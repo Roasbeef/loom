@@ -26,6 +26,9 @@ import broker/framing
 import broker/policy
 import client/agency
 import client/codemode
+import client/peer_mail
+import client/peers
+import client/serve
 import codemode/artifact
 import codemode/build
 import codemode/codemode as pipeline
@@ -58,6 +61,7 @@ import session/session
 import simplifile
 import storage/storage
 import support/addresses
+import support/internal/ffi_memory
 import support/tool_registry
 import tools/agent
 import tools/codemode as codemode_tool
@@ -2391,4 +2395,99 @@ pub fn note_reads_propagate_storage_failures_instead_of_absence_test() {
       assert reason != ""
     })
   })
+}
+
+fn peer_wiring() -> peers.Wiring {
+  peers.Wiring(
+    own: peer_mail.Endpoint("test-session", fn(command) {
+      case command {
+        peer_mail.Inbox(strand, _, _) -> Ok(json.String(strand))
+        _ -> Error("only inbox is used by this fixture")
+      }
+    }),
+    metadata: json.Object([]),
+    directory: None,
+  )
+}
+
+fn config_with_entropy_payload(
+  base: codemode.Config,
+  words: Int,
+) -> codemode.Config {
+  let payload = list.repeat(#("payload", "payload"), words)
+  codemode.Config(..base, entropy: fn(_bytes) { <<list.length(payload):64>> })
+}
+
+/// Peer composition retains the preceding router rather than its whole host.
+pub fn peer_router_does_not_copy_unrelated_host_configuration_test() {
+  let broker_actor = idle_broker()
+  let base = config_for(broker_actor)
+  let light = config_with_entropy_payload(base, 1)
+  let heavy = config_with_entropy_payload(base, 4096)
+  let small = serve.with_code_mode_peers(light, peer_wiring())
+  let large = serve.with_code_mode_peers(heavy, peer_wiring())
+
+  // Entropy remains in the host configuration, where satellite launch needs it.
+  assert ffi_memory.flat_words(heavy) > ffi_memory.flat_words(light) + 8192
+  assert ffi_memory.flat_words(large) > ffi_memory.flat_words(small) + 8192
+  assert ffi_memory.flat_words(large.wrap_router)
+    == ffi_memory.flat_words(small.wrap_router)
+  let _ = broker.stop(broker_actor)
+}
+
+/// Existing host wrapping runs first; peer calls intercept before its fallback.
+pub fn peer_router_preserves_wrapping_order_and_caller_strand_test() {
+  let broker_actor = idle_broker()
+  let order = process.new_subject()
+  let original =
+    codemode.Config(
+      ..config_for(broker_actor),
+      wrap_router: fn(request: codemode_tool.Request, fallback) {
+        process.send(order, "wrap:" <> request.strand)
+        fn(cap) {
+          process.send(order, "original dispatch")
+          fallback(cap)
+        }
+      },
+    )
+  let config = serve.with_code_mode_peers(original, peer_wiring())
+  let request = request_for("peer-order")
+  let router =
+    config.wrap_router(request, fn(_cap) {
+      process.send(order, "fallback")
+      Error(satellite.CapDenial("fixture", "fallback marker"))
+    })
+  assert process.receive(order, 0) == Ok("wrap:" <> request.strand)
+  let cap =
+    satellite.CapRequest(
+      cap: "peer.inbox",
+      args: msgpack.MapValue([
+        #(msgpack.StringValue("after"), msgpack.StringValue("")),
+        #(msgpack.StringValue("limit"), msgpack.IntValue(1)),
+      ]),
+      identity: identity.run_phase(identity.for_execution(
+        op_id: request.op_id,
+        step_id: request.step_id,
+        budget: budget.Budget(4, 9_000_000),
+      )),
+      base_policy: request.base_policy,
+      demand: request.demand,
+      env: [],
+      cwd: request.workspace,
+      ordinal: 0,
+    )
+  let assert Ok(satellite.ServedHere(answer)) = router(cap)
+    as "the peer router intercepts its own capability"
+  assert answer()
+    == framing.CapOk(
+      msgpack.StringValue(json.to_string(json.String(request.strand))),
+    )
+  assert process.receive(order, 0) == Error(Nil)
+
+  // Other capabilities keep both the original dispatch and fallback result.
+  assert router(satellite.CapRequest(..cap, cap: "fixture.other"))
+    == Error(satellite.CapDenial("fixture", "fallback marker"))
+  assert process.receive(order, 0) == Ok("original dispatch")
+  assert process.receive(order, 0) == Ok("fallback")
+  let _ = broker.stop(broker_actor)
 }

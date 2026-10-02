@@ -2497,10 +2497,16 @@ pub fn a_stop_that_outlived_its_grace_is_not_announced_on_reopen_test() {
   let assert Ok(Nil) =
     jobs.kill_job(harness.name, strand: "main", id: started.id, waiting: 5000)
     as "the owner may always stop what it started"
+
+  // The kill acknowledgement means the ladder was requested. A poll on the
+  // same actor also orders its durable Draining commit before restart reads it.
+  assert poll(harness, "main", started).state
+    == jobstate.Draining(by: jobstate.ByOwner)
   let clock = counting_clock(1_756_000_100_000, 1)
+  let replacement = addresses.new()
   let assert Ok(_replacement) =
     jobs.start(
-      addresses.new(),
+      replacement,
       fake_wiring(
         harness.runtime,
         start_fake_broker(),
@@ -2509,6 +2515,12 @@ pub fn a_stop_that_outlived_its_grace_is_not_announced_on_reopen_test() {
       ),
     )
     as "a replacement jobs actor must start"
+
+  // A durable Lost cell can precede the sweep's notification. Its listing
+  // reply runs after the whole injected sweep, so silence is observed last.
+  let assert Ok(_listed) =
+    jobs.list_jobs(replacement, strand: "main", waiting: 5000)
+    as "the replacement must finish its sweep before silence is checked"
   let assert jobstate.Lost(..) = await_record(harness, started.id, 200).state
     as "the sweep declares the drained job lost"
   assert !notified(harness, started)

@@ -1,48 +1,88 @@
 # Current handoff
 
-The memory and live Jev handoff was refreshed on October 1, 2026 against
-`3819fec3d4ea999f51c6504b31c4d9b5d68c1501`. The previous edition said a
-Jev credential was unavailable and live inference remained untested. Both
-claims are now historical: live Jev inference completed through code mode
-on the normal installed daemon.
+The resource handoff was refreshed on October 1, 2026 against the executable
+resource tree `16e866c8efd94b11127cf931bd46acaf2b675578` and installed main
+`31db7c68387859da416eff53ed41913cd2ac8f31`. The previous edition described
+`3819fec3d` as the current installation. That release's measurements and live
+Jev result remain historical evidence; the owner has since installed merged
+[PR #688](https://github.com/Roasbeef/loom/pull/688).
 
-The [memory investigation](review/daemon-memory-retention-2026-10-01.md)
-traced the large daemon heaps to executable-registry captures in provider
-request preparation and summary image classification. Private projections
-now retain only the inputs those callbacks use. The actual execution slot
-still owns its executor registry. Independent review and negative controls
-confirm the narrower captures preserve request and image behavior.
+The [first memory investigation](review/daemon-memory-retention-2026-10-01.md)
+removed broad executable-registry captures from provider preparation and
+summary image classification. The [resource follow-up](review/daemon-resource-usage-2026-10-01.md)
+also projects context metadata and the preceding code-mode router before
+retaining callbacks. Darwin's 20 ms process tracker indexes the original
+kernel snapshot instead of copying records and allocating child slices.
+Closure-size negative controls preserve the intended execution owner, while
+native regressions preserve ancestry, reparenting and birth checks.
 
-The self-contained server and terminal client at `3819fec3d` are installed.
-Authenticated graceful shutdown retired the old daemon, and both original
-sessions and their four strands were reconstructed. An observational settled
-census showed BEAM memory fall from 1298.933 MiB to 445.108 MiB; RSS fell from
-1366736 KiB to 517920 KiB. No forced collection was used. Hooks rearmed during
-reconstruction, so the note separates this comparison from the controlled
-bare-session fixture. Existing context-board, directory-admin and code-mode
-captures remain follow-up candidates; the remaining memory has not been
-fully attributed.
+Full combined local signoff exited zero in 517 seconds on `16e866c8`, including
+release/update verification, the simulation soaks and eleven enforced helper
+self-tests. The declared macOS `/proc` and rust-analyzer prerequisite skips
+remain explicit. Independent review found no remaining actionable finding.
+The follow-up also fixes two gate fixtures: typed MCP's VM-global channel now
+uses the existing serial-module declaration, and the Go LSP fixture forwards
+the same `GOCACHE` path it grants. Hosted CI and installation of the resource
+follow-up remain outstanding.
 
-Jevelin now carries its own ERTS, boot files, OTP libraries and macOS crypto
-library. The installed `~/.local/bin/jevelin-mcp` no longer resolves a host
-`erl` from Loom's PATH. [Installer PR #1](https://github.com/Roasbeef/jevelin-mcp/pull/1)
-at `307b7e4d5c5720ebd070cc0bd2868cdf66f0cada` passed Linux/macOS CI and a
-reviewed portable shell regression. It remains an open PR, so this describes
-the installed branch rather than the repository's default branch.
+The normal profiled daemon at installed main `5fbcda3` was PID 90442. Before
+the owner's restart, its single resident session and two idle strands used
+244.374 MiB of allocated BEAM memory, including 198.842 MiB of processes;
+RSS was 280496 KiB. The largest actor had spare old-heap capacity, while two
+large hibernated supervisors had nearly full heaps. Their restart ownership
+is the next measured lead, not a proven attribution to one source callback.
+Directory-admin lifetime changes remain deliberately separate.
 
-A fresh scripted-model session on the normal memory-fixed daemon discovered
-`cap://mcp/jev`, compiled its program in the real jail, and called live Jev.
-It retained a successful durable code-mode result from `jev-1.13.0` with
-Choice `logs`, confidence 1.0 and 324 input / 31 output tokens. The API key
-stayed outside model requests. Only that verification session was stopped.
-Seatbelt filesystem and network enforcement were active; macOS resource and
-process-lifecycle enforcement remained degraded.
+The source follow-up now also projects the gateway's private membership view
+to registered names and narrows the async-run and hub restart inputs before
+constructing their callbacks. Public startup options and runtime execution
+ownership remain unchanged. All 126 gateway tests pass; the isolated state
+stays 758 flat words as a separately supplied executable registry grows from
+202 to 90292. The old-field negative control fails. Independent review is
+complete, and the combined release gate passed with these additions.
 
-Typed MCP code generation merged in [PR #685](https://github.com/Roasbeef/loom/pull/685)
-at `b9e4a6344d5f0cf834d050d0ca163cb9ec85aff0`, tracked by issue #449. It adds
-structural input/output types and explicit schema fallbacks, with real Go SDK
-captures and jailed compiler tests. Resources, prompts and Loom HTTP transport
-configuration remain separate scope.
+
+The final controlled bare-session comparison against main `31db7c68`
+measured 1.521 MiB less idle BEAM memory and 5776 KiB less RSS for the
+follow-up. These single fixture cuts do not establish normal-session savings.
+An earlier baseline comparison measured about 2.8 MiB less BEAM memory but
+increased RSS. Darwin's real sleeping
+execution fixture allocated about 14% fewer bytes and 96% fewer objects;
+whole-window CPU times overlapped. Do not convert these bounded results into
+a claimed normal-daemon RSS or CPU percentage reduction.
+
+Jevelin's installed launcher carries its own ERTS, boot files, OTP libraries
+and macOS crypto library. [Installer PR #1](https://github.com/Roasbeef/jevelin-mcp/pull/1)
+at `307b7e4d5c5720ebd070cc0bd2868cdf66f0cada` is still open; its branch is
+installed. Typed MCP code generation merged in
+[PR #685](https://github.com/Roasbeef/loom/pull/685) at
+`b9e4a6344d5f0cf834d050d0ca163cb9ec85aff0`. A fresh session on the candidate
+self-contained release discovered `cap://mcp/jev`, compiled the structural
+Choice API in code mode and retained the local HTTP fixture's successful
+answer. This is separate from the earlier live inference on `3819fec3d`.
+
+Jev was unavailable in the normal `5fbcda3` daemon because its environment
+lacked `JEV_API_KEY`; the credential was installed in the owner's `.zshrc`.
+The owner's restart at `31db7c68` now reports `mcp.ready` with `jev=4`.
+Its first active cut was 292.694 MiB total BEAM and 290080 KiB RSS, with one
+working strand. A later idle cut was 258.328 MiB BEAM and 307600 KiB daemon
+RSS, plus 69360 KiB in Jevelin's separate process. The changed build, activity and MCP availability prevent a
+matched causal comparison. A fresh disposable session then completed a live typed Choice query through
+code mode on that normal daemon: `jev-1.13.0`, Choice `logs`, confidence 1.0,
+298 input / 31 output tokens. The credential stayed out of model requests,
+and only the verification session was stopped. Existing
+`[secrets]` commands offer a launch-independent credential seam for a future
+configuration pass. Never place the credential in model prompts or arguments.
+Newly assembled session runtimes get the discovered API; current resident
+runtimes retain their pinned modules. Resources, prompts and Loom HTTP
+transport configuration remain separate scope.
+
+Next: verify hosted CI on [PR #689](https://github.com/Roasbeef/loom/pull/689)
+at its exact head, then compare an installed resource release against the
+saved normal-daemon observations when the owner chooses to install it.
+Trace restart-specification ownership before further source changes. Keep
+actual process heaps, allocator carriers and OS RSS separate, and avoid forced
+collection in observations used to compare ordinary runtime behavior.
 
 ## Code-mode prompt cues
 

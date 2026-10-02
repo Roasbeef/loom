@@ -2097,6 +2097,29 @@ pub fn drain_resident(resident: Resident, within_ms: Int) -> Nil {
   )
 }
 
+/// Composes the peer router after the existing per-execution host wrapper.
+/// Only that wrapper is retained: unrelated code-mode configuration belongs
+/// to execution and must not be duplicated inside its own router callback.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.with_code_mode_peers(config, peer_wiring)
+/// ```
+@internal
+pub fn with_code_mode_peers(
+  config: codemode_wiring.Config,
+  peer_wiring: peers.Wiring,
+) -> codemode_wiring.Config {
+  let wrap_router = config.wrap_router
+  codemode_wiring.Config(
+    ..config,
+    wrap_router: fn(request: codemode_tool.Request, router) {
+      peers.router(peer_wiring, request.strand, wrap_router(request, router))
+    },
+  )
+}
+
 // Code mode, and the MCP servers it reaches — one decision, because the
 // second is unreachable without the first.
 //
@@ -3538,18 +3561,7 @@ fn assemble_in(
   let code_mode_host =
     option.map(code_mode_host, codemode_wiring.over_lsp(_, lsp_door))
   let code_mode_host =
-    option.map(code_mode_host, fn(config) {
-      codemode_wiring.Config(
-        ..config,
-        wrap_router: fn(request: codemode_tool.Request, router) {
-          peers.router(
-            peer_wiring,
-            request.strand,
-            config.wrap_router(request, router),
-          )
-        },
-      )
-    })
+    option.map(code_mode_host, with_code_mode_peers(_, peer_wiring))
   let code_mode =
     option.map(code_mode_host, fn(config) {
       let mode = async_codemode.seam(config, async_name, agency_config)
@@ -4094,6 +4106,40 @@ fn assemble_in(
   // who configured one deserves to be told which reason stopped it.
   seed_advisor(runtime, advisor_wiring, tool_registry, logger)
 
+  // Context observations need the immutable tool descriptions, while the hub's
+  // execution surface owns the registry. Build the reader before retaining the
+  // service start callback so observations carry neither executors nor Settings.
+  let context_window = settings.context_window
+  let context_reader =
+    context_view.reader(
+      opened,
+      assembled.text,
+      tool_registry,
+      fn(identity) {
+        facts(identity)
+        |> result.map(fn(pair) { pair.0.context_window })
+        |> result.unwrap(context_window)
+      },
+      settings.compaction,
+    )
+
+  // Restart specifications remain in the supervisor after initialization. Each
+  // worker captures the fields it needs before its closure is constructed, so a
+  // heartbeat or hub restart does not add a path through the whole Settings
+  // record. The runtime and executor registry keep their intended owners.
+  let async_heartbeat_ms = settings.jobs_policy.heartbeat_ms
+  let hub_session_id = settings.session_id
+  let hub_workspace = settings.workspace
+  let hub_catalog = settings.catalog
+  let code_mode_issue = case toolchain {
+    Error(reason) -> Some(reason)
+    Ok(_) ->
+      case list.contains(settings.deactivated_tools, "code_mode") {
+        True -> Some("disabled in the host tool configuration")
+        False -> None
+      }
+  }
+
   // The restartable half of the per-child policy. These children hold
   // no state a restart cannot rebuild and — crucially — none of them is
   // addressed by pid: each registers under a name and every caller
@@ -4123,7 +4169,7 @@ fn assemble_in(
             runtime:,
             clock:,
             abort: async_codemode.abort(broker_actor),
-            heartbeat_ms: settings.jobs_policy.heartbeat_ms,
+            heartbeat_ms: async_heartbeat_ms,
           ),
         )
       }),
@@ -4221,11 +4267,11 @@ fn assemble_in(
     |> sup.add(
       supervision.worker(fn() {
         hub.start(
-          hub.default_options(settings.session_id, runtime)
+          hub.default_options(hub_session_id, runtime)
             |> hub.with_directories(directories.admin(
               opened,
               fn() { Ok(runtime) },
-              settings.workspace,
+              hub_workspace,
               base_policy,
             ))
             |> hub.with_bus(event_bus)
@@ -4235,36 +4281,16 @@ fn assemble_in(
               |> result.map(worktree_diff.to_json)
               |> result.map_error(worktree_diff.error_message)
             })
-            |> hub.with_context(fn(strand) {
-              context_view.read(
-                opened,
-                strand,
-                assembled.text,
-                tool_registry,
-                fn(identity) {
-                  facts(identity)
-                  |> result.map(fn(pair) { pair.0.context_window })
-                  |> result.unwrap(settings.context_window)
-                },
-                settings.compaction,
-              )
-            })
+            |> hub.with_context(context_reader)
             |> hub.with_live_jobs(fn(strand) {
               jobs.live_jobs(jobs_name, strand, waiting: 1000)
               |> result.map_error(string.inspect)
             })
-            |> hub.with_catalog(settings.catalog)
+            |> hub.with_catalog(hub_catalog)
             |> hub.with_registry(tool_registry)
             |> hub.with_extension_refusals(extension_refusals)
             |> hub.with_skills(skills)
-            |> hub.with_code_mode_issue(case toolchain {
-              Error(reason) -> Some(reason)
-              Ok(_) ->
-                case list.contains(settings.deactivated_tools, "code_mode") {
-                  True -> Some("disabled in the host tool configuration")
-                  False -> None
-                }
-            })
+            |> hub.with_code_mode_issue(code_mode_issue)
             // The operator's abort reaches the effect plane here, and
             // this is the only place it can: the runtime stops the
             // strand's live effects, but a background job runs under a

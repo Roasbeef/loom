@@ -61,19 +61,37 @@ func (t *processTracker) capture() {
 	if err != nil {
 		return
 	}
-	children := make(map[int][]darwinProcess, len(table))
-	for _, process := range table {
-		children[process.ppid] = append(children[process.ppid], process)
+	t.captureTable(table)
+}
+
+// captureTable walks parent links in this fresh kernel snapshot. Child lists
+// retain row indices rather than copies of process records: only the observed
+// subtree's pid and birth time enter the persistent descendant ledger.
+func (t *processTracker) captureTable(table []unix.KinfoProc) {
+	children := make(map[int]int, len(table))
+	next := make([]int, len(table))
+
+	// Prepending rows backwards preserves the kernel snapshot's sibling
+	// order while giving every parent one head instead of a separate slice.
+	for row := len(table) - 1; row >= 0; row-- {
+		ppid := int(table[row].Eproc.Ppid)
+		next[row] = children[ppid]
+		children[ppid] = row + 1
 	}
-	frontier := children[t.root]
+
+	// A one-based link reserves zero for the end of a sibling list. All
+	// links belong to this snapshot, so no process identity is cached here.
+	frontier := []int{t.root}
 	observed := make(map[int]uint64)
 	for len(frontier) > 0 {
-		var next []darwinProcess
-		for _, process := range frontier {
-			observed[process.pid] = process.birth
-			next = append(next, children[process.pid]...)
+		parent := frontier[0]
+		frontier = frontier[1:]
+		for link := children[parent]; link != 0; link = next[link-1] {
+			process := table[link-1]
+			pid := int(process.Proc.P_pid)
+			observed[pid] = processBirth(process)
+			frontier = append(frontier, pid)
 		}
-		frontier = next
 	}
 	t.mu.Lock()
 	for pid, birth := range observed {
@@ -116,26 +134,8 @@ func (t *processTracker) close() {
 	<-t.done
 }
 
-type darwinProcess struct {
-	pid   int
-	ppid  int
-	birth uint64
-}
-
-func darwinProcessTable() ([]darwinProcess, error) {
-	entries, err := unix.SysctlKinfoProcSlice("kern.proc.all")
-	if err != nil {
-		return nil, err
-	}
-	out := make([]darwinProcess, 0, len(entries))
-	for _, entry := range entries {
-		out = append(out, darwinProcess{
-			pid:   int(entry.Proc.P_pid),
-			ppid:  int(entry.Eproc.Ppid),
-			birth: processBirth(entry),
-		})
-	}
-	return out, nil
+func darwinProcessTable() ([]unix.KinfoProc, error) {
+	return unix.SysctlKinfoProcSlice("kern.proc.all")
 }
 
 func processBirth(entry unix.KinfoProc) uint64 {

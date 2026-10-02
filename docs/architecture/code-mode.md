@@ -340,6 +340,13 @@ their existing bounds. A peer message still requires an exact directional
 grant. The broader import set does not bypass broker grants or the
 satellite's kernel sandbox.
 
+`serve.with_code_mode_peers` composes the peer router around the preceding
+per-execution host wrapper. It retains that wrapper function before creating
+the callback, so the callback does not capture the complete host configuration.
+The original wrapper runs first; peer interception binds the request's strand
+and delegates unrelated capabilities to the resulting router. Capture-size and
+behavioral tests pin both properties independently.
+
 An operator can install a workspace-only surface without Agency custody.
 That host keeps an effect-only allowlist and does not advertise
 `cap/strand` or `cap/workflow`. Extension tools and resident hooks also

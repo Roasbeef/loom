@@ -1,5 +1,39 @@
 # client
 
+## Context observation and router capture
+
+`context_view.reader` projects the immutable tool registry into a private
+name-keyed table containing only names, descriptions and schemas before
+constructing the hub's session-lived reader. Every observation still captures
+the current strand configuration and leaf together, then selects active tool
+names from that configuration. Sorting, deduplication, missing-name omission
+and duplicate registration replacement retain their existing semantics.
+`serve` also projects the fallback context window and compaction settings
+before retaining the reader. The public `read` and `inventory` adapters share
+the projected implementation; the production reader projects once at boot.
+
+`serve.with_code_mode_peers` retains the preceding `wrap_router` function
+before composing the peer router. It calls that wrapper first and binds peer
+access to the launching request's strand. The returned host still owns its
+execution configuration, but the router callback no longer duplicates the
+unrelated configuration in its environment. Capture-size regressions grow
+unrelated executor or host payloads and require both readers to remain the
+same size. Behavioral assertions independently pin observation and routing.
+
+## Gateway membership and restart captures
+
+The gateway projects `Options.registry` into a private name-keyed dictionary
+before building its actor state. That state distinguishes an absent registry
+from a configured empty registry, lists sorted registered names, and validates
+operator selections and history-tool availability without keeping tool
+executors in this slot. Public startup options still accept the same registry
+used by the runtime effect surface; execution remains owned by that surface.
+
+The async-run and hub child-start callbacks project their heartbeat, session,
+workspace, catalogue and code-mode refusal inputs before constructing the
+restart specification. Those callbacks retain the runtime inputs they require,
+but no longer add a path through the complete startup `Settings` record.
+
 ## Provider observation capture
 
 `wiring.request_image_classifier` projects the session before constructing
@@ -590,9 +624,9 @@ catalogue without opening runtimes. Explicit admission invokes
   one per served session, over a `runtime/api.Runtime`.
   `with_catalog` and `with_registry` supply the two things `set_config`
   validates against: the model catalogue behind `model_name`, and the
-  live tool registry behind `active_tools` (the same registry the
-  effect wiring dispatches through; without one, active-set changes are
-  refused in band).
+  registered-name projection behind `active_tools` (derived from the same
+  registry the effect wiring dispatches through; without one, active-set
+  changes are refused in band).
 - `client/gateway.{attach, detach, handle_text}` — the transport seam: a
   connection is a `fn(String) -> Nil` sink, inbound frames arrive as
   text, and nothing in the module knows about sockets. `attach` returns

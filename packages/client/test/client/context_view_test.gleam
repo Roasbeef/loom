@@ -2,6 +2,7 @@
 //// estimates and from usage copied across a compaction boundary. The production
 //// read uses a real session so an empty or missing strand cannot fake success.
 
+import broker/policy
 import client/context_view
 import core/clock
 import core/entry
@@ -13,6 +14,7 @@ import core/tx
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import machine/codec
 import machine/operation
 import machine/strand
 import runtime/effects
@@ -20,6 +22,7 @@ import runtime/hooks
 import session/session
 import session_view/context_view as terminal
 import storage/storage
+import support/internal/ffi_memory
 import support/tool_registry
 import tools/tool
 
@@ -193,16 +196,14 @@ pub fn server_reads_the_active_branch_and_refuses_an_unknown_strand_test() {
       ),
     )
     as "the strand is initialized through production boot bookkeeping"
-  let read = fn(name) {
-    context_view.read(
+  let read =
+    context_view.reader(
       opened,
-      name,
       "pinned prompt",
       tool.registry([]),
       fn(_) { 20_000 },
       operation.CompactionSettings(False, 0, 0),
     )
-  }
   let assert Ok(empty) = read("main")
     as "an initialized empty strand has a real static context"
   assert field(empty, "used_tokens") == json.Int(3)
@@ -236,5 +237,162 @@ pub fn server_reads_the_active_branch_and_refuses_an_unknown_strand_test() {
   assert field(observed, "used_tokens") == json.Int(8)
   assert field(observed, "model") == json.String("test/large")
   assert read("missing") == Error("context strand is unavailable")
+  let _ = session.close(opened)
+}
+
+// Dynamic executor data must remain observable through execution so the
+// capture premise measures real heap terms rather than shared literals.
+fn context_tool(name: String, words: Int) -> tool.Tool {
+  let payload = list.repeat(#(name, name), words)
+  tool.Tool(
+    name:,
+    description: "metadata retained independently of its executor",
+    prompt_snippet: None,
+    schema: tool.object_schema([], []),
+    replay: tool.Safe,
+    execution_mode: tool.Concurrent,
+    requirements: policy.workspace_default,
+    run: fn(_ctx, _arguments) {
+      tool.ToolOutcome(
+        content: [message.ToolResultText(string.inspect(payload), None)],
+        details: None,
+        is_error: False,
+        terminate: tool.ContinueRun,
+      )
+    },
+  )
+}
+
+fn context_registry(words: Int) -> tool.Registry {
+  tool.registry([context_tool("alpha", words), context_tool("zeta", words)])
+}
+
+/// The retained reader scales with descriptions, not executable payloads.
+pub fn context_reader_does_not_copy_tool_executors_test() {
+  let assert Ok(opened) = session.open_memory(clock.fixed(1))
+    as "the capture fixture owns its session"
+  let light = context_registry(1)
+  let heavy = context_registry(4096)
+  let small =
+    context_view.reader(
+      opened,
+      "system",
+      light,
+      fn(_) { 1000 },
+      operation.CompactionSettings(False, 0, 0),
+    )
+  let large =
+    context_view.reader(
+      opened,
+      "system",
+      heavy,
+      fn(_) { 1000 },
+      operation.CompactionSettings(False, 0, 0),
+    )
+
+  // The same number of tools and identical metadata isolate executor growth.
+  assert ffi_memory.flat_words(heavy) > ffi_memory.flat_words(light) + 8192
+  assert ffi_memory.flat_words(large) == ffi_memory.flat_words(small)
+  assert large("missing") == Error("context strand is unavailable")
+  let _ = session.close(opened)
+}
+
+/// A retained reader follows durable active names and the registry's last entry.
+pub fn context_reader_preserves_definitions_and_current_selection_test() {
+  let assert Ok(opened) = session.open_memory(clock.fixed(1))
+    as "the projection fixture owns its session"
+  let configuration =
+    strand.StrandConfiguration(
+      strand.ModelIdentity("test", "large"),
+      strand.ThinkingOff,
+      ["zeta", "missing", "alpha", "zeta"],
+    )
+  let assert Ok(Nil) = session.ensure_strand(opened, "main", configuration)
+    as "the selected tools belong to a real strand"
+  let old = context_tool("alpha", 1)
+  let newer =
+    tool.Tool(
+      ..old,
+      description: "the replacement description",
+      schema: tool.object_schema(
+        [#("value", json.Object([#("type", json.String("string"))]))],
+        ["value"],
+      ),
+    )
+  let registry = tool.registry([old, context_tool("zeta", 1), newer])
+  let window = fn(_) { 20_000 }
+  let settings = operation.CompactionSettings(False, 0, 0)
+  let read = context_view.reader(opened, "system", registry, window, settings)
+  assert read("main")
+    == context_view.read(opened, "main", "system", registry, window, settings)
+  let items =
+    context_view.inventory(
+      "system",
+      registry,
+      configuration.active_tool_names,
+      [],
+    )
+  assert list.map(items, fn(item) { item.name })
+    == ["Pinned prompt (includes embedded instructions)", "alpha", "zeta"]
+  assert context_view.inventory("system", registry, ["alpha"], [])
+    == context_view.inventory("system", tool.registry([newer]), ["alpha"], [])
+
+  // Independent fixture JSON lengths are 184 for the replacement alpha and
+  // 171 for zeta. Dividing each by four preserves both description and schema;
+  // comparing projection paths alone would let both lose the same metadata.
+  assert items
+    == [
+      context_view.Item(
+        "System prompt",
+        "Pinned prompt (includes embedded instructions)",
+        1,
+      ),
+      context_view.Item("Tools", "alpha", 46),
+      context_view.Item("Tools", "zeta", 42),
+    ]
+  let assert Ok(initial) = read("main")
+    as "the reader exposes the independently accounted tool metadata"
+  assert field(initial, "items_total") == json.Int(3)
+  assert field(initial, "used_tokens") == json.Int(89)
+  assert field(initial, "categories")
+    == json.Array([
+      json.Object([
+        #("name", json.String("System prompt")),
+        #("tokens", json.Int(1)),
+      ]),
+      json.Object([
+        #("name", json.String("Tools")),
+        #("tokens", json.Int(88)),
+      ]),
+      json.Object([
+        #("name", json.String("Messages")),
+        #("tokens", json.Int(0)),
+      ]),
+    ])
+
+  // Reusing the callback must not reuse the earlier active-tool selection.
+  let assert Ok(_) =
+    storage.commit(
+      opened.store,
+      tx.Tx(
+        [
+          tx.SetRegister(
+            register.StrandConfig,
+            "main",
+            register.value(codec.encode_configuration(
+              strand.StrandConfiguration(..configuration, active_tool_names: [
+                "zeta",
+              ]),
+            )),
+          ),
+        ],
+        [],
+      ),
+    )
+    as "the next observation reads a changed durable configuration"
+  assert read("main")
+    == context_view.read(opened, "main", "system", registry, window, settings)
+  let assert Ok(observed) = read("main") as "the changed selection is readable"
+  assert field(observed, "items_total") == json.Int(2)
   let _ = session.close(opened)
 }

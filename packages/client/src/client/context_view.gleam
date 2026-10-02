@@ -9,6 +9,7 @@ import core/json
 import core/message
 import core/register
 import gleam/bool
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
@@ -22,6 +23,48 @@ import session/session
 import storage/snapshot
 import storage/storage
 import tools/tool
+
+// Observation retains the exact surviving metadata of the immutable registry.
+// Executable callbacks own authority and lifetime elsewhere; this table cannot
+// execute a registration or keep its unrelated captured state alive.
+type Definition {
+  Definition(name: String, description: String, schema: json.JsonValue)
+}
+
+fn definitions(registry: tool.Registry) -> Dict(String, Definition) {
+  tool.registered(registry)
+  |> list.map(fn(registered) {
+    #(
+      registered.name,
+      Definition(registered.name, registered.description, registered.schema),
+    )
+  })
+  |> dict.from_list
+}
+
+/// Builds the session-lived context reader without retaining tool executors.
+/// The registry is immutable; each read still selects its current active names
+/// from the same captured configuration and branch as `read`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let inspect = context_view.reader(session, system, registry, window, settings)
+/// // inspect("main")
+/// ```
+@internal
+pub fn reader(
+  session: session.Session,
+  system: String,
+  registry: tool.Registry,
+  window_for: fn(strand.ModelIdentity) -> Int,
+  settings: operation.CompactionSettings,
+) -> fn(String) -> Result(json.JsonValue, String) {
+  let descriptions = definitions(registry)
+  fn(name) {
+    read_projected(session, name, system, descriptions, window_for, settings)
+  }
+}
 
 /// One independently estimated component; names never contain prompt content.
 pub type Item {
@@ -48,6 +91,24 @@ pub fn read(
   name: String,
   system: String,
   registry: tool.Registry,
+  window_for: fn(strand.ModelIdentity) -> Int,
+  settings: operation.CompactionSettings,
+) -> Result(json.JsonValue, String) {
+  read_projected(
+    session,
+    name,
+    system,
+    definitions(registry),
+    window_for,
+    settings,
+  )
+}
+
+fn read_projected(
+  session: session.Session,
+  name: String,
+  system: String,
+  descriptions: Dict(String, Definition),
   window_for: fn(strand.ModelIdentity) -> Int,
   settings: operation.CompactionSettings,
 ) -> Result(json.JsonValue, String) {
@@ -92,7 +153,12 @@ pub fn read(
   )
   let projected = hooks.project_from_scan(entries)
   let items =
-    inventory(system, registry, config.active_tool_names, projected.messages)
+    inventory_projected(
+      system,
+      descriptions,
+      config.active_tool_names,
+      projected.messages,
+    )
   board(
     name,
     cut.next_seq - 1,
@@ -125,12 +191,21 @@ pub fn inventory(
   active: List(String),
   messages: List(message.AgentMessage),
 ) -> List(Item) {
+  inventory_projected(system, definitions(registry), active, messages)
+}
+
+fn inventory_projected(
+  system: String,
+  descriptions: Dict(String, Definition),
+  active: List(String),
+  messages: List(message.AgentMessage),
+) -> List(Item) {
   let tools =
     active
     |> list.sort(string.compare)
     |> list.unique
     |> list.filter_map(fn(name) {
-      use definition <- result.map(tool.lookup(registry, name))
+      use definition <- result.map(dict.get(descriptions, name))
       let encoded =
         json.to_string(
           json.Object([
