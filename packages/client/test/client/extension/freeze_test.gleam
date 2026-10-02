@@ -269,27 +269,27 @@ pub fn no_prelude_module_imports_the_trusted_computing_base_test() {
   assert list.contains(modules, "storage/storage")
 }
 
-/// One file in the extension-facing packages is not Gleam, and it is
-/// `cap`'s FFI shim.
+/// Only the two reviewed satellite bridges ship foreign source.
 ///
 /// The import walk above reads `.gleam` files, because a Gleam import is
-/// the only thing it can read. That leaves a hole exactly the width of
-/// the tree's Erlang sources: `packages/cap/src/cap_ffi.erl` may name any
-/// module in the VM by atom, with no import line to find and no seam to
-/// pass. Today it names `gen_tcp`, `file`, `os` and `persistent_term` —
-/// the satellite side of the capability channel, which is what it is for
-/// — and no loom module at all.
+/// the only thing it can read. Erlang sources can name VM modules by atom
+/// without an import line for that walk to inspect. `cap_ffi.erl` owns the
+/// satellite side of the capability channel; `loom_cap_lsp_sql.erl` owns
+/// its bounded, private observation database under protocol change 062.
+/// Both execute in the satellite rather than the harness VM.
 ///
-/// The property worth gating is not that file's contents but its
-/// uniqueness. One known shim can be read by eye and was; a second one
-/// appearing is a decision somebody has to make on purpose, and this is
-/// where they are made to make it. So the set of non-Gleam sources under
-/// both trees is pinned exactly, and a new `.erl` fails here rather than
-/// passing through a walk that cannot see it.
-pub fn the_preludes_ship_one_foreign_source_test() {
+/// The exact source set records that review decision. A new foreign file
+/// must fail here rather than silently passing a walk that cannot see its
+/// calls. Adding a bridge requires reviewing its authority and ownership
+/// before changing this list.
+pub fn the_preludes_ship_only_reviewed_foreign_sources_test() {
   let foreign =
     list.append(foreign_sources_of("ext"), foreign_sources_of("cap"))
-  assert list.sort(foreign, string.compare) == ["cap_ffi.erl"]
+  assert list.sort(foreign, string.compare)
+    == [
+      "cap_ffi.erl",
+      "loom_cap_lsp_sql.erl",
+    ]
 }
 
 // --- Mechanism two: the seam a body is admitted under ----------------------
