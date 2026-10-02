@@ -347,6 +347,7 @@ pub fn capture_retains_and_refreshes_after_opmeta_is_deleted_test() {
       body_extent: agent_messages.Complete,
       seq: 2,
       state: agent_messages.SendPending,
+      ts: 0,
     )
   let ended_view =
     view(

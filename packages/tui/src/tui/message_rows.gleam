@@ -26,6 +26,7 @@ import etui/text
 import gleam/int
 import gleam/list
 import gleam/string
+import session_view/text_hygiene
 import session_view/transcript_line.{
   type Speaker, Assistant, Failure, PeerMessage, Reasoning, ReasoningDigest,
   SentMessage, Spacer, StrandMessage, SummarizedAdvice, SummarizedReasoning,
@@ -164,19 +165,28 @@ fn peer_rows(heading: String, body: String, width: Int) -> List(span.Line) {
   [top, ..body_rows(body, [span.span_plain("  "), bar], width - 4)]
 }
 
-// The body as Markdown, wrapped to `room` and drawn behind `prefix`. The
-// body's own words never become a heading here: whatever they say, they are
-// the rows under one. A Markdown block closes with a blank row, and the
-// message closes with one of its own, so the body's last blanks are dropped
-// rather than drawn as a bar with nothing beside it.
+// The body as plain text, each of its lines wrapped to `room` on its own
+// and drawn behind `prefix`. An agent writes a message as lines, and
+// Markdown would join two of them into one paragraph; kept as text, a
+// message reads as it was sent. The body's own words never become a heading
+// here: whatever they say, they are the rows under one. The message closes
+// with a blank row of its own, so the body's last blanks are dropped rather
+// than drawn as a bar with nothing beside it.
 fn body_rows(
   body: String,
   prefix: List(span.Span),
   room: Int,
 ) -> List(span.Line) {
   let room = int.max(1, room)
-  markdown.render(body, room)
-  |> markdown.wrap_lines(room)
+  body
+  |> text_hygiene.multiline
+  |> string.split("\n")
+  |> list.flat_map(fn(line) {
+    case string.trim(line) {
+      "" -> [span.line_plain("")]
+      _ -> markdown.wrap_line(span.line_plain(line), room)
+    }
+  })
   |> list.reverse
   |> list.drop_while(fn(line) { span.line_width(line) == 0 })
   |> list.reverse
@@ -214,9 +224,10 @@ fn clipped(pieces: List(#(String, style.Style)), room: Int) -> List(span.Span) {
   list.reverse(spans)
 }
 
-/// The hue a strand's traffic is drawn in: one of four accents, chosen from
-/// the strand's name so a strand keeps its hue across every message and
-/// every frame.
+/// The hue a strand's traffic is drawn in: one of three accents, chosen
+/// from the strand's name so a strand keeps its hue across every message
+/// and every frame. Body text's own colour is never one of them, so a bar
+/// always reads as a strand's.
 ///
 /// ## Examples
 ///
@@ -230,10 +241,9 @@ pub fn strand_hue(name: String) -> style.Color {
     |> list.fold(0, fn(total, point) {
       total + string.utf_codepoint_to_int(point)
     })
-  case sum % 4 {
+  case sum % 3 {
     0 -> theme.added
     1 -> theme.current
-    2 -> theme.advisor
-    _ -> theme.paper
+    _ -> theme.advisor
   }
 }

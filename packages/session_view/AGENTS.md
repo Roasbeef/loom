@@ -119,7 +119,9 @@ for a host with no surfaces.
   `StrandMessage` and `PeerMessage`, chosen from the `agent_send` call or
   the stored origin and never from the text; the text is a heading, a
   newline and the body. A peer heading ends in
-  `transcript_lines.origin_checked`.
+  `transcript_lines.origin_checked`, and every heading in the local clock
+  time when `Presentation.clock` (from `Shared.clock_offset`) knows the
+  zone. `agent_messages.Item.ts` keeps the send's time for the workspace.
 - `transcript_lines.deliveries` joins each successful `agent_send` result
   in a compact window to its call, for responses whose calls are drawn as
   narrative: the call's row says `admitted to its queue` or `started a run

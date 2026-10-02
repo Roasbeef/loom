@@ -70,6 +70,8 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set
 import gleam/string
+import gleam/time/calendar
+import gleam/time/duration
 import host/bootstrap as host_bootstrap
 import host/build_identity
 import host/claim as claim_token
@@ -513,7 +515,18 @@ pub fn new_model(
   inbox: Subject(connection_event.Message),
   project: workspace.Context,
 ) -> Model {
-  new_model_with_clock(inbox, project, host_bootstrap.monotonic_time_ms)
+  let model =
+    new_model_with_clock(inbox, project, host_bootstrap.monotonic_time_ms)
+
+  // The reader's zone is read once, when the terminal starts, so a message's
+  // heading can show the local time it arrived. A model built for a test
+  // keeps no offset and draws no times, which keeps its frames the same in
+  // every zone.
+  let offset =
+    calendar.local_offset()
+    |> duration.to_seconds_and_nanoseconds
+    |> fn(pair) { pair.0 / 60 }
+  Model(..model, shared: Shared(..model.shared, clock_offset: Some(offset)))
 }
 
 /// Creates a presentation state whose timing is controlled by its caller.
@@ -543,6 +556,7 @@ pub fn new_model_with_clock(
     runtime.read_stamp(monotonic_time_ms, host_bootstrap.monotonic_time_ms)
   Model(
     shared: Shared(
+      clock_offset: None,
       quit: False,
       parked_scrollback: dict.new(),
       attachments: [],

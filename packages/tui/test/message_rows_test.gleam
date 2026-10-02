@@ -10,16 +10,20 @@
 //// rule that defeats a forged heading: no text inside any body becomes a
 //// `⇄` band or a `←` heading.
 
+import core/entry
 import core/json
 import core/message
 import etui/buffer.{type Buffer}
 import etui/geometry.{Position}
 import frame_scene
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/string
+import session_view/model as session_model
 import session_view/strand_framing
 import session_view/transcript_lines
 import tui/frame
+import tui/model as tui_model
 import tui/theme
 
 const peer_session = "01a07d74-0000-7000-8000-000000000000"
@@ -262,4 +266,57 @@ pub fn no_body_text_becomes_a_band_or_a_heading_test() {
       "▎ ← from sub:tests · strand message",
     ]
   assert list.length(list.filter(lines, string.contains(_, forged_strand))) >= 5
+}
+
+// A message body is text: each line an agent wrote is a row of its own,
+// where Markdown would have joined the two into one paragraph.
+pub fn a_message_body_keeps_its_line_breaks_test() {
+  let lines =
+    painted(
+      [
+        frame_scene.user(1, "Update the README."),
+        frame_scene.received(
+          2,
+          framed("sub:docs", "README draft ready.\nNothing else touched."),
+          message.StrandOrigin("sub:docs"),
+        ),
+      ],
+      120,
+      40,
+    )
+    |> rows
+  let assert Ok(#(first, _)) = find(lines, "README draft ready.")
+    as "the first line"
+  let assert Ok(#(second, _)) = find(lines, "Nothing else touched.")
+    as "the second line"
+  assert second == first + 1
+}
+
+// With the reader's zone known, a message's heading ends in the local
+// clock time it was admitted at, which never needs drawing again.
+pub fn a_message_heading_shows_its_local_time_test() {
+  let base =
+    frame_scene.attach(frame_scene.model(), "fix readme badge", [
+      frame_scene.user(1, "What did lnd-review ask?"),
+      entry.MessageEntry(
+        frame_scene.entry_id(2),
+        None,
+        2,
+        2000,
+        message.UserMessage(
+          [message.UserText("Does it hold?", None)],
+          1_800_000_000_000,
+          Some(message.PeerOrigin(peer_session, "main")),
+        ),
+        False,
+      ),
+    ])
+  let model =
+    tui_model.Model(
+      ..base,
+      shared: session_model.Shared(..base.shared, clock_offset: Some(60)),
+    )
+  let lines = frame_scene.screen(model, 120, 40) |> frame.buffer_to_lines
+  let assert Ok(_) = find(lines, transcript_lines.origin_checked <> " · 09:00")
+    as "08:00 UTC is 09:00 an hour east"
 }

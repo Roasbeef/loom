@@ -119,6 +119,9 @@ pub type Presentation {
     compact_call_cache: Dict(tool_activity.Call, List(Line)),
     /// The captured worktree diff board and its explanation.
     worktree: worktree_view.State,
+    /// The local clock's offset from UTC in minutes, which a message's
+    /// heading needs to show its time (`model.Shared.clock_offset`).
+    clock: Option(Int),
   )
 }
 
@@ -955,7 +958,12 @@ fn record_blocks(
             spliced_sequence(item, fn(value) { value.seq }),
             #(
               expanded_source(item),
-              expanded_lines(item, owner, presentation.summaries),
+              expanded_lines(
+                item,
+                owner,
+                presentation.summaries,
+                presentation.clock,
+              ),
             ),
           )
         })
@@ -1032,10 +1040,11 @@ fn expanded_lines(
   spliced: Spliced(entry.Entry),
   owner: Option(message.Origin),
   labels: block_summary.Labels,
+  clock: Option(Int),
 ) -> List(Line) {
   case spliced {
     Transient(text, _) -> [Line(System, text)]
-    Projected(value) -> entry_lines(value, True, owner, labels)
+    Projected(value) -> clocked_entry_lines(value, True, owner, labels, clock)
   }
 }
 
@@ -1084,6 +1093,7 @@ fn compact_item_lines(
                   owner,
                   presentation.summaries,
                   found,
+                  presentation.clock,
                 ),
               ),
             ),
@@ -1097,7 +1107,13 @@ fn compact_item_lines(
           let lines =
             dict.get(presentation.compact_entry_cache, key)
             |> result.lazy_unwrap(fn() {
-              entry_lines(value, False, owner, presentation.summaries)
+              clocked_entry_lines(
+                value,
+                False,
+                owner,
+                presentation.summaries,
+                presentation.clock,
+              )
             })
           #(
             [#(seq, #(FromEntry(value), lines)), ..acc.0],
@@ -1108,7 +1124,11 @@ fn compact_item_lines(
       }
     tool_activity.Tools(calls) -> {
       let #(lines, cached) =
-        cached_activity_lines(calls, presentation.compact_call_cache)
+        cached_activity_lines(
+          calls,
+          presentation.compact_call_cache,
+          presentation.clock,
+        )
       #(
         [#(seq, #(FromTools(calls), lines)), ..acc.0],
         dict.merge(acc.1, cached),
@@ -1123,12 +1143,13 @@ fn compact_item_lines(
 fn cached_activity_lines(
   calls: List(tool_activity.Call),
   previous: Dict(tool_activity.Call, List(Line)),
+  clock: Option(Int),
 ) -> #(List(Line), Dict(tool_activity.Call, List(Line))) {
   let #(reversed, cached) =
     list.fold(calls, #([], dict.new()), fn(acc, call) {
       let lines =
         dict.get(previous, call)
-        |> result.lazy_unwrap(fn() { activity_call_lines(call) })
+        |> result.lazy_unwrap(fn() { clocked_call_lines(call, clock) })
       #([lines, ..acc.0], dict.insert(acc.1, call, lines))
     })
 
@@ -1442,12 +1463,28 @@ pub fn activity_heading(calls: List(tool_activity.Call)) -> Line {
 /// the outcome is known.
 @internal
 pub fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
+  clocked_call_lines(call, None)
+}
+
+/// `activity_call_lines` with the local clock's offset, so a send's row
+/// shows when its recipient took it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.clocked_call_lines(call, Some(60))
+/// ```
+@internal
+pub fn clocked_call_lines(
+  call: tool_activity.Call,
+  clock: Option(Int),
+) -> List(Line) {
   // A send that is pending or was taken is its message row; a failed one
   // keeps the failure rows every tool's failure gets, so the reason shows.
   let receipt = case call.outcome {
     None -> Ok(NoReceipt)
-    Some(message.ToolResultMessage(is_error: False, details:, ..)) ->
-      Ok(Receipted(details))
+    Some(message.ToolResultMessage(is_error: False, details:, timestamp:, ..)) ->
+      Ok(Receipted(details, clock_text(timestamp, clock)))
     Some(_) -> Error(Nil)
   }
   use <- result.lazy_unwrap(
@@ -1680,8 +1717,9 @@ type Receipt {
   // history draws the result as its own entry below the call.
   NoReceipt
 
-  // The successful result, whose details say how the message was taken.
-  Receipted(details: Option(json.JsonValue))
+  // The successful result, whose details say how the message was taken,
+  // and the heading's clock time for when it was, empty without a clock.
+  Receipted(details: Option(json.JsonValue), at: String)
 }
 
 // The one row an `agent_send` call becomes, or an error when its arguments
@@ -1701,12 +1739,12 @@ fn sent_lines(
   use body <- result.try(option.to_result(string_field(fields, "message"), Nil))
   let taken = case receipt {
     NoReceipt -> ""
-    Receipted(details: Some(json.Object(fields))) ->
+    Receipted(details: Some(json.Object(fields)), at:) ->
       case string_field(fields, "delivery") {
-        Some("started") -> " · started a run on it"
-        _ -> " · admitted to its queue"
+        Some("started") -> " · started a run on it" <> at
+        _ -> " · admitted to its queue" <> at
       }
-    Receipted(..) -> " · admitted to its queue"
+    Receipted(at:, ..) -> " · admitted to its queue" <> at
   }
   Ok([
     Line(
@@ -1733,7 +1771,7 @@ fn sent_lines(
 pub opaque type Deliveries {
   Deliveries(
     // Keyed by the calling entry's identity and the provider call id.
-    joined: Dict(#(String, String), Option(json.JsonValue)),
+    joined: Dict(#(String, String), #(Option(json.JsonValue), Int)),
     // The result entries whose content a call's row now draws.
     absorbed: Set(String),
   )
@@ -1785,6 +1823,7 @@ pub fn deliveries(entries: List(entry.Entry)) -> Deliveries {
               tool_call_id:,
               is_error:,
               details:,
+              timestamp:,
               ..,
             ),
             ..,
@@ -1792,11 +1831,10 @@ pub fn deliveries(entries: List(entry.Entry)) -> Deliveries {
             case dict.get(open, tool_call_id), is_error {
               Ok(caller), False -> #(
                 Deliveries(
-                  joined: dict.insert(
-                    found.joined,
-                    #(caller, tool_call_id),
+                  joined: dict.insert(found.joined, #(caller, tool_call_id), #(
                     details,
-                  ),
+                    timestamp,
+                  )),
                   absorbed: set.insert(
                     found.absorbed,
                     ids.entry_id_to_string(value.id),
@@ -1860,68 +1898,17 @@ pub fn reads_deliveries(value: entry.Entry) -> Bool {
   }
 }
 
-// A message preview preserves Markdown paragraphs; expansion exposes the
-// complete body from the same immutable call arguments.
-//
-// The preview is drawn as Markdown, so a cut inside a fenced block closes
-// the fence before the hint: left open, the fence would carry the hint into
-// the code block as one more line of code.
+// A message preview is its first twelve lines and the hint that expands
+// it; expansion exposes the complete body from the same immutable call
+// arguments. The terminal draws a message body as text, line by line, so a
+// cut needs no regard for Markdown.
 fn message_excerpt(body: String) -> String {
   let lines = string.split(body, "\n")
   case list.drop(lines, 12) {
     [] -> body
-    _ -> {
-      let kept = list.take(lines, 12)
-      let closing = case open_fence(kept) {
-        Some(fence) -> "\n" <> fence
-        None -> ""
-      }
-      string.join(kept, "\n")
-      <> closing
+    _ ->
+      string.join(list.take(lines, 12), "\n")
       <> "\n\n… Ctrl+g shows the complete message"
-    }
-  }
-}
-
-// The fence still open at the end of `lines`, if one is: a line of three or
-// more backticks or tildes opens a fence, and the next line holding only at
-// least as many of the same character closes it. An indented fence counts
-// as one, so a fence inside a list item is seen too.
-fn open_fence(lines: List(String)) -> Option(String) {
-  list.fold(lines, None, fn(open, line) {
-    let marker = fence_marker(string.trim_start(line))
-    case open, marker {
-      None, Some(fence) -> Some(fence)
-      Some(fence), Some(candidate) ->
-        case
-          string.first(candidate) == string.first(fence)
-          && string.length(candidate) >= string.length(fence)
-          && string.trim(line) == candidate
-        {
-          True -> None
-          False -> open
-        }
-      _, None -> open
-    }
-  })
-}
-
-// The run of backticks or tildes a fence line opens with, when it is at
-// least three long.
-fn fence_marker(line: String) -> Option(String) {
-  let run = fn(glyph) {
-    string.to_graphemes(line)
-    |> list.take_while(fn(char) { char == glyph })
-    |> string.concat
-  }
-  let marker = case string.first(line) {
-    Ok("`") -> run("`")
-    Ok("~") -> run("~")
-    _ -> ""
-  }
-  case string.length(marker) >= 3 {
-    True -> Some(marker)
-    False -> None
   }
 }
 
@@ -2000,7 +1987,26 @@ pub fn entry_lines(
   local_owner: Option(message.Origin),
   labels: block_summary.Labels,
 ) -> List(Line) {
-  entry_rows(value, details_expanded, local_owner, labels, unjoined)
+  entry_rows(value, details_expanded, local_owner, labels, unjoined, None)
+}
+
+/// `entry_lines` with the local clock's offset (`Presentation.clock`), so
+/// a message's heading shows the time it was admitted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.clocked_entry_lines(value, False, None, labels, Some(60))
+/// ```
+@internal
+pub fn clocked_entry_lines(
+  value: entry.Entry,
+  details_expanded: Bool,
+  local_owner: Option(message.Origin),
+  labels: block_summary.Labels,
+  clock: Option(Int),
+) -> List(Line) {
+  entry_rows(value, details_expanded, local_owner, labels, unjoined, clock)
 }
 
 /// `entry_lines` in compact history for an entry whose `agent_send` calls
@@ -2018,14 +2024,16 @@ pub fn delivered_entry_lines(
   local_owner: Option(message.Origin),
   labels: block_summary.Labels,
   found: Deliveries,
+  clock: Option(Int),
 ) -> List(Line) {
   let caller = ids.entry_id_to_string(value.id)
-  entry_rows(value, False, local_owner, labels, fn(call: message.ToolCall) {
+  let receipt = fn(call: message.ToolCall) {
     case dict.get(found.joined, #(caller, call.id)) {
-      Ok(details) -> Receipted(details)
+      Ok(#(details, at)) -> Receipted(details, clock_text(at, clock))
       Error(Nil) -> NoReceipt
     }
-  })
+  }
+  entry_rows(value, False, local_owner, labels, receipt, clock)
 }
 
 // No result is joined to any call: expanded history draws each result as
@@ -2040,6 +2048,7 @@ fn entry_rows(
   local_owner: Option(message.Origin),
   labels: block_summary.Labels,
   receipt: fn(message.ToolCall) -> Receipt,
+  clock: Option(Int),
 ) -> List(Line) {
   let found = labels_for(value, labels)
   case value {
@@ -2050,10 +2059,10 @@ fn entry_rows(
         block_label(found, 0),
       )
       |> option.lazy_or(fn() {
-        peer_message_lines(value, details_extent(details_expanded))
+        peer_message_lines(value, details_extent(details_expanded), clock)
       })
       |> option.lazy_or(fn() {
-        sibling_message_lines(value, details_extent(details_expanded))
+        sibling_message_lines(value, details_extent(details_expanded), clock)
       })
       |> option.lazy_unwrap(fn() {
         message_lines(value, details_expanded, local_owner, found, receipt)
@@ -2130,12 +2139,13 @@ fn harness_message_lines(
 fn peer_message_lines(
   value: message.AgentMessage,
   extent: notes_view.Extent,
+  clock: Option(Int),
 ) -> Option(List(Line)) {
   case value {
     message.UserMessage(
       content:,
       origin: Some(message.PeerOrigin(session:, strand:)),
-      ..,
+      timestamp:,
     ) ->
       Some([
         Line(
@@ -2146,11 +2156,29 @@ fn peer_message_lines(
             <> text_hygiene.single_line(strand)
             <> " · "
             <> origin_checked
+            <> clock_text(timestamp, clock)
             <> "\n"
             <> message_body(user_body(content), extent),
         ),
       ])
     _ -> None
+  }
+}
+
+// A message heading's time: ` · 14:02`, the local clock time `at` (Unix
+// milliseconds) falls on, or nothing when the host knows no offset. A clock
+// time never goes stale, which a relative age (`12s ago`) on a cached row
+// would.
+fn clock_text(at: Int, clock: Option(Int)) -> String {
+  case clock {
+    None -> ""
+    Some(offset) -> {
+      let minutes = int.modulo(at / 60_000 + offset, 1440) |> result.unwrap(0)
+      " · "
+      <> string.pad_start(int.to_string(minutes / 60), 2, "0")
+      <> ":"
+      <> string.pad_start(int.to_string(minutes % 60), 2, "0")
+    }
   }
 }
 
@@ -2179,12 +2207,13 @@ fn short_session(session: String) -> String {
 fn sibling_message_lines(
   value: message.AgentMessage,
   extent: notes_view.Extent,
+  clock: Option(Int),
 ) -> Option(List(Line)) {
   case value {
     message.UserMessage(
       content:,
       origin: Some(message.StrandOrigin(strand:)),
-      ..,
+      timestamp:,
     ) -> {
       let framed = strand_framing.strip(user_body(content), strand)
       let body = case framed.trailer {
@@ -2196,7 +2225,9 @@ fn sibling_message_lines(
           StrandMessage,
           "← from "
             <> text_hygiene.single_line(strand)
-            <> " · strand message\n"
+            <> " · strand message"
+            <> clock_text(timestamp, clock)
+            <> "\n"
             <> message_body(body, extent),
         ),
       ])

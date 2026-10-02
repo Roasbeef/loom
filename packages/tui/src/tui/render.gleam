@@ -1025,6 +1025,7 @@ fn speaker_mark(speaker: Speaker, text: String) -> #(String, style.Style) {
         True -> #("✓ ", theme.success_text())
         False -> #("● ", theme.current_bold())
       }
+
     // A result hangs under its call, two cells in, and the call keeps the
     // gutter with its own glyph, the way Codex draws a step.
     ToolResult -> #("  └ ", theme.quiet_text())

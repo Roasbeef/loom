@@ -239,10 +239,10 @@ pub fn an_aborted_child_names_its_reason_and_its_result_test() {
     ]
 }
 
-// A long message collapsed to a preview can stop inside a fence. The
-// preview closes the fence before the expand hint, so the hint is drawn as
-// a line of prose rather than as one more line of code.
-pub fn a_collapsed_long_peer_message_keeps_its_hint_out_of_the_code_test() {
+// A long message collapses to its opening lines and a hint. Its body is
+// drawn as text, line by line, so the hint is a row of its own whatever
+// the cut lands in, and expanding shows the whole body.
+pub fn a_collapsed_long_peer_message_ends_in_its_hint_test() {
   let long = "```\n" <> string.repeat("line of code\n", 2000) <> "```"
   let sent =
     entry_with(message.UserMessage(
@@ -258,11 +258,9 @@ pub fn a_collapsed_long_peer_message_keeps_its_hint_out_of_the_code_test() {
     |> list.map(fn(row) {
       row.spans |> list.map(fn(value) { value.content }) |> string.concat
     })
-  let assert Ok(hint) =
-    list.find(rows, fn(row) { string.contains(row, "Ctrl+g shows") })
-    as "the preview ends in its hint"
-  assert !string.contains(hint, "▎ ")
-  assert list.any(rows, fn(row) { string.contains(row, "▎ line of code") })
+  assert list.any(rows, fn(row) { string.contains(row, "Ctrl+g shows") })
+  assert list.length(list.filter(rows, string.contains(_, "line of code")))
+    == 11
 
   let assert [Line(PeerMessage, whole)] =
     transcript_lines.entry_lines(sent, True, None, block_summary.new())
