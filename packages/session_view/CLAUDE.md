@@ -125,6 +125,15 @@ for a host with no surfaces.
 - `transcript_lines.Presentation`: everything the line builders read of a
   client's state. A host fills it; the terminal does so in
   `tui_model.presentation`.
+- `transcript_lines.collapse_repeats` folds a run of identical consecutive
+  items into the newest of them with `×N` on its first row, in compact
+  history only. Two predicates say what may fold: `repeated_call` (a call
+  that settled successfully on one row, such as an `agent_wait` poll) inside
+  a tool group, and `repeated_failure` (an entry that draws only a provider
+  error) between items. The terminal's anchor fold in `tui/projection`
+  applies the same fold over the same items, so rows and anchors stay
+  paired; a folded run anchors to its newest call. A failure row opens bare,
+  so it gets a gap under a call's bare last row.
 - `transcript_lines.response_awaited(records, operations, stream)` says
   whether a live response is still owed to a host that draws only captures:
   its request's identity names an entry that `records` do not hold and the
@@ -177,7 +186,8 @@ for a host with no surfaces.
   person's message (the sender is a field, not a `name:` line of the text;
   `turns.attributed` sets the reader's own role on the reader's messages), one
   `Work` divider per turn (`Folded`, or `Open` while the strand runs or waits
-  on an approval; its `Worked` figures come from the records). The fold's
+  on an approval; its `Worked` figures come from the records, failed calls included, which
+  `turns.divider` prints as `· 1 failed`). The fold's
   items are `Narrated` blocks (each with `took`, the response's time, which a
   reasoning row reads), `Step`s (`words` from `step_words.of_call`) and
   `Memory`, the memory context the daemon recorded ahead of a prompt: it is no

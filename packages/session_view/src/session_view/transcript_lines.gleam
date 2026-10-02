@@ -988,9 +988,17 @@ fn record_blocks(
               )
           }
         })
+
+      // A provider error that repeats on every retry is one row with a
+      // count, not a wall of identical rows.
       #(
         reversed
           |> list.reverse
+          |> collapse_repeats(
+            fn(block) { block.1.1 },
+            fn(block) { repeated_failure(block.1.1) },
+            fn(block, rows) { #(block.0, #(block.1.0, rows)) },
+          )
           |> merge_sequence_blocks(sourced_advisor_blocks(advisor)),
         calls,
         narratives,
@@ -1100,10 +1108,115 @@ fn cached_activity_lines(
   #(
     [
       activity_heading(calls),
-      ..separated_tool_groups(list.reverse(reversed), WithinResponse)
+      ..reversed
+      |> list.reverse
+      |> collapse_repeats(fn(rows) { rows }, repeated_call, fn(_, rows) { rows })
+      |> separated_tool_groups(WithinResponse)
     ],
     cached,
   )
+}
+
+/// Folds each run of identical, consecutive repeatable items into the last
+/// of them, with the run's length on its first row: fifteen identical
+/// `✓ agent_wait · 2 subagents` rows become one `… ×15` row.
+///
+/// The last item is the one kept because it is the newest, so a host that
+/// pairs rows with durable identities lands on the latest of the run. The
+/// rows compared are the rows drawn, so two calls whose summaries differ in
+/// any word are never folded together. Only compact history folds: the
+/// expanded view still shows every original entry.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let row = [Line(ToolCall, "✓ agent_wait · 2 subagents")]
+/// assert transcript_lines.collapse_repeats(
+///     [row, row],
+///     fn(rows) { rows },
+///     transcript_lines.repeated_call,
+///     fn(_, rows) { rows },
+///   )
+///   == [[Line(ToolCall, "✓ agent_wait · 2 subagents ×2")]]
+/// ```
+@internal
+pub fn collapse_repeats(
+  items: List(a),
+  rows: fn(a) -> List(Line),
+  repeatable: fn(a) -> Bool,
+  rebuild: fn(a, List(Line)) -> a,
+) -> List(a) {
+  items
+  |> list.fold([], fn(runs, item) {
+    case runs {
+      [#(previous, count), ..rest] ->
+        case
+          repeatable(item)
+          && repeatable(previous)
+          && rows(previous) == rows(item)
+        {
+          True -> [#(item, count + 1), ..rest]
+          False -> [#(item, 1), ..runs]
+        }
+      [] -> [#(item, 1)]
+    }
+  })
+  |> list.reverse
+  |> list.map(fn(run) {
+    case run.1 {
+      1 -> run.0
+      count -> rebuild(run.0, counted(rows(run.0), count))
+    }
+  })
+}
+
+// The run's length, on the first row so it reads beside the summary.
+fn counted(rows: List(Line), count: Int) -> List(Line) {
+  case rows {
+    [first, ..rest] -> [
+      Line(..first, text: first.text <> " ×" <> int.to_string(count)),
+      ..rest
+    ]
+    [] -> []
+  }
+}
+
+/// Whether a tool call's rows may fold into a run of identical calls: a
+/// call that settled successfully and draws one row, as a poll such as
+/// `agent_wait` does. A pending call, a failure with its preview and a call
+/// with a patch or output under it keep their own rows, because a reader may
+/// be looking for that one call's detail and its place in the scrollback.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert transcript_lines.repeated_call([Line(ToolCall, "✓ agent_wait")])
+/// ```
+@internal
+pub fn repeated_call(rows: List(Line)) -> Bool {
+  case rows {
+    [Line(speaker: ToolCall, text: "✓ " <> _)] -> True
+    [] | [_, ..] -> False
+  }
+}
+
+/// Whether a narrative item's rows may fold into a run: only an entry that
+/// draws nothing but one failure row, such as a provider error repeated on
+/// every retry. Two identical prompts or answers are two things the reader
+/// has to see.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert transcript_lines.repeated_failure([Line(Failure, "http 429")])
+/// assert !transcript_lines.repeated_failure([Line(User, "again")])
+/// ```
+@internal
+pub fn repeated_failure(rows: List(Line)) -> Bool {
+  case rows {
+    [Line(speaker: Failure, ..)] -> True
+    [] | [_, ..] -> False
+  }
 }
 
 /// Which first row counts as opening a tool group, which depends on the
@@ -1234,6 +1347,10 @@ pub fn opens_bare(rows: List(Line), opening: GroupOpening) -> Bool {
     // gap of its own.
     [Line(speaker: System, ..), ..] -> True
     [Line(speaker: SummarizedAdvice, ..), ..] -> True
+
+    // A provider error after a run of calls is its own entry, and like the
+    // harness rows it would otherwise sit welded under the last call.
+    [Line(speaker: Failure, ..), ..] -> True
 
     // The one row whose meaning depends on the boundary being walked; see
     // `GroupOpening`.
