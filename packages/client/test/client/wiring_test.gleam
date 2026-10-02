@@ -336,6 +336,54 @@ pub fn compaction_slots_do_not_copy_the_registry_test() {
     == ffi_memory.flat_words(small.structural_decision)
 }
 
+/// Image classification retains the session without executable tool payloads.
+pub fn image_classifier_does_not_copy_the_registry_test() {
+  let base = config()
+  let light = wiring.Config(..base, registry: registry_padded_to(1))
+  let heavy = wiring.Config(..base, registry: registry_padded_to(4096))
+  let small = wiring.request_image_classifier(light)
+  let large = wiring.request_image_classifier(heavy)
+  let #(operation, _) = ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 1))
+
+  // The run payload still exists through its intended registration. Only the
+  // classification capability is independent of that unrelated tool graph.
+  assert ffi_memory.flat_words(heavy.registry)
+    > ffi_memory.flat_words(light.registry) + 8192
+  assert ffi_memory.flat_words(large) == ffi_memory.flat_words(small)
+  assert large(operation, []) == False
+  assert large(operation, [
+    message.UserMessage(
+      content: [message.UserImage("image/png", "pixels")],
+      origin: None,
+      timestamp: 0,
+    ),
+  ])
+}
+
+/// Provider facades retain rendered definitions, while execution owns payloads.
+pub fn provider_slots_do_not_copy_tool_executors_test() {
+  let base = config()
+  let light = wiring.Config(..base, registry: registry_padded_to(1))
+  let heavy = wiring.Config(..base, registry: registry_padded_to(4096))
+  let small = wiring.build_effects(light)
+  let large = wiring.build_effects(heavy)
+
+  // This is a retention assertion, so its control must show that the tool
+  // executors still carry the varying payload through the intended surface.
+  assert ffi_memory.flat_words(heavy.registry)
+    > ffi_memory.flat_words(light.registry) + 8192
+  assert ffi_memory.flat_words(large.tools.run)
+    > ffi_memory.flat_words(small.tools.run) + 8192
+  assert ffi_memory.flat_words(large.provider)
+    == ffi_memory.flat_words(small.provider)
+
+  let active = ["padded_two", "bash", "unknown", "padded_one", "bash"]
+  assert wiring.tool_specs(heavy, active) == wiring.tool_specs(light, active)
+  assert wiring.tool_specs(heavy, active)
+    |> list.map(fn(spec) { spec.name })
+    == ["bash", "padded_one", "padded_two"]
+}
+
 /// A collector's output callback carries identity independently of arguments.
 pub fn output_observer_does_not_copy_run_payload_test() {
   let opened = memory_session()

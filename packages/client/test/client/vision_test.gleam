@@ -990,12 +990,13 @@ pub fn held_image_and_text_batch_routes_admission_and_dispatch_test() {
   // an image turn and must not reach a summarizer on another service. The
   // continuation context is the same case one step later.
   let turns = process.new_subject()
+  let classify = wiring.request_image_classifier(config)
   let observed = fn(context) {
     let _tap =
       blocksummary.observer(
         addresses.new(),
         fn(operation, context) {
-          case wiring.request_image_bearing(config, operation, context) {
+          case classify(operation, context) {
             True -> blocksummary.ImageTurn
             False -> blocksummary.TextTurn
           }

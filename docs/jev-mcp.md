@@ -37,6 +37,23 @@ without publishing a launcher onto PATH.
 The server consumes its Gleam libraries through pinned Git dependencies;
 this setup does not require publishing them to Hex.
 
+For a self-contained installation, use the reviewed installer from
+[Jevelin MCP PR #1](https://github.com/Roasbeef/jevelin-mcp/pull/1). While that
+PR remains open, select its tested commit explicitly:
+
+```sh
+git checkout 307b7e4d5c5720ebd070cc0bd2868cdf66f0cada
+make install
+```
+
+The default prefix is `~/.local`; `make install PREFIX=/another/prefix`
+selects another location. Add the prefix's `bin` directory to your shell's
+PATH to invoke `jevelin-mcp` directly. Loom can use its absolute path without
+that shell setting. The launcher runs the bundled ERTS and boot files by
+absolute path, so it does not require host Erlang or resolve Loom's bundled
+`erl` from PATH. The installed release is a launcher and its private runtime
+tree, like Loom's distribution, rather than one statically linked executable.
+
 Loom also needs a working code-mode toolchain and build seed. The normal
 server distribution includes them. From a Loom checkout, build the helper
 with `make sandbox`, then run `make server-shipment`, which prepares the seed
@@ -55,11 +72,18 @@ command = ["/absolute/path/jevelin-mcp/bin/jevelin-mcp"]
 api_key_env = "JEV_API_KEY"
 ```
 
+For the default self-contained installation, use
+`command = ["/Users/your-user/.local/bin/jevelin-mcp"]` instead. In an existing
+normal daemon, add the table to its active catalogue, typically
+`~/.loom/loom.toml`, rather than the separate test catalogue above. Restart
+the daemon with the credential available, then open a fresh session: existing
+sessions keep their generated capability modules.
+
 The model provider and Jev use separate credentials. `api_key_env` names a
-credential in Loom's secret store; the TOML file contains no Jev credential.
-By default, that store reads the daemon's environment. For a terminal-only
-setup, set `JEV_API_KEY` using your secret manager and export it before
-starting the daemon. To enter it interactively in Bash or Zsh:
+key in Loom's secret store; the TOML file contains no Jev credential. By
+default, that store reads the daemon's environment. For a terminal-only setup,
+set `JEV_API_KEY` using your secret manager and export it before starting the
+daemon. To enter it interactively in Bash or Zsh:
 
 ```sh
 read -r -s JEV_API_KEY
@@ -393,9 +417,21 @@ recorded in the tool result.
 The tested Loom tree was `5aad549bd17a34dd07f6549695ef1430b0efff5f`, merged
 by [PR #669](https://github.com/Roasbeef/loom/pull/669). Jevelin MCP was
 `ed86f60cac3c61a8acbabcd095de6743dfac40a1`, with SDK runtime pin
-`686955fc0461630bf64a4dc8eb51565dc7ca1ac9`. This proves the integration
-against local fixtures. Live Jev authentication and inference remain
-untested until an API key is available.
+`686955fc0461630bf64a4dc8eb51565dc7ca1ac9`. That run proves the integration
+against local fixtures.
+
+A subsequent October 1 run used the normal installed Loom daemon at
+`3819fec3d4ea999f51c6504b31c4d9b5d68c1501` and the self-contained Jevelin
+release at `307b7e4d5c5720ebd070cc0bd2868cdf66f0cada`. A fresh scripted-model
+session discovered `cap://mcp/jev`, compiled the program in the real jail,
+and called the live Jev API over TLS. The durable successful code-mode
+result reported model `jev-1.13.0`, choice `logs`, confidence 1.0, and 324
+input / 31 output tokens. This verifies live authentication and inference
+through the installed daemon; the scripted model made the submitted program
+deterministic. The credential remained outside model requests. Only the
+verification session was stopped, preserving the operator's existing sessions.
+Seatbelt filesystem and network enforcement were active, with the same
+explicit macOS resource and process-lifecycle limitations described above.
 
 Loom currently connects MCP servers over stdio. Jevelin and the standalone
 SDK also support HTTP transport, but that transport is not configured by

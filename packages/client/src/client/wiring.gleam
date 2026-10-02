@@ -145,6 +145,7 @@ import core/entry
 import core/ids.{type OpId}
 import core/message.{type AgentMessage}
 import gleam/bool
+import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -274,6 +275,50 @@ pub type Config {
   )
 }
 
+// A provider request owns routing facts and rendered definitions, never tool
+// executors, jail policy, environment or broker clearance callbacks. The routing
+// projection also serves public target queries without building a tool table.
+type ProviderRouting {
+  ProviderRouting(
+    gateway: Gateway,
+    role: Role,
+    facts: fn(ModelIdentity) ->
+      Result(#(ResolvedModel, String, catalog.ImageReading), Nil),
+    api: String,
+    fallback_context_window: Int,
+    fallback_max_output_tokens: Int,
+  )
+}
+
+type ProviderConfiguration {
+  ProviderConfiguration(
+    routing: ProviderRouting,
+    session: Session,
+    system: Option(String),
+    definitions: Dict(String, ToolSpec),
+  )
+}
+
+fn provider_routing(config: Config) -> ProviderRouting {
+  ProviderRouting(
+    gateway: config.gateway,
+    role: config.role,
+    facts: config.facts,
+    api: config.api,
+    fallback_context_window: config.fallback_context_window,
+    fallback_max_output_tokens: config.fallback_max_output_tokens,
+  )
+}
+
+fn provider_configuration(config: Config) -> ProviderConfiguration {
+  ProviderConfiguration(
+    routing: provider_routing(config),
+    session: config.session,
+    system: config.system,
+    definitions: tool_definitions(config.registry),
+  )
+}
+
 /// An observer resolver that watches nothing: every execution's output
 /// still reaches its collected result, and no tail leaves the tool. The
 /// default for a host with nobody attached, and for tests about
@@ -311,13 +356,19 @@ pub fn build_effects(config: Config) -> Effects {
   // exists, so the projection answers what a lookup would have.
   let declared = tool.declarations(config.registry)
 
+  // Definitions are immutable for this effect graph. Project them once before
+  // retaining either provider facade, so executable registrations stay only in
+  // the tool surface. Active names are still chosen from each request's own
+  // durable configuration, not from this boot-time projection.
+  let provider = provider_configuration(config)
+
   effects.Effects(
     clock: config.clock,
     entropy: config.entropy,
     timers: effects.real_timers(),
     provider: effects.PreparedProviderSurface(
-      request: fn(spec) { dispatch(config, spec) },
-      prepare: fn(spec) { prepare_dispatch(config, spec) },
+      request: fn(spec) { dispatch(provider, spec) },
+      prepare: fn(spec) { prepare_dispatch(provider, spec) },
       timeout_ms: config.provider_timeout_ms,
     ),
     tools: effects.ToolSurface(
@@ -694,7 +745,10 @@ fn carried_by_session(opened: Session, strand: String) -> Int {
 // Dispatches one request spec. Generations go to the gateway; polls and
 // summary requests settle immediately in-band (see the module doc).
 
-fn dispatch(config: Config, spec: effects.RequestSpec) -> StreamHandle {
+fn dispatch(
+  config: ProviderConfiguration,
+  spec: effects.RequestSpec,
+) -> StreamHandle {
   prepare_dispatch(config, spec)
   |> stream.start_prepared
 }
@@ -703,17 +757,18 @@ fn dispatch(config: Config, spec: effects.RequestSpec) -> StreamHandle {
 // begin permit. The immediate error cases still use the same shape so every
 // wrapper can apply one prepare, publish, begin protocol.
 fn prepare_dispatch(
-  config: Config,
+  config: ProviderConfiguration,
   spec: effects.RequestSpec,
 ) -> stream.PreparedStream {
   case spec {
     effects.GenerationRequest(operation:, ..) -> {
-      let request = provider_request(config, spec)
+      let request = provider_request_from(config, spec)
       let protected = case image_budget.count(request.messages) {
         0 -> 0
         _ -> active_run_images(config.session, operation) |> result.unwrap(0)
       }
-      let scoped = gateway.with_protected_images(config.gateway, protected)
+      let scoped =
+        gateway.with_protected_images(config.routing.gateway, protected)
       gateway.prepare(scoped, request)
     }
     effects.PollRequest(..) ->
@@ -836,7 +891,7 @@ type ModelFacts {
 // does not know was switched to by an operator or seeded from an
 // environment the catalogue never described, and routing consults only
 // the blind declarations the catalogue actually made.
-fn model_facts(config: Config, identity: ModelIdentity) -> ModelFacts {
+fn model_facts(config: ProviderRouting, identity: ModelIdentity) -> ModelFacts {
   model_facts_from(
     config.facts,
     config.api,
@@ -1118,8 +1173,30 @@ pub fn request_image_bearing(
   operation: OpId,
   context: List(AgentMessage),
 ) -> Bool {
-  vision.image_bearing(context)
-  || admitted_image_bearing(config.session, operation) |> result.unwrap(False)
+  request_image_bearing_projected(config.session, operation, context)
+}
+
+/// Captures the session alone for observers that share dispatch's image rule.
+///
+/// The registry and executable tool closures belong to tool dispatch. A live
+/// summary observer needs only the operation's immutable admitted prompt batch
+/// and current context, so retaining its classifier must not retain that graph.
+/// Each call still reads operation metadata from the same session as dispatch.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let classify = wiring.request_image_classifier(config)
+/// // classify(operation, context)
+/// ```
+@internal
+pub fn request_image_classifier(
+  config: Config,
+) -> fn(OpId, List(AgentMessage)) -> Bool {
+  let opened = config.session
+  fn(operation, context) {
+    request_image_bearing_projected(opened, operation, context)
+  }
 }
 
 fn request_image_bearing_projected(
@@ -1204,10 +1281,17 @@ pub fn provider_request(
   config: Config,
   spec: effects.RequestSpec,
 ) -> ProviderRequest {
+  provider_request_from(provider_configuration(config), spec)
+}
+
+fn provider_request_from(
+  config: ProviderConfiguration,
+  spec: effects.RequestSpec,
+) -> ProviderRequest {
   case spec {
     effects.SummaryRequest(configuration:, ..) ->
       ProviderRequest(
-        target: request_target(config, configuration),
+        target: request_target_from(config.routing, configuration),
         system: None,
         messages: [],
         tools: [],
@@ -1224,12 +1308,12 @@ pub fn provider_request(
       // Every other request to a text-only identity has its images
       // placeholdered, because an image the model cannot read is
       // invalid input on any turn, not just the newest one.
-      let reading = model_facts(config, configuration.model).reading
+      let reading = model_facts(config.routing, configuration.model).reading
       let routed = case
         reading == catalog.TextOnly
-        && request_image_bearing(config, operation, context)
+        && request_image_bearing_projected(config.session, operation, context)
       {
-        True -> vision_route(config, configuration)
+        True -> vision_route(config.routing, configuration)
         False -> None
       }
       case routed {
@@ -1243,7 +1327,7 @@ pub fn provider_request(
               catalog.TextOnly -> vision.placeholdered(context)
               catalog.ReadsImages -> context
             },
-            request_target(config, configuration),
+            request_target_from(config.routing, configuration),
           )
       }
     }
@@ -1255,13 +1339,13 @@ pub fn provider_request(
         config,
         configuration,
         [],
-        resolved_target(config, configuration),
+        resolved_target_from(config.routing, configuration),
       )
   }
 }
 
 fn generation_request(
-  config: Config,
+  config: ProviderConfiguration,
   configuration: StrandConfiguration,
   messages: List(AgentMessage),
   target: RequestTarget,
@@ -1270,7 +1354,7 @@ fn generation_request(
     target:,
     system: config.system,
     messages:,
-    tools: tool_specs(config, configuration.active_tool_names),
+    tools: tool_specs_from(config.definitions, configuration.active_tool_names),
     max_output_tokens: None,
   )
 }
@@ -1305,13 +1389,20 @@ pub fn request_target(
   config: Config,
   configuration: StrandConfiguration,
 ) -> RequestTarget {
+  request_target_from(provider_routing(config), configuration)
+}
+
+fn request_target_from(
+  config: ProviderRouting,
+  configuration: StrandConfiguration,
+) -> RequestTarget {
   case routed_role(config, configuration.model) {
     Ok(role) ->
       ForRole(
         role:,
         thinking: Some(thinking_level(configuration.thinking_level)),
       )
-    Error(Nil) -> resolved_target(config, configuration)
+    Error(Nil) -> resolved_target_from(config, configuration)
   }
 }
 
@@ -1322,7 +1413,7 @@ pub fn request_target(
 // turn that raised its reasoning budget reaches the vision model with
 // the same budget it would have reached its own with.
 fn vision_route(
-  config: Config,
+  config: ProviderRouting,
   configuration: StrandConfiguration,
 ) -> Option(RequestTarget) {
   case gateway.resolve(config.gateway, model.Vision) {
@@ -1357,6 +1448,13 @@ pub fn resolved_target(
   config: Config,
   configuration: StrandConfiguration,
 ) -> RequestTarget {
+  resolved_target_from(provider_routing(config), configuration)
+}
+
+fn resolved_target_from(
+  config: ProviderRouting,
+  configuration: StrandConfiguration,
+) -> RequestTarget {
   let identity = configuration.model
   let facts = model_facts(config, identity)
   ForResolved(resolved: ResolvedModel(
@@ -1382,7 +1480,10 @@ pub fn resolved_target(
 // same entry resolves to `main`, every time, on every boot. The
 // configured role leads only when it is neither of them, which is the one
 // case a host has said something the canonical order does not cover.
-fn routed_role(config: Config, identity: ModelIdentity) -> Result(Role, Nil) {
+fn routed_role(
+  config: ProviderRouting,
+  identity: ModelIdentity,
+) -> Result(Role, Nil) {
   list.find(candidate_roles(config.role), fn(role) {
     case gateway.resolve(config.gateway, role) {
       Ok(resolved) ->
@@ -1463,6 +1564,31 @@ pub fn strand_thinking_level(
 /// ```
 ///
 pub fn tool_specs(config: Config, active: List(String)) -> List(ToolSpec) {
+  tool_specs_from(tool_definitions(config.registry), active)
+}
+
+// The table is rendered data alone. A schema or description may be large, but
+// each is required on the provider wire; a tool's executor and requirements are
+// not, and must not be copied into every owner of the provider surface.
+fn tool_definitions(registry: Registry) -> Dict(String, ToolSpec) {
+  tool.registered(registry)
+  |> list.map(fn(registered) {
+    #(
+      registered.name,
+      ToolSpec(
+        name: registered.name,
+        description: registered.description,
+        input_schema: registered.schema,
+      ),
+    )
+  })
+  |> dict.from_list
+}
+
+fn tool_specs_from(
+  definitions: Dict(String, ToolSpec),
+  active: List(String),
+) -> List(ToolSpec) {
   // The sort is load-bearing, not tidiness. Tool definitions render
   // ahead of the system prompt and the messages in a provider request,
   // and prompt caching matches on an exact byte prefix of that render:
@@ -1481,17 +1607,7 @@ pub fn tool_specs(config: Config, active: List(String)) -> List(ToolSpec) {
   active
   |> list.sort(string.compare)
   |> list.unique
-  |> list.filter_map(fn(name) {
-    case tool.lookup(config.registry, name) {
-      Ok(registered) ->
-        Ok(ToolSpec(
-          name: registered.name,
-          description: registered.description,
-          input_schema: registered.schema,
-        ))
-      Error(Nil) -> Error(Nil)
-    }
-  })
+  |> list.filter_map(fn(name) { dict.get(definitions, name) })
 }
 
 // --- the tool surface -----------------------------------------------------

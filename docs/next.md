@@ -1,6 +1,52 @@
 # Current handoff
 
-The current reliability work is based on `f84842d17bc3230c2a796f136d222b5179b5be28`,
+The memory and live Jev handoff was refreshed on October 1, 2026 against
+`3819fec3d4ea999f51c6504b31c4d9b5d68c1501`. The previous edition said a
+Jev credential was unavailable and live inference remained untested. Both
+claims are now historical: live Jev inference completed through code mode
+on the normal installed daemon.
+
+The [memory investigation](review/daemon-memory-retention-2026-10-01.md)
+traced the large daemon heaps to executable-registry captures in provider
+request preparation and summary image classification. Private projections
+now retain only the inputs those callbacks use. The actual execution slot
+still owns its executor registry. Independent review and negative controls
+confirm the narrower captures preserve request and image behavior.
+
+The self-contained server and terminal client at `3819fec3d` are installed.
+Authenticated graceful shutdown retired the old daemon, and both original
+sessions and their four strands were reconstructed. An observational settled
+census showed BEAM memory fall from 1298.933 MiB to 445.108 MiB; RSS fell from
+1366736 KiB to 517920 KiB. No forced collection was used. Hooks rearmed during
+reconstruction, so the note separates this comparison from the controlled
+bare-session fixture. Existing context-board, directory-admin and code-mode
+captures remain follow-up candidates; the remaining memory has not been
+fully attributed.
+
+Jevelin now carries its own ERTS, boot files, OTP libraries and macOS crypto
+library. The installed `~/.local/bin/jevelin-mcp` no longer resolves a host
+`erl` from Loom's PATH. [Installer PR #1](https://github.com/Roasbeef/jevelin-mcp/pull/1)
+at `307b7e4d5c5720ebd070cc0bd2868cdf66f0cada` passed Linux/macOS CI and a
+reviewed portable shell regression. It remains an open PR, so this describes
+the installed branch rather than the repository's default branch.
+
+A fresh scripted-model session on the normal memory-fixed daemon discovered
+`cap://mcp/jev`, compiled its program in the real jail, and called live Jev.
+It retained a successful durable code-mode result from `jev-1.13.0` with
+Choice `logs`, confidence 1.0 and 324 input / 31 output tokens. The API key
+stayed outside model requests. Only that verification session was stopped.
+Seatbelt filesystem and network enforcement were active; macOS resource and
+process-lifecycle enforcement remained degraded.
+
+Typed MCP code generation merged in [PR #685](https://github.com/Roasbeef/loom/pull/685)
+at `b9e4a6344d5f0cf834d050d0ca163cb9ec85aff0`, tracked by issue #449. It adds
+structural input/output types and explicit schema fallbacks, with real Go SDK
+captures and jailed compiler tests. Resources, prompts and Loom HTTP transport
+configuration remain separate scope.
+
+## Concurrent watcher and language-server reliability (PR #683)
+
+The reliability work is based on `f84842d17bc3230c2a796f136d222b5179b5be28`,
 checked on October 1, 2026. Main's hosted
 [run 36922134008](https://github.com/Roasbeef/loom/actions/runs/36922134008)
 is green at that exact base. This branch's local results belong to the
@@ -48,7 +94,7 @@ The records below retain their original dated heads and evidence. Their
 tracker state and broader remaining-work claims were not re-audited by this
 reliability pass and must not be treated as current verification.
 
-## Next actions for this branch
+## Next actions for PR #683
 
 1. Publish and verify the reliability PR against its exact head. Exit: the
    affected gates, hosted CI and required Linux signoff pass, with the
@@ -323,7 +369,9 @@ decoders. An independent Linux build passed the full application gate through
 the public dependencies, then fifty fresh runs of the original HTTP peer.
 Those runs retained all assertions, including 150 bearer refusals and fifty
 Origin refusals. The inherited startup blocker is closed by the published
-factory-order fixes above. No authenticated live Jev request has been made.
+factory-order fixes above. That application-head validation used fixtures.
+The installed-release live inference proof at the start of this handoff
+supersedes the earlier statement that authenticated Jev requests were untested.
 
 [PR #669](https://github.com/Roasbeef/loom/pull/669) records the current
 validation boundary and review status. Continue to require the full gate,
