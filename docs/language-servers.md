@@ -18,6 +18,10 @@ Existing sessions keep their pinned prompt. Unsupported methods need a
 supported query or text search; a server load failure needs its reported
 setup or access problem corrected before retrying.
 
+For joins and aggregates over explicit outline files and reference targets,
+see [Query language-server facts with SQL](lsp-sql.md). It uses the same
+profiles and jailed servers through `cap/lsp_sql` in code mode.
+
 ## Prepare Loom and the daemon environment
 
 Use a Loom build that includes [the LSP stack](https://github.com/Roasbeef/loom/pull/680).

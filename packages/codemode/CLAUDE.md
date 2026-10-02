@@ -286,6 +286,18 @@ session and sends it many invocations.
   that outlives the execution), one content address. Its own module
   rather than a member of either seam's, so neither seam module imports
   the other for it.
+- `codemode/observation.{snapshot_cap, max_admissions, routing, ceilings}`
+  routes only `lsp.snapshot` through an `lsp/observation.Door` under the
+  invocation's absolute deadline. The host admits four captures per invocation.
+  Every accepted request returns `satellite.ScopedService`, whose cancellation
+  handle is installed before its worker starts. Program cancellation, expiry
+  and resident-host release stop collection; the LSP actor withdraws pending
+  requests when the collector dies. Existing `ServedHere` semantics remain
+  unchanged. The encoded batch carries fixed fact arrays and scope metadata;
+  SQL and row decoding stay in the satellite. `cap/lsp_sql` is admitted and
+  rendered only for configured native workspace and orchestration hosts,
+  never extensions or resident hooks. See
+  [`docs/architecture/lsp-sql.md`](../../docs/architecture/lsp-sql.md).
 - `codemode/compile.{Artifact, CompileError, BuildProducts, Built,
   Compiled, Builder, Dependency, CompileConfig, generated_path}` — the
   hermetic compile service. `Builder` is
@@ -450,7 +462,7 @@ session and sends it many invocations.
   reaches a description and any program importing it is rejected — which
   is right for `cap/runtime` and indistinguishable from an oversight for
   anything else. `harness_only_cap_modules` is where that exclusion is
-  written down — `cap/notes` and `cap/lsp` there are waits on a per-host
+  written down — `cap/notes`, `cap/lsp` and `cap/lsp_sql` there are waits on a per-host
   door rather than refusals, admitted by `client/codemode.seam_allowlist`
   when the door is present — and `scripts/gen-prelude.sh --check` holds all three lists
   against the modules `packages/cap` actually ships: every module must be

@@ -4,7 +4,7 @@
 
 The capability prelude: the language a code-mode program is written
 against, plus the boot runtime that runs it. Every `cap/*` module a
-submitted program may import is here, and every one of them is an RPC stub
+submitted program may import is here. Its effectful calls use an RPC stub
 — a typed local-looking call that marshals its arguments into a `cap_call`
 frame, sends it over the one AF_UNIX channel to the satellite host, and
 blocks for the `cap_result`. This package runs *inside* the jailed
@@ -237,10 +237,30 @@ cannot hide the capability error. This does not grant the program a new effect.
 
 ## Relationships
 
+`cap/lsp_sql` separates one host capture from repeated satellite-local SQL.
+`Plan` names one server/root and explicit outlines and reference targets;
+`collect` dispatches `lsp.snapshot` and decodes an opaque immutable
+`Observation`. `metadata` returns scope, generation, interval and counts.
+`query` materializes the four fixed fact tables in private memory, binds tagged
+`Cell` values and uses a caller-owned `RowDecoder(a)`. `QueryResult(a)` keeps
+typed rows and column names beside unchanged provenance. `QueryError` names
+authorization, statement, budget, value and decoder failures without parsing
+sentences. A SELECT or decoder issues no host calls.
+
+Native authorization and progress/heap enforcement cannot be implemented by
+the pure Gleam API. `cap/internal/ffi_lsp_sql` delegates through
+`loom_cap_lsp_sql.erl` to the existing SQLite dependency family. All handles
+stay inside that bridge and every query closes its own database. The opt-in
+heap ceiling is process-global and belongs only in this satellite; loading
+these modules into the harness would violate Rule Zero. The detailed schema,
+ownership and checked-interval limits are in
+[`docs/architecture/lsp-sql.md`](../../docs/architecture/lsp-sql.md).
+
 - **Depends on**: `core` (msgpack values and the corruption report),
   `gleam_erlang` (processes, monitors, subjects), `gleam_otp` (the actor
-  behind `cap/actor` and the channel), and the standard library. Nothing
-  else.
+  behind `cap/actor` and the channel), and the standard library. The SQL
+  observation bridge additionally requires the existing native SQLite family;
+  its final package pin is part of the offline seed integration.
 - **Deliberately does not depend on `broker`.** The spec DAG (§0.1) puts
   WP-J at `J → G,I`, which holds for `codemode` but not here: `cap` is the
   untrusted far side of the effect-plane wire, not a peer of the broker, so
@@ -254,11 +274,12 @@ cannot hide the capability error. This does not grant the program a new effect.
   them, because linking model-facing code into the harness VM would break
   Rule Zero. A compiled program depends on `cap` by being built against it,
   vendored inside its own build root.
-- **FFI**: two modules, and they are the whole of the package's impurity.
+- **FFI**: the transport and registry modules own the channel's impurity.
   `cap/internal/ffi_registry` binds `persistent_term` — VM-global, readable
   at local-memory speed from every process a program spawns, which no pure
   alternative can do. `cap/internal/ffi_transport` binds `getenv`, a file
-  read, and `gen_tcp` over AF_UNIX. Both go through `cap_ffi.erl`.
+  read, and `gen_tcp` over AF_UNIX. Both go through `cap_ffi.erl`. The SQL
+  bridge described above is separate because it owns no channel effect.
 
 ## Traffic
 

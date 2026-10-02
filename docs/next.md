@@ -37,6 +37,40 @@ unrelated PR — same supervisor-killed shape under parallel lane load;
 The lane passed on the final CI run, consistent with the timing-flake
 diagnosis; a single pass is corroboration, not proof.
 
+## SQL LSP observation branch
+
+On October 1, `codex/lsp-sql` is based on `7d37ec86f` and implements the
+accepted [protocol 062](../protocol-change/062-lsp-sql-observations.md).
+The [usage guide](lsp-sql.md), [design examples](design-notes/lsp-sql.md) and
+[architecture](architecture/lsp-sql.md) describe its explicit collection and
+satellite-local SQL contract. This section describes a branch in progress,
+not an installed daemon or a merged release.
+
+The independent pass found two collection defects. Both are corrected and
+covered by the passing fifteen-test collection suite: admission is checked
+again after server startup before source preflight, and path-only resolver
+positions must fit retained source text before a references request. The
+[review record](review/lsp-sql.md) distinguishes protected host-memory reads
+from unproven model exfiltration and records the finite interval guarantee.
+
+The native fork and companion release drafts are reviewable in
+[esqlite PR #1](https://github.com/Roasbeef/esqlite/pull/1) and
+[sqlight PR #1](https://github.com/Roasbeef/sqlight/pull/1). Immutable Hex
+publication requires owner approval. Keep all existing companion consumers
+on one exact native family; `cap` itself needs only the native package.
+
+The initial real SQL E2E run identified a release boundary missing from the
+design-only checks: flattened code-mode artifacts carry BEAMs but omit the
+native library. The correction must carry the trusted library inside the
+same artifact read root, hash its bytes and use module-relative loading.
+Then rerun both jailed Gleam and Go SQL cases, resolve the published graph
+with stock Gleam, refresh the committed offline seed lock and run the
+aggregate gate. A local native wrapper is experimental evidence, not the
+shipping dependency path. No test or gate is intentionally skipped.
+
+The older handoff sections below retain their original evidence and scope;
+this feature does not repeat their installed-memory measurements.
+
 ## October 2 daemon memory pass
 
 `codex/memory-lsp-query-handle` reduces the seven direct LSP tools' measured
@@ -62,6 +96,7 @@ attach to a profiled daemon, with `--pid` for a profiled client and `--erl` for
 a local Observer/wx installation. See `docs/distribution.md` for navigation.
 Installed CPU savings and function-level attribution of the busy unprofiled
 terminal remain measurement work, not established results.
+
 
 ## Local orientation in large modules (issue #593)
 

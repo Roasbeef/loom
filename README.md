@@ -285,6 +285,13 @@ for all three languages, offline dependency preparation, daemon PATH, checks,
 custom paths and troubleshooting. The [architecture guide](docs/architecture/lsp.md)
 explains server ownership, isolation and rename behavior.
 
+Code-mode programs can also collect explicit outlines and reference targets
+through `cap/lsp_sql`, then use read-only SQLite joins, filters and aggregates
+over the captured facts. Queries run inside the jailed program and return
+typed rows with scope and provenance. The [SQL usage guide](docs/lsp-sql.md)
+has a complete Gleam example; the [architecture document](docs/architecture/lsp-sql.md)
+explains admission, limits and the finite observation guarantee.
+
 ## Why Gleam
 
 Gleam makes code mode a typed programming interface. Tool arguments, return

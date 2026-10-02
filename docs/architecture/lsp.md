@@ -3,6 +3,10 @@
 For installation, prerequisites and host checks, start with the
 [language-server setup guide](../language-servers.md).
 
+For bounded joins and aggregates in code mode, see
+[SQL over finite LSP observations](lsp-sql.md). Its separate observation door
+collects explicit outlines and reference targets before satellite-local SQL.
+
 A language server is a long-lived process that knows a codebase the way
 its compiler does. Asked over JSON-RPC on its stdin and stdout, it
 answers where a name is defined, who refers to it, what type it has, and

@@ -5299,3 +5299,29 @@ After a failure, empty answers and clean-looking diagnostics become
 The setup guide distinguishes host extension commands from a jailed Bash
 command's private HOME. Neither the private installation nor a nested probe's
 scratch refusal proves the daemon's global profile is missing or broken.
+
+## Finite language-server observations
+
+`client/lsp/manager.observation_door` fills `lsp/observation.Door` beside the
+interactive `query.Door`. Collection admits one configured server and root,
+pulls the explicit source documents into that server, waits for readiness,
+and queries only the requested outlines and reference seeds. It uses one
+weft worker under the lesser of the invocation deadline and 75 seconds.
+The death of its caller cancels that worker and its pending protocol id;
+collection never stops the shared language-server lease.
+
+A complete batch is bounded by 10,000 retained facts, 4 MiB of retained text
+and fact strings, and 128 semantic requests, including seed outline
+resolution. Counts retain server-withheld locations without reading or
+opening them. A failure, unsupported feature, busy server, exceeded bound or
+detected change refuses the whole batch. Canonical paths, content digests,
+internal document versions, the opaque client generation and the checked
+start/end interval describe the admitted observation.
+
+The interval checks synced source text and actor state before and after the
+queries, then rereads every admitted fact document and checks the original
+source spellings. Returned reference files can carry no actor version when
+the server never held them open. Those files are first read after the server
+answer. Standard LSP has no transactional project revision, so the batch
+does not establish atomic workspace coverage or detect edits in unseen
+dependencies. SQL execution belongs to the code-mode satellite.
