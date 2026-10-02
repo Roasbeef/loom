@@ -276,7 +276,8 @@ one.
 - **Design and spec** — `docs/loom-design.md`,
   `docs/loom-implementation-spec.md`, `docs/spec-gaps.md`.
 - **Architecture, per plane and subsystem** — `docs/architecture/`.
-  The three planes: `durability`, `orchestration`, `effects`. The
+  The three planes: `durability`, `orchestration`, `effects` (with
+  `executor`, the execution service over its helper pool). The
   process and its sessions: `daemon`, `sessions`, `client`,
   `terminal`, `web-view`, `multiplayer`. What the model sees and does: `prompt`,
   `tools`, `lsp`, `approvals`, `models`, `compaction`, `memory`.

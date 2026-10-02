@@ -51,3 +51,5 @@ document ever cited them under the old ones.
   jailed session leases, addressed by symbol (issue #25).
 - [016](016-language-profiles.md): a language server is a profile, and
   profiles ship as extensions (issue #25).
+- [017](017-executor-service-seam.md): the executor service sits at the
+  execution, one per session, inside the broker package (issue #696).

@@ -144,6 +144,16 @@ margin covers, a broker slower than the caller's whole budget or one
 stopped underneath a waiting caller, come back as `BrokerUnavailable`
 instead of crashing the strand.
 
+**The executor service is the planned owner of the pool, the relay and the
+settlement that follows them.** Today those three live in `broker/exec`,
+`broker/broker` and `client/serve`, and no single object represents an
+execution. [The executor service](executor.md) describes what the tree holds
+now, the execution-level seam that will replace the broker's checkout, relay
+and checkin (decided in [ADR-017](../adr/017-executor-service-seam.md)), the
+state model, and the phases that bring it in behind an opt-in switch. The pool
+semantics on this page stay as written: custody, retirement evidence and the
+caller-side wait are inherited by the service and not redefined.
+
 ### Relay, settlement, and abort
 
 Each dispatched call gets a **relay** process that owns the execution's
