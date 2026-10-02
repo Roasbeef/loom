@@ -5,8 +5,8 @@
 //// to a file of their own in a private directory, `0700` and owned by this
 //// user, under the system's temporary directory, and the file's path is
 //// given to the platform's opener (`view_link.quiet_opener`), the one
-//// `loom ui --open` uses, with its output dropped so nothing lands over the
-//// frame. The work reads and writes the file system and waits on a child
+//// `loom ui --open` uses, run through `/bin/sh` with its output sent to
+//// `/dev/null` so nothing lands over the frame. The work reads and writes the file system and waits on a child
 //// process, so it runs as a job (`job.OpenImage`) and never in a step.
 ////
 //// The path is built from the media type and the clock, never from

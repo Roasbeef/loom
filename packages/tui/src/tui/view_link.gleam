@@ -184,6 +184,41 @@ pub fn system_opener() -> fn(String) -> Result(Nil, String) {
   )
 }
 
+/// The opener the terminal hands a file to while it owns the screen: the
+/// platform's opener, as `system_opener` finds it, run through `/bin/sh`
+/// with its output sent to `/dev/null`, so nothing it writes lands over the
+/// frame.
+///
+/// The shell runs a fixed script, `exec "$0" "$1" >/dev/null 2>&1`, and the
+/// opener and the path are its positional arguments: they are never part of
+/// the script's text, so no character in a path can be read as shell. The
+/// launch is `launch_within`'s, so the opener is still found on `PATH` and
+/// waited on for at most `opener_wait_ms`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let open = view_link.quiet_opener()
+/// open("/var/folders/…/loom-images/image-1.png")
+/// ```
+pub fn quiet_opener() -> fn(String) -> Result(Nil, String) {
+  platform_opener(
+    host.getenv("LOOM_BUILD_PLATFORM"),
+    host.find_executable,
+    fn(executable, arguments) {
+      launch_within(
+        "/bin/sh",
+        ["-c", quiet_script, executable, ..arguments],
+        opener_wait_ms,
+      )
+    },
+  )
+}
+
+// The shell script `quiet_opener` runs: its first positional argument is
+// the opener and its second the file, and everything they write is dropped.
+const quiet_script = "exec \"$0\" \"$1\" >/dev/null 2>&1"
+
 /// Runs an opener through `ffi_terminal.run_forwarding` and waits for it
 /// for at most `within_ms`.
 ///
@@ -210,40 +245,8 @@ pub fn launch_within(
   arguments: List(String),
   within_ms: Int,
 ) -> Result(Launched, String) {
-  launch_with(ffi_terminal.run_forwarding, executable, arguments, within_ms)
-}
-
-/// The opener the terminal hands a file to while it owns the screen: the
-/// platform's opener, as `system_opener` finds it, run with its output
-/// dropped (`ffi_terminal.run_quiet`) so nothing it writes lands over the
-/// frame.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let open = view_link.quiet_opener()
-/// open("/var/folders/…/loom-images/image-1.png")
-/// ```
-pub fn quiet_opener() -> fn(String) -> Result(Nil, String) {
-  platform_opener(
-    host.getenv("LOOM_BUILD_PLATFORM"),
-    host.find_executable,
-    fn(executable, arguments) {
-      launch_with(ffi_terminal.run_quiet, executable, arguments, opener_wait_ms)
-    },
-  )
-}
-
-// One opener run under a deadline, by whichever runner says what becomes
-// of the opener's output.
-fn launch_with(
-  run: fn(String, List(String)) -> Result(Int, String),
-  executable: String,
-  arguments: List(String),
-  within_ms: Int,
-) -> Result(Launched, String) {
   let outcomes =
-    weft.new([fn() { run(executable, arguments) }])
+    weft.new([fn() { ffi_terminal.run_forwarding(executable, arguments) }])
     |> weft.deadline(within_ms)
     |> weft.start
 
