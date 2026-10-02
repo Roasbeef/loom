@@ -16,6 +16,7 @@ import core/tx.{SetRegister, Tx}
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/otp/system
 import machine/operation
 import machine/queue
 import runtime/api
@@ -25,6 +26,8 @@ import support/fake
 import support/harness
 import support/internal/ffi_memory
 import support/recorder
+import weft
+import weft/poll
 import weft/registry as address
 
 pub fn writer_publishes_committed_events_test() {
@@ -703,6 +706,10 @@ fn marking_runtime() -> api.Runtime {
 // A runtime with nothing driving it: these two are about the durable
 // cell, not about a run.
 fn fact_runtime() -> api.Runtime {
+  fact_runtime_observed(fn(_) { Nil })
+}
+
+fn fact_runtime_observed(after_commit: fn(Int) -> Nil) -> api.Runtime {
   let rec = recorder.start()
   let assert Ok(sess) =
     session.open_memory(clock.stepping(from: 1_000_000, by: 7))
@@ -718,9 +725,180 @@ fn fact_runtime() -> api.Runtime {
       },
     )
   let assert Ok(rt) =
-    api.open(sess, eff, api.default_options(harness.configuration()))
+    api.open(
+      sess,
+      eff,
+      api.Options(..api.default_options(harness.configuration()), after_commit:),
+    )
     as "the session tree must boot"
   rt
+}
+
+/// Unobserved durable commitment still crashes a projected-handle caller.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // The writer is killed after storage commits but before it sends a reply.
+/// ```
+pub fn projected_fact_handle_does_not_retry_uncertain_commit_test() {
+  let armed = recorder.start()
+  let committed = process.new_subject()
+  let release = process.new_subject()
+  let rt =
+    fact_runtime_observed(fn(_) {
+      case recorder.read(armed, "armed") {
+        0 -> Nil
+        _ -> {
+          process.send(committed, Nil)
+          process.receive_forever(release)
+        }
+      }
+    })
+  let facts = api.fact_handle(rt)
+  let assert Ok(writer) = address.lookup(rt.tree.writer)
+    as "the writer must resolve before the uncertain commit"
+  let assert Ok(old) = process.subject_owner(writer)
+    as "the writer owns the reply process"
+  let _ = recorder.bump(armed, "armed")
+  let key = "client/directory_access"
+  let caller =
+    weft.new([
+      fn() {
+        api.put_reserved_fact_expecting_with(
+          facts,
+          key,
+          json.String("durable"),
+          expected: None,
+        )
+      },
+    ])
+    |> weft.deadline(2000)
+    |> weft.start_detached
+  let assert Ok(Nil) = process.receive(committed, within: 1000)
+    as "storage must commit before the writer loses its reply"
+  process.kill(old)
+  let assert weft.PulledOutcome(weft.Crashed(0, _)) = weft.pull(caller, 1000)
+    as "an uncertain commit crashes instead of returning or retrying"
+  assert weft.pull(caller, 1000) == weft.AllDelivered
+
+  // The replacement serves the durable value once. Reading cannot turn the
+  // lost acknowledgement into a second commit or erase the first one.
+  assert poll.until(within: 1000, every: 5, attempt: fn() {
+      case address.lookup(rt.tree.writer) {
+        Ok(current) if current != writer -> poll.Done(Nil)
+        Ok(_) | Error(Nil) -> poll.Retry
+      }
+    })
+    == poll.Answered(Nil)
+  let assert Ok(Some(cell)) = api.fact_cell_with(facts, key)
+    as "the unobserved write must remain durable"
+  assert cell.value == json.String("durable")
+  assert api.close(rt) == Ok(Nil)
+}
+
+/// A projected fact door preserves CAS and resolves replacement writers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // Run with scripts/test.sh runtime --match projected_fact_handle.
+/// ```
+pub fn projected_fact_handle_survives_replacement_and_retirement_test() {
+  let rt = fact_runtime()
+  let facts = api.fact_handle(rt)
+  let key = "client/directory_access"
+  assert api.fact_cell_with(facts, key) == Ok(None)
+  assert api.put_reserved_fact_expecting_with(
+      facts,
+      "review/ordinary",
+      json.Null,
+      expected: None,
+    )
+    == Error(api.UnreservedFactKey("review/ordinary"))
+  let assert Ok(first) =
+    api.put_reserved_fact_expecting_with(
+      facts,
+      key,
+      json.String("first"),
+      expected: None,
+    )
+    as "the absent reserved fact must be claimed"
+
+  // Suspending restart custody creates a deterministic unbound interval.
+  // The retained handle must refuse before sending, then resolve the new
+  // incarnation rather than keeping its old subject or PID.
+  let assert Ok(subject) = address.lookup(rt.tree.writer)
+    as "the original writer must resolve"
+  let assert Ok(old) = process.subject_owner(subject)
+    as "the original writer owns its subject"
+  system.suspend(rt.tree.supervisor)
+  process.kill(old)
+  assert poll.until(within: 1000, every: 5, attempt: fn() {
+      case address.lookup(rt.tree.writer) {
+        Error(Nil) -> poll.Done(Nil)
+        Ok(_) -> poll.Retry
+      }
+    })
+    == poll.Answered(Nil)
+  assert api.fact_cell_with(facts, key) == Error(api.RuntimeUnavailable)
+  assert api.put_reserved_fact_expecting_with(
+      facts,
+      key,
+      json.String("gap"),
+      expected: Some(first),
+    )
+    == Error(api.RuntimeUnavailable)
+  system.resume(rt.tree.supervisor)
+  assert poll.until(within: 1000, every: 5, attempt: fn() {
+      case address.lookup(rt.tree.writer) {
+        Error(Nil) -> poll.Retry
+        Ok(subject) ->
+          case process.subject_owner(subject) {
+            Ok(pid) if pid != old -> poll.Done(Nil)
+            Ok(_) | Error(Nil) -> poll.Retry
+          }
+      }
+    })
+    == poll.Answered(Nil)
+
+  assert api.fact_cell_with(facts, key)
+    == Ok(Some(api.FactCell(json.String("first"), first)))
+  let assert Ok(second) =
+    api.put_reserved_fact_expecting_with(
+      facts,
+      key,
+      json.String("second"),
+      expected: Some(first),
+    )
+    as "the retained capability must write through the replacement"
+  assert second > first
+  assert api.put_reserved_fact_expecting_with(
+      facts,
+      key,
+      json.String("stale"),
+      expected: Some(first),
+    )
+    == Error(api.FactConflict(key))
+  assert api.put_reserved_fact_expecting_with(
+      facts,
+      key,
+      json.String("absent"),
+      expected: None,
+    )
+    == Error(api.FactConflict(key))
+  assert api.fact_cell_with(facts, key)
+    == Ok(Some(api.FactCell(json.String("second"), second)))
+  assert api.fact_cell(rt, key) == api.fact_cell_with(facts, key)
+  assert api.close(rt) == Ok(Nil)
+  assert api.fact_cell_with(facts, key) == Error(api.RuntimeUnavailable)
+  assert api.put_reserved_fact_expecting_with(
+      facts,
+      key,
+      json.Null,
+      expected: Some(second),
+    )
+    == Error(api.RuntimeUnavailable)
 }
 
 // The reserved side of the same compare-and-set, which is what lets a
