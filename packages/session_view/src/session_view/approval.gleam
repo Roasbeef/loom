@@ -610,7 +610,7 @@ fn readable_grant(value: json.JsonValue) -> String {
       }
       "network" -> {
         use network <- result.try(field(fields, "network"))
-        Ok("Network access: " <> { network |> json.to_string |> escaped_json })
+        Ok(readable_network(network))
       }
       "limit" -> Ok("Resource limit: " <> exact)
       "scratch" -> Ok("Scratch storage: " <> exact)
@@ -618,6 +618,55 @@ fn readable_grant(value: json.JsonValue) -> String {
     }
   }
   "- " <> result.lazy_unwrap(readable, fn() { "Exact grant: " <> exact })
+}
+
+// A network grant in words: `net · proxy.golang.org:443 · via proxy` for a
+// proxied allowlist, `net · any host` for full access and `net · off`. A
+// shape this does not know is shown as its exact JSON, escaped, as every
+// other unknown grant is, so nothing the request carries is hidden.
+fn readable_network(network: json.JsonValue) -> String {
+  let exact =
+    "Network access: " <> { network |> json.to_string |> escaped_json }
+  let readable = {
+    use fields <- result.try(object(network))
+    use mode <- result.try(text(fields, "mode"))
+    case mode {
+      "full" -> Ok("net · any host")
+      "off" -> Ok("net · off")
+      "proxy" -> {
+        use allowed <- result.try(case field(fields, "allow") {
+          Ok(json.Array(hosts)) ->
+            list.try_map(hosts, fn(host) {
+              case host {
+                json.String(host) -> Ok(literal_host(host))
+                _ -> Error("unreadable network host")
+              }
+            })
+          _ -> Error("unreadable network allowlist")
+        })
+        Ok("net · " <> string.join(allowed, ", ") <> " · via proxy")
+      }
+      _ -> Error("unknown network mode")
+    }
+  }
+  result.unwrap(readable, exact)
+}
+
+// A host as the grant names it, escaped as a literal is when it holds
+// anything but the letters, digits and punctuation of a host and port.
+fn literal_host(host: String) -> String {
+  let plain =
+    string.to_graphemes(host)
+    |> list.all(fn(char) {
+      string.contains(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-:[]*",
+        char,
+      )
+    })
+  case plain && host != "" {
+    True -> host
+    False -> literal_text(host)
+  }
 }
 
 fn literal_text(text: String) -> String {

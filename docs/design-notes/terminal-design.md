@@ -199,7 +199,7 @@ Today's code: `layout.layout` (`packages/tui/src/tui/layout.gleam:97`)
 (`layout`) stacks header, body, composer and footer. `body_layout`
 (`packages/tui/src/tui/layout.gleam:94`) (`body_layout`) gives the body one
 side pane, the 34-cell agent rail or the 72-cell changes pane. The footer is
-built in `footer_rows` (`packages/tui/src/tui/layout.gleam:327`)
+built in `footer_rows` (`packages/tui/src/tui/layout.gleam:349`)
 (`footer_rows`). The new layout replaces the header and footer with the
 identity line and the input frame, and replaces the two side panes with one
 rail.

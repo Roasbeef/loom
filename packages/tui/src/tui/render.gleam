@@ -39,7 +39,7 @@
 //// `view` and `cached_frame` lead to `render_frame`.
 //// `render_frame` divides the screen and calls the owned rendering sections.
 //// For held input, `render_frame` builds the input frame's `frame_status`,
-//// whose keys come from `input_title_keys`, which calls `input_behavior`.
+//// whose keys come from `input_title_keys`, which asks `layout.input_keys`.
 //// Follow `render_inline_queue` for the matching queue hint.
 //// Both read the same shared projection rather than an old interrupt notice.
 //// `goal_availability` derives the inspector command state from the shared

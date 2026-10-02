@@ -112,3 +112,33 @@ pub fn the_heading_names_the_asker_and_counts_the_queue_test() {
     assert list.any(lines, string.contains(_, "2 need you"))
   })
 }
+
+// A network grant is said in words, the hosts and how they are reached,
+// rather than as the JSON the request carries.
+pub fn a_network_grant_reads_as_words_test() {
+  let asked =
+    approval.Review(
+      ..review(),
+      permission: approval.Exact("digest", [
+        json.Object([
+          #("type", json.String("network")),
+          #(
+            "network",
+            json.Object([
+              #("mode", json.String("proxy")),
+              #("allow", json.Array([json.String("proxy.golang.org:443")])),
+              #("proxy", json.String("http://127.0.0.1:3128")),
+            ]),
+          ),
+        ]),
+      ]),
+    )
+  let lines =
+    frame_scene.screen(deciding(approval_panel.new(asked)), 120, 40)
+    |> frame.buffer_to_lines
+  assert list.any(lines, string.contains(
+    _,
+    "net · proxy.golang.org:443 · via proxy",
+  ))
+  assert !list.any(lines, string.contains(_, "\"mode\""))
+}
