@@ -123,14 +123,13 @@ pub fn the_rate_shows_when_the_outlook_leaves_room_test() {
   )
 }
 
-// The compact footer keeps its order (outlook, notice, model, context, cost)
-// and drops trailing pieces whole when a long notice crowds them out.
+// The everyday status is on the input frame's bottom rule, in its order
+// (outlook, notice, then model, context and cost), and a long notice never
+// leaves a cut figure behind it.
 pub fn the_compact_footer_drops_whole_pieces_test() {
   let text = footer_rows(model(), 120) |> string.join("\n")
-  assert string.contains(
-    text,
-    "cache idle 3m · baseten-kimi-k3 · ctx — · est $4.00",
-  )
+  assert string.contains(text, "╰─ cache idle 3m ›")
+  assert string.contains(text, "baseten-kimi-k3 › ctx — › est $4.00")
 
   let crowded = {
     let base = model()

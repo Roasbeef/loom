@@ -193,7 +193,7 @@ fn transcript_rows(drawn: buffer.Buffer) -> List(String) {
     && !string.starts_with(row, " ↓ Scrollback")
   })
   |> list.drop(1)
-  |> list.take_while(fn(row) { !string.starts_with(row, "─ To ") })
+  |> list.take_while(fn(row) { !string.starts_with(row, "╭─ To ") })
   |> list.reverse
   |> list.drop_while(empty_row)
   |> list.reverse

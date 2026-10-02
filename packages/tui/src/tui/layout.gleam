@@ -60,6 +60,7 @@ import session_view/worktree_view
 import tui/agent_strip
 import tui/agents
 import tui/diff_panel
+import tui/input_frame
 import tui/model.{
   type Model, AccessManager, AgentInspector, ApprovalInspector, DaemonSelector,
   DiffHidden, DiffVisible, GoalInspector, ModelSelector, NoOverlay,
@@ -268,14 +269,13 @@ fn footer_height(model: Model) -> Int {
     && model.view.height <= 12
   {
     True -> 1
+
+    // The everyday status lives on the input frame's rules, so the footer
+    // takes rows only for Ctrl+g's accounting detail.
     False ->
       case model.shared.details_expanded {
         True -> footer_rows(model.view.width)
-        False ->
-          case model.view.width < 100 {
-            True -> 2
-            False -> 1
-          }
+        False -> 0
       }
   }
 }
@@ -502,15 +502,6 @@ pub fn composer_status_lines(model: Model) -> List(String) {
     _, True | None, False -> []
     Some(board), False -> goal_view.row(board)
   }
-  let active = case active_status_label(model) {
-    None -> []
-    Some(status) -> [
-      activity_glyph(model.view.activity_frame)
-      <> " "
-      <> text_hygiene.single_line(status)
-      <> elapsed_label(model.shared.activity_elapsed_s),
-    ]
-  }
 
   // The workspace, the visible rail and the agent strip already own the
   // roster. Repeating it above the editor would spend its typing space on
@@ -527,6 +518,21 @@ pub fn composer_status_lines(model: Model) -> List(String) {
         True -> []
         False -> reviewer_band_lines(model)
       }
+  }
+
+  // What the strand is doing is on the input frame's top rule, unless the
+  // frame is too narrow to carry it beside the keys.
+  let active = case
+    active_status_label(model),
+    model.view.width < input_frame.carries_activity
+  {
+    Some(status), True -> [
+      activity_glyph(model.view.activity_frame)
+      <> " "
+      <> text_hygiene.single_line(status)
+      <> elapsed_label(model.shared.activity_elapsed_s),
+    ]
+    Some(_), False | None, _ -> []
   }
   list.append(
     active,
@@ -588,7 +594,7 @@ fn pending_status(model: Model) -> Option(String) {
 // Stacking the chips leaves the editor the full interior width, so the wrap
 // the operator sees no longer depends on what is attached.
 fn editor_content_width(model: Model) -> Int {
-  int.max(2, model.view.width - 2)
+  int.max(2, model.view.width - input_frame.prompt_margin)
 }
 
 /// How long the active strand has been busy, in the shape the prompt

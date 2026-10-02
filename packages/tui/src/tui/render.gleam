@@ -38,8 +38,8 @@
 ////
 //// `view` and `cached_frame` lead to `render_frame`.
 //// `render_frame` divides the screen and calls the owned rendering sections.
-//// For held input, `render_frame` passes `input_title` to
-//// `render_composer_chrome`; `input_title` calls `input_behavior`.
+//// For held input, `render_frame` builds the input frame's `frame_status`,
+//// whose keys come from `input_title_keys`, which calls `input_behavior`.
 //// Follow `render_inline_queue` for the matching queue hint.
 //// Both read the same shared projection rather than an old interrupt notice.
 //// `goal_availability` derives the inspector command state from the shared
@@ -58,6 +58,7 @@ import etui/widgets/block
 import etui/widgets/paragraph
 import etui/widgets/statusbar
 import etui/widgets/textarea as text_area
+import filepath
 import gleam/bool
 import gleam/dict
 import gleam/int
@@ -67,16 +68,19 @@ import gleam/result
 import gleam/string
 import session_view/advisor_pending
 import session_view/agent_messages
+import session_view/agent_roster
 import session_view/command
 import session_view/completion_summary
 import session_view/composer
 import session_view/context_view
+import session_view/lane_fold
 import session_view/live_jobs
 import session_view/model.{Disconnected} as session_model
 import session_view/notes_view
 import session_view/protocol
 import session_view/queued_input
 import session_view/snapshot_view
+import session_view/strand_card
 import session_view/text_hygiene
 import session_view/transcript_line.{
   type Line, type Speaker, Assistant, Failure, Line, Reasoning, ReasoningDigest,
@@ -95,6 +99,7 @@ import tui/collaboration_view
 import tui/context_panel
 import tui/diff_panel
 import tui/focused_goal_panel
+import tui/input_frame
 import tui/layout
 import tui/live_tail
 import tui/markdown
@@ -178,6 +183,7 @@ pub fn render_frame(
     layout.pending_layout(layout.panel_inner(input_area), model)
   let #(paste_area, editor_area) =
     layout.input_layout(composer_area, model.shared.attachments)
+  let editor_area = input_frame.prompt_area(editor_area)
   let #(footer_area, strip_area) = layout.footer_split(footer_area, model)
   let strip = layout.strip_lines(model)
 
@@ -199,21 +205,18 @@ pub fn render_frame(
   // only their borders over it, and the palette and overlays land last.
   let base =
     repaint_canvas(screen, model.view.repaint_phase)
-    |> render_header(header_area, model)
+    |> input_frame.render_identity(header_area, identity(model, strip))
     |> render_conversation_heading(transcript_panel, model)
     |> render_transcript(transcript_area, model)
     |> render_agent_rail(agent_panel, model)
     |> render_changes_panel(changes_panel, model)
     |> render_inline_queue(queue_area, model)
     |> render_todo_panel(layout.todo_area(body_area, model), model)
-    |> render_composer_chrome(
-      input_area,
-      input_title(model),
-      agent_strip.badge(strip, model.shared.active_strand),
-    )
+    |> input_frame.render(input_area, frame_status(model, strip))
     |> render_pending_band(pending_area, model)
     |> render_paste_chip(paste_area, model.shared.attachments)
     |> text_area.render(editor_area, editor, input_view)
+    |> input_frame.render_prompt(editor_area, placeholder(model, strip))
     |> render_footer(footer_area, model)
     |> agent_strip.render(
       strip_area,
@@ -521,47 +524,107 @@ fn session_title(model: Model) -> String {
   }
 }
 
-fn render_header(
-  buf: buffer.Buffer,
-  area: Rect,
+// The identity line's facts: what does not change while a turn runs.
+fn identity(
   model: Model,
-) -> buffer.Buffer {
-  let identity = " ◆ loom "
-  let details =
-    text.truncate(
-      " "
-        <> text_hygiene.single_line(model.shared.current_model)
-        <> " · Ctrl+g details ",
-      int.max(0, area.size.width / 3),
-      "…",
-    )
+  strip: List(agent_strip.Line),
+) -> input_frame.Identity {
+  input_frame.Identity(
+    workspace: filepath.base_name(model.view.workspace.path),
+    session: session_title(model),
+    strand: model.shared.active_strand,
+    task: agent_strip.badge(strip, model.shared.active_strand),
+    model: short_model(model.shared.current_model),
+    effort: effort(model),
+  )
+}
 
-  // A long checkout path must not hide which session owns this terminal.
-  // Reserve the two fixed ends before fitting the session and its context.
-  let room =
-    int.max(
-      0,
-      area.size.width - text.cell_width(identity) - text.cell_width(details),
-    )
-  let context =
-    text.truncate(
-      text_hygiene.single_line(session_title(model))
-        <> " · "
-        <> text_hygiene.single_line(workspace.label(model.view.workspace)),
-      room,
-      "…",
-    )
-  let bar =
-    statusbar.statusbar_new()
-    |> statusbar.with_style(theme.paper, theme.graphite)
-    |> statusbar.with_left([
-      span.line_new([span.span_styled(identity, theme.signal_bold())]),
-    ])
-    |> statusbar.with_center([span.line_plain(context)])
-    |> statusbar.with_right([
-      span.line_new([span.span_styled(details, theme.quiet_text())]),
-    ])
-  statusbar.render(buf, area, bar)
+// A model reads by its last path segment, `Kimi-K3`; the full identity is
+// in the workspace detail and `/model`.
+fn short_model(model: String) -> String {
+  model
+  |> text_hygiene.single_line
+  |> string.split("/")
+  |> list.last
+  |> result.unwrap(model)
+}
+
+// The viewed strand's reasoning effort, from the capture's configuration.
+fn effort(model: Model) -> Option(String) {
+  case model.shared.captured {
+    Some(#(_, view)) ->
+      dict.get(view.configurations, model.shared.active_strand)
+      |> result.map(fn(config) {
+        lane_fold.thinking_name(config.configuration.thinking_level)
+      })
+      |> option.from_result
+    None -> None
+  }
+}
+
+// Every live fact the input frame's rules carry.
+fn frame_status(
+  model: Model,
+  strip: List(agent_strip.Line),
+) -> input_frame.Status {
+  let activity = case layout.active_status_label(model) {
+    None -> input_frame.Resting
+    Some(doing) ->
+      input_frame.Busy(
+        glyph: layout.activity_glyph(model.view.activity_frame),
+        doing: text_hygiene.single_line(doing),
+        elapsed: case model.shared.activity_elapsed_s {
+          seconds if seconds > 0 -> agent_roster.duration(seconds)
+          _ -> ""
+        },
+      )
+  }
+  let notice =
+    [model.view.cache_outlook, text_hygiene.single_line(model.shared.notice)]
+    |> list.filter(fn(piece) { piece != "" })
+    |> string.join(" · ")
+  input_frame.Status(
+    target: recipient_label(model),
+    keys: string.trim(input_title_keys(model)),
+    activity:,
+    queued: list.length(layout.queue_rows(model)),
+    strand: model.shared.active_strand,
+    notice:,
+    model: short_model(model.shared.current_model),
+    effort: effort(model),
+    context: context_view.footer(model.shared.context),
+    cost: transcript_lines.money(model.shared.usage.cost.total),
+    needs: strand_card.needing(strip),
+    lock: case model.view.overlay {
+      ApprovalInspector(_) -> input_frame.Deciding
+      _ -> input_frame.Unlocked
+    },
+  )
+}
+
+// The key hints an empty draft shows, for the keys that do something right
+// now: Left only opens the picker from an empty composer with daemon
+// control, and Down enters the strip only while the strip is drawn.
+fn placeholder(model: Model, strip: List(agent_strip.Line)) -> Option(String) {
+  let composing = case model.view.overlay, model.view.strip_focus {
+    NoOverlay, agent_strip.Composing -> True
+    _, _ -> False
+  }
+  case composing, text_area.value(model.view.input) {
+    True, "" ->
+      [
+        sessions_hint("", model.shared.attachments, model.view.daemon_host),
+        case agent_strip.visible(strip) {
+          True -> "↓ agents"
+          False -> ""
+        },
+        "/ commands",
+      ]
+      |> list.filter(fn(piece) { piece != "" })
+      |> string.join(" · ")
+      |> Some
+    _, _ -> None
+  }
 }
 
 // A reading surface needs a heading and gutter, not four persistent edges.
@@ -583,52 +646,6 @@ fn render_conversation_heading(
       "…",
     ),
     theme.quiet_text(),
-  )
-}
-
-// Horizontal rules distinguish input from output without boxing the whole
-// conversation. The editor keeps its established inset for selection/copy.
-// The badge names the task of the agent being viewed, right-aligned on the
-// composer's top rule, so an operator who opened a sub-agent from the strip
-// can see which task the transcript and the composer now belong to. It
-// yields to the title: the send mode is never truncated to fit a badge.
-fn render_composer_chrome(
-  buf: buffer.Buffer,
-  area: Rect,
-  title: String,
-  badge: Option(String),
-) -> buffer.Buffer {
-  let width = int.max(0, area.size.width - 2)
-  let border = style.new(theme.signal, style.Default, style.none())
-  let title = text.truncate(title, width, "…")
-  let badge = case badge {
-    None -> ""
-    Some(words) ->
-      text.truncate(
-        " " <> text_hygiene.single_line(words) <> " ",
-        int.max(0, width - text.cell_width(title) - 2),
-        "… ",
-      )
-  }
-  let gap = int.max(0, width - text.cell_width(title) - text.cell_width(badge))
-  buf
-  |> buffer.set_string(
-    area.position,
-    "─" <> title <> string.repeat(" ", gap + text.cell_width(badge)) <> "─",
-    border,
-  )
-  |> buffer.set_string(
-    geometry.Position(
-      area.position.x + 1 + text.cell_width(title) + gap,
-      area.position.y,
-    ),
-    badge,
-    style.new(theme.graphite, theme.current, style.bold()),
-  )
-  |> buffer.set_string(
-    geometry.Position(area.position.x, geometry.bottom(area) - 1),
-    string.repeat("─", area.size.width),
-    style.new(theme.divider, style.Default, style.none()),
   )
 }
 
@@ -1834,15 +1851,17 @@ fn render_pending_band(
   )
 }
 
-fn input_title(model: Model) -> String {
-  let behavior = case model.view.overlay, model.view.strip_focus {
+// What the next key does, for the input frame's top rule after the
+// recipient. The strip and the workspace own the keyboard while they are
+// browsed, so they name their own keys instead.
+fn input_title_keys(model: Model) -> String {
+  case model.view.overlay, model.view.strip_focus {
     AgentInspector(agents.Inspector(focus: agents.Browsing, ..)), _ ->
       " w writes · Enter opens agent "
     _, agent_strip.Browsing(_) ->
-      " ↑↓ select agent · enter opens · x stops · esc back "
+      " ↑↓ select agent · Enter opens · x stops · Esc back "
     _, agent_strip.Composing -> input_behavior(model)
   }
-  " To " <> recipient_label(model) <> " ·" <> behavior
 }
 
 // A long child ID must not hide whether Enter sends, queues, or steers.
@@ -1877,17 +1896,17 @@ fn input_behavior(model: Model) -> String {
   )
   use <- bool.guard(
     tui_model.active_queue_halted(model),
-    " stopped · enter sends held input with your message ",
+    " stopped · Enter sends held input with your message ",
   )
   case
     session_model.active_interrupt(model.shared),
     layout.active_status_label(model),
     model.view.submission_mode
   {
-    Some(_), _, _ -> " stopped · enter sends held input with your message "
-    None, None, _ -> " prompt · enter sends · / commands "
-    None, Some(_), SteerNow -> " steer this turn · enter steers · tab queues "
-    None, Some(_), PromptNext -> " enter queues · tab steers "
+    Some(_), _, _ -> " stopped · Enter sends held input with your message "
+    None, None, _ -> " Enter sends "
+    None, Some(_), SteerNow -> " steer this turn · Enter steers · Tab queues "
+    None, Some(_), PromptNext -> " Enter queues · Tab steers "
   }
 }
 
