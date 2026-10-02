@@ -2,7 +2,7 @@
 
 The October 1 resource and typed-MCP follow-ups are separate changes with
 separate evidence. [PR #689](https://github.com/Roasbeef/loom/pull/689) was rebased
-onto main `7d37ec86`; its final resource head is `862ddc9f`. The owner authorized
+onto main `7d37ec86`; its final resource head is `4a6e4fad`. The owner authorized
 merge once that exact head is ready. Fresh hosted CI and local signoff are being
 checked; the earlier green results in the review report belong to their named
 heads. The running normal daemon was not upgraded by these follow-ups.
@@ -23,8 +23,10 @@ timeout passed five focused repetitions. The job-stop/reopen failure had a
 concrete ordering defect: the test treated cancellation acknowledgement as a
 completed durable write and observed Lost before notification handling finished.
 Existing actor poll/list barriers fix that fixture. A forced schedule fails the
-old fixture and passes the ordered one; production source and deadlines remain
-unchanged. Final checks must belong to `862ddc9f`, not its older green CI head.
+old fixture and passes the ordered one. The scanner fixture also waits for
+asynchronous rearming and checks the exact logical deadline, preventing an
+unrelated driver timer from satisfying its retry bound. Production source and
+deadlines remain unchanged. Final checks must belong to `4a6e4fad`, not its older green CI heads.
 
 The [directory follow-up, PR #691](https://github.com/Roasbeef/loom/pull/691),
 projects a restartable writer address for mutation and Storage for readback.
@@ -32,7 +34,7 @@ Its [review report](review/directory-fact-retention-2026-10-01.md) records const
 1,385-flat-word administration overhead as unrelated executor payload grows.
 Package gates, independent review, full local signoff at the named pre-rebase
 head, and a fresh-runtime retirement witness passed. Its rebased hosted head is
-`0a3ade6d`. These term measurements do not predict installed RSS. The additive
+`b06b3a29`. These term measurements do not predict installed RSS. The additive
 internal fact interfaces were approved by the owner; public signatures and wire
 contracts remain unchanged.
 
