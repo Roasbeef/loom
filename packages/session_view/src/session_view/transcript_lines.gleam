@@ -1305,6 +1305,22 @@ pub fn separated_tool_blocks(
   |> list.reverse
 }
 
+/// `separated_tool_blocks` over lines that are not grouped into blocks,
+/// each line its own block: the transcript's own lines (the head, notices
+/// and approvals), which no fold over entries has seen. A line that closes
+/// bare and one that opens bare get the one blank row between them that the
+/// fold gives any two blocks.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.separated_lines(model.shared.transcript)
+/// ```
+@internal
+pub fn separated_lines(lines: List(Line)) -> List(Line) {
+  separated_tool_groups(list.map(lines, fn(line) { [line] }), BetweenEntries)
+}
+
 // The same separation over rows that carry no anchor identity.
 //
 // Groups are wrapped as idless blocks and run through the one fold rather

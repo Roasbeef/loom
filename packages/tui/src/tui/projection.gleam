@@ -377,7 +377,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
       let #(lines, compact_call_cache, compact_entry_cache) =
         record_projection(model)
       let #(record_rows, record_line_cache, record_gutters) =
-        model.shared.transcript
+        transcript_lines.separated_lines(model.shared.transcript)
         |> list.append(lines)
         |> cached_record_lines(width, previous)
       Model(
@@ -663,7 +663,7 @@ fn record_anchors_for(
       |> transcript_lines.separated_tool_blocks(BetweenEntries)
     }
   }
-  [#("", model.shared.transcript), ..blocks]
+  [#("", transcript_lines.separated_lines(model.shared.transcript)), ..blocks]
   |> list.flat_map(fn(block) {
     block.1
     |> list.index_map(fn(line, part) { #(line, part) })
@@ -865,8 +865,7 @@ fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
 
     // A summary's rows sit under its header behind a two-cell indent.
     SummarizedReasoning | SummarizedAdvice if index > 0 -> 2
-    User if index == 1 -> 1
-    User if index > 1 && index < row_count - 1 -> 3
+    User if index > 0 && index < row_count - 1 -> 2
 
     // A message's bar is painted in the margin, outside these cells, so
     // the gutter counts only the indent before the heading and the body.
