@@ -1,7 +1,7 @@
 # protocol-change/062 — slice `strand.wait` windows in the satellite stub
 
-**Status**: PROPOSED · **Affects**: WP-N `cap/strand` `wait` ·
-**Raised by**: code-mode orchestration use · **Implemented**: cap + tools (prelude regeneration)
+**Status**: ACCEPTED 2026-10-02, on the owner's confirmation after the merge · **Affects**: WP-N `cap/strand` `wait` ·
+**Raised by**: code-mode orchestration use · **Implemented**: cap + tools (prelude regeneration), merged in #719 on the owner's authorization
 
 ## Problem
 
