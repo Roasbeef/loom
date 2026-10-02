@@ -700,6 +700,10 @@ fn run_gopls(helper_path: String, gopls: String, places: GoPlaces) -> Nil {
   // from), and a jail that grants the wrong cache leaves `go list` unable
   // to write, so `gopls` loads no packages and every definition comes back
   // empty.
+
+  // The cache grant follows the test runner's GOCACHE override. Forwarding
+  // the same name makes jailed Go write to the granted path; when unset,
+  // both sides retain the native cache default.
   let gopls_cache = parent_directory(places.cache) <> "/gopls"
   let toml = "
 [models.acme]
@@ -719,7 +723,7 @@ extensions = [\".go\"]
 root_markers = [\"go.mod\"]
 readable = [\"" <> places.root <> "\", \"" <> places.module_cache <> "\"]
 writable = [\"" <> places.cache <> "\", \"" <> gopls_cache <> "\"]
-env = [\"GOFLAGS\", \"GOTOOLCHAIN\"]
+env = [\"GOCACHE\", \"GOFLAGS\", \"GOTOOLCHAIN\"]
 "
   let messages =
     run_session(rig, helper_path, toml, gopls_turns(), fn(_) { Nil }, "gopls")
