@@ -32,6 +32,17 @@ extended by the M3 runtime wave.
 
 ## Key Types
 
+- `runtime/api.FactHandle` is an opaque internal host capability containing
+  only the session writer Address. `fact_handle` projects it before a host
+  retains a fact callback. `fact_cell_with` and
+  `put_reserved_fact_expecting_with` share the Runtime doors' decoding,
+  reserved-key check, conditional transaction and error mapping. Each request
+  resolves the current writer; replacement preserves the handle, while
+  namespace retirement makes it unavailable. A writer death after admission
+  still crashes the caller when the commit's acknowledgement is uncertain.
+  Lease loss remains `SessionStolen` and stale expectations remain
+  `FactConflict`. The handle carries neither Effects nor a cached PID.
+
 - `effects.failure_observation` derives diagnostic identity from the captured
   `RequestSpec`. Provider effects retain their own deadline or stop through
   cancellation acknowledgement; the inner custodian records only cancellation

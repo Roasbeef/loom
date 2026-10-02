@@ -119,6 +119,15 @@ canonical path refuses dispatch. See protocol 041.
 
 ## Session directory authority
 
+Production retains a projected `api.FactHandle` in the directory supplier
+before constructing the hub's restart callback. `directories.admin_with_facts`
+owns only that supplier, workspace and protected paths for mutation; its
+readback callback owns Storage alone. The gateway still owns Runtime for
+execution. The existing `admin` constructor acquires its Runtime lazily after
+filesystem validation and projects the handle when called, preserving its
+unavailable behavior. Conditional commitment and authenticated origin follow
+the same path for both constructors.
+
 `directories` owns the reserved `fact.custom/client/directory_access` record.
 The operator gateway accepts `set_config.add_directory`, validates the real
 existing directory and enforces protected paths for write additions, and commits through
