@@ -184,3 +184,14 @@ post-edit observer, clipping and changed-span helpers remain for code mode and
 ordinary writes. Their focused tests and the real-server capability programs
 retain the corresponding behavior checks. [Protocol 063](063-saved-code-mode-programs.md)
 adds reusable source-file input without preserving SQL observations or authority.
+
+## Verification update, 2026-10-02: published native integration
+
+This supersedes the experimental-wrapper status in the original verification
+section. `esqlite_loom` 0.9.1 and `sqlight_loom` 1.2.1 are published and selected
+by the normal package manifests and offline seed lock. Six real jailed Gleam
+and Go fixtures, full local package checks and distribution builds pass with
+that normal seed. The complete Linux container run also passed all six lanes,
+release/update verification and its strict skip census. Current-head hosted
+checks and Linux signoff remain the merge criteria; this verification does not
+update a running daemon or change the accepted API.

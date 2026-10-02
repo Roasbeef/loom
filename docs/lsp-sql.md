@@ -5,13 +5,13 @@ over several language-server answers. A program collects explicit outlines and
 reference targets once, then queries the returned observation locally. SQL
 runs in the jailed satellite over four fixed in-memory tables.
 
-**Integration status:** the complete program in the
-[design note](design-notes/lsp-sql.md#a-complete-program) has compiled
-warning-free. Real jailed Gleam and Go SQL cases also pass using an isolated
-experimental native wrapper. The native and companion forks have merged, but
-Hex publication, final dependency pins and
-the cold published-package seed remain pending. An older installed Loom daemon
-does not acquire this module by installing a language profile.
+**Integration status:** `esqlite_loom` 0.9.1 and `sqlight_loom` 1.2.1 are
+published, pinned and resolved in the normal offline seed. The complete program
+in the [design note](design-notes/lsp-sql.md#a-complete-program) compiles
+warning-free, and real jailed Gleam and Go SQL fixtures pass with that seed.
+Full local checks and distribution builds pass; current-head hosted checks and
+Linux signoff remain the merge gates. An older installed Loom daemon does not
+acquire this module by installing a language profile.
 
 ## Prepare the existing LSP setup
 

@@ -1,13 +1,13 @@
 # SQL over LSP observations
 
-**Status: implementation in progress.** This note describes the API on
-`codex/lsp-sql`, based on `7d37ec86f`. The collection, routing, typed decoding,
-and cancellation tests have passed focused checks, including both corrections
-from independent review. The complete Gleam program below compiles unchanged
-with warnings treated as errors. Real jailed Gleam and Go SQL tests also pass
-using an isolated experimental native wrapper. Native package publication and
-the cold resolved published-package seed are still being integrated.
-This is a reviewable contract, not a release announcement.
+**Status: implemented; final merge gates in progress.** This note describes the
+API on `codex/lsp-sql`. Collection, routing, typed decoding and cancellation
+tests pass, including the corrections from independent review. The complete
+Gleam program below compiles unchanged with warnings treated as errors. Real
+jailed Gleam and Go SQL tests pass with the normal offline seed resolved from
+published `esqlite_loom` 0.9.1 and `sqlight_loom` 1.2.1. Full local package checks
+and distribution builds pass. This is a reviewable contract, not an installed
+daemon update or a release announcement.
 
 ## What this lets a program ask
 
@@ -166,8 +166,9 @@ fn render_count(row: ReferenceCount) -> report.Value {
 
 The expected counts for this fixture are one for `greet` and zero for
 `unused`, assuming the server reports this project's references and withholds
-none. The example is being added to the real-server acceptance tests. Its
-publication here does not claim that its final offline build has passed yet.
+none. Real-server acceptance tests exercise the same collection and SQL path
+with the normal published-package seed, including saved Gleam source and inline
+Go source. The complete example above also compiles warning-free.
 
 The decoder gives the returned rows their Gleam type. SQLite still parses SQL
 at runtime. A projection with the wrong storage classes returns
@@ -297,10 +298,11 @@ the connection closes.
 
 The existing SQLite binding is extended because a Gleam-only query wrapper
 cannot install these native controls. We keep one SQLite implementation in
-the dependency graph. The packaging plan is an update to the existing
-`esqlite_loom` and `sqlight_loom` forks, with native builder metadata that stock
-Gleam understands. Publishing those package versions and validating the
-resulting cold offline seed are still pending.
+the dependency graph. Published `esqlite_loom` 0.9.1 and `sqlight_loom` 1.2.1
+carry native builder metadata that stock Gleam understands. The resolved normal
+seed builds and archives successfully. Its known in-seed Rebar plugin link is
+materialized before relocation; the native-library bytes remain part of the
+satellite artifact fingerprint.
 
 ## Where to read the implementation
 

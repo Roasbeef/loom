@@ -9,14 +9,15 @@ queries makes no further language-server requests.
 For installation and examples, see the [usage guide](../lsp-sql.md). The
 [design note](../design-notes/lsp-sql.md) records the API and motivation, and
 [protocol-change/062](../../protocol-change/062-lsp-sql-observations.md) records
-the separate observation contract. The ordinary tools and `cap/lsp` keep their
-existing [LSP door](lsp.md).
+the separate observation contract. Individual semantic queries use `cap/lsp`
+through the existing [LSP door](lsp.md); top-level LSP tools are removed.
 
-**Integration status:** focused checks and real jailed Gleam and Go SQL
-programs have passed. The complete design-note example compiles warning-free.
-Native publication, final dependency pins and the cold published-package seed
-remain pending. The successful jailed run used an isolated experimental native
-wrapper, so it does not establish that final distribution path.
+**Integration status:** the published native and companion packages are pinned
+in the normal offline seed. Real jailed Gleam and Go SQL programs, the complete
+design-note example and full local package checks pass using that dependency
+graph. Native seed packaging and distribution builds also pass. Current-head
+hosted checks and full Linux signoff remain required before merge; integrating
+the source does not replace an already running daemon.
 
 ## The execution boundary
 
