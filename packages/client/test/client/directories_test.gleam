@@ -1,14 +1,107 @@
+import broker/policy
 import client/directories
+import client/gateway_test
 import core/clock
+import core/ids
 import core/json
 import core/register
 import core/tx
-import gleam/option.{None}
+import gleam/erlang/process
+import gleam/option.{None, Some}
 import gleam/result
+import runtime/api
 import session/session
 import simplifile
 import storage/storage
 import tools/directory_access
+
+/// The compatibility supplier remains lazy through validation and readback.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // Invalid paths never ask the host for its runtime.
+/// ```
+pub fn admin_preserves_lazy_runtime_acquisition_test() {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test workspace must be known"
+  let assert Ok(opened) = session.open_memory(clock.fixed(1000))
+    as "the lazy admin session must open"
+  let calls = process.new_subject()
+  let admin =
+    directories.admin(
+      opened,
+      fn() {
+        process.send(calls, Nil)
+        Error(Nil)
+      },
+      here,
+      policy.workspace_default(here),
+    )
+  assert admin.read() == Ok(json.Array([]))
+  assert result.is_error(admin.add(
+    json.Object([
+      #("path", json.String(here <> "/missing-directory-capture-fixture")),
+      #("access", json.String("read")),
+    ]),
+    None,
+  ))
+  assert process.receive(calls, within: 0) == Error(Nil)
+
+  // A valid filesystem request acquires exactly once, then preserves the
+  // compatibility supplier's unavailable refusal rather than caching it.
+  assert admin.add(
+      json.Object([
+        #("path", json.String(here)),
+        #("access", json.String("read")),
+      ]),
+      None,
+    )
+    == Error("session is unavailable")
+  assert process.receive(calls, within: 1000) == Ok(Nil)
+  assert process.receive(calls, within: 0) == Error(Nil)
+  assert session.close(opened) == Ok(Nil)
+}
+
+/// The projected production door commits additions and returns durable views.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // A read grant upgrades to write without adding another directory.
+/// ```
+pub fn projected_admin_commits_and_upgrades_directory_access_test() {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the granted workspace must exist"
+  let id = ids.mint_session(ids.generator(clock.fixed(1000), 642)).0
+  let harness = gateway_test.reserved_fixture(id)
+  let facts = api.fact_handle(harness.runtime)
+  let admin =
+    directories.admin_with_facts(
+      harness.runtime.session,
+      fn() { Ok(facts) },
+      here,
+      policy.workspace_default(here),
+    )
+  let request = fn(mode) {
+    json.Object([
+      #("path", json.String(here)),
+      #("access", json.String(mode)),
+    ])
+  }
+  let expected = fn(mode) { json.Array([request(mode)]) }
+  assert admin.add(request("read"), None) == Ok(expected("read"))
+  assert admin.add(request("write"), None) == Ok(expected("write"))
+  assert admin.read() == Ok(expected("write"))
+  let assert Ok(Some(cell)) = api.fact_cell(harness.runtime, directories.key)
+    as "the projected door must commit through the real writer"
+  assert cell.value
+    == json.Object([
+      #("directories", expected("write")),
+      #("origin", json.Null),
+    ])
+  assert api.close(harness.runtime) == Ok(Nil)
+}
 
 pub fn directory_fact_survives_sqlite_close_and_reopen_test() {
   let assert Ok(here) = simplifile.current_directory()
