@@ -1432,6 +1432,48 @@ pub fn an_operators_abort_of_the_operation_kills_the_job_test() {
   assert result.cancelled
 }
 
+pub fn aborting_the_originating_turn_preserves_a_session_job_test() {
+  let harness = start_harness()
+  let assert Ok(operation) =
+    api.prompt(api.on_strand(harness.runtime, "main"), [user("watch mail")])
+    as "a real run owns the launch"
+  let assert Ok(started) =
+    jobs.start_job(
+      harness.name,
+      strand: "main",
+      operation:,
+      request: jobs.Request(
+        command: "watch mail",
+        wall_ms: Some(0),
+        captured_policy: None,
+        audience: jobs.NotifyOwner,
+        stdin: jobs.KeepStdinOpen,
+        idle_wake: job.QuietUntilDone,
+      ),
+      waiting: 10_000,
+    )
+    as "the authorized session watcher starts"
+  let swept = process.new_subject()
+  let hub =
+    start_hub(harness, fn(op) {
+      process.send(
+        harness.fake.subject,
+        SweepOperation(op_id: op, result: cancelled_result()),
+      )
+      process.send(swept, op)
+    })
+  command(hub, 3, protocol.Abort(strand: "main"))
+  assert process.receive(swept, 5000) == Ok(operation)
+  assert poll(harness, "main", started).state == jobstate.Running
+  assert !notified(harness, started)
+  assert jobs.kill_job(harness.name, "main", started.id, 5000) == Ok(Nil)
+  assert await_cancel(harness, started, 5000) == 1
+  settle_with(harness, started, cancelled_result())
+  let assert jobstate.Killed(by: jobstate.ByOwner, ..) =
+    settled_state(harness, "main", started)
+    as "detachment preserves explicit owner cancellation"
+}
+
 pub fn a_deadline_kills_with_its_own_cause_test() {
   // The one test on the wall clock: a runner turns `deadline - now` into
   // a real receive window, so the deadline has to be real time.
@@ -2645,6 +2687,8 @@ pub fn a_session_lifetime_job_stays_quiet_and_stops_with_its_session_test() {
   let assert [spec] = specs(harness) as "one execution is cleared"
   assert spec.budget.deadline_ms == 0
   assert spec.requirements.limits.wall_s == 0
+  assert spec.op_id != harness.operation
+    as "session custody must not share the originating turn's abort fence"
   process.sleep(100)
   assert poll(harness, "main", started).state == jobstate.Running
   assert !notified(harness, started)

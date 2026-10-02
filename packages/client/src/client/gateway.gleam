@@ -5910,7 +5910,7 @@ fn commit_approval(
   use change <- result.try(case lifetime {
     Once -> Ok(None)
     ForSession ->
-      permissions.remembering(state.runtime, echoed, author)
+      permissions.remembering_action(state.runtime, cell.record, echoed, author)
       |> result.map(Some)
       |> result.map_error(fn(reason) {
         refusal(protocol.code_bad_request, reason)

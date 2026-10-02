@@ -149,6 +149,7 @@
 //// monitored call that answers a dead or wedged callee as a value rather
 //// than crashing the asker as `process.call` would.
 
+import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -485,7 +486,11 @@ type Resolved {
 // answer does: reach a caller, pass a settlement barrier, complete the
 // handshake, or acknowledge shutdown.
 type Pending {
-  CallerWaits(reply: Subject(Result(JsonValue, RequestError)), deadline_ms: Int)
+  CallerWaits(
+    reply: Subject(Result(JsonValue, RequestError)),
+    deadline_ms: Int,
+    feature: Feature,
+  )
   BarrierFor(token: Int)
   HandshakeWaits(reply: Subject(Result(Nil, StartError)))
   ShutdownWaits
@@ -639,6 +644,9 @@ type Data {
     versioning: Versioning,
     /// The latest publication for each URI.
     publications: Dict(String, Publication),
+    /// One bounded server load error, retained until a semantic answer
+    /// proves recovery. It is data, never an instruction to the harness.
+    server_failure: Option(String),
     /// The next key for a settlement or readiness waiter.
     next_token: Int,
     /// Settlements in progress, by token.
@@ -1375,6 +1383,7 @@ fn spawn(
         sequence: 0,
         versioning: Unversioned,
         publications: dict.new(),
+        server_failure: None,
         next_token: 1,
         waiters: dict.new(),
         progress: dict.new(),
@@ -1772,7 +1781,7 @@ fn ask_server(
       Flow(Serving, data)
     }
     protocol.Provided -> {
-      let #(data, id) = mint(data, CallerWaits(reply:, deadline_ms:))
+      let #(data, id) = mint(data, CallerWaits(reply:, deadline_ms:, feature:))
 
       // The id is tracked before the write, so a failed write's `fail`
       // answers this caller with every other one.
@@ -1793,7 +1802,7 @@ fn ask_server(
 // is dropped, and tells the server to stop computing it.
 fn expire(flow: Flow, id: Int) -> Flow {
   case dict.get(flow.data.pending, id) {
-    Ok(CallerWaits(reply:, deadline_ms:)) -> {
+    Ok(CallerWaits(reply:, deadline_ms:, ..)) -> {
       process.send(reply, Error(TimedOut(after_ms: deadline_ms)))
       let data = Data(..flow.data, pending: dict.delete(flow.data.pending, id))
       cancel(Flow(..flow, data:), id)
@@ -1916,9 +1925,11 @@ fn answered(
   outcome: Result(JsonValue, jsonrpc.RpcError),
 ) -> Flow {
   case pending {
-    CallerWaits(reply:, ..) -> {
-      process.send(reply, result.map_error(outcome, server_error))
-      flow
+    CallerWaits(reply:, feature:, ..) -> {
+      let answered = result.map_error(outcome, server_error)
+      let #(data, answered) = semantic_answer(flow.data, feature, answered)
+      process.send(reply, answered)
+      Flow(..flow, data:)
     }
 
     // Any answer, an error included, proves the server processed every
@@ -1927,6 +1938,71 @@ fn answered(
 
     HandshakeWaits(reply:) -> handshake_answered(flow.data, reply, outcome)
     ShutdownWaits -> acknowledged(flow.data)
+  }
+}
+
+// An empty result is ambiguous after a server-reported load failure. A
+// substantive result is evidence that analysis recovered; it retires the
+// retained error so later legitimate misses remain ordinary empty answers.
+fn semantic_answer(
+  data: Data,
+  feature: Feature,
+  outcome: Result(JsonValue, RequestError),
+) -> #(Data, Result(JsonValue, RequestError)) {
+  case outcome, data.server_failure {
+    Error(_), _ | Ok(_), None -> #(data, outcome)
+    Ok(json.Array([_, ..])), Some(_)
+      if feature == protocol.CallHierarchyFeature
+    -> #(data, outcome)
+    Ok(value), Some(reason) ->
+      case substantive(feature, value) {
+        True -> #(Data(..data, server_failure: None), outcome)
+        False -> #(data, Error(Unavailable(reason:)))
+      }
+  }
+}
+
+// Recovery needs a decoded semantic result, not merely a non-null JSON
+// object. Hover and rename both encode legitimate empty answers as objects.
+// Call hierarchy shares one capability across three different decoders.
+// Its nonempty replies reach the method-specific decoder without clearing
+// the failure; another semantic query must establish recovery.
+fn substantive(feature: Feature, value: JsonValue) -> Bool {
+  case feature {
+    protocol.DefinitionFeature | protocol.ReferencesFeature ->
+      decoded_nonempty(protocol.decode_locations(value))
+    protocol.HoverFeature ->
+      case protocol.decode_hover(value) {
+        Ok(Some(hover)) -> string.trim(hover.contents) != ""
+        Ok(None) | Error(_) -> False
+      }
+    protocol.DocumentSymbolFeature ->
+      case protocol.decode_document_symbols(value) {
+        Ok(protocol.Hierarchical(symbols)) -> !list.is_empty(symbols)
+        Ok(protocol.Flat(symbols)) -> !list.is_empty(symbols)
+        Error(_) -> False
+      }
+    protocol.RenameFeature ->
+      case protocol.decode_workspace_edit(value) {
+        Ok(edit) ->
+          list.any(edit.documents, fn(document) {
+            !list.is_empty(document.edits)
+          })
+        Error(_) -> False
+      }
+    protocol.PrepareRenameFeature ->
+      case protocol.decode_prepare_rename(value) {
+        Ok(protocol.CanRename(..)) | Ok(protocol.CanRenameDefault) -> True
+        Ok(protocol.CannotRename) | Error(_) -> False
+      }
+    protocol.CallHierarchyFeature -> False
+  }
+}
+
+fn decoded_nonempty(outcome: Result(List(a), protocol.ProtocolFault)) -> Bool {
+  case outcome {
+    Ok(items) -> !list.is_empty(items)
+    Error(_) -> False
   }
 }
 
@@ -1966,8 +2042,23 @@ fn notification(data: Data, method: String, params: Option(JsonValue)) -> Data {
     Ok(protocol.Published(diagnostics:)) ->
       release_settled(record(data, diagnostics))
     Ok(protocol.Progressed(progress:)) -> progressed(data, progress)
+    Ok(protocol.ServerFailure(message:)) ->
+      Data(..data, server_failure: Some(server_failure(message)))
     Ok(protocol.Ignored(..)) | Ok(protocol.Unrecognised(..)) | Error(..) -> data
   }
+}
+
+// Retain bytes, not grapheme count: a single grapheme may contain an
+// arbitrarily long sequence of combining marks. Invalid truncated UTF-8
+// keeps a fixed explanation rather than retaining the oversized original.
+fn server_failure(message: String) -> String {
+  let bytes = bit_array.from_string(message)
+  let length = int.min(bit_array.byte_size(bytes), 2048)
+  let bounded =
+    bit_array.slice(bytes, 0, length)
+    |> result.try(bit_array.to_string)
+    |> result.unwrap("server error message was truncated at 2048 bytes")
+  "the language server reported an error: " <> bounded
 }
 
 // --- documents ------------------------------------------------------------------
@@ -2226,8 +2317,11 @@ fn release_settled(data: Data) -> Data {
     case settled(data, waiter) {
       False -> data
       True -> {
-        let settlement = Settlement(Settled, collect(data, waiter))
-        process.send(waiter.reply, Ok(settlement))
+        let settlement = case data.server_failure {
+          None -> Ok(Settlement(Settled, collect(data, waiter)))
+          Some(reason) -> Error(Unavailable(reason:))
+        }
+        process.send(waiter.reply, settlement)
         Data(..data, waiters: dict.delete(data.waiters, token))
       }
     }
@@ -2264,8 +2358,11 @@ fn settle_expired(flow: Flow, token: Int) -> Flow {
   case dict.get(flow.data.waiters, token) {
     Error(Nil) -> flow
     Ok(waiter) -> {
-      let settlement = Settlement(DeadlineExpired, collect(flow.data, waiter))
-      process.send(waiter.reply, Ok(settlement))
+      let settlement = case flow.data.server_failure {
+        Some(reason) -> Error(Unavailable(reason:))
+        None -> Ok(Settlement(DeadlineExpired, collect(flow.data, waiter)))
+      }
+      process.send(waiter.reply, settlement)
       let data =
         Data(..flow.data, waiters: dict.delete(flow.data.waiters, token))
       case waiter.barrier {
@@ -2487,7 +2584,11 @@ fn answer_read(data: Data, reading: Reading) -> Nil {
         |> list.filter(wanted)
         |> list.map(fn(entry) { #({ entry.1 }.path, { entry.1 }.diagnostics) })
         |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
-      process.send(reply, Ok(published))
+      let outcome = case data.server_failure {
+        None -> Ok(published)
+        Some(reason) -> Error(Unavailable(reason:))
+      }
+      process.send(reply, outcome)
     }
     CapabilitiesOf(reply:) -> process.send(reply, Ok(data.capabilities))
   }

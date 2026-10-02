@@ -987,7 +987,12 @@ pub fn policy_for(
       ..base,
       writable_roots: writes,
       readable_roots: list.unique(
-        list.flatten([[root, scratch], readable, writable]),
+        list.flatten([
+          [root, scratch],
+          workspace_reads(placement.workspace, lease),
+          readable,
+          writable,
+        ]),
       ),
       network: policy.NetworkOff,
       limits: policy.Limits(..base.limits, wall_s: 0, cpu_s: 0, output_bytes: 0),
@@ -1011,6 +1016,22 @@ pub fn policy_for(
     step_id: step_id(server.name, root),
     unset:,
   ))
+}
+
+// A package may depend on a sibling package. The lease can read the part
+// of the workspace the session already authorizes, but never discovers or
+// grants an external path from a language manifest or server response.
+// Writes and the gate for answer text remain at the selected package root.
+fn workspace_reads(workspace: String, lease: SandboxPolicy) -> List(String) {
+  list.append(lease.readable_roots, lease.writable_roots)
+  |> list.filter_map(fn(root) {
+    case policy.covers(root, workspace), policy.covers(workspace, root) {
+      True, _ -> Ok(workspace)
+      False, True -> Ok(root)
+      False, False -> Error(Nil)
+    }
+  })
+  |> list.unique
 }
 
 // The one question the project's access decides.

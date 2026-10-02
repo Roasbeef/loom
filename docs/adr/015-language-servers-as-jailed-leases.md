@@ -451,3 +451,17 @@ to an unreadable request has no id to echo, so LSP passes `Some(id)`. And
 where it returns that client's own error type, so `lsp/call` holds the
 small pure-Gleam copy of it that LSP needs. When `docs/weft.md`'s gap is
 filled, that copy and the broker's collapse into the weft primitive.
+
+## Addendum: workspace dependency reads and load errors (2026-10-01)
+
+Protocol 061 expands a lease's read view to the session-authorized portion
+of its workspace. Gleam monorepos need sibling path dependencies; denying
+one reproduces empty semantic answers while the same binary resolves them
+outside the jail. Writes, answer admission, protected paths, and network-off
+stay unchanged. Dependencies outside that workspace need profile authority.
+
+Error-level server window messages are retained under a byte bound. Empty
+semantic answers and diagnostics after such a failure are unavailable, until
+a substantive semantic result demonstrates recovery. This amends the former
+choice to discard all window messages. The raw PATH-only control succeeded;
+missing HOME/cache variables did not explain the observed failure.

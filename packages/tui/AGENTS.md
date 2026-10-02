@@ -2635,3 +2635,10 @@ commands (`ListPrincipals`, `PrincipalMemberships`, `SetMemberRole`,
 `RevokeMembership`, `RevokeCredentials`); the reads add no epoch and the three
 changes add the hello's. The page refuses `/access` with every surface
 command, since `Surface(Access)` never reaches `page_command`'s `Ok`.
+
+## Session watcher consent
+
+The approval panel uses `session_view/approval.remembered_authority` to explain
+that a wall-zero session decision covers the exact action on its requesting
+strand. The shared projection enables the session choice only for eligible
+grants. The panel does not broaden a request or parse shell commands.

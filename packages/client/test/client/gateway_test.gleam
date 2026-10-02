@@ -11,6 +11,7 @@ import client/blocksummary
 import client/blocksummarybook
 import client/catalog
 import client/directories
+import client/escalate
 import client/gateway
 import client/goalcommand
 import client/grants
@@ -5637,6 +5638,50 @@ pub fn once_approval_leaves_session_permissions_absent_test() {
     as "legacy once-only approval still succeeds"
   assert record.status == "approved"
   assert api.fact_cell(harness.runtime, permissions.key) == Ok(None)
+}
+
+pub fn remembered_watch_authority_matches_only_its_strand_tool_and_arguments_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  let arguments =
+    json.Object([
+      #("command", json.String("substrate watch --session-id own-session")),
+      #("mode", json.String("background")),
+      #("lifetime", json.String("session")),
+    ])
+  let digest = escalate.action_digest(arguments)
+  claim(
+    harness,
+    "remember-watch",
+    scope_on("main", op_id(605)),
+    durable.Action("bash", digest, "watch mail"),
+    [wall(0)],
+  )
+  let _displayed = next_escalation(harness)
+  let seq = current_question_seq(harness, "remember-watch")
+  send(
+    harness,
+    935,
+    protocol.ApproveForSession("remember-watch", [wall(0)], digest, seq),
+  )
+  let assert protocol.EscalationEvent(record:) =
+    next_reply(harness, 935, 20).event
+    as "approval and its exact action grant commit together"
+  assert record.status == "approved"
+  let opened = harness.runtime.session
+  assert permissions.read(opened) == Ok([])
+  assert permissions.read_for(opened, "main", "bash", arguments)
+    == Ok([wall(0)])
+  assert permissions.read_for(opened, "other", "bash", arguments) == Ok([])
+  assert permissions.read_for(opened, "main", "code_mode", arguments) == Ok([])
+  assert permissions.read_for(opened, "main", "bash", json.Object([])) == Ok([])
+  assert api.put_fact(
+      harness.runtime,
+      permissions.action_prefix <> "forged",
+      json.Object([]),
+    )
+    != Ok(Nil)
+    as "model-authored facts cannot create reusable execution authority"
 }
 
 /// Repeated observers retain one preparation path per facade, not every

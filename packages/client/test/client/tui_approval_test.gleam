@@ -66,6 +66,40 @@ fn review(id, seq) {
   review
 }
 
+pub fn session_lifetime_consent_is_exact_and_other_limits_stay_once_test() {
+  let captured =
+    approval.Review(
+      ..review("watch", 49),
+      permission: approval.Exact("watch-action", [
+        protocol.encode_grant(policy.GrantLimit(policy.WallSeconds, 0)),
+      ]),
+    )
+  assert approval.rememberable(captured) == Ok(Nil)
+  assert approval.remembered_authority(captured)
+    == "Session approval permits only this exact action on this strand."
+  let assert Ok(wire) = approval.approve_for_session(23, captured)
+    as "the wall-zero action can be remembered"
+  let assert Ok(envelope) = protocol.decode_command(wire)
+    as "the real gateway codec accepts the displayed authority"
+  assert envelope.command
+    == protocol.ApproveForSession(
+      "watch",
+      [policy.GrantLimit(policy.WallSeconds, 0)],
+      "watch-action",
+      49,
+    )
+  assert approval.rememberable(review("finite", 50)) != Ok(Nil)
+  let mixed =
+    approval.Review(
+      ..captured,
+      permission: approval.Exact("watch-action", [
+        protocol.encode_grant(policy.GrantLimit(policy.WallSeconds, 0)),
+        protocol.encode_grant(policy.GrantReadableRoot("/extra")),
+      ]),
+    )
+  assert approval.rememberable(mixed) != Ok(Nil)
+}
+
 pub fn tui_approval_echoes_same_captured_action_grants_and_sequence_test() {
   let captured = review("esc-1", 47)
   let assert Ok(wire) = approval.approve(19, captured)

@@ -23,6 +23,7 @@ import client/directories
 import client/escalate
 import client/gateway as client_gateway
 import client/grants
+import client/internal/ffi_os
 import client/permissions
 import client/wiring
 import core/clock
@@ -32,6 +33,7 @@ import core/message
 import core/register
 import core/tx
 import events/bus
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -47,6 +49,7 @@ import provider/model
 import provider/secret
 import runtime/api
 import runtime/effects
+import runtime/escalation as durable
 import session/session
 import simplifile
 import storage/storage
@@ -638,6 +641,69 @@ pub fn dispatch_reads_session_directory_authority_before_native_io_test() {
     ..,
   ) = wiring.run_tool(other, run)
     as "another session must not inherit the addition"
+}
+
+pub fn remembered_watch_authority_survives_sqlite_reopen_test() {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test directory exists"
+  let path =
+    here
+    <> "/build/remembered-watch-"
+    <> int.to_string(ffi_os.unique_positive_integer())
+    <> ".db"
+  let time = clock.fixed(1000)
+  let assert Ok(opened) = session.open_sqlite(path, "first", 30_000, time)
+    as "the durable session opens"
+  let assert Ok(live) =
+    api.open(
+      opened,
+      wiring.build_effects(config()),
+      api.default_options(configuration_with(["bash"])),
+    )
+    as "the real writer owns approval custody"
+  let run = tool_run([])
+  let args = json.Object([#("command", json.String("watch mail"))])
+  let scope =
+    durable.CallScope(
+      operation: run.operation,
+      strand: run.strand,
+      step_id: run.step_id,
+      source_index: 0,
+      call_id: "watch",
+    )
+  let assert Ok(durable.Claimed(record)) =
+    api.claim_escalation(
+      live,
+      "watch",
+      json.Object([]),
+      durable.Action("bash", escalate.action_digest(args), "watch mail"),
+      scope,
+      3,
+    )
+    as "the exact launch claims a pending decision"
+  let assert Ok(cell) = api.escalation_cell(live, "watch")
+    as "the decision is captured"
+  let allowed = [policy.GrantLimit(policy.WallSeconds, 0)]
+  let assert Ok(change) =
+    permissions.remembering_action(live, record, allowed, None)
+    as "wall consent has a private exact-action fact"
+  let assert Ok(_) =
+    api.approve_escalation_with_fact_at(
+      live,
+      cell,
+      list.map(allowed, grants.encode),
+      None,
+      change,
+    )
+    as "approval and exact authority commit atomically"
+  let assert Ok(Nil) = api.close(live) as "the writer and SQLite close"
+  let assert Ok(reopened) = session.open_sqlite(path, "second", 30_000, time)
+    as "the saved session reopens"
+  assert permissions.read_for(reopened, "main", "bash", args) == Ok(allowed)
+  assert permissions.read_for(reopened, "main", "bash", json.Object([]))
+    == Ok([])
+  assert permissions.read(reopened) == Ok([])
+  let assert Ok(Nil) = session.close(reopened) as "the read lease closes"
 }
 
 pub fn remembered_file_and_network_permissions_survive_restart_without_widening_neighbors_test() {

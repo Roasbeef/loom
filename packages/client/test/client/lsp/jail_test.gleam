@@ -127,6 +127,29 @@ pub fn a_writable_project_is_writable_in_the_jail_test() {
   assert list.contains(final.readable_roots, root)
 }
 
+pub fn sibling_dependencies_are_readable_without_widening_writes_test() {
+  let final = composed(built(server(profile.ProjectWritable)))
+  assert list.contains(final.readable_roots, workspace)
+  assert !list.contains(final.writable_roots, workspace)
+  assert final.network == policy.NetworkOff
+  let narrow =
+    policy.SandboxPolicy(
+      ..session_base(),
+      readable_roots: [root, "/work/.codemode"],
+      writable_roots: [root, "/work/.codemode"],
+    )
+  let assert Ok(jailed) =
+    jail.policy_for(
+      placement(server(profile.ProjectWritable)),
+      narrow,
+      host_env,
+    )
+    as "an independently narrowed session remains usable"
+  let final = composed(jailed)
+  assert !list.contains(final.readable_roots, workspace)
+  assert !list.contains(final.readable_roots, "/external")
+}
+
 pub fn a_read_only_project_is_read_but_never_written_test() {
   let built = built(server(profile.ProjectReadOnly))
   let final = composed(built)
@@ -1156,15 +1179,27 @@ fn live_rig(helper: String, here: String) -> Live {
   let assert Ok(Nil) =
     simplifile.write(
       project <> "/gleam.toml",
-      "name = \"probe\"\nversion = \"1.0.0\"\ntarget = \"erlang\"\n\n[dependencies]\n",
+      "name = \"probe\"\nversion = \"1.0.0\"\ntarget = \"erlang\"\n\n[dependencies]\nsibling = { path = \"../sibling\" }\n",
     )
     as "the live project manifest must be written"
   let assert Ok(Nil) =
-    simplifile.write(
-      project <> "/src/probe.gleam",
-      "pub fn greet() -> String {\n  \"hi\"\n}\n",
-    )
+    simplifile.write(project <> "/src/probe.gleam", live_source)
     as "the live project source must be written"
+  let dependency = workspace <> "/sibling"
+  let assert Ok(Nil) = simplifile.create_directory_all(dependency <> "/src")
+    as "the sibling path dependency exists inside the authorized workspace"
+  let assert Ok(Nil) =
+    simplifile.write(
+      dependency <> "/gleam.toml",
+      "name = \"sibling\"\nversion = \"1.0.0\"\ntarget = \"erlang\"\n",
+    )
+    as "the sibling manifest is readable without network access"
+  let assert Ok(Nil) =
+    simplifile.write(
+      dependency <> "/src/sibling.gleam",
+      "pub fn greet() -> String { \"hi\" }\n",
+    )
+    as "the imported function forces the server to load the sibling"
 
   // The base reads the workspace alone, so the only regions the lease can
   // add are the ones its own policy names. The helper's minimal view binds
@@ -1287,7 +1322,11 @@ fn converse(
     ),
   )
   let buffer = case await_reply(inbound, buffer, 2) {
-    Replied(result: _, buffer:) -> buffer
+    Replied(result:, buffer:) -> {
+      let assert json.Array([_, ..]) = result
+        as "a loaded monorepo project must produce a nonempty semantic outline"
+      buffer
+    }
     Declined(reason) -> panic as reason
   }
 
@@ -1323,7 +1362,8 @@ fn converse(
     == ["build", "gleam.toml", "manifest.toml", "src"]
   let assert Ok(entries) = simplifile.read_directory(live.workspace)
     as "the workspace must be listable"
-  assert list.sort(entries, string.compare) == [".codemode", "home", "probe"]
+  assert list.sort(entries, string.compare)
+    == [".codemode", "home", "probe", "sibling"]
   stop_live(live)
 }
 
@@ -1442,6 +1482,9 @@ fn initialize(uri: String) -> json.JsonValue {
   )
 }
 
+const live_source =
+  "import sibling\npub fn greet() -> String {\n  sibling.greet()\n}\n"
+
 fn did_open(file: String) -> json.JsonValue {
   jsonrpc.notification(
     "textDocument/didOpen",
@@ -1453,7 +1496,7 @@ fn did_open(file: String) -> json.JsonValue {
             #("uri", json.String(file)),
             #("languageId", json.String("gleam")),
             #("version", json.Int(1)),
-            #("text", json.String("pub fn greet() -> String {\n  \"hi\"\n}\n")),
+            #("text", json.String(live_source)),
           ]),
         ),
       ]),

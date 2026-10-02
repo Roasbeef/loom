@@ -202,6 +202,120 @@ pub fn lsp_rename_end_to_end_test_() -> EunitTest {
   })
 }
 
+/// A compiled satellite reaches the production LSP door over a monorepo.
+pub fn lsp_code_mode_monorepo_end_to_end_test_() -> EunitTest {
+  Timeout(test_timeout_seconds / gleeunit_timeout_scale, fn() {
+    let assert Ok(here) = simplifile.current_directory()
+      as "the test package has a working directory"
+    let seed = here <> "/../../build/codemode-seed"
+    case gleam_prerequisites(), codemode.discover(seed) {
+      Ok(helper), Ok(_) -> run_code_mode(helper, seed)
+      Error(reason), _ | _, Error(reason) ->
+        io.println_error("SKIP lsp code mode monorepo: " <> reason)
+    }
+  })
+}
+
+const semantic_program =
+  "import cap/lsp
+import cap/report
+import gleam/int
+import gleam/list
+import gleam/string
+
+pub fn main() -> report.Outcome {
+  let path = \"app/src/app/util.gleam\"
+  let outline = lsp.outline(path)
+  let hover = lsp.hover(lsp.in(lsp.at_line(lsp.symbol(\"greet\"), 3), path))
+  case outline, hover {
+    Ok([_, ..] as symbols), Ok(text) ->
+      report.text(\"lsp-cap-ok outline=\" <> int.to_string(list.length(symbols)) <> \" hover=\" <> text)
+    _, _ -> report.failure(string.inspect(#(outline, hover)))
+  }
+}
+"
+
+fn run_code_mode(helper: String, seed: String) -> Nil {
+  let rig = rig("code-mode")
+  write_gleam_project(rig)
+  write(
+    rig.workspace <> "/app/gleam.toml",
+    "name = \"app\"\nversion = \"1.0.0\"\ntarget = \"erlang\"\n[dependencies]\nsibling = { path = \"../sibling\" }\n",
+  )
+  write(
+    rig.workspace <> "/app/src/app/util.gleam",
+    "import sibling\n\npub fn greet(name: String) -> String { sibling.prefix() <> name }\n",
+  )
+  write(
+    rig.workspace <> "/sibling/gleam.toml",
+    "name = \"sibling\"\nversion = \"1.0.0\"\ntarget = \"erlang\"\n",
+  )
+  write(
+    rig.workspace <> "/sibling/src/sibling.gleam",
+    "pub fn prefix() -> String { \"Hello, \" }\n",
+  )
+  let turns = [
+    script.ToolUseTurn(
+      call_id: "semantic-program",
+      tool: "code_mode",
+      arguments: json.Object([
+        #("program", json.String(semantic_program)),
+        #("within_ms", json.Int(120_000)),
+      ]),
+      input_tokens: 100,
+      output_tokens: 5,
+    ),
+    script.AnswerTurn(
+      text: "semantic results received",
+      input_tokens: 110,
+      output_tokens: 5,
+    ),
+  ]
+  let assert Ok(parsed) = catalog.parse(gleam_toml) as "the profile is valid"
+
+  // Deep worktrees exceed the Unix socket path limit. The transport lives
+  // in host scratch outside /tmp, which the satellite jail replaces.
+  let socket_parent = "/var/tmp/"
+  let socket_root =
+    socket_parent <> "lsp-cap-" <> int.to_string(ffi_shell.unique_integer())
+  let assert Ok(Nil) = simplifile.create_directory_all(socket_root)
+    as "the capability transport has a shallow socket root"
+  let settings =
+    serve.Settings(
+      ..settings(rig, helper, parsed, script.transport(turns), "code-mode"),
+      codemode_seed: seed,
+      codemode_sockets: Some(socket_root),
+    )
+  let assert Ok(instance) = serve.open_instance(settings, log.discard())
+    as "the real session wires code mode and its LSP door"
+  let outcome = complete(instance)
+  serve.close_instance(instance)
+  let assert Ok(operation.RunLastResult(outcome: completion, ..)) = outcome
+    as "the scripted run settles"
+  assert completion == operation.RunCompleted(operation.CompletedByAssistant)
+  let messages = transcript(settings.session_path)
+  echo_language_server_results("code-mode", messages)
+  let assert [content] =
+    list.filter_map(messages, fn(entry) {
+      case entry {
+        message.ToolResultMessage(
+          tool_name: "code_mode",
+          content:,
+          is_error: False,
+          ..,
+        ) -> Ok(content)
+        _other -> Error(Nil)
+      }
+    })
+    as "one successfully compiled code-mode result is persisted"
+  let text = result_text(content)
+  io.println_error("lsp code mode monorepo: " <> text)
+  assert string.contains(text, "lsp-cap-ok outline=")
+  assert string.contains(text, "fn(String) -> String")
+  let _cleaned = simplifile.delete_all([socket_root])
+  Nil
+}
+
 fn rename_turns() -> List(script.Turn) {
   [
     script.ToolUseTurn(
@@ -709,7 +823,7 @@ fn echo_language_server_results(
   list.each(messages, fn(entry) {
     case entry {
       message.ToolResultMessage(tool_name:, content:, ..) ->
-        case string.starts_with(tool_name, "lsp_") {
+        case string.starts_with(tool_name, "lsp_") || tool_name == "code_mode" {
           True ->
             io.println_error(
               "lsp e2e "

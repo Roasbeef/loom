@@ -259,12 +259,54 @@ pub fn rememberable(record: Review) -> Result(Nil, String) {
   case record.permission {
     Unavailable(reason) -> Error(reason)
     Exact(_, grants) -> {
+      // Unlimited wall consent is remembered for this exact action, not
+      // merged into the session's general sandbox authority.
+      use <- bool.guard(when: session_wall(grants), return: Ok(Nil))
       use <- bool.guard(
         grants == [] || !list.all(grants, persistent_grant),
-        Error("Only filesystem and full-network permissions can be remembered."),
+        Error(
+          "Session consent requires filesystem/full-network grants or only the exact action's session wall grant.",
+        ),
       )
       Ok(Nil)
     }
+  }
+}
+
+fn session_wall(grants: List(json.JsonValue)) -> Bool {
+  let eligible = {
+    use grant <- result.try(case grants {
+      [grant] -> Ok(grant)
+      _ -> Error("session wall consent must be the complete grant set")
+    })
+    use fields <- result.try(object(grant))
+    use kind <- result.try(text(fields, "type"))
+    use limit <- result.try(text(fields, "field"))
+    use value <- result.try(field(fields, "value"))
+    Ok(kind == "limit" && limit == "wall_seconds" && value == json.Int(0))
+  }
+  result.unwrap(eligible, False)
+}
+
+/// States the authority retained by the session choice in the dialog.
+///
+/// Wall consent must name its exact-action restriction at decision time.
+/// A generic persistence label would imply a broader sandbox grant.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // approval.remembered_authority(displayed)
+/// ```
+pub fn remembered_authority(record: Review) -> String {
+  case record.permission {
+    Exact(_, grants) ->
+      case session_wall(grants) {
+        True ->
+          "Session approval permits only this exact action on this strand."
+        False -> "Session approval persists across restart."
+      }
+    Unavailable(_) -> "Session approval unavailable."
   }
 }
 

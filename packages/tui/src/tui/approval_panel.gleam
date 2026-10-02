@@ -407,7 +407,7 @@ fn detail_lines(
       let session = case approval.rememberable(state.review) {
         Ok(_) ->
           styled_lines(
-            "Session approval persists across restart.",
+            approval.remembered_authority(state.review),
             theme.overlay_quiet(),
             width,
           )

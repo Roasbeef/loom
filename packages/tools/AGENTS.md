@@ -963,3 +963,11 @@ Generated capability declarations expose the satellite's typed responses and
 identity helpers from the same compiled package interface.
 
 See [protocol 057](../../protocol-change/057-typed-capability-results.md).
+
+## Code-mode compiler guidance
+
+The `code_mode` description states that warnings are errors and gives the
+agent concrete import discipline: import only used modules and constructors,
+use qualified standard-library helpers, and repair every reported diagnostic
+before resubmitting. It keeps the compiler gate intact and encourages a small
+first program rather than a large unrelated rewrite after each failure.

@@ -551,3 +551,14 @@ refuse the server before any question. The jailed Linux lane installs
   `make conformance` runs the suites; `make e2e` the jailed acceptance;
   `make soak` the long session simulation run, and `make soak-daemon-sim`
   the daemon one.
+
+## Code-mode LSP monorepo acceptance
+
+`lsp_e2e_test.lsp_code_mode_monorepo_end_to_end_test_` boots the production
+session with a prepared code-mode seed, a scripted provider, a real helper,
+and a Gleam profile. The submitted program imports `cap/lsp` and queries a
+package that imports a sibling path dependency. Its durable tool result must
+contain a nonempty outline and the exact hover signature. It prints a skip
+when the toolchain, helper, or seed is absent; such a skip is not an end-to-end
+pass. The seed is prepared with `make codemode-seed`, as for the code-mode
+acceptance lane.

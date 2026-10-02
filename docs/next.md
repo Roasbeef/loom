@@ -1,5 +1,90 @@
 # Current handoff
 
+The current reliability work is based on `f84842d17bc3230c2a796f136d222b5179b5be28`,
+checked on October 1, 2026. Main's hosted
+[run 36922134008](https://github.com/Roasbeef/loom/actions/runs/36922134008)
+is green at that exact base. This branch's local results belong to the
+reliability changes, rather than to main or a running installation.
+
+## Watcher and language-server reliability
+
+[Protocol 061](../protocol-change/061-watch-and-lsp-reliability.md) records
+the accepted changes. A session-lifetime watcher survives abort of the model
+operation that started it. Remembered wall-zero consent authorizes only the
+same strand, tool and canonical arguments; another action still needs its
+own authority. Finite jobs retain their previous abort semantics, and
+explicit owner kill and session close still stop session jobs.
+
+A language-server lease can read the session-authorized portion of the
+workspace, including sibling path dependencies. Package writes, protected
+paths, network-off and server-named answer admission keep their existing
+boundaries. Retained error-level window messages make empty semantic replies
+and diagnostics report `Unavailable`. A diagnostics deadline and an empty
+hover or rename object cannot erase that failure.
+
+`loom-default-11` explicitly asks agents to prefer offered LSP tools for
+definitions, references, types and file symbols, and use `cap/lsp` for batches.
+It also distinguishes unsupported features from setup failures and advises
+against repeating failed probes without new evidence. Existing sessions keep
+their pinned prompt. Code-mode guidance keeps warnings as errors and gives
+concrete import and repair advice.
+
+The complete affected-change gate exited zero in 495 seconds on the final
+executable tree `0372d301b`, with a fresh helper, shipment and offline seed.
+The [review record](review/watch-and-lsp-reliability.md) records its package
+counts, review regressions and actual jailed code-mode/LSP proofs.
+The running user daemon was not upgraded by this work. Hosted verification
+and installation remain outstanding.
+
+## Corrections to the earlier records
+
+The earlier watcher paragraph described protocol 058 as branch work awaiting
+landing. PR #671 merged at `7b1c662cfd4e9f6fe8d4b63dc8a40e5a54e3a55d`. The new
+work repairs consent and custody defects in that behavior; it does not add a
+second lifetime API. The older terminal priority still said to land #583;
+that PR merged at `8b3455493bbcb11f6788e908664e260fdb4a36db`.
+
+The records below retain their original dated heads and evidence. Their
+tracker state and broader remaining-work claims were not re-audited by this
+reliability pass and must not be treated as current verification.
+
+## Next actions for this branch
+
+1. Publish and verify the reliability PR against its exact head. Exit: the
+   affected gates, hosted CI and required Linux signoff pass, with the
+   review findings closed. PR #683 independently changes code-mode prompt
+   guidance; preserve both sets of instructions during integration.
+2. After landing and updating the daemon, check real watcher survival across
+   stop/resume, reusable exact-action consent and a positive semantic query
+   in a sibling-dependent Gleam project. Exit: the watcher remains running
+   and a real `cap/lsp` call returns semantic content without repeated
+   approvals for the same action. A new session gets the revised prompt.
+3. Recheck the tracker before resuming the older terminal, Trace and remote
+   access priorities. Their design choices remain separate from this fix.
+
+## Rulings to preserve
+
+Each of these is settled. Re-open one only with new evidence, and record the
+reopening where the ruling lives.
+
+Exact-action consent cannot become general unlimited wall authority. Session
+job attribution and broker custody have different identities. LSP sibling
+reads derive from existing authority, while writes and answer admission stay
+package-scoped. [Protocol 061](../protocol-change/061-watch-and-lsp-reliability.md)
+and the ADR-015/016 addenda record these boundaries.
+
+## How to verify this work
+
+Use `make check-affected BASE=f84842d17bc3230c2a796f136d222b5179b5be28`, followed
+by the required signoff. Focused reproductions use `bash scripts/test.sh lsp`,
+`bash scripts/test.sh client --match client@lsp@jail_test` and
+`bash scripts/test.sh conformance --match conformance@lsp_e2e_test`. Build the
+helper and offline code-mode seed first; a prerequisite skip is not proof.
+Read each gate's own exit code. See [execution](execution.md) for the remaining
+verification rules.
+
+## Earlier baseline records
+
 The MCP handoff was refreshed against `f875811be` on October 1, 2026.
 The previous edition described extraction validation as pending before
 merge. [PR #669](https://github.com/Roasbeef/loom/pull/669) has now merged
