@@ -39,7 +39,7 @@
 //// `view` and `cached_frame` lead to `render_frame`.
 //// `render_frame` divides the screen and calls the owned rendering sections.
 //// For held input, `render_frame` builds the input frame's `frame_status`,
-//// whose keys come from `input_title_keys`, which calls `input_behavior`.
+//// whose keys come from `input_title_keys`, which asks `layout.input_keys`.
 //// Follow `render_inline_queue` for the matching queue hint.
 //// Both read the same shared projection rather than an old interrupt notice.
 //// `goal_availability` derives the inspector command state from the shared
@@ -69,6 +69,8 @@ import gleam/string
 import session_view/advisor_pending
 import session_view/agent_messages
 import session_view/agent_roster
+import session_view/agent_view
+import session_view/approval
 import session_view/command
 import session_view/completion_summary
 import session_view/composer
@@ -265,7 +267,20 @@ pub fn render_frame(
       )
     PeerLinkManager(state) -> peer_links.render(base, screen, state)
     AccessManager(state) -> access_overlay.render(base, screen, state)
-    ApprovalInspector(panel) -> approval_panel.render(base, screen, panel)
+    ApprovalInspector(panel) ->
+      approval_panel.render(
+        base,
+        geometry.rect_new(
+          screen.position.x,
+          screen.position.y + 1,
+          screen.size.width,
+          int.max(0, input_area.position.y - screen.position.y - 1),
+        ),
+        panel,
+        waiting: list.count(model.shared.approvals, fn(review) {
+          review.status == approval.Pending
+        }),
+      )
   }
 
   let rendered = case model.view.overlay {
@@ -562,6 +577,24 @@ fn effort(model: Model) -> Option(String) {
   }
 }
 
+// How many things wait on the operator: the agents whose rows say they
+// need input, and each open approval whose strand is not one of them, which
+// covers a question main itself asked.
+fn needs_you(model: Model, strip: List(agent_strip.Line)) -> Int {
+  let waiting =
+    strip
+    |> list.filter(fn(line) { line.status == agent_view.NeedsInput })
+    |> list.map(fn(line) { line.id })
+  strand_card.needing(strip)
+  + list.count(model.shared.approvals, fn(review) {
+    review.status == approval.Pending
+    && case review.strand {
+      Some(strand) -> !list.contains(waiting, strand)
+      None -> True
+    }
+  })
+}
+
 // Every live fact the input frame's rules carry.
 fn frame_status(
   model: Model,
@@ -594,7 +627,7 @@ fn frame_status(
     effort: effort(model),
     context: context_view.footer(model.shared.context),
     cost: transcript_lines.money(model.shared.usage.cost.total),
-    needs: strand_card.needing(strip),
+    needs: needs_you(model, strip),
     lock: case model.view.overlay {
       ApprovalInspector(_) -> input_frame.Deciding
       _ -> input_frame.Unlocked
@@ -1837,6 +1870,15 @@ fn render_pending_band(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
+  // The band's rows start one cell in from the frame's side, where the
+  // prompt's own text starts, rather than against the border.
+  let area =
+    geometry.rect_new(
+      area.position.x + 1,
+      area.position.y,
+      int.max(0, area.size.width - 1),
+      area.size.height,
+    )
   paragraph.render_styled(
     buf,
     area,

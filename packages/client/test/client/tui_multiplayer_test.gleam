@@ -194,7 +194,7 @@ pub fn tui_multiplayer_operators_race_exact_approval_and_observer_sees_winner_te
         tui_v2_test.await(driver, fn(sample) {
           case sample.model.view.overlay {
             tui_model.ApprovalInspector(_) ->
-              string.contains(sample.frame, "Permission required")
+              string.contains(sample.frame, "Enter confirms")
             _ -> False
           }
         })
