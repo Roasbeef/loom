@@ -74,6 +74,9 @@ type Exec struct {
 	pgid    int
 	started time.Time
 
+	// stdin is the FIFO and writer goroutine in front of the child's stdin
+	// pipe. It has its own lock, so nothing here waits on a pipe write.
+	stdin   *stdinQueue
 	stdinW  *os.File
 	reportR *os.File
 	stdoutR *os.File
@@ -87,7 +90,6 @@ type Exec struct {
 	killT    *time.Timer
 	wallT    *time.Timer
 	timedOut bool
-	stdinEOF bool
 
 	pumps  sync.WaitGroup
 	feat   Features
@@ -547,6 +549,7 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 		cmd:        cmd,
 		pgid:       cmd.Process.Pid, // Setsid ⇒ pgid == child pid
 		started:    time.Now(),
+		stdin:      newStdinQueue(stdinW),
 		stdinW:     stdinW,
 		reportR:    reportR,
 		stdoutR:    stdoutR,
@@ -644,26 +647,20 @@ func (e *Exec) pump(name string, r *os.File, lim *StreamLimiter, sink OutputSink
 	}
 }
 
-// WriteStdin forwards a stdin chunk; eof closes the child's stdin after
-// the write. Writes after eof are rejected.
+// WriteStdin queues a stdin chunk for the child; eof closes the child's
+// stdin once everything queued before it has been written. Writes after
+// eof are rejected.
+//
+// It returns when the chunk is accepted, not when the child has read it:
+// the pipe write happens on the execution's writer goroutine (stdin.go),
+// because the caller is the helper's frame loop and a payload that does not
+// read stdin would otherwise hold it, and Cancel with it, behind a full
+// pipe. The one wait left is the bounded-pending case, which needs
+// StdinPendingMax bytes queued for a payload that is not reading. A failed
+// write is reported by the next call, since the failing chunk was already
+// accepted.
 func (e *Exec) WriteStdin(data []byte, eof bool) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.stdinEOF {
-		return fmt.Errorf("jail: stdin already closed")
-	}
-	if len(data) > 0 {
-		if _, err := e.stdinW.Write(data); err != nil {
-			return fmt.Errorf("jail: write stdin: %w", err)
-		}
-	}
-	if eof {
-		e.stdinEOF = true
-		if err := e.stdinW.Close(); err != nil {
-			return fmt.Errorf("jail: close stdin: %w", err)
-		}
-	}
-	return nil
+	return e.stdin.put(data, eof)
 }
 
 // Cancel starts (or re-requests, idempotently) TERM→KILL escalation of
@@ -786,7 +783,11 @@ func (e *Exec) Settle() (Result, func()) {
 	timedOut := e.timedOut
 	e.mu.Unlock()
 
-	e.stdinW.Close()
+	// Closing the pipe is also what interrupts a stdin write blocked on a
+	// payload that never read, so abandon both closes and joins the writer.
+	// It sits before Settle returns, hence before the exit frame and before
+	// the server's waitDone, so no writer outlives its execution.
+	_ = e.stdin.abandon()
 
 	s2 := readStage2Report(e.reportR)
 	e.reportR.Close()
