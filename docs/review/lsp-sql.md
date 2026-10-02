@@ -67,3 +67,24 @@ the aggregate gate and hosted Linux/macOS verification remain pending. Existing
 macOS resource/process-lifecycle degradation was reported rather than weakened.
 Standard LSP still does not offer a project-wide transaction: unseen dependency
 changes are outside the finite checked interval guarantee.
+
+## Fresh review after PR creation
+
+On October 2, [Loom PR #693](https://github.com/Roasbeef/loom/pull/693) opened
+as a draft before the requested fresh Astra review at high reasoning effort.
+The review pinned Loom `7d37ec86f..f6ba5337d`, native
+`e38d89bb..adf8d65a`, and companion `ec867545..ab7932e0`.
+It found no new confirmed defect and requested no implementation changes.
+
+The reviewer traced source admission and coordinate conversion, default host
+and seam routing, native authorization and limits, cancellation ownership,
+and native artifact custody. It independently reran all fifteen collector
+tests and twelve native query, retirement and flattened-loader tests. Both
+runs exited zero using existing compiled artifacts. It did not rebuild a
+cold seed or repeat the reported real jailed E2E runs.
+
+The disposition is suitable to remain a draft with no new code-review
+blocker. Dependency publication approval, exact native and companion pins,
+resolved manifests, a cold published-package seed, aggregate verification
+and Linux/macOS signoff remain required. The experimental wrapper does not
+establish that shipping dependency path.

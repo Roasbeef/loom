@@ -46,6 +46,12 @@ The [usage guide](lsp-sql.md), [design examples](design-notes/lsp-sql.md) and
 satellite-local SQL contract. This section describes a branch in progress,
 not an installed daemon or a merged release.
 
+On October 2, [PR #693](https://github.com/Roasbeef/loom/pull/693) opened as
+a draft. A fresh Astra review at high reasoning effort found no new confirmed
+defect in the pinned implementation and independently reran fifteen collector
+and twelve native query, retirement and loader tests with zero exit status.
+The release-integration and full-verification blockers below remain open.
+
 The independent pass found two collection defects. Both are corrected and
 covered by the passing fifteen-test collection suite: admission is checked
 again after server startup before source preflight, and path-only resolver
