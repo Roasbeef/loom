@@ -1,5 +1,10 @@
 //// One gateway actor per resident session, with original-handle v2 attachment.
 ////
+//// Runtime effects own executable tool registrations. The gateway's separate
+//// tool view retains registered names alone: operator selection and source
+//// recovery test membership, and availability lists names in sorted order.
+//// An absent view remains distinct from a configured empty registry.
+////
 //// ## Authenticated network delivery
 ////
 //// A socket supplies one request and waits for one bounded reply. Coherent
@@ -780,8 +785,10 @@ type State {
     goal_abort: Option(fn(OpId) -> Nil),
     // The model catalogue, when the host configured one.
     catalog: Option(catalog.Catalog),
-    // The tool registry, when the host configured one.
-    registry: Option(Registry),
+    // Operator configuration needs registered names, never tool executors.
+    // Absence still refuses active-set changes; a configured empty set permits
+    // clearing the selection without retaining execution authority in this slot.
+    registered_tools: Option(Dict(String, Nil)),
     /// Skills captured by this daemon, shared with the model load tool.
     skills: skill.Catalogue,
     // The original boot diagnostic, not a guessed missing executable.
@@ -951,6 +958,16 @@ fn start_with_delivery(
   name: address.Address(Message),
   delivery: Delivery,
 ) {
+  // Runtime effects own execution. The gateway's separate registry view only
+  // validates membership and lists names. Initialization still receives the
+  // public options, but its callback is discarded; retained state keeps names.
+  let registered_tools =
+    option.map(options.registry, fn(registry) {
+      tool.names(registry)
+      |> list.map(fn(name) { #(name, Nil) })
+      |> dict.from_list
+    })
+
   actor.new_with_initialiser(5000, fn(subject) {
     let selector = case options.bus {
       Some(events_bus) -> {
@@ -1013,7 +1030,7 @@ fn start_with_delivery(
         goal_control: options.goal_control,
         goal_abort: options.goal_abort,
         catalog: options.catalog,
-        registry: options.registry,
+        registered_tools:,
         skills: options.skills,
         code_mode_issue: options.code_mode_issue,
         extension_refusals: options.extension_refusals,
@@ -2173,13 +2190,18 @@ fn captured_transfer(
       ),
       #("peers", json.Array(roster(state))),
       #("pending_inputs", json.Array(pending_inputs(state, connection))),
-      #("tool_availability", case state.registry {
+      #("tool_availability", case state.registered_tools {
         None -> json.Null
         Some(registry) ->
           json.Object([
             #(
               "registered",
-              json.Array(list.map(tool.names(registry), json.String)),
+              json.Array(
+                registry
+                |> dict.keys
+                |> list.sort(string.compare)
+                |> list.map(json.String),
+              ),
             ),
             #(
               "extension_refusals",
@@ -6337,16 +6359,16 @@ fn compaction_preparation(
   // Enable source recovery before preparation so the committed tail, rather
   // than a later display-only projection, contains the exact references.
   let projected = case
-    state.registry,
+    state.registered_tools,
     ids.parse_session_id(state.session_id),
     session.strand_configuration(state.runtime.session, strand)
   {
     Some(registry), Ok(session_id), Ok(Some(configuration)) ->
       case
-        tool.lookup(registry, history.tool_name),
+        dict.has_key(registry, history.tool_name),
         list.contains(configuration.value.active_tool_names, history.tool_name)
       {
-        Ok(_), True ->
+        True, True ->
           hooks.with_tool_references(
             projected,
             state.runtime.session,
@@ -6983,14 +7005,14 @@ fn canonical_tool_names(
   state: State,
   names: List(String),
 ) -> Result(List(String), String) {
-  case state.registry {
+  case state.registered_tools {
     None -> Error("no tool registry is configured")
     Some(registry) -> {
       use _known <- result.try(
         list.try_map(names, fn(name) {
-          case tool.lookup(registry, name) {
-            Ok(_registered) -> Ok(name)
-            Error(Nil) -> Error("unknown tool name: " <> name)
+          case dict.has_key(registry, name) {
+            True -> Ok(name)
+            False -> Error("unknown tool name: " <> name)
           }
         }),
       )

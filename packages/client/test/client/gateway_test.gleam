@@ -36,9 +36,12 @@ import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/otp/system
 import gleam/result
 import gleam/string
+import machine/codec
 import machine/operation
+import machine/planner
 import machine/strand as machine_strand
 import provider/model
 import provider/stream
@@ -57,6 +60,7 @@ import support/addresses
 import support/internal/ffi_memory
 import support/tool_registry
 import tools/directory_access
+import tools/history
 import tools/tool
 import weft
 import weft/actor
@@ -228,6 +232,9 @@ pub fn parked_reserved_fixture(id: ids.SessionId) -> Harness {
 type Provider {
   SettlingProvider
   ScriptedProvider(surface: effects.ProviderSurface)
+
+  // Manual compaction needs generation admitted by its structural decision.
+  SummarizingProvider(surface: effects.ProviderSurface)
 }
 
 fn start_harness_reserved(
@@ -318,7 +325,7 @@ fn start_harness_adjusted(
       entropy:,
       timers: effects.real_timers(),
       provider: case provider {
-        ScriptedProvider(surface:) -> surface
+        ScriptedProvider(surface:) | SummarizingProvider(surface:) -> surface
         SettlingProvider ->
           effects.ProviderSurface(timeout_ms: 1000, request: fn(_spec) {
             let events = process.new_subject()
@@ -336,7 +343,14 @@ fn start_harness_adjusted(
         replay_still_safe: fn(_name) { False },
         execution_mode: fn(_name) { effects.ExclusiveExecution },
       ),
-      hooks: effects.default_hooks(),
+      hooks: case provider {
+        SummarizingProvider(_) ->
+          effects.Hooks(
+            ..effects.default_hooks(),
+            structural_decision: fn(_, _) { planner.VerdictGenerate },
+          )
+        SettlingProvider | ScriptedProvider(_) -> effects.default_hooks()
+      },
     )
   let configuration =
     machine_strand.StrandConfiguration(
@@ -1960,6 +1974,286 @@ pub fn set_config_active_tools_preserves_membership_test() {
   assert list.contains(names, "bash")
   assert list.contains(names, "grep")
   assert !list.contains(names, "fs_write")
+}
+
+// Executor payloads remain real captured heap terms through their intended run
+// slot. Only the gateway's additional name view is allowed to discard them.
+fn registry_view_tool(name: String, words: Int) -> tool.Tool {
+  let payload = list.repeat(#(name, name), words)
+  tool.Tool(
+    name:,
+    description: "registry view fixture",
+    prompt_snippet: None,
+    schema: tool.object_schema([], []),
+    replay: tool.Safe,
+    execution_mode: tool.Concurrent,
+    requirements: policy.workspace_default,
+    run: fn(_context, _arguments) {
+      tool.ToolOutcome(
+        content: [message.ToolResultText(string.inspect(payload), None)],
+        details: None,
+        is_error: False,
+        terminate: tool.ContinueRun,
+      )
+    },
+  )
+}
+
+fn registry_view_registry(words: Int) -> tool.Registry {
+  tool.registry([
+    registry_view_tool("zeta", words),
+    registry_view_tool("alpha", words),
+    registry_view_tool("alpha", words),
+  ])
+}
+
+fn gateway_state_words(harness: Harness) -> Int {
+  let assert Ok(pid) = addresses.owner(harness.hub.name)
+    as "the isolated gateway owns its actor state"
+  pid |> system.get_state |> ffi_memory.flat_words
+}
+
+/// A real gateway state does not copy unrelated tool executor environments.
+pub fn gateway_registry_view_does_not_copy_executors_test() {
+  let light = registry_view_registry(1)
+  let heavy = registry_view_registry(4096)
+  let small = start_harness_full(None, Some(light), None)
+  let large = start_harness_full(None, Some(heavy), None)
+
+  // The runtime fixture has no tool executors. Varying only the separately
+  // supplied registry therefore isolates this actor's additional retained view.
+  assert ffi_memory.flat_words(heavy) > ffi_memory.flat_words(light) + 8192
+  assert gateway_state_words(large) == gateway_state_words(small)
+  let _ = api.close(small.runtime)
+  let _ = api.close(large.runtime)
+}
+
+/// Availability remains sorted and deduplicated on the actual network capture.
+pub fn gateway_registry_view_preserves_availability_test() {
+  let harness =
+    start_harness_reserved(
+      None,
+      Some(registry_view_registry(1)),
+      None,
+      Some(join_fixture_id(6421)),
+      SettlingProvider,
+      None,
+    )
+  let socket =
+    queued_socket(
+      harness,
+      operator("registry-view", "Registry view"),
+      access.Participant(access.Operator),
+    )
+  let availability =
+    queue_field(queued_metadata(socket, 840), "tool_availability")
+  assert queue_field(availability, "registered")
+    == json.Array([json.String("alpha"), json.String("zeta")])
+  let _ = api.close(harness.runtime)
+}
+
+/// A configured empty registry permits clearing, while absence still refuses it.
+pub fn gateway_registry_view_preserves_empty_configuration_test() {
+  let empty = start_harness_full(None, Some(tool.registry([])), None)
+  let absent = start_harness_without_registry()
+  subscribe(empty)
+  subscribe(absent)
+  let clear =
+    protocol.SetConfig(
+      Some("main"),
+      json.Object([
+        #("active_tools", json.Array([])),
+      ]),
+    )
+  send(empty, 841, clear)
+  let envelope = next(empty)
+  let assert protocol.SnapshotEvent(protocol.ConfigSnapshot(config:)) =
+    envelope.event
+    as "a configured empty registry can clear its active set"
+  assert field_of(config, "active_tools") == Ok(json.Array([]))
+  send(absent, 842, clear)
+  let envelope = next(absent)
+  let assert protocol.ErrorEvent(code: "bad_request", message:, ..) =
+    envelope.event
+    as "an absent registry still refuses even an empty active set"
+  assert message == "no tool registry is configured"
+  let _ = api.close(empty.runtime)
+  let _ = api.close(absent.runtime)
+}
+
+// The manual-compaction request exposes its real frozen preparation through the
+// provider seam. Durable configuration may name a tool unavailable at this boot,
+// so the three cases distinguish registration from the strand's active names.
+fn registry_view_compaction_tail(
+  registry: tool.Registry,
+  active: List(String),
+) -> List(message.AgentMessage) {
+  let prepared = process.new_subject()
+  let provider =
+    effects.ProviderSurface(timeout_ms: 1000, request: fn(spec) {
+      let assert effects.SummaryRequest(preparation:, ..) = spec
+        as "manual compaction submits its real summary request"
+      process.send(prepared, preparation)
+      let events = process.new_subject()
+      let assert Ok(answer) = stream.settle(scripted_answer())
+        as "the fixture returns a valid settled summary"
+      process.send(events, stream.Settled(answer, effects.zero_usage()))
+      stream.immediate(events, fn() { Nil })
+    })
+
+  // A canonical session identity admits exact source references. The recent
+  // budget retains the old tool exchange but excludes the earlier bulky input.
+  let harness =
+    start_harness_adjusted(
+      None,
+      Some(registry),
+      None,
+      None,
+      SummarizingProvider(provider),
+      None,
+      None,
+      fn(options) {
+        gateway.Options(
+          ..options,
+          session_id: ids.session_id_to_string(api.session_id(options.runtime)),
+          runtime: api.Runtime(
+            ..options.runtime,
+            settings: operation.RunSettings(
+              ..options.runtime.settings,
+              compaction: operation.CompactionSettings(False, 0, 4000),
+            ),
+          ),
+        )
+      },
+    )
+
+  // The latest exchange stays verbatim even when recall is enabled. A completed
+  // older call/result pair is the eligible source whose membership we test.
+  let assert message.AssistantMessage(..) as answer = scripted_answer()
+    as "the fixture answer is an assistant message"
+  let call =
+    message.AssistantMessage(..answer, content: [
+      message.AssistantToolCall(message.ToolCall(
+        "saved-call",
+        "alpha",
+        json.Object([]),
+        None,
+        None,
+      )),
+    ])
+  let result =
+    message.ToolResultMessage(
+      "saved-call",
+      "alpha",
+      [message.ToolResultText(string.repeat("r", 8192), None)],
+      None,
+      None,
+      None,
+      False,
+      0,
+    )
+  let messages = [
+    message.UserMessage(
+      [message.UserText(string.repeat("o", 40_000), None)],
+      0,
+      None,
+    ),
+    scripted_answer(),
+    message.UserMessage([message.UserText("carried", None)], 0, None),
+    call,
+    result,
+    scripted_answer(),
+    message.UserMessage([message.UserText("fresh", None)], 0, None),
+    scripted_answer(),
+  ]
+
+  // Publish one coherent branch and selection through the real writer. Direct
+  // durable selection also exercises a tool deactivated between daemon boots.
+  let assert Ok(Some(configuration)) =
+    session.strand_configuration(harness.runtime.session, "main")
+    as "the real strand owns its durable configuration"
+  let #(#(leaf, _generator), rows) =
+    list.map_fold(
+      messages,
+      #(None, ids.generator(clock.fixed(123), 6422)),
+      fn(next, message) {
+        let #(id, generator) = ids.mint_entry(next.1)
+        #(
+          #(Some(id), generator),
+          core_entry.MessageEntry(id, next.0, 0, 0, message, False),
+        )
+      },
+    )
+  let assert Ok(_) =
+    writer.commit(
+      harness.runtime.tree.writer,
+      tx.Tx(
+        list.append(list.map(rows, tx.InsertEntry), [
+          tx.SetRegister(register.StrandLeaf, "main", register.leaf_value(leaf)),
+          tx.SetRegister(
+            register.StrandConfig,
+            "main",
+            register.value(codec.encode_configuration(
+              machine_strand.StrandConfiguration(
+                ..configuration.value,
+                active_tool_names: active,
+              ),
+            )),
+          ),
+        ]),
+        [],
+      ),
+    )
+    as "the branch and current tool selection are durably staged"
+
+  // Capture the preparation sent by the operator command, rather than computing
+  // an expected tail through the same membership implementation under test.
+  send(
+    harness,
+    843,
+    protocol.Subscribe(
+      ids.session_id_to_string(api.session_id(harness.runtime)),
+      None,
+    ),
+  )
+  let _subscribed = next_reply(harness, 843, 32)
+  send(harness, 844, protocol.Compact("main", None))
+  let compacted = next_reply(harness, 844, 32)
+  let assert protocol.OpTransitionEvent(..) = compacted.event
+    as "the gateway admits the requested compaction operation"
+  let assert Ok(Some(operation.CompactionPreparation(retained_tail:, ..))) =
+    process.receive(prepared, within: 1000)
+    as "the provider receives the gateway's frozen compaction preparation"
+  let _ = api.close(harness.runtime)
+  retained_tail
+}
+
+/// Source references require both a registered history tool and active selection.
+pub fn gateway_registry_view_preserves_history_admission_test() {
+  let registered = tool.registry([registry_view_tool(history.tool_name, 1)])
+  let active = registry_view_compaction_tail(registered, [history.tool_name])
+  let inactive = registry_view_compaction_tail(registered, [])
+  let unavailable =
+    registry_view_compaction_tail(tool.registry([]), [history.tool_name])
+  let result_text = fn(messages) {
+    let texts =
+      list.flat_map(messages, fn(message) {
+        case message {
+          message.ToolResultMessage(content:, ..) ->
+            list.filter_map(content, fn(block) {
+              case block {
+                message.ToolResultText(text, _) -> Ok(text)
+                message.ToolResultImage(..) -> Error(Nil)
+              }
+            })
+          _ -> []
+        }
+      })
+    string.join(texts, "")
+  }
+  assert string.contains(result_text(active), "[loom tool-result reference]")
+  assert result_text(inactive) == string.repeat("r", 8192)
+  assert result_text(unavailable) == string.repeat("r", 8192)
 }
 
 // --- escalations: naming the request, and answering that one ---------------
@@ -4920,6 +5214,18 @@ fn queued_rows(
   socket: gateway.ConnectionHandle,
   id: Int,
 ) -> List(json.JsonValue) {
+  let value = queued_metadata(socket, id)
+  let assert json.Array(rows) = queue_field(value, "pending_inputs")
+    as "queue rows are present even when empty"
+  rows
+}
+
+// Queue and availability assertions consume the same complete credited metadata
+// fragment, then close the transfer so no fixture leaves a capture admitted.
+fn queued_metadata(
+  socket: gateway.ConnectionHandle,
+  id: Int,
+) -> json.JsonValue {
   let assert protocol.SnapshotBegin(header) =
     queued_request(socket, id, protocol.CatchUp(0))
     as "queue metadata starts a credited capture"
@@ -4939,10 +5245,8 @@ fn queued_rows(
   let assert Ok(text) = bit_array.to_string(bytes)
     as "complete metadata is UTF-8"
   let assert Ok(value) = json.parse(text) as "metadata is complete JSON"
-  let assert json.Array(rows) = queue_field(value, "pending_inputs")
-    as "queue rows are present even when empty"
   finish_queue_capture(socket, snapshot_id, 1, id * 1000, 100)
-  rows
+  value
 }
 
 fn queued_id(row: json.JsonValue) -> String {
