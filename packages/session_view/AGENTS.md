@@ -144,6 +144,10 @@ for a host with no surfaces.
   with a readable record shows the summary and rows under the failure text.
   The golden JSON in `call_tree_test` is the same literal `tools` asserts
   its encoder writes.
+- `ImageRow` is an image's placeholder row under the call or turn that
+  carries it, worded by `image_header.describe` (`image 1 · image/png ·
+  1200×700 · 84 KB`); `image_header.dimensions` reads the pixel size from a
+  PNG, JPEG or GIF header totally, and answers `None` for anything else.
 - `transcript_lines.Presentation`: everything the line builders read of a
   client's state. A host fills it; the terminal does so in
   `tui_model.presentation`.

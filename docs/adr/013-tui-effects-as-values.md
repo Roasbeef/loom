@@ -383,10 +383,10 @@ The survey of mailbox reads, at the commit this slice started from:
   Each answers a job the step started, and they move when job starts
   become keyed effects.
 - **Outside the step, and staying there.** The worker's acknowledgement wait,
-  now in the runner (`tui/job_runner.gleam:594` (`acknowledged`)), runs in
+  now in the runner (`tui/job_runner.gleam:614` (`acknowledged`)), runs in
   the worker, and `attachment.cancel` runs as an effect; since S5 it reads
   no mailbox, and the attachment job's cancel drains the job's messages
-  instead (`tui/job_runner.gleam:411` (`drain`)). `sessions.discard`, now `buffered.discard`, is the
+  instead (`tui/job_runner.gleam:426` (`drain`)). `sessions.discard`, now `buffered.discard`, is the
   `Discard` effect. The bootstrap snapshot wait
   (`tui/bootstrap.gleam:1227` (`await_snapshot`)) runs before the loop, the
   daemon control handshake in `tui/daemon.gleam` runs in its own process, and

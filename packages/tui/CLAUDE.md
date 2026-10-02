@@ -2707,6 +2707,22 @@ a.gleam · b.gleam`, and drawn in the success or danger colour by that
 leading glyph. The record is written on a result only, so a block still
 awaiting its result has no call list.
 
+An image a tool returned, or a person attached, is a placeholder row under
+the row that carries it, `▣ image 1 · image/png · 1200×700 · 84 KB   o opens
+externally`, built by `session_view/image_header`, which reads the pixel
+size from a PNG, JPEG or GIF header in the data's first 64 KiB. Inside
+Herdr (`herdr_reporter` set) a second row says pane graphics are not passed
+through; `projection.noted_images` adds it to the line before rows and
+anchors are built from it, so the two agree. While the reader is above the
+tail with nothing typed, `o` opens the strand's newest image outside the
+terminal: `image_drain.open_newest` starts `job.OpenImage`, whose worker
+(`image_open.open`) writes the bytes to a file in a `0700` directory under
+`TMPDIR` and hands the path to the platform opener with its output dropped
+(`view_link.quiet_opener`, over `ffi_terminal.run_quiet`), and
+`image_drain.drain` turns the reply into the notice. The newest image is
+chosen rather than the one on screen, since a row does not name its image
+without the anchors.
+
 An operator's turn is one band, `› text`, wrapped under its own first word,
 with no title row. An answer opens with a heading naming the strand,
 `◆ main`, and its body sits under it at the gutter with no band; the
