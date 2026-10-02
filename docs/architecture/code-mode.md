@@ -623,6 +623,27 @@ the tool array renders ahead of the system prompt and is the byte prefix
 of the cached region, so every byte in it is paid on every request of the
 session.
 
+### Choosing code mode from a direct tool
+
+The default prompt asks for code mode immediately on planned batches and on
+chains whose intermediate results need no agent judgment. The third extraction
+probe is the fallback when an investigation grows into that shape. Programs
+filter internally and return relevant facts, paths and failures; an exhaustive
+claim still requires checking completeness and truncation.
+
+`client/contributions` appends call forms and result shapes to the five core
+workspace-tool descriptions only when the default seam both admits their
+module and services their capability. A wider alternate seam is insufficient.
+The hints distinguish whole-file text from native image/window/anchor reads,
+unique string replacements from hashline edits, and foreground argv execution
+from a shell or durable job. The system tool-index snippets keep their direct
+contracts; capability hints appear once in the tool descriptions.
+
+The shorter introduction retains every recipe and generated type declaration.
+A rejected build retains its compiler diagnostics, states that the program did
+not run, and reminds the model that warnings fail compilation too. These words
+change selection and repair guidance; they add no execution or tracing path.
+
 ### What the description tells a model about the prelude
 
 The model has no autocomplete or language server when it writes a program.

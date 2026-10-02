@@ -590,13 +590,10 @@ pub fn tool_for(mode: CodeMode) -> Tool {
     name: tool_name,
     description: description(mode),
     prompt_snippet: option.Some(
-      "Prefer `code_mode` for batches of reads, searches, or checks, and "
-      <> "dependent steps whose intermediate results a program can handle: "
-      <> "finding files, filtering or counting matches, joining results "
-      <> "across files (`cap/search` does the walk and the grep, no shell). "
-      <> "The third probe against the same data source is the signal to "
-      <> "switch — fetch once, filter inside the program, return the answer. "
-      <> "Use a direct tool when the next step needs your judgment.",
+      "Use `code_mode` immediately for a planned batch of reads, searches "
+      <> "or checks, or a chain whose intermediate results need no judgment. "
+      <> "Filter inside the program; return relevant facts, paths and failures. "
+      <> "Use a direct tool when its result needs your judgment before continuing.",
     ),
     schema: tool.object_schema(
       list.flatten([
@@ -696,23 +693,19 @@ fn seam_properties(seams: Seams) -> List(#(String, JsonValue)) {
 /// ```
 ///
 pub fn description(mode: CodeMode) -> String {
-  "Run a Gleam program in a jailed satellite and get one structured "
-  <> "result. Prefer it for batches of independent file reads, searches, "
-  <> "or checks, and for dependent steps you can express without inspecting "
-  <> "each result yourself. Loops, conditionals, and concurrency happen "
-  <> "inside the program, and only what `main` returns comes back — the "
-  <> "intermediate output never enters the conversation. When an "
-  <> "investigation grows past two probes against the same data source, "
-  <> "switch to a program: fetch once, filter internally, return the "
-  <> "answer. Write `pub fn main() -> report.Outcome`, returning "
-  <> "`report.text(...)` or `report.value(...)`. "
+  "Run a Gleam program in a jailed satellite; only its returned result "
+  <> "enters the conversation. Use it immediately for planned batches or "
+  <> "dependent steps whose intermediate results need no judgment. "
+  <> "Write `pub fn main() -> report.Outcome`, returning `report.text(...)` "
+  <> "or `report.value(...)`. Filter internally; return relevant facts, "
+  <> "paths and failures. "
   <> composition_guidance(mode.seams)
   <> notes_guidance(mode.seams)
   <> seams_text(mode.seams)
   <> async_text(mode.background, mode.seams)
   <> recipes_text(mode.seams)
-  <> " A program that is refused or does not compile comes back with the "
-  <> "reason, so you can fix it and submit again."
+  <> " Refusals and compile errors include diagnostics for repair; "
+  <> "warnings fail compilation too."
   <> " Compilation treats warnings as errors. Import only modules and "
   <> "constructors actually used: for example, import gleam/option.{Some} "
   <> "when you call Some, without importing unused None. Use qualified "
@@ -1590,7 +1583,9 @@ fn compile_outcome(
   let #(kind, body) = case failure {
     BuildRejected(diagnostics:) -> #(
       "build_rejected",
-      "the program did not compile:\n" <> diagnostics,
+      "the program did not compile and did not run. Fix the diagnostics "
+        <> "below; warnings also fail the build:\n"
+        <> diagnostics,
     )
     WorkspaceSetupFailed(reason:) -> #(
       "workspace_setup_failed",

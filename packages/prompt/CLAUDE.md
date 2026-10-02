@@ -1,5 +1,15 @@
 # prompt
 
+## Code-mode guidance
+
+The shipped `loom-default-13` pack asks for immediate code mode on planned
+batches and chains whose intermediate results need no agent judgment. The
+third extraction probe remains the fallback for investigations that grew into
+a batch. Bounded `cap/task.parallel_map` guidance is conditional on the selected
+seam, and completeness, truncation, `cap://` discovery and warning-free
+compilation remain explicit. Stateful external mutations retain an agent
+judgment step between calls.
+
 ## Purpose
 
 Model-facing prose as swappable data. A **pack** is a file of named,

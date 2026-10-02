@@ -140,6 +140,83 @@ pub type Collision {
   Collision(name: String, first: Origin, second: Origin)
 }
 
+// A call hint is paid only by a host whose default program can actually
+// make the call. Import permission alone does not imply a serviced router.
+type CodeModeHint {
+  CodeModeHint(
+    tool_name: String,
+    module: String,
+    capability: String,
+    text: String,
+  )
+}
+
+// Keep the direct tool's contract beside its program alternative. Reads
+// return plain text, edits match unique strings, and processes take argv;
+// none is a claim that the direct tool's wire schema works inside a program.
+fn code_mode_hints() -> List(CodeModeHint) {
+  [
+    CodeModeHint(
+      "fs_read",
+      "cap/fs",
+      "fs.read",
+      "When `code_mode` is available: `fs.read(path)` from `cap/fs` returns `Result(String, FsError)` for whole-file text; use `fs_read` for images, windows or edit anchors.",
+    ),
+    CodeModeHint(
+      "fs_write",
+      "cap/fs",
+      "fs.write",
+      "When `code_mode` is available: `fs.write(path, contents)` from `cap/fs` returns `Result(Nil, FsError)`; serialize writes to the same path.",
+    ),
+    CodeModeHint(
+      "fs_edit",
+      "cap/fs",
+      "fs.edit",
+      "When `code_mode` is available: `fs.edit(path, replacements)` from `cap/fs` returns `Result(Nil, FsError)`; each `fs.Replacement(find:, replace_with:)` must match exactly once. It takes no hashline anchors or digest.",
+    ),
+    CodeModeHint(
+      "grep",
+      "cap/search",
+      "search.grep",
+      "When `code_mode` is available: `search.grep(search.grep_query(under: path, matching: pattern))` from `cap/search` returns `Result(Found, SearchError)`; filter matches inside the program and check completeness.",
+    ),
+    CodeModeHint(
+      "bash",
+      "cap/proc",
+      "proc.run",
+      "When `code_mode` is available: `proc.run(proc.command(argv))` from `cap/proc` returns `Result(Output, ProcError)` for a foreground process with no shell expansion; check exit_code, timed_out and output truncation.",
+    ),
+  ]
+}
+
+// Default-seam hints need no extra choice at the call site. An alternative
+// seam's wider surface remains discoverable through code_mode and cap://.
+fn with_code_mode_hints(
+  tools: List(Tool),
+  mode: Option(codemode_tool.CodeMode),
+) -> List(Tool) {
+  case mode {
+    None -> tools
+    Some(mode) -> {
+      let offer = mode.seams.default
+      let hints =
+        list.filter(code_mode_hints(), fn(hint) {
+          list.contains(offer.allowed_imports, hint.module)
+          && list.contains(offer.serviced_caps, hint.capability)
+        })
+      use original <- list.map(tools)
+      list.find(hints, fn(hint) { hint.tool_name == original.name })
+      |> result.map(fn(hint) {
+        tool.Tool(
+          ..original,
+          description: original.description <> " " <> hint.text,
+        )
+      })
+      |> result.unwrap(original)
+    }
+  }
+}
+
 /// The one contribution a host's own planes make, in the order the
 /// registry has always been built in: the five core tools, the six
 /// `agent_*` tools, `code_mode`, `history_search`, `remember`, the three
@@ -230,13 +307,16 @@ pub fn built_in(
     Contribution(
       origin: BuiltIn,
       tools: list.flatten([
-        [
-          bash.tool(door),
-          grep.tool(),
-          fs.read_tool_with(read_schemes),
-          write_tool,
-          edit_tool,
-        ],
+        with_code_mode_hints(
+          [
+            bash.tool(door),
+            grep.tool(),
+            fs.read_tool_with(read_schemes),
+            write_tool,
+            edit_tool,
+          ],
+          code_mode,
+        ),
         case agency {
           None -> []
           Some(agency) -> agent.tools(agency)

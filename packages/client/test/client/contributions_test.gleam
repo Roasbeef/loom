@@ -22,7 +22,7 @@ import gleam/string
 import tools/codemode as codemode_tool
 import tools/directory_access
 import tools/job
-import tools/tool
+import tools/tool.{type Registry}
 
 // A tool an extension might contribute, under whatever name the test
 // needs. Nothing about its behaviour matters here: registration is
@@ -119,6 +119,121 @@ pub fn wired_host_advertises_only_its_available_virtual_reads_test() {
   let assert Ok(bare) = tool.lookup(core_only, "fs_read")
   assert !string.contains(bare.description, "cap://")
   assert !string.contains(bare.description, "job://")
+}
+
+// These offers exercise the actual registry builder, including a capability
+// admitted on an alternate seam but unavailable to an omitted seam argument.
+fn hint_offer(
+  imports: List(String),
+  caps: List(String),
+) -> codemode_tool.SeamOffer {
+  codemode_tool.SeamOffer(
+    seam: codemode_tool.WorkspaceSeam,
+    allowed_imports: imports,
+    serviced_caps: caps,
+    extra_surfaces: [],
+  )
+}
+
+fn hinted_tools(seams: codemode_tool.Seams) -> Registry {
+  let mode =
+    codemode_tool.CodeMode(
+      execute: fn(_request) {
+        panic as "description tests never execute programs"
+      },
+      background: None,
+      seams:,
+      default_within_ms: 1000,
+      max_within_ms: 1000,
+    )
+  let assert Ok(registry) =
+    contributions.registry(
+      contributions.built_in(
+        None,
+        Some(mode),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        [],
+      ),
+    )
+    as "built-in call hints cannot introduce a registry collision"
+  registry
+}
+
+pub fn workspace_call_hints_require_both_import_and_service_test() {
+  let cases = [
+    codemode_tool.one_seam(hint_offer(["cap/fs"], [])),
+    codemode_tool.one_seam(hint_offer([], ["fs.read"])),
+    codemode_tool.Seams(default: hint_offer([], []), alternates: [
+      codemode_tool.SeamOffer(
+        ..hint_offer(["cap/fs"], ["fs.read"]),
+        seam: codemode_tool.OrchestrationSeam,
+      ),
+    ]),
+  ]
+  list.each(cases, fn(seams) {
+    let assert Ok(reader) = tool.lookup(hinted_tools(seams), "fs_read")
+    assert !string.contains(reader.description, "`fs.read(path)`")
+    let assert Some(snippet) = reader.prompt_snippet
+    assert !string.contains(snippet, "`fs.read(path)`")
+  })
+  let assert Ok(reader) =
+    tool.lookup(
+      hinted_tools(codemode_tool.one_seam(hint_offer(["cap/fs"], ["fs.read"]))),
+      "fs_read",
+    )
+  assert string.contains(reader.description, "`fs.read(path)`")
+  assert string.contains(reader.description, "images, windows or edit anchors")
+  let assert Some(snippet) = reader.prompt_snippet
+  assert !string.contains(snippet, "`fs.read(path)`")
+}
+
+pub fn workspace_call_hints_preserve_each_direct_contract_test() {
+  let registry =
+    hinted_tools(
+      codemode_tool.one_seam(
+        hint_offer(["cap/fs", "cap/search", "cap/proc"], [
+          "fs.read",
+          "fs.write",
+          "fs.edit",
+          "search.grep",
+          "proc.run",
+        ]),
+      ),
+    )
+  let expected = [
+    #("fs_write", "`fs.write(path, contents)`"),
+    #("fs_edit", "must match exactly once"),
+    #("grep", "search.grep_query(under: path, matching: pattern)"),
+    #("bash", "no shell expansion"),
+  ]
+  list.each(expected, fn(pair) {
+    let assert Ok(registered) = tool.lookup(registry, pair.0)
+    assert string.contains(registered.description, pair.1)
+  })
+  let assert Ok(editor) = tool.lookup(registry, "fs_edit")
+  assert string.contains(editor.description, "Pass the digest")
+  assert string.contains(editor.description, "no hashline anchors or digest")
+  let assert Ok(shell) = tool.lookup(registry, "bash")
+  assert string.contains(shell.description, "foreground process")
+  assert string.contains(shell.description, "check exit_code, timed_out")
+}
+
+pub fn an_unwired_host_keeps_the_original_core_descriptions_test() {
+  let assert Ok(registry) =
+    contributions.registry(
+      contributions.built_in(None, None, None, None, None, None, None, None, []),
+    )
+  list.each(tool.registered(registry), fn(registered) {
+    assert !string.contains(
+      registered.description,
+      "When `code_mode` is available:",
+    )
+  })
 }
 
 pub fn the_host_makes_exactly_one_contribution_test() {

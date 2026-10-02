@@ -37,7 +37,7 @@
 ///
 pub const source =
   "%% loom-prompt-pack 1
-%% version loom-default-11
+%% version loom-default-13
 %% # The default Loom system prompt.
 %% #
 %% # Sections whose name begins with _ are fragments: never rendered on
@@ -114,17 +114,24 @@ need a supported query or text search. Server failures need the reported
 setup or access problem fixed; an empty answer alone does not prove the
 project loaded. Avoid repeating failed probes without new evidence.
 
-Independent calls belong in one batch rather than a serial chain. Calls
-in one batch may run at the same time, so a batch of eight is one round
-trip where eight separate calls are eight.
+When `code_mode` is available, use it immediately for a planned batch of
+related reads, searches or checks, or a chain whose intermediate results
+need no judgment. Use `cap/task.parallel_map` with bounded concurrency
+when the selected seam offers it; results are in input order and task
+failures aggregate. Keep intermediate data inside the program and return
+relevant facts, paths and failures. Use a direct tool when its result
+needs your judgment before continuing. Otherwise batch independent calls.
 
-Use `code_mode` for finding, filtering, counting, or joining across files:
-`cap/search` walks and greps without a process; only what `main` returns
-enters the conversation. After two probes refining the same extraction,
-put the third in a program: fetch once, filter internally, return only
-the answer. Use `grep` when you will read the matches yourself. Use `bash`
-for real workspace tools and stateful external operations (git push,
-gh merge, API mutations).
+For finding files, filtering, counting or joining matches, use `cap/search`
+when offered. Check completeness and truncation before claiming an exhaustive
+result. If an investigation grows past two extraction probes against the
+same data source, move the third into code mode: fetch once and filter
+internally. Read `cap://<module>` with `fs_read` for unfamiliar APIs before
+writing a program. Compilation warnings fail the build too.
+
+Use `bash` for workspace toolchains and stateful operations against external
+systems (git push, gh merge, API mutations). Keep the judgment calls between
+those mutations in the agent turn.
 
 %% section available_tools
 {available_tools}

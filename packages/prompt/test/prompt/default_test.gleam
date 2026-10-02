@@ -49,7 +49,7 @@ fn phrases(enforcement: pack.Enforcement) -> String {
 
 pub fn shipped_pack_decodes_test() {
   let assert Ok(decoded) = pack.decode(default.source)
-  assert decoded.version == "loom-default-11"
+  assert decoded.version == "loom-default-13"
 }
 
 pub fn shipped_pack_has_no_problems_test() {
@@ -69,6 +69,25 @@ pub fn code_mode_guidance_matches_the_full_default_surface_test() {
   assert string.contains(text, "cap://<module> gives signatures")
   assert string.contains(text, "job:// polls without waiting")
   assert !string.contains(text, "workspace for files/processes")
+}
+
+// Planned batching comes before the third-probe fallback, and unfamiliar
+// capability APIs are learned before a compiler round trip is spent.
+pub fn code_mode_guidance_starts_planned_batches_immediately_test() {
+  let text = phrases(pack.FullyEnforced)
+  assert string.contains(text, "use it immediately for a planned batch")
+  assert string.contains(text, "cap/task.parallel_map")
+  assert string.contains(text, "bounded concurrency")
+  assert string.contains(
+    text,
+    "results are in input order and task failures aggregate",
+  )
+  assert string.contains(text, "relevant facts, paths and failures")
+  assert string.contains(text, "check completeness and truncation")
+  assert string.contains(text, "third into code mode")
+  assert string.contains(text, "for unfamiliar apis before writing a program")
+  assert string.contains(text, "compilation warnings fail the build too")
+  assert string.contains(text, "stateful operations against external systems")
 }
 
 pub fn shipped_pack_carries_the_canonical_sections_in_design_order_test() {
