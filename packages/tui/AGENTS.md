@@ -2675,14 +2675,30 @@ bare, so there is one blank row between any two blocks. A call keeps the
 gutter with its glyph (`× ` for a failure) and only its result hangs under it,
 `  └ `; a tool group's heading is its own speaker, `ToolGroup`, drawn `▸`.
 
-A send's heading needs its result. A response holding prose draws its calls
-inside itself, so `transcript_lines.deliveries` joins each successful
-`agent_send` result to its call across the compact window: the call's row
-carries the admission, the result entry draws no rows, and the response is
-projected afresh rather than from the entry cache. `record_anchors_for`
-mirrors the absorbed result as an empty block; the call's own heading is
-one row whether or not the result has joined it, so the response needs no
-mirror. A refused send keeps the generic failure rows.
+A send's heading and a program's rows need their result. A response holding
+prose draws its calls inside itself, so `transcript_lines.joined` joins each
+`agent_send` and `code_mode` result to its call across the compact window:
+the call's row is drawn from the result, the result entry draws no rows, and
+the response is projected afresh rather than from the entry cache.
+`record_anchors_for` mirrors both halves, an empty block for the absorbed
+result and `joined_block_lines` for the response's blocks, since a program's
+block and its settled row differ in height. The separation fold passes over
+an empty block to the last block that drew a row. A refused send keeps the
+generic failure rows.
+
+A code-mode program that settled is one `✓ code_mode · completed · result …
+· Ctrl+g` row. One the client has no result for yet, and one that failed,
+are titled blocks drawn by `tui/program_rows`: a rule carrying the title, a
+box holding the body, and a rule carrying the foot, two cells in and one
+short of the pane's right edge, the border in `theme.current` while it waits
+and `theme.danger` when it failed. A running block shows `PROGRAM · N lines,
+M shown`, the program's first non-blank lines under their numbers, and
+`RESULT · none yet`; its foot names the `within_ms` budget the call asked
+for. A failure block shows the error; a compiler's diagnostic is cut to its
+heading with `· line N` and the source it quotes, and the foot says how
+many lines `Ctrl+g` shows. Body rows holding a number and a `│` gutter are
+drawn as source on the raised ground. The client receives nothing per
+capability call, so the blocks carry no call list (protocol-change 060).
 
 An operator's turn is one band, `› text`, wrapped under its own first word,
 with no title row. An answer opens with a heading naming the strand,
