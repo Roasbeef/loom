@@ -69,6 +69,25 @@ pub fn one_exec_at_a_time_test() {
   exec.shutdown(helper)
 }
 
+/// A helper with an execution in flight is occupied, not ready. The pool
+/// asks `status` whether a helper is fit to lend, so `Running` and
+/// `Cancelling` must both answer something other than `StatusReady`.
+pub fn status_of_a_running_helper_is_busy_test() {
+  let helper = fake_helper.start_helper(fake_helper.SleepUntilCancel)
+  let events = process.new_subject()
+  let assert Ok(Nil) =
+    exec.run(helper, request(exec.BestEffort), events:, waiting: 1000)
+  let assert exec.StatusBusy(features) = exec.status(helper, waiting: 1000)
+  assert features == ["rlimits", "pgroup", "bwrap", "landlock", "seccomp"]
+
+  // Cancelling is the same occupancy: the slot stays taken until the
+  // helper reports the execution's exit.
+  exec.cancel(helper)
+  let assert Ok(exec.Exited(_)) = process.receive(events, 1000)
+  let assert exec.StatusReady(_) = exec.status(helper, waiting: 1000)
+  exec.shutdown(helper)
+}
+
 pub fn helper_busy_error_settles_in_band_test() {
   let helper = fake_helper.start_helper(fake_helper.AlwaysBusy)
   let events = process.new_subject()
@@ -429,6 +448,103 @@ pub fn pool_checkout_checkin_cycle_test() {
   exec.checkin(pool, first)
   let assert Ok(_third) = exec.checkout(pool, waiting: 2000)
   exec.checkin(pool, second)
+  exec.stop_pool(pool)
+}
+
+/// A relay that crashes mid-run checks its helper in while the execution
+/// is still in flight. The pool must not lend that helper to the next
+/// borrower, whose `run` would fail with `HelperBusy` for a call it never
+/// made. With a free slot the next checkout gets a different, idle helper.
+pub fn pool_does_not_lend_a_helper_checked_in_mid_execution_test() {
+  let assert Ok(pool) =
+    exec.start_pool(size: 2, spawn: fn() {
+      Ok(fake_helper.start_helper(fake_helper.SleepUntilCancel))
+    })
+  let assert Ok(abandoned) = exec.checkout(pool, waiting: 2000)
+  let events = process.new_subject()
+  let assert Ok(Nil) =
+    exec.run(abandoned, request(exec.BestEffort), events:, waiting: 1000)
+  exec.checkin(pool, abandoned)
+
+  let assert Ok(next) = exec.checkout(pool, waiting: 2000)
+  assert exec.pid(next) != exec.pid(abandoned)
+  let assert Ok(Nil) =
+    exec.run(
+      next,
+      request(exec.BestEffort),
+      events: process.new_subject(),
+      waiting: 1000,
+    )
+  exec.stop_pool(pool)
+}
+
+/// Retirement starts at checkin, not at the next checkout that happens to
+/// notice. Nothing here borrows again, so the only thing that can retire
+/// the abandoned helper's actor is `handle_checkin` itself; the lend-time
+/// probe in `next_helper` is a second line of defence this test must not
+/// lean on.
+pub fn busy_checkin_retires_the_helper_without_a_further_checkout_test() {
+  let assert Ok(pool) =
+    exec.start_pool(size: 1, spawn: fn() {
+      Ok(fake_helper.start_helper(fake_helper.SleepUntilCancel))
+    })
+  let assert Ok(abandoned) = exec.checkout(pool, waiting: 2000)
+  let assert Ok(Nil) =
+    exec.run(
+      abandoned,
+      request(exec.BestEffort),
+      events: process.new_subject(),
+      waiting: 1000,
+    )
+  exec.checkin(pool, abandoned)
+
+  let assert poll.Answered(Nil) =
+    poll.until(within: 4000, every: 5, attempt: fn() {
+      case process.is_alive(exec.pid(abandoned)) {
+        True -> poll.Retry
+        False -> poll.Done(Nil)
+      }
+    })
+    as "checkin retires a busy helper"
+  exec.stop_pool(pool)
+}
+
+/// The same checkin in a one-slot pool: the busy helper cannot be lent,
+/// and its slot is not free until the orderly retirement completes, so
+/// the checkout refuses rather than lending it. Once the retirement is
+/// confirmed the slot respawns a fresh helper that accepts a run.
+pub fn pool_of_one_refuses_then_respawns_after_a_busy_checkin_test() {
+  let assert Ok(pool) =
+    exec.start_pool(size: 1, spawn: fn() {
+      Ok(fake_helper.start_helper(fake_helper.SleepUntilCancel))
+    })
+  let assert Ok(abandoned) = exec.checkout(pool, waiting: 2000)
+  let assert Ok(Nil) =
+    exec.run(
+      abandoned,
+      request(exec.BestEffort),
+      events: process.new_subject(),
+      waiting: 1000,
+    )
+  exec.checkin(pool, abandoned)
+
+  let assert poll.Answered(fresh) =
+    poll.until(within: 4000, every: 5, attempt: fn() {
+      case exec.checkout(pool, waiting: 1000) {
+        Ok(helper) -> poll.Done(helper)
+        Error(exec.AllBusy(_)) -> poll.Retry
+        Error(other) -> poll.Fail(other)
+      }
+    })
+    as "confirmed retirement frees capacity"
+  assert exec.pid(fresh) != exec.pid(abandoned)
+  let assert Ok(Nil) =
+    exec.run(
+      fresh,
+      request(exec.BestEffort),
+      events: process.new_subject(),
+      waiting: 1000,
+    )
   exec.stop_pool(pool)
 }
 
