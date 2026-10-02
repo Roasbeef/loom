@@ -727,37 +727,57 @@ fn render_cut(
   // The same coherent presence test governs both turn labels and the
   // attachment banner. A lone owner needs no redundant name or role; every
   // other attachment retains the full identity and participant count.
-  let #(notice, attachment_banner) = case
-    transcript_lines.solo_owner(Some(#(cut, view)))
-  {
-    Some(_) -> #("1 present", "Attached · 1 present")
-    None -> {
-      let identity =
-        origin.display_label(cut.attachment.origin)
-        <> " · "
-        <> role
-        <> " · "
-        <> int.to_string(list.length(view.peers))
-        <> " present"
-      #(identity, "Attached as: " <> identity)
-    }
+  let attachment_banner = case transcript_lines.solo_owner(Some(#(cut, view))) {
+    Some(_) -> "Attached · 1 present"
+    None ->
+      "Attached as: "
+      <> origin.display_label(cut.attachment.origin)
+      <> " · "
+      <> role
+      <> " · "
+      <> int.to_string(list.length(view.peers))
+      <> " present"
   }
+
+  // A conversation the window holds from its first entry needs no row to
+  // say so; only a trimmed one says where the older entries are.
   let boundary = case branch.unloaded {
-    None -> "Beginning of this conversation."
+    None -> []
     Some(_) ->
       case history.request {
-        history_view.Wanted | history_view.Pending(_) ->
-          "Loading older conversation…"
-        history_view.Quiet -> "Scroll up to load older conversation."
+        history_view.Wanted | history_view.Pending(_) -> [
+          "Loading older conversation…",
+        ]
+        history_view.Quiet -> ["Scroll up to load older conversation."]
       }
   }
+
+  // The session facts the head of the transcript states are one block of
+  // at most three rows: where the older entries are, the attachment and the
+  // shared run settings, and code mode. The model and effort are on the
+  // terminal's identity line, so the strand configuration has no row of its
+  // own; who last changed it is still said, beside the run settings.
+  let head =
+    Line(
+      System,
+      list.flatten([
+        boundary,
+        [
+          attachment_banner
+          <> " · "
+          <> run_settings(view)
+          <> configuration_author(view, active),
+        ],
+        [code_mode_status(view, active)],
+      ])
+        |> string.join("\n"),
+    )
   let transcript = [
-    Line(System, boundary),
-    Line(System, attachment_banner),
+    head,
     ..list.append(
       shared.build_notice,
       list.append(
-        configuration_lines(view, active),
+        extension_refusals(view),
         list.append(
           unconfirmed_lines(shared.unconfirmed),
           approval_lines(reviews),
@@ -898,12 +918,9 @@ fn render_cut(
     },
     submitting: None,
     record_cache_valid:,
-    // Presence already has its own banner. Repeated metadata captures must
-    // not alternate that banner with streaming or operator feedback below.
-    notice: case shared.captured {
-      None -> notice
-      Some(_) -> shared.notice
-    },
+    // Presence has its own banner at the head of the transcript and is
+    // identity rather than news, so a capture leaves the notice as it was.
+    notice: shared.notice,
     transcript:,
   )
   |> event_fold.settle_pending_cache(cut.next_seq)
@@ -916,36 +933,35 @@ fn render_cut(
   |> session_model.mark_activity
 }
 
-fn configuration_lines(view: snapshot_view.View, active: String) {
-  let configuration = case dict.get(view.configurations, active) {
-    Ok(config) -> [
-      Line(
-        System,
-        "Strand configuration: "
-          <> config.configuration.model.model_id
-          <> " · effort "
-          <> thinking_name(config.configuration.thinking_level)
-          <> changed_by(config.origin),
-      ),
-    ]
-    Error(Nil) -> []
+// The shared run settings, as the head's attachment row carries them.
+fn run_settings(view: snapshot_view.View) -> String {
+  view.settings.queue_mode
+  <> " · "
+  <> view.settings.tool_execution
+  <> changed_by(view.settings.origin)
+}
+
+// Who last changed the strand's model or effort, when a person did. The
+// identity line shows the values; this says whose they are.
+fn configuration_author(view: snapshot_view.View, active: String) -> String {
+  case dict.get(view.configurations, active) {
+    Ok(config) ->
+      case config.origin {
+        Some(author) ->
+          " · model and effort changed by " <> origin.display_label(author)
+        None -> ""
+      }
+    Error(Nil) -> ""
   }
-  [
-    Line(System, code_mode_status(view, active)),
-    Line(
-      System,
-      "Shared settings: "
-        <> view.settings.queue_mode
-        <> " · "
-        <> view.settings.tool_execution
-        <> changed_by(view.settings.origin),
-    ),
-    ..list.append(configuration, case view.tools {
-      None -> []
-      Some(tools) ->
-        list.map(tools.extension_refusals, fn(reason) { Line(System, reason) })
-    })
-  ]
+}
+
+// An extension the host refused to load is a fact of its own, one row each.
+fn extension_refusals(view: snapshot_view.View) -> List(transcript_line.Line) {
+  case view.tools {
+    None -> []
+    Some(tools) ->
+      list.map(tools.extension_refusals, fn(reason) { Line(System, reason) })
+  }
 }
 
 // Availability comes from the live registry; enabling comes from this strand's
