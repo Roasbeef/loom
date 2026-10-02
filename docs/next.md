@@ -1,88 +1,73 @@
 # Current handoff
 
-The resource handoff was refreshed on October 1, 2026 against the executable
-resource tree `16e866c8efd94b11127cf931bd46acaf2b675578` and installed main
-`31db7c68387859da416eff53ed41913cd2ac8f31`. The previous edition described
-`3819fec3d` as the current installation. That release's measurements and live
-Jev result remain historical evidence; the owner has since installed merged
-[PR #688](https://github.com/Roasbeef/loom/pull/688).
+The October 1 resource and typed-MCP follow-ups are separate changes with
+separate evidence. [PR #689](https://github.com/Roasbeef/loom/pull/689) was rebased
+onto main `7d37ec86`; its final resource head is `4a6e4fad`. The owner authorized
+merge once that exact head is ready. Fresh hosted CI and local signoff are being
+checked; the earlier green results in the review report belong to their named
+heads. The running normal daemon was not upgraded by these follow-ups.
 
-The [first memory investigation](review/daemon-memory-retention-2026-10-01.md)
-removed broad executable-registry captures from provider preparation and
-summary image classification. The [resource follow-up](review/daemon-resource-usage-2026-10-01.md)
-also projects context metadata and the preceding code-mode router before
-retaining callbacks. Darwin's 20 ms process tracker indexes the original
-kernel snapshot instead of copying records and allocating child slices.
-Closure-size negative controls preserve the intended execution owner, while
-native regressions preserve ancestry, reparenting and birth checks.
+## Memory and CPU follow-ups
 
-Full combined local signoff exited zero in 517 seconds on `16e866c8`, including
-release/update verification, the simulation soaks and eleven enforced helper
-self-tests. The declared macOS `/proc` and rust-analyzer prerequisite skips
-remain explicit. Independent review found no remaining actionable finding.
-The follow-up also fixes two gate fixtures: typed MCP's VM-global channel now
-uses the existing serial-module declaration, and the Go LSP fixture forwards
-the same `GOCACHE` path it grants. Hosted CI and installation of the resource
-follow-up remain outstanding.
+The [resource report](review/daemon-resource-usage-2026-10-01.md) covers context
+metadata, peer-router, gateway membership and restart-callback projections, plus
+Darwin tracker allocation reductions. A matched bare-session fixture measured
+1.521 MiB less idle BEAM memory and 5,776 KiB less RSS than main `31db7c68`.
+Darwin's sleeping execution fixture allocated about 14 percent fewer bytes and
+96 percent fewer objects; CPU windows overlapped. These bounded observations do
+not establish savings for an installed normal session. Earlier installed-daemon
+cuts and the live Jev result remain historical evidence in that report.
 
-The normal profiled daemon at installed main `5fbcda3` was PID 90442. Before
-the owner's restart, its single resident session and two idle strands used
-244.374 MiB of allocated BEAM memory, including 198.842 MiB of processes;
-RSS was 280496 KiB. The largest actor had spare old-heap capacity, while two
-large hibernated supervisors had nearly full heaps. Their restart ownership
-is the next measured lead, not a proven attribution to one source callback.
-Directory-admin lifetime changes remain deliberately separate.
+A local rebase gate exposed two fixture failures. The operator-page connection
+timeout passed five focused repetitions. The job-stop/reopen failure had a
+concrete ordering defect: the test treated cancellation acknowledgement as a
+completed durable write and observed Lost before notification handling finished.
+Existing actor poll/list barriers fix that fixture. A forced schedule fails the
+old fixture and passes the ordered one. The scanner fixture also waits for
+asynchronous rearming and checks the exact logical deadline, preventing an
+unrelated driver timer from satisfying its retry bound. Production source and
+deadlines remain unchanged. Final checks must belong to `4a6e4fad`, not its older green CI heads.
 
-The source follow-up now also projects the gateway's private membership view
-to registered names and narrows the async-run and hub restart inputs before
-constructing their callbacks. Public startup options and runtime execution
-ownership remain unchanged. All 126 gateway tests pass; the isolated state
-stays 758 flat words as a separately supplied executable registry grows from
-202 to 90292. The old-field negative control fails. Independent review is
-complete, and the combined release gate passed with these additions.
+The [directory follow-up, PR #691](https://github.com/Roasbeef/loom/pull/691),
+projects a restartable writer address for mutation and Storage for readback.
+Its [review report](review/directory-fact-retention-2026-10-01.md) records constant
+1,385-flat-word administration overhead as unrelated executor payload grows.
+Package gates, independent review, full local signoff at the named pre-rebase
+head, and a fresh-runtime retirement witness passed. Its rebased hosted head is
+`b06b3a29`. These term measurements do not predict installed RSS. The additive
+internal fact interfaces were approved by the owner; public signatures and wire
+contracts remain unchanged.
 
+## Concise typed MCP
 
-The final controlled bare-session comparison against main `31db7c68`
-measured 1.521 MiB less idle BEAM memory and 5776 KiB less RSS for the
-follow-up. These single fixture cuts do not establish normal-session savings.
-An earlier baseline comparison measured about 2.8 MiB less BEAM memory but
-increased RSS. Darwin's real sleeping
-execution fixture allocated about 14% fewer bytes and 96% fewer objects;
-whole-window CPU times overlapped. Do not convert these bounded results into
-a claimed normal-daemon RSS or CPU percentage reduction.
+The [concise MCP report](review/mcp-concise-types-2026-10-01.md) explains the
+replacement for exposed node-path names and branch wrapper records. Semantic
+names have module-wide collision allocation, and required distinct literal tags
+belong to constructors such as `ChoiceQuestion` and `ScoreQuestion`. Decoders
+still require exact tags and closed objects. For the same four Jev schemas, full
+API prose shrank 48.35 percent in bytes; this is not a tokenizer measurement.
 
-Jevelin's installed launcher carries its own ERTS, boot files, OTP libraries
-and macOS crypto library. [Installer PR #1](https://github.com/Roasbeef/jevelin-mcp/pull/1)
-at `307b7e4d5c5720ebd070cc0bd2868cdf66f0cada` is still open; its branch is
-installed. Typed MCP code generation merged in
-[PR #685](https://github.com/Roasbeef/loom/pull/685) at
-`b9e4a6344d5f0cf834d050d0ca163cb9ec85aff0`. A fresh session on the candidate
-self-contained release discovered `cap://mcp/jev`, compiled the structural
-Choice API in code mode and retained the local HTTP fixture's successful
-answer. This is separate from the earlier live inference on `3819fec3d`.
+The MCP gate, independent review, full local signoff at `ac0c26ca`, and the
+installed-server HTTP fixture passed. After rebase, release `239db772` also
+passed all three Jev channel regressions and the real isolated daemon fixture:
+generated API discovery, jailed mixed batch, exactly one HTTP request, expected
+durable result, credential confinement, and authenticated shutdown exiting zero.
+MacOS filesystem/network enforcement ran; resource-limit and process-lifecycle
+gaps remained explicit. The fixture used dummy credentials and no live Jev call.
+[The Jev walkthrough](jev-mcp.md) contains the complete tested program.
 
-Jev was unavailable in the normal `5fbcda3` daemon because its environment
-lacked `JEV_API_KEY`; the credential was installed in the owner's `.zshrc`.
-The owner's restart at `31db7c68` now reports `mcp.ready` with `jev=4`.
-Its first active cut was 292.694 MiB total BEAM and 290080 KiB RSS, with one
-working strand. A later idle cut was 258.328 MiB BEAM and 307600 KiB daemon
-RSS, plus 69360 KiB in Jevelin's separate process. The changed build, activity and MCP availability prevent a
-matched causal comparison. A fresh disposable session then completed a live typed Choice query through
-code mode on that normal daemon: `jev-1.13.0`, Choice `logs`, confidence 1.0,
-298 input / 31 output tokens. The credential stayed out of model requests,
-and only the verification session was stopped. Existing
-`[secrets]` commands offer a launch-independent credential seam for a future
-configuration pass. Never place the credential in model prompts or arguments.
-Newly assembled session runtimes get the discovered API; current resident
-runtimes retain their pinned modules. Resources, prompts and Loom HTTP
-transport configuration remain separate scope.
+Jevelin's installed self-contained launcher is still the open
+[installer PR #1](https://github.com/Roasbeef/jevelin-mcp/pull/1) at `307b7e4d`.
+It bundles its own ERTS and boot files. Newly assembled Loom session runtimes
+regenerate MCP modules automatically; resident sessions keep their assembled
+surface, and saved programs using older generated names need updating. Resources,
+prompts, and Loom HTTP transport configuration remain separate scope.
 
-Next: verify hosted CI on [PR #689](https://github.com/Roasbeef/loom/pull/689)
-at its exact head, then compare an installed resource release against the
-saved normal-daemon observations when the owner chooses to install it.
-Trace restart-specification ownership before further source changes. Keep
-actual process heaps, allocator carriers and OS RSS separate, and avoid forced
-collection in observations used to compare ordinary runtime behavior.
+Next: verify and merge #689 at its exact final head, then retarget its follow-ups
+to main and verify their final hosted checks. Installation and a matched normal-
+daemon measurement remain separate from source proof. Keep actual process heaps,
+allocator carriers, flat-size retention evidence, and OS RSS distinct; do not
+force collection in ordinary-runtime comparisons.
 
 ## Code-mode prompt cues
 

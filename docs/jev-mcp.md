@@ -7,7 +7,7 @@ the `cap/mcp/jev` module. A model reads the generated API, then imports the
 module in a code-mode program. The program's call crosses Loom's capability
 broker before reaching the MCP server and Jev's HTTP API.
 
-This guide covers setup, a complete Choice query, and the local fixture used
+This guide covers setup, a complete mixed Choice/Score batch, and the local fixture used
 to verify the integration without a Jev API key. The
 [MCP architecture](architecture/mcp.md) explains generation and dispatch;
 [code-mode architecture](architecture/code-mode.md) explains the jailed
@@ -170,30 +170,37 @@ generation exposes the signature below. Read `cap://mcp/jev` from the
 running session before submitting a program; that deployed surface is
 authoritative.
 
-The typed Choice signature is:
+The concise Batch signature is:
 
 ```gleam
-pub fn jev_choice(
-  state: McpT1InputN1JevChoiceState,
-  choices: List(McpT1InputN6JevChoiceChoicesItem),
-  options: McpT1OptionsJevChoice,
-) -> Result(McpT1OutputN0JevChoiceResult, mcp.McpError)
+pub fn jev_batch(
+  state: State,
+  questions: List(Question),
+  options: JevBatchOptions,
+) -> Result(JevBatchResult, mcp.McpError)
 ```
 
-The API read declares every type named in that signature. The Choice state
-has variants for text, a JSON object and a JSON array. Each choice is a record
-with a label and optional nullable description. The options record exposes
-`model` and `instructions`; `jev_choice_defaults` omits both. The returned
-record has `model`, `answer` and `usage` fields, so the program can read
-`found.answer.choice` and `found.usage.input_tokens` directly.
+`StateText`, `StateObject`, and `StateArray` represent the supported state
+shapes. `ChoiceQuestion`, `ScoreQuestion`, and `NoulQuestion` construct the
+question variants directly. The encoder supplies the required wire discriminator
+from the variant; callers cannot pair a Choice constructor with a Score tag.
+The returned answer variants are `ChoiceAnswer`, `ScoreAnswer`, and `NoulAnswer`.
+The result record exposes `model`, `answers`, and `usage`.
+
+Generated names describe the nearest schema role. A deterministic allocator
+adds a compact suffix only when a name is already occupied. Tool and node
+ordinals remain internal identities rather than mandatory call-site prefixes.
+The same allocation supplies the compilable module and the API read.
 
 In Gleam, call a record's named constructor to build it, and use
 `Constructor(..existing, field: value)` to update a field. Optional fields
 use `Option`: `None` omits a key and `Some(value)` supplies it. Nullable
 optional fields have a second layer: `Some(None)` sends null, while
-`Some(Some(value))` sends data. The generated API names every union branch
-and enum constructor. Read that surface each session, because schema changes
-can change the generated type names.
+`Some(Some(value))` sends data. Jev's descriptions and rubric levels accept
+text, objects, or arrays, so `DescriptionText` and `LevelText` still express
+real alternatives. Genuine single-branch schemas require no extra wrapper.
+Read the deployed surface each session; schema and generator changes can
+change the generated names, and existing resident runtimes keep their modules.
 
 These types restrict structural questions at compile time. Jevelin's smart
 constructors still validate conditions such as duplicate labels before HTTP
@@ -204,86 +211,95 @@ a path and the original content; a failed tool or transport keeps its own
 error variant. Numeric bounds and general schema refinements remain
 server admission checks.
 
-## Run a Choice query
+## Run a mixed batch
 
 Give the Loom session this instruction:
 
-> Read `cap://mcp/jev` and `cap://report`. Use `code_mode` to call
-> `jev.jev_choice` for a failed build, choosing between reading compiler
-> logs and running tests. Return the choice, confidence, and token usage.
+> Read `cap://mcp/jev` and `cap://report`. Use `code_mode` to evaluate a
+> failed build in one Jev batch: choose between reading compiler logs and
+> running tests, and score its priority against low and high rubric levels.
+> Return the choice, confidence, score, and token usage.
 
-This complete program uses the typed declarations above. It constructs
-choice records and an instructions union, then reads the decoded answer and
-usage fields. This exact program passed through a fresh production daemon
-and the local HTTP fixture on October 1, 2026. The validation section below
-separates that typed run from the earlier raw-value integration proof.
+This complete program constructs the question variants and matches the decoded
+answer variants. A Choice constructor owns its tag and criteria together;
+there is no separate discriminator enum or intermediate branch record.
 
 ```gleam
-//// A Choice request uses schema-derived inputs and a decoded answer record.
+//// A mixed batch selects its wire discriminators through typed constructors.
 
 import cap/mcp/jev
 import cap/report
 import gleam/list
 import gleam/option.{None, Some}
 
-/// Returns the model, choice, confidence, probabilities, and token usage.
+/// Returns the decoded choice, score, and token usage from one batch.
 ///
 /// ## Examples
 ///
-/// This entry point is run by Loom's code-mode satellite.
+/// This entry point runs in Loom's code-mode satellite.
 pub fn main() -> report.Outcome {
-  let choices = [
-    jev.McpT1InputN6JevChoiceChoicesItem(label: "logs", description: None),
-    jev.McpT1InputN6JevChoiceChoicesItem(label: "tests", description: None),
+  let questions = [
+    jev.ChoiceQuestion(
+      name: "route",
+      choices: [
+        jev.Choice(
+          label: "logs",
+          description: Some(Some(jev.DescriptionText("Read compiler logs"))),
+        ),
+        jev.Choice(label: "tests", description: None),
+      ],
+      instructions: None,
+    ),
+    jev.ScoreQuestion(
+      name: "priority",
+      levels: [jev.LevelText("low"), jev.LevelText("high")],
+      instructions: None,
+    ),
   ]
 
-  let options = jev.McpT1OptionsJevChoice(
-    ..jev.jev_choice_defaults,
-    instructions: Some(Some(
-      jev.McpT1InputN15V0BranchJevChoiceInstructionsItem(
-        "Choose the most relevant next action.",
-      ),
-    )),
-  )
-
-  case jev.jev_choice(
-    state: jev.McpT1InputN1V0BranchJevChoiceState(
-      "The user wants to inspect a failed build.",
-    ),
-    choices: choices,
-    options: options,
-  ) {
+  case
+    jev.jev_batch(
+      jev.StateText("The user wants to inspect a failed build."),
+      questions,
+      jev.jev_batch_defaults,
+    )
+  {
     Ok(found) -> {
-      let probabilities = list.map(found.answer.probabilities, fn(pair) {
-        #(pair.0, report.float(pair.1))
-      })
-
-      report.value(report.object([
-        #("model", report.string(found.model)),
-        #("usage", report.object([
-          #("input_tokens", report.int(found.usage.input_tokens)),
-          #("output_tokens", report.int(found.usage.output_tokens)),
-        ])),
-        #("answer", report.object([
-          #("type", report.string("choice")),
-          #("choice", report.string(found.answer.choice)),
-          #("confidence", report.float(found.answer.confidence)),
-          #("probabilities", report.object(probabilities)),
-        ])),
-      ]))
+      case
+        list.key_find(found.answers, "route"),
+        list.key_find(found.answers, "priority")
+      {
+        Ok(jev.ChoiceAnswer(choice:, confidence:, ..)),
+          Ok(jev.ScoreAnswer(score:, ..))
+        ->
+          report.value(
+            report.object([
+              #("model", report.string(found.model)),
+              #("choice", report.string(choice)),
+              #("confidence", report.float(confidence)),
+              #("score", report.float(score)),
+              #(
+                "usage",
+                report.object([
+                  #("input_tokens", report.int(found.usage.input_tokens)),
+                  #("output_tokens", report.int(found.usage.output_tokens)),
+                ]),
+              ),
+            ]),
+          )
+        _, _ -> report.failure("The batch did not return its typed answers.")
+      }
     }
-    Error(_reason) -> report.failure("The Jev MCP evaluation failed.")
+    Error(_) -> report.failure("The Jev batch was refused.")
   }
 }
 ```
 
-`report.object` and the other builders construct the program's final report;
-the MCP input is built with the generated records and variants. The success
-branch uses normal field access rather than raw key lookup or parsing the
-server's text block. The report contains the choice, confidence,
-probabilities and token usage. Loom stores that result and supplies it to
-the model's next turn. A live Jev answer depends on the service; the fixture
-response below is deterministic.
+`report.object` and the other builders construct the final report; MCP inputs
+use generated records and variants. The program finds answers by their request
+names, then pattern-matches their typed values. Loom stores the report and
+supplies it to the model's next turn. A live Jev answer depends on the service;
+the local fixture response below is deterministic.
 
 ## Try the HTTP fixture without a Jev key
 
@@ -323,18 +339,15 @@ fixture uses Python's standard library and existing server test code; no
 additional Python package or helper script is needed. Stop the fixture
 with Ctrl-C when finished.
 
-The fixture's successful response contains:
+The documented program returns this report with the local fixture:
 
 ```json
 {
   "model": "jev-fixture",
-  "usage": {"input_tokens": 10, "output_tokens": 3},
-  "answer": {
-    "type": "choice",
-    "choice": "logs",
-    "confidence": 0.9,
-    "probabilities": {"logs": 1.0, "tests": 0.0}
-  }
+  "choice": "logs",
+  "confidence": 0.9,
+  "score": 0.25,
+  "usage": {"input_tokens": 10, "output_tokens": 3}
 }
 ```
 

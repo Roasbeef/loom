@@ -3,24 +3,29 @@
 //// shapes; it never supplies executable statements or decoder callbacks.
 ////
 //// Reading path: render sorts tools and chooses a collision-free helper
-//// namespace; facade plans input and output once; typed_facade builds the
+//// namespace; facade plans both directions for allocation and emission;
+//// typed_facade builds the
 //// optional record and defaults constant; members and node recursively derive
 //// types, encoders and decoders together. Each structural node contributes its
 //// declarations to both outputs, so the visible surface cannot invent a type
 //// the compiler never sees. The raw control token in encoder templates cannot
 //// occur in escaped server literals; encoded replaces it only with trusted
-//// generator expressions. Trusted tool/direction/node/variant ordinals own
-//// identity; at most 64 ASCII display characters follow them. This keeps even
-//// deeply nested names below the BEAM 255-byte atom limit after snake casing.
+//// generator expressions. Trusted ordinal keys own declaration identity;
+//// module-wide allocation prefers a nearby semantic name and adds a compact
+//// ordinal only on collision. Names never accumulate a recursive schema path,
+//// and bounded ASCII spellings remain below BEAM's 255-byte atom limit.
 
 import gleam/bool
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import gleam_mcp/json
 import gleam_mcp/protocol
 import mcp/internal/render_text as codegen
+import mcp/internal/type_name
 import mcp/name
 import mcp/schema
 
@@ -42,19 +47,20 @@ type Node {
     decoder: String,
     definitions: List(String),
     next: Int,
+    names: List(#(String, String)),
   )
 }
 
-// The ordinal prefix is trusted and appears before every semantic label.
-// Decimal ordinals end at fixed alphabetic markers; server text cannot move a
-// node into another tool, direction, node or variant constructor namespace.
+// Trusted ordinal keys distinguish tools, directions, nodes and variants.
+// Server text supplies only a preferred display spelling; allocation resolves
+// every declaration and constructor together before source emission.
 type Direction {
   Input(tool: Int)
   Output(tool: Int)
 }
 
 type Scope {
-  Scope(direction: Direction, semantic: String)
+  Scope(direction: Direction, semantic: String, allocated: Dict(String, String))
 }
 
 // An encoder template owns whether its payload is consumed. Imported module
@@ -80,6 +86,7 @@ type Facade {
     source: String,
     definitions: List(String),
     defaults: String,
+    names: List(#(String, String)),
   )
 }
 
@@ -104,9 +111,18 @@ pub fn render(
     })
   let tool_names = list.map(tools, fn(t) { name.mangle(t.name, digest) })
   let prefix = helper_prefix(tool_names, "mcp_generated_")
+  let planned =
+    list.index_map(tools, fn(tool, index) {
+      facade(server, tool, index, prefix, tool_names, dict.new(), digest)
+    })
+
+  // The first pass collects declaration identities. Allocation reserves all
+  // semantic candidates before a second pass emits syntax with settled names;
+  // no replacement ever traverses a server literal or documentation string.
+  let allocated = type_name.allocate(list.flat_map(planned, fn(f) { f.names }))
   let facades =
     list.index_map(tools, fn(tool, index) {
-      facade(server, tool, index, prefix, tool_names, digest)
+      facade(server, tool, index, prefix, tool_names, allocated, digest)
     })
 
   // Tool order fixes ordinal namespaces before any structural declaration is
@@ -202,10 +218,11 @@ fn facade(
   index: Int,
   prefix: String,
   tool_names: List(String),
+  allocated: Dict(String, String),
   digest: fn(String) -> String,
 ) -> Facade {
   let function = name.mangle(tool.name, digest)
-  let stem = Scope(Input(index), pascal(function))
+  let stem = Scope(Input(index), pascal(function), allocated)
   let default_name = case list.contains(tool_names, function <> "_defaults") {
     True -> prefix <> function <> "_defaults"
     False -> function <> "_defaults"
@@ -223,7 +240,7 @@ fn facade(
     Some(value) ->
       Some(node(
         schema.shape(value),
-        Scope(Output(index), stem.semantic <> "Result"),
+        Scope(Output(index), stem.semantic <> "Result", allocated),
         0,
         digest,
       ))
@@ -245,6 +262,10 @@ fn facade(
   let output_definitions = case output {
     None -> []
     Some(n) -> n.definitions
+  }
+  let output_names = case output {
+    None -> []
+    Some(n) -> n.names
   }
   let invoke = case output {
     None -> "internal.invoke"
@@ -286,6 +307,7 @@ fn facade(
         function_source(documentation, function, params, return_type, body),
         output_definitions,
         "",
+        output_names,
       )
     }
     Ok(fields) ->
@@ -298,6 +320,7 @@ fn facade(
         intro,
         fields,
         output_definitions,
+        output_names,
         invoke,
         decoded,
         return_type,
@@ -315,6 +338,7 @@ fn typed_facade(
   intro: String,
   fields: List(schema.Field),
   output_definitions: List(String),
+  output_names: List(#(String, String)),
   invoke: String,
   decoded: String,
   return_type: String,
@@ -351,6 +375,7 @@ fn typed_facade(
         function_source(documentation, function, params, return_type, body),
         output_definitions,
         "",
+        output_names,
       )
     }
     Ok(Nil) -> {
@@ -358,11 +383,10 @@ fn typed_facade(
         list.filter(members, fn(m) { m.field.presence == schema.Required })
       let optional =
         list.filter(members, fn(m) { m.field.presence == schema.OptionalField })
-      let options_type =
-        "McpT"
-        <> int.to_string(stem.direction.tool)
-        <> "Options"
-        <> semantic_name(stem.semantic)
+      let options_key =
+        "McpT" <> int.to_string(stem.direction.tool) <> "Options"
+      let options_semantic = semantic_name(stem.semantic <> "Options")
+      let options_type = allocated_name(stem, options_key, options_semantic)
       let declaration = record_definition(options_type, optional)
       let defaults =
         "/// Omit each optional field; the server applies its declared defaults.\npub const "
@@ -455,6 +479,11 @@ fn typed_facade(
         function_source(documentation, function, params, return_type, body),
         definitions,
         "",
+        list.flatten([
+          output_names,
+          list.flat_map(members, fn(m) { m.node.names }),
+          [#(options_key, options_semantic)],
+        ]),
       )
     }
   }
@@ -503,8 +532,8 @@ fn shape_note(shape: schema.Shape) -> String {
   }
 }
 
-// Each subtree receives a fresh ordinal after its parent. Semantic path names
-// help a reader, while ordinals prevent equal Pascal spellings from aliasing.
+// Each subtree receives a fresh identity after its parent. A field starts a
+// nearby semantic name instead of retaining every ancestor in its spelling.
 fn members(
   fields: List(schema.Field),
   stem: Scope,
@@ -512,14 +541,9 @@ fn members(
   digest: fn(String) -> String,
 ) -> #(List(Member), Int) {
   list.map_fold(fields, start, fn(counter, field) {
-    let label = name.mangle_label(field.original, digest)
+    let label = field_label(field.original, digest)
     let child =
-      node(
-        field.shape,
-        Scope(..stem, semantic: stem.semantic <> pascal(label)),
-        counter,
-        digest,
-      )
+      node(field.shape, Scope(..stem, semantic: pascal(label)), counter, digest)
     #(child.next, Member(field, label, child))
   })
   |> fn(pair) { #(pair.1, pair.0) }
@@ -571,6 +595,7 @@ fn node(
       container_node(NullableContainer, inner, stem, counter, digest)
     schema.Record(fields, openness) ->
       object_node(fields, openness, stem, counter, digest)
+    schema.Alternatives([inner]) -> node(inner, stem, counter, digest)
     schema.Alternatives(branches) -> union_node(branches, stem, counter, digest)
   }
 }
@@ -582,21 +607,19 @@ fn leaf(
   decoder: String,
   counter: Int,
 ) -> Node {
-  Node(shape, type_name, encode, decoder, [], counter + 1)
+  Node(shape, type_name, encode, decoder, [], counter + 1, [])
 }
 
 // A named two-variant boolean puts wire meaning at each call site instead of
 // making the caller remember the polarity of a naked Bool parameter.
 fn boolean_node(shape: schema.Shape, stem: Scope, counter: Int) -> Node {
   let identifier = node_identifier(stem, counter)
-  let enabled =
-    node_prefix(stem.direction, counter)
-    <> "V0Enabled"
-    <> semantic_name(stem.semantic)
-  let disabled =
-    node_prefix(stem.direction, counter)
-    <> "V1Disabled"
-    <> semantic_name(stem.semantic)
+  let key = node_prefix(stem.direction, counter)
+  let semantic = semantic_name(stem.semantic)
+  let enabled = allocated_name(stem, key <> "V0", semantic <> "Enabled")
+  let disabled = allocated_name(stem, key <> "V1", semantic <> "Disabled")
+
+  // Both variants retain the same wire polarity in input and output codecs.
   let definition =
     "/// Named boolean meaning for this wire field.\npub type "
     <> identifier
@@ -617,11 +640,15 @@ fn boolean_node(shape: schema.Shape, stem: Scope, counter: Int) -> Node {
     <> " False -> "
     <> disabled
     <> " } })"
-  Node(shape, identifier, encode, decoder, [definition], counter + 1)
+  Node(shape, identifier, encode, decoder, [definition], counter + 1, [
+    #(key, semantic),
+    #(key <> "V0", semantic <> "Enabled"),
+    #(key <> "V1", semantic <> "Disabled"),
+  ])
 }
 
-// Enum labels receive the same digest discipline as tool and field names,
-// plus a variant ordinal for different literals with the same sanitized name.
+// Enum wire literals remain exact. Their display candidates share the same
+// allocator as records and other constructors, including ordinal lookalikes.
 fn enum_variants(
   values: List(String),
   stem: Scope,
@@ -631,10 +658,11 @@ fn enum_variants(
   list.index_map(values, fn(value, index) {
     #(
       value,
-      node_prefix(stem.direction, counter)
-        <> "V"
-        <> int.to_string(index)
-        <> semantic_name(stem.semantic <> pascal(name.mangle(value, digest))),
+      allocated_name(
+        stem,
+        node_prefix(stem.direction, counter) <> "V" <> int.to_string(index),
+        semantic_name(stem.semantic <> pascal(name.mangle(value, digest))),
+      ),
     )
   })
 }
@@ -681,7 +709,15 @@ fn enum_node(
       ", ",
     )
     <> "])"
-  Node(shape, identifier, encode, decoder, [definition], counter + 1)
+  Node(shape, identifier, encode, decoder, [definition], counter + 1, [
+    #(node_prefix(stem.direction, counter), semantic_name(stem.semantic)),
+    ..list.index_map(values, fn(value, index) {
+      #(
+        node_prefix(stem.direction, counter) <> "V" <> int.to_string(index),
+        semantic_name(stem.semantic <> pascal(name.mangle(value, digest))),
+      )
+    })
+  ])
 }
 
 // The dispatch type makes non-container shapes unreachable here. Child
@@ -702,7 +738,7 @@ fn container_node(
   let child =
     node(
       inner,
-      Scope(..stem, semantic: stem.semantic <> "Item"),
+      Scope(..stem, semantic: container_semantic(container, stem.semantic)),
       counter + 1,
       digest,
     )
@@ -730,7 +766,15 @@ fn container_node(
     MapContainer -> schema.Mapping(child.kind)
     NullableContainer -> schema.Nullable(child.kind)
   }
-  Node(shape, type_name, encode, decoder, child.definitions, child.next)
+  Node(
+    shape,
+    type_name,
+    encode,
+    decoder,
+    child.definitions,
+    child.next,
+    child.names,
+  )
 }
 
 // A record decoder establishes object shape and required presence before
@@ -758,72 +802,25 @@ fn object_node(
         next,
       )
     Ok(Nil) -> {
-      let fields =
-        list.map(members, fn(m) {
-          case m.field.presence {
-            schema.Required ->
-              "[#("
-              <> codegen.lit(m.field.original)
-              <> ", "
-              <> encoded(m.node, "\u{1}." <> m.label)
-              <> ")]"
-            schema.OptionalField ->
-              "codec.optional("
-              <> codegen.lit(m.field.original)
-              <> ", \u{1}."
-              <> m.label
-              <> ", "
-              <> encoder_function(m.node, "item")
-              <> ")"
-          }
-        })
-      let encode =
-        "report.object(list.flatten([" <> string.join(fields, ", ") <> "]))"
-      let openness = case openness {
-        schema.Open -> "codec.AllowAdditional"
-        schema.Closed -> "codec.RejectAdditional"
-      }
+      let encode = object_encode(members, "\u{1}.", None)
       let decoder =
-        "codec.object(["
-        <> string.join(
-          list.map(members, fn(m) { codegen.lit(m.field.original) }),
-          ", ",
+        object_decoder(
+          members,
+          openness,
+          constructor(
+            identifier,
+            list.map(members, fn(member) {
+              member.label <> ": " <> member.label
+            }),
+          ),
+          None,
         )
-        <> "], "
-        <> openness
-        <> ", { "
-        <> string.concat(
-          list.map(members, fn(m) {
-            let field_fn = case m.field.presence {
-              schema.Required -> "field"
-              schema.OptionalField -> "optional_field"
-            }
-            "use "
-            <> m.label
-            <> " <- codec."
-            <> field_fn
-            <> "("
-            <> codegen.lit(m.field.original)
-            <> ", "
-            <> m.node.decoder
-            <> ")\n "
-          }),
-        )
-        <> "codec.success("
-        <> constructor(
-          identifier,
-          list.map(members, fn(m) { m.label <> ": " <> m.label }),
-        )
-        <> ") })"
       Node(
         schema.Record(
           list.map(members, fn(m) {
             schema.Field(..m.field, shape: m.node.kind)
           }),
-          case openness {
-            "codec.AllowAdditional" -> schema.Open
-            _ -> schema.Closed
-          },
+          openness,
         ),
         identifier,
         encode,
@@ -832,45 +829,383 @@ fn object_node(
           record_definition(identifier, members),
         ]),
         next,
+        [
+          #(node_prefix(stem.direction, counter), semantic_name(stem.semantic)),
+          ..list.flat_map(members, fn(m) { m.node.names })
+        ],
       )
     }
   }
 }
 
 fn record_definition(identifier: String, members: List(Member)) -> String {
-  let head =
-    "/// Named wire properties; optional fields retain absence separately from null.\npub type "
-    <> identifier
-    <> " {\n  /// Construct this wire record.\n  "
-    <> identifier
+  "/// Named wire properties; optional fields retain absence separately from null.\npub type "
+  <> identifier
+  <> " {\n  /// Construct this wire record.\n  "
+  <> record_constructor(identifier, members)
+  <> "\n}"
+}
+
+fn record_constructor(identifier: String, members: List(Member)) -> String {
   case members {
-    [] -> head <> "\n}"
+    [] -> identifier
     _ ->
-      head
+      identifier
       <> "(\n"
       <> string.join(
-        list.map(members, fn(m) {
-          let type_name = case m.field.presence {
-            schema.Required -> m.node.type_name
-            schema.OptionalField -> "Option(" <> m.node.type_name <> ")"
-          }
+        list.map(members, fn(member) {
           "    /// "
-          <> codegen.clean(m.field.original, 100)
+          <> codegen.clean(member.field.original, 100)
           <> " wire property.\n    "
-          <> m.label
-          <> ": "
-          <> type_name
+          <> member_declaration(member)
           <> ","
         }),
         "\n",
       )
-      <> "\n  )\n}"
+      <> "\n  )"
   }
+}
+
+// A required singleton string field can transfer its wire obligation to a
+// constructor. Optional, repeated or nested tags cannot select this path.
+type TaggedBranch {
+  TaggedBranch(
+    fields: List(schema.Field),
+    openness: schema.Openness,
+    literal: String,
+  )
+}
+
+type TaggedNode {
+  TaggedNode(members: List(Member), openness: schema.Openness, literal: String)
+}
+
+fn union_node(
+  branches: List(schema.Shape),
+  stem: Scope,
+  counter: Int,
+  digest: fn(String) -> String,
+) -> Node {
+  case tagged_branches(branches) {
+    Some(#(tag, tagged)) ->
+      case tagged_union_node(tag, tagged, stem, counter, digest) {
+        Ok(rendered) -> rendered
+        Error(Nil) -> ordinary_union_node(branches, stem, counter, digest)
+      }
+    None -> ordinary_union_node(branches, stem, counter, digest)
+  }
+}
+
+fn tagged_branches(
+  branches: List(schema.Shape),
+) -> Option(#(String, List(TaggedBranch))) {
+  case branches {
+    [schema.Record(fields, _), ..] -> {
+      let candidates =
+        list.filter(fields, fn(field) {
+          case field.presence, field.shape {
+            schema.Required, schema.Enumeration([_]) -> True
+            _, _ -> False
+          }
+        })
+        |> list.sort(fn(a, b) { string.compare(a.original, b.original) })
+      list.find_map(candidates, fn(field) {
+        use tagged <- result.try(
+          list.try_map(branches, tagged_branch(_, field.original)),
+        )
+        use Nil <- result.try(
+          name.first_collision(
+            list.map(tagged, fn(branch) { #(branch.literal, branch.literal) }),
+          )
+          |> result.map_error(fn(_) { Nil }),
+        )
+        Ok(#(field.original, tagged))
+      })
+      |> option_from_result
+    }
+    _ -> None
+  }
+}
+
+fn option_from_result(value: Result(a, Nil)) -> Option(a) {
+  case value {
+    Ok(value) -> Some(value)
+    Error(Nil) -> None
+  }
+}
+
+fn tagged_branch(
+  branch: schema.Shape,
+  tag: String,
+) -> Result(TaggedBranch, Nil) {
+  case branch {
+    schema.Record(fields, openness) -> {
+      use field <- result.try(
+        list.find(fields, fn(field) { field.original == tag }),
+      )
+      case field.presence, field.shape {
+        schema.Required, schema.Enumeration([literal]) ->
+          Ok(TaggedBranch(fields, openness, literal))
+        _, _ -> Error(Nil)
+      }
+    }
+    _ -> Error(Nil)
+  }
+}
+
+fn tagged_union_node(
+  tag: String,
+  branches: List(TaggedBranch),
+  stem: Scope,
+  counter: Int,
+  digest: fn(String) -> String,
+) -> Result(Node, Nil) {
+  let #(next, rendered) =
+    list.map_fold(branches, counter + 1, fn(counter, branch) {
+      let #(members, next) = members(branch.fields, stem, counter + 1, digest)
+      #(next, TaggedNode(members, branch.openness, branch.literal))
+    })
+
+  // Recheck the full rendered records, including the constructor-owned tag.
+  // The payload projection removes neither presence nor literal exclusivity
+  // from the decoder's proof, even when an unrelated field falls back.
+  use <- bool.lazy_guard(
+    when: !schema.branches_disjoint(
+      list.map(rendered, fn(branch) {
+        record_shape(branch.members, branch.openness)
+      }),
+    )
+      || list.any(rendered, fn(branch) {
+      case
+        name.first_collision(
+          list.map(branch.members, fn(member) {
+            #(member.field.original, member.label)
+          }),
+        )
+      {
+        Ok(Nil) -> False
+        Error(_) -> True
+      }
+    }),
+    return: fn() { Error(Nil) },
+  )
+  let key = node_prefix(stem.direction, counter)
+  let identifier = node_identifier(stem, counter)
+  let variants =
+    list.index_map(rendered, fn(branch, index) {
+      let variant_key = key <> "V" <> int.to_string(index)
+      let semantic =
+        semantic_name(
+          pascal(name.mangle(branch.literal, digest)) <> stem.semantic,
+        )
+      #(
+        allocated_name(stem, variant_key, semantic),
+        branch,
+        #(variant_key, semantic),
+      )
+    })
+  let definition =
+    "/// Exactly one tagged wire record; the constructor supplies its discriminator.\npub type "
+    <> identifier
+    <> " {\n"
+    <> string.join(
+      list.map(variants, fn(variant) {
+        "  /// Wire literal "
+        <> codegen.clean(variant.1.literal, 120)
+        <> ".\n  "
+        <> record_constructor(
+          variant.0,
+          payload_members(variant.1.members, tag),
+        )
+      }),
+      "\n\n",
+    )
+    <> "\n}"
+  let encode =
+    "case \u{1} { "
+    <> string.join(
+      list.map(variants, fn(variant) {
+        constructor(
+          variant.0,
+          list.map(payload_members(variant.1.members, tag), fn(member) {
+            member.label
+            <> ": "
+            <> binding_name(member.label, member_usage(member))
+          }),
+        )
+        <> " -> "
+        <> object_encode(variant.1.members, "", Some(#(tag, variant.1.literal)))
+      }),
+      " ",
+    )
+    <> " }"
+  let decoder =
+    "codec.one_of(["
+    <> string.join(
+      list.map(variants, fn(variant) {
+        object_decoder(
+          variant.1.members,
+          variant.1.openness,
+          constructor(
+            variant.0,
+            list.map(payload_members(variant.1.members, tag), fn(member) {
+              member.label <> ": " <> member.label
+            }),
+          ),
+          Some(#(tag, variant.1.literal)),
+        )
+      }),
+      ", ",
+    )
+    <> "])"
+  let payloads =
+    list.flat_map(rendered, fn(branch) { payload_members(branch.members, tag) })
+  Ok(Node(
+    schema.Alternatives(
+      list.map(rendered, fn(branch) {
+        record_shape(branch.members, branch.openness)
+      }),
+    ),
+    identifier,
+    encode,
+    decoder,
+    list.append(
+      list.flat_map(payloads, fn(member) { member.node.definitions }),
+      [definition],
+    ),
+    next,
+    list.flatten([
+      [#(key, semantic_name(stem.semantic))],
+      list.flat_map(payloads, fn(member) { member.node.names }),
+      list.map(variants, fn(variant) { variant.2 }),
+    ]),
+  ))
+}
+
+fn payload_members(members: List(Member), tag: String) -> List(Member) {
+  list.filter(members, fn(member) { member.field.original != tag })
+}
+
+fn member_usage(member: Member) -> Usage {
+  case member.field.presence {
+    schema.OptionalField -> Used
+    schema.Required -> payload_usage(member.node)
+  }
+}
+
+fn member_declaration(member: Member) -> String {
+  let type_name = case member.field.presence {
+    schema.Required -> member.node.type_name
+    schema.OptionalField -> "Option(" <> member.node.type_name <> ")"
+  }
+  member.label <> ": " <> type_name
+}
+
+// Records and flattened tagged variants share their wire codecs. The optional
+// fixed field changes only how the constructor supplies one required literal;
+// object keys, openness, presence and nested decoder checks remain identical.
+fn object_encode(
+  members: List(Member),
+  access: String,
+  fixed: Option(#(String, String)),
+) -> String {
+  let fields =
+    list.map(members, fn(member) {
+      case fixed {
+        Some(#(tag, literal)) if member.field.original == tag ->
+          "[#("
+          <> codegen.lit(tag)
+          <> ", report.string("
+          <> codegen.lit(literal)
+          <> "))]"
+        _ ->
+          case member.field.presence {
+            schema.Required ->
+              "[#("
+              <> codegen.lit(member.field.original)
+              <> ", "
+              <> encoded(member.node, access <> member.label)
+              <> ")]"
+            schema.OptionalField ->
+              "codec.optional("
+              <> codegen.lit(member.field.original)
+              <> ", "
+              <> access
+              <> member.label
+              <> ", "
+              <> encoder_function(member.node, "item")
+              <> ")"
+          }
+      }
+    })
+  "report.object(list.flatten([" <> string.join(fields, ", ") <> "]))"
+}
+
+fn record_shape(
+  members: List(Member),
+  openness: schema.Openness,
+) -> schema.Shape {
+  schema.Record(
+    list.map(members, fn(member) {
+      schema.Field(..member.field, shape: member.node.kind)
+    }),
+    openness,
+  )
+}
+
+fn object_decoder(
+  members: List(Member),
+  openness: schema.Openness,
+  constructed: String,
+  fixed: Option(#(String, String)),
+) -> String {
+  let openness = case openness {
+    schema.Closed -> "codec.RejectAdditional"
+    schema.Open -> "codec.AllowAdditional"
+  }
+  let fields =
+    list.map(members, fn(member) {
+      case fixed {
+        Some(#(tag, literal)) if member.field.original == tag ->
+          "use _tag <- codec.field("
+          <> codegen.lit(tag)
+          <> ", codec.literal(report.string("
+          <> codegen.lit(literal)
+          <> "), Nil))\n "
+        _ -> {
+          let field_fn = case member.field.presence {
+            schema.Required -> "field"
+            schema.OptionalField -> "optional_field"
+          }
+          "use "
+          <> member.label
+          <> " <- codec."
+          <> field_fn
+          <> "("
+          <> codegen.lit(member.field.original)
+          <> ", "
+          <> member.node.decoder
+          <> ")\n "
+        }
+      }
+    })
+  "codec.object(["
+  <> string.join(
+    list.map(members, fn(member) { codegen.lit(member.field.original) }),
+    ", ",
+  )
+  <> "], "
+  <> openness
+  <> ", { "
+  <> string.concat(fields)
+  <> "codec.success("
+  <> constructed
+  <> ") })"
 }
 
 // Planning proved the branches structurally disjoint. The trusted one_of
 // combinator still requires exactly one successful decoder at the wire edge.
-fn union_node(
+fn ordinary_union_node(
   branches: List(schema.Shape),
   stem: Scope,
   counter: Int,
@@ -879,13 +1214,7 @@ fn union_node(
   let identifier = node_identifier(stem, counter)
   let #(next, children) =
     list.map_fold(branches, counter + 1, fn(counter, branch) {
-      let child =
-        node(
-          branch,
-          Scope(..stem, semantic: stem.semantic <> "Branch"),
-          counter,
-          digest,
-        )
+      let child = node(branch, stem, counter, digest)
       #(child.next, child)
     })
 
@@ -909,11 +1238,11 @@ fn union_node(
   let variants =
     list.index_map(children, fn(child, index) {
       #(
-        node_prefix(stem.direction, counter)
-          <> "V"
-          <> int.to_string(index)
-          <> "Branch"
-          <> semantic_name(stem.semantic),
+        allocated_name(
+          stem,
+          node_prefix(stem.direction, counter) <> "V" <> int.to_string(index),
+          semantic_name(stem.semantic <> branch_semantic(child.kind)),
+        ),
         child,
       )
     })
@@ -964,6 +1293,16 @@ fn union_node(
     decoder,
     list.append(list.flat_map(children, fn(c) { c.definitions }), [definition]),
     next,
+    list.flatten([
+      [#(node_prefix(stem.direction, counter), semantic_name(stem.semantic))],
+      list.flat_map(children, fn(c) { c.names }),
+      list.index_map(children, fn(child, index) {
+        #(
+          node_prefix(stem.direction, counter) <> "V" <> int.to_string(index),
+          semantic_name(stem.semantic <> branch_semantic(child.kind)),
+        )
+      }),
+    ]),
   )
 }
 
@@ -1016,12 +1355,60 @@ fn node_prefix(direction: Direction, counter: Int) -> String {
 }
 
 fn node_identifier(scope: Scope, counter: Int) -> String {
-  node_prefix(scope.direction, counter) <> semantic_name(scope.semantic)
+  allocated_name(
+    scope,
+    node_prefix(scope.direction, counter),
+    semantic_name(scope.semantic),
+  )
 }
 
-// Semantic text is ASCII display only. The bounded trusted prefix owns
-// identity, so clipping cannot collide and leaves every BEAM atom under 255
-// bytes even when CamelCase is translated to Erlang snake_case.
+// Escaping this keyword locally avoids exposing a digest at ordinary call
+// sites. An explicit type_ field competes for the same label and therefore
+// follows the existing field-collision fallback, never silently aliases it.
+fn field_label(original: String, digest: fn(String) -> String) -> String {
+  case original {
+    "type" | "type_" -> "type_"
+    _ -> name.mangle_label(original, digest)
+  }
+}
+
+fn allocated_name(scope: Scope, key: String, semantic: String) -> String {
+  case dict.get(scope.allocated, key) {
+    Ok(chosen) -> chosen
+    Error(Nil) -> key <> semantic
+  }
+}
+
+fn container_semantic(container: Container, semantic: String) -> String {
+  case container {
+    NullableContainer -> semantic
+    ListContainer | MapContainer ->
+      case
+        string.ends_with(semantic, "s") && !string.ends_with(semantic, "ss")
+      {
+        True -> string.drop_end(semantic, 1)
+        False -> semantic
+      }
+  }
+}
+
+fn branch_semantic(shape: schema.Shape) -> String {
+  case shape {
+    schema.Primitive(schema.ScalarString) -> "Text"
+    schema.Primitive(schema.ScalarInt) -> "Integer"
+    schema.Primitive(schema.ScalarFloat) -> "Number"
+    schema.Primitive(schema.ScalarBool) -> "Boolean"
+    schema.RawObject | schema.Mapping(_) | schema.Record(_, _) -> "Object"
+    schema.RawArray | schema.Sequence(_) -> "Array"
+    schema.NullValue -> "Null"
+    schema.Nullable(_) -> "Nullable"
+    schema.Enumeration(_) -> "Literal"
+    schema.Alternatives(_) | schema.ValueFallback(_) -> "Value"
+  }
+}
+
+// Semantic names are bounded ASCII candidates. Allocation, rather than
+// clipping or server text, owns uniqueness after CamelCase becomes an atom.
 fn semantic_name(value: String) -> String {
   string.slice(value, 0, 64)
 }

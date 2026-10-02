@@ -266,56 +266,61 @@ not a captured response from a live Ashby server. Configured as
 `[mcp.structured]`, its generated surface includes these declarations:
 
 ```gleam
-pub type McpT1InputN2ListApplicationsFilter {
-  McpT1InputN2ListApplicationsFilter(region: String, tags: List(String))
+pub type Filter {
+  Filter(region: String, tags: List(String))
 }
 
-pub type McpT1InputN6ListApplicationsStatus {
-  McpT1InputN6V0ListApplicationsStatusActive
-  McpT1InputN6V1ListApplicationsStatusHired
-  McpT1InputN6V2ListApplicationsStatusArchived
-  McpT1InputN6V3ListApplicationsStatusLead
+pub type Status2 {
+  StatusActive2
+  StatusHired2
+  StatusArchived2
+  StatusLead2
 }
 
-pub type McpT1OptionsListApplications {
-  McpT1OptionsListApplications(
-    status: Option(McpT1InputN6ListApplicationsStatus),
+pub type ListApplicationsOptions {
+  ListApplicationsOptions(
+    status: Option(Status2),
     cursor: Option(Option(String)),
     limit: Option(Int),
-    include_archived: Option(McpT1InputN10ListApplicationsIncludeArchived),
+    include_archived: Option(IncludeArchived),
   )
 }
 
 pub const list_applications_defaults =
-  McpT1OptionsListApplications(
+  ListApplicationsOptions(
     status: None, cursor: None, limit: None, include_archived: None,
   )
 
-pub type McpT1OutputN0ListApplicationsResult {
-  McpT1OutputN0ListApplicationsResult(
-    results: List(McpT1OutputN2ListApplicationsResultResultsItem),
+pub type ListApplicationsResult {
+  ListApplicationsResult(
+    results: List(Result2),
     next_cursor: Option(Option(String)),
   )
 }
 
 pub fn list_applications(
   job_id: String,
-  filter: McpT1InputN2ListApplicationsFilter,
-  options: McpT1OptionsListApplications,
-) -> Result(McpT1OutputN0ListApplicationsResult, mcp.McpError)
+  filter: Filter,
+  options: ListApplicationsOptions,
+) -> Result(ListApplicationsResult, mcp.McpError)
 ```
 
 This is an excerpt; the complete API read also declares the result item,
-its status enum and the input/output boolean types. Generated names start
-with trusted tool, input/output, node and variant ordinals. A readable tool/schema label follows that prefix, capped at 64 ASCII
-characters so even deep declarations remain within the BEAM atom limit.
-The ordinal prefix owns identity; server-supplied labels cannot imitate it.
+its status enum and the input/output boolean types. Generated names describe
+nearby schema roles: `Filter`, `Status`, and `ListApplicationsOptions`. A
+module-wide allocator reserves imported names and all preferred spellings,
+then assigns compact numeric suffixes to collisions. For example, the input
+and output status types are distinct `Status2` and `Status` declarations.
+Trusted tool, direction, node, and variant identities stay inside the generator;
+server text cannot select an identity or capture an allocated suffix. Names
+remain bounded for BEAM atoms. The same allocation renders the source and
+model-visible surface, without rewriting wire literals or server prose.
 Read the current API rather than carrying names from an older listing into
 a session. Enum declarations also document their exact wire literals.
 
 In Gleam, these generated types with one variant and named fields are
 records, and their constructors have the same names as their types.
-`McpT1InputN2ListApplicationsFilter(...)` constructs the filter, and `found.results` reads a returned record field. `Some(value)`
+`Filter(...)` constructs the filter, and `found.results` reads a returned record field. `Some(value)`
 supplies an optional value; `None` omits it. The program starts with the
 omission constant and uses record-update syntax to select only the fields
 it needs:
@@ -328,12 +333,12 @@ import gleam/list
 import gleam/option.{Some}
 
 pub fn main() -> report.Outcome {
-  let filter = applications.McpT1InputN2ListApplicationsFilter(
+  let filter = applications.Filter(
     region: "us", tags: ["engineering"],
   )
-  let options = applications.McpT1OptionsListApplications(
+  let options = applications.ListApplicationsOptions(
     ..applications.list_applications_defaults,
-    status: Some(applications.McpT1InputN6V0ListApplicationsStatusActive),
+    status: Some(applications.StatusActive2),
     limit: Some(100),
   )
 
@@ -389,41 +394,41 @@ types and signatures from it (wrapped here for readability). The complete
 API read includes the other tools and their declarations.
 
 ```gleam
-pub type McpT5OptionsGetIssue {
-  McpT5OptionsGetIssue
+pub type GetIssueOptions {
+  GetIssueOptions
 }
 
-pub const get_issue_defaults = McpT5OptionsGetIssue
+pub const get_issue_defaults = GetIssueOptions
 
-pub type McpT7InputN3ListIssuesState {
-  McpT7InputN3V0ListIssuesStateOpen
-  McpT7InputN3V1ListIssuesStateClosed
-  McpT7InputN3V2ListIssuesStateAll
+pub type State {
+  StateOpen
+  StateClosed
+  StateAll
 }
 
-pub type McpT7OptionsListIssues {
-  McpT7OptionsListIssues(
-    state: Option(McpT7InputN3ListIssuesState),
+pub type ListIssuesOptions {
+  ListIssuesOptions(
+    state: Option(State),
     labels: Option(List(String)),
-    sort: Option(McpT7InputN6ListIssuesSort),
-    direction: Option(McpT7InputN7ListIssuesDirection),
+    sort: Option(Sort),
+    direction: Option(Direction),
     since: Option(String),
     page: Option(Float),
     per_page_77879bba: Option(Float),
   )
 }
 
-pub const list_issues_defaults = McpT7OptionsListIssues(
+pub const list_issues_defaults = ListIssuesOptions(
   state: None, labels: None, sort: None, direction: None,
   since: None, page: None, per_page_77879bba: None,
 )
 
 pub fn get_issue(
-  owner: String, repo: String, issue_number: Int, options: McpT5OptionsGetIssue,
+  owner: String, repo: String, issue_number: Int, options: GetIssueOptions,
 ) -> Result(mcp.ToolResult, mcp.McpError)
 
 pub fn list_issues(
-  owner: String, repo: String, options: McpT7OptionsListIssues,
+  owner: String, repo: String, options: ListIssuesOptions,
 ) -> Result(mcp.ToolResult, mcp.McpError)
 ```
 
@@ -514,9 +519,9 @@ fn triage() -> Result(report.Outcome, String) {
     github.list_issues(
       owner: owner,
       repo: repo,
-      options: github.McpT7OptionsListIssues(
+      options: github.ListIssuesOptions(
         ..github.list_issues_defaults,
-        state: option.Some(github.McpT7InputN3V0ListIssuesStateOpen),
+        state: option.Some(github.StateOpen),
         per_page_77879bba: option.Some(100.0),
       ),
     )
@@ -877,15 +882,15 @@ characters are all that keep them two functions rather than one. The
 generated function for the second row reads:
 
 ```gleam
-pub type McpT0OptionsCreateIssue48f762e0 {
-  McpT0OptionsCreateIssue48f762e0
+pub type CreateIssue48f762e0Options {
+  CreateIssue48f762e0Options
 }
 
-pub const create_issue_48f762e0_defaults = McpT0OptionsCreateIssue48f762e0
+pub const create_issue_48f762e0_defaults = CreateIssue48f762e0Options
 
 pub fn create_issue_48f762e0(
   title title: String,
-  options _options: McpT0OptionsCreateIssue48f762e0,
+  options _options: CreateIssue48f762e0Options,
 ) -> Result(mcp.ToolResult, mcp.McpError) {
   internal.invoke(
     "fixture",
@@ -984,7 +989,7 @@ success. Transport refusals and `ToolFailed` keep their existing meanings.
 | schema JSON nesting | 32 levels | `SchemaTooLarge`; the server is refused whole |
 | recursive typed shape nesting | 12 levels | the deeper field becomes an explicit raw-value fallback |
 | structural `oneOf` alternatives | 32 branches per union | The field falls back to `report.Value` |
-| generated type/variant display suffix | 64 ASCII characters | clipping preserves the trusted identity prefix |
+| preferred generated type/variant name | 64 ASCII characters before a compact collision suffix | allocation keeps identity distinct after clipping |
 | generated source | 512 KiB | `SourceTooLarge`; the server is refused whole |
 | rendered surface | 64 KiB | `SurfaceTooLarge`; the server is refused whole |
 | `tools/list` pages | 64 | `TooManyPages`; the listing fails |

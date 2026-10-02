@@ -1,4 +1,5 @@
 import gleam/bit_array
+import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -8,6 +9,7 @@ import gleam_mcp/json.{type JsonValue}
 import gleam_mcp/protocol
 import mcp/codegen
 import mcp/fixtures/github
+import mcp/internal/type_name
 import mcp/schema
 
 // --- the injected digest -------------------------------------------------
@@ -214,18 +216,12 @@ pub fn typed_body_marshals_by_wire_name_test() {
     "#(\"labels\", report.list(list.map(labels, fn(item) { report.string(item) })))",
   )
   assert string.contains(source, "#(\"ratio\", report.float(ratio))")
-  assert string.contains(
-    source,
-    "draft draft: McpT0InputN5CreateIssue63726561Draft",
-  )
-  assert string.contains(
-    source,
-    "V0EnabledCreateIssue63726561Draft -> report.bool(True)",
-  )
+  assert string.contains(source, "draft draft: Draft")
+  assert string.contains(source, "DraftEnabled -> report.bool(True)")
   assert string.contains(source, "#(\"payload\", report.object(payload))")
   assert string.contains(
     source,
-    "  options _options: McpT0OptionsCreateIssue63726561,",
+    "  options _options: CreateIssue63726561Options,",
   )
   assert string.contains(source, "import gleam/list")
 }
@@ -252,7 +248,7 @@ pub fn optional_only_tool_emits_typed_options_test() {
   assert string.contains(generated.source, "page: Option(Float)")
   assert string.contains(
     generated.source,
-    "pub const ping_defaults = McpT0OptionsPing(page: None)",
+    "pub const ping_defaults = PingOptions(page: None)",
   )
   assert string.contains(
     generated.source,
@@ -305,11 +301,8 @@ pub fn enum_values_render_as_typed_variants_test() {
   let filter =
     tool("filter", None, object_schema([#("state", state)], ["state"]))
   let assert Ok(generated) = gen("srv", [filter])
-  assert string.contains(generated.source, "McpT0InputN1V0FilterStateOpen")
-  assert string.contains(
-    generated.source,
-    "  state state: McpT0InputN1FilterState,",
-  )
+  assert string.contains(generated.source, "StateOpen")
+  assert string.contains(generated.source, "  state state: State,")
 }
 
 // --- adversarial names ---------------------------------------------------
@@ -610,12 +603,12 @@ pub fn empty_options_defaults_are_zero_arity_values_test() {
   let assert Ok(generated) = gen("srv", [tool("ping", None, no_params())])
   assert string.contains(
     generated.source,
-    "pub const ping_defaults = McpT0OptionsPing\n",
+    "pub const ping_defaults = PingOptions\n",
   )
-  assert !string.contains(generated.source, "McpT0OptionsPing()")
+  assert !string.contains(generated.source, "PingOptions()")
   assert string.contains(
     generated.surface,
-    "pub const ping_defaults = McpT0OptionsPing\n",
+    "pub const ping_defaults = PingOptions\n",
   )
 }
 
@@ -649,11 +642,8 @@ pub fn empty_record_and_null_encoders_ignore_unused_payloads_test() {
     generated.source,
     "fn(_value) { report.object(list.flatten([])) }",
   )
-  assert string.contains(
-    generated.source,
-    "codec.success(McpT0OutputN0EmptyResult)",
-  )
-  assert !string.contains(generated.source, "McpT0OutputN0EmptyResult()")
+  assert string.contains(generated.source, "codec.success(EmptyResult)")
+  assert !string.contains(generated.source, "EmptyResult()")
 }
 
 fn enumeration(values: List(String)) -> JsonValue {
@@ -664,12 +654,20 @@ fn enumeration(values: List(String)) -> JsonValue {
 }
 
 // Constructor declarations share a module namespace even when their types
-// differ. These names expose the authority prefix without scanning references.
+// differ. These lines select declarations without scanning their references.
 fn constructors(source: String) -> List(String) {
   source
   |> string.split("\n")
   |> list.map(string.trim)
-  |> list.filter(string.starts_with(_, "Mcp"))
+  |> list.filter(fn(line) {
+    case string.to_utf_codepoints(string.slice(line, 0, 1)) {
+      [first] -> {
+        let code = string.utf_codepoint_to_int(first)
+        code >= 0x41 && code <= 0x5A
+      }
+      _ -> False
+    }
+  })
   |> list.map(fn(line) {
     string.split(line, "(") |> list.first |> result.unwrap(line)
   })
@@ -704,9 +702,9 @@ pub fn semantic_tokens_cannot_collide_with_ordinal_namespaces_test() {
   let assert Ok(generated) = gen("srv", [descriptor, other])
   let names = constructors(generated.source)
   assert list.length(names) == list.length(list.unique(names))
-  assert string.contains(generated.source, "McpT0InputN1V0FooABN2C")
-  assert string.contains(generated.source, "McpT0InputN2V0FooAN1BC")
-  assert string.contains(generated.source, "McpT1Input")
+  assert string.contains(generated.source, "ABN2C")
+  assert string.contains(generated.source, "AN1BC")
+  assert string.contains(generated.source, "FlagEnabled2")
   assert string.contains(generated.source, "report.string(\"b_n2_c\")")
 }
 
@@ -812,4 +810,184 @@ pub fn deep_semantic_names_stay_inside_the_beam_atom_limit_test() {
     generated.source,
     "report.string(\"long_wire_literal_that_remains_visible\")",
   )
+}
+
+pub fn semantic_names_reserve_ordinal_lookalikes_and_imports_test() {
+  let requests = [
+    #("a", "Question"),
+    #("b", "Question"),
+    #("c", "Question2"),
+    #("d", "Some"),
+    #("e", "Some2"),
+    #("f", "Question"),
+  ]
+  let allocated = type_name.allocate(requests)
+  assert dict.get(allocated, "a") == Ok("Question")
+  assert dict.get(allocated, "b") == Ok("Question3")
+  assert dict.get(allocated, "c") == Ok("Question2")
+  assert dict.get(allocated, "d") == Ok("Some3")
+  assert dict.get(allocated, "e") == Ok("Some2")
+  assert dict.get(allocated, "f") == Ok("Question4")
+  assert type_name.allocate(requests) == allocated
+}
+
+pub fn singleton_alternatives_keep_their_actual_inner_type_test() {
+  let singleton = json.Object([#("oneOf", json.Array([typed("string")]))])
+  let descriptor =
+    protocol.ToolDescriptor(
+      ..tool("single", None, object_schema([#("text", singleton)], ["text"])),
+      output_schema: Some(singleton),
+    )
+  let assert Ok(generated) = gen("srv", [descriptor])
+  assert string.contains(generated.source, "text text: String")
+  assert string.contains(generated.source, "Result(String, mcp.McpError)")
+  assert !string.contains(generated.source, "codec.one_of(")
+  assert !string.contains(generated.source, "pub type Text")
+}
+
+pub fn tagged_union_constructors_own_the_required_wire_discriminator_test() {
+  let branches =
+    list.map(["choice", "score"], fn(tag) {
+      json.Object([
+        #("type", json.String("object")),
+        #(
+          "properties",
+          json.Object([
+            #("type", enumeration([tag])),
+            #("name", typed("string")),
+          ]),
+        ),
+        #("required", json.Array([json.String("type"), json.String("name")])),
+        #("additionalProperties", json.Bool(False)),
+      ])
+    })
+  let union = json.Object([#("oneOf", json.Array(branches))])
+  let descriptor =
+    protocol.ToolDescriptor(
+      ..tool("query", None, object_schema([#("question", union)], ["question"])),
+      output_schema: Some(union),
+    )
+  let assert Ok(generated) = gen("srv", [descriptor])
+  assert string.contains(
+    generated.source,
+    "ChoiceQuestion(\n    /// name wire property.\n    name: String,",
+  )
+  assert string.contains(
+    generated.source,
+    "ScoreQuestion(\n    /// name wire property.\n    name: String,",
+  )
+  assert string.contains(
+    generated.source,
+    "#(\"type\", report.string(\"choice\"))",
+  )
+  assert string.contains(
+    generated.source,
+    "codec.field(\"type\", codec.literal(report.string(\"score\"), Nil))",
+  )
+  assert string.contains(
+    generated.source,
+    "codec.object([\"type\", \"name\"], codec.RejectAdditional",
+  )
+  assert string.contains(
+    generated.source,
+    "codec.field(\"type\", codec.literal(report.string(\"choice\"), Nil))",
+  )
+  assert !string.contains(generated.source, "codec.optional_field(\"type\"")
+  assert !string.contains(generated.source, "type_: Type")
+  assert !string.contains(generated.source, "pub type Type")
+  assert !string.contains(generated.source, "Branch")
+}
+
+pub fn escaped_keyword_label_cannot_alias_an_explicit_field_test() {
+  let descriptor =
+    tool(
+      "clash",
+      None,
+      object_schema([#("type", typed("string")), #("type_", typed("integer"))], [
+        "type",
+        "type_",
+      ]),
+    )
+  let assert Ok(generated) = gen("srv", [descriptor])
+  assert string.contains(generated.source, "arguments arguments: report.Value")
+  assert string.contains(generated.source, "Parameters collide after renaming")
+}
+
+// A different required property can prove these records disjoint. An absent,
+// optional or non-singleton tag must nevertheless remain ordinary caller data.
+pub fn only_required_distinct_singleton_tags_flatten_test() {
+  let cases = [
+    #(Some(enumeration(["left"])), Some(enumeration(["right"])), ["value"]),
+    #(None, None, ["value"]),
+    #(Some(enumeration(["same"])), Some(enumeration(["same"])), [
+      "type",
+      "value",
+    ]),
+    #(Some(enumeration(["left", "extra"])), Some(enumeration(["right"])), [
+      "type",
+      "value",
+    ]),
+  ]
+  list.each(cases, fn(example) {
+    let branches = [
+      unflattened_branch(example.0, "string", example.2),
+      unflattened_branch(example.1, "integer", example.2),
+    ]
+    let output = json.Object([#("oneOf", json.Array(branches))])
+    let assert schema.Alternatives(_) = schema.shape(output)
+      as "the non-tag property must still prove exclusive records"
+    let descriptor =
+      protocol.ToolDescriptor(
+        ..tool("union", None, no_params()),
+        output_schema: Some(output),
+      )
+    let assert Ok(generated) = gen("srv", [descriptor])
+      as "the ordinary disjoint union must remain typed"
+    assert string.contains(generated.source, "codec.map(codec.object(")
+    assert !string.contains(generated.source, "use _tag <-")
+    assert !string.contains(
+      generated.source,
+      "Result(report.Value, mcp.McpError)",
+    )
+  })
+}
+
+fn unflattened_branch(
+  tag: Option(JsonValue),
+  value_type: String,
+  required: List(String),
+) -> JsonValue {
+  let fields = case tag {
+    None -> []
+    Some(tag) -> [#("type", tag)]
+  }
+  object_schema(list.append(fields, [#("value", typed(value_type))]), required)
+}
+
+pub fn hostile_tag_literals_stay_inert_and_exact_test() {
+  let hostile = "choice\n@external(erlang, \"os\", \"cmd\")"
+  let branches =
+    list.map([hostile, "score"], fn(tag) {
+      object_schema([#("type", enumeration([tag]))], ["type"])
+    })
+  let descriptor =
+    protocol.ToolDescriptor(
+      ..tool(
+        "tag",
+        None,
+        object_schema(
+          [#("question", json.Object([#("oneOf", json.Array(branches))]))],
+          ["question"],
+        ),
+      ),
+      output_schema: Some(json.Object([#("oneOf", json.Array(branches))])),
+    )
+  let assert Ok(generated) = gen("srv", [descriptor])
+    as "hostile tag text must remain inert source data"
+  assert !string.contains(generated.source, "\n@external")
+  assert string.contains(
+    generated.source,
+    "report.string(" <> "\"" <> codegen.escape(hostile) <> "\"" <> ")",
+  )
+  assert string.contains(generated.source, "use _tag <- codec.field(")
 }
