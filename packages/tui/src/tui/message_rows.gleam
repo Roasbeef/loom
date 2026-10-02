@@ -41,7 +41,10 @@ import tui/theme
 pub const margin_bar = "▎"
 
 /// The rows a message line draws in a pane `width` cells wide: a blank, the
-/// heading, the body, and a blank. The heading is always one row, cut to
+/// heading and the body. The message closes bare, as a call does
+/// (`transcript_lines.closes_bare`): the block after it brings the blank
+/// above itself, so a run of messages is one blank row apart rather than
+/// two. The heading is always one row, cut to
 /// the pane, so a heading that gains words when a result arrives (`admitted
 /// to its queue`) keeps the line's height.
 ///
@@ -82,7 +85,7 @@ pub fn rows(speaker: Speaker, text: String, width: Int) -> List(span.Line) {
     | Failure
     | Spacer -> body_rows(text, [], width)
   }
-  [span.line_plain(""), ..list.append(drawn, [span.line_plain("")])]
+  [span.line_plain(""), ..drawn]
 }
 
 // A sent or sibling message: the heading behind one blank cell, the body

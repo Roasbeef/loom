@@ -1339,7 +1339,9 @@ fn block_closes_bare(rows: List(Line)) -> Bool {
 /// blank, which is why it is a function rather than a second copy of the list:
 /// moving a speaker into or out of the tool family changes both the row drawn
 /// and the gap the fold above owes it, and the two have to move together.
-/// Everything else already ends in a blank, and a `Spacer` is a blank.
+/// A message between agents closes bare as well, so a run of messages,
+/// each opening with its own blank, is one blank row apart. Everything else
+/// already ends in a blank, and a `Spacer` is a blank.
 @internal
 pub fn closes_bare(speaker: Speaker) -> Bool {
   case speaker {
@@ -1348,7 +1350,10 @@ pub fn closes_bare(speaker: Speaker) -> Bool {
     | ToolFailure
     | ToolPatch
     | ReasoningDigest
-    | SummarizedReasoning -> True
+    | SummarizedReasoning
+    | SentMessage
+    | StrandMessage
+    | PeerMessage -> True
     System
     | User
     | Assistant
@@ -1356,10 +1361,7 @@ pub fn closes_bare(speaker: Speaker) -> Bool {
     | ToolDetail
     | Failure
     | Spacer
-    | SummarizedAdvice
-    | SentMessage
-    | StrandMessage
-    | PeerMessage -> False
+    | SummarizedAdvice -> False
   }
 }
 
