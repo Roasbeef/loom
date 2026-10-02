@@ -171,3 +171,28 @@ pub fn joined_results_keep_rows_and_anchors_paired_test() {
   assert list.length(resized.view.rendered_anchors)
     == list.length(resized.view.caches.record_rows)
 }
+
+// A program the deadline stopped names, on the block's foot, the budget
+// the call asked for.
+pub fn a_stopped_program_names_its_budget_test() {
+  let model =
+    frame_scene.attach(frame_scene.model(), "fix readme badge", [
+      frame_scene.user(1, "Run the tests."),
+      frame_scene.assistant(2, "Running them.", [
+        program("c1", checking, [#("within_ms", json.Int(30_000))]),
+      ]),
+      outcome(
+        3,
+        "c1",
+        json.Object([
+          #("status", json.String("run_failed")),
+          #("kind", json.String("deadline_exceeded")),
+          #("detail", json.String("the wall deadline passed")),
+        ]),
+        frame_scene.Errored,
+      ),
+    ])
+  let lines = frame_scene.screen(model, 120, 40) |> frame.buffer_to_lines
+  let assert Ok(_) = find(lines, "the program was stopped · budget 30s")
+    as "the foot names the budget"
+}

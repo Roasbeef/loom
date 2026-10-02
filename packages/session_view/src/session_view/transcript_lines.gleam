@@ -1809,7 +1809,7 @@ fn program_lines(
       details: Some(json.Object(details)),
       content:,
       ..,
-    )) -> Ok([Line(ProgramFailure, failure_text(details, content))])
+    )) -> Ok([Line(ProgramFailure, failure_text(details, content, fields))])
     Some(_) -> Error(Nil)
   }
 }
@@ -1877,7 +1877,14 @@ fn running_text(
 fn failure_text(
   details: List(#(String, json.JsonValue)),
   content: List(message.ToolResultBlock),
+  arguments: List(#(String, json.JsonValue)),
 ) -> String {
+  // A program the deadline stopped says the budget it ran out of, when the
+  // call named one.
+  let budget = case int_field(arguments, "within_ms") {
+    Some(ms) -> " · budget " <> duration_text(ms)
+    None -> ""
+  }
   let said = content |> list.map(tool_result_text) |> string.join("\n")
   let #(title, foot, error) = case string_field(details, "status") {
     Some("compile_failed") -> #(
@@ -1890,7 +1897,11 @@ fn failure_text(
       "the program did not run",
       said,
     )
-    Some("run_failed") -> #("did not finish", "the program was stopped", said)
+    Some("run_failed") -> #(
+      "did not finish",
+      "the program was stopped" <> budget,
+      said,
+    )
     Some("program_failed") -> #(
       "program failed",
       "the program reported a failure",
