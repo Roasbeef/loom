@@ -1085,9 +1085,12 @@ event as the reply instead, carrying both `reply_to` and the same `seq`. Every
 other connection receives the ordinary broadcast. A client therefore sees each
 durable event exactly once, whether or not it issued the command.
 
-`set_config`'s `active_tools` is checked against the live tool registry, so
-the registry the hub holds must be the one the effect wiring dispatches
-through. That registry is built at boot from an ordered list of
+`set_config`'s `active_tools` is checked against registered tool names. At
+startup the hub projects those names from the same immutable registry used
+by effect dispatch, rather than retaining executors in its membership field.
+A configured empty set still differs from no registry: the former permits an
+empty active selection, while the latter refuses active-set changes.
+The execution registry is built at boot from an ordered list of
 **contributions** (`client/contributions.gleam`), each naming its origin: the
 harness's own built-ins, or an installed extension.
 

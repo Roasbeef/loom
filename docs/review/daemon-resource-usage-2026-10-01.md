@@ -1,7 +1,8 @@
 # Daemon and Darwin helper resource use, 2026-10-01
 
-Status: source fixes committed and independently reviewed. Full local signoff
-and the isolated typed Jev fixture passed. The resource changes have not been
+Status: the first resource slice passed full local signoff and the isolated
+typed Jev fixture. The additional gateway and restart projections are under
+verification. The resource changes have not been
 installed in the normal daemon; hosted CI remains outstanding. This wave builds
 on the [first closure-retention fix](daemon-memory-retention-2026-10-01.md).
 
@@ -55,6 +56,49 @@ old captures failed the regressions, growing the context reader from 643 to
 counts prove independence from unrelated payload growth; they are not a
 prediction of resident-memory savings.
 
+## Gateway membership and supervisor restart inputs
+
+The remaining source trace found one explicit gateway-state owner that did
+not use executable registrations: `gateway.State.registry` listed registered
+names and checked membership for operator configuration and history recovery.
+The private state now projects an optional name-keyed dictionary before
+initialization. Public `Options.registry` and `with_registry` still accept the
+same registry, and runtime effects still own executable tools. Availability
+remains sorted; an absent registry still refuses active-set edits, while a
+configured empty registry allows an empty selection. This removes the separate
+state slot's executor path, not every registry path reachable through Runtime.
+
+The async-run worker previously read a heartbeat through captured Settings,
+and the hub worker read its session, workspace, catalogue and code-mode issue
+through the same complete record. Those values are now projected before their
+restart closures are built. Runtime and hub execution inputs retain their
+existing restart ownership. No borrowed-runtime lifetime, public interface
+or supervision strategy is changed.
+
+The four new gateway regressions and the existing cases passed together:
+126 tests, own exit zero. The actual isolated actor-state measurement varied
+only the separately supplied registry; its runtime fixture had no tool
+executors. Registry size grew from 202 to 90292 flat words, while state stayed
+758 words. Restoring the original executable-registry field made state grow
+from 946 to 91036 words and failed the regression. Source was restored before
+the successful complete gateway run. Temporary scalar prints were removed.
+
+Availability uses a real completed credited metadata capture. Configuration
+asserts the exact absent-registry refusal and successful empty selection.
+Manual compaction submits a real durable branch through the operator command
+and captures the provider's frozen preparation: registered plus active history
+produces source references, while inactive or unavailable history preserves
+the original result. Its private provider fixture permits summary generation;
+existing default and scripted fixtures retain their prior policy.
+
+The pinned weft 0.4.5 initializer transfers selected builder fields into its
+loop and discards the initializer callback. Gateway's retained handler is the
+top-level `handle`, so startup Options do not reintroduce the removed registry
+field through a handler environment. A fresh independent review found no
+remaining invariant, simplification or reachable nearby-variant finding in
+these additions. These results isolate retained paths; they do not predict
+installed process or RSS savings. Final combined release signoff is pending.
+
 ## Fresh snapshot traversal
 
 The Darwin tracker indexes parent heads and one-based sibling links within
@@ -92,7 +136,7 @@ the old captures, omitted recursive traversal and bypassed birth checks.
 The tracker tests cover deep unordered ancestry, reparenting, PID reuse and
 real TERM delivery while an unrelated sleeping process remains alive.
 
-A fresh Astra review found no production regression, no high or medium
+A fresh independent review found no production regression, no high or medium
 finding, and no additional actionable nearby variant. It identified a low
 test-oracle gap: metadata comparisons shared the projection under test. The
 follow-up adds an independent expected value for the known fixture metadata.
@@ -111,7 +155,7 @@ without forwarding that variable to jailed Go. The granted path and actual
 write path diverged under a private cache override. Forwarding the same name
 aligns them. Both private and default caches pass; reverting only the forwarding
 line reproduces the original symbol-not-found failure. Filesystem grants and
-query assertions are unchanged. Astra reviewed both test-only corrections
+query assertions are unchanged. An independent review covered both test-only corrections
 and found no remaining issue.
 
 ## Matched release observation
@@ -196,6 +240,31 @@ RSS was 290080 KiB. This changes build, activity, collection history and
 MCP availability at once. It cannot isolate the cost of MCP or prove a
 restart memory saving. The same original session and its two strands remained
 resident. The resource branch itself was not installed.
+
+A later cut of the same restarted daemon found both strands idle: 258.328 MiB
+allocated BEAM memory, 211.883 MiB of processes and 307600 KiB daemon RSS.
+The separate installed Jevelin process used 69360 KiB RSS. Their summed RSS
+is about 368 MiB, which explains the rough combined magnitude without assigning
+Jev's separate runtime to Loom's process heap. It does not prove an Activity
+Monitor footprint equivalence or isolate startup from workload history.
+
+
+## Live typed Jev on the restarted normal daemon
+
+A fresh disposable session on PID 20976, source `31db7c683`, discovered the
+structural `cap://mcp/jev` module from the model-visible code-mode description,
+read that module and compiled the typed Choice program in the real jail.
+Live `jev-1.13.0` returned Choice `logs`, confidence 1.0 and 298 input / 31
+output tokens. The credited durable session snapshot retained a successful
+code-mode tool result, and both build and satellite reported Seatbelt
+filesystem and network enforcement. Their platform resource and process
+limits remained degraded. No model request contained the API key.
+
+Only the disposable verification session was stopped, returning to `saved`;
+the normal daemon and original user session remained running. This verifies
+the owner's credential-bearing restart and installed typed MCP path, not
+installation of the new resource branch. Memory cuts taken before this test
+are not replaced with cuts after its additional workload.
 
 ## Remaining limits
 
