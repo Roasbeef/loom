@@ -52,6 +52,29 @@
 //// The API key is accepted as an argument and written into one
 //// `x-goog-api-key` header; it is never stored in the accumulator, any
 //// event, or any error (spec §3.3 invariant 4).
+////
+//// ## Flow
+////
+//// `build_request` → `encode_contents` → `response_machine` → `on_chunk` → `handle_sse` → `handle_response_document` → `handle_part` → `on_end` → `settle`
+////
+//// 1. `build_request` picks the generation config, including
+////    `thinking_config` for the model's generation, and hands the transcript
+////    to `encode_contents`.
+//// 2. `encode_contents` folds each message into the turn in progress with
+////    `push_message`, and `flush_images` closes a tool-result run that
+////    carried images.
+//// 3. `response_machine` starts an `Accumulator` and wires the transport's
+////    callbacks to it.
+//// 4. `on_chunk` feeds a 200 body to the SSE parser and each event to
+////    `handle_sse`; other statuses collect the error body for `http_error`.
+//// 5. `handle_sse` parses one document; `handle_document` treats a top-level
+////    `"error"` as an in-band failure, and `handle_response_document` records
+////    usage and routes the first candidate to `handle_candidate`.
+//// 6. `handle_candidate` folds each part with `handle_part` (text through
+////    `append_text`, calls through `append_tool`) and then applies the
+////    `finishReason` with `apply_finish_reason`.
+//// 7. There is no terminator event, so `on_end` calls `settle`, which builds
+////    the one assistant message in `settle_with_stop`.
 
 import core/corruption.{type CorruptionReport}
 import core/json.{type JsonValue}

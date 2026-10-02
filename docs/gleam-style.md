@@ -507,53 +507,7 @@ message type want no blank lines at all — but a comment giving the
 *reasoning* for an arm still wants one above it, which is the first rule
 arriving in the second place.
 
-### Reading order: spine, flow, state first, tables
-
-A reader usually arrives in a large module through go-to-definition, in
-the middle of a file, with no map. Six habits give them one. They came
-out of an outside read of the tree ([issue #593](https://github.com/Roasbeef/loom/issues/593)), and the LSP modules
-were the first to be written this way, so each habit below points at a
-real example there. **These are style rules, not lint gates yet.** Issue
-#593 tracks which of them can be checked mechanically (a required
-`## Flow` heading, types-before-functions, a doc-check for transition
-tables) and which stay judgement.
-
-1. **A spine at the top of a large module.** Under a `## Flow` heading in
-   the module doc, sketch the main path as a text block of function
-   names, in the order a reader will meet them, about 10 to 20 lines. It
-   names real functions, so it goes stale visibly. Example: the `## Flow`
-   section of `client/lsp/manager.gleam`, which traces a path-scoped
-   query from `door` through the keeper to the answer.
-2. **Order the file by call flow.** Put the entry point first and the
-   helpers it calls after it, roughly depth-first, so reading down the
-   file follows a call down the stack. The manager's `## Flow` says the
-   order out loud: types, the actor, the keeper, the door, then the
-   helpers the door's closures call, and the production backend last
-   because it is a plug-in and not part of the path. A helper shared by
-   several callers has no single right place, and that is fine.
-3. **Keep domain calls qualified.** `resolve.admit`, `lsp.settle` and
-   `manager.door` tell the reader which domain a call belongs to, which
-   in Gleam is the nearest thing to a method receiver. Import types
-   unqualified and functions qualified (see Imports above), and do not
-   relax this for domain functions.
-4. **Extract a helper only when its name is a domain operation.**
-   `gate`, `readied` and `named_uri` in the manager each say what
-   happens in the domain, so the call site reads as the story. A helper
-   named for its position (`do_step2`) that wraps six lines and has one
-   caller hides a step the reader would rather see in place. Lint R8
-   measures width; this rule asks about the name.
-5. **State, `Msg` and `Effect` types first.** In a module that is a state
-   machine, put the state, message and effect types above the first
-   function, so the reader sees the state space before the code that
-   moves through it. Example: `lsp/client.gleam` declares `Msg`,
-   `Phase` and the rest of its types before its first function.
-6. **A transition table for the key state machines.** Put a table in the
-   module doc: a row per state, a column per message, and in each cell
-   the next state or what the message does when the state stays. Cells
-   are prose and need only make the legal state space visible. Examples:
-   `## Transition table` in `lsp/client.gleam` and `## Transitions of
-   the relay` in `client/lsp/jail.gleam`.
-
+### What the formatter decides, and what you do
 
 `gleam format` gives a call or signature exactly two layouts: everything
 on one line when the whole form fits in 80 columns, otherwise one
@@ -565,6 +519,219 @@ that add width without disambiguating (stdlib practice), name
 intermediates so the call takes short references, and split a function
 whose signature cannot fit rather than living with a tall one. Never
 trade clarity for a saved line.
+
+### Orientation in large modules
+
+Stanzas orient a reader inside one body. This section orients a reader
+inside one *module*, and it is a rule about layout rather than about any
+single function, which is why it sits beside the stanza rules and not in
+Part III. The reader it serves arrives from "go to definition" or a search
+hit, lands in the middle of a two-thousand-line file, and has not read the
+module doc, the types or the function above. Small bodies and prose over
+every stanza keep each function readable, but they do not tell that reader
+where the function sits in the whole. Six rules do, and they are cheap to
+follow because they ask for what the author already knows. They came out
+of an outside read of the tree ([issue
+#593](https://github.com/Roasbeef/loom/issues/593)), and the
+language-server modules were the first written this way, so their module
+docs are good second examples beside the two below.
+
+| # | Rule | Lint | Tier |
+| --- | --- | --- | --- |
+| 1 | A large module opens with a flow spine | R13 | gates |
+| 2 | Functions follow the call flow | R17 | census |
+| 3 | Domain functions are called qualified | R16 | gates |
+| 4 | A helper is extracted only if it names a domain operation | R18 | census |
+| 5 | State, message and effect types come before the first function | R15 | gates |
+| 6 | A critical state machine carries a checked transition table | R14 | gates |
+
+R13, R14, R15 and R16 are decidable without judgement, so they gate once
+the tree is clean. R17 and R18 never gate: they are censuses that warn
+forever. A helper shared by several callers has no single right place
+(R17), and whether a name is a domain operation is a judgement that a
+program can only approximate (R18). Read their warnings as a prompt to
+look, as you read R8's.
+
+**1. Open a large module with a flow spine.** A module of a thousand lines
+or more (`policy.spine_lines`) carries a `//// ## Flow` section in its
+module doc, after the paragraphs that say why the module exists. The
+section runs to the next `#` or `##` heading, so put it before the deeper
+sections rather than above a paragraph it would swallow. The spine is one
+arrow line naming the main path, then a numbered
+list saying what each step does, in the order a reader meets the steps. It
+runs ten to twenty lines. It shows the main road and leaves the detail to
+the doc comment on each function. This is `tui/inbound`'s:
+
+```gleam
+//// ## Flow
+////
+//// `drain_connection` → `handle_connection_message` → `apply_channel_update`
+//// → `run_settled` → `settle_surfaces` → `show_surface`
+////
+//// 1. `drain_connection` takes a batch from the adopted inbox with
+////    `take_connection` and records whether it stopped at the batch.
+//// 2. `handle_connection_message` gives one message to the session channel
+////    through `lane_fold.receive`, which answers with channel updates.
+//// 3. `tick_channel` is the timer's way in: `lane_fold.tick` yields the same
+////    updates when a deadline or the idle refresh falls due.
+//// 4. `apply_channel_update` reads `surroundings`, then folds one update
+////    through `run_settled`, which holds the result and settles it.
+//// 5. `settle_surfaces` replays each recorded fact through `show_surface`,
+////    then `restore_returned_drafts` moves returned drafts to the editors.
+//// 6. `show_surface` writes one fact to the terminal; a lost connection ends
+////    in `begin_reconnect`, which asks `reconnect_decision` if one is owed.
+```
+
+A path with branches reads better drawn than listed, and a spine may be a
+diagram in a ```` ```text ```` fence instead. `client/lsp/manager`'s traces
+a path-scoped query from `door` through the keeper to the answer, with the
+bare-name, write and shutdown paths beside it:
+
+```gleam
+//// ```text
+//// door → definition | references | hover | outline | calls
+//// a path-scoped query:
+////   session_for → owned → acquire → ask(Acquire) → handle
+////     → begin → start_keeper → keep_server → begin_server
+////     → backend.connect (jailed: connect_jailed → jail_for → probe)
+//// ```
+```
+
+The lint checks the names, which keeps a spine from rotting the way a
+paragraph would. Every backticked snake_case name in the section must be a
+function defined in the module, and `alias.name` must use an alias the
+module imports (`lane_fold.receive` above; the function behind it is not
+checked). A spine names at least three local functions and holds no fenced
+code block, which would hide names from the check. Anything else in
+backticks, such as a type or a constructor, is prose and is left alone.
+That includes a quoted literal, which is how a spine names a wire field:
+`settle` runs on `"message_stop"`, not on `message_stop`, which the lint
+would read as a function the module lacks. A parameter, a field or a
+constant is not a function either, so write it as a plain word.
+Inside a `text` diagram there are no backticks to say which words are
+names, so the check goes by shape. A word with an interior underscore
+(`begin_server`) or written as a call (`ask(Acquire)`) must be a function
+or a constant of the module, because prose has no such words. A plain
+word (`door`, `handle`) is not checked, though it counts towards the three
+when it is a function. A qualified word (`backend.connect`) is not checked
+in a diagram, where it is as often a field call as an import, and a
+pattern such as `decode_<name>` or `render_*` names a family. Any fence
+that is not `text` is a code listing and is refused.
+Rename a function and the build fails until the spine follows. A smaller
+module may carry a spine too, and it is checked the same way. R13 gates.
+
+**2. Order a large file by call flow.** Put an entry point above the
+helpers it calls, and the helpers in the order the entry point reaches
+them, so that reading downward follows the spine. A reader who has just
+read `receive` then finds `apply_pushed` and `apply_reply` below it, and
+not eleven screens away beside whatever they share a prefix with. Gleam
+does not care about definition order, so the order is yours to give. R17
+counts a module's private helpers that sit above their first caller, and
+warns when a module has ten or more helpers and more than half of them are
+out of order. The tree reads entry point first today, so the census is zero
+and the rule stands guard over that. It is a census because a helper called from five places has no
+single right position, and moving one to please the count would hurt four
+callers to help one.
+
+**3. Call domain functions qualified.** Import a Loom module and write
+`session_channel.tick(...)`, not
+`import session_view/session_channel.{tick}` and a bare `tick(...)`. This
+is the Imports rule above, enforced for Loom modules. A bare `tick` or
+`apply` in the middle of a body could be this module's own function or
+another's, and the reader dropped in from "go to definition" answers that
+by scrolling to the imports. Qualified, `lane_fold.apply_channel_update`
+names the module that owns the step without leaving the line. R16 flags an
+unqualified import of a Loom function and gates.
+
+The rule reaches only Loom's own modules, those whose first path segment
+is a package root under `packages/*/src` (`qualified.loom_roots`, which a
+test holds to the tree). The standard library and dependencies follow the
+Imports section above, where `type Option, None, Some` stay unqualified.
+Types and constructors are never findings, because a constructor names
+itself, and neither is a type. Qualification is not free, so the rule also
+has an allow list (`qualified.allowed`) for a Loom function whose bare name
+reads better, the way a `use <- or_fault(...)` continuation combinator
+might. It is empty: the tree held two unqualified Loom values, both
+constants, and both read better qualified. What the rule refuses is the
+call a reader cannot place, a function that does domain work.
+
+```gleam
+// Bad: `tick` and `receive` could be this module's, or anyone's.
+import session_view/session_channel.{receive, tick}
+
+let #(lane, updates) = receive(lane, message, now:)
+
+// Good: the module that owns the transition is on the line.
+import session_view/session_channel
+
+let #(lane, updates) = session_channel.receive(lane, message, now:)
+```
+
+**4. Extract a helper only if its name is a domain operation.** A helper
+earns its place by naming a step of the domain: `settle_cache`,
+`apply_submission` and `capture_again` each say what changes when they run,
+so the reader of the caller can skip the body because the name is the
+summary. `do_thing2`, `helper` and `process_inner` name only where the
+author cut the function. They add a jump without a meaning, and the reader
+pays the jump to learn that the body is no more than the lines the caller
+lost. When you cannot name the extracted piece as an operation, it is
+probably not one, and the better change is a stanza break and a comment
+inside the caller.
+
+This complements R8 and does not repeat it. R8 looks at the shape of a
+one-caller function wide enough to be a pyramid moved elsewhere. R18 looks
+at the name of a small one: a private function with exactly one caller,
+spanning six lines or fewer (`policy.unnamed_helper_lines`), whose name the
+module doc never mentions. A helper the module doc names has been promoted
+to part of the module's story by the one reader entitled to say so. Both
+warn and neither is a reason to inline by itself, because naming a domain
+operation is a judgement. Never add helper names to a module doc to quiet
+R18: that defeats the only signal it gives.
+
+**5. Put the state, message and effect types first.** In a module that is
+a state machine (a reducer, a channel, a supervisor loop), define its
+custom types above its first function. A reader of a transition needs the
+states before the transitions, and "go to definition" on a constructor
+should land near the top and not at line 1,100. The move is free because
+Gleam resolves types in any order. R15 decides which module is a state
+machine and which types are its state space without guessing from names: a
+module that defines a step function (`update`, `step`, `transition`,
+`handle_message` or `handle`, the table in `state_first.step_names`) is
+one, and the local types its signature names, through type arguments,
+tuples and function types, are the state space. Each must be defined above
+the first function. R15 gates.
+`tui/inbound` defined `ReconnectDecision` after the function that returns
+it; the fix was a pure move above `reconnect_decision`.
+
+**6. Give a critical state machine a checked transition table.** A
+function that dispatches on a state type shows what happens in each case
+but never lets the reader see one state whole. A table does: one row per
+state, one column per event. For the machines whose misuse costs the most,
+put the table in the module doc under a marker that names the type, and
+the lint holds it to the code. This is a part of `session_view/session_channel`'s,
+whose `Phase` has five states:
+
+```gleam
+//// <!-- transitions: session_channel.Phase -->
+////
+//// | state | receive | tick | submit | close | retire |
+//// | --- | --- | --- | --- | --- | --- |
+//// | `AwaitingBegin` | `Receiving` on a valid begin; `Ready` on a resumed marker; a push is applied in place; anything else `Closed` | `Closed` once the deadline passes | queued (`Waiting`); a mutation also needs a held cut and a mutating role, else refused | `Closed` | `Closed` |
+//// | `Closed` | ignored | nothing | refused | unchanged | unchanged |
+```
+
+The marker names `module.Type`, where `module` is the last path segment
+or the full path, and the type must be a custom type defined in the
+module. The body rows must name exactly the type's variants: a missing,
+extra or duplicated row fails, as does a row whose cell count differs from
+the header's and an empty cell. So adding a variant to `Phase` fails the
+build until someone decides what every event does to it, which is the
+decision the table exists to force. The cells are prose: name the next
+state, say "refused" or "ignored", and add a few words where the answer
+depends on something. The lint checks the shape and not the claims, so
+derive the table from the code with the code open, and read it against the
+model where one exists (`protocol/models/terminal-attachment` for this
+channel). R14 gates.
 
 ### Deprecation
 

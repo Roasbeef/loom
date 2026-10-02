@@ -26,6 +26,25 @@
 //// `7` for Sunday through `6` for Saturday, and `7` is normalised to `0`
 //// at parse time so the matcher only ever compares against one spelling.
 ////
+//// ## Flow
+////
+//// `parse` → `five_fields` → `parse_restriction` → `matches` → `next_occurrence` → `next_from`
+////
+//// 1. `parse` bounds the text with `within_length`, splits it with
+////    `five_fields`, and parses each field against its `Bounds`.
+//// 2. `parse_values` and `parse_restriction` expand a field's items through
+////    `parse_items` and `parse_item`; the day fields keep whether they were
+////    restricted, since that decides the OR rule.
+//// 3. `matches` tests one instant, converting it with `civil_from_days` and
+////    asking `day_matches` for the day-of-month and day-of-week rule.
+//// 4. `next_occurrence` floors the instant to the next minute and seeds
+////    `next_from` with that day and minute.
+//// 5. `next_from` walks days forward, skipping non-matching ones, and inside a
+////    matching day takes `first_minute_at_or_after` the floor.
+//// 6. `previous_occurrence` and `previous_from` are the mirror, walking back.
+//// 7. Both stop after the search horizon, so an expression that never
+////    recurs answers `None`.
+////
 //// ## Day-of-month and day-of-week are ORed, not ANDed
 ////
 //// This is the one rule in cron that surprises everybody, and it is the

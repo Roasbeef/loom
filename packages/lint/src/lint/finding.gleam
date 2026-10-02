@@ -97,6 +97,41 @@ pub type Rule {
   /// has no type widths or lifetime information, so this is a warning about
   /// a measurable capture shape rather than a claim about memory cost.
   BroadClosureCapture
+
+  /// R13. A module over the policy's line threshold whose module doc has no
+  /// `//// ## Flow` spine, or whose spine names a function the module does
+  /// not define. The spine is the local orientation a reader dropped in by
+  /// "go to definition" needs (issue #593, 1); checking every name it lists
+  /// is what keeps it from going stale silently.
+  FlowSpine
+
+  /// R14. A transition table marked `<!-- transitions: module.Type -->` in a
+  /// module doc whose rows do not match the constructors of the named type
+  /// exactly (issue #593, 6). The cells stay prose; the row set is checked,
+  /// so adding a state without updating the table fails the gate.
+  TransitionTable
+
+  /// R15. A state-machine module whose state, message or effect types are
+  /// defined after its first function (issue #593, 5). A reader should see
+  /// the state space before the code that moves through it.
+  StateFirst
+
+  /// R16. An unqualified import of a function from one of Loom's own
+  /// modules. The qualifier says which domain a call belongs to — the
+  /// closest thing Gleam has to a method receiver (issue #593, 3).
+  QualifiedDomainCall
+
+  /// R17. A census: modules where many private helpers are defined before
+  /// their first caller, so the file does not read in call order (issue
+  /// #593, 2). Helpers shared by several callers have no single right
+  /// place, so this warns forever.
+  FlowOrder
+
+  /// R18. A census: a short private function with one caller whose name
+  /// the module doc never mentions — a likely helper that hides a step
+  /// rather than naming a domain operation (issue #593, 4). Whether a name
+  /// is a domain operation is judgement, so this warns forever.
+  UnnamedHelper
 }
 
 /// Every rule, in report order.
@@ -115,6 +150,12 @@ pub fn rules() -> List(Rule) {
     CommentStanza,
     DenseStanza,
     BroadClosureCapture,
+    FlowSpine,
+    TransitionTable,
+    StateFirst,
+    QualifiedDomainCall,
+    FlowOrder,
+    UnnamedHelper,
   ]
 }
 
@@ -225,8 +266,63 @@ pub fn rules() -> List(Rule) {
 /// because whether a callee retains one is an interprocedural question. A
 /// report can therefore name a useful projection, but it cannot prove the
 /// retained value is broad or long-lived enough to cost material memory.
+///
+/// **R13, R14, R15 and R16 gate; R17 and R18 warn forever.** They arrived
+/// together for issue #593, local orientation in a large module, and they
+/// split along the line the staging always draws: four are decidable and
+/// were driven to zero in the change that wrote them, and two are
+/// judgements wearing a number.
+///
+/// **R13** was 96 on the day it was written — every hand-written module of a
+/// thousand lines or more — and it is **zero** now, because each of those
+/// modules gained a `//// ## Flow` spine in the same change. Whether a module
+/// doc holds the heading is decidable, and so is whether a backticked name
+/// in it is a function the module defines; that second half is the reason
+/// to gate. A spine is prose that names code, and prose that names code goes
+/// stale the day a function is renamed. At warning level a renamed function
+/// leaves a spine that lies to the next reader; at error level the rename
+/// fails the build until the spine is told.
+///
+/// **R14** was zero by construction, because no table existed before it, and
+/// it is the rule whose whole purpose is the gate: a transition table whose
+/// rows must equal a type's constructors is worth having only if adding a
+/// state without a row fails. Nine tables exist now and each matches its
+/// type. The cells stay prose, which is the half nothing can check.
+///
+/// **R15** was 47 across 24 modules and is zero; every fix was a pure move of
+/// a type definition above the first function, verified by the compiler.
+/// Which types are the state space is decided from the step function's
+/// signature rather than guessed from names, so the rule needs no types to
+/// be exact. The step-function table (`update`, `step`, `transition`,
+/// `handle_message`, `handle`) is a judgement, but a narrow one: each name
+/// was kept only after its findings in this tree were real state machines.
+///
+/// **R16** was two, both constants, and is zero. An import either names a
+/// lowercase value from a Loom module or it does not. The rule protects what
+/// a qualifier tells a reader — which domain a call belongs to — and that is
+/// lost one convenient unqualified import at a time, which is the shape of
+/// property this list exists to hold.
+///
+/// **R17 and R18 never gate.** R17 asks whether a module reads in call order,
+/// and a helper shared by several callers has no single right place; its
+/// census is zero at the default threshold, so it stands as a regression
+/// guard on a tree that already reads entry point first. R18 asks whether a
+/// short one-caller helper names a domain operation, and that is judgement
+/// by definition; its 859 findings are a reading list for a reviewer, not a
+/// backlog, and a module doc padded with helper names to silence it would
+/// destroy what it measures.
 pub fn error_by_default() -> List(Rule) {
-  [Unparseable, NestingDepth, PanicInSource, PortablePurity, CommentStanza]
+  [
+    Unparseable,
+    NestingDepth,
+    PanicInSource,
+    PortablePurity,
+    CommentStanza,
+    FlowSpine,
+    TransitionTable,
+    StateFirst,
+    QualifiedDomainCall,
+  ]
 }
 
 /// How a run's findings divide into the ones that fail a build and the ones
@@ -269,6 +365,12 @@ pub fn id(rule: Rule) -> String {
     CommentStanza -> "R10"
     DenseStanza -> "R11"
     BroadClosureCapture -> "R12"
+    FlowSpine -> "R13"
+    TransitionTable -> "R14"
+    StateFirst -> "R15"
+    QualifiedDomainCall -> "R16"
+    FlowOrder -> "R17"
+    UnnamedHelper -> "R18"
   }
 }
 
@@ -288,6 +390,12 @@ pub fn name(rule: Rule) -> String {
     CommentStanza -> "comment-stanza"
     DenseStanza -> "dense-stanza"
     BroadClosureCapture -> "broad-closure-capture"
+    FlowSpine -> "flow-spine"
+    TransitionTable -> "transition-table"
+    StateFirst -> "state-first"
+    QualifiedDomainCall -> "qualified-domain-call"
+    FlowOrder -> "flow-order"
+    UnnamedHelper -> "unnamed-helper"
   }
 }
 

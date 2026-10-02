@@ -9,6 +9,27 @@
 //// schema, and a total `run` that turns every failure into a structured
 //// result the model can act on.
 ////
+//// ## Flow
+////
+//// `default_config` → `seam` → `execute` → `execute_after_vetting` → `watching` → `translate`
+////
+//// 1. `default_config` and the `serving`, `orchestrating` and `over_*`
+////    builders fill a `Config`; `discover` finds the toolchain it runs on.
+//// 2. `seam` fills the `tools/codemode` record: `offered_seams` and
+////    `seam_offer` say which allowlists and capabilities the model may name.
+//// 3. `execute` refuses a seam the host does not serve through `unserved`,
+////    then vets the source with the seam's own `seam_allowlist`.
+//// 4. `execute_after_vetting` prepares this execution's directories, after
+////    `check_socket_path` and `prepare_root`, and always removes them again.
+//// 5. `exec_config` assembles the pipeline's configuration under the
+////    execution's `exec_root`, `pooled_budget` and `build_config`.
+//// 6. `watching` wraps the launcher so that a policy refusal at the run
+////    stage is reported outward by `reported_refusal`.
+//// 7. `translate` and `translate_enforcement` turn the pipeline's outcome
+////    and the helper's account into the tool's vocabulary.
+//// 8. The routers (`surface_router`, `workspace_router`) service the
+////    capability calls the running program makes.
+////
 //// ## Two seams, one pipeline
 ////
 //// There are two code-mode selections, and `Config.surface` says which

@@ -18,6 +18,32 @@
 //// row starts as a new arm in one of those. The advisor traffic section
 //// recognizes the frames the server wraps advisor messages in and gives
 //// them their own compact rows.
+////
+//// ## Flow
+////
+//// `record_lines` → `record_blocks` → `entry_lines` → `message_lines` → `assistant_block_lines` → `tool_call_summary`
+////
+//// 1. `record_lines` (or `keyed_record_lines` for a host that matches rows by
+////    identity) takes the active strand's records and calls `record_blocks`,
+////    then `separated_tool_groups` puts a blank between adjacent tool groups.
+//// 2. `record_blocks` selects the strand's entries with `strand_entries`, splices
+////    cache notices in at their sequence (`splice_notices`) and builds one block
+////    per entry, group or notice, tagged by durable sequence.
+//// 3. Expanded history draws each entry in full through `expanded_lines`;
+////    compact history goes through `compact_item_lines`, which reuses a cached
+////    call's rows (`cached_activity_lines`) or draws them with `activity_call_lines`.
+//// 4. `entry_lines` dispatches on the entry: a compaction, a branch summary and
+////    a custom entry are one row, and a message goes to `message_lines` unless
+////    `harness_message_lines` or `peer_message_lines` claims it first.
+//// 5. `message_lines` draws a user message, an assistant response through
+////    `assistant_block_lines`, or a tool result through `tool_result_lines`.
+//// 6. `assistant_block_lines` turns a reasoning block, text or a tool call into
+////    rows; a call becomes `code_mode_program`, `patch_program` or the one-line
+////    `tool_call_summary`.
+//// 7. Live output takes a separate path: `stream_lines` draws the open streams
+////    (`live_reasoning_line` for thinking) until the entry that settles them
+////    lands and `clear_streams` drops them. Advisor frames reach
+////    `labelled_advisor_lines` through `harness_message_lines`.
 
 import core/entry
 import core/ids

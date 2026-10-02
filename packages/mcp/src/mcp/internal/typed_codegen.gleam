@@ -2,18 +2,26 @@
 //// combinators. Server text selects inert literals, identifiers and schema
 //// shapes; it never supplies executable statements or decoder callbacks.
 ////
-//// Reading path: render sorts tools and chooses a collision-free helper
-//// namespace; facade plans both directions for allocation and emission;
-//// typed_facade builds the
-//// optional record and defaults constant; members and node recursively derive
-//// types, encoders and decoders together. Each structural node contributes its
-//// declarations to both outputs, so the visible surface cannot invent a type
-//// the compiler never sees. The raw control token in encoder templates cannot
-//// occur in escaped server literals; encoded replaces it only with trusted
-//// generator expressions. Trusted ordinal keys own declaration identity;
-//// module-wide allocation prefers a nearby semantic name and adds a compact
-//// ordinal only on collision. Names never accumulate a recursive schema path,
-//// and bounded ASCII spellings remain below BEAM's 255-byte atom limit.
+//// Each structural node contributes its declarations to both outputs, so the
+//// visible surface cannot invent a type the compiler never sees. The raw
+//// control token in encoder templates cannot occur in escaped server
+//// literals; encoded replaces it only with trusted generator expressions.
+//// Trusted ordinal keys own declaration identity; module-wide allocation
+//// prefers a nearby semantic name and adds a compact ordinal only on
+//// collision. Names never accumulate a recursive schema path, and bounded
+//// ASCII spellings remain below BEAM's 255-byte atom limit.
+////
+//// ## Flow
+////
+//// `render` → `facade` → `typed_facade` → `members` → `node` → `encoded`
+////
+//// 1. `render` sorts the tools and chooses a collision-free helper namespace
+////    with `helper_prefix`, then gathers `imports` for what the facades use.
+//// 2. `facade` plans both directions once, for allocation and for emission.
+//// 3. `typed_facade` builds the optional record and the defaults constant.
+//// 4. `members` and `node` recursively derive types, encoders and decoders
+////    together, through `object_node`, `union_node`, `enum_node` and `leaf`.
+//// 5. `encoded` fills an encoder template, and `function_source` emits it.
 
 import gleam/bool
 import gleam/dict.{type Dict}

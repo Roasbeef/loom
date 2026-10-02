@@ -24,6 +24,26 @@
 //// yields the ordinary in-band unavailable-tool error result (pi §3.8:
 //// an `is_error` text result, `details` omitted — the harness must not
 //// invent a value for a tool's typed details contract).
+////
+//// ## Flow
+////
+//// `registry` → `dispatch` → `with_arg` → `or_outcome` → `authorize_policy` → `broker_runner` → `collect_events`
+////
+//// 1. `registry` builds the name lookup from the tools a host registers;
+////    `declarations` and `snippets` read what the model is told about them.
+//// 2. `dispatch` finds the tool with `lookup` and calls its run; an unknown
+////    name is the in-band unavailable result.
+//// 3. A tool body decodes its arguments with `required_string`,
+////    `optional_int` and the other readers, chained by `with_arg`, which turns a
+////    bad argument into the standard invalid-arguments outcome.
+//// 4. Later steps chain with `or_outcome`, which renders a domain error as a
+////    `ToolOutcome` through the tool's own function.
+//// 5. A tool that needs more sandbox authority calls `authorize_policy`, which
+////    `ask_permission` raises as a refusal and resumes with the approved grants.
+//// 6. Execution goes through `broker_runner`, which clears the call, and
+////    `collect_events` or `collect_observed` folds its output until it settles.
+//// 7. `success`, `failure` and `with_details` build the answer, and
+////    `refusal_outcome` and `exec_failure_outcome` render what went wrong.
 
 import broker/broker.{type CallEvent, type CallOutcome, type Refusal}
 import broker/budget
@@ -215,7 +235,7 @@ pub type RunningCall {
   )
 }
 
-/// Everything a tool's `run` may touch. Constructed per call by the
+/// Everything a tool's run may touch. Constructed per call by the
 /// strand driver (WP-E).
 ///
 /// Constructor invariants: `workspace` and `blob_root` are absolute
@@ -422,11 +442,11 @@ pub type ToolOutcome {
 /// One tool: identity, contract, and behaviour.
 ///
 /// Constructor invariants: `name` is unique within a registry; `schema`
-/// is a JSON-schema object describing `run`'s arguments;
+/// is a JSON-schema object describing run's arguments;
 /// `requirements`, applied to the workspace root, is the policy-shaped
 /// statement of exactly what the tool needs (it is composed with the
 /// session base by the broker — ask for exactly what you need, nothing
-/// more); `run` is total — it returns error outcomes, it does not
+/// more); run is total — it returns error outcomes, it does not
 /// crash.
 ///
 /// `prompt_snippet` is a second, much smaller model-facing surface than
@@ -544,7 +564,7 @@ pub fn registered(registry: Registry) -> List(Tool) {
 ///
 /// Two callers ask only these questions — the effect surface's
 /// `replay_still_safe` and `execution_mode` slots — and neither needs a
-/// tool's `run`, `requirements`, `schema` or description to answer them.
+/// tool's run, `requirements`, `schema` or description to answer them.
 /// The distinction matters because those slots are closures inside a
 /// record that is copied into every process a session assembly starts,
 /// and BEAM does not preserve sharing across a copy: a closure holding

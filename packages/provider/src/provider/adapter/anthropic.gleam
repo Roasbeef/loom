@@ -40,6 +40,27 @@
 //// The API key is accepted as an argument and written into one request
 //// header; it is never stored in the accumulator, any event, or any
 //// error (spec §3.3 invariant 4).
+////
+//// ## Flow
+////
+//// `build_request` → `encode_messages` → `response_machine` → `on_chunk` → `handle_sse` → `handle_message` → `settle`
+////
+//// 1. `build_request` assembles the wire body (model, limits, thinking
+////    budget, system, tools) and hands the transcript to `encode_messages`.
+//// 2. `encode_messages` turns each `AgentMessage` into a wire turn with
+////    `to_turn`, merges neighbours of one role with `merge_turns`, and lets
+////    `mark_tail_user_turns` place the rolling cache breakpoints.
+//// 3. `response_machine` starts an `Accumulator` and wires the transport's
+////    status, chunk, end and failure callbacks to it.
+//// 4. `on_chunk` feeds a 200 body to the SSE parser and each event to
+////    `handle_sse`; any other status only collects the error body, which
+////    `on_end` turns into `http_error`.
+//// 5. `handle_sse` parses one event's JSON and `handle_message` dispatches on
+////    its type to the block, delta and usage handlers.
+//// 6. `settle` runs on `"message_stop"`: `settle_with_stop` builds the content
+////    with `build_blocks` and the usage with `build_usage`, applies the
+////    overflow rule, and emits the one settled message. `fail` ends the
+////    stream in-band wherever the path breaks.
 
 import core/corruption.{type CorruptionReport}
 import core/json.{type JsonValue}
@@ -79,6 +100,41 @@ pub const api_name = "anthropic-messages"
 // merely tripped a counter (spec §1.5 requires the negligible-output
 // guard so real answers are never discarded as overflow).
 const negligible_output_tokens = 64
+
+/// The pure streamed-response state: SSE carry, accumulated blocks,
+/// usage, and settlement facts. Driven by `response_machine`.
+pub opaque type Accumulator {
+  /// Invariants: `blocks` is in reverse arrival order; `status` is 0
+  /// until the response status arrives; once `done` is `True` no further
+  /// event changes anything.
+  Accumulator(
+    resolved: ResolvedModel,
+    now: Int,
+    status: Int,
+    retry_after_ms: Option(Int),
+    error_body: BitArray,
+    sse: stream.SseParser,
+    blocks: List(BlockAcc),
+    input: Int,
+    output: Int,
+    cache_read: Int,
+    cache_write: Int,
+    cache_write_1h: Option(Int),
+    reasoning: Option(Int),
+    stop: Option(StopReason),
+    raw_stop: Option(String),
+    error_message: Option(String),
+    response_id: Option(String),
+    response_model: Option(String),
+    done: Bool,
+  )
+}
+
+type BlockAcc {
+  TextAcc(index: Int, text: String)
+  ThinkingAcc(index: Int, thinking: String, signature: String, redacted: Bool)
+  ToolAcc(index: Int, call_id: String, name: String, arguments_json: String)
+}
 
 // --- request construction -----------------------------------------------
 
@@ -511,41 +567,6 @@ pub fn map_stop_reason(
 }
 
 // --- response accumulation ----------------------------------------------
-
-/// The pure streamed-response state: SSE carry, accumulated blocks,
-/// usage, and settlement facts. Driven by `response_machine`.
-pub opaque type Accumulator {
-  /// Invariants: `blocks` is in reverse arrival order; `status` is 0
-  /// until the response status arrives; once `done` is `True` no further
-  /// event changes anything.
-  Accumulator(
-    resolved: ResolvedModel,
-    now: Int,
-    status: Int,
-    retry_after_ms: Option(Int),
-    error_body: BitArray,
-    sse: stream.SseParser,
-    blocks: List(BlockAcc),
-    input: Int,
-    output: Int,
-    cache_read: Int,
-    cache_write: Int,
-    cache_write_1h: Option(Int),
-    reasoning: Option(Int),
-    stop: Option(StopReason),
-    raw_stop: Option(String),
-    error_message: Option(String),
-    response_id: Option(String),
-    response_model: Option(String),
-    done: Bool,
-  )
-}
-
-type BlockAcc {
-  TextAcc(index: Int, text: String)
-  ThinkingAcc(index: Int, thinking: String, signature: String, redacted: Bool)
-  ToolAcc(index: Int, call_id: String, name: String, arguments_json: String)
-}
 
 /// The response machine for one Messages API request attempt. `now` is
 /// the Unix-ms timestamp stamped on the settled assistant message (read

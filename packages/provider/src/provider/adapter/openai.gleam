@@ -41,6 +41,29 @@
 //// The API key is accepted as an argument and written into one
 //// `authorization` header; it is never stored in the accumulator, any
 //// event, or any error (spec §3.3 invariant 4).
+////
+//// ## Flow
+////
+//// `build_request` → `encode_messages` → `response_machine` → `on_chunk` → `handle_sse` → `handle_chunk_document` → `handle_delta` → `settle`
+////
+//// 1. `build_request` writes the streaming request body and hands the system
+////    prompt and transcript to `encode_messages`.
+//// 2. `encode_messages` puts the system prompt first, lifts tool-result
+////    images into a user turn with `move_tool_images`, and encodes the rest
+////    message by message with `encode_message`.
+//// 3. `response_machine` starts an `Accumulator` and wires the transport's
+////    callbacks to it.
+//// 4. `on_chunk` feeds a 200 body to the SSE parser and each event to
+////    `handle_sse`; other statuses collect the error body for `http_error`.
+//// 5. `handle_sse` settles at the `[DONE]` sentinel and otherwise parses the
+////    chunk; `handle_document` turns an embedded `"error"` into an in-band
+////    failure and `handle_chunk_document` records usage and the first choice.
+//// 6. `handle_choice` reads the delta with `handle_delta` (text, reasoning,
+////    tool-call fragments) and then the `"finish_reason"` through
+////    `apply_finish_reason`.
+//// 7. `settle` builds the one assistant message in `settle_with_stop`;
+////    `on_end` reaches it through `settle_or_disconnect` when the provider
+////    closed without a sentinel.
 
 import core/corruption.{type CorruptionReport}
 import core/json.{type JsonValue}

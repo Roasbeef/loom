@@ -36,6 +36,31 @@
 //// The incremental `Deframer` is pure: bytes in, frames out, remainder
 //// carried. Frame boundaries never depend on how the transport chunks
 //// its reads.
+////
+//// ## Flow
+////
+//// Outbound: `encode` → `encode_payload` → `body_to_msgpack`
+////
+//// Inbound: `push` → `push_loop` → `take_frame` → `decode_payload` →
+//// `decode_body` → `push_decoded`
+////
+//// 1. `encode` prefixes the msgpack payload from `encode_payload` with its
+////    u32 length and refuses one over the maximum frame size; `encode_payload`
+////    writes the envelope, and `body_to_msgpack` writes the body its `kind_name`
+////    names.
+//// 2. `push` is the deframer's only way in. A deframer that already faulted
+////    answers the same fault; otherwise the bytes join the carried buffer and
+////    `push_loop` scans it.
+//// 3. `push_loop` reads a length prefix, and `take_frame` cuts one payload
+////    once enough bytes have arrived, so frame boundaries never depend on how
+////    the transport chunked its reads.
+//// 4. `decode_payload` checks the envelope (version, id, kind), and
+////    `decode_body` dispatches on the kind to one `decode_*` function per body.
+//// 5. `push_decoded` decides what a decode result means: a frame is `Known`, an
+////    unknown kind is reported and scanning goes on, and a broken envelope
+////    poisons the deframer through `faulted`.
+//// 6. `carry` ends a scan that ran out of bytes, keeping the buffer for the
+////    next `push`.
 
 import broker/policy.{type Limits, type SandboxPolicy}
 import core/corruption.{type CorruptionReport}

@@ -17,6 +17,28 @@
 //// has to be narrowed before it is drawn rather than clipped after. Every
 //// other block ignores the width here and is reflowed by `wrap_lines`, which
 //// is the stage that knows how many cells a prefix has already consumed.
+////
+//// ## Flow
+////
+//// `render` → `render_sanitized` → `render_block` → `inline_lines` → `wrap_lines`
+////
+//// 1. `render` strips control characters with `text_hygiene.multiline`, and
+////    `render_sanitized` does the same job for text already known to be safe: it
+////    parses with `tree.parse` and renders each block in order.
+//// 2. `render_block` dispatches on the block: headings and paragraphs go through
+////    `inline_lines`, code blocks through `code_spans`, quotes and alerts through
+////    `render_quote` and `render_alert`, lists through `render_list`, tables
+////    through `render_table`.
+//// 3. `inline_lines` turns inline nodes into styled parts (`inline_parts`) and
+////    `parts_to_lines` folds them into lines at each break.
+//// 4. `render_table` is the only stage that needs the width: `table_lines`
+////    measures columns (`measure_columns`, `fit_columns`) and draws a grid
+////    (`grid_lines`) or, when the grid cannot fit, records (`record_lines`).
+//// 5. Rendering leaves long rows whole; `wrap_lines` reflows them with
+////    `wrap_line`, which classifies each row (`row_kind`) as code, fixed or
+////    flowing, and `rewrap` resumes the previous row when a live answer grows.
+//// 6. `diff` is the sibling entry for patches, with numbered rows from
+////    `numbered_diff_row`.
 
 import etui/span
 import etui/style

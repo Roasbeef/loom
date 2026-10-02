@@ -10,6 +10,26 @@
 //// fan-out caps, the deadline, the wait loop, the lineage ledger — lives
 //// on this side.
 ////
+//// ## Flow
+////
+//// `seam` → `spawn` → `spawn_on` → `reconcile` → `create` → `wait` → `wait_loop`
+////
+//// 1. `seam` fills the `tools/agent` record with closures over the holder's name;
+////    `start` stands up the holder those closures call into.
+//// 2. `spawn` asks the holder to run `spawn_on`, which serializes admission:
+////    it reads the ledger with `read_ledger` and enforces the depth cap.
+//// 3. `child_name` derives the child's name from its call site, and `adopt`
+////    returns an existing child only when the ledger says this caller minted it.
+//// 4. `reconcile` finishes a first spawn or a half-made one: `check_capacity`,
+////    then `create`, then `write_result_schema` ahead of the lineage cell.
+//// 5. `wait` borrows the runtime outside the holder, checks descent with
+////    `is_descendant`, and `reap_overdue` marks late children.
+//// 6. `wait_loop` polls with `settle_pass` until every handle settles or the
+////    budget runs out, and `ready` reads each settled child's notes.
+//// 7. `send` and `roster` read the ledger to decide whom a strand may reach;
+////    `note` and `notes` keep a child's notes under its own prefix.
+//// 8. `reaping_hooks` spawns `reap_run` unlinked, off the driver, at a run end.
+////
 //// ## The bootstrap knot, and the name that unties it
 ////
 //// "Production wiring fills the seam with closures over the live runtime"

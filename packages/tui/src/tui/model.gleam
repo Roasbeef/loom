@@ -65,6 +65,26 @@
 ////
 //// ## Flow
 ////
+//// `start_step` → `run_shared` → `hold_shared` → `emit` → (the step's caller takes `View.outbox`)
+////
+//// 1. `start_step` opens one step: it stamps `Shared`, records the wall clock, and
+////    `record`s the input's own line before any reducer runs.
+//// 2. A reducer over session state alone is applied with `run_shared`, which calls
+////    it on `Model.shared` and hands the result to `hold_shared`.
+//// 3. `hold_shared` stores the new `Shared`, moves the effects it queued into
+////    `View.outbox` (wrapped as `effect.Step`), resets the quiet timer when the
+////    activity revision moved, clears the composer for sent drafts, and shows the
+////    queue and goal observations the call recorded (`show_queue_notices`,
+////    `show_goal_observations`).
+//// 4. A terminal-only effect is queued with `emit`; `start_job` and `allocate_job`
+////    build on it to start a weft job under a fresh key.
+//// 5. Daemon custody passes through `adopt_daemon`, which records the retained
+////    control host and the build-mismatch notice; `release` and
+////    `release_reconnect` close what a superseded arrival still holds.
+//// 6. The shared helpers (`append_error`, `append_notice`, `invalidate_frame`,
+////    `hold_channel`) are `hold_shared` over the `session_view/model` function of
+////    the same name.
+////
 //// `hold_shared` stores a shared reducer result and consumes its host facts.
 //// `show_goal_observations` folds observations through `observe_goal` only
 //// when the goal inspector is open. A failed refresh keeps that panel stale.

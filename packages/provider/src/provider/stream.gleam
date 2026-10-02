@@ -26,6 +26,29 @@
 //// subject delivers zero or more `Delta` events followed by exactly one
 //// terminal event — `Settled` or `Failed` — and nothing after it. Deltas
 //// are ephemeral display data and never prove anything about settlement.
+////
+//// ## Flow
+////
+//// `run_tracked` → `run_loop` → `run_chunk` → `feed` → `forward` → `finish_attempt`
+////
+//// 1. `run_tracked` prepares the transport, publishes the live request through
+////    the started callback, arms the one absolute deadline and monitors the
+////    consumer and the transport owner; `run` is the fixture facade over it.
+//// 2. `run_loop` waits on one selector for the next fact: an HTTP event, a
+////    cancel, the deadline, or either monitor going down. Each of those ends
+////    in an `AttemptOutcome` except a status or a chunk, which loop again.
+//// 3. `run_chunk` charges the chunk against the response byte cap and asks the
+////    adapter's machine to fold it. The adapter does that with `feed`, which
+////    splits bytes into `SseEvent`s through `feed_loop`, `take_line` and
+////    `handle_line`; `dispatch` closes an event on the blank line.
+//// 4. `forward` delivers deltas in order and returns the first terminal event;
+////    without one `run_loop` carries on under the same deadline.
+//// 5. A terminal, an end of body or a failed request is held at
+////    `finish_attempt` until the transport owner's monitor proves it exited,
+////    while a cancel, deadline or oversize body goes through `stop_attempt`,
+////    whose grace is bounded; `finish_outcome` retires the deadline timer.
+//// 6. Consumers read the other side of the handle with `next`,
+////    `await_terminal` and `await_stopped`; `cancel` only requests teardown.
 
 import core/corruption.{type CorruptionReport}
 import core/json

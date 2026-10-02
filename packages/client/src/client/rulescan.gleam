@@ -211,36 +211,6 @@ pub type Options {
   )
 }
 
-/// The shipped options for a rule list: a silent logger and the two
-/// bounds above.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // rulescan.default_options(parsed_rules)
-/// ```
-///
-pub fn default_options(rules: List(Rule)) -> Options {
-  Options(
-    rules:,
-    logger: log.discard(),
-    scan_limit: default_scan_limit,
-    checkpoint_every: default_checkpoint_every,
-  )
-}
-
-/// Sets the logger the scanner reports fires and refusals on.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // rulescan.default_options(rules) |> rulescan.with_logger(logger)
-/// ```
-///
-pub fn with_logger(options: Options, logger: Logger) -> Options {
-  Options(..options, logger:)
-}
-
 // What one strand's scanning knows between passes. Held in the actor
 // rather than in a process per strand: with the commit stream as the
 // feed there is no streaming load to shard, and "per-strand" in design
@@ -288,8 +258,40 @@ type Hold {
   Abandoned
 }
 
+// Everything the actor holds: what it was configured with, the session it
+// reads, and the per-strand progress above.
 type State {
   State(options: Options, runtime: Runtime, progress: Dict(String, Progress))
+}
+
+/// The shipped options for a rule list: a silent logger and the two
+/// bounds above.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // rulescan.default_options(parsed_rules)
+/// ```
+///
+pub fn default_options(rules: List(Rule)) -> Options {
+  Options(
+    rules:,
+    logger: log.discard(),
+    scan_limit: default_scan_limit,
+    checkpoint_every: default_checkpoint_every,
+  )
+}
+
+/// Sets the logger the scanner reports fires and refusals on.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // rulescan.default_options(rules) |> rulescan.with_logger(logger)
+/// ```
+///
+pub fn with_logger(options: Options, logger: Logger) -> Options {
+  Options(..options, logger:)
 }
 
 /// Starts the scanner under `name`, watching `runtime`'s session.

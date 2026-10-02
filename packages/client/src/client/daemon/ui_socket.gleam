@@ -56,6 +56,36 @@
 //// budget) closes with 4000, which the runtime retries. `web_view/ending`
 //// decides which is which, one closed type for both the words and the code
 //// (protocol-change/051, the addendum on an ended page).
+////
+//// ## Flow
+////
+//// `upgrade` → `admit` → `start_page` → `serve` → `closing`
+////
+//// 1. `upgrade` reads the page's `role_of` its attachment, builds the relay
+////    `Attach` and the invitation capability, and opens the websocket.
+//// 2. The socket's first turn handles `Admit`, which calls `admit`: it takes
+////    the permit's custody with `root.transfer`, then builds the component's
+////    transport from `listed_for`, `opened_for` and `ticket_for`.
+//// 3. `start_page` picks the component the role calls for and `serve` starts
+////    it, returning the `Page` the socket holds for its life: forward a
+////    browser frame (after `observer_accepts`, `operator_accepts` or
+////    `owner_accepts`), shut down, read an image.
+//// 4. Afterwards the handler forwards browser frames, writes the component's
+////    frames to the browser, and on the relay's `Ended` schedules `Stop`.
+//// 5. `closing` turns an ending's close code into mist's clean stop (1000) or
+////    its abnormal one (4000, which the client runtime retries).
+////
+//// ## Transitions
+////
+//// <!-- transitions: ui_socket.Phase -->
+////
+//// | state | Admit | browser text | component frame | Ended | Stop | binary, closed, shutdown |
+//// | --- | --- | --- | --- | --- | --- | --- |
+//// | `Pending` | `Serving` once the permit transfers and the component starts; otherwise `closing` with a retry close | socket stops | socket stops | socket stops | socket stops | socket stops |
+//// | `Serving` | socket stops | forwarded to the component, filtered by role; stays `Serving` | written to the browser, stays `Serving`; socket stops if the write fails | stays `Serving`; schedules `Stop` after the grace period | `closing`: clean stop or retry close | socket stops |
+////
+//// Leaving `Serving` for any reason runs the component's shutdown from
+//// `on_close`.
 
 import broker/token
 import client/daemon/manager

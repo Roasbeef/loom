@@ -75,7 +75,7 @@
 //// composes can carry it, whatever an extension asks for.
 
 import broker/framing.{type CapOutcome}
-import client/extension/policy.{net_cap}
+import client/extension/policy
 import codemode/satellite.{
   type CapDenial, type CapPlan, type CapRequest, type CapRouter, CapDenial,
   ServedHere,
@@ -92,7 +92,7 @@ import gleam/string
 /// asserts each one routes, which is what keeps it the same list as the
 /// `case` arms below — Gleam patterns cannot name a constant, so the two
 /// could otherwise drift.
-pub const serviced_caps = [net_cap, remember_cap, recall_cap]
+pub const serviced_caps = [policy.net_cap, remember_cap, recall_cap]
 
 /// The capability an extension writes one durable cell with.
 pub const remember_cap = "ext.remember"

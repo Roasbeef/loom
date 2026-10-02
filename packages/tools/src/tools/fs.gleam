@@ -24,6 +24,27 @@
 //// `.git/hooks/post-checkout` is arbitrary code execution outside the
 //// jail on the next checkout.
 ////
+//// ## Flow
+////
+//// `read_tool` → `run_read` → `resolve_invocation` → `resolve_real` → `walk` → `check_under`
+////
+//// 1. `read_tool_with` registers any virtual `Scheme`s; `run_read` decodes the
+////    window, then sends a `scheme://` reference to `scheme_outcome` and
+////    every other path to `file_outcome`.
+//// 2. `resolve_invocation` asks for approval of the exact target when it lies
+////    outside the workspace, then resolves through `resolve_readable` or
+////    `resolve_writable`.
+//// 3. `resolve_real` is the path discipline: `walk` follows symlinks one
+////    component at a time and `check_under` refuses a result outside the root.
+//// 4. A read goes on through `read_outcome` (text windows) or `image_outcome`.
+//// 5. `run_write` resolves for writing, so the protected-path list applies,
+////    and `write_whole` creates parents and writes; `write_outcome` answers.
+//// 6. `run_edit` resolves, reads the pre-image with `read_text_file`,
+////    applies the digest-bound plan with `hashline.apply`, and writes the
+////    result;
+////    `edit_outcome` or `apply_error_outcome` answers with fresh anchors.
+//// 7. `path_outcome` and `fs_error_outcome` turn refusals into in-band results.
+////
 //// ## Virtual reads
 ////
 //// A host may register `Scheme` resolvers on `fs_read`. A path containing

@@ -10,6 +10,27 @@
 //// The module also holds the few content measurements that decide a
 //// height, such as the lines in the status band above the composer,
 //// because the composer's height depends on them.
+////
+//// ## Flow
+////
+//// `layout` → `queue_body_layout` → `body_layout` → `footer_split` → `hit_area`
+////
+//// 1. `layout` cuts the screen into header, body, composer and footer rows, asking
+////    `input_height` and `footer_height` (plus `strip_height`) how tall the last
+////    two must be.
+//// 2. `queue_body_layout` takes the body and reserves the pinned todo panel and
+////    the queue card (`body_split`, `queue_height`, `todo_height`), leaving the
+////    conversation row.
+//// 3. `body_layout` splits the conversation row into transcript, agent rail and
+////    changes pane; the changes pane borrows the rail's column
+////    (`diff_pane_width`).
+//// 4. `footer_split` divides the footer rectangle into the footer proper and the
+////    agent strip beneath it.
+//// 5. The composer's own shape comes from `input_layout`, `input_view_state` and
+////    `composer_status_lines`, because the status band decides its height.
+//// 6. Readers ask for one rectangle instead of repeating the arithmetic:
+////    `hit_area` for a click, `transcript_width` and `transcript_viewport_height`
+////    for the projection and the tick, and the `*_area` functions for each overlay.
 
 import core/todo_list
 import etui/geometry.{type Rect, Fill, Length}

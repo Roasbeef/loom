@@ -8,6 +8,26 @@
 //// the program instead of landing in the context
 //// (`docs/architecture/code-mode.md`).
 ////
+//// ## Flow
+////
+//// `tools` → `tool_for` → `run` → `run_program` → `once_more_if_approved` → `render`
+////
+//// 1. `tools` and `tool_for` build the one `Tool`; its schema and
+////    `description` depend on which seams and background mode the host serves.
+//// 2. `run` reads the mode argument: a plain run and a launch go to
+////    `run_program`, the other commands to `interact`.
+//// 3. `run_program` checks the program is not empty, picks the seam with
+////    `chosen_seam`, and has the call authorized before any build begins.
+//// 4. `request` builds the `Request` that crosses the seam; the model
+////    supplies the program and the budget and nothing else.
+//// 5. `once_more_if_approved` runs mode.execute once and, if a policy
+////    refusal stopped it and a human approved, exactly once more.
+//// 6. `render` turns the `Execution` into the model's answer:
+////    `vet_outcome`, `compile_outcome`, `run_failed_outcome` or
+////    `ran_outcome`, each in band and none a crash.
+//// 7. `bounded_success` and `bounded_failure` cap the output, and
+////    `sandbox_text` says which enforcement layers actually applied.
+////
 //// ## Which seam a submission is judged against
 ////
 //// A submission is judged against one installed mode. On the default

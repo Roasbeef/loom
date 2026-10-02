@@ -54,6 +54,23 @@ const keywords = [
 /// drift gate as `keywords` above.
 const max_length = 32
 
+// The two small types `flatten` folds over, kept ahead of the code so the
+// state space is read before the transitions: `Previous` is the single fact
+// the camelCase rule carries between codepoints (was the last original
+// codepoint a lowercase letter or a digit), and `Class` is what
+// `classify` makes of one codepoint.
+type Previous {
+  LowerOrDigit
+  Boundary
+}
+
+type Class {
+  LowerCase
+  Digit
+  UpperCase
+  Other
+}
+
 /// Mangles an original tool or server name into a Gleam function or
 /// module-segment name.
 ///
@@ -184,20 +201,6 @@ fn tag(base: String, digest_hex: String) -> String {
 }
 
 // --- codepoint translation ---------------------------------------------------
-
-// Whether the previous *original* codepoint was a lowercase letter or a
-// digit — the one fact the camelCase rule needs.
-type Previous {
-  LowerOrDigit
-  Boundary
-}
-
-type Class {
-  LowerCase
-  Digit
-  UpperCase
-  Other
-}
 
 fn flatten(original: String) -> String {
   let #(pieces, _) =

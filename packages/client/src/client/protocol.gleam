@@ -24,6 +24,29 @@
 //// - Everything here is pure and total: malformed input yields a
 ////   `ProtocolFault` value, never a crash.
 ////
+//// ## Flow
+////
+//// `decode_command` → `decode_command_body`, and `encode_event` →
+//// `event_value` → `event_body`, with `encode_command` and `decode_event`
+//// as the mirror pair
+////
+//// 1. `decode_command` reads one text frame: `envelope_fields` and
+////    `check_version` enforce the strict envelope, then
+////    `decode_command_body` dispatches on the command name into the per-command body
+////    readers, answering a `ProtocolFault` rather than crashing.
+//// 2. `encode_command` is the client's half: `command_body` names the command
+////    and its body, and the envelope wraps them.
+//// 3. `encode_event` is the server's half: `event_value` wraps what
+////    `event_body` renders, with `encode_snapshot`, `encode_entry_record` and
+////    `encode_escalation` for the structured bodies.
+//// 4. `decode_event` reads a pushed event through `decode_event_body`, with
+////    `decode_snapshot` and `decode_entry_record` for the structured bodies.
+//// 5. Entries and messages cross through `wire_entry`/`codec_entry`, which
+////    adapt the core codec's vocabulary to the fixtures, and `to_wire_text`
+////    prints floats the way the fixtures do.
+//// 6. `encode_grant` and `decode_grant` carry the policy grants that ride
+////    inside approval bodies.
+////
 //// ## Where the wire form and `core/codec` disagree
 ////
 //// The golden fixtures pin three details the core codec renders

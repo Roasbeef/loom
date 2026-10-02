@@ -14,6 +14,24 @@
 //// pure `commit` either returns a fully applied successor state or an
 //// error and no state change, which is what makes all-or-none trivially
 //// true here.
+////
+//// ## Flow
+////
+//// `open` → `handle_message` → `commit` → `check_expectations` → `apply_write` → `scan_branch`
+////
+//// 1. `open` starts the actor over `new` and returns the `Storage` handle,
+////    whose every operation is a call into the mailbox.
+//// 2. `handle_message` answers one `Message` at a time; a sealed handle
+////    replies `HandleClosed` to everything but a repeat close.
+//// 3. A commit calls the pure `commit` with the injected clock's timestamp.
+//// 4. `commit` runs `check_expectations` against pre-transaction registers,
+////    then folds `apply_write` over the writes, so a failure returns no
+////    successor state at all.
+//// 5. `apply_write` dispatches to `insert_entry`, `insert_usage` and the
+////    register writes, each keeping the children index and stats in step.
+//// 6. Queries (`get_entries`, `get_register`, `list_registers`,
+////    `scan_branch`, `scan_entries`, `scan_usage`, `stats`) read the same
+////    state without changing it.
 
 import core/clock.{type Clock}
 import core/corruption
@@ -64,6 +82,73 @@ pub opaque type MemoryState {
     next_seq: Seq,
     stats: SessionStats,
   )
+}
+
+/// Messages understood by the memory storage actor. Opaque: callers go
+/// through the `Storage` interface, never send these directly.
+pub opaque type Message {
+  /// Commit a transaction and reply with the result.
+  Commit(tx: Tx, reply: Subject(Result(CommitResult, CommitError)))
+
+  /// Batch entry fetch.
+  GetEntries(
+    ids: List(EntryId),
+    reply: Subject(Result(Dict(EntryId, Entry), StorageError)),
+  )
+
+  /// Read one register cell.
+  GetRegister(
+    ns: RegisterNs,
+    key: String,
+    reply: Subject(Result(Option(Register), StorageError)),
+  )
+
+  /// List a namespace's cells.
+  ListRegisters(
+    ns: RegisterNs,
+    key_prefix: Option(String),
+    reply: Subject(Result(List(#(String, Register)), StorageError)),
+  )
+
+  /// Branch query.
+  ScanBranch(q: BranchScan, reply: Subject(Result(List(Entry), StorageError)))
+
+  /// Entry inventory scan.
+  ScanEntries(q: EntryScan, reply: Subject(Result(List(Entry), StorageError)))
+
+  /// Ledger read.
+  ScanUsage(q: UsageScan, reply: Subject(Result(List(UsageRow), StorageError)))
+
+  /// Stats projection read.
+  Stats(reply: Subject(Result(SessionStats, StorageError)))
+
+  /// Capture a bounded projection from one immutable state value.
+  SnapshotCapture(
+    plan: snapshot.Plan,
+    reply: Subject(Result(snapshot.Cut, snapshot.Error)),
+  )
+
+  /// Return only bounded immutable entry descriptors.
+  SnapshotPage(
+    after: Int,
+    before: Int,
+    limit: Int,
+    reply: Subject(Result(List(snapshot.Descriptor), snapshot.Error)),
+  )
+
+  /// Return one bounded serialized entry fragment.
+  SnapshotFragment(
+    descriptor: snapshot.Descriptor,
+    offset: Int,
+    reply: Subject(Result(BitArray, snapshot.Error)),
+  )
+
+  /// Seal the handle. Idempotent.
+  Close(reply: Subject(Result(Nil, StorageError)))
+}
+
+type ActorState {
+  ActorState(state: MemoryState, clock: Clock, closed: Bool)
 }
 
 /// An empty session: no entries, no registers, an empty ledger, seqs
@@ -573,73 +658,6 @@ fn take_limit(rows: List(row), limit: Option(Int)) -> List(row) {
 }
 
 // --- the actor wrapper ---------------------------------------------------
-
-/// Messages understood by the memory storage actor. Opaque: callers go
-/// through the `Storage` interface, never send these directly.
-pub opaque type Message {
-  /// Commit a transaction and reply with the result.
-  Commit(tx: Tx, reply: Subject(Result(CommitResult, CommitError)))
-
-  /// Batch entry fetch.
-  GetEntries(
-    ids: List(EntryId),
-    reply: Subject(Result(Dict(EntryId, Entry), StorageError)),
-  )
-
-  /// Read one register cell.
-  GetRegister(
-    ns: RegisterNs,
-    key: String,
-    reply: Subject(Result(Option(Register), StorageError)),
-  )
-
-  /// List a namespace's cells.
-  ListRegisters(
-    ns: RegisterNs,
-    key_prefix: Option(String),
-    reply: Subject(Result(List(#(String, Register)), StorageError)),
-  )
-
-  /// Branch query.
-  ScanBranch(q: BranchScan, reply: Subject(Result(List(Entry), StorageError)))
-
-  /// Entry inventory scan.
-  ScanEntries(q: EntryScan, reply: Subject(Result(List(Entry), StorageError)))
-
-  /// Ledger read.
-  ScanUsage(q: UsageScan, reply: Subject(Result(List(UsageRow), StorageError)))
-
-  /// Stats projection read.
-  Stats(reply: Subject(Result(SessionStats, StorageError)))
-
-  /// Capture a bounded projection from one immutable state value.
-  SnapshotCapture(
-    plan: snapshot.Plan,
-    reply: Subject(Result(snapshot.Cut, snapshot.Error)),
-  )
-
-  /// Return only bounded immutable entry descriptors.
-  SnapshotPage(
-    after: Int,
-    before: Int,
-    limit: Int,
-    reply: Subject(Result(List(snapshot.Descriptor), snapshot.Error)),
-  )
-
-  /// Return one bounded serialized entry fragment.
-  SnapshotFragment(
-    descriptor: snapshot.Descriptor,
-    offset: Int,
-    reply: Subject(Result(BitArray, snapshot.Error)),
-  )
-
-  /// Seal the handle. Idempotent.
-  Close(reply: Subject(Result(Nil, StorageError)))
-}
-
-type ActorState {
-  ActorState(state: MemoryState, clock: Clock, closed: Bool)
-}
 
 /// Opens a fresh in-memory session wrapped in an actor and returns the
 /// uniform `Storage` handle. Commit timestamps come from the injected

@@ -10,6 +10,26 @@
 //// `run` happens to spend a satellite where `bash`'s spends a jailed
 //// process.
 ////
+//// ## Flow
+////
+//// `tools` → `tool_for` → `call` → `invoking` → `router` → `settle`
+////
+//// 1. `tools` turns one installed extension into `Tool` values, reading each
+////    declared tool's schema with `schema_of`; `hosting` builds the matching
+////    recipe for the host registry from the same record and configuration.
+//// 2. `tool_for` closes one declaration over its record, schema and egress
+////    policy; its run function builds a `Dispatching` and calls `call`.
+//// 3. `call` sends the model's arguments to the extension's persistent
+////    satellite with `hosts.invoke`, under this call's `coordinates` and the
+////    wall bound from `within`.
+//// 4. The host launches the satellite through `start_host` the first time and
+////    asks `invoking` for the terms of each invocation.
+//// 5. `router` layers the extension seam over the workspace bridge, built by
+////    `bridge`, and the search arm, so a capability call met by the satellite
+////    meets this invocation's policy.
+//// 6. `settle` turns the satellite's answer into a tool outcome, through
+////    `completed` or `failed`, with `failure_text` wording what went wrong.
+////
 //// # One satellite per session, not one per call
 ////
 //// ADR-007 accepted a node boot per tool call and Decision 3 removed it.
@@ -924,7 +944,7 @@ fn completed(
       #("extension", json.String(written.name)),
       #("tool", json.String(declared.name)),
       #("manifest_hash", json.String(written.manifest_hash)),
-      #("value", value_json(value)),
+      #("value", codemode_tool.value_json(value)),
     ]),
     reply.terminate,
     Answered,
@@ -1139,8 +1159,4 @@ fn schema_of(
 
 fn value_text(value: MsgPackValue) -> String {
   codemode_tool.value_text(value)
-}
-
-fn value_json(value: MsgPackValue) -> JsonValue {
-  codemode_tool.value_json(value)
 }

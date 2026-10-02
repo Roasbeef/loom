@@ -12,6 +12,17 @@
 //// Every transition returns an `Event`. Durability is the caller's job:
 //// the runtime (WP-E) records each event before acting on it, so the
 //// transcript shows denial, decision, and the single re-execution.
+////
+//// ## Transitions
+////
+//// <!-- transitions: escalation.Phase -->
+////
+//// | state | `raise` | `approve` | `reject` | `consume` |
+//// | --- | --- | --- | --- | --- |
+//// | `Pending` | entry state of every new escalation | `Approved` when every grant was wanted; refused, `GrantNotWanted`, otherwise | `Rejected` | refused, `NotApproved` |
+//// | `Approved` | not applicable, a new value is made | refused, `NotPending` | refused, `NotPending` | `Consumed`, yielding the grants for the one re-execution |
+//// | `Rejected` | not applicable, a new value is made | refused, `NotPending` | refused, `NotPending` | refused, `NotApproved` |
+//// | `Consumed` | not applicable, a new value is made | refused, `NotPending` | refused, `NotPending` | refused, `NotApproved`; the single re-execution is spent |
 
 import broker/policy.{type Grant}
 import gleam/list

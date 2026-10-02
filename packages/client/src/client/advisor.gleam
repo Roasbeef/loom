@@ -2,6 +2,25 @@
 //// primary strand did, and turns the reviewer's verdict back into
 //// something the primary sees.
 ////
+//// ## Flow
+////
+//// `hooks` → `serve` → `feed` → `attempt_feed` → `deliver_feed` → `judge` → `outcome`
+////
+//// 1. `hooks` wraps the driver's run boundaries: `notify` and `spent` cast the
+////    primary's run end and steps here, and `follow_up` drains owed nudges.
+//// 2. `handle` borrows the runtime, or `unavailable` answers every waiting
+////    caller; `serve` recalls the durable cells and routes one `Message`.
+//// 3. `feed` asks `owing` whether the occasion is a coalesced skip, a quiet
+////    review end, or a feed to send now.
+//// 4. `attempt_feed` scans the primary's branch from the cursor with
+////    `new_entries` and renders it through `advisorslice.render`.
+//// 5. `deliver_feed` frames the slice for the advisor, then advances the
+////    review clock and cursor with `store_guard` and `store_cursor`.
+//// 6. `seam` carries the advisor's advise call back as `Judge`; `judge`
+////    sends goal words to `goal_word` and the rest through the guard.
+//// 7. `outcome` turns the guard's decision into delivery now, a queued nudge,
+////    a downgrade or a drop, and `deliver_nudges` places queued nudges.
+////
 //// # Why the advisor is a peer and not a child
 ////
 //// Every other second strand in this session is made by the Agency, on

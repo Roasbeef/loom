@@ -2,6 +2,27 @@
 //// serves, and composes the compatibility gates into the session's
 //// `Effects`.
 ////
+//// ## Flow
+////
+//// `locations` → `load` → `read` → `wire` → `cleared` → `ran`
+////
+//// 1. `locations` names the settings files a session may import, in
+////    precedence order.
+//// 2. `load` reads each one through `read`, which parses (`parsed`), checks
+////    trust (`checked`, `against_the_record`, `first_sight`) and answers
+////    absent, loaded or refused; the loaded configs are merged into one
+////    `Serving`.
+//// 3. `wire` composes the `Serving` into the session's `Effects`: a small
+////    counter actor owns the Stop cap, and each slot is wrapped beside the
+////    harness's own.
+//// 4. At run start `started_context` adds the `SessionStart` context; at run
+////    end `stop_block` asks the `Stop` hooks only when the harness placed no
+////    follow-up of its own.
+//// 5. Before a tool runs, `cleared` asks the `PreToolUse` hooks and narrows
+////    the harness's verdict; `ran` then folds `PostToolUse` feedback into the
+////    result.
+//// 6. At compaction, `hookserve_compaction_note` adds the `PreCompact` note.
+////
 //// # The load, and what trust means here
 ////
 //// Three sources merge, in the precedence the design note fixes: the

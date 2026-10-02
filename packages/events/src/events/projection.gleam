@@ -79,6 +79,31 @@ pub type Checkpoint(state) {
   )
 }
 
+/// Messages understood by a projection driver. Opaque: callers use
+/// `poke`, `read`, and `sync`.
+pub opaque type Message(state) {
+  Hinted
+  Read(reply: Subject(state))
+  Synchronize(reply: Subject(Result(state, StorageError)))
+}
+
+type DriverState(state, handle) {
+  DriverState(
+    get_store: fn() -> Storage(handle),
+    get_generation: fn() -> Int,
+    projection: Projection(state),
+    checkpoint: Checkpoint(state),
+    logger: Logger,
+    state: state,
+    high_water: Seq,
+    /// The generation `state`/`high_water` were folded under. Compared
+    /// against `get_generation()` on every pull; a mismatch means a
+    /// rewrite happened underneath this checkpoint and the fold must
+    /// restart from `projection.initial` at seq zero.
+    generation: Int,
+  )
+}
+
 /// A checkpoint that persists nothing: every restart rebuilds from
 /// zero. The honest default for cheap projections.
 ///
@@ -294,31 +319,6 @@ pub type Options(state, handle) {
     /// Where a pull fault with no reply channel is reported. Injected
     /// (§0.2); `log.discard()` for a driver nobody is watching.
     logger: Logger,
-  )
-}
-
-/// Messages understood by a projection driver. Opaque: callers use
-/// `poke`, `read`, and `sync`.
-pub opaque type Message(state) {
-  Hinted
-  Read(reply: Subject(state))
-  Synchronize(reply: Subject(Result(state, StorageError)))
-}
-
-type DriverState(state, handle) {
-  DriverState(
-    get_store: fn() -> Storage(handle),
-    get_generation: fn() -> Int,
-    projection: Projection(state),
-    checkpoint: Checkpoint(state),
-    logger: Logger,
-    state: state,
-    high_water: Seq,
-    /// The generation `state`/`high_water` were folded under. Compared
-    /// against `get_generation()` on every pull; a mismatch means a
-    /// rewrite happened underneath this checkpoint and the fold must
-    /// restart from `projection.initial` at seq zero.
-    generation: Int,
   )
 }
 

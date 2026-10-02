@@ -3,6 +3,27 @@
 //// The overlay keeps inspection and draft coordinates separate from the
 //// attached conversation. A grant is sent only after the operator reviews
 //// its direction and wake permission; each control request remains one-way.
+////
+//// ## Flow
+////
+//// `new` → `update` → `update_browsing` → `update_session_choice` → `update_target_strand` → `update_confirmation` → `completed`
+////
+//// 1. `new` (or `from_agent`, `from_session`) opens the modal on the attached
+////    strand's coordinates, in the `Browsing` prompt.
+//// 2. `update` maps one key by the current prompt. `update_browsing` returns an
+////    `Action` for the shell (`Inspect`, `NextPage`, `Unlink`) or moves the local
+////    selection.
+//// 3. A grant is built in three prompts: `update_session_choice` picks a resident
+////    target session from the catalogue, `update_target_strand` takes the exact
+////    strand name, and `update_confirmation` reviews direction and wake permission.
+////    Only Enter there returns `Link`.
+//// 4. `reverse_proposal` starts a proposal from an existing incoming grant, going
+////    straight to `update_confirmation`.
+//// 5. The shell turns each `Action` into a control job and feeds the reply back
+////    through `loaded`, `catalogue`, `append_sessions`, `append_page`, `completed`
+////    or `failed`; the `decode_inspection` and `decode_inspection_page` decoders
+////    validate the daemon's JSON first.
+//// 6. `render` draws the chooser, the grants and the open question from `State`.
 
 import core/json
 import etui/buffer

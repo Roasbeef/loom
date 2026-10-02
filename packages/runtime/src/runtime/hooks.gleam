@@ -15,6 +15,23 @@
 //// so a decision taken before a crash is taken again after it (the same
 //// rule the simulation hooks follow).
 ////
+//// ## Flow
+////
+//// `new` → `with_threshold` → `build`, then per step `threshold` → `preparation` → `reference_tail`
+////
+//// 1. `new` makes the inert registry; each `with_*` setter replaces one
+////    slot, and `build` freezes the registry into `effects.Hooks`.
+//// 2. `project` (via `project_from_scan`) reads the strand's durable branch
+////    through its latest compaction into a `Projected`.
+//// 3. `threshold` prices that projection with `context_tokens`, which
+////    trusts the newest provider-reported usage, and compares it with the
+////    window less the reserve. `overflow` skips the comparison.
+//// 4. `preparation` chooses the cut: `recent` spends the keep-recent
+////    budget, `latest_exchange` protects the newest turn, and `cut`
+////    aligns the boundary backward off any tool result.
+//// 5. `reference_tail` then shortens eligible tool results inside the
+////    retained suffix without moving the cut.
+////
 //// ## Counting a context the way the provider does
 ////
 //// The threshold is pi's inequality — compact once the context passes

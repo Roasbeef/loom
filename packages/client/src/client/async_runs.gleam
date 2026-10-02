@@ -5,6 +5,27 @@
 //// durable transition before child cleanup, and Finished requires the scope's
 //// final drain report plus every owned child operation's terminal result.
 //// A replacement service records Lost and never replays a volatile satellite.
+////
+//// ## Flow
+////
+//// `launch` → `handle` → `admit` → `start_worker` → `reported` → `close` → `sweep` → `tell`
+////
+//// 1. `start` runs the service actor and sends itself `Recover`, so `recover`
+////    fences records a previous incarnation left behind before any request.
+//// 2. `launch` and `interact` are bounded calls through `ask`; `handle`
+////    serializes them with the managed-task reports and ends each turn in
+////    `resume`, which rebuilds the selector over the live workers.
+//// 3. `admit` validates a record and answers a replay from the stored one;
+////    `start_worker` claims it durably with `save` before the weft scope runs.
+//// 4. `inspect` serves one nonblocking `Action` on an owned handle, such as
+////    a check, a cancel, `append_input` or a receive.
+//// 5. `reported` takes a worker's ordered outcome and drain proof, and
+////    `close` makes the durable Draining transition before child cleanup.
+//// 6. `sweep` runs on a timer: it reaps deadlines, `heartbeat`s long runs,
+////    and saves the terminal phase once the drain is proven.
+//// 7. `tell` then posts a completion note to the launching strand when
+////    `worth_telling` says the phase is news.
+//// 8. `abort_operation` revokes an initiating operation ahead of the broker.
 
 import client/agency
 import client/notice

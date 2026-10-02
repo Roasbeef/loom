@@ -3,16 +3,34 @@
 //// The websocket actor owns transport I/O; this module owns what the
 //// traffic means. `drain_connection` takes a bounded batch from the
 //// connection inbox, and `apply_channel_update` folds each channel update
-//// into the model. A captured snapshot cut is projected by `render_cut` into
-//// the transcript, approvals, workspaces and cache watches.
+//// into the model. A captured snapshot cut reaches the transcript,
+//// approvals, workspaces and cache watches through `apply_cut`.
 ////
 //// Each pushed event (stream fragments, tool output tails, durable entries,
 //// strand phases, usage and the replies to side-surface reads) goes to the
 //// shared event fold, `event_fold.apply_event`, which takes the session
-//// state alone. `run_event` calls it and then applies what it recorded for
-//// the terminal's own surfaces (`settle_surfaces`): the editor on a
+//// state alone. `run_settled` calls a fold and then applies what it recorded
+//// for the terminal's own surfaces (`settle_surfaces`): the editor on a
 //// workspace switch, the model selector, the cache outlook, the notes panel,
 //// the summary's job cursor and a returned draft.
+////
+//// ## Flow
+////
+//// `drain_connection` → `handle_connection_message` → `apply_channel_update`
+//// → `run_settled` → `settle_surfaces` → `show_surface`
+////
+//// 1. `drain_connection` takes a batch from the adopted inbox with
+////    `take_connection` and records whether it stopped at the batch.
+//// 2. `handle_connection_message` gives one message to the session channel
+////    through `lane_fold.receive`, which answers with channel updates.
+//// 3. `tick_channel` is the timer's way in: `lane_fold.tick` yields the same
+////    updates when a deadline or the idle refresh falls due.
+//// 4. `apply_channel_update` reads `surroundings`, then folds one update
+////    through `run_settled`, which holds the result and settles it.
+//// 5. `settle_surfaces` replays each recorded fact through `show_surface`,
+////    then `restore_returned_drafts` moves returned drafts to the editors.
+//// 6. `show_surface` writes one fact to the terminal; a lost connection ends
+////    in `begin_reconnect`, which asks `reconnect_decision` if one is owed.
 
 import core/json
 import core/message
@@ -61,6 +79,15 @@ import tui/render
 import tui/side_surfaces
 import tui/summary_panel
 
+// What `reconnect_decision` produced: the work to do, or the reason there is
+// none. The reason is carried rather than dropped so the caller can say why
+// rather than leaving the operator with a silent terminal.
+type ReconnectDecision {
+  ReconnectWanted(session: String, options: bootstrap.Options)
+
+  ReconnectRefused(reason: String)
+}
+
 /// Decides whether one unexpected daemon death earns a reconnect.
 ///
 /// The decision is a pure read of the terminal's own state, taken at the
@@ -101,15 +128,6 @@ fn reconnect_state_decision(
       ReconnectRefused("a reconnect is already running")
     ReconnectSpent -> ReconnectRefused("the attempt was already made")
   }
-}
-
-// What the decision above produced: the work to do, or the reason there is
-// none. The reason is carried rather than dropped so the caller can say why
-// rather than leaving the operator with a silent terminal.
-type ReconnectDecision {
-  ReconnectWanted(session: String, options: bootstrap.Options)
-
-  ReconnectRefused(reason: String)
 }
 
 // Enters the one bounded reconnect an unexpected daemon death is allowed.

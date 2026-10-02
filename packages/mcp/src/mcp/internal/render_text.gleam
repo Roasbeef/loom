@@ -112,10 +112,6 @@ pub fn clean(text: String, cap: Int) -> String {
   truncate(sanitize(text), cap)
 }
 
-fn quoted(text: String) -> String {
-  "\"" <> text <> "\""
-}
-
 /// Escapes text for the inside of a Gleam string literal. Total: `\` and
 /// `"` are escaped, and any codepoint outside printable ASCII
 /// (0x20–0x7E) is emitted as Gleam's `\u{...}` escape, so a literal can
@@ -152,5 +148,5 @@ fn escape_codepoint(codepoint: UtfCodepoint) -> String {
 /// assert render_text.lit("abc") == "\"abc\""
 /// ```
 pub fn lit(text: String) -> String {
-  quoted(escape(text))
+  "\"" <> escape(text) <> "\""
 }

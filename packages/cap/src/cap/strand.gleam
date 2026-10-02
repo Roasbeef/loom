@@ -7,6 +7,25 @@
 //// custody and rejects this import (`codemode/vet/policy`). Every call is
 //// still judged against the current strand's lineage and resource limits.
 ////
+//// ## Flow
+////
+//// `assignment` → `spawn` → `wait` → `map` (batches of `admit_batch` and `join_batch`)
+////
+//// 1. `assignment` and the `with_*` builders describe one child; nothing
+////    leaves the satellite until `spawn` runs.
+//// 2. `spawn` sends `assignment_value` through `dispatch.call` and decodes
+////    the admitted child with `decode_handle`.
+//// 3. `wait` joins a list of handles against one shared deadline and decodes
+////    one `Waited` each with `decode_waited`.
+//// 4. `map` bounds the fan-out: `map_batches` admits a batch with
+////    `admit_batch`, joins it with `join_batch`, and stops admitting as soon
+////    as `batch_settled` says a child is unresolved.
+//// 5. `send`, `note`, `notes` and `roster` address the rest of the
+////    lineage; each is one `dispatch.call` whose refusal `map_error` turns
+////    into a `StrandError`.
+//// 6. `error_text`, `waited_text` and `handle_text` render the results for a
+////    program that prints them.
+////
 //// # Why this exists at all
 ////
 //// Every fan-out a model performs today is N `agent_spawn` calls plus an

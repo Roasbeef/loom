@@ -27,6 +27,34 @@
 //// constructor, and exist nowhere else: not in the gateway value beyond
 //// the store itself, not in any event, error, or returned structure
 //// (spec §3.3 invariant 4).
+////
+//// ## Flow
+////
+//// `request` → `prepare` → `start_guard` → `step` → `begin_request` → `pump` → `attempt` → `attempt_one` → `forward_or_settle` → `settle`
+////
+//// 1. `request` is `prepare` followed by `stream.start_prepared`; the public
+////    registry setters (`new`, `add_provider`, `route`) only build the value
+////    these read.
+//// 2. `prepare` starts the guard with `start_guard` and puts a custodian over
+////    it, returning a parked handle that has resolved no route and read no
+////    secret.
+//// 3. The guard is a weft state machine over `Phase`: `handle` sends every
+////    signal through `classify` into `step`, whose arms are the whole
+////    transition set, and `entered` arms the deadline a phase owns.
+//// 4. The begin permit reaches `begin_request`, which spawns the pump parked
+////    (`parked_pump`); `release_pump` adopts it through `adopt_pump` and only
+////    then lets it run.
+//// 5. `pump` hands the request to `dispatch_role` for a role, or straight to
+////    `attempt` for one resolved identity; `usable_chain` and `overlaid`
+////    decide the targets walked.
+//// 6. `attempt` walks the chain one target at a time. `attempt_one` limits
+////    images, looks up the provider and secret, and runs the adapter through
+////    `stream.run_tracked`; `continue_or_deliver` falls back to the next
+////    target only for a retryable failure.
+//// 7. Back in the guard, `forward_or_settle` relays deltas and sends a
+////    terminal to `settle`, which waits for the attempt's exit proof and
+////    publishes through `publish_settled`; `reap` and `abandon` handle the
+////    pump or consumer dying first.
 
 import core/clock.{type Clock}
 import core/message.{type Usage, AssistantMessage}
@@ -161,6 +189,210 @@ pub opaque type Gateway {
     attempt_timeout_ms: Int,
   )
 }
+
+/// The phase the guard is in — the machine's *state*, in weft's sense.
+///
+/// The public request owner is a guard rather than the process doing the
+/// route walk. That extra process has one job: preserve the stream law if
+/// the pump crashes after startup. It also makes cancellation bounded
+/// without asking the caller to understand the pump's monitor or the active
+/// fallback attempt.
+///
+/// Every deadline the guard owns belongs to one of these states and is
+/// armed by `entered`, so it is cancelled by the move out of the state
+/// that armed it. Nothing here re-establishes its own relevance, and a fire
+/// that raced a transition is dropped by weft's timer book before it
+/// reaches the handler — which is why the stale-deadline arms below can say
+/// they are unreachable and mean it.
+///
+/// Nothing in a payload changes while the machine is in that state: a
+/// transition to an equal value is not a state change, so a payload that
+/// moved would restart or void the deadline the state exists to hold.
+/// Everything that moves per event lives in `Guard`.
+type Phase {
+  /// Nothing has resolved a route, read a secret, or opened a socket. The
+  /// guard is waiting for the begin permit which publishes its custodian.
+  Parked
+
+  /// The pump has been spawned parked and its ready handshake is
+  /// outstanding. Entering this state arms the start deadline.
+  Starting
+
+  /// The route walk is running and the public response window is open.
+  Requesting
+
+  /// Cancellation has been selected and the pump asked to stop. Entering
+  /// this state arms the fixed grace; the terminal is the guard's to author
+  /// when the grace expires.
+  Cancelling
+
+  /// The pump authored `terminal`, but the active transport's owner has not
+  /// yet retired. Its exit reason decides whether that terminal survives or
+  /// becomes `DrainProofLost`.
+  Settling(terminal: StreamEvent)
+
+  /// The pump died without authoring a terminal. Entering this state arms
+  /// the same fixed grace for the active transport to acknowledge its own
+  /// cancellation; `cause` is what a clean acknowledgement means.
+  Reaping(cause: ReapCause)
+
+  /// The public terminal has been published and the pump's ownership
+  /// frontier is still open.
+  ClosingPump
+
+  /// The direct consumer died. Nothing more will be published; the frontier
+  /// stays open and every late transport is cancelled as well as refused.
+  Abandoning
+
+  /// Nothing remains but the active transport owner's `Down`.
+  ClosingActive
+}
+
+/// What a clean transport acknowledgement means when the pump died without
+/// authoring a terminal of its own.
+type ReapCause {
+  /// The pump stopped mid-walk. The consumer is owed an in-band transport
+  /// failure, which is retryable at the layer above.
+  PumpStoppedEarly
+
+  /// The pump died after cancellation was selected. Only the guard may say
+  /// cancellation won its race, and a dead pump proves nothing about it.
+  PumpGoneAfterCancel
+}
+
+/// The pump as the guard knows it.
+///
+/// The guard keeps the monitor it created before the pump was released,
+/// because a later failure must not collapse a normal exit, an abnormal
+/// one, and a late `noproc` into one answer.
+type Pump {
+  /// No pump: the begin permit has not arrived.
+  NoPump
+
+  /// Spawned and parked behind its own begin gate. This process still owns
+  /// its teardown, because nothing has been adopted yet.
+  PumpParked(owner: process.Pid, monitor: process.Monitor)
+
+  /// Released into the route walk, with the control subject its
+  /// cancellation travels on.
+  PumpRunning(monitor: process.Monitor, control: process.Subject(Control))
+
+  /// Its `Down` has been seen.
+  PumpGone
+}
+
+/// The transport attempt the pump most recently published.
+///
+/// The guard keeps the monitor created before it publishes an attempt
+/// permit. Carrying the monitor with the capability prevents a later pump
+/// failure from collapsing normal drain, abnormal exit, and a late `noproc`
+/// into one Boolean.
+type Attempt {
+  /// No transport has been registered, or the last one was superseded.
+  NoAttempt
+
+  /// One transport whose owner the guard is still watching.
+  LiveAttempt(running: RunningRequest, monitor: process.Monitor)
+
+  /// The owner's `Down` has arrived. It is recorded rather than acted on,
+  /// because the phase which was going to wait for it may not have been
+  /// reached yet — an exit seen early must mean exactly what an exit seen
+  /// late would have meant.
+  ExitedAttempt(outcome: ActiveExit)
+}
+
+/// What an attempt owner's exit proved.
+///
+/// Only a normal exit acknowledges that the native work beneath the owner
+/// stopped; any other reason means the proof was lost, whatever the pump
+/// had computed.
+type ActiveExit {
+  ActiveDrained
+  ActiveProofLost
+}
+
+/// Everything the guard carries *across* phases.
+///
+/// The split from `Phase` is weft's and it is load-bearing: data may change
+/// on any event without disturbing a state timeout, while a change of state
+/// cancels one. So the custodian, the pump, the active attempt and the
+/// consumer monitor live here — putting the attempt in the state would make
+/// an ordinary registration cancel the cancellation grace.
+type Guard {
+  Guard(
+    gateway: Gateway,
+    request: ProviderRequest,
+    now: Int,
+    events: process.Subject(StreamEvent),
+    pump_ready: process.Subject(
+      #(process.Subject(Control), process.Subject(Nil)),
+    ),
+    pump_events: process.Subject(StreamEvent),
+    pump_attempts: process.Subject(AttemptRegistration),
+    /// `None` once the consumer's death has stopped mattering, so a later
+    /// `Down` cannot be mistaken for one of the guard's live monitors.
+    consumer_watch: Option(process.Monitor),
+    /// `None` only while parked: the custodian arrives with the permit.
+    custodian: Option(custodian.Custodian),
+    pump: Pump,
+    attempt: Attempt,
+  )
+}
+
+/// What the guard's selector delivers.
+///
+/// The selector is fixed when the machine starts, before the consumer,
+/// pump, or attempt monitors exist, so a `Down` cannot be given a meaning
+/// at selection time. `Watched` carries it raw and `classify` asks which of
+/// the guard's monitors fired; everything else already knows what it means.
+type Signal {
+  Told(event: Event)
+  Watched(down: process.Down)
+}
+
+/// One thing that happened, in the guard's own vocabulary.
+type Event {
+  /// The begin permit, carrying the custodian which has adopted the guard.
+  Begin(custodian: custodian.Custodian)
+
+  /// The parked pump answered its ready handshake.
+  PumpAdmitted(control: process.Subject(Control), begin: process.Subject(Nil))
+
+  /// The start deadline on `Starting` expired.
+  PumpStartExpired
+
+  /// The pump published a stream event.
+  FromPump(streamed: StreamEvent)
+
+  /// The pump published a prepared transport and is blocked on its permit.
+  Registered(registration: AttemptRegistration)
+
+  /// The direct consumer exited.
+  ConsumerExited
+
+  /// The pump exited.
+  PumpExited
+
+  /// The active attempt's transport owner exited.
+  AttemptExited(exit: ActiveExit)
+
+  /// A `Down` matching none of the guard's monitors. Unreachable in
+  /// practice — `demonitor_process` flushes — and total by construction.
+  StrayExited
+
+  /// The public cancel capability was invoked.
+  CancelAsked
+
+  /// The cancellation grace on `Cancelling` expired.
+  CancelExpired
+
+  /// The reap grace on `Reaping` expired.
+  ReapExpired
+}
+
+/// What every handler in this machine returns.
+type Step =
+  sm.Next(Phase, Guard, Signal)
 
 /// A gateway with no providers or routes. Inject the real transport,
 /// secret store, and clock in production; fixtures in tests.
@@ -462,210 +694,6 @@ pub fn prepare(
 }
 
 // --- the request guard -----------------------------------------------------
-
-/// The phase the guard is in — the machine's *state*, in weft's sense.
-///
-/// The public request owner is a guard rather than the process doing the
-/// route walk. That extra process has one job: preserve the stream law if
-/// the pump crashes after startup. It also makes cancellation bounded
-/// without asking the caller to understand the pump's monitor or the active
-/// fallback attempt.
-///
-/// Every deadline the guard owns belongs to one of these states and is
-/// armed by `entered`, so it is cancelled by the move out of the state
-/// that armed it. Nothing here re-establishes its own relevance, and a fire
-/// that raced a transition is dropped by weft's timer book before it
-/// reaches the handler — which is why the stale-deadline arms below can say
-/// they are unreachable and mean it.
-///
-/// Nothing in a payload changes while the machine is in that state: a
-/// transition to an equal value is not a state change, so a payload that
-/// moved would restart or void the deadline the state exists to hold.
-/// Everything that moves per event lives in `Guard`.
-type Phase {
-  /// Nothing has resolved a route, read a secret, or opened a socket. The
-  /// guard is waiting for the begin permit which publishes its custodian.
-  Parked
-
-  /// The pump has been spawned parked and its ready handshake is
-  /// outstanding. Entering this state arms the start deadline.
-  Starting
-
-  /// The route walk is running and the public response window is open.
-  Requesting
-
-  /// Cancellation has been selected and the pump asked to stop. Entering
-  /// this state arms the fixed grace; the terminal is the guard's to author
-  /// when the grace expires.
-  Cancelling
-
-  /// The pump authored `terminal`, but the active transport's owner has not
-  /// yet retired. Its exit reason decides whether that terminal survives or
-  /// becomes `DrainProofLost`.
-  Settling(terminal: StreamEvent)
-
-  /// The pump died without authoring a terminal. Entering this state arms
-  /// the same fixed grace for the active transport to acknowledge its own
-  /// cancellation; `cause` is what a clean acknowledgement means.
-  Reaping(cause: ReapCause)
-
-  /// The public terminal has been published and the pump's ownership
-  /// frontier is still open.
-  ClosingPump
-
-  /// The direct consumer died. Nothing more will be published; the frontier
-  /// stays open and every late transport is cancelled as well as refused.
-  Abandoning
-
-  /// Nothing remains but the active transport owner's `Down`.
-  ClosingActive
-}
-
-/// What a clean transport acknowledgement means when the pump died without
-/// authoring a terminal of its own.
-type ReapCause {
-  /// The pump stopped mid-walk. The consumer is owed an in-band transport
-  /// failure, which is retryable at the layer above.
-  PumpStoppedEarly
-
-  /// The pump died after cancellation was selected. Only the guard may say
-  /// cancellation won its race, and a dead pump proves nothing about it.
-  PumpGoneAfterCancel
-}
-
-/// The pump as the guard knows it.
-///
-/// The guard keeps the monitor it created before the pump was released,
-/// because a later failure must not collapse a normal exit, an abnormal
-/// one, and a late `noproc` into one answer.
-type Pump {
-  /// No pump: the begin permit has not arrived.
-  NoPump
-
-  /// Spawned and parked behind its own begin gate. This process still owns
-  /// its teardown, because nothing has been adopted yet.
-  PumpParked(owner: process.Pid, monitor: process.Monitor)
-
-  /// Released into the route walk, with the control subject its
-  /// cancellation travels on.
-  PumpRunning(monitor: process.Monitor, control: process.Subject(Control))
-
-  /// Its `Down` has been seen.
-  PumpGone
-}
-
-/// The transport attempt the pump most recently published.
-///
-/// The guard keeps the monitor created before it publishes an attempt
-/// permit. Carrying the monitor with the capability prevents a later pump
-/// failure from collapsing normal drain, abnormal exit, and a late `noproc`
-/// into one Boolean.
-type Attempt {
-  /// No transport has been registered, or the last one was superseded.
-  NoAttempt
-
-  /// One transport whose owner the guard is still watching.
-  LiveAttempt(running: RunningRequest, monitor: process.Monitor)
-
-  /// The owner's `Down` has arrived. It is recorded rather than acted on,
-  /// because the phase which was going to wait for it may not have been
-  /// reached yet — an exit seen early must mean exactly what an exit seen
-  /// late would have meant.
-  ExitedAttempt(outcome: ActiveExit)
-}
-
-/// What an attempt owner's exit proved.
-///
-/// Only a normal exit acknowledges that the native work beneath the owner
-/// stopped; any other reason means the proof was lost, whatever the pump
-/// had computed.
-type ActiveExit {
-  ActiveDrained
-  ActiveProofLost
-}
-
-/// Everything the guard carries *across* phases.
-///
-/// The split from `Phase` is weft's and it is load-bearing: data may change
-/// on any event without disturbing a state timeout, while a change of state
-/// cancels one. So the custodian, the pump, the active attempt and the
-/// consumer monitor live here — putting the attempt in the state would make
-/// an ordinary registration cancel the cancellation grace.
-type Guard {
-  Guard(
-    gateway: Gateway,
-    request: ProviderRequest,
-    now: Int,
-    events: process.Subject(StreamEvent),
-    pump_ready: process.Subject(
-      #(process.Subject(Control), process.Subject(Nil)),
-    ),
-    pump_events: process.Subject(StreamEvent),
-    pump_attempts: process.Subject(AttemptRegistration),
-    /// `None` once the consumer's death has stopped mattering, so a later
-    /// `Down` cannot be mistaken for one of the guard's live monitors.
-    consumer_watch: Option(process.Monitor),
-    /// `None` only while parked: the custodian arrives with the permit.
-    custodian: Option(custodian.Custodian),
-    pump: Pump,
-    attempt: Attempt,
-  )
-}
-
-/// What the guard's selector delivers.
-///
-/// The selector is fixed when the machine starts, before the consumer,
-/// pump, or attempt monitors exist, so a `Down` cannot be given a meaning
-/// at selection time. `Watched` carries it raw and `classify` asks which of
-/// the guard's monitors fired; everything else already knows what it means.
-type Signal {
-  Told(event: Event)
-  Watched(down: process.Down)
-}
-
-/// One thing that happened, in the guard's own vocabulary.
-type Event {
-  /// The begin permit, carrying the custodian which has adopted the guard.
-  Begin(custodian: custodian.Custodian)
-
-  /// The parked pump answered its ready handshake.
-  PumpAdmitted(control: process.Subject(Control), begin: process.Subject(Nil))
-
-  /// The start deadline on `Starting` expired.
-  PumpStartExpired
-
-  /// The pump published a stream event.
-  FromPump(streamed: StreamEvent)
-
-  /// The pump published a prepared transport and is blocked on its permit.
-  Registered(registration: AttemptRegistration)
-
-  /// The direct consumer exited.
-  ConsumerExited
-
-  /// The pump exited.
-  PumpExited
-
-  /// The active attempt's transport owner exited.
-  AttemptExited(exit: ActiveExit)
-
-  /// A `Down` matching none of the guard's monitors. Unreachable in
-  /// practice — `demonitor_process` flushes — and total by construction.
-  StrayExited
-
-  /// The public cancel capability was invoked.
-  CancelAsked
-
-  /// The cancellation grace on `Cancelling` expired.
-  CancelExpired
-
-  /// The reap grace on `Reaping` expired.
-  ReapExpired
-}
-
-/// What every handler in this machine returns.
-type Step =
-  sm.Next(Phase, Guard, Signal)
 
 // Starts the guard machine, unlinked from the consumer that asked for it,
 // and returns its identity: the pid the custodian adopts and the two

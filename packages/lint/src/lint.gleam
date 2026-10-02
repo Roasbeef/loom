@@ -20,16 +20,17 @@
 //// disabled, so the false-positive rate on this corpus is a thing to
 //// measure before gating on it — the same staging `scripts/doc_check.sh`
 //// went through, and for the same reason
-//// (docs/design-notes/four-decisions.md, D2). R0, R2, R4, R6 and R10 have made
-//// that argument and gate; R1, R5, R9 and R11 have a census to clear
-//// first; R3 and R8 over-report by construction and warn forever. The
+//// (docs/design-notes/four-decisions.md, D2). R0, R2, R4, R6, R10, R13, R14,
+//// R15 and R16 have made that argument and gate; R1, R5, R9 and R11 have a
+//// census to clear first; R3, R8, R17 and R18 over-report by construction
+//// and warn forever. The
 //// decision is data, in `finding.error_by_default`, which is where each
 //// argument is written down; `lint/cli`'s `--error` promotes one for a
 //// single run.
 ////
 //// # Layout is not in the tree
 ////
-//// Three of the thirteen rules are not questions about the AST. R9 reads
+//// Three of the nineteen rules are not questions about the AST. R9 reads
 //// annotations, which `glance` does carry; R10 and R11 ask where the blank
 //// lines and comments *are*, which it throws away entirely. `lint/layout`
 //// is that half: it reads the tree for where each sibling begins and the
@@ -58,11 +59,17 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import glexer/token
 import lint/finding.{type Finding, Finding}
+import lint/flow_order
 import lint/layout
 import lint/policy.{type Eager, type Policy}
 import lint/portable
+import lint/qualified
 import lint/scan.{type Raw, Raw}
 import lint/source
+import lint/spine
+import lint/state_first
+import lint/transitions
+import lint/unnamed_helper
 
 /// Lint one source. `path` labels findings, and also — via `module_path`
 /// below — gives R1's structural half something to key a locally-defined
@@ -135,12 +142,28 @@ pub fn check_with(
       let lines = source.classify(code)
       let blocks = layout.blocks(module, code)
       let at = source.line_map(lines.starts, layout.offsets(blocks))
+      let own = module_path(path)
+
+      // R13 to R18 are about how a reader finds their way around a large
+      // module (issue #593): its spine, its order, its state space, and
+      // what each call's qualifier says. They read the module doc as well
+      // as the tree, so each takes the line table alongside the AST.
+      let orientation =
+        list.flatten([
+          spine.findings(module, code, lines, policy, own),
+          transitions.findings(module, code, lines, policy, own),
+          state_first.findings(module, code, lines, policy, own),
+          qualified.findings(module, code, lines, policy, own),
+          flow_order.findings(module, code, lines, policy, own),
+          unnamed_helper.findings(module, code, lines, policy, own),
+        ])
       let all =
         found
         |> list.append(backstop(found, code, policy))
         |> list.append(foreign)
         |> list.append(portable.imports(package, module))
         |> list.append(layout.findings(blocks, lines, at, policy))
+        |> list.append(orientation)
       locate(path, lines.starts, all)
     }
   }

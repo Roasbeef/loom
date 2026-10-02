@@ -7,6 +7,27 @@
 //// the session. The field names are frozen by protocol 044 §1; changing
 //// one is a protocol-change proposal, never an edit here.
 ////
+//// ## Flow
+////
+//// `new` → `encode` → `decode` → `decode_phase` → `decode_status`
+////
+//// 1. `new` builds a goal in its first state, with the counters at zero and
+////    the phase `Idle`; every later change is the loop's own, in
+////    `client/goalloop`.
+//// 2. `encode` writes the whole cell for its one writer, through `encode_phase`
+////    and `encode_status` for the two tagged fields and `encode_last_check`
+////    for the nullable result.
+//// 3. `decode` reads it back for every observer: `object_fields` first, then
+////    the required fields (`required_string`, `decode_stored_status`,
+////    `required_phase`, `required_budget`, `required_ms`) and then the
+////    optional ones (`decode_counters`, `optional_cost`, `optional_text`,
+////    `optional_last_check`).
+//// 4. `decode_phase` and `decode_status` refuse a tag that does not carry the
+////    payload it names, and `check_updated_after` refuses a cell whose age runs
+////    backwards.
+//// 5. `status_of`, `tokens_used_of` and `reviewer_note_of` are the read
+////    accessors the panels use without decoding anything.
+////
 //// ## Why the loop's phase is in the cell and not in the actor's heap
 ////
 //// The cell carries more than the operator's answer to "what am I

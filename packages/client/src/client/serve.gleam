@@ -23,6 +23,28 @@
 ////
 //// boot and open_instance remain internal host/test seams. They are not CLI
 //// compatibility modes: invoking this module's main refuses per-session serving.
+////
+//// ## Flow
+////
+//// `assemble_owned` → `assemble_owned_with` → `assemble_in` → `open_session_file` → `wiring.build_effects` → `api.open_published` → `close_instance`
+////
+//// 1. `assemble_owned` (or `assemble_in_domain`, which also hands over the
+////    daemon's shared services) enters `assemble_owned_with`, which starts the
+////    instance's address namespace and registers it with the custodian.
+//// 2. `assemble_in` is the whole construction, in order. It resolves the
+////    memory and index paths, then `open_session_file` takes the session's
+////    write lease, waiting out a short distillation harvest.
+//// 3. It names and builds the services: `memory_seam`, `summary_route` and the
+////    other per-session actors, then the tool registry.
+//// 4. `system_prompt.pinned_for` reads the pinned prompt before the open, and
+////    `wiring.build_effects` assembles the effect record the runtime runs on.
+//// 5. `api.open_published` stands the runtime up, `system_prompt.pin_for`
+////    writes the prompt back, and the service supervisor then starts.
+//// 6. A failure at any step unwinds what earlier steps retained rather than
+////    releasing storage early. `boot` adds a listener through `assemble`
+////    for host and test seams.
+//// 7. `close_instance` drains the hub, closes the runtime, then calls
+////    `stop_services` and stops the namespace.
 
 import broker/broker.{type Broker}
 import broker/egress

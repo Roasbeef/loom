@@ -23,10 +23,10 @@ disagreement in section 11.
 The transport is WebSocket over HTTP. Every frame is a text frame
 carrying exactly one JSON object. Binary frames are not part of the
 protocol: a server that receives one closes the connection.
-Source: (`client/daemon/session_socket.gleam:165-171`).
+Source: (`client/daemon/session_socket.gleam:176-182`).
 
 Per-message compression is disabled on both endpoints.
-Source: (`client/daemon/server.gleam:250`).
+Source: (`client/daemon/server.gleam:273`).
 
 ### 1.2 Envelopes
 
@@ -45,7 +45,7 @@ Command envelope:
 | `cmd` | string | required | Command name. |
 | `body` | object | required in practice | Command body. An absent `body` decodes as `{}` on the session endpoint and is a refusal on the control endpoint. |
 
-Source: (`client/protocol.gleam:685-714`) and
+Source: (`client/protocol.gleam:708-737`) and
 (`client/daemon/protocol.gleam:124-160`).
 
 Event envelope:
@@ -62,7 +62,7 @@ Event envelope:
 | `seq` | integer | optional | Storage sequence of the durable write this event reports. Present only on durable-stream events. |
 | `body` | object | required | Event body. |
 
-Source: (`client/protocol.gleam:918-927`).
+Source: (`client/protocol.gleam:941-950`).
 
 Field order in an encoded envelope is `v`, `reply_to`, `event`, `seq`,
 `body`. A client MUST NOT depend on that order; JSON object key order
@@ -78,7 +78,7 @@ replies by `id` and MUST NOT infer a reply from the event name alone.
 A frame with no `reply_to` answers no command. Such frames are described
 in section 6. A client MUST accept an uncorrelated frame in any phase
 of the connection and MUST NOT treat it as the answer to an outstanding
-request. Source: (`client/protocol.gleam:475-485`).
+request. Source: (`client/protocol.gleam:498-508`).
 
 The reference terminal enforces the rule directly: a frame whose
 `reply_to` names anything other than the outstanding request is a
@@ -91,7 +91,7 @@ routes to the pushed path. Source: (`session_view/session_wire.gleam:188-192`).
 writes in one session share a single increasing sequence space, so
 sequence numbers are sparse from any one event stream's point of view. A
 numeric gap does not by itself mean an event was lost.
-Source: (`client/gateway.gleam:103-108`).
+Source: (`client/gateway.gleam:129-134`).
 
 `snapshot`, `snapshot_begin`, `snapshot_chunk`, `snapshot_end`,
 `stream_delta`, `tool_output`, `block_summary`, `goal_changed`, `mutation_outcome`,
@@ -104,10 +104,10 @@ Within version 2:
 - A receiver MUST ignore unknown fields inside a body it otherwise
   understands.
 - A client MUST ignore an event whose name it does not know rather than
-  closing the connection. Source: (`client/protocol.gleam:1338`).
+  closing the connection. Source: (`client/protocol.gleam:1361`).
 - A server answers an unknown command name with an `error` event whose
   code is `unsupported`.
-  Source: (`client/gateway.gleam:2855-2863`).
+  Source: (`client/gateway.gleam:2880-2888`).
 
 A server MUST NOT remove a field or change the meaning of one within
 version 2.
@@ -115,9 +115,9 @@ version 2.
 Both sides keep an unrecognised name as data rather than failing on it.
 A command name this server does not know decodes to `UnknownCommand`,
 which carries the raw body so the refusal can name it
-(`client/protocol.gleam:185`). An event name a client does not know
+(`client/protocol.gleam:208`). An event name a client does not know
 decodes to `UnknownEvent` with its body kept
-(`client/protocol.gleam:465`).
+(`client/protocol.gleam:488`).
 
 ### 1.6 Nested durable values
 
@@ -132,14 +132,14 @@ rendering, and the wire form is normative:
 
 - An assistant `toolCall` content block nests the call under a
   `toolCall` key, where the internal codec inlines its fields.
-  Source: (`client/protocol.gleam:2028-2041`).
+  Source: (`client/protocol.gleam:2051-2064`).
 - A `thinking` content block always carries `redacted`, where the
   internal codec omits the default `false`.
-  Source: (`client/protocol.gleam:2043-2050`).
+  Source: (`client/protocol.gleam:2066-2073`).
 
 Floats are printed positionally for decimal exponents between -7 and 21
 (`0.00027`), and in scientific notation outside that range.
-Source: (`client/protocol.gleam:2105-2125`).
+Source: (`client/protocol.gleam:2128-2148`).
 
 ---
 
@@ -165,11 +165,11 @@ specifies them and [the web view](architecture/web-view.md) describes them.
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:143-157`).
+Source: `handle` (`client/daemon/server.gleam:166-180`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
-refused with HTTP 409. Source: (`client/daemon/server.gleam:167-169`).
+refused with HTTP 409. Source: (`client/daemon/server.gleam:190-192`).
 
 ### 2.2 The upgrade request
 
@@ -178,13 +178,13 @@ The upgrade request MUST carry an `Authorization` header of the form
 part MUST be non-empty. The server hashes the token with SHA-256 and
 matches the lowercase hexadecimal digest against its durable credential
 catalogue; the plaintext token is never stored.
-Source: (`client/daemon/server.gleam:129-148`).
+Source: (`client/daemon/server.gleam:152-171`).
 
 An upgrade with no header, a header that is not a bearer, a token that
 authenticates nothing, or a daemon that has stopped accepting
 attachments, returns HTTP 401 with the body `unauthorized or
 unavailable`. The response does not distinguish those cases.
-Source: (`client/daemon/server.gleam:106-127`).
+Source: (`client/daemon/server.gleam:129-150`).
 
 Session upgrades have three further outcomes:
 
@@ -194,11 +194,11 @@ Session upgrades have three further outcomes:
 | 503 | `connection capacity unavailable` | The daemon holds no free connection reservation. |
 | 101 | (upgrade) | Admitted. |
 
-Source: (`client/daemon/server.gleam:184-215`).
+Source: (`client/daemon/server.gleam:207-238`).
 
 A session route resolves an already resident session only. It never
 opens a saved one; opening is the separate `sessions.open` control
-command. Source: (`client/daemon/server.gleam:219-227`).
+command. Source: (`client/daemon/server.gleam:242-250`).
 
 ### 2.3 Obtaining a bearer
 
@@ -209,7 +209,7 @@ and writes it, as 64 lowercase hexadecimal characters with no trailing
 newline, to `owner.token` inside its private state directory. The
 directory defaults to `$HOME/.loom` and is overridden by the daemon's
 `--state-dir` flag; the file's path is therefore `$HOME/.loom/owner.token`
-by default. Source: (`client/daemon/root.gleam:819-836`) and
+by default. Source: (`client/daemon/root.gleam:859-876`) and
 (`client/daemon/main.gleam:191-197`).
 
 A client discovering a running daemon reads the same file, rejecting
@@ -233,8 +233,8 @@ bytes, hex-encodes them as its bearer, stores them, and presents the claim
 on `/v2/claim` with only the bearer's SHA-256 digest (§2.7). From then on
 the member authenticates with that bearer like any other. A claim lives 24
 hours unless the owner chose a lifetime, and is spent once bound.
-Source: (`client/daemon/server.gleam:1424`) and
-(`client/daemon/server.gleam:678`).
+Source: (`client/daemon/server.gleam:1447`) and
+(`client/daemon/server.gleam:701`).
 
 No reply on the control endpoint carries a bearer. A client MUST NOT log
 a bearer or a claim token, place either in a URL, or send either anywhere
@@ -264,15 +264,15 @@ principal's authority over the target session. Three authorities exist.
 | `operator` | A membership with role `operator`. | All except `worktree_diff`, subject to original-author checks on queued input. |
 | `observer` | A membership with role `observer`. | Read-only commands that do not require owner or mutable-principal authority. |
 
-Source: (`client/gateway.gleam:1892-1898`).
+Source: (`client/gateway.gleam:1917-1923`).
 
 The read-only set is `subscribe`, `catch_up`, `snapshot_next`,
 `history`, `escalations_get`, `models`, `skills`, `notes`, `live_jobs`, `queued_input`,
 `worktree_diff`, `context` and `schedules`. Every other
 command from an observer is refused with the code `forbidden` before any
 durable write or effect dispatch.
-Source: (`client/gateway.gleam:1957-1981`) and
-(`client/gateway.gleam:2834-2846`).
+Source: (`client/gateway.gleam:1982-2006`) and
+(`client/gateway.gleam:2859-2871`).
 
 Read classification does not grant access to every observation. `worktree_diff`
 requires owner authority; `queued_input` requires the currently mutable original
@@ -282,7 +282,7 @@ On the control endpoint, owner authority is required for
 `sessions.create`, `sessions.default`, `sessions.set_default`,
 `sessions.stop`, `sessions.invite`, `credentials.rotate` and
 `daemon.shutdown`; a member principal receives `forbidden`.
-Source: (`client/daemon/server.gleam:472-477`).
+Source: (`client/daemon/server.gleam:495-500`).
 
 ### 2.6 Revocation while attached
 
@@ -292,8 +292,8 @@ immediately before it writes the answer, and closes the attachment if
 the answer changed. A command already admitted may finish; its reply
 does not reach a peer that has lost the right to it, and no further
 command from that socket is admitted.
-Source: (`client/gateway.gleam:37-48`) and
-(`client/gateway.gleam:1741-1750`).
+Source: (`client/gateway.gleam:63-74`) and
+(`client/gateway.gleam:1766-1775`).
 
 Three refusals close an attached socket:
 
@@ -303,8 +303,8 @@ Three refusals close an attached socket:
 | `stale incarnation` | The session's resident instance is no longer the admitted one. |
 | `unauthorized` | The credential is revoked, or is no longer a member of this session. |
 
-Source: (`client/daemon/session_socket.gleam:348-355`) and
-(`client/daemon/manager.gleam:401-413`).
+Source: (`client/daemon/session_socket.gleam:359-366`) and
+(`client/daemon/manager.gleam:423-435`).
 
 A client MUST treat a closed socket as an unknown outcome for any
 command whose reply it did not receive, and MUST NOT resend that
@@ -328,8 +328,8 @@ lowercase hex>`. The server hashes the whole token and answers:
 
 The existence check only filters: an expired or already claimed claim is
 admitted and then refused by the command, with its reason. Source:
-(`client/daemon/server.gleam:678`) and
-(`client/daemon/root.gleam:1032`).
+(`client/daemon/server.gleam:701`) and
+(`client/daemon/root.gleam:1072`).
 
 The server first sends `{"v":2,"event":"hello","body":{"protocol":2}}`.
 The client then sends exactly one command. An inbound message larger
@@ -370,7 +370,7 @@ recovers a lost reply. Refusals, as `error` events:
 
 A claim token authenticates nothing on `/v2/control` or a session route;
 presented there as a bearer it is 401. Source:
-(`storage/access.gleam:462`) and (`client/daemon/protocol.gleam:522`).
+(`storage/access.gleam:482`) and (`client/daemon/protocol.gleam:522`).
 
 ---
 
@@ -400,8 +400,8 @@ carries the daemon epoch that most control commands must echo.
 | `limits.reserved_message_bytes` | integer | required | Aggregate admission budget across all connections. |
 | `ui.path` | string | optional | Present only when the daemon was started with `--ui`: the web view's route prefix, `"/ui"`. A client that does not know the field ignores it. |
 
-Source: (`client/daemon/server.gleam:554-594`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:765`).
+Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
+`hello_view` (`client/daemon/server.gleam:788`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -429,7 +429,7 @@ Source: (`client/daemon/protocol.gleam:288-303`).
 A successful reply's `event` name is the command name. A failure is an
 `error` event carrying `{"code": ..., "message": ...}` with the same
 `reply_to`.
-Source: (`client/daemon/server.gleam:403-435`).
+Source: (`client/daemon/server.gleam:426-458`).
 
 Dispatcher refusals carry `request refused`, except an authorized exact
 `operations.get` startup failure (protocol 055). Its `start_failed` code
@@ -440,7 +440,7 @@ the slot. Diagnostic reads release no capacity or replacement fence; the
 next admitted operation clears the old failure memo.
 Credential, membership and epoch checks precede that read; other failures
 never quote the request or a private path.
-Source: (`client/daemon/server.gleam:1016`).
+Source: (`client/daemon/server.gleam:1039`).
 
 ### 3.3 `status`
 
@@ -471,11 +471,11 @@ Reply:
 | `domain_occupied` | integer | required | Domain slots held, including a retired domain whose sessions have not yet retired. |
 | `domain_blocked` | integer | required | Domain slots with a reported failure or lost cleanup proof. |
 
-Source: (`client/daemon/server.gleam:580-600`).
+Source: (`client/daemon/server.gleam:603-623`).
 
 Errors: `unavailable`, `not_initialized`, `capacity`, `not_found`,
 `conflict`, `bad_request` (all through the shared mapping in
-`client/daemon/server.gleam:839-851`).
+`client/daemon/server.gleam:862-874`).
 
 ### 3.4 `sessions.list`
 
@@ -505,7 +505,7 @@ Reply:
 | `sessions` | array | required | Session records, in cursor order. |
 | `after` | string or null | required | The last record's id, to pass as the next `after`; `null` when the page is empty. |
 
-Source: (`client/daemon/server.gleam:777-787`).
+Source: (`client/daemon/server.gleam:800-810`).
 
 Each session record:
 
@@ -517,7 +517,7 @@ Each session record:
 | `created_at` | integer | required | Creation time in milliseconds. |
 | `status` | object | required | Lifecycle status, described below. |
 
-Source: (`client/daemon/server.gleam:806-814`).
+Source: (`client/daemon/server.gleam:829-837`).
 
 A status object is discriminated by `state`:
 
@@ -530,17 +530,17 @@ A status object is discriminated by `state`:
 | `stopping` | `operation` | Draining under that operation id. |
 | `recovery_blocked` | none | Retained after a failure; not openable. |
 
-Source: (`client/daemon/server.gleam:816-837`).
+Source: (`client/daemon/server.gleam:839-860`).
 
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:1553`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:1576`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
-Source: (`client/daemon/server.gleam:601-609`) and
-(`client/daemon/server.gleam:769-775`).
+Source: (`client/daemon/server.gleam:624-632`) and
+(`client/daemon/server.gleam:792-798`).
 
 ### 3.5 `sessions.get`
 
@@ -558,7 +558,7 @@ Source: (`client/daemon/protocol.gleam:219`) and
 The reply body is a session record. For the owner it carries one extra
 field, `domain_scope`, whose value is `workspace_private` or
 `session_only`; a member principal receives the plain record.
-Source: (`client/daemon/server.gleam:736-767`).
+Source: (`client/daemon/server.gleam:759-790`).
 
 Errors: `forbidden` when the credential has no membership,
 `not_found`, `unavailable`.
@@ -587,7 +587,7 @@ Source: (`client/daemon/protocol.gleam:220-226`).
 ```
 
 The reply body of each is a session record.
-Source: (`client/daemon/server.gleam:619-630`).
+Source: (`client/daemon/server.gleam:642-653`).
 
 Errors: `forbidden`, `not_found`, `unavailable`.
 
@@ -611,12 +611,12 @@ Source: (`client/daemon/protocol.gleam:227-234`) and
 ```
 
 The reply body is a session record.
-Source: (`client/daemon/server.gleam:631-651`).
+Source: (`client/daemon/server.gleam:654-674`).
 
 Errors: `forbidden`; `invalid_workspace` and `invalid_configuration`
 when a path cannot be canonicalized; `conflict` when the key was reused
 with different metadata; `unavailable`.
-Source: (`client/daemon/server.gleam:634-641`).
+Source: (`client/daemon/server.gleam:657-664`).
 
 The server assigns the database path beneath its own private session
 directory. A client MUST NOT expect its `name` to appear in any path.
@@ -636,7 +636,7 @@ Source: (`client/daemon/protocol.gleam:235-239`).
 
 The reply body is a status object (section 3.4). Concurrent opens share
 one operation, so two clients opening the same session receive the same
-operation id. Source: (`client/daemon/server.gleam:652-659`).
+operation id. Source: (`client/daemon/server.gleam:675-682`).
 
 Requires operator authority or better on the target session.
 Errors: `stale_epoch`, `forbidden`, `not_found`, `capacity`,
@@ -663,7 +663,7 @@ Source: (`client/daemon/protocol.gleam:240-244`).
 
 The reply body is a status object. A caller's timeout does not cancel
 cleanup and does not free the slot.
-Source: (`client/daemon/server.gleam:660-666`).
+Source: (`client/daemon/server.gleam:683-689`).
 
 Errors: `forbidden`, `stale_epoch`, `not_found`, `unavailable`.
 
@@ -682,7 +682,7 @@ Source: (`client/daemon/protocol.gleam:245-250`).
 ```
 
 The reply body is a session record whose `status` reflects that
-operation. Source: (`client/daemon/server.gleam:684-673`).
+operation. Source: (`client/daemon/server.gleam:707-696`).
 
 Operation ids contain the daemon epoch and an opening nonce, so a
 request for an old operation cannot observe a replacement as though it
@@ -730,11 +730,11 @@ The invited member has no credential until it redeems the claim on
 `/v2/claim` (§2.7). The owner delivers the claim over a channel outside
 Loom and never through a Loom session: a claim pasted into a composer
 becomes part of the transcript and of the agent's context. Source:
-(`client/daemon/server.gleam:1449`).
+(`client/daemon/server.gleam:1472`).
 
 The target session's domain scope MUST be `session_only`; a
 workspace-private session is refused with `isolation_required`.
-Source: (`client/daemon/server.gleam:726-734`).
+Source: (`client/daemon/server.gleam:749-757`).
 
 Errors: `forbidden`, `stale_epoch`, `isolation_required`, `conflict`
 when the principal id was already used or `credential_digest` is already
@@ -770,7 +770,7 @@ Source: (`client/daemon/protocol.gleam:190-202`).
 ```
 
 Each reply body carries `principal_id` and `name` and no bearer.
-Source: (`client/daemon/server.gleam:553-570`).
+Source: (`client/daemon/server.gleam:576-593`).
 
 A `sessions.set_role` that creates a membership requires
 `session_only` scope and is otherwise refused with
@@ -799,7 +799,7 @@ reply: `principal_id`, `name`, and `claim` with `expires_in_ms` unless a
 digest was enrolled. `credentials.revoke` voids the open claim and
 revokes every active credential without a replacement; its reply is
 `principal_id` and `name`. Neither reply carries a bearer. Source:
-(`storage/access.gleam:356`) and (`storage/access.gleam:382`).
+(`storage/access.gleam:376`) and (`storage/access.gleam:402`).
 
 Owner credentials are outside these commands: the owner token file has
 its own lifetime.
@@ -828,7 +828,7 @@ Reply:
 {"v":2,"reply_to":12,"event":"sessions.isolate","body":{"session_id":"0198c0de-0000-7000-8000-000000000001","domain_scope":"session_only"}}
 ```
 
-Source: (`client/daemon/server.gleam:502-514`).
+Source: (`client/daemon/server.gleam:525-537`).
 
 The acknowledgement is required because isolation is prospective. It
 creates fresh domain metadata and copies no aggregate memory or index
@@ -860,8 +860,8 @@ Reply:
 ```
 
 The acknowledgement is written before the drain begins, so a client
-receives it. Source: (`client/daemon/server.gleam:300-310`) and
-(`client/daemon/server.gleam:674-681`).
+receives it. Source: (`client/daemon/server.gleam:323-333`) and
+(`client/daemon/server.gleam:697-704`).
 
 Errors: `forbidden`, `stale_epoch`.
 
@@ -924,7 +924,7 @@ While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:1061-1091`).
+`control_use` (`client/daemon/server.gleam:1084-1114`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -1090,7 +1090,7 @@ Reply:
 The server checks the caller's membership with the call a session upgrade
 makes, `manager.session_authority`, and refuses a non-member; it refuses
 with `unavailable` when the daemon was started without `--ui` (`UiLink`,
-`client/daemon/server.gleam:1055`). The ticket is 32 random bytes, sent
+`client/daemon/server.gleam:1078`). The ticket is 32 random bytes, sent
 base16 encoded; the daemon keeps only its SHA-256 digest, with the
 principal, the session, the digest of the credential that asked and the
 ceiling. It is redeemed at most once, and redeeming it ends every earlier
@@ -1173,37 +1173,37 @@ Errors: `forbidden`, `not_found`, `bad_request`, `unavailable`.
 The upgrade resolves an immutable attachment: session id, daemon epoch,
 resident incarnation, principal, role, credential digest and a fresh
 connection id. Nothing a client sends can change any of them.
-Source: (`client/daemon/server.gleam:47-75`).
+Source: (`client/daemon/server.gleam:70-98`).
 
 The socket sends no `hello`. A client's first command MUST be
 `subscribe`; every other command before it is refused with
 `bad_request` and the message `subscribe before sending commands`.
-Source: (`client/gateway.gleam:2877-2886`).
+Source: (`client/gateway.gleam:2902-2911`).
 
 A second `subscribe` on the same connection is refused with `conflict`.
-Source: (`client/gateway.gleam:2867-2876`).
+Source: (`client/gateway.gleam:2892-2901`).
 
 ### 4.2 Stop-and-wait credit
 
 A client MUST have at most one command in flight. The server admits one
 frame, computes one bounded reply, writes it, and only then reads the
 next frame from that socket. Source:
-(`client/daemon/session_socket.gleam:276-298`).
+(`client/daemon/session_socket.gleam:287-309`).
 
 A reply is bounded at 65536 encoded bytes. The server sizes the encoded
 envelope before serializing it; an envelope that would exceed the bound
 fails, and the failure closes the attachment rather than truncating.
-Source: (`client/gateway.gleam:2635-2646`).
+Source: (`client/gateway.gleam:2660-2671`).
 
 Inbound frames are bounded per role: 65536 bytes for an observer, and
 33554432 bytes for an operator or owner. The bound applies to a complete
 message, fragmented or not.
-Source: (`client/daemon/root.gleam:372-377`) and
-(`client/daemon/session_socket.gleam:99-112`).
+Source: (`client/daemon/root.gleam:412-417`) and
+(`client/daemon/session_socket.gleam:110-123`).
 
 The server answers one command within six seconds. A client that
 receives no reply in that window MUST treat the outcome as unknown.
-Source: (`client/gateway.gleam:723-733`).
+Source: (`client/gateway.gleam:808-818`).
 
 ### 4.3 The bounded snapshot transfer
 
@@ -1212,12 +1212,12 @@ transfer: one header, then a fragment per credit, then a terminator.
 
 Four commands begin a transfer: `subscribe`, `catch_up`, `history` and
 `escalations_get`.
-Source: (`client/gateway.gleam:1234-1264`).
+Source: (`client/gateway.gleam:1259-1289`).
 
 A connection holds at most one transfer. Beginning a second while one is
 open is refused with `stale_snapshot` and the message `finish the
 current transfer or subscribe first`.
-Source: (`client/gateway.gleam:1340-1352`).
+Source: (`client/gateway.gleam:1365-1377`).
 
 A transfer expires 30000 milliseconds after its capture. The deadline is
 absolute: a fragment does not extend it.
@@ -1280,8 +1280,8 @@ a protocol violation. Source: (`session_view/snapshot.gleam:340-350`).
 | `origin` | object or null | required | `{principal, name}` of the authenticated peer. |
 | `role` | string | required | `owner`, `operator` or `observer`. |
 
-Source: (`client/gateway.gleam:1451-1487`) and
-(`client/protocol.gleam:1344-1378`).
+Source: (`client/gateway.gleam:1476-1512`) and
+(`client/protocol.gleam:1367-1401`).
 
 A client MUST check `session_id`, `epoch` and `incarnation` against the
 attachment it selected, MUST check that `complete_history`
@@ -1316,7 +1316,7 @@ Source: (`client/daemon/transfer.gleam:323-344`).
 The decoded fragment is at least one byte and at most 24576 bytes;
 `offset + len(data)` never exceeds `total_bytes`; `total_bytes` never
 exceeds 33554432. A metadata record's `total_bytes` never exceeds
-2097152. Source: (`client/protocol.gleam:1388-1420`).
+2097152. Source: (`client/protocol.gleam:1411-1443`).
 
 A record whose `total_bytes` exceeds what a client is willing to decode
 MAY be drained and retained as a placeholder carrying its id, sequence
@@ -1337,7 +1337,7 @@ above 4194304 bytes. Source: (`session_view/snapshot.gleam:415-420`).
 | `more_after` | integer or null | required | For a `history` window, the sequence to pass as the next request's `after_seq`; `null` when the window is exhausted. |
 
 Source: (`client/daemon/transfer.gleam:253-263`) and
-(`client/protocol.gleam:1423-1430`).
+(`client/protocol.gleam:1446-1453`).
 
 `more_after` is non-null only for a `history` window, and only when the
 descriptor page came back full.
@@ -1360,7 +1360,7 @@ state: everything a client needs besides the entries themselves.
 | `pending_inputs` | array | optional | Host-held input ordered by priority and arrival; empty authoritatively clears the queue. |
 | `tool_availability` | object or null | optional | Actual registered names, optional code-mode boot diagnostic, and bounded extension startup refusals. |
 
-Source: (`client/gateway.gleam:1393-1437`).
+Source: (`client/gateway.gleam:1418-1462`).
 
 Each cell:
 
@@ -1371,22 +1371,22 @@ Each cell:
 | `seq` | integer | required | Sequence of the write that set this cell. |
 | `value` | any | required | The cell's payload, verbatim. |
 
-Source: (`client/gateway.gleam:1414-1423`).
+Source: (`client/gateway.gleam:1439-1448`).
 
 For a `recent`, `catch_up` or `history` window, the cells cover strand
 configuration, strand leaves, strand state, each strand's last result,
 the client fact prefix, pending escalations, and the open operation's
-state and metadata. Source: (`client/gateway.gleam:1291-1323`).
+state and metadata. Source: (`client/gateway.gleam:1316-1348`).
 
 For an `escalations` window, the cells are exactly the requested
 escalation records, and nothing else.
-Source: (`client/gateway.gleam:1358-1369`).
+Source: (`client/gateway.gleam:1383-1394`).
 
 `stream_preview`, when present, carries `revision`, `operation`, `generation`,
 `kind`, `text` and `discontinuous: true`. Older recordings may omit generation
 and kind. Because it is discontinuous, a client MUST
 render it as a standalone sample and MUST NOT concatenate two samples.
-Source: (`client/gateway.gleam:1849-1857`).
+Source: (`client/gateway.gleam:1874-1882`).
 
 `pending_inputs` rows contain `id`, `strand`, `kind` (`steer` or `queue`),
 and `text` (at most 512 UTF-8 bytes). The ID combines connection and request
@@ -1409,7 +1409,7 @@ which registered tools are enabled.
 | `session` | string | required | Canonical session id. MUST equal the one in the route. |
 | `from_seq` | integer | optional | Ignored by the authenticated transport. |
 
-Source: (`client/protocol.gleam:754-758`).
+Source: (`client/protocol.gleam:777-781`).
 
 ```json
 {"v":2,"id":1,"cmd":"subscribe","body":{"session":"0198c0de-0000-7000-8000-000000000001"}}
@@ -1419,17 +1419,17 @@ The reply is `snapshot_begin` with `window` `recent`. The window is at
 most 100 of the newest entry descriptors, and it is not the parent
 closure of anything: a client MUST expect entries whose parents it does
 not hold, and MUST index entries by id and parent rather than assuming a
-single strand's chain. Source: (`client/gateway.gleam:1353-1356`) and
+single strand's chain. Source: (`client/gateway.gleam:1378-1381`) and
 (`storage/snapshot.gleam:42`).
 
 A `session` that is not this attachment's own is refused with the code
-`wrong_session`. Source: (`client/gateway.gleam:1994`).
+`wrong_session`. Source: (`client/gateway.gleam:2019`).
 
 `from_seq` exists in the command's decoder for the in-process host
 fixture, where it selects a resume reply. Over the authenticated
 transport it is not read: the reply is always a fresh `recent`
 transfer, and reconciliation is `catch_up`.
-Source: (`client/gateway.gleam:1235-1244`).
+Source: (`client/gateway.gleam:1260-1269`).
 
 ### 4.5 `catch_up`
 
@@ -1437,7 +1437,7 @@ Source: (`client/gateway.gleam:1235-1244`).
 |---|---|---|---|
 | `from_seq` | integer | required | Lower bound of the reconciliation interval. |
 
-Source: (`client/protocol.gleam:760-763`).
+Source: (`client/protocol.gleam:783-786`).
 
 ```json
 {"v":2,"id":7,"cmd":"catch_up","body":{"from_seq":42}}
@@ -1467,7 +1467,7 @@ catch-up intervals are legal.
 | `after_seq` | integer | required | Exclusive lower bound. |
 | `before_seq` | integer | required | Exclusive upper bound. |
 
-Both MUST be non-negative. Source: (`client/protocol.gleam:748-752`).
+Both MUST be non-negative. Source: (`client/protocol.gleam:771-775`).
 
 ```json
 {"v":2,"id":14,"cmd":"history","body":{"after_seq":0,"before_seq":11}}
@@ -1494,7 +1494,7 @@ older entries beside the window a `subscribe` or `catch_up` established.
 
 An empty array, more than eight ids, or a non-string element refuses the
 command with `bad_request`. Duplicate ids are collapsed.
-Source: (`client/protocol.gleam:721-741`).
+Source: (`client/protocol.gleam:744-764`).
 
 ```json
 {"v":2,"id":15,"cmd":"escalations_get","body":{"ids":["esc-1","esc-2"]}}
@@ -1504,7 +1504,7 @@ The reply is `snapshot_begin` with `window` `escalations`, followed by a
 metadata-only transfer: the found cells, each with its current register
 sequence and resolution origin, plus a `missing` array naming the ids
 that had no cell. No entry descriptors follow.
-Source: (`client/gateway.gleam:1396-1411`).
+Source: (`client/gateway.gleam:1421-1436`).
 
 A client applies the result to those questions only. It MUST NOT replace
 its history cursor or its pending-escalation projection from an
@@ -1517,7 +1517,7 @@ escalations transfer. A missing record names no author.
 | `snapshot_id` | string | required | The transfer this credit belongs to. |
 | `index` | integer | required | The continuation index being granted. |
 
-Source: (`client/protocol.gleam:742-747`).
+Source: (`client/protocol.gleam:765-770`).
 
 ```json
 {"v":2,"id":2,"cmd":"snapshot_next","body":{"snapshot_id":"3:0","index":0}}
@@ -1526,8 +1526,8 @@ Source: (`client/protocol.gleam:742-747`).
 Each accepted `snapshot_next` yields exactly one `snapshot_chunk` or one
 `snapshot_end`. A mismatched `snapshot_id`, a mismatched `index`, or an
 expired transfer is refused with `stale_snapshot`.
-Source: (`client/gateway.gleam:1503-1518`) and
-(`client/gateway.gleam:1531-1540`).
+Source: (`client/gateway.gleam:1528-1543`) and
+(`client/gateway.gleam:1556-1565`).
 
 On `stale_snapshot` a client MUST discard the partial transfer and begin
 a new one. The server has already dropped its own state.
@@ -1538,7 +1538,7 @@ Over the authenticated transport, a mutation's reply is a
 `mutation_outcome` rather than the durable record it produced. The
 record itself travels the credited transfer path, which is the one place
 the size bound and the retention window are enforced.
-Source: (`client/gateway.gleam:2635-2646`).
+Source: (`client/gateway.gleam:2660-2671`).
 
 Three statuses exist.
 
@@ -1548,15 +1548,15 @@ Three statuses exist.
 | `committed` | The durable transition has landed. | `approve`, `deny`, `fork`, `create_strand`, `navigate`, `set_config` |
 | `queued` | The server holds the message in memory and will submit it when the strand goes idle. | `prompt`, `prompt_content` on a busy strand |
 
-Source: (`client/gateway.gleam:2636-2642`),
-(`client/gateway.gleam:4119-4127`),
-(`client/gateway.gleam:4305-4308`) and
-(`client/gateway.gleam:3511-3518`).
+Source: (`client/gateway.gleam:2661-2667`),
+(`client/gateway.gleam:4144-4152`),
+(`client/gateway.gleam:4330-4333`) and
+(`client/gateway.gleam:3536-3543`).
 
 `queued` is not a durable acknowledgement. A client MUST NOT render it
 as one, and MUST clear its own queued state when the socket closes,
 because the server's queue is process memory that a restart drops.
-Source: (`client/gateway.gleam:503-512`).
+Source: (`client/gateway.gleam:631-640`).
 
 #### 4.9.1 `prompt`
 
@@ -1565,8 +1565,8 @@ Source: (`client/gateway.gleam:503-512`).
 | `strand` | string | required | Target strand name. |
 | `text` | string | required | The user turn's text. |
 
-Source: (`client/protocol.gleam:765`) and
-(`client/protocol.gleam:880-888`).
+Source: (`client/protocol.gleam:788`) and
+(`client/protocol.gleam:903-911`).
 
 ```json
 {"v":2,"id":3,"cmd":"prompt","body":{"strand":"main","text":"add a retry to the fetcher"}}
@@ -1577,8 +1577,8 @@ Reply: `mutation_outcome` with status `admitted` on an idle strand, or
 
 A strand may hold at most four queued prompts. A fifth is refused with
 `conflict` and the message `the strand is busy and its queue is full`.
-Source: (`client/gateway.gleam:532`) and
-(`client/gateway.gleam:3500-3510`).
+Source: (`client/gateway.gleam:660`) and
+(`client/gateway.gleam:3525-3535`).
 
 Errors: `unknown_strand`; `conflict`; `bad_request` for an invalid
 message; `internal`.
@@ -1590,7 +1590,7 @@ message; `internal`.
 | `strand` | string | required | Target strand name. |
 | `content` | array | required | One or more user content blocks, in order. |
 
-Source: (`client/protocol.gleam:766-778`).
+Source: (`client/protocol.gleam:789-801`).
 
 ```json
 {"v":2,"id":18,"cmd":"prompt_content","body":{"strand":"main","content":[{"type":"text","text":"inspect this"},{"type":"image","data":"iVBORw0KGgo=","mimeType":"image/png"}]}}
@@ -1601,7 +1601,7 @@ A block is either `{"type":"text","text":...}` with an optional
 `data` is base64. An empty array, an unknown block type, invalid base64,
 an empty media type, or a field of the wrong type refuses the whole
 command with `bad_request`; no partial message is admitted.
-Source: (`client/protocol.gleam:864-878`).
+Source: (`client/protocol.gleam:887-901`).
 
 The server appends exactly one user message, preserving block order. A
 server that predates this command answers `unsupported`.
@@ -1613,7 +1613,7 @@ server that predates this command answers `unsupported`.
 | `strand` | string | required | Target strand name. |
 | `text` | string | required | Priority replacement instruction. |
 
-Source: (`client/protocol.gleam:779`).
+Source: (`client/protocol.gleam:802`).
 
 ```json
 {"v":2,"id":4,"cmd":"steer","body":{"strand":"main","text":"prefer exponential backoff"}}
@@ -1629,7 +1629,7 @@ See [protocol 022](../protocol-change/022-human-input-priority.md).
 
 #### 4.9.4 `follow_up`
 
-Body is identical to `steer`. Source: (`client/protocol.gleam:1119`).
+Body is identical to `steer`. Source: (`client/protocol.gleam:1142`).
 
 ```json
 {"v":2,"id":5,"cmd":"follow_up","body":{"strand":"main","text":"now add tests"}}
@@ -1644,7 +1644,7 @@ starts a run. Stopping the current operation does not discard this queue.
 |---|---|---|---|
 | `strand` | string | required | Target strand name. |
 
-Source: (`client/protocol.gleam:781-785`).
+Source: (`client/protocol.gleam:804-808`).
 
 ```json
 {"v":2,"id":6,"cmd":"abort","body":{"strand":"main"}}
@@ -1661,7 +1661,7 @@ per queued row ([protocol 033](../protocol-change/033-abort-halts-held-input.md)
 The per-priority queue bound does not refuse that release: it counts messages
 waiting for a run, and this one ends the wait.
 A strand with no live operation refuses with `conflict`.
-Source: (`client/gateway.gleam:3780-3823`).
+Source: (`client/gateway.gleam:3805-3848`).
 
 The durable `cancel_requested` transition reaches every subscriber
 through the notice path; the reply itself is `mutation_outcome` with
@@ -1676,7 +1676,7 @@ status `admitted`.
 | `action` | string | required | The action digest the client displayed. The empty string when the record names no action. |
 | `expected_seq` | integer | required | The record's register sequence as displayed. |
 
-Source: (`client/protocol.gleam:786-803`).
+Source: (`client/protocol.gleam:809-826`).
 
 ```json
 {"v":2,"id":16,"cmd":"approve","body":{"escalation_id":"esc-1","grants":[{"type":"network","network":{"mode":"proxy","allow":["registry.npmjs.org"],"proxy":"127.0.0.1:3128"}}],"action":"9f2c1a7b4e0d63859ac41d2f7b6e8035","expected_seq":11}}
@@ -1686,26 +1686,26 @@ All four fields are required. The server reads the record once, checks
 the three echoes against it, and commits the approval guarded at that
 same sequence, so a competing claim landing in between loses the commit
 rather than passing unseen.
-Source: (`client/gateway.gleam:3858-3890`).
+Source: (`client/gateway.gleam:3883-3915`).
 
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:5844`).
+   is `stale_approval`. Source: (`client/gateway.gleam:5869`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
-   Source: (`client/gateway.gleam:3916-3927`).
+   Source: (`client/gateway.gleam:3941-3952`).
 3. `action` MUST equal the record's action, and `grants` MUST be a
    subset of the denial's `wanted` diff. Narrowing is legal; widening is
    not. A failure of either is `stale_approval`.
-   Source: (`client/gateway.gleam:3957-3984`).
+   Source: (`client/gateway.gleam:3982-4009`).
 
 A `stale_approval` reply carries the record as the server now holds it,
 under `details.escalation`, in exactly the `escalation` event's body
 shape. The command had no effect. A client re-renders its prompt from
 those details and issues the command again; it needs no `catch_up` to
 recover.
-Source: (`client/protocol.gleam:1143-1145`).
+Source: (`client/protocol.gleam:1166-1168`).
 
 A client MUST NOT reconstruct `grants` or `action` from anything but the
 record it actually displayed to the person answering. The echo is what
@@ -1723,7 +1723,7 @@ Errors: `unknown_escalation`, `not_pending`, `stale_approval`,
 | `escalation_id` | string | required | The escalation being answered. |
 | `expected_seq` | integer | required | The record's register sequence as displayed. |
 
-Source: (`client/protocol.gleam:804-809`).
+Source: (`client/protocol.gleam:827-832`).
 
 ```json
 {"v":2,"id":17,"cmd":"deny","body":{"escalation_id":"esc-1","expected_seq":11}}
@@ -1731,7 +1731,7 @@ Source: (`client/protocol.gleam:804-809`).
 
 `deny` runs the same sequence check as `approve` and carries the same
 `stale_approval` recovery. It echoes no diff, because a refusal
-authorizes nothing. Source: (`client/gateway.gleam:4068-4103`).
+authorizes nothing. Source: (`client/gateway.gleam:4093-4128`).
 
 Reply: `mutation_outcome` with status `committed`.
 
@@ -1743,7 +1743,7 @@ Reply: `mutation_outcome` with status `committed`.
 | `scope` | string | required | `branch` or `tree`. |
 | `name` | string | optional | Requested name for the new strand. |
 
-Source: (`client/protocol.gleam:810-821`).
+Source: (`client/protocol.gleam:833-844`).
 
 ```json
 {"v":2,"id":19,"cmd":"fork","body":{"strand":"main","scope":"branch","name":"alt-approach"}}
@@ -1752,12 +1752,12 @@ Source: (`client/protocol.gleam:810-821`).
 Both scopes fork in place: the new strand's leaf is the source strand's
 current leaf, in the same session. `scope` is accepted and validated but
 does not change the result today.
-Source: (`client/gateway.gleam:2928-2929`) and
-(`client/gateway.gleam:4129-4160`).
+Source: (`client/gateway.gleam:2953-2954`) and
+(`client/gateway.gleam:4154-4185`).
 
 An absent `name` produces `<strand>-fork`. A name already in use is
 given a numeric suffix rather than refused.
-Source: (`client/gateway.gleam:4201-4215`).
+Source: (`client/gateway.gleam:4226-4240`).
 
 Reply: `mutation_outcome` with status `committed`. The new strand
 appears in the next transfer's metadata cells.
@@ -1770,7 +1770,7 @@ Errors: `unknown_strand`, `internal`.
 |---|---|---|---|
 | `name` | string | optional | Requested name. Defaults to `strand-<n>`. |
 
-Source: (`client/protocol.gleam:834-838`).
+Source: (`client/protocol.gleam:857-861`).
 
 ```json
 {"v":2,"id":20,"cmd":"create_strand","body":{"name":"research"}}
@@ -1780,8 +1780,8 @@ The new strand is idle and copies its configuration from `main`, or from
 the first existing strand when there is no `main`. Its per-turn thinking
 level comes from the catalogue entry its model identity names rather
 than from the copied strand's current level.
-Source: (`client/gateway.gleam:4163-4198`) and
-(`client/gateway.gleam:4283-4295`).
+Source: (`client/gateway.gleam:4188-4223`) and
+(`client/gateway.gleam:4308-4320`).
 
 Reply: `mutation_outcome` with status `committed`.
 Errors: `conflict` when the name exists, `internal`.
@@ -1793,7 +1793,7 @@ Errors: `conflict` when the name exists, `internal`.
 | `strand` | string | required | Strand whose leaf moves. |
 | `to_entry` | string | required | Canonical entry id to move the leaf to. |
 
-Source: (`client/protocol.gleam:822-827`).
+Source: (`client/protocol.gleam:845-850`).
 
 ```json
 {"v":2,"id":21,"cmd":"navigate","body":{"strand":"main","to_entry":"0198c0de-0000-7000-8000-000000000004"}}
@@ -1802,8 +1802,8 @@ Source: (`client/protocol.gleam:822-827`).
 A `to_entry` that is not a canonical entry id is `bad_request`; one that
 does not exist is `bad_request` with the message `the navigation target
 does not exist`.
-Source: (`client/gateway.gleam:4326-4334`) and
-(`client/gateway.gleam:4434-4437`).
+Source: (`client/gateway.gleam:4351-4359`) and
+(`client/gateway.gleam:4459-4462`).
 
 Reply: `mutation_outcome` with status `committed`.
 
@@ -1814,14 +1814,14 @@ Reply: `mutation_outcome` with status `committed`.
 | `strand` | string | required | Strand to compact. |
 | `instructions` | string | optional | Extra summarization instructions. |
 
-Source: (`client/protocol.gleam:828-833`).
+Source: (`client/protocol.gleam:851-856`).
 
 ```json
 {"v":2,"id":22,"cmd":"compact","body":{"strand":"main","instructions":"keep the API decisions"}}
 ```
 
 The compaction cuts where an automatic one would cut and keeps what an
-automatic one would keep. Source: (`client/gateway.gleam:4397-4414`).
+automatic one would keep. Source: (`client/gateway.gleam:4422-4439`).
 
 Reply: `mutation_outcome` with status `admitted`.
 Errors: `conflict` when the strand is busy or there is nothing to
@@ -1834,7 +1834,7 @@ compact, `unknown_strand`, `internal`.
 | `strand` | string | optional | The strand to change. Required for per-strand keys. |
 | `config` | object | required | The keys to set. |
 
-Source: (`client/protocol.gleam:842-850`).
+Source: (`client/protocol.gleam:865-873`).
 
 The accepted keys:
 
@@ -1847,7 +1847,7 @@ The accepted keys:
 | `thinking_level` | A thinking level name | Requires `strand`. |
 | `active_tools` | Array of tool names | Requires `strand`. Validated against the server's tool registry. |
 
-Source: (`client/gateway.gleam:4605-4615`).
+Source: (`client/gateway.gleam:4630-4640`).
 
 ```json
 {"v":2,"id":23,"cmd":"set_config","body":{"strand":"main","config":{"model_name":"baseten-oss"}}}
@@ -1855,18 +1855,18 @@ Source: (`client/gateway.gleam:4605-4615`).
 
 An unknown key is refused with `bad_request` and nothing is applied. An
 unknown `model_name` is refused rather than resolved.
-Source: (`client/gateway.gleam:4623-4632`).
+Source: (`client/gateway.gleam:4648-4657`).
 
 Reply to the issuing connection: `mutation_outcome` with status
 `committed`. Every other subscribed connection receives an uncorrelated
 `snapshot` event with mode `config` carrying the authoritative new
 value, so that shared settings converge without a round trip.
-Source: (`client/gateway.gleam:4639-4648`).
+Source: (`client/gateway.gleam:4664-4673`).
 
 #### 4.9.13 `models`
 
 Body is `{}`. Read-only, so an observer MAY send it.
-Source: (`client/protocol.gleam:841`).
+Source: (`client/protocol.gleam:864`).
 
 ```json
 {"v":2,"id":24,"cmd":"models","body":{}}
@@ -1874,11 +1874,11 @@ Source: (`client/protocol.gleam:841`).
 
 Reply: a `snapshot` event with mode `models` (section 5.4). A server
 with no configured catalogue answers an empty list rather than an error.
-Source: (`client/gateway.gleam:4451-4463`).
+Source: (`client/gateway.gleam:4476-4488`).
 
 #### 4.9.14 `schedules`
 
-Body is `{}`. Read-only. Source: (`client/protocol.gleam:853`).
+Body is `{}`. Read-only. Source: (`client/protocol.gleam:876`).
 
 ```json
 {"v":2,"id":25,"cmd":"schedules","body":{}}
@@ -1888,7 +1888,7 @@ Reply: a `snapshot` event with mode `schedules` (section 5.5). The body
 is deliberately empty because there is nothing to scope: an operator
 watching a session is watching all of it. A server with no scheduling
 plane answers an empty list.
-Source: (`client/gateway.gleam:4488-4498`).
+Source: (`client/gateway.gleam:4513-4523`).
 
 #### 4.9.15 `schedule_cancel`
 
@@ -1897,7 +1897,7 @@ Source: (`client/gateway.gleam:4488-4498`).
 | `target` | string | required | The strand the schedule fires onto. |
 | `name` | string | required | The schedule's own name. |
 
-Source: (`client/protocol.gleam:854-859`).
+Source: (`client/protocol.gleam:877-882`).
 
 ```json
 {"v":2,"id":26,"cmd":"schedule_cancel","body":{"target":"sub:main/reviewer-abc123","name":"heartbeat"}}
@@ -1909,7 +1909,7 @@ identity; a cancel that guessed a target would name a different clock.
 Only a schedule a strand created can be cancelled here. On success the
 reply is the `schedules` listing as it stands after the cancellation, so
 one round trip both acts and re-renders.
-Source: (`client/gateway.gleam:4543-4545`).
+Source: (`client/gateway.gleam:4568-4570`).
 
 Errors:
 
@@ -1920,7 +1920,7 @@ Errors:
 | `unsupported` | The server has no scheduling plane. |
 | `internal` | The scheduling store could not be read. |
 
-Source: (`client/gateway.gleam:4525-4582`).
+Source: (`client/gateway.gleam:4550-4607`).
 
 ---
 
@@ -2199,8 +2199,8 @@ do not reach a network client. Their bodies are documented here because
 they are the shapes carried by the register cells and entry records a
 transfer delivers, and because the `escalation` shape is what a
 `stale_approval` error carries back.
-Source: (`client/gateway.gleam:1991-2009`) and
-(`client/gateway.gleam:2636-2642`).
+Source: (`client/gateway.gleam:2016-2034`) and
+(`client/gateway.gleam:2661-2667`).
 
 ### 5.2 `snapshot`
 
@@ -2210,7 +2210,7 @@ One body, discriminated by `mode`.
 |---|---|---|---|
 | `mode` | string | required | `full`, `resume`, `strands`, `config`, `models`, `skills`, `notes`, `schedules`, `queued_input`, `worktree_diff`, `live_jobs` or `context`. |
 
-Source: (`client/protocol.gleam:1448-1517`).
+Source: (`client/protocol.gleam:1471-1540`).
 
 Mode `full` carries `session`, `next_seq`, `strands`, `entries`,
 `escalations` (pending only, omitted when empty) and `usage`.
@@ -2219,7 +2219,7 @@ replacement `strands` list. Mode `config` carries `config`. Mode
 `models` carries `models`. Mode `notes` carries `board` (section 4.9.16).
 Mode `schedules` carries `schedules`. Modes `queued_input`, `worktree_diff`,
 `live_jobs`, `skills`, `context` and `goal` carry `board` (sections 4.9.17 through 4.9.27).
-Source: (`client/protocol.gleam:1013-1050`).
+Source: (`client/protocol.gleam:1036-1073`).
 
 ```json
 {"v":2,"reply_to":1,"event":"snapshot","body":{"mode":"full","session":"sess-01","next_seq":5,"strands":[{"id":"main","name":"main","leaf":"0198c0de-0000-7000-8000-000000000004","live_op":{"op":"op-1","phase":"assistant"}},{"id":"research","name":"research"}],"entries":[{"strand":"main","entry":{"id":"0198c0de-0000-7000-8000-000000000003","parentId":null,"seq":1,"timestamp":1756000000000,"type":"message","message":{"role":"user","content":[{"type":"text","text":"hello"}],"timestamp":1756000000000,"origin":null}}}],"usage":{"input":1200,"output":300,"cacheRead":900,"cacheWrite":0,"totalTokens":1500,"cost":{"input":0.0036,"output":0.0045,"cacheRead":0.00027,"cacheWrite":0.0,"total":0.00837}}}}
@@ -2234,7 +2234,7 @@ A strand:
 | `leaf` | string | optional | Entry id of the strand's current leaf. |
 | `live_op` | object | optional | `{op, phase}` of the open operation. |
 
-Source: (`client/protocol.gleam:1086-1101`).
+Source: (`client/protocol.gleam:1109-1124`).
 
 ### 5.3 `snapshot` mode `config`
 
@@ -2245,7 +2245,7 @@ Source: (`client/protocol.gleam:1086-1101`).
 `config` is the effective configuration object. It carries the defined
 `set_config` keys, plus `model_name` when the strand's model identity is
 one the catalogue lists.
-Source: (`client/gateway.gleam:5090-5115`).
+Source: (`client/gateway.gleam:5115-5140`).
 
 ### 5.4 `snapshot` mode `models`
 
@@ -2261,8 +2261,8 @@ Source: (`client/gateway.gleam:5090-5115`).
 | `roles` | array of string | required | Roles whose fallback chain lists this entry. May be empty. |
 | `active` | array of string | required | Roles this entry currently resolves for. May be empty. |
 
-Source: (`client/protocol.gleam:1076-1084`) and
-(`client/gateway.gleam:4468-4478`).
+Source: (`client/protocol.gleam:1099-1107`) and
+(`client/gateway.gleam:4493-4503`).
 
 ### 5.5 `snapshot` mode `schedules`
 
@@ -2281,7 +2281,7 @@ Source: (`client/protocol.gleam:1076-1084`) and
 | `body` | string | required | The text one fire injects. |
 
 Every field is always present. Source:
-(`client/protocol.gleam:1056-1066`).
+(`client/protocol.gleam:1079-1089`).
 
 Rows are ordered: every operator schedule first, then every
 model-created one.
@@ -2301,13 +2301,13 @@ reach a terminal, using the rules in section 5.10.
 | `strand` | string | required | Strand this entry is attributed to. |
 | `entry` | object | required | The durable entry record, verbatim. |
 
-Source: (`client/protocol.gleam:1103-1108`).
+Source: (`client/protocol.gleam:1126-1131`).
 
 The nested `seq` is the entry's storage sequence. On a durable-stream
 event the envelope's `seq` equals it; on the acknowledgement of a queued
 `steer` or `follow_up` the nested `seq` is `0`, `parentId` is `null`,
 and the envelope carries no `seq`.
-Source: (`client/gateway.gleam:3726-3742`).
+Source: (`client/gateway.gleam:3751-3767`).
 
 ### 5.7 Durable entry shapes
 
@@ -2321,11 +2321,11 @@ Every entry carries five common fields and then per-type fields.
 | `timestamp` | integer | required | Milliseconds since the epoch. |
 | `type` | string | required | `message`, `compaction`, `branch_summary` or `custom`. |
 
-Source: (`core/codec.gleam:657-728`).
+Source: (`core/codec.gleam:679-750`).
 
 The type set is closed. A client MUST treat an unknown `type` as
 corruption rather than ignoring it.
-Source: (`core/codec.gleam:738-742`).
+Source: (`core/codec.gleam:760-764`).
 
 #### 5.7.1 `type: "message"`
 
@@ -2334,10 +2334,10 @@ Source: (`core/codec.gleam:738-742`).
 | `message` | object | required | The agent message, discriminated by `role`. |
 | `terminate` | boolean | optional | Omitted when `false`. Marks a terminal turn. |
 
-Source: (`core/codec.gleam:658-666`).
+Source: (`core/codec.gleam:680-688`).
 
 `role` is `user`, `assistant`, `toolResult` or `custom`.
-Source: (`core/codec.gleam:227-238`).
+Source: (`core/codec.gleam:249-260`).
 
 **`role: "user"`**
 
@@ -2347,7 +2347,7 @@ Source: (`core/codec.gleam:227-238`).
 | `timestamp` | integer | required | Milliseconds. |
 | `origin` | object or null | required | Human `{principal, name}`, peer `{kind: "peer", session, strand}`, or `null`. |
 
-Source: (`core/codec.gleam:130-136`).
+Source: (`core/codec.gleam:152-158`).
 
 ```json
 {"role":"user","content":[{"type":"text","text":"add a retry to the fetcher"}],"timestamp":1756000010000,"origin":{"principal":"reviewer-1","name":"Reviewer"}}
@@ -2388,7 +2388,7 @@ Source: (`core/origin.gleam:6-19`).
 | `endTurn` | boolean | optional | Whether the provider marked the turn ended. |
 | `timestamp` | integer | required | Milliseconds. |
 
-Source: (`core/codec.gleam:137-171`).
+Source: (`core/codec.gleam:159-193`).
 
 ```json
 {"role":"assistant","content":[{"type":"thinking","thinking":"The fetcher lives in fetch.go.","redacted":false},{"type":"text","text":"I will wrap the call in a bounded retry."},{"type":"toolCall","toolCall":{"id":"call-1","name":"bash","arguments":{"command":"go test ./..."}}}],"api":"anthropic-messages","provider":"anthropic","model":"orpheus-4","usage":{"input":1200,"output":300,"cacheRead":900,"cacheWrite":0,"totalTokens":1500,"cost":{"input":0.0036,"output":0.0045,"cacheRead":0.00027,"cacheWrite":0.0,"total":0.00837}},"stopReason":"toolUse","timestamp":1756000012000}
@@ -2396,7 +2396,7 @@ Source: (`core/codec.gleam:137-171`).
 
 A `toolCall` block nests `{id, name, arguments}` under `toolCall`, with
 optional `thoughtSignature` and `namespace`.
-Source: (`core/codec.gleam:550-558`).
+Source: (`core/codec.gleam:572-580`).
 
 **`role: "toolResult"`**
 
@@ -2411,7 +2411,7 @@ Source: (`core/codec.gleam:550-558`).
 | `isError` | boolean | required | Whether the tool failed. |
 | `timestamp` | integer | required | Milliseconds. |
 
-Source: (`core/codec.gleam:172-198`).
+Source: (`core/codec.gleam:194-220`).
 
 ```json
 {"role":"toolResult","toolCallId":"call-1","toolName":"bash","content":[{"type":"text","text":"ok  \tloom/fetch\t0.31s"}],"details":{"exitCode":0},"isError":false,"timestamp":1756000015000}
@@ -2424,7 +2424,7 @@ Source: (`core/codec.gleam:172-198`).
 | `schema` | string | required | Registered schema name. |
 | `payload` | any | required | Schema-defined payload. |
 
-Source: (`core/codec.gleam:199-204`).
+Source: (`core/codec.gleam:221-226`).
 
 ```json
 {"role":"custom","schema":"loom.note.v1","payload":{"note":"resumed after restart"}}
@@ -2440,7 +2440,7 @@ Source: (`core/codec.gleam:199-204`).
 | `fromHook` | boolean | required | Whether an automatic hook triggered it. |
 | `usage` | object | optional | Usage spent summarizing. |
 
-Source: (`core/codec.gleam:667-694`).
+Source: (`core/codec.gleam:689-716`).
 
 ```json
 {"id":"0198c0de-0000-7000-8000-000000000008","parentId":"0198c0de-0000-7000-8000-000000000007","seq":8,"timestamp":1756000020000,"type":"compaction","summary":"Added bounded retry to the fetcher; tests pass.","retainedTail":[],"tokensBefore":41000,"fromHook":false}
@@ -2455,7 +2455,7 @@ Source: (`core/codec.gleam:667-694`).
 | `fromHook` | boolean | required | Whether an automatic hook triggered it. |
 | `usage` | object | optional | Usage spent summarizing. |
 
-Source: (`core/codec.gleam:695-717`).
+Source: (`core/codec.gleam:717-739`).
 
 ```json
 {"id":"0198c0de-0000-7000-8000-000000000009","parentId":"0198c0de-0000-7000-8000-000000000004","seq":9,"timestamp":1756000030000,"type":"branch_summary","fromId":"0198c0de-0000-7000-8000-000000000008","summary":"Explored a channel-based retry and abandoned it.","fromHook":false}
@@ -2468,7 +2468,7 @@ Source: (`core/codec.gleam:695-717`).
 | `customType` | string | required | Registered custom entry type. |
 | `data` | any | required | Type-defined payload. |
 
-Source: (`core/codec.gleam:718-727`).
+Source: (`core/codec.gleam:740-749`).
 
 ```json
 {"id":"0198c0de-0000-7000-8000-00000000000a","parentId":"0198c0de-0000-7000-8000-000000000009","seq":10,"timestamp":1756000040000,"type":"custom","customType":"loom.marker.v1","data":{"label":"release cut"}}
@@ -2486,12 +2486,12 @@ Source: (`core/codec.gleam:718-727`).
 | `strand` | string | required | Strand the operation runs on. |
 | `phase` | string | required | Display phase label. |
 
-Source: (`client/protocol.gleam:1254-1260`).
+Source: (`client/protocol.gleam:1277-1283`).
 
 The phases the server emits are `starting`, `checkpoint`, `assistant`,
 `tools`, `compacting`, `awaiting_deferred`, `failure_drain`,
 `navigating`, `cancel_requested` and `done`.
-Source: (`client/gateway.gleam:2517-2541`).
+Source: (`client/gateway.gleam:2542-2566`).
 
 The set is open. A client MUST display an unknown phase verbatim rather
 than refusing the frame. The phase is a display label; the operation's
@@ -2509,7 +2509,7 @@ own durable state register is the truth.
 | `op` | string | optional | Operation, when the row names one. |
 | `usage` | object | required | One usage-ledger append. |
 
-Source: (`client/protocol.gleam:1328-1335`).
+Source: (`client/protocol.gleam:1351-1358`).
 
 The usage object:
 
@@ -2524,7 +2524,7 @@ The usage object:
 | `totalTokens` | integer | required | Total tokens. |
 | `cost` | object | required | `{input, output, cacheRead, cacheWrite, total}`, all floats. |
 
-Source: (`core/codec.gleam:51-71`) and (`core/codec.gleam:96-104`).
+Source: (`core/codec.gleam:73-93`) and (`core/codec.gleam:118-126`).
 
 A client accumulates ledger appends onto the running total the metadata
 document's `usage` field carries.
@@ -2555,12 +2555,12 @@ reusing `usage` would make them count the same row twice.
 | `asked` | integer | optional | How many questions this record has put to a human. Absent means `0`. |
 | `denial` | object | optional | Present when `status` is `pending`. |
 
-Source: (`client/protocol.gleam:1112-1129`) and
-(`client/gateway.gleam:2417-2440`).
+Source: (`client/protocol.gleam:1135-1152`) and
+(`client/gateway.gleam:2442-2465`).
 
 `op` and `strand` come off the record's own call scope and are never
 inferred from which strand happens to be busy.
-Source: (`client/gateway.gleam:2450-2457`).
+Source: (`client/gateway.gleam:2475-2482`).
 
 A field that is absent reads as the empty string or zero; a field that
 is present with the wrong type is a malformed body. A record with no
@@ -2576,8 +2576,8 @@ The denial:
 | `enforcement` | array of string | optional | Enforcement layers involved. The current server never sets it. |
 | `wanted` | array | required | The exact widening that would satisfy the denial. |
 
-Source: (`client/protocol.gleam:1154-1166`) and
-(`client/gateway.gleam:2468-2481`).
+Source: (`client/protocol.gleam:1177-1189`) and
+(`client/gateway.gleam:2493-2506`).
 
 A grant, discriminated by `type`:
 
@@ -2590,8 +2590,8 @@ A grant, discriminated by `type`:
 | `limit` | `field`: one of `cpu_seconds`, `wall_seconds`, `mem_bytes`, `pids`, `fsize_bytes`, `output_bytes`; `value`: integer |
 | `scratch` | `scratch`: `{mode: "tmpfs"\|"path", path?: string}` |
 
-Source: (`client/protocol.gleam:1707-1741`) and
-(`client/protocol.gleam:1864-1873`).
+Source: (`client/protocol.gleam:1730-1764`) and
+(`client/protocol.gleam:1887-1896`).
 
 A client shows `wanted` verbatim. An approval answers that diff and
 nothing wider.
@@ -2642,10 +2642,10 @@ size it holds regardless.
 | `status` | string | required | `done`, `aborted` or `failed`. |
 | `error` | object | optional | `{code, message}`. Present when `status` is `failed`. |
 
-Source: (`client/protocol.gleam:1312-1327`).
+Source: (`client/protocol.gleam:1335-1350`).
 
 A result is emitted for every operation kind: runs, compactions and
-navigations. Source: (`client/gateway.gleam:2545-2583`).
+navigations. Source: (`client/gateway.gleam:2570-2608`).
 
 ### 5.12 `committed`
 
@@ -2657,14 +2657,14 @@ navigations. Source: (`client/gateway.gleam:2545-2583`).
 |---|---|---|---|
 | `strand` | string | required | Strand the durable write landed on. |
 
-Source: (`client/protocol.gleam:1261-1265`).
+Source: (`client/protocol.gleam:1284-1288`).
 
 The envelope's `seq` is the storage sequence of that write. The notice
 carries no record: the record travels the credited transfer path.
 
 One notice is pushed per newly committed durable emit the server
 observes, to every subscribed connection.
-Source: (`client/gateway.gleam:1999-2008`).
+Source: (`client/gateway.gleam:2024-2033`).
 
 A notice is idempotent and order-free. A client that already holds that
 sequence ignores it. A client with a request in flight defers acting on
@@ -2689,7 +2689,7 @@ it. A client that missed one entirely is repaired by any later
 | `tool_name` | string | optional | Carries `tool_call` fragments. |
 | `arguments_fragment` | string | optional | A fragment of the arguments JSON. Not necessarily parseable alone. |
 
-Source: (`client/protocol.gleam:1266-1293`).
+Source: (`client/protocol.gleam:1289-1316`).
 
 ```json
 {"v":2,"event":"stream_delta","body":{"strand":"main","op":"op-1","ephemeral":true,"kind":"tool_call","call_id":"call-1","tool_name":"bash","arguments_fragment":"{\"command\":\"go te"}}
@@ -2724,7 +2724,7 @@ the queue rows themselves arrive only in captured metadata.
 | `status` | string | required | `admitted`, `committed` or `queued`. |
 
 A status outside those three is a malformed body.
-Source: (`client/protocol.gleam:1226-1237`).
+Source: (`client/protocol.gleam:1249-1260`).
 
 Section 4.9 gives which command produces which status, and what each one
 promises.
@@ -2747,11 +2747,11 @@ Each peer:
 | `origin` | object or null | required | `{principal, name}`. |
 | `role` | string | required | `owner`, `operator` or `observer`. |
 
-Source: (`client/protocol.gleam:936-939`) and
-(`client/gateway.gleam:1904-1922`).
+Source: (`client/protocol.gleam:959-962`) and
+(`client/gateway.gleam:1929-1947`).
 
 Only an authenticated and subscribed connection is a peer.
-Source: (`client/gateway.gleam:1906-1921`).
+Source: (`client/gateway.gleam:1931-1946`).
 
 Presence is transient. It never writes conversation entries, and a
 client MUST replace its whole roster on each frame rather than merging.
@@ -2759,7 +2759,7 @@ client MUST replace its whole roster on each frame rather than merging.
 A departure pushes a `presence` frame. A join does not: every pushed
 frame costs one authority check per peer, and a joining client's own
 transfer metadata already carries the roster.
-Source: (`client/gateway.gleam:1876-1890`).
+Source: (`client/gateway.gleam:1901-1915`).
 
 ### 5.16 `attachment`
 
@@ -2777,14 +2777,14 @@ Source: (`client/gateway.gleam:1876-1890`).
 | `role` | string | required | `owner`, `operator` or `observer`. |
 | `peers` | array | required | Roster at attachment time. |
 
-Source: (`client/gateway.gleam:2979-2989`).
+Source: (`client/gateway.gleam:3004-3014`).
 
 The authenticated transport does not emit this event: it routes
 `subscribe` straight to a transfer, and `snapshot_begin` carries the
 same identity fields. A client MUST read its attachment identity from
 `snapshot_begin` (section 4.3.2), and MAY accept an `attachment` frame
 for compatibility. Section 11 records the discrepancy.
-Source: (`client/gateway.gleam:1235-1244`).
+Source: (`client/gateway.gleam:1260-1269`).
 
 ### 5.17 `error`
 
@@ -2798,7 +2798,7 @@ Source: (`client/gateway.gleam:1235-1244`).
 | `message` | string | required | Human-readable diagnostic. |
 | `details` | any | optional | Code-specific structured detail. |
 
-Source: (`client/protocol.gleam:1328-1337`).
+Source: (`client/protocol.gleam:1351-1360`).
 
 With `reply_to`: the named command failed and had no effect. Without
 `reply_to`: a connection-scoped fault, described in section 6.4.
@@ -2893,7 +2893,7 @@ edge is required to display a paused, limited or satisfied outcome.
 
 On the session endpoint: `committed`, `stream_delta`, `tool_output`,
 `block_summary`, `goal_changed`, `presence`, `snapshot` with mode `config`, and `error`.
-Source: (`client/protocol.gleam:475-482`).
+Source: (`client/protocol.gleam:498-505`).
 
 On the control endpoint: `hello`, once, before anything else.
 
@@ -2923,7 +2923,7 @@ acknowledge, buffer or reorder notices.
 
 A client SHOULD issue a `catch_up` on an idle timer even when no notice
 arrived. The reference terminal uses 250 milliseconds.
-Source: (`session_view/session_channel.gleam:645-655`).
+Source: (`session_view/session_channel.gleam:672-682`).
 
 The refresh is what makes a lost notice harmless, and it is the only
 path on a server that pushes nothing. It also picks up metadata-only
@@ -2935,7 +2935,7 @@ key on.
 An `error` with no `reply_to` is a fault about the connection rather
 than about a command. The server emits one when a held prompt fails at
 drain time, long after the command that queued it was answered.
-Source: (`client/gateway.gleam:3568-3578`).
+Source: (`client/gateway.gleam:3593-3603`).
 
 A client SHOULD surface such an error against the strand it names in its
 message and MUST NOT correlate it with any outstanding request.
@@ -2970,7 +2970,7 @@ No claim of exactly-once external execution follows from either rule.
 A client MUST hold at most one open transfer per connection, MUST send
 exactly one `snapshot_next` per received chunk, and MUST NOT begin a
 second transfer before the first ends or is refused.
-Source: (`client/gateway.gleam:1340-1352`).
+Source: (`client/gateway.gleam:1365-1377`).
 
 A client MUST NOT apply a partial transfer to its view. It adopts a cut
 only after `snapshot_end`.
@@ -3021,12 +3021,12 @@ Source: (`docs/architecture/client.md:111-115`).
 | `snapshot_failed` | A bounded storage read that did not answer inside this request, or was refused. | Retry the transfer. |
 | `closed` | The attachment is gone. | Reconnect. |
 
-Sources: (`client/protocol.gleam:489-517`),
-(`client/gateway.gleam:1245-1254`),
-(`client/gateway.gleam:1331-1352`),
-(`client/gateway.gleam:1711-1735`),
-(`client/gateway.gleam:2834-2846`) and
-(`client/gateway.gleam:2896-2903`).
+Sources: (`client/protocol.gleam:512-540`),
+(`client/gateway.gleam:1270-1279`),
+(`client/gateway.gleam:1356-1377`),
+(`client/gateway.gleam:1736-1760`),
+(`client/gateway.gleam:2859-2871`) and
+(`client/gateway.gleam:2921-2928`).
 
 ### 7.2 Control endpoint codes
 
@@ -3054,9 +3054,9 @@ Sources: (`client/protocol.gleam:489-517`),
 | `invalid_configuration` | `sessions.create` could not canonicalize the configuration path. | Fix the path. |
 
 Sources: (`client/daemon/protocol.gleam:124-160`),
-(`client/daemon/server.gleam:726-734`),
-(`client/daemon/server.gleam:769-775`) and
-(`client/daemon/server.gleam:839-851`).
+(`client/daemon/server.gleam:749-757`),
+(`client/daemon/server.gleam:792-798`) and
+(`client/daemon/server.gleam:862-874`).
 
 ---
 
@@ -3099,15 +3099,15 @@ Sources: (`client/daemon/protocol.gleam:124-160`),
 | Idle refresh | 250 ms | Recommended client reconciliation cadence. |
 
 Sources: (`client/daemon/protocol.gleam:21`),
-(`client/daemon/root.gleam:92-96`),
-(`client/daemon/root.gleam:372-377`),
+(`client/daemon/root.gleam:132-136`),
+(`client/daemon/root.gleam:412-417`),
 (`client/daemon/transfer.gleam:28-47`),
-(`client/gateway.gleam:532`),
-(`client/gateway.gleam:723-733`),
-(`client/gateway.gleam:1529`),
-(`client/gateway.gleam:2635-2646`),
+(`client/gateway.gleam:660`),
+(`client/gateway.gleam:808-818`),
+(`client/gateway.gleam:1554`),
+(`client/gateway.gleam:2660-2671`),
 (`storage/snapshot.gleam:42-48`) and
-(`session_view/session_channel.gleam:645-655`).
+(`session_view/session_channel.gleam:672-682`).
 
 A client MUST reject a `snapshot_begin` whose `record_bytes_limit` or
 `fragment_bytes_limit` exceeds what it is prepared to buffer, rather
@@ -3298,16 +3298,16 @@ below have not been edited.
    specifies `v: 1`, the endpoint `/v1/ws`, and a reply table in which
    `subscribe` answers with a `snapshot` event. The code speaks version
    2 on `/v2/control` and `/v2/sessions/<id>/ws`
-   (`client/protocol.gleam:61`, `client/daemon/server.gleam:99-104`). It
+   (`client/protocol.gleam:84`, `client/daemon/server.gleam:122-127`). It
    also omits `history`, `escalations_get`, `snapshot_next`, the three
    transfer events, `mutation_outcome`, `committed`, `presence`,
    `attachment`, and `approve`'s `expected_seq` field
-   (`client/protocol.gleam:142-147`).
+   (`client/protocol.gleam:165-170`).
 
 2. **`protocol-change/015` states an outbound chunk limit of 256 KiB.**
    The code advertises and enforces 24576 bytes per decoded fragment and
    32768 bytes per base64 payload
-   (`client/daemon/transfer.gleam:28`, `client/protocol.gleam:1388-1391`).
+   (`client/daemon/transfer.gleam:28`, `client/protocol.gleam:1411-1414`).
 
 3. **`protocol-change/015`'s body sketch for the transfer events is
    superseded by its own addendum.** The sketch shows
@@ -3326,28 +3326,28 @@ below have not been edited.
 
 5. **The `attachment` event is unreachable over the authenticated
    transport.** It is built and sent on the in-process fixture path
-   (`client/gateway.gleam:2971-2992`), while the network path routes
+   (`client/gateway.gleam:2996-3017`), while the network path routes
    `subscribe` straight to a transfer
-   (`client/gateway.gleam:1235-1244`). Its identity fields are carried
+   (`client/gateway.gleam:1260-1269`). Its identity fields are carried
    by `snapshot_begin` instead. `protocol-change/018` lists `attachment`
    among the frames that may arrive unsolicited.
 
 6. **`subscribe`'s `from_seq` is decoded but not read over the
    authenticated transport.** The decoder accepts it
-   (`client/protocol.gleam:757`) and the fixture path uses it, but the
+   (`client/protocol.gleam:780`) and the fixture path uses it, but the
    network path always begins a `recent` transfer
-   (`client/gateway.gleam:1235-1244`). `packages/client/protocol.md`
+   (`client/gateway.gleam:1260-1269`). `packages/client/protocol.md`
    documents resume semantics for it.
 
 7. **`denial.enforcement` is documented but never emitted.** The wire
-   codec supports it (`client/protocol.gleam:1158-1163`), and the
+   codec supports it (`client/protocol.gleam:1181-1186`), and the
    server's view constructor always sets it to absent
-   (`client/gateway.gleam:2478`).
+   (`client/gateway.gleam:2503`).
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:3435`) and `navigating`
-   (`client/gateway.gleam:3027`).
+   `checkpoint` (`client/gateway.gleam:3460`) and `navigating`
+   (`client/gateway.gleam:3052`).
 
 9. **The spec's control command list is incomplete.**
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
@@ -3364,11 +3364,11 @@ below have not been edited.
 10. **`protocol-change/003`, `011` and `013` were written against
     `v: 1`.** Each shows a `v:1` envelope in its proposal text.
     `protocol-change/015` bumped the envelope to `v: 2` afterwards
-    (`client/protocol.gleam:61`), so the command and event shapes those
+    (`client/protocol.gleam:84`), so the command and event shapes those
     three define are current while their envelope examples are not.
 
 11. **A malformed command frame is answered with `reply_to: 0`.** The
     network dispatcher replies with id `0` when it cannot read an id
-    (`client/gateway.gleam:1213-1221`). No document states this, and a
+    (`client/gateway.gleam:1238-1246`). No document states this, and a
     client that matches replies strictly by outstanding id will treat
     such a frame as a correlation failure.

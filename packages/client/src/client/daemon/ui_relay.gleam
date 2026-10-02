@@ -94,59 +94,6 @@ pub type Attach {
   )
 }
 
-/// The authority a page acts with: the smallest of the membership
-/// `authority`, the page's `ceiling`, and Operator.
-///
-/// The ceiling caps and never grants, so an observer asking for an
-/// operator's page gets an observer's; and no page carries `Owner`, whose
-/// one power in a session beyond an operator's, the worktree bytes, a page
-/// never needs.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert ui_relay.capped(access.Owner, access.Operator)
-///   == access.Participant(access.Operator)
-/// ```
-pub fn capped(
-  authority: access.Authority,
-  ceiling: access.Role,
-) -> access.Authority {
-  case authority, ceiling {
-    _, access.Observer -> access.Participant(access.Observer)
-    access.Participant(access.Observer), access.Operator ->
-      access.Participant(access.Observer)
-    access.Owner, access.Operator
-    | access.Participant(access.Operator), access.Operator
-    -> access.Participant(access.Operator)
-  }
-}
-
-/// A page's authorization: `check`, refused once `open` says the page's UI
-/// session has ended.
-///
-/// The gateway calls the result at every request and every push, so a UI
-/// session that expires or is replaced while the page is open ends the
-/// attachment at the next frame, through the same `close` a revocation
-/// takes.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // ui_relay.while_open(authorize, ui_sessions.still_open(tables, cookie, grant))
-/// ```
-pub fn while_open(
-  check: fn() -> Result(answer, String),
-  open: fn() -> Result(Nil, Nil),
-) -> fn() -> Result(answer, String) {
-  fn() {
-    case open() {
-      Ok(Nil) -> check()
-      Error(Nil) -> Error(ending.reason(ending.PageEnded))
-    }
-  }
-}
-
 /// A running relay.
 pub opaque type Relay {
   Relay(subject: Subject(Message))
@@ -199,6 +146,59 @@ type State {
     held: access.Authority,
     ceiling: access.Role,
   )
+}
+
+/// The authority a page acts with: the smallest of the membership
+/// `authority`, the page's `ceiling`, and Operator.
+///
+/// The ceiling caps and never grants, so an observer asking for an
+/// operator's page gets an observer's; and no page carries `Owner`, whose
+/// one power in a session beyond an operator's, the worktree bytes, a page
+/// never needs.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_relay.capped(access.Owner, access.Operator)
+///   == access.Participant(access.Operator)
+/// ```
+pub fn capped(
+  authority: access.Authority,
+  ceiling: access.Role,
+) -> access.Authority {
+  case authority, ceiling {
+    _, access.Observer -> access.Participant(access.Observer)
+    access.Participant(access.Observer), access.Operator ->
+      access.Participant(access.Observer)
+    access.Owner, access.Operator
+    | access.Participant(access.Operator), access.Operator
+    -> access.Participant(access.Operator)
+  }
+}
+
+/// A page's authorization: `check`, refused once `open` says the page's UI
+/// session has ended.
+///
+/// The gateway calls the result at every request and every push, so a UI
+/// session that expires or is replaced while the page is open ends the
+/// attachment at the next frame, through the same `close` a revocation
+/// takes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_relay.while_open(authorize, ui_sessions.still_open(tables, cookie, grant))
+/// ```
+pub fn while_open(
+  check: fn() -> Result(answer, String),
+  open: fn() -> Result(Nil, Nil),
+) -> fn() -> Result(answer, String) {
+  fn() {
+    case open() {
+      Ok(Nil) -> check()
+      Error(Nil) -> Error(ending.reason(ending.PageEnded))
+    }
+  }
 }
 
 /// Starts a relay for the page's `component` and returns at once. Every

@@ -43,8 +43,8 @@ rather than at a version range:
   is touched.
 
 The daemon uses the option at both upgrade sites:
-`client/daemon/server.gleam:229` passes `protocol.max_bytes` for the
-control endpoint, and `client/daemon/session_socket.gleam:47` passes
+`client/daemon/server.gleam:252` passes `protocol.max_bytes` for the
+control endpoint, and `client/daemon/session_socket.gleam:58` passes
 `root.message_limit(class)`, which is 65,536 bytes for a control or
 observer connection and 33,554,432 for an operator.
 

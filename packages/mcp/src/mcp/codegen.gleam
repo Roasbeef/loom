@@ -117,9 +117,9 @@ pub fn describe(error: GenerateError) -> String {
       <> int.to_string(max_tools)
     ToolNameCollision(first:, second:) ->
       "refusing the server module: tool names "
-      <> quoted(clean(first, note_cap))
+      <> quoted(render_text.clean(first, note_cap))
       <> " and "
-      <> quoted(clean(second, note_cap))
+      <> quoted(render_text.clean(second, note_cap))
       <> " collide after renaming"
     SurfaceTooLarge(bytes:) ->
       "refusing the server module: its rendered surface is "
@@ -254,10 +254,6 @@ pub fn truncate(text: String, max: Int) -> String {
 /// ```
 pub fn escape(text: String) -> String {
   render_text.escape(text)
-}
-
-fn clean(text: String, cap: Int) -> String {
-  render_text.clean(text, cap)
 }
 
 fn quoted(text: String) -> String {
