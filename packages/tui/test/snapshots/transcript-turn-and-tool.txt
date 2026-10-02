@@ -2,8 +2,7 @@
  ◇ attached to session demo
 
 
-  › User
-    run the tests
+ › run the tests
 
  ◇ tools · 1 call · 1 failed · Ctrl+g expands details
 
@@ -12,6 +11,7 @@
      test/tui_test.gleam:12
 
  ◆ Looking at the failure now.
+
 
 
 

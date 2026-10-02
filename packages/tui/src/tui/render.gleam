@@ -839,13 +839,14 @@ pub fn render_line(line: Line, width: Int) -> List(span.Line) {
 
     // A message wraps its body to the room its bar leaves, and its first
     // span is a bar painted in the margin, outside the row's width; a second
-    // wrap would count that bar against the pane.
-    SentMessage | StrandMessage | PeerMessage -> speaker_rows(line, width)
+    // wrap would count that bar against the pane. The operator's turn wraps
+    // each typed line under its mark, which a second wrap would undo.
+    SentMessage | StrandMessage | PeerMessage | User ->
+      speaker_rows(line, width)
 
     // Every other body is laid out against the full pane and has never been
     // measured, so it is wrapped on the way out.
     System
-    | User
     | ReasoningDigest
     | ToolCall
     | ToolResult
@@ -990,26 +991,36 @@ fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
     False -> line.text
   }
   case line.speaker {
+    // The operator's turn is its own text in a shaded band, opened by the
+    // prompt's mark and wrapped under itself; the band, not a title row,
+    // says who wrote it. Each source line is wrapped on its own, so the
+    // operator's line breaks and indentation stay where they were typed.
     User -> {
       let body_style =
         style.new(theme.paper, theme.user_background, style.none())
-      let label_style =
+      let mark_style =
         style.new(theme.signal, theme.user_background, style.bold())
-
-      // A separate label and shaded block identify the speaker without
-      // depending on hue. Wrapped rows retain the same background, and copy
-      // continues to read the exact visible frame rather than another layout.
-      [
-        span.line_plain(""),
-        span.line_new([span.span_styled(" › User", label_style)]),
-        ..line.text
+      let room = int.max(1, width - 2)
+      let rows =
+        line.text
         |> text_hygiene.multiline
         |> string.split("\n")
-        |> list.map(fn(text) {
-          span.line_new([span.span_styled("   " <> text, body_style)])
+        |> list.flat_map(fn(text) {
+          markdown.wrap_line(span.line_plain(text), room)
         })
-        |> list.append([span.line_plain("")])
-      ]
+        |> list.index_map(fn(row, index) {
+          let prefix = case index == 0 {
+            True -> span.span_styled("› ", mark_style)
+            False -> span.span_styled(speaker_gutter, body_style)
+          }
+          span.Line(..row, spans: [
+            prefix,
+            ..list.map(row.spans, fn(value) {
+              span.Span(..value, style: body_style)
+            })
+          ])
+        })
+      [span.line_plain(""), ..list.append(rows, [span.line_plain("")])]
     }
 
     // The live tail builds these rows in pieces from the same three calls
