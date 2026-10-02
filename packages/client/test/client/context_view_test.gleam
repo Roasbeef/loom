@@ -337,6 +337,39 @@ pub fn context_reader_preserves_definitions_and_current_selection_test() {
   assert context_view.inventory("system", registry, ["alpha"], [])
     == context_view.inventory("system", tool.registry([newer]), ["alpha"], [])
 
+  // Independent fixture JSON lengths are 184 for the replacement alpha and
+  // 171 for zeta. Dividing each by four preserves both description and schema;
+  // comparing projection paths alone would let both lose the same metadata.
+  assert items
+    == [
+      context_view.Item(
+        "System prompt",
+        "Pinned prompt (includes embedded instructions)",
+        1,
+      ),
+      context_view.Item("Tools", "alpha", 46),
+      context_view.Item("Tools", "zeta", 42),
+    ]
+  let assert Ok(initial) = read("main")
+    as "the reader exposes the independently accounted tool metadata"
+  assert field(initial, "items_total") == json.Int(3)
+  assert field(initial, "used_tokens") == json.Int(89)
+  assert field(initial, "categories")
+    == json.Array([
+      json.Object([
+        #("name", json.String("System prompt")),
+        #("tokens", json.Int(1)),
+      ]),
+      json.Object([
+        #("name", json.String("Tools")),
+        #("tokens", json.Int(88)),
+      ]),
+      json.Object([
+        #("name", json.String("Messages")),
+        #("tokens", json.Int(0)),
+      ]),
+    ])
+
   // Reusing the callback must not reuse the earlier active-tool selection.
   let assert Ok(_) =
     storage.commit(
