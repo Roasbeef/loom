@@ -787,11 +787,11 @@ run, an idle-hibernate policy in `weft/actor` is not justified by measurement.
 
 The 117.5 MiB `weft@state_machine` that the previous section left unattributed
 is the daemon's session admission registry, `client/daemon/manager`. Its
-`Book.slots` dictionary (`packages/client/src/client/daemon/manager.gleam:794`)
+`Book.slots` dictionary (`packages/client/src/client/daemon/manager.gleam:868`)
 holds one `Slot` per resident session, and each slot's `phase` field
-(`daemon/manager.gleam:257`) carries `Occupancy.Running(instance)`
-(`daemon/manager.gleam:234`), where `instance` is a whole `client/serve.Instance`
-(`packages/client/src/client/serve.gleam:464`) and therefore a whole
+(`daemon/manager.gleam:279`) carries `Occupancy.Running(instance)`
+(`daemon/manager.gleam:256`), where `instance` is a whole `client/serve.Instance`
+(`packages/client/src/client/serve.gleam:486`) and therefore a whole
 `api.Runtime` and the `Effects` graph beneath it. Six resident sessions put six
 of those in one process. Nothing about the registry is unusual: it is the
 largest process in the daemon because it is the only one that holds one copy per
@@ -870,7 +870,7 @@ was read at all.
 One `sys:get_state`, reduced to sizes and constructor names in the expression
 that received it. The state element of the pair is the atom `ready`, which is
 `manager.Phase.Ready`; the data element is the eleven-field `Book`
-(`daemon/manager.gleam:644`):
+(`daemon/manager.gleam:695`):
 
 | `Book` field | Shape | Flat size |
 |---|---|---:|
@@ -921,7 +921,7 @@ map/6 (six slots)                        77.138 MiB
 
 The registry holds the instance because `Resolve` hands it back: `resolve` reads
 `Slot(phase: Running(instance), ..)` out of the dictionary and replies with it
-(`daemon/manager.gleam:1473`).
+(`daemon/manager.gleam:1497`).
 
 ### The memory is live, and it is not binaries
 
@@ -964,8 +964,8 @@ reference.**
 Over 23 hours of real model turns, during which the daemon's process heaps grew
 by about 112 MiB, this process did not move. The growth law is one `Slot` of
 about 12.86 MiB flat per resident session, inserted at admission
-(`daemon/manager.gleam:2071`) and deleted when the reservation drains
-(`daemon/manager.gleam:2818`), or about 19.6 MiB of process heap per session once the
+(`daemon/manager.gleam:2095`) and deleted when the reservation drains
+(`daemon/manager.gleam:2842`), or about 19.6 MiB of process heap per session once the
 heap block is counted. It is constant in turns, constant in conversation length,
 and linear in resident sessions.
 
@@ -995,7 +995,7 @@ one:
   the runtime graph. It was not patched, and it is worth about one `Effects` copy
   per session.
 - **`client/schedulescan`**, six of them. The data is the two-field `State`
-  (`packages/client/src/client/schedulescan.gleam:362`) whose `runtime` field is
+  (`packages/client/src/client/schedulescan.gleam:395`) whose `runtime` field is
   an `api.Runtime` of 12.811 MiB, reached with no closure in between. The scanner
   runs scheduled turns, so it needs the runtime; this is ownership, as the
   module's own documentation says.
@@ -1012,7 +1012,7 @@ Described, not implemented, and none of it justified by this measurement alone.
 
 The narrowest change is to stop storing the value in the registry.
 `Occupancy.Running` could carry the instance's owning pid or a `Subject` rather
-than the `serve.Instance`, and `Resolve` (`daemon/manager.gleam:1656`) would ask that
+than the `serve.Instance`, and `Resolve` (`daemon/manager.gleam:1680`) would ask that
 owner instead of reading a map. The reference already exists: the slot holds
 `host` and a monitor on the builder. The costs are real and on a hot path.
 `resolve` becomes a call with a deadline where it is now a dictionary read, a
@@ -1356,7 +1356,7 @@ rediscovered.
 - **The daemon manager's reply to a socket upgrade.** `daemon/manager`'s
   `ResolveIncarnation` answers with a whole `serve.Instance`, and so a whole
   `Effects`, while the upgrade path reads only `attachment.instance.gateway`
-  (`daemon/server.gleam:178`). A reply is a message, so this is a copy per
+  (`daemon/server.gleam:201`). A reply is a message, so this is a copy per
   upgrade rather than a resident one, and the narrower reply is a projection of
   the same shape as this change. Separately, `Book.slots` holding one
   `Occupancy.Running(instance)` per resident session is why the manager is the
@@ -1778,7 +1778,7 @@ Two of these are genuinely time-based and need a timer whatever else changes.
 `RetryNotBefore` names a wall-clock instant and arms its own. `DeferredPollDue`
 is the other and it is the reason the poll cannot simply be deleted: the permit
 a tick grants *is* the rate limiter on polling a deferred handle
-(`packages/machine/src/machine/planner.gleam:2286` and `:2366` both return it
+(`packages/machine/src/machine/planner.gleam:2306` and `:2366` both return it
 when `!in.poll_permit`), so the tick interval is that feature's polling
 interval.
 

@@ -26,7 +26,7 @@ one is about how a request moves through them, and where a step deserves
 more depth the cross-reference is the depth.
 
 Paths follow the convention those docs use: a Gleam path is relative to
-its package's source root, so `runtime/api.gleam:251` is
+its package's source root, so `runtime/api.gleam:270` is
 `packages/runtime/src/runtime/api.gleam` line 251; the remaining Go paths are
 relative to `packages/sandbox`, so `internal/jail/stage2.go:43` lives there.
 
@@ -199,19 +199,19 @@ Nothing else in the client package knows what a socket is. A connection
 
 ## 3. The hub
 
-The hub is one actor per served session (`client/gateway.gleam:441`).
+The hub is one actor per served session (`client/gateway.gleam:569`).
 Four kinds of message reach it: client frames as `FromClient`, the
 runtime writer's post-commit publication as `CommitHint`, a bus
 publication as `BusHint`, and streamed provider deltas as
 `ProviderDelta`.
 
-`handle_text` becomes `dispatch` (`client/gateway.gleam:3744`), which
+`handle_text` becomes `dispatch` (`client/gateway.gleam:3769`), which
 decodes strictly on the envelope and tolerantly on names — an
 unrecognized `cmd` survives as `UnknownCommand` so the hub can answer
 `unsupported` in band — then `run_command`
-(`client/gateway.gleam:1078`) checks that this connection has subscribed
+(`client/gateway.gleam:1103`) checks that this connection has subscribed
 and matches the command. Our `prompt` lands at
-`client/gateway.gleam:1497`:
+`client/gateway.gleam:1522`:
 
 ```gleam
   use <- known_strand(state, connection, id, strand)
@@ -227,9 +227,9 @@ the session's one writer.
 
 ## 4. The first commit
 
-`api.prompt` is two lines (`runtime/api.gleam:458`): accept quietly, then
+`api.prompt` is two lines (`runtime/api.gleam:477`): accept quietly, then
 ring the doorbell. The work is in `accept_quietly`
-(`runtime/api.gleam:408`), and its shape is the shape of every admission
+(`runtime/api.gleam:427`), and its shape is the shape of every admission
 in the system.
 
 It reads the strand state, the leaf, and the pending payloads — capturing
@@ -298,7 +298,7 @@ pub fn nudge(runtime: Runtime) -> Nil {
 }
 ```
 
-That is the doorbell doctrine in six lines (`runtime/api.gleam:746`).
+That is the doorbell doctrine in six lines (`runtime/api.gleam:765`).
 Every payload travels in a commit; the process message that follows
 carries nothing and asks only for promptness. Losing it costs one poll
 interval — 200 ms by default — because the driver's periodic `PollTick`
@@ -315,7 +315,7 @@ process message is fine.
 ## 6. The machine wakes
 
 The strand driver is an actor whose entire loop is the machine's contract
-read literally (`runtime/strand_runtime.gleam:595`):
+read literally (`runtime/strand_runtime.gleam:616`):
 
 ```
 load registers  →  build PlannerInputs  →  next_action  →  act  →  repeat
@@ -325,11 +325,11 @@ load registers  →  build PlannerInputs  →  next_action  →  act  →  repea
 and `strand.leaf` on *every* pass, then fetches exactly what the loaded
 state names — the assistant entry behind a tool batch, the deferred
 handle behind a suspended poll, the pending payloads for every queued id
-(`runtime/strand_runtime.gleam:1684`). No process-local memory of durable
+(`runtime/strand_runtime.gleam:1705`). No process-local memory of durable
 state exists to go stale, which is why a pass after a restart runs the
 same code as a pass mid-run.
 
-`plan` (`runtime/strand_runtime.gleam:1072`) then calls the one frozen
+`plan` (`runtime/strand_runtime.gleam:1093`) then calls the one frozen
 entry point:
 
 ```gleam
@@ -340,9 +340,9 @@ pub fn next_action(
 ) -> Action {
 ```
 
-`next_action` lives at `machine/planner.gleam:574`. It reads a durable
+`next_action` lives at `machine/planner.gleam:594`. It reads a durable
 state and a bundle of inputs and returns one of six actions, defined by
-`Action` (`machine/planner.gleam:532`):
+`Action` (`machine/planner.gleam:552`):
 
 | Action | What the driver does |
 |---|---|
@@ -417,7 +417,7 @@ and both are worth knowing by name. `threshold_checked` records the
 trigger whose compaction check already ran, so a boundary is never
 checked twice; `skip_inbox_once` is set by a drain on the checkpoint it
 produces, so a crash mid-drain cannot turn a one-at-a-time drain into an
-all-item drain (`checkpoint_action`, `machine/planner.gleam:760`).
+all-item drain (`checkpoint_action`, `machine/planner.gleam:780`).
 
 Large payloads never live inline in the state. Tool arguments go to
 `op.tool_args/{op}:{step}:{index}`, a summary's frozen input to
@@ -449,9 +449,9 @@ two:
                    in one atomic transaction
 ```
 
-`admit_generation` (`machine/planner.gleam:1102`) mints `R` and `U`, folds them into
+`admit_generation` (`machine/planner.gleam:1122`) mints `R` and `U`, folds them into
 `GenerationEffectPending`, and returns the intent transaction beside the
-next state. `runtime/strand_runtime.gleam:658` commits it and only then
+next state. `runtime/strand_runtime.gleam:679` commits it and only then
 runs the continuation that starts the effect:
 
 ```gleam
@@ -481,7 +481,7 @@ effect to match:
           KeyObservation(planner.ObservedAssistantOrphaned(partial: []))
 ```
 
-`runtime/strand_runtime.gleam:754`. The machine, not the driver,
+`runtime/strand_runtime.gleam:775`. The machine, not the driver,
 decides what an orphan means: an assistant request or deferred poll is
 wholly uncertain and settles synthetically at zero usage, following
 ordinary classification afterwards; a tool call consults the replay
@@ -498,11 +498,11 @@ to rerun.
 
 ## 8. The request
 
-`start_effect` (`runtime/strand_runtime.gleam:1608`) projects the context
+`start_effect` (`runtime/strand_runtime.gleam:1629`) projects the context
 and hands a `RequestSpec` to the injected provider surface. The
 projection is a branch scan from the leaf that stops at the first
 compaction entry, run through `session.project_scan`
-(`session/session.gleam:703`), which applies pi's five rules in order:
+(`session/session.gleam:725`), which applies pi's five rules in order:
 reverse to oldest-first, drop error/aborted/deferred assistant responses
 while keeping genuine output-limit `length` stops, run custom entries
 through their registered projectors, heal orphaned tool calls with
@@ -520,7 +520,7 @@ Everything past this point is behind `runtime/effects.Effects`, a record
 of functions injected at `api.open`: `clock`, `entropy`, `timers`,
 `provider`, `tools`, `hooks`. The runtime declares no FFI at all, which
 is what lets the whole plane run under a logical clock in simulation.
-`client/wiring.build_effects` (`client/wiring.gleam:173`) fills that
+`client/wiring.build_effects` (`client/wiring.gleam:194`) fills that
 record with the real gateway, broker, and registry; the module's own
 documentation is the authoritative list of mapping decisions, and it is
 worth reading before changing anything about how a request is shaped.
@@ -530,7 +530,7 @@ as `ForRole` so the gateway can walk that role's captured fallback chain;
 off-route generations and every deferred poll use `ForResolved` so recovery
 reaches exactly the identity its intent captured (`client/wiring.gleam`).
 And `tool_specs` sorts and
-deduplicates the active tool names (`client/wiring.gleam:329`), because
+deduplicates the active tool names (`client/wiring.gleam:350`), because
 the tool array renders ahead of the system prompt and prompt caching
 matches on an exact byte prefix; two requests with the same active set in
 a different order would miss the cache entirely and pay the write again
@@ -588,7 +588,7 @@ continuing to stream and bill after abort, timeout, or driver restart.
 `stream.await_terminal` returns, the effect process waits for the stream
 owner's complete drain, then sends `ProviderDone` to the driver. Only then does
 the driver turn it into an observation and plan again. `settle_assistant`
-(`machine/planner.gleam:1135`) classifies the
+(`machine/planner.gleam:1155`) classifies the
 response — first match wins, and the order is normative because
 reordering it changes behavior rather than style: cancelled control,
 overflow, valid deferred handle, retryable error, tool use, stop. Ask
@@ -597,7 +597,7 @@ compaction on its way out; ask about tool use before a genuine length
 stop and a truncated response executes calls cut in half.
 
 Then one transaction, in pi's normative order
-(`settle_writes`, `machine/planner.gleam:1517`):
+(`settle_writes`, `machine/planner.gleam:1537`):
 
 ```gleam
   [
@@ -620,9 +620,9 @@ subscribe the gateway to these unbounded commit or bus hints.
 The writer published `Committed` before it replied. A tiny forwarder
 actor — created before the runtime so the writer re-registers it on every
 tree restart — turns that into a `CommitHint` cast at the hub
-(`client/gateway.gleam:751`).
+(`client/gateway.gleam:830`).
 
-The hint carries nothing. It triggers `pull` (`client/gateway.gleam:2876`),
+The hint carries nothing. It triggers `pull` (`client/gateway.gleam:2901`),
 which reads everything in storage above the hub's high-water seq and
 merges four sources: new entries reachable from each strand's leaf plus a
 completeness pass for entries no leaf covers, new usage rows attributed
@@ -650,7 +650,7 @@ intermediate phase still converges, because phases are display labels and
 the snapshot carries live state.
 
 The client that issued the command gets its `entry` once, as the reply.
-`reply_with_matched` (`client/gateway.gleam:5535`) pulls, picks the last
+`reply_with_matched` (`client/gateway.gleam:5560`) pulls, picks the last
 emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.
@@ -719,7 +719,7 @@ reserves every result id up front, and each call then walks
 planned → effect-pending → outcome-ready → completed.
 
 Clearance happens before the intent commit and is a security boundary
-with a load-bearing ordering (`runtime/strand_runtime.gleam:1455`). The
+with a load-bearing ordering (`runtime/strand_runtime.gleam:1476`). The
 driver loads only the approvals attributed to *exactly this call* — an
 escalation record carries a `CallScope` of
 `{operation, strand, step, source index, call id}` — consumes them by
@@ -729,10 +729,10 @@ clearance proceeds under the base policy; a crash after consumption
 spends the approval without an execution. Both directions fail safe: one
 approval is worth at most one widened execution of exactly the call a
 human approved. What the clearance won then travels onto the dispatch it
-authorized — `take_cleared` (`runtime/strand_runtime.gleam:1665`) hands
+authorized — `take_cleared` (`runtime/strand_runtime.gleam:1686`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
-`Ctx.grants` (`run_grants`, `client/wiring.gleam:1883`). That is the
+`Ctx.grants` (`run_grants`, `client/wiring.gleam:1904`). That is the
 whole channel: an approval a human gave for this call, reaching the
 policy composition this call is judged by. It used to stop at the query.
 
@@ -740,10 +740,10 @@ Then `Dispatch` again — intent commit, then the effect — and the tool
 runs on its own spawned process. `client/wiring.run_tool` builds a fresh
 `Ctx` per call carrying the driver's own durable coordinates —
 `{strand, op_id, step_id, source_index}` — and dispatches through the
-registry (`run_tool`, `client/wiring.gleam:1678`). All four come from the driver, so a
+registry (`run_tool`, `client/wiring.gleam:1699`). All four come from the driver, so a
 model that names another strand in its arguments does not become it.
 
-`tool.dispatch` is total (`tools/tool.gleam:639`): an unknown name yields
+`tool.dispatch` is total (`tools/tool.gleam:659`): an unknown name yields
 an in-band error result rather than a crash, and so does every other
 failure a tool can meet. Tool failures are **data**. That is what makes
 "tools never crash the strand" a structural claim rather than a
@@ -761,15 +761,15 @@ argv, the constructed environment, and a pooled budget
 ```
 
 `ctx.clear_call` is `tool.broker_runner` over the live broker
-(`tools/tool.gleam:652`). Every effect that leaves the harness goes
+(`tools/tool.gleam:672`). Every effect that leaves the harness goes
 through this door and no other.
 
 ### Through the door
 
-`broker.clear_call` (`broker/broker.gleam:403`) is a call into the broker
+`broker.clear_call` (`broker/broker.gleam:423`) is a call into the broker
 actor, and from the moment it succeeds the caller is guaranteed exactly
 one settlement event, whatever happens downstream. Five steps, in order
-(`broker/broker.gleam:479` and `:519`):
+(`broker/broker.gleam:499` and `:519`):
 
 1. **Compose** — the meet of the session base and the tool's
    requirements, root coverage prefix-aware, the network lattice meeting
@@ -810,7 +810,7 @@ may be newer.
 
 ### Into the jail
 
-`spawn_helper` (`broker/exec.gleam:2247`) is where the Erlang side meets
+`spawn_helper` (`broker/exec.gleam:2282`) is where the Erlang side meets
 the OS. The helper's base policy has to arrive on file descriptor 3, and
 Erlang ports cannot map arbitrary descriptors, so the broker writes the
 policy to a mode-0600 file inside a mode-0700 directory and starts the
@@ -923,7 +923,7 @@ and windows answers are testable from Linux, which is the only host this
 tree has ever executed on.
 
 Output comes back as `exec_out` frames, the tool collects them
-(`tools/tool.gleam:692`), overflows anything past 64 KiB to a
+(`tools/tool.gleam:712`), overflows anything past 64 KiB to a
 content-addressed blob, and returns a `ToolOutcome`. The driver commits
 the result — staged into `pending.entry` first, then materialized into
 the tree in source order as a separate commit, because parallel execution
@@ -965,7 +965,7 @@ a checkpoint. What happens next is the same code with three differences
 worth knowing.
 
 **The checkpoint drains first.** The procedure
-`checkpoint_action` (`machine/planner.gleam:760`) runs a fixed order:
+`checkpoint_action` (`machine/planner.gleam:780`) runs a fixed order:
 apply accepted deferred
 writes, drain steer input per the run's drain mode, check the compaction
 threshold, and only then start a generation step or, at a `MayFinish`
@@ -995,7 +995,7 @@ before touching any of that.
 ### What is in the pinned bytes
 
 The prompt is rendered from a data pack, and the pack has seven canonical
-sections (`prompt/pack.gleam:308`): `identity`, `tool_discipline`,
+sections (`prompt/pack.gleam:329`): `identity`, `tool_discipline`,
 `delegation`, `conduct`, `environment`, `sandbox`,
 `repository_guidance`. The first four carry no placeholders at all — they
 are identical for every strand on a given build, and a test holds them
@@ -1018,7 +1018,7 @@ for a final answer that stands on its own, with anything that needs shape
 left as notes, which come back attached to the result.
 
 A pack's problems carry a severity, and the split is the point.
-`severity` (`prompt/pack.gleam:443`) calls an unknown placeholder, or a
+`severity` (`prompt/pack.gleam:464`) calls an unknown placeholder, or a
 missing *fragment*, `Corrupting`: the pack names something it does not
 carry, so a section that is present says nothing on some host, and the
 shortfall is invisible in the rendered bytes. A missing *canonical
@@ -1081,7 +1081,7 @@ ledger itself is temporary and significant: if that ordering memory dies, the
 whole session tree stops instead of restarting from an unsafe empty state.
 
 **Recovery is cold start is the first drive pass.** A restarted driver
-nudges itself in its initialiser (`runtime/strand_runtime.gleam:223`), so
+nudges itself in its initialiser (`runtime/strand_runtime.gleam:244`), so
 recovery needs no external input. What that pass does before planning is
 validate: every register decodes through a total decoder, and the bounded
 checks that follow are decoders in the same spirit — `op.meta`'s id must
@@ -1102,7 +1102,7 @@ effect that survived a driver restart would run *concurrently* with the
 replacement's recovery — a `ReplaySafe` tool re-executed beside its still
 running first execution, an assistant request retried while the original
 still streams and bills. The fix is an ownership chain built out of
-BEAM primitives (`runtime/strand_runtime.gleam:1082`):
+BEAM primitives (`runtime/strand_runtime.gleam:1103`):
 
 ```gleam
 fn spawn_effect(reaper, stop, body) {
@@ -1173,9 +1173,9 @@ closure on the **Agency** record (`tools/agent.gleam`) — and everything
 with teeth lives on the far side of that seam, in `client/agency.gleam`,
 where a live runtime is visible.
 
-`spawn` (`client/agency.gleam:558`) reads the durable lineage ledger,
+`spawn` (`client/agency.gleam:578`) reads the durable lineage ledger,
 checks the depth cap, and mints the child's name from coordinates that
-are already durable in the intent (`client/agency.gleam:500`):
+are already durable in the intent (`client/agency.gleam:520`):
 `sub:{parent}/{slug}-{digest}`, where the slug is the purpose bounded and
 the digest is sixteen fixed hex characters over the operation, the
 minting step and the source index. The model never supplies a name, so it
@@ -1199,7 +1199,7 @@ beside the prose report rather than as a sentence the parent would have to
 parse. That is what makes deterministic orchestration over children
 something other than a script that regexes prose.
 
-`api.create_strand` (`runtime/api.gleam:1466`) then seeds the child's
+`api.create_strand` (`runtime/api.gleam:1485`) then seeds the child's
 three registers — its own model identity, its own leaf (a cursor into the
 shared tree), its own strand state — starts its driver through the
 factory, and accepts the task brief as its first run. Because the
@@ -1210,10 +1210,10 @@ between the seed commit and the brief commit leaves a strand nothing else
 could finish.
 
 Collecting the result is a store read, not a message.
-`await_strand_result` (`runtime/api.gleam:1863`) keys on the *operation*,
+`await_strand_result` (`runtime/api.gleam:1882`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
-register (`build.set_last_result`, `machine/planner.gleam:3753`). Keying
+register (`build.set_last_result`, `machine/planner.gleam:3773`). Keying
 on the strand register alone had a hole: a child that starts a second
 run overwrites it, and a parent still waiting on the first run's result
 would read the second's.
@@ -1236,12 +1236,12 @@ corner would buy.
 
 Not every second strand is a child. If the catalogue routes an `advisor`
 role, `serve` seeds one more strand at boot — through
-`create_idle_strand` (`runtime/api.gleam:1495`) rather than through the
+`create_idle_strand` (`runtime/api.gleam:1514`) rather than through the
 Agency, so it gets no lineage cell and so is addressable by nobody,
 lists nobody, and is reaped by nobody. At each end of a run on `main` a
 wrapped `run_end` slot casts to `client/advisor`'s actor, which scans
 `main`'s branch past a stored cursor, renders it with `render`
-(`client/advisorslice.gleam:152`), and sends the result to the advisor
+(`client/advisorslice.gleam:171`), and sends the result to the advisor
 as one framed message. The advisor answers with one `advise` call, and
 an emission guard — `decide` (`client/advisorguard.gleam:265`), not the
 advisor — decides whether that verdict interrupts `main` now, waits for
@@ -1307,12 +1307,12 @@ the host's own `{op_id, step_id}` — so the deadline kills it and the
 budget pools across the whole execution.
 
 The model reaches all of that through a `code_mode` tool
-(`tools/codemode.gleam:264`) built on the same shape as the `agent_*`
+(`tools/codemode.gleam:284`) built on the same shape as the `agent_*`
 family: a `CodeMode` record of closures declared in `tools` as plain
 data, and filled by the one package that can see both ends. `codemode`
 already depends on `tools` — its capability router renders a
 `tool.Collected` into a `cap_result` — so the two meet in
-`client/codemode.seam` (`client/codemode.gleam:304`) rather than drawing
+`client/codemode.seam` (`client/codemode.gleam:325`) rather than drawing
 a cycle.
 
 Two of the tool's declarations carry more than their names suggest.
@@ -1323,14 +1323,14 @@ crash mid-execution can only synthesize an interrupted result. Execution
 is `tool.Exclusive`, and the workspace it may mutate is the lesser half
 of the reason. The broker opens an execution's pooled ledger on the
 *first* clearance under a `{op_id, step_id}`, with that call's budget
-(`broker/broker.gleam:688`) — so a concurrent call in the same step both
+(`broker/broker.gleam:708`) — so a concurrent call in the same step both
 sets the budget the program will live under and holds a slot the program
 needs, and a satellite needs two outstanding slots to launch at all: one
 the node holds for its whole life, one for the capability call it is
 serving.
 
 Identity is threaded, never minted. `codemode.request`
-(`tools/codemode.gleam:367`) copies `{strand, op_id, step_id, workspace,
+(`tools/codemode.gleam:387`) copies `{strand, op_id, step_id, workspace,
 base_policy, demand, env}` straight off the dispatching `Ctx` and takes
 only the program and a clamped `within_ms` from the model, so the
 hermetic build, the jailed `erl`, and every `cap_call` the running
@@ -1340,7 +1340,7 @@ operation reach the build and the node alike.
 
 The base policy such an execution is judged against is the session's own
 plus exactly two environment *names*. `execution_policy`
-(`client/codemode.gleam:612`) appends `LOOM_CAP_SOCK` and
+(`client/codemode.gleam:633`) appends `LOOM_CAP_SOCK` and
 `LOOM_CAP_TOKEN_FILE` to `env_allow` and touches no root, no network
 posture, and no limit. It has to: composition takes the meet, so a base
 that does not name those two composes them away and the node comes up
@@ -1565,7 +1565,7 @@ pid, which is what the cancel ladder's last resort needs.
 
 **Selective receive with typed subjects.** The driver's selector combines
 its own subject with monitor DOWNs
-(`runtime/strand_runtime.gleam:219`), so one mailbox carries doorbells,
+(`runtime/strand_runtime.gleam:240`), so one mailbox carries doorbells,
 timers, effect outcomes and process deaths with no dispatcher of its own.
 
 **`persistent_term`** appears exactly once, and inside the jail rather
@@ -1621,7 +1621,7 @@ post-commit publication is production's only hint source.
 Escalation, on the other hand, is now wired end to end, and the shape is
 worth knowing. A tool reaches the broker through `Ctx.clear_call`, and in
 production that closure is not the bare broker runner: `escalating_runner`
-(`client/wiring.gleam:1049`) wraps it, so a `PolicyRefused` — and only a
+(`client/wiring.gleam:1070`) wraps it, so a `PolicyRefused` — and only a
 policy refusal, the one refusal a human can overturn — goes to the
 escalation seam before it becomes a result. `decide`
 (`client/escalate.gleam:290`) files a durable, call-scoped record under an

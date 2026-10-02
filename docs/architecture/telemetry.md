@@ -128,7 +128,7 @@ In the runtime the flow is:
    `log.for_strand` (`runtime/strand_runtime`), so every driver line carries
    the strand.
 2. Each effect is dispatched and settled under `step_logger`
-   (`runtime/strand_runtime.gleam:683`), which calls `log.for_step` with the
+   (`runtime/strand_runtime.gleam:704`), which calls `log.for_step` with the
    operation id and the token's step id. That logger is what the spawned
    effect process captures.
 3. When an operation finishes, the drive loop writes `operation.settled`

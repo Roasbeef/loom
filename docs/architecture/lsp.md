@@ -40,7 +40,7 @@ Loom's release train.
 
 There is one place where the harness names a tool. The bare command
 `gleam` resolves to the toolchain code mode located, not to `PATH`
-(`executable_path`, `client/lsp/jail.gleam:398`), so the compiler
+(`executable_path`, `client/lsp/jail.gleam:400`), so the compiler
 analysing a project is the one that builds its programs. That is a rule
 about which release runs, not about Gleam's semantics, and it is stated
 here because a principle with an unstated exception is worse than a
@@ -54,7 +54,7 @@ all from a toolchain the model can edit. Rule Zero (no model-influenced
 code in the harness VM) therefore applies to the server as it does to
 `bash`. The broker's ordinary jailed exec holds it, under the session's
 own enforcement demand, and a probe proves the jail is enforced before the
-server starts. `policy_for` (`client/lsp/jail.gleam:920`) builds the
+server starts. `policy_for` (`client/lsp/jail.gleam:922`) builds the
 policy. Its read view includes the session-authorized portion of the
 workspace for sibling dependencies; writes remain at the selected package.
 Only the operator's table adds roots outside that workspace. Answer paths
@@ -64,7 +64,7 @@ still pass the admission gate below.
 
 A profile extension declares `[lsp.<name>]` tables and `[[check]]`s. The
 manifest decoder refuses a `[[tool]]`, `[[hook]]` or `[net]` in one by
-name (`profile_tier`, `client/extension/manifest.gleam:75`), and an
+name (`profile_tier`, `client/extension/manifest.gleam:93`), and an
 install is fetch, extract and record, with nothing to vet or compile. The
 profile runs nothing itself. It does carry the authority to name a binary
 for the harness to run in the jail, and a one-line `hint` that lands in
@@ -107,7 +107,7 @@ an answer, and the harness reads outside every jail. So every path out of
 an answer (a definition, a reference, a call edge, a published diagnostic,
 a rename's edit) becomes `Admitted` or `Withheld` through one function,
 `admit` (`client/lsp/resolve.gleam:399`), called from one place in the
-manager (`gate`, `client/lsp/manager.gleam:2186`). Without it, a hostile
+manager (`gate`, `client/lsp/manager.gleam:2190`). Without it, a hostile
 project's server could name `~/.loom/owner.token` and have the harness
 print its first line.
 
@@ -120,9 +120,9 @@ hides. A refused path costs no request.
 The two servers ADR-015 measured disagree on everything a client could
 wait on, and `rust-analyzer` answers `[]` while it is still loading. So a
 freshly started server is asked whether its work-done progress has gone
-quiet (`ready`, `lsp/client.gleam:1150`), and a write's diagnostics are
+quiet (`ready`, `lsp/client.gleam:1154`), and a write's diagnostics are
 collected under two rules that both must hold (`settle`,
-`lsp/client.gleam:1122`). The answer is a type that says `Settled` or
+`lsp/client.gleam:1126`). The answer is a type that says `Settled` or
 `Unsettled`, so a server that had not finished is never reported as clean
 code.
 
@@ -161,7 +161,7 @@ relative to its package's source root: `lsp/client.gleam` is
 | Module | Owns | Read first |
 |---|---|---|
 | `lsp/query.gleam` | The harness vocabulary and the `Door` contract every surface calls: `SymbolQuery`, `Site`, `Diagnostics`, `QueryError`. Types only. | its header |
-| `client/lsp/manager.gleam` | One server per session, the keepers that start servers, eviction, restart, the probe, the bare-symbol search, the gate on named paths, and `door`. | `## Flow` (`client/lsp/manager.gleam:100`), then `## Transitions of the manager` (`client/lsp/manager.gleam:124`) and `## Transitions of a keeper` (`client/lsp/manager.gleam:137`) |
+| `client/lsp/manager.gleam` | One server per session, the keepers that start servers, eviction, restart, the probe, the bare-symbol search, the gate on named paths, and `door`. | `## Flow` (`client/lsp/manager.gleam:100`), then `## Transitions of the manager` (`client/lsp/manager.gleam:124`) and `## Transitions of a keeper` (`client/lsp/manager.gleam:139`) |
 | `client/lsp/resolve.gleam` | The judgement half of the door: ownership, containment, the `admit` gate, qualified symbols, outline lookup and containers. | `## Flow` (`client/lsp/resolve.gleam:71`) |
 | `client/lsp/leases.gleam` | The per-session cap on session-lived helper leases. | its header |
 | `client/lsp/codemode_rename.gleam` | A program's applied rename, composed from the tools' landing and the program's write boundary. | its header |
@@ -170,14 +170,14 @@ relative to its package's source root: `lsp/client.gleam` is
 
 | Module | Owns | Read first |
 |---|---|---|
-| `client/lsp/jail.gleam` | `policy_for`, executable location and mounts, the containment checks, and the jailed `ChannelTransport` with its relay state machine. | `## Flow` (`client/lsp/jail.gleam:61`), `## Transitions of the relay` (`client/lsp/jail.gleam:82`) and `## What each containment rule stops` (`client/lsp/jail.gleam:98`) |
+| `client/lsp/jail.gleam` | `policy_for`, executable location and mounts, the containment checks, and the jailed `ChannelTransport` with its relay state machine. | `## Flow` (`client/lsp/jail.gleam:61`), `## Transitions of the relay` (`client/lsp/jail.gleam:82`) and `## What each containment rule stops` (`client/lsp/jail.gleam:100`) |
 | `broker/policy.gleam` | `session_lease` and `LeaseOutput`, shared with extension hosts. | `session_lease` |
 
 **The protocol client: one server, one actor.**
 
 | Module | Owns | Read first |
 |---|---|---|
-| `lsp/client.gleam` | The actor that owns one server: handshake, gated requests, document sync, the diagnostics store, settlement, readiness and stop. It is a `weft/state_machine` over `lsp/transport` and never imports `broker` or `mcp`. | `## Transition table` (`lsp/client.gleam:48`), `## Flow` (`lsp/client.gleam:74`) and `## Reading the handlers` (`lsp/client.gleam:100`) |
+| `lsp/client.gleam` | The actor that owns one server: handshake, gated requests, document sync, the diagnostics store, settlement, readiness and stop. It is a `weft/state_machine` over `lsp/transport` and never imports `broker` or `mcp`. | `## Transition table` (`lsp/client.gleam:48`), `## Flow` (`lsp/client.gleam:78`) and `## Reading the handlers` (`lsp/client.gleam:104`) |
 | `lsp/protocol.gleam` | Total decoders for every structure consumed, the advertised-capability gate, answers to the server's own requests, and `file://` conversion. | `## Flow` (`lsp/protocol.gleam:45`) and `## Reading a decoder` (`lsp/protocol.gleam:78`) |
 | `lsp/jsonrpc.gleam` | The JSON-RPC 2.0 envelope over `core/json`: the request, notification, response and error encoders, and the total `decode` of an inbound body into a response, server request, notification or fault. | `## Flow` (`lsp/jsonrpc.gleam:23`) |
 | `lsp/transport.gleam` | The transport seam: `Connection`, `TransportEvent`, and a `Transport` with only the channel variant. | `## Flow` (`lsp/transport.gleam:19`) |
