@@ -37,6 +37,21 @@ pub fn run_forwarding(
   arguments: List(String),
 ) -> Result(Int, String)
 
+/// Runs one executable to completion with its output read and dropped, and
+/// answers with its exit status.
+///
+/// Uses OTP `open_port/2` as `run_forwarding` does. The terminal hands an
+/// image to the platform's opener while etui owns the screen, and whatever
+/// the opener writes would land over the frame; its exit status says
+/// everything the terminal reports. Starting an operating-system process
+/// has no expression in `gleam_stdlib`, `gleam_erlang`, `gleam_otp` or
+/// weft, which is why this is `@external`.
+@external(erlang, "tui_ffi", "run_quiet")
+pub fn run_quiet(
+  executable: String,
+  arguments: List(String),
+) -> Result(Int, String)
+
 /// Asks the person at the terminal one question and returns their reply.
 ///
 /// Uses OTP `io:getopts/1` and `io:get_line/1`. A caller whose standard input

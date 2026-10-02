@@ -65,6 +65,7 @@ import session_view/block_summary
 import session_view/call_tree.{type CallLog}
 import session_view/composer
 import session_view/file_read_view
+import session_view/image_header
 import session_view/notes_view
 import session_view/protocol
 import session_view/snapshot
@@ -76,10 +77,11 @@ import session_view/todo_board
 import session_view/tool_activity
 import session_view/transcript_line.{
   type CacheNotice, type Line, type Speaker, type Stream, type Submission,
-  type ToolTail, Assistant, Failure, HeldPrompt, Interjection, Line, PeerMessage,
-  ProgramFailure, ProgramRunning, Reasoning, ReasoningDigest, SentMessage,
-  Spacer, StrandMessage, Stream, SummarizedAdvice, SummarizedReasoning, System,
-  ToolCall, ToolDetail, ToolFailure, ToolGroup, ToolPatch, ToolResult, User,
+  type ToolTail, Assistant, Failure, HeldPrompt, ImageRow, Interjection, Line,
+  PeerMessage, ProgramFailure, ProgramRunning, Reasoning, ReasoningDigest,
+  SentMessage, Spacer, StrandMessage, Stream, SummarizedAdvice,
+  SummarizedReasoning, System, ToolCall, ToolDetail, ToolFailure, ToolGroup,
+  ToolPatch, ToolResult, User,
 }
 import session_view/worktree_view
 
@@ -1389,7 +1391,8 @@ pub fn closes_bare(speaker: Speaker) -> Bool {
     | ReasoningDigest
     | SummarizedReasoning
     | ProgramRunning
-    | ProgramFailure -> True
+    | ProgramFailure
+    | ImageRow -> True
     System
     | ToolGroup
     | User
@@ -1589,14 +1592,40 @@ pub fn clocked_call_lines(
     ]
     [], Some(_) | _, None -> rows
   }
-  list.append(
+  let images = case call.outcome {
+    Some(message.ToolResultMessage(content:, ..)) -> result_image_lines(content)
+    Some(_) | None -> []
+  }
+  list.flatten([
     rows,
     note_call_lines(
       call.invocation.name,
       call.invocation.arguments,
       notes_view.Excerpt,
     ),
-  )
+    images,
+  ])
+}
+
+// The placeholder rows of a tool result's images, under the rows of the
+// call that returned them.
+fn result_image_lines(content: List(message.ToolResultBlock)) -> List(Line) {
+  content
+  |> list.filter_map(fn(block) {
+    case block {
+      message.ToolResultImage(data:, mime_type:) -> Ok(#(mime_type, data))
+      message.ToolResultText(..) -> Error(Nil)
+    }
+  })
+  |> image_lines
+}
+
+// One placeholder row per image, numbered by its place among its row's
+// images, the numbering `transcript_image` names an image by.
+fn image_lines(images: List(#(String, String))) -> List(Line) {
+  list.index_map(images, fn(image, index) {
+    Line(ImageRow, image_header.describe(index + 1, image.0, image.1))
+  })
 }
 
 /// The rows the terminal's `Ctrl+g` shows for one tool call under its
@@ -3182,6 +3211,14 @@ fn message_lines(
           |> composer.transcript_text(details_expanded)
         },
       ),
+      ..content
+      |> list.filter_map(fn(block) {
+        case block {
+          message.UserImage(data:, mime_type:) -> Ok(#(mime_type, data))
+          message.UserText(..) -> Error(Nil)
+        }
+      })
+      |> image_lines
     ]
     message.AssistantMessage(content:, error_message:, stop_reason:, ..) -> {
       // Expanded history has no activity group to fold a run of parallel
@@ -3204,7 +3241,16 @@ fn message_lines(
       list.append(lines, assistant_terminal_lines(stop_reason, error_message))
     }
     message.ToolResultMessage(tool_name:, content:, details:, is_error:, ..) ->
-      tool_result_lines(tool_name, content, details, is_error, details_expanded)
+      list.append(
+        tool_result_lines(
+          tool_name,
+          content,
+          details,
+          is_error,
+          details_expanded,
+        ),
+        result_image_lines(content),
+      )
     message.CustomMessage(schema:, payload:) -> [
       Line(System, schema <> " · " <> json.to_string(payload)),
     ]

@@ -518,6 +518,10 @@ pub type View {
     /// file system, so it runs as a job and the creation continues when
     /// `session_control.drain_configuration` takes the reply.
     configuring: Option(job.Awaiting(job.ConfigurationReply)),
+    /// The open-image job, while one runs: `o` while reading hands the
+    /// newest image to the platform's opener, and `image_open.drain` takes
+    /// the reply into the notice.
+    opening_image: Option(job.Awaiting(job.ImageReply)),
     /// Questions already presented locally, keyed by their exact durable sequence.
     prompted_approvals: List(#(String, Int)),
     /// Exact decision currently requested for local inspection, if any.
@@ -1075,7 +1079,8 @@ pub fn release(model: Model, arrival: job.Arrival(job.Daemon)) -> Model {
     | job.ReconnectArrived(..)
     | job.ControlArrived(..)
     | job.ActivityArrived(..)
-    | job.ConfigurationArrived(..) -> model
+    | job.ConfigurationArrived(..)
+    | job.ImageArrived(..) -> model
   }
 }
 

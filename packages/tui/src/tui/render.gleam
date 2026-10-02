@@ -84,10 +84,10 @@ import session_view/snapshot_view
 import session_view/strand_card
 import session_view/text_hygiene
 import session_view/transcript_line.{
-  type Line, type Speaker, Assistant, Failure, Line, PeerMessage, ProgramFailure,
-  ProgramRunning, Reasoning, ReasoningDigest, SentMessage, Spacer, StrandMessage,
-  SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
-  ToolFailure, ToolGroup, ToolPatch, ToolResult, User,
+  type Line, type Speaker, Assistant, Failure, ImageRow, Line, PeerMessage,
+  ProgramFailure, ProgramRunning, Reasoning, ReasoningDigest, SentMessage,
+  Spacer, StrandMessage, SummarizedAdvice, SummarizedReasoning, System, ToolCall,
+  ToolDetail, ToolFailure, ToolGroup, ToolPatch, ToolResult, User,
 }
 import session_view/transcript_lines
 import session_view/worktree_view
@@ -852,8 +852,10 @@ pub fn render_line(line: Line, width: Int, strand: String) -> List(span.Line) {
       speaker_rows(line, width, strand)
 
     // A program block cuts every row to its box; a wrap could only break
-    // the box's right edge onto a row of its own.
-    ProgramRunning | ProgramFailure -> speaker_rows(line, width, strand)
+    // the box's right edge onto a row of its own. An image's row is cut to
+    // the pane, so its key stays at the end of the one row.
+    ProgramRunning | ProgramFailure | ImageRow ->
+      speaker_rows(line, width, strand)
 
     // Every other body is laid out against the full pane and has never been
     // measured, so it is wrapped on the way out.
@@ -969,7 +971,8 @@ pub fn finish_markdown_rows(
     | StrandMessage
     | PeerMessage
     | ProgramRunning
-    | ProgramFailure -> marked_rows(speaker, rows, run)
+    | ProgramFailure
+    | ImageRow -> marked_rows(speaker, rows, run)
   }
 }
 
@@ -1045,6 +1048,7 @@ fn speaker_mark(speaker: Speaker, text: String) -> #(String, style.Style) {
     | PeerMessage
     | ProgramRunning
     | ProgramFailure -> #("", theme.quiet_text())
+    ImageRow -> #("▣ ", theme.current_bold())
   }
 }
 
@@ -1130,6 +1134,10 @@ fn speaker_rows(line: Line, width: Int, strand: String) -> List(span.Line) {
     ProgramRunning | ProgramFailure ->
       program_rows.rows(line.speaker, line.text, width)
 
+    // An image's row names it and the key that opens it; a second row, when
+    // the projection gives one, says why the picture itself is not drawn.
+    ImageRow -> image_rows(line.text, mark, mark_style, width)
+
     // Advice closes with a blank like every other system row.
     SummarizedAdvice ->
       summarized_rows(line.text, mark, mark_style, width)
@@ -1156,6 +1164,46 @@ fn speaker_rows(line: Line, width: Int, strand: String) -> List(span.Line) {
         True -> []
         False -> [span.line_plain("")]
       })
+  }
+}
+
+/// The key an image's row offers, at the end of its words.
+pub const image_key = "o opens externally"
+
+// An image's row: the mark, the words cut so the key fits beside them, and
+// the key. A note after a newline is a quiet row of its own under the words.
+fn image_rows(
+  text: String,
+  mark: String,
+  mark_style: style.Style,
+  width: Int,
+) -> List(span.Line) {
+  let #(words, note) = case string.split_once(text, "\n") {
+    Ok(#(words, note)) -> #(words, Some(note))
+    Error(Nil) -> #(text, None)
+  }
+  let room = int.max(0, width - 2 - 3 - string.length(image_key))
+  let words = text.truncate(text_hygiene.single_line(words), room, "…")
+  let first =
+    span.line_new([
+      span.span_styled(mark, mark_style),
+      span.span_styled(
+        words,
+        style.new(theme.paper, style.Default, style.none()),
+      ),
+      span.span_styled("   " <> image_key, theme.quiet_text()),
+    ])
+  case note {
+    Some(note) -> [
+      first,
+      span.line_new([
+        span.span_styled(
+          speaker_gutter <> text_hygiene.single_line(note),
+          theme.quiet_text(),
+        ),
+      ]),
+    ]
+    None -> [first]
   }
 }
 

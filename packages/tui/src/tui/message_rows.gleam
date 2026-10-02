@@ -28,8 +28,8 @@ import gleam/list
 import gleam/string
 import session_view/text_hygiene
 import session_view/transcript_line.{
-  type Speaker, Assistant, Failure, PeerMessage, ProgramFailure, ProgramRunning,
-  Reasoning, ReasoningDigest, SentMessage, Spacer, StrandMessage,
+  type Speaker, Assistant, Failure, ImageRow, PeerMessage, ProgramFailure,
+  ProgramRunning, Reasoning, ReasoningDigest, SentMessage, Spacer, StrandMessage,
   SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
   ToolFailure, ToolGroup, ToolPatch, ToolResult, User,
 }
@@ -88,7 +88,8 @@ pub fn rows(speaker: Speaker, text: String, width: Int) -> List(span.Line) {
     | Failure
     | Spacer
     | ProgramRunning
-    | ProgramFailure -> body_rows(text, [], width)
+    | ProgramFailure
+    | ImageRow -> body_rows(text, [], width)
   }
   list.append(drawn, [span.line_plain("")])
 }

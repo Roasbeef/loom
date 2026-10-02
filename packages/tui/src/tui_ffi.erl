@@ -4,7 +4,8 @@
 %% identity and launch are shared with the daemon and live in
 %% `host_bootstrap_ffi`, which `host/bootstrap` declares directly; nothing
 %% here forwards to it.
--export([silence_logger/0, run_forwarding/2, halt/1, read_console_reply/1,
+-export([silence_logger/0, run_forwarding/2, run_quiet/2, halt/1,
+    read_console_reply/1,
     read_standard_line/1,
     herdr_exchange/3, require_terminal/0]).
 
@@ -30,6 +31,33 @@ run_forwarding(ExecutableBinary, ArgumentBinaries) ->
         forward_loop(Port)
     catch
         Class:Reason -> {error, describe({Class, Reason})}
+    end.
+
+%% Runs one executable to completion with everything it writes read and
+%% dropped, and answers with its exit status. Used to hand a file to the
+%% platform's opener while the terminal owns the screen: the opener's output
+%% would land over the frame, and an opener that fails says why in its exit
+%% status, which is all the terminal reports.
+run_quiet(ExecutableBinary, ArgumentBinaries) ->
+    Executable = unicode:characters_to_list(ExecutableBinary),
+    Arguments = lists:map(fun unicode:characters_to_list/1, ArgumentBinaries),
+    try
+        Port = open_port(
+            {spawn_executable, Executable},
+            [binary, exit_status, use_stdio, stderr_to_stdout, hide,
+             {args, Arguments}]
+        ),
+        discard_loop(Port)
+    catch
+        Class:Reason -> {error, describe({Class, Reason})}
+    end.
+
+discard_loop(Port) ->
+    receive
+        {Port, {data, _}} ->
+            discard_loop(Port);
+        {Port, {exit_status, Status}} ->
+            {ok, Status}
     end.
 
 forward_loop(Port) ->

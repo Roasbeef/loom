@@ -210,8 +210,40 @@ pub fn launch_within(
   arguments: List(String),
   within_ms: Int,
 ) -> Result(Launched, String) {
+  launch_with(ffi_terminal.run_forwarding, executable, arguments, within_ms)
+}
+
+/// The opener the terminal hands a file to while it owns the screen: the
+/// platform's opener, as `system_opener` finds it, run with its output
+/// dropped (`ffi_terminal.run_quiet`) so nothing it writes lands over the
+/// frame.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let open = view_link.quiet_opener()
+/// open("/var/folders/…/loom-images/image-1.png")
+/// ```
+pub fn quiet_opener() -> fn(String) -> Result(Nil, String) {
+  platform_opener(
+    host.getenv("LOOM_BUILD_PLATFORM"),
+    host.find_executable,
+    fn(executable, arguments) {
+      launch_with(ffi_terminal.run_quiet, executable, arguments, opener_wait_ms)
+    },
+  )
+}
+
+// One opener run under a deadline, by whichever runner says what becomes
+// of the opener's output.
+fn launch_with(
+  run: fn(String, List(String)) -> Result(Int, String),
+  executable: String,
+  arguments: List(String),
+  within_ms: Int,
+) -> Result(Launched, String) {
   let outcomes =
-    weft.new([fn() { ffi_terminal.run_forwarding(executable, arguments) }])
+    weft.new([fn() { run(executable, arguments) }])
     |> weft.deadline(within_ms)
     |> weft.start
 
