@@ -1,5 +1,43 @@
 # Current handoff
 
+## Sliced strand.wait windows (PR #719, merged `59549a99c`)
+
+A code-mode orchestration program naming a join window larger than the
+harness's per-call ceiling used to observe the join "complete" after
+30 s with every long-running handle `Pending`: the agency clamps each
+`strand.wait` to `max_wait_ms` (30 s) by design, and the satellite stub
+forwarded the program's `within_ms` verbatim as one capability call, so
+the named deadline and the observed behaviour silently disagreed —
+the review fan-out that reported `needs_attention` with no findings was
+this, not a model failure.
+
+`cap/strand.wait` now slices: it re-issues the join on still-pending
+handles in requests of at most `max_wait_slice_ms` (30 s) until they
+settle or the program's `within_ms` is spent, accumulating `waited_ms`
+across slices and taking the host's per-slice report at face value (zero
+is reachable only from a zero-window probe and is accurate there). The
+harness clamp is untouched; `strand.map` still stops admission at the
+first unresolved child. Mismatched-handle answers now surface as
+`StrandResultMalformed` rather than `StrandsUnavailable`, and each join
+failure kind is pinned to its variant by test. An independent GLM 5.3
+review returned approve-with-comments; its four findings (slice-bound
+coupling, the variant, dead code in `join_batch`, the
+`execution.receive` cousin) are all addressed in the merged commits.
+
+**Open decision:** [protocol-change/062](../protocol-change/062-strand-wait-slicing.md)
+is deliberately still status PROPOSED — the merge was made on the
+owner's authorization, and the proposal awaits a formal accept or
+amendment. It records the residual cost (a never-settling child now
+blocks up to the program's own deadline) and why raising `max_wait_ms`
+was rejected.
+
+**Flake note:** issue #513 (runtime `interleave_test` tools case) has a
+second recorded occurrence — run `37072703564`, job 111057019796, on an
+unrelated PR — same supervisor-killed shape under parallel lane load;
+[the recurrence is logged on the issue](https://github.com/Roasbeef/loom/issues/513#issuecomment-5962830928).
+The lane passed on the final CI run, consistent with the timing-flake
+diagnosis; a single pass is corroboration, not proof.
+
 ## October 2 daemon memory pass
 
 `codex/memory-lsp-query-handle` reduces the seven direct LSP tools' measured
