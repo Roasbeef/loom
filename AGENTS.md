@@ -202,7 +202,7 @@ argued — the staging lives in `finding.error_by_default`, and
 narrows it. Read the warnings: they are the reason the gating rules could
 be promoted, and they are only useful if somebody looks at them.
 
-Two committed artifacts are generated and gated rather than regenerated
+Three committed artifacts are generated and gated rather than regenerated
 by the build. `make gen-prelude` re-renders
 `packages/tools/src/tools/prelude.gleam` — the capability prelude's public
 surface, which the `code_mode` description carries — from `packages/cap`,
@@ -211,6 +211,10 @@ and needs `gleam` and `python3`;
 neither. `make gen-sql` is the same arrangement for the generated SQL
 modules. Change `packages/cap`'s public surface and you must regenerate,
 or the gate fails naming the file that moved.
+`make gen-tags` likewise renders the enforcement tag vocabulary from
+`protocol/enforcement-tags.toml` into `packages/sandbox/internal/jail/tags_gen.go`
+and `packages/broker/src/broker/tags.gleam`, and `make tags-check` (python3
+only, part of `make check`) fails when the source or either output moved alone.
 
 Gleam ships godoc-style documentation tooling of its own. Run inside a
 package, `gleam docs build` renders the `////`/`///` doc comments into

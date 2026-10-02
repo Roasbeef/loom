@@ -144,6 +144,7 @@ import broker/internal/ffi_crypto
 import broker/internal/ffi_os
 import broker/internal/ffi_port
 import broker/policy.{type SandboxPolicy}
+import broker/tags
 import core/msgpack
 import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
@@ -1621,7 +1622,7 @@ fn native_verdict(
     AfterShutdown, 0 -> Ok(Nil)
     AfterShutdown, status -> Error(RetirementExit(status))
     AfterKill(exposure:), status | Unprompted(exposure:), status ->
-      case exposure, list.contains(features, "bwrap") {
+      case exposure, list.contains(features, tags.tag_bwrap) {
         NoJail, _ | SettledJail, _ | LiveJail, True -> Ok(Nil)
         LiveJail, False -> Error(RetirementExit(status))
       }
@@ -1786,7 +1787,7 @@ fn dispatch_exec(
 // full enforcement. Per-exec ground truth is additionally checked on
 // exec_exit.
 fn degraded_features(features: List(String)) -> Bool {
-  list.contains(features, "degraded")
+  list.contains(features, tags.tag_degraded)
 }
 
 /// The layer tags an execution under `policy` must be able to show as
@@ -1827,7 +1828,7 @@ pub fn required_layers_for_features(
   policy: Option(SandboxPolicy),
   features: List(String),
 ) -> List(String) {
-  let os_name = case list.contains(features, "seatbelt") {
+  let os_name = case list.contains(features, tags.tag_seatbelt) {
     True -> "darwin"
     False -> "linux"
   }
@@ -1856,17 +1857,20 @@ fn tolerated_layers_for_demand(
   features: List(String),
   demand: EnforcementDemand,
 ) -> List(String) {
-  case demand, list.contains(features, "seatbelt") {
+  case demand, list.contains(features, tags.tag_seatbelt) {
     PlatformEnforcement, True -> {
       let resource = case policy {
         None -> []
         Some(policy) ->
           list.flatten([
-            optional_layer(policy.limits.mem_bytes > 0, "rlimit-address-space"),
-            optional_layer(policy.limits.pids > 0, "rlimit-processes"),
+            optional_layer(
+              policy.limits.mem_bytes > 0,
+              tags.tag_rlimit_address_space,
+            ),
+            optional_layer(policy.limits.pids > 0, tags.tag_rlimit_processes),
           ])
       }
-      list.append(resource, ["darwin-process-lifecycle"])
+      list.append(resource, [tags.tag_darwin_process_lifecycle])
     }
     _, _ -> []
   }
@@ -1886,16 +1890,21 @@ pub fn required_layers_for(
         base,
         network_layers_for(policy.network, os_name),
         resource_layers_for(policy.limits, os_name),
-        optional_layer(policy.limits.cpu_s > 0, "rlimit-cpu"),
-        optional_layer(policy.limits.fsize_bytes > 0, "rlimit-fsize"),
+        optional_layer(policy.limits.cpu_s > 0, tags.tag_rlimit_cpu),
+        optional_layer(policy.limits.fsize_bytes > 0, tags.tag_rlimit_fsize),
       ])
   }
 }
 
 fn base_layers_for(os_name: String) -> List(String) {
   case os_name {
-    "darwin" -> ["seatbelt", "seatbelt-fs"]
-    "linux" -> ["bwrap", "mounts", "landlock", "no-new-privs"]
+    "darwin" -> [tags.tag_seatbelt, tags.tag_seatbelt_fs]
+    "linux" -> [
+      tags.tag_bwrap,
+      tags.tag_mounts,
+      tags.tag_landlock,
+      tags.tag_no_new_privs,
+    ]
     _ -> []
   }
 }
@@ -1907,8 +1916,8 @@ fn network_layers_for(
   case network {
     policy.NetworkOff | policy.NetworkProxy(..) ->
       case os_name {
-        "darwin" -> ["seatbelt-net"]
-        "linux" -> ["seccomp-net"]
+        "darwin" -> [tags.tag_seatbelt_net]
+        "linux" -> [tags.tag_seccomp_net]
         _ -> []
       }
     policy.NetworkFull -> []
@@ -1922,10 +1931,10 @@ fn resource_layers_for(limits: policy.Limits, os_name: String) -> List(String) {
       case os_name {
         "darwin" ->
           list.flatten([
-            optional_layer(limits.mem_bytes > 0, "rlimit-address-space"),
-            optional_layer(limits.pids > 0, "rlimit-processes"),
+            optional_layer(limits.mem_bytes > 0, tags.tag_rlimit_address_space),
+            optional_layer(limits.pids > 0, tags.tag_rlimit_processes),
           ])
-        "linux" -> ["cgroup-v2"]
+        "linux" -> [tags.tag_cgroup_v2]
         _ -> []
       }
   }
@@ -1947,7 +1956,7 @@ pub fn unapplied_layers(
 ) -> List(String) {
   let applied =
     enforcement
-    |> list.filter(fn(entry) { !string.starts_with(entry, "skip:") })
+    |> list.filter(fn(entry) { !string.starts_with(entry, tags.prefix_skip) })
     |> list.map(layer_tag)
   list.filter(required, fn(layer) { !list.contains(applied, layer) })
 }
@@ -1978,7 +1987,9 @@ fn degraded_report(
   required: List(String),
 ) -> Bool {
   degraded
-  || list.any(enforcement, fn(entry) { string.starts_with(entry, "skip:") })
+  || list.any(enforcement, fn(entry) {
+    string.starts_with(entry, tags.prefix_skip)
+  })
   || unapplied_layers(enforcement, required) != []
 }
 
@@ -1994,7 +2005,7 @@ fn platform_degraded_report(
 ) -> Bool {
   degraded
   || list.any(enforcement, fn(entry) {
-    string.starts_with(entry, "skip:")
+    string.starts_with(entry, tags.prefix_skip)
     && !list.contains(tolerated, report_layer_tag(entry))
   })
   || unapplied_layers(enforcement, required) != []
@@ -2014,8 +2025,8 @@ fn unreported_layers(
 // also needs the name *inside* a skip so it can compare that name with its
 // narrow tolerated set.
 fn report_layer_tag(entry: String) -> String {
-  case string.starts_with(entry, "skip:") {
-    True -> layer_tag(string.drop_start(entry, 5))
+  case string.starts_with(entry, tags.prefix_skip) {
+    True -> layer_tag(string.drop_start(entry, string.length(tags.prefix_skip)))
     False -> layer_tag(entry)
   }
 }

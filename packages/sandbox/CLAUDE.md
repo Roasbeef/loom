@@ -125,6 +125,18 @@ only Go module.
   cgroup held it. `CgroupCeilings` names *which* of `memory.max` and
   `pids.max` were asked for, so the skip cannot report a ceiling the
   policy never wanted.
+- `internal/jail.Tag*` and `Prefix*` (`tags_gen.go`) — **generated**, never
+  hand-edited: every hello feature, applied layer tag and `skip:` layer
+  name the helper emits, plus the separators (`PrefixSkip`,
+  `PrefixLandlockAbi`, `PrefixMountsReport`, `PrefixSeatbeltFsReport`).
+  `features.go`, `run.go`, `stage2.go`, `mounts.go`, `seatbelt.go`,
+  `bwrap.go`, `platform.go` and `nnp_other.go` use the constants; the
+  free-text reasons after a layer name stay hand-written. The source is
+  `protocol/enforcement-tags.toml`, shared with the broker's `broker/tags`
+  module; change a spelling there and run `make gen-tags`.
+  `make tags-check` (python3 only, in `make check-sandbox`) fails on a moved
+  source or a hand-edited output. The wire bytes are unchanged by
+  construction: constants are the former literals.
 - `internal/jail.{MountReport, AuditMounts, MountSkipPrefix}` — the mount
   layer's contribution to the enforcement report. `AuditMounts` replays a
   `MountPlan` and counts the policy's own paths whose *effective* view is

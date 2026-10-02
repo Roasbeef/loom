@@ -78,7 +78,7 @@ import (
 // MountSkipPrefix opens every mount skip entry, so a reader (and the
 // self-test, and CI) can recognise the layer without matching a reason
 // that varies by policy.
-const MountSkipPrefix = "mounts"
+const MountSkipPrefix = TagMounts
 
 // MountReport is the mount layer's contribution to the per-exec
 // enforcement summary: one applied entry stating what the resolved plan
@@ -256,7 +256,7 @@ func AuditMounts(p policy.Policy, plan []MountOp) MountReport {
 		base = "minimal"
 	}
 	rep.Applied = fmt.Sprintf(
-		"mounts:ro=%d,rw=%d,mask=%d,bind_ro=%d,bind_rw=%d,scratch=%s,base=%s,plan=%s",
+		PrefixMountsReport+"ro=%d,rw=%d,mask=%d,bind_ro=%d,bind_rw=%d,scratch=%s,base=%s,plan=%s",
 		ro, rw, mask, bindRO, bindRW, scratch, base, planDigest(plan))
 	return rep
 }

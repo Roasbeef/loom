@@ -71,7 +71,7 @@ func BlocksDirectNetwork(m policy.NetworkMode) bool {
 // sidecar to enforce it); direct network was disabled instead. Surfaced
 // to the broker as "skip:" + this string, which fails a
 // full-enforcement demand.
-const ProxyUnenforcedSkip = "network-proxy: egress sidecar not implemented in phase 1; direct network disabled, allowlist not enforced"
+const ProxyUnenforcedSkip = TagNetworkProxy + ": egress sidecar not implemented in phase 1; direct network disabled, allowlist not enforced"
 
 // BwrapArgs computes the bubblewrap argument list (excluding the bwrap
 // executable itself and the command to run) for a policy.

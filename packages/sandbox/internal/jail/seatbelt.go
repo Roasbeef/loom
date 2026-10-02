@@ -16,7 +16,7 @@ const SeatbeltExecutable = "/usr/bin/sandbox-exec"
 
 // SeatbeltUnwitnessedSkip is emitted when sandbox-exec was selected but stage
 // 2 never proved that the profile admitted it far enough to report.
-const SeatbeltUnwitnessedSkip = "seatbelt: stage 2 sent no enforcement report " +
+const SeatbeltUnwitnessedSkip = TagSeatbelt + ": stage 2 sent no enforcement report " +
 	"on fd 4, so the generated filesystem and network profile cannot be " +
 	"confirmed to have been applied"
 
@@ -137,15 +137,15 @@ func (p SeatbeltPlan) Args(command []string) []string {
 // only publish them after stage 2 reports from inside the profile.
 func (p SeatbeltPlan) Enforcement(network policy.NetworkMode) []string {
 	out := []string{
-		"seatbelt",
+		TagSeatbelt,
 		fmt.Sprintf(
-			"seatbelt-fs:rw=%d,mask=%d,bind_ro=%d,bind_rw=%d,scratch=%s,"+
+			PrefixSeatbeltFsReport+"rw=%d,mask=%d,bind_ro=%d,bind_rw=%d,scratch=%s,"+
 				"base=%s,plan=%s",
 			p.Writable, p.Protected, p.BindRO, p.BindRW, p.Scratch,
 			p.Base, p.Digest),
 	}
 	if BlocksDirectNetwork(network) {
-		out = append(out, "seatbelt-net")
+		out = append(out, TagSeatbeltNet)
 	}
 	return out
 }

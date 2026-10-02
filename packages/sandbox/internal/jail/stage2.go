@@ -47,7 +47,7 @@ const ScratchMountedFlag = "--scratch-mounted"
 // subreaper. A daemonizing double-fork can therefore be reparented between
 // process-table samples and outlive the execution. FullEnforcement must see
 // that limitation rather than accept sampled cleanup as a kernel guarantee.
-const DarwinLifecycleSkip = "darwin-process-lifecycle: macOS has no PID " +
+const DarwinLifecycleSkip = TagDarwinProcessLifecycle + ": macOS has no PID " +
 	"namespace, subreaper, or stable process handle; rapid reparenting can " +
 	"evade sampled cleanup and PID reuse remains racy while the Seatbelt " +
 	"profile persists"
@@ -103,14 +103,14 @@ func RunStage2(cfg Stage2Config) error {
 		if err := unix.Setrlimit(unix.RLIMIT_FSIZE, &lim); err != nil {
 			return fmt.Errorf("stage2: setrlimit fsize: %w", err)
 		}
-		rep.Applied = append(rep.Applied, "rlimit-fsize")
+		rep.Applied = append(rep.Applied, TagRlimitFsize)
 	}
 	if n := pol.Limits.CPUSeconds; n > 0 {
 		lim := unix.Rlimit{Cur: n, Max: n + 1}
 		if err := unix.Setrlimit(unix.RLIMIT_CPU, &lim); err != nil {
 			return fmt.Errorf("stage2: setrlimit cpu: %w", err)
 		}
-		rep.Applied = append(rep.Applied, "rlimit-cpu")
+		rep.Applied = append(rep.Applied, TagRlimitCpu)
 	}
 
 	switch runtime.GOOS {
@@ -122,9 +122,9 @@ func RunStage2(cfg Stage2Config) error {
 			if err := llock.Apply(llock.Rules(view)); err != nil {
 				return fmt.Errorf("stage2: landlock: %w", err)
 			}
-			rep.Applied = append(rep.Applied, "landlock:abi="+strconv.Itoa(abi))
+			rep.Applied = append(rep.Applied, PrefixLandlockAbi+strconv.Itoa(abi))
 		} else {
-			rep.Skipped = append(rep.Skipped, "landlock: "+reason)
+			rep.Skipped = append(rep.Skipped, TagLandlock+": "+reason)
 		}
 
 		// no_new_privs prevents privilege gain through setuid binaries and
@@ -136,17 +136,17 @@ func RunStage2(cfg Stage2Config) error {
 		case reason != "":
 			rep.Skipped = append(rep.Skipped, reason)
 		default:
-			rep.Applied = append(rep.Applied, "no-new-privs")
+			rep.Applied = append(rep.Applied, TagNoNewPrivs)
 		}
 		if BlocksDirectNetwork(pol.Network.Mode) {
 			if seccompf.Supported() {
 				if err := seccompf.Install(); err != nil {
 					return fmt.Errorf("stage2: seccomp: %w", err)
 				}
-				rep.Applied = append(rep.Applied, "seccomp-net")
+				rep.Applied = append(rep.Applied, TagSeccompNet)
 			} else {
 				rep.Skipped = append(rep.Skipped,
-					"seccomp: kernel lacks seccomp filter support")
+					TagSeccomp+": kernel lacks seccomp filter support")
 			}
 		}
 
@@ -163,10 +163,10 @@ func RunStage2(cfg Stage2Config) error {
 			lim := unix.Rlimit{Cur: n, Max: n}
 			if err := unix.Setrlimit(unix.RLIMIT_AS, &lim); err != nil {
 				rep.Skipped = append(rep.Skipped,
-					"rlimit-address-space: "+err.Error()+
+					TagRlimitAddressSpace+": "+err.Error()+
 						"; mem_bytes was NOT applied")
 			} else {
-				rep.Applied = append(rep.Applied, "rlimit-address-space")
+				rep.Applied = append(rep.Applied, TagRlimitAddressSpace)
 			}
 		}
 		if n := pol.Limits.Pids; n > 0 {
@@ -174,26 +174,26 @@ func RunStage2(cfg Stage2Config) error {
 			switch {
 			case countErr != nil:
 				rep.Skipped = append(rep.Skipped,
-					"rlimit-processes: count current uid processes: "+
+					TagRlimitProcesses+": count current uid processes: "+
 						countErr.Error()+"; pids was NOT applied")
 			case current >= n:
 				rep.Skipped = append(rep.Skipped, fmt.Sprintf(
-					"rlimit-processes: current uid already has %d processes, "+
+					TagRlimitProcesses+": current uid already has %d processes, "+
 						"not below requested limit %d; pids was NOT applied",
 					current, n))
 			case n-current <= darwinProcessLimitHeadroom:
 				rep.Skipped = append(rep.Skipped, fmt.Sprintf(
-					"rlimit-processes: current uid has %d processes and limit "+
+					TagRlimitProcesses+": current uid has %d processes and limit "+
 						"%d leaves no %d-process concurrency reserve; pids was "+
 						"NOT applied", current, n, darwinProcessLimitHeadroom))
 			default:
 				lim := unix.Rlimit{Cur: n, Max: n}
 				if err := unix.Setrlimit(unix.RLIMIT_NPROC, &lim); err != nil {
 					rep.Skipped = append(rep.Skipped,
-						"rlimit-processes: "+err.Error()+
+						TagRlimitProcesses+": "+err.Error()+
 							"; pids was NOT applied")
 				} else {
-					rep.Applied = append(rep.Applied, "rlimit-processes")
+					rep.Applied = append(rep.Applied, TagRlimitProcesses)
 				}
 			}
 		}
@@ -201,7 +201,7 @@ func RunStage2(cfg Stage2Config) error {
 
 	default:
 		rep.Skipped = append(rep.Skipped,
-			"platform-restrictions: no in-process driver for "+runtime.GOOS)
+			TagPlatformRestrictions+": no in-process driver for "+runtime.GOOS)
 	}
 
 	// Proxy mode remains narrowed to network-off on every platform until

@@ -143,7 +143,7 @@ func (c CgroupCeilings) names() string {
 // CgroupSkipPrefix opens every cgroup skip entry, so a reader (and the
 // self-test, and CI) can recognise the layer without matching a reason
 // that varies by machine.
-const CgroupSkipPrefix = "cgroup-v2"
+const CgroupSkipPrefix = TagCgroupV2
 
 const startGateScript = `IFS= read -r _ <&5 || exit 125
 exec 5<&-
@@ -896,7 +896,7 @@ func readStage2Report(r io.Reader) stage2Report {
 // Stage2SkipPrefix opens the skip entry emitted when stage 2 said
 // nothing, so a reader can recognise the condition without matching a
 // reason that varies by cause.
-const Stage2SkipPrefix = "stage2"
+const Stage2SkipPrefix = TagStage2
 
 // Stage2Skip is the enforcement entry for a stage 2 that never reported.
 // Everything the inner stage applies — rlimits, Landlock, no_new_privs,
@@ -914,7 +914,7 @@ func Stage2Skip(reason string) string {
 
 // BwrapUnwitnessedSkip is the entry emitted when bubblewrap was on the
 // path and asked to build a jail, but nothing witnessed it doing so.
-const BwrapUnwitnessedSkip = "bwrap: stage 2 sent no enforcement report " +
+const BwrapUnwitnessedSkip = TagBwrap + ": stage 2 sent no enforcement report " +
 	"on fd 4, so neither the namespaces nor the mount plan can be " +
 	"confirmed to have been built"
 
@@ -949,42 +949,42 @@ const BwrapUnwitnessedSkip = "bwrap: stage 2 sent no enforcement report " +
 func enforcementEntries(feat Features, cg cgroupOutcome, mounts MountReport, seatbelt []string, s2 stage2Report) []string {
 	var out []string
 	if !feat.Platform.Implemented {
-		out = append(out, "skip:"+feat.Platform.Reason)
+		out = append(out, PrefixSkip+feat.Platform.Reason)
 	}
 	if feat.BwrapPath != "" {
 		if s2.received {
-			out = append(out, "bwrap")
+			out = append(out, TagBwrap)
 			if mounts.Applied != "" {
 				out = append(out, mounts.Applied)
 			}
 		} else {
-			out = append(out, "skip:"+BwrapUnwitnessedSkip)
+			out = append(out, PrefixSkip+BwrapUnwitnessedSkip)
 		}
 	}
 	if feat.SeatbeltPath != "" {
 		if s2.received {
 			out = append(out, seatbelt...)
 		} else {
-			out = append(out, "skip:"+SeatbeltUnwitnessedSkip)
+			out = append(out, PrefixSkip+SeatbeltUnwitnessedSkip)
 		}
 	}
 	if cg.attached {
-		out = append(out, "cgroup-v2")
+		out = append(out, TagCgroupV2)
 	}
 	out = append(out, s2.rep.Applied...)
 	if feat.BwrapPath != "" && s2.received {
 		for _, m := range mounts.Skipped {
-			out = append(out, "skip:"+m)
+			out = append(out, PrefixSkip+m)
 		}
 	}
 	if cg.wanted() && !cg.attached {
-		out = append(out, "skip:"+CgroupSkip(cg.reason, cg.ceilings))
+		out = append(out, PrefixSkip+CgroupSkip(cg.reason, cg.ceilings))
 	}
 	for _, s := range s2.rep.Skipped {
-		out = append(out, "skip:"+s)
+		out = append(out, PrefixSkip+s)
 	}
 	if !s2.received {
-		out = append(out, "skip:"+Stage2Skip(s2.err))
+		out = append(out, PrefixSkip+Stage2Skip(s2.err))
 	}
 	return out
 }
