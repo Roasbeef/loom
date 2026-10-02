@@ -133,6 +133,11 @@ concurrently. The module now uses the existing serial group, preserving every
 assertion while preventing its four fixtures from replacing each other's channel.
 The same parallel package command then passed all 172 tests.
 
+The hosted Linux fan-in also caught an undeclared SQL Go fixture skip: its
+ordinary conformance bucket did not install `gopls`. That bucket now installs
+the same pinned 0.23.0 server as the existing jail and macOS jobs. The fixture
+runs instead of gaining a waiver; the strict skip census remains unchanged.
+
 ## October 2 daemon memory pass
 
 `codex/memory-lsp-query-handle` reduces the seven direct LSP tools' measured
