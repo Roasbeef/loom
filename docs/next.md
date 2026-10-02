@@ -52,6 +52,22 @@ defect in the pinned implementation and independently reran fifteen collector
 and twelve native query, retirement and loader tests with zero exit status.
 The release-integration and full-verification blockers below remain open.
 
+The owner also authorized removing all seven default `lsp_*` tool
+registrations. Semantic access now goes through `cap/lsp` and `cap/lsp_sql`
+in code mode. Automatic diagnostics on `fs_write` and `fs_edit` remain.
+Installed profile hints follow the admitted native capability into the
+code-mode description and `cap://lsp`; saved session pins are not rewritten.
+`loom-default-14` directs agents to semantic queries when offered and to SQL
+for joins and aggregates over explicit observations.
+
+The complete tools suite passed 610 tests, the prompt suite passed 102,
+and focused client discovery and prompt checks passed. All six real-server
+LSP fixtures passed without prerequisite skips after migrating the legacy
+calls to compiled capability programs. These retain anchored references,
+rename preview/apply, stale-content refusal, Go queries and both SQL cases.
+They also check that provider requests contain no top-level `lsp_*` tools.
+This evidence still uses the experimental seed described below.
+
 The independent pass found two collection defects. Both are corrected and
 covered by the passing fifteen-test collection suite: admission is checked
 again after server startup before source preflight, and path-only resolver

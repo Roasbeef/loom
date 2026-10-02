@@ -1230,7 +1230,7 @@ approving, and read back what it was never shown.
 contribution, a repeated name is the author overriding themselves, and
 the later one wins. *Between* contributions, a repeated name takes the
 boot down, naming both origins
-(`contributions.registry` at `client/contributions.gleam:406`). An
+(`contributions.registry` at `client/contributions.gleam:451`). An
 extension that could register `bash` would silently redefine what the
 model's `bash` call does, and every sandbox argument in the tree would be
 about the wrong function.
@@ -1525,7 +1525,7 @@ the jail, with access to the workspace roots and no network. What the
 plan does not yet contain is a grant for binaries: a `[proc]` table in
 the manifest beside `[net]`, with the same per-execution ceiling shape.
 LSP has since landed in the harness instead, as a jailed session lease
-whose door serves the `lsp_*` tools and `cap/lsp` alike (ADR-015,
+whose door serves `cap/lsp` and automatic post-edit diagnostics (ADR-015,
 `lsp.md`); the route remains named for DAP.
 
 ## Where the code lives
@@ -1557,7 +1557,7 @@ whose door serves the `lsp_*` tools and `cap/lsp` alike (ADR-015,
 | `packages/ext/src/ext/memory.gleam` | The author's side: `remember` and `recall` over `ext.remember` and `ext.recall`. |
 | `client/extension/dispatch.gleam` | An install record as `tools.Tool` values over the session's host: `tools` (`extension/dispatch.gleam:205`), `hosting` (`extension/dispatch.gleam:414`), the timeout clamp `within` (`extension/dispatch.gleam:686`), the jail's `requirements` (`extension/dispatch.gleam:333`), and `settle` (`extension/dispatch.gleam:883`). |
 | `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:2604`), the two refusals it logs, and the contribution it appends. |
-| `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:406`) and the collision that refuses a boot. |
+| `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:451`) and the collision that refuses a boot. |
 | `broker/egress.gleam` | The outbound HTTP surface: `request` (`broker/egress.gleam:374`), `one_host`, `Secret` (`broker/egress.gleam:159`), and a `Refusal` type with nowhere to put a credential. |
 | `broker/internal/ffi_egress.gleam` | One hop over `httpc` on a broker-private profile: `fetch` (`broker/internal/ffi_egress.gleam:61`). The only impurity in the path. |
 | `tui/tui.gleam` | `loom ext …` forwarded to the server by the same ladder a local session uses; the `Forward` arm is at `tui.gleam:311`. |

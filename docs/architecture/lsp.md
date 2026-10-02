@@ -12,10 +12,11 @@ its compiler does. Asked over JSON-RPC on its stdin and stdout, it
 answers where a name is defined, who refers to it, what type it has, and
 what a rename would change. It also reports, unasked, whether the code
 still compiles. Loom runs one such server per session, inside the jail,
-and puts its answers in front of the model in three places: seven
-`lsp_*` tools, a diagnostics block appended to every `fs_write` and
-`fs_edit` result, and the `cap/lsp` module a code-mode program can
-import.
+and puts its answers in front of the model through `cap/lsp` in code mode
+and a diagnostics block appended to `fs_write` and `fs_edit` results.
+`cap/lsp_sql` collects explicit observations for satellite-local SQL. The
+default registry exposes no separate `lsp_*` tools; the capability modules
+share the same manager and lease.
 
 This document is how the code carries out two rulings:
 `docs/adr/015-language-servers-as-jailed-leases.md` (the server is a
@@ -94,15 +95,13 @@ which a model can use.
 
 ### Shape answers as the model's next step
 
-Every site prints as `path:line:anchor|text`, which is exactly an
-`fs_read` line, so an answer feeds `fs_edit` with no read between. Lists
-state their count before they list and stop at a bound, so the model knows
-when to narrow a query or move it into code mode. `lsp_rename` previews by
-default and writes only on `mode: "apply"` (`decode_mode`,
-`tools/lsp.gleam:491`), and an unknown `mode` is refused rather than
-defaulted. The table in `tools/lsp.gleam` pairs each of these choices with
-the model failure it prevents (`# What each design choice prevents`,
-`tools/lsp.gleam:41`).
+A typed site carries its path, line, anchor and text, so a program can
+report the evidence needed for an anchored edit. Bounded lists retain their
+total and withheld counts rather than treating a clipped response as complete.
+`cap/lsp.rename` requires `Preview` or `Apply`; the model previews, inspects
+and applies in a separate code-mode call. The shared landing code still checks
+every base before the first write. Rendering and diagnostics remain in
+`tools/lsp`, whose legacy tool constructors are not registered by default.
 
 ### Gate every path the server names
 
@@ -139,8 +138,8 @@ reading of its documentation.
 
 The modules are listed in the order a query travels through them, so
 reading down the tables follows a question from the model to the server.
-To read the code, start with `tools/lsp.gleam` to see what the model
-sends, then `client/lsp/manager.gleam` for the door, then
+To read the code, start with `cap/lsp.gleam` and `codemode/lsp.gleam` to see
+what a program sends, then `client/lsp/manager.gleam` for the door, then
 `lsp/client.gleam` for one server's conversation, and read the jail and
 profile modules last, after the contract they protect is clear.
 Every large module opens with a `## Flow` section, a text sketch of its
@@ -155,7 +154,7 @@ relative to its package's source root: `lsp/client.gleam` is
 
 | Module | Owns | Read first |
 |---|---|---|
-| `tools/lsp.gleam` | The seven `lsp_*` tools, argument decoding, rendering, rename's `land`, the profile hints on `lsp_definition`, and the write tools' `diagnostics_observer`. | `## Flow` (`tools/lsp.gleam:74`) and the failure table at `tools/lsp.gleam:41` |
+| `tools/lsp.gleam` | Shared rendering, rename's `land`, the write tools' `diagnostics_observer`, and legacy tool constructors outside the default registry. | `## Flow` (`tools/lsp.gleam:74`) and the failure table at `tools/lsp.gleam:41` |
 | `tools/fs.gleam`, `tools/hashline.gleam` | `land_plan`, `WriteTarget`, the write observer, and `plan_between`: the one landing path rename shares with `fs_edit`. | their own headers |
 | `codemode/lsp.gleam` | The `lsp.*` router arm, rename preview diffing, and the wire shapes. | `## Flow` (`codemode/lsp.gleam:57`) |
 | `cap/lsp.gleam` | The typed module a program imports: `Query`, `Site`, `Found`, `LspError`, and the seven functions. | `## Flow` (`cap/lsp.gleam:43`) and `## Where each error comes from` (`cap/lsp.gleam:62`) |
@@ -233,9 +232,9 @@ what it meant. The keys are described under "Configuration" below.
 
 ## One door, every surface
 
-All three surfaces ask through one record of closures, `lsp/query.Door`.
-The `lsp_*` tools call it, the write tools' diagnostics observer calls it,
-and code mode's router calls it. The session's language-server manager
+Native queries and observed writes ask through one record of closures,
+`lsp/query.Door`. The write tools' diagnostics observer calls it, and code
+mode's router calls it. The session's language-server manager
 fills it. One door means one symbol-resolution rule, one document-sync
 rule and one server per session, whichever surface asked. A code-mode
 program is not a second client of the server; it is a second caller of
@@ -247,7 +246,7 @@ LSP position and nothing below `client` touches the broker:
 ```mermaid
 flowchart TB
     subgraph Surfaces
-      T[tools/lsp: seven lsp_* tools, the diagnostics observer, land]
+      T[tools/lsp: diagnostics observer and shared landing]
       FS[tools/fs: fs_write, fs_edit with the observer]
       CM[codemode/lsp: the lsp.* router arm]
       CAP[cap/lsp: what a program imports]
@@ -520,11 +519,10 @@ to read:
   (`other.twice`). That answers "who depends on this?", and it gives a
   one-level caller view on servers such as `gleam lsp` that offer no call
   hierarchy.
-- **Counts first.** `lsp_references` states how many references in how
-  many files before listing any, and lists at most 50, grouped by file
-  and by container. A model then knows when to narrow a query or move it
-  into code mode, where `cap/lsp` returns up to 200 items with the
-  uncapped total beside them.
+- **Completeness.** `cap/lsp` returns up to 200 items with the total and
+  withheld count beside them. A program checks those fields before treating
+  a list as complete, and returns a task-sized report rather than raw rows.
+  SQL observations have their own explicit scope and collection limits.
 
 Every request is gated on what the server advertised in its `initialize`
 answer. A measured server left an unadvertised request unanswered for
@@ -553,8 +551,8 @@ server holds open, sends a `didChange` for each whose digest moved and a
 `didClose` for each that vanished. This catches what push cannot: writes
 by `bash`, by background jobs and by code-mode programs. The pull is not
 a lock. Its race with a concurrent write is the one `fs_edit` already has
-with `bash`, and tool concurrency closes it for tools: `lsp_rename` is
-`Exclusive`.
+with `bash`. The outer `code_mode` call is `Exclusive`, but background
+writers may still race it; rename's base checks protect the landing.
 
 **Open what a query touches.** It is tempting to leave documents the
 server never opened to the server itself, which can read the disk.
@@ -703,16 +701,16 @@ server, and the settled diagnostics that follow expose a half-landed
 rename at once. A server's own refusal ("would make it unexported", in
 `gopls`'s words) reaches the model verbatim.
 
-The tool previews by default. `lsp_rename` with `mode: "preview"` shows
-every changed line before and after, with anchors, and writes nothing;
-the model applies with `mode: "apply"` what it has seen. The read-only
-tools are replay-`Safe` and `Concurrent`; `lsp_rename` is `Never` and
-`Exclusive`.
+`cap/lsp.rename(query, name, Preview)` returns each planned file and changed
+line without writing. After inspecting that result, the model submits a
+separate program using `Apply`. The outer `code_mode` call is replay-`Never`
+and `Exclusive`, so an interrupted program's effects are never replayed.
 
 ## Code mode
 
-A tool answers one question per call. A program composes them, and the
-composition is the point. "Every definition in this file that is used
+Semantic queries use capability modules in code mode. A program can ask
+one question or compose several, keeping intermediate results in the satellite.
+The default registry has no separate top-level LSP tools. "Every definition in this file that is used
 from another file" is one outline and a loop of reference queries, and no
 single tool offers it:
 
@@ -753,7 +751,7 @@ A program's rename previews in the router, which diffs the door's base
 and edited texts and needs nothing more. Apply is composed elsewhere,
 because it needs write authority the router must not hold.
 `client/lsp/codemode_rename` builds it per execution out of the door's
-`prepare_rename`, the same `tools/lsp.land` the tool uses, and the write
+`prepare_rename`, the shared `tools/lsp.land`, and the write
 boundary a program's `cap/fs.write` is held to: the execution's
 workspace, its approved writable roots and its protected paths. A
 protected path such as `.git/hooks` is refused to a rename for the reason
@@ -780,7 +778,7 @@ the prelude gate knows it is a decision rather than an oversight.
 Servers are configured, never discovered or installed. Each is an
 `[lsp.<name>]` table in `loom.toml`, and the table is the whole of what
 the server's jail grants beyond its project. With no `[lsp]` table there
-are no `lsp_*` tools, the write tools are unchanged, `cap/lsp` is not
+the write tools are unchanged, neither `cap/lsp` nor `cap/lsp_sql` is
 admitted, and nothing is spawned.
 
 ```toml
@@ -880,14 +878,13 @@ ADR-015 shipped before the key existed:
 | `module_case` | `"as-written"` | `"snake"` maps each qualifier segment from CamelCase before it meets a path, as Elixir and Ruby lay modules out. |
 | `hint` | none | One printable line, at most 200 bytes, telling the model how the language spells a qualified name. |
 
-A `hint` is appended once, as a "Language notes:" block of `name: hint`
-lines, to `lsp_definition`'s description, and nowhere else: every other
-symbol-taking tool addresses symbols the same way, so one statement
-reaches them all without paying for the text seven times in the cached
-prefix. It is operator-approved text in the model's context, exactly as
-an extension's tool description is. A session whose servers carry no
-hint sees the description byte for byte as it was; `tools/lsp` pins
-that with a test.
+Served profiles' hints travel as a deterministic "Language notes:" block
+with `cap/lsp` discovery. The `code_mode` description carries the same hints
+that `fs_read` at `cap://lsp` returns beside the full API. They appear only
+on an offer that admits and serves the native LSP capability, and no hint
+is advertised on extension or resident seams that cannot use it. The hints
+remain operator-approved configuration text, not language-specific harness
+logic. A host with no hints adds no supplemental block.
 
 `client/lsp/profile` decodes the tables, and `client/catalog` hands it
 the `[lsp]` table's entries. It is the one decoder, which an extension
@@ -956,7 +953,7 @@ keys are required: `command` (an argv, never a shell string),
   `qualifier_separators` when qualified names do not use `.` (`::`), and
   `module_case = "snake"` when modules are laid out as snake_case files.
 - **Is there a convention the resolver cannot express?** Put it in
-  `hint`, one line the model reads in `lsp_definition`'s description.
+  `hint`, one line the model reads in code-mode discovery and `cap://lsp`.
   Rust's leading `crate::` is the case: the hint tells the model to leave
   it out.
 

@@ -273,3 +273,17 @@ public API tests cover the wire contract, typed decoding, and scoped service
 custody. Real-server jailed tests and cold dependency preparation provide the
 remaining integration evidence; a focused test pass cannot substitute for
 those runs.
+
+## Semantic access through code mode
+
+The default registry exposes semantic operations through code mode rather
+than seven top-level LSP tools. Use `cap/lsp` for definitions, references,
+hover, outlines, calls, diagnostics and rename; use `cap/lsp_sql` for explicit
+collection followed by joins and aggregates. Automatic post-edit diagnostics
+remain on ordinary write tools. Rename preview and apply remain separate
+programs with a model judgment step between them.
+
+The system prompt prefers the modules when offered. Read `cap://lsp` for its
+API and the served language profiles' naming hints, and `cap://lsp_sql` for
+the observation/query API. Module discovery follows the same offered-seam
+allowlists as vetting, so an unavailable server is not advertised as usable.

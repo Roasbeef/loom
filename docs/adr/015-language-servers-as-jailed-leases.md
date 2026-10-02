@@ -512,3 +512,25 @@ shared core.
 The manifests of `lsp`, `tools` and `codemode` shrank from 18, 22 and 28
 packages to 6, 11 and 17. The `client` and `conformance` manifests keep
 `gleam_mcp` because `client/mcp` is a real MCP client.
+
+## Addendum, 2026-10-02: code-mode semantic access
+
+The owner chose code mode as the default model-facing LSP interface alongside
+SQL observations in PR #693. The default registry stops registering the seven
+`lsp_*` tools. `cap/lsp` retains individual semantic queries, diagnostics and
+explicit rename preview/apply; `cap/lsp_sql` retains bounded collection followed
+by satellite-local relational queries. Automatic post-edit diagnostics still
+use the shared session manager and lease.
+
+Language profiles' approved naming hints move from `lsp_definition` to
+code-mode discovery, visible in both the offered description and `cap://lsp`.
+Only an offer that admits and serves the native LSP capability receives them.
+The system prompt prefers these capabilities when offered and asks agents to
+read their exact APIs before submitting a program. Preview and apply remain
+separate calls with an agent judgment step between them.
+
+This removes duplicate model-facing schemas and lets programs keep intermediate
+semantic results local. It also means a single semantic lookup requires a
+code-mode program and an available toolchain. Legacy constructors and their
+tests remain for shared rendering/landing coverage; no compatibility registry
+or hidden fallback is added. Previously pinned prompt text is not rewritten.

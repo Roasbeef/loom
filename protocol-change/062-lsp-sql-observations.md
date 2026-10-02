@@ -155,3 +155,22 @@ examples. Focused checks, independent review corrections and actual jailed
 Gleam and Go SQL tests pass. Those jailed tests used an isolated native wrapper
 in the experimental seed. Final published-package resolution, seed locking
 and aggregate verification remain pending.
+
+## Accepted addendum, 2026-10-02: one model-facing semantic entry point
+
+The owner authorized removing the seven top-level LSP tools from the default
+registry alongside this feature. `code_mode` is the semantic entry point:
+`cap/lsp` handles individual queries and explicit rename preview/apply, while
+`cap/lsp_sql` handles joins and aggregates over finite observations. This
+changes default tool advertisement, not the capability envelope or the LSP
+lease protocol. The existing post-edit diagnostics observer remains active.
+
+Approved language naming hints move into offered code-mode discovery and the
+full `cap://lsp` read. Neither unconfigured hosts nor disallowed seams advertise
+those hints. The shipped prompt directs agents to the two modules conditionally
+on their availability, preserves setup/unsupported failure guidance and keeps
+an agent judgment step between rename preview and apply.
+
+Existing rename, stale-content and multi-root real-server acceptance tests
+move to actual `cap/lsp` code-mode programs rather than being dropped. The
+legacy tools' constructor, renderer and landing tests remain intact.

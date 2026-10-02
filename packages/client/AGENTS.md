@@ -2409,7 +2409,7 @@ catalogue without opening runtimes. Explicit admission invokes
   at all. When code mode or jobs is available, the built-in `fs_read` also
   receives `codemode.cap_scheme` or `job.scheme`, respectively. The schemes
   reuse those planes and add no separate registry entry. A language-server
-  door (ADR-015 §6) adds the seven `lsp_*` tools and builds `fs_write` and
+  door (ADR-015 §6 and its code-mode addendum) builds `fs_write` and
   `fs_edit` with `tools/lsp.diagnostics_observer`, so a landed write's
   result gains its settled diagnostics; with `None` the two write tools are
   the plain ones and the definitions are byte-identical to a host that
@@ -2417,8 +2417,10 @@ catalogue without opening runtimes. Explicit admission invokes
   door when the catalogue configures an `[lsp.<name>]` server that
   survived its load, and `None` otherwise (see "Language servers"). The
   last argument is the served profiles' hints as `#(server name, hint)`,
-  handed to `tools/lsp.tools`, which appends them to `lsp_definition`'s
-  description only; `[]` leaves every description byte-identical.
+  attached to offers that admit and serve `cap/lsp`. The `code_mode`
+  description and `cap://lsp` read carry them with the native API. The default
+  registry does not register top-level `lsp_*` tools. Without a served LSP
+  capability it advertises no naming hints.
 - `client/contributions.registry(List(Contribution)) ->
   Result(Registry, Collision)` — the seam an installed extension enters
   the registry through. Last-registration-wins survives *inside* one

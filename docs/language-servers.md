@@ -1,7 +1,7 @@
 # Set up language servers
 
-Loom's language-server tools give the agent semantic definitions, references,
-types, diagnostics and rename operations. Install a language profile to select
+Loom's language-server capabilities give the agent semantic definitions,
+references, types, diagnostics and rename operations. Install a language profile to select
 the server and its sandbox permissions. The profile is configuration data;
 the server binary and language toolchain are separate prerequisites.
 
@@ -11,12 +11,13 @@ The maintained profiles are
 [Rust](https://github.com/Roasbeef/loom-lsp-rust). Install any combination you
 need. Loom has no built-in server profiles, and starts a server on demand.
 
-Fresh sessions list the installed profiles' `lsp_*` tools in their system
-prompt and direct the agent to prefer them for semantic questions. Repeated
-queries can run through `cap/lsp` in code mode after reading `cap://lsp`.
-Existing sessions keep their pinned prompt. Unsupported methods need a
-supported query or text search; a server load failure needs its reported
-setup or access problem corrected before retrying.
+Fresh sessions expose `cap/lsp` through `code_mode` when a profile is available.
+The system prompt directs agents to prefer it for semantic questions, and
+`fs_read` at `cap://lsp` provides the full API and installed language hints.
+There are no default top-level `lsp_*` tools. Existing saved sessions retain
+their pinned prompt; start a fresh session to receive the new guidance.
+Unsupported methods need a supported query or text search; a server load
+failure needs its reported setup or access problem corrected before retrying.
 
 For joins and aggregates over explicit outline files and reference targets,
 see [Query language-server facts with SQL](lsp-sql.md). It uses the same
@@ -191,7 +192,7 @@ restart followed by explicitly reopening the saved session reloads them; closing
 and reattaching a terminal alone does not rebuild a resident session.
 
 For a first query, ask the agent to find a definition and its references using
-the language-server tools. Qualify names as the code spells them:
+`cap/lsp` inside code mode. Qualify names as the code spells them:
 
 | Language | Example | Project marker |
 |---|---|---|
@@ -199,13 +200,16 @@ the language-server tools. Qualify names as the code spells them:
 | Go | `util.Greet` | `go.mod` |
 | Rust | `util::greet`, without a leading `crate::` | `Cargo.toml` |
 
-The tools are `lsp_definition`, `lsp_references`, `lsp_hover`, `lsp_symbols`,
-`lsp_calls`, `lsp_diagnostics` and `lsp_rename`. A symbol query accepts an
-optional workspace `path` and 1-based `line` to disambiguate it. Call hierarchy
-support depends on the server; use references when it is unavailable.
-`lsp_rename` defaults to preview. Apply is a separate call and is not atomic
-across files; Loom checks every base before writing and reports each outcome.
-Code-mode programs use the typed `cap/lsp` module for the same operations.
+The typed `cap/lsp` module provides `definition`, `references`, `hover`,
+`outline`, `calls`, `diagnostics` and `rename`. Build a query with `lsp.symbol`,
+then narrow it with `lsp.in` and `lsp.at_line` using a workspace path and
+one-based line. Read `cap://lsp` for exact signatures before writing a program.
+Call hierarchy support depends on the server; use references when unsupported.
+
+Rename requires an explicit `lsp.Preview` or `lsp.Apply`. Preview first and
+inspect the plan before submitting a separate apply program. Apply is not
+atomic across files; Loom checks every base before writing and reports each
+outcome. Automatic diagnostics remain on `fs_write` and `fs_edit` results.
 
 ## Custom paths and configuration
 
@@ -245,7 +249,7 @@ verify an override with a real query in a newly opened session.
 
 | Symptom | Check |
 |---|---|
-| No `lsp_*` tools | Install a profile or configure a table, then start a new session. Check `ext list` for refused profiles. |
+| `cap/lsp` absent from code-mode discovery | Install a profile or configure a table, then start a new session. Check `ext list` for refused profiles. |
 | Executable not found | Check the daemon's PATH and the PATH of the standalone `ext check` invocation. A terminal's new PATH does not update a running daemon. |
 | Empty or incomplete results | Check dependencies, project markers, custom readable roots and the Rust restrictions above. Narrow the symbol with a path and line. |
 | Server still loading | Retry after the reported readiness delay. Unsettled diagnostics do not mean the project is clean. |

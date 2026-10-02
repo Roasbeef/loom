@@ -248,7 +248,11 @@ was asked.
   *host* supplies rather than the committed artifact: a `cap/mcp/<server>`
   façade is generated from one host's configured server (issue #106), so
   it cannot be in `tools/prelude`, and it renders after the committed
-  blocks under the same seam's heading.
+  blocks under the same seam's heading. Installed language-profile hints
+  supplement the committed `cap/lsp` API on admitted offers rather than
+  creating a second module. `cap://lsp` returns the full API followed by
+  those notes, and its index has one entry. SQL guidance requires both the
+  `cap/lsp_sql` import and `lsp.snapshot` service on the same offer.
 - `tools/codemode.{PolicyRefusal, Execution.refusal}` — whether policy
   composition stopped this execution before it ran, and whether an
   approval could overturn it. `NothingRefused` or `RunRefused(denial:,
@@ -311,8 +315,11 @@ was asked.
   render_references, render_outline, render_calls, render_hover,
   render_definitions, render_diagnostics, render_preview, render_report,
   render_error, max_reference_hits, max_rendered_diagnostics}` — the seven
-  `lsp_*` tools over `lsp/query.Door`, the record of closures `client`
-  fills from the session's language-server manager (ADR-015 §5–§6). Every
+  legacy `lsp_*` tool constructors and shared rendering/landing over
+  `lsp/query.Door`, the record of closures `client` fills from the session's
+  language-server manager (ADR-015 §5–§6). The default registry no longer
+  registers those constructors; code mode and observed writes still use the
+  shared implementation, and its coverage remains intact. Every
   symbol-addressed tool takes `symbol` (qualified names allowed), optional
   `path` and optional 1-based `line` — a `line` without a `path` is refused
   in band — and never a position. Every site renders as

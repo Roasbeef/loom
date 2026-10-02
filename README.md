@@ -254,8 +254,8 @@ sets, build cache, execution budgets, and cancellation model.
 
 Loom can ask a language server for definitions, references, types, file
 outlines, call hierarchy and diagnostics, and preview or apply a semantic
-rename across files. The same operations are available through `cap/lsp` in
-code mode. Results include file and line anchors for editing; writes through
+rename across files through `cap/lsp` in code mode. Semantic queries use
+capability modules rather than separate top-level LSP tools. Results include file and line anchors for editing; writes through
 `fs_write` and `fs_edit` also report diagnostics for files the running server
 owns. Rename previews write nothing, and unsupported server features are
 reported explicitly.
