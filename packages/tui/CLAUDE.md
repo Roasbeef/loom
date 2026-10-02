@@ -2686,8 +2686,8 @@ block and its settled row differ in height. The separation fold passes over
 an empty block to the last block that drew a row. A refused send keeps the
 generic failure rows.
 
-A code-mode program that settled is one `✓ code_mode · completed · result …
-· Ctrl+g` row. One the client has no result for yet, and one that failed,
+A code-mode program that settled is one `✓ code_mode · completed · result …`
+row. One the client has no result for yet, and one that failed,
 are titled blocks drawn by `tui/program_rows`: a rule carrying the title, a
 box holding the body, and a rule carrying the foot, two cells in and one
 short of the pane's right edge, the border in `theme.current` while it waits
@@ -2696,7 +2696,8 @@ M shown`, the program's first non-blank lines under their numbers, and
 `RESULT · none yet`; its foot names the `within_ms` budget the call asked
 for. A failure block shows the error; a compiler's diagnostic is cut to its
 heading with `· line N` and the source it quotes, and the foot says how
-many lines `Ctrl+g` shows. Body rows holding a number and a `│` gutter are
+many lines the whole error has. The key that expands a response is named
+once, on its heading; the feet carry only facts. Body rows holding a number and a `│` gutter are
 drawn as source on the raised ground. The client receives nothing per
 capability call, so the blocks carry no call list (protocol-change 060).
 
