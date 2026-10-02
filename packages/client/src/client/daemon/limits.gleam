@@ -60,7 +60,7 @@ pub fn parse(text: String) -> Result(Limits, String) {
 
 /// Validates the shared daemon table for startup and catalogue loading alike.
 ///
-/// Profiling is launcher-owned, but its type belongs to this same table's
+/// Profiling is launcher-owned, but it and the web-view setting share this table's
 /// contract. Omission keeps profiling disabled and each limit at its default.
 ///
 /// ## Examples
@@ -82,7 +82,8 @@ fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Limits, String) {
   use _ <- result.try(
     list.try_map(dict.keys(fields), fn(key) {
       case key {
-        "profile" | "max_connections" | "max_reserved_message_bytes" -> Ok(Nil)
+        "profile" | "ui" | "max_connections" | "max_reserved_message_bytes" ->
+          Ok(Nil)
         _ -> Error("unknown key `" <> key <> "` in [daemon]")
       }
     }),
@@ -90,6 +91,10 @@ fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Limits, String) {
   use Nil <- result.try(case dict.get(fields, "profile") {
     Error(Nil) | Ok(tom.Bool(_)) -> Ok(Nil)
     Ok(_) -> Error("daemon.profile must be true or false")
+  })
+  use Nil <- result.try(case dict.get(fields, "ui") {
+    Error(Nil) | Ok(tom.Bool(_)) -> Ok(Nil)
+    Ok(_) -> Error("daemon.ui must be true or false")
   })
   use connections <- result.try(positive(
     fields,

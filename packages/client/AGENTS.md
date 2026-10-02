@@ -4762,7 +4762,11 @@ schedule and legacy held-rule policies.
 
 `daemon/limits` validates positive `max_connections` and
 `max_reserved_message_bytes` settings in the same `[daemon]` table as optional
-`profile`. Both `catalog` and daemon startup use that parser. `daemon/main`
+`profile` and boolean `ui` (default false). Both `catalog` and daemon startup
+use that parser. `daemon/main.prepare_startup` captures the web-view choice
+and connection limits from one read; `--ui` enables the view even when the file
+says false. The production entrypoint carries the resolved configuration into
+UI construction and listener publication. `daemon/main`
 loads the last explicit startup configuration before preparing the root;
 session-specific configuration cannot alter a live root's limits. The root
 captures the limits in its handle and accounting state, and the control hello

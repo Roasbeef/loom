@@ -24,6 +24,7 @@ import client/serve
 import core/clock
 import core/glance
 import core/ids
+import gleam/dict
 import gleam/erlang/process
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
@@ -41,6 +42,7 @@ import simplifile
 import telemetry/field
 import telemetry/handler
 import telemetry/log.{type Logger}
+import tom
 import weft/poll
 
 /// Daemon-wide choices; session defaults are resolved only on explicit open.
@@ -58,7 +60,7 @@ pub type Config {
     owner_display_name: String,
     /// Helper/configuration/enforcement flags understood by serve's resolver.
     session_defaults: List(String),
-    /// Whether the listener serves the web view (`--ui`).
+    /// Whether the listener serves the web view (`--ui` or daemon.ui).
     view: WebView,
   )
 }
@@ -68,7 +70,7 @@ pub type WebView {
   /// No `/ui` route, no `hello` field and no `ui.link`: the default.
   ViewOff
 
-  /// `loomd --ui`: the listener serves the view.
+  /// `loomd --ui` or `[daemon] ui = true`: the listener serves the view.
   ViewOn
 }
 
@@ -121,8 +123,11 @@ pub fn main() -> Nil {
     |> result.try(claim_endpoint)
     |> result.try(fn(claimed) {
       let #(config, paths, fence) = claimed
-      prepare(config, logger)
-      |> result.map(fn(daemon) { #(config, paths, fence, daemon) })
+      prepare_startup(config, logger)
+      |> result.map(fn(prepared) {
+        let #(config, daemon) = prepared
+        #(config, paths, fence, daemon)
+      })
     })
   {
     Error(reason) -> {
@@ -341,12 +346,31 @@ pub fn prepare(
   config: Config,
   logger: Logger,
 ) -> Result(root.Root(serve.Resident), String) {
+  prepare_startup(config, logger) |> result.map(fn(prepared) { prepared.1 })
+}
+
+/// Captures startup settings and prepares the root without opening a session.
+///
+/// The returned configuration owns the web-view choice for this daemon's life.
+/// The startup file is read once for UI and connection limits alike; a session's
+/// catalogue cannot turn routes on or off. An explicit `--ui` always enables it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(#(config, daemon)) = main.prepare_startup(config, logger)
+/// ```
+@internal
+pub fn prepare_startup(
+  config: Config,
+  logger: Logger,
+) -> Result(#(Config, root.Root(serve.Resident)), String) {
   use configuration <- result.try(captured_domain_configuration(
     config.session_defaults,
     "",
   ))
-  use connection_limits <- result.try(case configuration {
-    "" -> Ok(limits.defaults)
+  use document <- result.try(case configuration {
+    "" -> Ok(dict.new())
     path -> {
       use text <- result.try(
         simplifile.read(path)
@@ -357,10 +381,28 @@ pub fn prepare(
           <> string.inspect(error)
         }),
       )
-      limits.parse(text)
-      |> result.map_error(fn(reason) { path <> ": " <> reason })
+      tom.parse(text)
+      |> result.map_error(fn(error) {
+        path <> ": invalid daemon configuration: " <> string.inspect(error)
+      })
     }
   })
+  use connection_limits <- result.try(
+    limits.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+
+  // Validation above makes a missing or false UI setting the only other
+  // possibility. The command-line opt-in remains authoritative over the file.
+  let view = case dict.get(document, "daemon") {
+    Ok(tom.Table(fields)) ->
+      case dict.get(fields, "ui") {
+        Ok(tom.Bool(True)) -> ViewOn
+        _ -> config.view
+      }
+    _ -> config.view
+  }
+  let config = Config(..config, view:)
   root.start(
     root.Config(
       config.state_root,
@@ -408,6 +450,7 @@ pub fn prepare(
       drain: serve.drain_resident,
     ),
   )
+  |> result.map(fn(daemon) { #(config, daemon) })
 }
 
 // Domain construction precedes session assembly, so its failures never reach
@@ -711,8 +754,7 @@ fn run(
   }
 }
 
-// The web view's assets, tables and socket, when the daemon was started with
-// `--ui`.
+// The web view's assets, tables and socket, when startup enabled the UI.
 // The tables' actor is linked to this process, which lives as long as the
 // daemon does.
 fn web_view(

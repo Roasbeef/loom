@@ -200,7 +200,7 @@ shared domain services before closing the listener. Its flags:
 --bind host:port       loopback listen address (default 127.0.0.1:0; port printed)
 --capacity <n>         maximum retained session instances (default 8)
 --owner-name <name>    initial owner display name (default Owner)
---ui                   serve the web view: a browser page per session, off by default
+--ui                   serve the web view (also enabled by [daemon] ui = true)
 --helper <path>        loom-exec location (default: beside the server, then PATH, then ./bin)
 --config <loom.toml>   model catalogue file (default: the LOOM_* env vars)
 --codemode-seed <dir>  the offline build seed (default <workspace>/build/codemode-seed, then the bundled one)
@@ -269,7 +269,7 @@ degradation for development machines. `LOOM_HELPER_POOL` bounds how many
 `loom-exec` helpers run at once (the scheduler count clamped to `[4, 16]`),
 which is the real ceiling on how wide a parallel tool batch runs.
 
-### Connection admission
+### Daemon settings
 
 The daemon reads these optional settings from its startup `--config` file.
 The ordinary `loom` launcher supplies the selected catalogue, defaulting to
@@ -278,11 +278,14 @@ The ordinary `loom` launcher supplies the selected catalogue, defaulting to
 
 ```toml
 [daemon]
+ui = true # Serve the web view on every daemon start.
 max_connections = 64
 max_reserved_message_bytes = 536870912 # 512 MiB.
 ```
 
-Both values must be positive integers. Omitted keys use the defaults above;
+`ui` must be a boolean and defaults to false; `--ui` enables the view even
+when the file says `ui = false`. The connection limits must be positive
+integers. Omitted limits use the defaults above;
 `profile` is optional in the same table. Changes take effect after a daemon
 restart. The startup file must be readable, valid TOML even before any
 session opens; invalid models and unavailable helpers still fail only when a
@@ -304,8 +307,10 @@ limits.
 
 ### A page in a browser
 
-A daemon started with `--ui` serves a web page for any session you are a
-member of. Ask your own `loom` for a link:
+A daemon started with `--ui` or `[daemon] ui = true` serves a web page for
+any session you are a member of. Set `ui = true` in `~/.loom/loom.toml` to
+enable it when ordinary `loom` starts a daemon, then use the terminal as
+usual. Ask your own `loom` for a link:
 
 ```sh
 # Print a single-use link to an observer's page for one session.
@@ -322,7 +327,7 @@ loom ui --state-dir ~/.loom --config ~/.loom/loom.toml --session SESSION_ID
 with the options before or after `--ui`.
 
 If no daemon is running, `loom ui` starts one with `--ui`. If the
-running daemon was started without it, `loom ui` says so and exits with
+running daemon has the view disabled, `loom ui` says so and exits with
 status 1; it never restarts a daemon other people may be using. The link
 works once, within 60 seconds, and only in the browser tab that opens it;
 a new tab or a daemon restart needs a new link. Each link opens its own

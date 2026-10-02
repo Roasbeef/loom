@@ -7,6 +7,7 @@ import client/daemon/main as entrypoint
 import client/daemon/root
 import gleam/bit_array
 import gleam/list
+import gleam/result
 import gleam/string
 import host/bootstrap
 import simplifile
@@ -80,5 +81,78 @@ pub fn invalid_startup_limits_fail_before_state_is_created_test() {
     reason,
     "daemon.max_connections must be a positive integer",
   )
+  assert simplifile.is_directory(path <> "/state") == Ok(False)
+}
+
+pub fn ui_setting_is_boolean_in_startup_and_catalogue_parsers_test() {
+  let assert Ok(example) = simplifile.read("../../docs/examples/loom.toml")
+    as "the committed catalogue is a complete session configuration"
+  list.each(["true", "false"], fn(value) {
+    let text = "[daemon]\nui = " <> value <> "\n"
+    assert limits.parse(text) == Ok(limits.defaults)
+    assert catalog.parse(example <> "\nui = " <> value <> "\n")
+      |> result.is_ok()
+  })
+  list.each(["1", "\"true\"", "[]", "{}"], fn(value) {
+    let text = "[daemon]\nui = " <> value <> "\n"
+    assert limits.parse(text) == Error("daemon.ui must be true or false")
+    assert catalog.parse(text) == Error("daemon.ui must be true or false")
+  })
+}
+
+pub fn startup_captures_ui_and_cli_opt_in_wins_test() {
+  list.each(
+    [
+      #("", [], entrypoint.ViewOff),
+      #("ui = false\n", [], entrypoint.ViewOff),
+      #("ui = true\n", [], entrypoint.ViewOn),
+      #("ui = false\n", ["--ui"], entrypoint.ViewOn),
+    ],
+    fn(fixture) {
+      let #(setting, flags, expected) = fixture
+      let path =
+        "build/test_db/daemon-ui-"
+        <> bit_array.base16_encode(token.production_entropy()(8))
+      let assert Ok(Nil) = bootstrap.ensure_private_directory(path)
+        as "fixture directory exists"
+      let selected = path <> "/selected.toml"
+      assert simplifile.write(selected, "[daemon]\n" <> setting) == Ok(Nil)
+      let assert Ok(config) =
+        entrypoint.parse(list.append(
+          [
+            "--state-dir",
+            path <> "/state",
+            "--config",
+            path <> "/missing.toml",
+            "--config",
+            selected,
+          ],
+          flags,
+        ))
+        as "the last startup catalogue is selected"
+      let assert Ok(#(resolved, daemon)) =
+        entrypoint.prepare_startup(config, log.discard())
+        as "startup captures settings without opening a session"
+      assert resolved.view == expected
+      assert root.connection_limits(daemon) == limits.defaults
+      assert root.shutdown(daemon, within: 5000) == Ok(Nil)
+    },
+  )
+}
+
+pub fn invalid_ui_setting_refuses_startup_before_state_is_created_test() {
+  let path =
+    "build/test_db/daemon-invalid-ui-"
+    <> bit_array.base16_encode(token.production_entropy()(8))
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(path)
+    as "fixture directory exists"
+  let selected = path <> "/invalid.toml"
+  assert simplifile.write(selected, "[daemon]\nui = \"true\"\n") == Ok(Nil)
+  let assert Ok(config) =
+    entrypoint.parse(["--state-dir", path <> "/state", "--config", selected])
+    as "flag parsing does not acquire resources"
+  let assert Error(reason) = entrypoint.prepare_startup(config, log.discard())
+    as "invalid UI configuration refuses startup"
+  assert string.contains(reason, "daemon.ui must be true or false")
   assert simplifile.is_directory(path <> "/state") == Ok(False)
 }
