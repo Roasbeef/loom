@@ -169,9 +169,9 @@ empty state says `main is the only strand` and names `/fork`. At 80×24 the
 list is a four-row window with `+3 more` and the detail is one line per
 heading.
 
-**Data.** The row comes from `Row` (`session_view/agent_view.gleam:65`),
-whose `Status` (`session_view/agent_view.gleam:38`) carries the glyph and
-`label` (`session_view/agent_view.gleam:509`) the word, and from `Line`
+**Data.** The row comes from `Row` (`session_view/agent_view.gleam:79`),
+whose `Status` (`session_view/agent_view.gleam:52`) carries the glyph and
+`label` (`session_view/agent_view.gleam:516`) the word, and from `Line`
 (`session_view/agent_roster.gleam:84`), which adds elapsed time and context
 size; `lines` (`session_view/agent_roster.gleam:355`) is the order. The task,
 activity, latest update, pending input, recent tools and approvals are the
@@ -334,7 +334,7 @@ on the owner's correction: `←` keeps the picker.
 | Approval card in the dock | yes | Kept in the dock, as a full-width block under a rule. The panel carries no decision control. |
 | `Alex is typing` | no | Not in the protocol, as the web note says. |
 | Todo line above the composer | yes | Today's panel in its one-row form by default. |
-| Changes from the session's edits | yes, as the fallback | The terminal can read the worktree, so Changes is `/diff`'s observation first, with `fold` (`session_view/changes_view.gleam:173`) as the labelled fallback it already uses. |
+| Changes from the session's edits | yes, as the fallback | The terminal can read the worktree, so Changes is `/diff`'s observation first, with `fold` (`session_view/changes_view.gleam:210`) as the labelled fallback it already uses. |
 | Trace with timing bars | no, until #656 | The tab draws the latest program's calls untimed; section 9.1 says what the result carries today. |
 | Layout remembered per workspace | yes | A file under the state root, section 10. |
 | Theme toggle | no | The palette is decided at launch from the terminal's environment (`detect`, `tui/appearance.gleam:46`). |
@@ -463,9 +463,9 @@ The way back is `Enter` on `main`, the first row, or `/strand main`.
 |---|---|---|---|
 | sub:tests focused, 120×40 | [standard-focus](C-fable-standard-focus-dark.png) | [light](C-fable-standard-focus-light.png) | [txt](C-fable-standard-focus.txt) |
 
-The gutter's hue comes from `hue` (`session_view/turns.gleam:211`), which
+The gutter's hue comes from `hue` (`session_view/turns.gleam:248`), which
 colours a strand by its position among the captured strands and never by its
-name, with `hues` (`session_view/turns.gleam:70`) sub-agent hues before they
+name, with `hues` (`session_view/turns.gleam:85`) sub-agent hues before they
 repeat. The terminal's row projection would carry a hue beside each row the
 way it carries anchors (`refresh_render_cache`, `tui/projection.gleam:49`),
 derived from `pieces` (`session_view/turns.gleam:298`), which already decides
@@ -728,16 +728,16 @@ No single key sends a decision.
 | Region | Data | Exists | Where |
 |---|---|---|---|
 | Header | session title, workspace, model | yes | `render_header`, `tui/render.gleam:503` |
-| Timeline gutter | each row's strand and hue | derivable | `pieces` (`session_view/turns.gleam:298`), `hue` (`session_view/turns.gleam:211`); new hue constants in `tui/theme.gleam` |
+| Timeline gutter | each row's strand and hue | derivable | `pieces` (`session_view/turns.gleam:298`), `hue` (`session_view/turns.gleam:248`); new hue constants in `tui/theme.gleam` |
 | Counted repeated rows | consecutive identical calls and errors | derivable | the grouping in `project` (`session_view/tool_activity.gleam:55`) gains a run-length fold; shared with the web view |
 | Harness notes | `[loom]`-prefixed inputs, hook and job notices | partly | `harness_message_lines` (`session_view/transcript_lines.gleam:1651`) recognises advisor frames; `memory_context_lines` (`session_view/composer.gleam:356`) the memory context; the `[loom]` job and hook notices need the same recogniser extended, no wire change |
-| Strands tab, strip, workspace list | one row per strand | yes | `lines` (`session_view/agent_roster.gleam:355`), `Line` (`session_view/agent_roster.gleam:84`), `status_line` (`session_view/strand_card.gleam:38`), `status_mark` (`tui/agents.gleam:738`) |
-| Strand detail | task, now, update, pending, recent, approvals | yes | `Row` (`session_view/agent_view.gleam:65`) |
+| Strands tab, strip, workspace list | one row per strand | yes | `lines` (`session_view/agent_roster.gleam:355`), `Line` (`session_view/agent_roster.gleam:84`), `status_line` (`session_view/strand_card.gleam:45`), `status_mark` (`tui/agents.gleam:738`) |
+| Strand detail | task, now, update, pending, recent, approvals | yes | `Row` (`session_view/agent_view.gleam:79`) |
 | Strand detail: messages out | sends with state | yes | `Item` (`session_view/agent_messages.gleam:52`) |
 | Strand detail: messages in, inbox | received messages, unread count | no | section 9.2; a strand origin on the admitted message and an inbox read need a protocol change |
 | Strand detail: cache | the cache outlook words | yes | `outlook_label` (`session_view/cache_miss.gleam:435`), today in `cache_outlook` (`tui/model.gleam:449`) |
 | Nudge count on the advisor row | pending nudges | yes | `Board` (`session_view/advisor_pending.gleam:51`), `nudges` (`session_view/model.gleam:224`) |
-| Changes tab | worktree observation, navigator, patch | yes | `State` (`session_view/worktree_view.gleam:98`), `layout` (`tui/diff_panel.gleam:33`), with `fold` (`session_view/changes_view.gleam:173`) as the labelled fallback |
+| Changes tab | worktree observation, navigator, patch | yes | `State` (`session_view/worktree_view.gleam:98`), `layout` (`tui/diff_panel.gleam:33`), with `fold` (`session_view/changes_view.gleam:210`) as the labelled fallback |
 | Trace tab, code-mode box | program, result, status | yes | `code_mode_program` (`session_view/transcript_lines.gleam:2380`), `execution_value` (`tools/codemode.gleam:1482`) |
 | Trace tab, code-mode box | the capability call list | no | protocol change (section 9.1, with #656) |
 | Session tab: goal | the goal board | yes | `row` (`session_view/goal_view.gleam:553`), `goal` (`session_view/model.gleam:236`) |

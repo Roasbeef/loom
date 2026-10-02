@@ -124,7 +124,7 @@ Data: all of it is on the page the picker already holds. `protocol.Session`
 creation time and lifecycle. `protocol.Activity` (`:300`) has the state
 (`ActivityState`, `:325`), strand and working counts, approvals, last
 outcome, last message, model, and up to four `GlanceLine`s (`:353`). The
-filters are `session_selector.Filter` (`session_selector.gleam:55`). Nothing
+filters are `session_selector.Filter` (`session_selector.gleam:75`). Nothing
 needs a wire change. Age is the creation age, because the page has no
 last-activity time; if the owner wants "last active" that is a protocol
 change to `sessions.activity`.
@@ -206,7 +206,7 @@ composer), and the actions (Enter opens, `n` jumps to attention, `a` reviews).
 At 80 by 24 the list (up to eight rows) sits above a compact detail, with a
 one-row footer. The detail scrolls with PgUp and PgDn, as today.
 
-Data: `agent_view.Row` (`packages/session_view/src/session_view/agent_view.gleam:65`)
+Data: `agent_view.Row` (`packages/session_view/src/session_view/agent_view.gleam:79`)
 has the task, activity, update, pending receipt, approvals, model, recent
 tools and decision preview. Elapsed time and context size are on
 `agent_roster.Line` (`agent_roster.gleam:84`, fields `elapsed_s` and
@@ -631,13 +631,13 @@ checked before the keys are fixed (open question 3).
 
 | Region | Source | In `session_view` today | New wire fields |
 |---|---|---|---|
-| Strand cards, status line, needs-input count | `agent_roster.Line` (`packages/session_view/src/session_view/agent_roster.gleam:84`), `strand_card.status_line` (`packages/session_view/src/session_view/strand_card.gleam:38`), `strand_card.needing` (69) | Yes | No |
+| Strand cards, status line, needs-input count | `agent_roster.Line` (`packages/session_view/src/session_view/agent_roster.gleam:84`), `strand_card.status_line` (`packages/session_view/src/session_view/strand_card.gleam:45`), `strand_card.needing` (69) | Yes | No |
 | Strand detail: model, context, running, recent tools | roster line, `strand_card.context_words` (83), `agent_view` | Yes | No |
 | Cache outlook | `cache_watch.outlook` (`packages/session_view/src/session_view/cache_watch.gleam:120`) | Yes | No |
-| Strand filter counts | counts over `agent_view.Status` (`packages/session_view/src/session_view/agent_view.gleam:38`) | Yes | No |
+| Strand filter counts | counts over `agent_view.Status` (`packages/session_view/src/session_view/agent_view.gleam:52`) | Yes | No |
 | Inline strand tree | the spawn, result and nudge rows the line builders emit (`transcript_lines`) | Rows yes; updating them in place needs a fold of the roster into the spawn row, which the web lane does | No |
-| Changes | `changes_view.fold` (`packages/session_view/src/session_view/changes_view.gleam:173`), `totals` (148), `label` (137); worktree observation (`worktree_view`) | Yes | No |
-| Trace | latest `code_mode` program, `transcript_lines.code_mode_program` (`packages/session_view/src/session_view/transcript_lines.gleam:2354`) | Program, state and result yes. The call list is not on the wire at all (`packages/tools/src/tools/codemode.gleam:1676`) | **Yes**: a call record, with timing in the same change (`protocol-change/NNN.md`) |
+| Changes | `changes_view.fold` (`packages/session_view/src/session_view/changes_view.gleam:210`), `totals` (148), `label` (137); worktree observation (`worktree_view`) | Yes | No |
+| Trace | latest `code_mode` program, `transcript_lines.code_mode_program` (`packages/session_view/src/session_view/transcript_lines.gleam:2380`) | Program, state and result yes. The call list is not on the wire at all (`packages/tools/src/tools/codemode.gleam:1676`) | **Yes**: a call record, with timing in the same change (`protocol-change/NNN.md`) |
 | Session tab: jobs, viewers | `session_summary.jobs` (`packages/session_view/src/session_view/session_summary.gleam:99`), `viewers` (122), `live_jobs.lines` (`packages/session_view/src/session_view/live_jobs.gleam:107`) | Yes | No |
 | Session tab: context, cost | `context_view.footer` (`packages/session_view/src/session_view/context_view.gleam:358`), `Shared.usage` through `transcript_lines.money` (3058) | Yes | No |
 | Session tab: goal, queue, schedules | `goal_view`, the cut's pending inputs, the schedule events | Yes | No |

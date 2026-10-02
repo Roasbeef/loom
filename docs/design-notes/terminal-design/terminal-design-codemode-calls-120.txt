@@ -13,15 +13,15 @@
  ◆ main                                                                                                                 
    I will check it with a small program.                                                                                
                                                                                                                         
- ✓ code_mode probe_calc.gleam · 4 calls · result {"ok": true} · Ctrl+g                                                  
+ ✓ code_mode · 4 calls · result {"ok": true} · Ctrl+g                                                                   
                                                                                                                         
-   ╭─ × code_mode · compile error · probe_range.gleam ─────────────────────────────────────────────────────────────────╮
+   ╭─ × code_mode · compile error ─────────────────────────────────────────────────────────────────────────────────────╮
    │ error: unknown module value list.rang · line 7                                                                    │
    │   7 │   list.rang(1, 10)                                                                                          │
    │     │        ^^^^^^^^^ did you mean list.range?                                                                   │
    ╰─ the program did not run · Ctrl+g shows all 12 lines ─────────────────────────────────────────────────────────────╯
                                                                                                                         
-   ╭─ ◐ running · check_subtract.gleam · call 7 · 1 failed ────────────────────────────────────────────────────────────╮
+   ╭─ ◐ code_mode · awaiting its result · call 7 · 1 failed ───────────────────────────────────────────────────────────╮
    │ PROGRAM · 24 lines, 4 shown                                                                                       │
    │   1 │ import cap/fs                                                                                               │
    │   2 │ import cap/proc                                                                                             │
