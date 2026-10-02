@@ -216,11 +216,9 @@ fn query_text(check: Check) -> String {
   verb <> " " <> check.symbol <> from
 }
 
-// One line per error, for an operator rather than a model: the tools'
-// rendering (`tools/lsp.render_error`) carries advice about which tool to
-// use next, which is the wrong reader here, and an ambiguous answer's
-// candidates go on the same line so the check's output stays one line
-// per check.
+// Operators need one line per check rather than model-facing capability
+// repair advice. Ambiguous candidates stay on that same line so the
+// standalone checker preserves its one-line result format.
 fn describe_error(error: QueryError) -> String {
   case error {
     query.NoServer(reason:) -> "no server: " <> reason

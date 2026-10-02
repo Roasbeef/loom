@@ -1549,7 +1549,7 @@ fn landing_statuses(details: JsonValue) -> List(#(String, String)) {
 
 // --- SQL over real bounded observations ------------------------------------
 
-/// Real Gleam collection followed by jailed typed SQLite joins and anti-joins.
+/// A saved Gleam program reaches real LSP collection and jailed typed SQL.
 pub fn lsp_sql_gleam_end_to_end_test_() -> EunitTest {
   Timeout(test_timeout_seconds / gleeunit_timeout_scale, fn() {
     let assert Ok(here) = simplifile.current_directory()
@@ -1668,11 +1668,11 @@ fn run_sql_gleam(helper: String, seed: String) -> Nil {
     rig.workspace <> "/app/src/app/util.gleam",
     "pub fn greet() -> String { \"hello\" }\n\npub fn lonely() -> String { \"unused\" }\n\npub fn twice() -> String { greet() <> greet() }\n",
   )
-  run_sql_program(
-    rig,
-    helper,
-    gleam_toml,
-    seed,
+  // The saved program exercises the production filesystem admission and
+  // source loader before the same compile, vet, jail, LSP and SQLite path.
+  let program_path = "observe.gleam"
+  write(
+    rig.workspace <> "/" <> program_path,
     sql_program(
       "gleam",
       "app",
@@ -1683,6 +1683,16 @@ fn run_sql_gleam(helper: String, seed: String) -> Nil {
       3,
       2,
     ),
+  )
+  run_sql_program(
+    rig,
+    helper,
+    gleam_toml,
+    seed,
+    json.Object([
+      #("program_path", json.String(program_path)),
+      #("within_ms", json.Int(120_000)),
+    ]),
     "sql-gleam",
   )
 }
@@ -1724,7 +1734,16 @@ env = [\"GOFLAGS\", \"GOTOOLCHAIN\"]
     helper,
     toml,
     seed,
-    sql_program("go", "gomod", "gomod/util/util.go", "Greet", "Lonely", 3, 5, 2),
+    program_args(sql_program(
+      "go",
+      "gomod",
+      "gomod/util/util.go",
+      "Greet",
+      "Lonely",
+      3,
+      5,
+      2,
+    )),
     "sql-gopls",
   )
 }
@@ -1734,17 +1753,14 @@ fn run_sql_program(
   helper: String,
   toml: String,
   seed: String,
-  program: String,
+  arguments: JsonValue,
   name: String,
 ) -> Nil {
   let turns = [
     script.ToolUseTurn(
       call_id: "sql-observation",
       tool: "code_mode",
-      arguments: json.Object([
-        #("program", json.String(program)),
-        #("within_ms", json.Int(120_000)),
-      ]),
+      arguments:,
       input_tokens: 100,
       output_tokens: 5,
     ),
