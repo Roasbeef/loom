@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -61,6 +62,63 @@ func TestProcessTrackerCaptureKeepsDescendantIdentity(t *testing.T) {
 	tracker.captureTable(nil)
 	if !reflect.DeepEqual(tracker.seen, want) {
 		t.Fatalf("empty snapshot discarded custody: %v", tracker.seen)
+	}
+}
+
+// TestProcessTrackerFreshEdges checks scratch reuse across reordered, empty,
+// shrinking and growing snapshots. Historical custody must survive, while
+// fresh unrelated processes must never inherit a stale parent link.
+func TestProcessTrackerFreshEdges(t *testing.T) {
+	tracker := &processTracker{root: 100, seen: make(map[int]uint64)}
+	tracker.captureTable([]unix.KinfoProc{
+		trackerProcess(101, 100, 101), trackerProcess(102, 101, 102),
+		trackerProcess(201, 200, 201),
+	})
+	tracker.captureTable([]unix.KinfoProc{
+		trackerProcess(301, 300, 301), trackerProcess(302, 301, 302),
+		trackerProcess(303, 300, 303),
+	})
+	tracker.captureTable(nil)
+	tracker.captureTable([]unix.KinfoProc{trackerProcess(401, 400, 401)})
+	tracker.captureTable([]unix.KinfoProc{
+		trackerProcess(501, 500, 501), trackerProcess(502, 501, 502),
+		trackerProcess(503, 500, 503), trackerProcess(105, 100, 105),
+	})
+	want := map[int]uint64{101: 101, 102: 102, 105: 105}
+	if !reflect.DeepEqual(tracker.seen, want) {
+		t.Fatalf("fresh edges changed custody: %v, want %v", tracker.seen, want)
+	}
+}
+
+func TestProcessTrackerSteadyCaptureAllocations(t *testing.T) {
+	table := make([]unix.KinfoProc, 1200)
+	for row := range table {
+		table[row] = trackerProcess(row+2, row/6+1, int64(row+1))
+	}
+	tracker := &processTracker{root: 1, seen: make(map[int]uint64)}
+	tracker.captureTable(table)
+	if allocations := testing.AllocsPerRun(100, func() {
+		tracker.captureTable(table)
+	}); allocations != 0 {
+		t.Fatalf("stable snapshot allocated %g times per capture", allocations)
+	}
+}
+
+func TestProcessTrackerConcurrentCaptures(t *testing.T) {
+	tracker := &processTracker{root: 100, seen: make(map[int]uint64)}
+	var workers sync.WaitGroup
+	for pid := 101; pid <= 102; pid++ {
+		workers.Go(func() {
+			table := []unix.KinfoProc{trackerProcess(pid, 100, int64(pid))}
+			for range 100 {
+				tracker.captureTable(table)
+			}
+		})
+	}
+	workers.Wait()
+	want := map[int]uint64{101: 101, 102: 102}
+	if !reflect.DeepEqual(tracker.seen, want) {
+		t.Fatalf("concurrent custody = %v, want %v", tracker.seen, want)
 	}
 }
 

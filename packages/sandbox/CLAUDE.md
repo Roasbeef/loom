@@ -175,9 +175,13 @@ only Go module.
   process-group signals for children that call `setsid(2)`. Each 20 ms sample
   reads a fresh kernel process table. A parent-head map and one-based sibling
   indices traverse that snapshot without copying process records or allocating
-  a child slice per host process. Reverse indexing preserves snapshot sibling
-  order; remembered identities remain roots after reparenting. Tests pin deep
-  traversal, reparenting and birth-checked delivery to a real sleeping process.
+  a child slice per host process. The ledger lock also owns reusable index and
+  frontier buffers; every capture clears the heads and overwrites active links
+  before traversal. Capacity follows the largest snapshot rather than being
+  allocated every tick. Reverse indexing preserves snapshot sibling order;
+  remembered identities remain in custody after reparenting. Tests pin fresh
+  edges after shrinking/reordered snapshots, allocation-free stable traversal,
+  concurrent captures and birth-checked delivery to a real sleeping process.
   macOS has no PID
   namespace, subreaper, or stable process handle, so a rapid daemonizing
   double-fork can be reparented between samples. Every Darwin execution reports
