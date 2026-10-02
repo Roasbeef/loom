@@ -1,5 +1,28 @@
 # Current handoff
 
+## Repeated default projection, October 2
+
+The live memory/CPU pass is recorded in
+[daemon-profile-2026-10-02](review/daemon-profile-2026-10-02.md). The installed
+`a3dc2535` daemon had about 493.5 MiB of VM allocation, mostly process heaps;
+targeted collection reclaimed about 54 MiB, while the large restart-owning
+supervisors stayed large. PR #721 is merged, but was not installed during this
+measurement, so its closure reductions remain a separate comparison.
+
+The runtime now keeps a pure default projection beside the leaf-keyed scan.
+An unchanged leaf had been rebuilt 15 times in one three-second live window.
+The isolated 1,200-message fixture removes millions of reductions per 500
+cache hits at a cost of about 66 KiB of extra shared term structure. Appends,
+forks and compaction still invalidate through the existing scan rules, and
+request-local transforms remain outside the cache. The reproducible optional
+work gate is `scripts/projection_cache_bench.escript ... --expect-cached`.
+
+A matched installed-daemon comparison is the next step after deployment.
+The remaining measured leads are jobs/advisor temporary allocation and
+repeated JSON decoding in the store. The forward orphan-result search usually
+stops on the adjacent result in this workload; no speculative global index
+was added. The bounded profiles and diagnostic module were removed.
+
 ## October 2 daemon memory pass
 
 `codex/memory-lsp-query-handle` reduces the seven direct LSP tools' measured

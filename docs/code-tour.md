@@ -329,7 +329,7 @@ handle behind a suspended poll, the pending payloads for every queued id
 state exists to go stale, which is why a pass after a restart runs the
 same code as a pass mid-run.
 
-`plan` (`runtime/strand_runtime.gleam:1093`) then calls the one frozen
+`plan` (`runtime/strand_runtime.gleam:1100`) then calls the one frozen
 entry point:
 
 ```gleam
