@@ -695,17 +695,17 @@ fn wait_slice(
 // Merges newly observed slice results into the settled map, accumulating
 // elapsed wait time for any handles that remain pending.
 //
-// The host's per-slice `waited_ms` is the primary measure, so a host
-// whose ceiling sits below `max_wait_slice_ms` is accounted honestly
-// rather than by the slice this module requested. `slice_ms` stands in
-// only when the host reports zero, which a real wait never does — a
-// zero report means the host measured nothing, and the requested slice
-// is the better estimate of what elapsed.
+// The host's per-slice `waited_ms` is the measure, taken as reported:
+// the agency computes it from its own clock as the time the wait loop
+// actually ran, so a host whose ceiling sits below the slice this
+// module requested is still accounted by what elapsed, never by the
+// request. Zero is reported honestly by a zero-window probe and taken
+// at face value — nothing was charged and nothing elapsed.
 fn update_settled(
   waited: List(Waited),
   settled: Dict(String, Waited),
   total_waited_ms: Int,
-  slice_ms: Int,
+  _slice_ms: Int,
 ) -> Dict(String, Waited) {
   list.fold(waited, settled, fn(acc, item) {
     case item {
@@ -715,14 +715,7 @@ fn update_settled(
         dict.insert(
           acc,
           handle_text(handle),
-          Pending(
-            handle:,
-            waited_ms: total_waited_ms
-              + case waited_ms > 0 {
-              True -> waited_ms
-              False -> slice_ms
-            },
-          ),
+          Pending(handle:, waited_ms: total_waited_ms + waited_ms),
         )
     }
   })
@@ -741,23 +734,18 @@ fn filter_pending(
   })
 }
 
-// How much wall time this slice consumed, from the host's own reports.
-// The largest pending `waited_ms` is the slice's true length — the host
-// measures it against the ceiling that actually fired, which may sit
-// below the slice this module requested — with the requested `slice_ms`
-// as the estimate only when every handle answered zero.
-fn slice_elapsed(waited: List(Waited), slice_ms: Int) -> Int {
-  let reported =
-    list.fold(waited, 0, fn(acc, item) {
-      case item {
-        Pending(waited_ms:, ..) -> int.max(acc, waited_ms)
-        Ready(..) -> acc
-      }
-    })
-  case reported > 0 {
-    True -> reported
-    False -> slice_ms
-  }
+// How much wall time this slice consumed, from the host's own reports:
+// the largest pending `waited_ms` is what the agency's clock measured
+// for this slice, whatever ceiling actually fired. Zero is a real
+// answer — a zero-window probe reports it — and `step_wait` treats a
+// zero-length slice as the join's end rather than looping on it.
+fn slice_elapsed(waited: List(Waited), _slice_ms: Int) -> Int {
+  list.fold(waited, 0, fn(acc, item) {
+    case item {
+      Pending(waited_ms:, ..) -> int.max(acc, waited_ms)
+      Ready(..) -> acc
+    }
+  })
 }
 
 // Reassembles the final waited list in the caller's original handle order.
