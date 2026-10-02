@@ -53,12 +53,16 @@
 //// The per-id timers are `Expire`, `SettleExpired`, `ReadyQuiet` and
 //// `ReadyExpired`; a caller request is `Ask`, `Sync`, `Settle` or `Ready`.
 ////
+//// <!-- transitions: client.Phase -->
+////
 //// | Phase | `Handshake` | Caller request | `Read` | `Stop` | `Abandoned` |
 //// |---|---|---|---|---|---|
 //// | `Initializing` | stays; sends `initialize` and arms the handshake timeout (a failed write goes to `Retiring`, Faulted) | postponed until the phase changes | postponed | `Retiring`, Forced | `Retiring`, Forced |
 //// | `Serving` | refused to the starter; stays | handled; stays (a failed write goes to `Retiring`, Faulted) | answered; stays | `ShuttingDown` (a failed write goes to `Retiring`, Forced) | `ShuttingDown` with `abandon_grace_ms` |
 //// | `ShuttingDown` | refused; stays | refused `Unavailable`; stays | refused; stays | stays; the caller joins the stoppers | ignored |
 //// | `Retiring` | refused; stays | refused `Unavailable`; stays | refused; stays | stays; the caller joins the stoppers | ignored |
+////
+//// <!-- transitions: client.Phase -->
 ////
 //// | Phase | Transport bytes | Transport closed | Per-id timers | Phase timers |
 //// |---|---|---|---|---|

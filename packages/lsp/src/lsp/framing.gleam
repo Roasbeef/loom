@@ -53,6 +53,8 @@
 ////
 //// The two `Buffer` states, and what one pushed chunk does to each:
 ////
+//// <!-- transitions: framing.Buffer -->
+////
 //// | State           | Chunk does not finish the part | Chunk finishes the part                                | Bad input                     |
 //// |-----------------|--------------------------------|--------------------------------------------------------|-------------------------------|
 //// | `ReadingHeader` | stays `ReadingHeader`          | becomes `ReadingBody`, then runs the chunk's remainder | `Error` with a `FramingFault` |
