@@ -13,10 +13,10 @@
 //// records the move off `gleam_mcp` in an addendum.
 ////
 //// The module follows the envelope codec Loom's own `packages/mcp` carried
-//// before the MCP client moved into `gleam_mcp` (commit `89247eb29`), cut
-//// down to what the LSP client uses: the encoders for a request,
-//// notification, success response and error response, and `decode` for one
-//// inbound message. It owns the envelope alone. LSP's methods live in
+//// before the MCP client moved into `gleam_mcp` (commit `89247eb29`): the
+//// request and notification encoders and `decode` for one inbound message
+//// are that codec's. The success and error response encoders did not exist
+//// there; they are taken from `gleam_mcp/jsonrpc`, where #514 had added them. It owns the envelope alone. LSP's methods live in
 //// `lsp/protocol`, the `Content-Length` framing in `lsp/framing`, and
 //// nothing here performs I/O.
 ////

@@ -485,8 +485,10 @@ depends on `gleam_mcp` for nothing.
 - `lsp/jsonrpc` is the JSON-RPC 2.0 envelope over `core/json`: `Id`,
   `RpcError`, `Inbound`, `MessageFault`, the four encoders (`request`,
   `notification`, `response`, `error_response`) and a total `decode`. It is
-  the codec `packages/mcp` carried before #669, cut down to what LSP uses,
-  and it keeps the same posture: strict envelope, tolerant content.
+  the codec `packages/mcp` carried before #669 for `decode`, `request` and
+  `notification`, with `response` and `error_response` taken from
+  `gleam_mcp/jsonrpc`, and it keeps the same posture: strict envelope,
+  tolerant content.
 - `lsp/transport` is `Connection`, `TransportEvent` and a `Transport` with
   one variant, `ChannelTransport`. It drops `PortTransport` and the Erlang
   FFI behind it. The invariant that `lsp/client.start` refused a port
