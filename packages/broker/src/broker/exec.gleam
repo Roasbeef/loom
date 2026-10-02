@@ -295,6 +295,38 @@ pub type ExecFailure {
   /// of reach, so nothing is known about the helper process behind it
   /// and no execution was dispatched.
   HelperUnresponsive
+
+  /// The execution may have started and its outcome is unknown: the
+  /// machinery that would have reported it was lost, so no exit status,
+  /// no output total and no enforcement report exist to settle with.
+  ///
+  /// This is the one failure that says "something may have run". It must
+  /// never be read as "nothing ran" and it must never be replayed
+  /// automatically, because a replay of an effect that did happen twice
+  /// is worse than an error the caller can see. `cause` names which piece
+  /// of machinery was lost, for the human reading the verdict.
+  ExecutionLost(cause: LossCause)
+}
+
+/// Which piece of machinery an `ExecutionLost` execution lost. The three
+/// are different facts about the world and a reader debugging a stuck
+/// session needs to tell them apart, although none of them changes what
+/// the caller may do next.
+pub type LossCause {
+  /// The helper's BEAM actor died while the execution was in flight. The
+  /// jail itself does not outlive it: the port closes with the dead owner,
+  /// the helper reads end of file, and it cancels and joins its jail. What
+  /// is lost is the report, not the cleanup.
+  HelperActorDown
+
+  /// The process that relayed the execution's events to the caller died
+  /// before it could report a terminal event, so the executor service
+  /// settled the caller on its behalf and cancelled the helper.
+  RelayDown
+
+  /// The executor service closed with the execution still live and settled
+  /// it rather than leave its caller waiting for ever.
+  ExecutorClosing
 }
 
 /// A helper's observable lifecycle position.
@@ -2397,6 +2429,35 @@ pub opaque type PoolMsg {
   HelperOwnerGone(pid: Pid, reason: process.ExitReason)
   PoolLinkedExit(pid: Pid)
   ForgetPool
+  QueryCensus(reply: Subject(PoolCensus))
+}
+
+/// A count of the pool's inventory by custody, taken at one instant by the
+/// pool actor itself. It is the pool's own answer rather than anything
+/// reconstructed from outside, so the six numbers always describe one
+/// consistent inventory.
+///
+/// `available + borrowed + draining + retiring + unconfirmed` is the
+/// number of entries the pool holds, and it is never more than `size`: an
+/// entry occupies its slot until it leaves the inventory, and only the
+/// proof of retirement removes it.
+pub type PoolCensus {
+  PoolCensus(
+    /// The pool's configured ceiling on entries.
+    size: Int,
+    /// Idle and lendable, subject to the readiness probe at checkout.
+    available: Int,
+    /// Lent to a borrower. A checkout reply lost to its borrower's deadline
+    /// still counts here, because custody never left the pool.
+    borrowed: Int,
+    /// Shutdown requested; native exit not yet reported.
+    draining: Int,
+    /// Native exit confirmed; the helper actor is still to exit normally.
+    retiring: Int,
+    /// Retirement could not be established, so the slot is held for the
+    /// life of the pool.
+    unconfirmed: Int,
+  )
 }
 
 /// Why a checkout was refused.
@@ -2594,6 +2655,33 @@ pub fn checkout(
   }
 }
 
+/// Counts the pool's inventory by custody, answered by the pool actor in
+/// whatever phase it is in: a closing or finished pool still has an
+/// inventory worth reporting, and an observer asking during shutdown is
+/// the observer most in need of one.
+///
+/// `waiting` is the caller's window in milliseconds. A pool that does not
+/// answer in it, or is not alive to be asked, is `PoolUnavailable` rather
+/// than a fault, for the reason `checkout` gives: the asker may be an actor
+/// whose death would lose a verdict it owes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(census) = exec.pool_census(pool, waiting: 1000)
+/// assert census.borrowed == 0
+/// ```
+///
+pub fn pool_census(
+  pool: Pool,
+  waiting timeout: Int,
+) -> Result(PoolCensus, CheckoutError) {
+  case call.try_call(pool.subject, waiting: timeout, sending: QueryCensus) {
+    Ok(census) -> Ok(census)
+    Error(call.NoReply) | Error(call.CalleeGone) -> Error(PoolUnavailable)
+  }
+}
+
 /// Returns a borrowed helper. Ready helpers become available; failed
 /// helpers retain capacity while their retirement is requested and observed.
 pub fn checkin(pool: Pool, helper: Helper) -> Nil {
@@ -2686,6 +2774,17 @@ fn handle_pool(
     PoolFinished(Error(_)), ForgetPool -> state_machine.keep(state)
     PoolLive, ForgetPool | PoolClosing, ForgetPool ->
       state_machine.keep(state) |> state_machine.postpone
+
+    // A census is a read of the inventory and changes nothing, so every
+    // phase answers it at once: it is never postponed behind a retirement
+    // the way `AwaitPoolRetirement` is.
+    PoolLive, QueryCensus(reply)
+    | PoolClosing, QueryCensus(reply)
+    | PoolFinished(..), QueryCensus(reply)
+    -> {
+      process.send(reply, census_of(state))
+      state_machine.keep(state)
+    }
     phase, HelperRetired(pid, outcome) ->
       pool_step(phase, record_retirement(state, pid, outcome))
     phase, HelperOwnerGone(pid, reason) ->
@@ -2696,6 +2795,28 @@ fn handle_pool(
         False -> pool_step(phase, state)
       }
   }
+}
+
+// Pure counting over the one canonical inventory. Each entry is in exactly
+// one availability, so the five counters partition the entries.
+fn census_of(state: PoolState) -> PoolCensus {
+  let entries = state.entries
+  let counted = fn(wanted: fn(Availability) -> Bool) {
+    list.count(entries, fn(entry) { wanted(entry.availability) })
+  }
+  PoolCensus(
+    size: state.size,
+    available: counted(fn(availability) { availability == Available }),
+    borrowed: counted(fn(availability) { availability == Borrowed }),
+    draining: counted(fn(availability) { availability == Draining }),
+    retiring: counted(fn(availability) { availability == RetiringActor }),
+    unconfirmed: counted(fn(availability) {
+      case availability {
+        Unconfirmed(_) -> True
+        Available | Borrowed | Draining | RetiringActor -> False
+      }
+    }),
+  )
 }
 
 fn pool_selector(state: PoolState) -> process.Selector(PoolMsg) {

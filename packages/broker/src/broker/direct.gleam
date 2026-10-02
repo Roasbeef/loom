@@ -59,10 +59,6 @@ import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/result
 
-// How long after the wall deadline (plus the helper's cancel ladder) a
-// relay waits before declaring the execution unkillable.
-const relay_grace_ms = 5000
-
 // How long `start` waits for the relay to hand back its event subject.
 const relay_ready_ms = 1000
 
@@ -274,7 +270,7 @@ fn relay(link: Relay) -> Nil {
               ..link,
               clock: relay_clock,
               caller_watch: None,
-              deadline_ms: cancelled_at + relay_grace_ms,
+              deadline_ms: cancelled_at + dispatch.relay_grace_ms,
               mode: Draining,
             ),
           )
@@ -297,7 +293,7 @@ fn relay(link: Relay) -> Nil {
             Relay(
               ..link,
               clock: relay_clock,
-              deadline_ms: cancelled_at + relay_grace_ms,
+              deadline_ms: cancelled_at + dispatch.relay_grace_ms,
               mode: Draining,
             ),
           )

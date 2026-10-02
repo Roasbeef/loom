@@ -1042,6 +1042,7 @@ pub fn every_exec_failure_has_a_pinned_denial_verdict_test() {
     exec.HeartbeatMissed,
     exec.HelperUnresponsive,
     exec.ProtocolVersionMismatch(helper: 1, broker: 3),
+    exec.ExecutionLost(cause: exec.RelayDown),
   ]
 
   // The two enforcement shortfalls escalate, and each carries the
@@ -1067,17 +1068,17 @@ pub fn every_exec_failure_has_a_pinned_denial_verdict_test() {
       ),
     ]
 
-  // The other twelve are availability, a helper refusal, a dead
+  // The other thirteen are availability, a helper refusal, a dead
   // channel, or a version disagreement that closed the channel before
   // anything ran: nothing was weakened, so there is nothing to put to
   // a human.
   assert list.map(settled, broker.denial_for_failure)
     == list.map(settled, fn(_failure) { None })
 
-  // The table is the whole type, not a sample of it. Fourteen today;
+  // The table is the whole type, not a sample of it. Fifteen today;
   // the `case` in `denial_for_failure` breaks the build on a
-  // fifteenth, and this count says the test must be extended too.
-  assert list.length(escalated) + list.length(settled) == 14
+  // sixteenth, and this count says the test must be extended too.
+  assert list.length(escalated) + list.length(settled) == 15
 }
 
 // A quiet wait spans a minute in logical time while taking only 120 ms of

@@ -49,6 +49,48 @@ protocol (spec Part 1.4). WP-G.
   back through `release` (`checkin`), which the broker calls while handling
   `Settle`, exactly where it used to check in. `abandon` is `exec.cancel`
   then `checkin`.
+- `broker/execution.{Core, step, Event, Effect, Mode, Output, Truncation}` —
+  the pure core of one execution's relay, and the only place its decisions
+  live. `step(core, event) -> #(core, effects)` takes one of eight events
+  (`ExecOutput`, `ExecExited`, `ExecFailed`, `CancelRequested`, `CallerDown`,
+  `HelperDown`, `DeadlineReached`, `GraceExpired`) and answers effects
+  (`Deliver`, `SendCancel`, `EnterDraining`, `Settle`). It imports no
+  process library, so `execution_test` runs 600 seeded random sequences
+  against it. `Core.settled` is absorbing: after `Settle` every event
+  answers `[]`, which is what makes at-most-one settlement a property of
+  the function. `CancelRequested` is the broker's cancel, which the service
+  has already forwarded to the helper, so the core records it, sends
+  nothing and does not enter `Draining`. `HelperDown` settles
+  `Failed(ExecutionLost(HelperActorDown))` in either mode. The module doc
+  carries the checked `Mode` transition table.
+- `broker/relay.{start, Config, Link, Permission, Relay}` — the per-execution
+  `weft/state_machine` shell around `execution.step`. State is
+  `execution.Mode` and carries nothing (rule 1 of `docs/weft.md`);
+  `Streaming`'s state timeout is the wall deadline that remains when the
+  relay starts (none for `deadline_ms: 0`) and `Draining`'s is
+  `dispatch.relay_grace_ms`. Its message type is `execution.Event`: the
+  `exec_events` subject (owned by the relay, created in its initialiser, so
+  `start` returns the subject only once the relay listens), the caller's
+  monitor, the helper actor's monitor and the service's control subject all
+  select into it. Effects: `Deliver` calls the dispatch's closure,
+  `SendCancel` calls `Link.cancel`, `EnterDraining` transitions, and
+  `Settle` asks `Link.may_settle` first. The relay never imports the service
+  and never casts to a helper: both ways back are closures the service builds.
+  Unlinked from its starter.
+- `broker/executor.{start, dispatcher, pid, inventory, close, ExecutorConfig,
+  Inventory}` — the service lane's one process per session, a
+  `weft/state_machine` with phases `Serving | Closing(closer) |
+  Closed(outcome)` (the pool's shape, with a state timeout in `Closing` for
+  the half-budget drain). `ExecutorConfig` is closures over the pool
+  (`checkout`, `checkin`, `census`, `close_helpers`) plus an `incarnation`.
+  `dispatcher(service)` is the `Dispatcher` `broker.start_dispatching`
+  takes. State is a `Dict(seq, Row)` with a row only while the service holds
+  a helper for it, so it is bounded by the pool. A `Row` is `Live` or
+  `Granted` and keeps the helper, the relay (pid, events, control subject),
+  the service's monitor on the relay, and the broker's `settle` closure.
+  `inventory` answers the rows and the pool census from one instant.
+- `broker/dispatch.relay_grace_ms` — the drain grace both dispatchers use,
+  moved here from `direct` so the lanes cannot disagree on it.
 - `broker/policy.SandboxPolicy` — `SandboxPolicyV1` as a typed value:
   writable/readable/protected roots, `NetworkPolicy`, `Limits`,
   `env_allow`, `Scratch`, and `mounts`. `compose` implements session base ⊕
@@ -95,6 +137,17 @@ protocol (spec Part 1.4). WP-G.
   `ExecResult.cancelled` says the helper truncated the run;
   `ExecResult.enforcement` is the ground truth `required_layers` and
   `unapplied_layers` check the policy's demands against.
+- `broker/exec.ExecFailure.ExecutionLost(cause: LossCause)` with
+  `LossCause = HelperActorDown | RelayDown | ExecutorClosing` — the one
+  failure that says the execution **may have started** and its outcome is
+  unknown. It must never be read as "nothing ran" and must never be
+  replayed automatically; `broker.denial_for_failure` answers `None` for it
+  (an approval would invite the replay) and `tools/tool.exec_failure_text`
+  says plainly that the command may have run.
+- `broker/exec.{pool_census, PoolCensus}` — the pool actor's own count of
+  its inventory by custody (`available`, `borrowed`, `draining`, `retiring`,
+  `unconfirmed`, beside the configured `size`), answered in every
+  `PoolPhase` and never postponed. A gone pool is `PoolUnavailable`.
 - `broker/exec.{close, close_pool, RetirementFailure}` separates shutdown
   requests from retirement proof. `Ok(Nil)` requires selected native exit
   status 0 followed by the original normal BEAM monitor event. A timeout,
@@ -175,6 +228,19 @@ protocol (spec Part 1.4). WP-G.
     `Settle` is sent by a call's `settle` closure, from the dispatcher's
     settling process, immediately before the caller's `CallSettled`; the
     broker handles it by calling the execution's `release`.
+  - `executor.Msg` — `Start(request, reply)` (a synchronous call from the
+    dispatcher's `start`, budget 20 000 ms = checkout's 15 000 plus run's
+    5 000), `Cancel(id)`, `Stdin(id, data, eof)`, `MaySettle(id, reply)`,
+    `Release(id)`, `Abandon(id)`, `RelayDown(down)`, `Report(reply)`,
+    `Close(waiting, reply)`, `DrainDeadline`. The `Execution` closures the
+    broker holds are casts of `Cancel`, `Stdin`, `Release` and `Abandon`
+    naming the execution by `ExecutionId`. `MaySettle` is the relay's
+    bounded call (`relay.settle_wait_ms`). Every phase and message pair is
+    written; the messages that mean the same in every phase bind the phase
+    to a name, so a new message is still a compile error.
+  - `relay` messages are `execution.Event`: the helper's `exec.ExecEvent`
+    mapped by `from_exec`, `CallerDown`, `HelperDown`, `CancelRequested`
+    (from the service) and the two state timeouts.
   - `exec.Msg` (per helper) — `AwaitReady(reply)`, `QueryStatus(reply)`,
     `Run(request, events, reply)`, `Stdin(data, eof)`, `CancelExec`,
     `CancelDeadline`, `HandshakeDeadline`, `HeartbeatTick`,
@@ -354,6 +420,64 @@ protocol (spec Part 1.4). WP-G.
   can still return to lending, so zero means a pool that lends nothing or
   one whose every slot is held by an unconfirmed retirement, and neither
   has anything to check back in.
+- **Service lane: the service is the helper's only sender.** Every `Run`,
+  `Stdin` and `CancelExec` an execution causes is sent by `broker/executor`.
+  The relay asks for a cancel (`Link.cancel` is a cast of `Cancel(id)`); it
+  never casts to the helper. Erlang orders one sender's messages to one
+  receiver, so a cancel sent for an execution reaches the helper before any
+  `Run` the service sends for the next execution on it, and `exec.run` is
+  sent before `start` replies so stdin (sent after the reply) follows its
+  `Run`. The other half of the fence is the row: a message for an execution
+  whose row is gone or `Granted` is dropped. There is no generation counter
+  and none is needed while those two hold. Honest limit: no test fails if
+  the relay casts to the helper directly, because the absorbing core never
+  cancels after settling, so the ordering argument is defence in depth that
+  is argued, not independently exercised.
+- **Service lane: settled exactly once through `MaySettle`.** The relay may
+  report only after the service answers `Granted`, which it does once, for a
+  `Live` row, and which turns the row `Granted`; any other ask is
+  `AlreadySettled` and the relay stays silent. The service settles a row
+  itself when it is `Live` and the relay died (its own monitor) or the
+  service is closing (`ExecutorClosing`), and on the broker's `Abandon`
+  whatever the row's status (`RelayDown`; whichever of monitor and
+  `Abandon` arrives first wins, the other finds no row). The status does
+  not decide the `Abandon` case because of send order: `broker.settle_to`
+  sends the broker `Settle` before anything else and a process's messages
+  reach the broker before its own death notice, so a relay that ran
+  `settle` at all is seen as settled and never abandoned; `Abandon` proves
+  the relay sent nothing and the caller has heard nothing. The service's own
+  monitor firing on a `Granted` row has no such proof (the relay may have
+  reported), so it neither settles nor cancels and waits for the broker's
+  `Release` (it saw the settlement) or `Abandon` (it did not).
+  A service that is gone or silent cannot forbid a report, so the relay
+  reports anyway (`ServiceSilent`); a dead service settles nothing, and a
+  live one answers late into a row it has by then either granted or
+  removed. The caller therefore always hears a settlement in this lane,
+  including when the relay dies, which the direct lane never delivered.
+  The helper is checked in exactly where the direct lane checked it in: by
+  `Release`, which the broker casts while processing the relay's `Settle`.
+- **Service lane: closing is a transition.** `executor.close(waiting)`
+  refuses new starts with `NoHelper(PoolUnavailable)` (deliberately not
+  `AllBusy`, so callers stop polling), cancels every live row, waits half
+  the budget for live rows to be granted, settles the rest
+  `ExecutionLost(ExecutorClosing)` (relay killed, helper checked in busy so
+  the pool retires it), then returns `close_helpers(remaining)`. `Ok` ends
+  the service; an `Error` keeps it alive in `Closed(outcome)` answering the
+  same verdict, because custody that could not be shown retired is not
+  dropped by exiting. A helper's `Release` never comes once the broker has
+  stopped, which custody does first, so `Granted` rows do not delay a close.
+- **Service lane: an orphaned `start` costs a slot and cannot wedge.** The
+  broker spends a call id on every start attempt, answered `Ok` or refused
+  (`Dispatch.seq` promises a number is never offered twice), so a service
+  that overruns its start budget (`checkout 15 s + relay init 1 s + run 5 s
+  + 1 s slack`, summed from named constants in `start_budget_ms`) and
+  goes on to hold a row the broker never received leaves one orphan and
+  nothing else: the next call has a new number, the orphan's late
+  settlement names a call the broker no longer has and is ignored, and its
+  helper stays held until the service closes or S2's late-`Run` fence stops
+  such a run being dispatched. The service still refuses a `start` whose
+  sequence number is in its table. Through the broker that is unreachable;
+  it guards other callers of the dispatcher against overwriting a live row.
 - **Every waiter leaves within its own budget *and with a verdict*.**
   The second half is not free. The loop reserves `min_retry_window_ms`
   of the caller's budget for its last attempt rather than issuing

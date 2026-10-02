@@ -25,6 +25,10 @@ pub type Script {
   /// Runs forever; a cancel settles it with signal 15.
   SleepUntilCancel
 
+  /// Answers exec_start with `count` stdout chunks, "0", "1", ..., each
+  /// its own frame, then a clean exit. Lets a test see output order.
+  ManyChunks(count: Int)
+
   /// Reports cancellation after a controlled delay, exercising relay drain grace.
   SlowCancel(delay_ms: Int)
   /// Runs forever and ignores cancel — forcing the broker-side
@@ -360,6 +364,21 @@ fn exec_start(
         }
         SleepUntilCancel | SlowCancel(..) | IgnoreCancel | StdinEcho ->
           FakeState(..state, running: Some(#(id, <<>>)))
+        ManyChunks(count:) -> {
+          let state = emit_chunks(state, id, from: 0, to: count)
+          reply(
+            state,
+            framing.Frame(
+              id:,
+              body: exit_body(
+                state.script,
+                stdout_bytes: count,
+                stdout_truncated: False,
+                signal: 0,
+              ),
+            ),
+          )
+        }
         Truncating -> {
           let state =
             reply(
@@ -466,6 +485,35 @@ fn exec_start(
           )
         }
       }
+  }
+}
+
+// One single-byte stdout frame per index in `from` up to but excluding `to`,
+// each carrying its index as the byte, so a reordering shows in the data.
+fn emit_chunks(
+  state: FakeState,
+  id: Int,
+  from from: Int,
+  to to: Int,
+) -> FakeState {
+  case from >= to {
+    True -> state
+    False -> {
+      let state =
+        reply(
+          state,
+          framing.Frame(
+            id:,
+            body: framing.ExecOut(
+              stream: framing.Stdout,
+              data: <<from>>,
+              bytes: from + 1,
+              truncated: False,
+            ),
+          ),
+        )
+      emit_chunks(state, id, from: from + 1, to:)
+    }
   }
 }
 

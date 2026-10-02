@@ -451,6 +451,49 @@ pub fn pool_checkout_checkin_cycle_test() {
   exec.stop_pool(pool)
 }
 
+/// The census is the pool's own count of its inventory by custody. A
+/// borrowed helper is `borrowed`, a returned idle one is `available`, and
+/// the five counters partition the entries.
+pub fn pool_census_counts_the_inventory_by_custody_test() {
+  let assert Ok(pool) =
+    exec.start_pool(size: 3, spawn: fn() {
+      Ok(fake_helper.start_helper(fake_helper.EchoArgv))
+    })
+  let empty =
+    exec.PoolCensus(
+      size: 3,
+      available: 0,
+      borrowed: 0,
+      draining: 0,
+      retiring: 0,
+      unconfirmed: 0,
+    )
+  assert exec.pool_census(pool, waiting: 1000) == Ok(empty)
+
+  let assert Ok(first) = exec.checkout(pool, waiting: 2000)
+  let assert Ok(second) = exec.checkout(pool, waiting: 2000)
+  assert exec.pool_census(pool, waiting: 1000)
+    == Ok(exec.PoolCensus(..empty, borrowed: 2))
+
+  exec.checkin(pool, first)
+  assert exec.pool_census(pool, waiting: 1000)
+    == Ok(exec.PoolCensus(..empty, available: 1, borrowed: 1))
+  exec.checkin(pool, second)
+  exec.stop_pool(pool)
+}
+
+/// A pool that has gone answers the census as it answers a checkout, with
+/// `PoolUnavailable`, never a fault in the asker.
+pub fn pool_census_of_a_stopped_pool_is_unavailable_test() {
+  let assert Ok(pool) =
+    exec.start_pool(size: 1, spawn: fn() {
+      Ok(fake_helper.start_helper(fake_helper.EchoArgv))
+    })
+  exec.stop_pool(pool)
+  process.sleep(100)
+  assert exec.pool_census(pool, waiting: 1000) == Error(exec.PoolUnavailable)
+}
+
 /// A relay that crashes mid-run checks its helper in while the execution
 /// is still in flight. The pool must not lend that helper to the next
 /// borrower, whose `run` would fail with `HelperBusy` for a call it never

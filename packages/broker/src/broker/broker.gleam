@@ -794,6 +794,13 @@ pub fn denial_for_failure(failure: ExecFailure) -> Option(Denial) {
     // question to a human that no execution ever asked.
     exec.HelperUnresponsive -> None
 
+    // The execution may have run and its outcome is unknown, because the
+    // machinery that would have reported it was lost. That is the
+    // opposite of a weakened enforcement: nothing here says the jail was
+    // thinner than demanded, and an approval would invite a retry of work
+    // that may already have happened, which the failure forbids.
+    exec.ExecutionLost(..) -> None
+
     // The two ends of the exec wire disagree on what they speak, so the
     // channel was closed before any execution and nothing was weakened.
     // The remedy is a rebuild on one side, which the rendered failure
@@ -1107,7 +1114,13 @@ fn start_execution(
   minted: token.Token,
   generation: Int,
 ) -> #(State, Result(CallHandle, Refusal)) {
+  // The identity is spent by the attempt, not by its success. A dispatcher
+  // that gave up on (or was refused) a start may still go on to hold state
+  // under this number, so reusing it for the next call would let that
+  // leftover be mistaken for the new execution. `Dispatch.seq` promises
+  // dispatchers that a number is never offered twice.
   let call_id = state.next_call
+  let state = State(..state, next_call: call_id + 1)
   let request =
     exec.ExecRequest(
       argv: spec.argv,
@@ -1147,11 +1160,7 @@ fn start_execution(
           ledger_generation: generation,
         )
       let state =
-        State(
-          ..state,
-          next_call: call_id + 1,
-          active: dict.insert(state.active, call_id, active),
-        )
+        State(..state, active: dict.insert(state.active, call_id, active))
       #(state, Ok(CallHandle(id: call_id)))
     }
   }
@@ -1189,6 +1198,12 @@ fn deliver_to(events: Subject(CallEvent)) -> fn(dispatch.Chunk) -> Nil {
 // leave from the process the dispatcher settles in, so a caller that reacts
 // to `CallSettled` by clearing another call finds the slot already queued
 // for release ahead of its own clearance.
+//
+// The order is also a proof the service lane relies on. A process's
+// messages reach the broker before its own death notice, so a guarantor
+// that ran this closure at all is seen as settled and never abandoned;
+// `Abandon` therefore means no settlement send happened, and the service
+// may settle the caller itself without a second settlement.
 fn settle_to(
   broker_subject: Subject(Msg),
   events: Subject(CallEvent),

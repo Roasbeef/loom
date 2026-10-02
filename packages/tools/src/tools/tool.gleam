@@ -1347,7 +1347,21 @@ pub fn exec_failure_text(failure_value: exec.ExecFailure) -> String {
       "the execution did not stop on cancel and was killed"
     exec.HeartbeatMissed -> "the sandbox helper stopped responding"
     exec.HelperUnresponsive -> "the sandbox helper did not answer"
+    exec.ExecutionLost(cause:) -> execution_lost_text(cause)
   }
+}
+
+// The text a model reads when an execution was lost. It says plainly that
+// the command may have run, because the model's next move depends on it: a
+// retry of a command that already ran is its decision to make with that
+// fact in hand, never something this layer does for it.
+fn execution_lost_text(cause: exec.LossCause) -> String {
+  let reason = case cause {
+    exec.HelperActorDown -> "the sandbox helper process manager died"
+    exec.RelayDown -> "the output relay for the execution died"
+    exec.ExecutorClosing -> "the session's executor was closing"
+  }
+  "the execution may have run, and its outcome is unknown: " <> reason
 }
 
 // Which side of a protocol-version disagreement is behind, and what to

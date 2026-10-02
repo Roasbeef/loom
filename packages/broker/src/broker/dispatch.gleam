@@ -58,6 +58,14 @@ import core/clock.{type Clock}
 import gleam/erlang/process.{type Pid}
 import gleam/option.{type Option}
 
+/// How long a relay waits, after it has asked the helper to stop, for the
+/// helper's terminal event before it declares the execution unkillable and
+/// settles `CancelEscalated`. It is the seam's constant, shared by both
+/// dispatchers, so the two lanes cannot disagree on how long a cancel may
+/// take: the helper's own ladder is TERM, then KILL two seconds later, and
+/// its machine escalates three seconds after that, which this exceeds.
+pub const relay_grace_ms = 5000
+
 /// Whether a stdin chunk is the last one. The seam's own two-variant type
 /// so that a call site reads `EndOfInput` rather than `True`.
 pub type Eof {
@@ -163,7 +171,10 @@ pub type Dispatch {
     request: exec.ExecRequest,
     /// The identity's position within the dispatcher's incarnation. The
     /// broker supplies it from its own call counter so that an execution's
-    /// identity matches the call id the broker already uses.
+    /// identity matches the call id the broker already uses. The counter
+    /// advances on every attempt, whether `start` answered `Ok` or a
+    /// refusal, so a number is never offered twice within a broker's life
+    /// and a dispatcher may rely on that.
     seq: Int,
     /// The aggregate wall deadline in the clock's milliseconds, or `0` for
     /// none. A dispatcher cancels the execution when it passes.
