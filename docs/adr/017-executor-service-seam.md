@@ -191,3 +191,40 @@ shows that sixteen helpers per session across the session slots is unaffordable
 and idle retirement cannot close the gap. The price is wrong if the round-trip
 probe moves by more than noise. Each fails visibly, as a failing test or a
 number, and none is a change to the mechanism of the other three decisions.
+
+## Addendum — what S1 built differs from the sketch in three places (issue #696)
+
+The four decisions stand. Building the service lane moved three details of the
+sketch above, and each was moved by a defect the sketch would have had.
+
+**The broker returns the helper; the dispatcher only says how.** The sketch had
+the service check a helper in when it granted a settlement. A first draft of the
+seam did the same thing in the direct lane, checking in from the relay just
+before it reported, and that opened a window in which a relay killed between the
+two would make the broker's fail-closed `abandon` cancel a helper already lent to
+another call. So `dispatch.Execution` carries a `release` closure that the broker
+calls while it processes the execution's `Settle`, after demonitoring the
+guarantor. `release` and `abandon` are therefore exclusive by the broker's own
+mailbox, and the ordering is the one the broker had before the seam existed.
+
+**The relay is the guarantor in both lanes.** The sketch made the service the
+process whose death means no settlement. But a service death is the session's
+death (it is a fatal child), while a relay death is the case worth handling.
+With the relay as guarantor the broker abandons a dead relay's call exactly as
+it always did, and the service, which also monitors its relays, settles a live
+row's caller as `ExecutionLost(RelayDown)` on whichever of the broker's
+`Abandon` or its own monitor arrives first. Review showed that an `Abandon` also
+proves a granted relay made no settlement send, since the relay's `Settle` to the
+broker would have preceded its death notice. So that case settles the caller too,
+and the service lane always gives the caller a settlement.
+
+**The service is a `weft/state_machine`, not an actor, and keeps no ring.** Its
+`Serving`, `Closing` and `Closed` phases need the half-budget drain as a state
+timeout, and `docs/weft.md` refuses a hand-rolled timer for that. The diagnostic
+ring the sketch placed here belongs to the operational surface (S3) and is not
+built in S1. No helper generation was minted either. The fence it would have
+provided comes from the service being the only process that sends a helper
+`Run`, `Stdin` or `CancelExec`, together with the row that drops anything
+addressed to a granted or finished execution. `docs/architecture/executor.md`
+carries the argument and its one honest limit: no test fails if the relay is
+made to cancel the helper directly.

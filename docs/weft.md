@@ -59,7 +59,12 @@ reasons, and name the primitive in the commit:
   bookkeeping is data, the timer is a state timeout that dies with its
   state, and a message the current state cannot handle is `postpone`d and
   replayed on the next transition. In-tree: `broker/exec` (the helper
-  lifecycle), `codemode/launch` (the node-report holder), `provider/gateway`
+  lifecycle), `broker/relay` (one execution's shell around the pure
+  `broker/execution` core, whose `Streaming` and `Draining` state timeouts
+  are the wall deadline and the cancel grace), `broker/executor` (the
+  per-session service: `Serving | Closing | Closed`, the drain budget a
+  state timeout), `codemode/launch` (the node-report holder),
+  `provider/gateway`
   (the request guard), `client/provider_relay` (the relay guard), and
   `codemode/satellite`'s `Host`, the persistent extension satellite —
   `Idle | Answering(id) | Destroyed(reason)`, where the open invocation's

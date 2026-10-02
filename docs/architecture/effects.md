@@ -144,15 +144,17 @@ margin covers, a broker slower than the caller's whole budget or one
 stopped underneath a waiting caller, come back as `BrokerUnavailable`
 instead of crashing the strand.
 
-**The executor service is the planned owner of the pool, the relay and the
-settlement that follows them.** Today those three live in `broker/exec`,
-`broker/broker` and `client/serve`, and no single object represents an
-execution. [The executor service](executor.md) describes what the tree holds
-now, the execution-level seam that will replace the broker's checkout, relay
-and checkin (decided in [ADR-017](../adr/017-executor-service-seam.md)), the
-state model, and the phases that bring it in behind an opt-in switch. The pool
-semantics on this page stay as written: custody, retirement evidence and the
-caller-side wait are inherited by the service and not redefined.
+**The executor service now exists behind an opt-in switch.** The broker hands
+each cleared call to a `Dispatcher` (`broker/dispatch`), and two
+implementations stand behind that seam. The direct lane, `broker/direct`, is
+the default and is the relay described below. The service lane,
+`broker/executor`, adds one service per session that owns a row for each
+running execution and starts a relay beneath it; `LOOM_EXECUTOR_LANE=service`
+selects it when a session opens. [The executor service](executor.md) describes
+both lanes, the state model, and the phases that remain (decided in
+[ADR-017](../adr/017-executor-service-seam.md)). The pool semantics on this
+page stay as written: custody, retirement evidence and the caller-side wait are
+inherited by the service and not redefined.
 
 ### Relay, settlement, and abort
 
