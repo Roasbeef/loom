@@ -9,6 +9,7 @@ import core/msgpack
 import gleam/erlang/process
 import gleam/int
 import gleam/list
+import gleam/string
 
 fn assignments(count: Int) -> List(strand.Assignment) {
   list.index_map(list.repeat(Nil, count), fn(_, i) {
@@ -167,20 +168,115 @@ pub fn a_later_spawn_failure_does_not_discard_previously_admitted_children_test(
   assert events(log, 3) == ["spawn:0", "spawn:1", "wait:1"]
 }
 
+// The two join failure kinds surface different variants, so each kind is
+// pinned to its own: a broken channel is an unavailable plane, and a
+// mismatched answer is a malformed result — the same distinction
+// `step_wait` enforces for a direct `wait`.
 pub fn failed_or_malformed_joins_preserve_all_handles_test() {
-  list.each(["error", "mismatch"], fn(kind) {
-    let log = process.new_subject()
-    install(log, "none", kind)
-    let assert Ok([
-      strand.JoinFailed(a, _),
-      strand.JoinFailed(b, _),
-      strand.NotStarted(_),
-    ]) = strand.map(assignments(3), max_concurrency: 2, within_ms: 10)
-      as "join failures retain handles and stop further admission"
-    assert a == handle("0")
-    assert b == handle("1")
-    assert events(log, 3) == ["spawn:0", "spawn:1", "wait:2"]
-  })
+  list.each(
+    [
+      #("error", fn(error) {
+        case error {
+          strand.StrandUnavailable(_) -> True
+          _ -> False
+        }
+      }),
+      #("mismatch", fn(error) {
+        case error {
+          strand.StrandResultMalformed(reason) ->
+            string.contains(reason, "mismatched handles")
+          _ -> False
+        }
+      }),
+    ],
+    fn(entry) {
+      let kind = entry.0
+      let pins_variant = entry.1
+      let log = process.new_subject()
+      install(log, "none", kind)
+      let assert Ok([
+        strand.JoinFailed(a, first_error),
+        strand.JoinFailed(b, second_error),
+        strand.NotStarted(_),
+      ]) = strand.map(assignments(3), max_concurrency: 2, within_ms: 10)
+        as "join failures retain handles and stop further admission"
+      assert pins_variant(first_error)
+      assert pins_variant(second_error)
+      assert a == handle("0")
+      assert b == handle("1")
+      assert events(log, 3) == ["spawn:0", "spawn:1", "wait:2"]
+    },
+  )
+}
+
+pub fn map_slices_long_join_windows_until_settled_test() {
+  let log = process.new_subject()
+  let call_count = process.new_subject()
+
+  dispatch.install(
+    channel.Channel(call: fn(cap, args, _) {
+      case cap {
+        "strand.spawn" -> {
+          let assert Ok(name) = wire.string_field(args, "purpose")
+            as "spawn has a purpose"
+          process.send(log, "spawn:" <> name)
+          Ok(handle_value(name))
+        }
+
+        "strand.wait" -> {
+          let assert Ok(handles) = wire.array_field(args, "handles")
+            as "join has handles"
+          process.send(log, "wait:" <> int.to_string(list.length(handles)))
+
+          case process.receive(call_count, 0) {
+            Error(Nil) -> {
+              process.send(call_count, "called")
+              Ok(
+                report.object([
+                  #(
+                    "waited",
+                    report.list(
+                      list.map(handles, fn(value) {
+                        let assert msgpack.MapValue(fields) = value
+                          as "handle is an object"
+                        msgpack.MapValue(
+                          list.append(fields, [
+                            #(
+                              msgpack.StringValue("kind"),
+                              report.string("pending"),
+                            ),
+                            #(
+                              msgpack.StringValue("waited_ms"),
+                              report.int(30_000),
+                            ),
+                          ]),
+                        )
+                      }),
+                    ),
+                  ),
+                ]),
+              )
+            }
+
+            Ok(_) -> {
+              Ok(
+                report.object([
+                  #("waited", report.list(list.map(handles, ready))),
+                ]),
+              )
+            }
+          }
+        }
+
+        _ -> panic as "map only spawns and joins"
+      }
+    }),
+  )
+
+  let assert Ok([strand.Joined(strand.Ready(handle: actual, ..))]) =
+    strand.map(assignments(1), max_concurrency: 1, within_ms: 60_000)
+  assert actual == handle("0")
+  assert events(log, 3) == ["spawn:0", "wait:1", "wait:1"]
 }
 
 pub fn invalid_map_options_and_empty_work_do_not_call_the_host_test() {
