@@ -38,6 +38,10 @@ pub type Speaker {
   /// the way `SummarizedReasoning` draws its label.
   SummarizedAdvice
 
+  /// The heading of a compact group of tool calls: how many calls it holds,
+  /// how many failed, and the key that expands them.
+  ToolGroup
+
   ToolCall
   ToolResult
   ToolDetail

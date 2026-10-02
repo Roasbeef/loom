@@ -86,8 +86,8 @@ import session_view/text_hygiene
 import session_view/transcript_line.{
   type Line, type Speaker, Assistant, Failure, Line, PeerMessage, Reasoning,
   ReasoningDigest, SentMessage, Spacer, StrandMessage, SummarizedAdvice,
-  SummarizedReasoning, System, ToolCall, ToolDetail, ToolFailure, ToolPatch,
-  ToolResult, User,
+  SummarizedReasoning, System, ToolCall, ToolDetail, ToolFailure, ToolGroup,
+  ToolPatch, ToolResult, User,
 }
 import session_view/transcript_lines
 import session_view/worktree_view
@@ -853,6 +853,7 @@ pub fn render_line(line: Line, width: Int, strand: String) -> List(span.Line) {
     // Every other body is laid out against the full pane and has never been
     // measured, so it is wrapped on the way out.
     System
+    | ToolGroup
     | ReasoningDigest
     | ToolCall
     | ToolResult
@@ -947,6 +948,7 @@ pub fn finish_markdown_rows(
     }
     Reasoning
     | System
+    | ToolGroup
     | User
     | ReasoningDigest
     | SummarizedReasoning
@@ -1008,6 +1010,10 @@ fn marked_rows(
 fn speaker_mark(speaker: Speaker, text: String) -> #(String, style.Style) {
   case speaker {
     System -> #("◇ ", theme.quiet_text())
+
+    // A tool group's heading folds its calls, so it takes the mark a reader
+    // knows as "more inside"; `◇` stays the harness's own.
+    ToolGroup -> #("▸ ", theme.quiet_text())
     User -> #("› ", theme.signal_bold())
     Assistant -> #("◆ ", theme.current_bold())
     Reasoning -> #("∴ Reasoning ", theme.quiet_text())
@@ -1019,9 +1025,11 @@ fn speaker_mark(speaker: Speaker, text: String) -> #(String, style.Style) {
         True -> #("✓ ", theme.success_text())
         False -> #("● ", theme.current_bold())
       }
-    ToolResult -> #("└ ", theme.quiet_text())
+    // A result hangs under its call, two cells in, and the call keeps the
+    // gutter with its own glyph, the way Codex draws a step.
+    ToolResult -> #("  └ ", theme.quiet_text())
     ToolDetail | ToolPatch -> #("  ", theme.quiet_text())
-    ToolFailure -> #("└ × ", theme.danger_text())
+    ToolFailure -> #("× ", theme.danger_text())
     Failure -> #("! error ", theme.danger_text())
     Spacer | SentMessage | StrandMessage | PeerMessage -> #(
       "",
@@ -1115,7 +1123,7 @@ fn speaker_rows(line: Line, width: Int, strand: String) -> List(span.Line) {
     ToolDetail ->
       markdown.render(line.text, width - string.length(mark))
       |> prefix_rendered_lines(mark, mark_style)
-    System | ToolCall | ToolResult | ToolFailure | Failure ->
+    System | ToolGroup | ToolCall | ToolResult | ToolFailure | Failure ->
       body
       |> text_hygiene.multiline
       |> string.split("\n")

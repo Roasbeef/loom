@@ -226,6 +226,7 @@ fn visible_texts(line: Line) -> List(String) {
     | transcript_line.ToolDetail ->
       list.flat_map(markdown.parse(line.text), block_texts)
     transcript_line.System
+    | transcript_line.ToolGroup
     | transcript_line.User
     | transcript_line.ReasoningDigest
     | transcript_line.SummarizedReasoning

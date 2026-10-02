@@ -78,7 +78,7 @@ import session_view/transcript_line.{
   type ToolTail, Assistant, Failure, HeldPrompt, Interjection, Line, PeerMessage,
   Reasoning, ReasoningDigest, SentMessage, Spacer, StrandMessage, Stream,
   SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
-  ToolFailure, ToolPatch, ToolResult, User,
+  ToolFailure, ToolGroup, ToolPatch, ToolResult, User,
 }
 import session_view/worktree_view
 
@@ -1366,6 +1366,7 @@ pub fn closes_bare(speaker: Speaker) -> Bool {
     | ReasoningDigest
     | SummarizedReasoning -> True
     System
+    | ToolGroup
     | User
     | Assistant
     | Reasoning
@@ -1407,6 +1408,7 @@ pub fn opens_bare(rows: List(Line), opening: GroupOpening) -> Bool {
     // under a call's bare last row it would sit welded to that call without a
     // gap of its own.
     [Line(speaker: System, ..), ..] -> True
+    [Line(speaker: ToolGroup, ..), ..] -> True
     [Line(speaker: SummarizedAdvice, ..), ..] -> True
 
     // A provider error after a run of calls is its own entry, and like the
@@ -1449,7 +1451,7 @@ pub fn activity_heading(calls: List(tool_activity.Call)) -> Line {
       n -> " · " <> int.to_string(n) <> " failed"
     }
     <> " · Ctrl+g expands details"
-  Line(System, heading)
+  Line(ToolGroup, heading)
 }
 
 /// The rows for one tool call: its summary, and its result or failure once
