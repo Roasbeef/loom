@@ -397,8 +397,8 @@ pub type Settings {
     /// embedding the server may name its own.
     helper_pool_size: Int,
     /// Which dispatcher runs this session's executions. `resolve` fills it
-    /// from `LOOM_EXECUTOR_LANE`: `service` selects `ServiceLane`, and an
-    /// unset or any other value is `DirectLane`.
+    /// from `LOOM_EXECUTOR_LANE`: `direct` selects `DirectLane`, and an
+    /// unset, empty or any other value is `ServiceLane`.
     executor_lane: ExecutorLane,
     /// The name clients subscribe with (derived from the session file).
     session_id: String,
@@ -1964,11 +1964,14 @@ fn env_int_or(name: String, fallback: Int) -> Int {
 
 /// The executor lane `LOOM_EXECUTOR_LANE` names.
 ///
-/// `service` selects the executor service. Unset, `direct` and any other
-/// text select the direct lane, silently, as `LOOM_HELPER_POOL` falls back
-/// to its default on text that is not a number: the variable is an opt-in
-/// to a newer path, and a typo that left a session on the established one
-/// is the safe direction to fail in. The lane is read when a session opens.
+/// `direct` selects the broker's own per-call relay. Unset, empty and any
+/// other text select the executor service, silently, as `LOOM_HELPER_POOL`
+/// falls back to its default on text that is not a number. The service is
+/// the default since S2, so the variable is now the rollback: `direct` is
+/// the one spelling that leaves a session on the old path, and S3 deletes
+/// the direct lane and with it this variable. A typo therefore lands on the
+/// service, the path every session is meant to run. The lane is read when a
+/// session opens.
 ///
 /// Public so a host or a test builds its `Settings` from the same variable
 /// `resolve` reads, which is how one run of the suite exercises the other
@@ -1977,29 +1980,29 @@ fn env_int_or(name: String, fallback: Int) -> Int {
 /// ## Examples
 ///
 /// ```gleam
-/// // LOOM_EXECUTOR_LANE=service
-/// // serve.executor_lane_from_environment() == serve.ServiceLane
+/// // LOOM_EXECUTOR_LANE=direct
+/// // serve.executor_lane_from_environment() == serve.DirectLane
 /// ```
 ///
 pub fn executor_lane_from_environment() -> ExecutorLane {
   executor_lane_named(env_text_or("LOOM_EXECUTOR_LANE", ""))
 }
 
-/// The lane a name selects: `service` is `ServiceLane`, anything else
-/// `DirectLane`.
+/// The lane a name selects: `direct` is `DirectLane`, anything else
+/// `ServiceLane`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert serve.executor_lane_named("service") == serve.ServiceLane
 /// assert serve.executor_lane_named("direct") == serve.DirectLane
-/// assert serve.executor_lane_named("servce") == serve.DirectLane
+/// assert serve.executor_lane_named("service") == serve.ServiceLane
+/// assert serve.executor_lane_named("") == serve.ServiceLane
 /// ```
 ///
 pub fn executor_lane_named(name: String) -> ExecutorLane {
   case name {
-    "service" -> ServiceLane
-    _ -> DirectLane
+    "direct" -> DirectLane
+    _ -> ServiceLane
   }
 }
 

@@ -268,9 +268,10 @@ demands the cross-platform contract; `--best-effort` accepts broader
 degradation for development machines. `LOOM_HELPER_POOL` bounds how many
 `loom-exec` helpers run at once (the scheduler count clamped to `[4, 16]`),
 which is the real ceiling on how wide a parallel tool batch runs.
-`LOOM_EXECUTOR_LANE=service` opts a session into the executor service
-(issue #696) in place of the broker's per-call relay; unset, or any other
-value, keeps the established path. The lane is read when a session opens.
+Sessions run through the executor service (issue #696) by default.
+`LOOM_EXECUTOR_LANE=direct` opts a session back into the broker's per-call
+relay as a rollback, until the S3 phase removes that lane; unset, empty or any
+other value selects the service. The lane is read when a session opens.
 
 ### Daemon settings
 

@@ -224,14 +224,15 @@ pub fn the_service_lane_is_a_fatal_root_and_closes_under_custody_test() {
   process.demonitor_process(service_watch)
 }
 
-/// `LOOM_EXECUTOR_LANE` names a lane, and anything it does not recognise
-/// leaves the session on the direct one.
-pub fn the_lane_variable_selects_the_service_only_by_name_test() {
-  assert serve.executor_lane_named("service") == serve.ServiceLane
+/// The executor service is the default lane, and `direct` is the one
+/// spelling that opts a session back out. Unset (the empty fallback),
+/// misspelt and differently cased names all reach the service.
+pub fn the_lane_variable_leaves_the_service_only_by_the_name_direct_test() {
   assert serve.executor_lane_named("direct") == serve.DirectLane
-  assert serve.executor_lane_named("") == serve.DirectLane
-  assert serve.executor_lane_named("Service") == serve.DirectLane
-  assert serve.executor_lane_named("servce") == serve.DirectLane
+  assert serve.executor_lane_named("service") == serve.ServiceLane
+  assert serve.executor_lane_named("") == serve.ServiceLane
+  assert serve.executor_lane_named("Direct") == serve.ServiceLane
+  assert serve.executor_lane_named("directt") == serve.ServiceLane
 }
 
 pub fn builder_kill_mid_assembly_keeps_lease_until_published_effect_drains_test() {
