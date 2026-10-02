@@ -9,6 +9,29 @@
 //// `refresh_diff_cache` does the same for the changes panel. The rows are
 //// anchored to durable identities, so a scrolled-back reader keeps their
 //// place when earlier history arrives.
+////
+//// ## Flow
+////
+//// `refresh_render_cache` → `refresh_record_cache` → `cached_record_lines`
+//// → `record_anchors_for` → `rendered_layout_for` → `rendered_lines`
+//// → `line_rows`
+////
+//// 1. `refresh_render_cache` compares the model before and after an event
+////    and does nothing unless a revision, the width, a surface or the
+////    active strand moved.
+//// 2. `refresh_record_cache` decides whether the cached record rows still
+////    describe the records, and appends the pending ones or rebuilds.
+//// 3. `cached_record_lines` wraps each record line once and keeps the
+////    result keyed by the line, so a settled record reuses its rows.
+//// 4. `record_anchors_for` pairs those rows with the durable entry each
+////    belongs to, so a reader scrolled back keeps their place.
+//// 5. `rendered_layout_for` adds what is not a record: help, the reading
+////    surface and the transient lines of the live stream.
+//// 6. `rendered_lines` turns the lines into rows and copy gutters together,
+////    and `line_rows` sends a live answer through the live tail and
+////    everything else through `render.render_line`.
+//// 7. `refresh_diff_cache` is the changes panel's own cache, kept on the
+////    same before-and-after comparison.
 
 import core/entry
 import core/ids
@@ -596,12 +619,35 @@ fn record_anchors_for(
               ),
               [
                 #("", heading),
-                ..transcript_lines.separated_tool_blocks(called, WithinResponse)
+                ..called
+                |> transcript_lines.collapse_repeats(
+                  fn(block) { block.1 },
+                  fn(block) { transcript_lines.repeated_call(block.1) },
+                  fn(block, rows) { #(block.0, rows) },
+                )
+                |> transcript_lines.separated_tool_blocks(WithinResponse)
               ],
             )
           }
         }
       })
+      // The same fold `record_lines` applies to a repeated provider error,
+      // over the same items, so the anchors stay paired with the rows.
+      |> transcript_lines.collapse_repeats(
+        fn(item) { list.flat_map(item.1, fn(block) { block.1 }) },
+        fn(item) {
+          case item.1 {
+            [#(_, rows)] -> transcript_lines.repeated_failure(rows)
+            [] | [_, _, ..] -> False
+          }
+        },
+        fn(item, rows) {
+          case item.1 {
+            [#(id, _)] -> #(item.0, [#(id, rows)])
+            [] | [_, _, ..] -> item
+          }
+        },
+      )
       |> transcript_lines.merge_sequence_blocks(
         advisor_anchor_blocks(visible_advisor_history(model)),
       )

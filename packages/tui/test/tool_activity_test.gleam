@@ -660,8 +660,18 @@ pub fn collapsing_a_long_result_keeps_its_call_visible_at_video_dimensions_test(
             )
           _ -> result
         }
+        // Each call edits its own file. A run of identical settled calls
+        // folds into one counted row anchored to the newest of them, so a
+        // reader's place on one call of such a run is not what this pins.
+        let edit =
+          json.Object([
+            #(
+              "path",
+              json.String("src/file-" <> int.to_string(index) <> ".gleam"),
+            ),
+          ])
         state
-        |> received(call(index * 2 - 1, key, "fs_edit", args()))
+        |> received(call(index * 2 - 1, key, "fs_edit", edit))
         |> received(result)
       },
     )
