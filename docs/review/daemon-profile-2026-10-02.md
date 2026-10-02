@@ -28,7 +28,7 @@ installed savings.
 An authorized major collection on six selected owners at 22:51:18 UTC lowered
 VM allocation from 515,519,501 to 458,454,989 bytes. Process allocation fell
 from 440,689,152 to 384,077,704 bytes. Two jobs actors fell from 19,513,776 and
-27,652,424 bytes to about 973 KiB each; one advisor actor fell from 11,516,728
+27,652,424 bytes to about 950 KiB each; one advisor actor fell from 11,516,728
 to 88,648 bytes. The two large services supervisors did not shrink. Individual
 RPC elapsed times ranged from 77 microseconds to 5.2 milliseconds, including
 transport overhead; those are not measured stop-the-world pause times.
@@ -76,7 +76,10 @@ cleanup checked afterward. Only the legacy/default trace session remained.
 The explicitly authorized, size-only diagnostic module had a 64 MiB worker
 heap cap and four-second deadlines, and was deleted afterward;
 `code:is_loaded` returned `false`. No production source was hotpatched and no
-candidate release was installed or restarted.
+candidate release was installed or restarted. A later observation-only cut at
+23:24:35 UTC saw 683.0 MiB total VM allocation, 605.4 MiB in processes, and
+368 processes. Session activity and process count had changed, so this is not
+a matched comparison with the earlier cut and does not establish a leak.
 
 ## The cache change and matched isolated measurement
 
@@ -114,8 +117,8 @@ daemon CPU. Same-process shared term structure grew from 403,536 to 470,832
 bytes for the ordinary fixture, and from 269,320 to 307,960 for compaction.
 The combined cache's flat-copy costs grew more, from 628,736 to 1,171,160 bytes
 and from 465,752 to 950,768 respectively. This cache stays within the driver;
-those flat figures describe a diagnostic or hypothetical copy, not a new
-per-request transfer. Off-heap binary payload size, process heap capacity and
+those flat figures describe the combined cache rather than the context which
+must still travel with a provider request. Off-heap binary payload size, process heap capacity and
 installed resident memory are not included in these term-size figures.
 
 To reproduce after building the runtime tests in each checkout:
@@ -127,14 +130,45 @@ escript scripts/projection_cache_bench.escript packages/runtime/build/dev/erlang
 escript scripts/projection_cache_bench.escript /path/to/baseline/packages/runtime/build/dev/erlang
 ```
 
-The optional regression check rejects a 500-hit batch above 10,000 reductions,
-rather than gating on timing. It passed for the candidate and failed on the
+The runtime-package gate runs the probe with `--expect-cached` inside a
+30-second deadline. The work check rejects a 500-hit batch above 10,000
+reductions, rather than gating on timing. It passed for the candidate and failed on the
 baseline with `projection_recomputed` and 14,666,621 reductions. The runtime's
 180-test gate also passed, including a direct provider-context regression
 that verifies an appended answer and next prompt reach the next request while
 transient hook messages do not leak into later requests or durable context.
 Existing join tests cover append, fork, rewind/no-extension and compaction;
 existing cold-open and interleave tests cover reconstruction after crashes.
+
+## Keeping the cache out of provider workers
+
+Independent review found that the provider worker read `state.reaper` inside
+its closure. That captured the entire State, including the new cache, and
+would have copied it into every effect worker. Binding the reaper before
+constructing the closure removes that transfer without changing adoption,
+begin or drain ordering. The required context in `RequestSpec` still travels
+with the request.
+
+The probe also intercepts the private spawn boundary in its own disposable VM
+to inspect the actual closure constructed by `spawn_provider`. It never runs
+the captured body, a provider request or effect adoption. For the same
+1,200-message projected request, baseline worker-closure flat size was
+136,958 words (1,095,664 bytes), versus 58,292 words (466,336 bytes) after
+narrowing, about 57% less structure to copy. Adding 8,192 integers to an
+unrelated tool closure grew baseline capture by 16,384 words; the narrowed
+capture stayed at 58,292 words. The padded payload was still reachable in
+State, which the probe asserts before measuring the worker.
+
+A targeted mutation restored just the `state.reaper` read while keeping the
+new projection cache. Cache-hit work stayed at 1,505 reductions, but the
+closure grew from 204,761 to 221,145 words with padding, and the capture check
+failed with `provider_captured_sibling_state`. Restoring the narrow binding
+passed both checks. These are flattened closure-copy costs, not measurements
+of installed worker heaps or resident memory. The runtime's adoption, restart
+reaping and graceful shutdown tests also passed after the binding change.
+An isolated stock Gleam 1.18.1 build passed the same probe, using its generated
+Erlang source instead of the native compiler's abstract forms; its fourteen
+batches also used 1,505 reductions, with equal 58,292-word worker closures.
 
 ## Remaining measurement boundary
 

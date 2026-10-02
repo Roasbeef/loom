@@ -794,7 +794,9 @@ extended by the M3 runtime wave.
   compaction, is a full rescan. Only write-once entries and their pure
   default projection are cached; threshold decisions and request-local
   context hooks still run at their original boundaries. The request hook's
-  transformed list never enters the cache. A fresh incarnation starts without
+  transformed list never enters the cache. Provider worker construction projects
+  the reaper before making its closure, so custody does not copy the whole
+  driver's scan, projection and sibling Effects into each worker. A fresh incarnation starts without
   a cache, which is the replay rule every projection here is held to. Before this a
   1,200-entry branch was decoded three times per step (issue #359).
 - **Read-only context inspection shares the compaction projection.**

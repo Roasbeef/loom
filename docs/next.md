@@ -147,10 +147,11 @@ restart invalidate it through the scan cache's existing rules, and
 request-local transforms stay outside it. The same pull request projects
 the reaper before building the provider worker closure, which had captured
 the whole driver. The live profile is
-[daemon-profile-2026-10-02](review/daemon-profile-2026-10-02.md), and
-`scripts/projection_cache_bench.escript ... --expect-cached` is the
-repeatable work check. A matched installed-daemon comparison is still item 8
-below.
+[daemon-profile-2026-10-02](review/daemon-profile-2026-10-02.md). The
+runtime package gate runs `scripts/projection_cache_bench.escript ...
+--expect-cached`, which checks both the cache-hit reductions and what the
+provider worker closure captures, so restoring either old behaviour fails it.
+A matched installed-daemon comparison is still item 8 below.
 
 ### What the previous edition got wrong
 
