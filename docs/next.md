@@ -1,5 +1,22 @@
 # Current handoff
 
+## October 2 daemon memory pass
+
+`codex/memory-lsp-query-handle` reduces the seven direct LSP tools' measured
+flat copy cost from 2,205,760 to 184,920 bytes using the installed daemon's
+configuration in an isolated probe VM. Each tool owns only its callback;
+the caller-side manager excludes transport-start custody. The manager actor
+and keeper still own startup. See
+[the live evidence and validation](review/daemon-memory-2026-10-02.md).
+
+The installed build remains `a3dc2535`; there is no installed RSS reduction
+claim. Targeted collections reclaimed 57.712 MiB of allocation across six
+owners, while the service supervisor's restart inputs remained. The second
+process named `loomd` is a `web_search` satellite. The two roughly 92 MiB
+terminal clients lack profiling nodes; attribute their BEAM owners after a
+client launch with `--profile`. The next memory exit criterion is a matched
+installed baseline/candidate run with the same workload and observation cuts.
+
 ## Local orientation in large modules (issue #593)
 
 Branch `lint/local-orientation` ([PR #679](https://github.com/Roasbeef/loom/pull/679))
