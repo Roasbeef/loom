@@ -259,8 +259,9 @@ ownership and checked-interval limits are in
 - **Depends on**: `core` (msgpack values and the corruption report),
   `gleam_erlang` (processes, monitors, subjects), `gleam_otp` (the actor
   behind `cap/actor` and the channel), and the standard library. The SQL
-  observation bridge additionally requires the existing native SQLite family;
-  its final package pin is part of the offline seed integration.
+  observation bridge directly pins `esqlite_loom` 0.9.1, the same native SQLite
+  family selected by the harness's `sqlight_loom` 1.2.1 consumers. The offline
+  seed carries that native application into the satellite artifact.
 - **Deliberately does not depend on `broker`.** The spec DAG (§0.1) puts
   WP-J at `J → G,I`, which holds for `codemode` but not here: `cap` is the
   untrusted far side of the effect-plane wire, not a peer of the broker, so
