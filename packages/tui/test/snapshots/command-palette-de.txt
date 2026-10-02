@@ -1,5 +1,7 @@
- ◆ loom               demo · /w/demo                baseten-kimi-k3 · Ctrl+…
+ ◆ demo · strand main                                       baseten-kimi-k3
  transcript / main
+
+
 
 
 
@@ -11,8 +13,6 @@
   │▸ /details  toggle reasoning and tool detail                          │
   │  /deny  reject an exact displayed request                            │
   ╰──────────────────────────────────────────────────────────────────────╯
-─ To main · prompt · enter sends · / commands                              ─
- /de
-────────────────────────────────────────────────────────────────────────────
- ready · baseten-kimi-k3 · ctx — · est $0.00
- 0 agents · 0 working · 0 attention
+╭─ To main · Enter sends ────────────────────────────────── ○ main · idle ─╮
+│ › /de                                                                    │
+╰─ ready › baseten-kimi-k3 › ctx — › $0.00 ─────────────────── 0 need you ─╯
