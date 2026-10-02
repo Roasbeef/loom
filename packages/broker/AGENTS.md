@@ -4,9 +4,9 @@
 
 The ToolBroker: the single door between the harness and the outside world.
 It composes sandbox policy, refuses or narrows what it cannot enforce,
-reserves pooled budget, mints a capability token, borrows a `loom-exec`
-helper from the pool, dispatches the jailed execution, streams its output,
-and settles. It also owns the broker side of the frozen effect-plane wire
+reserves pooled budget, mints a capability token, hands the cleared call
+to a dispatcher that borrows a `loom-exec` helper from the pool and runs
+the jailed execution, streams its output, and settles. It also owns the broker side of the frozen effect-plane wire
 protocol (spec Part 1.4). WP-G.
 
 ## Key Types
@@ -17,6 +17,38 @@ protocol (spec Part 1.4). WP-G.
 - `broker/broker.{CallSpec, CallHandle, CallEvent, CallOutcome, Refusal}` —
   the request, its handle, the streamed `CallOutput` / `CallSettled`
   events, and `CallExited(result)` versus `CallFailed(failure)`.
+- `broker/dispatch.{Dispatcher, Dispatch, Execution, ExecutionId,
+  StartRefusal, Terminal, Chunk, Eof}` — the seam between the broker and
+  whatever owns a helper while a call runs. The broker decides whether a
+  call may run (policy, budget, token, abort epochs); a `Dispatcher` is a
+  record holding one function, `start`, that carries the cleared call out.
+  `Dispatch` is what the broker hands over: the request, the wall
+  deadline and clock, the caller's pid, a `seq` for the identity, and two
+  closures the broker built — `deliver` for each output chunk and `settle`
+  for the one terminal verdict, called exactly once per started execution.
+  `start` answers with an `Execution` or a `StartRefusal` (`NoHelper(error)`
+  maps to exactly what a failed checkout always did; `NotStarted` is
+  `BrokerUnavailable`). An `Execution` is `{id, guarantor, cancel, stdin,
+  release, abandon}`: closures are the broker's only way to reach the
+  helper, and the broker holds no `Helper`. `guarantor` is the process
+  whose unsettled death means `settle` never runs; the broker monitors it.
+  On `Settle` it demonitors and calls `release` (return what was lent); on
+  an unsettled guarantor death it calls `abandon` (stop the execution and
+  return what was lent). Exactly one of the two runs, because only the
+  `Settle` path demonitors. `ExecutionId` is
+  opaque, `{incarnation, seq}`. `broker.start_dispatching(entropy:, clock:,
+  dispatcher:)` takes any dispatcher; `broker.start(config)` is it over
+  `direct.dispatcher`, so `BrokerConfig` and every caller of `start` are
+  unchanged.
+- `broker/direct.dispatcher(checkout:, checkin:)` — the implementation the
+  broker used to carry inline: borrow a helper, spawn a per-call relay that
+  owns the exec-event subject (ready handshake, caller monitor, `Streaming`
+  and `Draining` modes, `relay_grace_ms`, wall deadline on the injected
+  clock), run synchronously inside `start`, return an `Execution` whose
+  closures capture the helper. The relay only settles; the helper goes
+  back through `release` (`checkin`), which the broker calls while handling
+  `Settle`, exactly where it used to check in. `abandon` is `exec.cancel`
+  then `checkin`.
 - `broker/policy.SandboxPolicy` — `SandboxPolicyV1` as a typed value:
   writable/readable/protected roots, `NetworkPolicy`, `Limits`,
   `env_allow`, `Scratch`, and `mounts`. `compose` implements session base ⊕
@@ -134,11 +166,15 @@ protocol (spec Part 1.4). WP-G.
 
 - **Actor messages**
   - `broker.Msg` — `ClearCall(spec, events, reply)`,
-    `SendStdin(handle, data, eof)`, `CancelCall(handle)`, `AbortOp(op_id)`,
-    `AbortStep(op_id, step_id)`, `Settle(call_id)`, `RelayDown(down)`,
-    `QueryRelay(handle, reply)`,
+    `SendStdin(handle, data, eof: dispatch.Eof)`, `CancelCall(handle)`,
+    `AbortOp(op_id)`, `AbortStep(op_id, step_id)`, `Settle(call_id)`,
+    `GuarantorDown(down)`, `QueryRelay(handle, reply)` (answers the
+    execution's guarantor, which for `direct` is the relay),
     `QueryEpochs(reply)`, `StopBroker`. The last two are `@internal`
     observability, reached only by `relay_pid` and `abort_epoch_count`.
+    `Settle` is sent by a call's `settle` closure, from the dispatcher's
+    settling process, immediately before the caller's `CallSettled`; the
+    broker handles it by calling the execution's `release`.
   - `exec.Msg` (per helper) — `AwaitReady(reply)`, `QueryStatus(reply)`,
     `Run(request, events, reply)`, `Stdin(data, eof)`, `CancelExec`,
     `CancelDeadline`, `HandshakeDeadline`, `HeartbeatTick`,
@@ -306,8 +342,9 @@ protocol (spec Part 1.4). WP-G.
   clearance within the caller's own `waiting` budget instead of handing
   it back, so a tool batch wider than the pool queues rather than
   failing. The wait cannot move inside the broker: the broker calls its
-  `checkout` seam synchronously inside its own message handler and only
-  reaches `checkin` from `Settle` / `RelayDown`, so a broker (or a
+  `checkout` seam synchronously inside its own message handler (through the
+  dispatcher's `start`) and a helper only returns to the pool when the
+  broker releases a settled execution or abandons an unsettled one, so a broker (or a
   queueing pool it blocks on) would be waiting for a resource that only
   its own message loop can release. Nothing is held across the wait —
   the checkout-failure path releases the budget slot and revokes the
@@ -344,8 +381,9 @@ protocol (spec Part 1.4). WP-G.
   This proof covers the helper's existing jail cleanup, not arbitrary
   detached descendants on Darwin or remote effects.
 - **No exchange on the clearance path may fault where a refusal is
-  owed.** The broker calls its checkout seam and dispatches to the
-  borrowed helper synchronously inside its own message handler, so a
+  owed.** The broker calls the dispatcher's `start`, which borrows a
+  helper and dispatches to it synchronously inside the broker's own
+  message handler, so a
   pool that stopped, or a helper that died in the microseconds between
   the borrow and the dispatch, was the broker's death rather than one
   call's refusal — and a broker's death is every in-flight strand's
@@ -370,8 +408,8 @@ protocol (spec Part 1.4). WP-G.
   below is the anti-amplification cap. They answer different questions
   and neither substitutes for the other.
 - **Reservations cannot leak.** They are released on settlement, freed
-  wholesale on `abort`, and reclaimed when a call's relay process dies
-  unsettled (every relay is monitored). Releases are generation-checked, so
+  wholesale on `abort`, and reclaimed when a call's guarantor process
+  dies unsettled (every guarantor is monitored; for `direct` it is the relay). Releases are generation-checked, so
   a stale settlement from before an abort never frees a later ledger's
   budget.
 - **Tokens are single-use and unforgeable.** 32 bytes of injected entropy,

@@ -4,10 +4,9 @@
 //// `clear_call` is the whole story: compose the policy (session base ⊕
 //// tool requirements ⊕ escalation grants), refuse or surface the
 //// narrowings, reserve budget, mint a capability token bound to
-//// `{op_id, step_id, policy, deadline}`, borrow a helper from the pool
-//// seam, dispatch the execution, stream its output to the caller, and
-//// settle: check in the helper, revoke the single-use token, release
-//// the budget. `abort` revokes every token of an operation and cancels
+//// `{op_id, step_id, policy, deadline}`, hand the cleared call to the
+//// dispatcher seam, stream its output to the caller, and settle: revoke
+//// the single-use token and release the budget. `abort` revokes every token of an operation and cancels
 //// its running executions — revocation kills the OS process group via
 //// the helper's cancel ladder. `abort_step` is the same sweep narrowed
 //// to one `{op_id, step_id}`, for a caller that owns a step rather than
@@ -16,7 +15,7 @@
 //// ## Flow
 ////
 //// `clear_call` → `clear_awaiting_helper` → `handle` → `do_clear_call` →
-//// `authorize` → `dispatch` → `relay` → `settle`
+//// `authorize` → `start_execution` → `reclaim`
 ////
 //// 1. `clear_call` is the caller's entry; it hands the spec to
 ////    `clear_awaiting_helper`, which asks the broker actor and, on a full pool,
@@ -26,12 +25,16 @@
 //// 3. `do_clear_call` composes the policy with `policy.compose`, refuses or
 ////    narrows, and validates what remains.
 //// 4. `authorize` reserves a budget slot (`reserve_budget`), then `mint_token`
-////    binds a single-use token and `checkout_helper` borrows a helper.
-//// 5. `dispatch` starts the execution and spawns the per-call relay, which
-////    `relay` drives: it forwards output and enforces the wall deadline.
-//// 6. `settle` tells the broker the call ended; `reclaim` returns the helper,
-////    revokes the token and releases the budget, and `handle_relay_down` runs
-////    the same tail when a relay dies unsettled.
+////    binds a single-use token and `start_execution` hands the call to the
+////    dispatcher.
+//// 5. The dispatcher (`broker/dispatch`; `broker/direct` is today's
+////    implementation) borrows a helper, forwards output through the
+////    deliver closure the broker built, enforces the wall deadline, and
+////    reports the one terminal verdict through the settle closure.
+//// 6. Settling tells the broker the call ended; `reclaim` revokes the token
+////    and releases the budget, and `handle_guarantor_down` runs the same tail
+////    after abandoning the execution when the process that would have
+////    settled dies unsettled.
 ////
 //// ## The pooled budget is keyed per execution: `{op_id, step_id}`
 ////
@@ -50,8 +53,8 @@
 //// 10,000 polite parallel reads under one execution share one
 //// `max_outstanding` cap and one aggregate wall deadline. Reservations
 //// are released on settlement, freed wholesale on `abort`, and
-//// reclaimed when a call's relay process dies unsettled (the broker
-//// monitors every relay), so a crashed or cancelled call cannot leak a
+//// reclaimed when a call's guarantor process dies unsettled (the broker
+//// monitors every guarantor), so a crashed or cancelled call cannot leak a
 //// slot. Releases are generation-checked: a stale settlement from
 //// before an abort never frees budget of a later ledger under the same
 //// key.
@@ -80,15 +83,18 @@
 //// with no network at all. Either way nothing ever claims a proxy
 //// allowlist was enforced (see the `broker/policy` module doc).
 ////
-//// Effects are injected: the pool is a pair of checkout/checkin
-//// functions and entropy/time are injected values, so the entire flow
-//// runs against an in-process fake helper in tests.
+//// Effects are injected: execution is a `Dispatcher` (by default the
+//// direct one over a pair of checkout/checkin functions) and entropy/time
+//// are injected values, so the entire flow runs against an in-process fake
+//// helper, or a fake dispatcher, in tests.
 ////
 //// The MCP adapter (spawn-in-sandbox, schema validation, provenance
 //// tagging) is deliberately not here yet: it is later (post-M2) work
 //// layered on the same `clear_call` path.
 
 import broker/budget.{type Budget}
+import broker/direct
+import broker/dispatch.{type Dispatcher}
 import broker/escalation.{type Denial}
 import broker/exec.{type ExecFailure, type ExecResult, type Helper}
 import broker/framing.{type OutputStream}
@@ -222,7 +228,9 @@ pub opaque type CallHandle {
   CallHandle(id: Int)
 }
 
-/// Wiring for a broker: entropy, time, and the exec pool seam.
+/// Wiring for a broker: entropy, time, and the exec pool seam. `start`
+/// turns the pool seam into a `broker/direct` dispatcher; a caller with a
+/// different dispatcher uses `start_dispatching` and has no use for this.
 pub type BrokerConfig {
   BrokerConfig(
     /// Token entropy; production passes `token.production_entropy()`.
@@ -258,12 +266,12 @@ pub opaque type Msg {
     since: Option(Int),
     reply: Subject(#(Result(CallHandle, Refusal), Int)),
   )
-  SendStdin(handle: CallHandle, data: BitArray, eof: Bool)
+  SendStdin(handle: CallHandle, data: BitArray, eof: dispatch.Eof)
   CancelCall(handle: CallHandle)
   AbortOp(op_id: OpId)
   AbortStep(op_id: OpId, step_id: String)
   Settle(call_id: Int)
-  RelayDown(down: process.Down)
+  GuarantorDown(down: process.Down)
   QueryRelay(handle: CallHandle, reply: Subject(Result(Pid, Nil)))
   QueryEpochs(reply: Subject(Int))
   StopBroker
@@ -271,13 +279,14 @@ pub opaque type Msg {
 
 type Active {
   Active(
-    helper: Helper,
+    // The started execution. Its closures are the broker's only way to
+    // reach the helper behind it; the broker holds no `Helper`.
+    execution: dispatch.Execution,
     op_id: OpId,
     step_id: String,
     token_bytes: BitArray,
-    // The monitored relay process; its unsettled death reclaims the
-    // call's budget slot, token, and helper.
-    relay_pid: Pid,
+    // The monitor on `execution.guarantor`; its unsettled death abandons
+    // the execution and reclaims the call's budget slot and token.
     monitor: process.Monitor,
     // Which incarnation of the execution's ledger this call reserved
     // against; releases only apply to a matching generation.
@@ -295,7 +304,7 @@ type LedgerSlot {
 
 type State {
   State(
-    config: BrokerConfig,
+    dispatcher: Dispatcher,
     clock: Clock,
     vault: token.Vault,
     next_call: Int,
@@ -363,23 +372,52 @@ type State {
     // costs one entry per batch that ran a program, however many
     // programs it ran.
     step_abort_epochs: Dict(#(OpId, String), Int),
-    // The broker's own subject, handed to relays for Settle reports.
+    // The broker's own subject, which each call's `settle` closure uses
+    // to report the call's end.
     self: Subject(Msg),
   )
 }
 
-// How long after the wall deadline (plus the helper's cancel ladder) a
-// relay waits before declaring the execution unkillable.
-const relay_grace_ms = 5000
-
-/// Starts a broker.
+/// Starts a broker whose executions run on helpers borrowed through
+/// `config.checkout` and returned through `config.checkin`: the direct
+/// dispatcher over that pool seam.
 pub fn start(config: BrokerConfig) -> Result(Broker, actor.StartError) {
+  start_dispatching(
+    entropy: config.entropy,
+    clock: config.clock,
+    dispatcher: direct.dispatcher(
+      checkout: config.checkout,
+      checkin: config.checkin,
+    ),
+  )
+}
+
+/// Starts a broker over any `Dispatcher`. Everything the broker decides —
+/// policy, budget, tokens, abort epochs — is the same whichever dispatcher
+/// carries the cleared call out; only what happens after clearance differs.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(started) =
+///   broker.start_dispatching(
+///     entropy: token.production_entropy(),
+///     clock: clock.system(),
+///     dispatcher: direct.dispatcher(checkout:, checkin:),
+///   )
+/// ```
+///
+pub fn start_dispatching(
+  entropy entropy: fn(Int) -> BitArray,
+  clock clock: Clock,
+  dispatcher dispatcher: Dispatcher,
+) -> Result(Broker, actor.StartError) {
   actor.new_with_initialiser(1000, fn(subject) {
     let state =
       State(
-        config:,
-        clock: config.clock,
-        vault: token.new(entropy: config.entropy),
+        dispatcher:,
+        clock:,
+        vault: token.new(entropy:),
         next_call: 1,
         active: dict.new(),
         ledgers: dict.new(),
@@ -389,13 +427,13 @@ pub fn start(config: BrokerConfig) -> Result(Broker, actor.StartError) {
         self: subject,
       )
 
-    // The broker monitors every relay it spawns; the selector routes
-    // their DOWN messages so an unsettled relay death reclaims the
-    // call's reservations.
+    // The broker monitors every guarantor it is handed; the selector
+    // routes their DOWN messages so an unsettled death abandons the
+    // execution and reclaims the call's reservations.
     let selector =
       process.new_selector()
       |> process.select(subject)
-      |> process.select_monitors(RelayDown)
+      |> process.select_monitors(GuarantorDown)
     actor.initialised(state)
     |> actor.selecting(selector)
     |> actor.returning(subject)
@@ -403,9 +441,7 @@ pub fn start(config: BrokerConfig) -> Result(Broker, actor.StartError) {
   })
   |> actor.on_message(handle)
   |> actor.start
-  |> result.map(fn(started) {
-    Broker(subject: started.data, clock: config.clock)
-  })
+  |> result.map(fn(started) { Broker(subject: started.data, clock:) })
 }
 
 /// Clears and dispatches one tool call. On `Ok` the call is running:
@@ -592,7 +628,15 @@ pub fn stdin(
   data data: BitArray,
   eof eof: Bool,
 ) -> Nil {
-  process.send(broker.subject, SendStdin(handle:, data:, eof:))
+  process.send(broker.subject, SendStdin(handle:, data:, eof: eof_of(eof)))
+}
+
+// The wire's end-of-input flag as the seam's own two-variant type.
+fn eof_of(eof: Bool) -> dispatch.Eof {
+  case eof {
+    True -> dispatch.EndOfInput
+    False -> dispatch.MoreInput
+  }
 }
 
 /// Cancels a cleared call. Idempotent; the helper's pgroup dies within
@@ -659,10 +703,11 @@ pub fn abort_epoch_count(broker: Broker, waiting timeout: Int) -> Int {
   process.call(broker.subject, waiting: timeout, sending: QueryEpochs)
 }
 
-/// The pid of a cleared call's relay process, or `Error(Nil)` once the
-/// call settled. Exists so tests can kill a relay and prove the broker
-/// reclaims the call's budget slot, token, and helper; not part of the
-/// broker's API.
+/// The pid of a cleared call's guarantor (the process whose unsettled
+/// death means the call will never settle), or `Error(Nil)` once the call
+/// settled. For the direct dispatcher that is the call's relay. Exists so
+/// tests can kill it and prove the broker reclaims the call's budget slot,
+/// token, and helper; not part of the broker's API.
 @internal
 pub fn relay_pid(
   broker: Broker,
@@ -801,14 +846,14 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
     }
     SendStdin(handle:, data:, eof:) -> {
       case dict.get(state.active, handle.id) {
-        Ok(active) -> exec.stdin(active.helper, data:, eof:)
+        Ok(active) -> active.execution.stdin(data, eof)
         Error(Nil) -> Nil
       }
       actor.continue(state)
     }
     CancelCall(handle:) -> {
       case dict.get(state.active, handle.id) {
-        Ok(active) -> exec.cancel(active.helper)
+        Ok(active) -> active.execution.cancel()
         Error(Nil) -> Nil
       }
       actor.continue(state)
@@ -817,7 +862,7 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
       let vault = token.revoke_all(state.vault, op_id)
       dict.each(state.active, fn(_id, active) {
         case active.op_id == op_id {
-          True -> exec.cancel(active.helper)
+          True -> active.execution.cancel()
           False -> Nil
         }
       })
@@ -847,7 +892,7 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
       let vault = token.revoke_step(state.vault, op_id, step_id:)
       dict.each(state.active, fn(_id, active) {
         case active.op_id == op_id && active.step_id == step_id {
-          True -> exec.cancel(active.helper)
+          True -> active.execution.cancel()
           False -> Nil
         }
       })
@@ -872,21 +917,27 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
       case dict.get(state.active, call_id) {
         Error(Nil) -> actor.continue(state)
         Ok(active) -> {
-          // The relay exits right after settling; with the settlement
+          // The guarantor exits right after settling; with the settlement
           // in hand its death is expected, so stop watching (which also
           // flushes an already-queued DOWN).
           process.demonitor_process(active.monitor)
+
+          // The demonitor above is what makes `release` and `abandon`
+          // exclusive: a DOWN that arrives later finds no active call. The
+          // helper goes back here, ahead of the token and the slot, as it
+          // did when the broker held it.
+          active.execution.release()
           actor.continue(reclaim(state, call_id, active))
         }
       }
-    RelayDown(down:) -> handle_relay_down(state, down)
+    GuarantorDown(down:) -> handle_guarantor_down(state, down)
     QueryEpochs(reply:) -> {
       process.send(reply, dict.size(state.abort_epochs))
       actor.continue(state)
     }
     QueryRelay(handle:, reply:) -> {
       case dict.get(state.active, handle.id) {
-        Ok(active) -> process.send(reply, Ok(active.relay_pid))
+        Ok(active) -> process.send(reply, Ok(active.execution.guarantor))
         Error(Nil) -> process.send(reply, Error(Nil))
       }
       actor.continue(state)
@@ -895,39 +946,38 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
   }
 }
 
-// A relay died without settling (a normal exit settles first, and
+// A guarantor died without settling (a normal exit settles first, and
 // settlement demonitors): its call can no longer reach the caller, so
-// fail closed — cancel the execution, return the helper (the pool
-// retires it if it died too), revoke the token, and free the budget
-// slot so a crashed call never leaks a reservation.
-fn handle_relay_down(
+// fail closed — abandon the execution, which stops it and returns the
+// helper (the pool retires it if it died too), revoke the token, and free
+// the budget slot so a crashed call never leaks a reservation.
+fn handle_guarantor_down(
   state: State,
   down: process.Down,
 ) -> actor.Next(State, Msg) {
   case down {
-    // Unreachable in practice: the selector only monitors relay pids via
-    // `process.select_monitors`, and relays are ordinary processes, never
-    // ports. Handled anyway because `Down` is exhaustive over both.
+    // Unreachable in practice: the selector only monitors guarantor pids
+    // via `process.select_monitors`, and a guarantor is an ordinary
+    // process, never a port. Handled anyway because `Down` is exhaustive
+    // over both.
     process.PortDown(..) -> actor.continue(state)
     process.ProcessDown(pid:, monitor: _, reason: _) ->
-      case call_of_relay(state.active, pid) {
+      case call_of_guarantor(state.active, pid) {
         Error(Nil) -> actor.continue(state)
         Ok(#(call_id, active)) -> {
-          exec.cancel(active.helper)
+          active.execution.abandon()
           actor.continue(reclaim(state, call_id, active))
         }
       }
   }
 }
 
-// Returns a settled call's helper and budget slot and revokes its token
-// — the common tail of both an in-band `Settle` and a relay dying
-// unsettled. The caller decides beforehand whether the execution itself
-// still needs cancelling (a `Settle` means it already finished; an
-// unsettled relay death means it might not have).
+// Revokes a settled call's token and returns its budget slot — the common
+// tail of both an in-band `Settle` and a guarantor dying unsettled. The
+// helper is not returned here: the `Settle` arm called the execution's
+// `release` before reclaiming, and the unsettled path called `abandon`,
+// so exactly one of the two has already returned it.
 fn reclaim(state: State, call_id: Int, active: Active) -> State {
-  state.config.checkin(active.helper)
-
   // Tokens are single-use: settlement (or the fail-closed reclaim of an
   // unsettled death) revokes.
   let vault = retired_token(state, active.token_bytes)
@@ -944,13 +994,13 @@ fn retired_token(state: State, bytes: BitArray) -> token.Vault {
   |> token.drop_expired(now:, grace_ms: 5000)
 }
 
-// The active call whose relay is `pid`, if any.
-fn call_of_relay(
+// The active call whose guarantor is `pid`, if any.
+fn call_of_guarantor(
   active: Dict(Int, Active),
   pid: Pid,
 ) -> Result(#(Int, Active), Nil) {
   dict.fold(active, Error(Nil), fn(found, call_id, call) {
-    case call.relay_pid == pid {
+    case call.execution.guarantor == pid {
       True -> Ok(#(call_id, call))
       False -> found
     }
@@ -1036,7 +1086,7 @@ fn mint_token(
       #(state, Error(MintRefused(error:)))
     }
     Ok(#(vault, minted)) ->
-      checkout_helper(
+      start_execution(
         State(..state, vault:),
         spec,
         final_policy,
@@ -1047,8 +1097,9 @@ fn mint_token(
   }
 }
 
-// 4. Helper: borrow through the pool seam.
-fn checkout_helper(
+// 4. Dispatch: hand the cleared call to the dispatcher, which borrows a
+// helper and starts the execution.
+fn start_execution(
   state: State,
   spec: CallSpec,
   final_policy: SandboxPolicy,
@@ -1056,17 +1107,104 @@ fn checkout_helper(
   minted: token.Token,
   generation: Int,
 ) -> #(State, Result(CallHandle, Refusal)) {
-  case state.config.checkout() {
-    Error(error) -> {
-      // Nothing dispatched: hand back the slot and the token (its bytes
-      // never left the broker, but a live entry for an execution that
-      // will not run has no business in the vault).
+  let call_id = state.next_call
+  let request =
+    exec.ExecRequest(
+      argv: spec.argv,
+      env: spec.env,
+      cwd: spec.cwd,
+      policy: Some(final_policy),
+      token: token.to_bytes(minted),
+      demand: spec.demand,
+    )
+  let dispatch_request =
+    dispatch.Dispatch(
+      request:,
+      seq: call_id,
+      deadline_ms: spec.budget.deadline_ms,
+      clock: state.clock,
+      caller: option.from_result(process.subject_owner(events)),
+      deliver: deliver_to(events),
+      settle: settle_to(state.self, events, call_id),
+    )
+  case state.dispatcher.start(dispatch_request) {
+    Error(refusal) -> {
+      // Nothing is running, so nothing will settle: hand back the slot
+      // and the token (its bytes never left the broker, but a live entry
+      // for an execution that will not run has no business in the vault).
       let state = release_slot(state, spec.op_id, spec.step_id, generation)
       let vault = retired_token(state, token.to_bytes(minted))
-      #(State(..state, vault:), Error(NoHelper(error:)))
+      #(State(..state, vault:), Error(refusal_of(refusal)))
     }
-    Ok(helper) ->
-      dispatch(state, spec, final_policy, minted, helper, events, generation)
+    Ok(execution) -> {
+      let active =
+        Active(
+          execution:,
+          op_id: spec.op_id,
+          step_id: spec.step_id,
+          token_bytes: token.to_bytes(minted),
+          monitor: process.monitor(execution.guarantor),
+          ledger_generation: generation,
+        )
+      let state =
+        State(
+          ..state,
+          next_call: call_id + 1,
+          active: dict.insert(state.active, call_id, active),
+        )
+      #(state, Ok(CallHandle(id: call_id)))
+    }
+  }
+}
+
+// What a refused start means to the caller: a missing helper is the
+// pool's verdict, carried through as it always was, and a dispatcher that
+// could not set itself up is the broker being unable to decide anything.
+fn refusal_of(refusal: dispatch.StartRefusal) -> Refusal {
+  case refusal {
+    dispatch.NoHelper(error:) -> NoHelper(error:)
+    dispatch.NotStarted -> BrokerUnavailable
+  }
+}
+
+// Forwards one output chunk to the caller. It runs in whatever process the
+// dispatcher drives the execution from, and the caller sees the chunks in
+// the order the dispatcher delivers them.
+fn deliver_to(events: Subject(CallEvent)) -> fn(dispatch.Chunk) -> Nil {
+  fn(chunk: dispatch.Chunk) {
+    process.send(
+      events,
+      CallOutput(
+        stream: chunk.stream,
+        data: chunk.data,
+        total_bytes: chunk.total_bytes,
+        truncated: chunk.truncated,
+      ),
+    )
+  }
+}
+
+// Reports a call's end with two messages, in this order: the broker
+// first, so it reclaims the budget slot and token, then the caller. Both
+// leave from the process the dispatcher settles in, so a caller that reacts
+// to `CallSettled` by clearing another call finds the slot already queued
+// for release ahead of its own clearance.
+fn settle_to(
+  broker_subject: Subject(Msg),
+  events: Subject(CallEvent),
+  call_id: Int,
+) -> fn(dispatch.Terminal) -> Nil {
+  fn(terminal) {
+    process.send(broker_subject, Settle(call_id:))
+    process.send(events, CallSettled(outcome: outcome_of(terminal)))
+  }
+}
+
+// The dispatcher's two terminal verdicts as the broker's two outcomes.
+fn outcome_of(terminal: dispatch.Terminal) -> CallOutcome {
+  case terminal {
+    dispatch.Completed(result:) -> CallExited(result:)
+    dispatch.Failed(failure:) -> CallFailed(failure:)
   }
 }
 
@@ -1125,217 +1263,4 @@ fn release_slot(
       State(..state, ledgers:)
     }
   }
-}
-
-fn dispatch(
-  state: State,
-  spec: CallSpec,
-  final_policy: SandboxPolicy,
-  minted: token.Token,
-  helper: Helper,
-  events: Subject(CallEvent),
-  generation: Int,
-) -> #(State, Result(CallHandle, Refusal)) {
-  let call_id = state.next_call
-  let broker_subject = state.self
-
-  // 5. Relay: a per-call process owning the exec-event subject. It
-  // forwards output to the caller, enforces the aggregate wall
-  // deadline, and reports settlement back to the broker. The broker
-  // monitors it so an unsettled death reclaims the call's reservations.
-  // The relay in turn monitors the caller: a tool effect that is killed
-  // mid-call (an aborted run) can no longer cancel its own execution,
-  // and without this watch the jailed command would run on to its wall
-  // limit with nobody left to want its output.
-  let caller_pid = process.subject_owner(events)
-  let ready = process.new_subject()
-  let relay_pid =
-    process.spawn_unlinked(fn() {
-      let exec_events = process.new_subject()
-      let caller_watch = case caller_pid {
-        Ok(pid) -> Some(process.monitor(pid))
-        Error(Nil) -> None
-      }
-      process.send(ready, exec_events)
-      relay(Relay(
-        exec_events:,
-        caller: events,
-        caller_watch:,
-        broker_subject:,
-        call_id:,
-        helper:,
-        clock: state.clock,
-        deadline_ms: spec.budget.deadline_ms,
-        mode: Streaming,
-      ))
-    })
-  let monitor = process.monitor(relay_pid)
-
-  // The relay must own the subject it receives exec events on (subjects
-  // are tied to their owning process), so it creates `exec_events` itself
-  // and hands it back over `ready` before this function dispatches
-  // anything to it — closing the race where exec.run could fire before
-  // the relay is listening.
-  case process.receive(ready, 1000) {
-    Error(Nil) -> {
-      process.demonitor_process(monitor)
-      state.config.checkin(helper)
-      let state = release_slot(state, spec.op_id, spec.step_id, generation)
-      #(
-        State(..state, vault: retired_token(state, token.to_bytes(minted))),
-        Error(BrokerUnavailable),
-      )
-    }
-    Ok(exec_events) -> {
-      let request =
-        exec.ExecRequest(
-          argv: spec.argv,
-          env: spec.env,
-          cwd: spec.cwd,
-          policy: Some(final_policy),
-          token: token.to_bytes(minted),
-          demand: spec.demand,
-        )
-      let active =
-        Active(
-          helper:,
-          op_id: spec.op_id,
-          step_id: spec.step_id,
-          token_bytes: token.to_bytes(minted),
-          relay_pid:,
-          monitor:,
-          ledger_generation: generation,
-        )
-      let state =
-        State(
-          ..state,
-          next_call: call_id + 1,
-          active: dict.insert(state.active, call_id, active),
-        )
-
-      // 6. Dispatch. A refusal here still settles through the relay so
-      // the caller sees exactly one CallSettled either way.
-      case exec.run(helper, request, events: exec_events, waiting: 5000) {
-        Ok(Nil) -> Nil
-        Error(failure) -> process.send(exec_events, exec.Failed(failure:))
-      }
-      #(state, Ok(CallHandle(id: call_id)))
-    }
-  }
-}
-
-type RelayMode {
-  Streaming
-  Draining
-}
-
-// Everything one relay loop iteration carries. `caller_watch` is the
-// monitor on the process that asked for the call, `None` once it has
-// fired or when the caller's subject named no live owner.
-type Relay {
-  Relay(
-    exec_events: Subject(exec.ExecEvent),
-    caller: Subject(CallEvent),
-    caller_watch: Option(process.Monitor),
-    broker_subject: Subject(Msg),
-    call_id: Int,
-    helper: Helper,
-    clock: Clock,
-    deadline_ms: Int,
-    mode: RelayMode,
-  )
-}
-
-// What wakes a relay: the helper spoke, or the caller died.
-type RelayWake {
-  FromExec(event: exec.ExecEvent)
-  CallerGone
-}
-
-fn relay_wake(relay: Relay, within: Int) -> Result(RelayWake, Nil) {
-  let selector =
-    process.new_selector()
-    |> process.select_map(relay.exec_events, FromExec)
-  let selector = case relay.caller_watch {
-    Some(monitor) ->
-      process.select_specific_monitor(selector, monitor, fn(_down) {
-        CallerGone
-      })
-    None -> selector
-  }
-  case relay.mode, relay.deadline_ms {
-    Streaming, 0 -> Ok(process.selector_receive_forever(selector))
-    Streaming, _finite | Draining, _deadline ->
-      process.selector_receive(selector, within)
-  }
-}
-
-fn relay(link: Relay) -> Nil {
-  let #(now, relay_clock) = clock.read(link.clock)
-  let link = Relay(..link, clock: relay_clock)
-  let remaining = int.max(link.deadline_ms - now, 0)
-  case relay_wake(link, remaining + 20) {
-    Ok(FromExec(exec.Output(stream:, data:, total_bytes:, truncated:))) -> {
-      process.send(
-        link.caller,
-        CallOutput(stream:, data:, total_bytes:, truncated:),
-      )
-      relay(link)
-    }
-    Ok(FromExec(exec.Exited(result:))) -> settle(link, CallExited(result:))
-    Ok(FromExec(exec.Failed(failure:))) -> settle(link, CallFailed(failure:))
-
-    // The caller is gone, so nothing wants this execution any more:
-    // cancel it and drain to the helper's terminal event, which is what
-    // returns the helper and the budget slot to the pool. A caller that
-    // dies during the drain changes nothing; the cancel is already in.
-    Ok(CallerGone) ->
-      case link.mode {
-        Streaming -> {
-          exec.cancel(link.helper)
-          let #(cancelled_at, relay_clock) = clock.read(link.clock)
-
-          // Caller death may follow a long quiet receive. The drain gets
-          // its full grace from cancellation, rather than from that wait.
-          relay(
-            Relay(
-              ..link,
-              clock: relay_clock,
-              caller_watch: None,
-              deadline_ms: cancelled_at + relay_grace_ms,
-              mode: Draining,
-            ),
-          )
-        }
-        Draining -> relay(Relay(..link, caller_watch: None))
-      }
-    Error(Nil) ->
-      case link.mode {
-        // Wall deadline hit: cancel and drain. The helper's own ladder
-        // (TERM then KILL, then the pool's outright kill) guarantees a
-        // terminal event; Draining's window bounds our trust in that.
-        Streaming -> {
-          exec.cancel(link.helper)
-          let #(cancelled_at, relay_clock) = clock.read(link.clock)
-
-          // The wall wait has finished; the cancellation grace starts now.
-          // Reusing its earlier timestamp would immediately expire a quiet
-          // execution's drain before the helper could report its exit.
-          relay(
-            Relay(
-              ..link,
-              clock: relay_clock,
-              deadline_ms: cancelled_at + relay_grace_ms,
-              mode: Draining,
-            ),
-          )
-        }
-        Draining -> settle(link, CallFailed(failure: exec.CancelEscalated))
-      }
-  }
-}
-
-fn settle(link: Relay, outcome: CallOutcome) -> Nil {
-  process.send(link.broker_subject, Settle(call_id: link.call_id))
-  process.send(link.caller, CallSettled(outcome:))
 }
