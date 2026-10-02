@@ -731,8 +731,8 @@ No single key sends a decision.
 | Timeline gutter | each row's strand and hue | derivable | `pieces` (`session_view/turns.gleam:298`), `hue` (`session_view/turns.gleam:248`); new hue constants in `tui/theme.gleam` |
 | Counted repeated rows | consecutive identical calls and errors | derivable | the grouping in `project` (`session_view/tool_activity.gleam:55`) gains a run-length fold; shared with the web view |
 | Harness notes | `[loom]`-prefixed inputs, hook and job notices | partly | `harness_message_lines` (`session_view/transcript_lines.gleam:1651`) recognises advisor frames; `memory_context_lines` (`session_view/composer.gleam:356`) the memory context; the `[loom]` job and hook notices need the same recogniser extended, no wire change |
-| Strands tab, strip, workspace list | one row per strand | yes | `lines` (`session_view/agent_roster.gleam:355`), `Line` (`session_view/agent_roster.gleam:84`), `status_line` (`session_view/strand_card.gleam:38`), `status_mark` (`tui/agents.gleam:1441`) |
-| Strand detail | task, now, update, pending, recent, approvals | yes | `Row` (`session_view/agent_view.gleam:65`) |
+| Strands tab, strip, workspace list | one row per strand | yes | `lines` (`session_view/agent_roster.gleam:355`), `Line` (`session_view/agent_roster.gleam:84`), `status_line` (`session_view/strand_card.gleam:45`), `status_mark` (`tui/agents.gleam:1441`) |
+| Strand detail | task, now, update, pending, recent, approvals | yes | `Row` (`session_view/agent_view.gleam:79`) |
 | Strand detail: messages out | sends with state | yes | `Item` (`session_view/agent_messages.gleam:52`) |
 | Strand detail: messages in, inbox | received messages, unread count | no | section 9.2; a strand origin on the admitted message and an inbox read need a protocol change |
 | Strand detail: cache | the cache outlook words | yes | `outlook_label` (`session_view/cache_miss.gleam:435`), today in `cache_outlook` (`tui/model.gleam:449`) |
