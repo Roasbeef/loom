@@ -74,15 +74,19 @@ fn run(script: Script) -> hookrunner.Outcome {
   let assert Ok(#(outgoing, attachment)) = process.receive(handoff, 1000)
     as "script publishes its own inbox"
   let assert Ok(helper) =
-    exec.start(exec.HelperConfig(
-      transport: exec.ChannelTransport(
-        send: fn(bytes) { process.send(outgoing, bytes) },
-        close: fn() { Nil },
+    exec.start(
+      exec.HelperConfig(
+        ..exec.default_config(
+          exec.ChannelTransport(
+            send: fn(bytes) { process.send(outgoing, bytes) },
+            close: fn() { Nil },
+          ),
+        ),
+        handshake_timeout_ms: 2000,
+        cancel_grace_ms: 100,
+        heartbeat_interval_ms: 0,
       ),
-      handshake_timeout_ms: 2000,
-      cancel_grace_ms: 100,
-      heartbeat_interval_ms: 0,
-    ))
+    )
     as "scripted helper starts"
   let wire = exec.wire(helper)
   process.send(attachment, wire)

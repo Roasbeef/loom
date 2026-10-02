@@ -69,7 +69,7 @@ pub fn start_helper(behavior: Behavior) -> exec.Helper {
     )
   let config =
     exec.HelperConfig(
-      transport:,
+      ..exec.default_config(transport),
       handshake_timeout_ms: 2000,
       cancel_grace_ms: 400,
       heartbeat_interval_ms: 0,
