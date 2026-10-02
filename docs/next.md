@@ -17,6 +17,15 @@ terminal clients lack profiling nodes; attribute their BEAM owners after a
 client launch with `--profile`. The next memory exit criterion is a matched
 installed baseline/candidate run with the same workload and observation cuts.
 
+The CPU extension reuses Darwin descendant-tracker scratch under the ledger
+lock: the 1,200-row indexing benchmark falls from 46,672 bytes and six
+allocations to zero, with median time 9.9% lower. Kernel reads, 20 ms cadence
+and birth-checked delivery remain. `loom observer` / `loomd observer` now
+attach to a profiled daemon, with `--pid` for a profiled client and `--erl` for
+a local Observer/wx installation. See `docs/distribution.md` for navigation.
+Installed CPU savings and function-level attribution of the busy unprofiled
+terminal remain measurement work, not established results.
+
 ## Local orientation in large modules (issue #593)
 
 Branch `lint/local-orientation` ([PR #679](https://github.com/Roasbeef/loom/pull/679))

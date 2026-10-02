@@ -1,4 +1,4 @@
-# Live daemon memory, October 2
+# Live daemon memory and CPU, October 2
 
 This pass profiles the installed `a3dc253596ba24ebf308a1ea680712705b49b1d9`
 daemon and two terminal clients. The patch lives on
@@ -119,6 +119,73 @@ returned transport. A scripted enforcement-probe regression grows only the
 environment lookup payload while requiring equal transport flat sizes.
 Its installed memory contribution remains unmeasured.
 
+## CPU attribution and tracker allocation
+
+Four native CPU cuts span 15.274 seconds. Cumulative process CPU time, rather
+than `ps`'s decaying `%CPU`, gives the following fraction of one core:
+
+| Owner | CPU time consumed | One core |
+| --- | ---: | ---: |
+| Four persistent `loom-exec` helpers combined | 3.89 s | 25.5% |
+| Daemon | 0.96 s | 6.3% |
+| Terminal client 75618 | 0.08 s | 0.5% |
+| Terminal client 18100 | 1.59 s | 10.4% |
+
+Native helper sampling repeatedly reaches `sysctl`. Each persistent Darwin
+execution's descendant tracker reads the host process table every 20 ms and
+builds a fresh index. The change reuses its parent-head map, sibling links and
+frontier under the existing ledger lock. Each sample still reads the kernel,
+clears the old heads and overwrites active links before traversal. Previously
+observed births remain in custody, and signal delivery still checks a fresh
+birth time. The 20 ms cadence, descendant selection and Darwin's declared
+lifecycle limitation are unchanged.
+
+Five benchmark runs on the same Apple M4 Max, with a 1,200-row table, give:
+
+| Snapshot indexing | Median time | Bytes/op | Allocs/op |
+| --- | ---: | ---: | ---: |
+| Original | 16,462 ns | 46,672 | 6 |
+| Reused scratch | 14,834 ns | 0 | 0 |
+
+The median indexing time improves by 9.9%. At 50 captures per second, that
+fixture avoids about 2.23 MiB/s of scratch allocation per tracker. The kernel
+sysctl still allocates its returned records; this is an indexing benchmark,
+not a whole-helper CPU or installed RSS measurement. Scratch capacity remains
+at the largest snapshot seen during that tracker’s lifetime.
+
+The allocation regression traverses a wider descendant tree and fails the
+original implementation with 36 allocations per capture. Fresh-edge tests
+cover shrinking, empty, reordered and growing snapshots; concurrent captures
+pass the race detector. The real sleeping-process signal test verifies that a
+remembered PID with the wrong birth does not authorize delivery.
+
+A five-second daemon reduction census identified busy generic actor loops.
+A broad OTP `tprof` request timed out before returning results; subsequent
+`trace:session_info(all)` showed only the pre-existing legacy/default session,
+so the probe left no active trace session. Ten later bounded stack cuts found
+the selected actors waiting in their selectors. Neither result identifies a
+specific daemon CPU defect. The busy client's native JIT stacks include text
+and Unicode work, but its unprofiled launch prevents function-level live
+attribution. No speculative renderer or actor scheduling change is included.
+
+## Observer command
+
+`loom observer` and `loomd observer` open a separate local GUI on the single
+profiled daemon in the selected state root. `--pid` selects a profiled client
+or daemon, `--state-dir` selects its private root, and `--erl` selects a local
+GUI-capable Erlang installation. Discovery checks the live PID, generated
+node and cookie HOME, including nodes started by the installed older release.
+It skips stale directories and satellites. The cookie stays in its existing
+private directory, outside the process argument vector. GUI crash dumps are
+disabled. The command waits until the operator closes the window.
+
+The bundled runtime is headless; the observer machine needs OTP's `observer`
+and `wx` modules. Processes/Memory, Reductions, links and Load Charts provide
+allocation and activity views. Applications only shows application-owned
+roots; this release starts Loom outside that callback, so it does not present
+a complete Loom tree there. `docs/distribution.md` records the commands and
+how to interpret these views.
+
 ## Validation and remaining measurement
 
 The tool sibling-slot and manager connect-payload regressions failed against
@@ -137,9 +204,21 @@ returned exit 0. The abort regression fails the original implementation
 The real jailed Gleam LSP and gopls tests ran successfully. Rust-analyzer
 could not run because its Rust toolchain component is absent. The client
 suite's MCP-process death observation has a declared macOS skip because it
-requires Linux `/proc`. No hosted CI or Linux signoff was run. The default
+requires Linux `/proc`. The initial affected run did not include hosted CI or Linux signoff. The default
 Homebrew Gleam 1.18.1 produces baseline format drift; validation used the
 bundled 1.19.0-rc2 matching CI instead.
+
+After the CPU and Observer additions, the tracker race suite, real signal
+regression and seven Observer discovery tests returned exit 0. The slim
+launcher argument/credential test also passed, including Observer help dispatch.
+A real wx window attached through `bin/loom observer --pid 74659`; querying
+its active node confirmed the installed daemon, and closing that test window
+returned emulator exit 0. The expanded independent review found no blocker in
+scratch ownership, fresh links, cookie handling or launcher dispatch.
+
+The full repository, assembled-release and exact-head hosted/Linux results
+are reported with the pull request. No production release was installed to
+obtain the local comparisons.
 
 The independent review found no correctness blocker in the query/tool
 projections and verified that full startup custody remains in the actors.
