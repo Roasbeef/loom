@@ -126,9 +126,10 @@ protocol (spec Part 1.4). WP-G.
   "Queue age" has no referent: nothing queues, so `all_busy` counts the
   congested refusals instead.
   `census(service, waiting:)` answers a `broker/census.Census`: when the
-  pool has a slot it can lend without waiting, the service borrows a helper,
-  reads its hello features and returns it; otherwise (pool full, service
-  closing) it answers with empty features, meaning unknown.
+  pool has heard a hello, the features are the newest helper's, read from
+  `pool_custody` (`HelperView.features`); it borrows and spawns nothing.
+  Empty features mean unknown: no helper has said hello yet, the pool did
+  not answer, or the service is closing.
 - `broker/dispatch.relay_grace_ms` — the drain grace both dispatchers use,
   moved here from `direct` so the lanes cannot disagree on it.
 - `broker/policy.SandboxPolicy` — `SandboxPolicyV1` as a typed value:
@@ -191,7 +192,8 @@ protocol (spec Part 1.4). WP-G.
   postponed. A gone pool is `PoolUnavailable`.
 - `broker/exec.{pool_custody, PoolCustody, HelperView, Lending, Custody}` —
   the census and one view per inventoried helper from the same instant: pid,
-  spawn `ordinal` (introspection, not a fence), `Lendable | Lent |
+  spawn `ordinal` (introspection, not a fence), the hello `features` the
+  pool received at the handshake (empty = unknown), `Lendable | Lent |
   Withdrawn`, and custody `Held | Retiring | Retired | CleanupUnconfirmed(
   reason) | ProofLost`, derived from the pool's books without asking a
   helper. `NoNativeResource` is not a pool-level state (the pool begins a
