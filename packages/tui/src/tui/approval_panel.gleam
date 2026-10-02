@@ -192,6 +192,7 @@ pub fn update(key: keys.Key, state: State) -> Action {
           scroll: FromStart(0),
         ),
       )
+
     // A number selects its choice, when the choice is offered, and decides
     // nothing: Enter is the one key that sends a decision.
     keys.Char("1") -> select(state, AllowOnce, approvable(state.review))
@@ -492,6 +493,7 @@ fn detail_lines(
             width,
           )
       }
+
       // The question is the block's own heading, so the detail starts at
       // the action and the grant.
       list.flatten([
