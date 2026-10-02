@@ -128,10 +128,11 @@ for a host with no surfaces.
   `transcript_lines.origin_checked`, and every heading in the local clock
   time when `Presentation.clock` (from `Shared.clock_offset`) knows the
   zone. `agent_messages.Item.ts` keeps the send's time for the workspace.
-- `transcript_lines.joined` joins each `agent_send` and `code_mode` result
-  in a compact window to its call, for responses whose calls are drawn as
-  narrative (a refused send is not joined): the call's row is drawn from its
-  result, `absorbed` says which result entries draw nothing,
+- `transcript_lines.joined` joins every tool result in a compact window to
+  its call, for responses whose calls are drawn as narrative: the call is
+  drawn with the rows a tool group draws for it (`call_rows`), settled,
+  failed with its reason, a send with its admission, a program with its
+  value, an image result with its image's row, `absorbed` says which result entries draw nothing,
   `reads_joined` names the responses that bypass the entry cache, and
   `joined_entry_lines`/`joined_block_lines` draw a response with the
   results joined. A compact `code_mode` call is one `✓ code_mode ·
@@ -150,6 +151,10 @@ for a host with no surfaces.
   with a readable record shows the summary and rows under the failure text.
   The golden JSON in `call_tree_test` is the same literal `tools` asserts
   its encoder writes.
+- `ImageRow` is an image's placeholder row under the call or turn that
+  carries it, worded by `image_header.describe` (`image 1 · image/png ·
+  1200×700 · 84 KB`); `image_header.dimensions` reads the pixel size from a
+  PNG, JPEG or GIF header totally, and answers `None` for anything else.
 - `transcript_lines.Presentation`: everything the line builders read of a
   client's state. A host fills it; the terminal does so in
   `tui_model.presentation`.
