@@ -37,7 +37,7 @@
 ////    `reselect` the row so the highlight follows the identity.
 //// 6. `render` picks a layout by width, draws the grouped rows (`list_lines`,
 ////    `row_lines`, `window`) beside the details pane (`detail_lines`), and ends
-////    with `help_line`; `visible` is the one drawn order the highlight indexes.
+////    with `help_lines`; `visible` is the one drawn order the highlight indexes.
 
 import etui/buffer
 import etui/geometry.{type Rect}
@@ -58,6 +58,7 @@ import session_view/agent_roster
 import session_view/text_hygiene
 import tui/daemon/protocol
 import tui/theme
+import tui/workspace
 
 /// The selected metadata collection, independent of runtime status.
 pub type Collection {
@@ -768,6 +769,10 @@ fn columns(width: Int, arrangement: Arrangement) -> Columns {
 
 /// Renders only one bounded page and its explicit action hints.
 ///
+/// The picker owns the whole of `screen`: it clears it before drawing, so
+/// nothing of the transcript shows in the margins beside the frame. The
+/// caller hands it the screen below the identity line.
+///
 /// `now_ms` is the host's wall clock, and it is used for one thing: the age
 /// column, which is the row's creation age because the page carries no
 /// last-activity time.
@@ -866,7 +871,7 @@ pub fn render(
   // column of terminal background runs down each side inside the border.
   let painted =
     buf
-    |> buffer.clear(area)
+    |> buffer.clear(screen)
     |> buffer.set_style(area, theme.overlay_plain())
     |> block.render(area, frame)
     |> paragraph.render_styled(inside, [
@@ -978,7 +983,7 @@ fn list_lines(
 
 fn empty_message(state: State) -> String {
   case state.page.sessions, state.filter {
-    [], _ -> "No saved sessions. Press n to create one explicitly."
+    [], _ -> "No saved sessions. Press n to create one."
     _, _ -> "No sessions match this filter. Tab shows the next one."
   }
 }
@@ -1070,19 +1075,11 @@ fn workspace_name(workspace: String) -> String {
   }
 }
 
-// The daemon reports canonical paths and the picker holds no reading of
-// the operator's home directory, so a path under a conventional home root
-// reads as `~/…`. The shortening is presentation only: no path drawn here
-// is ever used for routing, and the details pane prints the path whole.
+// A path under a conventional home root reads as `~/…`, as the terminal
+// writes its own workspace (`workspace.path_label`). The shortening is
+// presentation only: no path drawn here is ever used for routing.
 fn home_relative(path: String) -> String {
-  case string.split(text_hygiene.single_line(path), "/") {
-    ["", "Users", _, ..rest] | ["", "home", _, ..rest] ->
-      case rest {
-        [] -> "~"
-        [_, ..] -> "~/" <> string.join(rest, "/")
-      }
-    _other -> text_hygiene.single_line(path)
-  }
+  workspace.path_label(text_hygiene.single_line(path))
 }
 
 // One row. The first line is the marker, the glyph, the label, the state
@@ -1101,13 +1098,31 @@ fn row_lines(
 ) -> List(span.Line) {
   let presence = presence(state, row)
   let activity = option.from_result(dict.get(state.activity, row.session_id))
-  let #(marker, background, name_weight) = case
+
+  // The cursor's mark is amber and bold; the attached session's is quiet,
+  // so one column never shows two marks that both read as a selection.
+  let #(marker, background, name_weight, mark_look) = case
     index == state.selected,
     row.session_id == state.current
   {
-    True, _ -> #("▸ ", theme.raised, style.bold())
-    False, True -> #("› ", theme.graphite, style.none())
-    False, False -> #("  ", theme.graphite, style.none())
+    True, _ -> #(
+      "▸ ",
+      theme.raised,
+      style.bold(),
+      #(theme.signal, style.bold()),
+    )
+    False, True -> #(
+      "› ",
+      theme.graphite,
+      style.none(),
+      #(theme.quiet, style.none()),
+    )
+    False, False -> #(
+      "  ",
+      theme.graphite,
+      style.none(),
+      #(theme.quiet, style.none()),
+    )
   }
   let tone = tone(presence, row.status)
   let name = text.pad_right(fit_label(label, columns.name), columns.name)
@@ -1125,10 +1140,7 @@ fn row_lines(
   }
   let first =
     span.line_new([
-      span.span_styled(
-        marker,
-        style.new(theme.signal, background, style.bold()),
-      ),
+      span.span_styled(marker, style.new(mark_look.0, background, mark_look.1)),
       span.span_styled(
         glyph(presence, row.status) <> " ",
         style.new(tone.0, background, tone.1),
@@ -1522,13 +1534,22 @@ fn detail_lines(
   let presence = presence(state, row)
   let activity = option.from_result(dict.get(state.activity, row.session_id))
   let tone = tone(presence, row.status)
-  let heading =
-    wrapped(
-      text_hygiene.single_line(row.name),
-      width,
-      style.new(theme.paper, theme.graphite, style.bold()),
-    )
-    |> list.take(2)
+
+  // The heading names the session as the design does, `loom · main`: its
+  // workspace, then its name, on one line and cut with an ellipsis.
+  let heading = [
+    span.line_new([
+      span.span_styled(
+        cut(
+          workspace_name(row.workspace)
+            <> " · "
+            <> text_hygiene.single_line(row.name),
+          width,
+        ),
+        style.new(theme.paper, theme.graphite, style.bold()),
+      ),
+    ]),
+  ]
   let reason = case reason(state, presence, row, activity) {
     "" -> ""
     reason -> " · " <> reason
@@ -1663,13 +1684,6 @@ fn table_row(
       ),
     ]),
   ]
-}
-
-fn wrapped(value: String, width: Int, style: style.Style) -> List(span.Line) {
-  value
-  |> text_hygiene.single_line
-  |> text.wrap(int.max(1, width))
-  |> list.map(fn(line) { span.line_new([span.span_styled(line, style)]) })
 }
 
 // At most `rows` wrapped lines. A longer value ends its last row with an
@@ -1827,6 +1841,14 @@ fn cut(value: String, width: Int) -> String {
         True, _ | False, [_] | False, [] -> head
         False, [_, _, ..] ->
           list.take(words, list.length(words) - 1) |> string.join(" ")
+      }
+
+      // A last word so long that ending before it would give back more
+      // than a third of the room, as a path or a long name does, is cut
+      // inside instead.
+      let whole = case text.cell_width(whole) * 3 < width * 2 {
+        True -> head
+        False -> whole
       }
       trim_joint(whole) <> "…"
     }

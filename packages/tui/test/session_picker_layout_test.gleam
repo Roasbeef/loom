@@ -219,7 +219,7 @@ pub fn wide_picker_aligns_every_column_and_previews_the_selection_test() {
   // The headings shorten the path to the home directory and count rows.
   let heading = line_with(lines, "LOOM")
   assert string.contains(heading, "~/code/loom")
-  assert string.contains(heading, "4  │ main")
+  assert string.contains(heading, "4  │ loom · main")
 
   // The preview has its fixed labels and the session's own words.
   assert string.contains(line_with(lines, "LAST MESSAGE"), "LAST MESSAGE")
@@ -355,4 +355,64 @@ pub fn ages_read_in_the_largest_whole_unit_test() {
   assert string.contains(line_with(lines, "static-panic"), "4h")
   assert string.contains(line_with(lines, "htlc"), "1w")
   assert string.contains(line_with(lines, "fix readme"), "2w")
+}
+
+// The picker owns the screen below the identity line: the transcript behind
+// it must not show in the margins beside the frame, at any width.
+pub fn nothing_behind_the_picker_shows_beside_it_test() {
+  list.each([#(120, 40), #(80, 24)], fn(size) {
+    let shown = painted(picker, size.0, size.1) |> frame.buffer_to_lines
+    assert !list.any(shown, string.contains(_, "gateway paths ready"))
+    assert !list.any(shown, string.contains(_, "Native client"))
+    let assert [identity, ..] = shown as "a frame has rows"
+    assert string.contains(identity, "◆")
+  })
+}
+
+// The attached session's mark is quiet; only the cursor's mark is amber.
+pub fn only_the_cursor_mark_is_amber_test() {
+  let buf =
+    painted(
+      fn(now) {
+        session_selector.State(..picker(now), current: "s-herdr", selected: 1)
+      },
+      120,
+      40,
+    )
+  let lines = frame.buffer_to_lines(buf)
+  let assert Ok(#(y, line)) =
+    lines
+    |> list.index_map(fn(line, index) { #(index, line) })
+    |> list.find(fn(pair) { string.contains(pair.1, "› ● herdr-update") })
+    as "the attached row is marked"
+  let at = column(line, "›")
+  assert buffer.cell_fg(buffer.get_cell(buf, geometry.Position(at, y)))
+    == theme.quiet
+}
+
+// A name with no break in it is cut with an ellipsis in the preview's
+// heading, never broken across lines.
+pub fn a_long_unbroken_name_is_cut_in_the_preview_test() {
+  let long = fn(now) {
+    session_selector.new(
+      protocol.Page(
+        1,
+        [
+          session(
+            now,
+            "s-long",
+            "/Users/operator/code/loom",
+            "an-unbroken-session-name-much-longer-than-the-preview-pane",
+            day,
+            protocol.Saved,
+          ),
+        ],
+        None,
+      ),
+      "",
+    )
+  }
+  let shown = painted(long, 120, 40) |> frame.buffer_to_lines
+  let heading = line_with(shown, "│ loom · an-unbroken")
+  assert string.ends_with(string.trim_end(string.drop_end(heading, 1)), "…")
 }

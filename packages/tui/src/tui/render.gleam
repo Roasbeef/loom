@@ -250,7 +250,12 @@ pub fn render_frame(
         goal_availability(model),
       )
     DaemonSelector(selector) ->
-      session_selector.render(base, screen, selector, model.view.wall_ms)
+      session_selector.render(
+        base,
+        below_identity(screen),
+        selector,
+        model.view.wall_ms,
+      )
     PeerLinkManager(state) -> peer_links.render(base, screen, state)
     AccessManager(state) -> access_overlay.render(base, screen, state)
     ApprovalInspector(panel) -> approval_panel.render(base, screen, panel)
@@ -316,6 +321,17 @@ pub fn render_frame(
   let #(rendered, cursor) =
     render_context_surface(rendered, cursor, screen, model)
   #(appearance.apply(rendered, model.view.palette), cursor)
+}
+
+// The screen under its first row, which the identity line keeps while a
+// full-screen surface is open, so the session it belongs to stays named.
+fn below_identity(screen: Rect) -> Rect {
+  geometry.rect_new(
+    screen.position.x,
+    screen.position.y + 1,
+    screen.size.width,
+    int.max(0, screen.size.height - 1),
+  )
 }
 
 /// Draws a rounded border and a left-aligned title, leaving the interior alone.
