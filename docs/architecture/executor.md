@@ -72,7 +72,7 @@ helper's own `wall_s` policy limit.
 Custody of a helper is two independent facts. `Availability`
 (`broker/exec.gleam:2443`) says what the pool may do with the entry:
 `Available`, `Borrowed`, `Draining`, `RetiringActor` or `Unconfirmed`.
-`Retirement` (`broker/exec.gleam:448`) says what the helper machine knows about
+`Retirement` (`broker/exec.gleam:456`) says what the helper machine knows about
 its own native process, and it has four values. `NoNativeResource` means
 nothing was acquired. `PendingExit` means a shutdown frame was sent and the
 port is retained so the exit status can still be selected. `NativeExit(status)`
@@ -85,12 +85,12 @@ entry, including draining and unconfirmed ones (`lendable_again`,
 `broker/exec.gleam:2861`), and an entry leaves the inventory only when its
 actor exits normally after a recorded retirement (`record_owner_exit`,
 `broker/exec.gleam:2769`). The cost is that most failures end in `LostExit`:
-`mark_dead` closes the port (`broker/exec.gleam:2097`), and `kill_transport`
-closes it before it sends `SIGKILL` (`broker/exec.gleam:2062`), so no exit
+`mark_dead` closes the port (`broker/exec.gleam:2108`), and `kill_transport`
+closes it before it sends `SIGKILL` (`broker/exec.gleam:2072`), so no exit
 status can follow. A helper that missed its cancel deadline, timed out its
 handshake or violated the protocol therefore costs one slot permanently. The
 pool has no waiter queue. A full pool answers `AllBusy(size)` at once
-(`next_helper`, `broker/exec.gleam:2811`), and waiting is the caller's polling loop
+(`next_helper`, `broker/exec.gleam:2823`), and waiting is the caller's polling loop
 (`clear_awaiting_helper`, `broker/broker.gleam:469`), which `docs/weft.md`
 rules deliberately hand-rolled. Idle retirement (#283) is not implemented.
 
@@ -109,7 +109,7 @@ The relay selects two things: events from the helper machine, and the death of
 the caller (`relay_wake`, `broker/broker.gleam:1255`). It does not watch the
 helper actor itself. When that actor dies mid-execution, nothing sends a
 terminal event, because the death notice runs inside the dying actor
-(`notify_death`, `broker/exec.gleam:2132`). A relay with a wall deadline
+(`notify_death`, `broker/exec.gleam:2143`). A relay with a wall deadline
 eventually settles through its grace window. A relay with `deadline_ms == 0`,
 the session-lifetime jobs of protocol-change/058, waits in
 `selector_receive_forever` (`broker/broker.gleam:1267`) and never settles. The
@@ -324,7 +324,7 @@ And the service is the only process that sends a helper `Run`, `CancelExec` or
 casting to the helper itself. Erlang orders messages between one sender and one
 receiver, so a cancel the service sent for an execution reaches the helper
 before any `Run` the service sends for the next one, and a helper that has
-already settled the first ignores it in `Idle` (`broker/exec.gleam:1096`). A
+already settled the first ignores it in `Idle` (`broker/exec.gleam:1104`). A
 row in `Settled` drops everything addressed to it. A `HelperGen` is added only
 if S2's race test finds a window this argument misses, or if S3's introspection
 needs to name a helper incarnation that a pid cannot.
@@ -392,7 +392,7 @@ of its callers. A property test over random event sequences pins it.
 One question the design settles by argument and leaves to a test is whether
 `CancelExec` needs an execution id. It carries none today
 (`broker/exec.gleam:403`), and a cancel cast that arrives after the helper has
-processed `Exited` is seen in `Idle` and ignored (`broker/exec.gleam:1096`).
+processed `Exited` is seen in `Idle` and ignored (`broker/exec.gleam:1104`).
 The mailbox is ordered, so a cancel sent while the row is live cannot overtake
 the terminal event of a later execution. S2 writes the race test. If it finds a
 window, then `CancelExec` grows a fence, and not before.
@@ -405,18 +405,18 @@ lands. "Defect" entries refer to the next section.
 
 | # | Invariant | Held today by | Held in the service by | Phase |
 |---|---|---|---|---|
-| 1 | Ownership precedes acquisition | `prepare` parks an owner with `NoNativeResource`; the pool records the entry and its monitor before `begin` (`spawn_new`, `broker/exec.gleam:2868`). No analogue for an execution. | The registry row is inserted before `exec.run`, and the relay monitors the helper before it dispatches. | S1 |
-| 2 | One helper, one live execution | The machine answers `HelperBusy`. The system does not: `status_of` reports `Running` and `Cancelling` as ready (`broker/exec.gleam:1263`), so a checked-in busy helper is re-lent (defect). | The pool lends a helper only when its status is `StatusReady`, which the busy-checkin fix makes mean idle. | Fix before S1 |
+| 1 | Ownership precedes acquisition | `prepare` parks an owner with `NoNativeResource`; the pool records the entry and its monitor before `begin` (`spawn_new`, `broker/exec.gleam:2880`). No analogue for an execution. | The registry row is inserted before `exec.run`, and the relay monitors the helper before it dispatches. | S1 |
+| 2 | One helper, one live execution | The machine answers `HelperBusy`. The system did not: `status_of` reported `Running` and `Cancelling` as ready, so a checked-in busy helper was re-lent. The busy-checkin fix gives them `StatusBusy` (`status_of`, `broker/exec.gleam:1274`). | The pool lends a helper only when its status is `StatusReady`, which the busy-checkin fix makes mean idle. | Fix before S1 |
 | 3 | Exactly one settlement per execution | The machine settles once and `Dead` absorbs, but a dead helper actor or a dead relay settles nothing (defect). | `Settled` is absorbing in `step`; one `Settled` message per id reaches the broker; `HelperDown` settles `Lost(HelperActorGone)`. | S1 |
 | 4 | No claim of exactly-once effects | `run` promises one terminal event, not one effect. `HelperUnresponsive` is documented as "nothing was dispatched" (`broker/exec.gleam:292`), which a timeout cannot guarantee (defect). | `Lost(..)` is the only outcome for an execution that may have started and cannot be accounted for; nothing replays. The document claim is corrected. | S1, S2 |
 | 5 | Cancel is idempotent and generation-fenced | Idempotent (`broker/exec.gleam:1086`). Fenced only by the broker's discipline of cancelling through the `Active` row. | The registry maps `ExecutionId` to `(helper, generation)` and drops anything addressed to a `Settled` row. | S1; race test S2 |
-| 6 | BEAM death is not native cleanup | `record_owner_exit` refuses to free the slot (`broker/exec.gleam:2769`). Unchanged. | The service settles the caller as `Lost` but never touches custody. A killed service leaves the pool `Unconfirmed`. | S2 (negative test) |
-| 7 | Native retirement keeps its witness | Only a native exit status selected from a retained port counts (`native_exit`, `broker/exec.gleam:1314`). | Unchanged, with one extension: under bwrap a deliberate `SIGKILL` of a port whose handle is kept yields status 137, which counts (defect). | S2 |
+| 6 | BEAM death is not native cleanup | `record_owner_exit` refuses to free the slot (`broker/exec.gleam:2780`). Unchanged. | The service settles the caller as `Lost` but never touches custody. A killed service leaves the pool `Unconfirmed`. | S2 (negative test) |
+| 7 | Native retirement keeps its witness | Only a native exit status selected from a retained port counts (`native_exit`, `broker/exec.gleam:1325`). | Unchanged, with one extension: under bwrap a deliberate `SIGKILL` of a port whose handle is kept yields status 137, which counts (defect). | S2 |
 | 8 | No capacity reuse before evidence | `lendable_again` (`broker/exec.gleam:2861`). Unchanged. | Unchanged. The rule stays; the witnessed kill changes only which failures can produce evidence. | S2 |
 | 9 | Late events from an old helper are fenced | Per-helper subjects, frame ids, pid-keyed pool messages. A late `Run` is not fenced (defect). | The registry fence plus the generation; a liveness check at dispatch drops a `Run` whose events owner is dead. | S1; late-`Run` S2 |
 | 10 | Enforced, degraded, skipped and unsupported stay distinct | Typed refusals (`DegradedHelper`, `DegradedExecution`) and a report of strings. | The service forwards `ExecResult.enforcement` unchanged and the lane-equivalence test compares it byte for byte. The tag vocabulary becomes a shared artifact in S5. | S1; S5 |
 | 11 | Darwin limits stay | `tolerated_layers_for_demand` and `FullEnforcement` still refusing `skip:darwin-process-lifecycle`. | Untouched. The witnessed-kill rule applies under bwrap only. | n/a |
-| 12 | Shutdown is a state transition | The helper (`handle_shutdown`, `broker/exec.gleam:1292`) and the pool both have one. The broker has none: stopping it does not cancel active calls. | The service's `Closing` phase (below). | S2 |
+| 12 | Shutdown is a state transition | The helper (`handle_shutdown`, `broker/exec.gleam:1303`) and the pool both have one. The broker has none: stopping it does not cancel active calls. | The service's `Closing` phase (below). | S2 |
 
 Invariant 10 is the honest weak spot. The report is a list of strings with a
 `skip:` prefix convention, assembled in Go and interpreted in Gleam by two
@@ -506,7 +506,7 @@ defect until S3 deletes it. Phase: S1.
 the broker casts a cancel and then checks the helper in at once
 (`handle_relay_down`, `broker/broker.gleam:903`). `status_of` reports a
 cancelling helper as ready, and any ready helper that comes back through
-`handle_checkin` (`broker/exec.gleam:2791`) is marked `Available`. The next borrower's `run` gets
+`handle_checkin` (`broker/exec.gleam:2803`) is marked `Available`. The next borrower's `run` gets
 `HelperBusy`, which the broker turns into a failure of an unrelated call. The
 fix is a small independent change off `main` on `broker/busy-checkin`: add
 `StatusBusy` to `HelperStatus`, lend only on `StatusReady`, and retire a helper
@@ -520,7 +520,7 @@ type documents as "nothing was dispatched" (`broker/exec.gleam:292`). The
 broker's next step retires the helper, which queues a shutdown right behind the
 run, so the orphan is cancelled within one mailbox step. The residual harm is
 that a jailed command may start after the caller was told it had not. S2 drops
-a `Run` in `handle_run` (`broker/exec.gleam:1394`) when the owner of its events
+a `Run` in `handle_run` (`broker/exec.gleam:1405`) when the owner of its events
 subject is no longer alive, replies `NotReady`, and corrects the two doc
 comments. A clock-stamped expiry is the stronger fence and is taken only if the
 race test shows the liveness check losing. Phase: S2.
