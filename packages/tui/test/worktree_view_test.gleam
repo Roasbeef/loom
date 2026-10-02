@@ -506,7 +506,6 @@ pub fn automatic_wide_diff_preserves_composer_and_explicit_dismissal_test() {
   let wide = tui.update(backend.Resize(160, 35), base)
   assert wide.view.diff_view == tui_model.DiffAutomatic
   assert string.contains(painted(wide), "captured changes")
-  assert string.contains(painted(wide), "transcript / main")
   assert textarea.value(key(wide, "x").view.input) == "draftx"
   assert key(wide, "esc").view.diff_view == tui_model.DiffAutomatic
     as "the default pane must not intercept the operation stop key"

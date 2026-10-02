@@ -14,10 +14,13 @@
 //// ╰─ Kimi-K3 · low › ctx ~41% › est $1.86 ───────────────────────────────────── 1 needs you ─╯
 //// ```
 ////
-//// The top rule's left says where Enter sends and what it does; its right
-//// says what the strand is doing, for how long, how much is queued and how
-//// to stop it. The bottom rule's left is the model, context and cost; its
-//// right is how many agents need the operator. Every label is drawn from a
+//// The top rule's left says where Enter sends and what it does, in keys
+//// rather than sentences; its right says what the strand is doing, for how
+//// long, how much is queued and how to stop it. The bottom rule's left is
+//// the model, context and cost and nothing else; its right is how many
+//// agents need the operator, drawn only while any do. A notice, and the
+//// reason behind an unusual key, sit in the status band inside the frame
+//// (`layout.composer_status_lines`), not on its rules. Every label is drawn from a
 //// `Status` the caller builds from the model, so this module reads no model
 //// and decides only geometry: what fits, and what gives way first when it
 //// does not.
@@ -89,8 +92,6 @@ pub type Status {
     queued: Int,
     /// The strand being viewed, named when it rests.
     strand: String,
-    /// A transient notice, or the empty string; it leads the bottom rule.
-    notice: String,
     /// The model by its last path segment.
     model: String,
     /// The reasoning effort, when known.
@@ -410,19 +411,7 @@ fn bottom_left(status: Status, width: Int) -> List(#(String, style.Style)) {
     True -> "$" <> status.cost
     False -> "est $" <> status.cost
   }
-
-  // A notice is drawn in paper rather than amber: most notices report, and
-  // amber is kept for what asks the operator to act.
-  let notice = case string.trim(status.notice) {
-    "" -> []
-    notice -> [
-      #(
-        " " <> text_hygiene.single_line(notice) <> " ›",
-        style.new(theme.paper, style.Default, style.none()),
-      ),
-    ]
-  }
-  list.append(notice, [
+  [
     #(
       " "
         <> text_hygiene.single_line(model)
@@ -433,15 +422,14 @@ fn bottom_left(status: Status, width: Int) -> List(#(String, style.Style)) {
         <> " ",
       quiet,
     ),
-  ])
+  ]
 }
 
-// How many agents need the operator, in the danger colour while any do.
+// How many agents need the operator, in the danger colour, and nothing at
+// all while none do.
 fn bottom_right(status: Status) -> List(#(String, style.Style)) {
   case status.needs {
-    0 -> [
-      #(" 0 need you ", style.new(theme.quiet, style.Default, style.none())),
-    ]
+    0 -> []
     1 -> [
       #(" 1 needs you ", style.new(theme.danger, style.Default, style.bold())),
     ]

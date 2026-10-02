@@ -927,7 +927,6 @@ pub fn workspace_preserves_recipient_controls_and_attention_at_small_sizes_test(
         render.view(initial, geometry.rect_new(0, 0, size.0, size.1)).0
         |> frame.buffer_to_text
       assert string.contains(rendered, "To main")
-      assert string.contains(rendered, "need you")
       assert string.contains(rendered, "retained draft")
       let editing = initial |> press("w")
       let rendered =

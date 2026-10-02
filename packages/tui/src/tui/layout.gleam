@@ -88,6 +88,27 @@ pub fn panel_inner(area: Rect) -> Rect {
   )
 }
 
+/// The transcript's reading area inside its panel: the full height but the
+/// bottom row, which the reading row takes while the reader is above the
+/// tail, and one cell in from each side for the gutter. The panel has no
+/// heading row; the identity line names the strand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert layout.transcript_inner(geometry.rect_new(0, 1, 10, 5))
+///   == geometry.rect_new(1, 1, 8, 4)
+/// ```
+@internal
+pub fn transcript_inner(panel: Rect) -> Rect {
+  geometry.rect_new(
+    panel.position.x + 1,
+    panel.position.y,
+    int.max(0, panel.size.width - 2),
+    int.max(0, panel.size.height - 1),
+  )
+}
+
 /// Splits the screen into the header, body, composer and footer rows.
 ///
 /// The footer rectangle includes the agent strip beneath the footer proper;
@@ -534,10 +555,23 @@ pub fn composer_status_lines(model: Model) -> List(String) {
     ]
     Some(_), False | None, _ -> []
   }
-  list.append(
-    active,
-    list.append(reviewers, list.append(goal, list.append(nudges, pending))),
-  )
+
+  // A notice and the reason behind an unusual key are news, so they sit
+  // here inside the frame rather than on its rules, which carry keys and
+  // figures.
+  // The queue editor owns the band while it is focused, as it does for the
+  // nudges and the goal.
+  let news = case queue_focused {
+    True -> []
+    False ->
+      [
+        model.view.cache_outlook,
+        text_hygiene.single_line(model.shared.notice),
+        input_keys(model).1 |> option.unwrap(""),
+      ]
+      |> list.filter(fn(piece) { piece != "" })
+  }
+  list.flatten([active, reviewers, goal, nudges, news, pending])
 }
 
 // An ordinary-height narrow terminal has no agent rail, so the composer owns
@@ -568,6 +602,61 @@ fn reviewer_band_lines(model: Model) -> List(String) {
   {
     [], True -> ["Advisor · idle · /agents to inspect", ""]
     lines, _ -> lines
+  }
+}
+
+/// What the next key does on the input frame's top rule, and the reason it
+/// is not the ordinary Enter when there is one, for the status band.
+///
+/// Composer guidance answers what the next Enter does. The agent rail can
+/// still display the last operation's outcome, so its terminal status alone
+/// cannot establish whether this idle strand retains queued input.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // layout.input_keys(model) == #(" Enter sends ", None)
+/// ```
+@internal
+pub fn input_keys(model: Model) -> #(String, Option(String)) {
+  use <- bool.guard(
+    model.shared.captured != None
+      && !session_model.is_known_strand(
+      model.shared.strands,
+      model.shared.active_strand,
+    ),
+    #(" ^O agents ", Some("Recipient unavailable · your draft is kept")),
+  )
+  use <- bool.guard(
+    model.shared.peer == session_model.Disconnected,
+    case model.view.reconnect {
+      tui_model.ReconnectAttempting(..) -> #(
+        " draft kept ",
+        Some("Reconnecting to the daemon · draft retained"),
+      )
+      tui_model.ReconnectIdle | tui_model.ReconnectSpent -> #(
+        " /sessions reconnects ",
+        Some("Disconnected · /sessions to reconnect · draft retained"),
+      )
+    },
+  )
+  let held = #(
+    " Enter sends held input ",
+    Some("Stopped · your next message is sent with the held input"),
+  )
+  use <- bool.guard(tui_model.active_queue_halted(model), held)
+  case
+    session_model.active_interrupt(model.shared),
+    active_status_label(model),
+    model.view.submission_mode
+  {
+    Some(_), _, _ -> held
+    None, None, _ -> #(" Enter sends ", None)
+    None, Some(_), tui_model.SteerNow -> #(" Enter steers · Tab queues ", None)
+    None, Some(_), tui_model.PromptNext -> #(
+      " Enter queues · Tab steers ",
+      None,
+    )
   }
 }
 
@@ -749,7 +838,7 @@ pub fn note_detail_area(model: Model) -> Rect {
   let #(_, body, _, _) = layout(screen, model)
   let #(conversation, _) = queue_body_layout(body, model)
   let #(transcript, _, _) = body_layout(conversation, model)
-  panel_inner(transcript)
+  transcript_inner(transcript)
 }
 
 /// Returns the message preview's actual rectangle for viewport regressions.
@@ -823,7 +912,7 @@ pub fn hit_area(model: Model, at: geometry.Position) -> Rect {
   let #(transcript_panel, agent_panel, changes_panel) =
     body_layout(conversation, model)
   [
-    panel_inner(transcript_panel),
+    transcript_inner(transcript_panel),
     panel_inner(agent_panel),
     panel_inner(changes_panel),
     panel_inner(input_area),
@@ -839,7 +928,7 @@ pub fn transcript_viewport_height(model: Model) -> Int {
   let screen = model_screen(model)
   let #(_, body, _, _) = layout(screen, model)
   let #(conversation, _) = queue_body_layout(body, model)
-  int.max(1, panel_inner(conversation).size.height)
+  int.max(1, transcript_inner(conversation).size.height)
 }
 
 /// Returns the transcript rows left after fixed terminal surfaces are reserved.
@@ -849,8 +938,8 @@ pub fn transcript_height(
   input_rows: Int,
   footer_rows: Int,
 ) -> Int {
-  // The header consumes one row and the transcript border consumes two.
-  int.max(1, height - input_rows - footer_rows - 3)
+  // The identity line consumes one row and the reading row one more.
+  int.max(1, height - input_rows - footer_rows - 2)
 }
 
 /// The width of a transcript row at the current screen size.

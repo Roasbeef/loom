@@ -300,7 +300,7 @@ already has and now carries on its title row; the approval as a full-width
 block under a rule with numbered choices, a key hint and a one-line reason,
 which replaces the bottom-anchored dialog's three vertical choices, keeping
 the rule that nothing is selected on opening and Enter confirms
-(`render`, `tui/approval_panel.gleam:263`, keeps its capture of the exact
+(`render`, `tui/approval_panel.gleam:285`, keeps its capture of the exact
 sequence, action and grants); the single footer line with an activity label
 on the left, which the compact footer already is; and the pinned todo as one
 line that expands.

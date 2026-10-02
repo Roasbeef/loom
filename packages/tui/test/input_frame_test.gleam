@@ -49,7 +49,8 @@ pub fn the_input_frame_is_closed_and_carries_the_live_status_test() {
     assert string.contains(middle, "/ commands")
     assert string.contains(bottom, "Kimi-K3")
     assert string.contains(bottom, "ctx —")
-    assert string.ends_with(bottom, "0 need you ─╯")
+    assert string.ends_with(bottom, "─╯")
+    assert !string.contains(bottom, "need you")
     assert string.length(top) == size.0
     assert string.length(bottom) == size.0
 

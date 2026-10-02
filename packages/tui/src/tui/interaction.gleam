@@ -1550,9 +1550,7 @@ pub fn begin_selection(model: Model, at: geometry.Position) -> Model {
   let #(transcript, _, _) = layout.body_layout(conversation, model)
   use <- bool.lazy_guard(
     tui_model.reading_history(model)
-      && {
-      at.y == transcript.position.y || at.y == geometry.bottom(transcript) - 1
-    }
+      && at.y == geometry.bottom(transcript) - 1
       && at.x < geometry.right(transcript),
     fn() {
       scroll_transcript(
@@ -1695,7 +1693,7 @@ fn selection_covers_transcript(
   let #(_, body_area, _, _) = layout.layout(screen, model)
   let #(conversation, _) = layout.queue_body_layout(body_area, model)
   let #(transcript_panel, _, _) = layout.body_layout(conversation, model)
-  selected.area == layout.panel_inner(transcript_panel)
+  selected.area == layout.transcript_inner(transcript_panel)
   && !layout.main_shows_diff(model)
 }
 
@@ -1746,7 +1744,7 @@ pub fn selection_gutters_on_display(model: Model) -> List(#(Int, Int)) {
   let #(_, body_area, _, _) = layout.layout(screen, model)
   let #(conversation, _) = layout.queue_body_layout(body_area, model)
   let #(transcript_panel, _, _) = layout.body_layout(conversation, model)
-  let area = layout.panel_inner(transcript_panel)
+  let area = layout.transcript_inner(transcript_panel)
   model.view.rendered_gutters
   |> list.drop(model.view.scroll_offset + tui_model.viewport_backlog(model))
   |> list.take(area.size.height)
