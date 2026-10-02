@@ -276,3 +276,20 @@ failure, because three methods share one capability. Another typed semantic
 query must establish recovery. Informational messages do not poison ordinary
 misses.
 Malformed notifications are dropped by the existing total decoder.
+
+## Finite semantic observations
+
+`lsp/observation` carries a separate `Door.collect(Request, Control)` contract.
+A request names one configured server and root, at most 16 outline files and
+32 explicit reference seeds. Seeds require a path; a missing line resolves
+through that file's outline and counts as a protocol request. The batch keeps
+outline symbols and reference targets separate, so an outlined symbol never
+implies that its references were collected. Raw references have no implicit
+container queries. Diagnostics and rename remain on the interactive door.
+
+`lsp/client.observation_state` reads the actor's incarnation token, document
+versions and text, active progress, retained failure and change epochs in one
+message. The client monitors each semantic request's reply owner. Owner death
+removes that pending id and sends `$/cancelRequest`; a late reply is ignored
+and the shared server keeps serving. Cancellation is a protocol request, so
+it does not prove that a server which ignores cancellation stopped computing.

@@ -158,6 +158,7 @@ import core/json.{type JsonValue}
 import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
+import gleam/erlang/reference
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -417,6 +418,9 @@ pub opaque type Msg {
   /// A request's deadline lapsed. Stale when the id already settled.
   Expire(id: Int)
 
+  /// A requesting process died; only its pending protocol requests are cancelled.
+  CallerDown(monitor: process.Monitor)
+
   /// Document operations, already resolved to URIs by the caller.
   Sync(ops: List(Resolved), reply: Subject(Result(Nil, RequestError)))
 
@@ -477,6 +481,7 @@ type Reading {
     ),
   )
   CapabilitiesOf(reply: Subject(Result(ServerCapabilities, RequestError)))
+  Observed(reply: Subject(Result(ObservationState, RequestError)))
 }
 
 // A `DocOp` with its path resolved to a URI in the caller, so the actor
@@ -495,6 +500,7 @@ type Pending {
     reply: Subject(Result(JsonValue, RequestError)),
     deadline_ms: Int,
     feature: Feature,
+    monitor: Option(process.Monitor),
   )
   BarrierFor(token: Int)
   HandshakeWaits(reply: Subject(Result(Nil, StartError)))
@@ -616,6 +622,10 @@ type Data {
   Data(
     /// The configured server name, for messages.
     server: String,
+    /// Actor-local incarnation token; never sent to the server or cap caller.
+    generation: reference.Reference,
+    /// Moves on every server-reported failure, including one later recovered.
+    failure_epoch: Int,
     /// The `languageId` for a `Change` to a document not yet open.
     language_id: String,
     /// The root as a `file://` URI, sent in `initialize`.
@@ -1346,6 +1356,7 @@ fn spawn(
       process.new_selector()
       |> process.select(commands)
       |> process.select_map(inbound, FromTransport)
+      |> process.select_monitors(fn(down) { CallerDown(down.monitor) })
       |> process.select_specific_monitor(process.monitor(owner), fn(_) {
         Abandoned
       })
@@ -1356,6 +1367,8 @@ fn spawn(
     let data =
       Data(
         server: options.server,
+        generation: reference.new(),
+        failure_epoch: 0,
         language_id: options.language_id,
         root_uri:,
         folders:,
@@ -1473,7 +1486,8 @@ fn initializing(data: Data, msg: Msg) -> sm.Next(Phase, Data, Msg) {
       conclude(Initializing, abandon(data, "the lsp client was abandoned"))
     Ask(..) | Sync(..) | Settle(..) | Ready(..) | Read(..) ->
       sm.keep(data) |> sm.postpone
-    Expire(..)
+    CallerDown(..)
+    | Expire(..)
     | SettleExpired(..)
     | ReadyQuiet(..)
     | ReadyExpired(..)
@@ -1489,6 +1503,8 @@ fn serving(data: Data, msg: Msg) -> sm.Next(Phase, Data, Msg) {
     Ask(feature:, build:, deadline_ms:, reply:) ->
       conclude(Serving, ask_server(data, feature, build, deadline_ms, reply))
     Expire(id:) -> conclude(Serving, expire(Flow(Serving, data), id))
+    CallerDown(monitor:) ->
+      conclude(Serving, caller_gone(Flow(Serving, data), monitor))
     Sync(ops:, reply:) -> conclude(Serving, sync_documents(data, ops, reply))
     Settle(uris:, deadline_ms:, reply:) ->
       conclude(Serving, begin_settle(data, uris, deadline_ms, reply))
@@ -1549,7 +1565,8 @@ fn shutting_down(
       process.send(reply, Error(TransportRefused(reason)))
       sm.keep(data)
     }
-    SettleExpired(..)
+    CallerDown(..)
+    | SettleExpired(..)
     | ReadyQuiet(..)
     | ReadyExpired(..)
     | Abandoned
@@ -1588,6 +1605,7 @@ fn retiring(
       sm.keep(data)
     }
     FromTransport(transport.TransportData(..))
+    | CallerDown(..)
     | Expire(..)
     | SettleExpired(..)
     | ReadyQuiet(..)
@@ -1608,6 +1626,7 @@ fn reply_of(msg: Msg) -> fn(RequestError) -> Nil {
     Ready(reply:, ..) -> fn(error) { process.send(reply, Error(error)) }
     Handshake(..)
     | HandshakeExpired
+    | CallerDown(..)
     | Expire(..)
     | SettleExpired(..)
     | ReadyQuiet(..)
@@ -1769,7 +1788,12 @@ fn ask_server(
       Flow(Serving, data)
     }
     protocol.Provided -> {
-      let #(data, id) = mint(data, CallerWaits(reply:, deadline_ms:, feature:))
+      let monitor =
+        process.subject_owner(reply)
+        |> result.map(process.monitor)
+        |> option.from_result
+      let #(data, id) =
+        mint(data, CallerWaits(reply:, deadline_ms:, feature:, monitor:))
 
       // The id is tracked before the write, so a failed write's `fail`
       // answers this caller with every other one.
@@ -1790,7 +1814,8 @@ fn ask_server(
 // is dropped, and tells the server to stop computing it.
 fn expire(flow: Flow, id: Int) -> Flow {
   case dict.get(flow.data.pending, id) {
-    Ok(CallerWaits(reply:, deadline_ms:, ..)) -> {
+    Ok(CallerWaits(reply:, deadline_ms:, monitor:, ..)) -> {
+      demonitor(monitor)
       process.send(reply, Error(TimedOut(after_ms: deadline_ms)))
       let data = Data(..flow.data, pending: dict.delete(flow.data.pending, id))
       cancel(Flow(..flow, data:), id)
@@ -1913,7 +1938,8 @@ fn answered(
   outcome: Result(JsonValue, jsonrpc.RpcError),
 ) -> Flow {
   case pending {
-    CallerWaits(reply:, feature:, ..) -> {
+    CallerWaits(reply:, feature:, monitor:, ..) -> {
+      demonitor(monitor)
       let answered = result.map_error(outcome, server_error)
       let #(data, answered) = semantic_answer(flow.data, feature, answered)
       process.send(reply, answered)
@@ -2027,7 +2053,11 @@ fn notification(data: Data, method: String, params: Option(JsonValue)) -> Data {
       release_settled(record(data, diagnostics))
     Ok(protocol.Progressed(progress:)) -> progressed(data, progress)
     Ok(protocol.ServerFailure(message:)) ->
-      Data(..data, server_failure: Some(server_failure(message)))
+      Data(
+        ..data,
+        server_failure: Some(server_failure(message)),
+        failure_epoch: data.failure_epoch + 1,
+      )
     Ok(protocol.Ignored(..)) | Ok(protocol.Unrecognised(..)) | Error(..) -> data
   }
 }
@@ -2575,6 +2605,25 @@ fn answer_read(data: Data, reading: Reading) -> Nil {
       process.send(reply, outcome)
     }
     CapabilitiesOf(reply:) -> process.send(reply, Ok(data.capabilities))
+    Observed(reply:) -> {
+      let documents =
+        list.map(dict.values(data.documents), fn(doc) {
+          ObservedDocument(path: doc.path, version: doc.version, text: doc.text)
+        })
+      let state =
+        ObservationState(
+          generation: data.generation,
+          revision: data.next_version,
+          activity_epoch: data.quiet_epoch,
+          failure_epoch: data.failure_epoch,
+          failure: data.server_failure,
+          busy: list.map(dict.values(data.progress), fn(activity) {
+            activity.title
+          }),
+          documents:,
+        )
+      process.send(reply, Ok(state))
+    }
   }
 }
 
@@ -2586,6 +2635,7 @@ fn refuse_read(reading: Reading, reason: String) -> Nil {
     OpenPaths(reply:) -> process.send(reply, Error(error))
     PublishedFor(reply:, ..) -> process.send(reply, Error(error))
     CapabilitiesOf(reply:) -> process.send(reply, Error(error))
+    Observed(reply:) -> process.send(reply, Error(error))
   }
 }
 
@@ -2682,7 +2732,10 @@ fn settle_all(data: Data, reason: String) -> Data {
   let error = Unavailable(reason:)
   dict.each(data.pending, fn(_, pending) {
     case pending {
-      CallerWaits(reply:, ..) -> process.send(reply, Error(error))
+      CallerWaits(reply:, monitor:, ..) -> {
+        demonitor(monitor)
+        process.send(reply, Error(error))
+      }
       HandshakeWaits(reply:) ->
         process.send(reply, Error(HandshakeFailed(error:)))
       BarrierFor(..) | ShutdownWaits -> Nil
@@ -2737,4 +2790,81 @@ fn describe_fault(fault: framing.FramingFault) -> String {
     framing.MalformedHeader(reason:) -> reason
     framing.BodyNotUtf8 -> "a body was not utf-8"
   }
+}
+
+// A request shares its caller's custody. Withdrawing its id before the cancel
+// write means a late result cannot reach a later observation or caller.
+fn caller_gone(flow: Flow, monitor: process.Monitor) -> Flow {
+  dict.to_list(flow.data.pending)
+  |> list.fold(flow, fn(flow, entry) {
+    case entry.1 {
+      CallerWaits(monitor: Some(held), ..) if held == monitor -> {
+        let data =
+          Data(..flow.data, pending: dict.delete(flow.data.pending, entry.0))
+        cancel(Flow(..flow, data:), entry.0)
+      }
+      CallerWaits(..) | BarrierFor(..) | HandshakeWaits(..) | ShutdownWaits ->
+        flow
+    }
+  })
+}
+
+fn demonitor(monitor: Option(process.Monitor)) -> Nil {
+  case monitor {
+    Some(monitor) -> process.demonitor_process(monitor)
+    None -> Nil
+  }
+}
+
+/// One atomic read of the actor's synced document and analysis state.
+///
+/// The generation is an actor-local token, which the harness content-hashes
+/// before exposing it. The revision and epochs detect intervening syncs,
+/// progress and failures, even when the final document text is unchanged.
+pub type ObservationState {
+  ObservationState(
+    /// This client incarnation's unique token.
+    generation: reference.Reference,
+    /// The next monotonically increasing internal document version.
+    revision: Int,
+    /// Changes in active work-done progress.
+    activity_epoch: Int,
+    /// Server failures reported since the client started.
+    failure_epoch: Int,
+    /// Any retained analysis failure.
+    failure: Option(String),
+    /// Active work-done progress titles.
+    busy: List(String),
+    /// The exact currently synced document texts and versions.
+    documents: List(ObservedDocument),
+  )
+}
+
+/// A document as the actor last sent it to the server.
+pub type ObservedDocument {
+  ObservedDocument(
+    /// The canonical path given at document sync.
+    path: String,
+    /// The actor's globally increasing internal version.
+    version: Int,
+    /// The full text sent with that version.
+    text: String,
+  )
+}
+
+/// Reads one atomic observation state within the caller's remaining bound.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // client.observation_state(client, 1000) -> Ok(ObservationState(..))
+/// ```
+pub fn observation_state(
+  client: Client,
+  waiting: Int,
+) -> Result(ObservationState, RequestError) {
+  exchange(client, int.max(int.min(waiting, local_wait_ms), 1), fn(reply) {
+    Read(Observed(reply))
+  })
+  |> result.flatten
 }
