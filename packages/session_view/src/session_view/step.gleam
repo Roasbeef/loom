@@ -215,6 +215,7 @@ pub fn new(
   replay_inbox: Inbox(replay_source, attempt.Event),
 ) -> Shared(socket, recorder, source, replay_source) {
   Shared(
+    clock_offset: None,
     quit: False,
     parked_scrollback: dict.new(),
     attachments: [],

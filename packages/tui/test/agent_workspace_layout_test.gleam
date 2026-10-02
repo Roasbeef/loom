@@ -106,6 +106,7 @@ fn sends() -> List(agent_messages.Item) {
       agent_messages.Complete,
       12,
       agent_messages.Accepted,
+      ts: 0,
     ),
   ]
 }
@@ -472,6 +473,7 @@ pub fn the_latest_messages_put_the_newest_last_test() {
       agent_messages.Complete,
       10,
       agent_messages.Started,
+      ts: 0,
     )
   let screen = geometry.rect_new(0, 0, 120, 40)
   let lines =
