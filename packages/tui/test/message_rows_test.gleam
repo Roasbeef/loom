@@ -262,8 +262,8 @@ pub fn no_body_text_becomes_a_band_or_a_heading_test() {
     })
   assert headings
     == [
-      "▎ → to sub:tests · agent_send · admitted to its queue",
-      "▎ ← from sub:tests · strand message",
+      "▎ → to sub:tests · agent_send · admitted to its queue · 00:00",
+      "▎ ← from sub:tests · strand message · 00:00",
     ]
   assert list.length(list.filter(lines, string.contains(_, forged_strand))) >= 5
 }

@@ -136,9 +136,11 @@ fn peer_rows(heading: String, body: String, width: Int) -> List(span.Line) {
     Error(Nil) -> #(heading, "")
   }
 
-  // The check is the heading's last words, which only a `PeerOrigin` puts
-  // there; it is split off by position, so a session or strand that holds
-  // the same words cannot colour anything but its own field.
+  // The check is the heading's last words but for the clock time, which
+  // only a `PeerOrigin` puts there; it is split off by position, so a
+  // session or strand that holds the same words cannot colour anything but
+  // its own field.
+  let #(rest, clock) = split_clock(rest)
   let #(middle, checked) = case
     string.ends_with(rest, transcript_lines.origin_checked)
   {
@@ -154,6 +156,7 @@ fn peer_rows(heading: String, body: String, width: Int) -> List(span.Line) {
         #(name, band(theme.advisor, style.bold())),
         #(middle, band(theme.quiet, style.none())),
         #(checked, band(theme.added, style.bold())),
+        #(clock, band(theme.quiet, style.none())),
       ],
       width,
     ))
@@ -163,6 +166,20 @@ fn peer_rows(heading: String, body: String, width: Int) -> List(span.Line) {
       style.new(theme.advisor, style.Default, style.none()),
     )
   [top, ..body_rows(body, [span.span_plain("  "), bar], width - 4)]
+}
+
+// A heading's trailing clock time, ` · 14:02`, split from the words before
+// it, or nothing when the heading has none.
+fn split_clock(heading: String) -> #(String, String) {
+  let tail = string.slice(heading, string.length(heading) - 8, 8)
+  case string.to_graphemes(tail) {
+    [" ", "·", " ", h1, h2, ":", m1, m2] ->
+      case int.parse(h1 <> h2), int.parse(m1 <> m2) {
+        Ok(_), Ok(_) -> #(string.drop_end(heading, 8), tail)
+        _, _ -> #(heading, "")
+      }
+    _ -> #(heading, "")
+  }
 }
 
 // The body as plain text, each of its lines wrapped to `room` on its own

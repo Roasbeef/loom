@@ -159,6 +159,9 @@ pub fn attach(
       // The demo model's own notice describes the demo, not the scene, and
       // an attached session would have replaced it.
       notice: "",
+      // A scene's clock is UTC, so a message heading shows the time it was
+      // admitted in every zone a test or a render runs in.
+      clock_offset: Some(0),
     ),
   )
   |> inbound.apply_channel_update(session_channel.Captured(
