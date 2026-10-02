@@ -639,24 +639,47 @@ fn placeholder(model: Model, strip: List(agent_strip.Line)) -> Option(String) {
 
 // A reading surface needs a heading and gutter, not four persistent edges.
 // Keeping its interior geometry preserves selection and semantic anchors.
+// The heading row names the transcript; the bottom row is the reading row.
 fn render_conversation_heading(
   buf: buffer.Buffer,
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
-  buffer.set_string(
-    buf,
-    area.position,
-    text.truncate(
-      case tui_model.reading_history(model) {
-        True -> " ↓ Scrollback · click for latest · End with empty prompt "
-        False -> transcript_title(model)
-      },
-      area.size.width,
-      "…",
-    ),
-    theme.quiet_text(),
-  )
+  let headed =
+    buffer.set_string(
+      buf,
+      area.position,
+      text.truncate(transcript_title(model), area.size.width, "…"),
+      theme.quiet_text(),
+    )
+
+  // While the reader is above the tail, the panel's bottom row names the
+  // way back and how far it is, just above the input frame where the eye
+  // returns to type. The row is the panel's own spare edge, so the
+  // transcript keeps every row it had.
+  case tui_model.reading_history(model) {
+    False -> headed
+    True -> {
+      let below = model.view.scroll_offset + tui_model.viewport_backlog(model)
+      let row = geometry.bottom(area) - 1
+      buffer.set_string(
+        headed,
+        geometry.Position(area.position.x, row),
+        text.truncate(
+          " ↑ reading · "
+            <> int.to_string(below)
+            <> case below {
+            1 -> " row below"
+            _ -> " rows below"
+          }
+            <> " · End jumps to latest · click to jump ",
+          area.size.width,
+          "…",
+        ),
+        theme.signal_bold(),
+      )
+    }
+  }
 }
 
 fn render_transcript(
