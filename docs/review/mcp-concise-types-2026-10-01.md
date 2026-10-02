@@ -77,3 +77,11 @@ retain the surface assembled at their startup. Stored programs using old names
 must read the new `cap://mcp/<server>` surface and update their constructors.
 Numeric/string refinements beyond the supported structural schema remain the
 server's validation responsibility, as before.
+
+After transplant onto the resource branch at `862ddc9f`, the feature patches
+remained unchanged. The rebased self-contained release at `239db772` rebuilt
+successfully; all three Jev channel tests and the isolated installed-server HTTP
+fixture passed again with their own exit status 0. The release endpoint matched
+that exact commit, made one fixture HTTP call, returned the same complete result,
+and exited zero after authenticated shutdown. The earlier whole signoff belongs
+to its named pre-rebase head; hosted checks validate the final integration head.
