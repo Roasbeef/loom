@@ -10,10 +10,14 @@
 
 import etui/buffer
 import etui/geometry.{Position}
+import etui/span
 import frame_scene
 import gleam/list
 import gleam/string
+import session_view/transcript_line.{Assistant, Line}
 import tui/frame
+import tui/live_tail
+import tui/render
 import tui/theme
 
 const prompt =
@@ -95,4 +99,45 @@ pub fn an_answer_opens_under_its_strands_name_test() {
     assert buffer.get_cell(shown, Position(size.0 - 2, y + 1)).style.bg
       != theme.user_background
   })
+}
+
+// The heading is the answer's only mark, so the answer still streaming has
+// it as well as the settled one: the live tail opens its first run with the
+// same row `render_line` draws, on its first frame and on every later one.
+pub fn the_live_and_settled_answer_both_carry_the_heading_test() {
+  let text = "I will check it.\n\nThen I will run the tests."
+  let settled = render.render_line(Line(Assistant, text), 80, "main")
+  let assert [heading, ..] = settled as "a settled answer draws rows"
+  assert row_text(heading) == "◆ main"
+  let layout =
+    live_tail.Layout(
+      room: render.markdown_room(Assistant, 80),
+      finish: fn(rows, run) {
+        render.finish_markdown_rows(Assistant, rows, run, "main")
+      },
+    )
+  let first = string.slice(text, 0, 8)
+  let #(opening, pass) =
+    live_tail.rows(
+      live_tail.begin(live_tail.new()),
+      Assistant,
+      first,
+      [first],
+      layout,
+    )
+  let assert [live_heading, ..] = opening as "a live answer draws rows"
+  assert row_text(live_heading) == "◆ main"
+  let #(whole, _) =
+    live_tail.rows(
+      live_tail.begin(live_tail.finish(pass)),
+      Assistant,
+      text,
+      [string.drop_start(text, 8), first],
+      layout,
+    )
+  assert whole == settled
+}
+
+fn row_text(row: span.Line) -> String {
+  row.spans |> list.map(fn(value) { value.content }) |> string.concat
 }

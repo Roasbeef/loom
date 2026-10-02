@@ -897,7 +897,7 @@ pub fn markdown_room(speaker: Speaker, width: Int) -> Int {
 }
 
 /// Turns wrapped Markdown rows of `speaker` into the rows `render_line`
-/// paints, less the blank row that opens the line.
+/// paints.
 ///
 /// An answer opens with a heading naming `strand`, `◆ main`, and its body
 /// sits under it behind the gutter. Every other speaker's first row carries
@@ -1072,19 +1072,16 @@ fn speaker_rows(line: Line, width: Int, strand: String) -> List(span.Line) {
             })
           ])
         })
-      [span.line_plain(""), ..list.append(rows, [span.line_plain("")])]
+      list.append(rows, [span.line_plain("")])
     }
 
     // The live tail builds these rows in pieces from the same three calls
     // (`live_tail`), so they are the only way an answer becomes rows.
     Assistant | Reasoning -> {
       let room = markdown_room(line.speaker, width)
-      [
-        span.line_plain(""),
-        ..markdown.render(line.text, room)
-        |> markdown.wrap_lines(room)
-        |> finish_markdown_rows(line.speaker, _, live_tail.OpensLine, strand)
-      ]
+      markdown.render(line.text, room)
+      |> markdown.wrap_lines(room)
+      |> finish_markdown_rows(line.speaker, _, live_tail.OpensLine, strand)
     }
     ToolPatch -> markdown.diff(line.text)
 

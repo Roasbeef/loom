@@ -1339,9 +1339,7 @@ fn block_closes_bare(rows: List(Line)) -> Bool {
 /// blank, which is why it is a function rather than a second copy of the list:
 /// moving a speaker into or out of the tool family changes both the row drawn
 /// and the gap the fold above owes it, and the two have to move together.
-/// A message between agents closes bare as well, so a run of messages,
-/// each opening with its own blank, is one blank row apart. Everything else
-/// already ends in a blank, and a `Spacer` is a blank.
+/// Everything else ends in a blank, and a `Spacer` is a blank.
 @internal
 pub fn closes_bare(speaker: Speaker) -> Bool {
   case speaker {
@@ -1350,10 +1348,7 @@ pub fn closes_bare(speaker: Speaker) -> Bool {
     | ToolFailure
     | ToolPatch
     | ReasoningDigest
-    | SummarizedReasoning
-    | SentMessage
-    | StrandMessage
-    | PeerMessage -> True
+    | SummarizedReasoning -> True
     System
     | User
     | Assistant
@@ -1361,7 +1356,10 @@ pub fn closes_bare(speaker: Speaker) -> Bool {
     | ToolDetail
     | Failure
     | Spacer
-    | SummarizedAdvice -> False
+    | SummarizedAdvice
+    | SentMessage
+    | StrandMessage
+    | PeerMessage -> False
   }
 }
 
@@ -1375,6 +1373,17 @@ pub fn opens_bare(rows: List(Line), opening: GroupOpening) -> Bool {
   case rows {
     [Line(speaker: ToolCall, ..), ..] -> True
     [Line(speaker: ReasoningDigest, ..), ..] -> True
+
+    // A turn, an answer and a message between agents end in a blank row
+    // and bring none above themselves, so whatever comes before one of them
+    // is one blank row away: the blank it closed with, or a spacer under a
+    // call that closed bare.
+    [Line(speaker: User, ..), ..] -> True
+    [Line(speaker: Assistant, ..), ..] -> True
+    [Line(speaker: Reasoning, ..), ..] -> True
+    [Line(speaker: SentMessage, ..), ..] -> True
+    [Line(speaker: StrandMessage, ..), ..] -> True
+    [Line(speaker: PeerMessage, ..), ..] -> True
     [Line(speaker: SummarizedReasoning, ..), ..] -> True
 
     // A harness row, such as advisor commentary, a notice or a tool group's

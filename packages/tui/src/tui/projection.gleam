@@ -879,17 +879,17 @@ fn live_sources(model: Model) -> List(#(Speaker, Stream)) {
 // those begin after these fixed cells and are never inspected here.
 fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
   case line.speaker {
-    Assistant | Reasoning if index > 1 -> 2
+    Assistant | Reasoning if index > 0 -> 2
 
     // A summary's rows sit under its header behind a two-cell indent.
     SummarizedReasoning | SummarizedAdvice if index > 0 -> 2
-    User if index > 0 && index < row_count - 1 -> 2
+    User if index < row_count - 1 -> 2
 
     // A message's bar is painted in the margin, outside these cells, so
     // the gutter counts only the indent before the heading and the body.
-    SentMessage | StrandMessage if index == 1 -> 1
-    SentMessage | StrandMessage if index > 1 && index < row_count - 1 -> 3
-    PeerMessage if index > 1 && index < row_count - 1 -> 4
+    SentMessage | StrandMessage if index == 0 -> 1
+    SentMessage | StrandMessage if index < row_count - 1 -> 3
+    PeerMessage if index > 0 && index < row_count - 1 -> 4
     ToolDetail -> 2
     System
     | User

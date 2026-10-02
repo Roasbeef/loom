@@ -85,7 +85,7 @@ pub fn rows(speaker: Speaker, text: String, width: Int) -> List(span.Line) {
     | Failure
     | Spacer -> body_rows(text, [], width)
   }
-  [span.line_plain(""), ..drawn]
+  list.append(drawn, [span.line_plain("")])
 }
 
 // A sent or sibling message: the heading behind one blank cell, the body
