@@ -122,8 +122,7 @@ pub fn a_compile_error_is_a_danger_block_naming_its_line_test() {
     let assert Ok(#(quoted, _)) = find(lines, "list.rang(1, 10)")
       as "the quoted source"
     assert quoted == top + 2
-    let assert Ok(#(foot, _)) =
-      find(lines, "the program did not run · 7 lines")
+    let assert Ok(#(foot, _)) = find(lines, "the program did not run · 7 lines")
       as "the foot says how much more there is"
     assert foot == top + 4
 
