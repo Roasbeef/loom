@@ -8,7 +8,7 @@ checks the default seam's import permission and serviced capability together.
 The hints preserve the differences between native and capability reads, edits
 and process execution.
 
-The revised `loom-default-12` system pack starts planned batches immediately.
+The revised `loom-default-13` system pack starts planned batches immediately.
 The third extraction probe remains a fallback. Discovery before unfamiliar
 programs, bounded concurrency, completeness checks and warning-free compilation
 remain explicit. A compile rejection preserves diagnostics and states that the
@@ -17,9 +17,12 @@ program did not run. Existing recipes, module indices and public types remain.
 ## Rebase integration
 
 PR #683 is rebased onto `5fbcda3ad473338d810376177d85153f23900106`.
-The combined prompt is `loom-default-12`, retaining main's LSP investigation
+The combined prompt is `loom-default-13`, retaining main's LSP investigation
 paragraph and detailed compiler-import/repair advice beside the immediate
-batching cues. The size comparison below belongs to the original
+batching cues. Prompt length has no hard 8,500-byte limit: the client test
+checks completeness and substantive content without an arbitrary upper bound.
+Useful batching and judgment guidance remains explicit even when it adds bytes.
+The size comparison below belongs to the original
 `3e3d38563bc3e45d0f41e8e62fce5c05bfcdcdf7` implementation against `f84842d17`;
 it is not a new size measurement of the integrated prompt.
 

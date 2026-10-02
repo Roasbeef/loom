@@ -590,8 +590,10 @@ pub fn tool_for(mode: CodeMode) -> Tool {
     name: tool_name,
     description: description(mode),
     prompt_snippet: option.Some(
-      "Use `code_mode` immediately for planned batches; filter internally "
-      <> "and return relevant facts, paths and failures.",
+      "Use `code_mode` immediately for a planned batch of reads, searches "
+      <> "or checks, or a chain whose intermediate results need no judgment. "
+      <> "Filter inside the program; return relevant facts, paths and failures. "
+      <> "Use a direct tool when its result needs your judgment before continuing.",
     ),
     schema: tool.object_schema(
       list.flatten([

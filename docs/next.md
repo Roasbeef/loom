@@ -48,7 +48,7 @@ configuration remain separate scope.
 
 The prompt change is rebased onto `5fbcda3ad` on October 1, 2026. It adds executable
 alternatives to the five direct workspace-tool descriptions only when the
-default code-mode seam admits and services the call. `loom-default-12` asks
+default code-mode seam admits and services the call. `loom-default-13` asks
 for immediate planned batching, API discovery before unfamiliar calls, and
 explicit completeness and truncation checks. The third-probe fallback remains.
 Compile failures retain diagnostics and state that execution never began.

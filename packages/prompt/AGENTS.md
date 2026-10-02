@@ -2,7 +2,7 @@
 
 ## Code-mode guidance
 
-The shipped `loom-default-12` pack asks for immediate code mode on planned
+The shipped `loom-default-13` pack asks for immediate code mode on planned
 batches and chains whose intermediate results need no agent judgment. The
 third extraction probe remains the fallback for investigations that grew into
 a batch. Bounded `cap/task.parallel_map` guidance is conditional on the selected
