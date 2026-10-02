@@ -2457,6 +2457,14 @@ a selected frame through the virtual loop cannot reorder it behind newer
 socket traffic. These tests complement the scripted snapshots here; they
 exercise actual server commands and durable replies.
 
+`test/frame_scene.gleam` builds whole frames from durable entries: `attach`
+runs a scene's entries (`user`, `assistant`, `call`, `result`,
+`provider_error`) through the shipped capture decoder and the `Captured`
+update, `screen` paints the full frame at a size through
+`render.render_frame`, and `write_styled` writes it with its colour for a
+review render. Layout tests that need the screen in context use it rather
+than painting one widget onto a blank buffer.
+
 `test/snapshots/*.txt` hold rendered frames as plain text, compared by
 `test/snapshot_test.gleam`. Each snapshot drives the shipped loop under the
 virtual backend with scripted keys and gateway frames and pins the last
