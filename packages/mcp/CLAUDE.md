@@ -85,14 +85,23 @@ compiles only the generated modules the submitted program imports.
   65,536 bytes. Aggregate overruns refuse the server; per-field depth
   fallback keeps the surrounding structure.
 - **Generated identities are construction-owned.** Trusted tool, direction,
-  node and variant ordinals precede every descriptive suffix. The suffix is
-  capped at 64 ASCII characters; clipping cannot alias declarations, and
-  resulting BEAM atoms remain below 255 bytes. Exact enum wire literals stay
-  in both the encoder and declaration comments.
+  node and variant keys identify declarations internally. A first rendering
+  pass gathers bounded semantic candidates; `internal/type_name` reserves all
+  candidates and imported names before adding compact ordinal suffixes to
+  collisions. A second pass emits settled names, without replacing source
+  text. Nearby property names replace recursive paths, and resulting BEAM
+  atoms remain below 255 bytes. Exact enum wire literals stay in both the
+  encoder and declaration comments. `type` escapes locally to `type_`; an
+  explicit `type_` sibling follows the existing field-collision fallback.
 - **Rendered unions preserve their proof.** `schema.branches_disjoint` checks
   the rendered child shapes, after field-name fallback. A lost discriminator
   makes the whole union a raw value; unrelated fallback does not erase a
-  discriminator that still proves exclusive branches.
+  discriminator that still proves exclusive branches. A one-branch union
+  renders its inner type directly. A tagged union flattens only when every
+  rendered record shares a required singleton string field with a distinct
+  literal. Constructors omit that field, encoders inject it, and total
+  decoders still require its exact literal and retain object openness checks.
+  Heterogeneous content unions and optional/null distinctions remain typed.
 - **Source and surface describe the same types.** `internal/typed_codegen`
   derives declarations, options constants, encoders and total output decoders
   from one plan. Optional defaults omit keys so the server applies its own
