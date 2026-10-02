@@ -1,9 +1,10 @@
 # Daemon and Darwin helper resource use, 2026-10-01
 
-Status: the first resource slice passed full local signoff and the isolated
-typed Jev fixture. The additional gateway and restart projections are under
-verification. The resource changes have not been
-installed in the normal daemon; hosted CI remains outstanding. This wave builds
+Status: the combined resource tree passed full local signoff and the isolated
+typed Jev fixture at `16e866c8efd94b11127cf931bd46acaf2b675578`.
+The resource changes have not been installed in the normal daemon;
+hosted CI on [PR #689](https://github.com/Roasbeef/loom/pull/689) remains
+outstanding. This wave builds
 on the [first closure-retention fix](daemon-memory-retention-2026-10-01.md).
 
 ## Measured boundaries
@@ -97,7 +98,7 @@ top-level `handle`, so startup Options do not reintroduce the removed registry
 field through a handler environment. A fresh independent review found no
 remaining invariant, simplification or reachable nearby-variant finding in
 these additions. These results isolate retained paths; they do not predict
-installed process or RSS savings. Final combined release signoff is pending.
+installed process or RSS savings. The final combined release signoff passed.
 
 ## Fresh snapshot traversal
 
@@ -182,6 +183,26 @@ separate; callback flat-copy savings are not subtracted from either census.
 
 ## Full release verification
 
+The final combined tree at `16e866c8efd94b11127cf931bd46acaf2b675578`
+passed `make signoff SIGNOFF_ARGS=--dry-run` in 517 seconds, own exit zero.
+All six source/test lanes, release/update verification and the declared-skip
+census passed on the clean, frozen head. Its client suite ran 2636 tests,
+the TUI suite 1052, followed by the configured simulation soaks. The helper
+reported eleven enforced self-test layers. The macOS `/proc` and
+rust-analyzer prerequisites remained the only declared skips.
+
+The final self-contained release then passed the same typed Choice fixture
+through generated discovery, jailed compilation, installed Jevelin dispatch
+and durable result capture. It returned `logs`, confidence 0.9 and 10 input /
+3 output tokens, with the expected dummy bearer absent from model requests.
+Only its disposable daemon and session were shut down. The reported Seatbelt
+filesystem and network enforcement and degraded macOS resource/lifecycle
+limits remained explicit.
+
+The earlier signoff below covers the first resource slice, before the private
+gateway and restart projections. It is retained as evidence of that boundary,
+not substituted for the final combined head.
+
 `make signoff SIGNOFF_ARGS=--dry-run` exited zero in 764 seconds on
 `bede55e54b8765af7785ece8cd122fa833c4ac32`, with a clean, frozen tree.
 All six source/test lanes and release/update verification passed. The client
@@ -203,6 +224,27 @@ the normal daemon. This is fixture integration evidence, not a new live Jev
 inference claim. The first attempt used an overly deep private state root;
 the socket-path validation rejected it before dispatch, and a shallower
 private state root allowed the same release and program to complete.
+
+## Final matched release observation
+
+Installed main `31db7c68387859da416eff53ed41913cd2ac8f31` and the final
+candidate `16e866c8efd94b11127cf931bd46acaf2b675578` ran with fresh private
+HOME directories and the same smoke configuration and control-plane fixture.
+Each admitted two sessions, stopped the first and observed the remaining resident after
+15 seconds idle. Neither run forced collection or copied retained state.
+
+| Cut | Main total / processes, MiB | Candidate total / processes, MiB |
+| --- | ---: | ---: |
+| Listening | 55.554 / 15.055 | 55.433 / 14.755 |
+| Two admitted, one stopped | 82.312 / 33.321 | 79.024 / 29.693 |
+| After 15 seconds idle | 76.473 / 27.491 | 74.952 / 25.614 |
+
+Idle BEAM allocation was 1.521 MiB lower in total and 1.877 MiB lower in
+process memory. RSS was 118848 KiB for main and 113072 KiB for the candidate,
+a 5776 KiB difference in this run. These are single matched fixture cuts;
+their small tool graph and collection history do not establish savings in
+the owner's larger normal session. They also do not isolate either new
+projection from the rest of the resource changes.
 
 ## Normal daemon before the owner's restart
 

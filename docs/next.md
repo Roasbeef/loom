@@ -1,7 +1,7 @@
 # Current handoff
 
 The resource handoff was refreshed on October 1, 2026 against the executable
-resource tree `bede55e54b8765af7785ece8cd122fa833c4ac32` and installed main
+resource tree `16e866c8efd94b11127cf931bd46acaf2b675578` and installed main
 `31db7c68387859da416eff53ed41913cd2ac8f31`. The previous edition described
 `3819fec3d` as the current installation. That release's measurements and live
 Jev result remain historical evidence; the owner has since installed merged
@@ -16,7 +16,7 @@ kernel snapshot instead of copying records and allocating child slices.
 Closure-size negative controls preserve the intended execution owner, while
 native regressions preserve ancestry, reparenting and birth checks.
 
-Full local signoff exited zero in 764 seconds on `bede55e54b`, including
+Full combined local signoff exited zero in 517 seconds on `16e866c8`, including
 release/update verification, the simulation soaks and eleven enforced helper
 self-tests. The declared macOS `/proc` and rust-analyzer prerequisite skips
 remain explicit. Independent review found no remaining actionable finding.
@@ -39,11 +39,14 @@ constructing their callbacks. Public startup options and runtime execution
 ownership remain unchanged. All 126 gateway tests pass; the isolated state
 stays 758 flat words as a separately supplied executable registry grows from
 202 to 90292. The old-field negative control fails. Independent review is
-complete; the combined release gate must be rerun for these additions.
+complete, and the combined release gate passed with these additions.
 
 
-The controlled bare-session comparison measured about 2.8 MiB less idle BEAM
-memory for the follow-up, but RSS increased in that run. Darwin's real sleeping
+The final controlled bare-session comparison against main `31db7c68`
+measured 1.521 MiB less idle BEAM memory and 5776 KiB less RSS for the
+follow-up. These single fixture cuts do not establish normal-session savings.
+An earlier baseline comparison measured about 2.8 MiB less BEAM memory but
+increased RSS. Darwin's real sleeping
 execution fixture allocated about 14% fewer bytes and 96% fewer objects;
 whole-window CPU times overlapped. Do not convert these bounded results into
 a claimed normal-daemon RSS or CPU percentage reduction.
@@ -74,9 +77,10 @@ Newly assembled session runtimes get the discovered API; current resident
 runtimes retain their pinned modules. Resources, prompts and Loom HTTP
 transport configuration remain separate scope.
 
-Next: publish the resource follow-up and verify hosted CI at its exact head,
-then obtain a settled cut of the owner's restarted profiled daemon alongside
-the saved observations. Trace restart-specification ownership before further source changes. Keep
+Next: verify hosted CI on [PR #689](https://github.com/Roasbeef/loom/pull/689)
+at its exact head, then compare an installed resource release against the
+saved normal-daemon observations when the owner chooses to install it.
+Trace restart-specification ownership before further source changes. Keep
 actual process heaps, allocator carriers and OS RSS separate, and avoid forced
 collection in observations used to compare ordinary runtime behavior.
 
