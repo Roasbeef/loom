@@ -754,13 +754,19 @@ fn render_cut(
   // The session facts the head of the transcript states are one block of
   // at most three rows: where the older entries are, the attachment and the
   // shared run settings, and code mode. The model and effort are on the
-  // terminal's identity line, so the strand configuration has no row.
+  // terminal's identity line, so the strand configuration has no row of its
+  // own; who last changed it is still said, beside the run settings.
   let head =
     Line(
       System,
       list.flatten([
         boundary,
-        [attachment_banner <> " · " <> run_settings(view)],
+        [
+          attachment_banner
+          <> " · "
+          <> run_settings(view)
+          <> configuration_author(view, active),
+        ],
         [code_mode_status(view, active)],
       ])
         |> string.join("\n"),
@@ -932,6 +938,20 @@ fn run_settings(view: snapshot_view.View) -> String {
   <> " · "
   <> view.settings.tool_execution
   <> changed_by(view.settings.origin)
+}
+
+// Who last changed the strand's model or effort, when a person did. The
+// identity line shows the values; this says whose they are.
+fn configuration_author(view: snapshot_view.View, active: String) -> String {
+  case dict.get(view.configurations, active) {
+    Ok(config) ->
+      case config.origin {
+        Some(author) ->
+          " · model and effort changed by " <> origin.display_label(author)
+        None -> ""
+      }
+    Error(Nil) -> ""
+  }
 }
 
 // An extension the host refused to load is a fact of its own, one row each.
