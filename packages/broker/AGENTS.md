@@ -40,8 +40,13 @@ protocol (spec Part 1.4). WP-G.
   dispatcher:)` takes any dispatcher; `broker.start(config)` is it over
   `direct.dispatcher`, so `BrokerConfig` and every caller of `start` are
   unchanged.
-- `broker/direct.dispatcher(checkout:, checkin:)` — the implementation the
-  broker used to carry inline: borrow a helper, spawn a per-call relay that
+- `broker/direct.dispatcher(checkout:, checkin:)` — **no longer a production
+  lane for sessions** (S3 deleted the switch; a session runs the executor
+  service). It stays as the dispatcher behind `broker.start(BrokerConfig)`,
+  which the one-shot build and check planes and about forty-three test and
+  demo call sites use; migrating them is follow-up work, and
+  `lane_equivalence_test` and `real_lane_test` remain the parity evidence.
+  It is the implementation the broker used to carry inline: borrow a helper, spawn a per-call relay that
   owns the exec-event subject (ready handshake, caller monitor, `Streaming`
   and `Draining` modes, `relay_grace_ms`, wall deadline on the injected
   clock), run synchronously inside `start`, return an `Execution` whose

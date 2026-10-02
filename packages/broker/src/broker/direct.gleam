@@ -1,6 +1,17 @@
 //// The direct dispatcher: one helper borrowed from the pool seam, one relay
 //// process per call, and nothing else between them.
 ////
+//// ## Not a production lane
+////
+//// A session does not use this module. Since issue #696's S3 a session has
+//// one execution model, the executor service (`broker/executor`), and the
+//// switch that chose between the two is gone. This dispatcher stays because
+//// `broker.start(BrokerConfig)` is built over it, and that entry point has
+//// about forty-three callers: the tests and demos, and the one-shot build
+//// and check planes that `client/serve` starts. Migrating them to the
+//// service is follow-up work, and until then `lane_equivalence_test` and
+//// `real_lane_test` are the evidence that the two dispatchers agree.
+////
 //// This is the dispatch machinery the broker carried inline before
 //// `broker/dispatch` existed, moved here unchanged behind the seam. A call
 //// borrows a helper with the injected `checkout`, spawns a relay process

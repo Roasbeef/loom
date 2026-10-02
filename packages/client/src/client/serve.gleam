@@ -322,25 +322,6 @@ pub type DomainPaths {
   )
 }
 
-/// Which dispatcher carries a session's cleared calls to its helpers.
-///
-/// Issue #696 puts the execution lifecycle behind a seam
-/// (`broker/dispatch`) and builds a second implementation of it, the
-/// executor service. The service ships opt-in, so the lane is a setting
-/// until the failure matrix has passed and the default flips; it is read
-/// when a session opens, and each lane builds its own pool, so a running
-/// session never changes lanes and the two never share a helper.
-pub type ExecutorLane {
-  /// `broker/direct`: one relay process per call, the broker's own
-  /// dispatcher since before the seam existed. The default.
-  DirectLane
-
-  /// `broker/executor`: one service per session owning a row for each
-  /// running execution, a relay beneath it per call, and the helper
-  /// pool's checkout, checkin and close behind it.
-  ServiceLane
-}
-
 /// Everything a boot needs, resolved: flags parsed, defaults filled,
 /// the provider gateway built. `main` assembles this from the command
 /// line and the environment; the smoke test assembles it directly with
@@ -396,10 +377,6 @@ pub type Settings {
     /// from `LOOM_HELPER_POOL` or `exec.default_pool_size()`; a host
     /// embedding the server may name its own.
     helper_pool_size: Int,
-    /// Which dispatcher runs this session's executions. `resolve` fills it
-    /// from `LOOM_EXECUTOR_LANE`: `direct` selects `DirectLane`, and an
-    /// unset, empty or any other value is `ServiceLane`.
-    executor_lane: ExecutorLane,
     /// The name clients subscribe with (derived from the session file).
     session_id: String,
     /// Sandbox enforcement demanded of the helper.
@@ -550,10 +527,10 @@ pub type Instance {
     storage_owner: Pid,
     broker: Broker,
     pool: Pool,
-    /// The executor service, in the service lane only. It sits between the
-    /// broker and the pool, so teardown closes it where the direct lane
-    /// closes the pool, and its death is as fatal as the pool's.
-    executor: Option(executor.Executor),
+    /// The executor service. It sits between the broker and the pool, so
+    /// teardown closes it and it closes the pool, and its death is as fatal
+    /// as the pool's.
+    executor: executor.Executor,
     /// The hub's stable address. Everything that talks to the hub — the
     /// listener, the commit forwarder, the provider tap — holds this
     /// name rather than a pid, which is what lets the hub be restarted
@@ -652,13 +629,14 @@ pub fn main() -> Nil {
 // between the two would mean an extension built under a policy no session
 // would have granted.
 
-/// A pool of jailed helpers and the one broker over them.
+/// A pool of jailed helpers and the one broker over them, for the one-shot
+/// planes: the extension installer's build and `loom ext check`.
 ///
-/// Factored out of `assemble` because the extension installer wants this
-/// and nothing else. The boot's own call is the only reason this is a
-/// function rather than eight lines inline, and it is enough of one: the
-/// two paths must compose the same policy from the same helper, or a
-/// build that passes at install could fail at run.
+/// The broker is started with `broker.start`, which dispatches through
+/// `broker/direct`: a plane that lives for one install has no session
+/// custody to prove and no executor service to close, and its callers stop
+/// the pool themselves. A session's effect plane is different, and has
+/// exactly one execution model: the executor service.
 ///
 /// ## Examples
 ///
@@ -673,43 +651,37 @@ pub fn start_effect_plane(
   size size: Int,
   clock clock: Clock,
 ) -> Result(#(Pool, Broker), String) {
-  use plane <- result.map(start_effect_plane_in(
-    helper,
-    base_policy,
-    tmp_dir,
-    size,
-    clock,
-    DirectLane,
-    log.discard(),
-    None,
-  ))
-  #(plane.pool, plane.broker)
+  use pool <- result.try(start_helper_pool(helper, base_policy, tmp_dir, size))
+  use broker_actor <- result.map(
+    broker.start(
+      broker.BrokerConfig(
+        entropy: token.production_entropy(),
+        clock:,
+        checkout: fn() { exec.checkout(pool, waiting: 15_000) },
+        checkin: fn(helper) { exec.checkin(pool, helper) },
+      ),
+    )
+    |> result.map_error(fn(error) {
+      "the broker did not start: " <> string.inspect(error)
+    }),
+  )
+  #(pool, broker_actor)
 }
 
-// What a session's effect plane is made of. The executor is present only in
-// the service lane, where it sits between the broker and the pool and owns
-// the helpers' checkout, checkin and close.
+// What a session's effect plane is made of: the executor service sits between
+// the broker and the pool and owns the helpers' checkout, checkin and close.
 type EffectPlane {
-  EffectPlane(pool: Pool, broker: Broker, executor: Option(executor.Executor))
+  EffectPlane(pool: Pool, broker: Broker, executor: executor.Executor)
 }
 
-// The owned path publishes parked helper custody before the first checkout.
-//
-// The lane chooses what stands between the broker and the pool. Either way
-// the pool is built first and exactly as it always was, and the broker is
-// the one door every clearance site goes through. `DirectLane` gives the
-// broker the pool's checkout and checkin; `ServiceLane` gives it the
-// executor service's dispatcher, and gives the service the pool's seams.
-fn start_effect_plane_in(
+// A pool of helpers spawned lazily over the resolved spawn configuration.
+// Both planes build their pool here, exactly as it always was.
+fn start_helper_pool(
   helper: String,
   base_policy: policy.SandboxPolicy,
   tmp_dir: String,
   size: Int,
-  clock: Clock,
-  lane: ExecutorLane,
-  logger: Logger,
-  owner: Option(custody.Owner),
-) -> Result(EffectPlane, String) {
+) -> Result(Pool, String) {
   let spawn_config =
     exec.SpawnConfig(
       helper_path: helper,
@@ -724,16 +696,33 @@ fn start_effect_plane_in(
       cancel_grace_ms: 3000,
       heartbeat_interval_ms: 0,
     )
-  use pool <- result.try(
-    exec.start_pool(size:, spawn: fn() { exec.prepare_helper(spawn_config) })
-    |> result.map_error(fn(error) {
-      "the helper pool did not start: " <> string.inspect(error)
-    }),
-  )
-  use #(service, broker_actor) <- result.try(case lane {
-    DirectLane -> start_direct_lane(pool, clock, owner)
-    ServiceLane -> start_service_lane(pool, clock, logger, owner)
+  exec.start_pool(size:, spawn: fn() { exec.prepare_helper(spawn_config) })
+  |> result.map_error(fn(error) {
+    "the helper pool did not start: " <> string.inspect(error)
   })
+}
+
+// A session's effect plane. The owned path publishes parked helper custody
+// before the first checkout. The pool is built first and the executor service
+// is started over its seams before anything can borrow; the broker is then
+// given the service's dispatcher, and is the one door every clearance site
+// goes through.
+fn start_effect_plane_in(
+  helper: String,
+  base_policy: policy.SandboxPolicy,
+  tmp_dir: String,
+  size: Int,
+  clock: Clock,
+  logger: Logger,
+  owner: Option(custody.Owner),
+) -> Result(EffectPlane, String) {
+  use pool <- result.try(start_helper_pool(helper, base_policy, tmp_dir, size))
+  use #(service, broker_actor) <- result.try(start_service_lane(
+    pool,
+    clock,
+    logger,
+    owner,
+  ))
   use broker_pid <- result.try(
     broker.pid(broker_actor)
     |> result.replace_error("the broker died during startup"),
@@ -749,39 +738,6 @@ fn start_effect_plane_in(
   Ok(EffectPlane(pool:, broker: broker_actor, executor: service))
 }
 
-// The direct lane: the broker borrows from the pool itself and the pool's
-// close is the `Helpers` custody step, as before the seam existed.
-fn start_direct_lane(
-  pool: Pool,
-  clock: Clock,
-  owner: Option(custody.Owner),
-) -> Result(#(Option(executor.Executor), Broker), String) {
-  use Nil <- result.try(
-    retain(
-      owner,
-      custody.Helpers,
-      fn() {
-        exec.close_pool(pool, waiting: 5000) |> result.map_error(string.inspect)
-      },
-      fn() { process.unlink(exec.pool_pid(pool)) },
-    ),
-  )
-  use broker_actor <- result.map(
-    broker.start(
-      broker.BrokerConfig(
-        entropy: token.production_entropy(),
-        clock:,
-        checkout: fn() { exec.checkout(pool, waiting: 15_000) },
-        checkin: fn(helper) { exec.checkin(pool, helper) },
-      ),
-    )
-    |> result.map_error(fn(error) {
-      "the broker did not start: " <> string.inspect(error)
-    }),
-  )
-  #(None, broker_actor)
-}
-
 // The service lane: the executor service is started over the pool's seams
 // before anything can borrow, its `close` becomes the `Helpers` custody
 // step (it drains executions for `executor.drain_ms` and then closes the
@@ -795,7 +751,7 @@ fn start_service_lane(
   session_clock: Clock,
   logger: Logger,
   owner: Option(custody.Owner),
-) -> Result(#(Option(executor.Executor), Broker), String) {
+) -> Result(#(executor.Executor, Broker), String) {
   use service <- result.try(
     executor.start(executor.ExecutorConfig(
       checkout: fn() { exec.checkout(pool, waiting: 15_000) },
@@ -837,7 +793,7 @@ fn start_service_lane(
       "the broker did not start: " <> string.inspect(error)
     }),
   )
-  #(Some(service), broker_actor)
+  #(service, broker_actor)
 }
 
 /// Everything a jailed offline build needs, and nothing a session does.
@@ -1477,7 +1433,6 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     ),
     helper_path:,
     helper_pool_size:,
-    executor_lane: executor_lane_from_environment(),
     session_id: session_id_of(session_path),
     demand: option.unwrap(flags.demand, exec.PlatformEnforcement),
     gateway:,
@@ -1966,50 +1921,6 @@ fn env_int_or(name: String, fallback: Int) -> Int {
   |> result.unwrap(fallback)
 }
 
-/// The executor lane `LOOM_EXECUTOR_LANE` names.
-///
-/// `direct` selects the broker's own per-call relay. Unset, empty and any
-/// other text select the executor service, silently, as `LOOM_HELPER_POOL`
-/// falls back to its default on text that is not a number. The service is
-/// the default since S2, so the variable is now the rollback: `direct` is
-/// the one spelling that leaves a session on the old path, and S3 deletes
-/// the direct lane and with it this variable. A typo therefore lands on the
-/// service, the path every session is meant to run. The lane is read when a
-/// session opens.
-///
-/// Public so a host or a test builds its `Settings` from the same variable
-/// `resolve` reads, which is how one run of the suite exercises the other
-/// lane.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // LOOM_EXECUTOR_LANE=direct
-/// // serve.executor_lane_from_environment() == serve.DirectLane
-/// ```
-///
-pub fn executor_lane_from_environment() -> ExecutorLane {
-  executor_lane_named(env_text_or("LOOM_EXECUTOR_LANE", ""))
-}
-
-/// The lane a name selects: `direct` is `DirectLane`, anything else
-/// `ServiceLane`.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert serve.executor_lane_named("direct") == serve.DirectLane
-/// assert serve.executor_lane_named("service") == serve.ServiceLane
-/// assert serve.executor_lane_named("") == serve.ServiceLane
-/// ```
-///
-pub fn executor_lane_named(name: String) -> ExecutorLane {
-  case name {
-    "direct" -> DirectLane
-    _ -> ServiceLane
-  }
-}
-
 // The zero-config surface as a one-entry catalogue: one Anthropic
 // entry named `anthropic` (so pre-catalogue durable identities keep
 // resolving) shaped by the LOOM_* variables, routed as main. The API
@@ -2177,10 +2088,7 @@ pub fn instance_children(instance: Instance) -> List(#(String, Pid)) {
     #("the session storage", instance.storage_owner),
     #("the helper pool", exec.pool_pid(instance.pool)),
     ..list.append(
-      case instance.executor {
-        Some(service) -> [#("the executor service", executor.pid(service))]
-        None -> []
-      },
+      [#("the executor service", executor.pid(instance.executor))],
       case broker.pid(instance.broker) {
         Ok(pid) -> [#("the capability broker", pid)]
         Error(Nil) -> []
@@ -3554,7 +3462,6 @@ fn assemble_in(
     tmp_dir,
     settings.helper_pool_size,
     clock,
-    settings.executor_lane,
     logger,
     owner,
   ))
@@ -4794,25 +4701,19 @@ pub fn close_instance(instance: Instance) -> Nil {
   mcp_wiring.stop(instance.mcp)
 }
 
-// Retires the session's helpers once the broker has stopped. The direct lane
-// asks the pool to stop. The service lane asks the service to close, which
-// settles anything still live, closes the pool with its verdict and ends
-// the service; a verdict that is not `Ok` leaves the pool and the service
-// alive holding the custody that could not be shown retired, which is what
-// the pool's own `stop_pool` does on the same failure.
+// Retires the session's helpers once the broker has stopped, by asking the
+// service to close: it settles anything still live, closes the pool with its
+// verdict and ends the service. A verdict that is not `Ok` leaves the pool
+// and the service alive holding the custody that could not be shown retired,
+// which is what the pool's own `stop_pool` does on the same failure.
 fn stop_helpers(instance: Instance) -> Nil {
-  case instance.executor {
-    None -> exec.stop_pool(instance.pool)
-    Some(service) -> {
-      let _verdict =
-        executor.close(
-          service,
-          draining: executor.drain_ms,
-          helpers: executor.helpers_ms,
-        )
-      Nil
-    }
-  }
+  let _verdict =
+    executor.close(
+      instance.executor,
+      draining: executor.drain_ms,
+      helpers: executor.helpers_ms,
+    )
+  Nil
 }
 
 // The triggered-rule scanner, and the decision not to start one.

@@ -2642,19 +2642,14 @@ catalogue without opening runtimes. Explicit admission invokes
   inside `broker.clear_call` rather than coming back as a resource
   error. Distinct from the broker's pooled `max_outstanding`, which
   refuses amplification rather than describing what the host affords.
-- `client/serve.{ExecutorLane, executor_lane_named,
-  executor_lane_from_environment}` and `Settings.executor_lane` — which
-  dispatcher carries a session's cleared calls: `ServiceLane` (the executor service,
-  issue #696, the default since S2) or `DirectLane` (the broker's own
-  per-call relay, kept as the rollback until S3 removes it). `resolve` fills
-  it from `LOOM_EXECUTOR_LANE` by the same mechanism as `LOOM_HELPER_POOL`:
-  `direct` selects `DirectLane`, and an unset, empty or any other value is
-  `ServiceLane`, silently, so a typo lands on the path every session is
-  meant to run. The lane is read when a session opens
-  and each lane builds its own pool, so a session never changes lanes and
-  the two never share a helper. `start_effect_plane_in` builds the pool
-  exactly as before in both lanes; in `ServiceLane` it then starts
-  `executor.start` over closures on that pool, makes
+- `client/serve.start_effect_plane_in` — a session has one execution model,
+  the executor service (issue #696). There is no lane setting: S3 deleted
+  `ExecutorLane`, `Settings.executor_lane` and `LOOM_EXECUTOR_LANE`, so a
+  session cannot be opted back into the broker's per-call relay. It builds
+  the pool, then starts
+  `executor.start` over closures on that pool (`custody`, `checkout`,
+  `checkin`, `close_helpers`) and the session's `Logger`, which is where the
+  service's `executor.settled` and `executor.closed` lines go, makes
   `executor.close(service, waiting: 5000)` the `Helpers` custody step (it
   drains executions and returns the pool's own verdict), unlinks pool and
   service together, and gives the broker `executor.dispatcher(service)` via
@@ -2663,10 +2658,11 @@ catalogue without opening runtimes. Explicit admission invokes
   replacement could not be reached by the closures already holding the old
   one. The boot-time `degraded` probe still borrows from the pool directly,
   before the broker serves anything. `start_effect_plane`, which the build
-  plane and the extension installer use, is always direct. Test fixtures
-  build their `Settings` with `executor_lane_from_environment()`, so
-  `LOOM_EXECUTOR_LANE=direct make check-client` runs the suite through the
-  rollback lane; the plain `make check-client` runs it through the service.
+  plane, the check plane and the extension installer use, is not a session
+  plane: it starts a pool and `broker.start`, which dispatches through
+  `broker/direct`, and its callers stop the pool themselves.
+  `broker/direct` is no longer a production lane for sessions; migrating
+  these one-shot planes is follow-up work.
 - `client/serve.Settings.base_policy` — the base every tool call is
   composed against, and the thing an escalation widens. A field rather
   than a `base_policy(workspace)` call inside `boot`, so a host may serve

@@ -1131,7 +1131,6 @@ fn settings(root: String, script: Subject(ScriptMessage)) -> serve.Settings {
     base_policy: serve.base_policy(root <> "/work"),
     helper_path: here <> "/../sandbox/loom-exec",
     helper_pool_size: 2,
-    executor_lane: serve.executor_lane_from_environment(),
     session_id: fixture_session,
     demand: exec.BestEffort,
     gateway: gateway_of(script),

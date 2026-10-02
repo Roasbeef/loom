@@ -13,15 +13,17 @@ page records where the tree is, the
 shape the service took, how each lifecycle invariant is held, and which parts of
 the issue the survey showed to be wrong.
 
-The service is built and, since S2, it is the default lane. The direct lane,
-which is the broker's behaviour from before the seam existed, remains for one
-more phase as the rollback: `LOOM_EXECUTOR_LANE=direct` selects it, and S3
-deletes it (see "The lane switch"). "The tree today" describes the direct lane,
-which is what runs only under that opt-out, and it cites the direct lane at its
-home in `broker/direct`. "The target shape" and "The state model" describe what
+The service is built and, since S3, it is the only execution model a session
+has. The direct dispatcher, which is the broker's behaviour from before the seam
+existed, was the rollback through S2; S3 removed the switch that chose it (see
+"The lane switch"). `broker/direct` remains as the dispatcher behind
+`broker.start(BrokerConfig)`, for the one-shot build and check planes and about
+forty-three test and demo callers. "The tree today" describes that dispatcher,
+as the tree stood before the service, and cites it at its home in
+`broker/direct`. "The target shape" and "The state model" describe what
 S1 built, and where the build differs from the S0 sketch the text says so. The
-sections on shutdown, defects and verification carry what S2 added. Everything
-labelled S3 or later is still a plan. The doc-check gate verifies every
+sections on shutdown, defects and verification carry what S2 added, and "The
+operational surface" is S3's. Everything labelled S4 or later is still a plan. The doc-check gate verifies every
 `path:line` citation below, so a phase that moves code will fail the build until
 this page is brought along. That is deliberate.
 
@@ -56,9 +58,9 @@ end of this page exist so that the hop is measured rather than assumed free.
 ## The tree today
 
 The survey behind this section read every module the service touches. The
-facts that shape the design are these. They describe the direct lane, which is
-what the tree does only when the lane switch asks for it, and the direct lane's
-own modules are cited at their present homes. Where S2 has since changed a
+facts that shape the design are these. They describe the direct lane, which was
+what the tree did before the service and is what `broker.start` still does, and
+the direct lane's own modules are cited at their present homes. Where S2 has since changed a
 fact, the paragraph says so.
 
 ### The helper machine
@@ -74,8 +76,8 @@ registry, queue or identity exists above it.
 
 The helper machine owns three timers: the handshake deadline, the cancel
 grace, and an idle heartbeat. The heartbeat is off in production, because
-`start_effect_plane_in` sets `heartbeat_interval_ms: 0`
-(`client/serve.gleam:723`). The execution's wall deadline is not in the helper
+`start_helper_pool` sets `heartbeat_interval_ms: 0`
+(`client/serve.gleam:697`). The execution's wall deadline is not in the helper
 machine at all. It lives in the broker's relay and, independently, in the
 helper's own `wall_s` policy limit.
 
@@ -125,7 +127,7 @@ started with, and the direct lane's is `broker/direct`. `start_execution`
 on success keeps an `Active` row (`broker/broker.gleam:280`) holding the
 `Execution` the dispatcher returned, the broker's monitor on that execution's
 guarantor, and the call's token and budget slot. The broker never holds a
-`Helper`. Direct `start` (`broker/direct.gleam:120`) borrows a helper, spawns an
+`Helper`. Direct `start` (`broker/direct.gleam:131`) borrows a helper, spawns an
 unlinked relay process, waits for the relay to hand back the event subject it
 owns, and only then sends the helper its start with `exec.run`
 (`broker/direct.gleam:169`), before `start` returns. The relay (`relay`,
@@ -138,13 +140,13 @@ handles that `Settle` by demonitoring the guarantor, calling the execution's
 slot.
 
 The relay selects two things: events from the helper machine, and the death of
-the caller (`relay_wake`, `broker/direct.gleam:221`). It does not watch the
+the caller (`relay_wake`, `broker/direct.gleam:232`). It does not watch the
 helper actor itself. When that actor dies mid-execution, nothing sends a
 terminal event, because the death notice runs inside the dying actor
 (`notify_death`, `broker/exec.gleam:2490`). A relay with a wall deadline
 eventually settles through its grace window. A relay with `deadline_ms == 0`,
 the session-lifetime jobs of protocol-change/058, waits in
-`selector_receive_forever` (`broker/direct.gleam:236`) and never settles. The
+`selector_receive_forever` (`broker/direct.gleam:247`) and never settles. The
 jail itself is not leaked, since the port closes with the dead owner, the
 helper reads end of file, and it cancels and joins its jail. The hang is on the
 BEAM side. A relay that itself dies unsettled is also silent to its caller: the
@@ -153,20 +155,17 @@ token, but `settle` was never called, so no `CallSettled` follows.
 
 ### The per-session effect plane
 
-`start_effect_plane_in` (`client/serve.gleam:702`) builds one pool and one
-broker for each session, and in the service lane one executor service between
-them. The pool and the broker are captured by value in closures, and each is a
-fatal child of the instance (`instance_children`, `client/serve.gleam:2169`),
-since a replacement would be unreachable. The service is a third fatal child in
-the service lane. The custody order of a session's teardown is Runtime,
+`start_effect_plane_in` (`client/serve.gleam:710`) builds one pool and one
+broker for each session, and one executor service between them. The pool and the broker are captured by value in closures, and each is a
+fatal child of the instance (`instance_children`, `client/serve.gleam:2084`),
+since a replacement would be unreachable. The service is a third fatal child. The custody order of a session's teardown is Runtime,
 Services, Broker, Helpers, Mcp, Storage, Namespace (`clean`,
 `client/internal/instance_owner.gleam:366`), so the session's writer lease is
 released only after the `Helpers` step has shown a native exit for every helper
-the session owned. In the direct lane `Helpers` is `close_pool` with a five
-second wait (`client/serve.gleam:762`); in the service lane it is
-`executor.close` with a two second drain budget and the same five second helpers
-budget (`client/serve.gleam:813`), which drains executions and then closes the
-pool.
+the session owned. `Helpers` is `executor.close` with a two second drain budget and
+a five second helpers budget (`client/serve.gleam:773`), which drains executions
+and then closes the pool. Before the service it was `close_pool` with a five
+second wait.
 
 Only `serve.gleam` builds the pool. Only `direct.gleam` and `executor.gleam`
 call `run`, `stdin` and `cancel`, and `broker.gleam` reaches them through the
@@ -177,7 +176,7 @@ git-identity step. Code mode reaches the broker through the opaque `Broker`
 handle at fifteen call sites in the `codemode` package, so any design that
 changes the handle's type touches all of them. One non-broker borrower exists:
 the boot-time `degraded` probe checks a helper out directly
-(`client/serve.gleam:6671`).
+(`client/serve.gleam:6576`).
 
 Some native processes never go through the pool, and "all execution goes
 through the service" must not be read to include them: MCP servers (an open
@@ -385,41 +384,33 @@ it would cost a wire the epic is told not to define.
 
 ### The lane switch
 
-The service ships behind a setting. `Settings.executor_lane` takes one of
-`DirectLane` or `ServiceLane` (`ExecutorLane`, `client/serve.gleam:333`), read
-from `LOOM_EXECUTOR_LANE` by the same mechanism as `LOOM_HELPER_POOL`
-(`client/serve.gleam:1476`) and chosen in `start_effect_plane_in`, which hands
-off to `start_direct_lane` (`client/serve.gleam:752`) or `start_service_lane`
-(`client/serve.gleam:791`). Since S2 only the exact text `direct` selects the
-direct lane (`executor_lane_named`, `client/serve.gleam:2002`). An unset
-variable, an empty one, `service`, a different capitalisation and a typo all
-select the service lane, silently, as `LOOM_HELPER_POOL` falls back to its
-default on text that is not a number. The polarity changed with the default: in
-S1 the variable was an opt-in and a typo left a session on the established
-path, and now it is the rollback, so a typo lands on the path every session is
-meant to run and `direct` is the one spelling that leaves it.
+The service shipped behind a setting, and S3 deleted it. `Settings.executor_lane`
+took `DirectLane` or `ServiceLane`, read from `LOOM_EXECUTOR_LANE`, and
+`start_effect_plane_in` handed off to a direct or a service start. S1 shipped
+the service opt-in with `DirectLane` as the default, because the issue's rollout
+rule is that a new path starts opt-in. S2 flipped the default once the failure
+matrix passed, and kept `LOOM_EXECUTOR_LANE=direct` as the rollback: only that
+exact text selected the direct lane, so a typo landed on the path every session
+was meant to run. The lane was read once when a session opened. A session built
+its one pool first, exactly as it always did, and the lane only chose what stood
+between the broker and that pool, so a running session never changed lanes and
+no helper was ever visible to both dispatchers.
 
-S1 shipped the service lane opt-in, with `DirectLane` as the default, because
-the issue's rollout rule is that a new path starts opt-in. S2 flipped the
-default to `ServiceLane` once the failure matrix passed. S3 deletes
-`broker/direct.gleam`, the setting and the variable. The lane is read once when
-a session opens. A
-session builds its one pool first, exactly as it always did, and the lane only
-chooses what stands between the broker and that pool, so a running session never
-changes lanes and no helper is ever visible to both dispatchers. Rollback before
-S3 is `LOOM_EXECUTOR_LANE=direct` at session open. That satisfies the issue's requirement that
-both paths never believe they own the same resource, by construction rather than
-by drain. The cost is one temporary duplicate relay loop of under a hundred
-lines, for the length of S1 and S2.
+S3 removed `ExecutorLane`, `Settings.executor_lane`, `executor_lane_named`,
+`executor_lane_from_environment`, the variable, and the direct arm of
+`client/serve`, with their tests and documentation. A session now has one
+execution model. The two parity tests stay as evidence: `lane_equivalence_test`
+and `real_lane_test` run the same scenarios through both dispatchers.
+`broker/direct.gleam` is kept on purpose. It is the dispatcher behind
+`broker.start(BrokerConfig)`, about forty-three test and demo call sites use that
+entry point, and so do the build plane and the check plane, which
+`start_effect_plane` starts for the extension installer and `loom ext check`
+(those planes have no session custody to prove and their callers stop the pool
+themselves). Migrating them to the service is follow-up work, and the module doc
+of `broker/direct` and the broker's `CLAUDE.md` say so.
 
-The test `Settings` builders read the variable through
-`executor_lane_from_environment` (`client/serve.gleam:1987`), so the client and
-conformance suites now run over the service lane with the variable unset, and
-exporting `LOOM_EXECUTOR_LANE=direct` runs them over the rollback lane without
-editing a test. Two tests pin the switch itself:
-`the_lane_variable_leaves_the_service_only_by_the_name_direct_test` and
-`the_service_lane_is_a_fatal_root_and_closes_under_custody_test`, which checks
-that the service is a fatal root beside the pool and the broker, that the
+The test `the_executor_service_is_a_fatal_root_and_closes_under_custody_test`
+pins that the service is a fatal root beside the pool and the broker, that the
 `Helpers` step closes it, and that the lease is released only after.
 
 ## The state model
@@ -780,8 +771,8 @@ pool size, which is clamped to sixteen (`max_pool_size`,
 | Relay progress reports | one per mode or cancel change, the first chunk, and every 16th chunk | `progress_chunks`, `broker/relay.gleam:254`. Never per chunk. |
 | Registry size | at most the pool size (4 to 16) | By construction: a row exists only while the service holds a helper for it. |
 | Relay grace after a cancel | 5000 ms | `relay_grace_ms`, `broker/dispatch.gleam:67`, shared by both lanes |
-| Checkout wait | 15 000 ms | `exec.checkout(pool, waiting: 15_000)`, `client/serve.gleam:772` and `client/serve.gleam:798` |
-| Run call | 5000 ms | `run_wait_ms`, `broker/direct.gleam:66` and `broker/executor.gleam:281` |
+| Checkout wait | 15 000 ms | `exec.checkout(pool, waiting: 15_000)`, `client/serve.gleam:660` and `client/serve.gleam:757` |
+| Run call | 5000 ms | `run_wait_ms`, `broker/direct.gleam:77` and `broker/executor.gleam:281` |
 | Service `start` call | 22 000 ms | `start_budget_ms`, `broker/executor.gleam:384`: the checkout wait, the relay's init wait, the run call and a second of slack |
 | Relay's ask to settle | 5000 ms | `settle_wait_ms`, `broker/relay.gleam:247` |
 | Relay's ask to cancel | 5000 ms | `cancel_wait_ms`, `broker/relay.gleam:260` |
@@ -1218,7 +1209,7 @@ should be able to find before proposing the item again.
 | A metrics exporter, an HTTP endpoint, any knob for the ring or the progress interval | Out of S3's cut list. The numbers are in the snapshot and the lines. |
 | Output buffering or BEAM-side backpressure in the service | Ports are active. The honest bound is helper-side, and S2 measured cancel latency under flood instead. Leases whose output is a wire run uncapped (`OutputIsWire`), so their mailbox is bounded only by the consumer. |
 | A restartable in-session service | The pool and broker are fatal children captured by value. The service joins them. |
-| Re-enabling the idle heartbeat | It is off in production on purpose (`client/serve.gleam:723`). |
+| Re-enabling the idle heartbeat | It is off in production on purpose (`client/serve.gleam:697`). |
 | Per-execution `limits`, use of the token by the helper, a shutdown acknowledgement, a `--version` flag, any new frame kind | Each is a wire change. The helper ignores `limits` and only checks the token for non-emptiness (`docs/spec-gaps.md`). |
 | Any NIF, and any Erlang FFI beyond `broker/internal/ffi_port` | The witnessed kill needs none: `kill_os_process` and `port_event` already exist. |
 | Folding #283 (idle retirement) into the epic | It is a pool change: one named timeout re-armed to the soonest expiry. The service must only not block it, so `Availability` stays the pool's. |
@@ -1263,7 +1254,7 @@ The branches are stacked, each cut from the one before.
 | Alongside | `broker/busy-checkin` and `sandbox/stdin-off-frame-loop`, each off `main` | The two defect fixes above, each with a test that fails without it. The busy-checkin fix is in the tree as `375d873`; the stdin fix is independent of the epic. | Merged independently of the epic. |
 | S1 (built) | `executor/s1-service` | The `Dispatcher` seam with its `release` and `abandon` split, `broker/execution`, `broker/relay`, `broker/executor` and `broker/direct`, the relay's helper monitor, `ExecutionLost`, `pool_census` and the inventory, and the opt-in lane switch. No `HelperGen` is minted. | `both_lanes_show_the_caller_the_same_events_test` and `both_lanes_refuse_an_empty_pool_alike_test` in `lane_equivalence_test` run twelve scenarios and an empty pool through both lanes over fake helpers and compare the caller's events without normalising. `real_helper_outcomes_are_identical_in_both_lanes_test` in `real_lane_test` runs four payloads through both lanes over real helpers and asserts the same bytes, the same exit and a byte-identical enforcement report. |
 | S2 (built) | `executor/s2-hardening` | The witnessed kill and the exposure-based `native_verdict`, the late-`Run` fence, fresh ids for stdin frames, the relay's cancel ask, separate drain and helpers budgets for `close`, the stored-verdict second close, `failure_matrix_test`, `leak_census_test`, the slow-consumer and sequential-runs tests, and the lane default flip to `ServiceLane`. The real-helper cancel race test was not written. | `failure_matrix_test` passes for every case under both lanes where they agree; `a_hundred_mixed_executions_leak_nothing_test` leaves the inventory empty, every relay dead and the process count at baseline; the real-helper leak census closes `Ok` with no process, port or jail left, where S0 measured seven stranded processes; `make check-client` is green with the variable unset and with `LOOM_EXECUTOR_LANE=direct`. |
-| S3 (built) | `executor/s3-ops` | `executor.snapshot`, `exec.pool_custody`, the counters and latency summaries, and `executor.settled` and `executor.closed` lines, with no tokens, environment or output; the 64-entry ring; the per-helper custody rendering. | A stuck executor is debuggable from the snapshot and the lines. Cancellation to native exit and an operator verb are not built. |
+| S3 (built) | `executor/s3-ops` | `executor.snapshot`, `exec.pool_custody`, the counters and latency summaries, and `executor.settled` and `executor.closed` lines, with no tokens, environment or output; the 64-entry ring; the per-helper custody rendering. The lane setting, `LOOM_EXECUTOR_LANE` and the direct arm of `client/serve` are deleted; `broker/direct.gleam` stays behind `broker.start`. | A stuck executor is debuggable from the snapshot and the lines, and a session has one execution model. Cancellation to native exit and an operator verb are not built. |
 | S4 | `executor/s4-standalone` | A thin `packages/executor` that boots the service without `client`, a smoke entrypoint, and a pure census of `{service version, exec protocol 3, policy 2, helper features}` with a skew check. No control socket and no protocol change. | The entrypoint boots from `broker` and `host` alone, runs one jailed command, and exits zero. |
 | S5 | `executor/s5-go-decision` | The enforcement-tag vocabulary as one generated source rendering a Go constants file and a Gleam module, gated like `make prelude-check`. ADR-018 records the verdict. | Wire bytes unchanged and golden fixtures pass. The expected verdict is no-go on moving Go and go on generating the contract. |
 

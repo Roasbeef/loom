@@ -240,3 +240,13 @@ The client suite, `make e2e` and `make e2e-codemode` also pass with the service
 lane as the default. So an unset `LOOM_EXECUTOR_LANE` now selects the service,
 and `LOOM_EXECUTOR_LANE=direct` is the rollback until S3 removes the production
 switch.
+
+## Addendum — the lane switch was removed in S3 (issue #696)
+
+S3 deleted `ExecutorLane`, `Settings.executor_lane`, `LOOM_EXECUTOR_LANE` and
+the direct arm of `client/serve`, so a session has one execution model.
+`broker/direct.gleam` is kept: it is the dispatcher behind
+`broker.start(BrokerConfig)`, which the one-shot build and check planes and
+about forty test and demo call sites use, and migrating them is follow-up work.
+`lane_equivalence_test` and `real_lane_test` stay as the parity evidence that the
+two dispatchers agree.
