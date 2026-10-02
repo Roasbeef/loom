@@ -635,6 +635,13 @@ still alive. The group delivers immediately to ordinary descendants. The
 tracker covers an observed child that called `setsid(2)`, rechecking its
 birth time immediately before signalling.
 
+The tracker reads a fresh kernel process table every 20 ms. It indexes parent
+heads and sibling links within that snapshot, preserving snapshot order
+without copying every process record or allocating child slices for the
+entire host. Remembered descendant identities remain traversal roots after
+reparenting. This reduces allocation without lengthening the sampling interval
+or changing the identity check at signal delivery.
+
 The Darwin tracker has two known gaps. Darwin has no stable process
 handle, so the birth check is not atomic with `kill(2)`. Nor can the
 tracker close the interval between process-table samples: a rapid

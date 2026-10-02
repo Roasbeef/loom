@@ -1,5 +1,25 @@
 # client
 
+## Context observation and router capture
+
+`context_view.reader` projects the immutable tool registry into a private
+name-keyed table containing only names, descriptions and schemas before
+constructing the hub's session-lived reader. Every observation still captures
+the current strand configuration and leaf together, then selects active tool
+names from that configuration. Sorting, deduplication, missing-name omission
+and duplicate registration replacement retain their existing semantics.
+`serve` also projects the fallback context window and compaction settings
+before retaining the reader. The public `read` and `inventory` adapters share
+the projected implementation; the production reader projects once at boot.
+
+`serve.with_code_mode_peers` retains the preceding `wrap_router` function
+before composing the peer router. It calls that wrapper first and binds peer
+access to the launching request's strand. The returned host still owns its
+execution configuration, but the router callback no longer duplicates the
+unrelated configuration in its environment. Capture-size regressions grow
+unrelated executor or host payloads and require both readers to remain the
+same size. Behavioral assertions independently pin observation and routing.
+
 ## Provider observation capture
 
 `wiring.request_image_classifier` projects the session before constructing

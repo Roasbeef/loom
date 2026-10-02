@@ -172,7 +172,13 @@ only Go module.
   descendants it observes with their process birth time and rechecks that
   identity immediately before signaling. This narrows PID reuse but cannot
   make the check and `kill(2)` atomic. It complements rather than replaces
-  process-group signals for children that call `setsid(2)`. macOS has no PID
+  process-group signals for children that call `setsid(2)`. Each 20 ms sample
+  reads a fresh kernel process table. A parent-head map and one-based sibling
+  indices traverse that snapshot without copying process records or allocating
+  a child slice per host process. Reverse indexing preserves snapshot sibling
+  order; remembered identities remain roots after reparenting. Tests pin deep
+  traversal, reparenting and birth-checked delivery to a real sleeping process.
+  macOS has no PID
   namespace, subreaper, or stable process handle, so a rapid daemonizing
   double-fork can be reparented between samples. Every Darwin execution reports
   `skip:darwin-process-lifecycle`; Seatbelt confinement remains inherited, but

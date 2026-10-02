@@ -493,6 +493,15 @@ retained scrollback or cumulative billing.
 [Protocol 030](../../protocol-change/030-context-observation.md) owns request
 correlation, byte bounds, and the estimate semantics.
 
+At boot, `context_view.reader` projects the immutable registry into a private
+table of tool names, descriptions and schemas. Its callback holds this table
+and the inputs used by the observation, rather than executable registrations
+and the complete startup settings. Each read still selects names from the
+captured strand configuration. The public one-shot adapters use the same
+projection, while the hub's reader constructs it once. This keeps observation
+ownership independent of execution ownership: adding captured state to a tool
+executor cannot enlarge the reader's retained environment.
+
 ## Installing an extension
 
 `loom ext` is `loomd`'s first subcommand. It is an operator surface, not a
