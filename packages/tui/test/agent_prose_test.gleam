@@ -85,7 +85,7 @@ pub fn an_expanded_wait_draws_the_report_as_prose_test() {
   // rather than three backticks on a row of their own.
   let rows =
     lines
-    |> list.flat_map(render.render_line(_, 80))
+    |> list.flat_map(render.render_line(_, 80, "main"))
     |> list.map(fn(row) {
       row.spans |> list.map(fn(value) { value.content }) |> string.concat
     })
@@ -254,7 +254,7 @@ pub fn a_collapsed_long_peer_message_keeps_its_hint_out_of_the_code_test() {
     transcript_lines.entry_lines(sent, False, None, block_summary.new())
     as "a collapsed long peer message is one message line"
   let rows =
-    render.render_line(preview, 80)
+    render.render_line(preview, 80, "main")
     |> list.map(fn(row) {
       row.spans |> list.map(fn(value) { value.content }) |> string.concat
     })

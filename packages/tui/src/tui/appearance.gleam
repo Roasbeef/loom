@@ -167,7 +167,6 @@ fn background(color: style.Color, palette: Palette) -> style.Color {
         value if value == theme.graphite -> style.Rgb(243, 245, 248)
         value if value == theme.raised -> style.Rgb(220, 231, 243)
         value if value == theme.user_background -> style.Rgb(251, 241, 221)
-        value if value == theme.assistant_background -> style.Rgb(228, 242, 243)
         value if value == theme.added_bg -> style.Rgb(224, 242, 228)
         value if value == theme.removed_bg -> style.Rgb(249, 228, 232)
         other -> other

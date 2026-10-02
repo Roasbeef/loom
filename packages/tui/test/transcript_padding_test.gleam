@@ -23,7 +23,7 @@ import tui/theme
 import tui/workspace
 
 pub fn direct_padding_preserves_styled_cells_test() {
-  let speaker = style.new(theme.paper, theme.assistant_background, style.bold())
+  let speaker = style.new(theme.paper, theme.raised, style.bold())
   let other = style.new(theme.quiet, theme.user_background, style.italic())
   let rows = [
     span.line_new([
@@ -103,7 +103,7 @@ fn padded(line: span.Line, width: Int) -> span.Line {
   case line.spans {
     [first, ..]
       if first.style.bg == theme.user_background
-      || first.style.bg == theme.assistant_background
+      || first.style.bg == theme.raised
     ->
       span.Line(
         ..line,

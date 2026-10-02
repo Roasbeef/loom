@@ -1,7 +1,6 @@
  ◆ replay · demo · strand main                                      baseten-kimi-k3
  ◇ attached to session demo
 
-
  › run the tests
 
  ◇ tools · 1 call · 1 failed · Ctrl+g expands details
@@ -10,7 +9,8 @@
  └ error: compilation failed
      test/tui_test.gleam:12
 
- ◆ Looking at the failure now.
+ ◆ main
+   Looking at the failure now.
 
 
 
