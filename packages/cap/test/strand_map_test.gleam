@@ -9,6 +9,7 @@ import core/msgpack
 import gleam/erlang/process
 import gleam/int
 import gleam/list
+import gleam/string
 
 fn assignments(count: Int) -> List(strand.Assignment) {
   list.index_map(list.repeat(Nil, count), fn(_, i) {
@@ -167,20 +168,45 @@ pub fn a_later_spawn_failure_does_not_discard_previously_admitted_children_test(
   assert events(log, 3) == ["spawn:0", "spawn:1", "wait:1"]
 }
 
+// The two join failure kinds surface different variants, so each kind is
+// pinned to its own: a broken channel is an unavailable plane, and a
+// mismatched answer is a malformed result — the same distinction
+// `step_wait` enforces for a direct `wait`.
 pub fn failed_or_malformed_joins_preserve_all_handles_test() {
-  list.each(["error", "mismatch"], fn(kind) {
-    let log = process.new_subject()
-    install(log, "none", kind)
-    let assert Ok([
-      strand.JoinFailed(a, _),
-      strand.JoinFailed(b, _),
-      strand.NotStarted(_),
-    ]) = strand.map(assignments(3), max_concurrency: 2, within_ms: 10)
-      as "join failures retain handles and stop further admission"
-    assert a == handle("0")
-    assert b == handle("1")
-    assert events(log, 3) == ["spawn:0", "spawn:1", "wait:2"]
-  })
+  list.each(
+    [
+      #("error", fn(error) {
+        case error {
+          strand.StrandUnavailable(_) -> True
+          _ -> False
+        }
+      }),
+      #("mismatch", fn(error) {
+        case error {
+          strand.StrandResultMalformed(reason) ->
+            string.contains(reason, "mismatched handles")
+          _ -> False
+        }
+      }),
+    ],
+    fn(entry) {
+      let kind = entry.0
+      let pins_variant = entry.1
+      let log = process.new_subject()
+      install(log, "none", kind)
+      let assert Ok([
+        strand.JoinFailed(a, first_error),
+        strand.JoinFailed(b, second_error),
+        strand.NotStarted(_),
+      ]) = strand.map(assignments(3), max_concurrency: 2, within_ms: 10)
+        as "join failures retain handles and stop further admission"
+      assert pins_variant(first_error)
+      assert pins_variant(second_error)
+      assert a == handle("0")
+      assert b == handle("1")
+      assert events(log, 3) == ["spawn:0", "spawn:1", "wait:2"]
+    },
+  )
 }
 
 pub fn map_slices_long_join_windows_until_settled_test() {
