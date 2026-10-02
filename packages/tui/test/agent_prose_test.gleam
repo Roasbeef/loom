@@ -13,7 +13,9 @@ import gleam/string
 import session_view/block_summary
 import session_view/protocol
 import session_view/strand_framing
-import session_view/transcript_line.{Line, System, ToolDetail, ToolResult, User}
+import session_view/transcript_line.{
+  Line, PeerMessage, StrandMessage, System, ToolDetail, ToolResult, User,
+}
 import session_view/transcript_lines
 import tui/render
 import tui_test/gateway
@@ -107,8 +109,12 @@ pub fn a_peer_message_is_prose_under_its_source_test() {
     ))
   assert transcript_lines.entry_lines(sent, False, None, block_summary.new())
     == [
-      Line(System, "peer · lint-census · main"),
-      Line(ToolDetail, "**R8** census is up"),
+      Line(
+        PeerMessage,
+        "⇄ peer session lint-census · strand main · "
+          <> transcript_lines.origin_checked
+          <> "\n**R8** census is up",
+      ),
     ]
 }
 
@@ -134,8 +140,7 @@ pub fn a_strand_message_is_prose_under_its_strand_without_framing_test() {
       block_summary.new(),
     )
     == [
-      Line(System, "strand · sub:main/x"),
-      Line(ToolDetail, "**two** issues"),
+      Line(StrandMessage, "← from sub:main/x · strand message\n**two** issues"),
     ]
   let contract =
     strand_framing.contract_open
@@ -154,9 +159,10 @@ pub fn a_strand_message_is_prose_under_its_strand_without_framing_test() {
       block_summary.new(),
     )
     == [
-      Line(System, "strand · main"),
-      Line(ToolDetail, "review it"),
-      Line(ToolDetail, contract),
+      Line(
+        StrandMessage,
+        "← from main · strand message\nreview it\n\n" <> contract,
+      ),
     ]
 
   // The head names a different strand than the origin, so nothing is
@@ -167,7 +173,9 @@ pub fn a_strand_message_is_prose_under_its_strand_without_framing_test() {
       None,
       block_summary.new(),
     )
-    == [Line(System, "strand · main"), Line(ToolDetail, framed)]
+    == [
+      Line(StrandMessage, "← from main · strand message\n" <> framed),
+    ]
 }
 
 // The framing is a hint the model can imitate, so it never selects the
@@ -231,9 +239,10 @@ pub fn an_aborted_child_names_its_reason_and_its_result_test() {
     ]
 }
 
-// A long message collapsed to a preview is not drawn as Markdown: the
-// preview can stop inside a fence and swallow the expand hint.
-pub fn a_collapsed_long_peer_message_stays_literal_test() {
+// A long message collapsed to a preview can stop inside a fence. The
+// preview closes the fence before the expand hint, so the hint is drawn as
+// a line of prose rather than as one more line of code.
+pub fn a_collapsed_long_peer_message_keeps_its_hint_out_of_the_code_test() {
   let long = "```\n" <> string.repeat("line of code\n", 2000) <> "```"
   let sent =
     entry_with(message.UserMessage(
@@ -241,12 +250,22 @@ pub fn a_collapsed_long_peer_message_stays_literal_test() {
       timestamp: 0,
       origin: Some(message.PeerOrigin("lint-census", "main")),
     ))
-  let assert [_, Line(System, preview)] =
+  let assert [Line(PeerMessage, _) as preview] =
     transcript_lines.entry_lines(sent, False, None, block_summary.new())
-    as "a collapsed long peer message is a literal preview"
-  assert preview != long
-  let assert [_, Line(ToolDetail, whole)] =
+    as "a collapsed long peer message is one message line"
+  let rows =
+    render.render_line(preview, 80)
+    |> list.map(fn(row) {
+      row.spans |> list.map(fn(value) { value.content }) |> string.concat
+    })
+  let assert Ok(hint) =
+    list.find(rows, fn(row) { string.contains(row, "Ctrl+g shows") })
+    as "the preview ends in its hint"
+  assert !string.contains(hint, "▎ ")
+  assert list.any(rows, fn(row) { string.contains(row, "▎ line of code") })
+
+  let assert [Line(PeerMessage, whole)] =
     transcript_lines.entry_lines(sent, True, None, block_summary.new())
-    as "an expanded peer message is Markdown"
-  assert whole == long
+    as "an expanded peer message is the whole body"
+  assert string.ends_with(whole, long)
 }

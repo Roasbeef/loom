@@ -623,7 +623,7 @@ pub fn messages_show_readable_recipient_and_complete_expanded_body_test() {
     ])
   let pending = model() |> received(call(1, "send", "agent_send", arguments))
   let #(compact, shown) = painted(pending)
-  assert string.contains(shown, "Message to sub:main/reviewer-0123456789abcdef")
+  assert string.contains(shown, "→ to sub:main/reviewer-0123456789abcdef")
   assert string.contains(shown, "Review request")
   assert string.contains(shown, "Please check the ownership boundary.")
   assert !string.contains(shown, "{\"to\"")

@@ -57,6 +57,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set.{type Set}
 import gleam/string
 import session_view/advisor_history
 import session_view/agent_roster
@@ -74,9 +75,10 @@ import session_view/todo_board
 import session_view/tool_activity
 import session_view/transcript_line.{
   type CacheNotice, type Line, type Speaker, type Stream, type Submission,
-  type ToolTail, Assistant, Failure, HeldPrompt, Interjection, Line, Reasoning,
-  ReasoningDigest, Spacer, Stream, SummarizedAdvice, SummarizedReasoning, System,
-  ToolCall, ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
+  type ToolTail, Assistant, Failure, HeldPrompt, Interjection, Line, PeerMessage,
+  Reasoning, ReasoningDigest, SentMessage, Spacer, StrandMessage, Stream,
+  SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
+  ToolFailure, ToolPatch, ToolResult, User,
 }
 import session_view/worktree_view
 
@@ -967,6 +969,7 @@ fn record_blocks(
     // its own, so one opening a narrative under a group's bare last row
     // would otherwise sit welded to it.
     notes_view.Excerpt -> {
+      let found = deliveries(entries)
       let #(reversed, calls, narratives) =
         entries
         |> tool_activity.project_split(advisor_splits(advisor))
@@ -985,6 +988,7 @@ fn record_blocks(
                 item_sequence(item, sequences),
                 presentation,
                 owner,
+                found,
               )
           }
         })
@@ -1053,6 +1057,7 @@ fn compact_item_lines(
   seq: Int,
   presentation: Presentation,
   owner: Option(message.Origin),
+  found: Deliveries,
 ) -> #(
   List(#(Int, #(Source, List(Line)))),
   Dict(tool_activity.Call, List(Line)),
@@ -1062,19 +1067,45 @@ fn compact_item_lines(
     // The labels the entry's rows would show are part of the key, so a
     // label arriving is a new key and the entry is projected again, while
     // every other cached narrative is reused.
-    tool_activity.Narrative(value) -> {
-      let key = #(value, owner, labels_for(value, presentation.summaries))
-      let lines =
-        dict.get(presentation.compact_entry_cache, key)
-        |> result.lazy_unwrap(fn() {
-          entry_lines(value, False, owner, presentation.summaries)
-        })
-      #(
-        [#(seq, #(FromEntry(value), lines)), ..acc.0],
-        acc.1,
-        dict.insert(acc.2, key, lines),
-      )
-    }
+    // A send's result that its call's row already draws is no rows at
+    // all, and a response holding a send is drawn afresh rather than from
+    // the cache, since its row changes when the result arrives later.
+    tool_activity.Narrative(value) ->
+      case absorbed(found, value), reads_deliveries(value) {
+        True, _ -> #([#(seq, #(FromEntry(value), [])), ..acc.0], acc.1, acc.2)
+        False, True -> #(
+          [
+            #(
+              seq,
+              #(
+                FromEntry(value),
+                delivered_entry_lines(
+                  value,
+                  owner,
+                  presentation.summaries,
+                  found,
+                ),
+              ),
+            ),
+            ..acc.0
+          ],
+          acc.1,
+          acc.2,
+        )
+        False, False -> {
+          let key = #(value, owner, labels_for(value, presentation.summaries))
+          let lines =
+            dict.get(presentation.compact_entry_cache, key)
+            |> result.lazy_unwrap(fn() {
+              entry_lines(value, False, owner, presentation.summaries)
+            })
+          #(
+            [#(seq, #(FromEntry(value), lines)), ..acc.0],
+            acc.1,
+            dict.insert(acc.2, key, lines),
+          )
+        }
+      }
     tool_activity.Tools(calls) -> {
       let #(lines, cached) =
         cached_activity_lines(calls, presentation.compact_call_cache)
@@ -1308,7 +1339,9 @@ fn block_closes_bare(rows: List(Line)) -> Bool {
 /// blank, which is why it is a function rather than a second copy of the list:
 /// moving a speaker into or out of the tool family changes both the row drawn
 /// and the gap the fold above owes it, and the two have to move together.
-/// Everything else already ends in a blank, and a `Spacer` is a blank.
+/// A message between agents closes bare as well, so a run of messages,
+/// each opening with its own blank, is one blank row apart. Everything else
+/// already ends in a blank, and a `Spacer` is a blank.
 @internal
 pub fn closes_bare(speaker: Speaker) -> Bool {
   case speaker {
@@ -1317,7 +1350,10 @@ pub fn closes_bare(speaker: Speaker) -> Bool {
     | ToolFailure
     | ToolPatch
     | ReasoningDigest
-    | SummarizedReasoning -> True
+    | SummarizedReasoning
+    | SentMessage
+    | StrandMessage
+    | PeerMessage -> True
     System
     | User
     | Assistant
@@ -1395,6 +1431,18 @@ pub fn activity_heading(calls: List(tool_activity.Call)) -> Line {
 /// the outcome is known.
 @internal
 pub fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
+  // A send that is pending or was taken is its message row; a failed one
+  // keeps the failure rows every tool's failure gets, so the reason shows.
+  let receipt = case call.outcome {
+    None -> Ok(NoReceipt)
+    Some(message.ToolResultMessage(is_error: False, details:, ..)) ->
+      Ok(Receipted(details))
+    Some(_) -> Error(Nil)
+  }
+  use <- result.lazy_unwrap(
+    result.try(receipt, sent_lines(call.invocation, _, notes_view.Excerpt)),
+  )
+
   // The invocation owns its source preview, so settling a result changes the
   // status without adding or removing code rows. Reuse the expanded entry's
   // Gleam renderer instead of displaying the transport JSON as a summary.
@@ -1512,6 +1560,9 @@ pub fn expanded_call_lines(call: tool_activity.Call) -> List(Line) {
       None,
     )
   {
+    // A send's row is not its summary: it carries the whole message, which
+    // is what expanding the call is for.
+    [Line(speaker: SentMessage, ..) as head, ..rest] -> [head, ..rest]
     [head, ..rest] ->
       case string.contains(call_summary(call), "…") {
         True -> [head, ..rest]
@@ -1520,7 +1571,7 @@ pub fn expanded_call_lines(call: tool_activity.Call) -> List(Line) {
     [] -> []
   }
   let outcome = case call.outcome {
-    Some(result) -> message_lines(result, True, None, [])
+    Some(result) -> message_lines(result, True, None, [], unjoined)
     None -> []
   }
   list.append(invocation, outcome)
@@ -1612,15 +1663,254 @@ fn note_call_lines(
   }
 }
 
+// What the transcript knows, where it draws a send, of the send's result.
+type Receipt {
+  // No result is joined to the call here: it has none yet, or expanded
+  // history draws the result as its own entry below the call.
+  NoReceipt
+
+  // The successful result, whose details say how the message was taken.
+  Receipted(details: Option(json.JsonValue))
+}
+
+// The one row an `agent_send` call becomes, or an error when its arguments
+// do not name a recipient and a message, which leaves the call to the
+// generic rows every other tool gets. The heading is built from the call's
+// arguments and its result; the body is drawn beneath it and never read.
+fn sent_lines(
+  call: message.ToolCall,
+  receipt: Receipt,
+  extent: notes_view.Extent,
+) -> Result(List(Line), Nil) {
+  use fields <- result.try(case call.name, call.arguments {
+    "agent_send", json.Object(fields) -> Ok(fields)
+    _, _ -> Error(Nil)
+  })
+  use recipient <- result.try(option.to_result(string_field(fields, "to"), Nil))
+  use body <- result.try(option.to_result(string_field(fields, "message"), Nil))
+  let taken = case receipt {
+    NoReceipt -> ""
+    Receipted(details: Some(json.Object(fields))) ->
+      case string_field(fields, "delivery") {
+        Some("started") -> " · started a run on it"
+        _ -> " · admitted to its queue"
+      }
+    Receipted(..) -> " · admitted to its queue"
+  }
+  Ok([
+    Line(
+      SentMessage,
+      "→ to "
+        <> text_hygiene.single_line(recipient)
+        <> " · agent_send"
+        <> taken
+        <> "\n"
+        <> message_body(body, extent),
+    ),
+  ])
+}
+
+/// The successful `agent_send` results of a compact window joined to the
+/// calls they answer, for responses whose calls are drawn as narrative.
+///
+/// A response that carries prose is narrative (`tool_activity`), so its
+/// calls are drawn inside it and their results arrive as entries of their
+/// own. A send's row says what became of the message, which only its result
+/// knows, so the row is drawn from both and the result entry draws nothing.
+/// A failed send's result is not joined: its failure rows stay where they
+/// are.
+pub opaque type Deliveries {
+  Deliveries(
+    // Keyed by the calling entry's identity and the provider call id.
+    joined: Dict(#(String, String), Option(json.JsonValue)),
+    // The result entries whose content a call's row now draws.
+    absorbed: Set(String),
+  )
+}
+
+/// Joins each successful `agent_send` result in `entries`, oldest first,
+/// to the latest earlier call with its provider id.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let joined = transcript_lines.deliveries([])
+/// ```
+@internal
+pub fn deliveries(entries: List(entry.Entry)) -> Deliveries {
+  let #(found, _open) =
+    list.fold(
+      entries,
+      #(Deliveries(dict.new(), set.new()), dict.new()),
+      fn(acc, value) {
+        let #(found, open) = acc
+        case value {
+          // A reused provider id replaces the earlier call: the next result
+          // with that id answers the latest call that made it.
+          entry.MessageEntry(
+            message: message.AssistantMessage(content:, ..),
+            ..,
+          ) -> {
+            let caller = ids.entry_id_to_string(value.id)
+            let open =
+              list.fold(content, open, fn(open, block) {
+                case block {
+                  message.AssistantToolCall(message.ToolCall(
+                    name: "agent_send",
+                    id:,
+                    ..,
+                  )) -> dict.insert(open, id, caller)
+                  message.AssistantToolCall(..)
+                  | message.AssistantText(..)
+                  | message.AssistantThinking(..) -> open
+                }
+              })
+            #(found, open)
+          }
+
+          entry.MessageEntry(
+            message: message.ToolResultMessage(
+              tool_name: "agent_send",
+              tool_call_id:,
+              is_error:,
+              details:,
+              ..,
+            ),
+            ..,
+          ) ->
+            case dict.get(open, tool_call_id), is_error {
+              Ok(caller), False -> #(
+                Deliveries(
+                  joined: dict.insert(
+                    found.joined,
+                    #(caller, tool_call_id),
+                    details,
+                  ),
+                  absorbed: set.insert(
+                    found.absorbed,
+                    ids.entry_id_to_string(value.id),
+                  ),
+                ),
+                dict.delete(open, tool_call_id),
+              )
+              Ok(_), True -> #(found, dict.delete(open, tool_call_id))
+              Error(Nil), _ -> #(found, open)
+            }
+
+          entry.MessageEntry(..)
+          | entry.CompactionEntry(..)
+          | entry.BranchSummaryEntry(..)
+          | entry.CustomEntry(..) -> #(found, open)
+        }
+      },
+    )
+  found
+}
+
+/// Whether `value` is a send's result that its call's row already draws
+/// (`deliveries`), and so draws no rows of its own in compact history.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.absorbed(transcript_lines.deliveries(entries), result)
+/// ```
+@internal
+pub fn absorbed(found: Deliveries, value: entry.Entry) -> Bool {
+  set.contains(found.absorbed, ids.entry_id_to_string(value.id))
+}
+
+/// Whether drawing `value` in compact history reads a joined result, so
+/// that its rows cannot be cached against the entry alone: the result
+/// arrives as a later entry and changes the row of a call already drawn.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.reads_deliveries(response)
+/// ```
+@internal
+pub fn reads_deliveries(value: entry.Entry) -> Bool {
+  case value {
+    entry.MessageEntry(message: message.AssistantMessage(content:, ..), ..) ->
+      list.any(content, fn(block) {
+        case block {
+          message.AssistantToolCall(message.ToolCall(name: "agent_send", ..)) ->
+            True
+          message.AssistantToolCall(..)
+          | message.AssistantText(..)
+          | message.AssistantThinking(..) -> False
+        }
+      })
+    entry.MessageEntry(..)
+    | entry.CompactionEntry(..)
+    | entry.BranchSummaryEntry(..)
+    | entry.CustomEntry(..) -> False
+  }
+}
+
 // A message preview preserves Markdown paragraphs; expansion exposes the
 // complete body from the same immutable call arguments.
+//
+// The preview is drawn as Markdown, so a cut inside a fenced block closes
+// the fence before the hint: left open, the fence would carry the hint into
+// the code block as one more line of code.
 fn message_excerpt(body: String) -> String {
   let lines = string.split(body, "\n")
   case list.drop(lines, 12) {
     [] -> body
-    _ ->
-      string.join(list.take(lines, 12), "\n")
+    _ -> {
+      let kept = list.take(lines, 12)
+      let closing = case open_fence(kept) {
+        Some(fence) -> "\n" <> fence
+        None -> ""
+      }
+      string.join(kept, "\n")
+      <> closing
       <> "\n\n… Ctrl+g shows the complete message"
+    }
+  }
+}
+
+// The fence still open at the end of `lines`, if one is: a line of three or
+// more backticks or tildes opens a fence, and the next line holding only at
+// least as many of the same character closes it. An indented fence counts
+// as one, so a fence inside a list item is seen too.
+fn open_fence(lines: List(String)) -> Option(String) {
+  list.fold(lines, None, fn(open, line) {
+    let marker = fence_marker(string.trim_start(line))
+    case open, marker {
+      None, Some(fence) -> Some(fence)
+      Some(fence), Some(candidate) ->
+        case
+          string.first(candidate) == string.first(fence)
+          && string.length(candidate) >= string.length(fence)
+          && string.trim(line) == candidate
+        {
+          True -> None
+          False -> open
+        }
+      _, None -> open
+    }
+  })
+}
+
+// The run of backticks or tildes a fence line opens with, when it is at
+// least three long.
+fn fence_marker(line: String) -> Option(String) {
+  let run = fn(glyph) {
+    string.to_graphemes(line)
+    |> list.take_while(fn(char) { char == glyph })
+    |> string.concat
+  }
+  let marker = case string.first(line) {
+    Ok("`") -> run("`")
+    Ok("~") -> run("~")
+    _ -> ""
+  }
+  case string.length(marker) >= 3 {
+    True -> Some(marker)
+    False -> None
   }
 }
 
@@ -1699,6 +1989,47 @@ pub fn entry_lines(
   local_owner: Option(message.Origin),
   labels: block_summary.Labels,
 ) -> List(Line) {
+  entry_rows(value, details_expanded, local_owner, labels, unjoined)
+}
+
+/// `entry_lines` in compact history for an entry whose `agent_send` calls
+/// have their results joined in `found` (`deliveries`): each such call's
+/// row says what became of its message.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.delivered_entry_lines(response, None, labels, found)
+/// ```
+@internal
+pub fn delivered_entry_lines(
+  value: entry.Entry,
+  local_owner: Option(message.Origin),
+  labels: block_summary.Labels,
+  found: Deliveries,
+) -> List(Line) {
+  let caller = ids.entry_id_to_string(value.id)
+  entry_rows(value, False, local_owner, labels, fn(call: message.ToolCall) {
+    case dict.get(found.joined, #(caller, call.id)) {
+      Ok(details) -> Receipted(details)
+      Error(Nil) -> NoReceipt
+    }
+  })
+}
+
+// No result is joined to any call: expanded history draws each result as
+// its own entry, and a host drawing one block alone has no window to join.
+fn unjoined(_call: message.ToolCall) -> Receipt {
+  NoReceipt
+}
+
+fn entry_rows(
+  value: entry.Entry,
+  details_expanded: Bool,
+  local_owner: Option(message.Origin),
+  labels: block_summary.Labels,
+  receipt: fn(message.ToolCall) -> Receipt,
+) -> List(Line) {
   let found = labels_for(value, labels)
   case value {
     entry.MessageEntry(message: value, ..) ->
@@ -1714,7 +2045,7 @@ pub fn entry_lines(
         sibling_message_lines(value, details_extent(details_expanded))
       })
       |> option.lazy_unwrap(fn() {
-        message_lines(value, details_expanded, local_owner, found)
+        message_lines(value, details_expanded, local_owner, found, receipt)
       })
     entry.CompactionEntry(retained_tail:, tokens_before:, ..) -> [
       Line(
@@ -1797,15 +2128,33 @@ fn peer_message_lines(
     ) ->
       Some([
         Line(
-          System,
-          "peer · "
-            <> text_hygiene.single_line(session)
+          PeerMessage,
+          "⇄ peer session "
+            <> short_session(text_hygiene.single_line(session))
+            <> " · strand "
+            <> text_hygiene.single_line(strand)
             <> " · "
-            <> text_hygiene.single_line(strand),
+            <> origin_checked
+            <> "\n"
+            <> message_body(user_body(content), extent),
         ),
-        prose_line(user_body(content), extent),
       ])
     _ -> None
+  }
+}
+
+/// The words a peer message's heading ends with. Only a `PeerOrigin` draws
+/// them, and the admission host writes that origin only after it has
+/// authenticated the sending session, so the claim is the daemon's and not
+/// the sender's.
+pub const origin_checked = "✓ origin checked by the daemon"
+
+// A session identifier, a UUID, is named by the eight characters before
+// its first dash, as the picker names one. Anything else is shown whole.
+fn short_session(session: String) -> String {
+  case string.slice(session, 8, 1) {
+    "-" -> string.slice(session, 0, 8)
+    _ -> session
   }
 }
 
@@ -1827,32 +2176,33 @@ fn sibling_message_lines(
       ..,
     ) -> {
       let framed = strand_framing.strip(user_body(content), strand)
-      let trailer = case framed.trailer {
-        Some(instruction) -> [prose_line(instruction, extent)]
-        None -> []
+      let body = case framed.trailer {
+        Some(instruction) -> framed.body <> "\n\n" <> instruction
+        None -> framed.body
       }
       Some([
-        Line(System, "strand · " <> text_hygiene.single_line(strand)),
-        prose_line(framed.body, extent),
-        ..trailer
+        Line(
+          StrandMessage,
+          "← from "
+            <> text_hygiene.single_line(strand)
+            <> " · strand message\n"
+            <> message_body(body, extent),
+        ),
       ])
     }
     _ -> None
   }
 }
 
-// An agent's prose as one row. A long message collapses to a preview and
-// an expand hint. The preview can stop inside a fence, which would swallow
-// the hint into a code block, so only the whole body is drawn as Markdown.
-fn prose_line(body: String, extent: notes_view.Extent) -> Line {
-  let whole = composer.transcript_text(body, True)
+// A message body as its row draws it: the complete text when details are
+// expanded, and otherwise its first twelve lines with the hint that expands
+// it. Every kind of message is cut the same way, so a sent, a sibling's and
+// a peer's message of one length preview to one height.
+fn message_body(body: String, extent: notes_view.Extent) -> String {
+  let body = text_hygiene.multiline(body)
   case extent {
-    notes_view.Complete -> Line(ToolDetail, whole)
-    notes_view.Excerpt ->
-      case composer.transcript_text(body, False) {
-        preview if preview == whole -> Line(ToolDetail, whole)
-        preview -> Line(System, preview)
-      }
+    notes_view.Complete -> body
+    notes_view.Excerpt -> message_excerpt(body)
   }
 }
 
@@ -2356,6 +2706,7 @@ fn message_lines(
   details_expanded: Bool,
   local_owner: Option(message.Origin),
   found: List(#(Int, String)),
+  receipt: fn(message.ToolCall) -> Receipt,
 ) -> List(Line) {
   case value {
     message.UserMessage(content:, origin:, ..) -> [
@@ -2377,10 +2728,11 @@ fn message_lines(
       let lines =
         content
         |> list.index_map(fn(block, index) {
-          assistant_block_lines(
+          block_lines(
             block,
             details_expanded,
             block_label(found, index),
+            receipt,
           )
         })
         |> separated_tool_groups(WithinResponse)
@@ -2475,6 +2827,15 @@ pub fn assistant_block_lines(
   details_expanded: Bool,
   label: Option(String),
 ) -> List(Line) {
+  block_lines(block, details_expanded, label, unjoined)
+}
+
+fn block_lines(
+  block: message.AssistantBlock,
+  details_expanded: Bool,
+  label: Option(String),
+  receipt: fn(message.ToolCall) -> Receipt,
+) -> List(Line) {
   case block {
     message.AssistantText(text:, ..) -> [Line(Assistant, text)]
     message.AssistantThinking(thinking:, redacted:, ..) ->
@@ -2492,6 +2853,11 @@ pub fn assistant_block_lines(
         ]
       }
     message.AssistantToolCall(call:) -> {
+      use <- result.lazy_unwrap(sent_lines(
+        call,
+        receipt(call),
+        details_extent(details_expanded),
+      ))
       let message.ToolCall(name:, arguments:, ..) = call
       case
         code_mode_program(name, arguments, details_expanded),
