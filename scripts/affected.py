@@ -63,15 +63,13 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # The static gates are whole-tree and take about ten seconds together, so
 # they always run rather than being selected by their inputs. Tracking the
-# inputs of the prelude digest (`packages/cap`), the web asset digest
+# inputs of the prelude digest (`packages/cap`) and the web asset digest
 # (`packages/web_client` and the `web_view` sources its stylesheet scans)
-# and the enforcement tag source (`protocol/enforcement-tags.toml`) would
-# save a couple of seconds and add a second copy of what those scripts
+# would save two seconds and add a second copy of what those scripts
 # already know. `make lint` runs over every package, not only the affected
 # ones: its gating rules are per file, but a whole-tree run costs seconds
 # and needs no argument about which rules are cross-module.
-STATIC_GATES = ("fmt-check", "lint", "doc-check", "prelude-check", "tags-check",
-                "client-check")
+STATIC_GATES = ("fmt-check", "lint", "doc-check", "prelude-check", "client-check")
 
 # Package lanes, taken from scripts/signoff.sh so that the packages which
 # run concurrently here are the ones already proven to run concurrently

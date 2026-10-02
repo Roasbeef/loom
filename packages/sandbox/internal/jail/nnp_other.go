@@ -14,7 +14,7 @@ import (
 // as applied would be the one thing that must never happen.
 func noNewPrivs() (skipReason string, err error) {
 	return fmt.Sprintf(
-		TagNoNewPrivs+": PR_SET_NO_NEW_PRIVS is Linux-only (%s)",
+		"no-new-privs: PR_SET_NO_NEW_PRIVS is Linux-only (%s)",
 		runtime.GOOS,
 	), nil
 }

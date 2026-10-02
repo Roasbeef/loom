@@ -32,20 +32,6 @@ for pkg in "${targets[@]}"; do
   fi
 done
 
-# The enforcement tag vocabulary is written by the Go helper and read by the
-# broker. Both spellings are generated from protocol/enforcement-tags.toml
-# (`make gen-tags`), so drift between the source and either output is a
-# build failure here, with the two packages that consume it. The gate is a
-# byte comparison that needs only python3; see scripts/gen-tags.py.
-for pkg in "${targets[@]}"; do
-  if [ "$pkg" = "broker" ] || [ "$pkg" = "sandbox" ]; then
-    echo "==> enforcement tags"
-    scripts/gen-tags.py --check
-    scripts/gen-tags.py --self-test
-    break
-  fi
-done
-
 # What the page loads besides Lustre's own runtime (the client components'
 # bundle, the Tailwind stylesheet and the two bootstrap scripts) is built
 # from packages/web_client into web_view's priv/static by `make gen-client`,

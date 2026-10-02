@@ -36,7 +36,7 @@ type PlatformSupport struct {
 const (
 	// PlatformUnsupportedFeature appears in hello.features when this
 	// build has no jail for its platform.
-	PlatformUnsupportedFeature = TagPlatformUnsupported
+	PlatformUnsupportedFeature = "platform-unsupported"
 	// AllowUnenforcedFlag is the explicit opt-in that lets loom-exec
 	// serve anyway, with no confinement at all.
 	AllowUnenforcedFlag = "--allow-unenforced"
@@ -55,12 +55,12 @@ func PlatformFor(goos string) PlatformSupport {
 	case "darwin":
 		return PlatformSupport{GOOS: goos, Implemented: true}
 	case "windows":
-		return PlatformSupport{GOOS: goos, Reason: TagJail + ": the Windows " +
+		return PlatformSupport{GOOS: goos, Reason: "jail: the Windows " +
 			"sandbox (WP-H phase 3) is not implemented — loom-exec " +
 			"applies no restricted token, no ACLs, and no firewall rule"}
 	default:
 		return PlatformSupport{GOOS: goos, Reason: fmt.Sprintf(
-			TagJail+": loom-exec has no sandbox implementation for %s; "+
+			"jail: loom-exec has no sandbox implementation for %s; "+
 				"Linux and macOS are built (WP-H phases 1 and 2)", goos)}
 	}
 }

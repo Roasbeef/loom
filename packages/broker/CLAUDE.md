@@ -178,19 +178,6 @@ protocol (spec Part 1.4). WP-G.
   `ExecResult.cancelled` says the helper truncated the run;
   `ExecResult.enforcement` is the ground truth `required_layers` and
   `unapplied_layers` check the policy's demands against.
-- `broker/tags` — **generated**, never hand-edited: the enforcement tag
-  vocabulary (`tag_bwrap`, `tag_seccomp_net`, `prefix_skip`, ...) the Go
-  helper writes into `hello.features` and `exec_exit.enforcement`.
-  `broker/exec`'s layer functions (`required_layers*`, `base_layers_for`,
-  `network_layers_for`, `resource_layers_for`, `tolerated_layers_for_demand`,
-  `degraded_features`, `layer_tag`, `report_layer_tag`) spell every layer
-  through it. The source is `protocol/enforcement-tags.toml`; rename or add
-  a tag there, run `make gen-tags`, and the Go twin
-  (`packages/sandbox/internal/jail/tags_gen.go`) moves with it.
-  `make tags-check` (python3 only, in `make check-broker`) fails on a moved
-  source or a hand-edited output. The `skip:` literal still appears in
-  `codemode/enforcement.gleam` and two `client/lsp` modules, outside this
-  package.
 - `broker/exec.ExecFailure.ExecutionLost(cause: LossCause)` with
   `LossCause = HelperActorDown | RelayDown | ExecutorClosing` — the one
   failure that says the execution **may have started** and its outcome is

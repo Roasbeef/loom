@@ -74,31 +74,31 @@ func DetectFeaturesWith(cgroupBase string) Features {
 // a strictly worse thing than a degraded one, and named separately so
 // the broker can tell them apart.
 func (f Features) List() []string {
-	out := []string{TagRlimits, TagPgroup}
+	out := []string{"rlimits", "pgroup"}
 	switch f.Platform.GOOS {
 	case "linux":
 		if f.BwrapPath != "" {
-			out = append(out, TagBwrap)
+			out = append(out, "bwrap")
 		} else {
-			out = append(out, TagDegraded)
+			out = append(out, "degraded")
 		}
 		if f.LandlockABI > 0 {
-			out = append(out, TagLandlock)
+			out = append(out, "landlock")
 		}
 		if f.Seccomp {
-			out = append(out, TagSeccomp)
+			out = append(out, "seccomp")
 		}
 		if f.CgroupDir != "" {
-			out = append(out, TagCgroupV2)
+			out = append(out, "cgroup-v2")
 		}
 	case "darwin":
 		if f.SeatbeltPath != "" {
-			out = append(out, TagSeatbelt)
+			out = append(out, "seatbelt")
 		} else {
-			out = append(out, TagDegraded)
+			out = append(out, "degraded")
 		}
 	default:
-		out = append(out, TagDegraded)
+		out = append(out, "degraded")
 	}
 	if !f.Platform.Implemented {
 		out = append(out, PlatformUnsupportedFeature)
