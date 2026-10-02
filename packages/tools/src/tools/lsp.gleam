@@ -873,7 +873,7 @@ fn check_disk(
         <> on_disk
         <> ", the server saw "
         <> prepared.plan.digest
-        <> "); nothing was written. Ask lsp_rename again to recompute it.",
+        <> "); nothing was written. Preview the rename again with cap/lsp in code mode to recompute it.",
       )
   }
 }

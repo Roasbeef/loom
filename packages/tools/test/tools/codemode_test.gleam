@@ -1078,6 +1078,63 @@ pub fn a_generated_surface_is_rendered_after_the_committed_ones_test() {
   assert string.contains(described, "### cap/proc")
 }
 
+pub fn sql_capture_guidance_depends_on_its_own_offer_test() {
+  let sql_only =
+    codemode.SeamOffer(
+      ..workspace_offer(),
+      allowed_imports: ["cap/lsp_sql"],
+      serviced_caps: ["lsp.snapshot"],
+    )
+  let described =
+    codemode.description(echoing_over(codemode.one_seam(sql_only)))
+  assert string.contains(described, "bounded observation once")
+  assert !string.contains(described, "### cap/lsp\n")
+  let closed = [
+    codemode.SeamOffer(..sql_only, allowed_imports: []),
+    codemode.SeamOffer(..sql_only, serviced_caps: []),
+  ]
+  list.each(closed, fn(offer) {
+    assert !string.contains(
+      codemode.description(echoing_over(codemode.one_seam(offer))),
+      "bounded observation once",
+    )
+  })
+}
+
+pub fn lsp_supplements_extend_the_existing_api_without_shadowing_test() {
+  let supplement =
+    "### cap/lsp\n\nInstalled language guidance.\nFirst profile. Second sentence.\nLast profile."
+  let offer =
+    codemode.SeamOffer(
+      ..workspace_offer(),
+      allowed_imports: ["cap/lsp"],
+      extra_surfaces: [supplement],
+    )
+  let mode = echoing_over(codemode.one_seam(offer))
+  let described = codemode.description(mode)
+  assert occurrences(described, "### cap/lsp\n") == 1
+  assert string.contains(described, "First profile. Second sentence.")
+  assert string.contains(described, "Last profile.")
+  let assert Ok(read) =
+    codemode.cap_scheme(mode).read(ctx_for("discovery"), "lsp")
+  assert occurrences(read, "### cap/lsp\n") == 1
+  let assert [_api, notes] = string.split(read, "pub fn definition(Query)")
+  assert string.contains(notes, "Installed language guidance.")
+  let assert Ok(index) =
+    codemode.cap_scheme(mode).read(ctx_for("discovery"), "")
+  assert occurrences(index, "cap/lsp:") == 1
+
+  // A fragment cannot admit the committed module on a closed offer.
+  let closed = codemode.SeamOffer(..offer, allowed_imports: [])
+  let closed_mode = echoing_over(codemode.one_seam(closed))
+  assert !string.contains(
+    codemode.description(closed_mode),
+    "Installed language",
+  )
+  let assert Error(fs.NotFound(..)) =
+    codemode.cap_scheme(closed_mode).read(ctx_for("discovery"), "lsp")
+}
+
 pub fn a_host_that_generated_nothing_renders_exactly_what_it_did_test() {
   // The empty list is the ordinary case, and it must cost nothing: an
   // empty block joined into the rendering would leave a stray blank line

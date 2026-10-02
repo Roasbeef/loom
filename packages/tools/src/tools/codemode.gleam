@@ -721,6 +721,7 @@ pub fn description(mode: CodeMode) -> String {
   <> "paths and failures. "
   <> composition_guidance(mode.seams)
   <> notes_guidance(mode.seams)
+  <> lsp_sql_guidance(mode.seams)
   <> seams_text(mode.seams)
   <> async_text(mode.background, mode.seams)
   <> recipes_text(mode.seams)
@@ -749,6 +750,21 @@ fn composition_guidance(seams: Seams) -> String {
     True ->
       "You can combine workspace effects and child operations in one program; "
       <> "omitting `seam` uses the default offer. "
+    False -> ""
+  }
+}
+
+// A finite capture is a separate admission from native point queries.
+// Advertise SQL only when the same offer can import and collect its facts.
+fn lsp_sql_guidance(seams: Seams) -> String {
+  case
+    list.any(offered(seams), fn(offer) {
+      list.contains(offer.allowed_imports, "cap/lsp_sql")
+      && list.contains(offer.serviced_caps, "lsp.snapshot")
+    })
+  {
+    True ->
+      "On a seam offering `cap/lsp_sql`, capture a bounded observation once, then join, aggregate or filter its facts with read-only SQL inside the program. "
     False -> ""
   }
 }
@@ -837,6 +853,11 @@ fn render_section(section: #(String, String)) -> String {
 // the description it rendered before, with the surfaces appended and no
 // word anywhere about a seam it cannot choose.
 fn signature_sections(seams: Seams) -> List(#(String, String)) {
+  let seams =
+    Seams(
+      default: admitted_lsp_notes(seams.default),
+      alternates: list.map(seams.alternates, admitted_lsp_notes),
+    )
   case seams.alternates {
     [] -> [#("", seam_surface(seams.default, seams.default.allowed_imports))]
     _alternates -> {
@@ -862,7 +883,10 @@ fn signature_sections(seams: Seams) -> List(#(String, String)) {
         #(
           "## On every seam",
           string.join(
-            [type_surface_text(shared), ..list.map(shared_extra, index_entry)],
+            [
+              type_surface_text(shared),
+              ..list.map(shared_extra, extra_surface_text)
+            ],
             "\n",
           ),
         ),
@@ -870,6 +894,21 @@ fn signature_sections(seams: Seams) -> List(#(String, String)) {
       ]
     }
   }
+}
+
+// Supplements cannot introduce their committed module on a closed seam.
+// Generated façades retain their existing independent discovery contract.
+fn admitted_lsp_notes(offer: SeamOffer) -> SeamOffer {
+  SeamOffer(
+    ..offer,
+    extra_surfaces: list.filter(offer.extra_surfaces, fn(block) {
+      case surface_module(block) {
+        Ok("cap/lsp") -> list.contains(offer.allowed_imports, "cap/lsp")
+        Ok(_module) -> True
+        Error(Nil) -> True
+      }
+    }),
+  )
 }
 
 // Host-generated modules may be offered on both modes. Render the common
@@ -893,7 +932,10 @@ fn shared_extra_surfaces(offers: List(SeamOffer)) -> List(String) {
 // all installed modes is rendered once, and a mode-specific block stays
 // under that mode.
 fn seam_surface(offer: SeamOffer, modules: List(String)) -> String {
-  [type_surface_text(modules), ..list.map(offer.extra_surfaces, index_entry)]
+  [
+    type_surface_text(modules),
+    ..list.map(offer.extra_surfaces, extra_surface_text)
+  ]
   |> list.filter(fn(block) { block != "" })
   |> string.join("\n")
 }
@@ -914,6 +956,23 @@ fn type_surface_text(allowed: List(String)) -> String {
   |> list.filter(fn(entry) { list.contains(allowed, entry.0) })
   |> list.map(fn(entry) { entry.1 })
   |> string.join("\n")
+}
+
+// Native profile notes supplement an existing module rather than creating
+// another API heading. Keep every note visible; façade summaries stay short.
+fn extra_surface_text(block: String) -> String {
+  case surface_module(block) {
+    Ok("cap/lsp") -> supplemental_body(block)
+    Ok(_module) -> index_entry(block)
+    Error(Nil) -> ""
+  }
+}
+
+fn supplemental_body(block: String) -> String {
+  case string.split_once(block, on: "\n") {
+    Ok(#(_heading, body)) -> string.trim(body) <> "\n"
+    Error(Nil) -> ""
+  }
 }
 
 // Host-generated façades carry no separate type section. Their heading and
@@ -980,11 +1039,26 @@ fn readable_surfaces(seams: Seams) -> List(#(String, String)) {
     })
   let generated =
     offers
-    |> list.flat_map(fn(offer) { offer.extra_surfaces })
+    |> list.flat_map(fn(offer) { admitted_lsp_notes(offer).extra_surfaces })
     |> list.filter_map(fn(block) {
       surface_module(block) |> result.map(fn(name) { #(name, block) })
     })
-  list.unique(list.append(committed, generated))
+  let generated = list.unique(generated)
+  let supplemented =
+    list.map(committed, fn(entry) {
+      case entry.0 {
+        "cap/lsp" -> {
+          let notes =
+            generated
+            |> list.filter(fn(extra) { extra.0 == "cap/lsp" })
+            |> list.map(fn(extra) { supplemental_body(extra.1) })
+          #(entry.0, string.join([entry.1, ..notes], "\n"))
+        }
+        _module -> entry
+      }
+    })
+  let facades = list.filter(generated, fn(entry) { entry.0 != "cap/lsp" })
+  list.unique(list.append(supplemented, facades))
 }
 
 fn cap_index(readable: List(#(String, String))) -> String {
