@@ -5,6 +5,7 @@ gleam = ">= 1.18.0"
 [dependencies]
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 core = { path = "../core" }
+telemetry = { path = "../telemetry" }
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 weft = "== 0.4.5"
