@@ -526,7 +526,14 @@ fn products(root: String) -> Result(BuildProducts, CompileError) {
   )
   use gathered <- result.try(
     list.try_fold(list.sort(packages, string.compare), [], fn(acc, package) {
-      gather(erlang_root <> "/" <> package <> "/ebin", beam_dir, acc)
+      let package_root = erlang_root <> "/" <> package
+      use modules <- result.try(gather(package_root <> "/ebin", beam_dir, acc))
+
+      // The trusted SQLite dependency owns the only native library this
+      // artifact admits. Keeping it beside its module preserves the same
+      // readable root and lets the loader avoid the program's working directory.
+      use _ <- result.try(gather_sqlite(package, package_root, beam_dir))
+      Ok(modules)
     }),
   )
   let entry = compile.entry_module <> ".beam"
@@ -541,6 +548,28 @@ fn products(root: String) -> Result(BuildProducts, CompileError) {
     }
   }
 }
+
+// Rebar names the OTP application `esqlite`, while a local Gleam package
+// uses its Hex name. Both layouts carry the same fixed library; arbitrary
+// priv files never enter a program's artifact through this boundary.
+fn gather_sqlite(
+  package: String,
+  package_root: String,
+  destination: String,
+) -> Result(Nil, CompileError) {
+  case package {
+    "esqlite" | "esqlite_loom" ->
+      simplifile.copy_file(
+        at: package_root <> "/priv/" <> sqlite_library,
+        to: destination <> "/" <> sqlite_library,
+      )
+      |> file_error("copy the trusted SQLite native library")
+      |> result.replace(Nil)
+    _other_package -> Ok(Nil)
+  }
+}
+
+const sqlite_library = "esqlite3_nif.so"
 
 // Copies one package's `ebin` into the flattened directory, returning the
 // names taken so far. A package directory without an `ebin` (Gleam keeps
@@ -593,10 +622,10 @@ fn gather(
 /// and it is the same function over the same directory in both places, so
 /// the two cannot drift into disagreeing about what the address is.
 ///
-/// Only `.beam` and `.app` files count, because those are the only ones
-/// `gather` puts there: a stray file dropped into the directory afterwards
-/// is not part of what the build produced and must not change its
-/// address.
+/// Only `.beam`, `.app`, and the fixed `esqlite3_nif.so` library count.
+/// SQLite's executable bytes belong to the same address as the module that
+/// loads them. Other files dropped into the directory are outside the
+/// artifact's admitted set and do not change its address.
 ///
 /// ## Examples
 ///
@@ -608,7 +637,11 @@ pub fn fingerprint_directory(beam_dir: String) -> Result(String, CompileError) {
   use entries <- result.try(
     simplifile.read_directory(beam_dir) |> file_error("read " <> beam_dir),
   )
-  fingerprint(beam_dir, list.filter(entries, compiled_module))
+  fingerprint(beam_dir, list.filter(entries, artifact_file))
+}
+
+fn artifact_file(name: String) -> Bool {
+  compiled_module(name) || name == sqlite_library
 }
 
 fn compiled_module(name: String) -> Bool {

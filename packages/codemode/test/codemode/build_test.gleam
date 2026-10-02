@@ -208,3 +208,45 @@ pub fn a_clone_carries_every_child_of_the_seeds_build_test() {
     == list.sort(entries, string.compare)
   assert list.first(ordered) == Ok(build.package_sources)
 }
+
+// The native library is executable input to a satellite. A fingerprint
+// that covered only its loader would accept a changed SQLite engine.
+pub fn the_sqlite_library_participates_in_the_artifact_hash_test() {
+  let root = fresh_dir("native-address")
+  let assert Ok(Nil) = simplifile.write(root <> "/loader.beam", "loader")
+    as "the fixture loader is writable"
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/esqlite3_nif.so", "engine one")
+    as "the fixture native library is writable"
+  let assert Ok(original) = build.fingerprint_directory(root)
+    as "the initial artifact has an address"
+
+  let assert Ok(Nil) =
+    simplifile.write(root <> "/esqlite3_nif.so", "engine two")
+    as "the native bytes can change independently of the loader"
+  let assert Ok(changed) = build.fingerprint_directory(root)
+    as "the changed artifact has an address"
+  assert original != changed
+
+  let assert Ok(Nil) = simplifile.delete(root <> "/esqlite3_nif.so")
+    as "the native file can be removed independently of the loader"
+  let assert Ok(absent) = build.fingerprint_directory(root)
+    as "the incomplete directory has a different address"
+  assert absent != original
+  assert absent != changed
+}
+
+// The exception is one trusted filename, not a new route for every shared
+// library or priv file a package happens to carry.
+pub fn other_native_files_do_not_join_the_artifact_hash_test() {
+  let root = fresh_dir("native-set")
+  let assert Ok(Nil) = simplifile.write(root <> "/loader.beam", "loader")
+    as "the fixture loader is writable"
+  let assert Ok(original) = build.fingerprint_directory(root)
+    as "the fixture has an address"
+  let assert Ok(Nil) = simplifile.write(root <> "/untrusted.so", "other engine")
+    as "an unrelated file can exist beside the artifact"
+  let assert Ok(after_extra) = build.fingerprint_directory(root)
+    as "the admitted set still has an address"
+  assert original == after_extra
+}
