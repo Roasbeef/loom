@@ -2658,11 +2658,16 @@ catalogue without opening runtimes. Explicit admission invokes
   replacement could not be reached by the closures already holding the old
   one. The boot-time `degraded` probe still borrows from the pool directly,
   before the broker serves anything. `start_effect_plane`, which the build
-  plane, the check plane and the extension installer use, is not a session
-  plane: it starts a pool and `broker.start`, which dispatches through
-  `broker/direct`, and its callers stop the pool themselves.
-  `broker/direct` is no longer a production lane for sessions; migrating
-  these one-shot planes is follow-up work.
+  plane, the check plane and the extension installer use, has no custody
+  instance to publish into but runs the same model: it starts the pool, the
+  executor service over it (`start_service_lane`, with a discarded logger)
+  and a `broker.start_dispatching` broker, and returns all three. The
+  `BuildPlane` and `CheckPlane` hold the executor, and `stop_build_plane` and
+  `stop_check_plane` close it with `executor.drain_ms` and
+  `executor.helpers_ms`; a close that errs falls back to `exec.stop_pool`
+  and reports nothing, so no native-exit verdict is invented. Production
+  therefore has one execution model. `broker/direct` remains only behind
+  `broker.start`, for tests and `client/demo`.
 - `client/serve.Settings.base_policy` — the base every tool call is
   composed against, and the thing an escalation widens. A field rather
   than a `base_policy(workspace)` call inside `boot`, so a host may serve

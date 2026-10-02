@@ -3,14 +3,15 @@
 ////
 //// ## Not a production lane
 ////
-//// A session does not use this module. Since issue #696's S3 a session has
-//// one execution model, the executor service (`broker/executor`), and the
-//// switch that chose between the two is gone. This dispatcher stays because
-//// `broker.start(BrokerConfig)` is built over it, and that entry point has
-//// about forty-three callers: the tests and demos, and the one-shot build
-//// and check planes that `client/serve` starts. Migrating them to the
-//// service is follow-up work, and until then `lane_equivalence_test` and
-//// `real_lane_test` are the evidence that the two dispatchers agree.
+//// Production has one execution model, the executor service
+//// (`broker/executor`): a session, the extension build plane and
+//// `loom ext check` all start it and give the broker its dispatcher. This
+//// module is reached only through `broker.start(BrokerConfig)`, which is
+//// built over it, and that entry point has about forty-three callers, all
+//// tests and the M3 demo (`client/demo`, whose fake checkout is why it is
+//// left on `broker.start`: it is a demonstration, not a production path).
+//// `lane_equivalence_test` and `real_lane_test` are the evidence that the two
+//// dispatchers agree.
 ////
 //// This is the dispatch machinery the broker carried inline before
 //// `broker/dispatch` existed, moved here unchanged behind the seam. A call

@@ -629,14 +629,19 @@ pub fn main() -> Nil {
 // between the two would mean an extension built under a policy no session
 // would have granted.
 
-/// A pool of jailed helpers and the one broker over them, for the one-shot
-/// planes: the extension installer's build and `loom ext check`.
+/// A pool of jailed helpers, the executor service over it and the one broker
+/// in front, for the one-shot planes: the extension installer's build and
+/// `loom ext check`.
 ///
-/// The broker is started with `broker.start`, which dispatches through
-/// `broker/direct`: a plane that lives for one install has no session
-/// custody to prove and no executor service to close, and its callers stop
-/// the pool themselves. A session's effect plane is different, and has
-/// exactly one execution model: the executor service.
+/// This is the same execution model a session has, and the only one
+/// production has: the broker is started with `broker.start_dispatching`
+/// over the executor service's dispatcher, so a build or a check gets the
+/// relay, the settlement guarantees and the custody proof a session gets. What
+/// differs is the owner. A one-shot plane has no custody instance to publish
+/// into, so its caller closes the returned executor itself, with
+/// `executor.close` and the same drain and helpers budgets
+/// (`stop_build_plane` and `stop_check_plane` do exactly that). `broker/direct`
+/// remains only behind `broker.start`, for tests and the demo.
 ///
 /// ## Examples
 ///
@@ -650,22 +655,38 @@ pub fn start_effect_plane(
   tmp_dir tmp_dir: String,
   size size: Int,
   clock clock: Clock,
-) -> Result(#(Pool, Broker), String) {
+) -> Result(#(Pool, Broker, executor.Executor), String) {
   use pool <- result.try(start_helper_pool(helper, base_policy, tmp_dir, size))
-  use broker_actor <- result.map(
-    broker.start(
-      broker.BrokerConfig(
-        entropy: token.production_entropy(),
-        clock:,
-        checkout: fn() { exec.checkout(pool, waiting: 15_000) },
-        checkin: fn(helper) { exec.checkin(pool, helper) },
-      ),
+  use #(service, broker_actor) <- result.map(start_service_lane(
+    pool,
+    clock,
+    log.discard(),
+    None,
+  ))
+  #(pool, broker_actor, service)
+}
+
+// Tears a one-shot plane down: no new calls, then the executor's close, which
+// drains what is running and returns the pool's own native-exit verdict. That
+// verdict is the only proof of cleanup, so a close that errs is not reported
+// as one: the pool is asked to retire what it still holds, as the cast alone
+// did before, and the caller sees the same `Nil` it always did.
+fn stop_one_shot(
+  broker_actor: Broker,
+  service: executor.Executor,
+  pool: Pool,
+) -> Nil {
+  broker.stop(broker_actor)
+  case
+    executor.close(
+      service,
+      draining: executor.drain_ms,
+      helpers: executor.helpers_ms,
     )
-    |> result.map_error(fn(error) {
-      "the broker did not start: " <> string.inspect(error)
-    }),
-  )
-  #(pool, broker_actor)
+  {
+    Ok(Nil) -> Nil
+    Error(_unconfirmed) -> exec.stop_pool(pool)
+  }
 }
 
 // What a session's effect plane is made of: the executor service sits between
@@ -803,6 +824,8 @@ pub type BuildPlane {
     broker: Broker,
     /// The pool behind it, held so the plane can be stopped.
     pool: Pool,
+    /// The executor service between the two, closed to stop the plane.
+    executor: executor.Executor,
     /// The verified `gleam`, `erl` and build seed.
     toolchain: codemode_wiring.Toolchain,
     /// The policy a build's requirements are met against.
@@ -874,14 +897,20 @@ pub fn start_build_plane(
   // base policy the sandbox cannot enforce is a failure now, not a
   // surprise inside the build.
   use Nil <- result.try(base_policy_fault(base))
-  use #(pool, broker_actor) <- result.try(start_effect_plane(
+  use #(pool, broker_actor, service) <- result.try(start_effect_plane(
     helper: helper_path,
     base_policy: base,
     tmp_dir:,
     size: exec.min_pool_size,
     clock:,
   ))
-  Ok(BuildPlane(broker: broker_actor, pool:, toolchain:, base_policy: base))
+  Ok(BuildPlane(
+    broker: broker_actor,
+    pool:,
+    executor: service,
+    toolchain:,
+    base_policy: base,
+  ))
 }
 
 /// A helper pool and broker for proving one language profile, and the
@@ -893,6 +922,8 @@ pub type CheckPlane {
     broker: Broker,
     /// The pool behind it, held so the plane can be stopped.
     pool: Pool,
+    /// The executor service between the two, closed to stop the plane.
+    executor: executor.Executor,
     /// The base a server's lease is composed from, as a session's is.
     base_policy: policy.SandboxPolicy,
     /// How many helpers the pool holds, which the lease counter's cap is
@@ -939,7 +970,7 @@ pub fn start_check_plane(
   // sandbox cannot enforce is a failure of the check's setup, not a
   // server that later fails to start for reasons nobody can read.
   use Nil <- result.try(base_policy_fault(base))
-  use #(pool, broker_actor) <- result.try(start_effect_plane(
+  use #(pool, broker_actor, service) <- result.try(start_effect_plane(
     helper: helper_path,
     base_policy: base,
     tmp_dir:,
@@ -949,6 +980,7 @@ pub fn start_check_plane(
   Ok(CheckPlane(
     broker: broker_actor,
     pool:,
+    executor: service,
     base_policy: base,
     size: exec.min_pool_size,
   ))
@@ -963,8 +995,7 @@ pub fn start_check_plane(
 /// ```
 ///
 pub fn stop_check_plane(plane: CheckPlane) -> Nil {
-  broker.stop(plane.broker)
-  exec.stop_pool(plane.pool)
+  stop_one_shot(plane.broker, plane.executor, plane.pool)
 }
 
 /// The `PATH` a build plane's jailed compiler runs with: exactly the two
@@ -994,8 +1025,7 @@ pub fn toolchain_path_of(plane: BuildPlane) -> String {
 /// ```
 ///
 pub fn stop_build_plane(plane: BuildPlane) -> Nil {
-  broker.stop(plane.broker)
-  exec.stop_pool(plane.pool)
+  stop_one_shot(plane.broker, plane.executor, plane.pool)
 }
 
 // --- the command line ------------------------------------------------------

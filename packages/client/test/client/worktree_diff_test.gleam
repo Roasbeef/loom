@@ -8,6 +8,7 @@
 import broker/broker
 import broker/budget
 import broker/exec
+import broker/executor
 import broker/policy
 import client/catalog
 import client/codemode
@@ -515,7 +516,7 @@ fn with_fixture(label: String, run: fn(worktree_diff.Wiring) -> Nil) -> Nil {
         Ok(False) | Error(_) -> #(base, "/usr/local/bin:/usr/bin:/bin")
       }
       let clock = clock.from_function(bootstrap.system_time_ms)
-      let assert Ok(#(pool, broker)) =
+      let assert Ok(#(_pool, broker, service)) =
         serve.start_effect_plane(
           helper: repository <> "/bin/loom-exec",
           base_policy: base,
@@ -540,7 +541,12 @@ fn with_fixture(label: String, run: fn(worktree_diff.Wiring) -> Nil) -> Nil {
 
       // The pool's original helper witnesses, not a stop request, prove drain.
       broker.stop(broker)
-      assert exec.close_pool(pool, waiting: 5000) == Ok(Nil)
+      assert executor.close(
+          service,
+          draining: executor.drain_ms,
+          helpers: executor.helpers_ms,
+        )
+        == Ok(Nil)
     }
   }
 }
