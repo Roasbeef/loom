@@ -54,22 +54,28 @@ cannot hide the capability error. This does not grant the program a new effect.
   the hermetic build's `--warnings-as-errors` turns importing a transitive
   dependency into a compile error, so without them `report.text` was the
   only thing a program could say.
-- `cap/mcp.{Content, ToolResult, McpError}` — the shared vocabulary for
-  the generated `cap/mcp/<server>` façades (issue #106): `Text`/`Other`
-  content blocks (non-text kinds carried by name only in v1), the tool
-  result with its optional structured output, and the error in
-  `cap/fs.FsError`'s shape (`ToolFailed` / `ServerUnavailable` /
-  `McpDenied` with the broker's code verbatim / `ResultMalformed`).
-  Types only, no authority: the one marshaling seam is
-  `cap/internal/mcp.invoke`, which sends `{tool, arguments}` — `tool`
-  the server's original name verbatim — under the per-server capability
-  `"mcp." <> server`, and being internal it is reachable only through a
-  generated façade the vetting allowlist names. On no *static* seam
-  (`harness_only_cap_modules`), and that is now permanent rather than a
-  wait: a façade exists only where a server is configured, so a host with
-  MCP servers widen each installed program mode's allowlist at boot with
-  `cap/mcp` and each generated module (`client/codemode.seam_allowlist`),
-  and a host with none allows neither.
+- `cap/mcp.{Content, ToolResult, DecodeError, McpError}` is the shared
+  vocabulary for generated `cap/mcp/<server>` façades. `Text`/`Other`
+  content blocks retain text and carry non-text kinds by name. Tools without
+  `outputSchema` return `ToolResult` with optional structured content. Tools
+  with it return generated records or other structural types, decoded by
+  `cap/internal/mcp_codec` after `cap/internal/mcp.invoke_typed` reads the
+  existing result envelope. `DecodeError(path, reason)` identifies a failure
+  relative to the structured root; `ResultSchemaMismatch(error, result)`
+  retains the original result for inspection. `ToolFailed`,
+  `ServerUnavailable`, `McpDenied` and `ResultMalformed` keep their distinct
+  tool, transport, policy and envelope meanings.
+  These public types carry no authority. The internal invocation seam fixes
+  the envelope `{tool, arguments}` and dispatches under `"mcp." <> server`;
+  generated façades fix both names. Programs cannot import that seam or the
+  codec module. The codec composes total readers for primitive types,
+  records, enums, lists, nullable values and supported unions. It checks
+  structural shapes, literals and closed objects; general JSON Schema
+  refinements remain the server's admission duty. Missing structured content
+  differs from present null, including inside optional nullable fields.
+  MCP is absent from every static seam: a configured host adds `cap/mcp`
+  and each generated module through `client/codemode.seam_allowlist`, and a
+  host with none allows neither.
 - `cap/strand.{Assignment, Handle, Waited, TerminalResult, StrandError}` —
   child operations in either default program mode. `assignment`/`within`/`detached`/
   `from_my_conversation`/`with_model`/`with_tools`/`expecting` build a spawn; `spawn`,

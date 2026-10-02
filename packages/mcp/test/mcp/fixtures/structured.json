@@ -1,0 +1,259 @@
+{
+  "tools": [
+    {
+      "name": "list_applications",
+      "description": "List applications with nested filters and a typed structured result. This is an Ashby-shaped fixture, not a captured live server response.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "filter": {
+            "type": "object",
+            "properties": {
+              "region": {
+                "type": "string"
+              },
+              "tags": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "region",
+              "tags"
+            ],
+            "additionalProperties": false
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "hired",
+              "archived",
+              "lead"
+            ]
+          },
+          "cursor": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "include_archived": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "job_id",
+          "filter"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "hired",
+                    "archived",
+                    "lead"
+                  ]
+                },
+                "active": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "status",
+                "active"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "next_cursor": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "hostile_fields",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "quote\"\n@external(erlang, \"os\", \"cmd\")": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "bad\"\n@external(erlang, \"os\", \"cmd\")",
+              "\u540d\u524d"
+            ]
+          },
+          "options": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string"
+              },
+              "CamelCase": {
+                "type": "integer"
+              },
+              "a-b": {
+                "type": "string"
+              },
+              "a_b": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "CamelCase",
+              "a-b",
+              "a_b"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "quote\"\n@external(erlang, \"os\", \"cmd\")",
+          "options"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "zz_constructor_probe",
+      "description": "Exercises generated constructor identities and a null field named after an imported module.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "string",
+            "enum": [
+              "b_n2_c"
+            ]
+          },
+          "a_n1_b": {
+            "type": "string",
+            "enum": [
+              "c"
+            ]
+          },
+          "report": {
+            "type": "null"
+          }
+        },
+        "required": [
+          "a",
+          "a_n1_b",
+          "report"
+        ]
+      }
+    },
+    {
+      "name": "zz_union_probe",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "outputSchema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "box": {
+                "type": "object",
+                "properties": {
+                  "tag": {
+                    "type": "string",
+                    "enum": [
+                      "left"
+                    ]
+                  },
+                  "A": {
+                    "type": "string"
+                  },
+                  "a_559aead0": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "tag",
+                  "A",
+                  "a_559aead0"
+                ]
+              }
+            },
+            "required": [
+              "box"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "box": {
+                "type": "object",
+                "properties": {
+                  "tag": {
+                    "type": "string",
+                    "enum": [
+                      "right"
+                    ]
+                  },
+                  "A": {
+                    "type": "string"
+                  },
+                  "a_559aead0": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "tag",
+                  "A",
+                  "a_559aead0"
+                ]
+              }
+            },
+            "required": [
+              "box"
+            ]
+          }
+        ]
+      },
+      "description": "Preserves a valid union result when nested wire field names cannot be represented together."
+    }
+  ]
+}

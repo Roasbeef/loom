@@ -1,5 +1,5 @@
 diff --git a/compiler-cli/src/dependencies.rs b/compiler-cli/src/dependencies.rs
-index 917d155..225fa42 100644
+index 917d155..8d902dc 100644
 --- a/compiler-cli/src/dependencies.rs
 +++ b/compiler-cli/src/dependencies.rs
 @@ -18,7 +18,7 @@ use flate2::read::GzDecoder;
@@ -51,7 +51,21 @@ index 917d155..225fa42 100644
              requirements: self.requirements.keys().cloned().collect(),
              source: self.source.to_manifest_package_source(),
          };
-@@ -1528,6 +1535,20 @@ fn provide_package(
+@@ -1369,6 +1376,13 @@ fn prepare_git_clone(clone_path: &Utf8Path, repo: &str, format: CloneFormat) ->
+             // but it's good to be extra careful.
+             .arg("-c")
+             .arg("protocol.ext.allow=never")
++            // Native builds copy this repository, including its Git metadata.
++            // Wait for auto-maintenance before returning so transient files
++            // cannot disappear while the build walks the source directory.
++            .arg("-c")
++            .arg("gc.autoDetach=false")
++            .arg("-c")
++            .arg("maintenance.autoDetach=false")
+             // Fetch the remote named "origin"
+             .arg("fetch")
+             .arg("origin"),
+@@ -1528,6 +1542,20 @@ fn provide_package(
      }
      // Load the package
      let config = crate::config::read(package_path.join("gleam.toml"))?;
@@ -72,7 +86,7 @@ index 917d155..225fa42 100644
      // Check that we are loading the correct project
      if config.name != package_name {
          return Err(Error::WrongDependencyProvided {
-@@ -1610,6 +1631,7 @@ fn provide_package(
+@@ -1610,6 +1638,7 @@ fn provide_package(
          config.name,
          ProvidedPackage {
              version: config.version,

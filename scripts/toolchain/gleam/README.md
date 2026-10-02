@@ -95,6 +95,13 @@ build tools are errors. Native path dependencies are refused because their
 cached Rebar output has no immutable source identity. Changing a Git commit
 retires the cached package even when its version stays the same.
 
+Compiler-owned fetches run automatic maintenance synchronously with
+`gc.autoDetach=false` and `maintenance.autoDetach=false`. Rebar builds copy
+the source repository, including `.git` for native hooks. A detached GC can
+otherwise remove a temporary reverse index after the copy enumerates it.
+Waiting for maintenance closes that race while retaining both maintenance
+and the repository metadata.
+
 On 1.19.0-rc2 the patch needed two adjustments: a new upstream licence test
 sits where its config test was appended, and `Error::FileIo` now carries a
 `cause: FileIoCause` instead of `err: Option<String>`. Stock 1.19.0-rc2 still
@@ -126,6 +133,10 @@ The native fixture builds a small Rebar dependency through a transitive Gleam
 wrapper, checks a clean rebuild, proves that an unchanged pin ignores a newer
 repository commit, and changes the pin without changing the version to catch
 stale native artifacts. It uses local Git repositories and no Hex downloads.
+Its Rebar hook reads `.git`, and two valid object packs force real automatic
+maintenance during the updated-pin fetch. Git Trace2 must show the repack
+finishing before its owning fetch exits; the fixture does not depend on
+catching a temporary file while it disappears.
 CI runs it on compiler-cache hits as well as fresh compiler builds.
 
 When retiring the Git pin in favor of a same-version Hex release, rebuild from

@@ -53,6 +53,17 @@ pub fn text(result: ToolResult) -> String {
   |> string.join("\n")
 }
 
+/// A schema failure relative to the structured-content root.
+pub type DecodeError {
+  /// Literal path segments keep punctuation in property names unambiguous.
+  DecodeError(
+    /// Property names or zero-based array indices, outermost first.
+    path: List(String),
+    /// The expected shape or violated schema choice.
+    reason: String,
+  )
+}
+
 /// Why an MCP call failed. Descriptive variants for the causes a program
 /// branches on; `McpDenied` carries any other broker code verbatim;
 /// `ServerUnavailable` is a transport or reachability failure.
@@ -74,4 +85,13 @@ pub type McpError {
 
   /// The `cap_result` did not match the pinned result shape.
   ResultMalformed(reason: String)
+
+  /// The tool succeeded but its structured output failed its declared schema.
+  /// The complete capability result survives for inspection or text fallback.
+  ResultSchemaMismatch(
+    /// The exact failing property or list index and the expected shape.
+    error: DecodeError,
+    /// The original content blocks and optional structured value.
+    result: ToolResult,
+  )
 }
