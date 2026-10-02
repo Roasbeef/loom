@@ -14,7 +14,7 @@ below it:
 | S2 | `executor/s2-hardening` | [#704](https://github.com/Roasbeef/loom/pull/704) |
 | S3 | `executor/s3-ops` | [#705](https://github.com/Roasbeef/loom/pull/705) |
 | S4 | `executor/s4-standalone` | [#706](https://github.com/Roasbeef/loom/pull/706) |
-| S5 | `executor/s5-go-decision` | the PR on #706 |
+| S5 | `executor/s5-go-decision` | [#707](https://github.com/Roasbeef/loom/pull/707) |
 
 Merge them bottom up. The design is `docs/architecture/executor.md`, and the
 decisions are ADR-017 (the seam, plus addenda for the S1 build and the
