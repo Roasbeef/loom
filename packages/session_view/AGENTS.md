@@ -134,6 +134,8 @@ for a host with no surfaces.
   foot and a body: the program's opening lines under their numbers, or the
   error, with a compiler diagnostic cut to its heading (`· line N`) and the
   source it quotes. Both block speakers open and close bare, like a call.
+  With a `call_tree` record the settled row counts the calls and a failure
+  block ends in a `CALLS · …` section, grouped by capability and ending.
 - `call_tree.{read, summary, CallLog, Call, Status}` (protocol 060): the
   total decoder for the `calls` key of a `code_mode` result's `details` and
   the one-line summary (`7 calls · 1 failed`). An absent key and a

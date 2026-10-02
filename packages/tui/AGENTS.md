@@ -2697,9 +2697,15 @@ M shown`, the program's first non-blank lines under their numbers, and
 for. A failure block shows the error; a compiler's diagnostic is cut to its
 heading with `· line N` and the source it quotes, and the foot says how
 many lines the whole error has. The key that expands a response is named
-once, on its heading; the feet carry only facts. Body rows holding a number and a `│` gutter are
-drawn as source on the raised ground. The client receives nothing per
-capability call, so the blocks carry no call list (protocol-change 060).
+once, on its heading; the feet carry only facts. Body rows holding a number
+and a `│` gutter are drawn as source on the raised ground. A result that
+carries the call record of protocol-change 060 adds to both: the settled row
+says `4 calls` (or the record's whole summary when any call did not settle),
+and a failure block lists the calls under `CALLS · 7 calls · 1 failed`,
+consecutive calls with one capability and ending grouped as `✓ fs.read ×3
+a.gleam · b.gleam`, and drawn in the success or danger colour by that
+leading glyph. The record is written on a result only, so a block still
+awaiting its result has no call list.
 
 An operator's turn is one band, `› text`, wrapped under its own first word,
 with no title row. An answer opens with a heading naming the strand,
