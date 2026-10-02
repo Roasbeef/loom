@@ -1052,3 +1052,160 @@ pub fn platform_enforcement_keeps_linux_silence_refusal_test() {
   assert result.enforcement == ["bwrap"]
   exec.shutdown(helper)
 }
+
+// --- late `Run` fence and stdin ids, over a transport the test controls ----
+
+// A channel the test can wedge. Writes pass straight through until the test
+// says `Hold`; from then on each write blocks inside the helper actor until
+// `Release`, which is what a wedged helper looks like from outside: alive,
+// mailbox growing, answering nothing. The gate is a process of its own
+// because the write runs inside the helper actor, and an actor cannot
+// receive on a subject the test owns.
+type Gate {
+  Hold
+  Release
+  Pass(reply: process.Subject(Nil))
+}
+
+type GateState {
+  GateOpen
+  GateHeld(waiting: List(process.Subject(Nil)))
+}
+
+fn start_gate() -> process.Subject(Gate) {
+  let handoff = process.new_subject()
+  process.spawn_unlinked(fn() {
+    let inbox = process.new_subject()
+    process.send(handoff, inbox)
+    gate_loop(inbox, GateOpen)
+  })
+  let assert Ok(inbox) = process.receive(handoff, 1000) as "the gate starts"
+  inbox
+}
+
+fn gate_loop(inbox: process.Subject(Gate), state: GateState) -> Nil {
+  case process.receive_forever(inbox), state {
+    Hold, GateOpen -> gate_loop(inbox, GateHeld(waiting: []))
+    Hold, GateHeld(..) -> gate_loop(inbox, state)
+    Release, GateOpen -> gate_loop(inbox, GateOpen)
+    Release, GateHeld(waiting:) -> {
+      list.each(waiting, fn(reply) { process.send(reply, Nil) })
+      gate_loop(inbox, GateOpen)
+    }
+    Pass(reply), GateOpen -> {
+      process.send(reply, Nil)
+      gate_loop(inbox, GateOpen)
+    }
+    Pass(reply), GateHeld(waiting:) ->
+      gate_loop(inbox, GateHeld(waiting: [reply, ..waiting]))
+  }
+}
+
+// A ready helper over a gated channel, plus the frames the broker writes.
+fn gated_helper(
+  gate: process.Subject(Gate),
+) -> #(exec.Helper, process.Subject(BitArray)) {
+  let sent = process.new_subject()
+  let config =
+    exec.default_config(
+      exec.ChannelTransport(
+        send: fn(bytes) {
+          process.send(sent, bytes)
+          process.call(gate, waiting: 5000, sending: Pass)
+        },
+        close: fn() { Nil },
+      ),
+    )
+  let assert Ok(helper) =
+    exec.start(exec.HelperConfig(..config, heartbeat_interval_ms: 0))
+    as "helper starts"
+  let assert Ok(hello) =
+    framing.encode(framing.Frame(
+      id: 1,
+      body: framing.Hello(
+        proto: framing.exec_protocol_version,
+        peer: "exec-helper",
+        features: ["bwrap"],
+      ),
+    ))
+    as "hello encodes"
+  process.send(exec.wire(helper), exec.WireBytes(hello))
+  assert exec.await_ready(helper, waiting: 1000) == Ok(["bwrap"])
+  let assert Ok(_) = process.receive(sent, 1000) as "the broker's hello"
+  #(helper, sent)
+}
+
+// The frame the next write carried. Every write is exactly one frame.
+fn next_frame(sent: process.Subject(BitArray), waiting: Int) -> framing.Frame {
+  let assert Ok(bytes) = process.receive(sent, waiting)
+    as "the broker wrote a frame"
+  let assert framing.Pushed(inbound: [framing.Known(frame:)], fault: None, ..) =
+    framing.push(framing.deframer(), bytes)
+    as "one whole frame"
+  frame
+}
+
+// How many `exec_start` frames were written within `waiting` of the last one.
+fn exec_starts_within(sent: process.Subject(BitArray), waiting: Int) -> Int {
+  case process.receive(sent, waiting) {
+    Error(Nil) -> 0
+    Ok(bytes) -> {
+      let framing.Pushed(inbound:, ..) = framing.push(framing.deframer(), bytes)
+      let starts =
+        list.count(inbound, fn(item) {
+          case item {
+            framing.Known(framing.Frame(body: framing.ExecStart(..), ..)) ->
+              True
+            framing.Known(_) | framing.UnknownInbound(..) -> False
+          }
+        })
+      starts + exec_starts_within(sent, waiting)
+    }
+  }
+}
+
+// `run` uses `try_call`, so a caller whose call times out leaves its `Run`
+// queued. An actor that recovers would dispatch an execution whose events
+// have no one to go to, after the caller was told `HelperUnresponsive`. The
+// fence refuses a `Run` whose events owner is dead. The helper stays usable
+// for a caller that is alive, which is what keeps the test from passing on a
+// helper that has simply stopped dispatching.
+pub fn late_run_is_not_dispatched_after_its_caller_is_gone_test() {
+  let gate = start_gate()
+  let #(helper, sent) = gated_helper(gate)
+
+  // Wedge the actor inside a write, so the next calls cannot be answered.
+  process.send(gate, Hold)
+  assert exec.heartbeat(helper, waiting: 20) == Error(exec.HelperUnresponsive)
+  let handoff = process.new_subject()
+  let doomed =
+    process.spawn_unlinked(fn() {
+      process.send(handoff, process.new_subject())
+      process.sleep_forever()
+    })
+  let assert Ok(doomed_events) = process.receive(handoff, 1000)
+    as "the doomed caller's events subject"
+  assert exec.run(helper, request(exec.BestEffort), doomed_events, waiting: 50)
+    == Error(exec.HelperUnresponsive)
+
+  // The caller dies with its `Run` still queued; then the actor recovers.
+  process.kill(doomed)
+  let assert poll.Answered(Nil) =
+    poll.until(within: 1000, every: 5, attempt: fn() {
+      case process.is_alive(doomed) {
+        True -> poll.Retry
+        False -> poll.Done(Nil)
+      }
+    })
+    as "the caller is gone"
+  process.send(gate, Release)
+  assert exec_starts_within(sent, 300) == 0
+
+  // A caller that is alive is dispatched as ever.
+  let events = process.new_subject()
+  assert exec.run(helper, request(exec.BestEffort), events:, waiting: 1000)
+    == Ok(Nil)
+  let assert framing.Frame(body: framing.ExecStart(..), ..) =
+    next_frame(sent, 1000)
+  exec.shutdown(helper)
+}

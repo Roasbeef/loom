@@ -539,6 +539,14 @@ protocol (spec Part 1.4). WP-G.
   helper keeps the failure it died with after its exit arrives.
   `hello_features` lives in `Data` for the verdict's sake; the phases that
   carry features are gone by then.
+- **A `Run` the caller gave up on is fenced, not withdrawn.** `run` uses
+  `try_call`, so a timed-out caller leaves its `Run` queued, and
+  `HelperUnresponsive` therefore does **not** mean "nothing was
+  dispatched". `handle_run` refuses with `NotReady` any `Run` whose
+  `events` subject has no living owner (`subject_owner` and `is_alive`, no
+  clock), which is the case that matters: the broker's relay dies with its
+  call. A caller that is alive but gave up is not caught and must treat the
+  outcome as unknown.
 - **Pool close includes borrowed helpers.** `close_pool` stops admissions
   before requesting each helper's shutdown. Native proof is recorded
   before `ForgetRetired` asks the helper actor to stop. The original

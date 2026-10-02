@@ -32,6 +32,16 @@
 //// A failed *write* is the one case that finds the port already closed, so
 //// there is nothing to wait for and the proof is lost (`mark_gone`).
 ////
+//// ## A `Run` outlives the caller that timed out
+////
+//// `run` is a `try_call`, so a caller that gives up leaves its `Run` queued
+//// in the actor's mailbox, and a recovered actor reads it. `handle_run`
+//// refuses it, with `NotReady`, when `events_owner_alive` says nobody is
+//// left to receive the events. That fences the broker's relay, which dies
+//// with its call; it is a liveness check and not a deadline, so a caller
+//// that is alive but stopped waiting must treat `HelperUnresponsive` as
+//// "outcome unknown", never as "nothing started".
+////
 //// ## The helper's lifecycle is a `weft/state_machine`
 ////
 //// `Prepared → AwaitingHello → Idle → Running → Cancelling → Idle`, with
@@ -123,7 +133,7 @@
 //// | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 //// | `Prepared` | `AwaitingHello`, or `Dead` if the transport will not open | ignored | refused, `NotReady` | ignored | ignored | ignored | `Dead`, no native resource | ignored |
 //// | `AwaitingHello` | ignored | `Idle`; `Dead` on a protocol version mismatch | refused, `NotReady` | ignored | ignored | `HandshakeDeadline` gives `Dead` | postponed until the handshake settles | `Dead` |
-//// | `Idle` | ignored | `Dead`, protocol violation | `Running`; refused if the helper is degraded | ignored | ignored | stale, ignored | `Dead` | `Dead`; a missed heartbeat also gives `Dead` |
+//// | `Idle` | ignored | `Dead`, protocol violation | `Running`; refused if the helper is degraded or the caller's events owner is gone | ignored | ignored | stale, ignored | `Dead` | `Dead`; a missed heartbeat also gives `Dead` |
 //// | `Running` | ignored | `Dead`, protocol violation | refused, `HelperBusy` | `Cancelling` after the TERM write, `Dead` if the write fails | the execution's own id gives `Idle`; other ids dropped | stale, ignored | `Dead`, in-flight caller told | `Dead`, in-flight caller told |
 //// | `Cancelling` | ignored | `Dead`, protocol violation | refused, `HelperBusy` | ignored, the first deadline keeps running | the execution's own id gives `Idle` and disarms the deadline | `CancelDeadline` kills the helper and keeps its port, `Dead` | `Dead`, in-flight caller told | `Dead`, in-flight caller told |
 //// | `Dead` | ignored | dropped | refused with the stored failure | ignored | dropped | stale, ignored | ignored | the exit status of a retained port is the retirement proof; after a closed port it is ignored |
@@ -314,8 +324,16 @@ pub type ExecFailure {
   /// The helper *actor* did not answer within the caller's window, or
   /// was not alive to be asked. Distinct from every failure above,
   /// which are things the actor told us: this is the actor itself out
-  /// of reach, so nothing is known about the helper process behind it
-  /// and no execution was dispatched.
+  /// of reach, so nothing is known about the helper process behind it.
+  ///
+  /// It does **not** say that no execution was dispatched. A `run` that
+  /// timed out leaves its request queued in the actor's mailbox, and an
+  /// actor that recovers will read it. What stops that late dispatch is
+  /// the fence in `handle_run`: a request whose events subject has no
+  /// living owner is refused. So the honest reading is that the execution
+  /// *may* start after the caller was told it failed, if the caller is
+  /// still alive to be sent its events, and the caller must treat the
+  /// outcome as unknown rather than as "never ran".
   HelperUnresponsive
 
   /// The execution may have started and its outcome is unknown: the
@@ -842,7 +860,8 @@ pub fn await_ready(
 
 /// The helper's current lifecycle position, or `StatusUnresponsive`
 /// when the actor does not answer within `timeout` or is not alive to
-/// be asked.
+/// be asked. The unresponsive answer is about the actor, not the
+/// helper behind it: nothing is known of what the helper is doing.
 ///
 /// This used to be an ordinary `process.call`, which panics on both.
 /// The contract was defensible for a caller whose next step needs the
@@ -861,7 +880,8 @@ pub fn status(helper: Helper, waiting timeout: Int) -> HelperStatus {
 
 /// Dispatches an execution. On `Ok`, events stream to `events` and end
 /// with exactly one `Exited` or `Failed`; an `Error` is a dispatch-time
-/// refusal and nothing was sent to the helper.
+/// refusal, and nothing was sent to the helper unless it is
+/// `HelperUnresponsive`.
 ///
 /// An actor that does not answer the dispatch is `HelperUnresponsive`,
 /// not a fault: the broker calls this from inside its own message
@@ -869,6 +889,14 @@ pub fn status(helper: Helper, waiting timeout: Int) -> HelperStatus {
 /// which is free to have died in between, and a dispatch that killed
 /// the broker would take every other strand's verdict with it. The
 /// refusal settles in band like any other dispatch-stage failure.
+///
+/// That answer says the caller stopped waiting, not that the request was
+/// withdrawn: the `Run` stays queued and a recovered actor will read it.
+/// It is dispatched only if the owner of `events` is still alive when it
+/// does, and refused with `NotReady` otherwise, so a caller that gives up
+/// and exits cannot have an execution started on its behalf. A caller
+/// that gives up and carries on can, and must treat the outcome as
+/// unknown.
 pub fn run(
   helper: Helper,
   request: ExecRequest,
@@ -1580,7 +1608,22 @@ fn send_heartbeat(
 
 // The one dispatch path: `Idle`, with a helper whose hello features the
 // request's demand can live with. Every other phase was refused in
-// `handle`, so this only has to weigh degradation.
+// `handle`, so this only has to weigh the caller's liveness and degradation.
+//
+// The liveness check is the late-`Run` fence. `run` uses `try_call`, and a
+// caller whose call times out has already been told `HelperUnresponsive`
+// while its `Run` is still queued in a wedged actor's mailbox. When the
+// actor recovers it would dispatch an execution that nobody is listening to,
+// after the caller was told it had failed. The events subject's owner is
+// the process that would receive the outcome, so an owner that is gone
+// means the caller gave up, and the `Run` is refused instead. The refusal
+// is `NotReady`, the same answer as any other helper that cannot take work,
+// and it goes to a reply subject nobody reads.
+//
+// This is a liveness fence and not a deadline. A caller that is still alive
+// but gave up, because it timed out and went on to wait for something else,
+// is not caught, and nor is one that dies in the instant after the check.
+// The broker's relay dies with its call, which is the case this is for.
 fn handle_run(
   data: Data,
   features: List(String),
@@ -1588,11 +1631,23 @@ fn handle_run(
   events: Subject(ExecEvent),
   reply: Subject(Result(Nil, ExecFailure)),
 ) -> state_machine.Next(Phase, Data, Msg) {
-  case request.demand, degraded_features(features) {
-    FullEnforcement, True -> refuse_run(data, reply, DegradedHelper(features:))
-    PlatformEnforcement, True ->
+  case events_owner_alive(events), request.demand, degraded_features(features) {
+    False, _, _ -> refuse_run(data, reply, NotReady)
+    True, FullEnforcement, True ->
       refuse_run(data, reply, DegradedHelper(features:))
-    _, _ -> dispatch_exec(data, features, request, events, reply)
+    True, PlatformEnforcement, True ->
+      refuse_run(data, reply, DegradedHelper(features:))
+    True, _, _ -> dispatch_exec(data, features, request, events, reply)
+  }
+}
+
+// Whether the process that would receive an execution's events is alive.
+// A subject with no owner, a named subject nobody has registered, has no one
+// to receive them either.
+fn events_owner_alive(events: Subject(ExecEvent)) -> Bool {
+  case process.subject_owner(events) {
+    Ok(owner) -> process.is_alive(owner)
+    Error(Nil) -> False
   }
 }
 
