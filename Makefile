@@ -348,6 +348,17 @@ bench-server: ## Benchmark the server's per-step hot paths (DB=<copy of a sessio
 	@test -n "$(DB)" || { echo "usage: make bench-server DB=<copy of a session .db>"; exit 2; }
 	@cd packages/client && gleam dev -- "$(DB)"
 
+# The exec helper pool against the real `loom-exec` under the real jail: spawn
+# to ready, warm round trip, the first wide batch, cancel to settle, a flood,
+# a leak census and resident memory, one JSON line per probe in
+# packages/broker/build/bench-exec.jsonl (LOOM_BENCH_OUT=path to move it).
+# It takes about half a minute and spawns real jails, so the module does nothing
+# unless LOOM_BENCH_EXEC=1, which this target sets.
+.PHONY: bench-exec
+bench-exec: sandbox ## Benchmark the exec helper pool against the real helper (LOOM_BENCH_OUT=path)
+	@LOOM_BENCH_EXEC=1 LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-600}" \
+		bash scripts/test.sh broker --match broker@bench_exec_test:
+
 .PHONY: dev
 dev: ## Build a scratch daemon and open its session picker (interactive)
 	@scripts/dev.sh
