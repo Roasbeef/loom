@@ -150,9 +150,9 @@ implementations stand behind that seam. The service,
 `broker/executor`, is what every session uses: it adds one service per session
 that owns a row for each running execution and starts a relay beneath it. The
 direct dispatcher, `broker/direct`, is the relay described below. It is no
-longer a production lane for sessions: it remains as the dispatcher behind
-`broker.start(BrokerConfig)`, which the one-shot build and check planes and
-about forty test and demo callers use. [The executor service](executor.md) describes
+longer a production path: it remains as the dispatcher behind
+`broker.start(BrokerConfig)`, which about forty test callers and the M3 demo
+use. The one-shot build and check planes run the service too. [The executor service](executor.md) describes
 both, the state model, and the phases that remain (decided in
 [ADR-017](../adr/017-executor-service-seam.md)). The pool semantics on this
 page stay as written: custody, retirement evidence and the caller-side wait are

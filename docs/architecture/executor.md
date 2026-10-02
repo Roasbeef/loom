@@ -17,8 +17,8 @@ The service is built and, since S3, it is the only execution model a session
 has. The direct dispatcher, which is the broker's behaviour from before the seam
 existed, was the rollback through S2; S3 removed the switch that chose it (see
 "The lane switch"). `broker/direct` remains as the dispatcher behind
-`broker.start(BrokerConfig)`, for the one-shot build and check planes and about
-forty-three test and demo callers. "The tree today" describes that dispatcher,
+`broker.start(BrokerConfig)`, for about forty-three test callers and the M3
+demo. The one-shot build and check planes run the service too. "The tree today" describes that dispatcher,
 as the tree stood before the service, and cites it at its home in
 `broker/direct`. "The target shape" and "The state model" describe what
 S1 built, and where the build differs from the S0 sketch the text says so. The
@@ -59,7 +59,7 @@ end of this page exist so that the hop is measured rather than assumed free.
 
 The survey behind this section read every module the service touches. The
 facts that shape the design are these. They describe the direct lane, which was
-what the tree did before the service and is what `broker.start` still does, and
+what the tree did before the service and is what `broker.start` still does (tests and the demo only), and
 the direct lane's own modules are cited at their present homes. Where S2 has since changed a
 fact, the paragraph says so.
 
@@ -155,9 +155,9 @@ token, but `settle` was never called, so no `CallSettled` follows.
 
 ### The per-session effect plane
 
-`start_effect_plane_in` (`client/serve.gleam:710`) builds one pool and one
+`start_effect_plane_in` (`client/serve.gleam:731`) builds one pool and one
 broker for each session, and one executor service between them. The pool and the broker are captured by value in closures, and each is a
-fatal child of the instance (`instance_children`, `client/serve.gleam:2084`),
+fatal child of the instance (`instance_children`, `client/serve.gleam:2076`),
 since a replacement would be unreachable. The service is a third fatal child. The custody order of a session's teardown is Runtime,
 Services, Broker, Helpers, Mcp, Storage, Namespace (`clean`,
 `client/internal/instance_owner.gleam:366`), so the session's writer lease is
@@ -357,7 +357,7 @@ values. `Granted` means the execution was live and is now spoken for, so this
 relay reports. `AlreadySettled` means the service has settled or released it
 already, so reporting again would be a second settlement and the relay says
 nothing. `ServiceSilent` means the service did not answer within
-`settle_wait_ms` (`broker/relay.gleam:247`) or is gone, and the relay reports
+`settle_wait_ms` (`broker/relay.gleam:253`) or is gone, and the relay reports
 anyway. The third arm is the delicate one, and the module argues it. A dead
 service settles nothing, so the relay's report is the only one. A live service
 that answers late has, by the order of its own mailbox, either granted this
@@ -403,11 +403,14 @@ execution model. The two parity tests stay as evidence: `lane_equivalence_test`
 and `real_lane_test` run the same scenarios through both dispatchers.
 `broker/direct.gleam` is kept on purpose. It is the dispatcher behind
 `broker.start(BrokerConfig)`, about forty-three test and demo call sites use that
-entry point, and so do the build plane and the check plane, which
-`start_effect_plane` starts for the extension installer and `loom ext check`
-(those planes have no session custody to prove and their callers stop the pool
-themselves). Migrating them to the service is follow-up work, and the module doc
-of `broker/direct` and the broker's `CLAUDE.md` say so.
+entry point, and so does the M3 demo, whose fake checkout keeps it on
+`broker.start`. The build plane and the check plane, which `start_effect_plane`
+starts for the extension installer and `loom ext check`, were migrated: that
+function now starts the pool, the service and a dispatching broker, and
+`stop_build_plane` and `stop_check_plane` close the service with `drain_ms` and
+`helpers_ms`. Production has one execution model, and the module doc of
+`broker/direct` and the broker's `CLAUDE.md` say that `broker/direct` is
+reached only through `broker.start`.
 
 The test `the_executor_service_is_a_fatal_root_and_closes_under_custody_test`
 pins that the service is a fatal root beside the pool and the broker, that the
@@ -768,14 +771,14 @@ pool size, which is clamped to sixteen (`max_pool_size`,
 | Drain budget of a close | 2000 ms | `drain_ms`, `broker/executor.gleam:391`: how long `close` lets live executions finish after a cancel |
 | Helpers budget of a close | 5000 ms, whole | `helpers_ms`, `broker/executor.gleam:304`: what the pool is given however long the drain took |
 | Diagnostic ring | the last 64 settled executions per service, and the last 64 samples of each latency series | `ring_size`, `broker/executor_view.gleam:50`: trimmed on every push. `the_recent_ring_holds_sixty_four_test`. |
-| Relay progress reports | one per mode or cancel change, the first chunk, and every 16th chunk | `progress_chunks`, `broker/relay.gleam:254`. Never per chunk. |
+| Relay progress reports | one per mode or cancel change, then at most one chunk-driven report (first chunk, every 16th) per 250 ms | `progress_chunks`, `broker/relay.gleam:260`, and `progress_interval_ms`, `broker/relay.gleam:266`. Never per chunk. |
 | Registry size | at most the pool size (4 to 16) | By construction: a row exists only while the service holds a helper for it. |
 | Relay grace after a cancel | 5000 ms | `relay_grace_ms`, `broker/dispatch.gleam:67`, shared by both lanes |
 | Checkout wait | 15 000 ms | `exec.checkout(pool, waiting: 15_000)`, `client/serve.gleam:660` and `client/serve.gleam:757` |
 | Run call | 5000 ms | `run_wait_ms`, `broker/direct.gleam:77` and `broker/executor.gleam:281` |
 | Service `start` call | 22 000 ms | `start_budget_ms`, `broker/executor.gleam:384`: the checkout wait, the relay's init wait, the run call and a second of slack |
-| Relay's ask to settle | 5000 ms | `settle_wait_ms`, `broker/relay.gleam:247` |
-| Relay's ask to cancel | 5000 ms | `cancel_wait_ms`, `broker/relay.gleam:260` |
+| Relay's ask to settle | 5000 ms | `settle_wait_ms`, `broker/relay.gleam:253` |
+| Relay's ask to cancel | 5000 ms | `cancel_wait_ms`, `broker/relay.gleam:272` |
 | Output per stream | `policy.limits.output_bytes`; 0 means unlimited | The helper (`limiter.go`). A session lease whose output is a wire runs with 0 (`session_lease`, `broker/policy.gleam:425`). |
 | Frame payload | 16 MiB | Both framing codecs. |
 
@@ -943,9 +946,14 @@ blocks in `ask_to_settle` for up to five seconds, so a stuck execution could
 stall the tool used to debug it. The relay therefore casts a `Progress` on a
 change of mode, a change of cancel state, the first chunk, and every
 `progress_chunks` (16) chunks after, and carries its exact final counters in
-the `Verdict` it asks leave to report. A flood of output costs the service one
-small message per 16 chunks. The cost is staleness: a running row's counters
-lag by up to 15 chunks, and exact totals appear in `recent`.
+the `Verdict` it asks leave to report. A chunk-driven report is also skipped
+when the relay's last one went less than `progress_interval_ms` (250 ms, on
+weft's monotonic clock) ago, so a flood of output costs the service at most
+four small messages a second per relay, and a service blocked for 15 seconds
+holds about 60 per relay however fast the helper writes. Mode and cancel
+changes are never skipped. The cost is staleness: a running row's counters
+lag by up to 15 chunks, or by a quarter second of output, and exact totals
+appear in `recent`.
 
 A settlement is recorded where a row's life ends, and nowhere else. A granted
 row is recorded when the broker releases it, so a relay that is granted and then
