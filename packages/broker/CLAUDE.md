@@ -56,6 +56,10 @@ protocol (spec Part 1.4). WP-G.
   `ExecFailure.HelperUnresponsive`, and `HelperStatus.StatusUnresponsive`
   — separate facts from `AllBusy`, `ChannelClosed` and `StatusDead`,
   which are things a live peer said.
+  `HelperStatus.StatusBusy` (handshake done, an execution in flight:
+  `Running` or `Cancelling`) is not ready: `helper_ready` lends only on
+  `StatusReady`, so a helper checked in mid-execution (a relay crash)
+  is retired rather than re-lent, at the cost of one lazy respawn.
   `ExecResult.cancelled` says the helper truncated the run;
   `ExecResult.enforcement` is the ground truth `required_layers` and
   `unapplied_layers` check the policy's demands against.

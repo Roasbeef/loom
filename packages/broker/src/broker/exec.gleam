@@ -302,8 +302,16 @@ pub type HelperStatus {
   /// Handshake still in flight.
   StatusStarting
 
-  /// Handshake done; these are the helper's hello features.
+  /// Handshake done and no execution in flight; these are the helper's
+  /// hello features. The only answer that makes a helper fit to lend.
   StatusReady(features: List(String))
+
+  /// Handshake done and an execution is in flight (`Running` or
+  /// `Cancelling`); these are the helper's hello features. The helper
+  /// is alive and well but occupied, so it is not fit to lend: a
+  /// borrower's `run` would be refused in-band with `HelperBusy` for a
+  /// call that was never theirs.
+  StatusBusy(features: List(String))
 
   /// The channel is gone; the actor answers every request with this
   /// failure until shut down.
@@ -1258,13 +1266,16 @@ fn advance(machine: Machine) -> state_machine.Next(Phase, Data, Msg) {
 }
 
 // The lifecycle position a `status` query reports. `Running` and
-// `Cancelling` are both "ready" to an outside observer: the helper
-// answered its hello and is doing what it was asked.
+// `Cancelling` are both "busy" to an outside observer: the helper
+// answered its hello but its single execution slot is taken, and a
+// `Cancelling` helper stays taken until the helper reports the
+// execution's exit. Reporting either as ready is what once let the
+// pool lend a helper that a relay crash had checked in mid-execution.
 fn status_of(phase: Phase) -> HelperStatus {
   case phase {
     Prepared | AwaitingHello -> StatusStarting
-    Idle(features:) | Running(features:, ..) | Cancelling(features:, ..) ->
-      StatusReady(features:)
+    Idle(features:) -> StatusReady(features:)
+    Running(features:, ..) | Cancelling(features:, ..) -> StatusBusy(features:)
     Dead(failure:, ..) -> StatusDead(failure:)
   }
 }
@@ -2786,8 +2797,9 @@ fn record_owner_exit(
   PoolState(..state, entries:)
 }
 
-// Returns a borrowed helper. Dead ones rejoin as `helper_ready` refuses
-// them; live ones fall through to `Checkin`'s ordinary bookkeeping.
+// Returns a borrowed helper. Only one `helper_ready` accepts rejoins the
+// lendable set; a dead, unresponsive or still-busy one is retired, so a
+// helper that is mid-execution at checkin is never lent again.
 fn handle_checkin(state: PoolState, helper: Helper) -> PoolState {
   let entries =
     list.map(state.entries, fn(entry) {
@@ -2920,7 +2932,8 @@ fn helper_ready(helper: Helper) -> Bool {
     True ->
       case status(helper, waiting: ready_probe_ms) {
         StatusReady(_) -> True
-        StatusStarting | StatusDead(_) | StatusUnresponsive -> False
+        StatusStarting | StatusBusy(_) | StatusDead(_) | StatusUnresponsive ->
+          False
       }
   }
 }
