@@ -534,3 +534,13 @@ semantic results local. It also means a single semantic lookup requires a
 code-mode program and an available toolchain. Legacy constructors and their
 tests remain for shared rendering/landing coverage; no compatibility registry
 or hidden fallback is added. Previously pinned prompt text is not rewritten.
+
+## Addendum, 2026-10-02: remove the retired tool implementations
+
+The owner also authorized deleting the seven top-level `lsp_*` constructors,
+their argument decoders and obsolete constructor/renderer tests. This supersedes
+the earlier same-day statement that those implementations remain. `tools/lsp`
+keeps shared rename landing, diagnostics rendering and the post-write observer,
+plus clipping and changed-span helpers used by code mode. Their focused coverage
+and the real-server code-mode fixtures remain. Language hints stay in admitted
+code-mode discovery; no compatibility registry is added.

@@ -8,7 +8,8 @@ runs in the jailed satellite over four fixed in-memory tables.
 **Integration status:** the complete program in the
 [design note](design-notes/lsp-sql.md#a-complete-program) has compiled
 warning-free. Real jailed Gleam and Go SQL cases also pass using an isolated
-experimental native wrapper. Native publication, final dependency pins and
+experimental native wrapper. The native and companion forks have merged, but
+Hex publication, final dependency pins and
 the cold published-package seed remain pending. An older installed Loom daemon
 does not acquire this module by installing a language profile.
 
@@ -114,6 +115,41 @@ the model makes one tool call, returning only the selected reports. Each SQL
 query still creates a fresh in-memory database and consumes local execution
 resources. Reuse the plan to collect fresh facts after edits; reuse the
 observation for more queries over the already captured facts.
+
+## Save a tested summary program
+
+After testing the program below against your project, save its adapted source
+as `analysis/lsp_summary.gleam`. Add a brief module comment stating its purpose,
+expected server/root, outline files and reference targets. Then submit the file
+instead of repeating the source. Keep the module readable using the
+[style guide](gleam-style.md#orientation-in-large-modules): large modules explain
+their call flow (R13), critical machines document checked transitions (R14), state
+types precede functions (R15), and domain calls name their owning module (R16).
+R17/R18 are warning censuses for flow order and unnamed helpers, not reasons to
+pad comments. Literate comments explain the assumptions and ordering a later
+reader must preserve.
+
+Submit the saved source:
+
+```json
+{
+  "program_path": "analysis/lsp_summary.gleam",
+  "within_ms": 120000
+}
+```
+
+Supply exactly one of `program` or `program_path`. Relative paths resolve
+against the workspace; absolute source paths use the same canonical read
+authorization as `fs_read`. The tool reads complete UTF-8 source under the
+existing eight-MiB file limit, then vets, compiles and runs it through the
+ordinary jail. Each new invocation reloads the file; an execution approval
+retry in the same invocation retains the already loaded bytes.
+
+Saving the program saves its collection plan and queries, not the LSP facts or
+authority. Its `main` must call `lsp_sql.collect` again on each run. Reuse that
+observation for the queries in that invocation; later calls collect again.
+Programs can read changing inputs through existing capabilities or files.
+See [protocol 063](../protocol-change/063-saved-code-mode-programs.md).
 
 ## Count references in other files
 

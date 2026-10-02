@@ -66,6 +66,24 @@ check is the first of two defenses.
 
 ## The pipeline
 
+A run or background launch accepts exactly one of inline `program` or
+`program_path`. The latter names a real workspace-relative or absolute file.
+`tools/codemode.source_input` selects the source before authority or I/O;
+`permissions.authorize_native` applies the invocation's declared permissions,
+then `load_source` calls `tools/fs.read_text`. That read resolves the canonical
+target and uses `fs_read` authority, including exact-target approval when
+needed. It returns complete UTF-8 text under the existing eight-MiB file bound.
+Missing, unreadable, oversized, invalid or blank source fails in band.
+
+The loaded text becomes the same `Request.source` as inline submission. Each
+new invocation reads the file again, but an approval retry inside the invocation
+retains the loaded text. Background launch shares that path; async interaction
+commands never reopen or replace source. Saving a program preserves no grants,
+compiled binary or SQL observation. Programs read inputs through existing
+capabilities and collect fresh semantic facts when run again. [Protocol
+063](../../protocol-change/063-saved-code-mode-programs.md) records the input
+contract.
+
 A submitted program passes two trust layers before its result returns: a
 pure lint in the harness, then a kernel-enforced jail around the running
 code. Vetting decides whether the program may run. The jail contains it

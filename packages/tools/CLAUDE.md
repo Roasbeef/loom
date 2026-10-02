@@ -18,6 +18,18 @@ A `BuildRejected` result says compilation and execution never completed and
 asks for diagnostic repair, including warnings. Compiler diagnostics and the
 structured failure fields remain intact; no automatic resubmission is added.
 
+## Saved program source
+
+A synchronous `code_mode` run or background launch selects exactly one of
+inline `program` or real-file `program_path` before authority or I/O. It
+checks invocation permissions, then `fs.read_text` canonicalizes and authorizes
+the exact file through the `fs_read` boundary before reading complete UTF-8 text
+under `max_read_bytes` (eight MiB). Virtual references, windows, anchors and
+image interpretation are not source inputs. The loaded string crosses the
+existing execution seam and remains unchanged through an approval retry;
+each later invocation reloads it. Async interaction modes do not read source.
+Saved source preserves no grants, compiled binaries or observations.
+
 ## Explicit directory access and approvals
 
 `directory_access.Access` carries explicit roots separately from the jail's
@@ -311,45 +323,18 @@ was asked.
   threshold reads (`client/checkpoint.remaining_seam`), so asked and told
   are one number. Read-only, `Safe`, `Concurrent`, no sandbox
   requirements.
-- `tools/lsp.{tools, land, diagnostics_observer, RenameMode, render_site,
-  render_references, render_outline, render_calls, render_hover,
-  render_definitions, render_diagnostics, render_preview, render_report,
-  render_error, max_reference_hits, max_rendered_diagnostics}` — the seven
-  legacy `lsp_*` tool constructors and shared rendering/landing over
-  `lsp/query.Door`, the record of closures `client` fills from the session's
-  language-server manager (ADR-015 §5–§6). The default registry no longer
-  registers those constructors; code mode and observed writes still use the
-  shared implementation, and its coverage remains intact. Every
-  symbol-addressed tool takes `symbol` (qualified names allowed), optional
-  `path` and optional 1-based `line` — a `line` without a `path` is refused
-  in band — and never a position. Every site renders as
-  `path:line:anchor|text`: a grep hit with the anchor `fs_read` prints
-  spliced in, so an answer feeds `fs_edit` without a read. References count
-  first, group by file then by containing symbol, and stop at
-  `max_reference_hits` (50) with a line naming how many were left out.
-  `Warmth.Started` puts one line in front of the answer. `lsp_calls` takes
-  `direction` and `lsp_rename` takes `mode` (`RenameMode`: `Preview`, the
-  default, or `Apply`); an unknown value of either is refused before the
-  door is asked. `land` is the rename's one landing path and needs no
-  `Ctx`, so code mode calls it with `fs.write_target` where the tool uses
-  `fs.edit_target`: plans (`hashline.plan_between`), then targets, then a
-  digest check of every file against the server's base, each phase over
-  every file — any failure writes nothing and reports the failures
-  `Rejected` and the rest `NotAttempted` — then `fs.land_plan` per file in
-  path order, then `after_write` for landed paths only. A diagnostics block
-  is clean only when `Settled([])`; an `Unsettled` one says "NOT settled"
-  first, even when empty, and a rename that wrote nothing carries
-  `Unsettled([])`. `diagnostics_observer` is the `fs.WriteObserver`
-  `client` hands `fs.write_tool_with`/`edit_tool_with`. `lsp_rename` is
-  `Never`/`Exclusive`, the other six `Safe`/`Concurrent`, and all seven ask
-  the broker for nothing: the door clears its own server.
-  `tools(door, hints)` takes the configured servers' profile hints as
-  `#(server name, hint)` (ADR-016 §2) and appends them once, as a
-  "Language notes:" block of `name: hint` lines, to `lsp_definition`'s
-  description and to no other tool's. **Invariant: with no hints every
-  description is byte-identical to the hint-less one**, since the tool
-  array is the cached prefix; `lsp_test` pins `lsp_definition`'s text and
-  checks the other six are unchanged by hints.
+- `tools/lsp.{land, diagnostics_observer, render_diagnostics, clip,
+  changed_spans, ChangedSpan, max_rendered_diagnostics}` keeps the shared
+  implementation used by code mode and observed writes. The seven top-level
+  `lsp_*` constructors, argument decoders and obsolete renderer tests are
+  removed. `land` needs no `Ctx`: code mode supplies `fs.write_target`, then
+  the shared path plans every file, resolves every target and checks every base
+  before its first write. A failure writes nothing and reports failed files as
+  `Rejected`, the rest as `NotAttempted`. Files then land in path order, and
+  `after_write` runs only for landed paths. Diagnostics are clean only for
+  `Settled([])`; `Unsettled` remains explicit even when empty. Language profile
+  hints belong to admitted code-mode discovery and `cap://lsp`, not a retired
+  tool description.
 - `tools/advise.{Advice, Verdict, Ack, name, tool, decode_verdict}` — the
   `advise` tool: an advisor strand's entire outward surface, a value over
   a seam the host fills, exactly as `remember` and `schedule` are.

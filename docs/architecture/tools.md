@@ -463,6 +463,17 @@ of them is registered:
 - `tools/hashline` is the pure anchor, plan, and apply core behind
   `fs_read` and `fs_edit`.
 
+## Saved code-mode input
+
+`code_mode` accepts exactly one of inline `program` or a real source file named
+by `program_path`. Invocation permissions are authorized before loading that
+file. `tools/fs.read_text` shares `fs_read` canonical target authorization and
+its eight-MiB UTF-8 whole-file bound; it returns source without image handling,
+windows or anchors. The loaded source goes through the ordinary pipeline and
+stays unchanged across an approval retry. A new invocation reloads the file.
+Background launch shares that path; async interaction commands do not read it.
+See [protocol 063](../../protocol-change/063-saved-code-mode-programs.md).
+
 ## Where the code lives
 
 | Path | What it holds |
@@ -473,7 +484,7 @@ of them is registered:
 | `tools/blob.gleam`, `tools/tail.gleam` | Output overflow and the rolling output window. |
 | `tools/permissions.gleam`, `tools/directory_access.gleam` | The optional `permissions` argument and explicit directory additions. |
 | `tools/agent.gleam`, `tools/job.gleam`, `tools/history.gleam`, `tools/remember.gleam`, `tools/schedule.gleam`, `tools/context.gleam`, `tools/advise.gleam`, `tools/codemode.gleam` | The shells over host seams, one module per family. |
-| `tools/lsp.gleam` | Shared rename landing, diagnostics rendering/observer, and legacy tool constructors outside the default registry. |
+| `tools/lsp.gleam` | Shared rename landing, diagnostics rendering/observer, clipping and changed spans. |
 | `tools/prelude.gleam` | Generated public-type prefixes for the description and full capability declarations for `cap://` reads (`make gen-prelude`). |
 | `client/contributions.gleam` | `Origin`, `Contribution`, `built_in`, `deactivate`, and the collision-checked `registry`. |
 | `client/serve.gleam` | Session assembly: opens the planes, builds the contribution list and registry, seeds `active_tool_names`, renders the prompt index. |

@@ -174,3 +174,13 @@ an agent judgment step between rename preview and apply.
 Existing rename, stale-content and multi-root real-server acceptance tests
 move to actual `cap/lsp` code-mode programs rather than being dropped. The
 legacy tools' constructor, renderer and landing tests remain intact.
+
+## Accepted addendum, 2026-10-02: delete retired tool constructors
+
+The owner authorized deleting all seven top-level `lsp_*` constructors and their
+obsolete tests. This supersedes the preceding claim that their constructor and
+renderer tests remain intact. Shared rename landing, diagnostics rendering, the
+post-edit observer, clipping and changed-span helpers remain for code mode and
+ordinary writes. Their focused tests and the real-server capability programs
+retain the corresponding behavior checks. [Protocol 063](063-saved-code-mode-programs.md)
+adds reusable source-file input without preserving SQL observations or authority.

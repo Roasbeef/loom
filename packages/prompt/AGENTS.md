@@ -2,13 +2,17 @@
 
 ## Code-mode guidance
 
-The shipped `loom-default-14` pack asks for immediate code mode on planned
+The shipped `loom-default-15` pack asks for immediate code mode on planned
 batches and chains whose intermediate results need no agent judgment. The
 third extraction probe remains the fallback for investigations that grew into
 a batch. Bounded `cap/task.parallel_map` guidance is conditional on the selected
 seam, and completeness, truncation, `cap://` discovery and warning-free
 compilation remain explicit. Stateful external mutations retain an agent
-judgment step between calls.
+judgment step between calls. Tested reusable programs belong in real workspace
+files with purpose and input notes. `program_path` reuses that source under
+current permissions; every new invocation reloads it and collects fresh LSP
+facts. SQL observations remain local to one invocation, and saved source carries
+no retained authority.
 
 ## Purpose
 

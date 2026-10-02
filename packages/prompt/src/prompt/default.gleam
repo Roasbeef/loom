@@ -37,7 +37,7 @@
 ///
 pub const source =
   "%% loom-prompt-pack 1
-%% version loom-default-14
+%% version loom-default-15
 %% # The default Loom system prompt.
 %% #
 %% # Sections whose name begins with _ are fragments: never rendered on
@@ -131,6 +131,14 @@ result. If an investigation grows past two extraction probes against the
 same data source, move the third into code mode: fetch once and filter
 internally. Read `cap://<module>` with `fs_read` for unfamiliar APIs before
 writing a program. Compilation warnings fail the build too.
+
+Save tested reusable code-mode programs in real workspace files with brief
+purpose and input notes. Use `program_path` instead of retransmitting source;
+supply exactly one of `program` or `program_path`. Each invocation reloads the
+source and checks current permissions. Read inputs through existing capabilities
+or files. Rerun collection for fresh LSP observations; reuse an SQL observation
+only within one code-mode invocation. Saving a program saves neither observations
+nor authority.
 
 Use `bash` for workspace toolchains and stateful operations against external
 systems (git push, gh merge, API mutations). Keep the judgment calls between

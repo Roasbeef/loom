@@ -13,7 +13,7 @@ workspace holds.
 The package is the **protocol and the vocabulary**, not the wiring.
 Starting a server in the jail, its policy, reading `[lsp.<name>]` from
 `loom.toml`, and the `Door` closures are harness wiring and live in
-`packages/client`; the `lsp_*` tools are `packages/tools`; the `lsp.*`
+`packages/client`; shared landing and write diagnostics are `packages/tools`; the `lsp.*`
 capabilities are `packages/codemode`. Nothing here performs I/O except
 the client actor, and nothing here imports `broker` (ADR-015 §2).
 
@@ -124,7 +124,7 @@ the shared decoding helpers close the file.
   portable subset lint R6 gates.
 - **Depended on by**: `client` (the manager that fills `query.Door`, and
   builds the production `ChannelTransport` over the broker's exec),
-  `tools` (the `lsp_*` tools, over `Door`), `codemode` (`lsp.*` served
+  `tools` (shared rename landing and observed-write diagnostics, over `Door`), `codemode` (`lsp.*` served
   here, over `Door`) — as those slices land.
 - **FFI**: none, and ADR-015 needs none. The production transport is a
   `lsp/transport.ChannelTransport` over the broker's jailed exec.

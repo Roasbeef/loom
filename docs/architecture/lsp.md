@@ -100,8 +100,9 @@ report the evidence needed for an anchored edit. Bounded lists retain their
 total and withheld counts rather than treating a clipped response as complete.
 `cap/lsp.rename` requires `Preview` or `Apply`; the model previews, inspects
 and applies in a separate code-mode call. The shared landing code still checks
-every base before the first write. Rendering and diagnostics remain in
-`tools/lsp`, whose legacy tool constructors are not registered by default.
+every base before the first write. Shared rename landing, diagnostics rendering and the write observer remain in
+`tools/lsp`; the seven top-level tool constructors and their obsolete tests are
+removed.
 
 ### Gate every path the server names
 
@@ -110,7 +111,7 @@ an answer, and the harness reads outside every jail. So every path out of
 an answer (a definition, a reference, a call edge, a published diagnostic,
 a rename's edit) becomes `Admitted` or `Withheld` through one function,
 `admit` (`client/lsp/resolve.gleam:399`), called from one place in the
-manager (`gate`, `client/lsp/manager.gleam:2201`). Without it, a hostile
+manager (`gate`, `client/lsp/manager.gleam:2212`). Without it, a hostile
 project's server could name `~/.loom/owner.token` and have the harness
 print its first line.
 
@@ -123,7 +124,7 @@ hides. A refused path costs no request.
 The two servers ADR-015 measured disagree on everything a client could
 wait on, and `rust-analyzer` answers `[]` while it is still loading. So a
 freshly started server is asked whether its work-done progress has gone
-quiet (`ready`, `lsp/client.gleam:1154`), and a write's diagnostics are
+quiet (`ready`, `lsp/client.gleam:1167`), and a write's diagnostics are
 collected under two rules that both must hold (`settle`,
 `lsp/client.gleam:1126`). The answer is a type that says `Settled` or
 `Unsettled`, so a server that had not finished is never reported as clean
@@ -142,10 +143,13 @@ To read the code, start with `cap/lsp.gleam` and `codemode/lsp.gleam` to see
 what a program sends, then `client/lsp/manager.gleam` for the door, then
 `lsp/client.gleam` for one server's conversation, and read the jail and
 profile modules last, after the contract they protect is clear.
-Every large module opens with a `## Flow` section, a text sketch of its
-control flow, and several carry transition tables for their state
-machines. Those are the maintained account of how each module works, and
-this document points at them instead of repeating them. Each path is
+The [style guide](../gleam-style.md#orientation-in-large-modules) requires a
+readable `## Flow` spine in large modules (R13), checked transition tables for
+critical state machines (R14), state types before functions (R15), and qualified
+domain calls (R16). R17 and R18 warn about function order and unnamed helpers;
+they remain censuses, and their warnings do not justify padding module prose.
+Literate comments explain ownership, ordering and failure behavior beside the
+code. This document links those maintained accounts of the implementation. Each path is
 relative to its package's source root: `lsp/client.gleam` is
 `packages/lsp/src/lsp/client.gleam`, and `client/lsp/jail.gleam` is
 `packages/client/src/client/lsp/jail.gleam`.
@@ -154,7 +158,7 @@ relative to its package's source root: `lsp/client.gleam` is
 
 | Module | Owns | Read first |
 |---|---|---|
-| `tools/lsp.gleam` | Shared rendering, rename's `land`, the write tools' `diagnostics_observer`, and legacy tool constructors outside the default registry. | `## Flow` (`tools/lsp.gleam:74`) and the failure table at `tools/lsp.gleam:41` |
+| `tools/lsp.gleam` | Shared rendering, rename's `land`, the write tools' `diagnostics_observer`, and shared clipping/change-span helpers. | `## Flow` (`tools/lsp.gleam:19`), then `land` (`tools/lsp.gleam:112`) |
 | `tools/fs.gleam`, `tools/hashline.gleam` | `land_plan`, `WriteTarget`, the write observer, and `plan_between`: the one landing path rename shares with `fs_edit`. | their own headers |
 | `codemode/lsp.gleam` | The `lsp.*` router arm, rename preview diffing, and the wire shapes. | `## Flow` (`codemode/lsp.gleam:57`) |
 | `cap/lsp.gleam` | The typed module a program imports: `Query`, `Site`, `Found`, `LspError`, and the seven functions. | `## Flow` (`cap/lsp.gleam:43`) and `## Where each error comes from` (`cap/lsp.gleam:62`) |
