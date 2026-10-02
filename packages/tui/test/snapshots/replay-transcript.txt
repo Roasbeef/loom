@@ -3,10 +3,10 @@
 
  › run the tests
 
- ◇ tools · 1 call · 1 failed · Ctrl+g expands details
+ ▸ tools · 1 call · 1 failed · Ctrl+g expands details
 
- └ × Bash(make check-tui)
- └ error: compilation failed
+ × Bash(make check-tui)
+   └ error: compilation failed
      test/tui_test.gleam:12
 
  ◆ main

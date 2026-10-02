@@ -52,7 +52,7 @@ import session_view/transcript_line.{
   type Line, type Speaker, type Stream, Assistant, Failure, Line, PeerMessage,
   Reasoning, ReasoningDigest, SentMessage, Spacer, StrandMessage,
   SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
-  ToolFailure, ToolPatch, ToolResult, User,
+  ToolFailure, ToolGroup, ToolPatch, ToolResult, User,
 }
 import session_view/transcript_lines.{
   BetweenEntries, Projected, Transient, WithinResponse,
@@ -892,6 +892,7 @@ fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
     PeerMessage if index > 0 && index < row_count - 1 -> 4
     ToolDetail -> 2
     System
+    | ToolGroup
     | User
     | Assistant
     | Reasoning

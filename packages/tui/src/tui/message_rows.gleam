@@ -29,7 +29,8 @@ import gleam/string
 import session_view/transcript_line.{
   type Speaker, Assistant, Failure, PeerMessage, Reasoning, ReasoningDigest,
   SentMessage, Spacer, StrandMessage, SummarizedAdvice, SummarizedReasoning,
-  System, ToolCall, ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
+  System, ToolCall, ToolDetail, ToolFailure, ToolGroup, ToolPatch, ToolResult,
+  User,
 }
 import session_view/transcript_lines
 import tui/markdown
@@ -71,6 +72,7 @@ pub fn rows(speaker: Speaker, text: String, width: Int) -> List(span.Line) {
     // Only the three message speakers reach this module; any other line
     // drawn here is its text as body rows, which is the safe reading.
     System
+    | ToolGroup
     | User
     | Assistant
     | Reasoning
