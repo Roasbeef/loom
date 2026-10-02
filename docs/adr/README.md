@@ -53,3 +53,6 @@ document ever cited them under the old ones.
   profiles ship as extensions (issue #25).
 - [017](017-executor-service-seam.md): the executor service sits at the
   execution, one per session, inside the broker package (issue #696).
+- [018](018-go-helper-keeps-its-protocol-code.md): the Go helper keeps its
+  protocol code, and the tag vocabulary is pinned by a test rather than
+  generated (issue #696).
