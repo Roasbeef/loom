@@ -944,7 +944,7 @@ fn completed(
       #("extension", json.String(written.name)),
       #("tool", json.String(declared.name)),
       #("manifest_hash", json.String(written.manifest_hash)),
-      #("value", value_json(value)),
+      #("value", codemode_tool.value_json(value)),
     ]),
     reply.terminate,
     Answered,
@@ -1159,8 +1159,4 @@ fn schema_of(
 
 fn value_text(value: MsgPackValue) -> String {
   codemode_tool.value_text(value)
-}
-
-fn value_json(value: MsgPackValue) -> JsonValue {
-  codemode_tool.value_json(value)
 }
