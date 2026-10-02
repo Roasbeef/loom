@@ -158,7 +158,9 @@ sandbox enforcement layers the current kernel actually provides, `make
 e2e` for the jailed end-to-end against a freshly built helper, and `make
 e2e-codemode` for the code-mode pipeline against a real toolchain and a
 real satellite (`make codemode-seed` prepares the offline cache it needs).
-`make release` builds the self-contained server, `make release-smoke` boots
+`make executor-smoke` boots the standalone executor (`packages/executor`, no
+`client` dependency) against the real helper and asserts a census line and a
+clean drain. `make release` builds the self-contained server, `make release-smoke` boots
 it with no `erl` on `PATH` and proves code mode registers from the bundled
 toolchain, and `make dist` packages both plus the TUI —
 `docs/distribution.md` says what a release carries and why.
