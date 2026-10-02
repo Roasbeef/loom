@@ -98,6 +98,43 @@ follow-up adds an independent expected value for the known fixture metadata.
 The reviewer's own real-process rerun was denied the kernel process-table
 sysctl by its sandbox; the escalated native suite is the execution evidence.
 
+The combined signoff exposed two fixture ownership errors. Eight-way EUnit
+ran typed MCP cases within `cap@mcp_codec_test` concurrently; they installed
+different responses into one VM-global capability channel. Its declaration
+in `scripts/serial-tests` now gives the module exclusive ownership, using the
+same mechanism as the existing capability suites. All 168 cap tests pass at
+the original eight-way setting. Assertions and production dispatch are unchanged.
+
+The Go LSP fixture derived its writable cache grant from outer `GOCACHE`
+without forwarding that variable to jailed Go. The granted path and actual
+write path diverged under a private cache override. Forwarding the same name
+aligns them. Both private and default caches pass; reverting only the forwarding
+line reproduces the original symbol-not-found failure. Filesystem grants and
+query assertions are unchanged. Astra reviewed both test-only corrections
+and found no remaining issue.
+
+## Matched release observation
+
+The installed baseline at `3819fec3d` and the combined candidate at
+`369c8a2fb` used the same release configuration and control-plane probe.
+The probe source was unchanged across the rebase. Each boot used a fresh
+private HOME, workspace and state root, admitted two empty sessions, stopped
+the first and observed the remaining resident after 15 seconds idle. Neither
+run forced collection or copied retained live state. The combined candidate
+also includes the typed MCP work merged in PR #685.
+
+| Cut | Baseline total / processes, MiB | Candidate total / processes, MiB |
+| --- | ---: | ---: |
+| Listening | 55.623 / 15.192 | 55.449 / 14.770 |
+| Two admitted, one stopped | 82.646 / 33.457 | 80.464 / 31.136 |
+| After 15 seconds idle | 76.841 / 27.656 | 74.032 / 24.687 |
+
+The idle BEAM delta was 2.809 MiB in total and 2.969 MiB in process memory.
+RSS moved from 113584 to 118240 KiB, so this run does not prove an RSS
+improvement. Allocator carriers, collection timing and the small bare-session
+tool graph differ from the normal daemon. The installed comparison remains
+separate; callback flat-copy savings are not subtracted from either census.
+
 ## Remaining limits
 
 Directory-administration capture is deferred because changing its borrowed
