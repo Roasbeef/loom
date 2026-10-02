@@ -24,12 +24,11 @@ review returned approve-with-comments; its four findings (slice-bound
 coupling, the variant, dead code in `join_batch`, the
 `execution.receive` cousin) are all addressed in the merged commits.
 
-**Open decision:** [protocol-change/062](../protocol-change/062-strand-wait-slicing.md)
-is deliberately still status PROPOSED — the merge was made on the
-owner's authorization, and the proposal awaits a formal accept or
-amendment. It records the residual cost (a never-settling child now
-blocks up to the program's own deadline) and why raising `max_wait_ms`
-was rejected.
+**Ruled:** [protocol-change/062](../protocol-change/062-strand-wait-slicing.md)
+was accepted by the owner on 2026-10-02 after the merge (implemented in
+#719 on the owner's authorization). It records the residual cost (a
+never-settling child now blocks up to the program's own deadline) and
+why raising `max_wait_ms` was rejected.
 
 **Flake note:** issue #513 (runtime `interleave_test` tools case) has a
 second recorded occurrence — run `37072703564`, job 111057019796, on an
