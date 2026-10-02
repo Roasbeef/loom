@@ -136,6 +136,8 @@ pub type Worked {
     steps: Int,
     /// How many distinct files the work wrote or edited.
     files: Int,
+    /// How many of the tool calls returned an error.
+    failed: Int,
   )
 }
 
@@ -1175,17 +1177,24 @@ fn worked(turn: Turn) -> Worked {
     })
     |> set.from_list
     |> set.size
-  Worked(duration_ms:, steps:, files:)
+  let failed =
+    list.count(turn.rest, fn(item) {
+      case item {
+        Doing(item: Step(standing: Failed, ..), ..) -> True
+        Doing(..) | Answer(..) | Input(..) | Outside(..) -> False
+      }
+    })
+  Worked(duration_ms:, steps:, files:, failed:)
 }
 
-/// The divider's words: `worked 48s · 4 steps · 2 files`, leaving out a
-/// figure the records did not give.
+/// The divider's words: `worked 48s · 4 steps · 2 files · 1 failed`,
+/// leaving out a figure the records did not give or that is zero.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert turns.divider(turns.Worked(Some(48_000), 4, 2))
-///   == "worked 48s · 4 steps · 2 files"
+/// assert turns.divider(turns.Worked(Some(48_000), 4, 2, 1))
+///   == "worked 48s · 4 steps · 2 files · 1 failed"
 /// ```
 pub fn divider(worked: Worked) -> String {
   let time = case worked.duration_ms {
@@ -1196,6 +1205,7 @@ pub fn divider(worked: Worked) -> String {
     time,
     counted(worked.steps, "step", "steps"),
     counted(worked.files, "file", "files"),
+    counted(worked.failed, "failed", "failed"),
   ]
   |> list.filter(fn(part) { part != "" })
   |> string.join(" · ")
