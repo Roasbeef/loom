@@ -433,6 +433,38 @@ helper uses the bundled `mem_report` module and exits after reporting process
 heaps, binary memory, ETS, and allocator carriers. It does not force garbage
 collection or inspect session payloads.
 
+Open the GUI with either launcher:
+
+```sh
+loom observer
+loomd observer
+loom observer --pid 12345 --state-dir /private/loom-profile
+loom observer --erl /opt/homebrew/bin/erl
+```
+
+Both commands select the single running profiled daemon under the chosen state
+root. `--pid` selects a specific profiled daemon or terminal client. Discovery
+matches the live PID, generated node and private cookie directory against its
+launch arguments, so it also works with profile nodes started by older releases.
+It ignores code-mode satellites and stale credential directories. If more than
+one daemon matches, the command requires `--pid`. An unprofiled running process
+must be started with profiling enabled before Observer can attach.
+
+The GUI runs in a separate hidden node bound to loopback. The command reads the
+existing cookie through Erlang's private HOME and preserves the operator's
+application-facing HOME; it never passes the cookie in process arguments. Close
+the window to finish. The machine opening the window needs a local Erlang/OTP
+installation with `observer` and `wx`; the bundled headless Loom runtime does
+not carry the GUI. Use `--erl` to select a compatible GUI-capable installation.
+
+In **Processes**, sort **Memory** to find large heaps, or **Reductions** to find
+busy processes, then open a row to inspect its memory, mailbox and links. In
+**Load Charts**, compare process, binary and ETS allocation over time. The
+**Applications** tab shows application-owned supervision trees; Loom's release
+starts its root outside an application callback, so that tab does not show the
+complete Loom tree. Follow process links for the live layout. Observer's heap
+counters are BEAM allocation, not native RSS or physical footprint.
+
 The launcher consumes `--profile` before it starts Erlang. When that client
 finds no local daemon, its one-time local launch carries `--profile` to the new
 `loomd`; an already-published daemon is only authenticated and never
