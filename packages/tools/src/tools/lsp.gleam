@@ -12,7 +12,9 @@
 //// sync, symbol resolution, settlement — is on the far side of
 //// `lsp/query.Door`, a record of closures `client` fills from the
 //// session's one language-server manager, exactly as it fills `Agency`
-//// or `CodeMode`.
+//// or `CodeMode`. Each retained tool callback owns only the query it calls;
+//// rename owns preparation and after-write. The rest of the door stays with
+//// its other callers rather than travelling with every registry copy.
 ////
 //// # Names in, anchors out
 ////
@@ -222,6 +224,7 @@ const addressing =
   <> "reading the file first."
 
 fn definition_tool(door: query.Door, hints: List(#(String, String))) -> Tool {
+  let ask = door.definition
   read_tool(
     name: "lsp_definition",
     description: "Find where a symbol is defined, using the language "
@@ -231,11 +234,12 @@ fn definition_tool(door: query.Door, hints: List(#(String, String))) -> Tool {
     snippet: "`lsp_definition` finds where a symbol is defined, by name; "
       <> "results carry fs_edit anchors.",
     schema: symbol_schema([], []),
-    run: fn(args) { run_definition(door, args) },
+    run: fn(args) { run_definition(ask, args) },
   )
 }
 
 fn references_tool(door: query.Door) -> Tool {
+  let ask = door.references
   read_tool(
     name: "lsp_references",
     description: "Find every reference to a symbol, its declaration "
@@ -249,11 +253,12 @@ fn references_tool(door: query.Door) -> Tool {
     snippet: "`lsp_references` lists who refers to a symbol, grouped by file "
       <> "and containing function, with fs_edit anchors.",
     schema: symbol_schema([], []),
-    run: fn(args) { run_references(door, args) },
+    run: fn(args) { run_references(ask, args) },
   )
 }
 
 fn hover_tool(door: query.Door) -> Tool {
+  let ask = door.hover
   read_tool(
     name: "lsp_hover",
     description: "Show a symbol's type or signature and its documentation, "
@@ -261,11 +266,12 @@ fn hover_tool(door: query.Door) -> Tool {
       <> addressing,
     snippet: "`lsp_hover` shows a symbol's type, signature and docs, by name.",
     schema: symbol_schema([], []),
-    run: fn(args) { run_hover(door, args) },
+    run: fn(args) { run_hover(ask, args) },
   )
 }
 
 fn symbols_tool(door: query.Door) -> Tool {
+  let ask = door.outline
   read_tool(
     name: "lsp_symbols",
     description: "Outline one file: every function, type, constant and "
@@ -278,11 +284,12 @@ fn symbols_tool(door: query.Door) -> Tool {
       [#("path", tool.string_property("the workspace file to outline"))],
       ["path"],
     ),
-    run: fn(args) { run_symbols(door, args) },
+    run: fn(args) { run_symbols(ask, args) },
   )
 }
 
 fn calls_tool(door: query.Door) -> Tool {
+  let ask = door.calls
   read_tool(
     name: "lsp_calls",
     description: "One level of the call hierarchy around a function: "
@@ -305,11 +312,12 @@ fn calls_tool(door: query.Door) -> Tool {
       ],
       ["direction"],
     ),
-    run: fn(args) { run_calls(door, args) },
+    run: fn(args) { run_calls(ask, args) },
   )
 }
 
 fn diagnostics_tool(door: query.Door) -> Tool {
+  let ask = door.diagnostics
   read_tool(
     name: "lsp_diagnostics",
     description: "The language server's current errors and warnings, for "
@@ -332,11 +340,15 @@ fn diagnostics_tool(door: query.Door) -> Tool {
       ],
       [],
     ),
-    run: fn(args) { run_diagnostics(door, args) },
+    run: fn(args) { run_diagnostics(ask, args) },
   )
 }
 
 fn rename_tool(door: query.Door) -> Tool {
+  // Rename needs two callbacks. Retaining the complete door here would copy
+  // all eight query handles into each tool executor and supervisor restart.
+  let prepare = door.prepare_rename
+  let after_write = door.after_write
   tool.Tool(
     name: "lsp_rename",
     description: "Rename a symbol everywhere the language server knows it "
@@ -369,7 +381,7 @@ fn rename_tool(door: query.Door) -> Tool {
     replay: tool.Never,
     execution_mode: tool.Exclusive,
     requirements: empty_requirements,
-    run: fn(ctx, args) { run_rename(door, ctx, args) },
+    run: fn(ctx, args) { run_rename(prepare, after_write, ctx, args) },
   )
 }
 
@@ -516,18 +528,24 @@ fn decode_new_name(args: JsonValue) -> Result(String, String) {
 // behind its warmth line. A tool with a different shape, like
 // `run_references`, says so where it differs. The `use` lines each bind a
 // value and run the rest of the function as a callback.
-fn run_definition(door: query.Door, args: JsonValue) -> ToolOutcome {
+fn run_definition(
+  ask: fn(SymbolQuery) -> Result(query.Served(List(Site)), QueryError),
+  args: JsonValue,
+) -> ToolOutcome {
   use asked <- tool.with_arg(decode_query(args))
-  use served <- tool.or_outcome(door.definition(asked), error_outcome)
+  use served <- tool.or_outcome(ask(asked), error_outcome)
   tool.success(with_warmth(
     served.warmth,
     render_definitions(asked.symbol, served.value),
   ))
 }
 
-fn run_references(door: query.Door, args: JsonValue) -> ToolOutcome {
+fn run_references(
+  ask: fn(SymbolQuery) -> Result(query.Served(List(Reference)), QueryError),
+  args: JsonValue,
+) -> ToolOutcome {
   use asked <- tool.with_arg(decode_query(args))
-  use served <- tool.or_outcome(door.references(asked), error_outcome)
+  use served <- tool.or_outcome(ask(asked), error_outcome)
   let references = served.value
   let text =
     with_warmth(served.warmth, render_references(asked.symbol, references))
@@ -544,31 +562,44 @@ fn run_references(door: query.Door, args: JsonValue) -> ToolOutcome {
   )
 }
 
-fn run_hover(door: query.Door, args: JsonValue) -> ToolOutcome {
+fn run_hover(
+  ask: fn(SymbolQuery) -> Result(query.Served(query.Hover), QueryError),
+  args: JsonValue,
+) -> ToolOutcome {
   use asked <- tool.with_arg(decode_query(args))
-  use served <- tool.or_outcome(door.hover(asked), error_outcome)
+  use served <- tool.or_outcome(ask(asked), error_outcome)
   tool.success(with_warmth(served.warmth, render_hover(served.value)))
 }
 
-fn run_symbols(door: query.Door, args: JsonValue) -> ToolOutcome {
+fn run_symbols(
+  ask: fn(String) -> Result(query.Served(List(SymbolEntry)), QueryError),
+  args: JsonValue,
+) -> ToolOutcome {
   use path <- tool.with_arg(tool.required_string(args, "path"))
-  use served <- tool.or_outcome(door.outline(path), error_outcome)
+  use served <- tool.or_outcome(ask(path), error_outcome)
   tool.success(with_warmth(served.warmth, render_outline(path, served.value)))
 }
 
-fn run_calls(door: query.Door, args: JsonValue) -> ToolOutcome {
+fn run_calls(
+  ask: fn(SymbolQuery, CallDirection) ->
+    Result(query.Served(List(Call)), QueryError),
+  args: JsonValue,
+) -> ToolOutcome {
   use asked <- tool.with_arg(decode_query(args))
   use direction <- tool.with_arg(decode_direction(args))
-  use served <- tool.or_outcome(door.calls(asked, direction), error_outcome)
+  use served <- tool.or_outcome(ask(asked, direction), error_outcome)
   tool.success(with_warmth(
     served.warmth,
     render_calls(asked.symbol, direction, served.value),
   ))
 }
 
-fn run_diagnostics(door: query.Door, args: JsonValue) -> ToolOutcome {
+fn run_diagnostics(
+  ask: fn(Option(String)) -> Result(query.Served(Diagnostics), QueryError),
+  args: JsonValue,
+) -> ToolOutcome {
   use path <- tool.with_arg(tool.optional_string(args, "path"))
-  use served <- tool.or_outcome(door.diagnostics(path), error_outcome)
+  use served <- tool.or_outcome(ask(path), error_outcome)
   tool.success(with_warmth(served.warmth, render_diagnostics(served.value)))
 }
 
@@ -577,14 +608,17 @@ fn run_diagnostics(door: query.Door, args: JsonValue) -> ToolOutcome {
 // Every argument is decoded before the server is asked, so an invalid
 // `mode` costs no request. Preview and apply ask the same question; they
 // differ only in what happens to the answer.
-fn run_rename(door: query.Door, ctx: Ctx, args: JsonValue) -> ToolOutcome {
+fn run_rename(
+  prepare: fn(SymbolQuery, String) ->
+    Result(query.Served(List(FileEdit)), QueryError),
+  after_write: fn(String) -> Option(Diagnostics),
+  ctx: Ctx,
+  args: JsonValue,
+) -> ToolOutcome {
   use asked <- tool.with_arg(decode_query(args))
   use new_name <- tool.with_arg(decode_new_name(args))
   use mode <- tool.with_arg(decode_mode(args))
-  use served <- tool.or_outcome(
-    door.prepare_rename(asked, new_name),
-    error_outcome,
-  )
+  use served <- tool.or_outcome(prepare(asked, new_name), error_outcome)
   let edits = served.value
   use <- or_no_edits(edits, asked.symbol, new_name)
   case mode {
@@ -593,7 +627,7 @@ fn run_rename(door: query.Door, ctx: Ctx, args: JsonValue) -> ToolOutcome {
         served.warmth,
         render_preview(asked.symbol, new_name, edits),
       ))
-    Apply -> apply_rename(door, ctx, asked.symbol, new_name, served)
+    Apply -> apply_rename(after_write, ctx, asked.symbol, new_name, served)
   }
 }
 
@@ -622,7 +656,7 @@ fn or_no_edits(
 // file goes through exactly the resolution, protected-path refusal and
 // approval `fs_edit` gives it.
 fn apply_rename(
-  door: query.Door,
+  after_write: fn(String) -> Option(Diagnostics),
   ctx: Ctx,
   symbol: String,
   new_name: String,
@@ -632,12 +666,7 @@ fn apply_rename(
     fs.edit_target(ctx, path) |> result.map_error(outcome_text)
   }
   let report =
-    land(
-      edits: served.value,
-      target:,
-      filesystem: ctx.filesystem,
-      after_write: door.after_write,
-    )
+    land(edits: served.value, target:, filesystem: ctx.filesystem, after_write:)
   let text = with_warmth(served.warmth, render_report(symbol, new_name, report))
   let outcome = case list.all(report.files, is_landed) {
     True -> tool.success(text)
@@ -726,7 +755,7 @@ type Prepared {
 /// //   edits:,
 /// //   target: fn(path) { fs.write_target(..) |> result.map_error(describe) },
 /// //   filesystem:,
-/// //   after_write: door.after_write,
+/// //   after_write:,
 /// // )
 /// // -> RenameReport(files: [Landed("src/a.gleam", 2)], diagnostics: ..)
 /// ```
