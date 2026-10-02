@@ -87,6 +87,13 @@ for pkg in "${targets[@]}"; do
     gleam format --check "${format_paths[@]}"
     bash ../../scripts/test.sh "$pkg"
   )
+  # This fixture checks the work removed by leaf memoisation and the provider
+  # worker's copy boundary in a disposable VM, separate from correctness tests.
+  if [ "$pkg" = "runtime" ]; then
+    python3 scripts/with_timeout.py 30 -- escript \
+      scripts/projection_cache_bench.escript packages/runtime/build/dev/erlang \
+      --expect-cached
+  fi
 done
 # Loom's own lint runs last. R0, R2, R4 and R6 gate — each has a census of
 # zero that the promotion exists to keep (packages/lint/CLAUDE.md, Staging)

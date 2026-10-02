@@ -2259,17 +2259,21 @@ fn spawn_provider(
   let parent = state.internal
   let driver = process.self()
   let surface = state.effects.provider
+
+  // The worker needs restart custody, not the driver's cached conversation or
+  // sibling tool closures. Project the handle before crossing the spawn boundary.
+  let reaper = state.reaper
   let logger = step_logger(state, token)
   log.debug(logger, "effect.dispatched", [
     field.text(key: "kind", value: effect_kind(token)),
     field.text(key: "model", value: configuration.model.model_id),
   ])
   let #(pid, stop) =
-    spawn_provider_effect(state.reaper, logger, fn(stop) {
+    spawn_provider_effect(reaper, logger, fn(stop) {
       let provider_custodian.Prepared(handle:, begin:) =
         provider_custodian.prepare(surface, spec)
       let drain = stream.watch_drain(handle)
-      case track_provider_owner(state.reaper, handle) {
+      case track_provider_owner(reaper, handle) {
         False -> {
           stream.cancel(handle)
           require_provider_drain(drain)

@@ -14,8 +14,11 @@ An unchanged leaf had been rebuilt 15 times in one three-second live window.
 The isolated 1,200-message fixture removes millions of reductions per 500
 cache hits at a cost of about 66 KiB of extra shared term structure. Appends,
 forks and compaction still invalidate through the existing scan rules, and
-request-local transforms remain outside the cache. The reproducible optional
-work gate is `scripts/projection_cache_bench.escript ... --expect-cached`.
+request-local transforms remain outside the cache. The runtime-package gate runs
+`scripts/projection_cache_bench.escript ... --expect-cached`, checking both
+cache-hit reductions and provider closure capture. Independent review found
+the provider worker's whole-State capture; it now receives a projected reaper
+handle, removing a copy of the cached branch and unrelated tool closures.
 
 A matched installed-daemon comparison is the next step after deployment.
 The remaining measured leads are jobs/advisor temporary allocation and

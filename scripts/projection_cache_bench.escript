@@ -1,7 +1,7 @@
 #!/usr/bin/env escript
 %%! +S 1:1
 %% Measures the private cache-hit path in a disposable, non-distributed VM.
-%% Usage: escript scripts/projection_cache_bench.escript packages/runtime/build/dev/erlang
+%% Usage: escript scripts/projection_cache_bench.escript packages/runtime/build/dev/erlang [--expect-cached]
 %% Build the runtime test package first, so support@fake is available.
 -mode(compile).
 
@@ -13,8 +13,7 @@ main(_) ->
 run(Build, Check) ->
     lists:foreach(fun code:add_patha/1, filelib:wildcard(filename:join([Build, "*", "ebin"]))),
     Path = filename:join([Build, "runtime", "_gleam_artefacts", "runtime@strand_runtime.abstr"]),
-    {ok, Encoded} = file:read_file(Path),
-    Forms = binary_to_term(Encoded),
+    Forms = generated_forms(Build, Path),
     %% The compiler's abstract forms let this VM call private functions without
     %% modifying a build artifact or exporting anything in the production VM.
     {ok, Module, Beam, _Warnings} = compile:forms(Forms, [binary, export_all, return_errors, return_warnings]),
@@ -27,7 +26,20 @@ run(Build, Check) ->
     io:format("otp=~s erts=~s word_bytes=~p schedulers=~p~n",
         [erlang:system_info(otp_release), erlang:system_info(version),
          erlang:system_info(wordsize), erlang:system_info(schedulers_online)]),
-    lists:foreach(fun(Shape) -> measure(Module, Empty, Shape, Check) end, [ordinary, compacted]).
+    lists:foreach(fun(Shape) -> measure(Module, Empty, Shape, Check) end, [ordinary, compacted]),
+    provider_capture(Module, Forms, Empty, Check).
+
+generated_forms(Build, Path) ->
+    case file:read_file(Path) of
+        {ok, Encoded} -> binary_to_term(Encoded);
+        {error, enoent} ->
+            %% Gleam 1.18 emits Erlang source; newer native builds emit abstract
+            %% forms. Both become the same compiler input in this isolated VM.
+            Source = filename:rootname(Path) ++ ".erl",
+            Includes = filelib:wildcard(filename:join([Build, "*", "include"])),
+            {ok, Forms} = epp:parse_file(Source, Includes, []),
+            Forms
+    end.
 
 measure(Module, Empty, Shape, Check) ->
     Entries = fixture(Shape),
@@ -93,3 +105,59 @@ entries([Message | Rest], Seq, Parent) ->
     Id = integer_to_binary(Seq),
     [{message_entry, Id, Parent, Seq, 0, Message, false} |
      entries(Rest, Seq + 1, {some, Id})].
+
+provider_capture(Module, Forms, Empty, Check) ->
+    %% Replace only this VM's private spawn boundary with a capture sink. The
+    %% real spawn_provider still constructs its actual worker closure, but no
+    %% provider request or effect adoption runs. Production artifacts stay intact.
+    Stub = {function, 0, spawn_provider_effect, 3, [
+        {clause, 0, [{var, 0, '_Reaper'}, {var, 0, '_Logger'}, {var, 0, 'Body'}], [], [
+            {call, 0, {remote, 0, {atom, 0, erlang}, {atom, 0, put}},
+                [{atom, 0, provider_body}, {var, 0, 'Body'}]},
+            {tuple, 0, [{call, 0, {remote, 0, {atom, 0, erlang}, {atom, 0, self}}, []},
+                {'fun', 0, {clauses, [{clause, 0, [], [], [{atom, 0, nil}]}]}}]}
+        ]}
+    ]},
+    Probe = [case F of
+        {function, _, spawn_provider_effect, 3, _} -> Stub;
+        _ -> F
+    end || F <- Forms],
+    {ok, Module, Beam, _} = compile:forms(Probe, [binary, export_all, return_errors, return_warnings]),
+    {module, Module} = code:load_binary(Module, "provider capture probe", Beam),
+    Entries = fixture(ordinary),
+    Leaf = element(2, hd(Entries)),
+    {Projected, Cached} = Module:remember(Empty, Leaf, Entries),
+    Context = element(2, Projected),
+    Light = provider_state(Cached, []),
+    Heavy = provider_state(Cached, lists:seq(1, 8192)),
+    true = (erts_debug:flat_size(Heavy) > erts_debug:flat_size(Light) + 8192),
+    LightWords = worker_words(Module, Light, Leaf, Context),
+    HeavyWords = worker_words(Module, Heavy, Leaf, Context),
+    io:format("provider_body light_flat_words=~p padded_flat_words=~p~n", [LightWords, HeavyWords]),
+    case Check of
+        report -> ok;
+        expect_cached when LightWords =:= HeavyWords -> ok;
+        expect_cached -> erlang:error({provider_captured_sibling_state, LightWords, HeavyWords})
+    end.
+
+provider_state(Cached, Padding) ->
+    %% The replay slot keeps an unrelated, growing tool payload reachable in
+    %% the driver. Its value is never needed by a provider dispatch.
+    Tools = {tool_surface, fun(_) -> undefined end, fun(_) -> undefined end,
+        fun(_) -> length(Padding) =:= 0 end, fun(_) -> concurrent_execution end},
+    Surface = {provider_surface, fun(_) -> undefined end, 60000},
+    Effects = {effects, undefined, undefined, undefined, Surface, Tools, undefined},
+    S1 = setelement(2, Cached, 'gleam@erlang@process':new_subject()),
+    S2 = setelement(5, S1, Effects),
+    S3 = setelement(12, S2, 'telemetry@log':discard()),
+    setelement(13, S3, {reaper, undefined, none, self()}).
+
+worker_words(Module, State, Leaf, Context) ->
+    {ok, Op} = 'core@ids':parse_op_id(<<"00000000-0000-7000-8000-000000000001">>),
+    Token = {assistant_effect, Op, <<"step">>, Leaf},
+    Configuration = 'support@harness':configuration(),
+    Spec = {generation_request, Op, <<"step">>, 1, Leaf, Configuration, Context, {object, []}},
+    _ = Module:spawn_provider(State, Token, Configuration, Spec),
+    Body = erase(provider_body),
+    true = is_function(Body, 1),
+    erts_debug:flat_size(Body).
