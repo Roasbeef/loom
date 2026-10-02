@@ -1,8 +1,8 @@
+import core/json.{type JsonValue}
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
-import gleam_mcp/json.{type JsonValue}
-import gleam_mcp/jsonrpc
+import lsp/jsonrpc
 import lsp/protocol
 import lsp/query
 import lsp/range.{Position, Range, TextEdit}

@@ -465,3 +465,50 @@ semantic answers and diagnostics after such a failure are unavailable, until
 a substantive semantic result demonstrates recovery. This amends the former
 choice to discard all window messages. The raw PATH-only control succeeded;
 missing HOME/cache variables did not explain the observed failure.
+
+## Addendum: the JSON-RPC and transport seam moved into `packages/lsp`
+
+The previous addendum moved the seam from `packages/mcp` to `gleam_mcp`.
+That was correct for the code as it stood, and it had a cost nobody
+measured until the LSP stack landed (#678). `gleam_mcp` is one package, so
+importing any module of it puts its HTTP server and client in the
+dependency closure: `mist`, `glisten`, `gun`, `cowlib`, `hpack_erl`,
+`gleam_http`, `gleam_crypto`, `gramps`, `logging` and `exception`. The LSP
+client talks to a child process over a framed byte stream and reaches none
+of them. `tools` and `codemode` import `lsp`, so their `manifest.toml`
+files grew from 10 to 22 and from 16 to 28 packages for a feature that uses
+a small codec.
+
+The decision is that `packages/lsp` owns the codec and the seam, and
+depends on `gleam_mcp` for nothing.
+
+- `lsp/jsonrpc` is the JSON-RPC 2.0 envelope over `core/json`: `Id`,
+  `RpcError`, `Inbound`, `MessageFault`, the four encoders (`request`,
+  `notification`, `response`, `error_response`) and a total `decode`. It is
+  the codec `packages/mcp` carried before #669 for `decode`, `request` and
+  `notification`, with `response` and `error_response` taken from
+  `gleam_mcp/jsonrpc`, and it keeps the same posture: strict envelope,
+  tolerant content.
+- `lsp/transport` is `Connection`, `TransportEvent` and a `Transport` with
+  one variant, `ChannelTransport`. It drops `PortTransport` and the Erlang
+  FFI behind it. The invariant that `lsp/client.start` refused a port
+  transport, so that no wiring mistake could run a server outside the
+  jail, now holds by construction: the type cannot express the refusal. The
+  test which built a port transport and expected `TransportRefused` was
+  removed with it, because it can no longer be written. `TransportRefused`
+  remains in `StartError`, for the transport that closes during startup.
+- `core/json` and `core/corruption` replace `gleam_mcp/json` and
+  `gleam_mcp/corruption`. They define the same types, so only the import
+  lines changed.
+
+What this costs is a second JSON-RPC codec in the tree, about 300 lines
+with the doc comments. The alternative considered in #678 was to split
+`gleam_mcp` into a protocol core and its HTTP transports, so that MCP and
+LSP share one codec. That is a change to another repository and a new
+release, and it earns its keep only when a third JSON-RPC consumer
+appears. If one does, `lsp/jsonrpc` is the first candidate to fold into the
+shared core.
+
+The manifests of `lsp`, `tools` and `codemode` shrank from 18, 22 and 28
+packages to 6, 11 and 17. The `client` and `conformance` manifests keep
+`gleam_mcp` because `client/mcp` is a real MCP client.

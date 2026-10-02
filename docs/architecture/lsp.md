@@ -177,15 +177,20 @@ relative to its package's source root: `lsp/client.gleam` is
 
 | Module | Owns | Read first |
 |---|---|---|
-| `lsp/client.gleam` | The actor that owns one server: handshake, gated requests, document sync, the diagnostics store, settlement, readiness and stop. It is a `weft/state_machine` over `gleam_mcp/transport` and never imports `broker` or `mcp`. | `## Transition table` (`lsp/client.gleam:48`), `## Flow` (`lsp/client.gleam:74`) and `## Reading the handlers` (`lsp/client.gleam:100`) |
+| `lsp/client.gleam` | The actor that owns one server: handshake, gated requests, document sync, the diagnostics store, settlement, readiness and stop. It is a `weft/state_machine` over `lsp/transport` and never imports `broker` or `mcp`. | `## Transition table` (`lsp/client.gleam:48`), `## Flow` (`lsp/client.gleam:74`) and `## Reading the handlers` (`lsp/client.gleam:100`) |
 | `lsp/protocol.gleam` | Total decoders for every structure consumed, the advertised-capability gate, answers to the server's own requests, and `file://` conversion. | `## Flow` (`lsp/protocol.gleam:45`) and `## Reading a decoder` (`lsp/protocol.gleam:78`) |
+| `lsp/jsonrpc.gleam` | The JSON-RPC 2.0 envelope over `core/json`: the request, notification, response and error encoders, and the total `decode` of an inbound body into a response, server request, notification or fault. | `## Flow` (`lsp/jsonrpc.gleam:23`) |
+| `lsp/transport.gleam` | The transport seam: `Connection`, `TransportEvent`, and a `Transport` with only the channel variant. | `## Flow` (`lsp/transport.gleam:19`) |
 | `lsp/framing.gleam` | The pure `Content-Length` framer. It works on bytes, because the header counts bytes. | `## Flow` (`lsp/framing.gleam:36`) and `## Transition table` (`lsp/framing.gleam:52`) |
 | `lsp/text.gleam` | The one place a server position becomes a line and codepoint, and the one place a server's text edits are applied. | `## Flow` (`lsp/text.gleam:60`) |
 | `lsp/range.gleam` | The server's coordinates: zero-based lines, columns in UTF-16 code units. | its header |
 
-The package takes the JSON value type, the JSON-RPC envelope and the
-transport seam from `gleam_mcp`, and keeps its own monitored try-call in
-`lsp/call.gleam`, because `gleam_mcp` carries one only privately.
+The package takes the JSON value type from `core/json` and carries its own
+JSON-RPC envelope and transport seam, `lsp/jsonrpc` and `lsp/transport`,
+because `gleam_mcp` ships its HTTP stack in the same package and that closure
+would reach every package that imports `lsp`. It keeps its own monitored
+try-call in `lsp/call.gleam` too, because `gleam_mcp` carries one only
+privately.
 `packages/lsp/CLAUDE.md` is the dense per-type reference for the package.
 
 **Profiles and checks: what a language is.**
@@ -266,7 +271,7 @@ flowchart TB
     M --> C
     CR --> T
     CR --> D
-    C -->|gleam_mcp/transport ChannelTransport| J
+    C -->|lsp/transport ChannelTransport| J
     J --> L
     J -->|clear_call, exec_stdin, exec_out| B
     B --> S
@@ -361,16 +366,16 @@ twelve hours out, as for extension hosts.
 
 ### The transport
 
-`client/lsp/jail.transport` is a `gleam_mcp/transport.ChannelTransport` whose
+`client/lsp/jail.transport` is an `lsp/transport.ChannelTransport` whose
 `connect` starts a relay. The relay acquires a lease, clears the call
 through `broker.clear_call`, and turns broker events into transport
 events. A stdout chunk becomes data. The settlement becomes a close,
 carrying the exit and the tail of the server's stderr. A truncated
 stdout chunk is fatal, because once bytes are missing the stream is no
 longer JSON-RPC. Stderr is only a log: it drains into an 8 KiB ring that
-colours the closing reason, and it is never fatal. `lsp/client.start`
-accepts only a channel transport, because a port transport would run the
-server outside the jail.
+colours the closing reason, and it is never fatal. `lsp/transport.Transport`
+has only the channel variant, so a port transport, which would run the
+server outside the jail, cannot be built.
 
 ### Demand, and the enforcement probe
 

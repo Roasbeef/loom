@@ -28,6 +28,7 @@ import client/lsp/leases
 import client/lsp/profile
 import core/clock
 import core/ids
+import core/json
 import filepath
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
@@ -37,9 +38,8 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
-import gleam_mcp/json
-import gleam_mcp/jsonrpc
-import gleam_mcp/transport
+import lsp/jsonrpc
+import lsp/transport
 import simplifile
 import tools/fs
 import tools/tool
@@ -939,14 +939,9 @@ fn connected(
   launch: jail.Launch,
 ) -> #(transport.Connection, Subject(transport.TransportEvent)) {
   let inbound = process.new_subject()
-  let assert Ok(#(connection, _selector)) =
-    transport.open(
-      jail.transport(launch),
-      inbound,
-      process.new_selector(),
-      fn(e) { e },
-    )
-    as "a channel transport always opens"
+  let transport.ChannelTransport(connect:) = jail.transport(launch)
+  let connection = connect(inbound)
+
   #(connection, inbound)
 }
 

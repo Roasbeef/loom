@@ -27,6 +27,7 @@ import client/lsp/profile
 import client/lsp/resolve
 import core/clock
 import core/ids
+import core/json
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/io
@@ -36,11 +37,10 @@ import gleam/order
 import gleam/otp/static_supervisor as sup
 import gleam/result
 import gleam/string
-import gleam_mcp/json
-import gleam_mcp/transport
 import lsp/protocol
 import lsp/query
 import lsp/range
+import lsp/transport
 import provider/secret
 import simplifile
 import support/fake_lsp
@@ -1552,21 +1552,19 @@ fn slow_close(
   inner: transport.Transport,
   closed: Subject(Nil),
 ) -> transport.Transport {
-  case inner {
-    transport.ChannelTransport(connect:) ->
-      transport.ChannelTransport(connect: fn(inbound) {
-        let connection = connect(inbound)
-        transport.Connection(..connection, close: fn() {
-          process.spawn_unlinked(fn() {
-            process.sleep(300)
-            connection.close()
-            process.send(closed, Nil)
-          })
-          Nil
-        })
+  let transport.ChannelTransport(connect:) = inner
+
+  transport.ChannelTransport(connect: fn(inbound) {
+    let connection = connect(inbound)
+    transport.Connection(..connection, close: fn() {
+      process.spawn_unlinked(fn() {
+        process.sleep(300)
+        connection.close()
+        process.send(closed, Nil)
       })
-    transport.PortTransport(..) -> inner
-  }
+      Nil
+    })
+  })
 }
 
 // --- (d) the real servers, jailed ------------------------------------------------

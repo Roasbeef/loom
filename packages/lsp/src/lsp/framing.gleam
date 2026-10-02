@@ -8,8 +8,8 @@
 //// `Content-Type`, then a blank line — followed by exactly `n` bytes of
 //// UTF-8 JSON. The length counts **bytes**, and the pipe (here, the
 //// broker's `CallOutput` chunks, ADR-015 §1) cuts wherever it likes,
-//// including between the bytes of one character. So unlike `gleam_mcp/stdio`,
-//// which frames on newlines and can take `String` chunks, this framer must
+//// including between the bytes of one character. So unlike a newline-delimited
+//// stdio framer, which frames on newlines and can take `String` chunks, this framer must
 //// take `BitArray` chunks: converting a chunk to text before the frame is
 //// whole would either refuse a split character or miscount the length.
 //// A body becomes a `String` only once all `n` of its bytes are in hand,
@@ -60,17 +60,17 @@
 ////
 //// A zero-length body completes in the same step that finishes its header.
 
+import core/json.{type JsonValue}
 import gleam/bit_array
 import gleam/bool
 import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
-import gleam_mcp/json.{type JsonValue}
 
 /// The largest body `push` will accept, in bytes: 16 MiB, the same cap
-/// `gleam_mcp/stdio.max_line_bytes` and the cap channel's frame cap put on one
-/// peer message, so one hostile message has one cost ceiling everywhere.
+/// the line cap of the MCP stdio transport and the cap channel's frame cap put
+/// on one peer message, so one hostile message has one cost ceiling everywhere.
 pub const max_frame_bytes = 16_777_216
 
 /// The largest header section `push` will accept, in bytes, not counting

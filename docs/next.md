@@ -703,6 +703,13 @@ account is [the LSP architecture doc](architecture/lsp.md). Read both before
 touching any of it; the ADR's "Measured" table and its corrections are what
 the code is built against.
 
+`packages/lsp` carries its own JSON-RPC envelope (`lsp/jsonrpc`) and channel
+transport seam (`lsp/transport`) over `core/json` and no longer depends on
+`gleam_mcp` (#678, ADR-015's last addendum). That is why the `tools` and
+`codemode` manifests do not carry `mist`, `glisten` or `gun`. A third
+JSON-RPC consumer would be the reason to share one codec through a split of
+`gleam_mcp`; until then the two copies stay separate.
+
 A session whose `loom.toml` carries an `[lsp.<name>]` table gets:
 
 - seven tools, `lsp_definition`, `lsp_references`, `lsp_hover`, `lsp_symbols`,
