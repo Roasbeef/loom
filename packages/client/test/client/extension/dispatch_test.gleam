@@ -488,7 +488,7 @@ pub fn every_serviced_cap_routes_and_nothing_else_does_test() {
     let routed = router(a_request(cap, ask_args("GET", "https://h/", [], <<>>)))
     assert case routed {
       Ok(satellite.ServedHere(..)) -> True
-      Ok(satellite.ClearedCall(..)) -> False
+      Ok(satellite.ClearedCall(..)) | Ok(satellite.ScopedService(..)) -> False
       Error(denial) -> denial.code != "beneath"
     }
   })

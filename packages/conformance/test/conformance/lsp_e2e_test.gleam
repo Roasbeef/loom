@@ -1220,3 +1220,251 @@ fn landing_statuses(details: JsonValue) -> List(#(String, String)) {
   })
   |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
 }
+
+// --- SQL over real bounded observations ------------------------------------
+
+/// Real Gleam collection followed by jailed typed SQLite joins and anti-joins.
+pub fn lsp_sql_gleam_end_to_end_test_() -> EunitTest {
+  Timeout(test_timeout_seconds / gleeunit_timeout_scale, fn() {
+    let assert Ok(here) = simplifile.current_directory()
+      as "the conformance package has a working directory"
+    let seed = here <> "/../../build/codemode-seed"
+    case gleam_prerequisites(), codemode.discover(seed) {
+      Ok(helper), Ok(_) -> run_sql_gleam(helper, seed)
+      Error(reason), _ | _, Error(reason) ->
+        io.println_error("SKIP lsp sql gleam: " <> reason)
+    }
+  })
+}
+
+/// Real gopls collection reaches the same production capture and SQLite seam.
+pub fn lsp_sql_gopls_end_to_end_test_() -> EunitTest {
+  Timeout(test_timeout_seconds / gleeunit_timeout_scale, fn() {
+    let assert Ok(here) = simplifile.current_directory()
+      as "the conformance package has a working directory"
+    let seed = here <> "/../../build/codemode-seed"
+    case go_prerequisites(), codemode.discover(seed) {
+      Ok(#(helper, gopls, places)), Ok(_) ->
+        run_sql_gopls(helper, gopls, places, seed)
+      Error(NotInstalled(reason)), _ ->
+        io.println_error(
+          "SKIP lsp sql gopls: gopls or go is not installed (" <> reason <> ")",
+        )
+      Error(UnknownRoot(reason)), _ ->
+        io.println_error(
+          "SKIP lsp sql gopls: go's GOROOT cannot be derived (" <> reason <> ")",
+        )
+      _, Error(reason) -> io.println_error("SKIP lsp sql gopls: " <> reason)
+    }
+  })
+}
+
+const sql_program_template =
+  "import cap/lsp_sql as sql
+import cap/report
+import gleam/int
+import gleam/list
+import gleam/option.{Some}
+import gleam/string
+
+fn count(row: List(sql.Cell)) -> Result(Int, String) {
+  case row { [sql.Integer(n)] -> Ok(n) _ -> Error(\"expected one integer count\") }
+}
+
+fn named_count(row: List(sql.Cell)) -> Result(#(String, Int), String) {
+  case row { [sql.Text(name), sql.Integer(n)] -> Ok(#(name,n)) _ -> Error(\"expected symbol text and integer count\") }
+}
+
+fn named(row: List(sql.Cell)) -> Result(String, String) {
+  case row { [sql.Text(name)] -> Ok(name) _ -> Error(\"expected one symbol text\") }
+}
+
+pub fn main() -> report.Outcome {
+  let path = \"__PATH__\"
+  let plan = sql.Plan(\"__SERVER__\", \"__ROOT__\", [path], [sql.Target(\"__USED__\",path,Some(__USEDLINE__)),sql.Target(\"__UNUSED__\",path,Some(__UNUSEDLINE__))])
+  let captured = sql.collect(plan)
+  case captured {
+    Error(error) -> report.failure(string.inspect(error))
+    Ok(observation) -> {
+      let counted = sql.query(observation, \"SELECT t.symbol,count(r.target_id) FROM targets t LEFT JOIN \\\"references\\\" r ON r.target_id=t.id AND (r.path!=t.path OR r.line!=t.line OR r.column!=t.column) GROUP BY t.id,t.symbol ORDER BY t.id\", [], named_count)
+      let unused = sql.query(observation, \"SELECT t.symbol FROM targets t WHERE NOT EXISTS (SELECT 1 FROM \\\"references\\\" r WHERE r.target_id=t.id AND (r.path!=t.path OR r.line!=t.line OR r.column!=t.column)) ORDER BY t.id\", [], named)
+      let joined = sql.query(observation, \"SELECT count(*) FROM symbols s JOIN documents d ON d.path=s.path\", [], count)
+      let mismatch = sql.query(observation,\"SELECT count(*) FROM symbols\",[],named)
+      let denied = sql.query(observation,\"DELETE FROM symbols\",[],count)
+      let missing = sql.collect(sql.Plan(\"unconfigured-server\", \"__ROOT__\", [path], []))
+      case counted,unused,joined,mismatch,denied,missing {
+        Ok(counted),Ok(unused),Ok(joined),Error(sql.DecodeFailed(0,_)),Error(sql.ReadOnlyDenied(_)),Error(sql.InvalidScope(_)) -> {
+          let expected = [#(\"__USED__\",__MINREFS__),#(\"__UNUSED__\",0)]
+          let complete = counted.rows == expected && unused.rows == [\"__UNUSED__\"] && case joined.rows { [n] -> n >= 2 _ -> False }
+          let same = counted.observation == sql.metadata(observation) && unused.observation == counted.observation && joined.observation == counted.observation
+          let metadata = sql.metadata(observation)
+          let scoped = metadata.server == \"__SERVER__\" && list.length(metadata.outlined) == 1 && list.length(metadata.targets) == 2 && metadata.withheld == 0 && metadata.finished_ms >= metadata.started_ms && string.starts_with(metadata.generation,\"sha256-\")
+          case complete && same && scoped {
+            True -> report.text(\"lsp-sql-ok references=\" <> string.inspect(counted.rows) <> \" unused=\" <> string.inspect(unused.rows) <> \" joined=\" <> string.inspect(joined.rows) <> \" facts=\" <> int.to_string(metadata.facts))
+            False -> report.failure(string.inspect(#(counted,unused,joined,metadata)))
+          }
+        }
+        _,_,_,_,_,_ -> report.failure(string.inspect(#(counted,unused,joined,mismatch,denied,missing)))
+      }
+    }
+  }
+}
+"
+
+fn sql_program(
+  server: String,
+  root: String,
+  path: String,
+  used: String,
+  unused: String,
+  used_line: Int,
+  unused_line: Int,
+  references: Int,
+) -> String {
+  sql_program_template
+  |> string.replace("__SERVER__", server)
+  |> string.replace("__ROOT__", root)
+  |> string.replace("__PATH__", path)
+  |> string.replace("__USED__", used)
+  |> string.replace("__UNUSED__", unused)
+  |> string.replace("__USEDLINE__", int.to_string(used_line))
+  |> string.replace("__UNUSEDLINE__", int.to_string(unused_line))
+  |> string.replace("__MINREFS__", int.to_string(references))
+}
+
+fn run_sql_gleam(helper: String, seed: String) -> Nil {
+  let rig = rig("sql-gleam")
+  write(
+    rig.workspace <> "/app/gleam.toml",
+    "name = \"app\"\nversion = \"1.0.0\"\ntarget = \"erlang\"\n",
+  )
+  write(
+    rig.workspace <> "/app/src/app/util.gleam",
+    "pub fn greet() -> String { \"hello\" }\n\npub fn lonely() -> String { \"unused\" }\n\npub fn twice() -> String { greet() <> greet() }\n",
+  )
+  run_sql_program(
+    rig,
+    helper,
+    gleam_toml,
+    seed,
+    sql_program(
+      "gleam",
+      "app",
+      "app/src/app/util.gleam",
+      "greet",
+      "lonely",
+      1,
+      3,
+      2,
+    ),
+    "sql-gleam",
+  )
+}
+
+fn run_sql_gopls(
+  helper: String,
+  gopls: String,
+  places: GoPlaces,
+  seed: String,
+) -> Nil {
+  let rig = rig("sql-gopls")
+  let module = rig.workspace <> "/gomod"
+  write(module <> "/go.mod", "module example.com/probe\n\ngo 1.21\n")
+  write(
+    module <> "/util/util.go",
+    "package util\n\nfunc Greet() string { return \"hello\" }\n\nfunc Lonely() string { return \"unused\" }\n\nfunc Twice() string { return Greet() + Greet() }\n",
+  )
+  let gopls_cache = parent_directory(places.cache) <> "/gopls"
+  let toml = "
+[models.acme]
+dialect = \"anthropic\"
+base_url = \"https://acme.test\"
+api_key_env = \"ACME_KEY\"
+model_id = \"loom-1\"
+context_window = 200000
+max_output_tokens = 8192
+[roles]
+main = [\"acme\"]
+[lsp.go]
+command = [\"" <> gopls <> "\", \"serve\"]
+extensions = [\".go\"]
+root_markers = [\"go.mod\"]
+readable = [\"" <> places.root <> "\", \"" <> places.module_cache <> "\"]
+writable = [\"" <> places.cache <> "\", \"" <> gopls_cache <> "\"]
+env = [\"GOFLAGS\", \"GOTOOLCHAIN\"]
+"
+  run_sql_program(
+    rig,
+    helper,
+    toml,
+    seed,
+    sql_program("go", "gomod", "gomod/util/util.go", "Greet", "Lonely", 3, 5, 2),
+    "sql-gopls",
+  )
+}
+
+fn run_sql_program(
+  rig: Rig,
+  helper: String,
+  toml: String,
+  seed: String,
+  program: String,
+  name: String,
+) -> Nil {
+  let turns = [
+    script.ToolUseTurn(
+      call_id: "sql-observation",
+      tool: "code_mode",
+      arguments: json.Object([
+        #("program", json.String(program)),
+        #("within_ms", json.Int(120_000)),
+      ]),
+      input_tokens: 100,
+      output_tokens: 5,
+    ),
+    script.AnswerTurn(
+      text: "SQL observation received",
+      input_tokens: 110,
+      output_tokens: 5,
+    ),
+  ]
+  let assert Ok(parsed) = catalog.parse(toml)
+    as "the SQL fixture profile is valid"
+  let socket_root =
+    "/var/tmp/lsp-sql-" <> int.to_string(ffi_shell.unique_integer())
+  let assert Ok(Nil) = simplifile.create_directory_all(socket_root)
+    as "the real jailed program has a shallow capability socket"
+  let settings =
+    serve.Settings(
+      ..settings(rig, helper, parsed, script.transport(turns), name),
+      codemode_seed: seed,
+      codemode_sockets: Some(socket_root),
+    )
+  let assert Ok(instance) = serve.open_instance(settings, log.discard())
+    as "production boot wires the observation door"
+  let outcome = complete(instance)
+  serve.close_instance(instance)
+  let assert Ok(operation.RunLastResult(outcome: completion, ..)) = outcome
+    as "the SQL fixture operation settles"
+  assert completion == operation.RunCompleted(operation.CompletedByAssistant)
+  let messages = transcript(settings.session_path)
+  echo_language_server_results(name, messages)
+  let assert [content] =
+    list.filter_map(messages, fn(entry) {
+      case entry {
+        message.ToolResultMessage(
+          tool_name: "code_mode",
+          is_error: False,
+          content:,
+          ..,
+        ) -> Ok(content)
+        _other -> Error(Nil)
+      }
+    })
+    as "one successful real code-mode SQL result is persisted"
+  let text = result_text(content)
+  io.println_error("lsp SQL " <> name <> ": " <> text)
+  assert string.contains(text, "lsp-sql-ok references=")
+  let _cleaned = simplifile.delete_all([socket_root])
+  Nil
+}

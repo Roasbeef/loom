@@ -3582,6 +3582,15 @@ fn assemble_in(
   // configured server has always had.
   let code_mode_host =
     option.map(code_mode_host, codemode_wiring.over_lsp(_, lsp_door))
+  let observation_door =
+    option.map(lsp_wiring, fn(wiring) {
+      lsp_manager.observation_door(wiring.plane.manager)
+    })
+  let code_mode_host =
+    option.map(code_mode_host, codemode_wiring.over_lsp_observation(
+      _,
+      observation_door,
+    ))
   let code_mode_host =
     option.map(code_mode_host, with_code_mode_peers(_, peer_wiring))
   let code_mode =

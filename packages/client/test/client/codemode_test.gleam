@@ -1267,7 +1267,8 @@ fn orchestrated(
     )
   case router(request) {
     Error(denial) -> framing.CapErr(code: denial.code, message: denial.message)
-    Ok(satellite.ServedHere(serve:)) -> serve()
+    Ok(satellite.ServedHere(serve:)) | Ok(satellite.ScopedService(serve:)) ->
+      serve()
     Ok(satellite.ClearedCall(..)) ->
       panic as "an orchestration call is never a jailed clearance"
   }
@@ -2107,7 +2108,8 @@ fn routed_call(
     )
   case pipeline.satellite.router(cap_request) {
     Error(denial) -> framing.CapErr(code: denial.code, message: denial.message)
-    Ok(satellite.ServedHere(serve)) -> serve()
+    Ok(satellite.ServedHere(serve)) | Ok(satellite.ScopedService(serve)) ->
+      serve()
     Ok(satellite.ClearedCall(..)) ->
       panic as "these test calls are serviced by the host"
   }

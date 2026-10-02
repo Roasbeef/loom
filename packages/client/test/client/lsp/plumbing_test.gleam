@@ -29,6 +29,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import lsp/observation
 import lsp/query
 import simplifile
 import tools/codemode as codemode_tool
@@ -169,7 +170,8 @@ fn route(
 ) -> framing.CapOutcome {
   case built.satellite.router(call) {
     Error(denial) -> framing.CapErr(code: denial.code, message: denial.message)
-    Ok(satellite.ServedHere(serve)) -> serve()
+    Ok(satellite.ServedHere(serve)) | Ok(satellite.ScopedService(serve)) ->
+      serve()
     Ok(satellite.ClearedCall(..)) ->
       panic as "an lsp call is answered in the harness"
   }
@@ -441,4 +443,77 @@ pub fn an_applied_rename_respects_protected_paths_test() {
   assert simplifile.read(workspace <> "/.git/config") == Ok("old\n")
   assert simplifile.read(workspace <> "/a.txt") == Ok("old\n")
   assert drain(written) == []
+}
+
+// The finite SQL capability enters exactly the native LSP program scopes.
+// A capture door by itself cannot grant imports, and installed extensions
+// cannot inherit it from the session's code-mode host configuration.
+pub fn finite_capture_inherits_native_lsp_scope_and_deadline_test() {
+  let broker_actor = idle_broker()
+  let seen = process.new_subject()
+  let capture =
+    observation.Door(collect: fn(_, control) {
+      process.send(seen, control.deadline_ms)
+      Error(observation.Changed("fixture changed"))
+    })
+  let base = config_for(broker_actor)
+  let capture_only = codemode.over_lsp_observation(base, Some(capture))
+  assert !vet_policy.contains(
+    codemode.seam_allowlist(capture_only, vet_policy.WorkspaceSeam),
+    "cap/lsp_sql",
+  )
+  let configured = capture_only |> codemode.over_lsp(Some(door()))
+  list.each([vet_policy.WorkspaceSeam, vet_policy.OrchestrationSeam], fn(seam) {
+    assert vet_policy.contains(
+      codemode.seam_allowlist(configured, seam),
+      "cap/lsp_sql",
+    )
+    assert list.contains(
+      codemode.seam_caps_on(configured, seam),
+      "lsp.snapshot",
+    )
+  })
+  assert !vet_policy.contains(
+    codemode.seam_allowlist(configured, vet_policy.ExtensionSeam),
+    "cap/lsp_sql",
+  )
+  assert !list.contains(
+    codemode.seam_caps_on(configured, vet_policy.ExtensionSeam),
+    "lsp.snapshot",
+  )
+  let ask = a_request("/work")
+  let built =
+    codemode.exec_config(configured, ask, "/work/run", 123_456, widened_by: [])
+  assert list.contains(
+    built.satellite.ceilings,
+    satellite.CapCeiling("lsp.snapshot", 4, "snapshot_ceiling"),
+  )
+  let answer =
+    routed(configured, ask, "lsp.snapshot", [
+      #("server", msgpack.StringValue("gleam")),
+      #("root", msgpack.StringValue("/work")),
+      #("outlines", msgpack.ArrayValue([])),
+      #("targets", msgpack.ArrayValue([])),
+    ])
+  assert answer == framing.CapErr("observation_changed", "fixture changed")
+  assert process.receive(seen, 100) == Ok(9_000_000)
+  let call =
+    satellite.CapRequest(
+      cap: "lsp.snapshot",
+      args: msgpack.MapValue([
+        #(msgpack.StringValue("server"), msgpack.StringValue("gleam")),
+        #(msgpack.StringValue("root"), msgpack.StringValue("/work")),
+        #(msgpack.StringValue("outlines"), msgpack.ArrayValue([])),
+        #(msgpack.StringValue("targets"), msgpack.ArrayValue([])),
+      ]),
+      identity: identity.run_phase(built.identity),
+      base_policy: ask.base_policy,
+      demand: ask.demand,
+      env: [],
+      cwd: "/work",
+      ordinal: 0,
+    )
+  let _ = route(built, call)
+  assert process.receive(seen, 100) == Ok(123_456)
+  broker.stop(broker_actor)
 }
