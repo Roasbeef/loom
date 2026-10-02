@@ -128,6 +128,8 @@
 //// start in progress. A keeper that is not the current one is a stale
 //// report about a server this manager has already moved past.
 ////
+//// <!-- transitions: manager.Phase -->
+////
 //// | `Phase`    | `Acquire`, same identity | `Acquire`, other identity | `Peek`, `Opened` | `KeeperReady` | `KeeperDown` | `StrayDown` | `Shutdown` |
 //// | ---------- | ------------------------ | ------------------------- | ---------------- | ------------- | ------------ | ----------- | ---------- |
 //// | `Idle`     | `Starting` (or stay `Idle` when no keeper can be spawned) | same as the left | `Idle` | ignored | ignored | ignored | stopped; replies no keeper |
@@ -140,6 +142,8 @@
 //// `Beginning`'s `Begin` handler, so a keeper that is starting serves
 //// nobody; a `Release` that arrives meanwhile is postponed and replays
 //// once the keeper is `Holding`.
+////
+//// <!-- transitions: manager.KeeperPhase -->
 ////
 //// | `KeeperPhase`      | `Begin` | `PreviousGone` | `Release` | `ClientDown` | `ManagerDown` |
 //// | ------------------ | ------- | -------------- | --------- | ------------ | ------------- |

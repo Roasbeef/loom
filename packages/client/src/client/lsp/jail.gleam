@@ -87,6 +87,8 @@
 //// was truncated, anywhere `FromCall` is handled, tells the client the wire
 //// is gone, aborts the step and moves to `Draining`.
 ////
+//// <!-- transitions: jail.Phase -->
+////
 //// | `Phase`    | `Clear` | `Write` | `Close` | `FromCall` | `OwnerDown` | `CloseGraceElapsed` | `SettleGraceElapsed` |
 //// | ---------- | ------- | ------- | ------- | ---------- | ----------- | ------------------- | -------------------- |
 //// | `Clearing` | `Relaying` once cleared, or stops on a refusal | postponed | postponed | ignored | stops, nothing was dispatched | ignored | ignored |
