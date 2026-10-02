@@ -424,9 +424,16 @@ Grid: [txt](terminal-design/terminal-design-fixes-120.txt) ·
 | Observation | Fix |
 |---|---|
 | About fifteen identical `✓ agent_wait · 2 subagents` rows | One counted row, `×15`, updated in place. A new rule in `tool_activity.project` (`packages/session_view/src/session_view/tool_activity.gleam:55`) (`project`). No wire change. |
-| Twenty identical `http 429` errors | One counted row with the retry time: `! provider returned http 429 ×20 · retrying in 8s`. A fold over the local lines in `session_view`. |
+| Twenty identical `http 429` errors | One counted row: `! provider returned http 429 ×20`. A fold over the local lines in `session_view`. |
 | A `[loom] background job ... was lost` notice drawn as a `› User` turn | A dim `◇ loom` line with a second line saying it is a notice from Loom, not a message from you. **Data check first:** the line builders already route some harness-authored user messages (`harness_message_lines`, `packages/session_view/src/session_view/transcript_lines.gleam:1621`) (`harness_message_lines`), and `composer.harness_injection_summary` (`packages/session_view/src/session_view/composer.gleam:425`) (`harness_injection_summary`) recognises the `[loom] ` prefix to bound a turn. If the daemon sends this notice as a user entry with no marker, recognising the prefix is the same text-to-attribution step that 059 exists to avoid, and the notice needs a marker through its own protocol-change. |
 | Approvals as a small dialog | A full-width block with numbered choices (below). |
+
+The fixes frame draws more on the folded rows than a fold has: `· 7m 30s ·
+last: both still working after 30s` on the poll and `· 3m 12s · retrying in
+8s` on the error. A folded run is built from the rows it folds, and none of
+them carries the run's span or the next retry's time, so the built rows say
+`×15` and `×20` and nothing more. The figures need fields the wire does not
+carry today.
 | No way back after scrolling up | A reading row naming the way back: `↑ reading · 38 rows below · End jumps to latest`. |
 
 **Approvals.** The approval is a full-width block above the input frame, and the
