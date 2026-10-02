@@ -346,10 +346,15 @@ rather than replayed as anonymous text.
 
 A message one strand sends another in the same session (`agent_send`, a
 spawn brief) has its own origin variant, `StrandOrigin(strand)`
-(protocol-change/059). The terminal and the web view read it, draw a
-`strand · <id>` heading and remove the Agency's framing with
-`session_view/strand_framing`, and provider projection leaves its content
-unchanged. In release N nothing writes it yet: the Agency still admits these
+(protocol-change/059). The terminal and the web view read it and remove
+the Agency's framing with `session_view/strand_framing`: the terminal draws
+a `← from <id> · strand message` heading over the body, the web view a
+`strand · <id>` card, and provider projection leaves its content unchanged.
+The terminal heads the other two kinds of agent traffic the same way: a
+send it projects from the `agent_send` call and its result, `→ to <id> ·
+agent_send · admitted to its queue`, and a `PeerOrigin` message as a band,
+`⇄ peer session <id> · strand <id> · ✓ origin checked by the daemon`. Each
+heading is built from the call or the origin and never from the body. In release N nothing writes it yet: the Agency still admits these
 messages with `origin: None`, and release N+1 sets it from the authenticated
 caller.
 

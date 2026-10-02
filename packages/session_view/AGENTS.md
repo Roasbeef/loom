@@ -115,7 +115,16 @@ for a host with no surfaces.
   `session_wire.Reply`: total decoders for the daemon's frames.
 - `transcript_line.Line(speaker, text)` and `Speaker`, with the live
   observations that become lines: `Stream`, `ToolTail`, `CacheNotice`,
-  `Submission`.
+  `Submission`. Agent traffic has three speakers, `SentMessage`,
+  `StrandMessage` and `PeerMessage`, chosen from the `agent_send` call or
+  the stored origin and never from the text; the text is a heading, a
+  newline and the body. A peer heading ends in
+  `transcript_lines.origin_checked`.
+- `transcript_lines.deliveries` joins each successful `agent_send` result
+  in a compact window to its call, for responses whose calls are drawn as
+  narrative: the call's row says `admitted to its queue` or `started a run
+  on it`, `absorbed` says which result entries draw nothing, and
+  `reads_deliveries` names the responses that bypass the entry cache.
 - `transcript_lines.Presentation`: everything the line builders read of a
   client's state. A host fills it; the terminal does so in
   `tui_model.presentation`.
