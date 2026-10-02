@@ -1958,7 +1958,10 @@ fn semantic_answer(
 fn substantive(feature: Feature, value: JsonValue) -> Bool {
   case feature {
     protocol.DefinitionFeature | protocol.ReferencesFeature ->
-      decoded_nonempty(protocol.decode_locations(value))
+      case protocol.decode_locations(value) {
+        Ok(locations) -> !list.is_empty(locations)
+        Error(_) -> False
+      }
     protocol.HoverFeature ->
       case protocol.decode_hover(value) {
         Ok(Some(hover)) -> string.trim(hover.contents) != ""
@@ -1984,13 +1987,6 @@ fn substantive(feature: Feature, value: JsonValue) -> Bool {
         Ok(protocol.CannotRename) | Error(_) -> False
       }
     protocol.CallHierarchyFeature -> False
-  }
-}
-
-fn decoded_nonempty(outcome: Result(List(a), protocol.ProtocolFault)) -> Bool {
-  case outcome {
-    Ok(items) -> !list.is_empty(items)
-    Error(_) -> False
   }
 }
 
