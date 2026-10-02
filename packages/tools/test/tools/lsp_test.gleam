@@ -19,6 +19,7 @@ import gleam/string
 import lsp/query
 import simplifile
 import support/fake_broker
+import support/internal/ffi_memory
 import tools/fs
 import tools/hashline
 import tools/lsp
@@ -812,4 +813,34 @@ pub fn the_observer_renders_the_door_answer_test() {
     == 20
   assert list.last(lines) == Ok("… 5 more not shown")
   assert !string.contains(block, "clean")
+}
+
+/// Read tools and rename keep only the door callbacks they call.
+pub fn tool_callbacks_do_not_retain_sibling_slots_test() {
+  let payload = list.repeat(#("hover", "payload"), 8192)
+  let small = door()
+  let large =
+    query.Door(..small, hover: fn(_asked) {
+      Error(query.Unavailable(string.inspect(payload)))
+    })
+
+  // The hover callback remains executable and owns the growing payload. The
+  // other six tools must exclude it, including rename's after-write path.
+  assert ffi_memory.flat_words(large) > ffi_memory.flat_words(small) + 8192
+  let assert Error(query.Unavailable(reason:)) =
+    large.hover(query.SymbolQuery("greet", None, None))
+    as "the hover payload must remain in its intended callback"
+  assert string.contains(reason, "payload")
+  list.each(
+    [
+      "lsp_definition", "lsp_references", "lsp_symbols", "lsp_calls",
+      "lsp_diagnostics", "lsp_rename",
+    ],
+    fn(name) {
+      assert ffi_memory.flat_words(named(large, name))
+        == ffi_memory.flat_words(named(small, name))
+    },
+  )
+  assert ffi_memory.flat_words(named(large, "lsp_hover"))
+    > ffi_memory.flat_words(named(small, "lsp_hover")) + 8192
 }

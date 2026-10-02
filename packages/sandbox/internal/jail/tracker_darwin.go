@@ -21,8 +21,14 @@ type processTracker struct {
 
 	mu   sync.Mutex
 	seen map[int]uint64
-	stop chan struct{}
-	done chan struct{}
+
+	// Scratch belongs to the same lock as the ledger. Its capacity follows the
+	// largest snapshot, but its links are rebuilt from each fresh kernel table.
+	children map[int]int
+	next     []int
+	frontier []int
+	stop     chan struct{}
+	done     chan struct{}
 }
 
 const processTrackInterval = 20 * time.Millisecond
@@ -68,36 +74,39 @@ func (t *processTracker) capture() {
 // retain row indices rather than copies of process records: only the observed
 // subtree's pid and birth time enter the persistent descendant ledger.
 func (t *processTracker) captureTable(table []unix.KinfoProc) {
-	children := make(map[int]int, len(table))
-	next := make([]int, len(table))
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Clearing the heads prevents a disappeared parent from retaining links
+	// into a later snapshot. Every active row's next link is overwritten below.
+	if cap(t.next) < len(table) || t.children == nil {
+		t.children = make(map[int]int, len(table))
+		t.next = make([]int, len(table))
+	} else {
+		clear(t.children)
+		t.next = t.next[:len(table)]
+	}
 
 	// Prepending rows backwards preserves the kernel snapshot's sibling
 	// order while giving every parent one head instead of a separate slice.
 	for row := len(table) - 1; row >= 0; row-- {
 		ppid := int(table[row].Eproc.Ppid)
-		next[row] = children[ppid]
-		children[ppid] = row + 1
+		t.next[row] = t.children[ppid]
+		t.children[ppid] = row + 1
 	}
 
 	// A one-based link reserves zero for the end of a sibling list. All
 	// links belong to this snapshot, so no process identity is cached here.
-	frontier := []int{t.root}
-	observed := make(map[int]uint64)
-	for len(frontier) > 0 {
-		parent := frontier[0]
-		frontier = frontier[1:]
-		for link := children[parent]; link != 0; link = next[link-1] {
+	t.frontier = append(t.frontier[:0], t.root)
+	for cursor := 0; cursor < len(t.frontier); cursor++ {
+		parent := t.frontier[cursor]
+		for link := t.children[parent]; link != 0; link = t.next[link-1] {
 			process := table[link-1]
 			pid := int(process.Proc.P_pid)
-			observed[pid] = processBirth(process)
-			frontier = append(frontier, pid)
+			t.seen[pid] = processBirth(process)
+			t.frontier = append(t.frontier, pid)
 		}
 	}
-	t.mu.Lock()
-	for pid, birth := range observed {
-		t.seen[pid] = birth
-	}
-	t.mu.Unlock()
 }
 
 // signal narrows each delivery to a process whose birth time still matches the

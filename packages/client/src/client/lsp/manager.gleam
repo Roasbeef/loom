@@ -323,7 +323,11 @@ pub type Config {
 pub opaque type Manager {
   Manager(
     reach: fn() -> Result(Subject(Msg), Nil),
-    config: Config,
+    workspace: String,
+    servers: List(LspServer),
+    search: fn(Search) -> Result(List(Hit), String),
+    protected: List(String),
+    timing: Timing,
     workspaces: List(String),
   )
 }
@@ -548,9 +552,16 @@ fn handle_for(
   reach: fn() -> Result(Subject(Msg), Nil),
   config: Config,
 ) -> Manager {
+  // Query callers resolve, search and check answers. Only the manager's
+  // keeper starts a transport, so the sendable handle excludes connect and
+  // its broker configuration before the door copies it into eight closures.
   Manager(
     reach:,
-    config:,
+    workspace: config.workspace,
+    servers: config.servers,
+    search: config.backend.search,
+    protected: config.backend.protected,
+    timing: config.timing,
     workspaces: list.unique([
       resolve.workspace_real(config.workspace),
       config.workspace,
@@ -611,7 +622,7 @@ pub fn stop(manager: Manager) -> Nil {
       let _gone =
         process.new_selector()
         |> process.select_specific_monitor(watch, fn(_down) { Nil })
-        |> process.selector_receive(manager.config.timing.previous_ms)
+        |> process.selector_receive(manager.timing.previous_ms)
       process.demonitor_process(watch)
     }
     Ok(None) | Error(_fault) -> Nil
@@ -1597,7 +1608,7 @@ fn file_edit(
 // already running, because an edit must never pay for a start or evict
 // another project's server (see `door`).
 fn after_write(manager: Manager, path: String) -> Option(Diagnostics) {
-  case resolve.owner(manager.config.servers, manager.config.workspace, path) {
+  case resolve.owner(manager.servers, manager.workspace, path) {
     Error(_unowned) -> None
     Ok(owned) -> {
       let peeked = peek(manager)
@@ -1630,7 +1641,7 @@ fn pushed(
       |> result.replace_error(Nil),
     )
     tell(manager, Opened(identity:, paths: [path]))
-    lsp.settle(client, [path], manager.config.timing.settle_ms)
+    lsp.settle(client, [path], manager.timing.settle_ms)
     |> result.replace_error(Nil)
   }
   case settlement {
@@ -1676,7 +1687,7 @@ fn readied(session: Session) -> Result(Nil, QueryError) {
   case session.warmth {
     query.Warm -> Ok(Nil)
     query.Started(..) -> {
-      let timing = session.manager.config.timing
+      let timing = session.manager.timing
       let readiness =
         lsp.ready(
           session.client,
@@ -1705,7 +1716,7 @@ fn still_loading(titles: List(String)) -> String {
 }
 
 fn owned(manager: Manager, path: String) -> Result(Owned, QueryError) {
-  resolve.owner(manager.config.servers, manager.config.workspace, path)
+  resolve.owner(manager.servers, manager.workspace, path)
   |> result.map_error(fn(unowned) {
     case unowned {
       resolve.NoOwner(reason:) | resolve.Refused(reason:) ->
@@ -1864,7 +1875,7 @@ fn searched(
   manager: Manager,
   asked: SymbolQuery,
 ) -> Result(#(Identity, List(Hit)), QueryError) {
-  let search = manager.config.backend.search
+  let search = manager.search
   case peek(manager).identity {
     Some(identity) -> {
       use hits <- result.try(
@@ -1879,10 +1890,10 @@ fn searched(
     }
     None -> {
       use hits <- result.try(
-        list.try_map(manager.config.servers, fn(server) {
+        list.try_map(manager.servers, fn(server) {
           search(Search(
             server:,
-            root: manager.config.workspace,
+            root: manager.workspace,
             identifier: symbol_for(server, asked.symbol).identifier,
           ))
         })
@@ -2060,7 +2071,7 @@ fn acquire(
   manager: Manager,
   identity: Identity,
 ) -> Result(Session, QueryError) {
-  let timing = manager.config.timing
+  let timing = manager.timing
   let waiting = timing.previous_ms + timing.exec_ms * 2 + timing.start_ms + 1000
   case ask(manager, waiting:, sending: Acquire(identity, _)) {
     Ok(Ok(granted)) ->
@@ -2188,13 +2199,7 @@ type Named {
 // asks `resolve.admit` for the path's real location and keeps only that
 // verdict, so the reads that follow need not repeat the check.
 fn gate(manager: Manager, identity: Identity, path: String) -> Named {
-  case
-    resolve.admit(
-      root: identity.root,
-      protected: manager.config.backend.protected,
-      path:,
-    )
-  {
+  case resolve.admit(root: identity.root, protected: manager.protected, path:) {
     Ok(real) -> Admitted(path: real)
     Error(_reason) -> Withheld(path:)
   }
@@ -2246,11 +2251,11 @@ fn shown(manager: Manager, path: String) -> String {
 }
 
 fn request_ms(session: Session) -> Int {
-  session.manager.config.timing.request_ms
+  session.manager.timing.request_ms
 }
 
 fn settle_ms(session: Session) -> Int {
-  session.manager.config.timing.settle_ms
+  session.manager.timing.settle_ms
 }
 
 // The client's refusal in the door's vocabulary.
@@ -2379,10 +2384,12 @@ pub fn connect_jailed(
   // lease clears under the same demand and nothing weaker or stronger.
   let spec =
     jail.call_spec(built, jailed.op_id, now_ms: now, demand: jailed.demand)
+  let abort_step = jailed.abort_step
+  let step_id = built.step_id
   Ok(
     jail.transport(jail.Launch(
       run: jailed.run,
-      abort: fn() { jailed.abort_step(built.step_id) },
+      abort: fn() { abort_step(step_id) },
       leases: jailed.leases,
       spec:,
       scratch: built.scratch,

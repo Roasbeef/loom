@@ -44,6 +44,7 @@ import lsp/transport
 import provider/secret
 import simplifile
 import support/fake_lsp
+import support/internal/ffi_memory
 import tools/fs
 import tools/tool
 import weft/poll
@@ -591,6 +592,39 @@ pub fn a_clean_probe_clears_the_server_under_the_session_demand_test() {
   let assert [spec] = drain(cleared, [])
     as "only the probe is cleared before the transport connects"
   assert spec.demand == exec.BestEffort
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
+/// A transport keeps its abort step rather than environment lookup custody.
+pub fn a_server_transport_does_not_retain_environment_lookup_test() {
+  let workspace = scratch("transport-capture")
+  let root = project(workspace, "app")
+  let cleared = process.new_subject()
+  let small =
+    probe_jailed(workspace, scripted_run(cleared, clean()), exec.BestEffort)
+  let payload = list.repeat(#("environment", "lookup"), 8192)
+  let reading = small.reading
+  let large =
+    manager.Jailed(..small, reading: fn(name) {
+      case name {
+        "UNASKED_CAPTURE" -> Ok(string.inspect(payload))
+        name -> reading(name)
+      }
+    })
+
+  // The preparation callback still owns its payload. No server asks that
+  // name, so both probes build the same launch and differ only in custody.
+  assert ffi_memory.flat_words(large) > ffi_memory.flat_words(small) + 8192
+  let identity = resolve.Identity(server: shell_server(), root:)
+  let assert Ok(light) = manager.connect_jailed(small, identity)
+    as "the light transport must pass its probe"
+  let assert Ok(heavy) = manager.connect_jailed(large, identity)
+    as "the heavy transport must pass the same probe"
+  assert ffi_memory.flat_words(heavy) == ffi_memory.flat_words(light)
+  let assert Ok(reason) = large.reading("UNASKED_CAPTURE")
+    as "environment preparation must retain its intended payload"
+  assert string.contains(reason, "lookup")
   let _ = simplifile.delete_all([workspace])
   Nil
 }
@@ -2226,4 +2260,43 @@ fn run_rust_analyzer(live: Live, home: String) -> Nil {
 fn dirname(path: String) -> String {
   let parts = string.split(path, "/")
   string.join(list.take(parts, list.length(parts) - 1), "/")
+}
+
+/// Query handles never copy the keeper's server-start callback.
+pub fn query_handles_do_not_retain_connect_payload_test() {
+  let payload = list.repeat(#("keeper", "transport"), 8192)
+  let backend =
+    manager.Backend(
+      connect: fn(_identity) { Error(string.inspect(payload)) },
+      search: no_search,
+      protected: ["/workspace/.git"],
+    )
+  let heavy =
+    manager.Config(
+      workspace: "/workspace",
+      servers: [fake_server()],
+      backend:,
+      timing: quick_timing(),
+    )
+  let light =
+    manager.Config(
+      ..heavy,
+      backend: manager.Backend(..backend, connect: fn(_identity) {
+        Error("no transport")
+      }),
+    )
+
+  // The manager actor and keeper still own a real, growing callback. Only
+  // the caller's handle and its eight door closures exclude that payload.
+  assert ffi_memory.flat_words(heavy) > ffi_memory.flat_words(light) + 8192
+  let assert Ok(namespace) = address.start()
+    as "the handle fixture needs an address namespace"
+  let name = address.new_address(namespace)
+  let small = manager.addressed(name, light)
+  let large = manager.addressed(name, heavy)
+  assert ffi_memory.flat_words(large) == ffi_memory.flat_words(small)
+  assert ffi_memory.flat_words(manager.door(large))
+    == ffi_memory.flat_words(manager.door(small))
+  let assert Ok(Nil) = address.stop(namespace)
+    as "the handle fixture releases its namespace"
 }
