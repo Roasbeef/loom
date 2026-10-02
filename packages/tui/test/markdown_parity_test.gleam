@@ -92,7 +92,7 @@ fn stream(
     live_tail.Layout(
       room: render.markdown_room(Assistant, 80),
       finish: fn(rows, run) {
-        render.finish_markdown_rows(Assistant, rows, run)
+        render.finish_markdown_rows(Assistant, rows, run, "main")
       },
     )
   let #(rows, pass) =
@@ -100,7 +100,7 @@ fn stream(
 
   case count >= 50 {
     True -> {
-      assert rows == render.render_line(Line(Assistant, text), 80)
+      assert rows == render.render_line(Line(Assistant, text), 80, "main")
         as "the last frame draws what a full render draws"
       Nil
     }

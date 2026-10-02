@@ -766,7 +766,6 @@ fn render_transcript_row(
 
     [first, ..]
       if first.style.bg == theme.user_background
-      || first.style.bg == theme.assistant_background
       || first.style.bg == theme.raised
     -> {
       let width = span.line_width(line)
@@ -811,9 +810,13 @@ fn surface_title(model: Model) -> Option(String) {
   })
 }
 
-fn transcript_content(lines: List(Line), width: Int) -> span.Text {
+fn transcript_content(
+  lines: List(Line),
+  width: Int,
+  strand: String,
+) -> span.Text {
   lines
-  |> list.flat_map(render_line(_, width))
+  |> list.flat_map(render_line(_, width, strand))
   |> span.text_new
 }
 
@@ -827,22 +830,25 @@ fn transcript_content(lines: List(Line), width: Int) -> span.Text {
 /// back to exactly `width`. A second pass over them would re-measure every
 /// span of every row to arrive at the rows it was handed, and the live stream
 /// re-renders its whole body on every delta, so that pass was paid per token.
+///
+/// `strand` is the strand whose transcript the line belongs to, which names
+/// an answer's heading (`◆ main`).
 @internal
-pub fn render_line(line: Line, width: Int) -> List(span.Line) {
+pub fn render_line(line: Line, width: Int, strand: String) -> List(span.Line) {
   case line.speaker {
-    Assistant | Reasoning -> speaker_rows(line, width)
+    Assistant | Reasoning -> speaker_rows(line, width, strand)
 
     // A summarized block lays out its own rows to the pane: a clipped
     // header and at most `summary_rows` wrapped secondary rows. A second
     // wrap could only add rows the bound was there to prevent.
-    SummarizedReasoning | SummarizedAdvice -> speaker_rows(line, width)
+    SummarizedReasoning | SummarizedAdvice -> speaker_rows(line, width, strand)
 
     // A message wraps its body to the room its bar leaves, and its first
     // span is a bar painted in the margin, outside the row's width; a second
     // wrap would count that bar against the pane. The operator's turn wraps
     // each typed line under its mark, which a second wrap would undo.
     SentMessage | StrandMessage | PeerMessage | User ->
-      speaker_rows(line, width)
+      speaker_rows(line, width, strand)
 
     // Every other body is laid out against the full pane and has never been
     // measured, so it is wrapped on the way out.
@@ -854,7 +860,7 @@ pub fn render_line(line: Line, width: Int) -> List(span.Line) {
     | ToolPatch
     | ToolFailure
     | Failure
-    | Spacer -> speaker_rows(line, width) |> markdown.wrap_lines(width)
+    | Spacer -> speaker_rows(line, width, strand) |> markdown.wrap_lines(width)
   }
 }
 
@@ -879,7 +885,9 @@ pub fn markdown_room(speaker: Speaker, width: Int) -> Int {
   // column zero — which is the two-left-edges bug itself. Measuring every row
   // against the widest of the two prefixes is what the fix costs: a
   // continuation row stops a few cells short of the pane, in exchange for one
-  // left edge shared by a wrapped paragraph, a list and a fence alike.
+  // left edge shared by a wrapped paragraph, a list and a fence alike. An
+  // answer's mark sits on a heading row of its own, so each of its rows pays
+  // only the gutter, which is the width of that mark.
   let #(mark, _) = speaker_mark(speaker, "")
 
   // The mark is measured in cells rather than codepoints for the same reason
@@ -891,10 +899,11 @@ pub fn markdown_room(speaker: Speaker, width: Int) -> Int {
 /// Turns wrapped Markdown rows of `speaker` into the rows `render_line`
 /// paints, less the blank row that opens the line.
 ///
-/// The first row of the line carries the speaker's mark and every other row
-/// the gutter; an answer's rows are also shaded. `run` says whether `rows`
-/// begin the line or continue rows already finished, which is what lets the
-/// live tail finish the settled part of an answer once and the rest of it on
+/// An answer opens with a heading naming `strand`, `◆ main`, and its body
+/// sits under it behind the gutter. Every other speaker's first row carries
+/// its mark and every later row the gutter. `run` says whether `rows` begin
+/// the line or continue rows already finished, which is what lets the live
+/// tail finish the settled part of an answer once and the rest of it on
 /// every frame. Every row is finished on its own, so finishing a list in two
 /// runs gives the rows finishing it in one would.
 ///
@@ -904,10 +913,71 @@ pub fn markdown_room(speaker: Speaker, width: Int) -> Int {
 /// let rows =
 ///   markdown.render("hello", 78)
 ///   |> markdown.wrap_lines(78)
-///   |> render.finish_markdown_rows(transcript_line.Assistant, _, live_tail.OpensLine)
+///   |> render.finish_markdown_rows(
+///     transcript_line.Assistant,
+///     _,
+///     live_tail.OpensLine,
+///     "main",
+///   )
 /// ```
 @internal
 pub fn finish_markdown_rows(
+  speaker: Speaker,
+  rows: List(span.Line),
+  run: live_tail.RowRun,
+  strand: String,
+) -> List(span.Line) {
+  case speaker {
+    // The heading is a row of its own, so the body's first row is indented
+    // like every other: an answer has one left edge, two cells in, and a
+    // run that opens the line differs from one that continues it only by
+    // the heading above it.
+    Assistant -> {
+      let body =
+        list.map(rows, fn(line) {
+          span.Line(..line, spans: [
+            span.span_plain(speaker_gutter),
+            ..line.spans
+          ])
+        })
+      case run {
+        live_tail.OpensLine -> [answer_heading(strand), ..body]
+        live_tail.ContinuesLine -> body
+      }
+    }
+    Reasoning
+    | System
+    | User
+    | ReasoningDigest
+    | SummarizedReasoning
+    | SummarizedAdvice
+    | ToolCall
+    | ToolResult
+    | ToolDetail
+    | ToolPatch
+    | ToolFailure
+    | Failure
+    | Spacer
+    | SentMessage
+    | StrandMessage
+    | PeerMessage -> marked_rows(speaker, rows, run)
+  }
+}
+
+// The row an answer opens with: the answer's mark and the name of the
+// strand that gave it, which is what the operator reads to know whose
+// words follow.
+fn answer_heading(strand: String) -> span.Line {
+  span.line_new([
+    span.span_styled("◆ ", theme.current_bold()),
+    span.span_styled(
+      text_hygiene.single_line(strand),
+      style.new(theme.paper, style.Default, style.bold()),
+    ),
+  ])
+}
+
+fn marked_rows(
   speaker: Speaker,
   rows: List(span.Line),
   run: live_tail.RowRun,
@@ -929,25 +999,7 @@ pub fn finish_markdown_rows(
         alignment:,
       )
     })
-  case speaker {
-    Assistant -> assistant_rows(marked)
-    Reasoning
-    | System
-    | User
-    | ReasoningDigest
-    | SummarizedReasoning
-    | SummarizedAdvice
-    | ToolCall
-    | ToolResult
-    | ToolDetail
-    | ToolPatch
-    | ToolFailure
-    | Failure
-    | Spacer
-    | SentMessage
-    | StrandMessage
-    | PeerMessage -> marked
-  }
+  marked
 }
 
 // The mark that opens a speaker's first row and the style it is drawn in. A
@@ -982,7 +1034,7 @@ fn speaker_mark(speaker: Speaker, text: String) -> #(String, style.Style) {
 // not already do for itself. Every arm ends by handing its mark to
 // `prefix_rendered_lines` or drawing it inline, so the mark and the gutter
 // beneath it are decided in one place.
-fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
+fn speaker_rows(line: Line, width: Int, strand: String) -> List(span.Line) {
   let #(mark, mark_style) = speaker_mark(line.speaker, line.text)
   let body = case
     line.speaker == ToolCall && string.starts_with(line.text, "✓ ")
@@ -1031,7 +1083,7 @@ fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
         span.line_plain(""),
         ..markdown.render(line.text, room)
         |> markdown.wrap_lines(room)
-        |> finish_markdown_rows(line.speaker, _, live_tail.OpensLine)
+        |> finish_markdown_rows(line.speaker, _, live_tail.OpensLine, strand)
       ]
     }
     ToolPatch -> markdown.diff(line.text)
@@ -1085,30 +1137,6 @@ fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
         False -> [span.line_plain("")]
       })
   }
-}
-
-// Plain Markdown spans share one shaded style for the whole block. Rebuilding
-// that identical record for every word makes the bounded live tail retain
-// hundreds of duplicate style tuples. Emphasis keeps its own foreground and
-// modifiers, while blank rows carry the same background to the pane edge.
-fn assistant_rows(rows: List(span.Line)) -> List(span.Line) {
-  let plain = style.default_style()
-  let shaded = style.with_bg(plain, theme.assistant_background)
-  list.map(rows, fn(line) {
-    let span.Line(spans:, alignment:) = line
-    let spans = case spans {
-      [] -> [span.span_styled(" ", shaded)]
-      spans ->
-        list.map(spans, fn(value) {
-          let painted = case value.style == plain {
-            True -> shaded
-            False -> style.with_bg(value.style, theme.assistant_background)
-          }
-          span.Span(..value, style: painted)
-        })
-    }
-    span.Line(spans:, alignment:)
-  })
 }
 
 /// The mark a summarized reasoning block's header row opens with. The
@@ -1351,7 +1379,7 @@ pub fn prepared_notes(
               | note_panel.Readable, notes_view.Excerpt
               -> Line(ToolResult, note.text)
             }
-            transcript_content([value], width).lines
+            transcript_content([value], width, target).lines
           }
         }
         note_panel.Row(
@@ -1388,6 +1416,7 @@ fn historical_note_rows(model: Model, target: String, width: Int) {
             },
           ],
           width,
+          target,
         ).lines,
       ),
     ]

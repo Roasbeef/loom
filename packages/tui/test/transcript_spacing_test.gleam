@@ -16,8 +16,9 @@
 //// heading of up to thirteen cells, and reapplying its whole width to every
 //// later row indented a second paragraph, a list or a fence far in from the
 //// margin while the first paragraph's own wrapped rows fell back to column
-//// zero. Every row after the first now sits at the glyph's two-cell gutter,
-//// whatever kind of block it belongs to.
+//// zero. An answer's mark now has a heading row of its own, and every row
+//// under it sits at the two-cell gutter, whatever kind of block it belongs
+//// to.
 
 import etui/backend
 import etui/buffer.{type Buffer}
@@ -94,8 +95,8 @@ pub fn the_activity_heading_keeps_its_one_row_gap_test() {
 pub fn a_multi_block_message_keeps_one_left_edge_test() {
   let rows = transcript_rows(said(document()))
 
-  assert indent_of(rows, "opening paragraph") == 0
-    as "row zero carries the whole speaker mark"
+  assert indent_of(rows, "opening paragraph") == gutter
+    as "the first paragraph sits at the gutter under the heading"
   assert indent_of(rows, "top level item") == gutter
     as "a top-level list item sits at the glyph's gutter"
   assert indent_of(rows, "nested item") == gutter + 2

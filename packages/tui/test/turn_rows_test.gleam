@@ -3,7 +3,9 @@
 //// An operator's turn is one shaded band opened by the prompt's mark, with
 //// no title row: the band says who wrote it. A long line wraps under its own
 //// first word rather than under the mark, and indentation the operator
-//// typed stays where it was typed. These tests paint whole frames at 120
+//// typed stays where it was typed. An answer is the other way about: a
+//// heading row naming the strand, `◆ main`, and the body under it with no
+//// band at all. These tests paint whole frames at 120
 //// and 80 columns, since the wrap is what changes between the two.
 
 import etui/buffer
@@ -70,4 +72,27 @@ pub fn an_operator_turn_keeps_its_line_breaks_and_indentation_test() {
   assert string.starts_with(first, "       if ready {")
   assert string.starts_with(second, "         go()")
   assert string.starts_with(third, "       }")
+}
+
+// An answer opens with a heading naming the strand that gave it, and its
+// body sits under the heading at the gutter, with no band behind it.
+pub fn an_answer_opens_under_its_strands_name_test() {
+  [#(120, 40), #(80, 24)]
+  |> list.each(fn(size) {
+    let #(shown, lines) =
+      lines_of(
+        [
+          frame_scene.user(1, "Check the subtract change."),
+          frame_scene.assistant(2, "I will check it with a small program.", []),
+        ],
+        size.0,
+        size.1,
+      )
+    let assert Ok(y) = row_of(lines, "◆ main") as "the answer's heading"
+    let assert Ok(body) = list.drop(lines, y + 1) |> list.first
+      as "the body follows"
+    assert string.starts_with(body, "   I will check it with a small program.")
+    assert buffer.get_cell(shown, Position(size.0 - 2, y + 1)).style.bg
+      != theme.user_background
+  })
 }

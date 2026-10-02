@@ -10,8 +10,8 @@
  └ error: compilation failed
      test/tui_test.gleam:12
 
- ◆ Looking at the failure now.
-
+ ◆ main
+   Looking at the failure now.
 
 
 

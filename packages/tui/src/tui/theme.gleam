@@ -22,9 +22,6 @@ pub const paper = style.Rgb(231, 237, 245)
 /// The subtle background identifying user-authored transcript blocks.
 pub const user_background = style.Rgb(38, 34, 29)
 
-/// The restrained cold background identifying assistant transcript blocks.
-pub const assistant_background = style.Rgb(20, 32, 35)
-
 /// Operator-controlled actions and prompts.
 pub const signal = style.Rgb(255, 189, 105)
 
