@@ -83,6 +83,21 @@ own wall deadline remains the outer bound, as it does for every program
 loop; a program naming a window beyond its execution budget is cut off
 by the wall, exactly as a hand-written re-join loop would be.
 
+
+**Why the slice bound is not a second ceiling.** `max_wait_slice_ms`
+matches the shipped `max_wait_ms` but is not a second copy of it: the
+loop measures each slice by the host's own reported `waited_ms`, so a
+host whose ceiling is configured lower is accounted by what actually
+elapsed, never by the slice this module requested. The bound governs
+how many requests a long join is split into, not how time is counted.
+
+**A cousin that stays as it is.** `execution.receive` bounds its own
+`within_ms` at 30 s and the async host *rejects* a longer wait as
+`invalid_argument` rather than silently shortening it — a program naming
+an over-long receive gets an honest refusal to act on, not a quietly
+clamped window, so that seam keeps its own behaviour and needs no
+slicing of its own.
+
 ## Doc impact
 
 `cap/strand`'s `wait` doc comment now states the slicing, the prelude

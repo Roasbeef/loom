@@ -171,9 +171,13 @@ pub fn entry_id_to_string(id: EntryId) -> String {
 pub const wait_margin_ms = 10_000
 
 /// The maximum duration in milliseconds of a single join request sent to
-/// the harness. The harness clamps each `strand.wait` capability call to
-/// its own `max_wait_ms` ceiling (30 s), so `wait` slices longer requested
-/// windows into requests of at most this duration.
+/// the harness. The shipped host clamps each `strand.wait` capability
+/// call to its own `max_wait_ms` ceiling (30 s), so `wait` slices longer
+/// requested windows into requests of at most this duration. A host
+/// whose ceiling sits lower than this slice is still accounted
+/// honestly — the slicing loop measures each slice by the host's own
+/// reported `waited_ms`, not by the slice it requested — so this bound
+/// governs only how many requests are made, never how time is counted.
 pub const max_wait_slice_ms = 30_000
 
 // --- what a call answers with --------------------------------------------
@@ -633,8 +637,12 @@ fn step_wait(
 ) -> Result(List(Waited), StrandError) {
   let returned_handles = list.map(waited, fn(item) { item.handle })
 
+  // A host answer that names handles this call did not ask for is a
+  // malformed result, not an unreachable plane: the honest variant is the
+  // one a program can branch on, and `join_batch` relies on the same
+  // check through `wait`.
   case returned_handles == pending_handles {
-    False -> Error(StrandsUnavailable("wait returned mismatched handles"))
+    False -> Error(StrandResultMalformed("wait returned mismatched handles"))
 
     True -> {
       let new_settled =
@@ -686,6 +694,13 @@ fn wait_slice(
 
 // Merges newly observed slice results into the settled map, accumulating
 // elapsed wait time for any handles that remain pending.
+//
+// The host's per-slice `waited_ms` is the primary measure, so a host
+// whose ceiling sits below `max_wait_slice_ms` is accounted honestly
+// rather than by the slice this module requested. `slice_ms` stands in
+// only when the host reports zero, which a real wait never does — a
+// zero report means the host measured nothing, and the requested slice
+// is the better estimate of what elapsed.
 fn update_settled(
   waited: List(Waited),
   settled: Dict(String, Waited),
@@ -702,7 +717,11 @@ fn update_settled(
           handle_text(handle),
           Pending(
             handle:,
-            waited_ms: total_waited_ms + int.max(waited_ms, slice_ms),
+            waited_ms: total_waited_ms
+              + case waited_ms > 0 {
+              True -> waited_ms
+              False -> slice_ms
+            },
           ),
         )
     }
@@ -722,14 +741,23 @@ fn filter_pending(
   })
 }
 
-// Computes how much wall time was spent in this slice across pending handles.
+// How much wall time this slice consumed, from the host's own reports.
+// The largest pending `waited_ms` is the slice's true length — the host
+// measures it against the ceiling that actually fired, which may sit
+// below the slice this module requested — with the requested `slice_ms`
+// as the estimate only when every handle answered zero.
 fn slice_elapsed(waited: List(Waited), slice_ms: Int) -> Int {
-  list.fold(waited, slice_ms, fn(acc, item) {
-    case item {
-      Pending(waited_ms:, ..) -> int.max(acc, waited_ms)
-      Ready(..) -> acc
-    }
-  })
+  let reported =
+    list.fold(waited, 0, fn(acc, item) {
+      case item {
+        Pending(waited_ms:, ..) -> int.max(acc, waited_ms)
+        Ready(..) -> acc
+      }
+    })
+  case reported > 0 {
+    True -> reported
+    False -> slice_ms
+  }
 }
 
 // Reassembles the final waited list in the caller's original handle order.
@@ -1301,14 +1329,11 @@ fn join_batch(
     [] -> Ok([])
     [_, ..] -> wait(handles, within_ms:)
   }
-  let joined =
-    result.try(joined, fn(waited) {
-      case list.map(waited, fn(item) { item.handle }) == handles {
-        True -> Ok(waited)
-        False ->
-          Error(StrandsUnavailable("map join returned mismatched handles"))
-      }
-    })
+
+  // A mismatched answer surfaces as `wait`'s own `StrandResultMalformed`
+  // error — `step_wait` checks it before any list reaches this arm — so
+  // there is no second mismatch check to repeat here; `joined` carries
+  // either a settled-or-pending list or that error.
   case joined {
     Error(error) ->
       list.map(admitted, fn(item) {

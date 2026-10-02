@@ -40,12 +40,12 @@
 ////   909bbbc014278c57bb888b3e4c834ba52e405855bd52156a2ff35345283a1274  packages/cap/src/cap/runtime.gleam
 ////   4e046bfdd44b9b7093ed0e787f55aa8792c433537a68e420bd30d0064dbd5cad  packages/cap/src/cap/schedule.gleam
 ////   c4be2e8c194d95ab02bbd6b4d27946152162e335cf5aee7e8bf812e6d52fc8e0  packages/cap/src/cap/search.gleam
-////   cf6e99e7de36064071e12d5599c8bbf60bd4aa522d63f16afd802c17844ac90b  packages/cap/src/cap/strand.gleam
+////   458e5bf012596a0c054b4f0854d63b265f234756d39f141c8f6585491a254906  packages/cap/src/cap/strand.gleam
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   dade50ada67f4ac667f0b92cb10d0da213cac327897524dbb006e02cf3c90963  packages/cap/src/cap/workflow.gleam
 ////   20e291637a68e2d484bd4a17e9b825c59f2c22f439f00f6482af0d26aafafadd  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 6753635aecf161982d9ea460ac61e94c540f522addc284b25594d9c83a99e9da
+//// Body digest (every line after the marker): e6a81a25b0706195acdbbf4ca4aee6e2daf5ecb8a5b7122f2360a18d289c4388
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -1934,9 +1934,13 @@ pub type Waited {
   Pending(handle: Handle, waited_ms: Int)
 }
 /// The maximum duration in milliseconds of a single join request sent to
-/// the harness. The harness clamps each `strand.wait` capability call to
-/// its own `max_wait_ms` ceiling (30 s), so `wait` slices longer
-/// requested windows into requests of at most this duration.
+/// the harness. The shipped host clamps each `strand.wait` capability
+/// call to its own `max_wait_ms` ceiling (30 s), so `wait` slices longer
+/// requested windows into requests of at most this duration. A host whose
+/// ceiling sits lower than this slice is still accounted honestly — the
+/// slicing loop measures each slice by the host's own reported
+/// `waited_ms`, not by the slice it requested — so this bound governs
+/// only how many requests are made, never how time is counted.
 pub const max_wait_slice_ms: Int
 /// How much longer than the requested join window this module will wait
 /// on the channel before calling the harness unreachable.
