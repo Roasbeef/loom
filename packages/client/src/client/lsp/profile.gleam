@@ -1144,7 +1144,10 @@ fn one_cache_env(
     tom.String(directory) -> Ok(directory)
     _other -> Error(here <> " must be a string naming a directory")
   })
-  use Nil <- result.try(cache_directory_fault(directory) |> prefixed(here))
+  use Nil <- result.try(
+    cache_directory_fault(directory)
+    |> result.map_error(fn(reason) { here <> reason }),
+  )
   Ok(#(name, directory))
 }
 
@@ -1186,10 +1189,6 @@ fn cache_directory_fault(directory: String) -> Result(Nil, String) {
       )
     _, False, False, False -> Ok(Nil)
   }
-}
-
-fn prefixed(outcome: Result(Nil, String), at: String) -> Result(Nil, String) {
-  result.map_error(outcome, fn(reason) { at <> reason })
 }
 
 /// Each `cache_env` variable of `server`, with the unexpanded path of the
