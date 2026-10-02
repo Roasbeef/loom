@@ -2924,7 +2924,7 @@ fn observed(
   let root =
     resolve.workspace_real(case filepath.is_absolute(request.root) {
       True -> request.root
-      False -> filepath.join(manager.config.workspace, request.root)
+      False -> filepath.join(manager.workspace, request.root)
     })
   use Nil <- result.try(
     list.try_each(owned_paths, fn(owned) {
@@ -2984,7 +2984,7 @@ fn observed(
   )
   use Nil <- result.try(resync(session, canonical) |> observation_query)
   use left <- result.try(remaining(control))
-  let timing = manager.config.timing
+  let timing = manager.timing
   use readiness <- result.try(
     lsp.ready(
       session.client,

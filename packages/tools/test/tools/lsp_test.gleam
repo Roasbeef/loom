@@ -382,9 +382,7 @@ pub fn the_observer_renders_the_door_answer_test() {
 pub fn observer_does_not_retain_sibling_slots_test() {
   let payload = list.repeat(#("hover", "payload"), 8192)
   let small =
-    query.Door(..door(), after_write: fn(_) {
-      Some(query.Settled([]))
-    })
+    query.Door(..door(), after_write: fn(_) { Some(query.Settled([])) })
   let large =
     query.Door(..small, hover: fn(_asked) {
       Error(query.Unavailable(string.inspect(payload)))
