@@ -125,6 +125,14 @@ the Rust manager probe without a working analyzer. The Linux signoff provisions
 its own dependencies, runs the shipped fixtures and enforces its skip census.
 Existing macOS kernel degradation is reported rather than weakened.
 
+The Linux signoff exposed a missing serial-test declaration for
+`cap@lsp_sql_test`: its fixture installs the same VM-global capability channel
+as the other capability tests. The parallel package run reproduced all four
+failures locally because EUnit also runs a parallel module's individual tests
+concurrently. The module now uses the existing serial group, preserving every
+assertion while preventing its four fixtures from replacing each other's channel.
+The same parallel package command then passed all 172 tests.
+
 ## October 2 daemon memory pass
 
 `codex/memory-lsp-query-handle` reduces the seven direct LSP tools' measured
