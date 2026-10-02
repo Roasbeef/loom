@@ -13,6 +13,6 @@
   │  /deny  reject an exact displayed request                            │
   ╰──────────────────────────────────────────────────────────────────────╯
 ╭─ To main · Enter sends ────────────────────────────────── ○ main · idle ─╮
-│ready                                                                     │
+│ ready                                                                    │
 │ › /de                                                                    │
 ╰─ baseten-kimi-k3 › ctx — › $0.00 ────────────────────────────────────────╯

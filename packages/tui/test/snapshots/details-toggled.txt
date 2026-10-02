@@ -6,7 +6,7 @@
 
 
 ╭─ To main · Enter sends ────────────────────────────────────────────────────── ○ main · idle ─╮
-│details expanded                                                                              │
+│ details expanded                                                                             │
 │ ›  / commands                                                                                │
 ╰─ baseten-kimi-k3 › ctx — › $0.00 ────────────────────────────────────────────────────────────╯
  /w/demo                                                                        baseten-kimi-k3

@@ -19,6 +19,6 @@
 
 
 ╭─ To main · Enter sends ────────────────────────────────────────── ○ main · idle ─╮
-│streaming text                                                                    │
+│ streaming text                                                                   │
 │ ›  / commands                                                                    │
 ╰─ baseten-kimi-k3 › ctx — › $0.00 ────────────────────────────────────────────────╯
