@@ -455,14 +455,15 @@ pub fn cut_middle(value: String, width: Int) -> String {
 }
 
 /// Cuts text to `width` cells at a word boundary with an ellipsis, so a cut
-/// never ends in half a word; a single word wider than the room is cut
-/// where it must be.
+/// never ends in half a word. When the last word is so long that ending
+/// before it would give back more than a third of the room, as a path does,
+/// the cut falls inside it instead.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert agent_row.cut("Tracing publish_herdr reachability", 20)
-///   == "Tracing…"
+/// assert agent_row.cut("Tracing publish_herdr reachability", 24)
+///   == "Tracing publish_herdr…"
 /// ```
 @internal
 pub fn cut(value: String, width: Int) -> String {
@@ -476,6 +477,10 @@ pub fn cut(value: String, width: Int) -> String {
         True, _ | False, [_] | False, [] -> head
         False, [_, _, ..] ->
           list.take(words, list.length(words) - 1) |> string.join(" ")
+      }
+      let whole = case text.cell_width(whole) * 3 < width * 2 {
+        True -> head
+        False -> whole
       }
       case width {
         0 -> ""

@@ -379,8 +379,14 @@ pub fn names_are_cut_in_the_middle_and_actions_at_a_word_test() {
   assert agent_row.cut_middle("adversarial-code-review-48f3", 16)
     == "adversaria…-48f3"
   assert agent_row.cut_middle("main", 16) == "main"
-  assert agent_row.cut("Tracing publish_herdr reachability", 20) == "Tracing…"
+  assert agent_row.cut("Tracing publish_herdr reachability", 24)
+    == "Tracing publish_herdr…"
   assert agent_row.cut("Needs approval · network", 18) == "Needs approval…"
+  assert agent_row.cut(
+      "Two citations drifted in docs/architecture/terminal.md",
+      40,
+    )
+    == "Two citations drifted in docs/architect…"
   assert agent_row.compact_duration(51) == "0m51"
   assert agent_row.compact_duration(3720) == "1h02"
   assert agent_row.compact_count(74_400) == "74k"
