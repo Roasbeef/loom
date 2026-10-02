@@ -1,7 +1,8 @@
 # Daemon and Darwin helper resource use, 2026-10-01
 
-Status: source fixes committed and independently reviewed. Combined signoff,
-release comparison and installed verification are in progress. This wave builds
+Status: source fixes committed and independently reviewed. Full local signoff
+and the isolated typed Jev fixture passed. The resource changes have not been
+installed in the normal daemon; hosted CI remains outstanding. This wave builds
 on the [first closure-retention fix](daemon-memory-retention-2026-10-01.md).
 
 ## Measured boundaries
@@ -134,6 +135,67 @@ RSS moved from 113584 to 118240 KiB, so this run does not prove an RSS
 improvement. Allocator carriers, collection timing and the small bare-session
 tool graph differ from the normal daemon. The installed comparison remains
 separate; callback flat-copy savings are not subtracted from either census.
+
+## Full release verification
+
+`make signoff SIGNOFF_ARGS=--dry-run` exited zero in 764 seconds on
+`bede55e54b8765af7785ece8cd122fa833c4ac32`, with a clean, frozen tree.
+All six source/test lanes and release/update verification passed. The client
+suite ran 2629 tests, the TUI suite 1052, the cap suite 168 and conformance
+91, followed by the configured simulation soaks. The helper reported eleven
+enforced self-test layers. The skip census contained only the two declared
+macOS prerequisites: the real stopped-process MCP fixture needs `/proc`,
+and the Rust language-server fixture needs a runnable rust-analyzer.
+
+A separate scripted session booted that self-contained candidate release,
+discovered `cap://mcp/jev`, read the generated structural API, compiled a typed
+Choice program in the real code-mode jail and called the installed Jevelin
+server against a local HTTP fixture. It retained a successful durable tool
+result with Choice `logs`, confidence 0.9 and the fixture's 10 input / 3 output
+tokens. Both build and satellite reported active Seatbelt filesystem and
+network enforcement. Their macOS memory, process-count and process-lifecycle
+limits remained degraded. The candidate shut down cleanly without touching
+the normal daemon. This is fixture integration evidence, not a new live Jev
+inference claim. The first attempt used an overly deep private state root;
+the socket-path validation rejected it before dispatch, and a shallower
+private state root allowed the same release and program to complete.
+
+## Normal daemon before the owner's restart
+
+The owner installed merged PR #688 at
+`5fbcda3ad473338d810376177d85153f23900106` and ran profiled daemon PID 90442.
+Its single resident session had two idle strands, no working strands and no
+pending approvals. An observational cut allocated 244.374 MiB total BEAM
+memory, including 198.842 MiB of process memory. The adjacent OS sample was
+280496 KiB RSS. Allocator carriers totaled 278.031 MiB; ETS held about
+1.145 MiB. These are distinct counters, not interchangeable memory totals.
+
+The process census grouped 87.402 MiB into weft actors, 56.199 MiB into static
+supervisors, 22.056 MiB into state machines and 13.984 MiB into factory
+supervisors. The largest actor had a 5157867-word old-heap block with
+2790546 used words, about 18 MiB of spare capacity in that block. Two large
+hibernated supervisors instead had nearly full heaps: 5224481 used words in
+5224493 capacity, and 2137444 in 2137456. This makes their restart-specification
+ownership a useful next investigation. It does not identify a particular
+callback as the measured owner. No collection, state copy or retained-root
+walk was used to make this comparison.
+
+A three-second idle sample recorded 5634 aggregate reduction credits across
+192 matched processes. The largest delta was 4351 in one waiting actor with
+an empty mailbox. Reduction credits are not elapsed CPU time. They do not
+justify a scheduling change or a whole-daemon CPU savings claim.
+
+The current daemon's Jev discovery failed before spawning because
+`JEV_API_KEY` was absent from its credential store. Its missing Jev server
+therefore does not explain the measured memory. Earlier live Jev success
+belongs to the previously recorded release and launch environment. The owner's restart booted PID 20976 at `31db7c68387859da416eff53ed41913cd2ac8f31`,
+which also contains the newly merged code-mode prompt work. Its log now
+reports `mcp.ready` with `jev=4`. An active cut during one working strand
+allocated 292.694 MiB total BEAM memory and 248.596 MiB of process memory;
+RSS was 290080 KiB. This changes build, activity, collection history and
+MCP availability at once. It cannot isolate the cost of MCP or prove a
+restart memory saving. The same original session and its two strands remained
+resident. The resource branch itself was not installed.
 
 ## Remaining limits
 
