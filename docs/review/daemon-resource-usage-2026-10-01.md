@@ -316,3 +316,33 @@ remaining daemon memory is not fully attributed. Darwin retains its declared
 sampled process-lifecycle gap: process birth checks cannot be atomic with
 signals, and rapid reparenting between samples can evade observed ancestry.
 Fewer allocations do not strengthen those kernel guarantees.
+
+## Rebase and job fixture ordering
+
+The branch was rebased onto main `7d37ec86`. Range comparison preserved every
+resource patch; only the duplicate MCP codec serialization commit was omitted,
+because main already contains it. Fresh exact-head hosted Linux checks passed.
+
+The first local signoff at `a8de3bc3` had one web operator-page connection timeout;
+its other lanes and release verification passed. Five focused repetitions of that
+exact test passed. The repeated full gate passed that case but exposed an existing
+job-stop/reopen fixture race. Both affected production files were unchanged by
+this resource wave.
+
+`kill_job` acknowledges a requested cancellation before committing Draining.
+The fixture immediately launched a replacement, which could sweep the earlier
+Running record and deliver a notice. It also checked absence of a notice after
+observing Lost, although reaping writes Lost before delivering the notice. These
+were incomplete fixture preconditions and completion ordering, not evidence that
+the resource projection changed cancellation behavior.
+
+The fixture now polls the original actor to establish Draining, then lists jobs
+through the replacement to establish completion of its entire injected sweep.
+Both barriers already occur in adjacent tests. No production API, persistence,
+retry, timeout, or assertion was weakened. A temporary 100-ms delay after the
+kill acknowledgement forced the schedule: the old fixture compiled and failed
+its silence assertion; the ordered fixture compiled and passed. Restored
+production source also passed. The initial control attempt caught an unused
+state-read helper; retaining its existing call kept the final comparison
+warning-free. Full current-head signoff and hosted CI will be checked before
+merge.
