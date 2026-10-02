@@ -437,14 +437,14 @@ fn run_typed_mcp_round_trip(ready: Ready) -> Nil {
 fn typed_mcp_program(job_id: String) -> String {
   "import cap/mcp/typed\nimport cap/report\nimport gleam/option.{Some, None}\n"
   <> "pub fn main() -> report.Outcome {\n"
-  <> "  let filter = typed.McpT1InputN2ListApplicationsFilter(region: \"north\", tags: [])\n"
-  <> "  let options = typed.McpT1OptionsListApplications(..typed.list_applications_defaults, status: Some(typed.McpT1InputN6V0ListApplicationsStatusActive), cursor: Some(None), limit: Some(0))\n"
+  <> "  let filter = typed.Filter(region: \"north\", tags: [])\n"
+  <> "  let options = typed.ListApplicationsOptions(..typed.list_applications_defaults, status: Some(typed.StatusActive2), cursor: Some(None), limit: Some(0))\n"
   <> "  case typed.list_applications(job_id: \""
   <> job_id
   <> "\", filter: filter, options: options) {\n"
   <> "    Ok(found) -> case found.results, found.next_cursor {\n"
   <> "      [row], Some(None) -> case row.status, row.active {\n"
-  <> "        typed.McpT1OutputN4V0ListApplicationsResultResultsItemStatusActive, typed.McpT1OutputN5V0EnabledListApplicationsResultResultsItemActive -> report.text(row.id)\n"
+  <> "        typed.StatusActive, typed.ActiveEnabled -> report.text(row.id)\n"
   <> "        _, _ -> report.failure(\"wrong decoded enum or boolean\")\n"
   <> "      }\n"
   <> "      _, _ -> report.failure(\"wrong result or null presence\")\n"
@@ -476,7 +476,7 @@ fn run_typed_mcp_mismatch(ready: Ready) -> Nil {
   let source =
     "import cap/mcp\nimport cap/mcp/typed\nimport cap/report\nimport gleam/list\n"
     <> "pub fn main() -> report.Outcome {\n"
-    <> "  case typed.list_applications(job_id: \"malformed\", filter: typed.McpT1InputN2ListApplicationsFilter(region: \"north\", tags: []), options: typed.list_applications_defaults) {\n"
+    <> "  case typed.list_applications(job_id: \"malformed\", filter: typed.Filter(region: \"north\", tags: []), options: typed.list_applications_defaults) {\n"
     <> "    Error(mcp.ResultSchemaMismatch(error, result)) -> report.value(report.object([#(\"path\", report.list(list.map(error.path, report.string))), #(\"text\", report.string(mcp.text(result)))]))\n"
     <> "    _ -> report.failure(\"the malformed answer did not fail typed decoding\")\n"
     <> "  }\n}\n"
@@ -532,11 +532,7 @@ fn run_typed_mcp_compile_refusals(ready: Ready) -> Nil {
   let mistakes = [
     #(
       "enum",
-      string.replace(
-        valid,
-        "Some(typed.McpT1InputN6V0ListApplicationsStatusActive)",
-        "Some(\"active\")",
-      ),
+      string.replace(valid, "Some(typed.StatusActive2)", "Some(\"active\")"),
       "Type mismatch",
     ),
     #(
@@ -676,9 +672,9 @@ fn run_go_sdk_mcp(ready: Ready) -> Nil {
     <> "import cap/report\n"
     <> "import gleam/option.{Some}\n"
     <> "pub fn main() -> report.Outcome {\n"
-    <> "  case sdk.list_applications(job_id: \"go-sdk\", filter: sdk.McpT0InputN2ListApplicationsFilter(region: \"north\", tags: Some([])), options: sdk.list_applications_defaults) {\n"
+    <> "  case sdk.list_applications(job_id: \"go-sdk\", filter: sdk.Filter(region: \"north\", tags: Some([])), options: sdk.list_applications_defaults) {\n"
     <> "    Ok(found) -> case found.applications, found.has_more {\n"
-    <> "      Some([row, ..]), sdk.McpT0OutputN9V1DisabledListApplicationsResultHasMore -> report.text(row.id <> \"/\" <> row.stage.name)\n"
+    <> "      Some([row, ..]), sdk.HasMoreDisabled -> report.text(row.id <> \"/\" <> row.stage.name)\n"
     <> "      _, _ -> report.failure(\"The SDK fixture returned no application.\")\n"
     <> "    }\n"
     <> "    Error(_reason) -> report.failure(\"The SDK fixture did not decode.\")\n"
@@ -755,6 +751,195 @@ fn run_documented_typed_mcp(ready: Ready) -> Nil {
   stop_rig(rig)
 }
 
+/// Runs the documented concise Jev batch through the compiler and cap channel.
+///
+/// The fixture uses schemas discovered from the installed Jevelin server. One
+/// typed constructor selects each request tag; returned variants must decode
+/// before the documented program can extract their choice and score fields.
+///
+/// ## Examples
+///
+/// This regression runs the guide's complete entry point in the satellite.
+pub fn documented_jev_batch_uses_typed_variants_test() {
+  case prerequisites() {
+    Error(reason) -> io.println_error("SKIP documented_jev_batch: " <> reason)
+    Ok(ready) -> run_documented_jev_batch(ready)
+  }
+}
+
+fn run_documented_jev_batch(ready: Ready) -> Nil {
+  let rig = rig(ready, under: ready.root)
+  let seen = process.new_subject()
+  let layer = fixture_mcp_layer("jev", "jev.json", seen)
+  let outcome =
+    run_notes_program(
+      typed_mcp_config(rig, layer),
+      rig,
+      documented_jev_program(),
+      "documented-jev-batch",
+    )
+  assert !outcome.is_error as rendered_text(outcome)
+  assert notes_program_value(outcome)
+    == json.Object([
+      #("model", json.String("jev-fixture")),
+      #("choice", json.String("logs")),
+      #("confidence", json.Float(0.9)),
+      #("score", json.Float(0.25)),
+      #(
+        "usage",
+        json.Object([
+          #("input_tokens", json.Int(10)),
+          #("output_tokens", json.Int(3)),
+        ]),
+      ),
+    ])
+  let assert Ok(#("jev_batch", arguments)) = process.receive(seen, 1000)
+    as "one batch must reach the production MCP client"
+  assert arguments
+    == mcp_json.Object([
+      #("state", mcp_json.String("The user wants to inspect a failed build.")),
+      #(
+        "questions",
+        mcp_json.Array([
+          mcp_json.Object([
+            #("name", mcp_json.String("route")),
+            #("type", mcp_json.String("choice")),
+            #(
+              "choices",
+              mcp_json.Array([
+                mcp_json.Object([
+                  #("label", mcp_json.String("logs")),
+                  #("description", mcp_json.String("Read compiler logs")),
+                ]),
+                mcp_json.Object([#("label", mcp_json.String("tests"))]),
+              ]),
+            ),
+          ]),
+          mcp_json.Object([
+            #("name", mcp_json.String("priority")),
+            #("type", mcp_json.String("score")),
+            #(
+              "levels",
+              mcp_json.Array([mcp_json.String("low"), mcp_json.String("high")]),
+            ),
+          ]),
+        ]),
+      ),
+    ])
+  assert process.receive(seen, 0) == Error(Nil)
+    as "the batch must be the only server call"
+  mcp_wiring.stop(layer)
+  stop_rig(rig)
+}
+
+/// Refuses incompatible variant fields before any Jev tool is invoked.
+///
+/// ## Examples
+///
+/// A ScoreQuestion cannot be constructed with Choice criteria.
+pub fn concise_jev_variant_mistakes_fail_before_execution_test() {
+  case prerequisites() {
+    Error(reason) -> io.println_error("SKIP concise_jev_refusals: " <> reason)
+    Ok(ready) -> run_jev_variant_refusals(ready)
+  }
+}
+
+fn run_jev_variant_refusals(ready: Ready) -> Nil {
+  let rig = rig(ready, under: ready.root)
+  let seen = process.new_subject()
+  let layer = fixture_mcp_layer("jev", "jev.json", seen)
+  let source = documented_jev_program()
+  let mistakes = [
+    #(
+      "fields",
+      string.replace(source, "jev.ScoreQuestion(", "jev.ChoiceQuestion("),
+      "levels",
+    ),
+    #(
+      "level",
+      string.replace(source, "jev.LevelText(\"low\")", "\"low\""),
+      "Type mismatch",
+    ),
+  ]
+  list.each(mistakes, fn(mistake) {
+    let #(name, program, diagnostic) = mistake
+    let outcome =
+      run_notes_program(
+        typed_mcp_config(rig, layer),
+        rig,
+        program,
+        "jev-refusal-" <> name,
+      )
+    assert outcome.is_error as rendered_text(outcome)
+    assert string.contains(rendered_text(outcome), diagnostic)
+      as rendered_text(outcome)
+    assert process.receive(seen, 0) == Error(Nil)
+      as "an invalid variant must never reach the MCP server"
+  })
+  mcp_wiring.stop(layer)
+  stop_rig(rig)
+}
+
+/// Checks missing and wrong tags through the generated satellite decoder.
+///
+/// ## Examples
+///
+/// Malformed tagged answers retain the schema-mismatch error channel.
+pub fn concise_jev_output_requires_its_exact_tag_test() {
+  case prerequisites() {
+    Error(reason) -> io.println_error("SKIP concise_jev_tags: " <> reason)
+    Ok(ready) -> run_jev_tag_refusals(ready)
+  }
+}
+
+fn run_jev_tag_refusals(ready: Ready) -> Nil {
+  let rig = rig(ready, under: ready.root)
+  let seen = process.new_subject()
+  let layer = fixture_mcp_layer("jev", "jev.json", seen)
+  let source =
+    documented_jev_program()
+    |> string.replace(
+      "import cap/mcp/jev\n",
+      "import cap/mcp\nimport cap/mcp/jev\n",
+    )
+    |> string.replace(
+      "Error(_) -> report.failure(\"The Jev batch was refused.\")",
+      "Error(mcp.ResultSchemaMismatch(_, _)) -> report.text(\"tag refused\")\n"
+        <> "Error(_) -> report.failure(\"Wrong error channel.\")",
+    )
+  list.each(["missing-tag", "wrong-tag"], fn(state) {
+    let program =
+      string.replace(source, "The user wants to inspect a failed build.", state)
+    let outcome =
+      run_notes_program(
+        typed_mcp_config(rig, layer),
+        rig,
+        program,
+        "jev-" <> state,
+      )
+    assert !outcome.is_error as rendered_text(outcome)
+    assert notes_program_value(outcome) == json.String("tag refused")
+    let assert Ok(#("jev_batch", _)) = process.receive(seen, 1000)
+      as "the tag refusal must follow one actual server response"
+    assert process.receive(seen, 0) == Error(Nil)
+  })
+  mcp_wiring.stop(layer)
+  stop_rig(rig)
+}
+
+fn documented_jev_program() -> String {
+  let assert Ok(document) = simplifile.read("../../docs/jev-mcp.md")
+    as "the Jev guide must be available"
+  let assert Ok(block) =
+    list.find(string.split(document, "```gleam\n"), fn(block) {
+      string.contains(block, "import cap/mcp/jev\n")
+    })
+    as "the guide must contain the complete Jev batch program"
+  let assert [source, ..] = string.split(block, "```")
+    as "the guide's Gleam fence must close"
+  source
+}
+
 // The typed fixture owns no process transport. The production MCP client,
 // generated module, hermetic compiler, satellite, and capability router all
 // run; a subject records each request before the fixture answers it.
@@ -812,6 +997,7 @@ fn fixture_mcp_result(
   arguments: mcp_json.JsonValue,
 ) -> mcp_json.JsonValue {
   case name {
+    "jev_batch" -> concise_jev_result(arguments)
     "zz_union_probe" ->
       mcp_json.Object([
         #("content", mcp_json.Array([])),
@@ -831,6 +1017,80 @@ fn fixture_mcp_result(
       ])
     _ -> fixture_application_result(arguments)
   }
+}
+
+// These literal answers obey the installed server's advertised schema. The
+// real client still decodes them through the generated satellite codec.
+fn concise_jev_result(arguments: mcp_json.JsonValue) -> mcp_json.JsonValue {
+  let state = case arguments {
+    mcp_json.Object(fields) -> list.key_find(fields, "state")
+    _ -> Error(Nil)
+  }
+  let tag = case state {
+    Ok(mcp_json.String("missing-tag")) -> []
+    Ok(mcp_json.String("wrong-tag")) -> [#("type", mcp_json.String("invalid"))]
+    _ -> [#("type", mcp_json.String("choice"))]
+  }
+
+  mcp_json.Object([
+    #("content", mcp_json.Array([])),
+    #(
+      "structuredContent",
+      mcp_json.Object([
+        #("model", mcp_json.String("jev-fixture")),
+        #(
+          "answers",
+          mcp_json.Object([
+            #(
+              "route",
+              mcp_json.Object(
+                list.append(tag, [
+                  #("choice", mcp_json.String("logs")),
+                  #("confidence", mcp_json.Float(0.9)),
+                  #(
+                    "probabilities",
+                    mcp_json.Object([
+                      #("logs", mcp_json.Float(1.0)),
+                      #("tests", mcp_json.Float(0.0)),
+                    ]),
+                  ),
+                ]),
+              ),
+            ),
+            #(
+              "priority",
+              mcp_json.Object([
+                #("type", mcp_json.String("score")),
+                #("score", mcp_json.Float(0.25)),
+                #("confidence", mcp_json.Float(0.5)),
+                #(
+                  "probabilities",
+                  mcp_json.Object([
+                    #("0", mcp_json.Float(0.75)),
+                    #("1", mcp_json.Float(0.25)),
+                  ]),
+                ),
+                #(
+                  "legend",
+                  mcp_json.Object([
+                    #("0", mcp_json.String("low")),
+                    #("1", mcp_json.String("high")),
+                  ]),
+                ),
+              ]),
+            ),
+          ]),
+        ),
+        #(
+          "usage",
+          mcp_json.Object([
+            #("input_tokens", mcp_json.Int(10)),
+            #("output_tokens", mcp_json.Int(3)),
+          ]),
+        ),
+      ]),
+    ),
+  ])
 }
 
 fn fixture_application_result(
@@ -976,7 +1236,7 @@ pub fn mcp_process_program_source() -> String {
   <> "    message: \""
   <> wire_message
   <> "\",\n"
-  <> "    options: fixture.McpT1OptionsEchoArgs(tag: option.Some(\""
+  <> "    options: fixture.EchoArgsOptions(tag: option.Some(\""
   <> wire_tag
   <> "\")),\n"
   <> "  ) {\n"
@@ -1162,7 +1422,7 @@ fn assert_generated_names(source: String, surface: String) -> Nil {
   let label = digested("target_repo", "Target-Repo")
   assert string.contains(
     source,
-    "  " <> label <> " " <> label <> ": McpT2InputN1Nested",
+    "  " <> label <> " " <> label <> ": TargetRepo",
   )
   assert string.contains(source, "\"Target-Repo\"")
   assert string.contains(source, "owner: String")
