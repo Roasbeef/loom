@@ -37,6 +37,8 @@
 //// 3. `resolve_real` is the path discipline: `walk` follows symlinks one
 ////    component at a time and `check_under` refuses a result outside the root.
 //// 4. A read goes on through `read_outcome` (text windows) or `image_outcome`.
+////    `read_text` shares the authorization and bounded UTF-8 read for a
+////    caller that needs whole source text instead of a rendered window.
 //// 5. `run_write` resolves for writing, so the protected-path list applies,
 ////    and `write_whole` creates parents and writes; `write_outcome` answers.
 //// 6. `run_edit` resolves, reads the pre-image with `read_text_file`,
@@ -1104,6 +1106,26 @@ pub type ReadError {
   /// The file's bytes are not valid UTF-8, so there is no text to
   /// return.
   NotText
+}
+
+/// Reads a complete UTF-8 file through the native tool's read authority.
+///
+/// Paths are canonicalized before the exact target is authorized, as for
+/// `fs_read`. The whole-file byte bound and text decoding are shared with
+/// `read_text_file`; this helper returns source text without windows,
+/// anchors or image interpretation. Read approval remains scoped to this
+/// invocation and grants no authority to a later call.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.read_text(ctx, "analysis.gleam") == Ok(source)
+/// ```
+///
+pub fn read_text(ctx: Ctx, path: String) -> Result(String, ToolOutcome) {
+  use resolved <- result.try(resolve_invocation(ctx, path, Reading))
+  read_text_file(ctx.filesystem, resolved)
+  |> result.map_error(read_error_outcome)
 }
 
 /// Reads a resolved path as text, subject to the large-file guard.
