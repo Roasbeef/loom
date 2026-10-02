@@ -265,7 +265,17 @@ pub fn render_frame(
       )
     PeerLinkManager(state) -> peer_links.render(base, screen, state)
     AccessManager(state) -> access_overlay.render(base, screen, state)
-    ApprovalInspector(panel) -> approval_panel.render(base, screen, panel)
+    ApprovalInspector(panel) ->
+      approval_panel.render(
+        base,
+        geometry.rect_new(
+          screen.position.x,
+          screen.position.y + 1,
+          screen.size.width,
+          int.max(0, input_area.position.y - screen.position.y - 1),
+        ),
+        panel,
+      )
   }
 
   let rendered = case model.view.overlay {
