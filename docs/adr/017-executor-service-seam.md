@@ -228,3 +228,15 @@ provided comes from the service being the only process that sends a helper
 addressed to a granted or finished execution. `docs/architecture/executor.md`
 carries the argument and its one honest limit: no test fails if the relay is
 made to cancel the helper directly.
+
+## Addendum — the service lane became the default in S2 (issue #696)
+
+The rollout above shipped the service lane opt-in and named the evidence that
+would flip it: the failure matrix passing and the leak census showing no
+unconfirmed slot under bwrap. S2 met both. The failure matrix covers helper and
+owner crash, acquisition failure, the cancel races, output-pump failure and
+shutdown mid-execution, and with the witnessed kill the census closes `Ok`.
+The client suite, `make e2e` and `make e2e-codemode` also pass with the service
+lane as the default. So an unset `LOOM_EXECUTOR_LANE` now selects the service,
+and `LOOM_EXECUTOR_LANE=direct` is the rollback until S3 removes the production
+switch.

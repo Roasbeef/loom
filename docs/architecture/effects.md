@@ -144,13 +144,13 @@ margin covers, a broker slower than the caller's whole budget or one
 stopped underneath a waiting caller, come back as `BrokerUnavailable`
 instead of crashing the strand.
 
-**The executor service now exists behind an opt-in switch.** The broker hands
+**The executor service is the default lane, with a rollback switch.** The broker hands
 each cleared call to a `Dispatcher` (`broker/dispatch`), and two
-implementations stand behind that seam. The direct lane, `broker/direct`, is
-the default and is the relay described below. The service lane,
-`broker/executor`, adds one service per session that owns a row for each
-running execution and starts a relay beneath it; `LOOM_EXECUTOR_LANE=service`
-selects it when a session opens. [The executor service](executor.md) describes
+implementations stand behind that seam. The service lane,
+`broker/executor`, is the default: it adds one service per session that owns a
+row for each running execution and starts a relay beneath it. The direct lane,
+`broker/direct`, is the relay described below and remains as the rollback;
+`LOOM_EXECUTOR_LANE=direct` selects it when a session opens. [The executor service](executor.md) describes
 both lanes, the state model, and the phases that remain (decided in
 [ADR-017](../adr/017-executor-service-seam.md)). The pool semantics on this
 page stay as written: custody, retirement evidence and the caller-side wait are
