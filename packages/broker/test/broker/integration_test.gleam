@@ -591,6 +591,61 @@ pub fn real_broker_session_lifetime_remains_jailed_and_cancellable_test() {
   broker.stop(owner)
 }
 
+// Accumulates stdout until the terminal event, keeping the event itself so
+// a test can tell an exit from an in-band failure.
+fn collect_terminal(
+  events: process.Subject(exec.ExecEvent),
+  stdout: BitArray,
+  timeout: Int,
+) -> #(BitArray, Result(exec.ExecEvent, Nil)) {
+  case process.receive(events, timeout) {
+    Ok(exec.Output(stream: framing.Stdout, data:, ..)) ->
+      collect_terminal(events, bit_array.append(stdout, data), timeout)
+    Ok(exec.Output(stream: framing.Stderr, ..)) ->
+      collect_terminal(events, stdout, timeout)
+    Ok(terminal) -> #(stdout, Ok(terminal))
+    Error(Nil) -> #(stdout, Error(Nil))
+  }
+}
+
+// A refused stdin write is answered by the helper with `error{no_exec}`
+// carrying the stdin frame's id. That error is about the *write*, not about
+// the execution, so it must not settle the execution: the payload is still
+// running and its real `exec_exit` is still owed. Before stdin frames had
+// ids of their own the error carried the execution's id, `settle` took it
+// for the execution's own refusal, and the machine went `Idle` with the
+// payload alive in the helper, so the next `Run` got a Go `busy`.
+//
+// The refusal is provoked by writing after end of file. The payload also
+// closes its own stdin, which is the shape the report described, but under
+// bwrap the jail's supervisor keeps the pipe's read end open, so that alone
+// does not fail the helper's write; the second send after `eof` does, on
+// every platform.
+pub fn real_helper_stdin_error_does_not_settle_execution_test() {
+  use helper <- with_real_helper("real_helper_stdin_error")
+  let events = process.new_subject()
+  let req =
+    request(
+      ["/bin/sh", "-c", "exec 0<&-; echo closed; sleep 2; echo done"],
+      1024,
+    )
+  assert exec.run(helper, req, events:, waiting: 3000) == Ok(Nil)
+  let assert Ok(exec.Output(data: <<"closed\n":utf8>>, ..)) =
+    process.receive(events, 5000)
+    as "the payload has closed its stdin before any is sent"
+
+  // The first send closes the helper's side of the pipe; the second is
+  // refused. Spaced, so the refusal is read while the payload still runs.
+  exec.stdin(helper, data: <<"first">>, eof: True)
+  process.sleep(100)
+  exec.stdin(helper, data: <<"second">>, eof: False)
+  let #(stdout, terminal) = collect_terminal(events, <<>>, 10_000)
+  let assert Ok(exec.Exited(exit)) = terminal
+    as "the execution settles by its own exit, not by the stdin refusal"
+  assert exit.code == 0
+  assert stdout == <<"done\n":utf8>>
+}
+
 // The marker in the payload's argv, which is how a leftover is recognised in
 // `/proc`. Nothing else on this host sleeps for this long.
 const kill_marker = "300.75"

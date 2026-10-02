@@ -547,6 +547,18 @@ protocol (spec Part 1.4). WP-G.
   clock), which is the case that matters: the broker's relay dies with its
   call. A caller that is alive but gave up is not caught and must treat the
   outcome as unknown.
+- **`exec_stdin` frames carry ids of their own, never the execution's.**
+  The helper answers a refused stdin write (`stdin already closed`, or the
+  payload's end of the pipe gone) with `error{no_exec}` under the *stdin
+  frame's* id, and uses a stdin id for nothing else. `settle` treats an
+  error under the execution's own id as that execution's refusal, so a
+  stdin frame sent with `exec.id` made a refused write settle a running
+  payload `Failed(RefusedByHelper)` and send the machine `Idle` while the
+  helper still ran it: the real `exec_exit` was dropped and the next `Run`
+  got a Go `busy`. A fresh id from `fresh_id` makes the error correlate to
+  nothing. `cancel` cannot hit the same trap: the helper never answers a
+  `cancel` with an error. This changes an id value, not the frame's shape,
+  kind, keys or version.
 - **Pool close includes borrowed helpers.** `close_pool` stops admissions
   before requesting each helper's shutdown. Native proof is recorded
   before `ForgetRetired` asks the helper actor to stop. The original

@@ -1209,3 +1209,60 @@ pub fn late_run_is_not_dispatched_after_its_caller_is_gone_test() {
     next_frame(sent, 1000)
   exec.shutdown(helper)
 }
+
+// A refused stdin write comes back from the helper as an error carrying the
+// stdin frame's id. If that id were the execution's, `settle` would take it
+// for the execution's own refusal and report a running payload as failed,
+// while the helper went on running it. Each stdin frame therefore gets an id
+// of its own, and the error answering it correlates to nothing.
+pub fn stdin_frames_carry_their_own_id_and_their_errors_settle_nothing_test() {
+  let gate = start_gate()
+  let #(helper, sent) = gated_helper(gate)
+  let events = process.new_subject()
+  assert exec.run(helper, request(exec.BestEffort), events:, waiting: 1000)
+    == Ok(Nil)
+  let assert framing.Frame(id: exec_id, body: framing.ExecStart(..)) =
+    next_frame(sent, 1000)
+  exec.stdin(helper, data: <<"late">>, eof: False)
+  let assert framing.Frame(id: stdin_id, body: framing.ExecStdin(..)) =
+    next_frame(sent, 1000)
+  assert stdin_id != exec_id
+
+  // The helper refuses the write and names the stdin frame in its error.
+  let assert Ok(refusal) =
+    framing.encode(framing.Frame(
+      id: stdin_id,
+      body: framing.ErrorBody(
+        code: "no_exec",
+        message: "jail: stdin already closed",
+      ),
+    ))
+    as "refusal encodes"
+  process.send(exec.wire(helper), exec.WireBytes(refusal))
+  assert process.receive(events, 100) == Error(Nil)
+  let assert exec.StatusBusy(_) = exec.status(helper, waiting: 1000)
+
+  // The execution's own exit is still owed, and still settles it.
+  let assert Ok(exit) =
+    framing.encode(framing.Frame(
+      id: exec_id,
+      body: framing.ExecExit(
+        code: 0,
+        signal: 0,
+        stdout_bytes: 0,
+        stderr_bytes: 0,
+        stdout_truncated: False,
+        stderr_truncated: False,
+        enforcement: [],
+        degraded: False,
+        wall_ms: 1,
+        timed_out: False,
+        cancelled: False,
+      ),
+    ))
+    as "exit encodes"
+  process.send(exec.wire(helper), exec.WireBytes(exit))
+  let assert Ok(exec.Exited(result)) = process.receive(events, 1000)
+  assert result.code == 0
+  exec.shutdown(helper)
+}

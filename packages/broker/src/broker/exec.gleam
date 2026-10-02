@@ -1222,13 +1222,26 @@ fn handle(
 
     // Stdin follows the execution rather than the phase: a payload that
     // has been TERMed but has not exited may still be reading.
-    Running(exec:, ..) as phase, Stdin(data: bytes, eof:)
-    | Cancelling(exec:, ..) as phase, Stdin(data: bytes, eof:)
-    ->
+    //
+    // The frame gets an id of its own and not the execution's. The helper
+    // answers a refused write (the payload closed its stdin, or stdin was
+    // already at end of file) with `error{no_exec}` carrying the *stdin
+    // frame's* id, and `settle` treats an error under the execution's own
+    // id as that execution's refusal: the running payload would be settled
+    // `Failed` and the machine sent `Idle` while the helper still runs it.
+    // The helper uses a stdin frame's id for nothing but addressing that
+    // reply, so a fresh id makes the reply correlate to nothing and `settle`
+    // drops it. Cancel needs no such care: the helper never answers a
+    // `cancel` with an error, and an unknown cancel is a no-op.
+    Running(..) as phase, Stdin(data: bytes, eof:)
+    | Cancelling(..) as phase, Stdin(data: bytes, eof:)
+    -> {
+      let #(data, id) = fresh_id(data)
       send_or_die(
         Machine(phase:, data:),
-        framing.Frame(id: exec.id, body: framing.ExecStdin(data: bytes, eof:)),
+        framing.Frame(id:, body: framing.ExecStdin(data: bytes, eof:)),
       )
+    }
 
     AwaitingHello, Stdin(..) | Idle(..), Stdin(..) | Dead(..), Stdin(..) ->
       state_machine.keep(data)
