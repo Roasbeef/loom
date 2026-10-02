@@ -508,16 +508,15 @@ pub fn inventory(
 }
 
 /// The service's version census: the three version numbers the service
-/// speaks, and the hello features of a live helper (`broker/census` says
-/// why features are reported and never refused).
+/// speaks, and the hello features of its newest helper (`broker/census`
+/// says why features are reported and never refused).
 ///
-/// A helper's features exist only once one has said hello, so the service
-/// asks one: it borrows a helper, reads its status, and returns it. When
-/// it cannot do that without waiting, because every slot is lent out or
-/// the service is closing, it answers with no features rather than
-/// waiting on an execution. Features are therefore
-/// "the features of a helper the service could look at just now", and an
-/// empty list means "unknown", never "none".
+/// The pool records each helper's features when its handshake completes, so
+/// the census reads them from the pool's custody query. It borrows nothing
+/// and spawns nothing: a census on a pool that has never spawned a helper
+/// answers no features, and so does one whose pool does not answer within
+/// the custody window or whose service is closing. An empty list therefore
+/// means "unknown", never "none".
 ///
 /// ## Examples
 ///
@@ -705,28 +704,25 @@ fn handle(
   }
 }
 
-// The census, with features read from a helper only when the pool will
-// lend one. A lazily spawned helper costs at most the handshake timeout.
+// The census, with features taken from the pool's custody and from no
+// helper: the pool heard them at the handshake. A closing service is
+// retiring its helpers, so it reports none.
 fn census_of(phase: Phase, state: State) -> Census {
   case phase {
-    Serving -> census.local(sampled_features(state))
+    Serving -> census.local(newest_features(state))
     Closing(..) | Closed(..) -> census.local([])
   }
 }
 
-fn sampled_features(state: State) -> List(String) {
-  case state.config.checkout() {
-    Ok(helper) -> {
-      let features = case exec.status(helper, waiting: 1000) {
-        exec.StatusReady(features:) | exec.StatusBusy(features:) -> features
-        exec.StatusStarting | exec.StatusDead(..) | exec.StatusUnresponsive -> []
-      }
-      state.config.checkin(helper)
-      features
-    }
-
-    // A full pool refuses at once rather than queueing, so an occupied
-    // service answers without features instead of waiting on a borrower.
+// Helpers are listed oldest first, so the newest that has said hello is the
+// last non-empty answer. A pool that cannot answer yields unknown.
+fn newest_features(state: State) -> List(String) {
+  case state.config.custody() {
+    Ok(custody) ->
+      list.reverse(custody.helpers)
+      |> list.find(fn(view) { view.features != [] })
+      |> result.map(fn(view) { view.features })
+      |> result.unwrap([])
     Error(_) -> []
   }
 }

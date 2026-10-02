@@ -5,7 +5,10 @@ import broker/framing
 import broker/policy
 import executor
 import gleam/io
+import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
+import gleam/string
 import gleeunit
 import simplifile
 
@@ -89,9 +92,12 @@ pub fn a_drained_executor_is_gone_test() {
   assert executor.drain(up) == Error(exec.RetirementOwnerGone)
 }
 
-/// Against the real helper: the census names this build's versions and the
-/// helper's own hello features, a jailed `true` runs through the service,
-/// and the drain returns the pool's clean verdict.
+/// Against the real helper: a jailed `true` runs through the service, the
+/// census names this build's versions and the helper's own hello features,
+/// and the drain returns the pool's clean verdict. A host whose helper says
+/// `degraded` (no bwrap on Linux, no seatbelt on macOS) must refuse the
+/// smoke instead, naming the degraded enforcement: that refusal is the
+/// behaviour, so it is asserted rather than skipped.
 pub fn a_standalone_boot_reports_its_census_and_runs_true_test() {
   case helper_path() {
     Error(reason) ->
@@ -101,6 +107,11 @@ pub fn a_standalone_boot_reports_its_census_and_runs_true_test() {
       let config = config(here <> "/" <> helper, "boot")
       let assert Ok(up) = executor.boot(config)
 
+      // Nothing has spawned a helper, so no hello has been heard.
+      let assert Ok(unknown) = executor.census(up)
+      assert unknown.features == []
+
+      let ran = executor.smoke(up, scratch: config.scratch)
       let assert Ok(measured) = executor.census(up)
       assert measured.service == census.service_version
       assert measured.exec_proto == framing.exec_protocol_version
@@ -108,26 +119,61 @@ pub fn a_standalone_boot_reports_its_census_and_runs_true_test() {
       assert measured.features != []
       assert census.skew(measured, census.local([])) == Ok(Nil)
 
-      assert executor.smoke(up, scratch: config.scratch) == Ok(Nil)
+      case list.contains(measured.features, "degraded") {
+        True -> {
+          let assert Error(reason) = ran
+          assert string.contains(reason, "degraded")
+          assert string.contains(reason, "skipped layers")
+        }
+        False -> {
+          assert ran == Ok(Nil)
+        }
+      }
       assert executor.drain(up) == Ok(Nil)
       let assert Ok(Nil) = simplifile.delete(config.scratch)
         as "the test removes what it booted"
 
-      let finished = self_cleaning(config)
-      assert finished == Ok(Nil)
+      case list.contains(measured.features, "degraded") {
+        True -> {
+          let assert Error(reason) = executor.run(config)
+          assert string.contains(reason, "degraded")
+        }
+        False -> {
+          assert executor.run(config) == Ok(Nil)
+        }
+      }
       assert simplifile.is_directory(config.scratch) == Ok(False)
     }
   }
 }
 
-/// The scratch directory a boot creates is gone once the run has drained,
-/// even when the run failed (the helper here does not exist).
+/// The scratch directory a boot creates is gone once the run has drained
+/// cleanly, even when the run failed (the helper here does not exist).
 pub fn a_run_removes_its_scratch_even_when_it_fails_test() {
   let config = config("/nonexistent/loom-exec", "removed")
   let assert Error(_) = executor.run(config)
   assert simplifile.is_directory(config.scratch) == Ok(False)
 }
 
-fn self_cleaning(config: executor.Config) -> Result(Nil, String) {
-  executor.run(config)
+/// A boot that fails after creating the scratch removes it: nothing was
+/// spawned, and `run` only cleans up after a boot that succeeded.
+pub fn a_boot_that_fails_after_the_scratch_removes_it_test() {
+  let config = config("none", "boot-failed")
+  let failed = executor.boot_with(config, start: fn(_) { Error("injected") })
+  assert failed |> result.is_error
+  assert simplifile.is_directory(config.scratch) == Ok(False)
+}
+
+/// A drain that cannot confirm custody means a jail may still be using the
+/// scratch, so the run leaves it in place (and says so on stderr).
+pub fn an_unconfirmed_drain_leaves_the_scratch_test() {
+  let config = config("/nonexistent/loom-exec", "kept")
+  let unconfirmed = fn(up) {
+    let _ = executor.drain(up)
+    Error(exec.RetirementOwnerGone)
+  }
+  let assert Error(_) = executor.run_with(config, drain: unconfirmed)
+  assert simplifile.is_directory(config.scratch) == Ok(True)
+  let assert Ok(Nil) = simplifile.delete(config.scratch)
+    as "the test removes what it kept"
 }

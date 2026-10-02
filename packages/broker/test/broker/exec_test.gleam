@@ -511,12 +511,14 @@ pub fn pool_custody_names_each_helper_test() {
         ordinal: 1,
         lending: exec.Lendable,
         custody: exec.Held,
+        features: ["rlimits", "pgroup", "bwrap", "landlock", "seccomp"],
       ),
       exec.HelperView(
         pid: exec.pid(second),
         ordinal: 2,
         lending: exec.Lent,
         custody: exec.Held,
+        features: ["rlimits", "pgroup", "bwrap", "landlock", "seccomp"],
       ),
     ]
   assert custody.census.spawned == 2

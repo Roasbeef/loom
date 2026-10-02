@@ -37,15 +37,26 @@
 ////    scratch and the network off, starts the service over the pool's
 ////    seams, and starts a broker over the service's dispatcher.
 //// 2. `smoke` runs `true` once, jailed, through that broker, which is the
-////    smallest proof that the helper, the jail and the service agree.
-//// 3. `drain` closes the service: new work is refused, live executions are
+////    smallest proof that the helper, the jail and the service agree. A
+////    degraded result (a host missing a layer the helper would build) is
+////    refused, naming the skipped layers.
+//// 3. `census` reports the versions and the features the helper said in its
+////    hello. It follows the smoke because the pool only hears a hello when
+////    it spawns, and the census borrows nothing; before any spawn the
+////    features are empty, which means unknown.
+//// 4. `drain` closes the service: new work is refused, live executions are
 ////    cancelled and given half the budget to settle, the pool is closed
 ////    with the rest, and the answer is the pool's native-exit verdict.
 ////
 //// "Restart" is a fresh incarnation. Nothing is resumed: a second `boot`
 //// in the same VM spawns new helpers under a new incarnation, minted from
-//// the wall clock to the microsecond, so an execution identity from the
-//// first service can never equal one from the second.
+//// the wall clock to the microsecond, so within one VM an execution
+//// identity from the first service never equals one from the second.
+////
+//// The scratch directory is the jail's writable root and holds the helper's
+//// policy files, which a jailed command can read just as the harness's can.
+//// It is removed only after a drain that confirmed custody, and after a
+//// boot that failed before spawning anything.
 
 import argv
 import broker/broker
@@ -62,6 +73,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/json
+import gleam/list
 import gleam/result
 import gleam/string
 import gleam/time/timestamp
@@ -172,6 +184,26 @@ pub fn mint_incarnation() -> Int {
 /// ```
 ///
 pub fn boot(config: Config) -> Result(Standalone, String) {
+  boot_with(config, start: start_plane)
+}
+
+/// `boot` with the start of the processes supplied, so that a test can make
+/// the step after the scratch directory exists fail. The scratch is created
+/// here and removed again if `start` fails: nothing was spawned, so no jail
+/// can be using it, and `run` (which only cleans up after a boot that
+/// succeeded) would otherwise never see it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let failed = executor.boot_with(config, start: fn(_) { Error("no") })
+/// assert failed == Error("no")
+/// ```
+///
+pub fn boot_with(
+  config: Config,
+  start start: fn(Config) -> Result(Standalone, String),
+) -> Result(Standalone, String) {
   // The helper refuses a relative path in its policy after it has been
   // spawned, which surfaces as a dead handshake. Say so before spawning.
   use Nil <- result.try(
@@ -189,6 +221,18 @@ pub fn boot(config: Config) -> Result(Standalone, String) {
       "cannot create " <> config.scratch <> ": " <> string.inspect(error)
     }),
   )
+  case start(config) {
+    Ok(up) -> Ok(up)
+    Error(reason) -> {
+      let _ = simplifile.delete(config.scratch)
+      Error(reason)
+    }
+  }
+}
+
+// Spawns the pool, the service over it and the broker over the service. The
+// pool is lazy and linked to the caller, so a failure here leaves no helper.
+fn start_plane(config: Config) -> Result(Standalone, String) {
   let spawn_config =
     exec.SpawnConfig(
       helper_path: config.helper,
@@ -250,8 +294,10 @@ pub fn service_of(standalone: Standalone) -> service.Executor {
   standalone.service
 }
 
-/// This executor's version census, with the features of a live helper when
-/// one could be sampled (see `broker/executor.census`).
+/// This executor's version census. The features are the hello of the newest
+/// helper the pool has spawned, and are empty (unknown) until one has said
+/// hello; the census borrows and spawns nothing (see
+/// `broker/executor.census`).
 ///
 /// ## Examples
 ///
@@ -285,7 +331,9 @@ pub fn census_line(here: Census) -> String {
 }
 
 /// Runs `true` once, jailed, through the broker and the service, and
-/// answers whether it exited 0 under reported enforcement.
+/// answers whether it exited 0 under full enforcement. A degraded result
+/// (the host lacked a layer the helper would build) is refused and names
+/// the skipped layers: a smoke that passed unjailed would prove nothing.
 ///
 /// ## Examples
 ///
@@ -331,13 +379,30 @@ fn settled(events: process.Subject(broker.CallEvent)) -> Result(Nil, String) {
     Error(Nil) -> Error("the smoke call never settled")
     Ok(broker.CallOutput(..)) -> settled(events)
     Ok(broker.CallSettled(broker.CallExited(result:))) ->
-      case result.code == 0 && !result.degraded {
-        True -> Ok(Nil)
-        False -> Error("the smoke call exited " <> int.to_string(result.code))
+      case result.degraded, result.code {
+        True, _ ->
+          Error(
+            "the smoke call ran without the required enforcement (degraded); "
+            <> "skipped layers: "
+            <> string.join(skipped_layers(result.enforcement), "; "),
+          )
+        False, 0 -> Ok(Nil)
+        False, code -> Error("the smoke call exited " <> int.to_string(code))
       }
     Ok(broker.CallSettled(broker.CallFailed(failure:))) ->
       Error("the smoke call failed: " <> string.inspect(failure))
   }
+}
+
+// The helper reports every layer it did not build as `skip:` and the reason,
+// so the refusal can name them.
+fn skipped_layers(enforcement: List(String)) -> List(String) {
+  list.filter_map(enforcement, fn(entry) {
+    case entry {
+      "skip:" <> reason -> Ok(reason)
+      _applied -> Error(Nil)
+    }
+  })
 }
 
 /// Drains and shuts the executor down: stops the broker, then closes the
@@ -375,11 +440,11 @@ pub fn main() -> Nil {
   }
 }
 
-// Boot, census, smoke, drain, each reported on its own line. A failed
-// step still drains, so a half-started plane does not leave helpers behind.
 /// One whole life of the entrypoint against `config`, returning why it
-/// failed, if it did. The scratch directory is removed after the drain
-/// whether or not the drain succeeded; `main` is this plus an exit status.
+/// failed, if it did. The scratch directory is removed after a drain that
+/// returned `Ok`; when the drain could not confirm custody a jail may still
+/// be using it, so it is left in place and its path is printed. `main` is
+/// this plus an exit status.
 ///
 /// ## Examples
 ///
@@ -388,27 +453,36 @@ pub fn main() -> Nil {
 /// ```
 ///
 pub fn run(config: Config) -> Result(Nil, String) {
+  run_with(config, drain: drain)
+}
+
+/// `run` with the drain supplied, so a test can make it answer an
+/// unconfirmed custody. The supplied drain must still close the executor it
+/// is given.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Error(_) =
+///   executor.run_with(config, drain: executor.drain)
+/// ```
+///
+pub fn run_with(
+  config: Config,
+  drain drain: fn(Standalone) -> Result(Nil, exec.RetirementFailure),
+) -> Result(Nil, String) {
   use up <- result.try(boot(config))
+  let ran = smoke(up, scratch: config.scratch)
+
+  // The census follows the smoke because features are what a helper said in
+  // its hello: before the first spawn the answer is "unknown" (empty).
   let measured = census(up)
   case measured {
     Ok(here) -> io.println(census_line(here))
     Error(_) -> Nil
   }
-  let ran = smoke(up, scratch: config.scratch)
   let verdict = drain(up)
-
-  // Only now: until `close` answers, a jail may still be using the scratch.
-  // A removal failure is reported and never changes the exit status.
-  case simplifile.delete(config.scratch) {
-    Ok(Nil) -> Nil
-    Error(error) ->
-      io.println_error(
-        "executor: could not remove "
-        <> config.scratch
-        <> ": "
-        <> string.inspect(error),
-      )
-  }
+  remove_scratch(config.scratch, verdict)
   io.println(
     "drain: "
     <> case verdict {
@@ -419,6 +493,35 @@ pub fn run(config: Config) -> Result(Nil, String) {
   use _here <- result.try(measured)
   use Nil <- result.try(ran)
   verdict |> result.map_error(fn(failure) { string.inspect(failure) })
+}
+
+// Only a drain that answered `Ok` proves no jail is left, so only then is
+// the scratch (the writable root and the helper's policy files) removed. On
+// an unconfirmed custody it stays as evidence and the operator is told. A
+// removal failure is reported and never changes the exit status.
+fn remove_scratch(
+  scratch: String,
+  verdict: Result(Nil, exec.RetirementFailure),
+) -> Nil {
+  case verdict {
+    Ok(Nil) ->
+      case simplifile.delete(scratch) {
+        Ok(Nil) -> Nil
+        Error(error) ->
+          io.println_error(
+            "executor: could not remove "
+            <> scratch
+            <> ": "
+            <> string.inspect(error),
+          )
+      }
+    Error(_) ->
+      io.println_error(
+        "executor: custody of the helpers was not confirmed, so "
+        <> scratch
+        <> " was left in place; a jail may still be using it",
+      )
+  }
 }
 
 // A scratch under the OS temp area, distinct per incarnation so that two

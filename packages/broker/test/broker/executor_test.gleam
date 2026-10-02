@@ -695,25 +695,40 @@ pub fn a_second_close_after_a_clean_close_finds_no_service_test() {
     == Error(exec.RetirementOwnerGone)
 }
 
-/// An idle service reports this build's versions and the hello features
-/// of the helper it borrowed to read them, and the borrow is returned.
-pub fn the_census_carries_the_features_of_a_live_helper_test() {
+/// A census reads the features the pool heard at the handshake and borrows
+/// no helper to do it: before any helper exists the features are unknown,
+/// and asking spawns nothing.
+pub fn the_census_reads_features_without_borrowing_test() {
   let plane = plane(fake_helper.EchoArgv, size: 1)
-  let assert Ok(here) = executor.census(service_of(plane), waiting: 3000)
-  assert here
-    == census.local(["rlimits", "pgroup", "bwrap", "landlock", "seccomp"])
+  let assert Ok(unknown) = executor.census(service_of(plane), waiting: 3000)
+  assert unknown == census.local([])
+  let assert Ok(before) = exec.pool_census(plane.pool, waiting: 1000)
+  assert before.spawned == 0
+
+  // One execution makes the pool spawn a helper, which says hello.
+  let #(_handle, events) = call(plane, 5000)
+  let assert [_, broker.CallSettled(_)] = lanes.collect(events, within: 2000)
   let _ = wait_for_census(plane, fn(counts) { counts.borrowed == 0 })
+  let assert Ok(spawned) = exec.pool_census(plane.pool, waiting: 1000)
+
+  let assert Ok(known) = executor.census(service_of(plane), waiting: 3000)
+  assert known
+    == census.local(["rlimits", "pgroup", "bwrap", "landlock", "seccomp"])
+  let assert Ok(after) = exec.pool_census(plane.pool, waiting: 1000)
+  assert after.spawned == spawned.spawned
+  assert after.borrowed == 0
   lanes.stop(plane)
 }
 
-/// A pool whose only slot is lent out cannot be sampled without waiting,
-/// so the census answers at once with no features instead of queueing
-/// behind the execution.
-pub fn a_full_pool_reports_the_census_without_features_test() {
+/// The census answers while the only slot is lent out, since it asks the
+/// pool's books and never the pool's lending.
+pub fn a_full_pool_still_reports_its_features_test() {
   let plane = plane(fake_helper.SleepUntilCancel, size: 1)
   let #(handle, events) = call(plane, 100_000)
+  let _ = wait_for_census(plane, fn(counts) { counts.borrowed == 1 })
   let assert Ok(here) = executor.census(service_of(plane), waiting: 1000)
-  assert here == census.local([])
+  assert here
+    == census.local(["rlimits", "pgroup", "bwrap", "landlock", "seccomp"])
 
   broker.cancel(plane.broker, handle)
   let assert [broker.CallSettled(_)] = lanes.collect(events, within: 2000)

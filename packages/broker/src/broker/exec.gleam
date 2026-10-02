@@ -2875,6 +2875,11 @@ pub type HelperView {
     lending: Lending,
     /// What is known of its native resource.
     custody: Custody,
+    /// The features the helper said in its hello, as the pool received them
+    /// when the handshake completed. Empty means unknown: a helper whose
+    /// handshake has not finished has not said, and a helper that said
+    /// nothing is indistinguishable from it.
+    features: List(String),
   )
 }
 
@@ -2940,6 +2945,8 @@ type PoolEntry {
     availability: Availability,
     // Which spawn this was, from one. Introspection only.
     ordinal: Int,
+    // The hello features `await_ready` answered at spawn; empty until then.
+    features: List(String),
   )
 }
 
@@ -3312,6 +3319,7 @@ fn custody_of(state: PoolState) -> PoolCustody {
         ordinal: entry.ordinal,
         lending:,
         custody:,
+        features: entry.features,
       )
     })
   PoolCustody(census: census_of(state), helpers:)
@@ -3522,6 +3530,7 @@ fn spawn_new(state: PoolState) -> #(PoolState, Result(Helper, CheckoutError)) {
           monitor: process.monitor(helper.pid),
           availability: Borrowed,
           ordinal: state.spawned + 1,
+          features: [],
         )
       let state =
         PoolState(
@@ -3535,7 +3544,15 @@ fn spawn_new(state: PoolState) -> #(PoolState, Result(Helper, CheckoutError)) {
       // the owner or converting partial acquisition into an empty slot.
       begin(helper)
       case await_ready(helper, waiting: helper.handshake_wait) {
-        Ok(_) -> #(state, Ok(helper))
+        Ok(features) -> {
+          // The entry is still the head: the pool is one actor and nothing
+          // else ran between the insertion and the handshake's answer.
+          let known = PoolEntry(..entry, features:)
+          #(
+            PoolState(..state, entries: [known, ..list.drop(state.entries, 1)]),
+            Ok(helper),
+          )
+        }
         Error(failure) -> {
           let retired = retire_entry(entry, state.commands)
           #(
