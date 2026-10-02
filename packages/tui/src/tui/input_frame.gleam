@@ -410,12 +410,15 @@ fn bottom_left(status: Status, width: Int) -> List(#(String, style.Style)) {
     True -> "$" <> status.cost
     False -> "est $" <> status.cost
   }
+
+  // A notice is drawn in paper rather than amber: most notices report, and
+  // amber is kept for what asks the operator to act.
   let notice = case string.trim(status.notice) {
     "" -> []
     notice -> [
       #(
         " " <> text_hygiene.single_line(notice) <> " ›",
-        style.new(theme.signal, style.Default, style.none()),
+        style.new(theme.paper, style.Default, style.none()),
       ),
     ]
   }
