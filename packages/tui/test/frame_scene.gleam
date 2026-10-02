@@ -156,6 +156,9 @@ pub fn attach(
       strands: [],
       transcript: [],
       current_model: "moonshotai/Kimi-K3",
+      // The demo model's own notice describes the demo, not the scene, and
+      // an attached session would have replaced it.
+      notice: "",
     ),
   )
   |> inbound.apply_channel_update(session_channel.Captured(
