@@ -4123,6 +4123,23 @@ fn assemble_in(
       settings.compaction,
     )
 
+  // Restart specifications remain in the supervisor after initialization. Each
+  // worker captures the fields it needs before its closure is constructed, so a
+  // heartbeat or hub restart does not add a path through the whole Settings
+  // record. The runtime and executor registry keep their intended owners.
+  let async_heartbeat_ms = settings.jobs_policy.heartbeat_ms
+  let hub_session_id = settings.session_id
+  let hub_workspace = settings.workspace
+  let hub_catalog = settings.catalog
+  let code_mode_issue = case toolchain {
+    Error(reason) -> Some(reason)
+    Ok(_) ->
+      case list.contains(settings.deactivated_tools, "code_mode") {
+        True -> Some("disabled in the host tool configuration")
+        False -> None
+      }
+  }
+
   // The restartable half of the per-child policy. These children hold
   // no state a restart cannot rebuild and — crucially — none of them is
   // addressed by pid: each registers under a name and every caller
@@ -4152,7 +4169,7 @@ fn assemble_in(
             runtime:,
             clock:,
             abort: async_codemode.abort(broker_actor),
-            heartbeat_ms: settings.jobs_policy.heartbeat_ms,
+            heartbeat_ms: async_heartbeat_ms,
           ),
         )
       }),
@@ -4250,11 +4267,11 @@ fn assemble_in(
     |> sup.add(
       supervision.worker(fn() {
         hub.start(
-          hub.default_options(settings.session_id, runtime)
+          hub.default_options(hub_session_id, runtime)
             |> hub.with_directories(directories.admin(
               opened,
               fn() { Ok(runtime) },
-              settings.workspace,
+              hub_workspace,
               base_policy,
             ))
             |> hub.with_bus(event_bus)
@@ -4269,18 +4286,11 @@ fn assemble_in(
               jobs.live_jobs(jobs_name, strand, waiting: 1000)
               |> result.map_error(string.inspect)
             })
-            |> hub.with_catalog(settings.catalog)
+            |> hub.with_catalog(hub_catalog)
             |> hub.with_registry(tool_registry)
             |> hub.with_extension_refusals(extension_refusals)
             |> hub.with_skills(skills)
-            |> hub.with_code_mode_issue(case toolchain {
-              Error(reason) -> Some(reason)
-              Ok(_) ->
-                case list.contains(settings.deactivated_tools, "code_mode") {
-                  True -> Some("disabled in the host tool configuration")
-                  False -> None
-                }
-            })
+            |> hub.with_code_mode_issue(code_mode_issue)
             // The operator's abort reaches the effect plane here, and
             // this is the only place it can: the runtime stops the
             // strand's live effects, but a background job runs under a
