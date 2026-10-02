@@ -318,7 +318,10 @@ session and sends it many invocations.
   differently-pinned one, `main` is `gleam run -m codemode/seed`.
 - `codemode/build.BuildConfig` — the production `Builder`: `gleam build
   --warnings-as-errors` inside a network-off jail, then the flattened
-  `.beam` set and its content address. Carries no operation, step,
+  modules and fixed `esqlite3_nif.so` library with their content address.
+  Native loading is module-relative and stays inside the same artifact read
+  root. Missing library copies fail the build; extra `priv` files do not enter
+  the artifact. Carries no operation, step,
   budget or grants. Its `observe` seam is shown the build's rolling
   output tail after every chunk (`tools/tool.collect_observed`); the
   `code_mode` tool passes its `Ctx.observe_output` through

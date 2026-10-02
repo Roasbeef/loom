@@ -60,13 +60,17 @@ publication requires owner approval. Keep all existing companion consumers
 on one exact native family; `cap` itself needs only the native package.
 
 The initial real SQL E2E run identified a release boundary missing from the
-design-only checks: flattened code-mode artifacts carry BEAMs but omit the
-native library. The correction must carry the trusted library inside the
-same artifact read root, hash its bytes and use module-relative loading.
-Then rerun both jailed Gleam and Go SQL cases, resolve the published graph
-with stock Gleam, refresh the committed offline seed lock and run the
-aggregate gate. A local native wrapper is experimental evidence, not the
-shipping dependency path. No test or gate is intentionally skipped.
+design-only checks: flattened code-mode artifacts omitted the native library.
+The correction carries exactly the trusted library inside the same artifact
+read root, hashes its bytes and uses module-relative loading. Both jailed
+Gleam and Go SQL cases now pass, along with all 340 code-mode tests using the
+matching stock compiler and experimental seed. The final native Hex payload
+rebuilds cold and passes forty-seven tests.
+
+Remaining: publish the approved dependency versions, resolve that graph with
+stock Gleam, refresh the committed offline seed lock and run the aggregate
+gate. The local native wrapper is experimental evidence, not the shipping
+dependency path. No test or gate is intentionally skipped.
 
 The older handoff sections below retain their original evidence and scope;
 this feature does not repeat their installed-memory measurements.

@@ -7,9 +7,10 @@ runs in the jailed satellite over four fixed in-memory tables.
 
 **Integration status:** the complete program in the
 [design note](design-notes/lsp-sql.md#a-complete-program) has compiled
-warning-free. Native package publication, final dependency pins, the cold
-offline seed, and the real jailed end-to-end run are pending. An older installed
-Loom daemon does not acquire this module by installing a language profile.
+warning-free. Real jailed Gleam and Go SQL cases also pass using an isolated
+experimental native wrapper. Native publication, final dependency pins and
+the cold published-package seed remain pending. An older installed Loom daemon
+does not acquire this module by installing a language profile.
 
 ## Prepare the existing LSP setup
 

@@ -12,11 +12,11 @@ For installation and examples, see the [usage guide](../lsp-sql.md). The
 the separate observation contract. The ordinary tools and `cap/lsp` keep their
 existing [LSP door](lsp.md).
 
-**Integration status:** focused collection, routing, decoding, and cancellation
-tests have passed. The complete design-note example has compiled warning-free.
-Native package publication, final dependency pins, the cold offline seed, and
-the real jailed end-to-end run are pending. These checks remain separate from
-the architectural properties described below.
+**Integration status:** focused checks and real jailed Gleam and Go SQL
+programs have passed. The complete design-note example compiles warning-free.
+Native publication, final dependency pins and the cold published-package seed
+remain pending. The successful jailed run used an isolated experimental native
+wrapper, so it does not establish that final distribution path.
 
 ## The execution boundary
 
@@ -215,6 +215,13 @@ block; the native boundary finalizes its statement and clears callbacks before
 that close.
 
 ## Budgets compose with invocation custody
+
+The code-mode builder copies exactly the trusted `esqlite3_nif.so` library
+beside the flattened BEAMs and includes its bytes in the artifact fingerprint.
+The native loader retains ordinary OTP `priv` lookup, then uses the module's
+directory for a flattened artifact. The program's working directory does not
+select executable bytes. This preserves the existing single `-pa` and artifact
+read root; arbitrary dependency `priv` files do not gain admission.
 
 | Boundary | Fixed maximum |
 | --- | --- |

@@ -4,8 +4,9 @@
 `codex/lsp-sql`, based on `7d37ec86f`. The collection, routing, typed decoding,
 and cancellation tests have passed focused checks, including both corrections
 from independent review. The complete Gleam program below compiles unchanged
-with warnings treated as errors. Native package publication, the cold resolved
-offline seed and real jailed end-to-end tests are still being integrated.
+with warnings treated as errors. Real jailed Gleam and Go SQL tests also pass
+using an isolated experimental native wrapper. Native package publication and
+the cold resolved published-package seed are still being integrated.
 This is a reviewable contract, not a release announcement.
 
 ## What this lets a program ask
@@ -314,6 +315,7 @@ resulting cold offline seed are still pending.
 - [Satellite host](../../packages/codemode/src/codemode/satellite.gleam):
   scoped service custody in both host shapes.
 
-The final PR will carry a numbered protocol proposal, an architecture page,
-an installation/usage guide, checked examples, and a verification report. This
-note remains the readable design account while that integration finishes.
+The [protocol proposal](../../protocol-change/062-lsp-sql-observations.md),
+[architecture page](../architecture/lsp-sql.md), [usage guide](../lsp-sql.md)
+and [review record](../review/lsp-sql.md) accompany this readable design account.
+Final distribution verification remains separate from the working implementation.

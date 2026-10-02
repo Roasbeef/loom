@@ -39,12 +39,31 @@ state metadata and the full existing LSP suite. Both new real-server SQL E2E
 fixtures compile. The complete program in the design and usage guides compiles
 unchanged with warnings treated as errors.
 
-The native checkout, a cold declared-source bundle and a cold unpack of the
-actual Hex payload each pass forty-six tests. The companion binding passes
+Before the loader correction, the native checkout, a cold declared-source
+bundle and a cold unpack of the Hex payload each passed forty-six tests.
+The companion binding passes
 twenty-one tests under stock Gleam 1.18.1 using a temporary local native wrapper.
 That wrapper proves the implementation, not the published package graph.
 
-Native publication, a cold resolved stock-Gleam graph, the refreshed offline
-seed, actual jailed E2E, the aggregate gate and hosted Linux/macOS verification
-remain pending. Standard LSP still does not offer a project-wide transaction:
-unseen dependency changes are outside the finite checked interval guarantee.
+The first real SQL E2E run exposed missing native artifact custody: the builder
+flattened BEAMs but omitted SQLite's library, and the loader's fallback depended
+on the working directory. The fixed library now joins the artifact read root
+and fingerprint. Module-relative fallback preserves normal OTP `priv` loading.
+Ten build tests cover native-byte changes, removal and exclusion of unrelated
+libraries; a fresh-VM native loader regression brings the full native suite to
+forty-seven passing tests, including a cold unpack of the final Hex payload.
+
+A narrow independent follow-up reviewed this packaging delta and both earlier
+collection fixes with no additional findings. It did not rerun tests. Both real
+jailed Gleam and Go SQL cases then passed joins, counts, anti-joins, typed decoder
+failure, DELETE refusal, invalid server scope and unchanged metadata. These runs
+used a native wrapper only inside the ignored experimental build seed. The
+matching stock-Gleam code-mode suite passed all 340 tests with zero skips.
+An earlier mixed-compiler run failed only the byte-identical seed check because
+the seed used 1.18.1 and the runtime compiler used 1.19.0-rc2; no gate was removed.
+
+Native publication, a cold resolved stock-Gleam graph, the final offline seed,
+the aggregate gate and hosted Linux/macOS verification remain pending. Existing
+macOS resource/process-lifecycle degradation was reported rather than weakened.
+Standard LSP still does not offer a project-wide transaction: unseen dependency
+changes are outside the finite checked interval guarantee.

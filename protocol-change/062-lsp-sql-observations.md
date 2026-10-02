@@ -151,5 +151,7 @@ positions and paths; exact invocation routing and capture admission; caller
 death and cancellation without killing the shared lease; document-change
 refusal; typed row-decoder failure; and real jailed Gleam and Go queries. The
 [design note](../docs/design-notes/lsp-sql.md) contains the schema and complete
-examples. Focused checks are passing; dependency distribution, end-to-end
-verification and final independent review remain in progress.
+examples. Focused checks, independent review corrections and actual jailed
+Gleam and Go SQL tests pass. Those jailed tests used an isolated native wrapper
+in the experimental seed. Final published-package resolution, seed locking
+and aggregate verification remain pending.
