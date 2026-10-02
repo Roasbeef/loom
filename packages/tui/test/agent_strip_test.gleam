@@ -545,7 +545,7 @@ pub fn down_enters_the_strip_and_enter_opens_the_agent_test() {
   assert browsing.view.strip_focus == Browsing("sub:main/audit-panics-1a2b3c")
   assert browsing.shared.active_strand == "main"
   assert browsing.view.input == initial.view.input
-  assert string.contains(painted(browsing, 120, 30), "enter opens · x stops")
+  assert string.contains(painted(browsing, 120, 30), "Enter opens · x stops")
 
   // Moving the cursor never retargets the composer.
   let moved = browsing |> press("down")

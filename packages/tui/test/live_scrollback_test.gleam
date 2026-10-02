@@ -188,7 +188,7 @@ pub fn a_disconnected_terminal_names_its_retained_draft_first_test() {
     as "a pending interrupt does not outrank the reconnect instruction"
   assert !string.contains(
     border_text(interrupting),
-    "stopped · enter sends held input",
+    "stopped · Enter sends held input",
   )
 
   // The same pending interrupt on a live terminal still names itself, so the
@@ -201,7 +201,7 @@ pub fn a_disconnected_terminal_names_its_retained_draft_first_test() {
         peer: session_model.Preview,
       ),
     )
-  assert string.contains(border_text(live), "stopped · enter sends held input")
+  assert string.contains(border_text(live), "stopped · Enter sends held input")
 }
 
 pub fn switching_agents_restores_the_frozen_reader_without_crossing_streams_test() {

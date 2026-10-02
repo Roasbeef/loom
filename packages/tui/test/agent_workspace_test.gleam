@@ -927,13 +927,13 @@ pub fn workspace_preserves_recipient_controls_and_attention_at_small_sizes_test(
         render.view(initial, geometry.rect_new(0, 0, size.0, size.1)).0
         |> frame.buffer_to_text
       assert string.contains(rendered, "To main")
-      assert string.contains(rendered, "attention")
+      assert string.contains(rendered, "need you")
       assert string.contains(rendered, "retained draft")
       let editing = initial |> press("w")
       let rendered =
         render.view(editing, geometry.rect_new(0, 0, size.0, size.1)).0
         |> frame.buffer_to_text
-      assert string.contains(rendered, "enter")
+      assert string.contains(rendered, "Enter")
       assert editing.shared.active_strand == "main"
     },
   )
@@ -1064,7 +1064,8 @@ pub fn long_checkout_paths_do_not_hide_the_session_identity_test() {
     |> list.first
   let assert Ok(header) = header as "a terminal has a header"
   assert string.contains(header, "review-session")
-  assert string.contains(header, "provider/model")
+  assert string.contains(header, "· strand main")
+  assert string.contains(header, "model")
 }
 
 pub fn tiny_workspace_keeps_selected_identity_and_navigation_visible_test() {

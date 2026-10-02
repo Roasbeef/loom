@@ -550,13 +550,13 @@ pub fn queue_mouse_hit_excludes_controls_and_scrolled_heading_test() {
   assert selected.view.queue_editor.selected == 11
 
   let controls =
-    tui.update(backend.MousePress(2, 14, backend.MouseLeft), selected)
+    tui.update(backend.MousePress(2, 15, backend.MouseLeft), selected)
   let heading =
-    tui.update(backend.MousePress(2, 17, backend.MouseLeft), selected)
+    tui.update(backend.MousePress(2, 18, backend.MouseLeft), selected)
   assert controls.view.queue_editor.selected == 11
   assert heading.view.queue_editor.selected == 11
 
-  let row = tui.update(backend.MousePress(2, 18, backend.MouseLeft), selected)
+  let row = tui.update(backend.MousePress(2, 19, backend.MouseLeft), selected)
   assert row.view.queue_editor.selected == 6
 }
 
@@ -860,7 +860,7 @@ pub fn an_idle_held_queue_survives_interrupt_retirement_on_both_terminals_test()
     as "the settled operation retired its marker"
 
   list.each([retired, second], fn(model) {
-    assert string.contains(painted(model), "stopped · enter sends held input")
+    assert string.contains(painted(model), "stopped · Enter sends held input")
       as "the composer derives the halt from the connected cut"
     let shown = painted(submit.open_queue(model))
     assert string.contains(shown, "held until your next message")
@@ -886,7 +886,7 @@ pub fn an_idle_held_queue_survives_interrupt_retirement_on_both_terminals_test()
     as "Enter releases held input with an ordinary prompt, not a steer"
 
   let #(empty, _) = ready([])
-  assert !string.contains(painted(empty), "stopped · enter sends held input")
+  assert !string.contains(painted(empty), "stopped · Enter sends held input")
     as "an idle strand without held rows is an ordinary prompt"
   let pending_stop = submit.toggle_submission_mode(interrupted)
   assert pending_stop.shared.notice

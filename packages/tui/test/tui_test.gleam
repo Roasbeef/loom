@@ -2338,7 +2338,7 @@ pub fn a_live_recording_replays_to_its_settled_frame_test() {
   // live strand paints the elapsed seconds of the *replay* into the
   // prompt border, so a fixture truncated mid-turn would flake under
   // load; the idle border title is that property, asserted.
-  assert string.contains(text, "prompt · enter sends · / commands")
+  assert string.contains(text, "· idle")
   assert !string.contains(text, "Design-preview echo received.")
   assert count_occurrences(text, "Reply with exactly this sentence") == 1
   snapshot_test.assert_snapshot("live-gemini-flash-reply", text)
