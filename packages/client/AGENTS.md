@@ -1,5 +1,18 @@
 # client
 
+## LSP query handle ownership
+
+`lsp/manager.Manager` retains reachability, workspace/server identity,
+search, protected paths, timing and display roots. Its caller-side handle
+excludes `Backend.connect`; the manager actor and keeper retain the full
+configuration and perform transport startup. Every query and stop still
+resolves the same restartable address and uses the original bounds. The
+capture regression grows only connect's environment and requires both the
+handle and its eight door callbacks to remain the same flat size. The returned
+server transport projects the abort callback and step identity before retaining
+its abort closure; environment lookup stays with preparation, tested by growing
+only its captured payload through the scripted enforcement probe.
+
 ## Context observation and router capture
 
 `context_view.reader` projects the immutable tool registry into a private
