@@ -66,7 +66,9 @@ LSP fixtures passed without prerequisite skips after migrating the legacy
 calls to compiled capability programs. These retain anchored references,
 rename preview/apply, stale-content refusal, Go queries and both SQL cases.
 They also check that provider requests contain no top-level `lsp_*` tools.
-This evidence still uses the experimental seed described below.
+Astra high reviewed this delta through `2b5941df1`, found no new confirmed
+defect and independently reran 54 tools, 12 client and 24 prompt tests with
+exit zero. This evidence still uses the experimental seed described below.
 
 The independent pass found two collection defects. Both are corrected and
 covered by the passing fifteen-test collection suite: admission is checked

@@ -88,3 +88,37 @@ blocker. Dependency publication approval, exact native and companion pins,
 resolved manifests, a cold published-package seed, aggregate verification
 and Linux/macOS signoff remain required. The experimental wrapper does not
 establish that shipping dependency path.
+
+## Capability-only LSP follow-up
+
+On October 2, the owner authorized removing all seven default top-level
+`lsp_*` registrations while retaining `cap/lsp`, `cap/lsp_sql` and automatic
+write diagnostics. The requested Astra high follow-up reviewed
+`055676ae8..2b5941df10945e8e2bee070271d015512045dc6c` and found no new
+confirmed defect. It requested no implementation changes.
+
+The reviewer traced the default registration, profile-note discovery and
+closed-seam admission, the separate SQL import/service requirement, rename
+write authority and shared base checks, and the migrated acceptance cases.
+Rename still inherits the outer tool's `Never` replay and `Exclusive`
+execution. Separate preview and apply calls are model guidance, not a new
+authorization mechanism. Saved session pins are not rewritten.
+
+The reviewer independently reran 54 code-mode tool tests, 12 client plumbing
+tests and 24 default-prompt tests from existing compiled artifacts, each with
+exit zero. It inspected the recorded six-generator real-server run and
+confirmed all named generators ran with no prerequisite skips; it did not
+repeat that run. The root's full tools suite passed 610 tests, the prompt
+suite passed 102, and client plumbing, contributions and system-prompt suites
+passed 12, 16 and 46 tests. Format, scoped lint, prelude and documentation
+gates exited zero, with existing non-gating warnings.
+
+All six real-server LSP generators passed after the legacy calls moved to
+compiled capability programs. They retain anchored references, preview
+without writes, fresh multi-file apply and diagnostics, stale refusal, Go
+queries and both SQL cases. They also cover sibling-package queries with
+withheld source context and check that provider requests contain no
+`lsp_*` tools. These runs use the same experimental seed; they do not prove
+the pending shipping dependency graph. The publication, pin, cold-seed,
+aggregate-gate and platform-signoff requirements remain open, so the PR
+remains draft with no new review blocker for this delta.
