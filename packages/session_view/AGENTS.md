@@ -204,7 +204,8 @@ for a host with no surfaces.
   terminal's agent rail and strip and the web view's chips.
   `agent_roster.{Roster, Line, Chips}` is which strands a strip lists, in
   what order, with elapsed time and context size (`lines`, `chips`,
-  `running_ms`, `context`).
+  `running_ms`, `context`). `describe` gives any row the same line whether
+  or not a strip would list it; the terminal's workspace list uses it.
   Its internal `listed_count` uses the same membership predicate without
   constructing display lines, for hosts measuring geometry. The roster test
   compares that count with `lines` across every status and active-strand choice.
