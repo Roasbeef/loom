@@ -1,8 +1,8 @@
 # Directory callback retention
 
-Status: local package verification passed; independent review and integration
-signoff remain outstanding. These measurements do not establish a reduction
-in the installed daemon's RSS.
+Status: local package gates, independent review, and the full macOS signoff
+passed. Hosted CI remains outstanding. These measurements do not establish a
+reduction in the installed daemon's RSS.
 
 The gateway needs its execution runtime, but directory administration needs
 less state. Its add callback reads and conditionally commits one reserved fact.
@@ -98,3 +98,15 @@ SQLite lease theft. A deterministic lost-reply fixture kills the writer after
 storage commits: the caller crashes, the replacement reads the durable value,
 and the API performs no retry. Compatibility administration tests preserve
 lazy runtime acquisition and durable directory upgrades.
+
+The complete local signoff passed at `ed574473` with its own exit status 0
+in 831 seconds, including all six lanes, enforcement, and release/update
+verification. Its two declared macOS prerequisites were the existing `/proc`
+and rust-analyzer exclusions; the skip census reported no undeclared skip.
+
+A fresh independent review found no blocking correctness or simplification
+findings. Its coverage qualification prompted a fresh-runtime witness: after
+retiring the original namespace, a new handle commits successfully, while the
+old handle cannot read or write even when supplied the fresh cell's current
+sequence. The fresh value and sequence remain unchanged. That additional
+focused test passed with its own exit status 0.

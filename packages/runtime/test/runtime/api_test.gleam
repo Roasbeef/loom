@@ -899,6 +899,33 @@ pub fn projected_fact_handle_survives_replacement_and_retirement_test() {
       expected: Some(second),
     )
     == Error(api.RuntimeUnavailable)
+
+  // A new session namespace cannot revive a retired capability. Use the
+  // fresh cell's current sequence for the old handle's write attempt, so a
+  // stale-sequence refusal could not hide accidental routing to the new writer.
+  let fresh = fact_runtime()
+  let fresh_facts = api.fact_handle(fresh)
+  assert fresh.tree.writer != rt.tree.writer
+  assert api.fact_cell_with(fresh_facts, key) == Ok(None)
+  let assert Ok(fresh_seq) =
+    api.put_reserved_fact_expecting_with(
+      fresh_facts,
+      key,
+      json.String("fresh"),
+      expected: None,
+    )
+    as "the fresh capability must commit through its independent writer"
+  assert api.fact_cell_with(facts, key) == Error(api.RuntimeUnavailable)
+  assert api.put_reserved_fact_expecting_with(
+      facts,
+      key,
+      json.String("retired handle write"),
+      expected: Some(fresh_seq),
+    )
+    == Error(api.RuntimeUnavailable)
+  assert api.fact_cell_with(fresh_facts, key)
+    == Ok(Some(api.FactCell(json.String("fresh"), fresh_seq)))
+  assert api.close(fresh) == Ok(Nil)
 }
 
 // The reserved side of the same compare-and-set, which is what lets a
