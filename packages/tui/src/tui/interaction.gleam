@@ -1804,9 +1804,14 @@ fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
     )
   let model =
     Model(
+      // The reading row at the transcript's foot says how far below the
+      // tail the reader is, so leaving the tail writes no notice of its own.
+      // The notice standing is left as it was rather than cleared, so the
+      // status band keeps its height and the viewport does not move under
+      // the reader as they enter scrollback.
       shared: Shared(..model.shared, notice: case offset == 0 && !older {
         True -> "following output"
-        False -> "scrollback · End returns to latest (empty prompt)"
+        False -> model.shared.notice
       }),
       view: View(..model.view, scroll_offset: offset),
     )

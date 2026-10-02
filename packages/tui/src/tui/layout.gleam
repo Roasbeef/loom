@@ -46,6 +46,7 @@ import gleam/string
 import session_view/advisor_pending
 import session_view/agent_roster
 import session_view/agent_view
+import session_view/commands
 import session_view/composer
 import session_view/context_view
 import session_view/goal_view
@@ -561,14 +562,17 @@ pub fn composer_status_lines(model: Model) -> List(String) {
   // figures.
   // The queue editor owns the band while it is focused, as it does for the
   // nudges and the goal.
+  // The reason behind a held key says what the interrupt's own notice says,
+  // so while it stands the notice is not drawn a second time.
+  let reason = input_keys(model).1 |> option.unwrap("")
+  let notice = case model.shared.notice == commands.stopping_notice, reason {
+    True, "" | False, _ -> text_hygiene.single_line(model.shared.notice)
+    True, _ -> ""
+  }
   let news = case queue_focused {
     True -> []
     False ->
-      [
-        model.view.cache_outlook,
-        text_hygiene.single_line(model.shared.notice),
-        input_keys(model).1 |> option.unwrap(""),
-      ]
+      [model.view.cache_outlook, notice, reason]
       |> list.filter(fn(piece) { piece != "" })
   }
   list.flatten([active, reviewers, goal, nudges, news, pending])
