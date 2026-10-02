@@ -1831,7 +1831,159 @@ fn settled_text(
     Ok(value) -> json.to_string(value)
     Error(Nil) -> content |> list.map(tool_result_text) |> string.join("\n")
   }
-  "code_mode · " <> status <> " · result " <> compact(value, 90)
+  let calls = case call_tree.read(json.Object(details)) {
+    Some(log) -> " · " <> call_count(log)
+    None -> ""
+  }
+  "code_mode · " <> status <> calls <> " · result " <> compact(value, 90)
+}
+
+// A record's count as a settled row says it: `4 calls` when every call
+// settled, and the record's whole summary when any did not.
+fn call_count(log: CallLog) -> String {
+  case log.failed + log.cancelled + log.unsettled {
+    0 -> count_text(log.total, "call", "calls")
+    _ -> call_tree.summary(log)
+  }
+}
+
+// How many groups of calls a failure block lists.
+const call_groups = 4
+
+// The calls section of a failure block, from the host's record: a
+// `CALLS · …` line and the calls grouped where consecutive calls share a
+// capability and an ending, with a closing line for the groups and calls
+// not listed. The arguments start in one column, after the widest glyph,
+// capability and count, so a list of calls reads as a table. A failure
+// names its error code in words (`failed · exit status`), and a call that
+// failed, that had not settled or that took over a second says how long
+// it took (`· 4.1s`). A call's argument summary is the host's redacted
+// one, cut to a row.
+fn call_section(log: CallLog) -> List(String) {
+  let groups = call_groups_of(log.items)
+  let shown = list.take(groups, call_groups)
+  let unlisted =
+    list.fold(list.drop(groups, call_groups), 0, fn(total, group) {
+      total + group.count
+    })
+    + log.total
+    - list.length(log.items)
+  let labels =
+    list.map(shown, fn(group) {
+      let glyph = case group.call.status {
+        call_tree.Settled -> "✓ "
+        call_tree.Failed -> "× "
+        call_tree.Cancelled -> "○ "
+        call_tree.Unsettled -> "◐ "
+      }
+      let times = case group.count {
+        1 -> ""
+        n -> " ×" <> int.to_string(n)
+      }
+      glyph <> text_hygiene.single_line(group.call.cap) <> times
+    })
+  let column =
+    list.fold(labels, 0, fn(widest, label) {
+      int.max(widest, string.length(label))
+    })
+  let rows =
+    list.map2(shown, labels, fn(group, label) {
+      let ending = case group.call.status {
+        call_tree.Settled -> ""
+        call_tree.Failed ->
+          "  failed"
+          <> option_text(option.map(group.call.error, error_words), " · ")
+        call_tree.Cancelled -> "  cancelled"
+        call_tree.Unsettled -> "  not settled"
+      }
+      let took = case group.call.status, group.duration_ms > 1000 {
+        call_tree.Failed, _ | call_tree.Unsettled, _ | _, True ->
+          " · " <> seconds_text(group.duration_ms)
+        call_tree.Settled, False | call_tree.Cancelled, False -> ""
+      }
+      string.pad_end(label, column, " ")
+      <> case group.args {
+        [] -> ""
+        args -> "  " <> compact(string.join(args, " · "), 72)
+      }
+      <> ending
+      <> took
+    })
+  let more = case unlisted {
+    0 -> []
+    n -> ["… " <> count_text(n, "more call", "more calls")]
+  }
+  ["", "CALLS · " <> call_tree.summary(log), ..list.append(rows, more)]
+}
+
+// A run of consecutive calls that share a capability, an ending and an
+// error code.
+type CallGroup {
+  CallGroup(
+    // The first call of the run, which names the capability and ending.
+    call: call_tree.Call,
+    // How many calls the run holds.
+    count: Int,
+    // Their argument summaries, in order.
+    args: List(String),
+    // Their durations added up, in milliseconds.
+    duration_ms: Int,
+  )
+}
+
+fn call_groups_of(calls: List(call_tree.Call)) -> List(CallGroup) {
+  calls
+  |> list.fold([], fn(groups: List(CallGroup), call) {
+    let args = case call.args {
+      Some(args) -> [text_hygiene.single_line(args)]
+      None -> []
+    }
+    case groups {
+      [first, ..rest]
+        if first.call.cap == call.cap
+        && first.call.status == call.status
+        && first.call.error == call.error
+      -> [
+        CallGroup(
+          ..first,
+          count: first.count + 1,
+          args: list.append(first.args, args),
+          duration_ms: first.duration_ms + call.duration_ms,
+        ),
+        ..rest
+      ]
+      [] | [_, ..] -> [CallGroup(call, 1, args, call.duration_ms), ..groups]
+    }
+  })
+  |> list.reverse
+}
+
+// A capability's error code as a reader says it: the codes the host
+// writes in words, and any other code as it is.
+fn error_words(code: String) -> String {
+  case code {
+    "exit_status" -> "exit status"
+    "policy" -> "policy refused"
+    "budget" -> "budget"
+    "aborted" -> "aborted"
+    "unauthorized" -> "unauthorized"
+    "not_found" -> "not found"
+    "permission_denied" -> "permission denied"
+    "fs_failure" -> "file system failure"
+    other -> text_hygiene.single_line(other)
+  }
+}
+
+// A call's duration: tenths of a second from one second up, and whole
+// milliseconds below it.
+fn seconds_text(ms: Int) -> String {
+  case ms >= 1000 {
+    True -> {
+      let tenths = { ms + 50 } / 100
+      int.to_string(tenths / 10) <> "." <> int.to_string(tenths % 10) <> "s"
+    }
+    False -> int.to_string(ms) <> "ms"
+  }
 }
 
 // A running block: the title, the foot naming the budget the call asked
@@ -1916,7 +2068,11 @@ fn failure_text(
     True -> " · " <> count_text(list.length(all), "line", "lines")
     False -> ""
   }
-  ["× code_mode · " <> title, foot <> more, ..body]
+  let calls = case call_tree.read(json.Object(details)) {
+    Some(log) -> call_section(log)
+    None -> []
+  }
+  ["× code_mode · " <> title, foot <> more, ..list.append(body, calls)]
   |> string.join("\n")
 }
 

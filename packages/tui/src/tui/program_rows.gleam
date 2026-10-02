@@ -149,7 +149,18 @@ fn content(row: String, inside: Int, role: Role) -> List(span.Span) {
       ]
     }
     False, ErrorHeading -> [span.span_styled(padded, theme.danger_text())]
-    False, BodyText -> [span.span_styled(padded, theme.quiet_text())]
+    False, BodyText -> [span.span_styled(padded, call_style(row))]
+  }
+}
+
+// A row of the calls section opens with its call's ending, `✓` for a call
+// that settled and `×` for one that failed, and takes that colour; any
+// other row is quiet text.
+fn call_style(row: String) -> style.Style {
+  case string.first(row) {
+    Ok("✓") -> theme.success_text()
+    Ok("×") -> theme.danger_text()
+    Ok(_) | Error(Nil) -> theme.quiet_text()
   }
 }
 
