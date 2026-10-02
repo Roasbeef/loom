@@ -980,6 +980,18 @@ protocol (spec Part 1.4). WP-G.
   with a silence. A build with no jail at all is a different thing, and
   `unenforced_helper_args` is the only place that difference is decided.
 
+**The enforcement tag vocabulary is pinned by a test, not generated.**
+`test/broker/enforcement_tags_test` reads the non-test Go in
+`../sandbox/internal/jail` and asserts that every tag `broker/exec` names
+occurs there as a quoted literal. The set is collected by calling
+`required_layers_for` over both platforms with a maximal policy, plus a
+short hand-listed remainder (`degraded`, `darwin-process-lifecycle`), so a
+tag the matrix starts requiring is pinned without being added anywhere.
+It also pins `exec.skip_prefix` (`"skip:"`, the one constant every `skip:`
+check in `exec` uses) and the `landlock:abi=` form. It proves a spelling
+exists in Go, not per-platform emission; the fixture and real-helper tests
+prove that. ADR-018 records why this beat a shared generated file.
+
 ## Deep Docs
 
 - [docs/architecture/effects.md](../../docs/architecture/effects.md) —

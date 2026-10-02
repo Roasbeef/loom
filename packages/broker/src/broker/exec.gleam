@@ -1789,6 +1789,19 @@ fn degraded_features(features: List(String)) -> Bool {
   list.contains(features, "degraded")
 }
 
+/// The prefix the Go helper puts on an enforcement entry for a layer it
+/// could not apply (`skip:landlock: unavailable ...`). Every place in this
+/// module that recognises or strips a skip uses this one constant, and
+/// `enforcement_tags_test` pins it against the helper's sources.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.starts_with("skip:stage2: no report", skip_prefix)
+/// ```
+///
+pub const skip_prefix = "skip:"
+
 /// The layer tags an execution under `policy` must be able to show as
 /// applied. Exported for the enforcement report the caller renders.
 ///
@@ -1947,7 +1960,7 @@ pub fn unapplied_layers(
 ) -> List(String) {
   let applied =
     enforcement
-    |> list.filter(fn(entry) { !string.starts_with(entry, "skip:") })
+    |> list.filter(fn(entry) { !string.starts_with(entry, skip_prefix) })
     |> list.map(layer_tag)
   list.filter(required, fn(layer) { !list.contains(applied, layer) })
 }
@@ -1978,7 +1991,7 @@ fn degraded_report(
   required: List(String),
 ) -> Bool {
   degraded
-  || list.any(enforcement, fn(entry) { string.starts_with(entry, "skip:") })
+  || list.any(enforcement, fn(entry) { string.starts_with(entry, skip_prefix) })
   || unapplied_layers(enforcement, required) != []
 }
 
@@ -1994,7 +2007,7 @@ fn platform_degraded_report(
 ) -> Bool {
   degraded
   || list.any(enforcement, fn(entry) {
-    string.starts_with(entry, "skip:")
+    string.starts_with(entry, skip_prefix)
     && !list.contains(tolerated, report_layer_tag(entry))
   })
   || unapplied_layers(enforcement, required) != []
@@ -2014,8 +2027,8 @@ fn unreported_layers(
 // also needs the name *inside* a skip so it can compare that name with its
 // narrow tolerated set.
 fn report_layer_tag(entry: String) -> String {
-  case string.starts_with(entry, "skip:") {
-    True -> layer_tag(string.drop_start(entry, 5))
+  case string.starts_with(entry, skip_prefix) {
+    True -> layer_tag(string.drop_start(entry, string.length(skip_prefix)))
     False -> layer_tag(entry)
   }
 }
