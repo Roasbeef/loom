@@ -731,20 +731,20 @@ No single key sends a decision.
 | Timeline gutter | each row's strand and hue | derivable | `pieces` (`session_view/turns.gleam:298`), `hue` (`session_view/turns.gleam:248`); new hue constants in `tui/theme.gleam` |
 | Counted repeated rows | consecutive identical calls and errors | derivable | the grouping in `project` (`session_view/tool_activity.gleam:55`) gains a run-length fold; shared with the web view |
 | Harness notes | `[loom]`-prefixed inputs, hook and job notices | partly | `harness_message_lines` (`session_view/transcript_lines.gleam:2470`) recognises advisor frames; `memory_context_lines` (`session_view/composer.gleam:356`) the memory context; the `[loom]` job and hook notices need the same recogniser extended, no wire change |
-| Strands tab, strip, workspace list | one row per strand | yes | `lines` (`session_view/agent_roster.gleam:355`), `Line` (`session_view/agent_roster.gleam:84`), `status_line` (`session_view/strand_card.gleam:38`), `status_mark` (`tui/agents.gleam:1441`) |
-| Strand detail | task, now, update, pending, recent, approvals | yes | `Row` (`session_view/agent_view.gleam:65`) |
+| Strands tab, strip, workspace list | one row per strand | yes | `lines` (`session_view/agent_roster.gleam:355`), `Line` (`session_view/agent_roster.gleam:84`), `status_line` (`session_view/strand_card.gleam:45`), `status_mark` (`tui/agents.gleam:1441`) |
+| Strand detail | task, now, update, pending, recent, approvals | yes | `Row` (`session_view/agent_view.gleam:79`) |
 | Strand detail: messages out | sends with state | yes | `Item` (`session_view/agent_messages.gleam:52`) |
 | Strand detail: messages in, inbox | received messages, unread count | no | section 9.2; a strand origin on the admitted message and an inbox read need a protocol change |
 | Strand detail: cache | the cache outlook words | yes | `outlook_label` (`session_view/cache_miss.gleam:435`), today in `cache_outlook` (`tui/model.gleam:449`) |
 | Nudge count on the advisor row | pending nudges | yes | `Board` (`session_view/advisor_pending.gleam:51`), `nudges` (`session_view/model.gleam:224`) |
-| Changes tab | worktree observation, navigator, patch | yes | `State` (`session_view/worktree_view.gleam:98`), `layout` (`tui/diff_panel.gleam:33`), with `fold` (`session_view/changes_view.gleam:173`) as the labelled fallback |
+| Changes tab | worktree observation, navigator, patch | yes | `State` (`session_view/worktree_view.gleam:98`), `layout` (`tui/diff_panel.gleam:33`), with `fold` (`session_view/changes_view.gleam:210`) as the labelled fallback |
 | Trace tab, code-mode box | program, result, status | yes | `code_mode_program` (`session_view/transcript_lines.gleam:3336`), `execution_value` (`tools/codemode.gleam:1491`) |
 | Trace tab, code-mode box | the capability call list | no | protocol change (section 9.1, with #656) |
 | Session tab: goal | the goal board | yes | `row` (`session_view/goal_view.gleam:553`), `goal` (`session_view/model.gleam:236`) |
 | Session tab: jobs | the live jobs board | yes | `jobs` (`session_view/session_summary.gleam:99`), `lines` (`session_view/live_jobs.gleam:107`) |
 | Session tab: schedules | the schedule rows | partly | `append_schedules` (`session_view/event_fold.gleam:596`) turns the `SchedulesSnapshot` rows into transcript lines and keeps no board; a `Shared.schedules` fold of the same `ScheduleRow` (`session_view/protocol.gleam:83`) is a `session_view` change, no wire change |
 | Session tab: viewers | the presence roster | yes | `viewers` (`session_view/session_summary.gleam:122`) |
-| Session tab: cost, context | usage, context estimate | yes | `usage` (`session_view/model.gleam:353`), `money` (`session_view/transcript_lines.gleam:4141`), `footer` (`session_view/context_view.gleam:358`) |
+| Session tab: cost, context | usage, context estimate | yes | `usage` (`session_view/model.gleam:353`), `money` (`session_view/transcript_lines.gleam:4184`), `footer` (`session_view/context_view.gleam:358`) |
 | Session tab: last completion | completion evidence | yes | `lines` (`session_view/completion_summary.gleam:514`) |
 | Sessions column, picker | rows, activity | yes, minus an age | section 1.1 |
 | Approval block | the exact escalation | yes | `approvals` (`session_view/model.gleam:342`), `render` (`tui/approval_panel.gleam:286`) |
