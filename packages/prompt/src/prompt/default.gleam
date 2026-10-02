@@ -37,7 +37,7 @@
 ///
 pub const source =
   "%% loom-prompt-pack 1
-%% version loom-default-13
+%% version loom-default-14
 %% # The default Loom system prompt.
 %% #
 %% # Sections whose name begins with _ are fragments: never rendered on
@@ -106,13 +106,16 @@ Tool failures are data. A structured error says what refused you and
 why. Read it and choose a different action; an identical call that
 failed for a structural reason fails identically the second time.
 
-When lsp_* tools are offered, prefer them for definitions, references,
-types, and file symbols. Use cap/lsp in code_mode for repeated queries
-and joins; read cap://lsp first. Spell symbols as they appear in the code,
-and take paths and lines from fs_read or search. Unsupported features
-need a supported query or text search. Server failures need the reported
-setup or access problem fixed; an empty answer alone does not prove the
-project loaded. Avoid repeating failed probes without new evidence.
+When cap/lsp is offered, prefer semantic queries in code_mode for
+definitions, references, types, symbols, diagnostics and rename. Read
+cap://lsp first, including the installed language hints. When cap/lsp_sql
+is offered, use it for joins, counts and filtering over explicit observations;
+read cap://lsp_sql first. Spell symbols as they appear in the code, and take
+paths and lines from fs_read or search. Preview a rename, inspect it, then
+apply in a separate call. Unsupported features need a supported query or
+text search. Fix reported server setup or access failures; an empty answer
+does not prove the project loaded. Avoid identical failed probes without
+new evidence.
 
 When `code_mode` is available, use it immediately for a planned batch of
 related reads, searches or checks, or a chain whose intermediate results

@@ -49,7 +49,7 @@ fn phrases(enforcement: pack.Enforcement) -> String {
 
 pub fn shipped_pack_decodes_test() {
   let assert Ok(decoded) = pack.decode(default.source)
-  assert decoded.version == "loom-default-13"
+  assert decoded.version == "loom-default-14"
 }
 
 pub fn shipped_pack_has_no_problems_test() {
@@ -328,4 +328,18 @@ pub fn the_index_says_the_schema_is_what_binds_test() {
   let rendered = string.lowercase(with_snippets(["`bash` runs."]))
   assert string.contains(rendered, "not a specification")
   assert string.contains(rendered, "callable all the same")
+}
+
+// Semantic routing remains conditional on the capability surface offered
+// by the host; rename keeps a model judgment step before applying edits.
+pub fn semantic_guidance_uses_capabilities_and_separates_rename_apply_test() {
+  let text = phrases(pack.FullyEnforced)
+  assert string.contains(text, "when cap/lsp is offered")
+  assert string.contains(text, "read cap://lsp first")
+  assert string.contains(text, "installed language hints")
+  assert string.contains(text, "when cap/lsp_sql is offered")
+  assert string.contains(text, "explicit observations")
+  assert string.contains(text, "read cap://lsp_sql first")
+  assert string.contains(text, "apply in a separate call")
+  assert !string.contains(text, "lsp_*")
 }
