@@ -1,5 +1,4 @@
  ◆ demo · strand main              baseten-kimi-k…
- transcript / main
 
 
 
@@ -8,5 +7,6 @@
 
 
 ╭─ To main · Enter sends ────────────────────────╮
+│ ready                                          │
 │ ›  / commands                                  │
-╰─ ready › baseten-kimi-k3 › ctx —…─ 0 need you ─╯
+╰─ baseten-kimi-k3 › ctx — › $0.00 ──────────────╯

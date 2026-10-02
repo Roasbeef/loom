@@ -1,5 +1,4 @@
  ◆ replay · loom-rec-1788512865 · strand main                                                                           gemini-flash
- transcript / main
  ◇ attached to session loom-rec-1788512865
 
 
@@ -36,5 +35,6 @@
 
 
 ╭─ To main · Enter sends ─────────────────────────────────────────────────────────────────────────────────────────── ○ main · idle ─╮
+│ main: done                                                                                                                        │
 │ ›  / commands                                                                                                                     │
-╰─ main: done › gemini-flash › ctx — › est $0.00 ────────────────────────────────────────────────────────────────────── 0 need you ─╯
+╰─ gemini-flash › ctx — › est $0.00 ────────────────────────────────────────────────────────────────────────────────────────────────╯
