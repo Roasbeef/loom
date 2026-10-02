@@ -117,8 +117,8 @@ protocol-change; this concept does not ask for one (question 6).
 
 Captured from `gleam dev agents dark` (six fixture agents) in a private tmux
 session. `--demo` gives the same layout with three strands and every field
-"unavailable". The view is `render_rail` at `tui/agents.gleam:292` beside
-`render_inspection` at `tui/agents.gleam:371`. What is wrong with it:
+"unavailable". The view is `render_rail` at `tui/agents.gleam:303` beside
+`render_inspection` at `tui/agents.gleam:382`. What is wrong with it:
 
 - **Columns.** Each strand takes three rows (name, task, status) and a blank,
   so six strands need 24 rows and the list scrolls at 120×40. No row shows

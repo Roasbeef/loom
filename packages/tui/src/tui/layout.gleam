@@ -761,7 +761,39 @@ pub fn message_detail_area(model: Model) -> Rect {
     AgentInspector(inspector) -> inspector
     _ -> agents.inspect(model.shared.active_strand)
   }
-  agents.inspection_detail_area(body, displayed_agents(model), inspector)
+  agents.inspection_detail_area(
+    workspace_area(screen, body, inspector),
+    displayed_agents(model),
+    inspector,
+  )
+}
+
+/// Where the agent workspace is drawn. While the operator browses it owns
+/// the screen below the identity line, covering the strip and the input
+/// frame; while they write to the recipient from inside it, the composer
+/// keeps its rows and the workspace takes the body above it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // layout.workspace_area(screen, body, agents.inspect("main"))
+/// ```
+@internal
+pub fn workspace_area(
+  screen: Rect,
+  body: Rect,
+  inspector: agents.Inspector,
+) -> Rect {
+  case inspector.focus {
+    agents.Composing -> body
+    agents.Browsing ->
+      geometry.rect_new(
+        screen.position.x,
+        screen.position.y + 1,
+        screen.size.width,
+        int.max(0, screen.size.height - 1),
+      )
+  }
 }
 
 /// The area a press at this cell selects within.

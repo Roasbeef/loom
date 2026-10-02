@@ -236,7 +236,7 @@ pub fn render_frame(
     AgentInspector(selected) ->
       agents.render_inspection(
         base,
-        body_area,
+        layout.workspace_area(screen, body_area, selected),
         layout.displayed_agents(model),
         model.shared.active_strand,
         selected,
@@ -1837,7 +1837,7 @@ fn render_pending_band(
 fn input_title(model: Model) -> String {
   let behavior = case model.view.overlay, model.view.strip_focus {
     AgentInspector(agents.Inspector(focus: agents.Browsing, ..)), _ ->
-      " Tab writes · Enter opens agent "
+      " w writes · Enter opens agent "
     _, agent_strip.Browsing(_) ->
       " ↑↓ select agent · enter opens · x stops · esc back "
     _, agent_strip.Composing -> input_behavior(model)

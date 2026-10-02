@@ -173,7 +173,7 @@ pub fn wide_workspace_aligns_its_columns_and_labels_its_detail_test() {
   assert string.contains(line_with(lines, " 1 Activity "), "4 Collab")
   assert string.contains(
     line_with(lines, "needs input ·"),
-    "needs input · 2m 38s · 74.0k ctx · Kimi-K3",
+    "needs input · 2m 38s · 74k ctx · Kimi-K3",
   )
   assert string.contains(line_with(lines, "TASK"), "TASK")
   assert string.contains(line_with(lines, "Needs approval:"), "fs_write")
@@ -199,7 +199,7 @@ pub fn a_failed_agent_leads_with_its_error_once_test() {
   assert string.contains(line_with(lines, "× Provider returned 429"), "after")
   assert string.contains(line_with(lines, "Enter opens its transcript"), "the")
   assert string.contains(line_with(lines, "repeated here"), "not repeated here")
-  assert string.contains(line_with(lines, "failed ·"), "1m 03s · 144.0k ctx")
+  assert string.contains(line_with(lines, "failed ·"), "1m 03s · 144k ctx")
 }
 
 pub fn narrow_workspace_stacks_the_detail_under_the_list_test() {
@@ -343,9 +343,9 @@ pub fn seven_agents_fit_one_row_each_at_120_test() {
   let advisor = line_with(lines, "◆ advisor")
 
   // The figures end at the edge, and their `·` lines up down the strip.
-  assert column(main, " · 259.0k ctx") == column(tests, " ·   9.0k ctx")
-  assert column(main, " · 259.0k") == column(advisor, " ·  22.0k")
-  assert string.ends_with(main, "259.0k ctx")
+  assert column(main, " · 259k ctx") == column(tests, " ·   9k ctx")
+  assert column(main, " · 259k") == column(advisor, " ·  22k")
+  assert string.ends_with(main, "259k ctx")
   assert column(main, "Waiting") == column(advisor, "Reviewing")
 
   // Twins share a slug, so each keeps the head of its digest.
@@ -391,4 +391,116 @@ pub fn names_are_cut_in_the_middle_and_actions_at_a_word_test() {
   assert agent_row.compact_duration(3720) == "1h02"
   assert agent_row.compact_count(74_400) == "74k"
   assert agent_row.compact_count(950) == "950"
+}
+
+// --- the critique round ----------------------------------------------------
+
+// The workspace is anchored under the identity line and is as tall as what
+// it shows, so a short roster does not hang in the middle of an empty frame.
+pub fn the_workspace_sits_at_the_top_and_fits_its_content_test() {
+  let screen = geometry.rect_new(0, 0, 120, 40)
+  let body = geometry.rect_new(0, 1, 120, 39)
+  let lines =
+    agents.render_inspection(
+      buffer.buffer_new(screen),
+      body,
+      rows(),
+      "main",
+      selecting(docs),
+      agents.Facts(roster(), sends()),
+      None,
+    )
+    |> frame.buffer_to_lines
+  assert index_of(lines, "AGENT WORKSPACE") == 1
+  let bottom = index_of(lines, "╰")
+  assert bottom < 39
+  assert bottom > index_of(lines, "To: main")
+}
+
+// A list cut by its room says how many agents it hides, as the picker does.
+pub fn a_cut_list_counts_what_it_hides_test() {
+  let many =
+    list.repeat(Nil, 20)
+    |> list.index_map(fn(_, index) {
+      agent(
+        "sub:main/worker-" <> int.to_string(index) <> "-0a0b0c0d",
+        agent_view.Working,
+        "Working",
+      )
+    })
+  let screen = geometry.rect_new(0, 0, 80, 24)
+  let lines =
+    agents.render_inspection(
+      buffer.buffer_new(screen),
+      geometry.rect_new(0, 1, 80, 23),
+      [agent("main", agent_view.Working, "Waiting"), ..many],
+      "main",
+      agents.inspect("main"),
+      agents.Facts(roster(), []),
+      None,
+    )
+    |> frame.buffer_to_lines
+  assert list.any(lines, string.contains(_, "more below"))
+}
+
+// An empty roster says so, rather than blaming a filter that hides nothing.
+pub fn an_empty_roster_says_there_are_no_agents_yet_test() {
+  let screen = geometry.rect_new(0, 0, 120, 40)
+  let lines =
+    agents.render_inspection(
+      buffer.buffer_new(screen),
+      screen,
+      [],
+      "main",
+      agents.inspect("main"),
+      agents.no_facts(),
+      None,
+    )
+    |> frame.buffer_to_lines
+  assert list.any(lines, string.contains(_, "No agents yet."))
+}
+
+// The latest messages read in transcript order, the newest last.
+pub fn the_latest_messages_put_the_newest_last_test() {
+  let older =
+    agent_messages.Item(
+      "e1",
+      "c1",
+      "main",
+      docs,
+      "Review the docs for drift",
+      agent_messages.Complete,
+      10,
+      agent_messages.Started,
+    )
+  let screen = geometry.rect_new(0, 0, 120, 40)
+  let lines =
+    agents.render_inspection(
+      buffer.buffer_new(screen),
+      screen,
+      rows(),
+      "main",
+      selecting(docs),
+      agents.Facts(roster(), [list.first(sends()) |> result_or(older), older]),
+      None,
+    )
+    |> frame.buffer_to_lines
+  assert index_of(lines, "← main  Review") < index_of(lines, "→ main  Two")
+}
+
+fn result_or(value: Result(a, Nil), fallback: a) -> a {
+  case value {
+    Ok(value) -> value
+    Error(Nil) -> fallback
+  }
+}
+
+// The viewed strand's mark is quiet; only the cursor's mark is amber.
+pub fn only_the_cursor_mark_is_amber_in_the_table_test() {
+  let buf = workspace(120, 40, selecting(docs))
+  let lines = frame.buffer_to_lines(buf)
+  let y = index_of(lines, "› ● main")
+  let x = column(line_with(lines, "› ● main"), "›")
+  assert buffer.cell_fg(buffer.get_cell(buf, geometry.Position(x, y)))
+    == theme.quiet
 }

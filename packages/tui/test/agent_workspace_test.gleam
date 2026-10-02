@@ -958,7 +958,7 @@ pub fn collaboration_tab_preserves_inspection_and_composer_target_test() {
     render.view(opened, geometry.rect_new(0, 0, 100, 30)).0
     |> frame.buffer_to_text
   assert string.contains(rendered, "4 Collaborate")
-  assert string.contains(rendered, "To main")
+  assert string.contains(rendered, "To: main")
 }
 
 pub fn approval_detail_keeps_its_captured_preview_and_no_default_decision_test() {
@@ -1096,7 +1096,23 @@ pub fn tiny_workspace_keeps_selected_identity_and_navigation_visible_test() {
     |> frame.buffer_to_text
   assert string.contains(rendered, "Review scheduler")
   assert string.contains(rendered, "↑↓")
-  assert string.contains(rendered, "To main")
+  assert string.contains(rendered, "To: main")
+
+  // Browsing covers the composer; writing from the workspace brings it
+  // back with the draft its recipient kept.
+  let writing = initial |> press("w")
+  let rendered =
+    render.view(
+      tui_model.Model(
+        ..writing,
+        view: tui_model.View(
+          ..writing.view,
+          caches: tui_model.Caches(..writing.view.caches, frame_cache: None),
+        ),
+      ),
+      geometry.rect_new(0, 0, 40, 12),
+    ).0
+    |> frame.buffer_to_text
   assert string.contains(rendered, "retained draft")
 }
 

@@ -38,7 +38,7 @@ pub const table_width = 69
 @internal
 pub type Shape {
   /// The strip under the input: a wide name column and spelled figures,
-  /// `4m 10s · 259.0k ctx`, right-aligned at the edge.
+  /// `4m 10s · 259k ctx`, right-aligned at the edge.
   StripRow
 
   /// The workspace list: narrower columns and compact figures, `4m10` and
@@ -63,6 +63,8 @@ pub type Mark {
 /// Draws one list of agents, one row each, `width` cells wide, on
 /// `ground`: the terminal's own background under the strip, the modal
 /// background inside the workspace. The cursor's row is raised on either.
+/// The cursor's mark is amber and bold; the viewed strand's is quiet, so one
+/// column never shows two marks that both read as a selection.
 ///
 /// The names are labelled together so a pair that share a slug both carry
 /// their digest's head (`labels`), and the strip's figure columns are as
@@ -207,7 +209,7 @@ fn spelled_time(line: agent_roster.Line) -> String {
 
 fn spelled_size(line: agent_roster.Line) -> String {
   case line.tokens {
-    Some(count) -> agent_roster.count_label(count)
+    Some(count) -> compact_count(count)
     None -> ""
   }
 }
@@ -260,7 +262,10 @@ fn row(
     False, TableRow -> style.new(theme.quiet, background, style.none())
   }
   let spans = [
-    span.span_styled(lead, style.new(theme.signal, background, style.bold())),
+    span.span_styled(lead, case mark {
+      Cursor -> style.new(theme.signal, background, style.bold())
+      Viewing | Unmarked -> style.new(theme.quiet, background, style.none())
+    }),
     span.span_styled(glyph <> " ", tone),
     span.span_styled(
       text.pad_right(cut_middle(name, name_width), name_width) <> " ",
@@ -326,9 +331,9 @@ pub fn compact_duration(seconds: Int) -> String {
 
 /// A compact token count for a table column: `950`, `74k`, `1.2m`.
 ///
-/// The strip keeps a tenth of a thousand so its figures visibly move; a
-/// table column has no room for it and the detail pane carries the exact
-/// figure.
+/// Every agent surface writes a context size this one way, so the strip,
+/// the table and the detail read the same figure the same way: whole
+/// thousands below a million, tenths of a million above it.
 ///
 /// ## Examples
 ///

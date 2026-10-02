@@ -14,6 +14,17 @@
 //// workspace puts the detail beside the list; a narrow one stacks it under a
 //// rule. The order and the filter are applied in one place, `listed`, which
 //// navigation reads too, so Up and Down always move to the row drawn next.
+////
+//// While the operator browses, the workspace owns the screen below the
+//// identity line: the strip and the input frame are covered, and the frame
+//// is as tall as its content, anchored at the top as the session picker
+//// is. Writing to the recipient from inside it (`w`) hands the composer
+//// back its rows, so the workspace then sits in the body above it.
+////
+//// The latest messages are drawn oldest first, newest last, in the order
+//// the transcript holds them. They carry no age: a captured send
+//// (`agent_messages.Item`) holds its sequence, not a time, and an age
+//// computed from anything else would be a guess.
 
 import etui/buffer
 import etui/geometry.{type Rect, Fill, Length}
@@ -428,23 +439,26 @@ type Arrangement {
 /// The narrowest inside width that puts the detail beside the list.
 const beside_width = 96
 
-fn geometry_for(screen: Rect, shown: Int) -> Geometry {
+fn geometry_for(screen: Rect, shown: Int, tallest: Int) -> Geometry {
   let width = int.max(1, int.min(136, screen.size.width - 2))
-  let height = int.max(1, screen.size.height - 2)
-  let area = geometry.centered_rect(width, height, screen)
+  let height = int.max(1, int.min(screen.size.height, tallest))
+  let area =
+    geometry.rect_new(
+      screen.position.x + { screen.size.width - width } / 2,
+      screen.position.y,
+      width,
+      height,
+    )
   let inside = block.inner(area, workspace_frame([]))
   let arrangement = case inside.size.width >= beside_width {
     True -> Beside
     False -> Stacked
   }
 
-  // A wide footer names the recipient on a row of its own above the keys;
-  // a narrow one keeps only the keys. A blank row separates it from the
-  // body either way.
-  let footer_rows = case arrangement {
-    Beside -> 2
-    Stacked -> 1
-  }
+  // The footer names the recipient on a row of its own above the keys,
+  // since the workspace covers the composer that would otherwise say it. A
+  // blank row separates it from the body.
+  let footer_rows = 2
   let body_height = int.max(0, inside.size.height - footer_rows - 1)
   let x = inside.position.x
   let y = inside.position.y
@@ -516,7 +530,11 @@ pub fn inspection_detail_area(
       )
     False -> {
       let shape =
-        geometry_for(screen, list.length(listed(rows, inspector.filter)))
+        geometry_for(
+          screen,
+          list.length(listed(rows, inspector.filter)),
+          screen.size.height,
+        )
       geometry.rect_new(
         0,
         0,
@@ -586,8 +604,22 @@ fn render_full_inspection(
   content: Option(fn(Rect) -> List(span.Line)),
 ) -> buffer.Buffer {
   let shown = listed(rows, inspector.filter)
-  let shape = geometry_for(screen, list.length(shown))
   let lines = list.map(shown, agent_roster.describe(facts.roster, _))
+
+  // The frame is as tall as what it shows: the taller of the list and the
+  // Activity detail, with its border, footer and the gap above the footer.
+  // A view another module draws has no length known here, and a stacked
+  // workspace is narrow enough to want every row, so both take the screen.
+  let full = geometry_for(screen, list.length(shown), screen.size.height)
+  let tallest = case full.arrangement, content {
+    Beside, None -> {
+      let detail =
+        list.length(detail_rows(full, rows, lines, inspector, facts, content))
+      int.max(list.length(shown) + 1, detail) + 5
+    }
+    Beside, Some(_) | Stacked, _ -> screen.size.height
+  }
+  let shape = geometry_for(screen, list.length(shown), tallest)
 
   // etui's background fill covers the area inside the padding only, so the
   // padding cells are given the modal background first; without it a column
@@ -636,22 +668,31 @@ fn footer_lines(
   inspector: Inspector,
 ) -> List(span.Line) {
   let width = shape.footer.size.width
+
+  // The recipient row is quiet with the recipient itself in bold paper:
+  // amber is kept for what asks the operator to act.
+  let target = fit(text_hygiene.single_line(active), int.max(0, width / 3))
   let recipient =
-    line(
-      fit(
-        "To: "
-          <> text_hygiene.single_line(active)
-          <> case inspector.focus {
-          Browsing -> " · Enter opens the selected transcript"
-          Composing -> " · typing in the composer below"
-        },
-        width,
+    span.line_new([
+      span.span_styled("To: ", theme.overlay_quiet()),
+      span.span_styled(
+        target,
+        style.new(theme.paper, theme.graphite, style.bold()),
       ),
-      style.new(theme.signal, theme.graphite, style.none()),
-    )
+      span.span_styled(
+        fit(
+          case inspector.focus {
+            Browsing -> " · Enter opens the selected transcript"
+            Composing -> " · typing in the composer below"
+          },
+          int.max(0, width - 4 - text.cell_width(target)),
+        ),
+        theme.overlay_quiet(),
+      ),
+    ])
   case shape.arrangement {
     Beside -> [recipient, hints(full_hints(inspector, active), width)]
-    Stacked -> [hints(compact_hints(inspector), width)]
+    Stacked -> [recipient, hints(compact_hints(inspector), width)]
   }
 }
 
@@ -789,15 +830,16 @@ fn list_lines(
     |> list.index_map(fn(line, index) { #(line.id, index) })
     |> list.key_find(inspector.selected)
     |> result.unwrap(0)
-  let #(visible, _) = selection_window(lines, index, room)
-  let body = case visible {
-    [] -> [
+  let #(visible, above, below) = counted_window(lines, index, room)
+  let body = case visible, inspector.filter, rows {
+    [], AllAgents, [] -> [line("   No agents yet.", theme.overlay_quiet())]
+    [], _, _ -> [
       line(
         "   No agents match this filter. Tab shows the next one.",
         theme.overlay_quiet(),
       ),
     ]
-    _ ->
+    _, _, _ ->
       agent_row.rows(
         visible,
         agent_row.TableRow,
@@ -812,12 +854,55 @@ fn list_lines(
         },
       )
   }
-  [heading, ..body]
+  list.flatten([
+    [heading],
+    more_row(above, "↑", "above"),
+    body,
+    more_row(below, "↓", "below"),
+  ])
 }
 
-// The list's heading: what the filter shows and how many, and on the right
-// how many agents need the operator, in the danger colour so it is seen
-// before it is read.
+// The rows a list shows when it is taller than its room, with how many it
+// cut above and below. A side that cuts rows gives up one row to say so,
+// as the session picker's list does, so a list that ends at the frame never
+// reads as all the agents there are.
+fn counted_window(
+  lines: List(a),
+  selected: Int,
+  room: Int,
+) -> #(List(a), Int, Int) {
+  let total = list.length(lines)
+  case total <= room || room < 3 {
+    True -> {
+      let #(visible, offset) = selection_window(lines, selected, room)
+      #(visible, offset, int.max(0, total - offset - list.length(visible)))
+    }
+    False -> {
+      let #(first, offset) = selection_window(lines, selected, room - 1)
+      let #(visible, offset) = case offset > 0, offset + room - 1 < total {
+        True, True -> selection_window(lines, selected, room - 2)
+        True, False | False, True | False, False -> #(first, offset)
+      }
+      #(visible, offset, int.max(0, total - offset - list.length(visible)))
+    }
+  }
+}
+
+fn more_row(count: Int, arrow: String, side: String) -> List(span.Line) {
+  case count {
+    0 -> []
+    count -> [
+      line(
+        "   " <> arrow <> " " <> int.to_string(count) <> " more " <> side,
+        theme.overlay_quiet(),
+      ),
+    ]
+  }
+}
+
+// The list's heading: what the filter shows and how many. How many need the
+// operator is in the frame's title, and those rows are red, so the heading
+// does not say it a third time.
 fn list_heading(
   rows: List(Row),
   lines: List(agent_roster.Line),
@@ -832,30 +917,15 @@ fn list_heading(
     WorkingAgents -> #("WORKING", " · " <> shown <> " of " <> all)
     SettledAgents -> #("SETTLED", " · " <> shown <> " of " <> all)
   }
-  let attention =
-    list.count(rows, fn(row) { agent_view.needs_attention(row.status) })
-  let right = case attention {
-    0 -> ""
-    1 -> "!1 needs you "
-    count -> "!" <> int.to_string(count) <> " need you "
-  }
-
-  // The heading spans the table's columns, so its count sits over the
-  // context column whatever the list's width.
-  let span_width = int.min(width, agent_row.table_width)
   let left = " " <> label
-  let gap =
-    span_width
-    - text.cell_width(left)
-    - text.cell_width(count)
-    - text.cell_width(right)
   span.line_new([
-    span.span_styled(left, style.new(theme.quiet, theme.graphite, style.bold())),
-    span.span_styled(count, theme.overlay_quiet()),
-    span.span_styled(string.repeat(" ", int.max(1, gap)), theme.overlay_quiet()),
     span.span_styled(
-      right,
-      style.new(theme.danger, theme.graphite, style.bold()),
+      fit(left, width),
+      style.new(theme.quiet, theme.graphite, style.bold()),
+    ),
+    span.span_styled(
+      fit(count, width - text.cell_width(left)),
+      theme.overlay_quiet(),
     ),
   ])
 }
@@ -869,6 +939,43 @@ fn render_detail(
   facts: Facts,
   content: Option(fn(Rect) -> List(span.Line)),
 ) -> buffer.Buffer {
+  let area = shape.detail
+  let drawn = detail_rows(shape, rows, lines, inspector, facts, content)
+  let offset = case inspector.detail {
+    Messages -> 0
+    Overview | Notes | Collaboration ->
+      int.min(
+        inspector.scroll,
+        int.max(0, list.length(drawn) - area.size.height),
+      )
+  }
+  let heading = case shape.arrangement {
+    Beside -> 2
+    Stacked -> 1
+  }
+
+  // The tabs stay put while the body scrolls under them, and a section
+  // label whose body the frame cut off is not drawn on its own.
+  let shown =
+    list.append(
+      list.take(drawn, heading),
+      drawn
+        |> list.drop(heading + offset)
+        |> list.take(area.size.height - heading),
+    )
+    |> without_hanging_label
+  paragraph.render_styled(buf, area, shown)
+}
+
+// The detail's rows from the top: the view tabs, then the selected view.
+fn detail_rows(
+  shape: Geometry,
+  rows: List(Row),
+  lines: List(agent_roster.Line),
+  inspector: Inspector,
+  facts: Facts,
+  content: Option(fn(Rect) -> List(span.Line)),
+) -> List(span.Line) {
   let area = shape.detail
   let heading = case shape.arrangement {
     Beside -> [tabs(inspector.detail, area.size.width), span.line_new([])]
@@ -919,19 +1026,22 @@ fn render_detail(
         }
       }
   }
-  let offset = case inspector.detail {
-    Messages -> 0
-    Overview | Notes | Collaboration ->
-      int.min(
-        inspector.scroll,
-        int.max(0, list.length(body) - area.size.height + list.length(heading)),
-      )
-  }
-  paragraph.render_styled(
-    buf,
-    area,
-    list.append(heading, list.drop(body, offset)),
-  )
+  list.append(heading, body)
+}
+
+// Drops the trailing blanks and section labels a cut leaves, so the last
+// row drawn is never a heading with nothing under it.
+fn without_hanging_label(rows: List(span.Line)) -> List(span.Line) {
+  rows
+  |> list.reverse
+  |> list.drop_while(fn(row) {
+    case row.spans {
+      [] -> True
+      [only] -> only.content == "" || only.style == label_style()
+      [_, _, ..] -> False
+    }
+  })
+  |> list.reverse
 }
 
 // The view tabs, named in full when there is room and shortened when not.
@@ -1023,7 +1133,7 @@ fn state_line(row: Row, figures: agent_roster.Line, width: Int) -> span.Line {
     [
       option.map(figures.elapsed_s, agent_roster.duration),
       option.map(figures.tokens, fn(count) {
-        agent_roster.count_label(count) <> " ctx"
+        agent_row.compact_count(count) <> " ctx"
       }),
       short_model(row.model),
     ]
@@ -1109,7 +1219,11 @@ fn message_lines(
   messages: List(agent_messages.Item),
   width: Int,
 ) -> List(span.Line) {
-  case agent_messages.for_strand(messages, row.id) |> list.take(2) {
+  case
+    agent_messages.for_strand(messages, row.id)
+    |> list.take(2)
+    |> list.reverse
+  {
     [] -> []
     latest -> [
       span.line_new([]),
@@ -1220,7 +1334,13 @@ fn identity_lines(row: Row, width: Int) -> List(span.Line) {
 }
 
 fn label_line(value: String) -> span.Line {
-  line(value, style.new(theme.quiet, theme.graphite, style.bold()))
+  line(value, label_style())
+}
+
+// The one style every section label is drawn in, which is also how a cut
+// recognises a label it would leave hanging.
+fn label_style() -> style.Style {
+  style.new(theme.quiet, theme.graphite, style.bold())
 }
 
 // At most `rows` wrapped lines of plain text. A longer value ends its last

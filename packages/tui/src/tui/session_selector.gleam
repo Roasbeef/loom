@@ -56,6 +56,7 @@ import gleam/set
 import gleam/string
 import session_view/agent_roster
 import session_view/text_hygiene
+import tui/agent_row
 import tui/daemon/protocol
 import tui/theme
 import tui/workspace
@@ -1829,43 +1830,11 @@ fn hints(items: List(String), width: Int) -> span.Line {
   span.line_new([span.span_styled(joined, theme.overlay_quiet())])
 }
 
-// Cuts text to `width` cells at a word boundary, so a cut never ends in
-// half a word; a single word wider than the room is cut where it must be.
+// The picker cuts text as every agent surface does, at a word with an
+// ellipsis, or inside a last word too long to end before
+// (`agent_row.cut`).
 fn cut(value: String, width: Int) -> String {
-  case text.cell_width(value) <= width {
-    True -> value
-    False -> {
-      let head = text.truncate(value, int.max(0, width - 1), "")
-      let words = string.split(head, " ")
-      let whole = case string.ends_with(head, " "), words {
-        True, _ | False, [_] | False, [] -> head
-        False, [_, _, ..] ->
-          list.take(words, list.length(words) - 1) |> string.join(" ")
-      }
-
-      // A last word so long that ending before it would give back more
-      // than a third of the room, as a path or a long name does, is cut
-      // inside instead.
-      let whole = case text.cell_width(whole) * 3 < width * 2 {
-        True -> head
-        False -> whole
-      }
-      trim_joint(whole) <> "…"
-    }
-  }
-}
-
-// Drops the spaces and separators a cut leaves at its end, so the ellipsis
-// follows a word rather than a dangling ` ·`.
-fn trim_joint(value: String) -> String {
-  case
-    string.ends_with(value, " ")
-    || string.ends_with(value, "·")
-    || string.ends_with(value, ",")
-  {
-    True -> trim_joint(string.drop_end(value, 1))
-    False -> value
-  }
+  agent_row.cut(value, width)
 }
 
 fn question(value: String, width: Int) -> span.Line {

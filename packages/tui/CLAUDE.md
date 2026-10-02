@@ -37,7 +37,14 @@ error with "the error is not repeated here"), Latest messages from
 from `agents.Facts`, the strip's `agent_roster.Roster` and the captured sends,
 through `agent_roster.describe`, which also describes the settled agents a
 strip does not list. At an inside width of 96 or more the detail sits beside a
-69-cell list; narrower, it stacks under a rule and keeps only Task and Now. Editing uses the existing submission and command
+69-cell list; narrower, it stacks under a rule and keeps only Task and Now.
+While browsing, the workspace owns the screen below the identity line
+(`layout.workspace_area`), covering the strip and the composer, and is as tall
+as its content, anchored at the top; while writing (`w`) it takes the body
+above the composer. A list cut by its room ends in `↓ N more below`, a
+section label whose body was cut is not drawn, the latest messages read
+oldest first (a captured send has no time, so there is no age), and the
+footer names the recipient quietly with the recipient in bold paper. Editing uses the existing submission and command
 completion paths, including the visible command palette. The ordinary
 `Shift+Tab` rail shares the same task summaries, with a reserved Advisor section
 and a separately labelled worktree observation. A missing Git observation is
