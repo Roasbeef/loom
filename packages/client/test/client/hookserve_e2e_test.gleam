@@ -570,6 +570,7 @@ fn settings(rig: Rig, script: Subject(ScriptMessage)) -> serve.Settings {
     base_policy: serve.base_policy(rig.workspace),
     helper_path: here <> "/../sandbox/loom-exec",
     helper_pool_size: 2,
+    executor_lane: serve.executor_lane_from_environment(),
     session_id: "hookserve-e2e",
     demand: exec.BestEffort,
     gateway: gateway(script),

@@ -938,6 +938,7 @@ fn settings(
     // The smallest pool the boot allows, which is also the one where the
     // lease cap (`pool_size - 3`) admits exactly the one server.
     helper_pool_size: exec.min_pool_size,
+    executor_lane: serve.executor_lane_from_environment(),
     session_id: "lsp-e2e-" <> name,
     // See the module documentation, "Why `BestEffort`".
     demand: exec.BestEffort,

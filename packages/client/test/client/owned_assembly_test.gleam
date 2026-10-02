@@ -4,6 +4,7 @@
 
 import broker/broker
 import broker/exec
+import broker/executor
 import client/catalog
 import client/codemode
 import client/distillpass
@@ -78,6 +79,7 @@ pub fn settings() -> serve.Settings {
     base_policy: serve.base_policy(root <> "/work"),
     helper_path: here <> "/../sandbox/loom-exec",
     helper_pool_size: 2,
+    executor_lane: serve.executor_lane_from_environment(),
     session_id: "owned",
     demand: exec.BestEffort,
     gateway: catalog.gateway(
@@ -183,6 +185,53 @@ pub fn two_owned_instances_keep_reserved_ids_and_close_independently_test() {
   assert simplifile.is_file(first_settings.token_path) == Ok(False)
   process.demonitor_process(first_watch)
   process.demonitor_process(second_watch)
+}
+
+/// The service lane assembles under the same custody: the executor service
+/// is a fatal root beside the pool and the broker, the `Helpers` step closes
+/// it (draining executions and then the pool), and the session's lease is
+/// released only after that step. The direct lane's instance has no
+/// executor, so the two lanes' fatal roots differ by exactly that one.
+pub fn the_service_lane_is_a_fatal_root_and_closes_under_custody_test() {
+  let direct_settings =
+    serve.Settings(..settings(), executor_lane: serve.DirectLane)
+  let #(direct, direct_instance, direct_watch) =
+    opened(direct_settings, identity(21))
+  assert direct_instance.executor == None
+  let direct_roots =
+    list.map(serve.instance_children(direct_instance), fn(r) { r.0 })
+  assert !list.contains(direct_roots, "the executor service")
+  assert host.close(direct, within_ms: 5000) == custody.Closed
+  process.demonitor_process(direct_watch)
+
+  let service_settings =
+    serve.Settings(..settings(), executor_lane: serve.ServiceLane)
+  let #(service, service_instance, service_watch) =
+    opened(service_settings, identity(22))
+  let assert Some(executor_service) = service_instance.executor
+  let roots = serve.instance_children(service_instance)
+  assert list.contains(
+    list.map(roots, fn(root) { root.0 }),
+    "the executor service",
+  )
+  assert list.length(roots) == list.length(direct_roots) + 1
+  assert process.is_alive(executor.pid(executor_service))
+  lease_is_held(service_settings)
+
+  assert host.close(service, within_ms: 5000) == custody.Closed
+  assert !process.is_alive(executor.pid(executor_service))
+  lease_is_released(service_settings)
+  process.demonitor_process(service_watch)
+}
+
+/// `LOOM_EXECUTOR_LANE` names a lane, and anything it does not recognise
+/// leaves the session on the direct one.
+pub fn the_lane_variable_selects_the_service_only_by_name_test() {
+  assert serve.executor_lane_named("service") == serve.ServiceLane
+  assert serve.executor_lane_named("direct") == serve.DirectLane
+  assert serve.executor_lane_named("") == serve.DirectLane
+  assert serve.executor_lane_named("Service") == serve.DirectLane
+  assert serve.executor_lane_named("servce") == serve.DirectLane
 }
 
 pub fn builder_kill_mid_assembly_keeps_lease_until_published_effect_drains_test() {

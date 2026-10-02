@@ -1036,6 +1036,7 @@ fn settings_at(test_root: String) -> serve.Settings {
     // boundary stays independent of whichever jail layers the host offers.
     helper_path: absolute("../../bin/loom-exec"),
     helper_pool_size: 2,
+    executor_lane: serve.executor_lane_from_environment(),
     session_id: "",
     demand: exec.BestEffort,
     gateway: catalog.gateway(

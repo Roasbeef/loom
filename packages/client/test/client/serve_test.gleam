@@ -181,6 +181,7 @@ fn settings_under(root: String) -> serve.Settings {
     // needs a helper that speaks the protocol and proves retirement.
     helper_path: absolute("../sandbox/loom-exec"),
     helper_pool_size: 2,
+    executor_lane: serve.executor_lane_from_environment(),
     session_id: "session",
     demand: exec.BestEffort,
     gateway: scripted_gateway(),
