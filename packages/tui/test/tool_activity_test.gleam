@@ -792,7 +792,7 @@ pub fn compact_code_mode_summarizes_success_and_keeps_exact_expansion_test() {
   let arguments = json.Object([#("program", json.String(source))])
   let #(pending, before) =
     model() |> received(call(1, "code", "code_mode", arguments)) |> painted
-  assert string.contains(before, "code_mode · awaiting result")
+  assert string.contains(before, "code_mode · awaiting its result")
   assert string.contains(before, "import cap/report")
   assert string.contains(before, "report.text(\"hello\")")
   assert !string.contains(before, "{\"program\"")

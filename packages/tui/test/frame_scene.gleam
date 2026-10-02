@@ -357,6 +357,45 @@ pub fn result(
   )
 }
 
+/// The result answering call `id`, with the structured `details` a tool
+/// attaches beside its text, as `code_mode` does for its status and value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let ran =
+///   frame_scene.result_with(
+///     3,
+///     "c1",
+///     "code_mode",
+///     "ok",
+///     json.Object([#("status", json.String("completed"))]),
+///     frame_scene.Succeeded,
+///   )
+/// ```
+pub fn result_with(
+  n: Int,
+  id: String,
+  name: String,
+  text: String,
+  details: json.JsonValue,
+  ending: Ending,
+) -> entry.Entry {
+  record(
+    n,
+    message.ToolResultMessage(
+      id,
+      name,
+      [message.ToolResultText(text, None)],
+      Some(details),
+      None,
+      None,
+      ending == Errored,
+      n * 1000,
+    ),
+  )
+}
+
 /// The result answering `agent_send` call `id`, as the tool writes it:
 /// `delivery` is `"steered"` when the message joined the recipient's open
 /// run and `"started"` when it started one.

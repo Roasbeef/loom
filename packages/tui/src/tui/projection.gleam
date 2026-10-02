@@ -50,9 +50,9 @@ import session_view/notes_view
 import session_view/tool_activity
 import session_view/transcript_line.{
   type Line, type Speaker, type Stream, Assistant, Failure, Line, PeerMessage,
-  Reasoning, ReasoningDigest, SentMessage, Spacer, StrandMessage,
-  SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
-  ToolFailure, ToolGroup, ToolPatch, ToolResult, User,
+  ProgramFailure, ProgramRunning, Reasoning, ReasoningDigest, SentMessage,
+  Spacer, StrandMessage, SummarizedAdvice, SummarizedReasoning, System, ToolCall,
+  ToolDetail, ToolFailure, ToolGroup, ToolPatch, ToolResult, User,
 }
 import session_view/transcript_lines.{
   BetweenEntries, Projected, Transient, WithinResponse,
@@ -571,7 +571,7 @@ fn record_anchors_for(
         case spliced {
           Transient(text, seq) -> #(seq, [#("", [Line(System, text)])])
           Projected(value) ->
-            anchored_entry_blocks(value, model)
+            anchored_entry_blocks(value, model, None)
             |> list.map(fn(block) {
               #(dict.get(results, block.0) |> result.unwrap(block.0), block.1)
             })
@@ -590,7 +590,7 @@ fn record_anchors_for(
     // placed, and a spacer's own row is blank, so this pass adds only the
     // gaps between items.
     False -> {
-      let found = transcript_lines.deliveries(entries)
+      let found = transcript_lines.joined(entries)
       entries
       |> tool_activity.project_split(
         transcript_lines.advisor_splits(visible_advisor_history(model)),
@@ -604,14 +604,16 @@ fn record_anchors_for(
         case spliced {
           Transient(text, seq) -> #(seq, [#("", [Line(System, text)])])
 
-          // A send's result that its call's row draws is no rows, as
-          // `record_lines` draws it. The call's own row is one heading row
-          // whether or not the result has joined it, so the response's
-          // blocks need no such mirror.
+          // A result that its call's row draws is no rows, as
+          // `record_lines` draws it, and a response's calls are drawn from
+          // the results joined to them, which can change their height.
           Projected(tool_activity.Narrative(value)) ->
             case transcript_lines.absorbed(found, value) {
               True -> #(value.seq, [#(ids.entry_id_to_string(value.id), [])])
-              False -> #(value.seq, anchored_entry_blocks(value, model))
+              False -> #(
+                value.seq,
+                anchored_entry_blocks(value, model, Some(found)),
+              )
             }
           Projected(tool_activity.Tools(calls)) -> {
             let heading = [transcript_lines.activity_heading(calls)]
@@ -694,7 +696,13 @@ fn record_anchors_for(
 // Tool calls keep the same block identity in compact and expanded views.
 // Provider IDs are qualified by their durable owner, since a later response
 // may legitimately reuse them. Text and reasoning use their source index.
-fn anchored_entry_blocks(value: entry.Entry, model: Model) {
+// `joined` is the compact window's joined results (`transcript_lines.joined`),
+// or `None` in expanded history, which draws each result as its own entry.
+fn anchored_entry_blocks(
+  value: entry.Entry,
+  model: Model,
+  joined: Option(transcript_lines.Joined),
+) {
   let details = model.shared.details_expanded
   let owner = transcript_lines.solo_owner(model.shared.captured)
   let id = ids.entry_id_to_string(value.id)
@@ -717,7 +725,13 @@ fn anchored_entry_blocks(value: entry.Entry, model: Model) {
               id <> "/block/" <> int.to_string(index)
           }
           let label = list.key_find(found, index) |> option.from_result
-          #(key, transcript_lines.assistant_block_lines(block, details, label))
+          let lines = case joined {
+            Some(joined) ->
+              transcript_lines.joined_block_lines(block, label, value, joined)
+            None ->
+              transcript_lines.assistant_block_lines(block, details, label)
+          }
+          #(key, lines)
         })
         |> transcript_lines.separated_tool_blocks(WithinResponse)
       let terminal =
@@ -907,7 +921,9 @@ fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
     | Spacer
     | SentMessage
     | StrandMessage
-    | PeerMessage -> 0
+    | PeerMessage
+    | ProgramRunning
+    | ProgramFailure -> 0
   }
 }
 

@@ -28,10 +28,10 @@ import gleam/list
 import gleam/string
 import session_view/text_hygiene
 import session_view/transcript_line.{
-  type Speaker, Assistant, Failure, PeerMessage, Reasoning, ReasoningDigest,
-  SentMessage, Spacer, StrandMessage, SummarizedAdvice, SummarizedReasoning,
-  System, ToolCall, ToolDetail, ToolFailure, ToolGroup, ToolPatch, ToolResult,
-  User,
+  type Speaker, Assistant, Failure, PeerMessage, ProgramFailure, ProgramRunning,
+  Reasoning, ReasoningDigest, SentMessage, Spacer, StrandMessage,
+  SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
+  ToolFailure, ToolGroup, ToolPatch, ToolResult, User,
 }
 import session_view/transcript_lines
 import tui/markdown
@@ -86,7 +86,9 @@ pub fn rows(speaker: Speaker, text: String, width: Int) -> List(span.Line) {
     | ToolPatch
     | ToolFailure
     | Failure
-    | Spacer -> body_rows(text, [], width)
+    | Spacer
+    | ProgramRunning
+    | ProgramFailure -> body_rows(text, [], width)
   }
   list.append(drawn, [span.line_plain("")])
 }
