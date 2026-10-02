@@ -45,7 +45,7 @@ at `f9927f7d9`. The agent workspace is `gleam dev agents dark`, the shipped
 six-agent fixture through the shipped loop. The picker was drawn by the
 shipped `render` (`tui/session_selector.gleam:716`) over a seven-session
 fixture page, because `--demo` has no daemon to list sessions from and
-`open_session_selector` (`tui/submit.gleam:143`) refuses without a control
+`open_session_selector` (`tui/submit.gleam:149`) refuses without a control
 host. The frames are the real renderer's output either way.
 
 ### 1.1 The session picker (`←`)
@@ -371,7 +371,7 @@ rows a panel's tab needs are never taken from the composer.
 | Collapsed 429s and the scrollback position | [standard-errors](C-fable-standard-errors-dark.png) | [light](C-fable-standard-errors-light.png) | [txt](C-fable-standard-errors.txt) |
 
 How columns collapse: a hidden panel takes no width and its content is not
-drawn; the preference (`agent_rail_visible`, `tui/model.gleam:499`, renamed
+drawn; the preference (`agent_rail_visible`, `tui/model.gleam:508`, renamed
 for the panel) is kept when the width drops below the column's threshold and
 honoured again when it grows, which is how the rail behaves today. Hiding the
 panel while the Strands tab had the keyboard returns the keyboard to the
@@ -388,7 +388,7 @@ when a strand needs a decision (`needing`,
 `session_view/strand_card.gleam:69`). The panel has keyboard focus or the
 composer does; the panel's border is drawn in the signal colour while it has
 focus, and the composer's top rule says what the keys do, as it does for the
-strip today (`input_title`, `tui/render.gleam:1782`).
+strip today (`input_title`, `tui/render.gleam:1793`).
 
 | Key, panel focused | Does |
 |---|---|
@@ -406,8 +406,8 @@ strip today (`input_title`, `tui/render.gleam:1782`).
 
 | Key, composer focused | Does | Today |
 |---|---|---|
-| `Shift+Tab` | show or hide the panel | toggles the rail (`toggle_agent_rail`, `tui/submit.gleam:409`) |
-| `Ctrl+O`, `F2` | show the panel on Strands and give it the keyboard; at < 100 columns, open the workspace over the transcript | opens the workspace (`open_agents`, `tui/submit.gleam:45`) |
+| `Shift+Tab` | show or hide the panel | toggles the rail (`toggle_agent_rail`, `tui/submit.gleam:425`) |
+| `Ctrl+O`, `F2` | show the panel on Strands and give it the keyboard; at < 100 columns, open the workspace over the transcript | opens the workspace (`open_agents`, `tui/submit.gleam:54`) |
 | `↓` on an idle composer | enter the Strands list (the strip when the panel is hidden) | enters the strip (`down_from_composer`, `tui/interaction.gleam:1341`) |
 | `Ctrl+D` | focus the Changes tab's navigator | toggles the diff navigator's focus (`tui/interaction.gleam:1126`, the `worktree` focus) |
 | `/diff` | show the panel on Changes and request the worktree read | opens the changes pane |
@@ -506,7 +506,7 @@ error on a `└` line, and the row reads `7 calls · 1 failed`. That frame is
 labelled as needing the change, in the frame itself and in its name.
 
 **Data.** The program source and its name come from the invocation's
-arguments (`code_mode_program`, `session_view/transcript_lines.gleam:2371`).
+arguments (`code_mode_program`, `session_view/transcript_lines.gleam:2354`).
 The state and the result come from the result's `status`, `value`, `message`,
 `failure` and `rejections` fields (`execution_value`,
 `tools/codemode.gleam:1336`), and the sandbox's enforcement report
@@ -556,7 +556,7 @@ marker is the framing text, which a model can see and forge; the module doc
 of `core/origin.gleam` forbids turning transcript text back into
 attribution, and this concept does not parse `[message from`. The `Origin`
 type names a principal or a peer session (`display_label`,
-`core/origin.gleam:174`; `PeerOrigin` at `core/origin.gleam:177`) and has no
+`core/origin.gleam:174`; `PeerOrigin` at `core/origin.gleam:190`) and has no
 kind for a strand of the same session. Attributing a received message needs
 a structured origin on the admitted message, a strand variant of
 `message.Origin` stamped by the daemon, which changes the durable entry
@@ -727,7 +727,7 @@ No single key sends a decision.
 
 | Region | Data | Exists | Where |
 |---|---|---|---|
-| Header | session title, workspace, model | yes | `render_header`, `tui/render.gleam:469` |
+| Header | session title, workspace, model | yes | `render_header`, `tui/render.gleam:480` |
 | Timeline gutter | each row's strand and hue | derivable | `pieces` (`session_view/turns.gleam:276`), `hue` (`session_view/turns.gleam:211`); new hue constants in `tui/theme.gleam` |
 | Counted repeated rows | consecutive identical calls and errors | derivable | the grouping in `project` (`session_view/tool_activity.gleam:55`) gains a run-length fold; shared with the web view |
 | Harness notes | `[loom]`-prefixed inputs, hook and job notices | partly | `harness_message_lines` (`session_view/transcript_lines.gleam:1621`) recognises advisor frames; `memory_context_lines` (`session_view/composer.gleam:356`) the memory context; the `[loom]` job and hook notices need the same recogniser extended, no wire change |
@@ -735,21 +735,21 @@ No single key sends a decision.
 | Strand detail | task, now, update, pending, recent, approvals | yes | `Row` (`session_view/agent_view.gleam:65`) |
 | Strand detail: messages out | sends with state | yes | `Item` (`session_view/agent_messages.gleam:52`) |
 | Strand detail: messages in, inbox | received messages, unread count | no | section 9.2; a strand origin on the admitted message and an inbox read need a protocol change |
-| Strand detail: cache | the cache outlook words | yes | `outlook_label` (`session_view/cache_miss.gleam:435`), today in `cache_outlook` (`tui/model.gleam:420`) |
-| Nudge count on the advisor row | pending nudges | yes | `Board` (`session_view/advisor_pending.gleam:51`), `nudges` (`session_view/model.gleam:197`) |
+| Strand detail: cache | the cache outlook words | yes | `outlook_label` (`session_view/cache_miss.gleam:435`), today in `cache_outlook` (`tui/model.gleam:429`) |
+| Nudge count on the advisor row | pending nudges | yes | `Board` (`session_view/advisor_pending.gleam:51`), `nudges` (`session_view/model.gleam:206`) |
 | Changes tab | worktree observation, navigator, patch | yes | `State` (`session_view/worktree_view.gleam:98`), `layout` (`tui/diff_panel.gleam:33`), with `fold` (`session_view/changes_view.gleam:173`) as the labelled fallback |
-| Trace tab, code-mode box | program, result, status | yes | `code_mode_program` (`session_view/transcript_lines.gleam:2371`), `execution_value` (`tools/codemode.gleam:1336`) |
+| Trace tab, code-mode box | program, result, status | yes | `code_mode_program` (`session_view/transcript_lines.gleam:2354`), `execution_value` (`tools/codemode.gleam:1336`) |
 | Trace tab, code-mode box | the capability call list | no | protocol change (section 9.1, with #656) |
-| Session tab: goal | the goal board | yes | `row` (`session_view/goal_view.gleam:553`), `goal` (`session_view/model.gleam:212`) |
+| Session tab: goal | the goal board | yes | `row` (`session_view/goal_view.gleam:553`), `goal` (`session_view/model.gleam:218`) |
 | Session tab: jobs | the live jobs board | yes | `jobs` (`session_view/session_summary.gleam:99`), `lines` (`session_view/live_jobs.gleam:107`) |
-| Session tab: schedules | the schedule rows | partly | `append_schedules` (`session_view/event_fold.gleam:566`) turns the `SchedulesSnapshot` rows into transcript lines and keeps no board; a `Shared.schedules` fold of the same `ScheduleRow` (`session_view/protocol.gleam:54`) is a `session_view` change, no wire change |
+| Session tab: schedules | the schedule rows | partly | `append_schedules` (`session_view/event_fold.gleam:576`) turns the `SchedulesSnapshot` rows into transcript lines and keeps no board; a `Shared.schedules` fold of the same `ScheduleRow` (`session_view/protocol.gleam:62`) is a `session_view` change, no wire change |
 | Session tab: viewers | the presence roster | yes | `viewers` (`session_view/session_summary.gleam:122`) |
-| Session tab: cost, context | usage, context estimate | yes | `usage` (`session_view/model.gleam:327`), `money` (`session_view/transcript_lines.gleam:3058`), `footer` (`session_view/context_view.gleam:358`) |
+| Session tab: cost, context | usage, context estimate | yes | `usage` (`session_view/model.gleam:335`), `money` (`session_view/transcript_lines.gleam:3073`), `footer` (`session_view/context_view.gleam:358`) |
 | Session tab: last completion | completion evidence | yes | `lines` (`session_view/completion_summary.gleam:514`) |
 | Sessions column, picker | rows, activity | yes, minus an age | section 1.1 |
-| Approval block | the exact escalation | yes | `approvals` (`session_view/model.gleam:315`), `render` (`tui/approval_panel.gleam:263`) |
-| Todo line | the strand's board | yes | `height` (`tui/todo_panel.gleam:50`), `todo_boards` (`session_view/model.gleam:270`) |
-| Scrollback position | rows above the tail | yes | `reading_history` (`tui/model.gleam:1249`), `viewport_backlog` (`tui/model.gleam:668`) |
+| Approval block | the exact escalation | yes | `approvals` (`session_view/model.gleam:324`), `render` (`tui/approval_panel.gleam:263`) |
+| Todo line | the strand's board | yes | `height` (`tui/todo_panel.gleam:50`), `todo_boards` (`session_view/model.gleam:279`) |
+| Scrollback position | rows above the tail | yes | `reading_history` (`tui/model.gleam:1260`), `viewport_backlog` (`tui/model.gleam:677`) |
 | Images | bytes, type, pixel size | partly | `Image` (`session_view/transcript_image.gleam:29`) holds the bytes and type; the pixel size is decoded client-side from the PNG, JPEG, GIF or WebP header, no wire change; drawing needs etui |
 | Layout memory | the three preferences | new | section 10 |
 
