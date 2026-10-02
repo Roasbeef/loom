@@ -240,6 +240,10 @@ pub fn render_frame(
         layout.displayed_agents(model),
         model.shared.active_strand,
         selected,
+        agents.Facts(
+          roster: model.shared.roster,
+          messages: model.shared.agent_messages,
+        ),
         agent_detail_content(model, selected),
       )
     GoalInspector(state) ->

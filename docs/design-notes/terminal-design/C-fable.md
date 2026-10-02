@@ -135,7 +135,7 @@ the activity reply would be a change to the control protocol, so a
   cost a row each and the `· to` suffix on the active row is a word where a
   mark would do.
 - The detail pane is `Heading` / `value` / blank for seven sections
-  (`detail_lines`, `tui/agents.gleam:551`); `CURRENT STATE` says
+  (`detail_lines`, `tui/agents.gleam:911`); `CURRENT STATE` says
   `agent_send` on its own line, `RECENT ACTIVITY` lists `· Result unavailable
   · agent_wait`, and `INPUT` says `3 received, awaiting delivery` without
   saying from whom. Elapsed time and tokens, which the strip shows, are not in

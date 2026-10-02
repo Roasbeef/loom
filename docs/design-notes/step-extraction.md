@@ -232,7 +232,7 @@ type and no job slot. What it does hold from `tui/` today moves with it:
 over its lane's handles) and the `Peer`, `Interrupt`,
 `UnconfirmedSubmission`, `SubmissionSource`, `GoalReport` and
 `ConnectionBacklog` types from `tui/model`. `agents.summary`
-(`tui/agents.gleam:816` (`summary`)) stays behind; the terminal derives
+(`tui/agents.gleam:337` (`summary`)) stays behind; the terminal derives
 the footer string in its projection.
 
 ### The web view's `component.Model`

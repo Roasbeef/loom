@@ -757,7 +757,11 @@ pub fn note_detail_area(model: Model) -> Rect {
 pub fn message_detail_area(model: Model) -> Rect {
   let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
   let #(_, body, _, _) = layout(screen, model)
-  agents.inspection_detail_area(body)
+  let inspector = case model.view.overlay {
+    AgentInspector(inspector) -> inspector
+    _ -> agents.inspect(model.shared.active_strand)
+  }
+  agents.inspection_detail_area(body, displayed_agents(model), inspector)
 }
 
 /// The area a press at this cell selects within.
