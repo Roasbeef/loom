@@ -16,7 +16,7 @@
 //// `packages/mcp` carried before the MCP client moved into `gleam_mcp`
 //// (commit `89247eb29`), kept to the types the LSP client uses.
 ////
-//// ## Flow
+//// ## How a connection is used
 ////
 //// `lsp/client` creates a `Subject(TransportEvent)` inside the actor
 //// process and passes it to the `connect` function. `connect` returns a

@@ -22,7 +22,7 @@
 ////
 //// ## Flow
 ////
-//// Outbound, `lsp/protocol` builds a `params` value and calls `request` or
+//// Outbound, `lsp/protocol` builds a `"params"` value and calls `request` or
 //// `notification`; `lsp/client` serializes the result with
 //// `core/json.to_string` and hands it to `lsp/framing`. Inbound,
 //// `lsp/framing` yields one body as text, and `decode` settles it as exactly
@@ -33,9 +33,9 @@
 ////
 //// The posture is strict on the envelope and tolerant of content. A wrong
 //// or missing `"jsonrpc"`, an id that is neither an integer nor a string,
-//// and a response carrying both or neither of `result` and `error` are all
-//// refused. Unknown extra fields are ignored, and `params`, `result` and
-//// error `data` are carried raw for `lsp/protocol` to interpret.
+//// and a response carrying both or neither of `"result"` and `"error"` are all
+//// refused. Unknown extra fields are ignored, and `"params"`, `"result"` and
+//// error `"data"` are carried raw for `lsp/protocol` to interpret.
 
 import core/corruption.{type CorruptionReport}
 import core/json.{type JsonValue}
