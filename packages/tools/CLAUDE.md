@@ -1,13 +1,14 @@
 # tools
 
-## LSP tool callback ownership
+## LSP observer callback ownership
 
-`lsp.tools` projects each read callback before retaining its executor. A
-rename retains only preparation and after-write. The complete `lsp/query.Door`
-remains with callers that need all eight operations, such as code mode; it no
-longer travels seven times through the direct-tool registry. The sibling-slot
-regression grows hover's captured payload, requires the other six tools to
-remain the same flat size, and checks that hover still owns that payload.
+The retired top-level LSP constructors are removed. `lsp.diagnostics_observer`
+projects only `Door.after_write` before retaining its callback; the full
+`lsp/query.Door` remains with callers that need all eight operations, such as
+code mode. The sibling-retention regression grows hover's captured payload,
+requires the live observer to remain the same flat size, and checks both
+hover's retained payload and the observer's settled-diagnostics result.
+Shared rename landing and anchored previews remain covered independently.
 
 ## Code-mode description and repair
 

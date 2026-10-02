@@ -39,7 +39,7 @@ diagnosis; a single pass is corroboration, not proof.
 
 ## SQL LSP observation branch
 
-On October 2, `codex/lsp-sql` is rebased onto `a3dc25359` for
+On October 2, `codex/lsp-sql` is rebased onto `945da29f1` for
 [PR #693](https://github.com/Roasbeef/loom/pull/693). The implementation follows
 [protocol 062](../protocol-change/062-lsp-sql-observations.md) and the new
 [saved-source contract](../protocol-change/063-saved-code-mode-programs.md).
@@ -51,7 +51,8 @@ Semantic access goes through `cap/lsp` and `cap/lsp_sql` in code mode.
 All seven legacy top-level constructors, schemas, argument decoders and
 execution wrappers are removed, along with sixteen obsolete surface tests.
 Shared rename landing, anchored previews and automatic write diagnostics remain;
-nine shared regressions retain stale-file, partial-write and settlement checks.
+ten shared regressions retain stale-file, partial-write, settlement and
+observer-retention checks.
 Installed profile hints follow the admitted capability into the description
 and `cap://lsp`. Saved session pins are not rewritten.
 
@@ -63,8 +64,8 @@ a later invocation reloads it. Handle interactions perform no source reads.
 reuse them by path and collect fresh observations. Reuse saves neither authority
 nor semantic facts.
 
-The independent full `make check` exited zero against the published graph and
-normal seed, using stock Gleam 1.19.0-rc2. It passed 2,666 client tests, 1,052
+Before the memory integration rebase, the independent full `make check` exited
+zero against the published graph and normal seed, using stock Gleam 1.19.0-rc2. It passed 2,666 client tests, 1,052
 TUI tests, 93 conformance tests, 172 capability tests and 340 code-mode tests,
 along with the other package gates. All six real jailed LSP fixtures ran
 without prerequisite skips. The Gleam SQL fixture loads a saved file; Go uses
@@ -130,10 +131,17 @@ ordinary conformance bucket did not install `gopls`. That bucket now installs
 the same pinned 0.23.0 server as the existing jail and macOS jobs. The fixture
 runs instead of gaining a waiver; the strict skip census remains unchanged.
 
+The integration rebase preserves main's reduced caller-side LSP manager and
+transport-start ownership. SQL collection now reads its workspace and timing
+from that handle. The retired-tool memory regression follows the live
+write-diagnostics observer, retaining the sibling-capture assertion rather
+than discarding coverage. Astra found no actionable integration defect.
+The rebased head requires fresh local, hosted and Linux signoff results.
+
 ## October 2 daemon memory pass
 
-`codex/memory-lsp-query-handle` reduces the seven direct LSP tools' measured
-flat copy cost from 2,205,760 to 184,920 bytes using the installed daemon's
+The pre-removal `codex/memory-lsp-query-handle` measurement reduced the seven
+direct LSP tools' flat copy cost from 2,205,760 to 184,920 bytes using the installed daemon's
 configuration in an isolated probe VM. Each tool owns only its callback;
 the caller-side manager excludes transport-start custody. The manager actor
 and keeper still own startup. See
@@ -155,7 +163,6 @@ attach to a profiled daemon, with `--pid` for a profiled client and `--erl` for
 a local Observer/wx installation. See `docs/distribution.md` for navigation.
 Installed CPU savings and function-level attribution of the busy unprofiled
 terminal remain measurement work, not established results.
-
 
 ## Local orientation in large modules (issue #593)
 
