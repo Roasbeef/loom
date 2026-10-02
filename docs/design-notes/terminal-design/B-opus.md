@@ -206,7 +206,7 @@ fewer columns.
   captured is not there. A complete inbox for a strand that is not on screen
   is not on the client wire. Protocol-change 056 gave code mode an `inbox`
   call; a client read would be a new read command and a protocol-change.
-- Inbox count: `PendingInput` at `session_view/snapshot_view.gleam:118`.
+- Inbox count: `PendingInput` at `session_view/snapshot_view.gleam:126`.
 
 No protocol change is needed for the view as drawn.
 
@@ -281,7 +281,7 @@ and the roster returns under the input.
 | Strand cards with a ring and one status line | a ring is not drawable in cells | a glyph, the name, the status line, and the cache outlook as `3m` |
 | Strand focus from dots, tags and cards | dots are cells, not buttons; no hover | `Ctrl+T` timeline cursor, `Enter` on a row; clicks are additive |
 | Breadcrumb with `All strands` and `Esc` | `Esc` already interrupts the active strand | breadcrumb with `↓ ⏎ main` |
-| `⌘B`, `⌘⌥B` | terminals do not deliver `⌘`; `Ctrl+B` is tmux's prefix; `Ctrl+Alt+B` parses as `Unknown`; any `Alt` letter is read as Escape then the letter (`interrupt_and_insert` at `tui/submit.gleam:395`) | `Shift+Tab`, which already toggles the rail |
+| `⌘B`, `⌘⌥B` | terminals do not deliver `⌘`; `Ctrl+B` is tmux's prefix; `Ctrl+Alt+B` parses as `Unknown`; any `Alt` letter is read as Escape then the letter (`interrupt_and_insert` at `tui/submit.gleam:411`) | `Shift+Tab`, which already toggles the rail |
 | Left session sidebar | costs 26 or more cells and duplicates the multiplexer | not drawn; the `←` picker |
 | 180 ms width animation, shadows, rounded cards | no | none |
 | Approval card in the dock | fits | today's bottom-anchored approval panel, unchanged in rules |
@@ -397,19 +397,19 @@ record would need a new control command.
 | Region | Data | Source today |
 |---|---|---|
 | Gutter hues | strand hue | `hue` at `session_view/turns.gleam:211` |
-| Worked divider with failure count | the turn's steps | `divider` at `session_view/turns.gleam:1140`, plus a failure count from the steps' results |
+| Worked divider with failure count | the turn's steps | `divider` at `session_view/turns.gleam:1159`, plus a failure count from the steps' results |
 | Collapsed repeats (`agent_wait ×15`) | consecutive identical calls | a new rule in `project` at `session_view/tool_activity.gleam:55`; no wire change |
 | Collapsed repeated errors (`429 ×20`) | consecutive identical local lines | a fold in `session_view` over `Shared.transcript`; no wire change |
 | Harness notices as system lines | the `[loom] ` prefix | recognised today only to bound the turn, `harness_injection_summary` at `session_view/composer.gleam:425`; the line builder still draws a User turn |
 | Spawn tree, roster, Strands tab | status, words, time, tokens | `Line` at `session_view/agent_roster.gleam:84`, `chips` at `session_view/agent_roster.gleam:393` |
 | Activity line | the active operation | `tui/layout` labels today (`active_status_label`) |
 | Status rule: ctx | context estimate | `footer` at `session_view/context_view.gleam:358` |
-| Status rule: cost | session total | `usage` at `session_view/model.gleam:327` |
+| Status rule: cost | session total | `usage` at `session_view/model.gleam:335` |
 | Status rule: needs you | approvals per strand | `needing` at `session_view/strand_card.gleam:69` |
 | Strands tab: cache | outlook per strand | `outlook` at `session_view/cache_watch.gleam:120` |
 | Changes tab | session edits | `fold` at `session_view/changes_view.gleam:173` |
 | Session tab: jobs, viewers | jobs board, presence | `jobs` at `session_view/session_summary.gleam:99`, `viewers` at `session_view/session_summary.gleam:122` |
-| Code mode block, Trace tab | program, status, result | `code_mode_program` at `session_view/transcript_lines.gleam:2371`, `code_mode_result_lines` at `session_view/transcript_lines.gleam:2808`; the call list has no data and needs a new wire record |
+| Code mode block, Trace tab | program, status, result | `code_mode_program` at `session_view/transcript_lines.gleam:2354`, `code_mode_result_lines` at `session_view/transcript_lines.gleam:2844`; the call list has no data and needs a new wire record |
 | Peer messages | authenticated origin | `PeerOrigin` at `core/message.gleam:43`, `peer_message_lines` at `session_view/transcript_lines.gleam:1641` |
 | Strand messages | harness text frame | `frame_message` at `client/agency.gleam:1641`; not recognised by `session_view` today |
 | Images | mime type and bytes | `Image` at `session_view/transcript_image.gleam:29` |
@@ -451,10 +451,10 @@ receives.
   "needs protocol-change: call record".
 
 What the client receives: the program, from the call's `program` argument
-only (`code_mode_program` at `session_view/transcript_lines.gleam:2371`),
+only (`code_mode_program` at `session_view/transcript_lines.gleam:2354`),
 and the result's details, which carry the value or the error message and
 details, `status`, `manifest_hash` and `sandbox`
-(`code_mode_result_lines` at `session_view/transcript_lines.gleam:2808`
+(`code_mode_result_lines` at `session_view/transcript_lines.gleam:2844`
 draws them). There is no call data at all: no call list, no capability
 names, no per-call status. Capability calls are serviced inside the
 satellite and the broker, and no transcript entry is written per call. A
