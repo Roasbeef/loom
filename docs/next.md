@@ -413,6 +413,16 @@ on 2026-09-30. Tracker state was read with `gh` the same day. Every claim
 below was checked against that tree or that tracker; a claim that could not be
 checked says so.
 
+## Persistent web-view startup
+
+`[daemon] ui = true` enables the web view when ordinary `loom` starts a
+new daemon from the selected catalogue. Omission keeps it disabled, and
+`loomd --ui` enables it even when the file says false. Startup captures
+UI and connection limits from one read before preparing the root; session
+catalogues and later file edits cannot change a running listener. Restart
+an existing daemon to apply the setting. `loom ui --session ID --open`
+still requests a browser link; `loom --ui` remains its older spelling.
+
 ## Herdr integration corrections (this branch)
 
 The `tui/herdr` adapter was audited against upstream herdrdev/herdr
