@@ -21,6 +21,7 @@ fn record(seq: Int, status: approval.Status) -> approval.Review {
     permission: approval.Exact("digest", [
       json.Object([#("kind", json.String("network"))]),
     ]),
+    strand: None,
   )
 }
 

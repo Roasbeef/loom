@@ -259,6 +259,7 @@ fn hostile_review() -> approval.Review {
         #("path", json.String(hostile("path-sentinel"))),
       ]),
     ]),
+    strand: None,
   )
 }
 

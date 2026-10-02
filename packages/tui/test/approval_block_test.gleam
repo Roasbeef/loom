@@ -7,9 +7,10 @@ import core/json
 import etui/keys
 import frame_scene
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/string
 import session_view/approval
+import session_view/model as session_model
 import tui/approval_panel
 import tui/frame
 import tui/model as tui_model
@@ -28,6 +29,7 @@ fn review() -> approval.Review {
         #("path", json.String("/work/report")),
       ]),
     ]),
+    strand: None,
   )
 }
 
@@ -63,7 +65,7 @@ pub fn the_block_sits_above_the_locked_input_frame_test() {
     let rule = index_of(lines, "──────────")
     let once = index_of(lines, "1  Allow once")
     let deny = index_of(lines, "3  Deny")
-    let keys = index_of(lines, "Enter decides")
+    let keys = index_of(lines, "Enter confirms")
     let frame = index_of(lines, "╭─ To main · locked while deciding")
     assert rule < once && once < deny && deny < keys && keys < frame
     assert frame == keys + 1
@@ -86,4 +88,27 @@ pub fn a_number_selects_and_only_enter_decides_test() {
   let assert approval_panel.Continue(_) =
     approval_panel.update(keys.Enter, panel)
     as "Enter with nothing selected decides nothing"
+}
+
+// The heading names the strand whose call asked, and with a second
+// question waiting it says which of them this is. An open question is
+// something the operator owes, so the bottom rule counts it.
+pub fn the_heading_names_the_asker_and_counts_the_queue_test() {
+  let asked = approval.Review(..review(), strand: Some("sub:tests"))
+  let other = approval.Review(..review(), id: "esc-2", strand: None)
+  let base = deciding(approval_panel.new(asked))
+  let model =
+    tui_model.Model(
+      ..base,
+      shared: session_model.Shared(..base.shared, approvals: [asked, other]),
+    )
+  list.each([#(120, 40), #(80, 24)], fn(size) {
+    let lines =
+      frame_scene.screen(model, size.0, size.1) |> frame.buffer_to_lines
+    let assert Ok(heading) =
+      list.find(lines, string.contains(_, "? sub:tests · "))
+      as "the heading names the asking strand"
+    assert string.contains(heading, "1 of 2")
+    assert list.any(lines, string.contains(_, "2 need you"))
+  })
 }

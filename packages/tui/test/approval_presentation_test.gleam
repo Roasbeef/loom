@@ -32,6 +32,7 @@ fn review(path) {
         #("path", json.String(path)),
       ]),
     ]),
+    strand: None,
   )
 }
 
@@ -52,7 +53,7 @@ pub fn approval_capture(width: Int, height: Int) -> String {
       "sub:review",
       "run-1",
     ))
-  approval_panel.render(base, screen, panel) |> frame.buffer_to_text
+  approval_panel.render(base, screen, panel, waiting: 1) |> frame.buffer_to_text
 }
 
 pub fn approval_presentation_ascii_escapes_hidden_paths_without_changing_authority_test() {
@@ -118,7 +119,7 @@ pub fn approval_presentation_exact_display_boundary_and_narrow_scrolling_test() 
     ))
   let screen = geometry.rect_new(0, 0, 80, 10)
   let draw = fn(panel) {
-    approval_panel.render(buffer.buffer_new(screen), screen, panel)
+    approval_panel.render(buffer.buffer_new(screen), screen, panel, waiting: 1)
     |> frame.buffer_to_text
   }
   assert !string.contains(draw(panel), "unsafe-suffix")
@@ -144,14 +145,14 @@ pub fn approval_owner_context_preserves_exact_consent_test() {
     ))
   let screen = geometry.rect_new(0, 0, 100, 24)
   let rendered =
-    approval_panel.render(buffer.buffer_new(screen), screen, panel)
+    approval_panel.render(buffer.buffer_new(screen), screen, panel, waiting: 1)
     |> frame.buffer_to_text
   assert string.contains(rendered, "Requested by sub:review")
   assert !string.contains(rendered, "operation run-1")
   let assert approval_panel.Continue(raw) =
     approval_panel.update(keys.Ctrl("g"), panel)
   let raw_rendered =
-    approval_panel.render(buffer.buffer_new(screen), screen, raw)
+    approval_panel.render(buffer.buffer_new(screen), screen, raw, waiting: 1)
     |> frame.buffer_to_text
   assert string.contains(raw_rendered, "operation run-1")
   let assert approval_panel.Continue(unselected) =
@@ -174,7 +175,7 @@ pub fn approval_panel_is_bottom_anchored_and_preserves_the_transcript_test() {
   let base =
     paragraph.render_styled(buffer.buffer_new(screen), screen, transcript)
   let rendered =
-    approval_panel.render(base, screen, approval_panel.new(record))
+    approval_panel.render(base, screen, approval_panel.new(record), waiting: 1)
     |> frame.buffer_to_lines
   let assert Ok(first) = list.first(rendered)
   assert first == "transcript remains visible"
@@ -193,7 +194,7 @@ pub fn approval_panel_readable_and_raw_views_stay_compact_test() {
   let panel = approval_panel.new(review("/work/clear-name"))
   let screen = geometry.rect_new(0, 0, 96, 36)
   let draw = fn(panel) {
-    approval_panel.render(buffer.buffer_new(screen), screen, panel)
+    approval_panel.render(buffer.buffer_new(screen), screen, panel, waiting: 1)
     |> frame.buffer_to_text
   }
   assert string.contains(draw(panel), "Read files under")
@@ -320,7 +321,12 @@ pub fn approval_paging_cannot_skip_detail_rows_test() {
     int.range(0, 100, #([], approval_panel.new(record)), fn(acc, _) {
       let #(pages, panel) = acc
       let rendered =
-        approval_panel.render(buffer.buffer_new(screen), screen, panel)
+        approval_panel.render(
+          buffer.buffer_new(screen),
+          screen,
+          panel,
+          waiting: 1,
+        )
       let assert approval_panel.Continue(next) =
         approval_panel.update(keys.PageDown, panel)
         as "paging never chooses a decision"
@@ -342,6 +348,7 @@ pub fn unavailable_approval_can_only_select_deny_test() {
       "unknown authority",
       None,
       approval.Unavailable("unsupported requested grant kind"),
+      strand: None,
     )
   let panel = approval_panel.new(record)
   let assert approval_panel.Continue(selected) =
@@ -354,6 +361,7 @@ pub fn unavailable_approval_can_only_select_deny_test() {
       buffer.buffer_new(geometry.rect_new(0, 0, 52, 12)),
       geometry.rect_new(0, 0, 52, 12),
       panel,
+      waiting: 1,
     )
     |> frame.buffer_to_text
   assert string.contains(rendered, "Allow once (unavailable)")
@@ -365,7 +373,7 @@ pub fn narrow_approval_stacks_choices_and_tiny_terminal_stays_bounded_test() {
   let panel = approval_panel.new(review("/work/report"))
   let narrow = geometry.rect_new(0, 0, 48, 12)
   let lines =
-    approval_panel.render(buffer.buffer_new(narrow), narrow, panel)
+    approval_panel.render(buffer.buffer_new(narrow), narrow, panel, waiting: 1)
     |> frame.buffer_to_lines
   let once = row_index(lines, "Allow once")
   let session = row_index(lines, "Allow for session")
@@ -378,7 +386,7 @@ pub fn narrow_approval_stacks_choices_and_tiny_terminal_stays_bounded_test() {
 
   let tiny = geometry.rect_new(0, 0, 24, 6)
   let tiny_lines =
-    approval_panel.render(buffer.buffer_new(tiny), tiny, panel)
+    approval_panel.render(buffer.buffer_new(tiny), tiny, panel, waiting: 1)
     |> frame.buffer_to_lines
   assert list.length(tiny_lines) == 6
   assert list.all(tiny_lines, fn(line) { string.length(line) <= 24 })
@@ -389,7 +397,7 @@ pub fn approval_styles_keep_panel_backgrounds_and_choice_focus_test() {
   let screen = geometry.rect_new(0, 0, 100, 40)
   let panel = approval_panel.new(review("/work/report"))
   let draw = fn(state) {
-    approval_panel.render(buffer.buffer_new(screen), screen, state)
+    approval_panel.render(buffer.buffer_new(screen), screen, state, waiting: 1)
   }
   let initial = draw(panel)
   let rows = frame.buffer_to_lines(initial)

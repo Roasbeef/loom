@@ -8,7 +8,7 @@
 //// a rule, rather than as a dialog over the transcript: the question, the
 //// exact action, the grant and whether session approval exists, then the
 //// numbered choices and the keys. `1`, `2` and `3` select a choice and
-//// never confirm it; only Enter decides, so no decision is one keystroke.
+//// never confirm it; only Enter confirms, so no decision is one keystroke.
 //// `d` shows the raw captured request and Escape defers. While it is open
 //// the input frame says it is locked.
 
@@ -285,7 +285,12 @@ fn session_approvable(review: approval.Review) -> Bool {
 /// ```gleam
 /// // approval_panel.render(buffer, above_input, panel)
 /// ```
-pub fn render(buf: buffer.Buffer, area: Rect, state: State) -> buffer.Buffer {
+pub fn render(
+  buf: buffer.Buffer,
+  area: Rect,
+  state: State,
+  waiting waiting: Int,
+) -> buffer.Buffer {
   let width = area.size.width
   let panel_width = case width < 74 {
     True -> NarrowPanel
@@ -331,10 +336,10 @@ pub fn render(buf: buffer.Buffer, area: Rect, state: State) -> buffer.Buffer {
     _, _ -> ["PgUp earlier in the request"]
   }
   let controls = case panel_width {
-    NarrowPanel -> ["1-3 ↑↓ select", "Enter decides", "d raw", "Esc defers"]
+    NarrowPanel -> ["1-3 ↑↓ select", "Enter confirms", "d raw", "Esc defers"]
     WidePanel ->
       list.flatten([
-        ["1-3 or ↑↓ select", "Enter decides", "d raw request", "Esc defers"],
+        ["1-3 or ↑↓ select", "Enter confirms", "d raw request", "Esc defers"],
         more,
       ])
   }
@@ -344,7 +349,7 @@ pub fn render(buf: buffer.Buffer, area: Rect, state: State) -> buffer.Buffer {
   }
   let rows =
     list.flatten([
-      [rule(width), heading(state, width)],
+      [rule(width), heading(state, waiting, width)],
       gap,
       list.map(list.take(list.drop(lines, offset), detail_height), indent),
       gap,
@@ -386,18 +391,30 @@ fn rule(width: Int) -> span.Line {
 }
 
 // The question in bold beside the danger mark, as the transcript's own
-// approval row draws it, so the two read as one thing.
-fn heading(state: State, width: Int) -> span.Line {
+// approval row draws it, so the two read as one thing, after the strand
+// whose call asked. When more questions wait, the right end says which of
+// them this is.
+fn heading(state: State, waiting: Int, width: Int) -> span.Line {
   let approval.Presentation(question, _, _) = state.presentation
+  let asker = case state.review.strand {
+    Some(strand) -> text_hygiene.single_line(strand) <> " · "
+    None -> ""
+  }
+  let place = case waiting > 1 {
+    True -> "1 of " <> int.to_string(waiting) <> " "
+    False -> ""
+  }
+  let room = width - 3 - string.length(place) - 1
+  let words = fit(asker <> text_hygiene.single_line(question), room)
+  let gap = int.max(1, width - 3 - string.length(words) - string.length(place))
   span.line_new([
     span.span_styled(
       " ? ",
       style.new(theme.danger, style.Default, style.bold()),
     ),
-    span.span_styled(
-      text_hygiene.single_line(question) |> fit(width - 4),
-      style.new(theme.paper, style.Default, style.bold()),
-    ),
+    span.span_styled(words, style.new(theme.paper, style.Default, style.bold())),
+    span.span_plain(string.repeat(" ", gap)),
+    span.span_styled(place, theme.quiet_text()),
   ])
 }
 

@@ -13,7 +13,7 @@ import core/register
 import gleam/bool
 import gleam/int
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import session_view/session_wire
@@ -68,6 +68,9 @@ pub type Review {
     origin: Option(message.Origin),
     /// Exact captured authority or the reason approval cannot be encoded.
     permission: Permission,
+    /// The strand whose call asked, from the escalation's captured scope,
+    /// or `None` for a question with no call scope.
+    strand: Option(String),
   )
 }
 
@@ -203,7 +206,15 @@ pub fn decode(cell: snapshot_view.Cell) -> Result(Review, String) {
     Ok(permission) -> permission
     Error(reason) -> Unavailable(reason)
   }
-  Ok(Review(id, cell.seq, state, tool, preview, author, permission))
+  let strand = case list.key_find(fields, "scope") {
+    Ok(json.Object(scope)) ->
+      case list.key_find(scope, "strand") {
+        Ok(json.String(strand)) if strand != "" -> Some(strand)
+        _ -> None
+      }
+    _ -> None
+  }
+  Ok(Review(id, cell.seq, state, tool, preview, author, permission, strand))
 }
 
 fn exact(fields) {
