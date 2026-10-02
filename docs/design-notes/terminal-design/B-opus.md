@@ -117,8 +117,8 @@ protocol-change; this concept does not ask for one (question 6).
 
 Captured from `gleam dev agents dark` (six fixture agents) in a private tmux
 session. `--demo` gives the same layout with three strands and every field
-"unavailable". The view is `render_rail` at `tui/agents.gleam:145` beside
-`render_inspection` at `tui/agents.gleam:239`. What is wrong with it:
+"unavailable". The view is `render_rail` at `tui/agents.gleam:324` beside
+`render_inspection` at `tui/agents.gleam:403`. What is wrong with it:
 
 - **Columns.** Each strand takes three rows (name, task, status) and a blank,
   so six strands need 24 rows and the list scrolls at 120×40. No row shows
@@ -351,9 +351,9 @@ call list in both needs a new wire record (section 10).
 | Key | Today | Concept B |
 |---|---|---|
 | `←` on an empty composer | session picker (`tui/interaction.gleam:1376`) | unchanged |
-| `↓` on an empty composer | into the strip (`down_from_composer` at `tui/interaction.gleam:1260`) | unchanged; lands on `main` when another strand is focused |
-| `Shift+Tab` | toggle the rail (`tui/interaction.gleam:1362`) | toggle the drawer, which replaces the rail |
-| `Ctrl+O`, `F2` | open `/agents` (`open_agents` at `tui/interaction.gleam:1149`) | open Strands: full body, or focus the docked drawer |
+| `↓` on an empty composer | into the strip (`down_from_composer` at `tui/interaction.gleam:1287`) | unchanged; lands on `main` when another strand is focused |
+| `Shift+Tab` | toggle the rail (`tui/interaction.gleam:1389`) | toggle the drawer, which replaces the rail |
+| `Ctrl+O`, `F2` | open `/agents` (`open_agents` at `tui/interaction.gleam:1176`) | open Strands: full body, or focus the docked drawer |
 | `Ctrl+T` | unbound | timeline cursor (new) |
 | `Ctrl+G` | details everywhere | unchanged |
 | `Ctrl+D` | changes navigator focus | focus the drawer on Changes |

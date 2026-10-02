@@ -19,9 +19,32 @@ Arrows inspect without changing `Model.shared.active_strand`; Enter explicitly o
 the selected transcript and recipient. Missing selections stay visible as
 unavailable until navigation chooses another row. `n` visits the next attention
 state, `a` opens the existing exact-request approval panel, and PgUp/PgDn scroll
-the selected detail. The real composer stays visible below the workspace. Tab
+the selected detail. The real composer stays visible below the workspace. `w`
 transfers keyboard ownership to it without changing the inspected ID or recipient;
-Escape returns to the roster. Editing uses the existing submission and command
+Escape returns to the list. Tab and Shift+Tab cycle `agents.Filter` (All, Need
+you, Working, Settled), as the session picker's tabs do; a filter that hides the
+selection selects its own first row.
+
+The list draws each agent as one `agent_row.TableRow` row (glyph, name, action,
+elapsed, context) in attention order after `main`: needs input, failed, halted,
+working, idle, finished, unavailable, and the advisor last. `agents.listed` is
+that order and the filter, and `navigate` and `next_attention` read it, so Up
+and Down always move to the row drawn next. The Activity detail is labelled
+sections, each said once: Task (cut at a word, with a line saying where the
+rest is), Now (a pending approval's request and the `a` key, or a failure's
+error with "the error is not repeated here"), Latest messages from
+`agent_messages`, Inbox and Tools, and the identity dimmest. The figures come
+from `agents.Facts`, the strip's `agent_roster.Roster` and the captured sends,
+through `agent_roster.describe`, which also describes the settled agents a
+strip does not list. At an inside width of 96 or more the detail sits beside a
+69-cell list; narrower, it stacks under a rule and keeps only Task and Now.
+While browsing, the workspace owns the screen below the identity line
+(`layout.workspace_area`), covering the strip and the composer, and is as tall
+as its content, anchored at the top; while writing (`w`) it takes the body
+above the composer. A list cut by its room ends in `↓ N more below`, a
+section label whose body was cut is not drawn, the latest messages read
+oldest first (a captured send has no time, so there is no age), and the
+footer names the recipient quietly with the recipient in bold paper. Editing uses the existing submission and command
 completion paths, including the visible command palette. The ordinary
 `Shift+Tab` rail shares the same task summaries, with a reserved Advisor section
 and a separately labelled worktree observation. A missing Git observation is
@@ -108,9 +131,15 @@ running several strands can see what each is doing without opening `/agents`.
 working, waiting, needs input or is halted. Settled strands leave the strip,
 and the advisor, which has its own band, is listed only while it is active.
 The strip appears once a second agent is listed and the terminal is at least
-`min_screen_height` rows. It grows a row per agent, up to a quarter of the
-screen and never more than `max_rows`; any further rows fold into a
-`+N more · ^O agents` row. `layout.layout` includes it in the footer
+`min_screen_height` rows. It grows a row per agent, up to a fifth of the
+screen plus one (five rows at 24, eight at 40) and never more than `max_rows`; any further rows fold into a
+`+N more · Down enters the strip · F2 opens the list` row. Its rows are
+`agent_row.StripRow` rows, the shape the workspace list draws: the cursor's
+row is the raised bar marked `❯`, the viewed strand is marked `›`, and the
+name and figure columns are as wide as the widest the strip shows, so the
+`·` between time and context lines up at the right edge. Two agents whose
+slugs match keep the head of their digest (`agent_row.labels`), and a name too
+long for its column is cut in the middle so that suffix survives. `layout.layout` includes it in the footer
 rectangle and `layout.footer_split` divides the two, so no other hit-test
 or scroll path sees it. While it is drawn, the reviewer band above the
 composer steps aside.
@@ -1204,6 +1233,12 @@ boundaries and the split's measurements under Invariants.
   overlay"): the principal and membership lists, their paging, the y/N
   review of each change, and the pure `update` that returns an `Action`.
   `tui/session_control` runs its requests and `tui/render` paints it.
+- `tui/agent_row.{Shape, Mark}` draws one agent as one row for both the
+  strip (`StripRow`) and the workspace list (`TableRow`): `rows` labels the
+  list together (`labels`, twins keep a digest head), sizes its columns and
+  marks the cursor and the viewed strand. `status_mark`, `status_style` and
+  `glyph` are the status vocabulary every agent surface draws; `cut_middle`
+  and `cut` are its two truncations.
 - `tui/agent_strip.{State, Focus, Line, Outcome, StripKey}` is the pinned
   per-agent strip under the footer (see "Agent strip"). `State` holds
   keyboard focus beside an `agent_roster.Roster` (decoded glances,

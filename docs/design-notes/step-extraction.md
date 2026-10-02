@@ -232,7 +232,7 @@ type and no job slot. What it does hold from `tui/` today moves with it:
 over its lane's handles) and the `Peer`, `Interrupt`,
 `UnconfirmedSubmission`, `SubmissionSource`, `GoalReport` and
 `ConnectionBacklog` types from `tui/model`. `agents.summary`
-(`tui/agents.gleam:816` (`summary`)) stays behind; the terminal derives
+(`tui/agents.gleam:357` (`summary`)) stays behind; the terminal derives
 the footer string in its projection.
 
 ### The web view's `component.Model`
@@ -650,7 +650,7 @@ The worst cases in the code, and the cut for each:
    (`tui/inbound.gleam:1063` (`request_visible_worktree`) reads
    `layout.diff_shown`); `request_history_for_view`, which becomes
    `Acted(OlderHistory)` for the same reason
-   (`tui/interaction.gleam:1837` (`request_history_for_view`) reads the
+   (`tui/interaction.gleam:1864` (`request_history_for_view`) reads the
    viewport); `publish_herdr`; `refresh_render_cache`; the viewport snap;
    and `refresh_frame_cache`. The compile-time boundary the comment above
    `apply_input` describes keeps its shape: the shared `update` applies
@@ -676,7 +676,7 @@ The worst cases in the code, and the cut for each:
    terminal function over `TuiModel`, and the calls it makes into shared
    reducers become `Acted` commands or direct calls through `hold_shared`.
    `update_ready_key`'s order, Escape before the drain
-   (`tui/interaction.gleam:1485` (`update_ready_key`)), is kept because
+   (`tui/interaction.gleam:1512` (`update_ready_key`)), is kept because
    the shell decides when to call the shared drain, as it does today.
 
 ## 4. What the web view deletes
