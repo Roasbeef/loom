@@ -1831,7 +1831,95 @@ fn settled_text(
     Ok(value) -> json.to_string(value)
     Error(Nil) -> content |> list.map(tool_result_text) |> string.join("\n")
   }
-  "code_mode · " <> status <> " · result " <> compact(value, 90)
+  let calls = case call_tree.read(json.Object(details)) {
+    Some(log) -> " · " <> call_count(log)
+    None -> ""
+  }
+  "code_mode · " <> status <> calls <> " · result " <> compact(value, 90)
+}
+
+// A record's count as a settled row says it: `4 calls` when every call
+// settled, and the record's whole summary when any did not.
+fn call_count(log: CallLog) -> String {
+  case log.failed + log.cancelled + log.unsettled {
+    0 -> count_text(log.total, "call", "calls")
+    _ -> call_tree.summary(log)
+  }
+}
+
+// How many groups of calls a failure block lists.
+const call_groups = 4
+
+// The calls section of a failure block, from the host's record: a
+// `CALLS · …` line and the calls grouped where consecutive calls share a
+// capability and an ending (`✓ fs.read ×3  a.gleam · b.gleam`), with a
+// closing line for the groups and calls not listed. A call's argument
+// summary is the host's redacted one, cut to a row.
+fn call_section(log: CallLog) -> List(String) {
+  let groups = call_groups_of(log.items)
+  let shown = list.take(groups, call_groups)
+  let unlisted =
+    list.fold(list.drop(groups, call_groups), 0, fn(total, group) {
+      total + group.1
+    })
+    + log.total
+    - list.length(log.items)
+  let rows =
+    list.map(shown, fn(group) {
+      let #(call, count, args) = group
+      let glyph = case call.status {
+        call_tree.Settled -> "✓ "
+        call_tree.Failed -> "× "
+        call_tree.Cancelled -> "○ "
+        call_tree.Unsettled -> "◐ "
+      }
+      let times = case count {
+        1 -> ""
+        n -> " ×" <> int.to_string(n)
+      }
+      let ending = case call.status {
+        call_tree.Settled -> ""
+        call_tree.Failed -> "  failed" <> option_text(call.error, " ")
+        call_tree.Cancelled -> "  cancelled"
+        call_tree.Unsettled -> "  not settled"
+      }
+      glyph
+      <> text_hygiene.single_line(call.cap)
+      <> times
+      <> case args {
+        [] -> ""
+        args -> "  " <> compact(string.join(args, " · "), 72)
+      }
+      <> ending
+    })
+  let more = case unlisted {
+    0 -> []
+    n -> ["… " <> count_text(n, "more call", "more calls")]
+  }
+  ["", "CALLS · " <> call_tree.summary(log), ..list.append(rows, more)]
+}
+
+// Consecutive calls that share a capability, an ending and an error code,
+// each group with its count and its calls' argument summaries.
+fn call_groups_of(
+  calls: List(call_tree.Call),
+) -> List(#(call_tree.Call, Int, List(String))) {
+  calls
+  |> list.fold([], fn(groups: List(#(call_tree.Call, Int, List(String))), call) {
+    let args = case call.args {
+      Some(args) -> [text_hygiene.single_line(args)]
+      None -> []
+    }
+    case groups {
+      [#(first, count, seen), ..rest]
+        if first.cap == call.cap
+        && first.status == call.status
+        && first.error == call.error
+      -> [#(first, count + 1, list.append(seen, args)), ..rest]
+      [] | [_, ..] -> [#(call, 1, args), ..groups]
+    }
+  })
+  |> list.reverse
 }
 
 // A running block: the title, the foot naming the budget the call asked
@@ -1916,7 +2004,11 @@ fn failure_text(
     True -> " · " <> count_text(list.length(all), "line", "lines")
     False -> ""
   }
-  ["× code_mode · " <> title, foot <> more, ..body]
+  let calls = case call_tree.read(json.Object(details)) {
+    Some(log) -> call_section(log)
+    None -> []
+  }
+  ["× code_mode · " <> title, foot <> more, ..list.append(body, calls)]
   |> string.join("\n")
 }
 
