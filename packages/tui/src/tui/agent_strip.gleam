@@ -29,13 +29,12 @@ import etui/text
 import etui/widgets/paragraph
 import gleam/int
 import gleam/list
-import gleam/option.{type Option, None, Some}
+import gleam/option.{type Option}
 import gleam/result
 import session_view/agent_roster
 import session_view/agent_view
 import session_view/snapshot_view
-import session_view/text_hygiene
-import tui/agents
+import tui/agent_row
 import tui/theme
 
 /// The most agent rows the strip draws before it folds the rest into a count.
@@ -352,6 +351,10 @@ pub fn badge(lines: List(Line), active: String) -> Option(String) {
 
 /// Paints the strip into its area, bottom-aligned under the footer.
 ///
+/// The rows are `agent_row`'s, the shape the workspace list draws too: the
+/// cursor's row is the raised bar marked `❯`, the strand being viewed is
+/// marked `›`, and the figures line up at the right edge.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -372,23 +375,40 @@ pub fn render(
     False -> lines
   }
   let rows =
-    list.map(shown, fn(line) { row(line, focus, active, area.size.width) })
+    agent_row.rows(
+      shown,
+      agent_row.StripRow,
+      area.size.width,
+      style.Default,
+      fn(line) {
+        case focus == Browsing(line.id), line.id == active {
+          True, _ -> agent_row.Cursor
+          False, True -> agent_row.Viewing
+          False, False -> agent_row.Unmarked
+        }
+      },
+    )
+
+  // The overflow row says how many agents are out of view and how to reach
+  // them; once the cursor is in the strip, Down already moves it, so only
+  // the full list is offered.
   let rows = case overflow > 0 {
     False -> rows
-    True ->
+    True -> {
+      let hidden = int.to_string(list.length(lines) - list.length(shown))
+      let reach = case focus {
+        Composing -> " more · Down enters the strip · F2 opens the list"
+        Browsing(_) -> " more · F2 opens the list"
+      }
       list.append(rows, [
         span.line_new([
           span.span_styled(
-            text.pad_right(
-              "  +"
-                <> int.to_string(list.length(lines) - list.length(shown))
-                <> " more · ^O agents",
-              area.size.width,
-            ),
+            text.pad_right("   +" <> hidden <> reach, area.size.width),
             theme.quiet_text(),
           ),
         ]),
       ])
+    }
   }
   paragraph.render_styled(buf, area, rows)
 }
@@ -406,68 +426,4 @@ fn window(lines: List(Line), focus: Focus, size: Int) -> List(Line) {
   }
   let start = int.clamp(at - size + 1, min: 0, max: list.length(lines))
   lines |> list.drop(start) |> list.take(size)
-}
-
-fn row(line: Line, focus: Focus, active: String, width: Int) -> span.Line {
-  let selected = focus == Browsing(line.id)
-  let viewing = line.id == active
-  let background = case selected {
-    True -> theme.raised
-    False -> style.Default
-  }
-
-  // The cursor and the viewed strand each carry a mark as well as a color,
-  // so the strip still reads on a terminal with no color at all.
-  let cursor = case selected, viewing {
-    True, _ -> "❯ "
-    False, True -> "› "
-    False, False -> "  "
-  }
-
-  // The meter keeps its column; on a narrow terminal it goes first, since
-  // what the agent is doing matters more than for how long.
-  let meter = case width >= 72 {
-    True -> meter(line)
-    False -> ""
-  }
-  let name_width = int.min(22, int.max(8, width / 5))
-  let name = text.pad_right(fit(line.name, name_width), name_width)
-  let lead = cursor <> agents.status_mark(line.status) <> " "
-  let room =
-    width - text.cell_width(lead) - name_width - 1 - text.cell_width(meter) - 1
-  let body = text.pad_right(fit(line.text, room), int.max(0, room))
-  let name_style = case viewing {
-    True -> style.new(theme.signal, background, style.bold())
-    False -> style.new(theme.current, background, style.none())
-  }
-  span.line_new([
-    span.span_styled(cursor, style.new(theme.signal, background, style.bold())),
-    span.span_styled(
-      agents.status_mark(line.status) <> " ",
-      agents.status_style(line.status, background),
-    ),
-    span.span_styled(name <> " ", name_style),
-    span.span_styled(
-      body <> " ",
-      style.new(theme.paper, background, style.none()),
-    ),
-    span.span_styled(meter, style.new(theme.quiet, background, style.none())),
-  ])
-}
-
-fn meter(line: Line) -> String {
-  let time = option.map(line.elapsed_s, agent_roster.duration)
-  let size =
-    option.map(line.tokens, fn(count) {
-      agent_roster.count_label(count) <> " ctx"
-    })
-  case time, size {
-    Some(time), Some(size) -> time <> " · " <> size
-    Some(one), None | None, Some(one) -> one
-    None, None -> ""
-  }
-}
-
-fn fit(value: String, width: Int) -> String {
-  text.truncate(text_hygiene.single_line(value), int.max(0, width), "…")
 }
