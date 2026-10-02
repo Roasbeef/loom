@@ -131,10 +131,15 @@ pub fn a_failed_program_lists_its_calls_grouped_test() {
     let shown = lines(width)
     assert has(shown, "× code_mode · did not finish")
     assert has(shown, "CALLS · 7 calls · 1 failed · 1 unsettled")
+    // The arguments start in one column; a failure names its code in
+    // words, and a failed or unsettled call says how long it took.
     assert has(shown, "✓ fs.read ×3  calc.gleam · calc_test.gleam · README.md")
-    assert has(shown, "× proc.run  gleam format --check  failed exit_status")
-    assert has(shown, "✓ proc.run  gleam build")
-    assert has(shown, "◐ proc.run  gleam test  not settled")
+    assert has(
+      shown,
+      "× proc.run    gleam format --check  failed · exit status · 5ms",
+    )
+    assert has(shown, "✓ proc.run    gleam build")
+    assert has(shown, "◐ proc.run    gleam test  not settled · 5ms")
     assert has(shown, "… 1 more call")
   })
 }
