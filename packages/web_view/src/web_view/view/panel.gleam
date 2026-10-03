@@ -1,16 +1,20 @@
 //// The strand panel: the right-hand column, a tabbed panel of three panes,
-//// the Strands, Changes and Session tabs.
+//// the Strands, Changes and Session tabs, with the advisor's pending
+//// nudges drawn under them.
 ////
 //// The panel is the page's last child (`view/shell`). It is an `aside` whose
 //// children are the three panes, always in the same order and all drawn, so
-//// no pane's place depends on what another holds. The panel adds the column
-//// and the Strands pane's title around the strip's list, which `view/strip`
-//// draws and memoizes; the Changes and Session panes are drawn by
-//// `view/changes` and `view/session_tab`, and each is a `section` of its own.
-//// The tab bar is not here: the shell element draws the buttons above the
-//// column (`packages/web_client`), keeps which tab is chosen, and hides the
-//// panes of the others. The server draws every pane and never learns which
-//// shows.
+//// no pane's place depends on what another holds, and then the advisor's
+//// pending nudges, drawn by `view/nudges` as a section of their own under
+//// the panes. The nudge card is not a pane: the tab rules hide a tab's
+//// siblings, and the card belongs to none of them, so it shows whichever
+//// tab is chosen — the queue is the advisor's, not a view of one pane's
+//// data — and it is the aside's last child, so the paths the panes hold
+//// (`component.strip_path`, `component.invite_path`) do not move. Its
+//// visibility is the column's: the card is on screen while the panel is
+//// open, is hidden with the column when the reader closes it, and below
+//// 980px the stylesheet hides it so the narrow row of cards is left alone
+//// (the cost is recorded in protocol-change/051's addendum of 2026-10-02).
 ////
 //// The Strands pane is the panel's first child. Its title comes first and the
 //// strip's list second, and the list's `ul` is the path
@@ -37,19 +41,23 @@ import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 
-/// The panel around the three panes, the first of which is `strands` under a
-/// title saying how many strands it lists.
+/// The panel around the three panes and the advisor's pending nudges,
+/// the first pane being `strands` under a title saying how many strands
+/// it lists.
 ///
 /// With no strand listed the title is the word alone, so a page that has not
 /// yet captured a session does not say "Strands · 0". `detail` is the view of
 /// the strand in focus, when it has one, and the pane hides its title and list
 /// while it is drawn. `changes` and `session` are whole panes, drawn by their
-/// own modules.
+/// own modules. `nudges` is the advisor's pending-nudge card
+/// (`view/nudges`), drawn under the panes on every tab, or
+/// `element.none()` when nothing is waiting — which keeps the aside's child
+/// list one length, so no handler's path moves when a nudge lands.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // panel.view(strip.count(strip), strip.view(strip, focus), None, changes.view(board), session)
+/// // panel.view(strip.count(strip), strip.view(strip, focus), None, changes.view(board), session, nudges.view(board))
 /// ```
 pub fn view(
   count: Int,
@@ -57,6 +65,7 @@ pub fn view(
   detail: Option(Element(message)),
   changes: Element(message),
   session: Element(message),
+  nudges: Element(message),
 ) -> Element(message) {
   html.aside(
     [
@@ -88,6 +97,7 @@ pub fn view(
       ),
       changes,
       session,
+      nudges,
     ],
   )
 }
