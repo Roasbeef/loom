@@ -909,7 +909,7 @@ around it, at the commit this slice started from:
 | a new session's configuration: `HOME`, the canonical state root, the kind and canonical path of `--config`, or whether `<state-root>/loom.toml` exists | `bootstrap.session_configuration`, called by `create_session` at `tui/session_control.gleam:541` | in the step | a job, `Configure` at `tui/job_runner.gleam:302` |
 | the workspace of an opened or created session: the `.git` marker and `HEAD` | `daemon_selection.target`, which calls `discover_from` at `tui/daemon/selection.gleam:551` | the attachment worker, since S5 | unchanged |
 | the owner token after a daemon death | `daemon_selection.relaunch`, which calls `read_private_bounded` at `tui/daemon/selection.gleam:136` | the relaunch worker, since S4 | unchanged |
-| the working directory's workspace, `--workspace`, `--token-file`, the owner token, daemon resolution, the recording header, a replayed recording, and the Herdr and palette environment | `discover` at `tui.gleam:743`, `discover_from` at `tui.gleam:775`, `read` at `tui.gleam:1363`, `read_private_bounded` at `tui.gleam:2014`, `start` at `tui.gleam:900`, `decode_file` at `tui.gleam:1819`, `configure` at `tui/tick.gleam:55` | before the loop | unchanged |
+| the working directory's workspace, `--workspace`, `--token-file`, the owner token, daemon resolution, the recording header, a replayed recording, and the Herdr and palette environment | `discover` at `tui.gleam:749`, `discover_from` at `tui.gleam:781`, `read` at `tui.gleam:1391`, `read_private_bounded` at `tui.gleam:2042`, `start` at `tui.gleam:923`, `decode_file` at `tui.gleam:1847`, `configure` at `tui/tick.gleam:55` | before the loop | unchanged |
 | the record-based session discovery that fed the local switch | `tui/sessions` and `tui/bootstrap` | deleted in S5 | gone; no definition or caller remains |
 
 Recording appends are writes, and have been effects since S3. Two reads in
@@ -1070,7 +1070,7 @@ Two reads remain in the step, and neither touches the file system. Adoption
 asks whether the replacement socket's actor is alive (phase 3 moved the
 read to `tui/runtime.gleam:309` (`connection.adopt`)). And the
 build-mismatch notice reads this client's build identity from two environment variables on
-every coherent cut (`tui/model.gleam:1023` (`build_identity`)). Phase 3
+every coherent cut (`tui/model.gleam:1016` (`build_identity`)). Phase 3
 takes both: once etui's events are replaced by a domain message type, the
 runtime can read the liveness when it delivers the message that carries the
 socket, and the build identity, which does not change while the process

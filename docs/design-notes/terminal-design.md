@@ -421,6 +421,23 @@ placement and deletion belong in `../etui`, so that work is its own slice
 the platform opener the `loom ui` link already uses (`opener_for`,
 `packages/tui/src/tui/view_link.gleam:83`) (`opener_for`).
 
+**As built (slice 11).** The probe, the box and the commands are in
+`packages/tui/src/tui/image_support.gleam`, `image_box.gleam`,
+`image_shown.gleam` and `image_plan.gleam`, and `packages/tui/CLAUDE.md`
+("Drawn images") says how they fit. Three things differ from the frames above.
+The frame hugs the box, as wide as the picture or its label needs, rather than
+spanning the pane, and the picture is centred in it. The box's foot offers only
+`o opens externally`, because no key selects an image yet. The picture takes
+about half the transcript, taken from the terminal's own height so that typing
+never resizes it (at least 3 rows, at most 12), so an 80 by 24 terminal, which
+has 19 transcript rows, gets a 9-row picture and still shows the
+text around it. Two images in a row have one blank row between their boxes. A terminal that answered no graphics query shows the placeholder row alone,
+with no line saying so, so that a replay and a live session show the same row.
+And kitty and Ghostty draw PNG only, since their transmission carries the file
+as it is: a JPEG or GIF keeps the placeholder row with a line saying so, and
+iTerm2 draws all three. An image over 4 MiB decoded is never sent and says so
+the same way.
+
 ## 9. Pain-point fixes
 
 The owner's recordings show four problems. Each is fixed in one frame.

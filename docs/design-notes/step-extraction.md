@@ -45,15 +45,15 @@ The terminal's whole update is `runtime.settle(step(runtime.message(event,
 model), runtime.receive(model)))` (`packages/tui/src/tui.gleam:1764`
 (`update`)). `step` takes `msg.Msg` (`tui/msg.gleam:59` (`Msg`)): an
 `Input(at, event)` it reduces through `apply_input` and `settle_update`
-(`packages/tui/src/tui.gleam:2130` (`apply_input`),
-`packages/tui/src/tui.gleam:2131` (`settle_update`)), or an `Arrived`
+(`packages/tui/src/tui.gleam:2158` (`apply_input`),
+`packages/tui/src/tui.gleam:2159` (`settle_update`)), or an `Arrived`
 that `admission.admit` only files (`tui/admission.gleam:68` (`admit`)).
 Every reducer reads and writes one record, `State(view)`
 (`tui/model.gleam:378` (`Model`)), whose `view` field already holds the
 terminal's etui render caches (`tui/model.gleam:318` (`Caches`)). The lane's
 outputs join the step's one outbox through `hold_channel`
-(`tui/model.gleam:970` (`hold_channel`)), and `runtime.take` returns
-them with the model (`tui/runtime.gleam:355` (`take`)).
+(`tui/model.gleam:982` (`hold_channel`)), and `runtime.take` returns
+them with the model (`tui/runtime.gleam:361` (`take`)).
 
 The web view held the lane, an inbox and what it derived from the last
 capture in its own `Model`, one record of 22 fields. Its `update` reduced
@@ -407,7 +407,7 @@ reducers decide. Every `Channel` effect comes through `hold_channel`
 reducer queues is the channelless arrival
 (`session_view/lane_fold.gleam:1083` (`receive_unlaned`), the arrival of a message with no lane). The input's own recording line is queued by `start_step` before
 the reducer runs
-(`tui/model.gleam:1137` (`start_step`)); the terminal's shell keeps
+(`tui/model.gleam:1150` (`start_step`)); the terminal's shell keeps
 queuing it, ahead of the shared call, so the recording's order holds. The
 terminal maps `Recorded(recorder, message)` to
 `recording.append(recorder, recording.Arrived(message))`, which writes the
@@ -641,7 +641,7 @@ The worst cases in the code, and the cut for each:
    lookup's inspector (`LookupAnswered`) are facts the terminal applies
    after the update.
 
-7. **`settle_update`** (`packages/tui/src/tui.gleam:2131`
+7. **`settle_update`** (`packages/tui/src/tui.gleam:2159`
    (`settle_update`)) runs nine calls after every event. Three are
    shared and move into `step.update`'s own settle: `sync_context`,
    `sync_advisor_nudges`, `sync_goal`. Six are terminal and stay:
@@ -656,7 +656,7 @@ The worst cases in the code, and the cut for each:
    `apply_input` describes keeps its shape: the shared `update` applies
    its settle to a parameter, and the terminal's `settle_update` applies
    its remaining steps to `updated` as it does now
-   (`packages/tui/src/tui.gleam:2130` (`apply_input`)).
+   (`packages/tui/src/tui.gleam:2158` (`apply_input`)).
 
 8. **The tick** (`tui/tick.gleam:139` (`update_tick`)) is a fixed
    order of drains: replay, strip, activity, control, candidate,
@@ -2078,7 +2078,7 @@ them.
 
 4. **Compile time.** The step's settle chains are the two places the
    Erlang inliner has cost a minute before (the comment above
-   `packages/tui/src/tui.gleam:2130` (`apply_input`)). S3 creates a third
+   `packages/tui/src/tui.gleam:2158` (`apply_input`)). S3 creates a third
    chain, the shell's edges. *Recommendation:* every S3 landing measures
    `erlc +time` on the generated modules and keeps the parameter boundary
    in each of the three chains; the `beam-compile-review` skill has the

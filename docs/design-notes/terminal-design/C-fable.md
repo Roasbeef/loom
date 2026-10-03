@@ -371,7 +371,7 @@ rows a panel's tab needs are never taken from the composer.
 | Collapsed 429s and the scrollback position | [standard-errors](C-fable-standard-errors-dark.png) | [light](C-fable-standard-errors-light.png) | [txt](C-fable-standard-errors.txt) |
 
 How columns collapse: a hidden panel takes no width and its content is not
-drawn; the preference (`agent_rail_visible`, `tui/model.gleam:528`, renamed
+drawn; the preference (`agent_rail_visible`, `tui/model.gleam:540`, renamed
 for the panel) is kept when the width drops below the column's threshold and
 honoured again when it grows, which is how the rail behaves today. Hiding the
 panel while the Strands tab had the keyboard returns the keyboard to the
@@ -388,7 +388,7 @@ when a strand needs a decision (`needing`,
 `session_view/strand_card.gleam:69`). The panel has keyboard focus or the
 composer does; the panel's border is drawn in the signal colour while it has
 focus, and the composer's top rule says what the keys do, as it does for the
-strip today (`input_title_keys`, `tui/render.gleam:2058`).
+strip today (`input_title_keys`, `tui/render.gleam:2109`).
 
 | Key, panel focused | Does |
 |---|---|
@@ -472,7 +472,7 @@ derived from `pieces` (`session_view/turns.gleam:298`), which already decides
 which strand a spawn, result, nudge or peer row belongs to. `tui/theme.gleam`
 needs five strand hue constants beside `advisor` (`tui/theme.gleam:17`),
 `signal` (`tui/theme.gleam:29`) and `current` (`tui/theme.gleam:32`), with
-light values in `foreground` (`tui/appearance.gleam:131`). The mockups use
+light values in `foreground` (`tui/appearance.gleam:142`). The mockups use
 teal, olive, blue, coral and lavender. No wire change.
 
 ## 9. Content the new terminal must display well
@@ -735,7 +735,7 @@ No single key sends a decision.
 | Strand detail | task, now, update, pending, recent, approvals | yes | `Row` (`session_view/agent_view.gleam:79`) |
 | Strand detail: messages out | sends with state | yes | `Item` (`session_view/agent_messages.gleam:52`) |
 | Strand detail: messages in, inbox | received messages, unread count | no | section 9.2; a strand origin on the admitted message and an inbox read need a protocol change |
-| Strand detail: cache | the cache outlook words | yes | `outlook_label` (`session_view/cache_miss.gleam:435`), today in `cache_outlook` (`tui/model.gleam:449`) |
+| Strand detail: cache | the cache outlook words | yes | `outlook_label` (`session_view/cache_miss.gleam:435`), today in `cache_outlook` (`tui/model.gleam:457`) |
 | Nudge count on the advisor row | pending nudges | yes | `Board` (`session_view/advisor_pending.gleam:51`), `nudges` (`session_view/model.gleam:224`) |
 | Changes tab | worktree observation, navigator, patch | yes | `State` (`session_view/worktree_view.gleam:98`), `layout` (`tui/diff_panel.gleam:33`), with `fold` (`session_view/changes_view.gleam:210`) as the labelled fallback |
 | Trace tab, code-mode box | program, result, status | yes | `code_mode_program` (`session_view/transcript_lines.gleam:3378`), `execution_value` (`tools/codemode.gleam:1491`) |
@@ -749,7 +749,7 @@ No single key sends a decision.
 | Sessions column, picker | rows, activity | yes, minus an age | section 1.1 |
 | Approval block | the exact escalation | yes | `approvals` (`session_view/model.gleam:342`), `render` (`tui/approval_panel.gleam:286`) |
 | Todo line | the strand's board | yes | `height` (`tui/todo_panel.gleam:50`), `todo_boards` (`session_view/model.gleam:297`) |
-| Scrollback position | rows above the tail | yes | `reading_history` (`tui/model.gleam:1280`), `viewport_backlog` (`tui/model.gleam:697`) |
+| Scrollback position | rows above the tail | yes | `reading_history` (`tui/model.gleam:1293`), `viewport_backlog` (`tui/model.gleam:709`) |
 | Images | bytes, type, pixel size | partly | `Image` (`session_view/transcript_image.gleam:29`) holds the bytes and type; the pixel size is decoded client-side from the PNG, JPEG, GIF or WebP header, no wire change; drawing needs etui |
 | Layout memory | the three preferences | new | section 10 |
 
