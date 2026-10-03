@@ -485,10 +485,19 @@ protocol (spec Part 1.4). WP-G.
   sent before `start` replies so stdin (sent after the reply) follows its
   `Run`. The other half of the fence is the row: a message for an execution
   whose row is gone or `Granted` is dropped. There is no generation counter
-  and none is needed while those two hold. Honest limit: no test fails if
-  the relay casts to the helper directly, because the absorbing core never
-  cancels after settling, so the ordering argument is defence in depth that
-  is argued, not independently exercised.
+  and none is needed while those two hold. A real relay never produces a
+  stale cancel, because the absorbing core never cancels after settling, so no
+  test of the real path could fail if the fence went. `cancel_fence_test`
+  makes one by hand: a helper runs an execution that ends by itself, is
+  returned and runs a second that sleeps, and then the first execution's
+  relay link (`executor.relay_link`, `@internal`) is asked to cancel, late.
+  Through the service's link the second execution is untouched; through a
+  link whose cancel is `exec.cancel(helper)` (the control) it is cancelled.
+  Sending directly from `link_over` fails the first test (recorded in the
+  commit). The limit that remains is the test's own premise: the stale cancel
+  is injected, not produced by a relay, and the helper is a fake, so it shows
+  what the row and the single sender prevent and not that a scheduler delay
+  can happen.
 - **Executor service: settled exactly once through `MaySettle`.** The relay may
   report only after the service answers `Granted`, which it does once, for a
   `Live` row, and which turns the row `Granted`; any other ask is

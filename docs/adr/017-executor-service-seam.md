@@ -270,3 +270,11 @@ already dead when a call is dispatched now settles `ExecutionLost(HelperActorDow
 where the direct lane said `HelperUnresponsive`, since the service's relay
 monitors the helper it is given. The seam stayed a record of functions, so a
 test can still hand the broker a fake dispatcher.
+
+The cancel fence's honest limit, noted in the S1 addendum above (no test failed
+if the relay cancelled the helper directly), is closed by `cancel_fence_test`.
+A real relay never produces a stale cancel, so the test injects one by calling
+a finished execution's relay link late, after the helper's next execution has
+started: through the service's link nothing happens, and through a link that
+sends to the helper directly (the control) the next execution is cancelled.
+Making the service's link send directly fails the first test.
