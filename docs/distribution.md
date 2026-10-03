@@ -17,6 +17,13 @@ unmodified Gleam on Linux and macOS. The tree still compiles with 1.18.1,
 but the 1.19 formatter lays out long constants differently, so
 `make fmt-check` expects 1.19.
 
+The native seed must also survive relocation. Rebar creates an absolute link
+from its production `pc` build plugin to the default-profile plugin inside the
+seed. After compilation settles, seed preparation replaces only that known
+link with regular files before checking the relocated offline clone. It refuses
+an external target or nested links; the release archiver keeps its existing
+link restrictions. The helper is included in the release recipe digests.
+
 Reproducible release jobs use the maintained compiler described in the
 [toolchain instructions](../scripts/toolchain/gleam/README.md). It is the
 release tag, which carries the upstream path-dependency freshness fix for

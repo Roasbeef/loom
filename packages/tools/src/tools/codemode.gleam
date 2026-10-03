@@ -16,10 +16,12 @@
 ////    `description` depend on which seams and background mode the host serves.
 //// 2. `run` reads the mode argument: a plain run and a launch go to
 ////    `run_program`, the other commands to `interact`.
-//// 3. `run_program` checks the program is not empty, picks the seam with
-////    `chosen_seam`, and has the call authorized before any build begins.
+//// 3. `run_program` chooses exactly one source with `source_input`, picks
+////    the seam with `chosen_seam`, and authorizes the call before
+////    `load_source` reads a source file through `fs.read_text`.
 //// 4. `request` builds the `Request` that crosses the seam; the model
-////    supplies the program and the budget and nothing else.
+////    supplies inline source or a file path and the budget and nothing else.
+////    A retry retains the loaded source and never reopens the file.
 //// 5. `once_more_if_approved` runs mode.execute once and, if a policy
 ////    refusal stopped it and a human approved, exactly once more.
 //// 6. `render` turns the `Execution` into the model's answer:
@@ -103,6 +105,13 @@ import tools/fs
 import tools/permissions
 import tools/prelude
 import tools/tool.{type Ctx, type Tool, type ToolOutcome}
+
+// Source selection is decided before authority or I/O. A loaded file then
+// becomes the same immutable request source as an inline submission.
+type SourceInput {
+  InlineSource(source: String)
+  FileSource(path: String)
+}
 
 /// The name the model calls this tool by.
 pub const tool_name = "code_mode"
@@ -527,22 +536,29 @@ fn async_properties(
   }
 }
 
-// With the async modes present `program` cannot sit in the schema's
-// `required` list, since send, check, join and cancel name a handle
-// instead, so the property states the rule itself. A model filling fields
-// from the schema reads the properties, not the description, and a
-// requirement stated only in prose is how `history_search` came to be
-// called twenty times without its query.
+// Neither source field is required alone: run and launch require exactly
+// one of them, while interactions use a handle and never load source.
 fn program_text(background: Option(Background)) -> String {
   let program =
-    "the Gleam program. It must define `pub fn main() -> report.Outcome` "
-    <> "and import `cap/report` to build one"
+    "exactly one of program or program_path is required: inline Gleam source defining `pub fn main() -> report.Outcome`, importing `cap/report`"
   case background {
     None -> program
     Some(_) ->
-      "REQUIRED for mode=run (the default) and mode=launch: "
+      "For mode=run (default) and mode=launch, "
       <> program
-      <> ". Omit it for send, check, join and cancel"
+      <> ". Omit both for send, check, join and cancel"
+  }
+}
+
+fn program_path_text(background: Option(Background)) -> String {
+  let path =
+    "alternative to program: path to a UTF-8 Gleam source file, relative to the workspace or absolute with read authority; loaded once for this invocation"
+  case background {
+    None -> "Exactly one of program or program_path is required; " <> path
+    Some(_) ->
+      "For mode=run (default) and mode=launch, "
+      <> path
+      <> ". Supply exactly one source input. Omit both for send, check, join and cancel"
   }
 }
 
@@ -620,6 +636,10 @@ pub fn tool_for(mode: CodeMode) -> Tool {
         [
           #("permissions", permissions.schema()),
           #("program", tool.string_property(program_text(mode.background))),
+          #(
+            "program_path",
+            tool.string_property(program_path_text(mode.background)),
+          ),
         ],
         seam_properties(mode.seams),
         async_properties(mode.background),
@@ -636,10 +656,7 @@ pub fn tool_for(mode: CodeMode) -> Tool {
           ),
         ],
       ]),
-      case mode.background {
-        None -> ["program"]
-        Some(_) -> []
-      },
+      [],
     ),
     replay: tool.Never,
     execution_mode: tool.Exclusive,
@@ -718,9 +735,11 @@ pub fn description(mode: CodeMode) -> String {
   <> "dependent steps whose intermediate results need no judgment. "
   <> "Write `pub fn main() -> report.Outcome`, returning `report.text(...)` "
   <> "or `report.value(...)`. Filter internally; return relevant facts, "
-  <> "paths and failures. "
+  <> "paths and failures. Supply exactly one of `program` (inline source) "
+  <> "or `program_path` (a source file loaded once after read authorization). "
   <> composition_guidance(mode.seams)
   <> notes_guidance(mode.seams)
+  <> lsp_sql_guidance(mode.seams)
   <> seams_text(mode.seams)
   <> async_text(mode.background, mode.seams)
   <> recipes_text(mode.seams)
@@ -749,6 +768,21 @@ fn composition_guidance(seams: Seams) -> String {
     True ->
       "You can combine workspace effects and child operations in one program; "
       <> "omitting `seam` uses the default offer. "
+    False -> ""
+  }
+}
+
+// A finite capture is a separate admission from native point queries.
+// Advertise SQL only when the same offer can import and collect its facts.
+fn lsp_sql_guidance(seams: Seams) -> String {
+  case
+    list.any(offered(seams), fn(offer) {
+      list.contains(offer.allowed_imports, "cap/lsp_sql")
+      && list.contains(offer.serviced_caps, "lsp.snapshot")
+    })
+  {
+    True ->
+      "On a seam offering `cap/lsp_sql`, capture a bounded observation once, then join, aggregate or filter its facts with read-only SQL inside the program. "
     False -> ""
   }
 }
@@ -837,6 +871,11 @@ fn render_section(section: #(String, String)) -> String {
 // the description it rendered before, with the surfaces appended and no
 // word anywhere about a seam it cannot choose.
 fn signature_sections(seams: Seams) -> List(#(String, String)) {
+  let seams =
+    Seams(
+      default: admitted_lsp_notes(seams.default),
+      alternates: list.map(seams.alternates, admitted_lsp_notes),
+    )
   case seams.alternates {
     [] -> [#("", seam_surface(seams.default, seams.default.allowed_imports))]
     _alternates -> {
@@ -862,7 +901,10 @@ fn signature_sections(seams: Seams) -> List(#(String, String)) {
         #(
           "## On every seam",
           string.join(
-            [type_surface_text(shared), ..list.map(shared_extra, index_entry)],
+            [
+              type_surface_text(shared),
+              ..list.map(shared_extra, extra_surface_text)
+            ],
             "\n",
           ),
         ),
@@ -870,6 +912,21 @@ fn signature_sections(seams: Seams) -> List(#(String, String)) {
       ]
     }
   }
+}
+
+// Supplements cannot introduce their committed module on a closed seam.
+// Generated façades retain their existing independent discovery contract.
+fn admitted_lsp_notes(offer: SeamOffer) -> SeamOffer {
+  SeamOffer(
+    ..offer,
+    extra_surfaces: list.filter(offer.extra_surfaces, fn(block) {
+      case surface_module(block) {
+        Ok("cap/lsp") -> list.contains(offer.allowed_imports, "cap/lsp")
+        Ok(_module) -> True
+        Error(Nil) -> True
+      }
+    }),
+  )
 }
 
 // Host-generated modules may be offered on both modes. Render the common
@@ -893,7 +950,10 @@ fn shared_extra_surfaces(offers: List(SeamOffer)) -> List(String) {
 // all installed modes is rendered once, and a mode-specific block stays
 // under that mode.
 fn seam_surface(offer: SeamOffer, modules: List(String)) -> String {
-  [type_surface_text(modules), ..list.map(offer.extra_surfaces, index_entry)]
+  [
+    type_surface_text(modules),
+    ..list.map(offer.extra_surfaces, extra_surface_text)
+  ]
   |> list.filter(fn(block) { block != "" })
   |> string.join("\n")
 }
@@ -914,6 +974,23 @@ fn type_surface_text(allowed: List(String)) -> String {
   |> list.filter(fn(entry) { list.contains(allowed, entry.0) })
   |> list.map(fn(entry) { entry.1 })
   |> string.join("\n")
+}
+
+// Native profile notes supplement an existing module rather than creating
+// another API heading. Keep every note visible; façade summaries stay short.
+fn extra_surface_text(block: String) -> String {
+  case surface_module(block) {
+    Ok("cap/lsp") -> supplemental_body(block)
+    Ok(_module) -> index_entry(block)
+    Error(Nil) -> ""
+  }
+}
+
+fn supplemental_body(block: String) -> String {
+  case string.split_once(block, on: "\n") {
+    Ok(#(_heading, body)) -> string.trim(body) <> "\n"
+    Error(Nil) -> ""
+  }
 }
 
 // Host-generated façades carry no separate type section. Their heading and
@@ -980,11 +1057,26 @@ fn readable_surfaces(seams: Seams) -> List(#(String, String)) {
     })
   let generated =
     offers
-    |> list.flat_map(fn(offer) { offer.extra_surfaces })
+    |> list.flat_map(fn(offer) { admitted_lsp_notes(offer).extra_surfaces })
     |> list.filter_map(fn(block) {
       surface_module(block) |> result.map(fn(name) { #(name, block) })
     })
-  list.unique(list.append(committed, generated))
+  let generated = list.unique(generated)
+  let supplemented =
+    list.map(committed, fn(entry) {
+      case entry.0 {
+        "cap/lsp" -> {
+          let notes =
+            generated
+            |> list.filter(fn(extra) { extra.0 == "cap/lsp" })
+            |> list.map(fn(extra) { supplemental_body(extra.1) })
+          #(entry.0, string.join([entry.1, ..notes], "\n"))
+        }
+        _module -> entry
+      }
+    })
+  let facades = list.filter(generated, fn(entry) { entry.0 != "cap/lsp" })
+  list.unique(list.append(supplemented, facades))
 }
 
 fn cap_index(readable: List(#(String, String))) -> String {
@@ -1214,23 +1306,58 @@ fn run_program(
   args: JsonValue,
   background: Option(Background),
 ) -> ToolOutcome {
-  use program <- tool.with_arg(tool.required_string(args, "program"))
+  use input <- tool.with_arg(source_input(args))
   use within_ms <- tool.with_arg(tool.optional_int(args, "within_ms"))
   use named <- tool.with_arg(tool.optional_string(args, "seam"))
   use offer <- tool.with_arg(chosen_seam(mode.seams, named))
-  case string.trim(program) {
-    "" -> tool.failure("invalid arguments: `program` must not be empty")
-    _ -> {
-      use ctx <- tool.or_outcome(
-        permissions.authorize_native(ctx, args),
-        fn(outcome) { outcome },
-      )
-      let asked = request(mode, ctx, program, within_ms, on: offer.seam)
-      case background {
-        None ->
-          render(ctx, offer, program, once_more_if_approved(mode, ctx, asked))
-        Some(background) -> async_outcome(background.launch(asked))
-      }
+  use ctx <- tool.or_outcome(
+    permissions.authorize_native(ctx, args),
+    fn(outcome) { outcome },
+  )
+
+  // File reads share the native filesystem boundary. Only the loaded text
+  // crosses the execution seam, so approval retries cannot change source.
+  use program <- tool.or_outcome(load_source(ctx, input), fn(outcome) {
+    outcome
+  })
+  let asked = request(mode, ctx, program, within_ms, on: offer.seam)
+  case background {
+    None -> render(ctx, offer, program, once_more_if_approved(mode, ctx, asked))
+    Some(background) -> async_outcome(background.launch(asked))
+  }
+}
+
+fn source_input(args: JsonValue) -> Result(SourceInput, String) {
+  use program <- result.try(tool.optional_value(args, "program"))
+  use path <- result.try(tool.optional_value(args, "program_path"))
+  case program, path {
+    Some(_), Some(_) ->
+      Error("supply exactly one of `program` or `program_path`, not both")
+    None, None ->
+      Error("exactly one of `program` or `program_path` is required")
+    Some(json.String(source)), None ->
+      nonblank_source(source, "program") |> result.map(InlineSource)
+    None, Some(json.String(path)) ->
+      nonblank_source(path, "program_path") |> result.map(FileSource)
+    Some(_), None -> Error("`program` must be a string")
+    None, Some(_) -> Error("`program_path` must be a string")
+  }
+}
+
+fn nonblank_source(source: String, field: String) -> Result(String, String) {
+  case string.trim(source) {
+    "" -> Error("`" <> field <> "` must not be empty")
+    _ -> Ok(source)
+  }
+}
+
+fn load_source(ctx: Ctx, input: SourceInput) -> Result(String, ToolOutcome) {
+  case input {
+    InlineSource(source) -> Ok(source)
+    FileSource(path) -> {
+      use source <- result.try(fs.read_text(ctx, path))
+      nonblank_source(source, "program_path file")
+      |> result.map_error(tool.failure)
     }
   }
 }

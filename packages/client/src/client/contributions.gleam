@@ -83,6 +83,7 @@ import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import lsp/query
 import tools/agent.{type Agency}
 import tools/bash
@@ -217,11 +218,54 @@ fn with_code_mode_hints(
   }
 }
 
+// Profiles describe the native door, so they follow its admission on each
+// offer rather than the presence of a compiler or a configured catalogue.
+fn with_lsp_guidance(
+  mode: codemode_tool.CodeMode,
+  hints: List(#(String, String)),
+) -> codemode_tool.CodeMode {
+  let seams = mode.seams
+  codemode_tool.CodeMode(
+    ..mode,
+    seams: codemode_tool.Seams(
+      default: lsp_offer_guidance(seams.default, hints),
+      alternates: list.map(seams.alternates, lsp_offer_guidance(_, hints)),
+    ),
+  )
+}
+
+fn lsp_offer_guidance(
+  offer: codemode_tool.SeamOffer,
+  hints: List(#(String, String)),
+) -> codemode_tool.SeamOffer {
+  case
+    list.contains(offer.allowed_imports, "cap/lsp")
+    && list.contains(offer.serviced_caps, "lsp.definition")
+  {
+    False -> offer
+    True -> {
+      let profiles =
+        list.map(hints, fn(profile) { "- `" <> profile.0 <> "`: " <> profile.1 })
+      let notes = string.join(profiles, "\n")
+      case notes {
+        "" -> offer
+        _ ->
+          codemode_tool.SeamOffer(
+            ..offer,
+            extra_surfaces: list.append(offer.extra_surfaces, [
+              "### cap/lsp\n\nLanguage-server guidance for this seam:\n"
+              <> notes,
+            ]),
+          )
+      }
+    }
+  }
+}
+
 /// The one contribution a host's own planes make, in the order the
 /// registry has always been built in: the five core tools, the six
 /// `agent_*` tools, `code_mode`, `history_search`, `remember`, the three
-/// `schedule_*` tools, `context_remaining`, the three `job_*` tools, and
-/// the seven `lsp_*` tools.
+/// `schedule_*` tools, `context_remaining` and the three `job_*` tools.
 ///
 /// Each `Option` is a plane that decided its own presence from the host
 /// it found, and the gating is arithmetic rather than tidiness: the wire
@@ -239,10 +283,10 @@ fn with_code_mode_hints(
 /// tools too: with a door, `fs_write` and `fs_edit` are built with
 /// `tools/lsp.diagnostics_observer` so a landed write's result gains its
 /// settled diagnostics. Without one they are the plain tools, byte for
-/// byte, and the `lsp_*` definitions are absent. `lsp_hints` are the
-/// served profiles' hints as `#(server name, hint)`, which
-/// `tools/lsp.tools` appends to `lsp_definition`'s description; they
-/// matter only with a door, and `[]` leaves every description as it was.
+/// byte. Language-server calls are available through code mode rather
+/// than separate top-level tools. `lsp_hints` are the served profiles'
+/// hints in server-name order; they extend discovery only on offers
+/// admitting and servicing `cap/lsp`.
 ///
 /// ## Examples
 ///
@@ -272,6 +316,11 @@ pub fn built_in(
   lsp: Option(query.Door),
   lsp_hints: List(#(String, String)),
 ) -> List(Contribution) {
+  let code_mode = case lsp {
+    None -> code_mode
+    Some(_door) -> option.map(code_mode, with_lsp_guidance(_, lsp_hints))
+  }
+
   // The jobs plane is the one that reaches a *core* tool: `bash` takes
   // the door whether or not there is one behind it, because `mode:
   // "background"` has to be answered on a host with no jobs actor rather
@@ -345,10 +394,6 @@ pub fn built_in(
         case jobs {
           None -> []
           Some(jobs) -> job_tool.tools(jobs)
-        },
-        case lsp {
-          None -> []
-          Some(lsp_door) -> lsp_tool.tools(lsp_door, lsp_hints)
         },
       ]),
     ),

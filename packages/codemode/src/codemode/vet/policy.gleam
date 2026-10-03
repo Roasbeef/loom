@@ -705,11 +705,11 @@ pub fn extension_stdlib_modules() -> List(String) {
 ///
 /// ```gleam
 /// assert policy.harness_only_cap_modules()
-///   == ["cap/notes", "cap/lsp", "cap/mcp", "cap/runtime"]
+///   == ["cap/notes", "cap/lsp", "cap/lsp_sql", "cap/mcp", "cap/runtime"]
 /// ```
 ///
 pub fn harness_only_cap_modules() -> List(String) {
-  ["cap/notes", "cap/lsp", "cap/mcp", "cap/runtime"]
+  ["cap/notes", "cap/lsp", "cap/lsp_sql", "cap/mcp", "cap/runtime"]
 }
 
 /// The standard-library modules in the default allowlist. Every one has a pure,

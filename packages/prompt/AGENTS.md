@@ -2,13 +2,17 @@
 
 ## Code-mode guidance
 
-The shipped `loom-default-13` pack asks for immediate code mode on planned
+The shipped `loom-default-15` pack asks for immediate code mode on planned
 batches and chains whose intermediate results need no agent judgment. The
 third extraction probe remains the fallback for investigations that grew into
 a batch. Bounded `cap/task.parallel_map` guidance is conditional on the selected
 seam, and completeness, truncation, `cap://` discovery and warning-free
 compilation remain explicit. Stateful external mutations retain an agent
-judgment step between calls.
+judgment step between calls. Tested reusable programs belong in real workspace
+files with purpose and input notes. `program_path` reuses that source under
+current permissions; every new invocation reloads it and collects fresh LSP
+facts. SQL observations remain local to one invocation, and saved source carries
+no retained authority.
 
 ## Purpose
 
@@ -307,11 +311,11 @@ which namespaces a host serves.
 
 ## Semantic query guidance
 
-Version 10 directs agents to prefer installed `lsp_*` tools for definitions,
-references, types, and outlines, and `cap/lsp` for repeated queries and joins.
-The instruction is conditional on offered tools; the registered snippets
-identify actual availability. It requires source-grounded paths and lines,
-distinguishes unsupported requests from server failures, and discourages
-identical retries without new evidence. Existing session pins are not migrated.
-The older extraction advice is condensed without changing its routing rule,
-keeping the prompt inside its existing byte budget.
+Version 14 directs agents to `cap/lsp` in code mode for semantic questions
+when that module is offered, and to `cap/lsp_sql` for joins, counts and filters
+on explicit observations when its separate module is offered. The prompt
+requires reading the corresponding `cap://` API first. Installed naming hints
+travel with code-mode discovery, and rename retains a judgment step between
+preview and a separate apply call. Source-grounded paths and lines, unsupported
+request handling, server-failure diagnosis and retry discipline remain explicit.
+Existing session pins are not migrated; fresh sessions receive the new pack.

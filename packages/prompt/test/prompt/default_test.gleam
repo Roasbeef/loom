@@ -49,7 +49,7 @@ fn phrases(enforcement: pack.Enforcement) -> String {
 
 pub fn shipped_pack_decodes_test() {
   let assert Ok(decoded) = pack.decode(default.source)
-  assert decoded.version == "loom-default-13"
+  assert decoded.version == "loom-default-15"
 }
 
 pub fn shipped_pack_has_no_problems_test() {
@@ -88,6 +88,29 @@ pub fn code_mode_guidance_starts_planned_batches_immediately_test() {
   assert string.contains(text, "for unfamiliar apis before writing a program")
   assert string.contains(text, "compilation warnings fail the build too")
   assert string.contains(text, "stateful operations against external systems")
+}
+
+// Reusing source must still collect fresh evidence under current authority.
+pub fn saved_program_guidance_retains_fresh_observations_test() {
+  let text = phrases(pack.FullyEnforced)
+  assert string.contains(text, "save tested reusable code-mode programs")
+  assert string.contains(text, "purpose and input notes")
+  assert string.contains(
+    text,
+    "use `program_path` instead of retransmitting source",
+  )
+  assert string.contains(text, "exactly one of `program` or `program_path`")
+  assert string.contains(text, "each invocation reloads the source")
+  assert string.contains(text, "checks current permissions")
+
+  // New runs refresh evidence rather than inheriting a saved execution.
+  assert string.contains(
+    text,
+    "read inputs through existing capabilities or files",
+  )
+  assert string.contains(text, "rerun collection for fresh lsp observations")
+  assert string.contains(text, "only within one code-mode invocation")
+  assert string.contains(text, "saves neither observations nor authority")
 }
 
 pub fn shipped_pack_carries_the_canonical_sections_in_design_order_test() {
@@ -328,4 +351,18 @@ pub fn the_index_says_the_schema_is_what_binds_test() {
   let rendered = string.lowercase(with_snippets(["`bash` runs."]))
   assert string.contains(rendered, "not a specification")
   assert string.contains(rendered, "callable all the same")
+}
+
+// Semantic routing remains conditional on the capability surface offered
+// by the host; rename keeps a model judgment step before applying edits.
+pub fn semantic_guidance_uses_capabilities_and_separates_rename_apply_test() {
+  let text = phrases(pack.FullyEnforced)
+  assert string.contains(text, "when cap/lsp is offered")
+  assert string.contains(text, "read cap://lsp first")
+  assert string.contains(text, "installed language hints")
+  assert string.contains(text, "when cap/lsp_sql is offered")
+  assert string.contains(text, "explicit observations")
+  assert string.contains(text, "read cap://lsp_sql first")
+  assert string.contains(text, "apply in a separate call")
+  assert !string.contains(text, "lsp_*")
 }

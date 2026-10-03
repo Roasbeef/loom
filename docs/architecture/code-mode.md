@@ -66,6 +66,24 @@ check is the first of two defenses.
 
 ## The pipeline
 
+A run or background launch accepts exactly one of inline `program` or
+`program_path`. The latter names a real workspace-relative or absolute file.
+`tools/codemode.source_input` selects the source before authority or I/O;
+`permissions.authorize_native` applies the invocation's declared permissions,
+then `load_source` calls `tools/fs.read_text`. That read resolves the canonical
+target and uses `fs_read` authority, including exact-target approval when
+needed. It returns complete UTF-8 text under the existing eight-MiB file bound.
+Missing, unreadable, oversized, invalid or blank source fails in band.
+
+The loaded text becomes the same `Request.source` as inline submission. Each
+new invocation reads the file again, but an approval retry inside the invocation
+retains the loaded text. Background launch shares that path; async interaction
+commands never reopen or replace source. Saving a program preserves no grants,
+compiled binary or SQL observation. Programs read inputs through existing
+capabilities and collect fresh semantic facts when run again. [Protocol
+063](../../protocol-change/063-saved-code-mode-programs.md) records the input
+contract.
+
 A submitted program passes two trust layers before its result returns: a
 pure lint in the harness, then a kernel-enforced jail around the running
 code. Vetting decides whether the program may run. The jail contains it
@@ -983,7 +1001,10 @@ pass, and a hard-coded count breaks the next time something is vendored.
 
 The output is an `Artifact`: every package's compiled modules flattened
 into one directory, which is one `-pa` on the node's argv, plus a content
-address over the whole set. Flattening is safe because Gleam prefixes a
+address over the whole set. The trusted `esqlite3_nif.so` library joins that
+set for satellite SQL and is loaded relative to its module, never the program's
+working directory. No other dependency `priv` files are admitted by this copy.
+Flattening is safe because Gleam prefixes a
 module's beam name with its package, so `gleam@list` and `cap@fs` cannot
 collide. Before the clone, the build root is cleared of anything a
 previous run left, since a stale `.beam` would otherwise join both the
@@ -1469,7 +1490,7 @@ provides.
 | `codemode/vet.gleam`, `codemode/vet/policy.gleam` | The lint, its two token-stream backstops, and the opaque `Vetted`; the allowlist, the denylist, and the ASCII grammar gate. |
 | `codemode/compile.gleam` | The hermetic compile service: pinned module name, generated entry, pinned dependency table. |
 | `codemode/seed.gleam` | The once-resolved, vendored package cache every build root is cloned from, and `verify`. |
-| `codemode/build.gleam` | The production `Builder`: `gleam build --warnings-as-errors` in a network-off jail, the flattened `.beam` set, the content address. |
+| `codemode/build.gleam` | The production `Builder`: `gleam build --warnings-as-errors` in a network-off jail, flattened modules and the fixed SQLite native library, and their content address. |
 | `codemode/launch.gleam` | The production `Launcher`: the cap socket, the reachability checks, the jailed `erl`, the janitor. |
 | `codemode/satellite.gleam` | The in-harness host: the broker end of the cap channel, the router, the deadline, teardown. |
 | `codemode/enforcement.gleam` | What each jailed stage's helper reported, or why no report exists; both stages of an execution as one record. |

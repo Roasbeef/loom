@@ -669,7 +669,7 @@ pub fn every_serviced_cap_routes_and_none_builds_a_clearance_test() {
     list.map(search.serviced_caps, fn(cap) {
       case routed(answering(seen))(request(cap, well_formed(cap))) {
         Ok(satellite.ServedHere(..)) -> True
-        Ok(satellite.ClearedCall(..)) -> False
+        Ok(satellite.ClearedCall(..)) | Ok(satellite.ScopedService(..)) -> False
         Error(_denial) -> False
       }
     })

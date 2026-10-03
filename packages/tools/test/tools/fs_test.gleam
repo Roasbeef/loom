@@ -1213,6 +1213,28 @@ pub fn image_bytes_do_not_change_the_text_capability_test() {
     == Error(fs.NotText)
 }
 
+pub fn authorized_whole_text_read_preserves_all_lines_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let content = string.repeat("source line\n", fs.default_read_lines + 1)
+  write_file(ctx, "source.gleam", content)
+  assert fs.read_text(ctx, "source.gleam") == Ok(content)
+  assert fs.read_text(ctx, "/work/source.gleam") == Ok(content)
+}
+
+pub fn authorized_whole_text_read_shares_byte_and_utf8_bounds_test() {
+  let #(ctx, filesystem) = memory_ctx()
+  let assert Ok(Nil) = filesystem.write("/work/invalid.gleam", <<255>>)
+  let assert Error(invalid) = fs.read_text(ctx, "invalid.gleam")
+  assert invalid.is_error
+  assert string.contains(first_text(invalid), "not valid UTF-8")
+  let size = fs.max_read_bytes + 1
+  let assert Ok(Nil) =
+    filesystem.write("/work/large.gleam", <<0:size(size)-unit(8)>>)
+  let assert Error(large) = fs.read_text(ctx, "large.gleam")
+  assert large.is_error
+  assert string.contains(first_text(large), "larger than")
+}
+
 pub fn added_read_directory_does_not_grant_write_test() {
   let #(ctx, filesystem) = memory_ctx()
   let assert Ok(Nil) = filesystem.write("/shared/a", <<"before":utf8>>)

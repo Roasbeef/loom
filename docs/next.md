@@ -37,10 +37,115 @@ unrelated PR — same supervisor-killed shape under parallel lane load;
 The lane passed on the final CI run, consistent with the timing-flake
 diagnosis; a single pass is corroboration, not proof.
 
+## SQL LSP observation branch
+
+On October 2, `codex/lsp-sql` is rebased onto `ee8c5e341` for
+[PR #693](https://github.com/Roasbeef/loom/pull/693). The implementation follows
+[protocol 062](../protocol-change/062-lsp-sql-observations.md) and the new
+[saved-source contract](../protocol-change/063-saved-code-mode-programs.md).
+The [usage guide](lsp-sql.md), [design examples](design-notes/lsp-sql.md) and
+[architecture](architecture/lsp-sql.md) explain explicit collection and
+satellite-local SQL. Source integration does not update a running daemon.
+
+Semantic access goes through `cap/lsp` and `cap/lsp_sql` in code mode.
+All seven legacy top-level constructors, schemas, argument decoders and
+execution wrappers are removed, along with sixteen obsolete surface tests.
+Shared rename landing, anchored previews and automatic write diagnostics remain;
+ten shared regressions retain stale-file, partial-write, settlement and
+observer-retention checks.
+Installed profile hints follow the admitted capability into the description
+and `cap://lsp`. Saved session pins are not rewritten.
+
+A run or background launch accepts exactly one of inline `program` and
+`program_path`. File source uses canonical native read authorization before the
+ordinary vet, compile and jail pipeline. Approval retries retain loaded source;
+a later invocation reloads it. Handle interactions perform no source reads.
+`loom-default-15` directs agents to save tested programs with purpose/input notes,
+reuse them by path and collect fresh observations. Reuse saves neither authority
+nor semantic facts.
+
+Before the memory integration rebase, the independent full `make check` exited
+zero against the published graph and normal seed, using stock Gleam 1.19.0-rc2. It passed 2,666 client tests, 1,052
+TUI tests, 93 conformance tests, 172 capability tests and 340 code-mode tests,
+along with the other package gates. All six real jailed LSP fixtures ran
+without prerequisite skips. The Gleam SQL fixture loads a saved file; Go uses
+inline source. Both prove joins, counts, anti-joins, typed-decoder errors,
+SQL refusal and unchanged provenance. This replaces the earlier experimental
+seed evidence. Mixing compiler versions invalidates seed-byte comparisons.
+
+Current full format, lint, prelude and documentation gates exit zero. R13 flow
+spines, R14 checked transition tables, R15 state types before functions and R16
+qualified domain calls are enforced on this rebased tree. R17/R18 remain
+censuses; no prose was padded to suppress them. The usage guide links these
+rules. The final Astra high source review of
+`a3dc25359..ea4b2359b` found no actionable defect and independently passed
+170 focused tests. It grants source signoff; the same reviewer also approved
+the published dependency integration.
+
+The supporting [esqlite PR #1](https://github.com/Roasbeef/esqlite/pull/1) and
+[sqlight PR #1](https://github.com/Roasbeef/sqlight/pull/1) are merged. Hex now
+carries `esqlite_loom` 0.9.1 and `sqlight_loom` 1.2.1, with source tags on their
+merged trees. The native 0.9.1 payload passed forty-seven cold tests before
+publication. The native library remains inside the addressed satellite artifact.
+
+The direct `cap` pin, all four companion updates and eight compiler-generated
+package manifests select the genuine releases. The generated offline seed lock
+adds only the native package and `cap`'s dependency edge; its checksum matches
+Hex. A fresh normal seed builds with stock Gleam 1.19.0-rc2 and Rebar, without
+the temporary wrapper. Prelude regeneration was byte-identical. The earlier
+hosted jail lane failed both SQL fixtures with `SqlUnavailable` while the old
+seed lacked this dependency; ninety-one other tests passed. No assertion was
+weakened and that failure is not treated as a flake.
+
+The architectural freeze test now pins exactly `cap_ffi.erl` and
+`loom_cap_lsp_sql.erl`, the reviewed satellite bridges. A third foreign source
+still fails. Its fourteen focused regressions passed, and Astra approved the
+exact-list update.
+
+Hosted stock-compiler packaging exposed Rebar's absolute `pc` plugin link in
+the native seed. Seed preparation now copies only that known in-seed plugin
+before the relocated offline probe; archive link restrictions remain unchanged.
+The relocation regression removes the original root and preserves plugin modes
+and native-library bytes. External targets and nested links are refused. All
+51 script tests and four archive regressions passed, and Astra approved this
+packaging delta. The fresh seed rebuilt normally; real fixture and distribution
+gates must still pass on the corrected head.
+
+Merge criteria: current-head hosted checks and the repository's full Linux
+signoff. The owner authorized removing draft status and merging green. The local
+aggregate run skipped shipped-server fixtures without their opt-in server and
+the Rust manager probe without a working analyzer. The Linux signoff provisions
+its own dependencies, runs the shipped fixtures and enforces its skip census.
+Existing macOS kernel degradation is reported rather than weakened.
+
+The Linux signoff exposed a missing serial-test declaration for
+`cap@lsp_sql_test`: its fixture installs the same VM-global capability channel
+as the other capability tests. The parallel package run reproduced all four
+failures locally because EUnit also runs a parallel module's individual tests
+concurrently. The module now uses the existing serial group, preserving every
+assertion while preventing its four fixtures from replacing each other's channel.
+The same parallel package command then passed all 172 tests.
+
+The hosted Linux fan-in also caught an undeclared SQL Go fixture skip: its
+ordinary conformance bucket did not install `gopls`. That bucket now installs
+the same pinned 0.23.0 server as the existing jail and macOS jobs. The fixture
+runs instead of gaining a waiver; the strict skip census remains unchanged.
+
+The integration rebase preserves main's reduced caller-side LSP manager and
+transport-start ownership. SQL collection now reads its workspace and timing
+from that handle. The retired-tool memory regression follows the live
+write-diagnostics observer, retaining the sibling-capture assertion rather
+than discarding coverage. Astra found no actionable integration defect.
+The `acc648436` tree passed the full local gate, all six Linux signoff lanes,
+release/update verification and the strict skip census. The next integration
+preserves merged strand-wait slicing and its accepted protocol record, with
+the prelude regenerated from both capability surfaces. This rebased head
+requires fresh local, hosted and Linux signoff results.
+
 ## October 2 daemon memory pass
 
-`codex/memory-lsp-query-handle` reduces the seven direct LSP tools' measured
-flat copy cost from 2,205,760 to 184,920 bytes using the installed daemon's
+The pre-removal `codex/memory-lsp-query-handle` measurement reduced the seven
+direct LSP tools' flat copy cost from 2,205,760 to 184,920 bytes using the installed daemon's
 configuration in an isolated probe VM. Each tool owns only its callback;
 the caller-side manager excludes transport-start custody. The manager actor
 and keeper still own startup. See

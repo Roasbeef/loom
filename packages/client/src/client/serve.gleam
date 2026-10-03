@@ -585,8 +585,8 @@ pub type Instance {
   )
 }
 
-/// The session's language-server plane: the manager every `lsp_*` tool,
-/// `cap/lsp` capability and post-write diagnostics block asks through, and
+/// The session's language-server plane: the manager every `cap/lsp`
+/// capability and post-write diagnostics block asks through, and
 /// what its teardown needs.
 ///
 /// One per session, because the helper pool it leases from is one per
@@ -2508,11 +2508,10 @@ fn installed_profiles(
 }
 
 // The profile hints of the servers the plane serves, as
-// `#(server name, hint)` in name order, for `lsp_definition`'s
-// description (ADR-016 §2). They are read from the wired servers rather
-// than the whole catalogue, so a server refused at boot for roots that
-// would not resolve does not describe a language the session cannot ask
-// about.
+// `#(server name, hint)` in name order, for code-mode discovery. They are
+// read from the wired servers rather than the whole catalogue, so a server
+// refused at boot for roots that would not resolve does not describe a
+// language the session cannot ask about.
 fn lsp_hints(wiring: Option(LspWiring)) -> List(#(String, String)) {
   case wiring {
     None -> []
@@ -2521,6 +2520,7 @@ fn lsp_hints(wiring: Option(LspWiring)) -> List(#(String, String)) {
         option.to_result(server.hint, Nil)
         |> result.map(fn(hint) { #(server.name, hint) })
       })
+      |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
   }
 }
 
@@ -3537,7 +3537,7 @@ fn assemble_in(
   // manager starts under the service supervisor below. No `[lsp.<name>]`
   // table or installed profile, or none that survived its load, means no
   // plane at all: no
-  // counter, no manager, no `lsp_*` tool and no `cap/lsp`, and the write
+  // counter, no manager and no `cap/lsp`, and the write
   // tools are the plain ones.
   //
   // The installed extensions are discovered here, once, because a profile
@@ -3576,12 +3576,21 @@ fn assemble_in(
     owner,
   ))
 
-  // `lsp.*` is answered by the same door the `lsp_*` tools call, so a
+  // `lsp.*` is answered by the same native door, so a
   // program and a tool call ask the one server this session runs. A
   // `None` door leaves `cap/lsp` unadmitted, which is what a host with no
   // configured server has always had.
   let code_mode_host =
     option.map(code_mode_host, codemode_wiring.over_lsp(_, lsp_door))
+  let observation_door =
+    option.map(lsp_wiring, fn(wiring) {
+      lsp_manager.observation_door(wiring.plane.manager)
+    })
+  let code_mode_host =
+    option.map(code_mode_host, codemode_wiring.over_lsp_observation(
+      _,
+      observation_door,
+    ))
   let code_mode_host =
     option.map(code_mode_host, with_code_mode_peers(_, peer_wiring))
   let code_mode =
@@ -3772,8 +3781,8 @@ fn assemble_in(
         Some(context_seam),
         Some(jobtools.seam(jobs_door)),
         // The language-server door, when a server is configured: it
-        // registers the `lsp_*` tools and gives `fs_write` and `fs_edit`
-        // their settled-diagnostics block.
+        // gives `fs_write` and `fs_edit` their settled-diagnostics block
+        // and supplies profile guidance to admitted code-mode offers.
         lsp_door,
         lsp_hints(lsp_wiring),
       ),

@@ -348,6 +348,11 @@ pub type CapPlan {
   /// `client/codemode.default_call_timeout_ms` so that the bound with an
   /// answer is the one that fires, everything else by a store round trip.
   ServedHere(serve: fn() -> CapOutcome)
+
+  /// Answer under the invocation's custody. Host death, invocation release,
+  /// explicit call cancellation and the call deadline all reap the worker.
+  /// A shared transport must monitor that worker to withdraw its request.
+  ScopedService(serve: fn() -> CapOutcome)
 }
 
 /// A router's in-band refusal of a capability call.
@@ -550,7 +555,11 @@ pub opaque type Msg {
 
 // One in-flight routed capability call.
 type InFlight {
-  InFlight(handle: Option(broker.CallHandle), cancelled: Bool)
+  InFlight(
+    handle: Option(broker.CallHandle),
+    cancelled: Bool,
+    service: Option(weft.Cancel),
+  )
 }
 
 type State {
@@ -1132,20 +1141,27 @@ fn dispatch_cap_call(
   already: Int,
   plan: CapPlan,
 ) -> State {
-  let inflight =
-    dict.insert(state.inflight, id, InFlight(handle: None, cancelled: False))
   let admitted = dict.insert(state.admitted, cap, already + 1)
-  spawn_worker(
-    Settling(
-      started: fn(handle) {
-        process.send(state.commands, CapStarted(id:, handle:))
-      },
-      done: fn(outcome) { process.send(state.commands, CapDone(id:, outcome:)) },
-    ),
-    state.broker,
-    plan,
-    state.call_timeout_ms,
-  )
+  let service =
+    spawn_worker(
+      Settling(
+        started: fn(handle) {
+          process.send(state.commands, CapStarted(id:, handle:))
+        },
+        done: fn(outcome) {
+          process.send(state.commands, CapDone(id:, outcome:))
+        },
+      ),
+      state.broker,
+      plan,
+      state.call_timeout_ms,
+    )
+  let inflight =
+    dict.insert(
+      state.inflight,
+      id,
+      InFlight(handle: None, cancelled: False, service:),
+    )
   State(..state, inflight:, admitted:)
 }
 
@@ -1199,16 +1215,10 @@ fn budget_denial(max_outstanding: Int) -> CapOutcome {
   )
 }
 
-// Services one admitted call off the actor's timeline. A jailed clearance
-// goes through the broker and reports its handle back so a `Cancel` can
-// reach it; a harness-served call has no handle, because there is no
-// executor process group to revoke — it runs to its own end and its
-// answer is emitted, which a program that cancelled has already stopped
-// listening for.
-// How one worker reports back. Two callbacks rather than a subject and a
-// frame id, because there are two hosts now — the single-shot one above
-// and the persistent one below — whose message types are different and
-// whose bookkeeping is not this function's business.
+// The two host shapes have different message types, so callbacks carry the
+// broker handle and settlement without sharing either actor's bookkeeping.
+// Scoped services publish cancellation before their worker can begin; their
+// weft run watches both that signal and the host that admitted the call.
 type Settling {
   Settling(started: fn(broker.CallHandle) -> Nil, done: fn(CapOutcome) -> Nil)
 }
@@ -1218,15 +1228,30 @@ fn spawn_worker(
   broker: Broker,
   plan: CapPlan,
   call_timeout_ms: Int,
-) -> Nil {
+) -> Option(weft.Cancel) {
+  let owner = process.self()
+
+  // Publication precedes spawn, so an immediate Cancel or invocation release
+  // can stop collection even before the scoped worker enters its weft run.
+  let service = case plan {
+    ScopedService(_) -> Some(weft.cancel_signal())
+    ClearedCall(..) | ServedHere(_) -> None
+  }
   process.spawn_unlinked(fn() {
     case plan {
       ClearedCall(spec:, render:) ->
         run_collector(settling, broker, spec, render, call_timeout_ms)
-      ServedHere(serve:) -> run_service(settling, serve, call_timeout_ms)
+      ServedHere(serve:) -> run_service(settling, serve, call_timeout_ms, None)
+      ScopedService(serve:) ->
+        run_service(
+          settling,
+          serve,
+          call_timeout_ms,
+          option.map(service, fn(signal) { #(signal, owner) }),
+        )
     }
   })
-  Nil
+  service
 }
 
 fn run_collector(
@@ -1315,12 +1340,19 @@ fn run_service(
   settling: Settling,
   serve: fn() -> CapOutcome,
   call_timeout_ms: Int,
+  custody: Option(#(weft.Cancel, Pid)),
 ) -> Nil {
   let served = fn() -> Result(CapOutcome, Nil) { Ok(serve()) }
-  let outcomes =
-    weft.new([served])
-    |> weft.deadline(call_timeout_ms)
-    |> weft.start
+  let run = weft.new([served]) |> weft.deadline(call_timeout_ms)
+  let run = case custody {
+    None -> run
+    Some(#(signal, owner)) ->
+      run |> weft.cancel_with(signal) |> weft.cancel_when_exits(owner)
+  }
+  let outcomes = weft.start(run)
+
+  // The signal is one idle process, so successful settlement releases it too.
+  option.map(custody, fn(pair) { weft.cancel(pair.0) })
   let outcome = case outcomes {
     [weft.Completed(value:, ..)] -> value
     [weft.Crashed(..)] -> served_died_outcome()
@@ -1362,6 +1394,7 @@ fn handle_cancel(state: State, id: Int) -> State {
         Some(handle) -> broker.cancel(state.broker, handle)
         None -> Nil
       }
+      option.map(entry.service, weft.cancel)
       State(
         ..state,
         inflight: dict.insert(
@@ -1420,6 +1453,9 @@ fn terminate(
 // instant the program returned. An operator aborting the whole operation
 // still does reach it, through the hub's `abort` command.
 fn cleanup(state: State) -> Report {
+  list.each(dict.to_list(state.inflight), fn(entry) {
+    option.map(entry.1.service, weft.cancel)
+  })
   broker.abort_step(
     state.broker,
     identity.op_id(state.identity),
@@ -2896,12 +2932,13 @@ fn dispatch_invocation_call(
   already: Int,
   plan: CapPlan,
 ) -> Hosting {
-  spawn_worker(
-    host_settling(hosting, id),
-    hosting.config.broker,
-    plan,
-    hosting.config.call_timeout_ms,
-  )
+  let service =
+    spawn_worker(
+      host_settling(hosting, id),
+      hosting.config.broker,
+      plan,
+      hosting.config.call_timeout_ms,
+    )
   Hosting(
     ..hosting,
     open: Some(
@@ -2910,7 +2947,7 @@ fn dispatch_invocation_call(
         inflight: dict.insert(
           open.inflight,
           id,
-          InFlight(handle: None, cancelled: False),
+          InFlight(handle: None, cancelled: False, service:),
         ),
         admitted: dict.insert(open.admitted, cap, already + 1),
       ),
@@ -3000,6 +3037,7 @@ fn cancel_inflight(hosting: Hosting, id: Int) -> Hosting {
             Some(handle) -> broker.cancel(hosting.config.broker, handle)
             None -> Nil
           }
+          option.map(entry.service, weft.cancel)
           with_inflight(
             hosting,
             open,
@@ -3066,6 +3104,7 @@ fn release(hosting: Hosting) -> Hosting {
           Some(handle) -> broker.cancel(hosting.config.broker, handle)
           None -> Nil
         }
+        option.map(entry.1.service, weft.cancel)
       })
 
       // `revoke_all` marks rather than removes, so the vault keeps one

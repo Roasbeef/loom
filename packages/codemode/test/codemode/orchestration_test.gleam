@@ -140,7 +140,7 @@ fn refused_by(
         as "this call must be refused"
       #(code, message)
     }
-    Ok(satellite.ClearedCall(..)) ->
+    Ok(satellite.ClearedCall(..)) | Ok(satellite.ScopedService(..)) ->
       panic as "an orchestration call must never be a jailed clearance"
   }
 }
@@ -955,7 +955,7 @@ pub fn the_router_never_builds_a_clearance_test() {
     list.map(orchestration.serviced_caps, fn(cap) {
       case orchestration.router(seam(agency))(request(cap, arguments(cap), 0)) {
         Ok(satellite.ServedHere(..)) -> True
-        Ok(satellite.ClearedCall(..)) -> False
+        Ok(satellite.ClearedCall(..)) | Ok(satellite.ScopedService(..)) -> False
         Error(_denial) -> False
       }
     })
