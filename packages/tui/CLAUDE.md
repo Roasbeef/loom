@@ -2648,13 +2648,47 @@ not claim which configured ceiling was exhausted.
 
 ## Peer attribution
 
-Existing conversation rendering uses `core/origin.display_label` for both
-human and peer sources. A `PeerOrigin` appears as `peer session/strand` and
-survives the entry codec; it is not rendered as the local operator. This is
-attribution within the existing conversation view. A `StrandOrigin` message
-(a strand of the same session) is drawn by `transcript_lines` as a
-`strand · <id>` heading and its body as Markdown, with the Agency's framing
-removed and a brief's result contract on a line of its own.
+Existing conversation rendering uses `core/origin.display_label` for human
+sources. Agent traffic has three speakers of its own, which
+`session_view/transcript_lines` chooses from the call or the stored origin
+and never from the text, and `tui/message_rows` draws: a `SentMessage`
+(`→ to sub:tests · agent_send · admitted to its queue`), a `StrandMessage`
+(`← from sub:docs · strand message`, the Agency's framing removed and a
+brief's result contract after the body) and a `PeerMessage`, a band reading
+`⇄ peer session 01a07d74 · strand main · ✓ origin checked by the daemon`.
+A line's text is its heading, a newline and its body; only the heading is
+drawn as a heading, so body text that reads like one stays body text
+(`test/message_rows_test.gleam` pins it). A body is drawn as text, each
+line the agent wrote a row of its own. A heading ends in the local clock
+time the message was admitted (`· 14:02`) when the terminal knows its zone:
+`tui.new_model` reads the offset once at start into
+`Shared.clock_offset`, and a model built for a test keeps none and draws no
+time. The first two kinds hang from a bar in the other strand's hue, one of
+cyan, violet and green (`message_rows.strand_hue`), which `render` paints in
+the margin column left of the transcript (`message_rows.margin_bar`), so the
+row's own cells and copy gutter are where any row has them.
+
+Every narrative block opens bare and closes with a blank row: a turn, an
+answer, a message, a notice. The tool family opens and closes bare, and the
+fold places a spacer between a block that closed bare and one that opens
+bare, so there is one blank row between any two blocks. A call keeps the
+gutter with its glyph (`× ` for a failure) and only its result hangs under it,
+`  └ `; a tool group's heading is its own speaker, `ToolGroup`, drawn `▸`.
+
+A send's heading needs its result. A response holding prose draws its calls
+inside itself, so `transcript_lines.deliveries` joins each successful
+`agent_send` result to its call across the compact window: the call's row
+carries the admission, the result entry draws no rows, and the response is
+projected afresh rather than from the entry cache. `record_anchors_for`
+mirrors the absorbed result as an empty block; the call's own heading is
+one row whether or not the result has joined it, so the response needs no
+mirror. A refused send keeps the generic failure rows.
+
+An operator's turn is one band, `› text`, wrapped under its own first word,
+with no title row. An answer opens with a heading naming the strand,
+`◆ main`, and its body sits under it at the gutter with no band; the
+heading is why `render.render_line` and `render.finish_markdown_rows` take
+the strand.
 
 The Collaboration tab projects a selected strand's background executions,
 readiness, outgoing peer links, named workflow intents, and peer-authored

@@ -745,6 +745,7 @@ pub fn opening_selected_message_sender_preserves_drafts_until_the_action_test() 
       body_extent: agent_messages.Complete,
       seq: 7,
       state: agent_messages.Accepted,
+      ts: 0,
     )
   let initial = {
     let base = model()
@@ -782,6 +783,7 @@ pub fn unknown_message_sender_is_refused_without_retargeting_test() {
       body_extent: agent_messages.Complete,
       seq: 7,
       state: agent_messages.SendPending,
+      ts: 0,
     )
   let initial = {
     let base = model()
@@ -814,6 +816,7 @@ pub fn short_detail_with_multiline_draft_keeps_selected_body_visible_test() {
       body_extent: agent_messages.Complete,
       seq: 7,
       state: agent_messages.Accepted,
+      ts: 0,
     )
   let inspector = agents.inspect("main")
   let inspected =
@@ -856,6 +859,7 @@ pub fn capture_reconciliation_preserves_scrolled_durable_selection_test() {
       body_extent: agent_messages.Complete,
       seq: 7,
       state: agent_messages.Accepted,
+      ts: 0,
     )
   let fresh =
     agent_messages.Item(
@@ -867,6 +871,7 @@ pub fn capture_reconciliation_preserves_scrolled_durable_selection_test() {
       body_extent: agent_messages.Complete,
       seq: 8,
       state: agent_messages.Started,
+      ts: 0,
     )
   let inspector = agents.inspect("main")
   let model =
@@ -1130,6 +1135,7 @@ pub fn a_cut_revalidates_the_message_selection_test() {
       body_extent: agent_messages.Complete,
       seq: 3,
       state: agent_messages.Accepted,
+      ts: 0,
     )
   let inspector = agents.inspect("main")
   let base = model()

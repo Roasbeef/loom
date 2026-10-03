@@ -201,6 +201,11 @@ pub type Shared(socket, recorder, source, replay_source) {
     answer: String,
     /// Current Git observation and independent file-navigation state.
     worktree: worktree_view.State,
+    /// The local clock's offset from UTC in minutes, when the host knows
+    /// it. A message's heading shows its clock time only then: a host that
+    /// cannot say which zone its reader is in draws no time rather than a
+    /// time in the wrong zone.
+    clock_offset: Option(Int),
     /// Server-observed current context and independent inspector state.
     context: context_view.State,
     /// Attachment-local terminal result provenance.
@@ -1159,5 +1164,6 @@ pub fn presentation(
     compact_entry_cache: shared.compact_entry_cache,
     compact_call_cache: shared.compact_call_cache,
     worktree: shared.worktree,
+    clock: shared.clock_offset,
   )
 }

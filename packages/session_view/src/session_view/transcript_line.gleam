@@ -38,6 +38,10 @@ pub type Speaker {
   /// the way `SummarizedReasoning` draws its label.
   SummarizedAdvice
 
+  /// The heading of a compact group of tool calls: how many calls it holds,
+  /// how many failed, and the key that expands them.
+  ToolGroup
+
   ToolCall
   ToolResult
   ToolDetail
@@ -47,6 +51,25 @@ pub type Speaker {
 
   ToolFailure
   Failure
+
+  /// A message this strand sent to another with `agent_send`. The text is
+  /// a heading, a newline, and the body: the heading names the recipient
+  /// and what the result says happened to the message (`→ to sub:tests ·
+  /// agent_send · admitted to its queue`), all of it read from the call's
+  /// arguments and its result, never from the body.
+  SentMessage
+
+  /// A message another strand of this session sent through the Agency,
+  /// selected by its stored `StrandOrigin` and by nothing in its text. The
+  /// text is a heading naming the sender (`← from sub:docs · strand
+  /// message`), a newline, and the body with the Agency's framing removed.
+  StrandMessage
+
+  /// A message another session's agent sent, selected by its stored
+  /// `PeerOrigin`, which the admission host writes after it authenticates
+  /// the sender. The text is a heading naming the source session and strand
+  /// and ending in `origin_checked`, a newline, and the body.
+  PeerMessage
 
   /// One blank row, placed by the projection that knows it is needed.
   ///

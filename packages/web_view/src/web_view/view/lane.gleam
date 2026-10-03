@@ -815,6 +815,7 @@ fn body_of(speaker: transcript_line.Speaker) -> Body {
     | transcript_line.Reasoning
     | transcript_line.ToolDetail -> Markdown
     transcript_line.System
+    | transcript_line.ToolGroup
     | transcript_line.User
     | transcript_line.ReasoningDigest
     | transcript_line.SummarizedReasoning
@@ -825,6 +826,13 @@ fn body_of(speaker: transcript_line.Speaker) -> Body {
     | transcript_line.ToolFailure
     | transcript_line.Failure
     | transcript_line.Spacer -> Literal
+
+    // A message between agents is its heading and its body in one text; the
+    // terminal draws the heading as a heading, and here it is kept a line of
+    // its own rather than run into the body as one Markdown paragraph.
+    transcript_line.SentMessage
+    | transcript_line.StrandMessage
+    | transcript_line.PeerMessage -> Literal
   }
 }
 
@@ -835,6 +843,7 @@ fn speaker_class(
 ) -> attribute.Attribute(message) {
   case speaker {
     transcript_line.System -> attribute.class("system")
+    transcript_line.ToolGroup -> attribute.class("tool-group")
     transcript_line.User -> attribute.class("user")
     transcript_line.Assistant -> attribute.class("assistant")
     transcript_line.Reasoning -> attribute.class("reasoning")
@@ -849,5 +858,8 @@ fn speaker_class(
     transcript_line.ToolFailure -> attribute.class("tool-failure")
     transcript_line.Failure -> attribute.class("failure")
     transcript_line.Spacer -> attribute.class("spacer")
+    transcript_line.SentMessage -> attribute.class("sent-message")
+    transcript_line.StrandMessage -> attribute.class("strand-message")
+    transcript_line.PeerMessage -> attribute.class("peer-message")
   }
 }

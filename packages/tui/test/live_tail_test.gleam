@@ -143,7 +143,9 @@ fn deltas(
 fn layout(speaker: Speaker, width: Int) -> live_tail.Layout {
   live_tail.Layout(
     room: render.markdown_room(speaker, width),
-    finish: fn(rows, run) { render.finish_markdown_rows(speaker, rows, run) },
+    finish: fn(rows, run) {
+      render.finish_markdown_rows(speaker, rows, run, "main")
+    },
   )
 }
 
@@ -209,7 +211,8 @@ fn feed(
           stream.fragments,
           layout(speaker, width),
         )
-      let expected = render.render_line(Line(speaker, stream.text), width)
+      let expected =
+        render.render_line(Line(speaker, stream.text), width, "main")
       assert rows == expected
         as {
           "frame " <> int.to_string(frame) <> " drew what a full render draws"
@@ -307,7 +310,8 @@ fn feed_characters(
             stream.fragments,
             layout(Assistant, width),
           )
-        assert rows == render.render_line(Line(Assistant, stream.text), width)
+        assert rows
+          == render.render_line(Line(Assistant, stream.text), width, "main")
           as {
             "character "
             <> int.to_string(index)

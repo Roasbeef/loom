@@ -57,6 +57,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set.{type Set}
 import gleam/string
 import session_view/advisor_history
 import session_view/agent_roster
@@ -74,9 +75,10 @@ import session_view/todo_board
 import session_view/tool_activity
 import session_view/transcript_line.{
   type CacheNotice, type Line, type Speaker, type Stream, type Submission,
-  type ToolTail, Assistant, Failure, HeldPrompt, Interjection, Line, Reasoning,
-  ReasoningDigest, Spacer, Stream, SummarizedAdvice, SummarizedReasoning, System,
-  ToolCall, ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
+  type ToolTail, Assistant, Failure, HeldPrompt, Interjection, Line, PeerMessage,
+  Reasoning, ReasoningDigest, SentMessage, Spacer, StrandMessage, Stream,
+  SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
+  ToolFailure, ToolGroup, ToolPatch, ToolResult, User,
 }
 import session_view/worktree_view
 
@@ -117,6 +119,9 @@ pub type Presentation {
     compact_call_cache: Dict(tool_activity.Call, List(Line)),
     /// The captured worktree diff board and its explanation.
     worktree: worktree_view.State,
+    /// The local clock's offset from UTC in minutes, which a message's
+    /// heading needs to show its time (`model.Shared.clock_offset`).
+    clock: Option(Int),
   )
 }
 
@@ -953,7 +958,12 @@ fn record_blocks(
             spliced_sequence(item, fn(value) { value.seq }),
             #(
               expanded_source(item),
-              expanded_lines(item, owner, presentation.summaries),
+              expanded_lines(
+                item,
+                owner,
+                presentation.summaries,
+                presentation.clock,
+              ),
             ),
           )
         })
@@ -967,6 +977,7 @@ fn record_blocks(
     // its own, so one opening a narrative under a group's bare last row
     // would otherwise sit welded to it.
     notes_view.Excerpt -> {
+      let found = deliveries(entries)
       let #(reversed, calls, narratives) =
         entries
         |> tool_activity.project_split(advisor_splits(advisor))
@@ -985,6 +996,7 @@ fn record_blocks(
                 item_sequence(item, sequences),
                 presentation,
                 owner,
+                found,
               )
           }
         })
@@ -1028,10 +1040,11 @@ fn expanded_lines(
   spliced: Spliced(entry.Entry),
   owner: Option(message.Origin),
   labels: block_summary.Labels,
+  clock: Option(Int),
 ) -> List(Line) {
   case spliced {
     Transient(text, _) -> [Line(System, text)]
-    Projected(value) -> entry_lines(value, True, owner, labels)
+    Projected(value) -> clocked_entry_lines(value, True, owner, labels, clock)
   }
 }
 
@@ -1053,6 +1066,7 @@ fn compact_item_lines(
   seq: Int,
   presentation: Presentation,
   owner: Option(message.Origin),
+  found: Deliveries,
 ) -> #(
   List(#(Int, #(Source, List(Line)))),
   Dict(tool_activity.Call, List(Line)),
@@ -1062,22 +1076,59 @@ fn compact_item_lines(
     // The labels the entry's rows would show are part of the key, so a
     // label arriving is a new key and the entry is projected again, while
     // every other cached narrative is reused.
-    tool_activity.Narrative(value) -> {
-      let key = #(value, owner, labels_for(value, presentation.summaries))
-      let lines =
-        dict.get(presentation.compact_entry_cache, key)
-        |> result.lazy_unwrap(fn() {
-          entry_lines(value, False, owner, presentation.summaries)
-        })
-      #(
-        [#(seq, #(FromEntry(value), lines)), ..acc.0],
-        acc.1,
-        dict.insert(acc.2, key, lines),
-      )
-    }
+    // A send's result that its call's row already draws is no rows at
+    // all, and a response holding a send is drawn afresh rather than from
+    // the cache, since its row changes when the result arrives later.
+    tool_activity.Narrative(value) ->
+      case absorbed(found, value), reads_deliveries(value) {
+        True, _ -> #([#(seq, #(FromEntry(value), [])), ..acc.0], acc.1, acc.2)
+        False, True -> #(
+          [
+            #(
+              seq,
+              #(
+                FromEntry(value),
+                delivered_entry_lines(
+                  value,
+                  owner,
+                  presentation.summaries,
+                  found,
+                  presentation.clock,
+                ),
+              ),
+            ),
+            ..acc.0
+          ],
+          acc.1,
+          acc.2,
+        )
+        False, False -> {
+          let key = #(value, owner, labels_for(value, presentation.summaries))
+          let lines =
+            dict.get(presentation.compact_entry_cache, key)
+            |> result.lazy_unwrap(fn() {
+              clocked_entry_lines(
+                value,
+                False,
+                owner,
+                presentation.summaries,
+                presentation.clock,
+              )
+            })
+          #(
+            [#(seq, #(FromEntry(value), lines)), ..acc.0],
+            acc.1,
+            dict.insert(acc.2, key, lines),
+          )
+        }
+      }
     tool_activity.Tools(calls) -> {
       let #(lines, cached) =
-        cached_activity_lines(calls, presentation.compact_call_cache)
+        cached_activity_lines(
+          calls,
+          presentation.compact_call_cache,
+          presentation.clock,
+        )
       #(
         [#(seq, #(FromTools(calls), lines)), ..acc.0],
         dict.merge(acc.1, cached),
@@ -1092,12 +1143,13 @@ fn compact_item_lines(
 fn cached_activity_lines(
   calls: List(tool_activity.Call),
   previous: Dict(tool_activity.Call, List(Line)),
+  clock: Option(Int),
 ) -> #(List(Line), Dict(tool_activity.Call, List(Line))) {
   let #(reversed, cached) =
     list.fold(calls, #([], dict.new()), fn(acc, call) {
       let lines =
         dict.get(previous, call)
-        |> result.lazy_unwrap(fn() { activity_call_lines(call) })
+        |> result.lazy_unwrap(fn() { clocked_call_lines(call, clock) })
       #([lines, ..acc.0], dict.insert(acc.1, call, lines))
     })
 
@@ -1274,6 +1326,22 @@ pub fn separated_tool_blocks(
   |> list.reverse
 }
 
+/// `separated_tool_blocks` over lines that are not grouped into blocks,
+/// each line its own block: the transcript's own lines (the head, notices
+/// and approvals), which no fold over entries has seen. A line that closes
+/// bare and one that opens bare get the one blank row between them that the
+/// fold gives any two blocks.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.separated_lines(model.shared.transcript)
+/// ```
+@internal
+pub fn separated_lines(lines: List(Line)) -> List(Line) {
+  separated_tool_groups(list.map(lines, fn(line) { [line] }), BetweenEntries)
+}
+
 // The same separation over rows that carry no anchor identity.
 //
 // Groups are wrapped as idless blocks and run through the one fold rather
@@ -1308,7 +1376,7 @@ fn block_closes_bare(rows: List(Line)) -> Bool {
 /// blank, which is why it is a function rather than a second copy of the list:
 /// moving a speaker into or out of the tool family changes both the row drawn
 /// and the gap the fold above owes it, and the two have to move together.
-/// Everything else already ends in a blank, and a `Spacer` is a blank.
+/// Everything else ends in a blank, and a `Spacer` is a blank.
 @internal
 pub fn closes_bare(speaker: Speaker) -> Bool {
   case speaker {
@@ -1319,13 +1387,17 @@ pub fn closes_bare(speaker: Speaker) -> Bool {
     | ReasoningDigest
     | SummarizedReasoning -> True
     System
+    | ToolGroup
     | User
     | Assistant
     | Reasoning
     | ToolDetail
     | Failure
     | Spacer
-    | SummarizedAdvice -> False
+    | SummarizedAdvice
+    | SentMessage
+    | StrandMessage
+    | PeerMessage -> False
   }
 }
 
@@ -1339,6 +1411,17 @@ pub fn opens_bare(rows: List(Line), opening: GroupOpening) -> Bool {
   case rows {
     [Line(speaker: ToolCall, ..), ..] -> True
     [Line(speaker: ReasoningDigest, ..), ..] -> True
+
+    // A turn, an answer and a message between agents end in a blank row
+    // and bring none above themselves, so whatever comes before one of them
+    // is one blank row away: the blank it closed with, or a spacer under a
+    // call that closed bare.
+    [Line(speaker: User, ..), ..] -> True
+    [Line(speaker: Assistant, ..), ..] -> True
+    [Line(speaker: Reasoning, ..), ..] -> True
+    [Line(speaker: SentMessage, ..), ..] -> True
+    [Line(speaker: StrandMessage, ..), ..] -> True
+    [Line(speaker: PeerMessage, ..), ..] -> True
     [Line(speaker: SummarizedReasoning, ..), ..] -> True
 
     // A harness row, such as advisor commentary, a notice or a tool group's
@@ -1346,6 +1429,7 @@ pub fn opens_bare(rows: List(Line), opening: GroupOpening) -> Bool {
     // under a call's bare last row it would sit welded to that call without a
     // gap of its own.
     [Line(speaker: System, ..), ..] -> True
+    [Line(speaker: ToolGroup, ..), ..] -> True
     [Line(speaker: SummarizedAdvice, ..), ..] -> True
 
     // A provider error after a run of calls is its own entry, and like the
@@ -1388,13 +1472,41 @@ pub fn activity_heading(calls: List(tool_activity.Call)) -> Line {
       n -> " · " <> int.to_string(n) <> " failed"
     }
     <> " · Ctrl+g expands details"
-  Line(System, heading)
+  Line(ToolGroup, heading)
 }
 
 /// The rows for one tool call: its summary, and its result or failure once
 /// the outcome is known.
 @internal
 pub fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
+  clocked_call_lines(call, None)
+}
+
+/// `activity_call_lines` with the local clock's offset, so a send's row
+/// shows when its recipient took it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.clocked_call_lines(call, Some(60))
+/// ```
+@internal
+pub fn clocked_call_lines(
+  call: tool_activity.Call,
+  clock: Option(Int),
+) -> List(Line) {
+  // A send that is pending or was taken is its message row; a failed one
+  // keeps the failure rows every tool's failure gets, so the reason shows.
+  let receipt = case call.outcome {
+    None -> Ok(NoReceipt)
+    Some(message.ToolResultMessage(is_error: False, details:, timestamp:, ..)) ->
+      Ok(Receipted(details, clock_text(timestamp, clock)))
+    Some(_) -> Error(Nil)
+  }
+  use <- result.lazy_unwrap(
+    result.try(receipt, sent_lines(call.invocation, _, notes_view.Excerpt)),
+  )
+
   // The invocation owns its source preview, so settling a result changes the
   // status without adding or removing code rows. Reuse the expanded entry's
   // Gleam renderer instead of displaying the transport JSON as a summary.
@@ -1512,6 +1624,9 @@ pub fn expanded_call_lines(call: tool_activity.Call) -> List(Line) {
       None,
     )
   {
+    // A send's row is not its summary: it carries the whole message, which
+    // is what expanding the call is for.
+    [Line(speaker: SentMessage, ..) as head, ..rest] -> [head, ..rest]
     [head, ..rest] ->
       case string.contains(call_summary(call), "…") {
         True -> [head, ..rest]
@@ -1520,7 +1635,7 @@ pub fn expanded_call_lines(call: tool_activity.Call) -> List(Line) {
     [] -> []
   }
   let outcome = case call.outcome {
-    Some(result) -> message_lines(result, True, None, [])
+    Some(result) -> message_lines(result, True, None, [], unjoined)
     None -> []
   }
   list.append(invocation, outcome)
@@ -1612,8 +1727,197 @@ fn note_call_lines(
   }
 }
 
-// A message preview preserves Markdown paragraphs; expansion exposes the
-// complete body from the same immutable call arguments.
+// What the transcript knows, where it draws a send, of the send's result.
+type Receipt {
+  // No result is joined to the call here: it has none yet, or expanded
+  // history draws the result as its own entry below the call.
+  NoReceipt
+
+  // The successful result, whose details say how the message was taken,
+  // and the heading's clock time for when it was, empty without a clock.
+  Receipted(details: Option(json.JsonValue), at: String)
+}
+
+// The one row an `agent_send` call becomes, or an error when its arguments
+// do not name a recipient and a message, which leaves the call to the
+// generic rows every other tool gets. The heading is built from the call's
+// arguments and its result; the body is drawn beneath it and never read.
+fn sent_lines(
+  call: message.ToolCall,
+  receipt: Receipt,
+  extent: notes_view.Extent,
+) -> Result(List(Line), Nil) {
+  use fields <- result.try(case call.name, call.arguments {
+    "agent_send", json.Object(fields) -> Ok(fields)
+    _, _ -> Error(Nil)
+  })
+  use recipient <- result.try(option.to_result(string_field(fields, "to"), Nil))
+  use body <- result.try(option.to_result(string_field(fields, "message"), Nil))
+  let taken = case receipt {
+    NoReceipt -> ""
+    Receipted(details: Some(json.Object(fields)), at:) ->
+      case string_field(fields, "delivery") {
+        Some("started") -> " · started a run on it" <> at
+        _ -> " · admitted to its queue" <> at
+      }
+    Receipted(at:, ..) -> " · admitted to its queue" <> at
+  }
+  Ok([
+    Line(
+      SentMessage,
+      "→ to "
+        <> text_hygiene.single_line(recipient)
+        <> " · agent_send"
+        <> taken
+        <> "\n"
+        <> message_body(body, extent),
+    ),
+  ])
+}
+
+/// The successful `agent_send` results of a compact window joined to the
+/// calls they answer, for responses whose calls are drawn as narrative.
+///
+/// A response that carries prose is narrative (`tool_activity`), so its
+/// calls are drawn inside it and their results arrive as entries of their
+/// own. A send's row says what became of the message, which only its result
+/// knows, so the row is drawn from both and the result entry draws nothing.
+/// A failed send's result is not joined: its failure rows stay where they
+/// are.
+pub opaque type Deliveries {
+  Deliveries(
+    // Keyed by the calling entry's identity and the provider call id.
+    joined: Dict(#(String, String), #(Option(json.JsonValue), Int)),
+    // The result entries whose content a call's row now draws.
+    absorbed: Set(String),
+  )
+}
+
+/// Joins each successful `agent_send` result in `entries`, oldest first,
+/// to the latest earlier call with its provider id.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let joined = transcript_lines.deliveries([])
+/// ```
+@internal
+pub fn deliveries(entries: List(entry.Entry)) -> Deliveries {
+  let #(found, _open) =
+    list.fold(
+      entries,
+      #(Deliveries(dict.new(), set.new()), dict.new()),
+      fn(acc, value) {
+        let #(found, open) = acc
+        case value {
+          // A reused provider id replaces the earlier call: the next result
+          // with that id answers the latest call that made it.
+          entry.MessageEntry(
+            message: message.AssistantMessage(content:, ..),
+            ..,
+          ) -> {
+            let caller = ids.entry_id_to_string(value.id)
+            let open =
+              list.fold(content, open, fn(open, block) {
+                case block {
+                  message.AssistantToolCall(message.ToolCall(
+                    name: "agent_send",
+                    id:,
+                    ..,
+                  )) -> dict.insert(open, id, caller)
+                  message.AssistantToolCall(..)
+                  | message.AssistantText(..)
+                  | message.AssistantThinking(..) -> open
+                }
+              })
+            #(found, open)
+          }
+
+          entry.MessageEntry(
+            message: message.ToolResultMessage(
+              tool_name: "agent_send",
+              tool_call_id:,
+              is_error:,
+              details:,
+              timestamp:,
+              ..,
+            ),
+            ..,
+          ) ->
+            case dict.get(open, tool_call_id), is_error {
+              Ok(caller), False -> #(
+                Deliveries(
+                  joined: dict.insert(found.joined, #(caller, tool_call_id), #(
+                    details,
+                    timestamp,
+                  )),
+                  absorbed: set.insert(
+                    found.absorbed,
+                    ids.entry_id_to_string(value.id),
+                  ),
+                ),
+                dict.delete(open, tool_call_id),
+              )
+              Ok(_), True -> #(found, dict.delete(open, tool_call_id))
+              Error(Nil), _ -> #(found, open)
+            }
+
+          entry.MessageEntry(..)
+          | entry.CompactionEntry(..)
+          | entry.BranchSummaryEntry(..)
+          | entry.CustomEntry(..) -> #(found, open)
+        }
+      },
+    )
+  found
+}
+
+/// Whether `value` is a send's result that its call's row already draws
+/// (`deliveries`), and so draws no rows of its own in compact history.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.absorbed(transcript_lines.deliveries(entries), result)
+/// ```
+@internal
+pub fn absorbed(found: Deliveries, value: entry.Entry) -> Bool {
+  set.contains(found.absorbed, ids.entry_id_to_string(value.id))
+}
+
+/// Whether drawing `value` in compact history reads a joined result, so
+/// that its rows cannot be cached against the entry alone: the result
+/// arrives as a later entry and changes the row of a call already drawn.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.reads_deliveries(response)
+/// ```
+@internal
+pub fn reads_deliveries(value: entry.Entry) -> Bool {
+  case value {
+    entry.MessageEntry(message: message.AssistantMessage(content:, ..), ..) ->
+      list.any(content, fn(block) {
+        case block {
+          message.AssistantToolCall(message.ToolCall(name: "agent_send", ..)) ->
+            True
+          message.AssistantToolCall(..)
+          | message.AssistantText(..)
+          | message.AssistantThinking(..) -> False
+        }
+      })
+    entry.MessageEntry(..)
+    | entry.CompactionEntry(..)
+    | entry.BranchSummaryEntry(..)
+    | entry.CustomEntry(..) -> False
+  }
+}
+
+// A message preview is its first twelve lines and the hint that expands
+// it; expansion exposes the complete body from the same immutable call
+// arguments. The terminal draws a message body as text, line by line, so a
+// cut needs no regard for Markdown.
 fn message_excerpt(body: String) -> String {
   let lines = string.split(body, "\n")
   case list.drop(lines, 12) {
@@ -1699,6 +2003,69 @@ pub fn entry_lines(
   local_owner: Option(message.Origin),
   labels: block_summary.Labels,
 ) -> List(Line) {
+  entry_rows(value, details_expanded, local_owner, labels, unjoined, None)
+}
+
+/// `entry_lines` with the local clock's offset (`Presentation.clock`), so
+/// a message's heading shows the time it was admitted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.clocked_entry_lines(value, False, None, labels, Some(60))
+/// ```
+@internal
+pub fn clocked_entry_lines(
+  value: entry.Entry,
+  details_expanded: Bool,
+  local_owner: Option(message.Origin),
+  labels: block_summary.Labels,
+  clock: Option(Int),
+) -> List(Line) {
+  entry_rows(value, details_expanded, local_owner, labels, unjoined, clock)
+}
+
+/// `entry_lines` in compact history for an entry whose `agent_send` calls
+/// have their results joined in `found` (`deliveries`): each such call's
+/// row says what became of its message.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.delivered_entry_lines(response, None, labels, found)
+/// ```
+@internal
+pub fn delivered_entry_lines(
+  value: entry.Entry,
+  local_owner: Option(message.Origin),
+  labels: block_summary.Labels,
+  found: Deliveries,
+  clock: Option(Int),
+) -> List(Line) {
+  let caller = ids.entry_id_to_string(value.id)
+  let receipt = fn(call: message.ToolCall) {
+    case dict.get(found.joined, #(caller, call.id)) {
+      Ok(#(details, at)) -> Receipted(details, clock_text(at, clock))
+      Error(Nil) -> NoReceipt
+    }
+  }
+  entry_rows(value, False, local_owner, labels, receipt, clock)
+}
+
+// No result is joined to any call: expanded history draws each result as
+// its own entry, and a host drawing one block alone has no window to join.
+fn unjoined(_call: message.ToolCall) -> Receipt {
+  NoReceipt
+}
+
+fn entry_rows(
+  value: entry.Entry,
+  details_expanded: Bool,
+  local_owner: Option(message.Origin),
+  labels: block_summary.Labels,
+  receipt: fn(message.ToolCall) -> Receipt,
+  clock: Option(Int),
+) -> List(Line) {
   let found = labels_for(value, labels)
   case value {
     entry.MessageEntry(message: value, ..) ->
@@ -1708,13 +2075,13 @@ pub fn entry_lines(
         block_label(found, 0),
       )
       |> option.lazy_or(fn() {
-        peer_message_lines(value, details_extent(details_expanded))
+        peer_message_lines(value, details_extent(details_expanded), clock)
       })
       |> option.lazy_or(fn() {
-        sibling_message_lines(value, details_extent(details_expanded))
+        sibling_message_lines(value, details_extent(details_expanded), clock)
       })
       |> option.lazy_unwrap(fn() {
-        message_lines(value, details_expanded, local_owner, found)
+        message_lines(value, details_expanded, local_owner, found, receipt)
       })
     entry.CompactionEntry(retained_tail:, tokens_before:, ..) -> [
       Line(
@@ -1788,24 +2155,61 @@ fn harness_message_lines(
 fn peer_message_lines(
   value: message.AgentMessage,
   extent: notes_view.Extent,
+  clock: Option(Int),
 ) -> Option(List(Line)) {
   case value {
     message.UserMessage(
       content:,
       origin: Some(message.PeerOrigin(session:, strand:)),
-      ..,
+      timestamp:,
     ) ->
       Some([
         Line(
-          System,
-          "peer · "
-            <> text_hygiene.single_line(session)
+          PeerMessage,
+          "⇄ peer session "
+            <> short_session(text_hygiene.single_line(session))
+            <> " · strand "
+            <> text_hygiene.single_line(strand)
             <> " · "
-            <> text_hygiene.single_line(strand),
+            <> origin_checked
+            <> clock_text(timestamp, clock)
+            <> "\n"
+            <> message_body(user_body(content), extent),
         ),
-        prose_line(user_body(content), extent),
       ])
     _ -> None
+  }
+}
+
+// A message heading's time: ` · 14:02`, the local clock time `at` (Unix
+// milliseconds) falls on, or nothing when the host knows no offset. A clock
+// time never goes stale, which a relative age (`12s ago`) on a cached row
+// would.
+fn clock_text(at: Int, clock: Option(Int)) -> String {
+  case clock {
+    None -> ""
+    Some(offset) -> {
+      let minutes = int.modulo(at / 60_000 + offset, 1440) |> result.unwrap(0)
+      " · "
+      <> string.pad_start(int.to_string(minutes / 60), 2, "0")
+      <> ":"
+      <> string.pad_start(int.to_string(minutes % 60), 2, "0")
+    }
+  }
+}
+
+/// The words a peer message's heading ends with. Only a `PeerOrigin` draws
+/// them, and the admission host writes that origin only after it has
+/// authenticated the sending session, so the claim is the daemon's and not
+/// the sender's.
+pub const origin_checked = "✓ origin checked by the daemon"
+
+// A session identifier, a UUID, is named by the eight characters before
+// its first dash, as the picker names one. Anything else is shown whole.
+fn short_session(session: String) -> String {
+  case string.slice(session, 8, 1) {
+    "-" -> string.slice(session, 0, 8)
+    _ -> session
   }
 }
 
@@ -1819,40 +2223,44 @@ fn peer_message_lines(
 fn sibling_message_lines(
   value: message.AgentMessage,
   extent: notes_view.Extent,
+  clock: Option(Int),
 ) -> Option(List(Line)) {
   case value {
     message.UserMessage(
       content:,
       origin: Some(message.StrandOrigin(strand:)),
-      ..,
+      timestamp:,
     ) -> {
       let framed = strand_framing.strip(user_body(content), strand)
-      let trailer = case framed.trailer {
-        Some(instruction) -> [prose_line(instruction, extent)]
-        None -> []
+      let body = case framed.trailer {
+        Some(instruction) -> framed.body <> "\n\n" <> instruction
+        None -> framed.body
       }
       Some([
-        Line(System, "strand · " <> text_hygiene.single_line(strand)),
-        prose_line(framed.body, extent),
-        ..trailer
+        Line(
+          StrandMessage,
+          "← from "
+            <> text_hygiene.single_line(strand)
+            <> " · strand message"
+            <> clock_text(timestamp, clock)
+            <> "\n"
+            <> message_body(body, extent),
+        ),
       ])
     }
     _ -> None
   }
 }
 
-// An agent's prose as one row. A long message collapses to a preview and
-// an expand hint. The preview can stop inside a fence, which would swallow
-// the hint into a code block, so only the whole body is drawn as Markdown.
-fn prose_line(body: String, extent: notes_view.Extent) -> Line {
-  let whole = composer.transcript_text(body, True)
+// A message body as its row draws it: the complete text when details are
+// expanded, and otherwise its first twelve lines with the hint that expands
+// it. Every kind of message is cut the same way, so a sent, a sibling's and
+// a peer's message of one length preview to one height.
+fn message_body(body: String, extent: notes_view.Extent) -> String {
+  let body = text_hygiene.multiline(body)
   case extent {
-    notes_view.Complete -> Line(ToolDetail, whole)
-    notes_view.Excerpt ->
-      case composer.transcript_text(body, False) {
-        preview if preview == whole -> Line(ToolDetail, whole)
-        preview -> Line(System, preview)
-      }
+    notes_view.Complete -> body
+    notes_view.Excerpt -> message_excerpt(body)
   }
 }
 
@@ -2356,6 +2764,7 @@ fn message_lines(
   details_expanded: Bool,
   local_owner: Option(message.Origin),
   found: List(#(Int, String)),
+  receipt: fn(message.ToolCall) -> Receipt,
 ) -> List(Line) {
   case value {
     message.UserMessage(content:, origin:, ..) -> [
@@ -2377,10 +2786,11 @@ fn message_lines(
       let lines =
         content
         |> list.index_map(fn(block, index) {
-          assistant_block_lines(
+          block_lines(
             block,
             details_expanded,
             block_label(found, index),
+            receipt,
           )
         })
         |> separated_tool_groups(WithinResponse)
@@ -2475,6 +2885,15 @@ pub fn assistant_block_lines(
   details_expanded: Bool,
   label: Option(String),
 ) -> List(Line) {
+  block_lines(block, details_expanded, label, unjoined)
+}
+
+fn block_lines(
+  block: message.AssistantBlock,
+  details_expanded: Bool,
+  label: Option(String),
+  receipt: fn(message.ToolCall) -> Receipt,
+) -> List(Line) {
   case block {
     message.AssistantText(text:, ..) -> [Line(Assistant, text)]
     message.AssistantThinking(thinking:, redacted:, ..) ->
@@ -2492,6 +2911,11 @@ pub fn assistant_block_lines(
         ]
       }
     message.AssistantToolCall(call:) -> {
+      use <- result.lazy_unwrap(sent_lines(
+        call,
+        receipt(call),
+        details_extent(details_expanded),
+      ))
       let message.ToolCall(name:, arguments:, ..) = call
       case
         code_mode_program(name, arguments, details_expanded),

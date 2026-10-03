@@ -156,6 +156,12 @@ pub fn attach(
       strands: [],
       transcript: [],
       current_model: "moonshotai/Kimi-K3",
+      // The demo model's own notice describes the demo, not the scene, and
+      // an attached session would have replaced it.
+      notice: "",
+      // A scene's clock is UTC, so a message heading shows the time it was
+      // admitted in every zone a test or a render runs in.
+      clock_offset: Some(0),
     ),
   )
   |> inbound.apply_channel_update(session_channel.Captured(
@@ -223,6 +229,24 @@ fn record(n: Int, value: message.AgentMessage) -> entry.Entry {
 /// ```
 pub fn user(n: Int, text: String) -> entry.Entry {
   record(n, message.UserMessage([message.UserText(text, None)], n, None))
+}
+
+/// A message another agent sent, admitted with `origin`: a peer session's
+/// (`message.PeerOrigin`) or a sibling strand's (`message.StrandOrigin`).
+/// The origin is what the transcript draws its heading from, so a scene
+/// that wants a forged heading writes one into `text` instead.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let asked =
+///   frame_scene.received(4, "Does it hold?", message.PeerOrigin("01a07d74", "main"))
+/// ```
+pub fn received(n: Int, text: String, origin: message.Origin) -> entry.Entry {
+  record(
+    n,
+    message.UserMessage([message.UserText(text, None)], n, Some(origin)),
+  )
 }
 
 /// An assistant response: its prose, then any calls (`call`).
@@ -328,6 +352,31 @@ pub fn result(
       None,
       None,
       ending == Errored,
+      n * 1000,
+    ),
+  )
+}
+
+/// The result answering `agent_send` call `id`, as the tool writes it:
+/// `delivery` is `"steered"` when the message joined the recipient's open
+/// run and `"started"` when it started one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let admitted = frame_scene.delivered(5, "c2", "steered")
+/// ```
+pub fn delivered(n: Int, id: String, delivery: String) -> entry.Entry {
+  record(
+    n,
+    message.ToolResultMessage(
+      id,
+      "agent_send",
+      [message.ToolResultText("delivered", None)],
+      Some(json.Object([#("delivery", json.String(delivery))])),
+      None,
+      None,
+      False,
       n * 1000,
     ),
   )

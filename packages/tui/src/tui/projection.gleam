@@ -49,9 +49,10 @@ import session_view/model.{Shared} as session_model
 import session_view/notes_view
 import session_view/tool_activity
 import session_view/transcript_line.{
-  type Line, type Speaker, type Stream, Assistant, Failure, Line, Reasoning,
-  ReasoningDigest, Spacer, SummarizedAdvice, SummarizedReasoning, System,
-  ToolCall, ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
+  type Line, type Speaker, type Stream, Assistant, Failure, Line, PeerMessage,
+  Reasoning, ReasoningDigest, SentMessage, Spacer, StrandMessage,
+  SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
+  ToolFailure, ToolGroup, ToolPatch, ToolResult, User,
 }
 import session_view/transcript_lines.{
   BetweenEntries, Projected, Transient, WithinResponse,
@@ -264,6 +265,7 @@ fn refresh_diff_cache(before: Model, after: Model) -> Model {
             |> cached_record_lines(
               layout.diff_width(after),
               previous_diff_layout(before, after),
+              after.shared.active_strand,
             )
           let count = list.length(rows)
           Model(
@@ -367,6 +369,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
     False, _ -> {
       let previous = case
         model.view.record_cache_width == width
+        && model.view.record_cache_strand == model.shared.active_strand
         && model.view.caches.record_cache_epoch
         == model.shared.record_cache_epoch
       {
@@ -376,9 +379,9 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
       let #(lines, compact_call_cache, compact_entry_cache) =
         record_projection(model)
       let #(record_rows, record_line_cache, record_gutters) =
-        model.shared.transcript
+        transcript_lines.separated_lines(model.shared.transcript)
         |> list.append(lines)
-        |> cached_record_lines(width, previous)
+        |> cached_record_lines(width, previous, model.shared.active_strand)
       Model(
         shared: Shared(
           ..model.shared,
@@ -414,7 +417,11 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
       let #(newest_rows, appended, newest_gutters) =
         lines
         |> separated_from_screen(model)
-        |> cached_record_lines(width, model.view.caches.record_line_cache)
+        |> cached_record_lines(
+          width,
+          model.view.caches.record_line_cache,
+          model.shared.active_strand,
+        )
 
       // Every cache here describes the current projection, and the appended
       // records have just joined it. Merging rather than replacing keeps the
@@ -483,12 +490,13 @@ fn cached_record_lines(
   lines: List(Line),
   width: Int,
   previous: Dict(Line, List(span.Line)),
+  strand: String,
 ) -> #(List(span.Line), Dict(Line, List(span.Line)), List(Int)) {
   list.fold(lines, #([], dict.new(), []), fn(acc, line) {
     let #(rows, cached, gutters) = acc
     let rendered =
       dict.get(previous, line)
-      |> result.lazy_unwrap(fn() { render.render_line(line, width) })
+      |> result.lazy_unwrap(fn() { render.render_line(line, width, strand) })
     let rendered_count = list.length(rendered)
     let line_gutters =
       list.index_map(rendered, fn(_, index) {
@@ -581,7 +589,8 @@ fn record_anchors_for(
     // compact history. Inside a group or a response every spacer is already
     // placed, and a spacer's own row is blank, so this pass adds only the
     // gaps between items.
-    False ->
+    False -> {
+      let found = transcript_lines.deliveries(entries)
       entries
       |> tool_activity.project_split(
         transcript_lines.advisor_splits(visible_advisor_history(model)),
@@ -594,10 +603,16 @@ fn record_anchors_for(
       |> list.map(fn(spliced) {
         case spliced {
           Transient(text, seq) -> #(seq, [#("", [Line(System, text)])])
-          Projected(tool_activity.Narrative(value)) -> #(
-            value.seq,
-            anchored_entry_blocks(value, model),
-          )
+
+          // A send's result that its call's row draws is no rows, as
+          // `record_lines` draws it. The call's own row is one heading row
+          // whether or not the result has joined it, so the response's
+          // blocks need no such mirror.
+          Projected(tool_activity.Narrative(value)) ->
+            case transcript_lines.absorbed(found, value) {
+              True -> #(value.seq, [#(ids.entry_id_to_string(value.id), [])])
+              False -> #(value.seq, anchored_entry_blocks(value, model))
+            }
           Projected(tool_activity.Tools(calls)) -> {
             let heading = [transcript_lines.activity_heading(calls)]
             let called =
@@ -653,15 +668,18 @@ fn record_anchors_for(
       )
       |> list.flat_map(fn(group) { group.1 })
       |> transcript_lines.separated_tool_blocks(BetweenEntries)
+    }
   }
-  [#("", model.shared.transcript), ..blocks]
+  [#("", transcript_lines.separated_lines(model.shared.transcript)), ..blocks]
   |> list.flat_map(fn(block) {
     block.1
     |> list.index_map(fn(line, part) { #(line, part) })
     |> list.flat_map(fn(pair) {
       let rendered =
         dict.get(model.view.caches.record_line_cache, pair.0)
-        |> result.lazy_unwrap(fn() { render.render_line(pair.0, width) })
+        |> result.lazy_unwrap(fn() {
+          render.render_line(pair.0, width, model.shared.active_strand)
+        })
       list.index_map(rendered, fn(_, wrapped) {
         case block.0 {
           "" -> None
@@ -753,7 +771,13 @@ fn rendered_layout_for(
       {
         Some(lines) -> {
           let #(rows, gutters, _) =
-            rendered_lines(lines, width, [], live_tail.begin(live_tail.new()))
+            rendered_lines(
+              lines,
+              width,
+              [],
+              live_tail.begin(live_tail.new()),
+              model.shared.active_strand,
+            )
           #(rows, gutters, model.view.caches.live_tail)
         }
         None -> {
@@ -763,6 +787,7 @@ fn rendered_layout_for(
               width,
               live_sources(model),
               live_tail.begin(model.view.caches.live_tail),
+              model.shared.active_strand,
             )
           #(rows, gutters, live_tail.finish(pass))
         }
@@ -787,10 +812,11 @@ fn rendered_lines(
   width: Int,
   sources: List(#(Speaker, Stream)),
   pass: live_tail.Pass,
+  strand: String,
 ) -> #(List(span.Line), List(Int), live_tail.Pass) {
   list.fold(lines, #([], [], pass), fn(acc, line) {
     let #(rows, gutters, pass) = acc
-    let #(rendered, pass) = line_rows(line, width, sources, pass)
+    let #(rendered, pass) = line_rows(line, width, sources, pass, strand)
     let rendered_count = list.length(rendered)
     let line_gutters =
       list.index_map(rendered, fn(_, index) {
@@ -810,6 +836,7 @@ fn line_rows(
   width: Int,
   sources: List(#(Speaker, Stream)),
   pass: live_tail.Pass,
+  strand: String,
 ) -> #(List(span.Line), live_tail.Pass) {
   let bytes = string.byte_size(line.text)
   case list.filter(sources, fn(source) { source.0 == line.speaker }) {
@@ -818,12 +845,12 @@ fn line_rows(
         live_tail.Layout(
           room: render.markdown_room(speaker, width),
           finish: fn(rows, run) {
-            render.finish_markdown_rows(speaker, rows, run)
+            render.finish_markdown_rows(speaker, rows, run, strand)
           },
         )
       live_tail.rows(pass, speaker, line.text, stream.fragments, layout)
     }
-    _ -> #(render.render_line(line, width), pass)
+    _ -> #(render.render_line(line, width, strand), pass)
   }
 }
 
@@ -852,14 +879,20 @@ fn live_sources(model: Model) -> List(#(Speaker, Stream)) {
 // those begin after these fixed cells and are never inspected here.
 fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
   case line.speaker {
-    Assistant | Reasoning if index > 1 -> 2
+    Assistant | Reasoning if index > 0 -> 2
 
     // A summary's rows sit under its header behind a two-cell indent.
     SummarizedReasoning | SummarizedAdvice if index > 0 -> 2
-    User if index == 1 -> 1
-    User if index > 1 && index < row_count - 1 -> 3
+    User if index < row_count - 1 -> 2
+
+    // A message's bar is painted in the margin, outside these cells, so
+    // the gutter counts only the indent before the heading and the body.
+    SentMessage | StrandMessage if index == 0 -> 1
+    SentMessage | StrandMessage if index < row_count - 1 -> 3
+    PeerMessage if index > 0 && index < row_count - 1 -> 4
     ToolDetail -> 2
     System
+    | ToolGroup
     | User
     | Assistant
     | Reasoning
@@ -871,7 +904,10 @@ fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
     | ToolPatch
     | ToolFailure
     | Failure
-    | Spacer -> 0
+    | Spacer
+    | SentMessage
+    | StrandMessage
+    | PeerMessage -> 0
   }
 }
 

@@ -304,12 +304,9 @@ fn fresh(
 // The whole line rendered from scratch: what `render.render_line` does for
 // a Markdown speaker, and what every fallback here draws.
 fn full_rows(text: String, layout: Layout) -> List(span.Line) {
-  [
-    span.line_plain(""),
-    ..markdown.render(text, layout.room)
-    |> markdown.wrap_lines(layout.room)
-    |> layout.finish(OpensLine)
-  ]
+  markdown.render(text, layout.room)
+  |> markdown.wrap_lines(layout.room)
+  |> layout.finish(OpensLine)
 }
 
 // One frame of a slot. An error means the text cannot be split safely and
@@ -348,7 +345,7 @@ fn render_slot(
     memo
     |> list.flat_map(fn(pair) { pair.1 })
     |> layout.finish(run(slot))
-  let drawn = [span.line_plain(""), ..list.append(slot.settled, tail_rows)]
+  let drawn = list.append(slot.settled, tail_rows)
   let settled = settle(Slot(..slot, memo:), bits, layout)
 
   // A checkpoint is placed against this frame's parse of the tail, which a

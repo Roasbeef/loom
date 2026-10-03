@@ -124,6 +124,7 @@ pub fn a_summarized_block_is_a_header_and_three_rows_at_most_test() {
           long,
         ),
         width,
+        "main",
       )
       |> list.map(row_text)
     let assert [header, ..summary] = rows as "a header row comes first"
@@ -142,6 +143,7 @@ pub fn a_summarized_block_is_a_header_and_three_rows_at_most_test() {
         "Found it.",
       ),
       80,
+      "main",
     )
     |> list.map(row_text)
   assert short
@@ -163,8 +165,8 @@ pub fn live_and_settled_summarized_blocks_have_equal_height_test() {
       label,
     )
   list.each([30, 60, 120], fn(width) {
-    assert list.length(render.render_line(live, width))
-      == list.length(render.render_line(settled, width))
+    assert list.length(render.render_line(live, width, "main"))
+      == list.length(render.render_line(settled, width, "main"))
   })
 }
 
@@ -178,7 +180,7 @@ pub fn an_unsummarized_reasoning_row_is_one_row_test() {
   list.each([24, 40, 80, 200], fn(width) {
     list.each(rows, fn(text) {
       let line = transcript_line.Line(transcript_line.ReasoningDigest, text)
-      assert list.length(render.render_line(line, width)) == 1
+      assert list.length(render.render_line(line, width, "main")) == 1
     })
   })
 }
@@ -385,6 +387,7 @@ pub fn long_advice_collapses_to_its_heading_and_label_test() {
           <> string.repeat("Asks for a rerun. ", 30),
       ),
       60,
+      "main",
     )
     |> list.map(row_text)
   let assert ["◇ Advisor · block delivered (summarized)" <> _, ..rest] = rows
