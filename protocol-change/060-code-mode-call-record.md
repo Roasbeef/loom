@@ -1,6 +1,8 @@
 # protocol-change/060 — a per-call record for code-mode programs
 
-**Status**: PROPOSED 2026-09-30 · **Affects**: the `details` object of the
+**Status**: ACCEPTED 2026-10-01 (PR #673); slices 1 to 3 and the terminal
+half of slice 4 implemented, the web Trace tab and the live feed (slice 5)
+not yet · proposed 2026-09-30 · **Affects**: the `details` object of the
 `code_mode` tool result (an open JSON value, not a Part 1 interface);
 `codemode/satellite`'s `Run`; `codemode/codemode`'s `Execution`;
 `tools/codemode`'s `Execution`; `session_view` (a new fold) · **Raised by**:
@@ -125,7 +127,8 @@ Statuses:
   `satellite.gleam:1032`, `:1124`, `:1155`). Refused calls have
   `duration_ms == 0`.
 - `CallCancelled`: the satellite sent `Cancel` for the call before it
-  settled (`satellite.gleam:1317` `handle_cancel`).
+  settled, and the call settled before the execution ended. A cancelled call
+  still open at the end of the execution is recorded as `CallUnsettled` (`satellite.gleam:1317` `handle_cancel`).
 - `CallUnsettled`: the call was still in flight when the execution ended,
   by program return, wall deadline or satellite death. Its end is the
   settlement instant of the execution.
@@ -187,12 +190,17 @@ there would spend the notice's clip and add tens of KiB of context to every
 one for them, in a field the model does not read, is future work and not part
 of this change.
 
-Foreground `details` are never projected to a provider. The adapters ignore
-the field when they encode a tool result for the model
+Provider adapters never project `details`. They ignore the field when they
+encode a tool result for the model
 (`packages/provider/src/provider/adapter/anthropic.gleam:201` to `:209`,
 `gemini.gleam:318`, `openai.gleam:278`,
-`internal/responses_request.gleam:112`), so on this path the record adds no
-context tokens. Because `details` is stored in the entry, the record is
+`internal/responses_request.gleam:112`), so by default the record adds no
+context tokens. Two other readers do receive the stored entry whole,
+`details` included: `history read` (`packages/tools/src/tools/history.gleam`)
+and the `context` and `tool_result` hook programs of installed extensions
+(`packages/client/src/client/extension/hooks.gleam`). The record is built to
+be safe in both places: it holds codes, redacted summaries and counts only.
+Because `details` is stored in the entry, the record is
 durable and is part of what a client receives when it reads the transcript:
 a reconnecting terminal or a fresh web page sees it with no live feed.
 
@@ -279,7 +287,7 @@ by default, because their argument shapes are not known to the host.
 |---|---|
 | `fs.read`, `fs.write`, `fs.edit`, `fs.list` | the `path` argument only |
 | `proc.run` | basename of `argv[0]`, then ` +N args`; `cwd`, `env` and `stdin` are not read |
-| `job.start` | the first whitespace-separated token of `command`, then nothing |
+| `job.start` | the first whitespace-separated token of `command` that is not an inline assignment (a token containing `=`); none if every token is one |
 | `job.poll`, `job.kill`, `job.send` | the `job_id` argument only |
 | `kv.get`, `kv.set`, `kv.delete` | the `key` argument only |
 | everything else | none |
@@ -493,3 +501,6 @@ Docs updated with slice 3: `docs/architecture/code-mode.md`,
    stay default-deny?
 5. Should background executions get a call record later, in a field the model
    does not read, or stay without one?
+6. Bidirectional override characters (U+202A to U+202E, U+2066 to U+2069)
+   survive the control-character strip and could reorder a drawn summary.
+   Stripping them is a follow-up.
