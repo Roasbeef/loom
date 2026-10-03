@@ -128,7 +128,7 @@ pub fn a_hundred_mixed_executions_leak_nothing_test() {
   assert census.draining + census.unconfirmed + census.retiring == crashes
 
   // The executor holds no row, and no relay is alive.
-  let assert Ok(books) = executor.inventory(service, waiting: 1000)
+  let assert Ok(books) = executor.snapshot(service, waiting: 1000)
   assert books.live == []
   let alive =
     list.filter(list.flat_map(results, fn(r) { r.relays }), process.is_alive)

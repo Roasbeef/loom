@@ -157,9 +157,9 @@ token, but `settle` was never called, so no `CallSettled` follows.
 
 ### The per-session effect plane
 
-`start_effect_plane_in` (`client/serve.gleam:731`) builds one pool and one
+`start_effect_plane_in` (`client/serve.gleam:737`) builds one pool and one
 broker for each session, and one executor service between them. The pool and the broker are captured by value in closures, and each is a
-fatal child of the instance (`instance_children`, `client/serve.gleam:2076`),
+fatal child of the instance (`instance_children`, `client/serve.gleam:2082`),
 since a replacement would be unreachable. The service is a third fatal child. The custody order of a session's teardown is Runtime,
 Services, Broker, Helpers, Mcp, Storage, Namespace (`clean`,
 `client/internal/instance_owner.gleam:366`), so the session's writer lease is
@@ -564,9 +564,9 @@ A row exists only while the service holds a helper for the execution. It is
 `Live` until nobody has been given leave to report a verdict. The relay asks
 (`MaySettle`) before it reports, and the first ask for a live row turns it
 `Granted` and is answered `Granted`; every later ask is answered
-`AlreadySettled` (`grant_settlement`, `broker/executor.gleam:679`). The service
+`AlreadySettled` (`grant_settlement`, `broker/executor.gleam:631`). The service
 settles a row itself only when it is `Live`, and only for a lost relay or a
-closing service (`lose_row`, `broker/executor.gleam:1094`). It never settles a
+closing service (`lose_row`, `broker/executor.gleam:1071`). It never settles a
 `Granted` row, because the relay may already have reported. Because the status
 is read and written inside one mailbox, the two settlers cannot both win.
 
@@ -584,7 +584,7 @@ settlement in this lane in every case
 A `Live` row can be released too, and the case is real. A relay whose ask went
 unanswered reports anyway as `ServiceSilent`, the broker releases, and the
 service reads `Release` before the late ask. The execution has been reported,
-so `release_row` treats it exactly as a granted one (`broker/executor.gleam:686`),
+so `release_row` treats it exactly as a granted one (`broker/executor.gleam:638`),
 and the relay's late ask finds no row and is answered `AlreadySettled` to a
 process that has already gone.
 
@@ -597,7 +597,7 @@ will not come.
 
 ### The duplicate-sequence refusal
 
-`dispatch_execution` (`broker/executor.gleam:757`) refuses a `start` whose
+`dispatch_execution` (`broker/executor.gleam:726`) refuses a `start` whose
 sequence number is still in the table, answering `NotStarted` and borrowing no
 helper. The check exists because `start` is a call whose budget is the sum of
 every step the service may spend inside it, the checkout wait, the relay's init
@@ -624,12 +624,12 @@ beside five counts that partition the entries, `available`, `borrowed`,
 `draining`, `retiring` and `unconfirmed`. The pool answers in every phase,
 including while closing, and never postpones the question behind a retirement,
 since an observer during shutdown is the observer most in need of an answer. A
-pool that is gone or silent is `PoolUnavailable`. `executor.inventory` returns
-an `Inventory` of the service's incarnation, its live rows in start order (each
-a `LiveRow` with an id and a start time), and the census beside them. It is
-answered inside one service handler, so the rows cannot change while the census
-is read. `pool_census_counts_the_inventory_by_custody_test` and
-`the_inventory_shows_a_live_row_until_the_release_test` cover the two. The
+pool that is gone or silent is `PoolUnavailable`. `executor.snapshot`
+carries the service's incarnation, its live rows in start order, and the census
+beside them. (An earlier `executor.inventory`, with an `Inventory` and a `LiveRow`,
+returned the same three things, had no production caller and duplicated the
+snapshot, so it was removed.) `pool_census_counts_the_inventory_by_custody_test`
+and `the_snapshot_shows_a_live_row_until_the_release_test` cover the two. The
 census also carries two lifetime counters, `spawned` and `retired`, which are
 the pool's helper churn (see "The operational surface").
 
@@ -792,15 +792,15 @@ pool size, which is clamped to sixteen (`max_pool_size`,
 | Bound | Value | Where it is enforced |
 |---|---|---|
 | Output retained by the service | 0 bytes; counters only | `execution.Output` holds counts. Output goes to the caller as it does today. `a_live_snapshot_carries_no_request_test` and `the_settled_snapshot_and_the_log_carry_no_request_test` search the rendered snapshot and the log lines for a marker the helper echoes back. |
-| Drain budget of a close | 2000 ms | `drain_ms`, `broker/executor.gleam:391`: how long `close` lets live executions finish after a cancel |
-| Helpers budget of a close | 5000 ms, whole | `helpers_ms`, `broker/executor.gleam:304`: what the pool is given however long the drain took |
+| Drain budget of a close | 2000 ms | `drain_ms`, `broker/executor.gleam:366`: how long `close` lets live executions finish after a cancel |
+| Helpers budget of a close | 5000 ms, whole | `helpers_ms`, `broker/executor.gleam:282`: what the pool is given however long the drain took |
 | Diagnostic ring | the last 64 settled executions per service, and the last 64 samples of each latency series | `ring_size`, `broker/executor_view.gleam:50`: trimmed on every push. `the_recent_ring_holds_sixty_four_test`. |
 | Relay progress reports | one per mode or cancel change, then at most one chunk-driven report (first chunk, every 16th) per 250 ms | `progress_chunks`, `broker/relay.gleam:260`, and `progress_interval_ms`, `broker/relay.gleam:266`. Never per chunk. |
 | Registry size | at most the pool size (4 to 16) | By construction: a row exists only while the service holds a helper for it. |
 | Relay grace after a cancel | 5000 ms | `relay_grace_ms`, `broker/dispatch.gleam:67` |
 | Checkout wait | 15 000 ms | `exec.checkout(pool, waiting: 15_000)`, `client/serve.gleam:660` and `client/serve.gleam:757` |
-| Run call | 5000 ms | `run_wait_ms`, `broker/executor.gleam:377` (the direct dispatcher had its own copy) |
-| Service `start` call | 22 000 ms | `start_budget_ms`, `broker/executor.gleam:384`: the checkout wait, the relay's init wait, the run call and a second of slack |
+| Run call | 5000 ms | `run_wait_ms`, `broker/executor.gleam:360` (the direct dispatcher had its own copy) |
+| Service `start` call | 22 000 ms | `start_budget_ms`, `broker/executor.gleam:359`: the checkout wait, the relay's init wait, the run call and a second of slack |
 | Relay's ask to settle | 5000 ms | `settle_wait_ms`, `broker/relay.gleam:253` |
 | Relay's ask to cancel | 5000 ms | `cancel_wait_ms`, `broker/relay.gleam:272` |
 | Output per stream | `policy.limits.output_bytes`; 0 means unlimited | The helper (`limiter.go`). A session lease whose output is a wire runs with 0 (`session_lease`, `broker/policy.gleam:425`). |
@@ -852,10 +852,10 @@ and replayed when the machine reaches `Closed`; and `Closed` is a state that
 answers the stored verdict, which a plain actor would have to fake with a flag.
 Every phase and message pair is written out, with the messages that mean the
 same in all phases binding the phase to a name, so a new message is still a
-compile error (`handle`, `broker/executor.gleam:439`). ADR-017 sketched the
+compile error (`handle`, `broker/executor.gleam:414`). ADR-017 sketched the
 service as an actor holding a registry; closing is what made it a machine.
 
-On a `Close` in `Serving` (`begin_close`, `broker/executor.gleam:1150`) the
+On a `Close` in `Serving` (`begin_close`, `broker/executor.gleam:1098`) the
 service sends a cancel to every live row and, if any is still live, enters
 `Closing` with a state timeout of the drain budget. From then on it refuses new
 `start` calls with `NoHelper(PoolUnavailable)`, which is deliberately not
@@ -864,9 +864,9 @@ through their relays as the cancels land, and the service finishes as the last
 one is granted. If the drain budget expires first, the rows still live are
 settled `ExecutionLost(ExecutorClosing)`: the relay is killed first so it cannot
 answer a late ask, and the helper is returned busy so the pool retires it
-(`expire_live_rows`, `broker/executor.gleam:1180`). Then it calls `close_helpers`,
+(`expire_live_rows`, `broker/executor.gleam:1128`). Then it calls `close_helpers`,
 which is `close_pool`, with the whole helpers budget, and replies with the
-pool's retirement verdict (`finish_closing`, `broker/executor.gleam:1165`).
+pool's retirement verdict (`finish_closing`, `broker/executor.gleam:1145`).
 
 S2 separated the two budgets. `executor.close(service, draining:, helpers:)`
 takes a drain budget and a helpers budget, and the pool always gets the whole of

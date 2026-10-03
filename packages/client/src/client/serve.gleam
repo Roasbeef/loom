@@ -669,8 +669,14 @@ pub fn start_effect_plane(
 // Tears a one-shot plane down: no new calls, then the executor's close, which
 // drains what is running and returns the pool's own native-exit verdict. That
 // verdict is the only proof of cleanup, so a close that errs is not reported
-// as one: the pool is asked to retire what it still holds, as the cast alone
-// did before, and the caller sees the same `Nil` it always did.
+// as one, and the caller sees the same `Nil` it always did.
+//
+// The fallback is not a second `StopPool`, which `executor.close` already sent
+// through `close_pool`. What `stop_pool` adds is the `ForgetPool` behind it.
+// After a close that timed out the pool is still `Closing`, and it parks that
+// message until a late exit proves the last helper retired, then stops itself.
+// Without it a pool whose proof arrives after the window would outlive the
+// plane, which for a plane inside the daemon is a process nobody owns.
 fn stop_one_shot(
   broker_actor: Broker,
   service: executor.Executor,

@@ -2742,7 +2742,9 @@ fn judged(outcome: broker.CallOutcome) -> Result(Nil, String) {
 fn skipped_layers(failure: exec.ExecFailure) -> String {
   case failure {
     exec.DegradedExecution(result:) ->
-      case list.filter(result.enforcement, string.starts_with(_, "skip:")) {
+      case
+        list.filter(result.enforcement, string.starts_with(_, exec.skip_prefix))
+      {
         [] -> ""
         skipped -> "; skipped " <> string.join(skipped, ", ")
       }

@@ -398,9 +398,9 @@ fn settled(events: process.Subject(broker.CallEvent)) -> Result(Nil, String) {
 // so the refusal can name them.
 fn skipped_layers(enforcement: List(String)) -> List(String) {
   list.filter_map(enforcement, fn(entry) {
-    case entry {
-      "skip:" <> reason -> Ok(reason)
-      _applied -> Error(Nil)
+    case string.starts_with(entry, exec.skip_prefix) {
+      True -> Ok(string.drop_start(entry, string.length(exec.skip_prefix)))
+      False -> Error(Nil)
     }
   })
 }

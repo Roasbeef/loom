@@ -2,7 +2,7 @@
 //// fake helpers: ordering, exactly-once settlement, the ways a relay or a
 //// helper can die, and closing with work in flight.
 ////
-//// Tests that need to see inside the service use its inventory, and the
+//// Tests that need to see inside the service use its snapshot, and the
 //// two that must speak to it as its relay does build a `Dispatch` by hand
 //// and call the dispatcher directly, because only the closures of an
 //// `Execution` reach a row.
@@ -12,6 +12,7 @@ import broker/census
 import broker/dispatch
 import broker/exec
 import broker/executor
+import broker/executor_view
 import broker/relay
 import broker/support/fake_helper
 import broker/support/planes
@@ -59,8 +60,8 @@ fn wait_for_census(
   census
 }
 
-fn live_rows(plane: planes.Plane) -> List(executor.LiveRow) {
-  let assert Ok(books) = executor.inventory(service_of(plane), waiting: 1000)
+fn live_rows(plane: planes.Plane) -> List(executor_view.LiveView) {
+  let assert Ok(books) = executor.snapshot(service_of(plane), waiting: 1000)
   books.live
 }
 
@@ -148,16 +149,16 @@ pub fn stdin_sent_straight_after_clear_call_reaches_the_payload_test() {
 
 /// The service's books show one row while the execution runs, naming the
 /// broker's call id, and none once the broker has released it.
-pub fn the_inventory_shows_a_live_row_until_the_release_test() {
+pub fn the_snapshot_shows_a_live_row_until_the_release_test() {
   let plane = plane(fake_helper.SleepUntilCancel, size: 2)
   let #(handle, events) = call(plane, 100_000)
-  let assert Ok(books) = executor.inventory(service_of(plane), waiting: 1000)
+  let assert Ok(books) = executor.snapshot(service_of(plane), waiting: 1000)
   let assert [row] = books.live
   assert dispatch.seq(row.id) == 1
   assert dispatch.incarnation(row.id) == 1
   assert books.incarnation == 1
-  let assert Ok(census) = books.pool
-  assert census.borrowed == 1
+  let assert Ok(custody) = books.pool
+  assert custody.census.borrowed == 1
 
   broker.cancel(plane.broker, handle)
   let assert [broker.CallSettled(_)] = planes.collect(events, within: 2000)

@@ -79,7 +79,7 @@ fn assert_baseline(plane: planes.Plane, unconfirmed unconfirmed: Int) -> Nil {
 }
 
 fn assert_no_rows(plane: planes.Plane) -> Nil {
-  let assert Ok(books) = executor.inventory(plane.service, waiting: 1000)
+  let assert Ok(books) = executor.snapshot(plane.service, waiting: 1000)
   assert books.live == []
 }
 

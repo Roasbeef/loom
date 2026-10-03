@@ -82,8 +82,8 @@ protocol (spec Part 1.4). WP-G.
   (`policy.version`) and the hello `features`. `skew(ours, theirs)` names
   every mismatched version and ignores features, which are capability and
   are reported, never refused. No process, no FFI.
-- `broker/executor.{start, dispatcher, pid, inventory, snapshot, census, close,
-  ExecutorConfig, Inventory}` — the service's one process per session, a
+- `broker/executor.{start, dispatcher, pid, snapshot, census, close,
+  ExecutorConfig}` — the service's one process per session, a
   `weft/state_machine` with phases `Serving | Closing(closer) |
   Closed(outcome)` (the pool's shape, with a state timeout in `Closing` for
   the drain budget). `ExecutorConfig` is closures over the pool

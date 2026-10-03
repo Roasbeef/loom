@@ -226,32 +226,6 @@ pub opaque type Executor {
   Executor(subject: Subject(Msg), pid: Pid, incarnation: Int)
 }
 
-/// One execution the service holds, as an observer sees it.
-pub type LiveRow {
-  LiveRow(
-    /// The execution's identity.
-    id: dispatch.ExecutionId,
-    /// When the execution started, in the session clock's milliseconds.
-    started_at: Int,
-  )
-}
-
-/// The service's books at one instant: the executions it holds and the
-/// pool's census beside them. A row exists only while the service holds a
-/// helper for it, so the list is never longer than the pool.
-pub type Inventory {
-  Inventory(
-    /// The service's incarnation.
-    incarnation: Int,
-    /// Every execution the service holds, in start order. A row stays from
-    /// dispatch until the broker releases it, so it includes executions
-    /// whose settlement has been granted and not yet released.
-    live: List(LiveRow),
-    /// The pool's answer, or why it gave none.
-    pool: Result(exec.PoolCensus, executor_view.CustodyUnavailable),
-  )
-}
-
 /// The service did not answer an observer within its window, or is gone.
 pub type Unreachable {
   Unreachable
@@ -276,7 +250,6 @@ pub opaque type Msg {
   Release(id: dispatch.ExecutionId)
   Abandon(id: dispatch.ExecutionId)
   RelayDown(down: process.Down)
-  Report(reply: Subject(Inventory))
   Observe(reply: Subject(executor_view.Snapshot))
   QueryCensus(reply: Subject(Census))
   Close(
@@ -486,27 +459,6 @@ pub fn dispatcher(executor: Executor) -> Dispatcher {
   })
 }
 
-/// The service's books, answered by the service so that rows and census
-/// describe one instant. `waiting` is the observer's window in
-/// milliseconds.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let assert Ok(books) = executor.inventory(service, waiting: 1000)
-/// assert books.live == []
-/// ```
-///
-pub fn inventory(
-  executor: Executor,
-  waiting timeout: Int,
-) -> Result(Inventory, Unreachable) {
-  case call.try_call(executor.subject, waiting: timeout, sending: Report) {
-    Ok(books) -> Ok(books)
-    Error(call.NoReply) | Error(call.CalleeGone) -> Error(Unreachable)
-  }
-}
-
 /// The service's version census: the three version numbers the service
 /// speaks, and the hello features of its newest helper (`broker/census`
 /// says why features are reported and never refused).
@@ -686,10 +638,6 @@ fn handle(
     phase, Release(id:) -> conclude(phase, release_row(state, id))
     phase, Abandon(id:) -> conclude(phase, abandon_row(state, id))
     phase, RelayDown(down:) -> conclude(phase, relay_gone(state, down))
-    _phase, Report(reply:) -> {
-      process.send(reply, books(state))
-      state_machine.keep(state)
-    }
     phase, Observe(reply:) -> {
       process.send(reply, snapshot_of(phase, state))
       state_machine.keep(state)
@@ -1236,20 +1184,6 @@ fn has_live_row(state: State) -> Bool {
 }
 
 // --- observation --------------------------------------------------------
-
-fn books(state: State) -> Inventory {
-  let live =
-    dict.to_list(state.rows)
-    |> list.sort(fn(left, right) { int.compare(left.0, right.0) })
-    |> list.map(fn(entry) {
-      LiveRow(id: { entry.1 }.id, started_at: { entry.1 }.started_at_ms)
-    })
-  Inventory(
-    incarnation: state.config.incarnation,
-    live:,
-    pool: custody_of(state) |> result.map(fn(custody) { custody.census }),
-  )
-}
 
 // The relay's report, kept on the row it names. A report for a granted row
 // is dropped: the verdict carried the final counters. One for a row that is
