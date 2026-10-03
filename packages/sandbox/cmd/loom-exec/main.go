@@ -175,10 +175,33 @@ func runServer(cfg serverConfig) {
 		cgroupBase = cgroup.BaseFromEnv()
 	}
 	feat := jail.DetectFeaturesWith(cgroupBase)
+	sweepStaleCgroups(feat)
 	conn := framing.NewConn(os.Stdin, os.Stdout)
 	if err := server.New(conn, feat, selfExe, basePol).Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "loom-exec: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+// sweepStaleCgroups removes the per-execution cgroups that killed helpers left
+// in the delegated base (issue #702), before this helper serves anything.
+//
+// It runs only here, in server mode, and only when detection accepted a base:
+// the self-test and the probes also detect features, and none of them owns the
+// base. The sweep is best effort, because a directory it cannot remove costs
+// kernel memory and never correctness, so a failure is reported on stderr and
+// the helper serves regardless. Nothing is printed when there was nothing to
+// remove, which is every start but the one after a kill.
+func sweepStaleCgroups(feat jail.Features) {
+	if feat.CgroupDir == "" {
+		return
+	}
+	removed, err := cgroup.Sweep(feat.CgroupDir)
+	if removed > 0 {
+		fmt.Fprintf(os.Stderr, "loom-exec: removed %d stale execution cgroup(s) from %s\n", removed, feat.CgroupDir)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "loom-exec: stale cgroup sweep of %s: %v\n", feat.CgroupDir, err)
 	}
 }
 

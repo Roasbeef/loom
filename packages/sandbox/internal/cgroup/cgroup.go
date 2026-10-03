@@ -25,9 +25,11 @@
 package cgroup
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -451,4 +453,89 @@ func Cleanup(dir string) error {
 		return fmt.Errorf("cgroup: remove %s: %w", dir, err)
 	}
 	return nil
+}
+
+// unpopulated reads cgroup.events; an unreadable file counts as empty,
+// because there is then no cgroup whose population could hold rmdir off.
+func unpopulated(events string) bool {
+	raw, err := os.ReadFile(events)
+	if err != nil {
+		return true
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.TrimSpace(line) == "populated 0" {
+			return true
+		}
+	}
+	return false
+}
+
+// execDirName matches the name `jail.Run` gives a per-execution cgroup,
+// `exec-<request id>-<pid>`, and captures the pid. That pid is the
+// execution's own first process (the blocked shell or bwrap, which the helper
+// forked), not the helper's: the helper never puts its own pid in a name, so
+// it cannot be used to tell which helper made the directory, only whether the
+// execution's process still exists.
+var execDirName = regexp.MustCompile(`^exec-[0-9]+-([0-9]+)$`)
+
+// pidAlive says whether a process with this pid exists. A variable so a test
+// can answer it without forking real processes.
+var pidAlive = processAlive
+
+// Sweep removes the per-execution cgroups that earlier helpers left in base,
+// and reports how many it removed.
+//
+// A helper that is SIGKILLed with an execution live never runs the release
+// that removes its cgroup (`Cleanup` is called after `exec_exit` is written),
+// so each such kill leaves an empty `exec-<id>-<pid>` directory behind, about
+// 120 KB of kernel memory each, at the rate of kills (issue #702). Nothing
+// else will remove it: the helper that made it is dead. The next helper to
+// start against the same base can.
+//
+// A directory is removed only when both of these hold:
+//
+//   - its name is exactly `exec-<digits>-<digits>`, so nothing a base's owner
+//     put there for another purpose is touched; and
+//   - the execution's process, named by the second number, no longer exists,
+//     and the kernel reports the cgroup unpopulated.
+//
+// The pid check is what keeps this from removing a live helper's cgroup. A
+// cgroup that `Setup` has just made is empty until `Enter` moves the
+// execution's process in, so `populated 0` alone cannot tell it from a
+// leftover. The process is already forked and blocked on its start gate by
+// then, so its pid answers as alive, and the directory is left to the helper
+// that owns it. A pid that was reused by an unrelated process is also read as
+// alive, which only leaves one directory for a later sweep.
+//
+// Removal is `Cleanup`: `rmdir` depth-first, never a recursive delete, since
+// a cgroup's interface files are the kernel's and a recursive delete would
+// fail on them and, on a plain directory, remove what it should not. A
+// directory another sweeper removed first is not an error. The first failure
+// is returned after every candidate has been tried.
+func Sweep(base string) (removed int, err error) {
+	entries, readErr := os.ReadDir(base)
+	if readErr != nil {
+		return 0, fmt.Errorf("cgroup: sweep %s: %w", base, readErr)
+	}
+	var failures []error
+	for _, entry := range entries {
+		match := execDirName.FindStringSubmatch(entry.Name())
+		if match == nil || !entry.IsDir() {
+			continue
+		}
+		pid, convErr := strconv.Atoi(match[1])
+		if convErr != nil || pid <= 1 || pidAlive(pid) {
+			continue
+		}
+		dir := filepath.Join(base, entry.Name())
+		if !unpopulated(filepath.Join(dir, "cgroup.events")) {
+			continue
+		}
+		if cleanErr := Cleanup(dir); cleanErr != nil {
+			failures = append(failures, cleanErr)
+			continue
+		}
+		removed++
+	}
+	return removed, errors.Join(failures...)
 }

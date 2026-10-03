@@ -181,3 +181,11 @@ becomes `LostExit` as before. Expiry still grants no proof.
 **What it costs.** A helper whose port closed with no status (a port closed
 from outside, or a port that failed without one) now holds its slot for the
 witness window before it is `LostExit`, where it was `LostExit` at once.
+
+**The cgroup directory a kill leaves (issue #702).** The first addendum says a
+killed helper's per-exec cgroup directory is not removed and that a startup
+sweep would be Go work outside that change. It is now done, in Go and with no
+wire change: `loom-exec` removes, at the start of server mode, the
+`exec-<id>-<pid>` directories in its delegated base whose execution process no
+longer exists and whose cgroup is unpopulated, by rmdir. The grade of evidence
+in (b) is unchanged: the directory was never evidence of anything, only a leak.
