@@ -177,6 +177,7 @@ pub fn a_refusal_reads_for_an_operator_test() {
 pub fn a_profile_round_trips_through_json_test() {
   let full =
     profile.LspServer(
+      preparation: profile.AlreadyPrepared,
       name: "ex",
       command: ["elixir-ls", "--stdio"],
       extensions: [".ex", ".exs"],
@@ -194,6 +195,31 @@ pub fn a_profile_round_trips_through_json_test() {
   let bare = server("go", [".go"], "gopls")
   assert round_trip(full) == Ok(full)
   assert round_trip(bare) == Ok(bare)
+}
+
+pub fn preparation_round_trip_preserves_explicit_authority_and_old_records_test() {
+  let old = server("gleam", [".gleam"], "gleam")
+  let encoded = json.to_string(profile.encode_server(old))
+  let old_record = string.replace(encoded, "\"prepare\":\"none\",", "")
+  assert json.parse(old_record, profile.server_decoder()) == Ok(old)
+  let prepared =
+    profile.LspServer(
+      ..old,
+      command: ["gleam", "lsp"],
+      project: profile.ProjectWritable,
+      preparation: profile.GleamDependencies,
+      cache_env: [#("XDG_CACHE_HOME", "hex")],
+    )
+  assert round_trip(prepared) == Ok(prepared)
+  assert prepared != old
+  let invalid =
+    string.replace(
+      json.to_string(profile.encode_server(prepared)),
+      "gleam-dependencies",
+      "shell-command",
+    )
+  let assert Error(_) = json.parse(invalid, profile.server_decoder())
+    as "unknown recipes are refused in durable records"
 }
 
 pub fn a_malformed_profile_is_refused_test() {
@@ -234,6 +260,7 @@ fn server(
   command: String,
 ) -> LspServer {
   profile.LspServer(
+    preparation: profile.AlreadyPrepared,
     name:,
     command: [command],
     extensions:,

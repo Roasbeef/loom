@@ -1244,7 +1244,16 @@ fn environment(
     |> list.filter(fn(entry) { entry != "" })
     |> list.unique
     |> string.join(":")
-  let home = case placement.places.home {
+
+  // Gleam uses HOME/Library/Caches on macOS even when XDG_CACHE_HOME is
+  // set. Setup and the offline server therefore share a private HOME too;
+  // neither can populate the cache or credentials of the operator's tools.
+  let home = case placement.server.preparation {
+    profile.AlreadyPrepared -> placement.places.home
+    profile.GleamDependencies ->
+      list.key_find(caches, "XDG_CACHE_HOME") |> option.from_result
+  }
+  let home = case home {
     Some(home) -> [#("HOME", home)]
     None -> []
   }

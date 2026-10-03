@@ -17,12 +17,15 @@
 
 import broker/broker
 import broker/exec
+import broker/framing
 import broker/policy
 import broker/token
 import client/internal/ffi_os
+import client/lsp/dependency_state
 import client/lsp/jail
 import client/lsp/leases
 import client/lsp/manager
+import client/lsp/preparation
 import client/lsp/profile
 import client/lsp/resolve
 import core/clock
@@ -83,6 +86,7 @@ fn write(path: String, text: String) -> Nil {
 
 fn fake_server() -> profile.LspServer {
   profile.LspServer(
+    preparation: profile.AlreadyPrepared,
     name: "fake",
     command: ["/bin/false"],
     extensions: [".gleam"],
@@ -158,9 +162,14 @@ fn rig_timed(
     manager.start(manager.Config(
       workspace:,
       servers: [fake_server()],
-      backend: manager.Backend(connect:, search:, protected: [
-        workspace <> "/app/.git",
-      ]),
+      backend: manager.Backend(
+        metadata_roots: [workspace],
+        connect:,
+        search:,
+        protected: [
+          workspace <> "/app/.git",
+        ],
+      ),
       timing:,
     ))
     as "the manager must start"
@@ -1527,7 +1536,12 @@ pub fn a_supervised_manager_is_replaced_under_its_address_test() {
     manager.Config(
       workspace:,
       servers: [fake_server()],
-      backend: manager.Backend(connect:, search: no_search, protected: []),
+      backend: manager.Backend(
+        metadata_roots: [workspace],
+        connect:,
+        search: no_search,
+        protected: [],
+      ),
       timing: quick_timing(),
     )
   let assert Ok(names) = address.start() as "the registry must start"
@@ -1781,6 +1795,7 @@ fn run_gleam(live: Live) -> Nil {
   write(project <> "/src/other.gleam", other_source)
   let server =
     profile.LspServer(
+      preparation: profile.AlreadyPrepared,
       name: "gleam",
       command: ["gleam", "lsp"],
       extensions: [".gleam"],
@@ -1993,6 +2008,7 @@ fn run_gopls(live: Live, gopls: String, go: String, goroot: String) -> Nil {
   let go_bin = dirname(go)
   let server =
     profile.LspServer(
+      preparation: profile.AlreadyPrepared,
       name: "gopls",
       command: [gopls],
       extensions: [".go"],
@@ -2163,6 +2179,7 @@ fn run_rust_analyzer(live: Live, home: String) -> Nil {
     as "the cargo home's registry must be linked"
   let server =
     profile.LspServer(
+      preparation: profile.AlreadyPrepared,
       name: "rust-analyzer",
       command: [home <> "/.cargo/bin/rust-analyzer"],
       extensions: [".rs"],
@@ -2267,6 +2284,7 @@ pub fn query_handles_do_not_retain_connect_payload_test() {
   let payload = list.repeat(#("keeper", "transport"), 8192)
   let backend =
     manager.Backend(
+      metadata_roots: ["/w"],
       connect: fn(_identity) { Error(string.inspect(payload)) },
       search: no_search,
       protected: ["/workspace/.git"],
@@ -2299,4 +2317,329 @@ pub fn query_handles_do_not_retain_connect_payload_test() {
     == ffi_memory.flat_words(manager.door(small))
   let assert Ok(Nil) = address.stop(namespace)
     as "the handle fixture releases its namespace"
+}
+
+// A fixed recipe with a vetted system executable keeps scripted tests
+// independent of whichever Gleam version the host has on PATH.
+fn preparing_server() -> profile.LspServer {
+  profile.LspServer(
+    ..fake_server(),
+    command: ["/usr/bin/false", "lsp"],
+    project: profile.ProjectWritable,
+    preparation: profile.GleamDependencies,
+    cache_env: [#("XDG_CACHE_HOME", "hex")],
+  )
+}
+
+pub fn dependency_preparation_has_separate_finite_network_authority_test() {
+  let workspace = scratch("prepare-policy")
+  let root = project(workspace, "app")
+  write(root <> "/manifest.toml", "packages = []\n")
+  write(root <> "/build/packages/packages.toml", "[packages]\n")
+  let cleared = process.new_subject()
+  let jailed =
+    manager.Jailed(
+      ..probe_jailed(workspace, scripted_run(cleared, clean()), exec.BestEffort),
+      session_base: policy.SandboxPolicy(
+        ..probe_session_base(workspace),
+        network: policy.NetworkOff,
+      ),
+      places: profile.Places(home: None, cache: Some(workspace <> "/cache")),
+    )
+  let assert Ok(_transport) =
+    manager.connect_jailed(jailed, resolve.Identity(preparing_server(), root))
+    as "preparation succeeds before a transport is returned"
+  let assert [probe, setup] = drain(cleared, [])
+    as "setup is one call after the enforcement probe"
+  assert probe.requirements.network == policy.NetworkOff
+  assert setup.requirements.network == policy.NetworkFull
+  assert setup.base_policy.network == policy.NetworkFull
+  assert setup.argv == ["/usr/bin/false", "deps", "download"]
+  assert setup.cwd == root
+  assert setup.requirements.limits.wall_s == 60
+  assert setup.requirements.limits.cpu_s == 60
+  assert setup.requirements.limits.output_bytes == 1_048_576
+  assert setup.budget.deadline_ms == preparation.timeout_ms
+  assert setup.requirements.protected == probe.requirements.protected
+  assert setup.requirements.writable_roots == probe.requirements.writable_roots
+  assert jailed.session_base.network == policy.NetworkOff
+  assert list.any(setup.env, fn(pair) {
+    pair.0 == "XDG_CACHE_HOME" && string.contains(pair.1, "/loom/lsp/fake/hex")
+  })
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
+pub fn a_failed_preparation_never_returns_a_server_transport_test() {
+  let workspace = scratch("prepare-failed")
+  let root = project(workspace, "app")
+  let cleared = process.new_subject()
+  let run = fn(spec: broker.CallSpec, events: Subject(broker.CallEvent)) {
+    process.send(cleared, spec)
+    let outcome = case string.ends_with(spec.step_id, "/prepare") {
+      False -> clean()
+      True -> {
+        process.send(
+          events,
+          broker.CallOutput(
+            stream: framing.Stderr,
+            data: <<"Hex API rate limit exceeded":utf8>>,
+            total_bytes: 27,
+            truncated: False,
+          ),
+        )
+        let assert broker.CallExited(exited) = clean()
+          as "the scripted outcome is an exit"
+        broker.CallExited(exec.ExecResult(..exited, code: 1))
+      }
+    }
+    process.send(events, broker.CallSettled(outcome:))
+    Ok(tool.RunningCall(stdin: fn(_data, _eof) { Nil }, cancel: fn() { Nil }))
+  }
+  let jailed =
+    manager.Jailed(
+      ..probe_jailed(workspace, run, exec.BestEffort),
+      places: profile.Places(home: None, cache: Some(workspace <> "/cache")),
+    )
+  let assert Error(reason) =
+    manager.connect_jailed(jailed, resolve.Identity(preparing_server(), root))
+    as "an unsuccessful download cannot yield a lease"
+  assert string.contains(reason, root)
+  assert string.contains(reason, "Hex API rate limit exceeded")
+  assert string.contains(
+    reason,
+    "waiting on the offline server cannot finish a download",
+  )
+  assert list.length(drain(cleared, [])) == 2
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
+pub fn missing_inventory_refuses_even_a_zero_exit_preparation_test() {
+  let workspace = scratch("prepare-incomplete")
+  let root = project(workspace, "app")
+  let cleared = process.new_subject()
+  let jailed =
+    manager.Jailed(
+      ..probe_jailed(workspace, scripted_run(cleared, clean()), exec.BestEffort),
+      places: profile.Places(home: None, cache: Some(workspace <> "/cache")),
+    )
+  let assert Error(reason) =
+    manager.connect_jailed(jailed, resolve.Identity(preparing_server(), root))
+    as "setup must leave readable dependency metadata"
+  assert string.contains(reason, "dependency preparation")
+  assert string.contains(reason, "No such file")
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
+pub fn dependency_inputs_include_transitive_path_config_and_inventory_test() {
+  let workspace = scratch("dependency-state")
+  let root = project(workspace, "app")
+  write(
+    root <> "/gleam.toml",
+    "name = \"app\"\nversion = \"1.0.0\"\n[dependencies]\nsibling = { path = \"../sibling\" }\n",
+  )
+  write(
+    workspace <> "/sibling/gleam.toml",
+    "name = \"sibling\"\nversion = \"1.0.0\"\n",
+  )
+  let assert Ok(first) =
+    dependency_state.fingerprint(workspace, [], [workspace], root)
+    as "a fresh package can be fingerprinted"
+  write(
+    workspace <> "/sibling/gleam.toml",
+    "name = \"sibling\"\nversion = \"1.1.0\"\n",
+  )
+  let assert Ok(second) =
+    dependency_state.fingerprint(workspace, [], [workspace], root)
+    as "sibling changes are observed"
+  assert first != second
+  write(
+    root <> "/build/packages/packages.toml",
+    "[packages]\ngleam_stdlib = \"1.0.5\"\n",
+  )
+  let assert Ok(third) =
+    dependency_state.fingerprint(workspace, [], [workspace], root)
+    as "a newly installed inventory is observed"
+  assert second != third
+  let assert Error(protected) =
+    dependency_state.fingerprint(
+      workspace,
+      [workspace <> "/sibling"],
+      [workspace],
+      root,
+    )
+    as "metadata traversal never crosses a protected path"
+  assert string.contains(protected, "protected")
+  let assert Error(narrowed) =
+    dependency_state.fingerprint(workspace, [], [root], root)
+    as "workspace membership alone does not grant a sibling metadata read"
+  assert string.contains(narrowed, "authorized dependency roots")
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
+pub fn a_warm_server_restarts_after_sibling_dependency_configuration_changes_test() {
+  let workspace = scratch("prepare-restart")
+  let root = project(workspace, "app")
+  write(
+    root <> "/gleam.toml",
+    "name = \"app\"\n[dependencies]\nsibling = { path = \"../sibling\" }\n",
+  )
+  write(
+    workspace <> "/sibling/gleam.toml",
+    "name = \"sibling\"\nversion = \"1.0.0\"\n",
+  )
+  let starts = process.new_subject()
+  let connect = fn(identity: resolve.Identity) {
+    process.send(starts, identity.root)
+    let fake =
+      fake_lsp.start_with(
+        fake_lsp.everything(),
+        outline_script,
+        fn(_method, _params) { [] },
+      )
+    Ok(fake_lsp.seam(fake))
+  }
+  let assert Ok(running) =
+    manager.start(manager.Config(
+      workspace:,
+      servers: [preparing_server()],
+      backend: manager.Backend(
+        metadata_roots: [workspace],
+        connect:,
+        search: no_search,
+        protected: [],
+      ),
+      timing: quick_timing(),
+    ))
+    as "the preparation-aware manager starts"
+  let door = manager.door(running)
+  let assert Ok(cold) = door.outline("app/src/a.gleam")
+    as "a cold server answers"
+  assert cold.warmth == query.Started("fake")
+  let assert Ok(warm) = door.outline("app/src/a.gleam")
+    as "unchanged metadata reuses the server"
+  assert warm.warmth == query.Warm
+  write(
+    workspace <> "/sibling/gleam.toml",
+    "name = \"sibling\"\nversion = \"1.1.0\"\n",
+  )
+  let assert Ok(restarted) = door.outline("app/src/a.gleam")
+    as "a changed path dependency starts a prepared generation"
+  assert restarted.warmth == query.Started("fake")
+  assert drain(starts, []) == [root, root]
+  manager.stop(running)
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
+// This fixture begins without build/ or a manifest, and with an empty
+// private cache. It tests the real downloader and server, not a host build
+// whose pre-existing metadata would conceal a broken preparation path.
+pub fn gleam_preparation_downloads_hex_and_loads_a_sibling_in_a_fresh_workspace_test() {
+  case
+    live_prerequisites("lsp dependency preparation"),
+    ffi_os.find_executable("gleam")
+  {
+    Error(Nil), _ -> Nil
+    Ok(_), Error(_) ->
+      io.println_error("SKIP lsp dependency preparation: gleam is not on PATH")
+    Ok(helper), Ok(_) -> run_prepared_gleam(live_rig(helper, "prepared-gleam"))
+  }
+}
+
+fn run_prepared_gleam(live: Live) -> Nil {
+  let root = live.workspace <> "/app"
+  write(
+    root <> "/gleam.toml",
+    "name = \"app\"\nversion = \"1.0.0\"\n[dependencies]\ngleam_stdlib = \"== 1.0.5\"\nsibling = { path = \"../sibling\" }\n",
+  )
+  write(
+    root <> "/src/app.gleam",
+    "import gleam/string\nimport sibling\n\npub fn shout() -> String {\n  string.uppercase(sibling.greet())\n}\n",
+  )
+  write(
+    live.workspace <> "/sibling/gleam.toml",
+    "name = \"sibling\"\nversion = \"1.0.0\"\n",
+  )
+  write(
+    live.workspace <> "/sibling/src/sibling.gleam",
+    "pub fn greet() -> String { \"hi\" }\n",
+  )
+  let cleared = process.new_subject()
+  let lsp_op = op()
+  let run =
+    tool.broker_runner(broker: live.broker, waiting: jail.clearance_wait_ms)
+  let jailed =
+    manager.Jailed(
+      workspace: live.workspace,
+      session_base: policy.SandboxPolicy(
+        ..live_base(live.workspace),
+        network: policy.NetworkOff,
+      ),
+      demand: exec.BestEffort,
+      toolchain: None,
+      places: profile.Places(
+        home: None,
+        cache: Some(live.workspace <> "/private-cache"),
+      ),
+      reading: fn(name) { secret.lookup(secret.env(), name) },
+      run: fn(spec, events) {
+        process.send(cleared, spec)
+        run(spec, events)
+      },
+      abort_step: fn(step) {
+        broker.abort_step(live.broker, lsp_op, step_id: step)
+      },
+      leases: live.counter,
+      op_id: lsp_op,
+      clock: wall_clock(),
+      exec_ms: 20_000,
+    )
+  let server =
+    profile.LspServer(..preparing_server(), name: "gleam", command: [
+      "gleam",
+      "lsp",
+    ])
+  let assert Ok(running) =
+    manager.start(manager.Config(
+      workspace: live.workspace,
+      servers: [server],
+      backend: manager.jailed(jailed),
+      timing: manager.default_timing(),
+    ))
+    as "the real preparation manager starts"
+  let door = manager.door(running)
+  let assert Ok(cold) =
+    door.hover(query.SymbolQuery(
+      "string.uppercase",
+      Some("app/src/app.gleam"),
+      Some(5),
+    ))
+    as "an offline server answers semantic queries after automatic preparation"
+  assert string.contains(cold.value.contents, "String")
+  assert cold.warmth == query.Started("gleam")
+  let assert Ok(warm) = door.outline("app/src/app.gleam")
+    as "the populated server stays usable"
+  assert list.map(warm.value, fn(entry) { entry.name }) == ["shout"]
+  assert warm.warmth == query.Warm
+  let assert [probe, setup, lease] = drain(cleared, [])
+    as "one probe, one preparation, one offline lease; no warm-query download"
+  assert probe.requirements.network == policy.NetworkOff
+  assert setup.argv
+    == [list.first(lease.argv) |> result.unwrap(""), "deps", "download"]
+  assert setup.requirements.network == policy.NetworkFull
+  assert lease.requirements.network == policy.NetworkOff
+  assert list.key_find(setup.env, "HOME")
+    == list.key_find(setup.env, "XDG_CACHE_HOME")
+  assert lease.env == setup.env
+  let assert Ok(Nil) =
+    dependency_state.verify(live.workspace, [], [live.workspace], root)
+    as "setup leaves both dependency records"
+  io.println_error(
+    "lsp dependency preparation: fresh Hex dependency and sibling loaded; setup network full, lease network off",
+  )
+  stop_live(live, running)
 }
