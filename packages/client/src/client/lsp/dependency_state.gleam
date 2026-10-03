@@ -150,6 +150,10 @@ fn metadata(path: String) -> Result(String, String) {
   use info <- result.try(
     simplifile.file_info(path) |> result.map_error(simplifile.describe_error),
   )
+  use <- bool.lazy_guard(
+    simplifile.file_info_type(info) != simplifile.File,
+    fn() { Error(path <> " is not a regular dependency metadata file") },
+  )
   use <- bool.lazy_guard(info.size > 131_072, fn() {
     Error(path <> " exceeds the 128 KiB dependency metadata limit")
   })

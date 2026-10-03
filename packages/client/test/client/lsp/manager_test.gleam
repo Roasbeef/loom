@@ -2480,6 +2480,33 @@ pub fn dependency_inputs_include_transitive_path_config_and_inventory_test() {
   Nil
 }
 
+pub fn a_dependency_config_fifo_is_refused_before_a_blocking_read_test() {
+  let workspace = scratch("dependency-fifo")
+  let root = project(workspace, "app")
+  write(
+    root <> "/gleam.toml",
+    "name = \"app\"\n[dependencies]\nsibling = { path = \"../sibling\" }\n",
+  )
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/sibling")
+    as "the dependency directory exists"
+  let assert Ok(#(0, _output)) =
+    ffi_os.run_capture(
+      "/usr/bin/mkfifo",
+      [workspace <> "/sibling/gleam.toml"],
+      1000,
+    )
+    as "the fixture creates a FIFO without adding a writer"
+
+  // A FIFO has size zero but reading it waits for a writer. Metadata
+  // inspection runs before acquire, so it must refuse before that read.
+  let assert Error(reason) =
+    dependency_state.fingerprint(workspace, [], [workspace], root)
+    as "special files are refused synchronously"
+  assert string.contains(reason, "not a regular dependency metadata file")
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
 pub fn a_warm_server_restarts_after_sibling_dependency_configuration_changes_test() {
   let workspace = scratch("prepare-restart")
   let root = project(workspace, "app")
