@@ -854,7 +854,7 @@ pub fn render_line(line: Line, width: Int, strand: String) -> List(span.Line) {
     // A program block cuts every row to its box; a wrap could only break
     // the box's right edge onto a row of its own. An image's row is cut to
     // the pane, so its key stays at the end of the one row.
-    ProgramRunning | ProgramFailure | ImageRow ->
+    ProgramRunning | ProgramFailure | ImageRow(..) ->
       speaker_rows(line, width, strand)
 
     // Every other body is laid out against the full pane and has never been
@@ -972,7 +972,7 @@ pub fn finish_markdown_rows(
     | PeerMessage
     | ProgramRunning
     | ProgramFailure
-    | ImageRow -> marked_rows(speaker, rows, run)
+    | ImageRow(..) -> marked_rows(speaker, rows, run)
   }
 }
 
@@ -1048,7 +1048,7 @@ fn speaker_mark(speaker: Speaker, text: String) -> #(String, style.Style) {
     | PeerMessage
     | ProgramRunning
     | ProgramFailure -> #("", theme.quiet_text())
-    ImageRow -> #("▣ ", theme.current_bold())
+    ImageRow(..) -> #("▣ ", theme.current_bold())
   }
 }
 
@@ -1136,7 +1136,7 @@ fn speaker_rows(line: Line, width: Int, strand: String) -> List(span.Line) {
 
     // An image's row names it and the key that opens it; a second row, when
     // the projection gives one, says why the picture itself is not drawn.
-    ImageRow -> image_rows(line.text, mark, mark_style, width)
+    ImageRow(..) -> image_rows(line.text, mark, mark_style, width)
 
     // Advice closes with a blank like every other system row.
     SummarizedAdvice ->

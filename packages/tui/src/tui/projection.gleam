@@ -494,7 +494,7 @@ fn noted_images(lines: List(Line), model: Model) -> List(Line) {
     Some(note) ->
       list.map(lines, fn(line) {
         case line.speaker {
-          ImageRow -> Line(ImageRow, line.text <> "\n" <> note)
+          ImageRow(..) -> Line(line.speaker, line.text <> "\n" <> note)
           _ -> line
         }
       })
@@ -953,7 +953,7 @@ fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
     | PeerMessage
     | ProgramRunning
     | ProgramFailure
-    | ImageRow -> 0
+    | ImageRow(..) -> 0
   }
 }
 

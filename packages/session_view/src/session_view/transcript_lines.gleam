@@ -1392,7 +1392,7 @@ pub fn closes_bare(speaker: Speaker) -> Bool {
     | SummarizedReasoning
     | ProgramRunning
     | ProgramFailure
-    | ImageRow -> True
+    | ImageRow(..) -> True
     System
     | ToolGroup
     | User
@@ -1630,7 +1630,10 @@ fn result_image_lines(content: List(message.ToolResultBlock)) -> List(Line) {
 // images, the numbering `transcript_image` names an image by.
 fn image_lines(images: List(#(String, String))) -> List(Line) {
   list.index_map(images, fn(image, index) {
-    Line(ImageRow, image_header.describe(index + 1, image.0, image.1))
+    Line(
+      ImageRow(image_header.picture(image.0, image.1)),
+      image_header.describe(index + 1, image.0, image.1),
+    )
   })
 }
 

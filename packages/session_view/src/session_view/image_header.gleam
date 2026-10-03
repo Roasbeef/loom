@@ -14,12 +14,99 @@
 //// header this reads sits in its first 64 KiB, and the byte size comes
 //// from the base64 length without decoding the rest. The module is pure
 //// and portable (lint R6).
+////
+//// A host that can draw the picture needs more than the words: it must tell
+//// this image from another without carrying the image in a transcript line,
+//// which is a cache key and has to stay small. `picture` gives that
+//// identity, a fingerprint of the data, together with the facts a host
+//// needs to size a box before it has decoded anything.
 
 import gleam/bit_array
 import gleam/int
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import session_view/text_hygiene
+
+/// What a host that draws an image needs to know about it before it holds
+/// the image: which image it is, what it claims to be, how large it says it
+/// is, and how many bytes it weighs.
+///
+/// A picture is built only when the header can be read, so a line that
+/// carries one has a pixel size a box can be fitted to. The fingerprint is
+/// not a hash: it is the byte count and three short samples of the data,
+/// which stays cheap on a multi-megabyte string and is enough to tell two
+/// different images of one size apart.
+pub type Picture {
+  Picture(
+    /// The image's identity, as `fingerprint` computes it.
+    fingerprint: String,
+    /// The media type the entry declares. It is a claim about the bytes.
+    mime_type: String,
+    /// The pixel width the header declares.
+    width: Int,
+    /// The pixel height the header declares.
+    height: Int,
+    /// The decoded size of the image in bytes.
+    bytes: Int,
+  )
+}
+
+/// The picture of an image, or `None` when its header cannot be read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert image_header.picture("image/png", "aGk=") == option.None
+/// ```
+pub fn picture(mime_type: String, data: String) -> Option(Picture) {
+  case dimensions(data) {
+    Some(#(width, height)) ->
+      Some(Picture(
+        fingerprint: fingerprint(data),
+        mime_type:,
+        width:,
+        height:,
+        bytes: byte_size(data),
+      ))
+    None -> None
+  }
+}
+
+/// The identity of an image's data: its length, and the first, middle and
+/// last 32 bytes of the base64 text.
+///
+/// The head of an image is its header, which two screenshots of one window
+/// share, so the middle and the tail carry the difference. The samples are
+/// taken from the binary, so the cost does not grow with the image.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert image_header.fingerprint("aGk=") == "4:aGk=:aGk=:aGk="
+/// ```
+pub fn fingerprint(data: String) -> String {
+  let bytes = bit_array.from_string(data)
+  let size = bit_array.byte_size(bytes)
+  int.to_string(size)
+  <> ":"
+  <> sample(bytes, 0)
+  <> ":"
+  <> sample(bytes, size / 2 - 16)
+  <> ":"
+  <> sample(bytes, size - 32)
+}
+
+// Up to 32 bytes of the text from `at`, which is clamped into the data.
+// Base64 is ASCII, so a slice never splits a character; anything that is
+// not text samples as nothing.
+fn sample(bytes: BitArray, at: Int) -> String {
+  let size = bit_array.byte_size(bytes)
+  let start = int.clamp(at, 0, int.max(0, size - 32))
+  bit_array.slice(bytes, start, int.min(32, size - start))
+  |> result.try(bit_array.to_string)
+  |> result.unwrap("")
+}
 
 /// The pixel width and height an image's header declares, or `None` when
 /// the header is not a PNG's, a JPEG's or a GIF's, or cannot be read.
@@ -109,7 +196,7 @@ fn positive(width: Int, height: Int) -> Option(#(Int, Int)) {
 /// assert image_header.byte_size("aGk=") == 2
 /// ```
 pub fn byte_size(data: String) -> Int {
-  let length = string.length(data)
+  let length = string.byte_size(data)
   let padding = case string.ends_with(data, "==") {
     True -> 2
     False ->
