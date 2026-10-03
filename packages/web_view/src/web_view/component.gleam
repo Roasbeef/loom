@@ -135,6 +135,7 @@ import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/server_component
+import session_view/advisor_history
 import session_view/advisor_pending
 import session_view/agent_roster
 import session_view/agent_view
@@ -179,6 +180,7 @@ import web_view/image as web_image
 import web_view/invites
 import web_view/sessions
 import web_view/view/changes
+import web_view/view/commentary
 import web_view/view/crumb
 import web_view/view/ended
 import web_view/view/expansion
@@ -2707,6 +2709,24 @@ pub fn sent_forms(model: Model(socket)) -> Int {
   model.view.sent_forms
 }
 
+/// The advisor's settled commentary on the strand on screen, as the last
+/// capture projected it (`session_view/advisor_history`), already narrowed
+/// by the shared visibility rule: a board for `main` only. The advisor's own
+/// transcript holds the same text as its ordinary entries, so the focused
+/// advisor draws no section and the lane marks nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // commentary.view(component.advisor_commentary(model))
+/// ```
+pub fn advisor_commentary(model: Model(socket)) -> advisor_history.Board {
+  advisor_history.visible(
+    model.shared.advisor_history,
+    model.shared.active_strand,
+  )
+}
+
 /// What the page last told the operator: its own refusal of an input if
 /// there is one, otherwise the daemon's reply to the last command, otherwise
 /// what the session said when that command ran.
@@ -2912,6 +2932,7 @@ pub fn panel(
       share,
     ),
     nudges.view(pending_nudges(model)),
+    commentary.view(advisor_commentary(model)),
   )
 }
 
