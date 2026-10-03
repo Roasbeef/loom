@@ -462,3 +462,17 @@ keeps shared rename landing, diagnostics rendering and the post-write observer,
 plus clipping and changed-span helpers used by code mode. Their focused coverage
 and the real-server code-mode fixtures remain. Language hints stay in admitted
 code-mode discovery; no compatibility registry is added.
+
+
+## Addendum: bounded dependency preparation (2026-10-03)
+
+[Protocol 064](../../protocol-change/064-lsp-dependency-preparation.md) adds the
+optional `prepare = "gleam-dependencies"` recipe to the approved profile. A
+profile remains data: the harness selects a fixed downloader invocation and
+owns its bounded broker execution. Approval discloses setup networking;
+missing keys and old approval records retain the previous authority.
+
+The setup call and offline server share a private HOME and package cache.
+A cold start prepares the selected package before the lease is returned, and
+changed dependency inputs invalidate a warm server. These steps address fresh
+worktrees without giving a long-lived language server network access.

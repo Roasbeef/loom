@@ -5327,3 +5327,25 @@ the server never held them open. Those files are first read after the server
 answer. Standard LSP has no transactional project revision, so the batch
 does not establish atomic workspace coverage or detect edits in unseen
 dependencies. SQL execution belongs to the code-mode satellite.
+
+
+## Approved LSP dependency preparation
+
+`lsp/profile.Preparation` is approved profile data. `AlreadyPrepared` is the
+backward-compatible default; `GleamDependencies` authorizes the fixed, finite
+`gleam deps download` recipe. `lsp/preparation` creates a separate broker
+`CallSpec` with full network, a 60-second CPU/wall bound and bounded output.
+`lsp/manager.connect_jailed` runs it after the enforcement probe and verifies
+metadata before constructing the offline transport. `lsp/jail` gives setup and
+server the same private HOME and XDG cache for cross-platform Gleam cache lookup.
+
+`lsp/dependency_state.fingerprint` gates workspace-local real paths against
+protected entries and the session’s existing readable or writable roots,
+follows at most 64 package configurations, and retains
+128 KiB at most per metadata file. The query caller sends only a digest in
+`manager.Acquire`; the actor compares it with the successful keeper start's
+`Started.stamp`. A change uses the existing eviction path, reruns setup, and
+reopens held documents. This snapshot tracks dependency preparation inputs,
+not transactional workspace coverage. Profiles without the recipe skip these
+reads and retain their existing network authority. Protocol 064 records the
+new consent boundary and the refused external path-dependency scope.
