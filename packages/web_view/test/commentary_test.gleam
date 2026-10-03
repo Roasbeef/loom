@@ -1,0 +1,174 @@
+//// The advisor's commentary on the web page: one hairline in the lane per
+//// review, the bodies in the strand panel's Strands pane, and none of it a
+//// handler. What crosses into the lane before the panel existed, the full
+//// blocks, is gone.
+////
+//// The fixture holds the forked capture: `main`, the reviewer and the
+//// advisor each have a transcript, and the advisor's one note (``advisor:
+//// watch the <sweep>``) is commentary on `main` — captured, never sent.
+
+import gleam/erlang/process
+import gleam/list
+import gleam/option.{None, Some}
+import gleam/string
+import lane_fixture
+import lustre/element.{type Element}
+import page_fixture
+import session_view/advisor_history
+import web_view/component
+import web_view/operator_page
+import web_view/view/commentary
+
+@external(erlang, "page_events_ffi", "handlers")
+fn handlers(view: Element(message)) -> List(String)
+
+fn page(updates) {
+  component.new(page_fixture.start()) |> component.apply(updates)
+}
+
+fn html(model) -> String {
+  element.to_string(component.view(model))
+}
+
+fn focused(model, strand: String) {
+  component.update(model, component.FocusRequested(strand)).0
+}
+
+fn in_order(haystack: String, needles: List(String)) -> Bool {
+  case needles {
+    [] -> True
+    [needle, ..rest] ->
+      case string.split_once(haystack, needle) {
+        Ok(#(_, after)) -> in_order(after, rest)
+        Error(Nil) -> False
+      }
+  }
+}
+
+pub fn the_lane_keeps_one_quiet_line_per_review_test() {
+  let drawn = html(page([lane_fixture.forked(None, [])]))
+
+  // The hairline: the advisor's tag, the request's words, one line.
+  assert string.contains(drawn, "class=\"commentary-mark\"")
+  assert string.contains(drawn, "advisor</button> · Advisor · commentary")
+
+  // The full body and the heading are gone from the lane: everything
+  // before the panel holds neither, and the panel's section holds both.
+  let assert Ok(#(centre, _)) = string.split_once(drawn, "pane pane-strands")
+    as "the page draws the panel"
+  assert !string.contains(centre, "class=\"block commentary\"")
+  assert !string.contains(centre, "Advisor transcript · captured")
+  assert !string.contains(centre, "watch the &lt;sweep&gt;")
+}
+
+pub fn the_hairline_carries_the_advisors_marker_and_no_handler_test() {
+  let model = page([lane_fixture.forked(None, [])])
+  let drawn = html(model)
+
+  // The hairline's dot is the advisor's: the row carries the marker the
+  // relay presses the advisor's card with.
+  let assert Ok(#(_, from_mark)) =
+    string.split_once(drawn, "class=\"commentary-mark\"")
+    as "the marker is drawn"
+  let assert Ok(#(row, _)) = string.split_once(from_mark, "</p>")
+    as "the marker is closed"
+  assert string.contains(row, "data-loom-focus")
+
+  // No handler is drawn for it: an observer's page still holds only the
+  // strand cards' clicks.
+  let keys = handlers(component.view(model))
+  let clicks = list.filter(keys, fn(key) { string.ends_with(key, "\nclick") })
+  assert list.length(clicks) == 4
+    as "main, the reviewer, the tester and the advisor"
+}
+
+pub fn the_panel_holds_the_review_bodies_test() {
+  let model = page([lane_fixture.forked(None, [])])
+  let drawn = html(model)
+
+  // The section sits in the Strands pane, under the strand cards, with
+  // the advisor's whole text as a text node.
+  assert in_order(drawn, [
+    "pane pane-strands",
+    "class=\"agent-strip\"",
+    "class=\"commentary\"",
+    "Advisor commentary",
+    "commentary",
+    "watch the &lt;sweep&gt;",
+  ])
+  assert !string.contains(drawn, "watch the <sweep>")
+}
+
+pub fn the_section_hides_when_the_advisor_is_on_screen_test() {
+  let model = page([lane_fixture.forked(None, [])])
+  let advisor = focused(model, "advisor")
+
+  // The advisor's own transcript holds the note as its ordinary entries,
+  // so the section draws nothing while it is on screen — the board the
+  // getter hands the panel is empty for every strand but `main`.
+  assert component.advisor_commentary(advisor).items == []
+  assert string.contains(html(advisor), "advisor: watch the &lt;sweep&gt;")
+  assert !string.contains(html(advisor), "class=\"commentary\"")
+}
+
+pub fn a_page_without_commentary_draws_no_section_test() {
+  let drawn = html(page([lane_fixture.captured(10, None)]))
+  assert !string.contains(drawn, "class=\"commentary\"")
+  assert !string.contains(drawn, "commentary-mark")
+}
+
+pub fn the_count_and_the_missing_edge_are_worded_test() {
+  let many =
+    advisor_history.Board(
+      [
+        advisor_history.Item("a", 1, 0, "first", advisor_history.AdvisorUpdate),
+        advisor_history.Item("b", 2, 0, "second", advisor_history.AdvisorUpdate),
+        advisor_history.Item("c", 3, 0, "third", advisor_history.AdvisorUpdate),
+        advisor_history.Item("d", 4, 0, "fourth", advisor_history.AdvisorUpdate),
+      ],
+      Some("an older parent"),
+    )
+  let drawn = element.to_string(commentary.view(many))
+  assert string.contains(drawn, "first")
+  assert string.contains(drawn, "second")
+  assert string.contains(drawn, "third")
+  assert !string.contains(drawn, "fourth")
+  assert string.contains(drawn, "+ 1 earlier reviews")
+  assert string.contains(drawn, "Earlier advisor commentary is not loaded")
+}
+
+pub fn the_section_holds_no_control_test() {
+  let model = page([lane_fixture.forked(None, [])])
+  let assert Ok(#(_, from_section)) =
+    string.split_once(html(model), "class=\"commentary\"")
+    as "the section is drawn"
+  let assert Ok(#(section, _)) = string.split_once(from_section, "</section>")
+    as "the section is closed"
+  assert !string.contains(section, "<button")
+  assert !string.contains(section, "<form")
+}
+
+pub fn an_operators_page_draws_the_same_commentary_test() {
+  let wire = process.new_subject()
+  let model =
+    page_fixture.run(
+      component.new(page_fixture.start()),
+      operator_page.update,
+      list.flatten([
+        [operator_page.Observed(component.Opened(wire))],
+        list.map(page_fixture.transfer("operator", []), fn(frame) {
+          operator_page.Observed(component.Arrived([frame]))
+        }),
+        [operator_page.Observed(component.Ticked)],
+      ]),
+    )
+    |> fn(model) {
+      page_fixture.refuse_reads(model, operator_page.update, wire, fn(frames) {
+        operator_page.Observed(component.Arrived(frames))
+      })
+    }
+    |> component.apply([lane_fixture.forked(None, [])])
+  let drawn = element.to_string(operator_page.view(model))
+  assert string.contains(drawn, "class=\"commentary-mark\"")
+  assert string.contains(drawn, "class=\"commentary\"")
+}
