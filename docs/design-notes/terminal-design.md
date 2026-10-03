@@ -67,7 +67,7 @@ the grids are exact. Running the generator also writes a viewer page,
 
 Reached with `←` from an empty composer (`packages/tui/src/tui/interaction.gleam:1376`).
 A draft or a pending attachment keeps `←` as a cursor key, as today. The view
-is `session_selector.render` (`packages/tui/src/tui/session_selector.gleam:734`)
+is `session_selector.render` (`packages/tui/src/tui/session_selector.gleam:783`)
 (`render`), and this note redraws it without changing its keys.
 
 ![Picker, 120x40](terminal-design/terminal-design-picker-120-dark.png)

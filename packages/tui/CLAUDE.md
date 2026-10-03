@@ -1018,7 +1018,8 @@ boundaries and the split's measurements under Invariants.
 - `tui/session_selector.State` retains one authorized, revision-fenced page.
   It is also the cross-session view: rows are grouped by workspace in page
   order, each carries a `Presence` glyph (`!` needs you, `●` working, `○`
-  idle, `◌` resident but unobserved, `·` inactive), and Tab/Shift+Tab cycle
+  idle, `◌` resident but unobserved, `×` recovery blocked, `·` other
+  inactive), and Tab/Shift+Tab cycle
   a `Filter` over All, Needs you, Working, Idle and Inactive whose counts are
   of the page on screen. `presence` joins the row's lifecycle with
   `State.activity`, the latest `sessions.activity` answer per resident
@@ -1028,10 +1029,20 @@ boundaries and the split's measurements under Invariants.
   highlighted identity when it is still drawn. `observe` treats an asked
   identity absent from the reply as no longer resident. `carry` keeps the
   tab and the answers for rows still on a reloaded page of the same
-  collection. At an inner width of 96 or more a details pane shows the
-  highlighted row's status and reason, last message, agent glances,
-  workspace, model and identity; narrower pickers put status and short
-  identity on a second row line instead. `Model.view.activity_poll` fills
+  collection. `render` takes the host's wall clock (`Model.view.wall_ms`)
+  for one column, the creation age, because the page has no last-activity
+  time. A row is one line of fixed columns (marker, glyph, name, state word,
+  short reason, age), so the state words and ages line up down the list;
+  workspace headings shorten a home path to `~/…` and count their rows;
+  rows sharing a name carry their short identity so twins stay apart; the
+  `current` session is marked `›`. At an inner width of 96 or more a
+  details pane shows the highlighted row's state and reason, last message,
+  strands from the glances, and a model, workspace and identity table;
+  narrower pickers give only the highlighted row a second line with its
+  reason and last message, and a list taller than the frame says how many
+  sessions it hides (`↓ 3 more below`). Hints are two rows (movement and
+  opening, then the rarer keys); an open question takes the first and its
+  answer keys the second. The picker is at most 116 cells wide. `Model.view.activity_poll` fills
   `State.activity`: while the picker is open on the active collection with
   resident rows, `session_control.service_activity` (from the tick) asks
   `sessions.activity` for at most `protocol.activity_limit` of them, on a
