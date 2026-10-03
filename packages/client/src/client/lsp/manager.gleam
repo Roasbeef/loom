@@ -176,8 +176,10 @@ import broker/budget
 import broker/exec
 import broker/policy.{type SandboxPolicy}
 import client/codemode.{type Toolchain}
+import client/lsp/dependency_state
 import client/lsp/jail
 import client/lsp/leases
+import client/lsp/preparation
 import client/lsp/profile.{type LspServer, type Places}
 import client/lsp/resolve.{type Identity, type Owned, type Symbol}
 import core/clock.{type Clock}
@@ -293,6 +295,8 @@ pub type Backend {
     /// The session base policy's `protected` list, absolute. No path a
     /// server names is read under one of these (`resolve.admit`).
     protected: List(String),
+    /// Existing session read/write roots for dependency metadata inspection.
+    metadata_roots: List(String),
   )
 }
 
@@ -331,6 +335,7 @@ pub opaque type Manager {
     servers: List(LspServer),
     search: fn(Search) -> Result(List(Hit), String),
     protected: List(String),
+    metadata_roots: List(String),
     timing: Timing,
     workspaces: List(String),
   )
@@ -353,7 +358,11 @@ type Peeked {
 /// manager binds (`supervised`).
 pub opaque type Msg {
   // A caller wants the server for `identity`, started if need be.
-  Acquire(identity: Identity, reply: Subject(Result(Granted, QueryError)))
+  Acquire(
+    identity: Identity,
+    stamp: String,
+    reply: Subject(Result(Granted, QueryError)),
+  )
 
   // A caller wants to know what is running, without starting anything.
   Peek(reply: Subject(Peeked))
@@ -362,7 +371,7 @@ pub opaque type Msg {
   Opened(identity: Identity, paths: List(String))
 
   // A keeper's start finished.
-  KeeperReady(keeper: Pid, outcome: Result(lsp.Client, String))
+  KeeperReady(keeper: Pid, outcome: Result(Started, String))
 
   // A monitored keeper exited.
   KeeperDown(pid: Pid, reason: process.ExitReason)
@@ -373,6 +382,11 @@ pub opaque type Msg {
   // The session is ending. The reply names the keeper still stopping a
   // server, if any, so `stop` can wait for its exit in the caller.
   Shutdown(reply: Subject(Option(Pid)))
+}
+
+// A successful start records dependency metadata after setup populated it.
+type Started {
+  Started(client: lsp.Client, stamp: String)
 }
 
 // A running keeper: its pid for the monitor, its subject for `Release`.
@@ -404,6 +418,8 @@ type Data {
   Data(
     // The session's servers, bounds and effects, fixed for the manager's life.
     config: Config,
+    // Only a digest is retained, never the project metadata or its text.
+    stamp: String,
     // The manager's own subject, which each keeper reports to.
     self: Subject(Msg),
     waiters: List(Subject(Result(Granted, QueryError))),
@@ -565,6 +581,7 @@ fn handle_for(
     servers: config.servers,
     search: config.backend.search,
     protected: config.backend.protected,
+    metadata_roots: config.backend.metadata_roots,
     timing: config.timing,
     workspaces: list.unique([
       resolve.workspace_real(config.workspace),
@@ -594,7 +611,14 @@ fn builder(config: Config) -> sm.Builder(Phase, Data, Msg, Subject(Msg)) {
       })
     sm.initialised(
       Idle,
-      Data(config:, self: commands, waiters: [], last: None, opened: []),
+      Data(
+        config:,
+        stamp: "",
+        self: commands,
+        waiters: [],
+        last: None,
+        opened: [],
+      ),
     )
     |> sm.selecting(selector)
     |> sm.returning(commands)
@@ -665,11 +689,14 @@ fn tell(manager: Manager, message: Msg) -> Nil {
 // so a new `Msg` or `Phase` constructor fails to compile until it is placed.
 fn handle(phase: Phase, data: Data, msg: Msg) -> sm.Next(Phase, Data, Msg) {
   case phase, msg {
-    Idle, Acquire(identity:, reply:) -> begin(data, identity, None, reply)
+    Idle, Acquire(identity:, stamp: _, reply:) ->
+      begin(data, identity, None, reply)
 
     // Another caller for the start in progress joins its waiters: one
     // start, however many ask.
-    Starting(identity: starting, keeper: _), Acquire(identity:, reply:) ->
+    Starting(identity: starting, keeper: _),
+      Acquire(identity:, stamp: _, reply:)
+    ->
       case resolve.same(starting, identity) {
         True -> sm.keep(Data(..data, waiters: [reply, ..data.waiters]))
         False -> sm.keep(data) |> sm.postpone
@@ -678,8 +705,10 @@ fn handle(phase: Phase, data: Data, msg: Msg) -> sm.Next(Phase, Data, Msg) {
     // A different project evicts the running server. Its keeper stops it
     // after this handler returns; the new keeper waits for that keeper's
     // exit, so the handler itself waits for nothing.
-    Running(identity: running, client:, keeper:), Acquire(identity:, reply:) ->
-      case resolve.same(running, identity) {
+    Running(identity: running, client:, keeper:),
+      Acquire(identity:, stamp:, reply:)
+    ->
+      case resolve.same(running, identity) && data.stamp == stamp {
         True -> {
           process.send(reply, Ok(Granted(client:, warmth: query.Warm)))
           sm.keep(data)
@@ -810,11 +839,12 @@ fn settle_start(
   data: Data,
   identity: Identity,
   keeper: Keeper,
-  outcome: Result(lsp.Client, String),
+  outcome: Result(Started, String),
 ) -> sm.Next(Phase, Data, Msg) {
   let data_after = Data(..data, waiters: [])
   case outcome {
-    Ok(client) -> {
+    Ok(Started(client:, stamp:)) -> {
+      let data_after = Data(..data_after, stamp:)
       let warmth = query.Started(server: identity.server.name)
       answer(data.waiters, Ok(Granted(client:, warmth:)))
       sm.transition(to: Running(identity:, client:, keeper:), data: data_after)
@@ -951,12 +981,12 @@ fn keep_server(
 // Reports the start and moves to holding the client, now watched.
 fn started(
   keeping: Keeping,
-  outcome: Result(lsp.Client, String),
+  outcome: Result(Started, String),
 ) -> sm.Next(KeeperPhase, Keeping, KeeperMsg) {
   process.send(keeping.manager, KeeperReady(keeper: process.self(), outcome:))
   case outcome {
     Error(_reason) -> sm.stop()
-    Ok(client) -> {
+    Ok(Started(client:, stamp: _)) -> {
       let selector =
         process.new_selector()
         |> process.select(keeping.commands)
@@ -975,7 +1005,7 @@ fn started(
 
 // The start itself: the backend's transport (the probe runs in there),
 // the client's handshake, then the documents the dead server held.
-fn begin_server(keeping: Keeping) -> Result(lsp.Client, String) {
+fn begin_server(keeping: Keeping) -> Result(Started, String) {
   let identity = keeping.identity
   let config = keeping.config
   use transport <- result.try(config.backend.connect(identity))
@@ -1005,7 +1035,40 @@ fn begin_server(keeping: Keeping) -> Result(lsp.Client, String) {
     [] -> Ok(Nil)
     ops -> lsp.sync(client, ops)
   }
-  Ok(client)
+  case
+    dependency_stamp(
+      config.workspace,
+      config.backend.protected,
+      config.backend.metadata_roots,
+      identity,
+    )
+  {
+    Ok(stamp) -> Ok(Started(client:, stamp:))
+    Error(reason) -> {
+      let _report = lsp.stop(client, config.timing.stop_grace_ms)
+      Error(reason)
+    }
+  }
+}
+
+// Reuse requires the dependency inputs to match the prepared start.
+// Profiles without automatic setup keep the previous no-read behavior.
+fn dependency_stamp(
+  workspace: String,
+  protected: List(String),
+  metadata_roots: List(String),
+  identity: Identity,
+) -> Result(String, String) {
+  case identity.server.preparation {
+    profile.AlreadyPrepared -> Ok("")
+    profile.GleamDependencies ->
+      dependency_state.fingerprint(
+        workspace,
+        protected,
+        metadata_roots,
+        identity.root,
+      )
+  }
 }
 
 fn start_error_text(error: lsp.StartError) -> String {
@@ -2075,9 +2138,25 @@ fn acquire(
   manager: Manager,
   identity: Identity,
 ) -> Result(Session, QueryError) {
+  use stamp <- result.try(
+    dependency_stamp(
+      manager.workspace,
+      manager.protected,
+      manager.metadata_roots,
+      identity,
+    )
+    |> result.map_error(fn(reason) {
+      query.NoServer(reason: "dependency preparation: " <> reason)
+    }),
+  )
   let timing = manager.timing
-  let waiting = timing.previous_ms + timing.exec_ms * 2 + timing.start_ms + 1000
-  case ask(manager, waiting:, sending: Acquire(identity, _)) {
+  let setup_ms = case identity.server.preparation {
+    profile.AlreadyPrepared -> 0
+    profile.GleamDependencies -> preparation.timeout_ms + 2000
+  }
+  let waiting =
+    timing.previous_ms + timing.exec_ms * 2 + timing.start_ms + setup_ms + 1000
+  case ask(manager, waiting:, sending: Acquire(identity, stamp, _)) {
     Ok(Ok(granted)) ->
       Ok(Session(
         manager:,
@@ -2356,6 +2435,10 @@ pub fn jailed(jailed: Jailed) -> Backend {
     connect: connect_jailed(jailed, _),
     search: search_jailed(jailed, _),
     protected: jailed.session_base.protected,
+    metadata_roots: list.unique(list.append(
+      jailed.session_base.readable_roots,
+      jailed.session_base.writable_roots,
+    )),
   )
 }
 
@@ -2391,8 +2474,11 @@ pub fn connect_jailed(
     waiting: jailed.exec_ms,
   ))
 
-  // The probe just proved this demand holds under this policy, so the
-  // lease clears under the same demand and nothing weaker or stronger.
+  use Nil <- result.try(prepare_dependencies(jailed, identity, built))
+  let #(now, _clock) = clock.read(jailed.clock)
+
+  // The probe proved the lease's demand. Preparation had a separate finite
+  // policy, and cannot carry its network authority into this lease.
   let spec =
     jail.call_spec(built, jailed.op_id, now_ms: now, demand: jailed.demand)
   let abort_step = jailed.abort_step
@@ -2407,6 +2493,49 @@ pub fn connect_jailed(
       timing: jail.default_timing(),
     )),
   )
+}
+
+// An older profile never gains network authority merely because the
+// harness was upgraded. Only the recipe approved at installation runs.
+fn prepare_dependencies(
+  jailed: Jailed,
+  identity: Identity,
+  built: jail.Jail,
+) -> Result(Nil, String) {
+  case identity.server.preparation {
+    profile.AlreadyPrepared -> Ok(Nil)
+    profile.GleamDependencies -> {
+      let #(now, _clock) = clock.read(jailed.clock)
+      let prepared = {
+        use Nil <- result.try(preparation.run(
+          built,
+          jailed.run,
+          jailed.op_id,
+          jailed.demand,
+          now_ms: now,
+        ))
+        dependency_state.verify(
+          jailed.workspace,
+          jailed.session_base.protected,
+          list.append(
+            jailed.session_base.readable_roots,
+            jailed.session_base.writable_roots,
+          ),
+          identity.root,
+        )
+      }
+      prepared
+      |> result.map_error(fn(reason) {
+        "lsp."
+        <> identity.server.name
+        <> " was not started: dependency preparation for "
+        <> identity.root
+        <> " failed. "
+        <> reason
+        <> ". Fix the dependency, registry, or setup-policy error before retrying; waiting on the offline server cannot finish a download."
+      })
+    }
+  }
 }
 
 // Locates the executable, composes the jail, judges the real paths of the

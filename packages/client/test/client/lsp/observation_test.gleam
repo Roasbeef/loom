@@ -39,6 +39,7 @@ fn scratch() -> String {
 
 fn server() -> profile.LspServer {
   profile.LspServer(
+    preparation: profile.AlreadyPrepared,
     name: "fake",
     command: ["/bin/false"],
     extensions: [".gleam"],
@@ -74,6 +75,7 @@ fn rig(
       servers: [server()],
       timing:,
       backend: manager.Backend(
+        metadata_roots: [root],
         connect: fn(_identity: resolve.Identity) { Ok(fake_lsp.seam(fake)) },
         search: fn(_) { panic as "an observation must never search a workspace" },
         protected: [root <> "/protected"],
@@ -506,6 +508,7 @@ pub fn unsupported_requested_features_refuse_the_entire_observation_test() {
       servers: [server()],
       timing: manager.Timing(..manager.default_timing(), quiet_ms: 0),
       backend: manager.Backend(
+        metadata_roots: [root],
         connect: fn(_) { Ok(fake_lsp.seam(fake)) },
         search: fn(_) { panic as "no search is admitted" },
         protected: [],
@@ -545,6 +548,7 @@ pub fn startup_redirect_is_refused_before_source_size_preflight_test() {
         ready_ms: 100,
       ),
       backend: manager.Backend(
+        metadata_roots: [root],
         connect: fn(_identity) {
           let assert Ok(Nil) = simplifile.delete(root <> "/a.gleam")
             as "replace the source during startup"

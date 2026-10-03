@@ -246,6 +246,11 @@ command = ["gleam", "lsp"]
 extensions = [".gleam"]
 root_markers = ["gleam.toml"]
 project = "writable"
+
+# The owner approves networking for one finite dependency-preparation call.
+# The server remains offline. Both use a private HOME and package cache.
+prepare = "gleam-dependencies"
+cache_env = { XDG_CACHE_HOME = "hex" }
 hint = "Qualify a name with its module as imported: probe.greet, or pkg/mod.name for a nested module"
 
 # gopls reads the module cache, outside the project, so it is named

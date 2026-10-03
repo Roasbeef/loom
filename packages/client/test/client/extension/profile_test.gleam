@@ -391,6 +391,7 @@ pub fn the_install_prints_what_was_approved_test() {
 pub fn the_approval_names_every_grant_the_jail_makes_test() {
   let go =
     profile.LspServer(
+      preparation: profile.AlreadyPrepared,
       name: "go",
       command: ["gopls", "serve"],
       extensions: [".go"],

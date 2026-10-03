@@ -52,6 +52,7 @@ const root = "/work/probe"
 
 fn server(project: profile.ProjectAccess) -> profile.LspServer {
   profile.LspServer(
+    preparation: profile.AlreadyPrepared,
     name: "gleam",
     command: ["gleam", "lsp"],
     extensions: [".gleam"],
