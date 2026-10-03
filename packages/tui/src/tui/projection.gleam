@@ -58,6 +58,8 @@ import session_view/transcript_line.{
 import session_view/transcript_lines.{
   BetweenEntries, Projected, Transient, WithinResponse,
 }
+import tui/image_box
+import tui/image_support
 import tui/layout
 import tui/live_tail
 import tui/markdown
@@ -267,6 +269,7 @@ fn refresh_diff_cache(before: Model, after: Model) -> Model {
               layout.diff_width(after),
               previous_diff_layout(before, after),
               after.shared.active_strand,
+              after.view.image_support,
             )
           let count = list.length(rows)
           Model(
@@ -383,7 +386,12 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
         transcript_lines.separated_lines(model.shared.transcript)
         |> list.append(lines)
         |> noted_images(model)
-        |> cached_record_lines(width, previous, model.shared.active_strand)
+        |> cached_record_lines(
+          width,
+          previous,
+          model.shared.active_strand,
+          model.view.image_support,
+        )
       Model(
         shared: Shared(
           ..model.shared,
@@ -424,6 +432,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
           width,
           model.view.caches.record_line_cache,
           model.shared.active_strand,
+          model.view.image_support,
         )
 
       // Every cache here describes the current projection, and the appended
@@ -485,27 +494,53 @@ fn separated_from_screen(lines: List(Line), model: Model) -> List(Line) {
 }
 
 // An image's row says why the picture is not drawn when this terminal
-// knows: inside Herdr, which passes no pane graphics through. The note is
-// added here, to the line, so the rows and the anchors built from the same
-// lines agree on the row it adds.
+// knows: inside Herdr, which passes no pane graphics through, or on a
+// terminal that would draw it but for the image itself (too large, or a
+// format its protocol cannot carry). The note is added here, to the line,
+// so the rows and the anchors built from the same lines agree on the row it
+// adds.
 fn noted_images(lines: List(Line), model: Model) -> List(Line) {
-  case image_note(model) {
-    None -> lines
-    Some(note) ->
-      list.map(lines, fn(line) {
-        case line.speaker {
-          ImageRow(..) -> Line(line.speaker, line.text <> "\n" <> note)
-          _ -> line
-        }
-      })
-  }
+  list.map(lines, fn(line) {
+    case line.speaker, image_note(model, line.speaker) {
+      ImageRow(..), Some(note) -> Line(line.speaker, line.text <> "\n" <> note)
+      _, _ -> line
+    }
+  })
 }
 
 // The reason a picture is not drawn, when the terminal can name it.
-fn image_note(model: Model) -> Option(String) {
-  case model.view.herdr_reporter {
-    Some(_) -> Some("inside Herdr: pane graphics are not passed through")
-    None -> None
+fn image_note(model: Model, speaker: Speaker) -> Option(String) {
+  case model.view.herdr_reporter, speaker {
+    Some(_), _ -> Some("inside Herdr: pane graphics are not passed through")
+    None, ImageRow(Some(picture)) ->
+      image_box.refusal(model.view.image_support, picture)
+    None, _ -> None
+  }
+}
+
+// The rows of a line. An image the terminal can draw becomes a box; every
+// other line, and every image it cannot draw, is the line `render_line`
+// draws.
+fn line_rows_for(
+  line: Line,
+  width: Int,
+  strand: String,
+  support: image_support.Support,
+) -> List(span.Line) {
+  case line.speaker {
+    ImageRow(Some(picture)) ->
+      case image_box.verdict(support, picture, width) {
+        image_box.Draw(drawing) ->
+          image_box.rows(
+            support,
+            drawing,
+            string.split(line.text, "\n") |> list.first |> result.unwrap(""),
+            width,
+          )
+        image_box.Keep | image_box.Refuse(..) ->
+          render.render_line(line, width, strand)
+      }
+    _ -> render.render_line(line, width, strand)
   }
 }
 
@@ -519,12 +554,13 @@ fn cached_record_lines(
   width: Int,
   previous: Dict(Line, List(span.Line)),
   strand: String,
+  support: image_support.Support,
 ) -> #(List(span.Line), Dict(Line, List(span.Line)), List(Int)) {
   list.fold(lines, #([], dict.new(), []), fn(acc, line) {
     let #(rows, cached, gutters) = acc
     let rendered =
       dict.get(previous, line)
-      |> result.lazy_unwrap(fn() { render.render_line(line, width, strand) })
+      |> result.lazy_unwrap(fn() { line_rows_for(line, width, strand, support) })
     let rendered_count = list.length(rendered)
     let line_gutters =
       list.index_map(rendered, fn(_, index) {
@@ -709,7 +745,12 @@ fn record_anchors_for(
       let rendered =
         dict.get(model.view.caches.record_line_cache, pair.0)
         |> result.lazy_unwrap(fn() {
-          render.render_line(pair.0, width, model.shared.active_strand)
+          line_rows_for(
+            pair.0,
+            width,
+            model.shared.active_strand,
+            model.view.image_support,
+          )
         })
       list.index_map(rendered, fn(_, wrapped) {
         case block.0 {

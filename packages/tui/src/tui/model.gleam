@@ -124,6 +124,8 @@ import tui/connection
 import tui/effect
 import tui/focused_goal_panel
 import tui/herdr
+import tui/image_shown
+import tui/image_support
 import tui/job
 import tui/job_runner
 import tui/live_tail
@@ -424,6 +426,12 @@ pub type View {
     height: Int,
     /// Launch-time color capability, never read while rendering.
     palette: appearance.Palette,
+    /// What the terminal can draw, asked once at launch (`image_support`).
+    /// Projection reads it to give an image its box, and nothing changes it.
+    image_support: image_support.Support,
+    /// What the terminal has been told about images (`image_shown`), which
+    /// `image_plan` compares with each frame.
+    images: image_shown.Shown,
     /// The composer's editor, including its cursor and selection.
     input: text_area.TextAreaState,
     /// Unsent drafts and reading endpoints never cross session identities.
