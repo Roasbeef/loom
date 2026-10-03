@@ -1,0 +1,24 @@
+ ◆ loom   ws · pi-gui (main)                           kimi-k3 · Ctrl+g details 
+ MOCKUP, needs protocol-change: call tree                                       
+ ╭─ ✓ code_mode · read_config.gleam · 4 calls ─────────────────────────────────╮
+ │ result: ok · 3 files read, config parsed                                    │
+ ╰─ Ctrl+g expands the program and its calls ──────────────────────────────────╯
+                                                                                
+ ╭─ × code_mode · check_subtract.gleam · failed ───────────────────────────────╮
+ │ program · 7 calls · 1 failed · 2 not run                                    │
+ │ ├ ✓ cap/fs.read   src/calc.gleam                                            │
+ │ ├ ✓ cap/fs.read   test/calc_test.gleam                                      │
+ │ ├ ✓ cap/proc.run  gleam build                                               │
+ │ ├ × cap/proc.run  gleam test            exit 2                              │
+ │ └ ○ cap/fs.write  report.md             not run                             │
+ │                                                                             │
+ │ result: failed · 2 tests failed in test/calc_test.gleam                     │
+ ╰─ Ctrl+g: program, stdout, stderr ───────────────────────────────────────────╯
+                                                                                
+ ● code_mode fix_subtract.gleam · running 1.2s · 2 calls so far                 
+─ To main · enter queues · tab steers ──────────────────────────────────────────
+ ›                                                                              
+ ◒ streaming (3s) · esc to interrupt                                            
+                                                                                
+ kimi-k3 · ctx ~41% · est $1.86                                                 
+ F2 strands · F3 changes                     3 agents · 2 working · 1 needs you 

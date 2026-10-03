@@ -1,0 +1,50 @@
+ ◆ loom    ws · pi-gui (main)                                                                                                                                                  kimi-k3 · Ctrl+g details 
+ SESSIONS                     │ ws · main ▸ sub:tests                                                                     Ctrl+t 0 all strands │ Strands ●1  Changes  Trace  Session                    
+──────────────────────────────│▎[main] forked this strand · 34s ago                                                                            │────────────────────────────────────────────────────────
+ ~/code/pi-gui              3 │ › Run gleam test and report failures.                                                                          │ ← Strands   Esc                                        
+▌● ws · main              ▮▮▮ │                                                                                                                │                                                        
+  ● fix readme badge          │ ∴ Reasoning 4s                                                                                                 │ ● sub:tests                                            
+  ○ extension api probe       │ ● bash gleam test · waiting for approval                                                                       │   Working 34s · needs approval                         
+                              │                                                                                                                │                                                        
+──────────────────────────────│ ◇ network access to proxy.golang.org needs a decision. The approval dialog                                     │ Model                                    kimi-k3 · low 
+ ~/code/lnd-review          2 │   is open on this strand; the panel shows status only.                                                         │ Context                                             9k 
+  ● review htlc interceptor   │                                                                                                                │ Cache expires                                       3m 
+  ○ nightly: deps bump        │                                                                                                                │ Running                                            34s 
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │ RECENT                                                 
+                              │                                                                                                                │ Waiting on network approval                            
+                              │                                                                                                                │ Started bash · gleam test                              
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+                              │─ To sub:tests · enter queues · tab steers ─────────────────────────────────────────────────────────────────────│                                                        
+                              │ ›                                                                                                              │                                                        
+                              │                                                                                                                │                                                        
+                              │                                                                                                                │                                                        
+ Enter open · Esc back        │ ◒ streaming (3s) · esc to interrupt                                                                            │                                                        
+ F1 hide · /sessions          │                                                                                                                │ Enter: to composer · Esc: list                         
+ baseten-kimi-k3 · ctx ~41% · est $1.86 · ↓ strip · ← sessions · ⇧Tab panel                                                                                          3 agents · 2 working · 1 needs you 

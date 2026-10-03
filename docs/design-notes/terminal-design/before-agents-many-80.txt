@@ -1,0 +1,24 @@
+                                                                                
+ ╭ AGENT WORKSPACE 5 agents · 2 working · 2 attention ────────────────────────╮ 
+ │ ▸ docs-accuracy-review · 3/5                                               │ 
+ │                                                                            │ 
+ │ [1 Activity]  2 Messages  3 Notes  4 Collaborate                           │ 
+ │                                                                            │ 
+ │ docs-accuracy-review                                                       │ 
+ │ ? Needs input                                                              │ 
+ │                                                                            │ 
+ │ TASK                                                                       │ 
+ │ Check doc comments against behaviour                                       │ 
+ │                                                                            │ 
+ │ CURRENT STATE                                                              │ 
+ │ Needs approval: fs_write docs/next.md                                      │ 
+ │                                                                            │ 
+ │ LATEST UPDATE                                                              │ 
+ │ Latest update: Needs approval: fs_write docs/next.md                       │ 
+ │                                                                            │ 
+ │ RECENT ACTIVITY                                                            │ 
+ │ To: main · Enter opens selected transcript                                 │ 
+ │ ↑/↓ inspect · n attention · a review permission                            │ 
+ │ 1/2/3/4 view · PgUp/Dn scroll · Tab write · Esc close                      │ 
+ ╰────────────────────────────────────────────────────────────────────────────╯ 
+                                                                                

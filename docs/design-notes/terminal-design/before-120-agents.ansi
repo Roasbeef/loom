@@ -1,0 +1,40 @@
+[1m ◆ loom [0mdemo · ~/gocode/src/github.com/roasbeef/loom/.claude/worktrees/loom-checkout-… baseten-kimi-k3 · Ctrl+g details
+
+ ╭[1m AGENT WORKSPACE [0m3 agents · 2 working · 0 attention ────────────────────────────────────────────────────────────────╮
+ │ SESSION                             [1m[1 Activity]  2 Messages  3 Notes  4 Collaborate[0m                               │
+ │ [1m▸ main · to                       [0m                                                                                 │
+ │   Task unavailable                  [1mmain[0m                                                                           │
+ │   ● Working · streaming             ● Working                                                                      │
+ │                                                                                                                    │
+ │ STRANDS                             TASK                                                                           │
+ │ [1m  catalog audit                   [0m  Task unavailable                                                               │
+ │   Task unavailable                                                                                                 │
+ │   ● Working · running tools         CURRENT STATE                                                                  │
+ │                                     streaming                                                                      │
+ │ [1m  terminal qa                     [0m                                                                                 │
+ │   Task unavailable                  LATEST UPDATE                                                                  │
+ │   - Unavailable · …ate unavailable  Latest update unavailable                                                      │
+ │                                                                                                                    │
+ │                                     RECENT ACTIVITY                                                                │
+ │                                     Tool history unavailable in this capture. Enter opens the transcript.          │
+ │                                                                                                                    │
+ │                                     INPUT                                                                          │
+ │                                     Pending input unknown                                                          │
+ │                                                                                                                    │
+ │                                     IDENTITY                                                                       │
+ │                                     main · Model unavailable                                                       │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │ [1mTo: main · Enter opens selected transcript[0m                                                                         │
+ │ ↑/↓ inspect · n attention · a review permission                                                                    │
+ │ 1/2/3/4 view · PgUp/Dn scroll · Tab write · Esc close                                                              │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+─ To main · Tab writes · Enter opens agent                                                                             ─
+ ◒ streaming (9s)
+ [1m [0m
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ agent workspace · baseten-kimi-k3 · ctx — · est $0.00                                3 agents · 2 working · 0 attention
+[1m› [0m● [1mmain                   [0mstreaming
+[1m  [0m● catalog audit          running tools

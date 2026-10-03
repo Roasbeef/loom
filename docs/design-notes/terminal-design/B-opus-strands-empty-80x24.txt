@@ -1,0 +1,24 @@
+ Strands · 1                                                           Esc back 
+ All 1   Needs 0   Work 1   Fail 0                                          Tab 
+     name                    doing                        time     ctx          
+ ❯ ● main                    Writing calc.gleam            12s     18k          
+                                                                                
+ No other strands. A spawn from main, the advisor and peer                      
+ links appear here when they start.                                             
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+ ● main · Working · 12s · 18k                                                   
+ Task  Add a subtract function to calc.gleam.                                   
+ Now   edit · calc.gleam                                                        
+ Inbox empty                                                                    
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ Enter open · Esc back                                                          
+                                                                                
+╭─ To main ──────────────────────────────────────────────────────── ws · main ─╮
+│ ›                                                                            │
+╰─ kimi-k3 › ctx ~41% › $1.86 ──────────────────────────────────── 0 need you ─╯

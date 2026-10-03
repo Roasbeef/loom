@@ -1,0 +1,40 @@
+ Strands · ws · main                                                                              Tab filter · Esc back 
+ All 7   Needs you 1   Working 4   Failed 1   Done 1                                                                    
+─━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                        
+     name                                doing                                          time     ctx                    
+   ● main                                Waiting for 2 reviewers                      4m 10s    259k                    
+   ? sub:tests                           Needs approval · network                        34s      9k                    
+ ❯ × sub:terminal-checks                 Failed · wide-label check failed             1m 02s     31k                    
+   ● sub:adversarial-code-review-48f3    Tracing quit-path publish_herdr              2m 45s     65k                    
+   ● sub:adversarial-code-review-ec14    Grep-searching herdr:loom refs               1m 03s    144k                    
+   ● sub:docs-accuracy-review            Writing an early note on herdr.gleam         2m 38s     74k                    
+   ◆ advisor                             Reviewing main's plan · 1 nudge                 18s     22k                    
+                                                                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ × sub:terminal-checks · Failed after 1m 02s · 31k ctx · kimi-k3 low             1 Overview 2 Messages 3 Notes 4 Collab 
+                                                                                                                        
+ Task     Exercise small terminals, Unicode width edge cases, wide labels and the 40×12 fallback, and report every      
+           layout that clips a status word or moves the composer; attach frames for each failure and name the module    
+           +2 lines · PgDn                                                                                              
+ Result   failed · wide-label check failed: status word clipped at 40 columns                                           
+ Last     “The footer drops ‘attention’ at 40 columns; agent_strip keeps it.”                                           
+                                                                                                                        
+ RECENT TOOLS                                                                                                           
+ ✓ bash  gleam test --target erlang                                                                                     
+ × bash  gleam run -m tui_dev -- agents plain exit 1                                                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ ↑↓ select · Enter open transcript · Tab filter · n next attention · PgDn detail · Esc back                             
+                                                                                                                        
+ ◐ main · agent_wait · 2 subagents · 51s                                                                       Esc back 
+╭─ To main · Tab writes here ────────────────────────────────────────────────────────────────────────────── ws · main ─╮
+│ ›                                                                                                                    │
+╰─ kimi-k3 · low › pi-gui › main *1 › ctx ~41% › est $1.86 ────────────────────────────────── 1 needs you · 4 working ─╯

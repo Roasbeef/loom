@@ -1,0 +1,24 @@
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ ● main                                                                         
+   Both reviewers expired their wall-clock budget without producing results.    
+   Respawning with leaner briefs and longer budgets.                            
+                                                                                
+ ● agent_spawn ×2  adversarial…48f3 · adversarial…ec14                          
+                                                                                
+ ◇ loom · background job 01a0eff2 lost · helper exited · Ctrl+G                 
+                                                                                
+ ● ✓ agent_wait · 2 subagents ×15 · 7m 30s                                      
+                                                                                
+ ● sub:tests waits for approval · a reviews                                     
+ ◐ main · agent_wait · 51s                                       Esc interrupts 
+╭─ To main · Tab steers ─────────────────────────────────────────── ws · main ─╮
+│ › ← sessions · ↓ strands · / commands                                        │
+╰─ kimi-k3 › ctx ~41% › $1.86 ─────────────────────────────────── 1 needs you ─╯
+   ● main                    Waiting for adversarial-code-…              4m 10s 
+ ❯ ? sub:tests               Needs approval · network                       34s 
+   ● sub:adversarial-…-48f3  Tracing quit-path publish_her…              2m 45s 
+   ● sub:adversarial-…-ec14  Grep-searching herdr:loom ref…              1m 03s 
+   +3 more · Ctrl+O strands                                                     

@@ -1,0 +1,24 @@
+                                                                                
+                                                                                
+  ╭ SESSIONS · active ───────────────────────────────────────────────────────╮  
+  │                                                                          │  
+  │  All 6  Needs you 1  Working 1  Idle 1  Inactive 2            Tab filter │  
+  │ ──────────────────────────────────────────────────────────────────────── │  
+  │ /Users/roasbeef/gocode/src/github.com/roasbeef/loom 4                    │  
+  │   ● loom-herdr-update · herdr-update                             current │  
+  │     working · 01a07d71-e1fb                                              │  
+  │ ▸ ! terminal revamp concepts                                             │  
+  │     needs you · 01a07d74-272d                                            │  
+  │   ◌                                                                      │  
+  │     resident · 01a07d75-0000                                             │  
+  │   · review htlc interceptor                                              │  
+  │     saved · 01a07d76-0000                                                │  
+  │                                                                          │  
+  │ /Users/roasbeef/code/pi-gui 2                                            │  
+  │   ○ ws · main                                                            │  
+  │                                                                          │  
+  │ ↑↓ select · Enter open · Tab filter · l link · n new · r rename · d arc… │  
+  │                                                                          │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
+                                                                                
+                                                                                

@@ -1,0 +1,24 @@
+ ◆ loom   ws · pi-gui (main)                           kimi-k3 · Ctrl+g details 
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+  ╭ SESSIONS · active ───────────────────────────────────────────────────────╮  
+  │                                                                          │  
+  │  All 0   Needs you 0   Working 0   Idle 0   Inactive 0        Tab filter │  
+  │ ──────────────────────────────────────────────────────────────────────── │  
+  │                                                                          │  
+  │                                                                          │  
+  │   No sessions yet.                                                       │  
+  │   A session holds one conversation and its strands.                      │  
+  │   Press n to start one in ~/code/pi-gui.                                 │  
+  │                                                                          │  
+  │                                                                          │  
+  │ ↑↓ move · Enter open · Tab filter · n new                                │  
+  │ l link · r rename · d archive · a archived · Esc close                   │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
