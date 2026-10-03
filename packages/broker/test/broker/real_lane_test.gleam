@@ -201,17 +201,41 @@ fn observe(name: String, seen: List(broker.CallEvent)) -> Observed {
     cancelled: result.cancelled,
     degraded: result.degraded,
     timed_out: result.timed_out,
-    enforcement: list.map(result.enforcement, without_run_digest),
+    enforcement: list.map(result.enforcement, without_run_details),
   )
 }
 
+// The parts of an enforcement tag that describe this run rather than the
+// layer, cut so the lanes are compared on what they enforced.
+//
+// A `skip:` tag names its layer and then why it was skipped, and on Darwin
+// the reason is a live reading of the host: `skip:rlimit-processes` reports
+// how many processes the uid already has, which moves between the two runs
+// whenever anything else on the machine starts or exits (a full `make
+// check` always has something running). Which layers were skipped is the
+// claim, so a skip compares by its layer alone.
+//
 // Darwin's `seatbelt-fs` tag ends in `plan=<digest>`, a hash over the
 // generated profile and its path definitions. Those name the run's own
 // private scratch directory, so two runs never share a digest whichever lane
-// carried them. The digest is cut from the comparison and every other field
-// of the tag is kept. Linux's `mounts` digest covers only the mount plan,
-// which these runs share, and is left whole.
-fn without_run_digest(tag: String) -> String {
+// carried them. The digest is cut and every other field of the tag is kept.
+// Linux's `mounts` digest covers only the mount plan, which these runs
+// share, and is left whole.
+fn without_run_details(tag: String) -> String {
+  case string.starts_with(tag, exec.skip_prefix) {
+    True -> skipped_layer(tag)
+    False -> without_plan_digest(tag)
+  }
+}
+
+fn skipped_layer(tag: String) -> String {
+  case string.split_once(tag, ": ") {
+    Ok(#(layer, _reason)) -> layer
+    Error(Nil) -> tag
+  }
+}
+
+fn without_plan_digest(tag: String) -> String {
   case
     string.starts_with(tag, "seatbelt-fs:"),
     string.split_once(tag, ",plan=")
