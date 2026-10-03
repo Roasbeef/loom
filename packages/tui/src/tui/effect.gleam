@@ -20,7 +20,7 @@
 //// generic over the socket and recorder, and reach this type through
 //// `Step`. Everything else here is the terminal's own: the provisional
 //// attachment, the control connection, jobs, inboxes the terminal created,
-//// the input recording lines, the clipboard and Herdr.
+//// the input recording lines, the clipboard, image commands and Herdr.
 ////
 //// Every effect names the resource it acts on. The model's handles move
 //// during a step: an adoption replaces the socket, a quit clears the
@@ -49,6 +49,7 @@ import session_view/step_effect
 import tui/attachment
 import tui/connection
 import tui/herdr
+import tui/image_shown
 import tui/job
 import tui/recording
 
@@ -92,6 +93,18 @@ pub type Effect {
 
   /// Writes an OSC 52 clipboard sequence to the terminal.
   WriteClipboard(sequence: String)
+
+  /// Writes image commands to the terminal: transmissions, placements and
+  /// deletions for kitty and Ghostty, drawings and erasures for iTerm2. They
+  /// are written the way the clipboard sequence is, in line with the frames
+  /// etui draws, and only ever after the alternate screen is open
+  /// (`image_shown.reconcile` decides nothing before that).
+  DrawImages(commands: List(image_shown.Command))
+
+  /// Wakes the loop that owns the terminal, so its next step runs as soon as
+  /// the frame just built has been drawn rather than at the next tick. An
+  /// iTerm2 picture is owed until that frame exists.
+  WakeLoop
 
   /// Announces the session identity to the Herdr pane.
   AnnounceHerdr(reporter: herdr.Reporter, session: String)
