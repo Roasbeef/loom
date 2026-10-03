@@ -17,8 +17,8 @@
 //// (`session_view/commands`). A draft is parsed as the terminal parses it,
 //// so a slash command that names a session command is that command, and one
 //// that opens a terminal surface is refused with a notice. The controls are
-//// the same commands chosen by a button or a small form (Stop, the goal's
-//// buttons, Fork, Set goal), and `Replying` puts the start of a reply to a
+//// the same commands chosen by a button or a small form (the goal's
+//// buttons, Fork), and `Replying` puts the start of a reply to a
 //// peer's message in the composer without sending anything. This module
 //// decides nothing about the session. It turns a browser event into one of
 //// those calls, and draws the composer, the controls and the approval
@@ -82,8 +82,7 @@ pub type Msg(socket) {
   /// the card was drawn at, and the answer.
   Decided(id: String, seq: Int, answer: component.Answer)
 
-  /// A session control: Stop, one of the goal's buttons, or one of the two
-  /// forms, with the text it held.
+  /// A session control: one of the goal's buttons, or the fork form with
   Controlled(control: component.Control)
 
   /// A peer message's Reply button, by the key of the piece it was drawn
