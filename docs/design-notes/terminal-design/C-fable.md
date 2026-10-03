@@ -188,8 +188,8 @@ capture already projects.
 Today's terminal (`layout`, `tui/layout.gleam:97`) is a header, a body, a
 composer and a footer with the agent strip under it. The body holds the
 transcript and, at the right, either the agent rail (34 cells, from 100
-columns, `body_layout` at `tui/layout.gleam:115`) or the changes pane (up to
-72 cells, from 140 columns, `diff_pane_width` at `tui/layout.gleam:212`), never
+columns, `body_layout` at `tui/layout.gleam:138`) or the changes pane (up to
+72 cells, from 140 columns, `diff_pane_width` at `tui/layout.gleam:235`), never
 both. Eight more surfaces are overlays or transcript replacements, each with
 its own keys: the agent workspace, the picker, the model selector, the
 approval dialog, the peer-link and access overlays, `/notes`, `/summary`,
@@ -250,7 +250,7 @@ Taken:
   per awaited strand (`└ sub:main/adversarial-…-48f3c1 still working after
   30s`) using the roster's own words.
 - **The activity line above the input with its cancel key**, which the band
-  already has (`composer_status_lines`, `tui/layout.gleam:475`) minus the key.
+  already has (`composer_status_lines`, `tui/layout.gleam:497`) minus the key.
 - **Tinted blocks, not boxes**, for the two things the terminal already tints:
   the user turn and the assistant's prose. Tool calls stay one-line rows
   without a tint, because the owner's recordings show that a wall of tinted
@@ -300,7 +300,7 @@ already has and now carries on its title row; the approval as a full-width
 block under a rule with numbered choices, a key hint and a one-line reason,
 which replaces the bottom-anchored dialog's three vertical choices, keeping
 the rule that nothing is selected on opening and Enter confirms
-(`render`, `tui/approval_panel.gleam:263`, keeps its capture of the exact
+(`render`, `tui/approval_panel.gleam:285`, keeps its capture of the exact
 sequence, action and grants); the single footer line with an activity label
 on the left, which the compact footer already is; and the pinned todo as one
 line that expands.
@@ -355,7 +355,7 @@ today, so the composer never loses width to a column.
 | < 100 | transcript | none beside it; `Shift+Tab` or `Ctrl+O` opens the panel over the transcript, `Esc` returns | drawn, from 16 rows and two agents, up to a quarter of the height |
 
 The transcript keeps at least 68 cells beside a panel, the rule
-`diff_pane_width` (`tui/layout.gleam:212`) applies today. The strip's height
+`diff_pane_width` (`tui/layout.gleam:235`) applies today. The strip's height
 rule is unchanged (`height_for_count`, `tui/agent_strip.gleam:212`). The
 rows a panel's tab needs are never taken from the composer.
 
@@ -747,7 +747,7 @@ No single key sends a decision.
 | Session tab: cost, context | usage, context estimate | yes | `usage` (`session_view/model.gleam:353`), `money` (`session_view/transcript_lines.gleam:3216`), `footer` (`session_view/context_view.gleam:358`) |
 | Session tab: last completion | completion evidence | yes | `lines` (`session_view/completion_summary.gleam:514`) |
 | Sessions column, picker | rows, activity | yes, minus an age | section 1.1 |
-| Approval block | the exact escalation | yes | `approvals` (`session_view/model.gleam:342`), `render` (`tui/approval_panel.gleam:263`) |
+| Approval block | the exact escalation | yes | `approvals` (`session_view/model.gleam:342`), `render` (`tui/approval_panel.gleam:286`) |
 | Todo line | the strand's board | yes | `height` (`tui/todo_panel.gleam:50`), `todo_boards` (`session_view/model.gleam:297`) |
 | Scrollback position | rows above the tail | yes | `reading_history` (`tui/model.gleam:1280`), `viewport_backlog` (`tui/model.gleam:697`) |
 | Images | bytes, type, pixel size | partly | `Image` (`session_view/transcript_image.gleam:29`) holds the bytes and type; the pixel size is decoded client-side from the PNG, JPEG, GIF or WebP header, no wire change; drawing needs etui |

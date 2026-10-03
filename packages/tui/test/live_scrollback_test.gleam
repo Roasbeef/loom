@@ -125,7 +125,7 @@ pub fn clicking_the_visible_jump_hint_preserves_a_draft_test() {
   let assert Ok(#(_, y)) =
     frame.buffer_to_lines(shown)
     |> list.index_map(fn(row, y) { #(row, y) })
-    |> list.find(fn(pair) { string.contains(pair.0, "click for latest") })
+    |> list.find(fn(pair) { string.contains(pair.0, "End jumps to latest") })
     as "the user has a visible jump action while reading above the tail"
   let resumed =
     tui.update(backend.MousePress(5, y, backend.MouseLeft), drafting)
@@ -186,10 +186,7 @@ pub fn a_disconnected_terminal_names_its_retained_draft_first_test() {
     "Disconnected · /sessions to reconnect · draft retained",
   )
     as "a pending interrupt does not outrank the reconnect instruction"
-  assert !string.contains(
-    border_text(interrupting),
-    "stopped · enter sends held input",
-  )
+  assert !string.contains(border_text(interrupting), "Enter sends held input")
 
   // The same pending interrupt on a live terminal still names itself, so the
   // guard rather than the fixture produced the two assertions above.
@@ -201,7 +198,7 @@ pub fn a_disconnected_terminal_names_its_retained_draft_first_test() {
         peer: session_model.Preview,
       ),
     )
-  assert string.contains(border_text(live), "stopped · enter sends held input")
+  assert string.contains(border_text(live), "Enter sends held input")
 }
 
 pub fn switching_agents_restores_the_frozen_reader_without_crossing_streams_test() {

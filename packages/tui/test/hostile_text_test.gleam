@@ -233,7 +233,7 @@ pub fn hostile_approval_detail_shows_escapes_not_controls_test() {
       [],
     )
   assert_shows(raw_rows, [
-    "Raw captured request",
+    "raw request",
     "\"tool\":\"\\u001b\"",
     "preview-sentinel",
     "action-sentinel",
@@ -259,6 +259,7 @@ fn hostile_review() -> approval.Review {
         #("path", json.String(hostile("path-sentinel"))),
       ]),
     ]),
+    strand: None,
   )
 }
 

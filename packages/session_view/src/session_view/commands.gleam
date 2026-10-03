@@ -106,7 +106,7 @@ pub fn interrupt_active(
               operation: captured_operation(shared, strand),
               pending: None,
             )),
-            notice: "stopping; held input waits · enter sends it with your message",
+            notice: stopping_notice,
           )
           |> session_model.record_surface(InterruptRequested)
           |> outbound.send_frame(protocol.abort(shared.next_id, strand))
@@ -968,3 +968,9 @@ fn steering_submission(
     None -> Interjection
   }
 }
+
+/// The notice an interrupt request leaves. A host that already says why
+/// the held input waits, as the terminal's status band does, recognises it
+/// by this constant and draws the one sentence rather than both.
+pub const stopping_notice =
+  "stopping; held input waits · enter sends it with your message"

@@ -46,6 +46,7 @@ import gleam/string
 import session_view/advisor_pending
 import session_view/agent_roster
 import session_view/agent_view
+import session_view/commands
 import session_view/composer
 import session_view/context_view
 import session_view/goal_view
@@ -60,6 +61,7 @@ import session_view/worktree_view
 import tui/agent_strip
 import tui/agents
 import tui/diff_panel
+import tui/input_frame
 import tui/model.{
   type Model, AccessManager, AgentInspector, ApprovalInspector, DaemonSelector,
   DiffHidden, DiffVisible, GoalInspector, ModelSelector, NoOverlay,
@@ -84,6 +86,27 @@ pub fn panel_inner(area: Rect) -> Rect {
     area.position.y + 1,
     int.max(0, area.size.width - 2),
     int.max(0, area.size.height - 2),
+  )
+}
+
+/// The transcript's reading area inside its panel: the full height but the
+/// bottom row, which the reading row takes while the reader is above the
+/// tail, and one cell in from each side for the gutter. The panel has no
+/// heading row; the identity line names the strand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert layout.transcript_inner(geometry.rect_new(0, 1, 10, 5))
+///   == geometry.rect_new(1, 1, 8, 4)
+/// ```
+@internal
+pub fn transcript_inner(panel: Rect) -> Rect {
+  geometry.rect_new(
+    panel.position.x + 1,
+    panel.position.y,
+    int.max(0, panel.size.width - 2),
+    int.max(0, panel.size.height - 1),
   )
 }
 
@@ -268,14 +291,13 @@ fn footer_height(model: Model) -> Int {
     && model.view.height <= 12
   {
     True -> 1
+
+    // The everyday status lives on the input frame's rules, so the footer
+    // takes rows only for Ctrl+g's accounting detail.
     False ->
       case model.shared.details_expanded {
         True -> footer_rows(model.view.width)
-        False ->
-          case model.view.width < 100 {
-            True -> 2
-            False -> 1
-          }
+        False -> 0
       }
   }
 }
@@ -502,15 +524,6 @@ pub fn composer_status_lines(model: Model) -> List(String) {
     _, True | None, False -> []
     Some(board), False -> goal_view.row(board)
   }
-  let active = case active_status_label(model) {
-    None -> []
-    Some(status) -> [
-      activity_glyph(model.view.activity_frame)
-      <> " "
-      <> text_hygiene.single_line(status)
-      <> elapsed_label(model.shared.activity_elapsed_s),
-    ]
-  }
 
   // The workspace, the visible rail and the agent strip already own the
   // roster. Repeating it above the editor would spend its typing space on
@@ -528,10 +541,41 @@ pub fn composer_status_lines(model: Model) -> List(String) {
         False -> reviewer_band_lines(model)
       }
   }
-  list.append(
-    active,
-    list.append(reviewers, list.append(goal, list.append(nudges, pending))),
-  )
+
+  // What the strand is doing is on the input frame's top rule, unless the
+  // frame is too narrow to carry it beside the keys.
+  let active = case
+    active_status_label(model),
+    model.view.width < input_frame.carries_activity
+  {
+    Some(status), True -> [
+      activity_glyph(model.view.activity_frame)
+      <> " "
+      <> text_hygiene.single_line(status)
+      <> elapsed_label(model.shared.activity_elapsed_s),
+    ]
+    Some(_), False | None, _ -> []
+  }
+
+  // A notice and the reason behind an unusual key are news, so they sit
+  // here inside the frame rather than on its rules, which carry keys and
+  // figures.
+  // The queue editor owns the band while it is focused, as it does for the
+  // nudges and the goal.
+  // The reason behind a held key says what the interrupt's own notice says,
+  // so while it stands the notice is not drawn a second time.
+  let reason = input_keys(model).1 |> option.unwrap("")
+  let notice = case model.shared.notice == commands.stopping_notice, reason {
+    True, "" | False, _ -> text_hygiene.single_line(model.shared.notice)
+    True, _ -> ""
+  }
+  let news = case queue_focused {
+    True -> []
+    False ->
+      [model.view.cache_outlook, notice, reason]
+      |> list.filter(fn(piece) { piece != "" })
+  }
+  list.flatten([active, reviewers, goal, nudges, news, pending])
 }
 
 // An ordinary-height narrow terminal has no agent rail, so the composer owns
@@ -565,6 +609,61 @@ fn reviewer_band_lines(model: Model) -> List(String) {
   }
 }
 
+/// What the next key does on the input frame's top rule, and the reason it
+/// is not the ordinary Enter when there is one, for the status band.
+///
+/// Composer guidance answers what the next Enter does. The agent rail can
+/// still display the last operation's outcome, so its terminal status alone
+/// cannot establish whether this idle strand retains queued input.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // layout.input_keys(model) == #(" Enter sends ", None)
+/// ```
+@internal
+pub fn input_keys(model: Model) -> #(String, Option(String)) {
+  use <- bool.guard(
+    model.shared.captured != None
+      && !session_model.is_known_strand(
+      model.shared.strands,
+      model.shared.active_strand,
+    ),
+    #(" ^O agents ", Some("Recipient unavailable · your draft is kept")),
+  )
+  use <- bool.guard(
+    model.shared.peer == session_model.Disconnected,
+    case model.view.reconnect {
+      tui_model.ReconnectAttempting(..) -> #(
+        " draft kept ",
+        Some("Reconnecting to the daemon · draft retained"),
+      )
+      tui_model.ReconnectIdle | tui_model.ReconnectSpent -> #(
+        " /sessions reconnects ",
+        Some("Disconnected · /sessions to reconnect · draft retained"),
+      )
+    },
+  )
+  let held = #(
+    " Enter sends held input ",
+    Some("Stopped · your next message is sent with the held input"),
+  )
+  use <- bool.guard(tui_model.active_queue_halted(model), held)
+  case
+    session_model.active_interrupt(model.shared),
+    active_status_label(model),
+    model.view.submission_mode
+  {
+    Some(_), _, _ -> held
+    None, None, _ -> #(" Enter sends ", None)
+    None, Some(_), tui_model.SteerNow -> #(" Enter steers · Tab queues ", None)
+    None, Some(_), tui_model.PromptNext -> #(
+      " Enter queues · Tab steers ",
+      None,
+    )
+  }
+}
+
 /// Splits the composer panel into the status band above and the editor
 /// below.
 @internal
@@ -588,7 +687,7 @@ fn pending_status(model: Model) -> Option(String) {
 // Stacking the chips leaves the editor the full interior width, so the wrap
 // the operator sees no longer depends on what is attached.
 fn editor_content_width(model: Model) -> Int {
-  int.max(2, model.view.width - 2)
+  int.max(2, model.view.width - input_frame.prompt_margin)
 }
 
 /// How long the active strand has been busy, in the shape the prompt
@@ -743,7 +842,7 @@ pub fn note_detail_area(model: Model) -> Rect {
   let #(_, body, _, _) = layout(screen, model)
   let #(conversation, _) = queue_body_layout(body, model)
   let #(transcript, _, _) = body_layout(conversation, model)
-  panel_inner(transcript)
+  transcript_inner(transcript)
 }
 
 /// Returns the message preview's actual rectangle for viewport regressions.
@@ -817,7 +916,7 @@ pub fn hit_area(model: Model, at: geometry.Position) -> Rect {
   let #(transcript_panel, agent_panel, changes_panel) =
     body_layout(conversation, model)
   [
-    panel_inner(transcript_panel),
+    transcript_inner(transcript_panel),
     panel_inner(agent_panel),
     panel_inner(changes_panel),
     panel_inner(input_area),
@@ -833,7 +932,7 @@ pub fn transcript_viewport_height(model: Model) -> Int {
   let screen = model_screen(model)
   let #(_, body, _, _) = layout(screen, model)
   let #(conversation, _) = queue_body_layout(body, model)
-  int.max(1, panel_inner(conversation).size.height)
+  int.max(1, transcript_inner(conversation).size.height)
 }
 
 /// Returns the transcript rows left after fixed terminal surfaces are reserved.
@@ -843,8 +942,8 @@ pub fn transcript_height(
   input_rows: Int,
   footer_rows: Int,
 ) -> Int {
-  // The header consumes one row and the transcript border consumes two.
-  int.max(1, height - input_rows - footer_rows - 3)
+  // The identity line consumes one row and the reading row one more.
+  int.max(1, height - input_rows - footer_rows - 2)
 }
 
 /// The width of a transcript row at the current screen size.

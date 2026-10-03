@@ -1646,12 +1646,43 @@ untouched.
 - **Prompt view**: the editor retains the exact source and cursor state used by
   history and submission. Rendering wraps that state by terminal cells into a
   bounded one-to-four-row viewport; it never inserts newlines into the prompt.
-- **Conversation and footer**: the reading surface has a heading and gutter;
-  horizontal rules separate the composer. Scrollback controls replace the
-  transcript heading, so Enter's send mode remains visible and entering history
-  does not change the viewport height. Compact mode shows model, context estimate,
-  estimated session cost, notices and an attention summary in one row, or two
-  below 100 columns. The attention summary reserves its own space. Ctrl+G exposes
+- **Identity line and input frame** (`tui/input_frame`): the top row is the
+  identity line on the raised background, the workspace's last segment, the
+  session's name (left out when it repeats the workspace), `strand <id>`, the
+  viewed sub-agent's task, and on the right the model's last segment and the
+  strand's effort. Nothing on it changes while a turn runs. The composer is a
+  rounded frame whose rules carry everything live: top-left `To <strand> ·`
+  and what Enter does, in keys (`layout.input_keys`), top-right what the
+  strand is doing with its elapsed time, queue count and `Esc interrupts` (or
+  `○ <strand> · idle`), bottom-left only model, effort, `ctx ~N%` and
+  `est $N`, bottom-right `N need you` from `strand_card.needing`, drawn only
+  while it is above zero. A notice, the cache outlook and the reason behind
+  an unusual key (`Stopped · …`, `Disconnected · …`) are rows of the status
+  band inside the frame (`layout.composer_status_lines`), never the rules. When the two labels of
+  a rule do not fit, the top rule keeps its left and the bottom rule its right.
+  Below 72 columns the top rule carries no activity and the status band above
+  the editor shows it, as it did before. An open approval locks the frame
+  (`locked while deciding`). The editor sits two cells in from the left side,
+  behind a `›` prompt; an empty draft shows the live key hints as placeholder
+  text. `input_frame.prompt_margin` is the editor's wrap allowance.
+- **Conversation and footer**: the reading surface has a gutter and no
+  heading row (`layout.transcript_inner`); the identity line names the
+  strand. Its bottom row is the reading row: while the reader is above the
+  tail it reads `↑ reading · N rows below · End jumps to latest` and a
+  click on it jumps; while help, notes or a diff borrow the area it names
+  them. Neither changes the viewport height.
+- **Approval block** (`approval_panel.render`): a full-width block under a
+  rule directly above the input frame, headed `? <strand> · <question>`
+  from the escalation's scope (`approval.Review.strand`) with `1 of N` at
+  the right while N questions wait, then the request, its action, the
+  grant and whether session approval exists, then `1`, `2`, `3` choices
+  that select and never confirm, Enter to confirm, `d` for the raw request
+  and Escape to defer; the input frame says it is locked meanwhile. An open
+  question counts in the bottom rule's `N need you`, beside the agents
+  whose rows need input (`render.needs_you`). The status band's rows sit
+  one cell in from the frame's side, and the interrupt's own notice is not
+  drawn while the held key's reason says the same.
+  The compact footer is gone; its facts are on the input frame. Ctrl+G exposes
   the complete input/output/cache/rate accounting in the existing adaptive footer.
   Both footers fit whole pieces (`render.fit_pieces`): a piece that does not
   fit is dropped from the right, never cut through a figure. The detailed row
@@ -1660,7 +1691,7 @@ untouched.
   output and rate. Millions keep one decimal.
   Coherent cuts supply usage and cost; model names never imply prices. Workspace
   and branch discovery still runs once before the event loop, through bounded
-  regular-file reads, and the header shows the resulting workspace label.
+  regular-file reads, and the identity line shows the workspace's last segment.
   Pushed usage rows update the output rate, never cumulative usage. The latest
   row per strand waits for a capture covering its sequence before it updates
   the cache watch, so a remote model change can discard a stale comparison.

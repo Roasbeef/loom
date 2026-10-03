@@ -319,7 +319,6 @@ pub fn wide_diff_keeps_the_conversation_visible_on_the_left_test() {
     |> painted_buffer(160)
   let left = columns(drawn, 0, 88)
   let right = columns(drawn, 88, 72)
-  assert string.contains(left, "transcript / main")
   assert string.contains(left, "CONVERSATION_MARKER")
   assert string.contains(right, "captured changes")
   assert string.contains(right, "+new")
