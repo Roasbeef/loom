@@ -1339,9 +1339,10 @@ boundaries and the split's measurements under Invariants.
   bootstrap and WebSocket transport;
   `core` and `machine` for pure total entry/register/state decoding; `weft` for guarded,
   deadline-bounded connection startup; `etui` at commit
-  `c10f6a64b29ef7b59dd3872bb4471c59deeac681` (the fork's stack pinned in
-  `gleam.toml`, whose last commit is etui#5, a linear wrap for a word wider
-  than the row) with bounded
+  `4d5e466cf433c322012cb874f147be4d6a400eef` (the fork's stack pinned in
+  `gleam.toml`, whose last commit is etui#6, inline images: the terminal
+  graphics probe, kitty placeholders and OSC 1337; etui#5, a linear wrap for
+  a word wider than the row, is below it) with bounded
   input bursts,
   POSIX flow control disabled in raw mode, Unicode emoji widths, synchronized
   frames, full-screen scroll-region presentation, closed-input EOF,
