@@ -1,12 +1,11 @@
-//// A broker over a real pool of fake helpers, in either dispatch lane.
+//// A broker over a real pool of fake helpers, carried out by the executor
+//// service.
 ////
-//// The direct lane and the service lane must behave alike from the
-//// caller's side, so the tests that compare them need the two planes built
-//// from the same parts: one pool of the same helpers, one broker, the same
-//// clock. Only the dispatcher differs. This module builds each, and the
-//// small amount of scaffolding every such test wants: a call spec, a
-//// collector for a call's events, and a record of every helper the lane
-//// borrowed.
+//// A test of the effect plane wants the same parts every time: one pool of
+//// scripted helpers, the service over it, a broker whose dispatcher is that
+//// service, and a clock. This module builds them, and the small amount of
+//// scaffolding every such test wants: a call spec, a collector for a call's
+//// events, and a record of every helper the service borrowed.
 
 import broker/broker.{type CallEvent}
 import broker/budget
@@ -18,27 +17,16 @@ import core/clock.{type Clock}
 import core/ids
 import gleam/erlang/process.{type Subject}
 import gleam/list
-import gleam/option.{type Option, None, Some}
 import telemetry/log.{type Logger}
 
-/// Which dispatcher carries cleared calls out.
-pub type Lane {
-  /// `broker/direct`: today's relay per call, no service.
-  Direct
-
-  /// `broker/executor`: the service, with a relay per call.
-  Service
-}
-
-/// One lane's parts.
+/// One plane's parts.
 pub type Plane {
   Plane(
-    lane: Lane,
     broker: broker.Broker,
     pool: exec.Pool,
-    /// The service, in the service lane only.
-    service: Option(executor.Executor),
-    /// Every helper the lane borrowed from the pool, in order.
+    /// The service the broker dispatches through.
+    service: executor.Executor,
+    /// Every helper the service borrowed from the pool, in order.
     borrowed: Subject(Helper),
   )
 }
@@ -71,16 +59,14 @@ pub fn spec(
   )
 }
 
-/// Builds a pool of `size` helpers made by `spawn` and a broker over it in
-/// `lane`. The same pool seams feed both lanes, so a difference between
-/// two planes is a difference between dispatchers.
+/// Builds a pool of `size` helpers made by `spawn` and a broker over it,
+/// dispatching through a service over that pool.
 pub fn start(
-  lane: Lane,
   size size: Int,
   spawn spawn: fn() -> Result(Helper, exec.SpawnError),
   clock clock: Clock,
 ) -> Plane {
-  start_intercepted(lane, size:, spawn:, clock:, intercept: fn(checkout) {
+  start_intercepted(size:, spawn:, clock:, intercept: fn(checkout) {
     checkout()
   })
 }
@@ -90,32 +76,28 @@ pub fn start(
 /// test block the service inside a `start`, or answer `AllBusy` at once,
 /// without touching the pool.
 pub fn start_intercepted(
-  lane: Lane,
   size size: Int,
   spawn spawn: fn() -> Result(Helper, exec.SpawnError),
   clock clock: Clock,
   intercept intercept: fn(fn() -> Result(Helper, exec.CheckoutError)) ->
     Result(Helper, exec.CheckoutError),
 ) -> Plane {
-  start_with(lane, size:, spawn:, clock:, intercept:, logger: log.discard())
+  start_with(size:, spawn:, clock:, intercept:, logger: log.discard())
 }
 
-/// As `start`, with the service writing its lines through `logger`. The
-/// direct lane has no service and ignores it.
+/// As `start`, with the service writing its lines through `logger`.
 pub fn start_logged(
-  lane: Lane,
   size size: Int,
   spawn spawn: fn() -> Result(Helper, exec.SpawnError),
   clock clock: Clock,
   logger logger: Logger,
 ) -> Plane {
-  start_with(lane, size:, spawn:, clock:, logger:, intercept: fn(checkout) {
+  start_with(size:, spawn:, clock:, logger:, intercept: fn(checkout) {
     checkout()
   })
 }
 
 fn start_with(
-  lane: Lane,
   size size: Int,
   spawn spawn: fn() -> Result(Helper, exec.SpawnError),
   clock clock: Clock,
@@ -138,48 +120,29 @@ fn start_with(
     })
   }
   let checkin = fn(helper) { exec.checkin(pool, helper) }
-  case lane {
-    Direct -> {
-      let assert Ok(started) =
-        broker.start(broker.BrokerConfig(
-          entropy: token.production_entropy(),
-          clock:,
-          checkout:,
-          checkin:,
-        ))
-        as "the direct broker starts"
-      Plane(lane:, broker: started, pool:, service: None, borrowed:)
-    }
-    Service -> {
-      let assert Ok(service) =
-        executor.start(executor.ExecutorConfig(
-          checkout:,
-          checkin:,
-          custody: fn() { exec.pool_custody(pool, waiting: 1000) },
-          close_helpers: fn(ms) { exec.close_pool(pool, waiting: ms) },
-          incarnation: 1,
-          log: logger,
-        ))
-        as "the executor service starts"
-      let assert Ok(started) =
-        broker.start_dispatching(
-          entropy: token.production_entropy(),
-          clock:,
-          dispatcher: executor.dispatcher(service),
-        )
-        as "the service broker starts"
-      Plane(lane:, broker: started, pool:, service: Some(service), borrowed:)
-    }
-  }
+  let assert Ok(service) =
+    executor.start(executor.ExecutorConfig(
+      checkout:,
+      checkin:,
+      custody: fn() { exec.pool_custody(pool, waiting: 1000) },
+      close_helpers: fn(ms) { exec.close_pool(pool, waiting: ms) },
+      incarnation: 1,
+      log: logger,
+    ))
+    as "the executor service starts"
+  let assert Ok(started) =
+    broker.start_dispatching(
+      entropy: token.production_entropy(),
+      clock:,
+      dispatcher: executor.dispatcher(service),
+    )
+    as "the service broker starts"
+  Plane(broker: started, pool:, service:, borrowed:)
 }
 
 /// A plane over fresh helpers of one script, with the clock fixed.
-pub fn start_scripted(
-  lane: Lane,
-  size size: Int,
-  script script: fn() -> Helper,
-) -> Plane {
-  start(lane, size:, spawn: fn() { Ok(script()) }, clock: clock.fixed(at: 1000))
+pub fn start_scripted(size size: Int, script script: fn() -> Helper) -> Plane {
+  start(size:, spawn: fn() { Ok(script()) }, clock: clock.fixed(at: 1000))
 }
 
 /// Stops the broker and asks the pool to retire every helper.

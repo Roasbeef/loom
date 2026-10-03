@@ -2681,8 +2681,8 @@ catalogue without opening runtimes. Explicit admission invokes
   `stop_check_plane` close it with `executor.drain_ms` and
   `executor.helpers_ms`; a close that errs falls back to `exec.stop_pool`
   and reports nothing, so no native-exit verdict is invented. Production
-  therefore has one execution model. `broker/direct` remains only behind
-  `broker.start`, for tests and `client/demo`.
+  therefore has one execution model. `broker.start` is the same service
+  over a pool's seams, for tests and `client/demo`; `broker/direct` is gone.
 - `client/serve.Settings.base_policy` — the base every tool call is
   composed against, and the thing an escalation widens. A field rather
   than a `base_policy(workspace)` call inside `boot`, so a host may serve

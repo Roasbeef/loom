@@ -250,3 +250,23 @@ the direct arm of `client/serve`, so a session has one execution model.
 about forty test and demo call sites use, and migrating them is follow-up work.
 `lane_equivalence_test` and `real_lane_test` stay as the parity evidence that the
 two dispatchers agree.
+
+## Addendum — `broker/direct` was deleted (issue #696 follow-up)
+
+`broker/direct` had survived only as the dispatcher behind
+`broker.start(BrokerConfig)`, with `lane_equivalence_test` and `real_lane_test`
+as the evidence that it and the service agreed. Nothing but those callers used
+it, so it was deleted, together with the comparison. `broker.start` stays as the
+entry for a caller that holds a pool's `checkout` and `checkin` and no session,
+and it now starts an executor service over those two seams, so the 59 call sites
+in 43 files needed no change. Production, the tests and the M3 demo have one
+execution model.
+
+The scenarios the comparison ran are asserted absolutely. `call_story_test` pins
+what a caller sees of twelve endings over fake helpers and
+`real_helper_service_test` checks the bytes and exit of four payloads over real
+helpers. One assertion changed because the lanes differed: a helper actor that is
+already dead when a call is dispatched now settles `ExecutionLost(HelperActorDown)`,
+where the direct lane said `HelperUnresponsive`, since the service's relay
+monitors the helper it is given. The seam stayed a record of functions, so a
+test can still hand the broker a fake dispatcher.

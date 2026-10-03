@@ -8,8 +8,8 @@
 //// wrapping that session's helper pool. It borrows a helper for each
 //// execution, starts a `broker/relay` to watch the execution, dispatches
 //// the helper, and keeps a row for the execution until the broker releases
-//// it. Four properties that the direct lane left to convention are
-//// properties of this module's structure.
+//// it. Four properties that the per-call relay this service replaced left to
+//// convention are properties of this module's structure.
 ////
 //// ## One sender
 ////
@@ -56,8 +56,8 @@
 //// the service cancels the helper, returns it (the pool retires a helper
 //// returned while busy), removes the row and settles the caller as
 //// `ExecutionLost(RelayDown)`. The second arrival finds no row and is
-//// dropped. The caller therefore always hears a settlement in this lane;
-//// the direct lane gives none when its relay dies.
+//// dropped. The caller therefore always hears a settlement, even when its
+//// relay dies, which the per-call relay this service replaced never did.
 ////
 //// That claim holds for a `Granted` row too, by an argument about order.
 //// The broker's `settle` closure sends the broker its `Settle` message
@@ -86,7 +86,7 @@
 //// budget (`drain_ms`). Executions still live at that point are settled
 //// `ExecutionLost(ExecutorClosing)`, their relays killed and their helpers
 //// returned busy. Then it closes the pool with the pool's own budget
-//// (`helpers_ms`, the 5000 the direct lane gave `close_pool`) and replies
+//// (`helpers_ms`, the 5000 `close_pool` is given when called alone) and replies
 //// with the pool's verdict. The two are separate arguments so that the
 //// pool is never given only what a slow drain left over.
 ////
@@ -392,11 +392,11 @@ fn start_budget_ms() -> Int {
 /// own TERM-to-KILL ladder, so a helper that honours cancel has answered.
 pub const drain_ms = 2000
 
-/// How long the pool is given to show every helper retired. The direct
-/// lane gave `close_pool` exactly this, and the service lane keeps it
-/// whole: draining is the service's own work and is paid for separately,
-/// so a shutdown with executions in flight does not make the pool report
-/// `RetirementPending` where the direct lane would have succeeded.
+/// How long the pool is given to show every helper retired. The service
+/// keeps it whole: draining is the service's own work and is paid for
+/// separately, so a shutdown with executions in flight does not make the
+/// pool report `RetirementPending` where an idle shutdown would have
+/// succeeded.
 pub const helpers_ms = 5000
 
 // The caller of `close` waits this much past the two budgets, because the
@@ -820,8 +820,8 @@ fn dispatch_execution(
       cancelled_mono: None,
     )
 
-  // A refusal here still reaches the caller through the relay, as the
-  // direct lane does, so the caller sees one settlement either way. The
+  // A refusal here still reaches the caller through the relay, so the
+  // caller sees one settlement either way. The
   // service sends it on the relay's own subject, which the relay reads as
   // the helper's failure event.
   case

@@ -1,23 +1,24 @@
-//// The two dispatch lanes against the real `loom-exec` helper.
+//// The executor service against the real `loom-exec` helper.
 ////
-//// `lane_equivalence_test` compares the lanes over fakes, which prove the
-//// plumbing and nothing about the kernel. This module runs the same four
-//// payloads through a broker in each lane over a pool of real helpers, and
-//// asserts that the caller sees the same bytes, the same exit and a
-//// byte-identical enforcement report. The report is the one that matters:
-//// it is ground truth about the jail, and a lane that altered it would be
-//// a lane that altered what the caller was told it got.
+//// `executor_test` and `call_story_test` drive the service over fakes, which
+//// prove the plumbing and nothing about the kernel. This module runs four
+//// payloads through a broker over a pool of real helpers and asserts that
+//// the caller sees the right bytes, the right exit and a non-empty
+//// enforcement report. The report is the one that matters: it is ground
+//// truth about the jail, and a service that dropped it would be a service
+//// that hid what the caller got. The helper's own tests, and `make e2e`,
+//// own what the report says; here it only has to arrive.
 ////
 //// Discovery and skip rules follow `integration_test`: the helper is the
 //// one `make sandbox` built, a missing one skips with the remedy named, and
-//// nothing here compiles a helper of its own. Wall time is the one field
-//// not compared, because two real runs never take the same time.
+//// nothing here compiles a helper of its own. Wall time is not asserted,
+//// because two real runs never take the same time.
 ////
-//// Two further tests run the service lane alone against the real helper,
-//// for properties a fake cannot show: that a caller which stops reading
-//// cannot slow a cancel, because the helper's own `output_bytes` cap is
-//// what bounds the backlog, and that back-to-back runs on a pool of one
-//// never meet a helper still busy with the last.
+//// Two further tests run the service against the real helper for
+//// properties a fake cannot show: that a caller which stops reading cannot
+//// slow a cancel, because the helper's own `output_bytes` cap is what
+//// bounds the backlog, and that back-to-back runs on a pool of one never
+//// meet a helper still busy with the last.
 
 import broker/broker
 import broker/budget
@@ -25,7 +26,7 @@ import broker/exec
 import broker/framing
 import broker/policy
 import broker/support/bench_host as host
-import broker/support/lanes.{type Lane}
+import broker/support/planes
 import core/clock
 import gleam/bit_array
 import gleam/erlang/process
@@ -33,7 +34,6 @@ import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
-import gleam/string
 import simplifile
 
 // Locates the prebuilt helper and returns a ready SpawnConfig, or the
@@ -57,7 +57,7 @@ fn helper_config_here() -> Result(exec.SpawnConfig, String) {
         shell_path: "/bin/sh",
         base_policy: base_policy(work_dir),
         helper_args: [],
-        tmp_dir: work_dir <> "/tmp-lanes",
+        tmp_dir: work_dir <> "/tmp-service",
         handshake_timeout_ms: 5000,
         cancel_grace_ms: 3000,
         heartbeat_interval_ms: 0,
@@ -128,10 +128,9 @@ type Observed {
   )
 }
 
-fn run(lane: Lane, config: exec.SpawnConfig, payload: Payload) -> Observed {
+fn run(config: exec.SpawnConfig, payload: Payload) -> Observed {
   let plane =
-    lanes.start(
-      lane,
+    planes.start(
       size: 1,
       spawn: fn() { exec.prepare_helper(config) },
       clock: clock.fixed(at: 1_700_000_000_000),
@@ -141,8 +140,8 @@ fn run(lane: Lane, config: exec.SpawnConfig, payload: Payload) -> Observed {
   let base = base_policy(work_dir)
   let spec =
     broker.CallSpec(
-      op_id: lanes.op(),
-      step_id: "lane-" <> payload.name,
+      op_id: planes.op(),
+      step_id: "real-" <> payload.name,
       base_policy: base,
       requirements: base,
       grants: [],
@@ -167,8 +166,8 @@ fn run(lane: Lane, config: exec.SpawnConfig, payload: Payload) -> Observed {
       broker.stdin(plane.broker, handle, data: <<text:utf8>>, eof: True)
     }
   }
-  let seen = lanes.collect(events, within: 15_000)
-  lanes.stop(plane)
+  let seen = planes.collect(events, within: 15_000)
+  planes.stop(plane)
   observe(payload.name, seen)
 }
 
@@ -201,70 +200,26 @@ fn observe(name: String, seen: List(broker.CallEvent)) -> Observed {
     cancelled: result.cancelled,
     degraded: result.degraded,
     timed_out: result.timed_out,
-    enforcement: list.map(result.enforcement, without_run_details),
+    enforcement: result.enforcement,
   )
 }
 
-// The parts of an enforcement tag that describe this run rather than the
-// layer, cut so the lanes are compared on what they enforced.
-//
-// A `skip:` tag names its layer and then why it was skipped, and on Darwin
-// the reason is a live reading of the host: `skip:rlimit-processes` reports
-// how many processes the uid already has, which moves between the two runs
-// whenever anything else on the machine starts or exits (a full `make
-// check` always has something running). Which layers were skipped is the
-// claim, so a skip compares by its layer alone.
-//
-// Darwin's `seatbelt-fs` tag ends in `plan=<digest>`, a hash over the
-// generated profile and its path definitions. Those name the run's own
-// private scratch directory, so two runs never share a digest whichever lane
-// carried them. The digest is cut and every other field of the tag is kept.
-// Linux's `mounts` digest covers only the mount plan, which these runs
-// share, and is left whole.
-fn without_run_details(tag: String) -> String {
-  case string.starts_with(tag, exec.skip_prefix) {
-    True -> skipped_layer(tag)
-    False -> without_plan_digest(tag)
-  }
-}
-
-fn skipped_layer(tag: String) -> String {
-  case string.split_once(tag, ": ") {
-    Ok(#(layer, _reason)) -> layer
-    Error(Nil) -> tag
-  }
-}
-
-fn without_plan_digest(tag: String) -> String {
-  case
-    string.starts_with(tag, "seatbelt-fs:"),
-    string.split_once(tag, ",plan=")
-  {
-    True, Ok(#(layer, _digest)) -> layer
-    _, _ -> tag
-  }
-}
-
-/// The same four payloads, through each lane, over real helpers, give the
-/// same bytes, the same exit and the same enforcement report. The
-/// expectations on the first lane's own result make the comparison mean
-/// something: two lanes agreeing on a wrong answer would still fail them.
-pub fn real_helper_outcomes_are_identical_in_both_lanes_test() {
+/// Four payloads, through the service, over real helpers, give the bytes and
+/// the exit each of them must produce, and an enforcement report that
+/// arrived.
+pub fn real_helper_outcomes_are_what_each_payload_produces_test() {
   case helper_config() {
-    Error(reason) ->
-      io.println_error("SKIP real_helper_outcomes_are_identical: " <> reason)
+    Error(reason) -> io.println_error("SKIP real_helper_outcomes: " <> reason)
     Ok(config) ->
       list.each(payloads(), fn(payload) {
-        let direct = run(lanes.Direct, config, payload)
-        let service = run(lanes.Service, config, payload)
-        assert direct == service as payload.name
-        assert direct.enforcement != [] as payload.name
-        assert expected(payload, direct) as payload.name
+        let observed = run(config, payload)
+        assert observed.enforcement != [] as payload.name
+        assert expected(payload, observed) as payload.name
       })
   }
 }
 
-// What each payload must have done, whichever lane ran it.
+// What each payload must have done.
 fn expected(payload: Payload, observed: Observed) -> Bool {
   case payload.drive {
     CancelAfter(..) -> observed.cancelled && observed.code == 143
@@ -286,7 +241,7 @@ fn real_spec(argv: List(String)) -> broker.CallSpec {
   let work_dir = here <> "/build/integration"
   let base = base_policy(work_dir)
   broker.CallSpec(
-    op_id: lanes.op(),
+    op_id: planes.op(),
     step_id: "service-real",
     base_policy: base,
     requirements: base,
@@ -329,8 +284,7 @@ pub fn a_caller_that_stops_reading_cannot_slow_a_cancel_test() {
       io.println_error("SKIP a_caller_that_stops_reading: " <> reason)
     Ok(config) -> {
       let plane =
-        lanes.start(
-          lanes.Service,
+        planes.start(
           size: 1,
           spawn: fn() { exec.prepare_helper(config) },
           clock: clock.fixed(at: 1_700_000_000_000),
@@ -348,7 +302,7 @@ pub fn a_caller_that_stops_reading_cannot_slow_a_cancel_test() {
       process.sleep(2000)
       let asked_at = host.now_us()
       broker.cancel(plane.broker, handle)
-      let seen = lanes.collect(events, within: 5000)
+      let seen = planes.collect(events, within: 5000)
       let settled_ms = { host.now_us() - asked_at } / 1000
 
       let assert Ok(broker.CallSettled(broker.CallExited(result))) =
@@ -364,7 +318,7 @@ pub fn a_caller_that_stops_reading_cannot_slow_a_cancel_test() {
         as { "the mailbox held " <> int.to_string(bytes) <> " bytes" }
       assert bytes >= 1_048_576 / 2
       assert truncated
-      lanes.stop(plane)
+      planes.stop(plane)
     }
   }
 }
@@ -380,8 +334,7 @@ pub fn twenty_sequential_runs_on_one_real_helper_see_no_busy_window_test() {
     Error(reason) -> io.println_error("SKIP twenty_sequential_runs: " <> reason)
     Ok(config) -> {
       let plane =
-        lanes.start(
-          lanes.Service,
+        planes.start(
           size: 1,
           spawn: fn() { exec.prepare_helper(config) },
           clock: clock.fixed(at: 1_700_000_000_000),
@@ -396,10 +349,10 @@ pub fn twenty_sequential_runs_on_one_real_helper_see_no_busy_window_test() {
             waiting: 10_000,
           )
         let assert [broker.CallSettled(broker.CallExited(result))] =
-          lanes.collect(events, within: 10_000)
+          planes.collect(events, within: 10_000)
         assert result.code == 0
       })
-      lanes.stop(plane)
+      planes.stop(plane)
     }
   }
 }

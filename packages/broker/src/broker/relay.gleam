@@ -75,7 +75,7 @@
 //// synchronous call, `cancel_wait_ms`) and enters `Draining` only after
 //// the service has answered, which it does after it has sent the helper
 //// the cancel. The grace then measures the helper's answer to a cancel
-//// that was sent, as it does in the direct lane. A service that does not
+//// that was sent. A service that does not
 //// answer is wedged or dead; the relay drains anyway, because the grace is
 //// the only thing left that bounds the relay, and a service that wakes
 //// later still forwards the cancel it finds in its mailbox. Waiting inside
@@ -240,9 +240,10 @@ type Course {
   End
 }
 
-// The direct relay has always waited this long past the remaining span
-// before it cancelled, and the service lane keeps the allowance so that
-// the two lanes expire together.
+// The wall deadline fires this long after the remaining span has elapsed,
+// so the span the clock reports is always complete before the relay
+// cancels, and a clock that reads a few milliseconds behind the timer does
+// not cancel a call early.
 const wall_slack_ms = 20
 
 /// How long a relay waits for the service to answer a request for leave to

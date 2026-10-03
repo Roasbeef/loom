@@ -27,7 +27,7 @@
 //// 4. `authorize` reserves a budget slot (`reserve_budget`), then `mint_token`
 ////    binds a single-use token and `start_execution` hands the call to the
 ////    dispatcher.
-//// 5. The dispatcher (`broker/dispatch`; `broker/direct` is today's
+//// 5. The dispatcher (`broker/dispatch`; `broker/executor` is its one
 ////    implementation) borrows a helper, forwards output through the
 ////    deliver closure the broker built, enforces the wall deadline, and
 ////    reports the one terminal verdict through the settle closure.
@@ -83,8 +83,8 @@
 //// with no network at all. Either way nothing ever claims a proxy
 //// allowlist was enforced (see the `broker/policy` module doc).
 ////
-//// Effects are injected: execution is a `Dispatcher` (by default the
-//// direct one over a pair of checkout/checkin functions) and entropy/time
+//// Effects are injected: execution is a `Dispatcher` (the executor service,
+//// over a pool or over a pair of checkout/checkin functions) and entropy/time
 //// are injected values, so the entire flow runs against an in-process fake
 //// helper, or a fake dispatcher, in tests.
 ////
@@ -93,10 +93,10 @@
 //// layered on the same `clear_call` path.
 
 import broker/budget.{type Budget}
-import broker/direct
 import broker/dispatch.{type Dispatcher}
 import broker/escalation.{type Denial}
 import broker/exec.{type ExecFailure, type ExecResult, type Helper}
+import broker/executor
 import broker/framing.{type OutputStream}
 import broker/internal/call
 import broker/policy.{type Grant, type SandboxPolicy}
@@ -111,6 +111,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
+import telemetry/log
 
 /// What to do when composition gives the tool less than it required.
 pub type NarrowingResponse {
@@ -229,8 +230,9 @@ pub opaque type CallHandle {
 }
 
 /// Wiring for a broker: entropy, time, and the exec pool seam. `start`
-/// turns the pool seam into a `broker/direct` dispatcher; a caller with a
-/// different dispatcher uses `start_dispatching` and has no use for this.
+/// builds an executor service over the pool seam; a caller that holds its
+/// own service, as a session does, uses `start_dispatching` and has no use
+/// for this.
 pub type BrokerConfig {
   BrokerConfig(
     /// Token entropy; production passes `token.production_entropy()`.
@@ -379,16 +381,43 @@ type State {
 }
 
 /// Starts a broker whose executions run on helpers borrowed through
-/// `config.checkout` and returned through `config.checkin`: the direct
-/// dispatcher over that pool seam.
+/// `config.checkout` and returned through `config.checkin`, carried out by an
+/// executor service that this call starts over those two seams.
+///
+/// The service is linked to the caller and ends with it. It answers no
+/// custody (`config` has no pool to ask) and closes no helpers, so a caller
+/// that owns a pool stops the pool itself, which is what every caller of
+/// this function already does; a session, which needs the service's
+/// `close` as a custody step, starts the service itself and uses
+/// `start_dispatching`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(started) =
+///   broker.start(broker.BrokerConfig(
+///     entropy: token.production_entropy(),
+///     clock: clock.system(),
+///     checkout: fn() { exec.checkout(pool, waiting: 15_000) },
+///     checkin: fn(helper) { exec.checkin(pool, helper) },
+///   ))
+/// ```
+///
 pub fn start(config: BrokerConfig) -> Result(Broker, actor.StartError) {
+  use service <- result.try(
+    executor.start(executor.ExecutorConfig(
+      checkout: config.checkout,
+      checkin: config.checkin,
+      custody: fn() { Error(exec.AllBusy(size: 0)) },
+      close_helpers: fn(_ms) { Ok(Nil) },
+      incarnation: 0,
+      log: log.discard(),
+    )),
+  )
   start_dispatching(
     entropy: config.entropy,
     clock: config.clock,
-    dispatcher: direct.dispatcher(
-      checkout: config.checkout,
-      checkin: config.checkin,
-    ),
+    dispatcher: executor.dispatcher(service),
   )
 }
 
@@ -403,7 +432,7 @@ pub fn start(config: BrokerConfig) -> Result(Broker, actor.StartError) {
 ///   broker.start_dispatching(
 ///     entropy: token.production_entropy(),
 ///     clock: clock.system(),
-///     dispatcher: direct.dispatcher(checkout:, checkin:),
+///     dispatcher: executor.dispatcher(service),
 ///   )
 /// ```
 ///
@@ -705,7 +734,7 @@ pub fn abort_epoch_count(broker: Broker, waiting timeout: Int) -> Int {
 
 /// The pid of a cleared call's guarantor (the process whose unsettled
 /// death means the call will never settle), or `Error(Nil)` once the call
-/// settled. For the direct dispatcher that is the call's relay. Exists so
+/// settled. For the executor service that is the call's relay. Exists so
 /// tests can kill it and prove the broker reclaims the call's budget slot,
 /// token, and helper; not part of the broker's API.
 @internal

@@ -22,11 +22,10 @@ import broker/exec
 import broker/executor
 import broker/support/bench_host as host
 import broker/support/fake_helper
-import broker/support/lanes
+import broker/support/planes
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
-import gleam/option.{Some}
 import weft/poll
 
 // How an execution is made to end.
@@ -80,14 +79,14 @@ fn argv_of(ending: Ending) -> List(String) {
 /// the VM as they were.
 pub fn a_hundred_mixed_executions_leak_nothing_test() {
   let plane =
-    lanes.start_scripted(lanes.Service, size: 12, script: fn() {
+    planes.start_scripted(size: 12, script: fn() {
       fake_helper.start_helper_configured(
         fake_helper.ByArgv,
         cancel_grace_ms: 300,
         heartbeat_interval_ms: 0,
       )
     })
-  let assert Some(service) = plane.service
+  let service = plane.service
 
   // One execution first, so the helper and its fake exist before the
   // process count is read.
@@ -144,7 +143,7 @@ pub fn a_hundred_mixed_executions_leak_nothing_test() {
       <> " to "
       <> int.to_string(processes_after)
     }
-  lanes.stop(plane)
+  planes.stop(plane)
 }
 
 // What one execution left behind for the census.
@@ -153,16 +152,16 @@ type Outcome {
 }
 
 // Runs one execution to its ending and counts what its caller heard.
-fn run_one(plane: lanes.Plane, ending: Ending) -> Outcome {
+fn run_one(plane: planes.Plane, ending: Ending) -> Outcome {
   case ending {
     CallerDies -> run_doomed(plane)
     Succeeds | Cancelled | HelperCrashes | Escalated -> run_live(plane, ending)
   }
 }
 
-fn run_live(plane: lanes.Plane, ending: Ending) -> Outcome {
+fn run_live(plane: planes.Plane, ending: Ending) -> Outcome {
   let events = process.new_subject()
-  let spec = lanes.spec(lanes.op(), argv: argv_of(ending), deadline_ms: 0)
+  let spec = planes.spec(planes.op(), argv: argv_of(ending), deadline_ms: 0)
   let assert Ok(handle) =
     broker.clear_call(plane.broker, spec, events:, waiting: 5000)
   let relay = broker.relay_pid(plane.broker, handle, waiting: 1000)
@@ -174,7 +173,7 @@ fn run_live(plane: lanes.Plane, ending: Ending) -> Outcome {
     }
     CallerDies -> Nil
   }
-  let seen = lanes.collect(events, within: 8000)
+  let seen = planes.collect(events, within: 8000)
   let settlements = count_settlements(seen)
   assert process.receive(events, 20) == Error(Nil)
   Outcome(ending:, settlements:, relays: pids(relay))
@@ -182,13 +181,13 @@ fn run_live(plane: lanes.Plane, ending: Ending) -> Outcome {
 
 // A caller that dies after the call is running: it hears nothing, and the
 // broker is left to put everything back.
-fn run_doomed(plane: lanes.Plane) -> Outcome {
+fn run_doomed(plane: planes.Plane) -> Outcome {
   let reported: Subject(Result(Pid, Nil)) = process.new_subject()
   let caller =
     process.spawn_unlinked(fn() {
       let events = process.new_subject()
       let spec =
-        lanes.spec(lanes.op(), argv: argv_of(CallerDies), deadline_ms: 0)
+        planes.spec(planes.op(), argv: argv_of(CallerDies), deadline_ms: 0)
       let assert Ok(handle) =
         broker.clear_call(plane.broker, spec, events:, waiting: 5000)
       process.send(
@@ -205,12 +204,12 @@ fn run_doomed(plane: lanes.Plane) -> Outcome {
 // The helper the last checkout lent: every checkout is announced on the
 // plane's `borrowed` subject, so the newest announcement is the one just
 // made, and the older ones are read past.
-fn latest_borrowed(plane: lanes.Plane) -> exec.Helper {
+fn latest_borrowed(plane: planes.Plane) -> exec.Helper {
   let assert Ok(first) = process.receive(plane.borrowed, 2000)
   newest(plane, first)
 }
 
-fn newest(plane: lanes.Plane, so_far: exec.Helper) -> exec.Helper {
+fn newest(plane: planes.Plane, so_far: exec.Helper) -> exec.Helper {
   case process.receive(plane.borrowed, 0) {
     Ok(later) -> newest(plane, later)
     Error(Nil) -> so_far

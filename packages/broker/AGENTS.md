@@ -37,23 +37,13 @@ protocol (spec Part 1.4). WP-G.
   return what was lent). Exactly one of the two runs, because only the
   `Settle` path demonitors. `ExecutionId` is
   opaque, `{incarnation, seq}`. `broker.start_dispatching(entropy:, clock:,
-  dispatcher:)` takes any dispatcher; `broker.start(config)` is it over
-  `direct.dispatcher`, so `BrokerConfig` and every caller of `start` are
-  unchanged.
-- `broker/direct.dispatcher(checkout:, checkin:)` — **not a production
-  path**: production has one execution model, the executor service (the
-  session, the extension build plane and `loom ext check` all run it). It
-  stays only as the dispatcher behind `broker.start(BrokerConfig)`, which
-  about forty-three test call sites and the M3 demo use;
-  `lane_equivalence_test` and `real_lane_test` remain the parity evidence.
-  It is the implementation the broker used to carry inline: borrow a helper, spawn a per-call relay that
-  owns the exec-event subject (ready handshake, caller monitor, `Streaming`
-  and `Draining` modes, `relay_grace_ms`, wall deadline on the injected
-  clock), run synchronously inside `start`, return an `Execution` whose
-  closures capture the helper. The relay only settles; the helper goes
-  back through `release` (`checkin`), which the broker calls while handling
-  `Settle`, exactly where it used to check in. `abandon` is `exec.cancel`
-  then `checkin`.
+  dispatcher:)` takes any dispatcher. `broker.start(config)` is the same
+  over an executor service it starts itself on the `checkout` and `checkin`
+  seams of a `BrokerConfig` (no custody query and no pool to close), for the
+  callers that hold a pool and no session: the tests of every package that
+  runs a tool and the M3 demo. `broker/direct`, the per-call relay the broker
+  once carried inline, was deleted with the lane comparison that kept it (issue
+  #696 follow-up): production, the tests and the demo run one execution model.
 - `broker/execution.{Core, step, Event, Effect, Mode, Output, Truncation}` —
   the pure core of one execution's relay, and the only place its decisions
   live. `step(core, event) -> #(core, effects)` takes one of eight events
@@ -93,7 +83,7 @@ protocol (spec Part 1.4). WP-G.
   every mismatched version and ignores features, which are capability and
   are reported, never refused. No process, no FFI.
 - `broker/executor.{start, dispatcher, pid, inventory, snapshot, census, close,
-  ExecutorConfig, Inventory}` — the service lane's one process per session, a
+  ExecutorConfig, Inventory}` — the service's one process per session, a
   `weft/state_machine` with phases `Serving | Closing(closer) |
   Closed(outcome)` (the pool's shape, with a state timeout in `Closing` for
   the drain budget). `ExecutorConfig` is closures over the pool
@@ -130,8 +120,8 @@ protocol (spec Part 1.4). WP-G.
   `pool_custody` (`HelperView.features`); it borrows and spawns nothing.
   Empty features mean unknown: no helper has said hello yet, the pool did
   not answer, or the service is closing.
-- `broker/dispatch.relay_grace_ms` — the drain grace both dispatchers use,
-  moved here from `direct` so the lanes cannot disagree on it.
+- `broker/dispatch.relay_grace_ms` — the drain grace of a relay's `Draining`
+  mode, kept in the seam module so the relay and the tests name one figure.
 - `broker/policy.SandboxPolicy` — `SandboxPolicyV1` as a typed value:
   writable/readable/protected roots, `NetworkPolicy`, `Limits`,
   `env_allow`, `Scratch`, and `mounts`. `compose` implements session base ⊕
@@ -279,7 +269,7 @@ protocol (spec Part 1.4). WP-G.
     `SendStdin(handle, data, eof: dispatch.Eof)`, `CancelCall(handle)`,
     `AbortOp(op_id)`, `AbortStep(op_id, step_id)`, `Settle(call_id)`,
     `GuarantorDown(down)`, `QueryRelay(handle, reply)` (answers the
-    execution's guarantor, which for `direct` is the relay),
+    execution's guarantor, which is the relay),
     `QueryEpochs(reply)`, `StopBroker`. The last two are `@internal`
     observability, reached only by `relay_pid` and `abort_epoch_count`.
     `Settle` is sent by a call's `settle` closure, from the dispatcher's
@@ -481,7 +471,7 @@ protocol (spec Part 1.4). WP-G.
   can still return to lending, so zero means a pool that lends nothing or
   one whose every slot is held by an unconfirmed retirement, and neither
   has anything to check back in.
-- **Service lane: the service is the helper's only sender.** Every `Run`,
+- **Executor service: the service is the helper's only sender.** Every `Run`,
   `Stdin` and `CancelExec` an execution causes is sent by `broker/executor`.
   The relay asks for a cancel (`Link.cancel` is a bounded call of
   `CancelAsk(id)`, answered after the service sent the helper its cancel); it
@@ -495,7 +485,7 @@ protocol (spec Part 1.4). WP-G.
   the relay casts to the helper directly, because the absorbing core never
   cancels after settling, so the ordering argument is defence in depth that
   is argued, not independently exercised.
-- **Service lane: settled exactly once through `MaySettle`.** The relay may
+- **Executor service: settled exactly once through `MaySettle`.** The relay may
   report only after the service answers `Granted`, which it does once, for a
   `Live` row, and which turns the row `Granted`; any other ask is
   `AlreadySettled` and the relay stays silent. The service settles a row
@@ -515,10 +505,9 @@ protocol (spec Part 1.4). WP-G.
   reports anyway (`ServiceSilent`); a dead service settles nothing, and a
   live one answers late into a row it has by then either granted or
   removed. The caller therefore always hears a settlement in this lane,
-  including when the relay dies, which the direct lane never delivered.
-  The helper is checked in exactly where the direct lane checked it in: by
-  `Release`, which the broker casts while processing the relay's `Settle`.
-- **Service lane: the relay's cancel starts its grace when the cancel was
+  including when the relay dies. The helper is checked in by `Release`,
+  which the broker casts while processing the relay's `Settle`.
+- **Executor service: the relay's cancel starts its grace when the cancel was
   sent (issue #696, F4).** A relay cancels for its own reasons (caller gone,
   wall deadline) and its `Draining` grace is `dispatch.relay_grace_ms`. A
   cast would start that clock while the cancel sat unread behind a service
@@ -532,17 +521,17 @@ protocol (spec Part 1.4). WP-G.
   never waits on a relay. Pinned by `executor_test`'s
   `a_relays_own_cancel_starts_its_grace_when_the_cancel_is_sent`; reverting
   the closure to a cast makes it settle `CancelEscalated`.
-- **Service lane: closing is a transition.** `executor.close(draining:,
+- **Executor service: closing is a transition.** `executor.close(draining:,
   helpers:)` refuses new starts with `NoHelper(PoolUnavailable)`
   (deliberately not `AllBusy`, so callers stop polling), cancels every live
   row, waits `draining` (`executor.drain_ms`, 2 000) for live rows to be
   granted, settles the rest `ExecutionLost(ExecutorClosing)` (relay killed,
   helper checked in busy so the pool retires it), then returns
   `close_helpers(helpers)`. The pool keeps its whole budget
-  (`executor.helpers_ms`, 5 000, what the direct lane gave `close_pool`)
-  however long the drain took (F5); an earlier single `waiting` split in
-  half left the pool 2.5-5 s and made `RetirementPending` likelier at
-  shutdown than in the direct lane. The call blocks at most
+  (`executor.helpers_ms`, 5 000, what `close_pool` is given when called
+  alone) however long the drain took (F5); an earlier single `waiting` split
+  in half left the pool 2.5-5 s and made `RetirementPending` likelier at
+  shutdown. The call blocks at most
   `draining + helpers + 1 000` (8 s with the constants), the figure a
   teardown step that funds it should assume. `instance_owner`'s cleanup
   steps have no overall deadline (its `close(within_ms)` bounds only the
@@ -560,17 +549,15 @@ protocol (spec Part 1.4). WP-G.
   pool, so a retirement that finished after an `Error` cannot improve it, and
   a caller retrying custody goes to `exec.close_pool` directly. After a clean close the service is gone
   and it answers `RetirementOwnerGone`, as `close_pool` does after a clean `close_pool`.
-  Worst-case blocking of `close_instance`: service lane 8 s (`close` above);
-  direct lane none (`stop_pool` is a cast). Both pinned in `executor_test`.
-- **Service lane: the failure matrix is pinned, case by case.**
+  Worst-case blocking of `close_instance`: 8 s (`close` above), pinned in
+  `executor_test`.
+- **Executor service: the failure matrix is pinned, case by case.**
   `test/broker/failure_matrix_test.gleam` runs each fault through a real
   broker over fake helpers and asserts one settlement (or one refusal), the
-  right outcome, a balanced pool census and an empty inventory; lanes that
-  agree run both. Where they differ the difference is the test: a helper
-  actor killed mid-run settles `ExecutionLost(HelperActorDown)` at once in
-  the service lane (pool slot left `unconfirmed`, since a killed actor cannot
-  attest to its jail) and never in the direct lane without a deadline, and
-  with one only after the relay's grace as `CancelEscalated`. A dead caller
+  right outcome, a balanced pool census and an empty inventory. A helper
+  actor killed mid-run settles `ExecutionLost(HelperActorDown)` at once (pool
+  slot left `unconfirmed`, since a killed actor cannot attest to its jail),
+  with no deadline needed to notice. A dead caller
   hears nothing, so those cases assert the books balance and the next call
   runs. `close` during output delivers the real exit when the helper honours
   cancel and `ExecutionLost(ExecutorClosing)` when it does not, never both,
@@ -585,7 +572,7 @@ protocol (spec Part 1.4). WP-G.
   runs a hundred mixed endings (success, cancel, caller death, helper crash,
   escalation) and checks pool census, inventory, relay liveness, the VM
   process count and one settlement per hearing caller.
-- **Service lane: the snapshot is bounded, true and carries no request.**
+- **Executor service: the snapshot is bounded, true and carries no request.**
   (Issue #696, S3.) Live rows are at most the pool size; the `recent` ring
   and each latency series are trimmed to `executor_view.ring_size` (64) on
   every push, so nothing grows with the session. A row's mode, cancel state
@@ -614,7 +601,7 @@ protocol (spec Part 1.4). WP-G.
   (rows, thinning, the 64 bound, last failure, refusal counts, and a marker
   planted in argv, environment, working directory and token that must not
   appear in any snapshot or line).
-- **Service lane: a slow consumer is bounded by the helper, not the BEAM.**
+- **Executor service: a slow consumer is bounded by the helper, not the BEAM.**
   The relay's delivery is a send; nothing waits on the caller's mailbox and
   there is no BEAM-side buffer or backpressure (a ruled cut). What bounds
   the backlog is the helper's per-stream `output_bytes` cap. The real-helper
@@ -628,7 +615,7 @@ protocol (spec Part 1.4). WP-G.
   for those long-lived streams the mailbox is bounded only by the consumer.
   `twenty_sequential_runs_on_one_real_helper_see_no_busy_window` pins that
   back-to-back runs on a pool of one never meet `HelperBusy` in this lane.
-- **Service lane: an orphaned `start` costs a slot and cannot wedge.** The
+- **Executor service: an orphaned `start` costs a slot and cannot wedge.** The
   broker spends a call id on every start attempt, answered `Ok` or refused
   (`Dispatch.seq` promises a number is never offered twice), so a service
   that overruns its start budget (`checkout 15 s + relay init 1 s + run 5 s
@@ -766,7 +753,7 @@ protocol (spec Part 1.4). WP-G.
   and neither substitutes for the other.
 - **Reservations cannot leak.** They are released on settlement, freed
   wholesale on `abort`, and reclaimed when a call's guarantor process
-  dies unsettled (every guarantor is monitored; for `direct` it is the relay). Releases are generation-checked, so
+  dies unsettled (every guarantor is monitored; it is the relay). Releases are generation-checked, so
   a stale settlement from before an abort never frees a later ledger's
   budget.
 - **Tokens are single-use and unforgeable.** 32 bytes of injected entropy,

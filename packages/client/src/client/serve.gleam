@@ -640,8 +640,8 @@ pub fn main() -> Nil {
 /// differs is the owner. A one-shot plane has no custody instance to publish
 /// into, so its caller closes the returned executor itself, with
 /// `executor.close` and the same drain and helpers budgets
-/// (`stop_build_plane` and `stop_check_plane` do exactly that). `broker/direct`
-/// remains only behind `broker.start`, for tests and the demo.
+/// (`stop_build_plane` and `stop_check_plane` do exactly that). Tests and the
+/// demo reach the same service through `broker.start`, over a pool's seams.
 ///
 /// ## Examples
 ///
