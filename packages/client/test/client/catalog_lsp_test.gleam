@@ -84,6 +84,7 @@ pub fn documented_servers_parse_to_exact_records_test() {
   assert parsed.lsp_servers
     == [
       profile.LspServer(
+        preparation: profile.AlreadyPrepared,
         name: "gleam",
         command: ["gleam", "lsp"],
         extensions: [".gleam"],
@@ -102,6 +103,7 @@ pub fn documented_servers_parse_to_exact_records_test() {
         ),
       ),
       profile.LspServer(
+        preparation: profile.AlreadyPrepared,
         name: "go",
         command: ["gopls"],
         extensions: [".go"],
@@ -132,7 +134,13 @@ pub fn example_carries_both_documented_servers_test() {
     as "the committed example catalogue must be readable"
   let assert Ok(parsed) = catalog.parse(text)
     as "the committed example catalogue must parse"
-  let assert Ok(expected) = catalog.parse(with_lsp(documented))
+  let prepared_example =
+    string.replace(
+      documented,
+      "project = \"writable\"",
+      "project = \"writable\"\nprepare = \"gleam-dependencies\"\ncache_env = { XDG_CACHE_HOME = \"hex\" }",
+    )
+  let assert Ok(expected) = catalog.parse(with_lsp(prepared_example))
   assert parsed.lsp_servers == expected.lsp_servers
 }
 
@@ -832,4 +840,36 @@ pub fn the_decoder_decodes_a_table_set_directly_test() {
   assert gleam.language_id == "gleam"
   let assert Error(_) = profile.claim_extensions([#(".gleam", "other")], gleam)
     as "an extension another server holds is refused"
+}
+
+pub fn preparation_requires_a_named_recipe_and_private_cache_test() {
+  let table =
+    "\n[lsp.gleam]\ncommand = [\"gleam\", \"lsp\"]\nextensions = [\".gleam\"]\nroot_markers = [\"gleam.toml\"]\nproject = \"writable\"\nprepare = \"gleam-dependencies\"\n"
+  assert string.contains(refusal(with_lsp(table)), "cache_env.XDG_CACHE_HOME")
+  let assert Ok(parsed) =
+    catalog.parse(with_lsp(
+      table <> "cache_env = { XDG_CACHE_HOME = \"hex\" }\n",
+    ))
+    as "the fixed recipe with its private cache is approved data"
+  let assert [server] = parsed.lsp_servers as "one profile is configured"
+  assert server.preparation == profile.GleamDependencies
+  assert string.contains(
+    profile.approval_lines(server) |> string.join("\n"),
+    "full network for at most 60 seconds",
+  )
+}
+
+pub fn preparation_cannot_be_an_arbitrary_command_or_readonly_project_test() {
+  assert string.contains(
+    refusal(one_server("prepare = \"curl | sh\"")),
+    "gleam-dependencies or omitted",
+  )
+  assert string.contains(
+    refusal(one_server("prepare = \"gleam-dependencies\"")),
+    "Gleam executable followed by lsp",
+  )
+  let assert Ok(parsed) = catalog.parse(one_server(""))
+    as "an old profile still decodes"
+  let assert [server] = parsed.lsp_servers as "one old profile is configured"
+  assert server.preparation == profile.AlreadyPrepared
 }

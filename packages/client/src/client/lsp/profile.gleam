@@ -147,6 +147,21 @@ pub type ProjectAccess {
   ProjectWritable
 }
 
+/// The bounded setup an operator authorizes before a cold server start.
+///
+/// Recipes fix the executable arguments and their network authority. A
+/// profile cannot turn preparation into an arbitrary shell command, and an
+/// older installed profile acquires no new authority when Loom is upgraded.
+pub type Preparation {
+  /// Start the offline server against dependencies already on disk.
+  AlreadyPrepared
+
+  /// Run the server's Gleam executable with `deps download`, with network
+  /// access for that finite setup call only. The profile must grant project
+  /// writes and a private `XDG_CACHE_HOME` shared with its offline server.
+  GleamDependencies
+}
+
 /// One operator-supplied extra root a jailed language server needs, as
 /// the file wrote it.
 ///
@@ -217,6 +232,8 @@ pub type LspServer {
     name: String,
     /// The server's argv, executable first. Never a shell string.
     command: List(String),
+    /// The separately approved dependency recipe, or no automatic setup.
+    preparation: Preparation,
     /// The file extensions this server answers for, lowercase, each with
     /// its leading dot, in file order.
     extensions: List(String),
@@ -355,7 +372,7 @@ pub fn claim_extensions(
 const table_keys = [
   "command", "extensions", "root_markers", "project", "readable", "writable",
   "env", "cache_env", "language_id", "qualifier_separators", "module_case",
-  "hint",
+  "hint", "prepare",
 ]
 
 /// Decodes one `[lsp.<name>]` table, `value`, under its key `name`.
@@ -411,6 +428,13 @@ pub fn decode_server(
   use Nil <- result.try(disjoint_roots(place, readable, writable))
   use env <- result.try(env(fields, place))
   use cache_env <- result.try(cache_env(fields, place, env))
+  use preparation <- result.try(preparation(
+    fields,
+    place,
+    command,
+    project,
+    cache_env,
+  ))
 
   // The profile keys. Each default is the behaviour ADR-015 shipped
   // before the key existed, so an older table decodes to a server that
@@ -422,6 +446,7 @@ pub fn decode_server(
   Ok(LspServer(
     name:,
     command:,
+    preparation:,
     extensions:,
     root_markers:,
     project:,
@@ -434,6 +459,40 @@ pub fn decode_server(
     module_case:,
     hint:,
   ))
+}
+
+// Preparation is a named recipe rather than executable text. The same
+// resolved binary serves the project and downloads its dependencies, and
+// only Loom's private cache is writable outside the selected project.
+fn preparation(
+  fields: Dict(String, tom.Toml),
+  place: String,
+  command: List(String),
+  project: ProjectAccess,
+  caches: List(#(String, String)),
+) -> Result(Preparation, String) {
+  case dict.get(fields, "prepare") {
+    Error(Nil) -> Ok(AlreadyPrepared)
+    Ok(tom.String("gleam-dependencies")) -> {
+      use Nil <- result.try(case command, project {
+        [_executable, "lsp"], ProjectWritable -> Ok(Nil)
+        _, _ ->
+          Error(
+            place
+            <> ".prepare requires a Gleam executable followed by lsp, and project = writable",
+          )
+      })
+      case list.any(caches, fn(entry) { entry.0 == "XDG_CACHE_HOME" }) {
+        True -> Ok(GleamDependencies)
+        False ->
+          Error(
+            place
+            <> ".prepare requires cache_env.XDG_CACHE_HOME for a private dependency cache",
+          )
+      }
+    }
+    Ok(_) -> Error(place <> ".prepare must be gleam-dependencies or omitted")
+  }
 }
 
 // The `[mcp.<name>]` grammar, held for one reason rather than two: an
@@ -1532,6 +1591,7 @@ pub fn encode_server(server: LspServer) -> Json {
   json.object([
     #("name", json.string(server.name)),
     #("command", json.array(server.command, json.string)),
+    #("prepare", json.string(preparation_text(server.preparation))),
     #("extensions", json.array(server.extensions, json.string)),
     #("root_markers", json.array(server.root_markers, json.string)),
     #("project", json.string(project_text(server.project))),
@@ -1601,9 +1661,15 @@ pub fn server_decoder() -> Decoder(LspServer) {
   )
   use module_case <- decode.field("module_case", module_case_decoder())
   use hint <- decode.field("hint", decode.optional(decode.string))
+  use preparation <- decode.optional_field(
+    "prepare",
+    AlreadyPrepared,
+    preparation_decoder(),
+  )
   decode.success(LspServer(
     name:,
     command:,
+    preparation:,
     extensions:,
     root_markers:,
     project:,
@@ -1659,6 +1725,15 @@ pub fn approval_lines(server: LspServer) -> List(String) {
     approval_line("env", server.env),
     approval_line("cache_env", caches),
   ]
+  let lines = case server.preparation {
+    AlreadyPrepared -> lines
+    GleamDependencies ->
+      list.append(lines, [
+        approval_line("prepare", [
+          "gleam-dependencies: deps download; full network for at most 60 seconds; private cache; server stays offline",
+        ]),
+      ])
+  }
   case server.hint {
     None -> lines
     Some(hint) -> list.append(lines, [approval_line("hint", [quoted(hint)])])
@@ -1860,5 +1935,23 @@ fn in_grammar(text: String, head: String, tail: String) -> Bool {
     [first, ..rest] ->
       string.contains(head, first)
       && list.all(rest, fn(grapheme) { string.contains(tail, grapheme) })
+  }
+}
+
+// Omission is the only backwards-compatible source default. The durable
+// form records an explicit spelling so install comparison includes consent.
+fn preparation_text(preparation: Preparation) -> String {
+  case preparation {
+    AlreadyPrepared -> "none"
+    GleamDependencies -> "gleam-dependencies"
+  }
+}
+
+fn preparation_decoder() -> Decoder(Preparation) {
+  use value <- decode.then(decode.string)
+  case value {
+    "none" -> decode.success(AlreadyPrepared)
+    "gleam-dependencies" -> decode.success(GleamDependencies)
+    _ -> decode.failure(AlreadyPrepared, "a dependency preparation recipe")
   }
 }

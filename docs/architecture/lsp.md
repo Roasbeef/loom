@@ -111,7 +111,7 @@ an answer, and the harness reads outside every jail. So every path out of
 an answer (a definition, a reference, a call edge, a published diagnostic,
 a rename's edit) becomes `Admitted` or `Withheld` through one function,
 `admit` (`client/lsp/resolve.gleam:399`), called from one place in the
-manager (`gate`, `client/lsp/manager.gleam:2212`). Without it, a hostile
+manager (`gate`, `client/lsp/manager.gleam:2202`). Without it, a hostile
 project's server could name `~/.loom/owner.token` and have the harness
 print its first line.
 
@@ -1075,3 +1075,30 @@ reach the caller without clearing a prior failure; another semantic query
 must establish recovery. Informational messages leave legitimate misses
 unchanged.
 Protocol 061 records this boundary and the workspace read change.
+
+
+## Approved dependency preparation
+
+A profile may opt into the fixed Gleam dependency recipe from
+[protocol 064](../../protocol-change/064-lsp-dependency-preparation.md). The
+production `manager.connect_jailed` path first proves its offline jail, then
+runs the recipe through the same broker, checks generated dependency records,
+and constructs the offline server transport. The profile's resolved executable,
+project view, protected paths and private cache are shared between setup and
+server. Only setup's finite policy permits networking.
+
+`client/lsp/preparation` owns the fixed argv, 60-second deadline, output bound
+and failure rendering. It never runs a shell or adds a general session grant.
+`client/lsp/dependency_state` fingerprints workspace-local dependency
+configurations and the selected package's manifest and installation inventory.
+Query callers perform these bounded reads before acquisition. The manager holds
+only the digest and compares it when reusing a server. A mismatch follows the
+existing eviction and keeper ordering, so preparation cannot begin while the
+previous lease is still being retired under that ordering.
+
+An existing profile has no recipe by default. Setup authority appears in its
+installation approval, and requires a writable project and private cache. The
+Gleam recipe also gives the server a private HOME because macOS cache lookup
+uses `HOME/Library/Caches`. Neither the model's query nor the language server's
+error message can enlarge those permissions. See the
+[setup guide](../language-servers.md#gleam) for upgrade and failure handling.

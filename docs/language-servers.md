@@ -73,23 +73,52 @@ In a real session, the bare `gleam` command uses the compiler located for code
 mode when one is available. The standalone `ext check` does not locate a
 code-mode toolchain, so it resolves `gleam` from its invocation's PATH.
 
-If the project's dependencies are not already present, prepare them outside
-the jail. An existing populated build does not require another download:
+A profile that declares `prepare = "gleam-dependencies"` prepares the selected
+package automatically before its first server starts. Loom runs `gleam deps
+download` in that package through a finite sandbox job with network access,
+then starts `gleam lsp` with networking off. Warm queries reuse the prepared
+server. A new worktree needs no manual download when this recipe is approved.
+
+The recipe is opt-in authority. The published v0.1.0 profile predates it and
+retains its previous permissions until you install an updated profile and
+start a new session. To opt in with an operator-owned `loom.toml` table, copy
+the complete Gleam profile and add:
+
+```toml
+prepare = "gleam-dependencies"
+cache_env = { XDG_CACHE_HOME = "hex" }
+```
+
+The command must be `["gleam", "lsp"]` (or an explicit Gleam executable), and
+`project = "writable"` is required. Approval grants full network access to one
+setup call, bounded by 60 seconds wall and CPU time and 1 MiB per output stream.
+It does not grant networking to the language server or ordinary tools. Setup
+and LSP share a private HOME and cache; this also gives macOS Gleam its private
+`HOME/Library/Caches` directory. The operator's package archives and credentials
+are not shared.
+
+The profile chooses the nearest `gleam.toml` above the queried file. In a
+monorepo, preparing one package does not prepare another package's
+`build/packages/packages.toml`. Loom prepares each selected root on its cold
+start and permits sibling reads only within the session-authorized workspace.
+For the automatic recipe, path dependencies must be workspace-local. Changes
+to those package configurations, the selected manifest, or its installed
+inventory restart the server and rerun preparation. Source edits keep the
+normal LSP synchronization behavior.
+
+A failed download returns the selected package and the setup failure. Fix the
+registry, dependency or setup-policy error before retrying; sleeping cannot
+complete a download inside the offline server. With an older profile, prepare
+the exact project outside the LSP jail:
 
 ```sh
-cd /path/to/gleam-project
+cd /path/to/selected-gleam-package
 gleam deps download
 ```
 
-The profile selects `.gleam` files and finds the project through `gleam.toml`.
-It grants a writable project because `gleam lsp` writes `manifest.toml` and
-`build/`. The lease can read the session-authorized part of the workspace,
-so sibling packages in a monorepo are visible without granting writes to
-them. Dependencies outside the workspace still need explicit readable roots
-in a custom profile. Network remains off: prepare downloaded dependencies
-before queries. A server-reported project load failure is returned as an
-unavailable query, including its reason, rather than as empty semantic
-results or clean diagnostics.
+Preparing dependencies does not compile the whole repository. Gleam resolves
+the package and its path dependencies, writes the installation inventory, and
+the language server then compiles the project for analysis.
 
 ## Go
 
@@ -253,6 +282,7 @@ verify an override with a real query in a newly opened session.
 | Executable not found | Check the daemon's PATH and the PATH of the standalone `ext check` invocation. A terminal's new PATH does not update a running daemon. |
 | Empty or incomplete results | Check dependencies, project markers, custom readable roots and the Rust restrictions above. Narrow the symbol with a path and line. |
 | Server still loading | Retry after the reported readiness delay. Unsettled diagnostics do not mean the project is clean. |
+| Dependency preparation failed | Read the named package and downloader error. Fix the dependency, registry or setup policy before retrying. The offline server was not started. |
 | Profile conflict | Only one effective profile may own a file extension. Remove the duplicate or replace it with an explicit catalogue table. |
 | Jail probe refused | Read the reported missing enforcement layers and correct host setup using the [sandbox guide](../packages/sandbox/README.md). |
 | Fixture passes but project fails | Fixtures are small and self-contained. Check the real project's external dependencies, environment and generated-code requirements. |

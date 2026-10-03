@@ -1,5 +1,17 @@
 # Current handoff
 
+## LSP dependency preparation work (2026-10-03)
+
+The preparation branch adds protocol 064's opt-in Gleam recipe: a fixed,
+60-second network-capable downloader job followed by the existing offline
+server lease. It verifies dependency records and invalidates reuse after
+workspace-local dependency configuration or inventory changes. Existing
+installed profiles gain no authority until explicitly updated. The companion
+Gleam profile update must follow the harness release that accepts the key.
+Validation and review status are recorded in the PR, not inferred from this
+handoff. The previous LSP SQL work is merged in #693.
+
+
 ## Sliced strand.wait windows (PR #719, merged `59549a99c`)
 
 A code-mode orchestration program naming a join window larger than the
