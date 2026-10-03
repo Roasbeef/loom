@@ -515,3 +515,34 @@ Each path is relative to its package's source root:
 `prompt/pack.gleam` is `packages/prompt/src/prompt/pack.gleam`. The design
 behind the pack and its stability contract is Part B of
 [agent comms and the system prompt](../design-notes/agent-comms-and-system-prompt.md).
+
+## Semantic capability guidance
+
+The shipped `loom-default-15` pack prefers `cap/lsp` in code mode when that
+module is offered, and `cap/lsp_sql` for joins, counts and filters over explicit
+observations when its separate module is offered. It names `cap://lsp` and
+`cap://lsp_sql` as the API reads to perform before writing unfamiliar calls.
+This instruction is build-constant and conditional; it does not claim every
+host has a language server. The code-mode offer supplies actual availability
+and the served profiles' naming hints.
+
+Default tool registration exposes no `lsp_*` schemas. Automatic write
+diagnostics remain, and rename requires an explicit preview followed by model
+inspection before a separate apply program. The prompt distinguishes an
+unsupported request from a server setup failure and does not treat an empty
+answer as evidence that a project loaded. Already pinned prompts are not
+rewritten; fresh sessions receive the new pack.
+
+## Saved program guidance
+
+`loom-default-15` asks agents to save tested reusable code-mode programs in real
+workspace files, with short purpose and input notes. The agent submits exactly
+one of `program` or `program_path`; the latter avoids retransmitting source.
+Each invocation reloads the file under current read and execution permissions.
+Programs read variable inputs through existing capabilities or files.
+
+The guidance keeps reuse separate from observation freshness. A saved LSP
+summary program collects fresh facts each time it runs, then reuses its SQL
+observation for local queries within that invocation. Saving source preserves
+neither an observation nor permission to execute it. Existing pinned prompts
+retain their original text; fresh sessions receive version 15.

@@ -147,4 +147,11 @@ export FAKE_ERL_DAEMON_PROFILE="$state/erl.daemon-profile"
 /bin/bash "$ROOT/bin/loom" --token --profile
 rg -Fx -- --profile "$FAKE_ERL_ARGS"
 
+# Observer dispatch happens before ordinary client argument parsing. Help must
+# not start the application emulator or create a profiling credential.
+cp "$FAKE_ERL_ARGS" "$state/erl.before-observer"
+/bin/bash "$ROOT/bin/loom" observer --help > "$state/observer.help"
+rg -q 'Usage: loom observer' "$state/observer.help"
+cmp "$FAKE_ERL_ARGS" "$state/erl.before-observer"
+
 echo "profile launcher: argument and credential checks passed"

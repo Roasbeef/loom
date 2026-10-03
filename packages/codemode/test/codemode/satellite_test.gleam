@@ -853,3 +853,96 @@ fn map_field(value: MsgPackValue, key: String) -> Result(MsgPackValue, Nil) {
     _ -> Error(Nil)
   }
 }
+
+// Scoped collection ends when its program cancels or the host deadline fires.
+// The call deadline is deliberately much later than either event, so these
+// cannot pass by exercising the existing ServedHere timeout behavior.
+pub fn scoped_program_cancel_reaps_the_capture_worker_test() {
+  let dir = fresh_dir("scoped-cancel")
+  let broker = start_broker(echoing())
+  let workers = process.new_subject()
+  let cfg =
+    satellite.SatelliteConfig(
+      ..config(dir),
+      router: scoped_stalling_router(workers),
+      call_timeout_ms: 60_000,
+    )
+  let result =
+    satellite.run(
+      artifact(),
+      run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
+      broker,
+      cfg,
+      satellite_peer.launcher(fn(ctx) {
+        satellite_peer.send_cap_call(
+          ctx,
+          ctx.token,
+          1,
+          "lsp.snapshot",
+          msgpack.MapValue([]),
+        )
+        process.sleep(100)
+        satellite_peer.send_cancel(ctx, 1)
+        process.sleep(100)
+        satellite_peer.send_outcome(ctx, msgpack.StringValue("cancelled"))
+      }),
+    )
+  assert result.outcome
+    == Ok(satellite.Completed(msgpack.StringValue("cancelled")))
+  let assert Ok(worker) = process.receive(workers, 1000)
+    as "capture entered its scoped worker"
+  assert died_within(worker, 1000)
+  broker.stop(broker)
+}
+
+pub fn scoped_host_deadline_reaps_the_capture_worker_test() {
+  let dir = fresh_dir("scoped-wall")
+  let broker = start_broker(echoing())
+  let workers = process.new_subject()
+  let cfg =
+    satellite.SatelliteConfig(
+      ..config(dir),
+      router: scoped_stalling_router(workers),
+      call_timeout_ms: 60_000,
+    )
+  let result =
+    satellite.run(
+      artifact(),
+      run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 500)),
+      broker,
+      cfg,
+      satellite_peer.launcher(fn(ctx) {
+        satellite_peer.send_cap_call(
+          ctx,
+          ctx.token,
+          1,
+          "lsp.snapshot",
+          msgpack.MapValue([]),
+        )
+        process.sleep(60_000)
+      }),
+    )
+  assert result.outcome == Error(satellite.DeadlineExceeded)
+  let assert Ok(worker) = process.receive(workers, 1000)
+    as "capture entered its scoped worker"
+  assert died_within(worker, 1000)
+  broker.stop(broker)
+}
+
+fn scoped_stalling_router(
+  workers: Subject(process.Pid),
+) -> satellite.CapRouter {
+  fn(request: satellite.CapRequest) {
+    case request.cap {
+      "lsp.snapshot" ->
+        Ok(
+          satellite.ScopedService(fn() {
+            process.send(workers, process.self())
+            process.sleep(60_000)
+            framing.CapOk(msgpack.StringValue("late"))
+          }),
+        )
+      _other -> satellite.default_router(request)
+    }
+  }
+}

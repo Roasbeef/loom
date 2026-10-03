@@ -538,3 +538,103 @@ fn stray_peer(written: Subject(Nil)) -> satellite.Launcher {
     satellite_peer.wait_for_close(ctx)
   })
 }
+
+/// Invocation release cancels a scoped capture while keeping the resident node.
+pub fn resident_release_reaps_scoped_capture_test() {
+  scoped_capture_ends("scoped-release", 0)
+}
+
+/// Explicit program cancellation ends the capture before invocation release.
+pub fn resident_program_cancel_reaps_scoped_capture_test() {
+  scoped_capture_ends("scoped-cancel", 1)
+}
+
+/// The resident invocation deadline cancels the capture with its node.
+pub fn resident_deadline_reaps_scoped_capture_test() {
+  scoped_capture_ends("scoped-deadline", 2)
+}
+
+fn scoped_capture_ends(name: String, mode: Int) -> Nil {
+  let dir = fresh_dir(name)
+  let broker = start_broker()
+  let workers = process.new_subject()
+  let launcher =
+    satellite_peer.launcher(fn(ctx) {
+      let assert Ok(#(_cursor, frame)) =
+        satellite_peer.next_hook_call(ctx, satellite_peer.reading(), soon)
+        as "resident peer receives the invocation"
+      let #(token, _, _) = satellite_peer.hook_call_parts(frame)
+      satellite_peer.send_cap_call(
+        ctx,
+        token,
+        991,
+        "lsp.snapshot",
+        msgpack.MapValue([]),
+      )
+      process.sleep(100)
+      case mode {
+        1 -> {
+          satellite_peer.send_cancel(ctx, 991)
+          process.sleep(100)
+          satellite_peer.send_hook_result(
+            ctx,
+            frame.id,
+            framing.CapOk(msgpack.StringValue("done")),
+          )
+        }
+        2 -> process.sleep(60_000)
+        _release ->
+          satellite_peer.send_hook_result(
+            ctx,
+            frame.id,
+            framing.CapOk(msgpack.StringValue("done")),
+          )
+      }
+    })
+  let assert Ok(host) =
+    satellite.start(
+      artifact(),
+      satellite.HostConfig(..config(dir, broker), call_timeout_ms: 60_000),
+      launcher,
+    )
+    as "resident host starts"
+  let router = fn(request: satellite.CapRequest) {
+    case request.cap {
+      "lsp.snapshot" ->
+        Ok(
+          satellite.ScopedService(fn() {
+            process.send(workers, process.self())
+            process.sleep(60_000)
+            framing.CapOk(msgpack.StringValue("late"))
+          }),
+        )
+      _other -> satellite.default_router(request)
+    }
+  }
+  let answer =
+    satellite.invoke(
+      host,
+      satellite.Tool("capture"),
+      args("{}"),
+      satellite.Invoking(..invoking(71), router:),
+      500,
+    )
+  case mode {
+    2 -> {
+      assert answer == Error(satellite.InvocationDeadline)
+    }
+    _completed -> {
+      assert answer == Ok(framing.CapOk(msgpack.StringValue("done")))
+    }
+  }
+  let assert Ok(worker) = process.receive(workers, soon)
+    as "the capture entered its worker"
+  let watch = process.monitor(worker)
+  let selected =
+    process.new_selector()
+    |> process.select_specific_monitor(watch, fn(_) { Nil })
+  assert process.selector_receive(selected, 1000) == Ok(Nil)
+  process.demonitor_process(watch)
+  let _ = satellite.stop(host)
+  broker.stop(broker)
+}

@@ -4,7 +4,7 @@
 
 The capability prelude: the language a code-mode program is written
 against, plus the boot runtime that runs it. Every `cap/*` module a
-submitted program may import is here, and every one of them is an RPC stub
+submitted program may import is here. Its effectful calls use an RPC stub
 — a typed local-looking call that marshals its arguments into a `cap_call`
 frame, sends it over the one AF_UNIX channel to the satellite host, and
 blocks for the `cap_result`. This package runs *inside* the jailed
@@ -79,7 +79,7 @@ cannot hide the capability error. This does not grant the program a new effect.
 - `cap/strand.{Assignment, Handle, Waited, TerminalResult, StrandError}` —
   child operations in either default program mode. `assignment`/`within`/`detached`/
   `from_my_conversation`/`with_model`/`with_tools`/`expecting` build a spawn; `spawn`,
-  `wait` (a list of handles against **one** deadline), `send`, `note`,
+  `wait` (a list of handles against **one** deadline, sliced across rounds up to `max_wait_slice_ms`), `send`, `note`,
   `notes` and `roster` are the six calls, serviced by the same
   `client/agency` closures the `agent_*` tools call. Every `StrandError`
   variant but the last two is one of the harness's own refusal names
@@ -237,10 +237,31 @@ cannot hide the capability error. This does not grant the program a new effect.
 
 ## Relationships
 
+`cap/lsp_sql` separates one host capture from repeated satellite-local SQL.
+`Plan` names one server/root and explicit outlines and reference targets;
+`collect` dispatches `lsp.snapshot` and decodes an opaque immutable
+`Observation`. `metadata` returns scope, generation, interval and counts.
+`query` materializes the four fixed fact tables in private memory, binds tagged
+`Cell` values and uses a caller-owned `RowDecoder(a)`. `QueryResult(a)` keeps
+typed rows and column names beside unchanged provenance. `QueryError` names
+authorization, statement, budget, value and decoder failures without parsing
+sentences. A SELECT or decoder issues no host calls.
+
+Native authorization and progress/heap enforcement cannot be implemented by
+the pure Gleam API. `cap/internal/ffi_lsp_sql` delegates through
+`loom_cap_lsp_sql.erl` to the existing SQLite dependency family. All handles
+stay inside that bridge and every query closes its own database. The opt-in
+heap ceiling is process-global and belongs only in this satellite; loading
+these modules into the harness would violate Rule Zero. The detailed schema,
+ownership and checked-interval limits are in
+[`docs/architecture/lsp-sql.md`](../../docs/architecture/lsp-sql.md).
+
 - **Depends on**: `core` (msgpack values and the corruption report),
   `gleam_erlang` (processes, monitors, subjects), `gleam_otp` (the actor
-  behind `cap/actor` and the channel), and the standard library. Nothing
-  else.
+  behind `cap/actor` and the channel), and the standard library. The SQL
+  observation bridge directly pins `esqlite_loom` 0.9.1, the same native SQLite
+  family selected by the harness's `sqlight_loom` 1.2.1 consumers. The offline
+  seed carries that native application into the satellite artifact.
 - **Deliberately does not depend on `broker`.** The spec DAG (§0.1) puts
   WP-J at `J → G,I`, which holds for `codemode` but not here: `cap` is the
   untrusted far side of the effect-plane wire, not a peer of the broker, so
@@ -254,11 +275,12 @@ cannot hide the capability error. This does not grant the program a new effect.
   them, because linking model-facing code into the harness VM would break
   Rule Zero. A compiled program depends on `cap` by being built against it,
   vendored inside its own build root.
-- **FFI**: two modules, and they are the whole of the package's impurity.
+- **FFI**: the transport and registry modules own the channel's impurity.
   `cap/internal/ffi_registry` binds `persistent_term` — VM-global, readable
   at local-memory speed from every process a program spawns, which no pure
   alternative can do. `cap/internal/ffi_transport` binds `getenv`, a file
-  read, and `gen_tcp` over AF_UNIX. Both go through `cap_ffi.erl`.
+  read, and `gen_tcp` over AF_UNIX. Both go through `cap_ffi.erl`. The SQL
+  bridge described above is separate because it owns no channel effect.
 
 ## Traffic
 
@@ -464,6 +486,7 @@ through core/json_wire. `strand.map` runs bounded batches with one output per
 assignment; pending/failed joins and refused admissions stop further spawning
 while retaining known handles and unstarted assignments. It introduces no
 process machinery or new capability.
+`strand.wait` slices long join windows into bounded requests of at most 30 s (`max_wait_slice_ms`) until handles settle or the deadline expires.
 
 
 `cap/peer` also exposes caller-owned `inbox`, `inbox_get`, and `history` for

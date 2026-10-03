@@ -226,6 +226,7 @@ import codemode/identity
 import codemode/launch
 import codemode/lsp as codemode_lsp
 import codemode/notes
+import codemode/observation as codemode_observation
 import codemode/orchestration
 import codemode/satellite
 import codemode/search as search_router
@@ -244,6 +245,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import lsp/observation
 import lsp/query
 import simplifile
 import tools/agent.{type Agency}
@@ -386,6 +388,8 @@ pub type Config {
     /// workspace, grants and protected list, so it is built per request
     /// (`client/lsp/codemode_rename`).
     lsp: Option(query.Door),
+    /// The finite observation door, admitted only beside the native LSP door.
+    observation: Option(observation.Door),
     /// The pooled outstanding-effect cap for a whole execution.
     max_outstanding: Int,
     /// How long the hermetic build itself may take.
@@ -622,6 +626,20 @@ pub fn over_lsp(config: Config, door: Option(query.Door)) -> Config {
   Config(..config, lsp: door)
 }
 
+/// Adds finite capture beside an installed native LSP door.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // config |> codemode.over_lsp_observation(Some(observation_door))
+/// ```
+pub fn over_lsp_observation(
+  config: Config,
+  door: Option(observation.Door),
+) -> Config {
+  Config(..config, observation: door)
+}
+
 /// The vetting allowlist one seam judges a submission against.
 ///
 /// Indexed by the seam and not by the surface: a program is vetted
@@ -676,7 +694,13 @@ pub fn seam_allowlist(
   }
   case lsp_on(config, seam) {
     None -> noted
-    Some(_) -> vet_policy.allow(noted, "cap/lsp")
+    Some(_) -> {
+      let native = vet_policy.allow(noted, "cap/lsp")
+      case observation_on(config, seam) {
+        None -> native
+        Some(_) -> vet_policy.allow(native, "cap/lsp_sql")
+      }
+    }
   }
 }
 
@@ -812,7 +836,13 @@ pub fn seam_caps_on(config: Config, seam: vet_policy.Seam) -> List(String) {
   }
   case lsp_on(config, seam) {
     None -> noted
-    Some(_) -> list.append(noted, codemode_lsp.serviced_caps)
+    Some(_) -> {
+      let native = list.append(noted, codemode_lsp.serviced_caps)
+      case observation_on(config, seam) {
+        None -> native
+        Some(_) -> list.append(native, [codemode_observation.snapshot_cap])
+      }
+    }
   }
 }
 
@@ -926,6 +956,7 @@ pub fn default_config(
     // No language server by default: ADR-015 §6 has no built-in one, and
     // `cap/lsp` stays off every allowlist until a host wires a door.
     lsp: None,
+    observation: None,
     max_outstanding: default_outstanding,
     build_timeout_ms: default_build_timeout_ms,
     accept_timeout_ms: default_accept_timeout_ms,
@@ -2397,6 +2428,7 @@ pub fn exec_config(
   deadline_ms: Int,
   widened_by grants: List(Grant),
 ) -> pipeline.ExecConfig {
+  let config = Config(..config, fixed_deadline: Some(deadline_ms))
   let pooled = pooled_budget(config, deadline_ms)
   let sockets = exec_socket_directory(config, request)
 
@@ -2541,6 +2573,23 @@ fn workspace_router(
         ),
         over: mcp_router,
       )
+  }
+
+  let lsp_router = case observation_on(config, vetting_seam(request.seam)) {
+    None -> lsp_router
+    Some(door) -> {
+      let #(now, _) = clock.read(config.clock)
+      let deadline_ms =
+        option.unwrap(config.fixed_deadline, now + request.within_ms)
+      let session_clock = config.clock
+      codemode_observation.routing(
+        door,
+        observation.Control(deadline_ms:, now: fn() {
+          clock.read(session_clock).0
+        }),
+        over: lsp_router,
+      )
+    }
   }
 
   workspace.routing(
@@ -3414,9 +3463,13 @@ fn surface_ceilings(
           |> list.filter(fn(ceiling) { ceiling.cap != artifact.emit_cap }),
       )
   }
-  case notes_on(config, vetting_seam(request.seam)) {
+  let ceilings = case notes_on(config, vetting_seam(request.seam)) {
     None -> ceilings
     Some(_) -> list.append(ceilings, notes.ceilings())
+  }
+  case observation_on(config, vetting_seam(request.seam)) {
+    None -> ceilings
+    Some(_) -> list.append(ceilings, codemode_observation.ceilings())
   }
 }
 
@@ -3684,4 +3737,15 @@ fn schedule_expiry(expiry: schedule_tool.Expiry) -> workspace.ScheduleExpiry {
     max_fires: expiry.max_fires,
     expires_after_s: expiry.expires_after_s,
   )
+}
+
+// Capture inherits the native LSP scope and never enters hooks or extensions.
+fn observation_on(
+  config: Config,
+  seam: vet_policy.Seam,
+) -> Option(observation.Door) {
+  case lsp_on(config, seam) {
+    None -> None
+    Some(_) -> config.observation
+  }
 }

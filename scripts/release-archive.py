@@ -78,7 +78,8 @@ def manifest(root, output, platform, version, epoch, artifacts):
                      *root.glob('packages/*/gleam.toml'), *root.glob('packages/*/go.mod'),
                      *root.glob('scripts/release*.sh'), *root.glob('scripts/release*.py'),
                      root / 'scripts/go-build.sh', root / 'scripts/platform.sh',
-                     root / 'scripts/codemode_seed.sh', root / 'scripts/codemode-seed-manifest.toml',
+                     root / 'scripts/codemode_seed.sh', root / 'scripts/codemode_seed_plugin.py',
+                     root / 'scripts/codemode-seed-manifest.toml',
                      root / 'scripts/dist.sh',
                      root / 'Makefile', root / 'packages/tui/priv/install.sh'})
     document = {

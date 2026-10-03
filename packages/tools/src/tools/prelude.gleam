@@ -31,6 +31,7 @@
 ////   dc1de7c9d376c1224193be85eb0ccbbf980dde14ab12532d8c718c570dfe62db  packages/cap/src/cap/job.gleam
 ////   100c99a10bdf7c898a32de79b01ca4d3cb1664c23c0db29a158b2a3862ecec18  packages/cap/src/cap/kv.gleam
 ////   cef1b32af6ae85af5d83f90a81ae7813694d5c32ca9cec6a0eab59f3852cec14  packages/cap/src/cap/lsp.gleam
+////   71492113c3a2f3dcc0ff5ca4d01036fd21aae4bb0ab5241db23fff61d9f42243  packages/cap/src/cap/lsp_sql.gleam
 ////   98e88492562b1a4cfb829581b6fee9c6040a956994f8d10cbb2ae2ed6bac0e6c  packages/cap/src/cap/mcp.gleam
 ////   5d130bfe00a9ea5275c03dce003e6238d497e389d261fb7d6a0e78f83dbde2b3  packages/cap/src/cap/net.gleam
 ////   cfbfea662dbdb362857911d078d78262c7f781153a3036256997a6309c428b2f  packages/cap/src/cap/notes.gleam
@@ -40,12 +41,12 @@
 ////   909bbbc014278c57bb888b3e4c834ba52e405855bd52156a2ff35345283a1274  packages/cap/src/cap/runtime.gleam
 ////   4e046bfdd44b9b7093ed0e787f55aa8792c433537a68e420bd30d0064dbd5cad  packages/cap/src/cap/schedule.gleam
 ////   c4be2e8c194d95ab02bbd6b4d27946152162e335cf5aee7e8bf812e6d52fc8e0  packages/cap/src/cap/search.gleam
-////   b4e669e709b3a3690cc028943f8ef3607b299aa08cb6bfd376a708b0d293d55a  packages/cap/src/cap/strand.gleam
+////   982b0d1630132ae6c19e3308d16a5cbe92917715a6fbc696954c858da4f845a3  packages/cap/src/cap/strand.gleam
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   dade50ada67f4ac667f0b92cb10d0da213cac327897524dbb006e02cf3c90963  packages/cap/src/cap/workflow.gleam
 ////   20e291637a68e2d484bd4a17e9b825c59f2c22f439f00f6482af0d26aafafadd  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): dc38d5378487258eb3eda92ae2ab80d18730cc0993140ba37c3b63a089737675
+//// Body digest (every line after the marker): b94c720794a0f57f9c3729e2c21f0bfcf93c2724b571e689d8c0a2045ee4b9b0
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -788,6 +789,126 @@ pub fn references(Query) -> Result(Found(Reference), LspError)
 pub fn rename(Query, String, RenameMode) -> Result(RenameReport, LspError)
 /// A query for `name` anywhere in the project.
 pub fn symbol(String) -> Query
+",
+  ),
+  #(
+    "cap/lsp_sql",
+    "### cap/lsp_sql
+A finite LSP observation with SQL evaluated inside this satellite only.
+
+/// A satellite-local decoder for one projected row.
+pub type RowDecoder(a) = fn(List(Cell)) -> Result(a, String)
+/// A SQLite value whose storage class remains explicit.
+pub type Cell {
+  /// SQL NULL, distinct from absent rows and empty text.
+  Null
+  /// A signed SQLite integer.
+  Integer(value: Int)
+  /// A SQLite floating-point value.
+  Real(value: Float)
+  /// UTF-8 SQLite text. Blob projections are refused by the native
+  /// boundary.
+  Text(value: String)
+}
+/// A capture refusal or disagreement on the capability channel.
+pub type Error {
+  /// The explicit scope was invalid or crossed the configured root.
+  InvalidScope(reason: String)
+  /// The server generation or an observed document changed.
+  Changed(reason: String)
+  /// A complete capture exceeded its fixed fact or request limits.
+  LimitExceeded(reason: String)
+  /// The observation or enclosing invocation exhausted its deadline.
+  DeadlineExceeded
+  /// Four captures were already admitted for this invocation.
+  CaptureCeilingReached
+  /// A required semantic query failed or was unsupported.
+  QueryFailed(reason: String)
+  /// An unrecognized host policy refusal retains its original code.
+  Denied(code: String, message: String)
+  /// The host could not be reached or returned malformed facts.
+  Unavailable(reason: String)
+}
+/// Scope and provenance that survive every SQL projection.
+pub type Metadata {
+  Metadata(server: String, root: String, generation: String, started_ms: Int, finished_ms: Int, outlined: List(String), targets: List(Target), requests: Int, withheld: Int, facts: Int, fact_bytes: Int)
+}
+/// An immutable complete capture; callers cannot construct or mutate its
+/// facts.
+pub type Observation
+/// The complete finite capture scope. Collection never expands these
+/// lists.
+pub type Plan {
+  Plan(server: String, root: String, outlines: List(String), targets: List(Target))
+}
+/// A local SQL refusal or typed row-decoder failure.
+pub type QueryError {
+  /// SQLite authorization refused an effect or an unapproved
+  /// table/function.
+  ReadOnlyDenied(reason: String)
+  /// More than one executable statement was submitted.
+  MultipleStatements
+  /// SQL syntax or bound parameters were invalid.
+  InvalidQuery(reason: String)
+  /// A fixed output or execution budget was exhausted, with no partial
+  /// rows.
+  QueryLimitExceeded(limit: QueryLimit, reason: String)
+  /// A blob, invalid UTF-8 text or non-finite real could not become a
+  /// Cell.
+  UnsupportedValue(reason: String)
+  /// The native boundary was unavailable or could not build its private
+  /// table.
+  SqlUnavailable(reason: String)
+  /// The native query was interrupted.
+  QueryCancelled
+  /// An unknown native refusal preserves its original code and message.
+  SqlRefused(code: String, message: String)
+  /// The projected storage classes did not match the decoder.
+  DecodeFailed(row: Int, reason: String)
+}
+/// The fixed native budget that prevented a complete query result.
+pub type QueryLimit {
+  /// More than five hundred projected rows.
+  Rows
+  /// More than thirty-two projected columns.
+  Columns
+  /// More than one MiB of projected output.
+  Bytes
+  /// The process-global lower-only SQLite heap ceiling.
+  Memory
+  /// More than one million SQLite VM operations.
+  Instructions
+  /// The two-second monotonic query deadline.
+  Time
+}
+/// Typed projected rows with unchanged capture provenance beside them.
+pub type QueryResult(a) {
+  QueryResult(columns: List(String), rows: List(a), observation: Metadata)
+}
+/// A reference seed with an explicit file and optional one-based line.
+pub type Target {
+  Target(symbol: String, path: String, line: option.Option(Int))
+}
+/// Captures one complete bounded observation, spending one capture
+/// admission.
+///
+/// The host admits at most four collections per invocation. Every capture
+/// is complete or refused: no truncation can turn an anti-join into a
+/// false claim.
+pub fn collect(Plan) -> Result(Observation, Error)
+/// Returns the declared scope and checked observation interval.
+pub fn metadata(Observation) -> Metadata
+/// Executes one bounded read-only SQLite statement over the captured
+/// facts.
+///
+/// SQL and the decoder remain inside the satellite. Native authorization
+/// refuses writes, schema access, attachment, pragmas, extensions and
+/// additional statements. Joins, aggregates and anti-joins are allowed.
+/// Every query opens and closes a fresh memory database and has a two-
+/// second execution deadline, one-million-operation bound, thirty-two
+/// columns and a one-MiB output cap. Bound parameters are Cells; blobs
+/// are unavailable in this vocabulary.
+pub fn query(Observation, String, List(Cell), fn(List(Cell)) -> Result(a, String)) -> Result(QueryResult(a), QueryError)
 ",
   ),
   #(
@@ -1933,6 +2054,15 @@ pub type Waited {
   /// do other work and come back.
   Pending(handle: Handle, waited_ms: Int)
 }
+/// The maximum duration in milliseconds of a single join request sent to
+/// the harness. The shipped host clamps each `strand.wait` capability
+/// call to its own `max_wait_ms` ceiling (30 s), so `wait` slices longer
+/// requested windows into requests of at most this duration. A host whose
+/// ceiling sits lower than this slice is still accounted honestly — the
+/// slicing loop measures each slice by the host's own reported
+/// `waited_ms`, not by the slice it requested — so this bound governs
+/// only how many requests are made, never how time is counted.
+pub const max_wait_slice_ms: Int
 /// How much longer than the requested join window this module will wait
 /// on the channel before calling the harness unreachable.
 ///
@@ -2035,6 +2165,14 @@ pub fn spawn(Assignment) -> Result(Handle, StrandError)
 /// has not settled by then comes back `Pending`, which is an answer — the
 /// program may join again, or go on and let the parent strand collect the
 /// result on a later turn.
+///
+/// The harness clamps any single join request to its own `max_wait_ms`
+/// ceiling (30 s). Rather than ending the join at its ceiling, `wait` re-
+/// issues the join on the still-pending handles until they settle or the
+/// requested window is spent, so a program that asks for `within_ms:
+/// 880_000` actually waits up to that window. A `Pending` answer's
+/// `waited_ms` accumulates across those slices, so it still reports time
+/// against the program's whole window.
 ///
 /// Capability: `strand.wait`.
 pub fn wait(List(Handle), within_ms: Int) -> Result(List(Waited), StrandError)
@@ -2589,6 +2727,106 @@ pub type Site {
 /// One entry of a file's outline, nested as the server nests it.
 pub type Symbol {
   Symbol(name: String, kind: String, detail: option.Option(String), site: Site, children: List(Symbol))
+}
+",
+  ),
+  #(
+    "cap/lsp_sql",
+    "### cap/lsp_sql
+A finite LSP observation with SQL evaluated inside this satellite only.
+
+/// A satellite-local decoder for one projected row.
+pub type RowDecoder(a) = fn(List(Cell)) -> Result(a, String)
+/// A SQLite value whose storage class remains explicit.
+pub type Cell {
+  /// SQL NULL, distinct from absent rows and empty text.
+  Null
+  /// A signed SQLite integer.
+  Integer(value: Int)
+  /// A SQLite floating-point value.
+  Real(value: Float)
+  /// UTF-8 SQLite text. Blob projections are refused by the native
+  /// boundary.
+  Text(value: String)
+}
+/// A capture refusal or disagreement on the capability channel.
+pub type Error {
+  /// The explicit scope was invalid or crossed the configured root.
+  InvalidScope(reason: String)
+  /// The server generation or an observed document changed.
+  Changed(reason: String)
+  /// A complete capture exceeded its fixed fact or request limits.
+  LimitExceeded(reason: String)
+  /// The observation or enclosing invocation exhausted its deadline.
+  DeadlineExceeded
+  /// Four captures were already admitted for this invocation.
+  CaptureCeilingReached
+  /// A required semantic query failed or was unsupported.
+  QueryFailed(reason: String)
+  /// An unrecognized host policy refusal retains its original code.
+  Denied(code: String, message: String)
+  /// The host could not be reached or returned malformed facts.
+  Unavailable(reason: String)
+}
+/// Scope and provenance that survive every SQL projection.
+pub type Metadata {
+  Metadata(server: String, root: String, generation: String, started_ms: Int, finished_ms: Int, outlined: List(String), targets: List(Target), requests: Int, withheld: Int, facts: Int, fact_bytes: Int)
+}
+/// An immutable complete capture; callers cannot construct or mutate its
+/// facts.
+pub type Observation
+/// The complete finite capture scope. Collection never expands these
+/// lists.
+pub type Plan {
+  Plan(server: String, root: String, outlines: List(String), targets: List(Target))
+}
+/// A local SQL refusal or typed row-decoder failure.
+pub type QueryError {
+  /// SQLite authorization refused an effect or an unapproved
+  /// table/function.
+  ReadOnlyDenied(reason: String)
+  /// More than one executable statement was submitted.
+  MultipleStatements
+  /// SQL syntax or bound parameters were invalid.
+  InvalidQuery(reason: String)
+  /// A fixed output or execution budget was exhausted, with no partial
+  /// rows.
+  QueryLimitExceeded(limit: QueryLimit, reason: String)
+  /// A blob, invalid UTF-8 text or non-finite real could not become a
+  /// Cell.
+  UnsupportedValue(reason: String)
+  /// The native boundary was unavailable or could not build its private
+  /// table.
+  SqlUnavailable(reason: String)
+  /// The native query was interrupted.
+  QueryCancelled
+  /// An unknown native refusal preserves its original code and message.
+  SqlRefused(code: String, message: String)
+  /// The projected storage classes did not match the decoder.
+  DecodeFailed(row: Int, reason: String)
+}
+/// The fixed native budget that prevented a complete query result.
+pub type QueryLimit {
+  /// More than five hundred projected rows.
+  Rows
+  /// More than thirty-two projected columns.
+  Columns
+  /// More than one MiB of projected output.
+  Bytes
+  /// The process-global lower-only SQLite heap ceiling.
+  Memory
+  /// More than one million SQLite VM operations.
+  Instructions
+  /// The two-second monotonic query deadline.
+  Time
+}
+/// Typed projected rows with unchanged capture provenance beside them.
+pub type QueryResult(a) {
+  QueryResult(columns: List(String), rows: List(a), observation: Metadata)
+}
+/// A reference seed with an explicit file and optional one-based line.
+pub type Target {
+  Target(symbol: String, path: String, line: option.Option(Int))
 }
 ",
   ),

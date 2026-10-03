@@ -160,6 +160,7 @@ fi
 # a separate code directory because Loom owns the `tools` application name.
 mkdir -p "$REL/share/diagnostics/ebin"
 cp "$ROOT/scripts/profile-launcher.sh" "$REL/share/diagnostics/profile-launcher.sh"
+cp "$ROOT/scripts/observer.sh" "$REL/share/diagnostics/observer.sh"
 erlc -o "$REL/share/diagnostics/ebin" "$ROOT/scripts/mem_report.erl"
 if [ "$DEBUG" = 1 ]; then
   OTP_TOOLS="$(erl -noshell -eval 'io:format("~s", [code:lib_dir(tools)]), halt().')"
@@ -214,6 +215,7 @@ export LOOM_EXECUTABLE
 LOOM_PROFILE_TOOL="\$root/bin/loom-profile"
 source "\$root/share/diagnostics/profile-launcher.sh"
 unset LOOM_DAEMON_PROFILE
+if [[ "\${1:-}" == observer ]]; then shift; exec "\$root/share/diagnostics/observer.sh" "\$@"; fi
 loom_profile_consume client "\$@"
 profile_args=()
 if (( LOOM_PROFILE_ENABLED == 1 )); then

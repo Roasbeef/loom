@@ -4,6 +4,9 @@ package server_test
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -552,4 +555,285 @@ func TestBadInlinePolicyRefused(t *testing.T) {
 // framing encoder (for malformed-input tests).
 func writeRaw(h *harness, raw []byte) (int, error) {
 	return h.rawW.Write(raw)
+}
+
+// stdinFlood sends total bytes of exec_stdin in 64 KiB chunks followed by
+// any trailer frames, from its own goroutine. It has to be its own
+// goroutine: the broker's side of the stdio pipe has a 64 KiB kernel
+// buffer, so a helper that has stopped reading stalls the sender, and a
+// test that sent inline would hang in the very place it is trying to
+// observe from the outside.
+func stdinFlood(h *harness, firstID uint64, total int, trailer func()) {
+	go func() {
+		chunk := make([]byte, 64*1024)
+		for sent, id := 0, firstID; sent < total; sent, id = sent+len(chunk), id+1 {
+			if err := h.conn.Write(id, framing.KindExecStdin, framing.ExecStdin{Data: chunk}); err != nil {
+				return
+			}
+		}
+		if trailer != nil {
+			trailer()
+		}
+	}()
+}
+
+// awaitExit reads frames until the exec_exit for id arrives or the
+// deadline passes. The read runs on its own goroutine for the same reason
+// stdinFlood does: Conn.Read has no deadline of its own.
+func awaitExit(t *testing.T, h *harness, id uint64, within time.Duration) framing.ExecExit {
+	t.Helper()
+	type outcome struct {
+		exit framing.ExecExit
+		err  error
+	}
+	got := make(chan outcome, 1)
+	go func() {
+		for {
+			f, err := h.conn.Read()
+			if err != nil {
+				got <- outcome{err: err}
+				return
+			}
+			if f.Kind == framing.KindError {
+				var e framing.ErrorBody
+				_ = framing.DecodeBody(f.Body, &e)
+				got <- outcome{err: fmt.Errorf("error frame id=%d %+v", f.ID, e)}
+				return
+			}
+			if f.Kind == framing.KindExecExit && f.ID == id {
+				var exit framing.ExecExit
+				err := framing.DecodeBody(f.Body, &exit)
+				got <- outcome{exit: exit, err: err}
+				return
+			}
+		}
+	}()
+	select {
+	case o := <-got:
+		if o.err != nil {
+			t.Fatalf("waiting for exec_exit: %v", o.err)
+		}
+		return o.exit
+	case <-time.After(within):
+		t.Fatalf("no exec_exit within %v: the frame loop or the deadline is wedged behind a stdin write", within)
+		return framing.ExecExit{}
+	}
+}
+
+// awaitUp reads frames until the payload's stdout shows it is running.
+// Flooding before that proves less: a cancel that lands before stage 2 has
+// even reported is not a cancel of a payload that is ignoring its stdin.
+func awaitUp(t *testing.T, h *harness) {
+	t.Helper()
+	for {
+		f, err := h.conn.Read()
+		if err != nil {
+			t.Fatalf("waiting for the payload to start: %v", err)
+		}
+		if f.Kind == framing.KindError {
+			var e framing.ErrorBody
+			_ = framing.DecodeBody(f.Body, &e)
+			t.Fatalf("error frame: %+v", e)
+		}
+		if f.Kind != framing.KindExecOut {
+			continue
+		}
+		var out framing.ExecOut
+		_ = framing.DecodeBody(f.Body, &out)
+		if strings.Contains(string(out.Data), "up") {
+			return
+		}
+	}
+}
+
+// A payload that never reads stdin must not be able to hold the frame loop
+// or the cancel path hostage by being sent more stdin than a pipe holds.
+// 1 MiB is sixteen pipe buffers: the first sixty-four KiB are absorbed by
+// the kernel and the rest used to block the helper's only frame-reading
+// goroutine inside a pipe write, while holding the lock Cancel needs. The
+// cancel frame queued behind the stdin was therefore never read, and the
+// broker's only remaining recourse was killing the whole helper.
+func TestCancelIsReadWhileStdinIsFlooded(t *testing.T) {
+	h := newHarness(t, testPol(t))
+	expectHello(t, h)
+	sendHello(t, h)
+
+	if err := h.conn.Write(70, framing.KindExecStart, framing.ExecStart{
+		Argv:  []string{"/bin/sh", "-c", "echo up; exec sleep 30"},
+		Env:   map[string]string{"PATH": "/usr/bin:/bin"},
+		Cwd:   "/",
+		Token: make([]byte, 32),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	awaitUp(t, h)
+	start := time.Now()
+	stdinFlood(h, 1000, 1<<20, func() {
+		_ = h.conn.Write(2000, framing.KindCancel, map[string]any{})
+	})
+	exit := awaitExit(t, h, 70, 3*time.Second)
+	t.Logf("exec_exit after %v: %+v", time.Since(start), exit)
+
+	if !exit.Cancelled || exit.TimedOut {
+		t.Fatalf("cancelled=%v timed_out=%v, want cancelled and not timed out", exit.Cancelled, exit.TimedOut)
+	}
+}
+
+// The wall-clock deadline is the backstop for a broker that never sends
+// cancel, so it has to fire on its own while the frame loop is still
+// busy with stdin the payload will not read. It takes the same lock the
+// stdin write used to hold across a blocking pipe write.
+func TestWallDeadlineFiresWhileStdinIsFlooded(t *testing.T) {
+	pol := testPol(t)
+	pol.Limits.WallSeconds = 1
+	h := newHarness(t, pol)
+	expectHello(t, h)
+	sendHello(t, h)
+
+	if err := h.conn.Write(80, framing.KindExecStart, framing.ExecStart{
+		Argv:  []string{"/bin/sh", "-c", "echo up; exec sleep 30"},
+		Env:   map[string]string{"PATH": "/usr/bin:/bin"},
+		Cwd:   "/",
+		Token: make([]byte, 32),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	awaitUp(t, h)
+	start := time.Now()
+	stdinFlood(h, 3000, 1<<20, nil)
+	exit := awaitExit(t, h, 80, 4*time.Second)
+	t.Logf("exec_exit after %v: %+v", time.Since(start), exit)
+
+	if !exit.TimedOut || !exit.Cancelled {
+		t.Fatalf("timed_out=%v cancelled=%v, want the wall deadline to have fired", exit.TimedOut, exit.Cancelled)
+	}
+}
+
+// The wire's largest frame and the helper's stdin bound are one number:
+// the jail package cannot import framing to say so, so this does.
+func TestStdinBoundIsTheFrameMaximum(t *testing.T) {
+	if jail.StdinPendingMax != framing.MaxFrameLen {
+		t.Fatalf("StdinPendingMax = %d, framing.MaxFrameLen = %d", jail.StdinPendingMax, framing.MaxFrameLen)
+	}
+}
+
+// Queueing must not reorder or drop stdin. Three MiB of a position-keyed
+// pattern goes through a reader slower than the sender, and the payload's
+// own digest of what it read must match the digest of what was sent.
+func TestStdinFloodArrivesIntactAndInOrder(t *testing.T) {
+	h := newHarness(t, testPol(t))
+	expectHello(t, h)
+	sendHello(t, h)
+
+	if err := h.conn.Write(90, framing.KindExecStart, framing.ExecStart{
+		Argv:  []string{"/bin/sh", "-c", "sleep 0.2; sha256sum"},
+		Env:   map[string]string{"PATH": "/usr/bin:/bin"},
+		Cwd:   "/",
+		Token: make([]byte, 32),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	hash := sha256.New()
+	go func() {
+		for i := 0; i < 48; i++ {
+			chunk := make([]byte, 64*1024)
+			for j := range chunk {
+				chunk[j] = byte(i*31 + j*7)
+			}
+			hash.Write(chunk)
+			if err := h.conn.Write(uint64(100+i), framing.KindExecStdin, framing.ExecStdin{Data: chunk}); err != nil {
+				return
+			}
+		}
+		_ = h.conn.Write(500, framing.KindExecStdin, framing.ExecStdin{EOF: true})
+	}()
+
+	var stdout strings.Builder
+	deadline := time.After(20 * time.Second)
+	frames := make(chan framing.Frame)
+	go func() {
+		for {
+			f, err := h.conn.Read()
+			if err != nil {
+				close(frames)
+				return
+			}
+			frames <- f
+		}
+	}()
+	for {
+		select {
+		case f, ok := <-frames:
+			if !ok {
+				t.Fatal("channel closed before exec_exit")
+			}
+			if f.Kind == framing.KindError {
+				var e framing.ErrorBody
+				_ = framing.DecodeBody(f.Body, &e)
+				t.Fatalf("error frame: %+v", e)
+			}
+			if f.Kind == framing.KindExecOut {
+				var out framing.ExecOut
+				_ = framing.DecodeBody(f.Body, &out)
+				if out.Stream == "stdout" {
+					stdout.Write(out.Data)
+				}
+			}
+			if f.Kind == framing.KindExecExit {
+				want := hex.EncodeToString(hash.Sum(nil))
+				if !strings.HasPrefix(stdout.String(), want) {
+					t.Fatalf("payload read different bytes: sha256sum said %q, sent %s", stdout.String(), want)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("no exec_exit for the stdin flood")
+		}
+	}
+}
+
+// While a payload ignores a large stdin, the frame loop keeps answering:
+// a heartbeat sent behind the flood is echoed instead of waiting on the
+// pipe.
+func TestHeartbeatIsEchoedWhileStdinIsFlooded(t *testing.T) {
+	h := newHarness(t, testPol(t))
+	expectHello(t, h)
+	sendHello(t, h)
+
+	if err := h.conn.Write(95, framing.KindExecStart, framing.ExecStart{
+		Argv:  []string{"/bin/sh", "-c", "echo up; exec sleep 30"},
+		Env:   map[string]string{"PATH": "/usr/bin:/bin"},
+		Cwd:   "/",
+		Token: make([]byte, 32),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	awaitUp(t, h)
+
+	stdinFlood(h, 4000, 1<<20, func() {
+		_ = h.conn.Write(777, framing.KindHeartbeat, map[string]any{})
+	})
+
+	echoed := make(chan struct{})
+	go func() {
+		for {
+			f, err := h.conn.Read()
+			if err != nil {
+				return
+			}
+			if f.Kind == framing.KindHeartbeat && f.ID == 777 {
+				close(echoed)
+				return
+			}
+		}
+	}()
+	select {
+	case <-echoed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("heartbeat behind a stdin flood was not echoed")
+	}
+	_ = h.conn.Write(778, framing.KindCancel, map[string]any{})
 }

@@ -146,3 +146,43 @@ The cost is maintaining two small package forks until an upstream release
 contains the repair. The binding fork changes packaging only. Returning to
 upstream packages requires changing every direct dependency together and
 checking that the resulting graph contains one SQLite implementation.
+
+## Addendum: satellite-local read-only observations
+
+*Added 2026-10-01. Implementation is on `codex/lsp-sql`; dependency publication
+and final distribution verification remain pending.*
+
+[Protocol 062](../../protocol-change/062-lsp-sql-observations.md) extends the
+same native dependency family for model-written SQL over explicit LSP facts.
+This SQL executes only inside the jailed code-mode satellite. The harness
+collects admitted facts and evaluates neither the SQL nor the caller's row
+decoder. A fresh private in-memory database per query makes connection custody
+internal to the bridge rather than another public handle lifecycle.
+
+The native entry point installs SQLite's authorizer before preparation, permits
+the declared fact tables and pure functions, requires one executable statement
+and bounds preparation, VM work, output and allocations. The opt-in lower-only
+32 MiB SQLite heap ceiling is process-global and belongs only in the satellite;
+ordinary storage connections do not initialize it. Progress callbacks and
+memory accounting must be enabled in the native build for those limits to hold.
+Fixed-table inserts are parameterized and retired before model SQL begins.
+
+The intended releases are `esqlite_loom` 0.9.1 and `sqlight_loom` 1.2.1. `cap`
+needs the native package directly; existing binding consumers must advance
+together so one native engine remains in the resolved graph. Stock Gleam still
+uses Hex's Rebar builder metadata. A local native wrapper was used only for
+isolated execution tests and is not the distribution decision.
+
+Code-mode artifacts previously flattened only modules. The trusted
+`esqlite3_nif.so` now joins that fixed set and its fingerprint, with
+module-relative fallback loading when an OTP application directory is absent.
+This adds no runtime read root and admits no arbitrary dependency `priv` files.
+The library bytes are executable input and therefore part of the artifact's
+content address. The shared seed carries that fixed dependency even for a
+program that does not import the optional SQL surface.
+
+The cost is maintaining a small native policy API and carrying its library in
+the shared code-mode seed/artifact. The [architecture](../architecture/lsp-sql.md)
+and [review record](../review/lsp-sql.md) state the authorization controls,
+consistency limits and the distinction between tested implementation and the
+pending cold published-package graph.

@@ -254,8 +254,8 @@ sets, build cache, execution budgets, and cancellation model.
 
 Loom can ask a language server for definitions, references, types, file
 outlines, call hierarchy and diagnostics, and preview or apply a semantic
-rename across files. The same operations are available through `cap/lsp` in
-code mode. Results include file and line anchors for editing; writes through
+rename across files through `cap/lsp` in code mode. Semantic queries use
+capability modules rather than separate top-level LSP tools. Results include file and line anchors for editing; writes through
 `fs_write` and `fs_edit` also report diagnostics for files the running server
 owns. Rename previews write nothing, and unsupported server features are
 reported explicitly.
@@ -284,6 +284,13 @@ The [language-server setup guide](docs/language-servers.md) covers installation
 for all three languages, offline dependency preparation, daemon PATH, checks,
 custom paths and troubleshooting. The [architecture guide](docs/architecture/lsp.md)
 explains server ownership, isolation and rename behavior.
+
+Code-mode programs can also collect explicit outlines and reference targets
+through `cap/lsp_sql`, then use read-only SQLite joins, filters and aggregates
+over the captured facts. Queries run inside the jailed program and return
+typed rows with scope and provenance. The [SQL usage guide](docs/lsp-sql.md)
+has a complete Gleam example; the [architecture document](docs/architecture/lsp-sql.md)
+explains admission, limits and the finite observation guarantee.
 
 ## Why Gleam
 

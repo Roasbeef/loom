@@ -7,14 +7,14 @@
 //// daemon session gets — from a `loom.toml` carrying `[lsp.gleam]`, over
 //// the real `loom-exec` helper. So the language server is started lazily
 //// by the session's own manager, after its enforcement probe, in the jail,
-//// as a helper lease, and the `lsp_*` tools reach it through the door the
-//// boot wired. A boot that forgot to wire the door registers no `lsp_*`
-//// tool, and the first scripted call fails as an unknown tool: this file is
-//// the test that fails when `serve` passes `None`.
+//// as a helper lease. Compiled `cap/lsp` programs reach the door the boot
+//// wired, while the provider sees no top-level `lsp_*` tools. A boot that
+//// forgot the door refuses the program capability: these fixtures fail
+//// when `serve` passes `None`.
 ////
-//// Three sessions, each its own boot:
+//// The rename and Go fixtures each boot their own session:
 ////
-//// - **Rename.** `lsp_references` on a bare name, an `fs_edit` whose anchor
+//// - **Rename.** `cap/lsp.references` on a bare name, an `fs_edit` whose anchor
 ////   is the one the references answer printed, a rename preview, a rename
 ////   apply and an `fs_read`. The preview writes nothing; the apply lands
 ////   every file and reports clean settled diagnostics. Between the preview
@@ -27,7 +27,8 @@
 ////   that file is rejected as stale, every other file is not attempted,
 ////   and nothing the rename planned is written (ADR-015 §4).
 //// - **Go.** `gopls`, when this host has it: a definition and the
-////   references of a qualified name, through the same tool path.
+////   references of a qualified name, through the same compiled capability
+////   path.
 ////
 //// ## Why `BestEffort`
 ////
@@ -194,10 +195,10 @@ project = \"writable\"
 /// a read, each checked against the transcript and the disk.
 pub fn lsp_rename_end_to_end_test_() -> EunitTest {
   Timeout(test_timeout_seconds / gleeunit_timeout_scale, fn() {
-    case gleam_prerequisites() {
-      Error(reason) ->
+    case gleam_prerequisites(), code_mode_seed() {
+      Ok(helper_path), Ok(seed) -> run_rename(helper_path, seed)
+      Error(reason), _ | _, Error(reason) ->
         io.println_error("SKIP lsp rename end to end: " <> reason)
-      Ok(helper_path) -> run_rename(helper_path)
     }
   })
 }
@@ -223,14 +224,37 @@ import gleam/int
 import gleam/list
 import gleam/string
 
+fn site(value: lsp.Site) -> report.Value {
+  report.object([
+    #(\"path\", report.string(value.path)),
+    #(\"line\", report.int(value.line)),
+    #(\"anchor\", report.string(value.anchor)),
+    #(\"text\", report.string(value.text)),
+  ])
+}
+
 pub fn main() -> report.Outcome {
   let path = \"app/src/app/util.gleam\"
+  let query = lsp.in(lsp.at_line(lsp.symbol(\"sibling.prefix\"), 3), path)
   let outline = lsp.outline(path)
   let hover = lsp.hover(lsp.in(lsp.at_line(lsp.symbol(\"greet\"), 3), path))
-  case outline, hover {
-    Ok([_, ..] as symbols), Ok(text) ->
-      report.text(\"lsp-cap-ok outline=\" <> int.to_string(list.length(symbols)) <> \" hover=\" <> text)
-    _, _ -> report.failure(string.inspect(#(outline, hover)))
+  let definitions = lsp.definition(query)
+  let references = lsp.references(query)
+  case outline, hover, definitions, references {
+    Ok([_, ..] as symbols), Ok(text), Ok(found), Ok(refs) ->
+      report.value(report.object([
+        #(\"marker\", report.string(\"lsp-cap-ok outline=\" <> int.to_string(list.length(symbols)))),
+        #(\"hover\", report.string(text)),
+        #(\"definitions\", report.object([
+          #(\"sites\", report.list(list.map(found.items, site))),
+          #(\"total\", report.int(found.total)),
+        ])),
+        #(\"references\", report.object([
+          #(\"sites\", report.list(list.map(refs.items, fn(reference) { site(reference.site) }))),
+          #(\"total\", report.int(refs.total)),
+        ])),
+      ]))
+    _, _, _, _ -> report.failure(string.inspect(#(outline, hover, definitions, references)))
   }
 }
 "
@@ -295,15 +319,16 @@ fn run_code_mode(helper: String, seed: String) -> Nil {
   assert completion == operation.RunCompleted(operation.CompletedByAssistant)
   let messages = transcript(settings.session_path)
   echo_language_server_results("code-mode", messages)
-  let assert [content] =
+  let assert [#(content, details)] =
     list.filter_map(messages, fn(entry) {
       case entry {
         message.ToolResultMessage(
           tool_name: "code_mode",
           content:,
           is_error: False,
+          details: Some(details),
           ..,
-        ) -> Ok(content)
+        ) -> Ok(#(content, details))
         _other -> Error(Nil)
       }
     })
@@ -312,6 +337,24 @@ fn run_code_mode(helper: String, seed: String) -> Nil {
   io.println_error("lsp code mode monorepo: " <> text)
   assert string.contains(text, "lsp-cap-ok outline=")
   assert string.contains(text, "fn(String) -> String")
+  let payload = program_payload(details, "completed", "value")
+  let definitions = json_field(payload, "definitions")
+  let references = json_field(payload, "references")
+
+  // A path dependency's definition is outside the queried app's root.
+  // The server may name it, but the harness withholds its text rather than
+  // reading a file the answer's identity did not admit.
+  assert json_field(definitions, "total") == json.Int(1)
+  assert reported_sites(definitions)
+    == [#("sibling/src/sibling.gleam", 1, hashline.anchor(""), "")]
+  let call = "pub fn greet(name: String) -> String { sibling.prefix() <> name }"
+  assert json_field(references, "total") == json.Int(2)
+  assert list.contains(reported_sites(references), #(
+    "app/src/app/util.gleam",
+    3,
+    hashline.anchor(call),
+    call,
+  ))
   let _cleaned = simplifile.delete_all([socket_root])
   Nil
 }
@@ -320,8 +363,8 @@ fn rename_turns() -> List(script.Turn) {
   [
     script.ToolUseTurn(
       call_id: "call_refs",
-      tool: "lsp_references",
-      arguments: json.Object([#("symbol", json.String("greet"))]),
+      tool: "code_mode",
+      arguments: program_args(references_program("greet")),
       input_tokens: 100,
       output_tokens: 5,
     ),
@@ -340,15 +383,15 @@ fn rename_turns() -> List(script.Turn) {
     ),
     script.ToolUseTurn(
       call_id: "call_preview",
-      tool: "lsp_rename",
-      arguments: rename_args("preview"),
+      tool: "code_mode",
+      arguments: program_args(rename_program("Preview")),
       input_tokens: 120,
       output_tokens: 5,
     ),
     script.ToolUseTurn(
       call_id: "call_apply",
-      tool: "lsp_rename",
-      arguments: rename_args("apply"),
+      tool: "code_mode",
+      arguments: program_args(rename_program("Apply")),
       input_tokens: 130,
       output_tokens: 5,
     ),
@@ -369,7 +412,7 @@ fn rename_turns() -> List(script.Turn) {
   ]
 }
 
-fn run_rename(helper_path: String) -> Nil {
+fn run_rename(helper_path: String, seed: String) -> Nil {
   let rig = rig("rename")
   write_gleam_project(rig)
   let project = rig.workspace <> "/app"
@@ -390,29 +433,38 @@ fn run_rename(helper_path: String) -> Nil {
     }
   }
   let messages =
-    run_session(rig, helper_path, gleam_toml, rename_turns(), hook, "rename")
+    run_session(
+      rig,
+      helper_path,
+      gleam_toml,
+      rename_turns(),
+      hook,
+      "rename",
+      seed,
+    )
 
   let assert [
     message.UserMessage(..),
     message.AssistantMessage(stop_reason: message.ToolUse, ..),
     message.ToolResultMessage(
-      tool_name: "lsp_references",
+      tool_name: "code_mode",
       is_error: False,
       content: references,
+      details: Some(reference_details),
       ..,
     ),
     message.AssistantMessage(stop_reason: message.ToolUse, ..),
     message.ToolResultMessage(tool_name: "fs_edit", is_error: False, ..),
     message.AssistantMessage(stop_reason: message.ToolUse, ..),
     message.ToolResultMessage(
-      tool_name: "lsp_rename",
+      tool_name: "code_mode",
       is_error: False,
-      content: preview,
+      details: Some(preview_details),
       ..,
     ),
     message.AssistantMessage(stop_reason: message.ToolUse, ..),
     message.ToolResultMessage(
-      tool_name: "lsp_rename",
+      tool_name: "code_mode",
       is_error: False,
       content: applied,
       details: Some(applied_details),
@@ -428,27 +480,35 @@ fn run_rename(helper_path: String) -> Nil {
     message.AssistantMessage(stop_reason: message.Stop, ..),
   ] = messages
     as "the rename run must be five successful tool turns and an answer"
-  let references = text_of(references)
-  let preview = text_of(preview)
-  let applied = text_of(applied)
-  io.println_error("lsp e2e references:\n" <> references)
-  io.println_error("lsp e2e rename applied:\n" <> applied)
+  io.println_error("lsp e2e references:\n" <> text_of(references))
+  io.println_error("lsp e2e rename applied:\n" <> text_of(applied))
+  let references = program_payload(reference_details, "completed", "value")
+  let preview = program_payload(preview_details, "completed", "value")
+  let applied = program_payload(applied_details, "completed", "value")
 
-  // The references answer counts, names every file, and prints each site
-  // as `path:line:anchor|text` — the anchor the scripted edit used, on the
-  // line it used it, which is why that edit landed.
-  assert string.contains(references, "4 references")
-  assert string.contains(
-    references,
-    "app/src/app.gleam:5:" <> hashline.anchor(app_call_line) <> "|",
-  )
-  assert string.contains(references, "app/src/app/util.gleam:1:")
-  assert string.contains(references, "app/src/app/other.gleam:4:")
+  // The bare-name answer includes its declaration and all three callers.
+  // The edit below uses exactly the anchor returned for app.gleam line 5.
+  assert json_field(references, "total") == json.Int(4)
+  let sites = reported_sites(references)
+  assert list.length(sites) == 4
+  assert list.contains(sites, #(
+    "app/src/app.gleam",
+    5,
+    hashline.anchor(app_call_line),
+    app_call_line,
+  ))
+  assert list.any(sites, fn(site) {
+    site.0 == "app/src/app/util.gleam" && site.1 == 1
+  })
+  assert list.any(sites, fn(site) {
+    site.0 == "app/src/app/other.gleam" && site.1 == 4
+  })
 
   // The preview showed the change and wrote nothing: the disk the hook
   // read between the preview and the apply is the fixture with only the
   // anchored edit on it.
-  assert string.contains(preview, "welcome")
+  assert json_field(preview, "phase") == json.String("previewed")
+  assert string.contains(json.to_string(preview), "welcome")
   let assert Ok(before_apply) = process.receive(snapshots, within: 0)
     as "the hook must have read the disk between the preview and the apply"
   assert before_apply
@@ -460,9 +520,13 @@ fn run_rename(helper_path: String) -> Nil {
 
   // Every file landed, through the hashline path, and the diagnostics
   // after the rename settled clean.
-  assert string.starts_with(applied, "Renamed `greet` to `welcome`: wrote 3")
-  assert string.contains(applied, "diagnostics: clean (settled)")
-  assert landing_statuses(applied_details)
+  assert json_field(applied, "phase") == json.String("applied")
+  assert json_field(applied, "cap_status") == json.String("answered")
+  assert json_field(applied, "written") == json.Int(3)
+  let diagnostics = json_field(applied, "diagnostics")
+  assert json_field(diagnostics, "status") == json.String("settled")
+  assert json_field(diagnostics, "count") == json.Int(0)
+  assert landing_statuses(applied)
     == [
       #("app/src/app.gleam", "landed"),
       #("app/src/app/other.gleam", "landed"),
@@ -489,9 +553,10 @@ fn run_rename(helper_path: String) -> Nil {
 /// is being applied is refused as stale, and nothing is written.
 pub fn lsp_rename_stale_end_to_end_test_() -> EunitTest {
   Timeout(test_timeout_seconds / gleeunit_timeout_scale, fn() {
-    case gleam_prerequisites() {
-      Error(reason) -> io.println_error("SKIP lsp rename stale: " <> reason)
-      Ok(helper_path) -> run_stale(helper_path)
+    case gleam_prerequisites(), code_mode_seed() {
+      Ok(helper_path), Ok(seed) -> run_stale(helper_path, seed)
+      Error(reason), _ | _, Error(reason) ->
+        io.println_error("SKIP lsp rename stale: " <> reason)
     }
   })
 }
@@ -500,15 +565,15 @@ fn stale_turns() -> List(script.Turn) {
   [
     script.ToolUseTurn(
       call_id: "call_preview",
-      tool: "lsp_rename",
-      arguments: rename_args("preview"),
+      tool: "code_mode",
+      arguments: program_args(rename_program("Preview")),
       input_tokens: 100,
       output_tokens: 5,
     ),
     script.ToolUseTurn(
       call_id: "call_apply",
-      tool: "lsp_rename",
-      arguments: rename_args("apply"),
+      tool: "code_mode",
+      arguments: program_args(rename_program("Apply")),
       input_tokens: 110,
       output_tokens: 5,
     ),
@@ -526,7 +591,7 @@ type Writer {
   Halt(reply: process.Subject(Nil))
 }
 
-fn run_stale(helper_path: String) -> Nil {
+fn run_stale(helper_path: String, seed: String) -> Nil {
   let rig = rig("stale")
   write_gleam_project(rig)
   let project = rig.workspace <> "/app"
@@ -559,7 +624,15 @@ fn run_stale(helper_path: String) -> Nil {
     }
   }
   let messages =
-    run_session(rig, helper_path, gleam_toml, stale_turns(), hook, "stale")
+    run_session(
+      rig,
+      helper_path,
+      gleam_toml,
+      stale_turns(),
+      hook,
+      "stale",
+      seed,
+    )
 
   // The writer is stopped before the disk is read, so what is read is
   // final.
@@ -570,10 +643,10 @@ fn run_stale(helper_path: String) -> Nil {
   let assert [
     message.UserMessage(..),
     message.AssistantMessage(stop_reason: message.ToolUse, ..),
-    message.ToolResultMessage(tool_name: "lsp_rename", is_error: False, ..),
+    message.ToolResultMessage(tool_name: "code_mode", is_error: False, ..),
     message.AssistantMessage(stop_reason: message.ToolUse, ..),
     message.ToolResultMessage(
-      tool_name: "lsp_rename",
+      tool_name: "code_mode",
       is_error: True,
       content: refused,
       details: Some(refused_details),
@@ -587,14 +660,34 @@ fn run_stale(helper_path: String) -> Nil {
 
   // The raced file is the one rejected, and why is said; every other file
   // was checked and never attempted.
-  assert string.contains(refused, "wrote nothing")
-  assert string.contains(refused, "app/src/app/other.gleam: rejected")
-  assert landing_statuses(refused_details)
+  assert string.contains(refused, "rename did not land every file")
+  let refused_report =
+    program_payload(refused_details, "program_failed", "details")
+  assert json_field(refused_report, "cap_status") == json.String("answered")
+  assert json_field(refused_report, "phase") == json.String("applied")
+  assert json_field(refused_report, "written") == json.Int(0)
+  assert landing_statuses(refused_report)
     == [
       #("app/src/app.gleam", "not_attempted"),
       #("app/src/app/other.gleam", "rejected"),
       #("app/src/app/util.gleam", "not_attempted"),
     ]
+
+  // A rejected landing names the disk-version race rather than a failed
+  // transport or an unsupported request. The capability itself answered.
+  let assert json.Array(files) = json_field(refused_report, "files")
+    as "the refused apply reports each planned file"
+  let assert [rejected] =
+    list.filter(files, fn(file) {
+      json_field(file, "status") == json.String("rejected")
+    })
+    as "only the raced file is rejected"
+  let assert json.String(reason) = json_field(rejected, "reason")
+    as "the rejected file explains the failed check"
+  assert string.contains(
+    reason,
+    "the file changed after the language server computed the rename",
+  )
 
   // Nothing the rename planned reached the disk: the two untouched files
   // are the fixture, and the raced one is the writer's, still calling
@@ -637,20 +730,22 @@ fn rewrite_until_halted(
 
 // --- gopls -----------------------------------------------------------------
 
-/// `gopls` through the same tool path: the definition of a bare name and
-/// the references of a qualified one.
+/// `gopls` through the same compiled capability path: the definition of a bare
+/// name and the references of a qualified one.
 pub fn lsp_gopls_end_to_end_test_() -> EunitTest {
   Timeout(test_timeout_seconds / gleeunit_timeout_scale, fn() {
-    case go_prerequisites() {
-      Error(NotInstalled(reason)) ->
+    case go_prerequisites(), code_mode_seed() {
+      Error(NotInstalled(reason)), _ ->
         io.println_error(
           "SKIP lsp e2e gopls: gopls or go is not installed (" <> reason <> ")",
         )
-      Error(UnknownRoot(reason)) ->
+      Error(UnknownRoot(reason)), _ ->
         io.println_error(
           "SKIP lsp e2e gopls: go's GOROOT cannot be derived (" <> reason <> ")",
         )
-      Ok(#(helper_path, gopls, places)) -> run_gopls(helper_path, gopls, places)
+      Ok(#(helper_path, gopls, places)), Ok(seed) ->
+        run_gopls(helper_path, gopls, places, seed)
+      _, Error(reason) -> io.println_error("SKIP lsp e2e gopls: " <> reason)
     }
   })
 }
@@ -659,15 +754,15 @@ fn gopls_turns() -> List(script.Turn) {
   [
     script.ToolUseTurn(
       call_id: "call_definition",
-      tool: "lsp_definition",
-      arguments: json.Object([#("symbol", json.String("Greet"))]),
+      tool: "code_mode",
+      arguments: program_args(definition_program("Greet")),
       input_tokens: 100,
       output_tokens: 5,
     ),
     script.ToolUseTurn(
       call_id: "call_refs",
-      tool: "lsp_references",
-      arguments: json.Object([#("symbol", json.String("util.Greet"))]),
+      tool: "code_mode",
+      arguments: program_args(references_program("util.Greet")),
       input_tokens: 110,
       output_tokens: 5,
     ),
@@ -679,7 +774,12 @@ fn gopls_turns() -> List(script.Turn) {
   ]
 }
 
-fn run_gopls(helper_path: String, gopls: String, places: GoPlaces) -> Nil {
+fn run_gopls(
+  helper_path: String,
+  gopls: String,
+  places: GoPlaces,
+  seed: String,
+) -> Nil {
   let rig = rig("gopls")
   let module = rig.workspace <> "/gomod"
   write(module <> "/go.mod", "module example.com/probe\n\ngo 1.21\n")
@@ -726,38 +826,50 @@ writable = [\"" <> places.cache <> "\", \"" <> gopls_cache <> "\"]
 env = [\"GOCACHE\", \"GOFLAGS\", \"GOTOOLCHAIN\"]
 "
   let messages =
-    run_session(rig, helper_path, toml, gopls_turns(), fn(_) { Nil }, "gopls")
+    run_session(
+      rig,
+      helper_path,
+      toml,
+      gopls_turns(),
+      fn(_) { Nil },
+      "gopls",
+      seed,
+    )
   let assert [
     message.UserMessage(..),
     message.AssistantMessage(stop_reason: message.ToolUse, ..),
     message.ToolResultMessage(
-      tool_name: "lsp_definition",
+      tool_name: "code_mode",
       is_error: False,
       content: definition,
+      details: Some(definition_details),
       ..,
     ),
     message.AssistantMessage(stop_reason: message.ToolUse, ..),
     message.ToolResultMessage(
-      tool_name: "lsp_references",
+      tool_name: "code_mode",
       is_error: False,
       content: references,
+      details: Some(reference_details),
       ..,
     ),
     message.AssistantMessage(stop_reason: message.Stop, ..),
   ] = messages
     as "the gopls run must be two successful queries and an answer"
-  let definition = text_of(definition)
-  let references = text_of(references)
-  io.println_error("lsp e2e gopls definition:\n" <> definition)
-  io.println_error("lsp e2e gopls references:\n" <> references)
-  assert string.contains(
-    definition,
-    "gomod/util/util.go:4:"
-      <> hashline.anchor("func Greet(name string) string {")
-      <> "|",
-  )
-  assert string.contains(references, "gomod/main.go:6:")
-  assert string.contains(references, "gomod/main.go:7:")
+  io.println_error("lsp e2e gopls definition:\n" <> text_of(definition))
+  io.println_error("lsp e2e gopls references:\n" <> text_of(references))
+  let definition = program_payload(definition_details, "completed", "value")
+  let references = program_payload(reference_details, "completed", "value")
+  let definition_line = "func Greet(name string) string {"
+  assert list.contains(reported_sites(definition), #(
+    "gomod/util/util.go",
+    4,
+    hashline.anchor(definition_line),
+    definition_line,
+  ))
+  let sites = reported_sites(references)
+  assert list.any(sites, fn(site) { site.0 == "gomod/main.go" && site.1 == 6 })
+  assert list.any(sites, fn(site) { site.0 == "gomod/main.go" && site.1 == 7 })
 }
 
 // --- one session -------------------------------------------------------------
@@ -797,10 +909,20 @@ fn run_session(
   turns: List(script.Turn),
   hook: fn(Int) -> Nil,
   name: String,
+  seed: String,
 ) -> List(message.AgentMessage) {
   let assert Ok(parsed) = catalog.parse(toml)
     as "the fixture loom.toml must parse"
-  let settings = settings(rig, helper_path, parsed, hooked(turns, hook), name)
+  let socket_root =
+    "/var/tmp/lsp-cap-" <> int.to_string(ffi_shell.unique_integer())
+  let assert Ok(Nil) = simplifile.create_directory_all(socket_root)
+    as "the compiled fixture has a shallow capability socket"
+  let settings =
+    serve.Settings(
+      ..settings(rig, helper_path, parsed, hooked(turns, hook), name),
+      codemode_seed: seed,
+      codemode_sockets: Some(socket_root),
+    )
   let assert Ok(instance) = serve.open_instance(settings, log.discard())
     as "the session must boot"
   let outcome = complete(instance)
@@ -811,6 +933,7 @@ fn run_session(
   let messages = transcript(settings.session_path)
 
   echo_language_server_results(name, messages)
+  let _cleaned = simplifile.delete_all([socket_root])
   messages
 }
 
@@ -862,6 +985,15 @@ fn result_text(content: List(message.ToolResultBlock)) -> String {
 fn hooked(turns: List(script.Turn), hook: fn(Int) -> Nil) -> http.Transport {
   let inner = script.transport(turns)
   http.Transport(prepare_streaming: fn(request, subject) {
+    let assert Ok(body) = json.parse(request.body)
+      as "the real provider request is valid JSON"
+    let assert json.Array(tools) = json_field(body, "tools")
+      as "the provider carries its default tool registry"
+    assert !list.any(tools, fn(tool) {
+      let assert json.String(name) = json_field(tool, "name")
+        as "each registered tool has a name"
+      string.starts_with(name, "lsp_")
+    })
     hook(script.tool_results_in(request.body))
     inner.prepare_streaming(request, subject)
   })
@@ -980,6 +1112,14 @@ fn settings(
 // The acceptance names a bare symbol, which the manager finds with
 // ripgrep before asking the server, so ripgrep is as much a prerequisite
 // here as `gleam` is.
+fn code_mode_seed() -> Result(String, String) {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test package has a working directory"
+  let seed = here <> "/../../build/codemode-seed"
+  use _ <- result.try(codemode.discover(seed))
+  Ok(seed)
+}
+
 fn gleam_prerequisites() -> Result(String, String) {
   case jail.find_executable("gleam"), jail.find_executable("rg") {
     Error(Nil), _ -> Error("gleam is not on PATH")
@@ -1147,12 +1287,198 @@ fn parent_directory(path: String) -> String {
 
 // --- the scripted arguments and the results ----------------------------------
 
-fn rename_args(mode: String) -> JsonValue {
-  json.Object([
-    #("symbol", json.String("greet")),
-    #("new_name", json.String("welcome")),
-    #("mode", json.String(mode)),
+// These programs serialize the typed capability answers into report values.
+// The host checks the committed JSON, so an empty or malformed answer cannot
+// pass by printing a plausible sentence.
+const site_program =
+  "import cap/lsp
+import cap/report
+import gleam/list
+import gleam/string
+
+fn site(value: lsp.Site) -> report.Value {
+  report.object([
+    #(\"path\", report.string(value.path)),
+    #(\"line\", report.int(value.line)),
+    #(\"column\", report.int(value.column)),
+    #(\"anchor\", report.string(value.anchor)),
+    #(\"text\", report.string(value.text)),
   ])
+}
+"
+
+const references_main =
+  "
+pub fn main() -> report.Outcome {
+  case lsp.references(lsp.symbol(__SYMBOL__)) {
+    Ok(found) -> report.value(report.object([
+      #(\"total\", report.int(found.total)),
+      #(\"sites\", report.list(list.map(found.items, fn(reference) { site(reference.site) }))),
+    ]))
+    Error(error) -> report.failure(string.inspect(error))
+  }
+}
+"
+
+const definition_main =
+  "
+pub fn main() -> report.Outcome {
+  case lsp.definition(lsp.symbol(__SYMBOL__)) {
+    Ok(found) -> report.value(report.object([
+      #(\"total\", report.int(found.total)),
+      #(\"sites\", report.list(list.map(found.items, site))),
+    ]))
+    Error(error) -> report.failure(string.inspect(error))
+  }
+}
+"
+
+const rename_template =
+  "import cap/lsp
+import cap/report
+import gleam/list
+import gleam/string
+
+fn planned(file: lsp.PlannedFile) -> report.Value {
+  report.object([
+    #(\"path\", report.string(file.path)),
+    #(\"edits\", report.int(file.edits)),
+    #(\"changes\", report.list(list.map(file.changes, fn(change) {
+      report.object([
+        #(\"line\", report.int(change.line)),
+        #(\"before\", report.string(change.before)),
+        #(\"after\", report.string(change.after)),
+      ])
+    }))),
+  ])
+}
+
+fn landing(file: lsp.Landing) -> report.Value {
+  case file {
+    lsp.Landed(path, edits) -> report.object([
+      #(\"path\", report.string(path)),
+      #(\"status\", report.string(\"landed\")),
+      #(\"edits\", report.int(edits)),
+    ])
+    lsp.Rejected(path, reason) -> report.object([
+      #(\"path\", report.string(path)),
+      #(\"status\", report.string(\"rejected\")),
+      #(\"reason\", report.string(reason)),
+    ])
+    lsp.NotAttempted(path) -> report.object([
+      #(\"path\", report.string(path)),
+      #(\"status\", report.string(\"not_attempted\")),
+    ])
+  }
+}
+
+fn diagnostics(value: lsp.Diagnostics) -> report.Value {
+  let #(status, diagnostics) = case value {
+    lsp.Settled(items) -> #(\"settled\", items)
+    lsp.Unsettled(items) -> #(\"unsettled\", items)
+  }
+  report.object([
+    #(\"status\", report.string(status)),
+    #(\"count\", report.int(list.length(diagnostics))),
+  ])
+}
+
+pub fn main() -> report.Outcome {
+  case lsp.rename(lsp.symbol(\"greet\"), \"welcome\", lsp.__MODE__) {
+    Ok(lsp.Previewed(files)) -> report.value(report.object([
+      #(\"phase\", report.string(\"previewed\")),
+      #(\"files\", report.list(list.map(files, planned))),
+    ]))
+    Ok(lsp.Applied(files, after)) -> {
+      let payload = report.object([
+        #(\"phase\", report.string(\"applied\")),
+        #(\"cap_status\", report.string(\"answered\")),
+        #(\"written\", report.int(list.count(files, fn(file) {
+          case file {
+            lsp.Landed(_, _) -> True
+            lsp.Rejected(_, _) | lsp.NotAttempted(_) -> False
+          }
+        }))),
+        #(\"files\", report.list(list.map(files, landing))),
+        #(\"diagnostics\", diagnostics(after)),
+      ])
+      case list.all(files, fn(file) {
+        case file {
+          lsp.Landed(_, _) -> True
+          lsp.Rejected(_, _) | lsp.NotAttempted(_) -> False
+        }
+      }) {
+        True -> report.value(payload)
+        False -> report.Errored(\"rename did not land every file\", payload)
+      }
+    }
+    Error(error) -> report.failure(string.inspect(error))
+  }
+}
+"
+
+fn references_program(symbol: String) -> String {
+  site_program
+  <> string.replace(
+    references_main,
+    "__SYMBOL__",
+    json.to_string(json.String(symbol)),
+  )
+}
+
+fn definition_program(symbol: String) -> String {
+  site_program
+  <> string.replace(
+    definition_main,
+    "__SYMBOL__",
+    json.to_string(json.String(symbol)),
+  )
+}
+
+fn rename_program(mode: String) -> String {
+  string.replace(rename_template, "__MODE__", mode)
+}
+
+fn program_args(program: String) -> JsonValue {
+  json.Object([
+    #("program", json.String(program)),
+    #("within_ms", json.Int(120_000)),
+  ])
+}
+
+// A successful program's value and a failed program's details occupy different
+// fields. Checking the status before reading either keeps a compile failure or
+// a refused capability from masquerading as a typed rename report.
+fn program_payload(
+  details: JsonValue,
+  status: String,
+  field: String,
+) -> JsonValue {
+  assert json_field(details, "status") == json.String(status)
+  json_field(details, field)
+}
+
+fn json_field(value: JsonValue, field: String) -> JsonValue {
+  let assert json.Object(fields) = value as "the report is an object"
+  let assert Ok(value) = list.key_find(fields, field)
+    as "the typed report contains the required field"
+  value
+}
+
+fn reported_sites(value: JsonValue) -> List(#(String, Int, String, String)) {
+  let assert json.Array(sites) = json_field(value, "sites")
+    as "the typed answer contains a site list"
+  list.map(sites, fn(site) {
+    let assert json.String(path) = json_field(site, "path")
+      as "a reported site has a path"
+    let assert json.Int(line) = json_field(site, "line")
+      as "a reported site has a line"
+    let assert json.String(anchor) = json_field(site, "anchor")
+      as "a reported site has a hashline anchor"
+    let assert json.String(text) = json_field(site, "text")
+      as "a reported site has its source line"
+    #(path, line, anchor, text)
+  })
 }
 
 // One anchored `fs_edit` replacing line `line` of a file whose whole text
@@ -1219,4 +1545,268 @@ fn landing_statuses(details: JsonValue) -> List(#(String, String)) {
     }
   })
   |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
+}
+
+// --- SQL over real bounded observations ------------------------------------
+
+/// A saved Gleam program reaches real LSP collection and jailed typed SQL.
+pub fn lsp_sql_gleam_end_to_end_test_() -> EunitTest {
+  Timeout(test_timeout_seconds / gleeunit_timeout_scale, fn() {
+    let assert Ok(here) = simplifile.current_directory()
+      as "the conformance package has a working directory"
+    let seed = here <> "/../../build/codemode-seed"
+    case gleam_prerequisites(), codemode.discover(seed) {
+      Ok(helper), Ok(_) -> run_sql_gleam(helper, seed)
+      Error(reason), _ | _, Error(reason) ->
+        io.println_error("SKIP lsp sql gleam: " <> reason)
+    }
+  })
+}
+
+/// Real gopls collection reaches the same production capture and SQLite seam.
+pub fn lsp_sql_gopls_end_to_end_test_() -> EunitTest {
+  Timeout(test_timeout_seconds / gleeunit_timeout_scale, fn() {
+    let assert Ok(here) = simplifile.current_directory()
+      as "the conformance package has a working directory"
+    let seed = here <> "/../../build/codemode-seed"
+    case go_prerequisites(), codemode.discover(seed) {
+      Ok(#(helper, gopls, places)), Ok(_) ->
+        run_sql_gopls(helper, gopls, places, seed)
+      Error(NotInstalled(reason)), _ ->
+        io.println_error(
+          "SKIP lsp sql gopls: gopls or go is not installed (" <> reason <> ")",
+        )
+      Error(UnknownRoot(reason)), _ ->
+        io.println_error(
+          "SKIP lsp sql gopls: go's GOROOT cannot be derived (" <> reason <> ")",
+        )
+      _, Error(reason) -> io.println_error("SKIP lsp sql gopls: " <> reason)
+    }
+  })
+}
+
+const sql_program_template =
+  "import cap/lsp_sql as sql
+import cap/report
+import gleam/int
+import gleam/list
+import gleam/option.{Some}
+import gleam/string
+
+fn count(row: List(sql.Cell)) -> Result(Int, String) {
+  case row { [sql.Integer(n)] -> Ok(n) _ -> Error(\"expected one integer count\") }
+}
+
+fn named_count(row: List(sql.Cell)) -> Result(#(String, Int), String) {
+  case row { [sql.Text(name), sql.Integer(n)] -> Ok(#(name,n)) _ -> Error(\"expected symbol text and integer count\") }
+}
+
+fn named(row: List(sql.Cell)) -> Result(String, String) {
+  case row { [sql.Text(name)] -> Ok(name) _ -> Error(\"expected one symbol text\") }
+}
+
+pub fn main() -> report.Outcome {
+  let path = \"__PATH__\"
+  let plan = sql.Plan(\"__SERVER__\", \"__ROOT__\", [path], [sql.Target(\"__USED__\",path,Some(__USEDLINE__)),sql.Target(\"__UNUSED__\",path,Some(__UNUSEDLINE__))])
+  let captured = sql.collect(plan)
+  case captured {
+    Error(error) -> report.failure(string.inspect(error))
+    Ok(observation) -> {
+      let counted = sql.query(observation, \"SELECT t.symbol,count(r.target_id) FROM targets t LEFT JOIN \\\"references\\\" r ON r.target_id=t.id AND (r.path!=t.path OR r.line!=t.line OR r.column!=t.column) GROUP BY t.id,t.symbol ORDER BY t.id\", [], named_count)
+      let unused = sql.query(observation, \"SELECT t.symbol FROM targets t WHERE NOT EXISTS (SELECT 1 FROM \\\"references\\\" r WHERE r.target_id=t.id AND (r.path!=t.path OR r.line!=t.line OR r.column!=t.column)) ORDER BY t.id\", [], named)
+      let joined = sql.query(observation, \"SELECT count(*) FROM symbols s JOIN documents d ON d.path=s.path\", [], count)
+      let mismatch = sql.query(observation,\"SELECT count(*) FROM symbols\",[],named)
+      let denied = sql.query(observation,\"DELETE FROM symbols\",[],count)
+      let missing = sql.collect(sql.Plan(\"unconfigured-server\", \"__ROOT__\", [path], []))
+      case counted,unused,joined,mismatch,denied,missing {
+        Ok(counted),Ok(unused),Ok(joined),Error(sql.DecodeFailed(0,_)),Error(sql.ReadOnlyDenied(_)),Error(sql.InvalidScope(_)) -> {
+          let expected = [#(\"__USED__\",__MINREFS__),#(\"__UNUSED__\",0)]
+          let complete = counted.rows == expected && unused.rows == [\"__UNUSED__\"] && case joined.rows { [n] -> n >= 2 _ -> False }
+          let same = counted.observation == sql.metadata(observation) && unused.observation == counted.observation && joined.observation == counted.observation
+          let metadata = sql.metadata(observation)
+          let scoped = metadata.server == \"__SERVER__\" && list.length(metadata.outlined) == 1 && list.length(metadata.targets) == 2 && metadata.withheld == 0 && metadata.finished_ms >= metadata.started_ms && string.starts_with(metadata.generation,\"sha256-\")
+          case complete && same && scoped {
+            True -> report.text(\"lsp-sql-ok references=\" <> string.inspect(counted.rows) <> \" unused=\" <> string.inspect(unused.rows) <> \" joined=\" <> string.inspect(joined.rows) <> \" facts=\" <> int.to_string(metadata.facts))
+            False -> report.failure(string.inspect(#(counted,unused,joined,metadata)))
+          }
+        }
+        _,_,_,_,_,_ -> report.failure(string.inspect(#(counted,unused,joined,mismatch,denied,missing)))
+      }
+    }
+  }
+}
+"
+
+fn sql_program(
+  server: String,
+  root: String,
+  path: String,
+  used: String,
+  unused: String,
+  used_line: Int,
+  unused_line: Int,
+  references: Int,
+) -> String {
+  sql_program_template
+  |> string.replace("__SERVER__", server)
+  |> string.replace("__ROOT__", root)
+  |> string.replace("__PATH__", path)
+  |> string.replace("__USED__", used)
+  |> string.replace("__UNUSED__", unused)
+  |> string.replace("__USEDLINE__", int.to_string(used_line))
+  |> string.replace("__UNUSEDLINE__", int.to_string(unused_line))
+  |> string.replace("__MINREFS__", int.to_string(references))
+}
+
+fn run_sql_gleam(helper: String, seed: String) -> Nil {
+  let rig = rig("sql-gleam")
+  write(
+    rig.workspace <> "/app/gleam.toml",
+    "name = \"app\"\nversion = \"1.0.0\"\ntarget = \"erlang\"\n",
+  )
+  write(
+    rig.workspace <> "/app/src/app/util.gleam",
+    "pub fn greet() -> String { \"hello\" }\n\npub fn lonely() -> String { \"unused\" }\n\npub fn twice() -> String { greet() <> greet() }\n",
+  )
+  // The saved program exercises the production filesystem admission and
+  // source loader before the same compile, vet, jail, LSP and SQLite path.
+  let program_path = "observe.gleam"
+  write(
+    rig.workspace <> "/" <> program_path,
+    sql_program(
+      "gleam",
+      "app",
+      "app/src/app/util.gleam",
+      "greet",
+      "lonely",
+      1,
+      3,
+      2,
+    ),
+  )
+  run_sql_program(
+    rig,
+    helper,
+    gleam_toml,
+    seed,
+    json.Object([
+      #("program_path", json.String(program_path)),
+      #("within_ms", json.Int(120_000)),
+    ]),
+    "sql-gleam",
+  )
+}
+
+fn run_sql_gopls(
+  helper: String,
+  gopls: String,
+  places: GoPlaces,
+  seed: String,
+) -> Nil {
+  let rig = rig("sql-gopls")
+  let module = rig.workspace <> "/gomod"
+  write(module <> "/go.mod", "module example.com/probe\n\ngo 1.21\n")
+  write(
+    module <> "/util/util.go",
+    "package util\n\nfunc Greet() string { return \"hello\" }\n\nfunc Lonely() string { return \"unused\" }\n\nfunc Twice() string { return Greet() + Greet() }\n",
+  )
+  let gopls_cache = parent_directory(places.cache) <> "/gopls"
+  let toml = "
+[models.acme]
+dialect = \"anthropic\"
+base_url = \"https://acme.test\"
+api_key_env = \"ACME_KEY\"
+model_id = \"loom-1\"
+context_window = 200000
+max_output_tokens = 8192
+[roles]
+main = [\"acme\"]
+[lsp.go]
+command = [\"" <> gopls <> "\", \"serve\"]
+extensions = [\".go\"]
+root_markers = [\"go.mod\"]
+readable = [\"" <> places.root <> "\", \"" <> places.module_cache <> "\"]
+writable = [\"" <> places.cache <> "\", \"" <> gopls_cache <> "\"]
+env = [\"GOFLAGS\", \"GOTOOLCHAIN\"]
+"
+  run_sql_program(
+    rig,
+    helper,
+    toml,
+    seed,
+    program_args(sql_program(
+      "go",
+      "gomod",
+      "gomod/util/util.go",
+      "Greet",
+      "Lonely",
+      3,
+      5,
+      2,
+    )),
+    "sql-gopls",
+  )
+}
+
+fn run_sql_program(
+  rig: Rig,
+  helper: String,
+  toml: String,
+  seed: String,
+  arguments: JsonValue,
+  name: String,
+) -> Nil {
+  let turns = [
+    script.ToolUseTurn(
+      call_id: "sql-observation",
+      tool: "code_mode",
+      arguments:,
+      input_tokens: 100,
+      output_tokens: 5,
+    ),
+    script.AnswerTurn(
+      text: "SQL observation received",
+      input_tokens: 110,
+      output_tokens: 5,
+    ),
+  ]
+  let assert Ok(parsed) = catalog.parse(toml)
+    as "the SQL fixture profile is valid"
+  let socket_root =
+    "/var/tmp/lsp-sql-" <> int.to_string(ffi_shell.unique_integer())
+  let assert Ok(Nil) = simplifile.create_directory_all(socket_root)
+    as "the real jailed program has a shallow capability socket"
+  let settings =
+    serve.Settings(
+      ..settings(rig, helper, parsed, script.transport(turns), name),
+      codemode_seed: seed,
+      codemode_sockets: Some(socket_root),
+    )
+  let assert Ok(instance) = serve.open_instance(settings, log.discard())
+    as "production boot wires the observation door"
+  let outcome = complete(instance)
+  serve.close_instance(instance)
+  let assert Ok(operation.RunLastResult(outcome: completion, ..)) = outcome
+    as "the SQL fixture operation settles"
+  assert completion == operation.RunCompleted(operation.CompletedByAssistant)
+  let messages = transcript(settings.session_path)
+  echo_language_server_results(name, messages)
+  let assert [content] =
+    list.filter_map(messages, fn(entry) {
+      case entry {
+        message.ToolResultMessage(
+          tool_name: "code_mode",
+          is_error: False,
+          content:,
+          ..,
+        ) -> Ok(content)
+        _other -> Error(Nil)
+      }
+    })
+    as "one successful real code-mode SQL result is persisted"
+  let text = result_text(content)
+  io.println_error("lsp SQL " <> name <> ": " <> text)
+  assert string.contains(text, "lsp-sql-ok references=")
+  let _cleaned = simplifile.delete_all([socket_root])
+  Nil
 }

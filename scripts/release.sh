@@ -466,6 +466,7 @@ fi
 # application metadata.
 mkdir -p "$REL/share/diagnostics/ebin"
 cp "$ROOT/scripts/profile-launcher.sh" "$REL/share/diagnostics/profile-launcher.sh"
+cp "$ROOT/scripts/observer.sh" "$REL/share/diagnostics/observer.sh"
 erlc -o "$REL/share/diagnostics/ebin" "$ROOT/scripts/mem_report.erl"
 DEBUG_START=""
 if [ "$DEBUG" = 1 ]; then
@@ -534,6 +535,7 @@ root=\$(dirname "\$here")
 LOOM_PROFILE_TOOL="\$root/bin/loom-profile"
 LOOM_PROFILE_CONFIG_READER="\$root/bin/loom-profile-config"
 source "\$root/share/diagnostics/profile-launcher.sh"
+if [[ "\${1:-}" == observer ]]; then shift; exec "\$root/share/diagnostics/observer.sh" "\$@"; fi
 loom_profile_consume daemon "\$@"
 set -- -extra \${LOOM_PROFILE_ARGS[@]+"\${LOOM_PROFILE_ARGS[@]}"}
 if (( LOOM_PROFILE_ENABLED == 1 )); then

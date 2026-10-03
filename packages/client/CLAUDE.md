@@ -1,5 +1,18 @@
 # client
 
+## LSP query handle ownership
+
+`lsp/manager.Manager` retains reachability, workspace/server identity,
+search, protected paths, timing and display roots. Its caller-side handle
+excludes `Backend.connect`; the manager actor and keeper retain the full
+configuration and perform transport startup. Every query and stop still
+resolves the same restartable address and uses the original bounds. The
+capture regression grows only connect's environment and requires both the
+handle and its eight door callbacks to remain the same flat size. The returned
+server transport projects the abort callback and step identity before retaining
+its abort closure; environment lookup stays with preparation, tested by growing
+only its captured payload through the scripted enforcement probe.
+
 ## Context observation and router capture
 
 `context_view.reader` projects the immutable tool registry into a private
@@ -2396,7 +2409,7 @@ catalogue without opening runtimes. Explicit admission invokes
   at all. When code mode or jobs is available, the built-in `fs_read` also
   receives `codemode.cap_scheme` or `job.scheme`, respectively. The schemes
   reuse those planes and add no separate registry entry. A language-server
-  door (ADR-015 §6) adds the seven `lsp_*` tools and builds `fs_write` and
+  door (ADR-015 §6 and its code-mode addendum) builds `fs_write` and
   `fs_edit` with `tools/lsp.diagnostics_observer`, so a landed write's
   result gains its settled diagnostics; with `None` the two write tools are
   the plain ones and the definitions are byte-identical to a host that
@@ -2404,8 +2417,10 @@ catalogue without opening runtimes. Explicit admission invokes
   door when the catalogue configures an `[lsp.<name>]` server that
   survived its load, and `None` otherwise (see "Language servers"). The
   last argument is the served profiles' hints as `#(server name, hint)`,
-  handed to `tools/lsp.tools`, which appends them to `lsp_definition`'s
-  description only; `[]` leaves every description byte-identical.
+  attached to offers that admit and serve `cap/lsp`. The `code_mode`
+  description and `cap://lsp` read carry them with the native API. The default
+  registry does not register top-level `lsp_*` tools. Without a served LSP
+  capability it advertises no naming hints.
 - `client/contributions.registry(List(Contribution)) ->
   Result(Registry, Collision)` — the seam an installed extension enters
   the registry through. Last-registration-wins survives *inside* one
@@ -5312,3 +5327,29 @@ After a failure, empty answers and clean-looking diagnostics become
 The setup guide distinguishes host extension commands from a jailed Bash
 command's private HOME. Neither the private installation nor a nested probe's
 scratch refusal proves the daemon's global profile is missing or broken.
+
+## Finite language-server observations
+
+`client/lsp/manager.observation_door` fills `lsp/observation.Door` beside the
+interactive `query.Door`. Collection admits one configured server and root,
+pulls the explicit source documents into that server, waits for readiness,
+and queries only the requested outlines and reference seeds. It uses one
+weft worker under the lesser of the invocation deadline and 75 seconds.
+The death of its caller cancels that worker and its pending protocol id;
+collection never stops the shared language-server lease.
+
+A complete batch is bounded by 10,000 retained facts, 4 MiB of retained text
+and fact strings, and 128 semantic requests, including seed outline
+resolution. Counts retain server-withheld locations without reading or
+opening them. A failure, unsupported feature, busy server, exceeded bound or
+detected change refuses the whole batch. Canonical paths, content digests,
+internal document versions, the opaque client generation and the checked
+start/end interval describe the admitted observation.
+
+The interval checks synced source text and actor state before and after the
+queries, then rereads every admitted fact document and checks the original
+source spellings. Returned reference files can carry no actor version when
+the server never held them open. Those files are first read after the server
+answer. Standard LSP has no transactional project revision, so the batch
+does not establish atomic workspace coverage or detect edits in unseen
+dependencies. SQL execution belongs to the code-mode satellite.

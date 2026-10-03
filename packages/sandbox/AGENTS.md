@@ -175,9 +175,13 @@ only Go module.
   process-group signals for children that call `setsid(2)`. Each 20 ms sample
   reads a fresh kernel process table. A parent-head map and one-based sibling
   indices traverse that snapshot without copying process records or allocating
-  a child slice per host process. Reverse indexing preserves snapshot sibling
-  order; remembered identities remain roots after reparenting. Tests pin deep
-  traversal, reparenting and birth-checked delivery to a real sleeping process.
+  a child slice per host process. The ledger lock also owns reusable index and
+  frontier buffers; every capture clears the heads and overwrites active links
+  before traversal. Capacity follows the largest snapshot rather than being
+  allocated every tick. Reverse indexing preserves snapshot sibling order;
+  remembered identities remain in custody after reparenting. Tests pin fresh
+  edges after shrinking/reordered snapshots, allocation-free stable traversal,
+  concurrent captures and birth-checked delivery to a real sleeping process.
   macOS has no PID
   namespace, subreaper, or stable process handle, so a rapid daemonizing
   double-fork can be reparented between samples. Every Darwin execution reports
@@ -411,6 +415,35 @@ only Go module.
 - **One execution at a time per helper**; a second `exec_start` gets a
   `busy` error. Concurrency lives in the broker's pool, which keeps "the
   pgroup" in the cancel contract unambiguous.
+- **Stdin never blocks the frame loop, and Cancel never waits on stdin.**
+  `exec_stdin` is handled on the helper's single frame-reading goroutine,
+  and a pipe write blocks once the kernel buffer (64 KiB) is full, which a
+  payload that never reads stdin guarantees. The write used to run inline
+  under `Exec.mu`, the same lock `Cancel` and the wall-clock deadline take,
+  so one such payload sent more than a pipe of stdin stopped the helper
+  reading `cancel`, `heartbeat` and `shutdown` and stopped its own deadline
+  from firing; the broker's only recourse was killing the helper after the
+  3 s grace, losing the native-exit witness and stranding a pool slot.
+  `Exec.WriteStdin` now only appends to `jail.stdinQueue`
+  (`internal/jail/stdin.go`): a FIFO with its own mutex, held for
+  bookkeeping and never across a write, drained by one writer goroutine per
+  execution, started by the first chunk. `Exec.mu` is not involved in
+  stdin at all. Pending bytes are bounded by `jail.StdinPendingMax`, 16 MiB,
+  equal to `framing.MaxFrameLen` (pinned by a test in `internal/server`,
+  since `jail` does not import `framing`); only a chunk that would exceed
+  it makes the frame loop wait, and that wait ends when the payload reads or
+  when the execution does, with `Cancel` and the deadline still able to
+  terminate the payload meanwhile. `exec_stdin` with `eof` closes the pipe
+  after every queued chunk has been written, so byte order is unchanged.
+  `Settle` calls `stdinQueue.abandon` after the child is reaped: it drops
+  the queue, closes the pipe (which interrupts a blocked write) and joins
+  the writer, before `execFreed` or `waitDone` can close, so "freed" and
+  "joined" below still hold with no writer goroutine outliving its
+  execution. Consequences visible to a caller: `WriteStdin` returns when the
+  chunk is accepted, not when the child read it, and a failed pipe write
+  (EPIPE from a child that closed stdin) is reported by the *next*
+  `exec_stdin` as the same `no_exec` error frame, not by the failing one.
+  No wire change.
 - **Busy ends when the child is reaped, not when the exit frame has been
   written.** `internal/server` keeps two signals for the running
   execution and closes them either side of the terminal write:

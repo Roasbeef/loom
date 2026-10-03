@@ -3,6 +3,7 @@ version = "0.2.0"
 gleam = ">= 1.18.0"
 
 [dependencies]
+esqlite_loom = "== 0.9.1"
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 core = { path = "../core" }
 gleam_erlang = ">= 1.0.0 and < 2.0.0"

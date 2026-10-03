@@ -1,6 +1,6 @@
 //// The language-server door, plumbed: what a session with no configured
 //// server sees (nothing, byte for byte), what a session with one sees
-//// (the `lsp_*` tools, observed writes, and `cap/lsp` admitted, rendered,
+//// (observed writes and `cap/lsp` admitted, rendered,
 //// advertised and routed together), and the applied rename code mode
 //// reaches, landing through the write boundary a program is held to.
 ////
@@ -29,11 +29,13 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import lsp/observation
 import lsp/query
 import simplifile
 import tools/codemode as codemode_tool
 import tools/directory_access
 import tools/fs
+import tools/hashline
 import tools/tool
 
 // --- fixtures ------------------------------------------------------------
@@ -169,7 +171,8 @@ fn route(
 ) -> framing.CapOutcome {
   case built.satellite.router(call) {
     Error(denial) -> framing.CapErr(code: denial.code, message: denial.message)
-    Ok(satellite.ServedHere(serve)) -> serve()
+    Ok(satellite.ServedHere(serve)) | Ok(satellite.ScopedService(serve)) ->
+      serve()
     Ok(satellite.ClearedCall(..)) ->
       panic as "an lsp call is answered in the harness"
   }
@@ -251,13 +254,9 @@ fn tool_named(registry: tool.Registry, name: String) -> tool.Tool {
   found
 }
 
-pub fn a_door_registers_the_lsp_tools_test() {
+pub fn a_door_keeps_language_calls_in_code_mode_test() {
   let names = tool.names(registry(Some(door())))
-  assert list.filter(names, string.starts_with(_, "lsp_"))
-    == [
-      "lsp_calls", "lsp_definition", "lsp_diagnostics", "lsp_hover",
-      "lsp_references", "lsp_rename", "lsp_symbols",
-    ]
+  assert list.filter(names, string.starts_with(_, "lsp_")) == []
 }
 
 // With a door, a landed write is reported to it and its diagnostics
@@ -286,6 +285,169 @@ pub fn a_door_observes_fs_write_test() {
   let plain = tool.dispatch(registry(None), ctx_in(workspace), "fs_write", args)
   assert !plain.is_error
   assert !string.contains(text_of(plain), "unused variable")
+}
+
+pub fn a_door_observes_fs_edit_test() {
+  let workspace = scratch("observed-edit")
+  let written = process.new_subject()
+  let content = "old\n"
+  let assert Ok(Nil) = simplifile.write(workspace <> "/a.txt", content)
+  let anchor =
+    json.Object([
+      #("line", json.Int(1)),
+      #("anchor", json.String(hashline.anchor("old"))),
+    ])
+  let outcome =
+    tool.dispatch(
+      registry(Some(recording_door(written))),
+      ctx_in(workspace),
+      "fs_edit",
+      json.Object([
+        #("path", json.String("a.txt")),
+        #("digest", json.String(hashline.digest(content))),
+        #(
+          "hunks",
+          json.Array([
+            json.Object([
+              #("op", json.String("replace")),
+              #("from", anchor),
+              #("to", anchor),
+              #("lines", json.Array([json.String("new")])),
+            ]),
+          ]),
+        ),
+      ]),
+    )
+  assert !outcome.is_error
+  assert string.contains(text_of(outcome), "unused variable `x`")
+  assert simplifile.read(workspace <> "/a.txt") == Ok("new\n")
+  let assert [path] = drain(written)
+  assert string.ends_with(path, "/a.txt")
+}
+
+fn guidance_registry(
+  lsp: Option(query.Door),
+  seams: codemode_tool.Seams,
+) -> tool.Registry {
+  let mode =
+    codemode_tool.CodeMode(
+      execute: fn(_) { panic as "discovery never executes a program" },
+      background: None,
+      seams:,
+      default_within_ms: 1000,
+      max_within_ms: 1000,
+    )
+  let assert Ok(registry) =
+    contributions.registry(
+      contributions.built_in(
+        None,
+        Some(mode),
+        None,
+        None,
+        None,
+        None,
+        None,
+        lsp,
+        [
+          #("gleam", "Gleam installed profile. Second sentence stays visible."),
+          #("go", "Go installed profile."),
+        ],
+      ),
+    )
+  registry
+}
+
+fn guidance_offer(
+  imports: List(String),
+  caps: List(String),
+) -> codemode_tool.SeamOffer {
+  codemode_tool.SeamOffer(
+    seam: codemode_tool.WorkspaceSeam,
+    allowed_imports: imports,
+    serviced_caps: caps,
+    extra_surfaces: [],
+  )
+}
+
+pub fn language_guidance_requires_door_import_and_service_test() {
+  let full =
+    guidance_offer(["cap/lsp", "cap/lsp_sql"], [
+      "lsp.definition",
+      "lsp.snapshot",
+    ])
+  let cases = [
+    #(None, full),
+    #(Some(door()), guidance_offer([], ["lsp.definition", "lsp.snapshot"])),
+    #(Some(door()), guidance_offer(["cap/lsp", "cap/lsp_sql"], [])),
+  ]
+  list.each(cases, fn(test_case) {
+    let registry =
+      guidance_registry(test_case.0, codemode_tool.one_seam(test_case.1))
+    let described = tool_named(registry, "code_mode").description
+    assert !string.contains(described, "installed profile")
+    let read =
+      tool.dispatch(
+        registry,
+        ctx_in("/nonexistent"),
+        "fs_read",
+        json.Object([#("path", json.String("cap://lsp"))]),
+      )
+    assert !string.contains(text_of(read), "installed profile")
+  })
+}
+
+pub fn language_guidance_is_shared_once_and_discovered_after_api_test() {
+  let full =
+    guidance_offer(["cap/lsp", "cap/lsp_sql"], [
+      "lsp.definition",
+      "lsp.snapshot",
+    ])
+  let seams =
+    codemode_tool.Seams(default: full, alternates: [
+      codemode_tool.SeamOffer(..full, seam: codemode_tool.OrchestrationSeam),
+    ])
+  let registry = guidance_registry(Some(door()), seams)
+  let described = tool_named(registry, "code_mode").description
+  assert list.length(string.split(described, "Gleam installed profile")) == 2
+  assert list.length(string.split(described, "### cap/lsp\n")) == 2
+  assert string.contains(described, "Second sentence stays visible.")
+  assert string.contains(described, "bounded observation once")
+  let read =
+    tool.dispatch(
+      registry,
+      ctx_in("/nonexistent"),
+      "fs_read",
+      json.Object([#("path", json.String("cap://lsp"))]),
+    )
+  assert !read.is_error
+  let assert [_before, after_api] =
+    string.split(text_of(read), "pub fn definition(Query)")
+  let assert [_api, after_gleam] =
+    string.split(after_api, "Gleam installed profile")
+  assert string.contains(after_gleam, "Go installed profile")
+  let index =
+    tool.dispatch(
+      registry,
+      ctx_in("/nonexistent"),
+      "fs_read",
+      json.Object([#("path", json.String("cap://"))]),
+    )
+  assert !index.is_error
+  assert list.length(string.split(text_of(index), "cap/lsp:")) == 2
+}
+
+pub fn sql_guidance_requires_its_own_import_and_snapshot_service_test() {
+  let cases = [
+    guidance_offer(["cap/lsp"], ["lsp.definition", "lsp.snapshot"]),
+    guidance_offer(["cap/lsp", "cap/lsp_sql"], ["lsp.definition"]),
+  ]
+  list.each(cases, fn(offer) {
+    let registry =
+      guidance_registry(Some(door()), codemode_tool.one_seam(offer))
+    let described = tool_named(registry, "code_mode").description
+    assert string.contains(described, "Gleam installed profile")
+    assert !string.contains(described, "bounded observation once")
+  })
 }
 
 // --- code mode --------------------------------------------------------------
@@ -441,4 +603,77 @@ pub fn an_applied_rename_respects_protected_paths_test() {
   assert simplifile.read(workspace <> "/.git/config") == Ok("old\n")
   assert simplifile.read(workspace <> "/a.txt") == Ok("old\n")
   assert drain(written) == []
+}
+
+// The finite SQL capability enters exactly the native LSP program scopes.
+// A capture door by itself cannot grant imports, and installed extensions
+// cannot inherit it from the session's code-mode host configuration.
+pub fn finite_capture_inherits_native_lsp_scope_and_deadline_test() {
+  let broker_actor = idle_broker()
+  let seen = process.new_subject()
+  let capture =
+    observation.Door(collect: fn(_, control) {
+      process.send(seen, control.deadline_ms)
+      Error(observation.Changed("fixture changed"))
+    })
+  let base = config_for(broker_actor)
+  let capture_only = codemode.over_lsp_observation(base, Some(capture))
+  assert !vet_policy.contains(
+    codemode.seam_allowlist(capture_only, vet_policy.WorkspaceSeam),
+    "cap/lsp_sql",
+  )
+  let configured = capture_only |> codemode.over_lsp(Some(door()))
+  list.each([vet_policy.WorkspaceSeam, vet_policy.OrchestrationSeam], fn(seam) {
+    assert vet_policy.contains(
+      codemode.seam_allowlist(configured, seam),
+      "cap/lsp_sql",
+    )
+    assert list.contains(
+      codemode.seam_caps_on(configured, seam),
+      "lsp.snapshot",
+    )
+  })
+  assert !vet_policy.contains(
+    codemode.seam_allowlist(configured, vet_policy.ExtensionSeam),
+    "cap/lsp_sql",
+  )
+  assert !list.contains(
+    codemode.seam_caps_on(configured, vet_policy.ExtensionSeam),
+    "lsp.snapshot",
+  )
+  let ask = a_request("/work")
+  let built =
+    codemode.exec_config(configured, ask, "/work/run", 123_456, widened_by: [])
+  assert list.contains(
+    built.satellite.ceilings,
+    satellite.CapCeiling("lsp.snapshot", 4, "snapshot_ceiling"),
+  )
+  let answer =
+    routed(configured, ask, "lsp.snapshot", [
+      #("server", msgpack.StringValue("gleam")),
+      #("root", msgpack.StringValue("/work")),
+      #("outlines", msgpack.ArrayValue([])),
+      #("targets", msgpack.ArrayValue([])),
+    ])
+  assert answer == framing.CapErr("observation_changed", "fixture changed")
+  assert process.receive(seen, 100) == Ok(9_000_000)
+  let call =
+    satellite.CapRequest(
+      cap: "lsp.snapshot",
+      args: msgpack.MapValue([
+        #(msgpack.StringValue("server"), msgpack.StringValue("gleam")),
+        #(msgpack.StringValue("root"), msgpack.StringValue("/work")),
+        #(msgpack.StringValue("outlines"), msgpack.ArrayValue([])),
+        #(msgpack.StringValue("targets"), msgpack.ArrayValue([])),
+      ]),
+      identity: identity.run_phase(built.identity),
+      base_policy: ask.base_policy,
+      demand: ask.demand,
+      env: [],
+      cwd: "/work",
+      ordinal: 0,
+    )
+  let _ = route(built, call)
+  assert process.receive(seen, 100) == Ok(123_456)
+  broker.stop(broker_actor)
 }

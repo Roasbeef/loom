@@ -25,6 +25,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import simplifile
 import tools/codemode
 import tools/directory_access
 import tools/fs
@@ -247,6 +248,312 @@ fn text_of(outcome: tool.ToolOutcome) -> String {
     }
   })
   |> string.join("\n")
+}
+
+// Real files exercise path resolution and UTF-8 reads; the execution seam
+// records the immutable request without invoking a compiler in this suite.
+fn source_ctx(name: String) -> Ctx {
+  let assert Ok(here) = simplifile.current_directory()
+  let workspace = here <> "/build/codemode-source/" <> name
+  let _ = simplifile.delete(workspace)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  tool.Ctx(
+    ..ctx_for(name),
+    workspace:,
+    base_policy: policy.workspace_default(workspace),
+    filesystem: fs.real_filesystem(),
+    blob_root: workspace <> "/.blobs",
+  )
+}
+
+fn recording_source(requests: Subject(codemode.Request)) -> codemode.CodeMode {
+  codemode.CodeMode(..echoing(), execute: fn(request: codemode.Request) {
+    process.send(requests, request)
+    ran(codemode.Completed(msgpack.StringValue("executed")))
+  })
+}
+
+fn file_arguments(path: String) -> json.JsonValue {
+  json.Object([#("program_path", json.String(path))])
+}
+
+pub fn source_inputs_are_exclusive_nonblank_strings_before_io_test() {
+  let reads = process.new_subject()
+  let filesystem = dead_filesystem()
+  let ctx =
+    tool.Ctx(
+      ..ctx_for("invalid-source"),
+      filesystem: tool.FileSystem(..filesystem, read: fn(path) {
+        process.send(reads, path)
+        Error(tool.FsNotFound(path:))
+      }),
+    )
+  let requests = process.new_subject()
+  let mode = recording_source(requests)
+  let cases = [
+    [],
+    [
+      #("program", json.String("source")),
+      #("program_path", json.String("file")),
+    ],
+    [#("program", json.Null)],
+    [#("program_path", json.Int(1))],
+    [#("program", json.String(" \n"))],
+    [#("program_path", json.String("\t"))],
+  ]
+  list.each(cases, fn(fields) {
+    assert codemode.tool_for(mode).run(ctx, json.Object(fields)).is_error
+  })
+  assert drained(requests, []) == []
+  assert drained(reads, []) == []
+}
+
+pub fn file_source_is_read_whole_and_reloaded_on_a_fresh_run_test() {
+  let ctx = source_ctx("fresh-runs")
+  let path = ctx.workspace <> "/analysis.gleam"
+  let first = "  import cap/report\npub fn main() { report.text(\"first\") }\n"
+  let second = "pub fn main() { report.text(\"second\") }\n"
+  let assert Ok(Nil) = simplifile.write(path, first)
+  let requests = process.new_subject()
+  let runner = codemode.tool_for(recording_source(requests))
+  assert !runner.run(ctx, file_arguments("analysis.gleam")).is_error
+  let assert Ok(Nil) = simplifile.write(path, second)
+  assert !runner.run(ctx, file_arguments(path)).is_error
+  let assert [one, two] = drained(requests, [])
+  assert one.source == first
+  assert two.source == second
+  assert one.workspace == ctx.workspace
+  assert one.grants == []
+  assert two.grants == []
+}
+
+pub fn unreadable_or_empty_source_files_never_cross_the_seam_test() {
+  let ctx = source_ctx("read-failures")
+  let assert Ok(Nil) =
+    ctx.filesystem.write(ctx.workspace <> "/binary.gleam", <<255>>)
+  let assert Ok(Nil) =
+    simplifile.write(ctx.workspace <> "/blank.gleam", " \n\t")
+  let requests = process.new_subject()
+  let runner = codemode.tool_for(recording_source(requests))
+  let cases = [
+    #("missing.gleam", "not found"),
+    #("binary.gleam", "not valid UTF-8"),
+    #("blank.gleam", "must not be empty"),
+  ]
+  list.each(cases, fn(test_case) {
+    let outcome = runner.run(ctx, file_arguments(test_case.0))
+    assert outcome.is_error
+    assert string.contains(text_of(outcome), test_case.1)
+  })
+  assert drained(requests, []) == []
+}
+
+pub fn outside_and_symlinked_sources_need_canonical_read_authority_test() {
+  let ctx = source_ctx("authority")
+  let outside = ctx.workspace <> "-outside.gleam"
+  let assert Ok(Nil) = simplifile.write(outside, "outside source")
+  let assert Ok(Nil) =
+    simplifile.create_symlink(
+      to: outside,
+      from: ctx.workspace <> "/alias.gleam",
+    )
+  let requests = process.new_subject()
+  let runner = codemode.tool_for(recording_source(requests))
+  list.each([outside, "alias.gleam"], fn(path) {
+    let refused = runner.run(ctx, file_arguments(path))
+    assert refused.is_error
+  })
+  assert drained(requests, []) == []
+  let authorized =
+    tool.Ctx(..ctx, directory_access: directory_access.Access([outside], []))
+  assert !runner.run(authorized, file_arguments("alias.gleam")).is_error
+  let assert [request] = drained(requests, [])
+  assert request.source == "outside source"
+  assert request.grants == []
+}
+
+pub fn source_read_approval_is_exact_precedes_io_and_is_not_retained_test() {
+  let ctx = source_ctx("read-approval")
+  let outside = ctx.workspace <> "-outside.gleam"
+  let assert Ok(Nil) = simplifile.write(outside, "approved source")
+  let reads = process.new_subject()
+  let filesystem = ctx.filesystem
+  let counted =
+    tool.FileSystem(..filesystem, read: fn(path) {
+      process.send(reads, path)
+      filesystem.read(path)
+    })
+  let approvals = process.new_subject()
+  let approved =
+    tool.Ctx(
+      ..ctx,
+      filesystem: counted,
+      raise_refusal: fn(refusal: tool.RaisedRefusal) {
+        assert drained(reads, []) == []
+        process.send(approvals, refusal.denial.wanted)
+        tool.Resume(refusal.denial.wanted)
+      },
+    )
+  let requests = process.new_subject()
+  let runner = codemode.tool_for(recording_source(requests))
+  assert !runner.run(approved, file_arguments(outside)).is_error
+  assert drained(reads, []) == [outside]
+  let assert [wanted] = drained(approvals, [])
+  assert wanted == [policy.GrantReadableRoot(outside)]
+  assert runner.run(ctx, file_arguments(outside)).is_error
+  assert list.length(drained(requests, [])) == 1
+}
+
+pub fn requested_permissions_are_authorized_before_loading_source_test() {
+  let ctx = source_ctx("permission-order")
+  let assert Ok(Nil) =
+    simplifile.write(ctx.workspace <> "/source.gleam", "source")
+  let reads = process.new_subject()
+  let filesystem = ctx.filesystem
+  let ctx =
+    tool.Ctx(
+      ..ctx,
+      filesystem: tool.FileSystem(..filesystem, read: fn(path) {
+        process.send(reads, path)
+        filesystem.read(path)
+      }),
+    )
+  let requests = process.new_subject()
+  let runner = codemode.tool_for(recording_source(requests))
+  let args =
+    json.Object([
+      #("program_path", json.String("source.gleam")),
+      #("permissions", json.Object([#("network", json.String("full"))])),
+    ])
+  assert runner.run(ctx, args).is_error
+  assert drained(reads, []) == []
+  assert drained(requests, []) == []
+  let approved =
+    tool.Ctx(..ctx, raise_refusal: fn(refusal: tool.RaisedRefusal) {
+      assert drained(reads, []) == []
+      tool.Resume(refusal.denial.wanted)
+    })
+  assert !runner.run(approved, args).is_error
+  assert drained(reads, []) == [ctx.workspace <> "/source.gleam"]
+  let assert [request] = drained(requests, [])
+  assert list.contains(request.grants, policy.GrantNetwork(policy.NetworkFull))
+}
+
+pub fn approval_retry_uses_the_loaded_source_without_rereading_test() {
+  let ctx = source_ctx("retry-source")
+  let path = ctx.workspace <> "/source.gleam"
+  let assert Ok(Nil) = simplifile.write(path, "first source")
+  let reads = process.new_subject()
+  let requests = process.new_subject()
+  let filesystem = ctx.filesystem
+  let ctx =
+    tool.Ctx(
+      ..ctx,
+      filesystem: tool.FileSystem(..filesystem, read: fn(path) {
+        process.send(reads, path)
+        filesystem.read(path)
+      }),
+      raise_refusal: fn(_refusal) {
+        let assert Ok(Nil) = simplifile.write(path, "changed source")
+        tool.Resume([raised_grant])
+      },
+    )
+  let mode =
+    codemode.CodeMode(..echoing(), execute: fn(request: codemode.Request) {
+      process.send(requests, request)
+      case list.contains(request.grants, raised_grant) {
+        True -> ran(codemode.Completed(msgpack.StringValue("approved")))
+        False -> run_refused()
+      }
+    })
+  assert !codemode.tool_for(mode).run(ctx, file_arguments("source.gleam")).is_error
+  assert drained(reads, []) == [path]
+  let assert [first, retried] = drained(requests, [])
+  assert first.source == "first source"
+  assert retried.source == first.source
+  assert first.grants == []
+  assert retried.grants == [raised_grant]
+  assert simplifile.read(path) == Ok("changed source")
+}
+
+pub fn background_launch_loads_source_but_interactions_never_do_test() {
+  let ctx = source_ctx("background-source")
+  let assert Ok(Nil) =
+    simplifile.write(ctx.workspace <> "/source.gleam", "launched source")
+  let launches = process.new_subject()
+  let interactions = process.new_subject()
+  let mode =
+    codemode.CodeMode(
+      ..echoing(),
+      background: Some(
+        codemode.Background(
+          launch: fn(request: codemode.Request) {
+            process.send(launches, request)
+            Ok(json.String("handle"))
+          },
+          interact: fn(_strand, _handle, action, _within) {
+            process.send(interactions, action)
+            Ok(json.String("interaction"))
+          },
+        ),
+      ),
+    )
+  let runner = codemode.tool_for(mode)
+  assert !runner.run(
+    ctx,
+    json.Object([
+      #("mode", json.String("launch")),
+      #("program_path", json.String("source.gleam")),
+    ]),
+  ).is_error
+  let assert [request] = drained(launches, [])
+  assert request.source == "launched source"
+  let invalid = [
+    [],
+    [
+      #("program", json.String("source")),
+      #("program_path", json.String("file")),
+    ],
+    [#("program_path", json.Null)],
+    [#("program_path", json.String(" \n"))],
+  ]
+  list.each(invalid, fn(fields) {
+    assert runner.run(
+      ctx,
+      json.Object([#("mode", json.String("launch")), ..fields]),
+    ).is_error
+  })
+  assert drained(launches, []) == []
+
+  // A supplied source is irrelevant to a handle interaction, even when it
+  // is malformed or names an unreadable file outside the workspace.
+  let filesystem = ctx.filesystem
+  let no_reads =
+    tool.Ctx(
+      ..ctx,
+      filesystem: tool.FileSystem(..filesystem, read: fn(_) {
+        panic as "asynchronous interactions must never read a source file"
+      }),
+    )
+  list.each(["check", "join", "cancel", "send"], fn(command) {
+    assert !runner.run(
+      no_reads,
+      json.Object([
+        #("mode", json.String(command)),
+        #("handle", json.String("handle")),
+        #("value", json.String("message")),
+        #("program", json.Int(1)),
+        #("program_path", json.String("/outside")),
+      ]),
+    ).is_error
+  })
+  assert drained(interactions, [])
+    == [
+      codemode.Check,
+      codemode.Join,
+      codemode.Cancel,
+      codemode.Send(json.String("message")),
+    ]
 }
 
 // --- a program that ran ----------------------------------------------------
@@ -710,7 +1017,10 @@ pub fn an_empty_program_never_reaches_the_seam_test() {
 pub fn bad_arguments_are_an_in_band_refusal_test() {
   let outcome = call(echoing(), [#("within_ms", json.Int(5))])
   assert outcome.is_error
-  assert string.contains(text_of(outcome), "`program` is required")
+  assert string.contains(
+    text_of(outcome),
+    "exactly one of `program` or `program_path` is required",
+  )
 }
 
 // --- which seam a submission is judged against -----------------------------
@@ -1008,7 +1318,9 @@ pub fn a_single_seam_description_guides_batches_without_a_choice_test() {
     <> "dependent steps whose intermediate results need no judgment. "
     <> "Write `pub fn main() -> report.Outcome`, returning `report.text(...)` "
     <> "or `report.value(...)`. Filter internally; return relevant facts, "
-    <> "paths and failures. Imports are restricted to: cap/proc, "
+    <> "paths and failures. Supply exactly one of `program` (inline source) "
+    <> "or `program_path` (a source file loaded once after read authorization). "
+    <> "Imports are restricted to: cap/proc, "
     <> "cap/report, gleam/int. `@external` is refused. Capabilities "
     <> "serviced today: proc.run; the other `cap/*` modules compile but "
     <> "answer unsupported_cap. Refusals and compile errors include diagnostics "
@@ -1076,6 +1388,63 @@ pub fn a_generated_surface_is_rendered_after_the_committed_ones_test() {
     as "the generated block appears exactly once"
   assert !string.contains(after, "### cap/proc")
   assert string.contains(described, "### cap/proc")
+}
+
+pub fn sql_capture_guidance_depends_on_its_own_offer_test() {
+  let sql_only =
+    codemode.SeamOffer(
+      ..workspace_offer(),
+      allowed_imports: ["cap/lsp_sql"],
+      serviced_caps: ["lsp.snapshot"],
+    )
+  let described =
+    codemode.description(echoing_over(codemode.one_seam(sql_only)))
+  assert string.contains(described, "bounded observation once")
+  assert !string.contains(described, "### cap/lsp\n")
+  let closed = [
+    codemode.SeamOffer(..sql_only, allowed_imports: []),
+    codemode.SeamOffer(..sql_only, serviced_caps: []),
+  ]
+  list.each(closed, fn(offer) {
+    assert !string.contains(
+      codemode.description(echoing_over(codemode.one_seam(offer))),
+      "bounded observation once",
+    )
+  })
+}
+
+pub fn lsp_supplements_extend_the_existing_api_without_shadowing_test() {
+  let supplement =
+    "### cap/lsp\n\nInstalled language guidance.\nFirst profile. Second sentence.\nLast profile."
+  let offer =
+    codemode.SeamOffer(
+      ..workspace_offer(),
+      allowed_imports: ["cap/lsp"],
+      extra_surfaces: [supplement],
+    )
+  let mode = echoing_over(codemode.one_seam(offer))
+  let described = codemode.description(mode)
+  assert occurrences(described, "### cap/lsp\n") == 1
+  assert string.contains(described, "First profile. Second sentence.")
+  assert string.contains(described, "Last profile.")
+  let assert Ok(read) =
+    codemode.cap_scheme(mode).read(ctx_for("discovery"), "lsp")
+  assert occurrences(read, "### cap/lsp\n") == 1
+  let assert [_api, notes] = string.split(read, "pub fn definition(Query)")
+  assert string.contains(notes, "Installed language guidance.")
+  let assert Ok(index) =
+    codemode.cap_scheme(mode).read(ctx_for("discovery"), "")
+  assert occurrences(index, "cap/lsp:") == 1
+
+  // A fragment cannot admit the committed module on a closed offer.
+  let closed = codemode.SeamOffer(..offer, allowed_imports: [])
+  let closed_mode = echoing_over(codemode.one_seam(closed))
+  assert !string.contains(
+    codemode.description(closed_mode),
+    "Installed language",
+  )
+  let assert Error(fs.NotFound(..)) =
+    codemode.cap_scheme(closed_mode).read(ctx_for("discovery"), "lsp")
 }
 
 pub fn a_host_that_generated_nothing_renders_exactly_what_it_did_test() {
@@ -1242,10 +1611,13 @@ fn raising_ctx(
   answer: tool.Escalated,
   asked: Subject(tool.RaisedRefusal),
 ) -> Ctx {
-  tool.Ctx(..ctx_for("turn-1:tools"), raise_refusal: fn(refusal) {
-    process.send(asked, refusal)
-    answer
-  })
+  tool.Ctx(
+    ..ctx_for("turn-1:tools"),
+    raise_refusal: fn(refusal: tool.RaisedRefusal) {
+      process.send(asked, refusal)
+      answer
+    },
+  )
 }
 
 fn drained(inbox: Subject(a), taken: List(a)) -> List(a) {
@@ -1477,15 +1849,16 @@ pub fn recipes_are_advertised_only_with_their_required_imports_test() {
 
 // A model fills fields from the schema, so a conditional requirement the
 // `required` list cannot express has to be in the property itself. With
-// the async modes, `program` is required for run and launch only and
-// `handle` for the other four; without them, `program` is simply required.
+// run and launch require exactly one source input; interactions need
+// a handle and never read either source input.
 pub fn the_schema_states_which_mode_needs_program_or_handle_test() {
   let assert Ok(json.Object(sync)) =
     schema_field(codemode.tool_for(echoing()).schema, "properties")
   let assert Ok(json.Array(sync_required)) =
     schema_field(codemode.tool_for(echoing()).schema, "required")
-  assert sync_required == [json.String("program")]
-  assert !string.starts_with(description_of(sync, "program"), "REQUIRED")
+  assert sync_required == []
+  assert string.contains(description_of(sync, "program"), "exactly one")
+  assert string.contains(description_of(sync, "program_path"), "Exactly one")
 
   let background =
     codemode.CodeMode(
@@ -1504,7 +1877,7 @@ pub fn the_schema_states_which_mode_needs_program_or_handle_test() {
     schema_field(codemode.tool_for(background).schema, "properties")
   assert string.starts_with(
     description_of(async, "program"),
-    "REQUIRED for mode=run (the default) and mode=launch",
+    "For mode=run (default) and mode=launch",
   )
   assert string.starts_with(
     description_of(async, "handle"),

@@ -444,6 +444,16 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ripgrep
 
+      # The SQL observation fixture needs a real Go server in this bucket,
+      # rather than only in the delegated jail lane. Use the same pinned
+      # server as the macOS and jail jobs so the skip census remains strict.
+      - name: Install gopls for SQL language-server conformance
+        if: matrix.bucket == 'conformance'
+        run: |
+          go install golang.org/x/tools/gopls@v0.23.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          "$(go env GOPATH)/bin/gopls" version
+
       # The developer fixture checks both host and restricted read views.
       # Restricted reads need bwrap's mount namespace, as in the jail job.
       - name: Install developer fixture tools and jail

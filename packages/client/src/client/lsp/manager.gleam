@@ -182,6 +182,7 @@ import client/lsp/profile.{type LspServer, type Places}
 import client/lsp/resolve.{type Identity, type Owned, type Symbol}
 import core/clock.{type Clock}
 import core/ids.{type OpId}
+import filepath
 import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Subject}
@@ -193,6 +194,7 @@ import gleam/result
 import gleam/string
 import lsp/call
 import lsp/client as lsp
+import lsp/observation
 import lsp/protocol.{type Location}
 import lsp/query.{
   type Diagnostics, type QueryError, type Served, type Site, type SymbolQuery,
@@ -202,8 +204,10 @@ import lsp/range.{type Position, type TextEdit}
 import lsp/text
 import lsp/transport.{type Transport}
 import simplifile
+import tools/blob
 import tools/grep
 import tools/tool.{type RunningCall}
+import weft
 import weft/registry as address
 import weft/state_machine as sm
 
@@ -323,7 +327,11 @@ pub type Config {
 pub opaque type Manager {
   Manager(
     reach: fn() -> Result(Subject(Msg), Nil),
-    config: Config,
+    workspace: String,
+    servers: List(LspServer),
+    search: fn(Search) -> Result(List(Hit), String),
+    protected: List(String),
+    timing: Timing,
     workspaces: List(String),
   )
 }
@@ -548,9 +556,16 @@ fn handle_for(
   reach: fn() -> Result(Subject(Msg), Nil),
   config: Config,
 ) -> Manager {
+  // Query callers resolve, search and check answers. Only the manager's
+  // keeper starts a transport, so the sendable handle excludes connect and
+  // its broker configuration before the door copies it into eight closures.
   Manager(
     reach:,
-    config:,
+    workspace: config.workspace,
+    servers: config.servers,
+    search: config.backend.search,
+    protected: config.backend.protected,
+    timing: config.timing,
     workspaces: list.unique([
       resolve.workspace_real(config.workspace),
       config.workspace,
@@ -611,7 +626,7 @@ pub fn stop(manager: Manager) -> Nil {
       let _gone =
         process.new_selector()
         |> process.select_specific_monitor(watch, fn(_down) { Nil })
-        |> process.selector_receive(manager.config.timing.previous_ms)
+        |> process.selector_receive(manager.timing.previous_ms)
       process.demonitor_process(watch)
     }
     Ok(None) | Error(_fault) -> Nil
@@ -1597,7 +1612,7 @@ fn file_edit(
 // already running, because an edit must never pay for a start or evict
 // another project's server (see `door`).
 fn after_write(manager: Manager, path: String) -> Option(Diagnostics) {
-  case resolve.owner(manager.config.servers, manager.config.workspace, path) {
+  case resolve.owner(manager.servers, manager.workspace, path) {
     Error(_unowned) -> None
     Ok(owned) -> {
       let peeked = peek(manager)
@@ -1630,7 +1645,7 @@ fn pushed(
       |> result.replace_error(Nil),
     )
     tell(manager, Opened(identity:, paths: [path]))
-    lsp.settle(client, [path], manager.config.timing.settle_ms)
+    lsp.settle(client, [path], manager.timing.settle_ms)
     |> result.replace_error(Nil)
   }
   case settlement {
@@ -1676,7 +1691,7 @@ fn readied(session: Session) -> Result(Nil, QueryError) {
   case session.warmth {
     query.Warm -> Ok(Nil)
     query.Started(..) -> {
-      let timing = session.manager.config.timing
+      let timing = session.manager.timing
       let readiness =
         lsp.ready(
           session.client,
@@ -1705,7 +1720,7 @@ fn still_loading(titles: List(String)) -> String {
 }
 
 fn owned(manager: Manager, path: String) -> Result(Owned, QueryError) {
-  resolve.owner(manager.config.servers, manager.config.workspace, path)
+  resolve.owner(manager.servers, manager.workspace, path)
   |> result.map_error(fn(unowned) {
     case unowned {
       resolve.NoOwner(reason:) | resolve.Refused(reason:) ->
@@ -1864,7 +1879,7 @@ fn searched(
   manager: Manager,
   asked: SymbolQuery,
 ) -> Result(#(Identity, List(Hit)), QueryError) {
-  let search = manager.config.backend.search
+  let search = manager.search
   case peek(manager).identity {
     Some(identity) -> {
       use hits <- result.try(
@@ -1879,10 +1894,10 @@ fn searched(
     }
     None -> {
       use hits <- result.try(
-        list.try_map(manager.config.servers, fn(server) {
+        list.try_map(manager.servers, fn(server) {
           search(Search(
             server:,
-            root: manager.config.workspace,
+            root: manager.workspace,
             identifier: symbol_for(server, asked.symbol).identifier,
           ))
         })
@@ -2060,7 +2075,7 @@ fn acquire(
   manager: Manager,
   identity: Identity,
 ) -> Result(Session, QueryError) {
-  let timing = manager.config.timing
+  let timing = manager.timing
   let waiting = timing.previous_ms + timing.exec_ms * 2 + timing.start_ms + 1000
   case ask(manager, waiting:, sending: Acquire(identity, _)) {
     Ok(Ok(granted)) ->
@@ -2102,7 +2117,7 @@ fn resync(session: Session, also: List(String)) -> Result(Nil, QueryError) {
     lsp.open_paths(session.client)
     |> result.map_error(request_error(session, _)),
   )
-  let pulled = list.filter_map(open, pulled(session.client, _))
+  let pulled = list.filter_map(open, pulled(session, _))
 
   // The one place a document is opened on the server, so the gate stands
   // here too: whatever a caller passes, a file the gate withholds is
@@ -2137,11 +2152,18 @@ fn resync(session: Session, also: List(String)) -> Result(Nil, QueryError) {
 // One open document against the disk: unchanged is nothing to send, moved
 // is a full-text change, and unreadable — deleted, grown past the guard,
 // no longer text — is a close, after which the server reads it itself.
-fn pulled(client: lsp.Client, path: String) -> Result(lsp.DocOp, Nil) {
-  case resolve.read_text(path) {
+fn pulled(session: Session, path: String) -> Result(lsp.DocOp, Nil) {
+  // An admitted file can later be replaced by a link. Re-admission precedes
+  // this harness read, just as it precedes opening a new server-named file.
+  let content =
+    admitted(named_path(session, path))
+    |> result.try(fn(path) {
+      resolve.read_text(path) |> result.replace_error(Nil)
+    })
+  case content {
     Error(_gone) -> Ok(lsp.Close(path:))
     Ok(content) ->
-      case lsp.synced_text(client, path) {
+      case lsp.synced_text(session.client, path) {
         Ok(Some(held)) if held == content -> Error(Nil)
         Ok(Some(_moved)) | Ok(None) | Error(_) ->
           Ok(lsp.Change(path:, text: content))
@@ -2188,13 +2210,7 @@ type Named {
 // asks `resolve.admit` for the path's real location and keeps only that
 // verdict, so the reads that follow need not repeat the check.
 fn gate(manager: Manager, identity: Identity, path: String) -> Named {
-  case
-    resolve.admit(
-      root: identity.root,
-      protected: manager.config.backend.protected,
-      path:,
-    )
-  {
+  case resolve.admit(root: identity.root, protected: manager.protected, path:) {
     Ok(real) -> Admitted(path: real)
     Error(_reason) -> Withheld(path:)
   }
@@ -2246,11 +2262,11 @@ fn shown(manager: Manager, path: String) -> String {
 }
 
 fn request_ms(session: Session) -> Int {
-  session.manager.config.timing.request_ms
+  session.manager.timing.request_ms
 }
 
 fn settle_ms(session: Session) -> Int {
-  session.manager.config.timing.settle_ms
+  session.manager.timing.settle_ms
 }
 
 // The client's refusal in the door's vocabulary.
@@ -2379,10 +2395,12 @@ pub fn connect_jailed(
   // lease clears under the same demand and nothing weaker or stronger.
   let spec =
     jail.call_spec(built, jailed.op_id, now_ms: now, demand: jailed.demand)
+  let abort_step = jailed.abort_step
+  let step_id = built.step_id
   Ok(
     jail.transport(jail.Launch(
       run: jailed.run,
-      abort: fn() { jailed.abort_step(built.step_id) },
+      abort: fn() { abort_step(step_id) },
       leases: jailed.leases,
       spec:,
       scratch: built.scratch,
@@ -2760,4 +2778,743 @@ pub fn bounded_hits(hits: List(Hit)) -> List(Hit) {
       }
     })
   list.reverse(kept) |> list.take(max_search_hits)
+}
+
+// --- finite semantic observations --------------------------------------------
+
+/// Builds the finite collection door without extending the interactive contract.
+///
+/// Each collection has a single managed worker and one deadline. Losing the
+/// invocation's caller stops that worker, whose pending LSP request is cancelled
+/// by the client's owner monitor; the shared language-server lease stays alive.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.observation_door(manager).collect(request, control)
+/// // -> Ok(observation.Batch(..))
+/// ```
+pub fn observation_door(manager: Manager) -> observation.Door {
+  observation.Door(collect: fn(request, control) {
+    collect_observation(manager, request, control)
+  })
+}
+
+// Text is retained only for admitted files and counts against the same bound as
+// the converted facts. It is never the text of a server-withheld location.
+type ObservedFile {
+  ObservedFile(path: String, content: String, version: Option(Int))
+}
+
+type Collection {
+  Collection(
+    session: Session,
+    control: observation.Control,
+    initial: lsp.ObservationState,
+    aliases: Dict(String, String),
+    files: Dict(String, ObservedFile),
+    symbols: List(observation.Symbol),
+    targets: List(observation.Target),
+    references: List(observation.Reference),
+    requests: Int,
+    withheld: Int,
+    bytes: Int,
+    facts: Int,
+    next_symbol: Int,
+  )
+}
+
+fn collect_observation(
+  manager: Manager,
+  request: observation.Request,
+  control: observation.Control,
+) -> Result(observation.Batch, observation.Error) {
+  let started = control.now()
+  let deadline =
+    int.min(control.deadline_ms, started + observation.max_duration_ms)
+  let control = observation.Control(..control, deadline_ms: deadline)
+  use Nil <- result.try(observation_scope(request))
+  use waiting <- result.try(remaining(control))
+
+  // The deadline owns the entire collection, including acquisition and local
+  // sync calls whose existing API has its own reply margin. No per-file bound
+  // can multiply the invocation's admitted interval.
+  let outcomes =
+    weft.new([fn() { observed(manager, request, control, started) }])
+    |> weft.deadline(waiting)
+    |> weft.cancel_when_exits(process.self())
+    |> weft.start
+  case outcomes {
+    [weft.Completed(value:, ..)] -> Ok(value)
+    [weft.Failed(error:, ..)] -> Error(error)
+    [weft.Abandoned(..)] | [weft.NeverStarted(..)] ->
+      Error(observation.DeadlineExceeded)
+    [weft.Crashed(reason:, ..)] ->
+      Error(observation.Changed(
+        "the observation worker exited: " <> string.inspect(reason),
+      ))
+    [weft.DrainProofLost(..)]
+    | [weft.CancellationUnconfirmed(..)]
+    | []
+    | [_, ..] ->
+      Error(observation.Changed("the observation worker did not settle"))
+  }
+}
+
+fn observation_scope(
+  request: observation.Request,
+) -> Result(Nil, observation.Error) {
+  case
+    list.length(request.outlines) <= observation.max_outline_files
+    && list.length(request.targets) <= observation.max_targets
+    && { request.outlines != [] || request.targets != [] }
+  {
+    False ->
+      Error(observation.InvalidScope(
+        "request at most 16 outlines and 32 reference seeds, with at least one source",
+      ))
+    True ->
+      list.try_each(request.targets, fn(asked) {
+        case asked.path {
+          None ->
+            Error(observation.InvalidScope(
+              "every reference seed requires an explicit path",
+            ))
+          Some(_) -> Ok(Nil)
+        }
+      })
+  }
+}
+
+fn remaining(control: observation.Control) -> Result(Int, observation.Error) {
+  let left = control.deadline_ms - control.now()
+  case left > 0 {
+    True -> Ok(left)
+    False -> Error(observation.DeadlineExceeded)
+  }
+}
+
+fn observation_query(
+  outcome: Result(a, QueryError),
+) -> Result(a, observation.Error) {
+  result.map_error(outcome, observation.QueryFailed)
+}
+
+fn observed(
+  manager: Manager,
+  request: observation.Request,
+  control: observation.Control,
+  started: Int,
+) -> Result(observation.Batch, observation.Error) {
+  let paths =
+    list.unique(list.append(
+      request.outlines,
+      list.filter_map(request.targets, fn(asked) {
+        option.to_result(asked.path, Nil)
+      }),
+    ))
+  use owned_paths <- result.try(
+    list.try_map(paths, fn(path) { owned(manager, path) |> observation_query }),
+  )
+  use first <- result.try(
+    list.first(owned_paths)
+    |> result.replace_error(observation.InvalidScope(
+      "the observation requires a source file",
+    )),
+  )
+  let root =
+    resolve.workspace_real(case filepath.is_absolute(request.root) {
+      True -> request.root
+      False -> filepath.join(manager.workspace, request.root)
+    })
+  use Nil <- result.try(
+    list.try_each(owned_paths, fn(owned) {
+      case
+        owned.identity.server.name == request.server
+        && owned.identity.root == root
+      {
+        False ->
+          Error(observation.InvalidScope(
+            "every source must belong to the requested configured server and root",
+          ))
+        True ->
+          admitted(gate(manager, owned.identity, owned.path))
+          |> result.replace_error(observation.InvalidScope(
+            "a requested source is protected or outside its server root",
+          ))
+          |> result.map(fn(_) { Nil })
+      }
+    }),
+  )
+  use session <- result.try(
+    acquire(manager, first.identity) |> observation_query,
+  )
+  let canonical = list.map(owned_paths, fn(owned) { owned.path })
+  let path_map = dict.from_list(list.zip(paths, canonical))
+  let canonical_outlines =
+    list.map(request.outlines, fn(path) {
+      dict.get(path_map, path) |> result.unwrap(path)
+    })
+  use _bytes <- result.try(
+    list.try_fold(canonical, 0, fn(bytes, path) {
+      // Server startup can outlive the earlier ownership check. Re-admit the
+      // captured spelling before the unjailed size preflight reads its text.
+      use admitted_path <- result.try(
+        admitted(named_path(session, path))
+        |> result.replace_error(observation.Changed(
+          "a requested source is no longer admitted",
+        )),
+      )
+      use Nil <- result.try(case admitted_path == path {
+        True -> Ok(Nil)
+        False -> Error(observation.Changed("a requested source was redirected"))
+      })
+      use content <- result.try(
+        resolve.read_text(admitted_path)
+        |> result.replace_error(observation.Changed(
+          "a requested source could not be read",
+        )),
+      )
+      let bytes = bytes + string.byte_size(content)
+      case bytes <= observation.max_fact_bytes {
+        True -> Ok(bytes)
+        False ->
+          Error(observation.LimitExceeded("requested source texts exceed 4 MiB"))
+      }
+    }),
+  )
+  use Nil <- result.try(resync(session, canonical) |> observation_query)
+  use left <- result.try(remaining(control))
+  let timing = manager.timing
+  use readiness <- result.try(
+    lsp.ready(
+      session.client,
+      quiet_ms: timing.quiet_ms,
+      deadline_ms: int.min(left, timing.ready_ms),
+    )
+    |> result.map_error(fn(error) {
+      observation.QueryFailed(request_error(session, error))
+    }),
+  )
+  use Nil <- result.try(case readiness {
+    lsp.Quiet -> Ok(Nil)
+    lsp.StillBusy(titles:) ->
+      Error(observation.QueryFailed(query.Unavailable(still_loading(titles))))
+  })
+  use initial <- result.try(observation_state(session, control))
+  use Nil <- result.try(quiet_observation(initial))
+  use Nil <- result.try(
+    list.try_each(canonical, fn(path) {
+      list.find(initial.documents, fn(doc) { doc.path == path })
+      |> result.replace_error(observation.Changed(
+        "a requested source is no longer synced",
+      ))
+      |> result.map(fn(_) { Nil })
+    }),
+  )
+  let collection =
+    Collection(
+      session:,
+      control:,
+      initial:,
+      aliases: path_map,
+      files: dict.new(),
+      symbols: [],
+      targets: [],
+      references: [],
+      requests: 0,
+      withheld: 0,
+      bytes: 0,
+      facts: 0,
+      next_symbol: 0,
+    )
+  use collection <- result.try(list.try_fold(canonical, collection, retain_file))
+  use collection <- result.try(list.try_fold(
+    canonical_outlines,
+    collection,
+    collect_outline,
+  ))
+  use collection <- result.try(
+    list.try_fold(
+      list.index_map(request.targets, fn(asked, index) { #(asked, index) }),
+      collection,
+      fn(collection, seed) { collect_references(collection, seed.0, seed.1) },
+    ),
+  )
+  use Nil <- result.try(check_observation(collection))
+  use _left <- result.try(remaining(control))
+  let documents =
+    list.map(dict.values(collection.files), fn(file) {
+      observation.Document(
+        path: file.path,
+        digest: digest(file.content),
+        version: file.version,
+      )
+    })
+    |> list.sort(fn(a, b) { string.compare(a.path, b.path) })
+  Ok(observation.Batch(
+    requested: request,
+    root:,
+    generation: digest(string.inspect(initial.generation)),
+    started_ms: started,
+    finished_ms: control.now(),
+    outlined: canonical_outlines,
+    documents:,
+    symbols: list.reverse(collection.symbols),
+    targets: list.reverse(collection.targets),
+    references: list.reverse(collection.references),
+    counts: observation.Counts(
+      requests: collection.requests,
+      withheld: collection.withheld,
+      facts: fact_count(collection),
+      fact_bytes: collection.bytes,
+    ),
+  ))
+}
+
+fn observation_state(
+  session: Session,
+  control: observation.Control,
+) -> Result(lsp.ObservationState, observation.Error) {
+  use left <- result.try(remaining(control))
+  lsp.observation_state(session.client, left)
+  |> result.map_error(fn(error) {
+    observation.QueryFailed(request_error(session, error))
+  })
+}
+
+fn quiet_observation(
+  state: lsp.ObservationState,
+) -> Result(Nil, observation.Error) {
+  case state.failure, state.busy {
+    Some(reason), _ -> Error(observation.QueryFailed(query.Unavailable(reason)))
+    None, [] -> Ok(Nil)
+    None, titles ->
+      Error(observation.QueryFailed(query.Unavailable(still_loading(titles))))
+  }
+}
+
+fn digest(content: String) -> String {
+  blob.ref_for(bit_array.from_string(content))
+}
+
+fn retain_file(
+  collection: Collection,
+  path: String,
+) -> Result(Collection, observation.Error) {
+  case dict.has_key(collection.files, path) {
+    True -> Ok(collection)
+    False -> {
+      use admitted_path <- result.try(
+        admitted(named_path(collection.session, path))
+        |> result.replace_error(observation.Changed(
+          "an observed file is no longer admitted",
+        )),
+      )
+      use content <- result.try(
+        resolve.read_text(admitted_path)
+        |> result.replace_error(observation.Changed(
+          "an admitted observed file could not be read",
+        )),
+      )
+      let synced =
+        list.find(collection.initial.documents, fn(document) {
+          document.path == admitted_path
+        })
+      use version <- result.try(case synced {
+        Ok(document) if document.text == content -> Ok(Some(document.version))
+        Ok(_) ->
+          Error(observation.Changed(
+            "the disk text differs from its synced document",
+          ))
+        Error(Nil) -> Ok(None)
+      })
+      let file = ObservedFile(path: admitted_path, content:, version:)
+      checked_collection(
+        Collection(
+          ..collection,
+          files: dict.insert(collection.files, admitted_path, file),
+          facts: collection.facts + 1,
+          bytes: collection.bytes
+            + string.byte_size(content)
+            + string.byte_size(admitted_path)
+            + 128,
+        ),
+      )
+    }
+  }
+}
+
+fn checked_collection(
+  collection: Collection,
+) -> Result(Collection, observation.Error) {
+  case
+    fact_count(collection) <= observation.max_facts
+    && collection.bytes <= observation.max_fact_bytes
+  {
+    True -> Ok(collection)
+    False ->
+      Error(observation.LimitExceeded(
+        "the complete observation exceeded 10000 facts or 4 MiB",
+      ))
+  }
+}
+
+fn fact_count(collection: Collection) -> Int {
+  collection.facts
+}
+
+fn request_slot(
+  collection: Collection,
+) -> Result(#(Collection, Int), observation.Error) {
+  use left <- result.try(remaining(collection.control))
+  case collection.requests < observation.max_requests {
+    False ->
+      Error(observation.LimitExceeded(
+        "the observation exhausted its 128 protocol requests",
+      ))
+    True ->
+      Ok(#(
+        Collection(..collection, requests: collection.requests + 1),
+        int.min(left, request_ms(collection.session)),
+      ))
+  }
+}
+
+fn observation_symbols(
+  collection: Collection,
+  path: String,
+) -> Result(#(Collection, protocol.DocumentSymbols), observation.Error) {
+  use #(collection, left) <- result.try(request_slot(collection))
+  use symbols <- result.try(
+    lsp.document_symbol(collection.session.client, path, left)
+    |> result.map_error(fn(error) {
+      observation.QueryFailed(request_error(collection.session, error))
+    }),
+  )
+  use Nil <- result.try(case symbols {
+    protocol.Hierarchical(_) -> Ok(Nil)
+    protocol.Flat(flat) ->
+      list.try_each(flat, fn(symbol) {
+        case named_uri(collection.session, symbol.location.uri) {
+          Admitted(admitted_path) if admitted_path == path -> Ok(Nil)
+          Admitted(_) | Withheld(_) ->
+            Error(observation.Changed(
+              "an outline named a location outside its requested document",
+            ))
+        }
+      })
+  })
+  Ok(#(collection, symbols))
+}
+
+fn collect_outline(
+  collection: Collection,
+  path: String,
+) -> Result(Collection, observation.Error) {
+  use file <- result.try(
+    dict.get(collection.files, path)
+    |> result.replace_error(observation.Changed(
+      "the outline source was not retained",
+    )),
+  )
+  use #(collection, symbols) <- result.try(observation_symbols(collection, path))
+  use Nil <- result.try(valid_observed_positions(symbols, file.content))
+  flatten_observed(
+    collection,
+    resolve.outline(symbols, file.content, path),
+    None,
+  )
+}
+
+fn flatten_observed(
+  collection: Collection,
+  entries: List(query.SymbolEntry),
+  parent: Option(Int),
+) -> Result(Collection, observation.Error) {
+  list.try_fold(entries, collection, fn(collection, entry) {
+    let id = collection.next_symbol
+    let symbol =
+      observation.Symbol(
+        id:,
+        parent_id: parent,
+        name: entry.name,
+        kind: entry.kind,
+        detail: entry.detail,
+        site: entry.site,
+      )
+    use collection <- result.try(checked_collection(
+      Collection(
+        ..collection,
+        symbols: [symbol, ..collection.symbols],
+        facts: collection.facts + 1,
+        next_symbol: id + 1,
+        bytes: collection.bytes
+          + site_bytes(entry.site)
+          + string.byte_size(entry.name)
+          + string.byte_size(entry.kind)
+          + string.byte_size(option.unwrap(entry.detail, ""))
+          + 64,
+      ),
+    ))
+    flatten_observed(collection, entry.children, Some(id))
+  })
+}
+
+fn site_bytes(site: Site) -> Int {
+  string.byte_size(site.path) + string.byte_size(site.text) + 64
+}
+
+fn collect_references(
+  collection: Collection,
+  asked: SymbolQuery,
+  id: Int,
+) -> Result(Collection, observation.Error) {
+  use path <- result.try(option.to_result(
+    asked.path,
+    observation.InvalidScope("reference seed path missing"),
+  ))
+  use owned <- result.try(
+    owned(collection.session.manager, path) |> observation_query,
+  )
+  use file <- result.try(
+    dict.get(collection.files, owned.path)
+    |> result.replace_error(observation.Changed(
+      "the reference seed source was not retained",
+    )),
+  )
+  let symbol = symbol_for(collection.session.identity.server, asked.symbol)
+  use #(collection, at) <- result.try(case asked.line {
+    Some(line) ->
+      text.symbol_position(file.content, line, symbol.identifier)
+      |> result.replace_error(observation.QueryFailed(query.NotFound(asked)))
+      |> result.map(fn(at) { #(collection, at) })
+    None -> resolve_observed_target(collection, asked, file, symbol)
+  })
+  use #(collection, left) <- result.try(request_slot(collection))
+  use locations <- result.try(
+    lsp.references(collection.session.client, file.path, at, left)
+    |> result.map_error(fn(error) {
+      observation.QueryFailed(request_error(collection.session, error))
+    }),
+  )
+  let target =
+    observation.Target(
+      id:,
+      asked:,
+      site: resolve.site(file.content, file.path, at),
+    )
+  use collection <- result.try(checked_collection(
+    Collection(
+      ..collection,
+      targets: [target, ..collection.targets],
+      facts: collection.facts + 1,
+      bytes: collection.bytes
+        + site_bytes(target.site)
+        + string.byte_size(asked.symbol)
+        + string.byte_size(path)
+        + 64,
+    ),
+  ))
+  list.try_fold(locations, collection, fn(collection, location) {
+    case named_uri(collection.session, location.uri) {
+      Withheld(_) ->
+        Ok(Collection(..collection, withheld: collection.withheld + 1))
+      Admitted(path:) -> {
+        use collection <- result.try(retain_file(collection, path))
+        use file <- result.try(
+          dict.get(collection.files, path)
+          |> result.replace_error(observation.Changed(
+            "a reference file was not retained",
+          )),
+        )
+        use site <- result.try(
+          observed_site(file.content, path, location.range.start)
+          |> result.replace_error(observation.Changed(
+            "a reference position does not fit its observed text",
+          )),
+        )
+        checked_collection(
+          Collection(
+            ..collection,
+            references: [
+              observation.Reference(target_id: id, site:),
+              ..collection.references
+            ],
+            bytes: collection.bytes + site_bytes(site) + 32,
+            facts: collection.facts + 1,
+          ),
+        )
+      }
+    }
+  })
+}
+
+fn resolve_observed_target(
+  collection: Collection,
+  asked: SymbolQuery,
+  file: ObservedFile,
+  symbol: Symbol,
+) -> Result(#(Collection, Position), observation.Error) {
+  use #(collection, symbols) <- result.try(observation_symbols(
+    collection,
+    file.path,
+  ))
+
+  // A resolver response is a fact boundary even when no outline was requested.
+  // Reject positions outside the retained source before issuing references.
+  use Nil <- result.try(valid_observed_positions(symbols, file.content))
+  let server = collection.session.identity.server
+  let found =
+    resolve.named(
+      symbols,
+      symbol.identifier,
+      symbol.qualifier,
+      server.module_case,
+      root: collection.session.identity.root,
+      path: file.path,
+    )
+    |> list.map(fn(entry) { refine(file.content, entry.1, symbol.identifier) })
+    |> list.unique
+  case found {
+    [] -> Error(observation.QueryFailed(query.NotFound(asked)))
+    [at] -> Ok(#(collection, at))
+    many ->
+      Error(
+        observation.QueryFailed(
+          query.Ambiguous(
+            list.map(many, resolve.site(file.content, file.path, _)),
+          ),
+        ),
+      )
+  }
+}
+
+fn check_observation(collection: Collection) -> Result(Nil, observation.Error) {
+  use Nil <- result.try(
+    list.try_each(dict.to_list(collection.aliases), fn(alias) {
+      use owned <- result.try(
+        owned(collection.session.manager, alias.0)
+        |> result.replace_error(observation.Changed(
+          "a requested spelling no longer names its admitted source",
+        )),
+      )
+      case
+        owned.path == alias.1
+        && resolve.same(owned.identity, collection.session.identity)
+      {
+        True -> Ok(Nil)
+        False ->
+          Error(observation.Changed(
+            "a requested spelling changed its server, root or admitted path",
+          ))
+      }
+    }),
+  )
+
+  // Actor versions alone cannot see an external edit. Admission and full text
+  // are checked again before publication; a failure refuses the whole batch.
+  use Nil <- result.try(
+    list.try_each(dict.values(collection.files), fn(file) {
+      use path <- result.try(
+        admitted(named_path(collection.session, file.path))
+        |> result.replace_error(observation.Changed(
+          "an observed file is no longer admitted",
+        )),
+      )
+      use content <- result.try(
+        resolve.read_text(path)
+        |> result.replace_error(observation.Changed(
+          "an observed file could not be reread",
+        )),
+      )
+      case path == file.path && content == file.content {
+        True -> Ok(Nil)
+        False ->
+          Error(observation.Changed(
+            "an observed file changed during collection",
+          ))
+      }
+    }),
+  )
+  use final <- result.try(observation_state(
+    collection.session,
+    collection.control,
+  ))
+  use Nil <- result.try(quiet_observation(final))
+  let initial = collection.initial
+  case
+    initial.generation == final.generation
+    && initial.revision == final.revision
+    && initial.activity_epoch == final.activity_epoch
+    && initial.failure_epoch == final.failure_epoch
+    && initial.documents == final.documents
+  {
+    True -> Ok(Nil)
+    False ->
+      Error(observation.Changed(
+        "the language-server document or analysis state changed during collection",
+      ))
+  }
+}
+
+// Interactive queries can show raw coordinates after an edit, but a complete
+// observation refuses them rather than labelling UTF-16 units as codepoints.
+fn valid_observed_positions(
+  symbols: protocol.DocumentSymbols,
+  content: String,
+) -> Result(Nil, observation.Error) {
+  case symbols {
+    protocol.Flat(flat) ->
+      list.try_each(flat, fn(symbol) {
+        valid_observed_position(content, symbol.location.range.start)
+      })
+    protocol.Hierarchical(nested) -> valid_nested_positions(nested, content)
+  }
+}
+
+fn valid_nested_positions(
+  symbols: List(protocol.DocumentSymbol),
+  content: String,
+) -> Result(Nil, observation.Error) {
+  list.try_each(symbols, fn(symbol) {
+    use Nil <- result.try(valid_observed_position(
+      content,
+      symbol.selection_range.start,
+    ))
+    valid_nested_positions(symbol.children, content)
+  })
+}
+
+fn valid_observed_position(
+  content: String,
+  at: Position,
+) -> Result(Nil, observation.Error) {
+  observed_site(content, "", at) |> result.map(fn(_) { Nil })
+}
+
+fn observed_site(
+  content: String,
+  path: String,
+  at: Position,
+) -> Result(Site, observation.Error) {
+  use site <- result.try(
+    text.to_site(content, path, at)
+    |> result.replace_error(observation.Changed(
+      "a server position does not fit its observed text",
+    )),
+  )
+  use character <- result.try(
+    text.to_utf16_character(site.text, site.column)
+    |> result.replace_error(observation.Changed(
+      "a server position does not fit its observed text",
+    )),
+  )
+  case site.line == at.line + 1 && character == at.character {
+    True -> Ok(site)
+    False ->
+      Error(observation.Changed(
+        "a server position was outside its observed text",
+      ))
+  }
 }
