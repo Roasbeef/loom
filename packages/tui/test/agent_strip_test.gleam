@@ -781,7 +781,7 @@ pub fn a_captured_glance_reaches_the_strip_and_the_badge_test() {
   let text = painted(captured, 120, 30)
   assert string.contains(text, "audit-panics")
   assert string.contains(text, "Reading manager.go")
-  assert string.contains(text, "58.2k ctx")
+  assert string.contains(text, "58k ctx")
 
   let opened = captured |> press("down") |> press("enter")
   assert opened.shared.active_strand == child

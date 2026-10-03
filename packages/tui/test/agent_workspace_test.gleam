@@ -423,9 +423,17 @@ pub fn workspace_is_opaque_and_navigable_at_narrow_and_short_sizes_test() {
           agents.inspect("worker"),
         )
       let text = frame.buffer_to_text(painted)
-      assert string.contains(text, "↑/↓ inspect")
-      assert string.contains(text, "To: main")
+      assert string.contains(text, "↑↓")
       assert string.contains(text, "▸")
+
+      // Beside the list, the footer names the unchanged recipient; a
+      // stacked workspace leaves that to the composer's own frame below it.
+      case size.0 >= 116 {
+        True -> {
+          assert string.contains(text, "To: main")
+        }
+        False -> Nil
+      }
     },
   )
 }
@@ -638,7 +646,7 @@ pub fn editing_inside_the_workspace_keeps_the_original_recipient_test() {
     )
   }
   let inspected =
-    initial |> press("f2") |> press("down") |> press("tab") |> press("!")
+    initial |> press("f2") |> press("down") |> press("w") |> press("!")
   assert inspected.shared.active_strand == "main"
   assert textarea.value(inspected.view.input) == "main draft!"
   let assert tui_model.AgentInspector(inspector) = inspected.view.overlay
@@ -673,10 +681,10 @@ pub fn paste_edits_only_while_the_workspace_composer_has_focus_test() {
   assert textarea.value(ignored.view.input) == "main draft"
     as "browsing must not change the hidden composer"
 
-  let composing = press(browsing, "tab")
+  let composing = press(browsing, "w")
   let pasted = tui.update(backend.Paste(" visible"), composing)
   assert textarea.value(pasted.view.input) == "main draft visible"
-    as "paste should edit after Tab gives the composer focus"
+    as "paste should edit after w gives the composer focus"
 
   let returned = press(pasted, "esc")
   let ignored_again = tui.update(backend.Paste(" hidden"), returned)
@@ -921,7 +929,7 @@ pub fn workspace_preserves_recipient_controls_and_attention_at_small_sizes_test(
       assert string.contains(rendered, "To main")
       assert string.contains(rendered, "attention")
       assert string.contains(rendered, "retained draft")
-      let editing = initial |> press("tab")
+      let editing = initial |> press("w")
       let rendered =
         render.view(editing, geometry.rect_new(0, 0, size.0, size.1)).0
         |> frame.buffer_to_text
@@ -950,7 +958,7 @@ pub fn collaboration_tab_preserves_inspection_and_composer_target_test() {
     render.view(opened, geometry.rect_new(0, 0, 100, 30)).0
     |> frame.buffer_to_text
   assert string.contains(rendered, "4 Collaborate")
-  assert string.contains(rendered, "To main")
+  assert string.contains(rendered, "To: main")
 }
 
 pub fn approval_detail_keeps_its_captured_preview_and_no_default_decision_test() {
@@ -973,12 +981,16 @@ pub fn approval_detail_keeps_its_captured_preview_and_no_default_decision_test()
       agents.inspect("main"),
     )
     |> frame.buffer_to_text
-  assert string.contains(rendered, "PERMISSION NEEDED")
-  assert string.contains(rendered, "write report")
+  assert string.contains(rendered, "Needs approval: fs_write")
+
+  // The captured preview wraps rather than being cut, so all of it shows.
+  assert string.contains(rendered, "report")
+  assert string.contains(rendered, "a reviews the exact request")
   assert string.contains(rendered, "Nothing is approved here")
 }
 
-// Tab transfers keyboard ownership out of any previously visible surface.
+// Writing from the workspace transfers keyboard ownership out of any
+// previously visible surface.
 pub fn workspace_typing_leaves_the_hidden_diff_navigator_test() {
   let initial =
     {
@@ -990,7 +1002,7 @@ pub fn workspace_typing_leaves_the_hidden_diff_navigator_test() {
     }
     |> press("ctrl+d")
   assert initial.shared.worktree.focus == worktree_view.Navigator
-  let editing = initial |> press("f2") |> press("tab") |> press("x")
+  let editing = initial |> press("f2") |> press("w") |> press("x")
   assert editing.shared.worktree.focus == worktree_view.Composer
   assert textarea.value(editing.view.input) == "x"
   let navigating = editing |> press("ctrl+d")
@@ -1002,7 +1014,7 @@ pub fn workspace_commands_expose_the_surface_that_owns_the_next_key_test() {
   list.each(
     ["/help", "/notes", "/diff", "/context", "/queue", "/summary"],
     fn(command) {
-      let editing = model() |> press("f2") |> press("tab")
+      let editing = model() |> press("f2") |> press("w")
       let opened =
         tui_model.Model(
           ..editing,
@@ -1019,7 +1031,7 @@ pub fn workspace_commands_expose_the_surface_that_owns_the_next_key_test() {
     let base = model()
     tui_model.Model(..base, view: tui_model.View(..base.view, help_open: True))
   }
-  let editing = previous |> press("f2") |> press("tab") |> press("x")
+  let editing = previous |> press("f2") |> press("w") |> press("x")
   assert !editing.view.help_open
   assert textarea.value(editing.view.input) == "x"
 }
@@ -1083,8 +1095,24 @@ pub fn tiny_workspace_keeps_selected_identity_and_navigation_visible_test() {
     ).0
     |> frame.buffer_to_text
   assert string.contains(rendered, "Review scheduler")
-  assert string.contains(rendered, "inspect")
-  assert string.contains(rendered, "To main")
+  assert string.contains(rendered, "↑↓")
+  assert string.contains(rendered, "To: main")
+
+  // Browsing covers the composer; writing from the workspace brings it
+  // back with the draft its recipient kept.
+  let writing = initial |> press("w")
+  let rendered =
+    render.view(
+      tui_model.Model(
+        ..writing,
+        view: tui_model.View(
+          ..writing.view,
+          caches: tui_model.Caches(..writing.view.caches, frame_cache: None),
+        ),
+      ),
+      geometry.rect_new(0, 0, 40, 12),
+    ).0
+    |> frame.buffer_to_text
   assert string.contains(rendered, "retained draft")
 }
 

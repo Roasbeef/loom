@@ -686,7 +686,34 @@ fn update_agent_inspector(
   })
   let rows = layout.displayed_agents(model)
   let changed = case key {
+    // Tab narrows the list, as it does in the session picker; Escape is the
+    // way back to the composer. `w` writes to the unchanged recipient from
+    // inside the workspace.
     keys.Tab ->
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          overlay: AgentInspector(agents.cycle_filter(
+            inspector,
+            rows,
+            agents.Next,
+          )),
+        ),
+      )
+    keys.BackTab ->
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          overlay: AgentInspector(agents.cycle_filter(
+            inspector,
+            rows,
+            agents.Previous,
+          )),
+        ),
+      )
+    keys.Char("w") ->
       Model(
         shared: Shared(
           ..model.shared,

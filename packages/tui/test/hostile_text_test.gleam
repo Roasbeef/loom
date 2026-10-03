@@ -155,13 +155,28 @@ pub fn hostile_agent_names_render_inert_test() {
     )
   }
   let inspector = last_rows(opened, 120, 30, [deliver(names)])
-  assert_shows(inspector, [
-    "active-sentinel",
-    "child-sentinel",
-    "phase-sentinel",
-  ])
+  assert_shows(inspector, ["active-sentinel", "phase-sentinel"])
   assert_inert(inspector)
   assert_no_residue(inspector)
+
+  // The workspace covers the strip while it is open and its list cuts a
+  // long name in the middle, so the child's whole name is checked where
+  // the workspace prints it whole: in its own detail.
+  let child_inbox = connection.new_inbox()
+  let child = {
+    let base = quiet_model(child_inbox)
+    tui_model.Model(
+      ..base,
+      view: tui_model.View(
+        ..base.view,
+        overlay: tui_model.AgentInspector(agents.inspect("sub:one")),
+      ),
+    )
+  }
+  let detail = last_rows(child, 120, 30, [deliver(names)])
+  assert_shows(detail, ["child-sentinel"])
+  assert_inert(detail)
+  assert_no_residue(detail)
 }
 
 /// The approval overlay shows an escape as its six characters, not its byte.
