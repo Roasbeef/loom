@@ -862,32 +862,114 @@ fn unique_name() -> String {
   int.to_string(host.unique()) <> ".log"
 }
 
-// A failed write finds the port already closed, so no exit status can ever
-// arrive and the proof is lost for good. Only a real port can fail a write, so
-// the port of an idle helper is closed from outside, which is what a port
-// that failed under its owner looks like: the next write is refused, and the
-// helper is declared dead without being killed, since there is no port left to
-// wait on. A late exit event injected afterwards cannot repair it. Had the
-// failed write been treated as a kill, that late status would have retired
-// the helper.
-pub fn real_helper_failed_write_loses_the_proof_test() {
-  case proc_helper_config() {
+// A write that fails after the helper died on its own finds the exit status
+// already queued behind it. A port delivers `{exit_status, S}` and only then
+// closes, so the order inside the actor's mailbox is the helper's death, the
+// caller's heartbeat request, and the status; but the actor reads the
+// request first because the test queued it first. To fix that order on a real
+// port, the actor is suspended, the request is queued, the helper is killed
+// from outside, and the port is given time to close with its status
+// delivered. Resuming then makes the actor write to a closed port with the
+// status next in line.
+//
+// The status must not be thrown away with the failed write. The helper was
+// idle, so its death left no jail and the status retires it. A `mark_gone`
+// that records `LostExit` at once leaves the pool slot unconfirmed for the
+// life of the session and blocks the session's writer lease.
+pub fn real_helper_failed_write_keeps_a_queued_status_test() {
+  case helper_config() {
     Error(reason) ->
-      io.println_error("SKIP real_helper_failed_write: " <> reason)
+      io.println_error("SKIP real_helper_failed_write_keeps: " <> reason)
     Ok(config) -> {
-      let baseline = host.helper_os_pids()
+      let before = host.port_os_pids()
       let assert Ok(helper) = exec.spawn_helper(config)
         as "native helper spawns"
       let assert [victim] =
-        list.filter(host.helper_os_pids(), fn(pid) {
-          !list.contains(baseline, pid)
-        })
+        list.filter(host.port_os_pids(), fn(pid) { !list.contains(before, pid) })
+        as "one new helper port"
+      let assert Ok(actor) = process.subject_owner(exec.wire(helper))
+        as "the wire subject belongs to the helper actor"
+
+      host.suspend(actor)
+      let answers = process.new_subject()
+      process.spawn_unlinked(fn() {
+        process.send(answers, exec.heartbeat(helper, waiting: 5000))
+      })
+      process.sleep(100)
+      host.signal(victim, "KILL")
+      process.sleep(500)
+      host.resume(actor)
+
+      assert process.receive(answers, 5000) == Ok(Error(exec.SendFailed))
+      assert exec.status(helper, waiting: 1000)
+        == exec.StatusDead(exec.SendFailed)
+      assert exec.close(helper, waiting: 2000) == Ok(Nil)
+    }
+  }
+}
+
+// The same ordering with `close` as the write that fails. A helper that died
+// on its own and is then asked to shut down finds the status queued behind
+// the shutdown frame, and the verdict is the unasked exit's, judged by the
+// idle phase it died in.
+pub fn real_helper_failed_shutdown_write_keeps_a_queued_status_test() {
+  case helper_config() {
+    Error(reason) ->
+      io.println_error("SKIP real_helper_failed_shutdown: " <> reason)
+    Ok(config) -> {
+      let before = host.port_os_pids()
+      let assert Ok(helper) = exec.spawn_helper(config)
+        as "native helper spawns"
+      let assert [victim] =
+        list.filter(host.port_os_pids(), fn(pid) { !list.contains(before, pid) })
+        as "one new helper port"
+      let assert Ok(actor) = process.subject_owner(exec.wire(helper))
+        as "the wire subject belongs to the helper actor"
+
+      host.suspend(actor)
+      let verdicts = process.new_subject()
+      process.spawn_unlinked(fn() {
+        process.send(verdicts, exec.close(helper, waiting: 5000))
+      })
+      process.sleep(100)
+      host.signal(victim, "KILL")
+      process.sleep(500)
+      host.resume(actor)
+
+      assert process.receive(verdicts, 5000) == Ok(Ok(Nil))
+    }
+  }
+}
+
+// The other half of the rule: a failed write whose status never comes. The
+// port of an idle helper is closed from outside, which is what a port that
+// failed under its owner looks like: the next write is refused and no exit
+// status is ever delivered. The helper is declared dead without being killed,
+// and the retirement stays pending for the witness window, after which the
+// proof is lost for good. A late status after that cannot repair it.
+pub fn real_helper_failed_write_loses_the_proof_test() {
+  case helper_config() {
+    Error(reason) ->
+      io.println_error("SKIP real_helper_failed_write: " <> reason)
+    Ok(config) -> {
+      let before = host.port_os_pids()
+      let assert Ok(helper) = exec.spawn_helper(config)
+        as "native helper spawns"
+      let assert [victim] =
+        list.filter(host.port_os_pids(), fn(pid) { !list.contains(before, pid) })
         as "one new helper port"
       let assert Ok(Nil) = host.close_port_of(victim)
         as "the helper's port is closed under its owner"
       assert exec.heartbeat(helper, waiting: 2000) == Error(exec.SendFailed)
       assert exec.status(helper, waiting: 1000)
         == exec.StatusDead(exec.SendFailed)
+
+      // The status is awaited, not given up on at the failed write.
+      assert exec.close(helper, waiting: 200) == Error(exec.RetirementPending)
+
+      // Five seconds is the witness window, and nothing arrives in it.
+      assert exec.close(helper, waiting: 8000)
+        == Error(exec.RetirementProofLost)
       process.send(exec.wire(helper), exec.WireClosed(0))
       assert exec.close(helper, waiting: 1000)
         == Error(exec.RetirementProofLost)

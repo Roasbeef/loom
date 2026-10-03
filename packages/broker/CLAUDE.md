@@ -684,10 +684,21 @@ protocol (spec Part 1.4). WP-G.
   status-0 witness (the payload may run a couple of wakeups past the
   verdict; the per-exec cgroup directory is not removed); see the addendum
   to protocol-change/014. A write that fails is the one case where the port
-  is already closed, so `mark_gone` records `LostExit`; a fake
+  is already closed, but its status may not be lost: a port delivers
+  `{exit_status, S}` and then closes, so a helper that died on its own
+  and then met a write has its status queued in the actor's mailbox
+  behind the failure. `mark_gone` (and `handle_shutdown`'s send-failure
+  arm) therefore wait as well, `Dead(failure, PendingExit(Unprompted(
+  exposure)))` with nothing to kill, and the same `kill_witness_ms`
+  timeout turns a status that never comes into `LostExit`. `Unprompted`
+  and not `AfterShutdown` for the shutdown arm, because a shutdown frame
+  that was never delivered cannot have been acknowledged by a join. A fake
   `ChannelTransport` cannot fail a write, so
-  `real_helper_failed_write_loses_the_proof_test` closes a real helper's
-  port from outside. The pool's existing path frees the slot with no
+  `real_helper_failed_write_keeps_a_queued_status_test` suspends the actor
+  with `sys:suspend`, queues a request, kills a real helper and resumes,
+  and `real_helper_failed_write_loses_the_proof_test` closes a real
+  helper's port from outside (no status ever comes) and sees `LostExit`
+  after the witness window. The pool's existing path frees the slot with no
   change: `retire_entry` parks the dead helper's `AwaitRetirement`, the
   status replays it, `record_retirement` marks `RetiringActor`, and
   `ForgetRetired` stops the actor on the same `Ok` verdict. Nothing waits

@@ -153,3 +153,31 @@ addendum rather than a new number, and recommended against a separate verdict
 per consumer, which is not taken: the hazard window is the same for both, and a
 third outcome through `close_pool` would cost about a hundred lines and a
 weaker invariant for no reachable resource.
+
+## Addendum, 2026-10-03: a failed write keeps its witness (issue #696 follow-up)
+
+The wire is unchanged. This corrects one sentence of the addendum above, "A
+write that fails finds the port already closed, so no status can follow and
+the proof is lost, as it always was."
+
+**The problem.** The sentence is wrong when the helper died on its own. A port
+opened with `exit_status` delivers `{exit_status, S}` and only then closes, so
+a write that fails after the helper died finds the status already queued in
+the broker actor's mailbox. Recording `LostExit` at the failed write made the
+actor drop that status, left the pool slot `Unconfirmed(RetirementProofLost)`
+for the life of the pool, made `close_pool` answer an error, and blocked the
+session's writer lease at the custody `Helpers` step.
+
+**The decision.** A failed write, including a failed shutdown frame, now waits
+for the status as a kill does, with nothing to kill and nothing to close
+(`PendingExit(Unprompted(..))`). The exit is judged by the phase the helper was
+in, exactly as any exit nobody asked for is, so the grades (a) to (c) above
+apply unchanged. After a failed shutdown write the status is not read as a
+shutdown acknowledgement: the helper never received the frame, so status 0 is
+not its report of a join. The five-second witness window that bounds the wait
+after a kill bounds this one too, and a status that does not arrive in it
+becomes `LostExit` as before. Expiry still grants no proof.
+
+**What it costs.** A helper whose port closed with no status (a port closed
+from outside, or a port that failed without one) now holds its slot for the
+witness window before it is `LostExit`, where it was `LostExit` at once.
