@@ -900,7 +900,10 @@ and an operator's page for one session. Both draw:
   strands after the live ones as a collapsed group (#659). Changes lists the
   files the session's own edits changed, keyed by path, and is always
   present. Session shows the goal, jobs, viewers (operator pages only) and
-  estimated cost. There is no Trace tab (#656).
+  estimated cost. There is no Trace tab (#656). Under the panes, on every
+  tab, the advisor's pending nudges are a read-only card (2026-10-02: it
+  moved out of the dock, which also lost its Stop button and Set goal form —
+  stopping is the terminal's Escape and a goal is pinned by typing `/goal ...`).
 - **Strand focus.** A card, a chip of the agent strip or a timeline row
   focuses a strand, and the transcript, breadcrumb, composer target and
   approval cards follow it. The transcript is a timeline with a dot in the
