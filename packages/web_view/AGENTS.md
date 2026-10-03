@@ -278,16 +278,18 @@ page keys and nonces, and the relay into the session's gateway.
   ones the server counted and did not send. It is read-only on both pages
   and holds no handler, because the queue has no accept or dismiss: the only
   operation on it is the `advisor_pending` read, and the primary's next run
-  start drains it. It is the dock's second child on the operator's page and sits
-  after the todo panel on the observer's.
+  start drains it. It is the strand panel's last child, under the three panes,
+  on every tab and on both pages (the 051 addendum of 2026-10-02 records the
+  move out of the dock).
 - `controls.view(bar)` draws the operator's controls in the dock, above the
-  approvals: Stop (always drawn, disabled while the strand is idle, so nothing
-  moves when it is enabled), the goal row in the terminal's words
+  approvals: the goal row in the terminal's words
   (`goal_view.row`) with the buttons its status offers (Pause while active,
   Resume while held or limited, Clear always, nothing to steer once complete)
-  in a `control-actions arming` row keyed by the status, and two `<details>`
-  each holding a one-field form, Fork and Set goal. `controls.Bar` carries the
-  messages each button sends and the forms' submit handlers, since
+  in a `control-actions arming` row keyed by the status, and one `<details>`
+  holding a one-field form, Fork. Stop and Set goal are gone: stopping is the
+  terminal's Escape, and a goal is pinned by typing `/goal ...` in the
+  composer, which the page parses as a command. `controls.Bar` carries the
+  messages each button sends and the form's submit handler, since
   `operator_page` owns the message type. The observer's page draws none of it.
 - `lane.Replies(fn(key) -> message)` or `NoReplies`, the last argument of
   `lane.view`. A peer card draws a `Reply to
@@ -407,19 +409,15 @@ page keys and nonces, and the relay into the session's gateway.
   refusals like any mutation, and the card stays when it is refused.
 - `component.control(model, Control)` and `component.reply(model, key)`:
   the page's session controls and its peer reply. A `component.Control` is
-  `Stop`, `PauseGoal`, `ResumeGoal`, `ClearGoal`, `Fork(name)` or
-  `PinGoal(objective)`. Stop is `msg.Interrupt`, the terminal's Escape: it
-  aborts the strand's running operation, holds the input queued behind it, and
-  leaves the session open (ending the session is daemon control, which stays in
-  the terminal). The goal buttons and the two forms are `msg.Control(command)`
+  `PauseGoal`, `ResumeGoal`, `ClearGoal` or `Fork(name)`. The goal buttons
+  and the fork form are `msg.Control(command)`
   (`session_view/commands.control`): the same dispatch as a typed draft, with
-  no draft, so the composer's text and `component.drafts` are untouched. A
-  form's text goes after `/fork ` or `/goal ` and through `command.parse`, and
-  `forking` and `pinning` check what came back: the goal form accepts only a
-  goal or the command's own complaint about it, so the word `clear` in its box
-  never unpins the goal. `View.sent_forms` counts forms whose command the lane accepted
+  no draft, so the composer's text and `component.drafts` are untouched. The
+  form's text goes after `/fork ` and through `command.parse`, and `forking`
+  checks what came back: a fork or the command's own complaint that a name
+  is missing. `View.sent_forms` counts forms whose command the lane accepted
   (`outbound.mutation_refusal` said none and the command mutates, so it went out
-  or was queued behind a read), and the forms are keyed by it, so an accepted
+  or was queued behind a read), and the form is keyed by it, so an accepted
   form comes back closed and empty and a refused one keeps its text.
   `component.reply` finds the `turns.Peer` piece by the engine's key, drafts
   `Reply to the peer message from session S, strand T, with peer_send: `, and
@@ -655,11 +653,12 @@ page keys and nonces, and the relay into the session's gateway.
   names (`/fork`, `/model`, `/goal ...` and the rest of `command.Session`),
   not only a prompt, except adding a directory, which `page_command` refuses
   (protocol-change/051, the addendum "the operator page runs session
-  commands"). Its controls (Stop, the goal's buttons, the Fork and Set goal
-  forms) and its peer Reply button run the same commands, chosen by a click or
-  a submit instead of typed (the addendum "the page's session controls, the
-  pending nudges and the peer reply"), so the page's operations are still
-  exactly `command.Session` less adding a directory, and its events are
+  commands"). Its controls (the
+  goal's buttons, the Fork form) and its peer Reply button run the same
+  commands, chosen by a click or a submit instead of typed (the addendum
+  "the page's session controls, the pending nudges and the peer reply", and
+  the addendum of 2026-10-02 that removed Stop and Set goal), so the page's
+  operations are still exactly `command.Session` less adding a directory, and its events are
   still the clicks and submits the socket admits. What bounds them is the
   attachment's role, capped at operator, which the gateway enforces. The
   daemon's gateway refuses an observer's mutation independently, and the
@@ -673,13 +672,11 @@ page keys and nonces, and the relay into the session's gateway.
   the command (sent, or queued behind a read, whose frame moves the request
   identity only when the reply lands), and a refusal (no name, an observer's attachment, a busy
   lane) keeps what was typed.
-- **The controls draw at fixed places.** Stop is always in the row and only
-  its `disabled` changes, so a strand starting to run moves nothing under
-  the pointer. The goal's row is keyed by the goal's status and carries
-  `arming`, the 600 ms refusal of clicks the approval card uses, so a status
-  change that swaps Pause for Resume cannot take a click aimed at the old
-  button. The composer stays last in the dock, with the approvals directly
-  above it.
+- **The controls draw at fixed places.** The goal's row is keyed by the
+  goal's status and carries `arming`, the 600 ms refusal of clicks the
+  approval card uses, so a status change that swaps Pause for Resume cannot
+  take a click aimed at the old button. The composer stays last in the dock,
+  with the approvals directly above it.
 - **No handler or attribute from session text.** Button messages carry the
   daemon's escalation identity and sequence; cards are keyed by sequence
   (every storage write takes its own), rows by the engine's `transcript.Row` key. Text is only ever

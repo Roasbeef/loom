@@ -306,11 +306,16 @@ flowchart LR
   terminal runs from a typed draft, `Controlled(control)` and
   `Replying(key)`, which are clicks and submits like the rest (the
   addendum "the page's session controls, the pending nudges and the peer
-  reply"): Stop, the goal's Pause, Resume and Clear, a Fork form, a Set
-  goal form, and a Reply button on a peer's message. A control's command is
-  `msg.Control`, which has no draft, so it never empties the composer.
+  reply", and the addendum of 2026-10-02): the goal's Pause, Resume and
+  Clear, a Fork form, and a Reply button on a peer's message. A control's
+  command is `msg.Control`, which has no draft, so it never empties the
+  composer. Stop and the Set goal form are gone: stopping a strand is the
+  terminal's Escape, and a goal is pinned by typing `/goal ...` in the
+  composer, which the page parses as a command.
   The advisor's pending nudges are a card on both pages with no button,
-  because the queue has no accept or dismiss command.
+  because the queue has no accept or dismiss command. It sits under the
+  strand panel's three panes, on every tab, so the dock holds only what the
+  operator types into or answers.
 
 The socket's inbound frame limit follows the role: 64 KiB for an
 observer's page, which is the daemon's observer limit, and 12 MiB for an
@@ -932,8 +937,8 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/view/session_tab.gleam` | The Session pane: the goal, the followed strand's live jobs (the read-only `live_jobs` read the component makes on a tick, first ten seconds after opening and then at most every 10 s), on an operator's page only the attached viewers, and the estimated cost, as text nodes in the panel's third pane. |
 | `packages/web_view/src/web_view/invites.gleam` | The invitation an owner's page may mint: `Role` (observer or operator, never an owner), `Invitation`, `Reason` with its fixed words, `Answer`, the control's `Share` state and `claim_ttl_ms` (one hour). |
 | `packages/web_view/src/web_view/view/share.gleam` | The invitation control in the Session pane: two buttons, or the invitation with a `<loom-copy>` box for the command and for the token. Drawn on an owner's page only; the messages its buttons send are values handed in. |
-| `packages/web_view/src/web_view/view/nudges.gleam` | The advisor's pending nudges, read-only, every body received as a text node and the count the server left out. It is drawn on both pages and has no handler. |
-| `packages/web_view/src/web_view/view/controls.gleam` | The operator's session controls: Stop, the goal row with its buttons, and the Fork and Set goal forms. It takes the messages its buttons send and the forms' submit handlers as values. |
+| `packages/web_view/src/web_view/view/nudges.gleam` | The advisor's pending nudges, read-only, every body received as a text node and the count the server left out. It is drawn under the strand panel's panes on both pages and has no handler. |
+| `packages/web_view/src/web_view/view/controls.gleam` | The operator's session controls: the goal row with its buttons, and the Fork form. It takes the messages its buttons send and the form's submit handler as values. |
 | `packages/web_view/src/web_view/view/expansion.gleam` | The budget an expanded row is cut to (300 lines, 8,000 characters) and the line that says a row was cut. |
 | `packages/web_view/src/web_view/view/lane.gleam` | The transcript lane: the line above its oldest row (`Top`, the "Load older" button), the keyed pieces as timeline rows with a dot in the strand's hue, the tags and dots that carry a marker for a listed strand (`Marks`), folded work, the cards, and each transcript line and card body in its own leaf memo. |
 | `packages/web_view/src/web_view/markdown_view.gleam` | The elements for an answer's Markdown, drawn from `session_view/markdown`'s tree: fixed tags, classes from closed types, every string a text node. |

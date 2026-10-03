@@ -633,22 +633,19 @@
   .approval-actions.arming button,.control-actions.arming button{animation:loom-arm-look 600ms steps(1,end);}
   @keyframes loom-arm{from{pointer-events:none;}to{pointer-events:none;}}
   @keyframes loom-arm-look{from{opacity:.45;}to{opacity:.45;}}
-  /* The advisor's pending nudges, in the operator's dock above the controls
-     and above the observer's bar. Read-only: the card has no button. Its
-     height is capped and it scrolls on its own, so a long queue cannot cover
-     the transcript. */
-  section.nudges{flex:0 0 auto;min-height:0;max-height:22vh;overflow-y:auto;overscroll-behavior:contain;box-sizing:border-box; margin:8px 0 0 0;padding:8px 12px;background:var(--color-bg-raised);border:1px solid var(--color-advisor); border-left-width:3px;border-radius:8px;font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;}
-  footer.dock > section.nudges{margin:0 0 8px 0;}
+  /* The advisor's pending nudges, in the strand panel under the three panes
+     on every tab. Read-only: the card has no button. The panel itself
+     scrolls, so the card needs no cap of its own. */
+  aside.panel > section.nudges{margin:10px 0 0 0;padding:8px 12px;background:var(--color-bg-raised);border:1px solid var(--color-advisor);border-left-width:3px;border-radius:8px;font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;}
   .nudge-head{margin:0 0 4px 0;color:var(--color-advisor-text);font:12px/1.4 var(--font-mono);}
   ul.nudge-list{margin:0;padding-left:20px;}
   li.nudge-item{white-space:pre-wrap;}
   .nudge-more{margin:4px 0 0 0;color:var(--color-fg-quiet);font-size:12px;}
-  /* The operator's session controls, in the dock above the approvals. Stop is
-     always drawn so nothing moves when it is enabled. */
+  /* The operator's session controls, in the dock above the approvals: the
+     goal's buttons and the fork form. Stop and Set goal left the page. */
   section.controls{flex:0 0 auto;margin:0 0 8px 0;font-size:13px;}
   .control-row{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;}
-  button.control-stop,button.control-clear{border-color:var(--color-danger);color:var(--color-danger-text);}
-  button.control-stop:disabled{opacity:.45;cursor:default;}
+  button.control-clear{border-color:var(--color-danger);color:var(--color-danger-text);}
   button.control-pause,button.control-resume{border-color:var(--color-signal);color:var(--color-signal-text);}
   .control-goal{flex:1 1 auto;min-width:0;}
   .control-actions{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;}
@@ -724,6 +721,7 @@
     .region-panel{order:-1;width:auto;border-left:0;border-bottom:1px solid var(--color-divider);}
     .region-panel.closed{width:auto;height:0;transition:none;}
     aside.panel{width:auto;height:auto;max-height:132px;padding:8px 16px;}
+    aside.panel > section.nudges{display:none;}
     .pane-strands .panel-title{display:none;}
     nav.agent-strip{overflow-x:auto;scrollbar-width:thin;}
     ul.chips{flex-direction:row;padding-bottom:4px;}

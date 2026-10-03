@@ -17,8 +17,8 @@
 //// (`session_view/commands`). A draft is parsed as the terminal parses it,
 //// so a slash command that names a session command is that command, and one
 //// that opens a terminal surface is refused with a notice. The controls are
-//// the same commands chosen by a button or a small form (Stop, the goal's
-//// buttons, Fork, Set goal), and `Replying` puts the start of a reply to a
+//// the same commands chosen by a button or a small form (the goal's
+//// buttons, Fork), and `Replying` puts the start of a reply to a
 //// peer's message in the composer without sending anything. This module
 //// decides nothing about the session. It turns a browser event into one of
 //// those calls, and draws the composer, the controls and the approval
@@ -60,7 +60,6 @@ import web_view/invites
 import web_view/sessions
 import web_view/view/controls
 import web_view/view/lane
-import web_view/view/nudges
 import web_view/view/share
 import web_view/view/shell
 import web_view/view/sidebar
@@ -83,8 +82,7 @@ pub type Msg(socket) {
   /// the card was drawn at, and the answer.
   Decided(id: String, seq: Int, answer: component.Answer)
 
-  /// A session control: Stop, one of the goal's buttons, or one of the two
-  /// forms, with the text it held.
+  /// A session control: one of the goal's buttons, or the fork form with
   Controlled(control: component.Control)
 
   /// A peer message's Reply button, by the key of the piece it was drawn
@@ -158,9 +156,11 @@ pub fn update(
 }
 
 /// The operator's page: the heading, the agent strip, the lane, and the
-/// dock, which holds the todo panel, the advisor's pending nudges, the
-/// session controls, the approvals waiting for a decision, in a region of
-/// their own directly above the composer, and the composer.
+/// dock, which holds the todo panel, the session controls, the approvals
+/// waiting for a decision, in a region of their own directly above the
+/// composer, and the composer. The advisor's pending nudges are not in
+/// the dock: the strand panel carries them (`component.panel`), so the
+/// dock holds only what the operator types into or answers.
 ///
 /// The page is a fixed frame: the heading and the agent strip at the top,
 /// the dock at the bottom, and the lane between them as the one thing that
@@ -186,13 +186,13 @@ pub fn update(
 /// composer nor cover a transcript row. With no board and no reviewer it is
 /// `element.none()`, as the approvals are.
 ///
-/// The nudges card and the controls come after it. The card shows what the
-/// advisor holds for the primary's next run and has no button, since the queue
-/// has no accept or dismiss (`web_view/view/nudges`). The controls are the
-/// operator's commands as buttons and two small forms
-/// (`web_view/view/controls`), and a peer's message in the lane carries a
-/// Reply button (`lane.view`). All are capped or drawn at fixed
-/// places, so none can move the composer's controls.
+/// The nudges card moved to the panel and the controls lost Stop and the
+/// Set goal form: the dock reads as a composer with the session's pending
+/// decisions above it, and the goals and forks the bar still offers are
+/// the ones the operator acts on while a goal is pinned (`web_view/view/
+/// controls`). A peer's message in the lane carries a Reply button
+/// (`lane.view`). All are capped or drawn at fixed places, so none can
+/// move the composer's controls.
 ///
 /// ## Examples
 ///
@@ -219,7 +219,6 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
       ),
       html.footer([attribute.class("dock")], [
         component.plan(model),
-        nudges.view(component.pending_nudges(model)),
         controls.view(bar(model)),
         approvals(component.pending(model)),
         composer(model),
@@ -287,23 +286,16 @@ fn departure(model: component.Model(socket)) -> Element(Msg(socket)) {
   )
 }
 
-// The controls, with what each sends. Stop is offered while the strand runs
-// an operation, and the two forms send their text as one field. The bar is
-// drawn in the dock for an operator only: an observer's page has no message
-// for any of it.
+// The controls, with what each sends. The fork form sends its text as one
+// field. The bar is drawn in the dock for an operator only: an observer's
+// page has no message for any of it.
 fn bar(model: component.Model(socket)) -> controls.Bar(Msg(socket)) {
   controls.Bar(
-    strand: component.strand(model),
-    stop: case component.activity(model) {
-      component.Busy -> Some(Controlled(component.Stop))
-      component.Idle -> None
-    },
     goal: component.goal(model),
     pause: Controlled(component.PauseGoal),
     resume: Controlled(component.ResumeGoal),
     clear: Controlled(component.ClearGoal),
     fork: form_submit(component.Fork),
-    pin: form_submit(component.PinGoal),
     sent: component.sent_forms(model),
   )
 }
@@ -359,7 +351,7 @@ pub const approvals_marker = "loom-approvals"
 //
 // With nothing pending the region is `element.none()`, an empty text node,
 // rather than nothing at all. The composer therefore stays the dock's
-// last child, after the places of the todo panel, the nudges, the controls
+// last child, after the places of the todo panel, the controls
 // and this one, whether or not a card is drawn, so the path a browser event
 // names for the composer's form is the same before and after a card
 // appears, and a submit in flight still reaches the form.
