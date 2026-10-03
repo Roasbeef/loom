@@ -746,7 +746,12 @@ at most three rows, the summarizer's summary, with the heading marked
 Detail mode shows its whole body. Feeds and goal continuations
 collapse to one attribution row with an opening excerpt and expand hint.
 The advisor's own commentary rows (`session_view/advisor_history`) are not
-summarized and always render in full.
+summarized and always render in full. The terminal draws them inline in the
+main transcript, its only shelf; the web view keeps a one-line hairline per
+review in its lane and draws the bodies in the strand panel, beside the
+strands they observe (protocol-change/051, the addendum of 2026-10-02). The
+shared rule both hosts ask is which strands see the commentary
+(`advisor_history.visible`), not where each host draws it.
 Expanded bodies keep their heading but drop the frame delimiters, which
 address the model rather than the operator. Captured advisor-only
 commentary is shown separately from delivered frames; a verdict

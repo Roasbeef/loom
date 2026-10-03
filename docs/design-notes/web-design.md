@@ -158,6 +158,7 @@ vocabulary the mockup shows:
 | A sub-strand's brief | one line with its state | the strand's output, by focusing it |
 | A peer's question | one line | the question |
 | An advisor nudge | a bordered card, text only | nothing |
+| The advisor's commentary (captured, not sent) | one quiet line: the tag and the request's label | the bodies, in the panel's Strands pane and in the advisor's own transcript (2026-10-02; the panel carries them, the lane keeps the hairline) |
 | A cache miss | the dashed line the page draws today | nothing |
 
 The grouping of a turn's work into one divider is the rule `turns` already

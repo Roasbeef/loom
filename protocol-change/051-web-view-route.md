@@ -3468,3 +3468,103 @@ pin the handler tables and the admissions, which are unchanged.
 `operator_page_test` and `component_test` pin the frames, whose dock is now
 one child shorter. No browser was in the loop; the card's look in the panel
 and its hiding below 980px run only in one.
+
+## Addendum: the advisor's commentary leaves the lane (2026-10-02)
+
+**Status**: PROPOSED, IMPLEMENTED on `web_view/advisor-commentary-rail` ·
+**Raised by**: the owner, on the web page's look ("this takes away from the
+transcript")
+
+The advisor's commentary — what it said on its own strand while watching the
+primary, captured and never sent — was drawn in the primary's transcript lane
+as full amber blocks between the primary's own work. This addendum records it
+moving out: the lane keeps one quiet line per review, and the bodies live in
+the strand panel beside the strands they observe. It adds no event to the
+socket's accepted list, no handler anywhere, and no operation: a click on the
+hairline is the click the dot beside it already was, and no click reaches the
+commentary section at all.
+
+### What changed
+
+- **The lane keeps a hairline, not the body.** Each `Commentary` piece now
+  draws one line — the advisor's tag, then the projection's own request label
+  (`Advisor · quiet requested` and its siblings), in the advisor's colour.
+  The label names the request only, never a delivery, exactly as the block it
+  replaced did; the tool result still owns the verdict's fate. The dot beside
+  the hairline carries `data-loom-focus` with the advisor card's position, as
+  it already did: the marker relay presses the advisor's card, whose focused
+  transcript is where the full bodies have always lived as the advisor's
+  ordinary entries.
+- **The bodies moved to the Strands pane.** A read-only section under the
+  strand cards draws the board's newest items whole — the request label as a
+  head, the advisor's text as a body, a `+n earlier reviews` count line when
+  the window holds more, and the board's own not-loaded line when the
+  captured ancestry is missing an older parent. It is fed by
+  `advisor_history.visible`, the same shared rule the lane asks: a board for
+  `main` only. The advisor's own focused transcript already holds the same
+  words as its ordinary entries, so the section draws nothing while the
+  advisor is on screen, and the stylesheet hides it with the pane's `detailed`
+  class for the same reason.
+- **Nothing new is admitted, and nothing new holds a handler.** The section
+  carries no control, exactly as the pending-nudges card does not: the
+  commentary changes nothing, and the run that delivers a nudge is the
+  primary's next run start, which no click on captured words can cause. The
+  observer's page draws the same hairline and the same section, text nodes
+  only, and its handler table is unchanged: an observer's page still holds
+  only the "Load older" click and the strand cards' clicks.
+- **The paths did not move.** The section is the Strands pane's fourth child,
+  after the title, the strip's list and the detail view, so
+  `component.strip_path` (`0\t3\t0\t1\t0`) and `component.invite_path`
+  (`0\t3\t2\t2`) are exactly where the earlier addenda pin them, and the
+  section is `element.none()` when the board is empty, so the pane's child
+  count never moves and neither does the detail's place.
+- **The TUI is unchanged.** It does not draw through `turns`; it consumes the
+  row projection directly, and inline full commentary is its only shelf. The
+  shared rule the two hosts cannot disagree on is *which strands see the
+  commentary* (`advisor_history.visible`), not where each host draws it —
+  the same host-appropriate placement the pending-nudges change made: a card
+  in the panel here, a band beside the composer there.
+
+### What was considered
+
+- **Drawing the commentary only on the advisor's own transcript.** That view
+  already exists and costs nothing, but it answers "what did the advisor say"
+  by swapping the centre away from the primary, and the temporal correlation
+  — which stretch of the primary's work a review was about — is the one thing
+  a focused advisor transcript cannot show. The hairline keeps that
+  correlation at one line per review.
+- **Expandable commentary rows in the lane.** A handler per row is the exact
+  surface the marker relay exists to avoid, and an inline expansion keeps the
+  full text in the lane, which is the complaint.
+- **A fifth panel tab for commentary.** Commentary belongs with the strands
+  it observes, not beside Changes and Session; and a tab hides it behind the
+  reader's last tab choice, the same reason the nudges card sits under the
+  panes.
+
+### Cost
+
+- The full review bodies are one column away from the timeline they discuss:
+  a reader following the primary's work who wants the advisor's reasoning
+  looks at the panel, or focuses the advisor for the whole history. The
+  hairline keeps the "when" and the panel keeps the "what".
+- Below 980px the section is hidden with the panel's short row of cards; a
+  narrow reader still sees each review's hairline and can focus the advisor.
+- The lane no longer discloses its bounds inline: the heading
+  (`Advisor transcript · captured, not sent to primary`) and the not-loaded
+  line moved to the panel's section, which carries both facts.
+
+### Verification
+
+`commentary_test` (`packages/web_view`) shows: the lane holding the hairline
+with the advisor's tag and the request label, and neither the full body nor
+the heading anywhere before the panel; the hairline's dot carrying the marker
+the relay presses the advisor's card with, and an observer's handler table
+still exactly the four strand cards' clicks; the section in the Strands pane
+under the strip with the advisor's whole text as an escaped text node; the
+section drawing nothing while the advisor is on screen, while the advisor's
+own transcript holds the same words as its ordinary entries; a page without
+commentary drawing no section and no hairline; the count and not-loaded lines
+worded; the section holding no button and no form; and the operator's page
+drawing the same hairline and section. The web client's gates pass unchanged.
+No browser was in the loop; the hairline's look beside a lane and the
+section's under the cards run only in one.
