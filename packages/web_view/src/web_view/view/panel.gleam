@@ -66,6 +66,7 @@ pub fn view(
   changes: Element(message),
   session: Element(message),
   nudges: Element(message),
+  commentary: Element(message),
 ) -> Element(message) {
   html.aside(
     [
@@ -93,6 +94,7 @@ pub fn view(
             Some(detail) -> detail
             None -> element.none()
           },
+          commentary,
         ],
       ),
       changes,
