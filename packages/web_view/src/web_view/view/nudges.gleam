@@ -1,6 +1,6 @@
 //// The advisor's pending nudges: what the advisor has written for the
-//// primary that the primary has not yet been given, drawn in the dock on
-//// both pages.
+//// primary that the primary has not yet been given, drawn at the bottom
+//// of the strand panel on both pages, under the panes on every tab.
 ////
 //// The terminal draws the same observation beside its composer, under the
 //// label "Advisor · pending, not delivered" (`session_view/advisor_pending`,
@@ -20,8 +20,8 @@
 //// and never an attribute, a class or a key. The words that frame them are
 //// fixed here. The card takes the observation as a plain value, because
 //// `web_view/component` imports this module to lay the page out, and it
-//// draws `element.none()` when nothing is waiting, so the dock's children keep
-//// their places.
+//// draws `element.none()` when nothing is waiting, so the panel's child
+//// list keeps one length and no handler's path moves when a nudge lands.
 
 import gleam/int
 import gleam/list
