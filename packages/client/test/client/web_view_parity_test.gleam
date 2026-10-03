@@ -239,7 +239,9 @@ fn visible_texts(line: Line) -> List(String) {
     | transcript_line.Spacer
     | transcript_line.SentMessage
     | transcript_line.StrandMessage
-    | transcript_line.PeerMessage -> [line.text]
+    | transcript_line.PeerMessage
+    | transcript_line.ProgramRunning
+    | transcript_line.ProgramFailure -> [line.text]
   }
 }
 

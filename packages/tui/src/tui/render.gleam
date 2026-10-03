@@ -84,10 +84,10 @@ import session_view/snapshot_view
 import session_view/strand_card
 import session_view/text_hygiene
 import session_view/transcript_line.{
-  type Line, type Speaker, Assistant, Failure, Line, PeerMessage, Reasoning,
-  ReasoningDigest, SentMessage, Spacer, StrandMessage, SummarizedAdvice,
-  SummarizedReasoning, System, ToolCall, ToolDetail, ToolFailure, ToolGroup,
-  ToolPatch, ToolResult, User,
+  type Line, type Speaker, Assistant, Failure, Line, PeerMessage, ProgramFailure,
+  ProgramRunning, Reasoning, ReasoningDigest, SentMessage, Spacer, StrandMessage,
+  SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
+  ToolFailure, ToolGroup, ToolPatch, ToolResult, User,
 }
 import session_view/transcript_lines
 import session_view/worktree_view
@@ -114,6 +114,7 @@ import tui/model.{
 import tui/model_selector
 import tui/note_panel
 import tui/peer_links
+import tui/program_rows
 import tui/queue_editor
 import tui/queue_panel
 import tui/selection
@@ -850,6 +851,10 @@ pub fn render_line(line: Line, width: Int, strand: String) -> List(span.Line) {
     SentMessage | StrandMessage | PeerMessage | User ->
       speaker_rows(line, width, strand)
 
+    // A program block cuts every row to its box; a wrap could only break
+    // the box's right edge onto a row of its own.
+    ProgramRunning | ProgramFailure -> speaker_rows(line, width, strand)
+
     // Every other body is laid out against the full pane and has never been
     // measured, so it is wrapped on the way out.
     System
@@ -962,7 +967,9 @@ pub fn finish_markdown_rows(
     | Spacer
     | SentMessage
     | StrandMessage
-    | PeerMessage -> marked_rows(speaker, rows, run)
+    | PeerMessage
+    | ProgramRunning
+    | ProgramFailure -> marked_rows(speaker, rows, run)
   }
 }
 
@@ -1032,10 +1039,12 @@ fn speaker_mark(speaker: Speaker, text: String) -> #(String, style.Style) {
     ToolDetail | ToolPatch -> #("  ", theme.quiet_text())
     ToolFailure -> #("× ", theme.danger_text())
     Failure -> #("! error ", theme.danger_text())
-    Spacer | SentMessage | StrandMessage | PeerMessage -> #(
-      "",
-      theme.quiet_text(),
-    )
+    Spacer
+    | SentMessage
+    | StrandMessage
+    | PeerMessage
+    | ProgramRunning
+    | ProgramFailure -> #("", theme.quiet_text())
   }
 }
 
@@ -1115,6 +1124,11 @@ fn speaker_rows(line: Line, width: Int, strand: String) -> List(span.Line) {
     // body as body (`message_rows`).
     SentMessage | StrandMessage | PeerMessage ->
       message_rows.rows(line.speaker, line.text, width)
+
+    // A program still awaiting its result, or one that failed, is a titled
+    // block (`program_rows`).
+    ProgramRunning | ProgramFailure ->
+      program_rows.rows(line.speaker, line.text, width)
 
     // Advice closes with a blank like every other system row.
     SummarizedAdvice ->

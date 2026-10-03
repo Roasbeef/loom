@@ -71,6 +71,19 @@ pub type Speaker {
   /// and ending in `origin_checked`, a newline, and the body.
   PeerMessage
 
+  /// A code-mode program the transcript has no result for yet, drawn as a
+  /// titled block. The text is the title, a newline, the foot, a newline,
+  /// and the body: a `PROGRAM` line counting the program's lines, the
+  /// program's opening lines each numbered (`  1 │ import cap/fs`), and a
+  /// `RESULT · none yet` line.
+  ProgramRunning
+
+  /// A code-mode program that failed: refused by vetting, rejected by the
+  /// compiler, stopped, or reporting a failure of its own. The text is laid
+  /// out as `ProgramRunning`'s, and its body is the error, with the source
+  /// lines a compiler diagnostic names numbered the same way.
+  ProgramFailure
+
   /// One blank row, placed by the projection that knows it is needed.
   ///
   /// Every other block closes itself with a blank, but the tool family is

@@ -76,9 +76,9 @@ import session_view/tool_activity
 import session_view/transcript_line.{
   type CacheNotice, type Line, type Speaker, type Stream, type Submission,
   type ToolTail, Assistant, Failure, HeldPrompt, Interjection, Line, PeerMessage,
-  Reasoning, ReasoningDigest, SentMessage, Spacer, StrandMessage, Stream,
-  SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
-  ToolFailure, ToolGroup, ToolPatch, ToolResult, User,
+  ProgramFailure, ProgramRunning, Reasoning, ReasoningDigest, SentMessage,
+  Spacer, StrandMessage, Stream, SummarizedAdvice, SummarizedReasoning, System,
+  ToolCall, ToolDetail, ToolFailure, ToolGroup, ToolPatch, ToolResult, User,
 }
 import session_view/worktree_view
 
@@ -977,7 +977,7 @@ fn record_blocks(
     // its own, so one opening a narrative under a group's bare last row
     // would otherwise sit welded to it.
     notes_view.Excerpt -> {
-      let found = deliveries(entries)
+      let found = joined(entries)
       let #(reversed, calls, narratives) =
         entries
         |> tool_activity.project_split(advisor_splits(advisor))
@@ -1066,7 +1066,7 @@ fn compact_item_lines(
   seq: Int,
   presentation: Presentation,
   owner: Option(message.Origin),
-  found: Deliveries,
+  found: Joined,
 ) -> #(
   List(#(Int, #(Source, List(Line)))),
   Dict(tool_activity.Call, List(Line)),
@@ -1080,7 +1080,7 @@ fn compact_item_lines(
     // all, and a response holding a send is drawn afresh rather than from
     // the cache, since its row changes when the result arrives later.
     tool_activity.Narrative(value) ->
-      case absorbed(found, value), reads_deliveries(value) {
+      case absorbed(found, value), reads_joined(value) {
         True, _ -> #([#(seq, #(FromEntry(value), [])), ..acc.0], acc.1, acc.2)
         False, True -> #(
           [
@@ -1088,7 +1088,7 @@ fn compact_item_lines(
               seq,
               #(
                 FromEntry(value),
-                delivered_entry_lines(
+                joined_entry_lines(
                   value,
                   owner,
                   presentation.summaries,
@@ -1309,13 +1309,16 @@ pub fn separated_tool_blocks(
 ) -> List(#(String, List(Line))) {
   blocks
   |> list.fold([], fn(placed, block) {
-    // `placed` is newest first, and its head is always a real block: a
-    // spacer is only ever pushed immediately beneath the block it precedes,
-    // so the row consulted here is never one this fold wrote.
-    let wanted = case placed {
-      [#(_, previous), ..] ->
+    // `placed` is newest first, and a spacer is only ever pushed
+    // immediately beneath the block it precedes, so the rows consulted here
+    // are never ones this fold wrote. A block that draws nothing, such as a
+    // result its call's row already draws (`joined`), is passed over: the
+    // block below comes to sit under the last block that drew a row.
+    let drew = fn(earlier: #(String, List(Line))) { earlier.1 != [] }
+    let wanted = case list.find(placed, drew) {
+      Ok(#(_, previous)) ->
         block_closes_bare(previous) && opens_bare(block.1, opening)
-      [] -> False
+      Error(Nil) -> False
     }
 
     case wanted {
@@ -1360,9 +1363,7 @@ fn separated_tool_groups(
 // Whether a block ends without a blank row of its own.
 //
 // Only the last row decides it, because that is the row the next block comes
-// to sit under. An empty block draws nothing and so closes nothing; the fold
-// treats it as already separated rather than reaching past it, which costs at
-// most a missing blank in a shape no projection currently produces.
+// to sit under. The fold never asks it of an empty block.
 fn block_closes_bare(rows: List(Line)) -> Bool {
   case list.last(rows) {
     Ok(line) -> closes_bare(line.speaker)
@@ -1385,7 +1386,9 @@ pub fn closes_bare(speaker: Speaker) -> Bool {
     | ToolFailure
     | ToolPatch
     | ReasoningDigest
-    | SummarizedReasoning -> True
+    | SummarizedReasoning
+    | ProgramRunning
+    | ProgramFailure -> True
     System
     | ToolGroup
     | User
@@ -1410,6 +1413,8 @@ pub fn closes_bare(speaker: Speaker) -> Bool {
 pub fn opens_bare(rows: List(Line), opening: GroupOpening) -> Bool {
   case rows {
     [Line(speaker: ToolCall, ..), ..] -> True
+    [Line(speaker: ProgramRunning, ..), ..] -> True
+    [Line(speaker: ProgramFailure, ..), ..] -> True
     [Line(speaker: ReasoningDigest, ..), ..] -> True
 
     // A turn, an answer and a message between agents end in a blank row
@@ -1495,17 +1500,15 @@ pub fn clocked_call_lines(
   call: tool_activity.Call,
   clock: Option(Int),
 ) -> List(Line) {
-  // A send that is pending or was taken is its message row; a failed one
-  // keeps the failure rows every tool's failure gets, so the reason shows.
-  let receipt = case call.outcome {
-    None -> Ok(NoReceipt)
-    Some(message.ToolResultMessage(is_error: False, details:, timestamp:, ..)) ->
-      Ok(Receipted(details, clock_text(timestamp, clock)))
-    Some(_) -> Error(Nil)
-  }
-  use <- result.lazy_unwrap(
-    result.try(receipt, sent_lines(call.invocation, _, notes_view.Excerpt)),
-  )
+  // A send is its message row and a program its own rows, each drawn from
+  // the call and the result the group joined to it.
+  use <- result.lazy_unwrap(sent_lines(
+    call.invocation,
+    call.outcome,
+    notes_view.Excerpt,
+    clock,
+  ))
+  use <- result.lazy_unwrap(program_lines(call.invocation, call.outcome))
 
   // The invocation owns its source preview, so settling a result changes the
   // status without adding or removing code rows. Reuse the expanded entry's
@@ -1635,7 +1638,7 @@ pub fn expanded_call_lines(call: tool_activity.Call) -> List(Line) {
     [] -> []
   }
   let outcome = case call.outcome {
-    Some(result) -> message_lines(result, True, None, [], unjoined)
+    Some(result) -> message_lines(result, True, None, [], unjoined, None)
     None -> []
   }
   list.append(invocation, outcome)
@@ -1727,25 +1730,17 @@ fn note_call_lines(
   }
 }
 
-// What the transcript knows, where it draws a send, of the send's result.
-type Receipt {
-  // No result is joined to the call here: it has none yet, or expanded
-  // history draws the result as its own entry below the call.
-  NoReceipt
-
-  // The successful result, whose details say how the message was taken,
-  // and the heading's clock time for when it was, empty without a clock.
-  Receipted(details: Option(json.JsonValue), at: String)
-}
-
 // The one row an `agent_send` call becomes, or an error when its arguments
-// do not name a recipient and a message, which leaves the call to the
-// generic rows every other tool gets. The heading is built from the call's
-// arguments and its result; the body is drawn beneath it and never read.
+// do not name a recipient and a message, or when the tool refused the send,
+// which leaves the call to the generic rows every other tool gets, so a
+// refusal's reason shows. The heading is built from the call's arguments
+// and its result, which is `None` when no result is joined to the call
+// here; the body is drawn beneath it and never read.
 fn sent_lines(
   call: message.ToolCall,
-  receipt: Receipt,
+  outcome: Option(message.AgentMessage),
   extent: notes_view.Extent,
+  clock: Option(Int),
 ) -> Result(List(Line), Nil) {
   use fields <- result.try(case call.name, call.arguments {
     "agent_send", json.Object(fields) -> Ok(fields)
@@ -1753,15 +1748,23 @@ fn sent_lines(
   })
   use recipient <- result.try(option.to_result(string_field(fields, "to"), Nil))
   use body <- result.try(option.to_result(string_field(fields, "message"), Nil))
-  let taken = case receipt {
-    NoReceipt -> ""
-    Receipted(details: Some(json.Object(fields)), at:) ->
+  use taken <- result.try(case outcome {
+    None -> Ok("")
+    Some(message.ToolResultMessage(
+      is_error: False,
+      details: Some(json.Object(fields)),
+      timestamp:,
+      ..,
+    )) ->
       case string_field(fields, "delivery") {
-        Some("started") -> " · started a run on it" <> at
-        _ -> " · admitted to its queue" <> at
+        Some("started") ->
+          Ok(" · started a run on it" <> clock_text(timestamp, clock))
+        _ -> Ok(" · admitted to its queue" <> clock_text(timestamp, clock))
       }
-    Receipted(at:, ..) -> " · admitted to its queue" <> at
-  }
+    Some(message.ToolResultMessage(is_error: False, timestamp:, ..)) ->
+      Ok(" · admitted to its queue" <> clock_text(timestamp, clock))
+    Some(_) -> Error(Nil)
+  })
   Ok([
     Line(
       SentMessage,
@@ -1775,38 +1778,247 @@ fn sent_lines(
   ])
 }
 
-/// The successful `agent_send` results of a compact window joined to the
-/// calls they answer, for responses whose calls are drawn as narrative.
+// The rows a compact `code_mode` call becomes, from its program and the
+// result joined to it, or an error for a call that is not a foreground
+// program, which leaves it to the generic rows. A program that completed
+// is one row with its value; one that failed is a titled block with the
+// error; one with no result yet is a titled block with the opening of its
+// program, which is all the client receives while it runs.
+fn program_lines(
+  call: message.ToolCall,
+  outcome: Option(message.AgentMessage),
+) -> Result(List(Line), Nil) {
+  use fields <- result.try(case call.name, call.arguments {
+    "code_mode", json.Object(fields) -> Ok(fields)
+    _, _ -> Error(Nil)
+  })
+  use program <- result.try(option.to_result(
+    string_field(fields, "program"),
+    Nil,
+  ))
+  case outcome {
+    None -> Ok([Line(ProgramRunning, running_text(program, fields))])
+    Some(message.ToolResultMessage(
+      is_error: False,
+      details: Some(json.Object(details)),
+      content:,
+      ..,
+    )) -> Ok([Line(ToolCall, "✓ " <> settled_text(details, content))])
+    Some(message.ToolResultMessage(
+      is_error: True,
+      details: Some(json.Object(details)),
+      content:,
+      ..,
+    )) -> Ok([Line(ProgramFailure, failure_text(details, content, fields))])
+    Some(_) -> Error(Nil)
+  }
+}
+
+// How many of a program's lines a running block shows.
+const fragment_lines = 4
+
+// How many lines of an error a failure block shows.
+const error_lines = 4
+
+// A settled program's one row: its status and its value, cut to a row.
+fn settled_text(
+  details: List(#(String, json.JsonValue)),
+  content: List(message.ToolResultBlock),
+) -> String {
+  let status = string_field(details, "status") |> option.unwrap("completed")
+  let value = case list.key_find(details, "value") {
+    Ok(value) -> json.to_string(value)
+    Error(Nil) -> content |> list.map(tool_result_text) |> string.join("\n")
+  }
+  "code_mode · " <> status <> " · result " <> compact(value, 90)
+}
+
+// A running block: the title, the foot naming the budget the call asked
+// for, and the opening of the program, each shown line under its own
+// number. Blank lines are skipped, so the lines shown are ones that say
+// something.
+fn running_text(
+  program: String,
+  fields: List(#(String, json.JsonValue)),
+) -> String {
+  let lines = string.split(string.trim_end(program), "\n")
+  let shown =
+    lines
+    |> list.index_map(fn(line, index) { #(index + 1, line) })
+    |> list.filter(fn(pair) { string.trim(pair.1) != "" })
+    |> list.take(fragment_lines)
+  let budget = case int_field(fields, "within_ms") {
+    Some(ms) -> "budget " <> duration_text(ms)
+    None -> ""
+  }
+
+  // The key that expands a response is on its heading, once; a block's
+  // foot keeps only its facts.
+  [
+    "◐ code_mode · awaiting its result",
+    budget,
+    "PROGRAM · "
+      <> count_text(list.length(lines), "line", "lines")
+      <> ", "
+      <> int.to_string(list.length(shown))
+      <> " shown",
+    ..numbered(shown)
+  ]
+  |> list.append([
+    "",
+    "RESULT · none yet · the result arrives when the program ends",
+  ])
+  |> string.join("\n")
+}
+
+// A failure block: what failed in the title, why in the body, and how much
+// more there is in the foot. A compiler's diagnostic is cut to its heading
+// and the source lines it names; any other error is its opening lines.
+fn failure_text(
+  details: List(#(String, json.JsonValue)),
+  content: List(message.ToolResultBlock),
+  arguments: List(#(String, json.JsonValue)),
+) -> String {
+  // A program the deadline stopped says the budget it ran out of, when the
+  // call named one.
+  let budget = case int_field(arguments, "within_ms") {
+    Some(ms) -> " · budget " <> duration_text(ms)
+    None -> ""
+  }
+  let said = content |> list.map(tool_result_text) |> string.join("\n")
+  let #(title, foot, error) = case string_field(details, "status") {
+    Some("compile_failed") -> #(
+      "compile error",
+      "the program did not run",
+      string_field(details, "detail") |> option.unwrap(said),
+    )
+    Some("vetting_rejected") -> #(
+      "refused by vetting",
+      "the program did not run",
+      said,
+    )
+    Some("run_failed") -> #(
+      "did not finish",
+      "the program was stopped" <> budget,
+      said,
+    )
+    Some("program_failed") -> #(
+      "program failed",
+      "the program reported a failure",
+      string_field(details, "message") |> option.unwrap(said),
+    )
+    Some(_) | None -> #("failed", "the program did not finish", said)
+  }
+  let all = string.split(string.trim(text_hygiene.multiline(error)), "\n")
+  let body = diagnostic(all)
+  let more = case list.length(all) > list.length(body) {
+    True -> " · " <> count_text(list.length(all), "line", "lines")
+    False -> ""
+  }
+  ["× code_mode · " <> title, foot <> more, ..body]
+  |> string.join("\n")
+}
+
+// The rows of an error a failure block shows. A Gleam diagnostic opens with
+// `error: …`, names its place on a `┌─ path:line:column` line, and quotes
+// the source under numbered `│` gutters: the heading gains the line number,
+// and the quoted lines follow it. Text in any other shape is shown from the
+// top.
+fn diagnostic(lines: List(String)) -> List(String) {
+  let quoted =
+    list.filter(lines, fn(line) {
+      let trimmed = string.trim_start(line)
+      case string.split_once(trimmed, " │") {
+        Ok(#(number, _)) -> int.parse(number) |> result.is_ok
+        Error(Nil) ->
+          string.starts_with(trimmed, "│") && string.contains(line, "^")
+      }
+    })
+  let place =
+    list.find_map(lines, fn(line) {
+      use #(_, path) <- result.try(string.split_once(line, "┌─ "))
+      case list.reverse(string.split(path, ":")) {
+        [_column, line, ..] -> int.parse(line)
+        _ -> Error(Nil)
+      }
+    })
+  case lines, quoted, place {
+    [heading, ..], [_, ..], Ok(number) -> [
+      heading <> " · line " <> int.to_string(number),
+      ..list.take(quoted, error_lines - 1)
+    ]
+    _, _, _ ->
+      lines
+      |> list.filter(fn(line) { string.trim(line) != "" })
+      |> list.take(error_lines)
+  }
+}
+
+// Program lines under right-aligned numbers and a gutter, the form the
+// renderer draws as source.
+fn numbered(lines: List(#(Int, String))) -> List(String) {
+  let width =
+    list.fold(lines, 1, fn(widest, pair) {
+      int.max(widest, string.length(int.to_string(pair.0)))
+    })
+  list.map(lines, fn(pair) {
+    "  "
+    <> string.pad_start(int.to_string(pair.0), width, " ")
+    <> " │ "
+    <> text_hygiene.single_line(pair.1)
+  })
+}
+
+fn count_text(count: Int, one: String, many: String) -> String {
+  int.to_string(count)
+  <> " "
+  <> case count {
+    1 -> one
+    _ -> many
+  }
+}
+
+// A budget in milliseconds, in whole seconds when it is one.
+fn duration_text(ms: Int) -> String {
+  case ms % 1000 {
+    0 -> int.to_string(ms / 1000) <> "s"
+    _ -> int.to_string(ms) <> "ms"
+  }
+}
+
+/// The results of a compact window joined to the calls they answer, for
+/// responses whose calls are drawn as narrative, for the two tools whose
+/// row is drawn from its result: `agent_send` and `code_mode`.
 ///
 /// A response that carries prose is narrative (`tool_activity`), so its
 /// calls are drawn inside it and their results arrive as entries of their
-/// own. A send's row says what became of the message, which only its result
-/// knows, so the row is drawn from both and the result entry draws nothing.
-/// A failed send's result is not joined: its failure rows stay where they
-/// are.
-pub opaque type Deliveries {
-  Deliveries(
+/// own. A send's row says what became of the message and a program's row
+/// what the program returned, which only the result knows, so the row is
+/// drawn from both and the result entry draws nothing. A refused send's
+/// result is not joined: its failure rows stay where they are.
+pub opaque type Joined {
+  Joined(
     // Keyed by the calling entry's identity and the provider call id.
-    joined: Dict(#(String, String), #(Option(json.JsonValue), Int)),
+    outcomes: Dict(#(String, String), message.AgentMessage),
     // The result entries whose content a call's row now draws.
     absorbed: Set(String),
   )
 }
 
-/// Joins each successful `agent_send` result in `entries`, oldest first,
-/// to the latest earlier call with its provider id.
+/// Joins each result of a joined tool in `entries`, oldest first, to the
+/// latest earlier call with its provider id.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let joined = transcript_lines.deliveries([])
+/// let found = transcript_lines.joined([])
 /// ```
 @internal
-pub fn deliveries(entries: List(entry.Entry)) -> Deliveries {
+pub fn joined(entries: List(entry.Entry)) -> Joined {
   let #(found, _open) =
     list.fold(
       entries,
-      #(Deliveries(dict.new(), set.new()), dict.new()),
+      #(Joined(dict.new(), set.new()), dict.new()),
       fn(acc, value) {
         let #(found, open) = acc
         case value {
@@ -1820,37 +2032,41 @@ pub fn deliveries(entries: List(entry.Entry)) -> Deliveries {
             let open =
               list.fold(content, open, fn(open, block) {
                 case block {
-                  message.AssistantToolCall(message.ToolCall(
-                    name: "agent_send",
-                    id:,
-                    ..,
-                  )) -> dict.insert(open, id, caller)
-                  message.AssistantToolCall(..)
-                  | message.AssistantText(..)
-                  | message.AssistantThinking(..) -> open
+                  message.AssistantToolCall(message.ToolCall(name:, id:, ..)) ->
+                    case joins(name) {
+                      True -> dict.insert(open, id, caller)
+                      False -> open
+                    }
+                  message.AssistantText(..) | message.AssistantThinking(..) ->
+                    open
                 }
               })
             #(found, open)
           }
 
+          // A refused send keeps its own failure rows, so its result is
+          // not joined; every other joined result is drawn by its call.
           entry.MessageEntry(
             message: message.ToolResultMessage(
-              tool_name: "agent_send",
+              tool_name:,
               tool_call_id:,
               is_error:,
-              details:,
-              timestamp:,
               ..,
-            ),
+            ) as outcome,
             ..,
           ) ->
-            case dict.get(open, tool_call_id), is_error {
-              Ok(caller), False -> #(
-                Deliveries(
-                  joined: dict.insert(found.joined, #(caller, tool_call_id), #(
-                    details,
-                    timestamp,
-                  )),
+            case dict.get(open, tool_call_id), tool_name, is_error {
+              Ok(_), "agent_send", True -> #(
+                found,
+                dict.delete(open, tool_call_id),
+              )
+              Ok(caller), _, _ -> #(
+                Joined(
+                  outcomes: dict.insert(
+                    found.outcomes,
+                    #(caller, tool_call_id),
+                    outcome,
+                  ),
                   absorbed: set.insert(
                     found.absorbed,
                     ids.entry_id_to_string(value.id),
@@ -1858,8 +2074,7 @@ pub fn deliveries(entries: List(entry.Entry)) -> Deliveries {
                 ),
                 dict.delete(open, tool_call_id),
               )
-              Ok(_), True -> #(found, dict.delete(open, tool_call_id))
-              Error(Nil), _ -> #(found, open)
+              Error(Nil), _, _ -> #(found, open)
             }
 
           entry.MessageEntry(..)
@@ -1872,16 +2087,21 @@ pub fn deliveries(entries: List(entry.Entry)) -> Deliveries {
   found
 }
 
-/// Whether `value` is a send's result that its call's row already draws
-/// (`deliveries`), and so draws no rows of its own in compact history.
+// The tools whose call's row is drawn from its result.
+fn joins(name: String) -> Bool {
+  name == "agent_send" || name == "code_mode"
+}
+
+/// Whether `value` is a result that its call's row already draws
+/// (`joined`), and so draws no rows of its own in compact history.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // transcript_lines.absorbed(transcript_lines.deliveries(entries), result)
+/// // transcript_lines.absorbed(transcript_lines.joined(entries), result)
 /// ```
 @internal
-pub fn absorbed(found: Deliveries, value: entry.Entry) -> Bool {
+pub fn absorbed(found: Joined, value: entry.Entry) -> Bool {
   set.contains(found.absorbed, ids.entry_id_to_string(value.id))
 }
 
@@ -1892,19 +2112,16 @@ pub fn absorbed(found: Deliveries, value: entry.Entry) -> Bool {
 /// ## Examples
 ///
 /// ```gleam
-/// // transcript_lines.reads_deliveries(response)
+/// // transcript_lines.reads_joined(response)
 /// ```
 @internal
-pub fn reads_deliveries(value: entry.Entry) -> Bool {
+pub fn reads_joined(value: entry.Entry) -> Bool {
   case value {
     entry.MessageEntry(message: message.AssistantMessage(content:, ..), ..) ->
       list.any(content, fn(block) {
         case block {
-          message.AssistantToolCall(message.ToolCall(name: "agent_send", ..)) ->
-            True
-          message.AssistantToolCall(..)
-          | message.AssistantText(..)
-          | message.AssistantThinking(..) -> False
+          message.AssistantToolCall(message.ToolCall(name:, ..)) -> joins(name)
+          message.AssistantText(..) | message.AssistantThinking(..) -> False
         }
       })
     entry.MessageEntry(..)
@@ -2025,37 +2242,60 @@ pub fn clocked_entry_lines(
   entry_rows(value, details_expanded, local_owner, labels, unjoined, clock)
 }
 
-/// `entry_lines` in compact history for an entry whose `agent_send` calls
-/// have their results joined in `found` (`deliveries`): each such call's
-/// row says what became of its message.
+/// `entry_lines` in compact history for an entry whose sends and programs
+/// have their results joined in `found` (`joined`): each such call's row
+/// is drawn from its result.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // transcript_lines.delivered_entry_lines(response, None, labels, found)
+/// // transcript_lines.joined_entry_lines(response, None, labels, found)
 /// ```
 @internal
-pub fn delivered_entry_lines(
+pub fn joined_entry_lines(
   value: entry.Entry,
   local_owner: Option(message.Origin),
   labels: block_summary.Labels,
-  found: Deliveries,
+  found: Joined,
   clock: Option(Int),
 ) -> List(Line) {
+  entry_rows(value, False, local_owner, labels, outcome_in(found, value), clock)
+}
+
+/// `assistant_block_lines` in compact history for one block of `value`,
+/// with the results joined in `found`: the rows `joined_entry_lines` draws
+/// for that block, for a host that keeps a response's blocks apart.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.joined_block_lines(block, None, response, found)
+/// ```
+@internal
+pub fn joined_block_lines(
+  block: message.AssistantBlock,
+  label: Option(String),
+  value: entry.Entry,
+  found: Joined,
+) -> List(Line) {
+  block_lines(block, False, label, outcome_in(found, value), None)
+}
+
+// The joined result of each of `value`'s calls.
+fn outcome_in(
+  found: Joined,
+  value: entry.Entry,
+) -> fn(message.ToolCall) -> Option(message.AgentMessage) {
   let caller = ids.entry_id_to_string(value.id)
-  let receipt = fn(call: message.ToolCall) {
-    case dict.get(found.joined, #(caller, call.id)) {
-      Ok(#(details, at)) -> Receipted(details, clock_text(at, clock))
-      Error(Nil) -> NoReceipt
-    }
+  fn(call: message.ToolCall) {
+    dict.get(found.outcomes, #(caller, call.id)) |> option.from_result
   }
-  entry_rows(value, False, local_owner, labels, receipt, clock)
 }
 
 // No result is joined to any call: expanded history draws each result as
 // its own entry, and a host drawing one block alone has no window to join.
-fn unjoined(_call: message.ToolCall) -> Receipt {
-  NoReceipt
+fn unjoined(_call: message.ToolCall) -> Option(message.AgentMessage) {
+  None
 }
 
 fn entry_rows(
@@ -2063,7 +2303,7 @@ fn entry_rows(
   details_expanded: Bool,
   local_owner: Option(message.Origin),
   labels: block_summary.Labels,
-  receipt: fn(message.ToolCall) -> Receipt,
+  receipt: fn(message.ToolCall) -> Option(message.AgentMessage),
   clock: Option(Int),
 ) -> List(Line) {
   let found = labels_for(value, labels)
@@ -2081,7 +2321,14 @@ fn entry_rows(
         sibling_message_lines(value, details_extent(details_expanded), clock)
       })
       |> option.lazy_unwrap(fn() {
-        message_lines(value, details_expanded, local_owner, found, receipt)
+        message_lines(
+          value,
+          details_expanded,
+          local_owner,
+          found,
+          receipt,
+          clock,
+        )
       })
     entry.CompactionEntry(retained_tail:, tokens_before:, ..) -> [
       Line(
@@ -2764,7 +3011,8 @@ fn message_lines(
   details_expanded: Bool,
   local_owner: Option(message.Origin),
   found: List(#(Int, String)),
-  receipt: fn(message.ToolCall) -> Receipt,
+  receipt: fn(message.ToolCall) -> Option(message.AgentMessage),
+  clock: Option(Int),
 ) -> List(Line) {
   case value {
     message.UserMessage(content:, origin:, ..) -> [
@@ -2791,6 +3039,7 @@ fn message_lines(
             details_expanded,
             block_label(found, index),
             receipt,
+            clock,
           )
         })
         |> separated_tool_groups(WithinResponse)
@@ -2885,14 +3134,15 @@ pub fn assistant_block_lines(
   details_expanded: Bool,
   label: Option(String),
 ) -> List(Line) {
-  block_lines(block, details_expanded, label, unjoined)
+  block_lines(block, details_expanded, label, unjoined, None)
 }
 
 fn block_lines(
   block: message.AssistantBlock,
   details_expanded: Bool,
   label: Option(String),
-  receipt: fn(message.ToolCall) -> Receipt,
+  receipt: fn(message.ToolCall) -> Option(message.AgentMessage),
+  clock: Option(Int),
 ) -> List(Line) {
   case block {
     message.AssistantText(text:, ..) -> [Line(Assistant, text)]
@@ -2915,7 +3165,15 @@ fn block_lines(
         call,
         receipt(call),
         details_extent(details_expanded),
+        clock,
       ))
+
+      // Expanded history draws the whole program and, below it, the whole
+      // result entry; compact history draws the program's own rows.
+      use <- result.lazy_unwrap(case details_expanded {
+        False -> program_lines(call, receipt(call))
+        True -> Error(Nil)
+      })
       let message.ToolCall(name:, arguments:, ..) = call
       case
         code_mode_program(name, arguments, details_expanded),

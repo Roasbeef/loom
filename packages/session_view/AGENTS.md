@@ -122,11 +122,18 @@ for a host with no surfaces.
   `transcript_lines.origin_checked`, and every heading in the local clock
   time when `Presentation.clock` (from `Shared.clock_offset`) knows the
   zone. `agent_messages.Item.ts` keeps the send's time for the workspace.
-- `transcript_lines.deliveries` joins each successful `agent_send` result
+- `transcript_lines.joined` joins each `agent_send` and `code_mode` result
   in a compact window to its call, for responses whose calls are drawn as
-  narrative: the call's row says `admitted to its queue` or `started a run
-  on it`, `absorbed` says which result entries draw nothing, and
-  `reads_deliveries` names the responses that bypass the entry cache.
+  narrative (a refused send is not joined): the call's row is drawn from its
+  result, `absorbed` says which result entries draw nothing,
+  `reads_joined` names the responses that bypass the entry cache, and
+  `joined_entry_lines`/`joined_block_lines` draw a response with the
+  results joined. A compact `code_mode` call is one `✓ code_mode ·
+  completed · result …` row once it settles, and otherwise a
+  `ProgramRunning` or `ProgramFailure` block, whose text is a title, a
+  foot and a body: the program's opening lines under their numbers, or the
+  error, with a compiler diagnostic cut to its heading (`· line N`) and the
+  source it quotes. Both block speakers open and close bare, like a call.
 - `transcript_lines.Presentation`: everything the line builders read of a
   client's state. A host fills it; the terminal does so in
   `tui_model.presentation`.

@@ -833,6 +833,10 @@ fn body_of(speaker: transcript_line.Speaker) -> Body {
     transcript_line.SentMessage
     | transcript_line.StrandMessage
     | transcript_line.PeerMessage -> Literal
+
+    // A program block's text is its title, its foot and its body, already
+    // laid out line by line.
+    transcript_line.ProgramRunning | transcript_line.ProgramFailure -> Literal
   }
 }
 
@@ -861,5 +865,7 @@ fn speaker_class(
     transcript_line.SentMessage -> attribute.class("sent-message")
     transcript_line.StrandMessage -> attribute.class("strand-message")
     transcript_line.PeerMessage -> attribute.class("peer-message")
+    transcript_line.ProgramRunning -> attribute.class("program-running")
+    transcript_line.ProgramFailure -> attribute.class("program-failure")
   }
 }
