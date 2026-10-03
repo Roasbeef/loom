@@ -1311,7 +1311,7 @@ trust model, and no `protocol-change/`.
 second type names it.
 
 The steps are `boot`, `smoke`, `census` and `drain`; `run` strings them
-together and `main` adds an exit status. `smoke` runs `/bin/true` jailed
+together and `main` adds an exit status. `smoke` runs `/usr/bin/true` jailed
 through the broker and the service and refuses a degraded result, naming the
 `skip:` layers the helper reported. A host whose helper says `degraded` (no
 bwrap on Linux) therefore fails the smoke by design, and the package's

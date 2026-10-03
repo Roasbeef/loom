@@ -33,6 +33,7 @@ import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import simplifile
 
 // Locates the prebuilt helper and returns a ready SpawnConfig, or the
@@ -100,7 +101,7 @@ type Payload {
 
 fn payloads() -> List(Payload) {
   [
-    Payload("true", ["/bin/true"], RunToCompletion),
+    Payload("true", ["/usr/bin/true"], RunToCompletion),
     Payload(
       "output on both streams and a nonzero exit",
       ["/bin/sh", "-c", "echo hi; echo err >&2; exit 3"],
@@ -200,8 +201,24 @@ fn observe(name: String, seen: List(broker.CallEvent)) -> Observed {
     cancelled: result.cancelled,
     degraded: result.degraded,
     timed_out: result.timed_out,
-    enforcement: result.enforcement,
+    enforcement: list.map(result.enforcement, without_run_digest),
   )
+}
+
+// Darwin's `seatbelt-fs` tag ends in `plan=<digest>`, a hash over the
+// generated profile and its path definitions. Those name the run's own
+// private scratch directory, so two runs never share a digest whichever lane
+// carried them. The digest is cut from the comparison and every other field
+// of the tag is kept. Linux's `mounts` digest covers only the mount plan,
+// which these runs share, and is left whole.
+fn without_run_digest(tag: String) -> String {
+  case
+    string.starts_with(tag, "seatbelt-fs:"),
+    string.split_once(tag, ",plan=")
+  {
+    True, Ok(#(layer, _digest)) -> layer
+    _, _ -> tag
+  }
 }
 
 /// The same four payloads, through each lane, over real helpers, give the
@@ -230,7 +247,7 @@ fn expected(payload: Payload, observed: Observed) -> Bool {
     FeedStdin(text:) -> observed.stdout == <<text:utf8>> && observed.code == 0
     RunToCompletion ->
       case payload.argv {
-        ["/bin/true"] -> observed.code == 0 && observed.stdout == <<>>
+        ["/usr/bin/true"] -> observed.code == 0 && observed.stdout == <<>>
         _ ->
           observed.code == 3
           && observed.stdout == <<"hi\n":utf8>>
@@ -350,7 +367,7 @@ pub fn twenty_sequential_runs_on_one_real_helper_see_no_busy_window_test() {
         let assert Ok(_handle) =
           broker.clear_call(
             plane.broker,
-            real_spec(["/bin/true"]),
+            real_spec(["/usr/bin/true"]),
             events:,
             waiting: 10_000,
           )

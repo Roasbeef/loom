@@ -315,7 +315,7 @@ fn spec(
 }
 
 fn true_spec(plane: Plane) -> broker.CallSpec {
-  spec(plane, ["/bin/true"], default_output_bytes)
+  spec(plane, ["/usr/bin/true"], default_output_bytes)
 }
 
 // A shell payload that prints `ready` once it is running, which is what lets

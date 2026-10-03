@@ -38,6 +38,19 @@ fn helper_config() -> Result(exec.SpawnConfig, String) {
   }
 }
 
+// The kill-custody tests below find the helper's OS pid, and the processes
+// under it, by reading `/proc` through `support/bench_host`, and only Linux
+// has one. Elsewhere they skip with that reason rather than fail on the
+// missing directory, which would read as a broken ruling instead of an
+// unreadable host.
+fn proc_helper_config() -> Result(exec.SpawnConfig, String) {
+  case ffi_os.os_name() {
+    "linux" -> helper_config()
+    other ->
+      Error("the kill evidence is read from /proc, which " <> other <> " lacks")
+  }
+}
+
 // Every test in this suite runs the helper `make sandbox` built, at the
 // path the Makefile names, and none compiles one itself. Each test used to
 // run its own `go build`, so a parallel run started several at once, beside
@@ -662,7 +675,7 @@ const kill_marker = "300.75"
 // `exit_status` is enough evidence. If the marked payload survived the kill,
 // the ruling would be wrong and the slot would have to stay unconfirmed.
 pub fn real_helper_witnessed_kill_retires_a_stopped_helper_test() {
-  case helper_config() {
+  case proc_helper_config() {
     Error(reason) ->
       io.println_error("SKIP real_helper_witnessed_kill: " <> reason)
     Ok(shared) -> {
@@ -770,7 +783,7 @@ const ordering_slack_ns = 100_000_000
 // than that would mean the jail outlived the verdict and the slot must stay
 // unconfirmed. The measured lag is printed so a reader can see the margin.
 pub fn real_helper_kill_verdict_precedes_no_late_payload_write_test() {
-  case helper_config() {
+  case proc_helper_config() {
     Error(reason) ->
       io.println_error("SKIP real_helper_kill_ordering: " <> reason)
     Ok(shared) -> {
@@ -858,7 +871,7 @@ fn unique_name() -> String {
 // failed write been treated as a kill, that late status would have retired
 // the helper.
 pub fn real_helper_failed_write_loses_the_proof_test() {
-  case helper_config() {
+  case proc_helper_config() {
     Error(reason) ->
       io.println_error("SKIP real_helper_failed_write: " <> reason)
     Ok(config) -> {

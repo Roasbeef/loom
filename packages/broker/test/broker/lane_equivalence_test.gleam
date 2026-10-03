@@ -235,7 +235,7 @@ pub fn both_lanes_refuse_an_empty_pool_alike_test() {
           spawn: fn() { Ok(fake_helper.start_helper(fake_helper.EchoArgv)) },
           clock: clock.fixed(at: 1000),
         )
-      let spec = lanes.spec(lanes.op(), argv: ["/bin/true"], deadline_ms: 0)
+      let spec = lanes.spec(lanes.op(), argv: ["/usr/bin/true"], deadline_ms: 0)
       let refused =
         broker.clear_call(
           plane.broker,

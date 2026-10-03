@@ -558,7 +558,7 @@ pub fn start_during_closing_is_refused_as_pool_unavailable_test() {
   // The closer cancelled the execution and now waits half its budget for
   // it, which a helper that ignores cancel will not oblige.
   process.sleep(200)
-  let spec = lanes.spec(lanes.op(), argv: ["/bin/true"], deadline_ms: 0)
+  let spec = lanes.spec(lanes.op(), argv: ["/usr/bin/true"], deadline_ms: 0)
   assert broker.clear_call(
       plane.broker,
       spec,

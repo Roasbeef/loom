@@ -469,7 +469,7 @@ pub fn a_start_refused_while_closing_is_counted_test() {
   })
   process.sleep(200)
 
-  let spec = lanes.spec(lanes.op(), argv: ["/bin/true"], deadline_ms: 0)
+  let spec = lanes.spec(lanes.op(), argv: ["/usr/bin/true"], deadline_ms: 0)
   assert broker.clear_call(
       plane.broker,
       spec,

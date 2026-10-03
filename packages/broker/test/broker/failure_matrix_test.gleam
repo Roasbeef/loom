@@ -280,7 +280,7 @@ pub fn acquisition_failure_spawn_failed_refuses_and_holds_nothing_test() {
         clock: clock.fixed(at: 1000),
       )
     list.each(list.repeat(Nil, 10), fn(_attempt) {
-      let spec = lanes.spec(lanes.op(), argv: ["/bin/true"], deadline_ms: 0)
+      let spec = lanes.spec(lanes.op(), argv: ["/usr/bin/true"], deadline_ms: 0)
       let events = process.new_subject()
       assert broker.clear_call(plane.broker, spec, events:, waiting: 500)
         == Error(
@@ -300,7 +300,7 @@ pub fn acquisition_failure_all_busy_refuses_and_holds_nothing_test() {
     let plane = plane(lane, fake_helper.SleepUntilCancel, size: 1)
     let #(handle, events) = call(plane, 0)
 
-    let spec = lanes.spec(lanes.op(), argv: ["/bin/true"], deadline_ms: 0)
+    let spec = lanes.spec(lanes.op(), argv: ["/usr/bin/true"], deadline_ms: 0)
     let refused_events = process.new_subject()
     assert broker.clear_call(
         plane.broker,
@@ -332,7 +332,7 @@ pub fn acquisition_refused_by_the_seam_leaves_no_row_test() {
       clock: clock.fixed(at: 1000),
       intercept: fn(_checkout) { Error(exec.AllBusy(size: 0)) },
     )
-  let spec = lanes.spec(lanes.op(), argv: ["/bin/true"], deadline_ms: 0)
+  let spec = lanes.spec(lanes.op(), argv: ["/usr/bin/true"], deadline_ms: 0)
   assert broker.clear_call(
       plane.broker,
       spec,
@@ -589,7 +589,7 @@ pub fn a_killed_service_does_not_report_completion_nor_lend_the_helper_test() {
   assert census.borrowed == 1
   assert census.available == 0
   let refused_events = process.new_subject()
-  let next = lanes.spec(lanes.op(), argv: ["/bin/true"], deadline_ms: 0)
+  let next = lanes.spec(lanes.op(), argv: ["/usr/bin/true"], deadline_ms: 0)
   assert broker.clear_call(
       plane.broker,
       next,

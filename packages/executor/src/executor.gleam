@@ -357,7 +357,7 @@ pub fn smoke(
       grants: [],
       response: broker.RefuseNarrowed,
       demand: exec.BestEffort,
-      argv: ["/bin/true"],
+      argv: ["/usr/bin/true"],
       env: [#("PATH", "/usr/bin:/bin")],
       cwd: "/",
       budget: budget.Budget(max_outstanding: 1, deadline_ms: 0),
