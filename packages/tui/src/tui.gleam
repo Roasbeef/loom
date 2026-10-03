@@ -701,6 +701,7 @@ pub fn new_model_with_clock(
       reconnect: ReconnectIdle,
       creation_key: None,
       configuring: None,
+      opening_image: None,
       prompted_approvals: [],
       inspecting_approval: None,
       next_attempt: 1,

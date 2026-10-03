@@ -338,6 +338,10 @@ pub type Spec {
   /// and the canonical path of `--config` or of the trusted
   /// `<state-root>/loom.toml` when it exists (`bootstrap.session_configuration`).
   Configure(options: bootstrap.Options)
+
+  /// Writes an image's bytes to a private file and hands the file to the
+  /// platform's opener (`tui/image_open`).
+  OpenImage(mime_type: String, data: String)
 }
 
 /// How an attachment job resolves the session it connects to.
@@ -432,6 +436,11 @@ pub type ActivityReply =
 pub type ConfigurationReply =
   weft.Pulled(String, String)
 
+/// What the open-image job's relay sends: the path of the file the opener
+/// was given, or why the image could not be opened.
+pub type ImageReply =
+  weft.Pulled(String, String)
+
 /// One message a job's relay sent, tagged with the job's key.
 ///
 /// The runtime produces these from the job's own subject, and
@@ -454,6 +463,9 @@ pub type Arrival(control) {
 
   /// A reply from the configuration job.
   ConfigurationArrived(key: Key, reply: ConfigurationReply)
+
+  /// A reply from the open-image job.
+  ImageArrived(key: Key, reply: ImageReply)
 }
 
 /// The key an arrival is tagged with.
@@ -483,6 +495,7 @@ pub fn is_last(arrival: Arrival(control)) -> Bool {
     ReconnectArrived(reply:, ..) -> ends_run(reply)
     ActivityArrived(reply:, ..) -> ends_run(reply)
     ConfigurationArrived(reply:, ..) -> ends_run(reply)
+    ImageArrived(reply:, ..) -> ends_run(reply)
     AttachArrived(reply: Settled(reply:), ..) -> ends_run(reply)
     AttachArrived(reply: Finished(_), ..) -> True
     AttachArrived(reply: Published(_), ..) -> False

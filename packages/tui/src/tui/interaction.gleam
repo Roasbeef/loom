@@ -76,6 +76,7 @@ import tui/daemon/protocol as control_protocol
 import tui/effect
 import tui/focused_goal_panel
 import tui/frame
+import tui/image_drain
 import tui/inbound
 import tui/job
 import tui/layout
@@ -1322,7 +1323,16 @@ fn update_main_key_without_palette(key: keys.Key, model: Model) -> Model {
 }
 
 fn update_conversation_key(key: keys.Key, model: Model) -> Model {
+  // While the reader is above the tail with nothing typed, `o` opens the
+  // strand's newest image outside the terminal; with text in the prompt it
+  // is a letter like any other.
+  let opens_image =
+    tui_model.reading_history(model)
+    && model.view.overlay == tui_model.NoOverlay
+    && text_area.value(model.view.input) == ""
+
   case key, model.view.help_open, model.view.notes_open {
+    keys.Char("o"), False, False if opens_image -> image_drain.open_newest(model)
     keys.Char("r"), False, True -> side_surfaces.refresh_notes(model)
     keys.Up, False, True -> side_surfaces.select_note(model, -1)
     keys.Down, False, True -> side_surfaces.select_note(model, 1)

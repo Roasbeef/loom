@@ -2675,16 +2675,15 @@ bare, so there is one blank row between any two blocks. A call keeps the
 gutter with its glyph (`× ` for a failure) and only its result hangs under it,
 `  └ `; a tool group's heading is its own speaker, `ToolGroup`, drawn `▸`.
 
-A send's heading and a program's rows need their result. A response holding
-prose draws its calls inside itself, so `transcript_lines.joined` joins each
-`agent_send` and `code_mode` result to its call across the compact window:
-the call's row is drawn from the result, the result entry draws no rows, and
-the response is projected afresh rather than from the entry cache.
+A call's settled row needs its result. A response holding prose draws its
+calls inside itself, so `transcript_lines.joined` joins every result to its
+call across the compact window: the call is drawn as a tool group draws it,
+the result entry draws no rows, and the response is projected afresh rather
+than from the entry cache.
 `record_anchors_for` mirrors both halves, an empty block for the absorbed
 result and `joined_block_lines` for the response's blocks, since a program's
 block and its settled row differ in height. The separation fold passes over
-an empty block to the last block that drew a row. A refused send keeps the
-generic failure rows.
+an empty block to the last block that drew a row.
 
 A code-mode program that settled is one `✓ code_mode · completed · result …`
 row. One the client has no result for yet, and one that failed,
@@ -2706,6 +2705,24 @@ consecutive calls with one capability and ending grouped as `✓ fs.read ×3
 a.gleam · b.gleam`, and drawn in the success or danger colour by that
 leading glyph. The record is written on a result only, so a block still
 awaiting its result has no call list.
+
+An image a tool returned, or a person attached, is a placeholder row under
+the row that carries it, `▣ image 1 · image/png · 1200×700 · 84 KB   o opens
+externally`, built by `session_view/image_header`, which reads the pixel
+size from a PNG, JPEG or GIF header in the data's first 64 KiB. Inside
+Herdr (`herdr_reporter` set) a second row says pane graphics are not passed
+through; `projection.noted_images` adds it to the line before rows and
+anchors are built from it, so the two agree. While the reader is above the
+tail with nothing typed, `o` opens the strand's newest image outside the
+terminal: `image_drain.open_newest` starts `job.OpenImage`, whose worker
+(`image_open.open`) writes the bytes to a file in a `0700` directory under
+`TMPDIR` and hands the path to the platform opener with its output dropped
+(`view_link.quiet_opener`: `/bin/sh -c 'exec "$0" "$1" >/dev/null 2>&1'` with
+the opener and the path as positional arguments, over the same
+`run_forwarding` launch `loom ui --open` uses), and
+`image_drain.drain` turns the reply into the notice. The newest image is
+chosen rather than the one on screen, since a row does not name its image
+without the anchors.
 
 An operator's turn is one band, `› text`, wrapped under its own first word,
 with no title row. An answer opens with a heading naming the strand,

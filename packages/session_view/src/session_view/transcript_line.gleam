@@ -84,6 +84,13 @@ pub type Speaker {
   /// lines a compiler diagnostic names numbered the same way.
   ProgramFailure
 
+  /// The placeholder row of one image a tool returned or a person attached:
+  /// its place among its row's images, its media type, its pixel size when
+  /// the header says, and its byte size (`image 1 · image/png · 1200×700 ·
+  /// 84 KB`). The row is always drawn, even where a host can also draw the
+  /// picture, so scrollback, a replay and `loom replay` stay text.
+  ImageRow
+
   /// One blank row, placed by the projection that knows it is needed.
   ///
   /// Every other block closes itself with a blank, but the tool family is
