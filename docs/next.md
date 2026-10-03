@@ -39,7 +39,7 @@ diagnosis; a single pass is corroboration, not proof.
 
 ## SQL LSP observation branch
 
-On October 2, `codex/lsp-sql` is rebased onto `945da29f1` for
+On October 2, `codex/lsp-sql` is rebased onto `ee8c5e341` for
 [PR #693](https://github.com/Roasbeef/loom/pull/693). The implementation follows
 [protocol 062](../protocol-change/062-lsp-sql-observations.md) and the new
 [saved-source contract](../protocol-change/063-saved-code-mode-programs.md).
@@ -136,7 +136,11 @@ transport-start ownership. SQL collection now reads its workspace and timing
 from that handle. The retired-tool memory regression follows the live
 write-diagnostics observer, retaining the sibling-capture assertion rather
 than discarding coverage. Astra found no actionable integration defect.
-The rebased head requires fresh local, hosted and Linux signoff results.
+The `acc648436` tree passed the full local gate, all six Linux signoff lanes,
+release/update verification and the strict skip census. The next integration
+preserves merged strand-wait slicing and its accepted protocol record, with
+the prelude regenerated from both capability surfaces. This rebased head
+requires fresh local, hosted and Linux signoff results.
 
 ## October 2 daemon memory pass
 
