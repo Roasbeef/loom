@@ -243,12 +243,18 @@ pub fn a_refused_start_maps_to_the_refusals_it_replaced_test() {
   // No helper: the pool's own verdict reaches the caller unchanged, and
   // the slot is not left held (a second attempt is refused for the same
   // reason, not for budget).
+  //
+  // The budget is a second, not less, because a congested answer under a
+  // second is returned without a retry (`min_retry_window_ms`), so the one
+  // exchange gets the whole window. A shorter one timed that exchange out
+  // when eight modules shared the emulator, and the caller heard
+  // `BrokerUnavailable` instead of the pool's verdict.
   let busy =
     broker_over(fake(observed, refusing: Some(dispatch.NoHelper(pool_busy))))
   let assert Error(broker.NoHelper(exec.AllBusy(size: 2))) =
-    broker.clear_call(busy, pooled, events:, waiting: 100)
+    broker.clear_call(busy, pooled, events:, waiting: 1000)
   let assert Error(broker.NoHelper(exec.AllBusy(size: 2))) =
-    broker.clear_call(busy, pooled, events:, waiting: 100)
+    broker.clear_call(busy, pooled, events:, waiting: 1000)
   broker.stop(busy)
 
   // A dispatcher that could not set itself up is the broker unavailable,

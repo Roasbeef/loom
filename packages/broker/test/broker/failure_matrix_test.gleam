@@ -282,7 +282,7 @@ pub fn acquisition_failure_spawn_failed_refuses_and_holds_nothing_test() {
     list.each(list.repeat(Nil, 10), fn(_attempt) {
       let spec = lanes.spec(lanes.op(), argv: ["/usr/bin/true"], deadline_ms: 0)
       let events = process.new_subject()
-      assert broker.clear_call(plane.broker, spec, events:, waiting: 500)
+      assert broker.clear_call(plane.broker, spec, events:, waiting: 1000)
         == Error(
           broker.NoHelper(error: exec.SpawnFailed(error: exec.PortOpenFailed)),
         )
