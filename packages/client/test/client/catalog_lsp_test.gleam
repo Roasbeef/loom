@@ -134,7 +134,13 @@ pub fn example_carries_both_documented_servers_test() {
     as "the committed example catalogue must be readable"
   let assert Ok(parsed) = catalog.parse(text)
     as "the committed example catalogue must parse"
-  let assert Ok(expected) = catalog.parse(with_lsp(documented))
+  let prepared_example =
+    string.replace(
+      documented,
+      "project = \"writable\"",
+      "project = \"writable\"\nprepare = \"gleam-dependencies\"\ncache_env = { XDG_CACHE_HOME = \"hex\" }",
+    )
+  let assert Ok(expected) = catalog.parse(with_lsp(prepared_example))
   assert parsed.lsp_servers == expected.lsp_servers
 }
 
