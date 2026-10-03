@@ -98,8 +98,12 @@ protocol (spec Part 1.4). WP-G.
   and only what an observer reads of the request (enforcement demand, deadline,
   session clock, start times, the relay's last `Progress`). Argv, environment,
   working directory, policy and token are never kept after dispatch.
-  `inventory` answers the rows and the pool census from one instant.
-  `snapshot` answers an `executor_view.Snapshot` (below).
+  `snapshot` answers an `executor_view.Snapshot` (below). The service
+  answers an `executor_view.Observation` (its own rows and books, no pool);
+  the caller reads the pool's custody from a closure the `Executor` handle
+  keeps and joins the two with `executor_view.completed`, so a slow pool
+  holds the observer and no settlement. The halves are not one instant. The
+  census does the same with `QueryPhase`.
 - `broker/executor_view.{Snapshot, LiveView, Settled, Failure, Metrics,
   LatencySummary, Outcome, Books, ring_size}` — the operator surface, pure.
   `Snapshot` is the incarnation and phase, the live rows (at most the pool
@@ -282,7 +286,7 @@ protocol (spec Part 1.4). WP-G.
     answered after `exec.cancel` was sent), `Stdin(id, data, eof)`,
     `MaySettle(id, verdict, reply)`, `Progress(id, progress)` (a relay's cast;
     never answered), `Release(id)`, `Abandon(id)`, `RelayDown(down)`,
-    `Report(reply)`, `Observe(reply)`, `QueryCensus(reply)`, `Close(draining, helpers, reply)`,
+    `Observe(reply)`, `QueryPhase(reply)`, `Close(draining, helpers, reply)`,
     `DrainDeadline`. The `Execution` closures the
     broker holds are casts of `Cancel`, `Stdin`, `Release` and `Abandon`
     naming the execution by `ExecutionId`. `MaySettle` is the relay's

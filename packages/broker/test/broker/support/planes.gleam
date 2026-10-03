@@ -82,7 +82,35 @@ pub fn start_intercepted(
   intercept intercept: fn(fn() -> Result(Helper, exec.CheckoutError)) ->
     Result(Helper, exec.CheckoutError),
 ) -> Plane {
-  start_with(size:, spawn:, clock:, intercept:, logger: log.discard())
+  start_with(
+    size:,
+    spawn:,
+    clock:,
+    intercept:,
+    custody: fn(custody) { custody() },
+    logger: log.discard(),
+  )
+}
+
+/// As `start`, with the service's custody query wrapped: `intercept`
+/// receives the pool's own query and may delay it, refuse it or call it. It
+/// lets a test hold an observer inside the pool question, to show what that
+/// wait does and does not delay.
+pub fn start_custody_intercepted(
+  size size: Int,
+  spawn spawn: fn() -> Result(Helper, exec.SpawnError),
+  clock clock: Clock,
+  intercept intercept: fn(fn() -> Result(exec.PoolCustody, exec.CheckoutError)) ->
+    Result(exec.PoolCustody, exec.CheckoutError),
+) -> Plane {
+  start_with(
+    size:,
+    spawn:,
+    clock:,
+    intercept: fn(checkout) { checkout() },
+    custody: intercept,
+    logger: log.discard(),
+  )
 }
 
 /// As `start`, with the service writing its lines through `logger`.
@@ -92,9 +120,14 @@ pub fn start_logged(
   clock clock: Clock,
   logger logger: Logger,
 ) -> Plane {
-  start_with(size:, spawn:, clock:, logger:, intercept: fn(checkout) {
-    checkout()
-  })
+  start_with(
+    size:,
+    spawn:,
+    clock:,
+    logger:,
+    intercept: fn(checkout) { checkout() },
+    custody: fn(custody) { custody() },
+  )
 }
 
 fn start_with(
@@ -103,6 +136,8 @@ fn start_with(
   clock clock: Clock,
   intercept intercept: fn(fn() -> Result(Helper, exec.CheckoutError)) ->
     Result(Helper, exec.CheckoutError),
+  custody custody: fn(fn() -> Result(exec.PoolCustody, exec.CheckoutError)) ->
+    Result(exec.PoolCustody, exec.CheckoutError),
   logger logger: Logger,
 ) -> Plane {
   let assert Ok(pool) = exec.start_pool(size:, spawn:)
@@ -124,7 +159,7 @@ fn start_with(
     executor.start(executor.ExecutorConfig(
       checkout:,
       checkin:,
-      custody: fn() { exec.pool_custody(pool, waiting: 1000) },
+      custody: fn() { custody(fn() { exec.pool_custody(pool, waiting: 1000) }) },
       close_helpers: fn(ms) { exec.close_pool(pool, waiting: ms) },
       incarnation: 1,
       log: logger,

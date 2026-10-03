@@ -45,6 +45,7 @@ import gleam/erlang/process.{type Pid}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 
 /// How many settled executions the `recent` ring keeps, and how many
 /// samples each latency series keeps.
@@ -217,7 +218,33 @@ pub type CustodyUnavailable {
   PoolSpawnFailed
 }
 
-/// Everything an observer is given about the service at one instant.
+/// What the service knows about itself, which is everything in a `Snapshot`
+/// except the pool's custody. The service answers it from its own books in
+/// one step and never asks the pool anything, so a pool that is slow to
+/// answer cannot hold up a settlement. The observer then reads the pool's
+/// custody in its own process and joins the two with `completed`.
+pub type Observation {
+  Observation(
+    /// The service's incarnation.
+    incarnation: Int,
+    /// Where the service is in its lifecycle.
+    phase: ServicePhase,
+    /// Every execution the service holds, in start order, with
+    /// `helper_ordinal` still `None`: only the pool knows an ordinal.
+    live: List(LiveView),
+    /// The counters and latency summaries.
+    metrics: Metrics,
+    /// The last `ring_size` settled executions, newest first.
+    recent: List(Settled),
+    /// The most recent settlement that was not `Completed`.
+    last_failure: Option(Failure),
+  )
+}
+
+/// Everything an observer is given about the service. The service's own
+/// fields describe one instant, and the pool's custody was read a moment
+/// after it, in the observer's process, so a helper that was released in
+/// between is simply absent from the custody and its row has no ordinal.
 pub type Snapshot {
   Snapshot(
     /// The service's incarnation.
@@ -236,6 +263,61 @@ pub type Snapshot {
     /// The most recent settlement that was not `Completed`.
     last_failure: Option(Failure),
   )
+}
+
+/// Joins what the service said of itself with what the pool said of its
+/// helpers. Each live row takes its helper's spawn ordinal from the custody
+/// when the pool still lists that helper, and none otherwise: the row was
+/// read before the custody, so a helper released in between is gone from the
+/// pool's list.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // executor_view.completed(observation, pool: Error(PoolNotAnswering))
+/// //   gives a snapshot whose rows have `helper_ordinal: None`
+/// ```
+pub fn completed(
+  observation: Observation,
+  pool pool: Result(exec.PoolCustody, CustodyUnavailable),
+) -> Snapshot {
+  let live =
+    list.map(observation.live, fn(row) {
+      let ordinal = case pool {
+        Ok(custody) ->
+          list.find(custody.helpers, fn(view) { view.pid == row.helper })
+          |> result.map(fn(view) { view.ordinal })
+          |> option.from_result
+        Error(_) -> None
+      }
+      LiveView(..row, helper_ordinal: ordinal)
+    })
+  Snapshot(
+    incarnation: observation.incarnation,
+    phase: observation.phase,
+    live:,
+    pool:,
+    metrics: observation.metrics,
+    recent: observation.recent,
+    last_failure: observation.last_failure,
+  )
+}
+
+/// Reduces the pool's refusal to a name. The refusal can carry a helper's
+/// message, so nothing past this function holds it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert executor_view.custody_unavailable(exec.PoolUnavailable)
+///   == executor_view.PoolNotAnswering
+/// ```
+pub fn custody_unavailable(refusal: exec.CheckoutError) -> CustodyUnavailable {
+  case refusal {
+    exec.AllBusy(..) -> PoolBusy
+    exec.PoolUnavailable -> PoolNotAnswering
+    exec.SpawnFailed(..) -> PoolSpawnFailed
+  }
 }
 
 /// The service's running totals. Opaque so that the rings can only be

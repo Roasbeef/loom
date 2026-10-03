@@ -564,7 +564,7 @@ A row exists only while the service holds a helper for the execution. It is
 `Live` until nobody has been given leave to report a verdict. The relay asks
 (`MaySettle`) before it reports, and the first ask for a live row turns it
 `Granted` and is answered `Granted`; every later ask is answered
-`AlreadySettled` (`grant_settlement`, `broker/executor.gleam:631`). The service
+`AlreadySettled` (`grant_settlement`, `broker/executor.gleam:649`). The service
 settles a row itself only when it is `Live`, and only for a lost relay or a
 closing service (`lose_row`, `broker/executor.gleam:1071`). It never settles a
 `Granted` row, because the relay may already have reported. Because the status
@@ -584,7 +584,7 @@ settlement in this lane in every case
 A `Live` row can be released too, and the case is real. A relay whose ask went
 unanswered reports anyway as `ServiceSilent`, the broker releases, and the
 service reads `Release` before the late ask. The execution has been reported,
-so `release_row` treats it exactly as a granted one (`broker/executor.gleam:638`),
+so `release_row` treats it exactly as a granted one (`broker/executor.gleam:656`),
 and the relay's late ask finds no row and is answered `AlreadySettled` to a
 process that has already gone.
 
@@ -597,7 +597,7 @@ will not come.
 
 ### The duplicate-sequence refusal
 
-`dispatch_execution` (`broker/executor.gleam:726`) refuses a `start` whose
+`dispatch_execution` (`broker/executor.gleam:736`) refuses a `start` whose
 sequence number is still in the table, answering `NotStarted` and borrowing no
 helper. The check exists because `start` is a call whose budget is the sum of
 every step the service may spend inside it, the checkout wait, the relay's init
@@ -640,15 +640,23 @@ in one pool step. A view is the helper's pid, its spawn ordinal, whether the
 pool can `Lend` it, and its custody in the issue's vocabulary. The views are
 derived from the pool's own `Availability` and never ask a helper anything, so
 a wedged helper cannot delay the answer and nothing is held once it is sent.
-S4 added a fourth field to the view, `features`: the hello features the pool
+The service does not ask it: `executor.snapshot` and `executor.census` call the
+query in the observer's process, from a closure the `Executor` handle keeps, so
+a pool slow to spawn holds only the observer. The service answers its own half
+(`Observation`, from its rows and books) and `executor_view.completed` joins the
+two. The halves are therefore not read at one instant: the rows are as of the
+service's answer and the custody a moment later, so a row whose helper the pool
+has since released has no ordinal. `a_snapshot_waiting_on_the_pool_does_not_delay_a_settlement_test`
+holds the query for two seconds and requires a cancel's settlement to arrive
+while it is held. S4 added a fourth field to the view, `features`: the hello features the pool
 received from `await_ready` when the handshake completed, stored on its
 `PoolEntry`. Empty means unknown, because a helper that has not finished its
 handshake has not said.
 
 The version census (`broker/census`, `executor.census`) takes its features
 from this custody query and from nothing else: the newest helper that has said
-hello. It borrows nothing and spawns nothing, so it cannot park the serial
-service behind a spawn. Before the first spawn the features are empty, meaning
+hello. It borrows nothing and spawns nothing, and the caller reads it, so it
+cannot park the serial service behind a spawn. Before the first spawn the features are empty, meaning
 unknown, never "none". `the_census_reads_features_without_borrowing_test` holds
 `PoolCensus.spawned` unchanged across a census, and
 `a_full_pool_still_reports_its_features_test` that a lent-out pool still
@@ -792,15 +800,15 @@ pool size, which is clamped to sixteen (`max_pool_size`,
 | Bound | Value | Where it is enforced |
 |---|---|---|
 | Output retained by the service | 0 bytes; counters only | `execution.Output` holds counts. Output goes to the caller as it does today. `a_live_snapshot_carries_no_request_test` and `the_settled_snapshot_and_the_log_carry_no_request_test` search the rendered snapshot and the log lines for a marker the helper echoes back. |
-| Drain budget of a close | 2000 ms | `drain_ms`, `broker/executor.gleam:366`: how long `close` lets live executions finish after a cancel |
-| Helpers budget of a close | 5000 ms, whole | `helpers_ms`, `broker/executor.gleam:282`: what the pool is given however long the drain took |
+| Drain budget of a close | 2000 ms | `drain_ms`, `broker/executor.gleam:374`: how long `close` lets live executions finish after a cancel |
+| Helpers budget of a close | 5000 ms, whole | `helpers_ms`, `broker/executor.gleam:290`: what the pool is given however long the drain took |
 | Diagnostic ring | the last 64 settled executions per service, and the last 64 samples of each latency series | `ring_size`, `broker/executor_view.gleam:50`: trimmed on every push. `the_recent_ring_holds_sixty_four_test`. |
 | Relay progress reports | one per mode or cancel change, then at most one chunk-driven report (first chunk, every 16th) per 250 ms | `progress_chunks`, `broker/relay.gleam:260`, and `progress_interval_ms`, `broker/relay.gleam:266`. Never per chunk. |
 | Registry size | at most the pool size (4 to 16) | By construction: a row exists only while the service holds a helper for it. |
 | Relay grace after a cancel | 5000 ms | `relay_grace_ms`, `broker/dispatch.gleam:67` |
 | Checkout wait | 15 000 ms | `exec.checkout(pool, waiting: 15_000)`, `client/serve.gleam:660` and `client/serve.gleam:757` |
 | Run call | 5000 ms | `run_wait_ms`, `broker/executor.gleam:360` (the direct dispatcher had its own copy) |
-| Service `start` call | 22 000 ms | `start_budget_ms`, `broker/executor.gleam:359`: the checkout wait, the relay's init wait, the run call and a second of slack |
+| Service `start` call | 22 000 ms | `start_budget_ms`, `broker/executor.gleam:367`: the checkout wait, the relay's init wait, the run call and a second of slack |
 | Relay's ask to settle | 5000 ms | `settle_wait_ms`, `broker/relay.gleam:253` |
 | Relay's ask to cancel | 5000 ms | `cancel_wait_ms`, `broker/relay.gleam:272` |
 | Output per stream | `policy.limits.output_bytes`; 0 means unlimited | The helper (`limiter.go`). A session lease whose output is a wire runs with 0 (`session_lease`, `broker/policy.gleam:425`). |
@@ -852,10 +860,10 @@ and replayed when the machine reaches `Closed`; and `Closed` is a state that
 answers the stored verdict, which a plain actor would have to fake with a flag.
 Every phase and message pair is written out, with the messages that mean the
 same in all phases binding the phase to a name, so a new message is still a
-compile error (`handle`, `broker/executor.gleam:414`). ADR-017 sketched the
+compile error (`handle`, `broker/executor.gleam:422`). ADR-017 sketched the
 service as an actor holding a registry; closing is what made it a machine.
 
-On a `Close` in `Serving` (`begin_close`, `broker/executor.gleam:1098`) the
+On a `Close` in `Serving` (`begin_close`, `broker/executor.gleam:1108`) the
 service sends a cancel to every live row and, if any is still live, enters
 `Closing` with a state timeout of the drain budget. From then on it refuses new
 `start` calls with `NoHelper(PoolUnavailable)`, which is deliberately not
@@ -864,9 +872,9 @@ through their relays as the cancels land, and the service finishes as the last
 one is granted. If the drain budget expires first, the rows still live are
 settled `ExecutionLost(ExecutorClosing)`: the relay is killed first so it cannot
 answer a late ask, and the helper is returned busy so the pool retires it
-(`expire_live_rows`, `broker/executor.gleam:1128`). Then it calls `close_helpers`,
+(`expire_live_rows`, `broker/executor.gleam:1138`). Then it calls `close_helpers`,
 which is `close_pool`, with the whole helpers budget, and replies with the
-pool's retirement verdict (`finish_closing`, `broker/executor.gleam:1145`).
+pool's retirement verdict (`finish_closing`, `broker/executor.gleam:1155`).
 
 S2 separated the two budgets. `executor.close(service, draining:, helpers:)`
 takes a drain budget and a helpers budget, and the pool always gets the whole of
@@ -940,8 +948,8 @@ pool-level half.
 
 S3 answers one question: can a stuck executor be debugged without attaching to
 arbitrary process state? The answer is `executor.snapshot`
-(`broker/executor.gleam:527`), a bounded value the service builds from its own
-books, and one telemetry line per settlement. Nothing in either can hold a
+(`broker/executor.gleam:527`), a bounded value built from the service's own
+books and the pool's custody, and one telemetry line per settlement. Nothing in either can hold a
 secret, because the types have nowhere to put one.
 
 ### Introspection

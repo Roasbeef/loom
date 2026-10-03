@@ -410,6 +410,49 @@ pub fn closing_logs_its_verdict_test() {
   broker.stop(plane.broker)
 }
 
+/// An observer waiting on the pool delays nothing the service owes a caller.
+/// The pool's custody is read in the observer's own process, so a pool that
+/// is slow to answer holds the snapshot and no one else. The test holds the
+/// custody query for two seconds, takes a snapshot into it, and cancels a
+/// running call meanwhile: the settlement has to come back long before the
+/// custody query does. A service that asked the pool from inside its own
+/// serial loop would sit in the query, and the relay's request for leave to
+/// settle would wait behind it.
+pub fn a_snapshot_waiting_on_the_pool_does_not_delay_a_settlement_test() {
+  let held = process.new_subject()
+  let plane =
+    planes.start_custody_intercepted(
+      size: 1,
+      spawn: fn() { Ok(fake_helper.start_helper(fake_helper.SleepUntilCancel)) },
+      clock: clock.fixed(at: 1000),
+      intercept: fn(custody) {
+        process.send(held, Nil)
+        process.sleep(2000)
+        custody()
+      },
+    )
+  let #(handle, events) = call(plane, 0)
+
+  // The observer enters the custody query, and stays there.
+  let answers = process.new_subject()
+  process.spawn_unlinked(fn() {
+    process.send(answers, executor.snapshot(service_of(plane), waiting: 5000))
+  })
+  let assert Ok(Nil) = process.receive(held, 1000)
+    as "the snapshot reached the custody query"
+
+  broker.cancel(plane.broker, handle)
+  let asked_at = poll.monotonic().now()
+  let assert [broker.CallSettled(_)] = planes.collect(events, within: 1500)
+    as "the settlement came while the custody query was still held"
+  assert poll.monotonic().now() - asked_at < 1000
+
+  // The held snapshot then completes, with the pool's answer.
+  let assert Ok(Ok(snapshot)) = process.receive(answers, 4000)
+  let assert Ok(_custody) = snapshot.pool
+  planes.stop(plane)
+}
+
 /// A snapshot of a service that is gone is `Unreachable`, not a fault.
 pub fn a_closed_service_is_unreachable_test() {
   let plane = plane(fake_helper.EchoArgv, size: 1)
