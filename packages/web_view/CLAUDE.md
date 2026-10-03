@@ -281,6 +281,17 @@ page keys and nonces, and the relay into the session's gateway.
   start drains it. It is the strand panel's last child, under the three panes,
   on every tab and on both pages (the 051 addendum of 2026-10-02 records the
   move out of the dock).
+- `commentary.view(board)` draws the advisor's settled commentary
+  (`Shared.advisor_history`, narrowed by `advisor_history.visible`: a board
+  for `main` only) in the Strands pane under the strand cards: the newest
+  three reviews whole, each a request label the projection worded and the
+  advisor's full text as text nodes, a `+n earlier reviews` count, and the
+  board's not-loaded line. Read-only, no handler, hidden while the advisor is
+  on screen (its own transcript already holds the same words as its ordinary
+  entries) and below 980px. The lane keeps one line per review
+  (`view/lane`'s `commentary-mark`): the advisor's tag and the request's
+  label, its dot carrying the advisor card's marker. The 051 addendum of
+  2026-10-02 records the move out of the lane.
 - `controls.view(bar)` draws the operator's controls in the dock, above the
   approvals: the goal row in the terminal's words
   (`goal_view.row`) with the buttons its status offers (Pause while active,
