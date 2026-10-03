@@ -149,6 +149,11 @@ for a host with no surfaces.
   carries it, worded by `image_header.describe` (`image 1 · image/png ·
   1200×700 · 84 KB`); `image_header.dimensions` reads the pixel size from a
   PNG, JPEG or GIF header totally, and answers `None` for anything else.
+  `ImageRow` carries `image_header.picture`, which is `None` when the header
+  cannot be read: a fingerprint (byte count and three 32-byte samples of the
+  base64 text, cheap on a large image), the media type, the pixel size and
+  the byte count. A line is a cache key, so it never holds the data; a host
+  that draws the image finds the data again from its entry by fingerprint.
 - `transcript_lines.Presentation`: everything the line builders read of a
   client's state. A host fills it; the terminal does so in
   `tui_model.presentation`.
