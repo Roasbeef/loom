@@ -286,8 +286,9 @@ protocol (spec Part 1.4). WP-G.
     settling process, immediately before the caller's `CallSettled`; the
     broker handles it by calling the execution's `release`.
   - `executor.Msg` — `Start(request, reply)` (a synchronous call from the
-    dispatcher's `start`, budget 20 000 ms = checkout's 15 000 plus run's
-    5 000), `Cancel(id)`, `CancelAsk(id, reply)` (the relay's own cancel,
+    dispatcher's `start`, budget 22 000 ms = checkout's 15 000, the relay's
+    1 000 to start, run's 5 000 and 1 000 of slack, as `start_budget_ms`
+    sums them), `Cancel(id)`, `CancelAsk(id, reply)` (the relay's own cancel,
     answered after `exec.cancel` was sent), `Stdin(id, data, eof)`,
     `MaySettle(id, verdict, reply)`, `Progress(id, progress)` (a relay's cast;
     never answered), `Release(id)`, `Abandon(id)`, `RelayDown(down)`,
