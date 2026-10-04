@@ -41,6 +41,7 @@ fn start() -> component.Start(ui_relay.Relay) {
       now: fn() { 0 },
       sessions: fn() { [] },
       open: fn(_) { sessions.Declined(sessions.NotHeld) },
+      resume: fn(_, _) { Nil },
       invite: None,
       home: None,
     ),
@@ -460,8 +461,9 @@ pub fn a_listed_entry_names_the_session_and_nothing_private_test() {
 }
 
 // A session the daemon runs, opens or closes is live; one it holds no process
-// for is saved.
-pub fn a_running_session_is_live_and_the_rest_are_saved_test() {
+// for is saved, and one whose creation was never reconciled or whose recovery
+// stopped is blocked, which a page may not ask the daemon to resume.
+pub fn a_running_session_is_live_and_the_rest_are_saved_or_blocked_test() {
   list.each(
     [
       manager.Resident("incarnation"),
@@ -472,14 +474,11 @@ pub fn a_running_session_is_live_and_the_rest_are_saved_test() {
       assert ui_socket.listed_entry(view(status)).residency == sessions.Live
     },
   )
+  assert ui_socket.listed_entry(view(manager.Saved)).residency == sessions.Saved
   list.each(
-    [
-      manager.Saved,
-      manager.Reserved,
-      manager.RecoveryBlocked("proof lost"),
-    ],
+    [manager.Reserved, manager.RecoveryBlocked("proof lost")],
     fn(status) {
-      assert ui_socket.listed_entry(view(status)).residency == sessions.Saved
+      assert ui_socket.listed_entry(view(status)).residency == sessions.Blocked
     },
   )
 }

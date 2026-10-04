@@ -58,6 +58,9 @@ import web_view/sessions
 import weft
 import weft/poll
 
+// How long a session named `slow-...` takes to build, in milliseconds.
+const slow_build_ms = 1200
+
 // What the page's upgrade does: answer with the role the router handed it, or
 // be the daemon's own page socket over a gateway that is not running.
 type Upgrade {
@@ -118,7 +121,15 @@ fn fixture_lasting(
       root.Config(directory, "Owner", 2, limits.defaults),
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
-        build: fn(record, _domain, _services, _, _directory) { Ok(record.id) },
+        build: fn(record, _domain, _services, _, _directory) {
+          // A session named `slow-...` takes a moment to build, so a test can
+          // see an open that has not finished.
+          case string.starts_with(record.name, "slow-") {
+            True -> process.sleep(slow_build_ms)
+            False -> Nil
+          }
+          Ok(record.id)
+        },
         drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),
@@ -303,8 +314,12 @@ fn switching(
     Error(Nil) -> []
   }
   let standing = ui_socket.page_standing(attachment, ceiling, reach)
-  let answer = case req.get_header(request, "x-go-home") {
-    Ok(_) ->
+  let answer = case
+    req.get_header(request, "x-resume"),
+    req.get_header(request, "x-go-home")
+  {
+    Ok(mode), _ -> resumed(role, standing, tickets, open, target, mode)
+    Error(Nil), Ok(_) ->
       case
         ui_socket.home_capability(reach, fn() {
           ui_socket.home_ticket_for(standing, tickets, open)
@@ -317,7 +332,7 @@ fn switching(
             sessions.Declined(reason) -> stub(291, string.inspect(reason))
           }
       }
-    Error(Nil) ->
+    Error(Nil), Error(Nil) ->
       case
         ui_socket.opened_for(role, fn() {
           ui_socket.ticket_for(standing, tickets, open, target)
@@ -330,6 +345,41 @@ fn switching(
   list.fold(deadline, reported(answer, reach), fn(answer, header) {
     response.set_header(answer, header.0, header.1)
   })
+}
+
+// A resume as a page asks for one, with the page socket's own gate for its role
+// (`resumed_for`) in front of either way of running it: `task` is the weft run
+// the page uses, and a number is the blocking steps with that wait in
+// milliseconds. The answer is 290 and the ticket's address, or 291 and the
+// reason, as a switch's is.
+fn resumed(
+  role: ui_socket.Role,
+  standing: ui_socket.Standing(String),
+  tickets,
+  open: fn() -> Result(Int, Nil),
+  target: String,
+  mode: String,
+) {
+  let answers = process.new_subject()
+  let deliver = fn(answer) { process.send(answers, answer) }
+  ui_socket.resumed_for(role, deliver, fn() {
+    case mode {
+      "task" -> ui_socket.resume_task(standing, tickets, open, target, deliver)
+      within ->
+        deliver(ui_socket.resume_for(
+          standing,
+          tickets,
+          open,
+          target,
+          within: result.unwrap(int.parse(within), 0),
+        ))
+    }
+  })
+  case process.receive(answers, 10_000) {
+    Ok(sessions.Ticketed(path)) -> stub(290, path)
+    Ok(sessions.Declined(reason)) -> stub(291, string.inspect(reason))
+    Error(Nil) -> stub(298, "the task never answered")
+  }
 }
 
 // The home's upgrade as a row press asks for a ticket: `ticket_for` with the
@@ -353,16 +403,15 @@ fn opening_from_home(
     Ok(until) -> [#("x-page-deadline", int.to_string(until))]
     Error(Nil) -> []
   }
-  let answer = case
-    ui_socket.ticket_for(
-      ui_socket.home_standing(attachment, ceiling, reach),
-      tickets,
-      open,
-      target,
-    )
-  {
-    sessions.Ticketed(path) -> stub(290, path)
-    sessions.Declined(reason) -> stub(291, string.inspect(reason))
+  let standing = ui_socket.home_standing(attachment, ceiling, reach)
+  let answer = case req.get_header(request, "x-resume") {
+    Ok(mode) ->
+      resumed(ui_socket.Operating, standing, tickets, open, target, mode)
+    Error(Nil) ->
+      case ui_socket.ticket_for(standing, tickets, open, target) {
+        sessions.Ticketed(path) -> stub(290, path)
+        sessions.Declined(reason) -> stub(291, string.inspect(reason))
+      }
   }
   list.fold(deadline, reported(answer, reach), fn(answer, header) {
     response.set_header(answer, header.0, header.1)
@@ -2688,4 +2737,308 @@ fn holds_from(haystack, needle, size, offset, last) -> Bool {
         False -> holds_from(haystack, needle, size, offset + 1, last)
       }
   }
+}
+
+// --- opening a saved session (protocol-change/065, the third pull request) ----
+
+// Stops `session` and waits until the registry says it is saved.
+fn saved(ready: root.Ready(String), session: String) -> Nil {
+  let assert Ok(_) = manager.stop_session(ready.registry, session)
+    as "stop requested"
+  assert poll.until(within: 2000, every: 1, attempt: fn() {
+      case manager.get(ready.registry, session) {
+        Ok(manager.View(status: manager.Saved, ..)) -> poll.Done(Nil)
+        Ok(_) -> poll.Retry
+        Error(error) -> poll.Fail(error)
+      }
+    })
+    == poll.Answered(Nil)
+}
+
+// Whether the registry holds `session` as saved.
+fn is_saved(ready: root.Ready(String), session: String) -> Bool {
+  case manager.get(ready.registry, session) {
+    Ok(manager.View(status: manager.Saved, ..)) -> True
+    _ -> False
+  }
+}
+
+// A page's standing for the member `name`, whose credential `member` made, with
+// a fresh table of tickets to mint into.
+fn standing_of(
+  ready: root.Ready(String),
+  name: String,
+  ceiling: access.Role,
+) -> #(ui_socket.Standing(String), ui_sessions.Sessions) {
+  let assert Ok(tickets) =
+    ui_sessions.start(ui_sessions.Settings(
+      now: bootstrap.monotonic_time_ms,
+      entropy: token.production_entropy(),
+      ticket_ms: ui_sessions.ticket_ms,
+      session_ms: ui_sessions.session_ms,
+    ))
+    as "the web view's tables start"
+  let assert Ok(digest) =
+    { name <> "-token" }
+    |> bit_array.from_string
+    |> bootstrap.sha256
+    |> bit_array.base16_encode
+    |> string.lowercase
+    |> access.credential_digest
+    as "the digest is valid"
+  #(
+    ui_socket.Standing(
+      registry: ready.registry,
+      digest:,
+      principal: name,
+      ceiling:,
+      reach: ui_sessions.Workspace,
+    ),
+    tickets,
+  )
+}
+
+fn page_open() -> Result(Int, Nil) {
+  Ok(bootstrap.monotonic_time_ms() + 60_000)
+}
+
+// The steps of `resume_for`, one at a time, each against the real registry: an
+// operator opens a saved session and is given a ticket for its page, and the
+// registry then holds the session as resident. A resident session resumes too,
+// since the open is idempotent.
+pub fn an_operator_resumes_a_saved_session_and_is_minted_a_ticket_test() {
+  fixture(fn(ready, _, _) {
+    let session = create_session(ready, "resume-ok", 1001)
+    let _ = member(ready, "ui-resumer", session, access.Operator)
+    let #(standing, tickets) = standing_of(ready, "ui-resumer", access.Operator)
+    saved(ready, session)
+    let assert sessions.Ticketed(path) =
+      ui_socket.resume_for(standing, tickets, page_open, session, within: 5000)
+      as "the session opens and a ticket is minted"
+    assert string.starts_with(path, "/ui/sessions/" <> session <> "?ticket=")
+    assert is_saved(ready, session) == False
+    assert result.is_ok(manager.resolve(ready.registry, session))
+
+    // Resident already: the open is idempotent, so the same call mints again.
+    let assert sessions.Ticketed(again) =
+      ui_socket.resume_for(standing, tickets, page_open, session, within: 5000)
+      as "a resident session resumes too"
+    assert string.starts_with(again, "/ui/sessions/" <> session <> "?ticket=")
+  })
+}
+
+// Each refusal opens nothing: the session is as saved afterwards as it was.
+pub fn a_resume_refuses_and_opens_nothing_test() {
+  fixture(fn(ready, _, _) {
+    let held = create_session(ready, "resume-held", 1002)
+    saved(ready, held)
+    let watched = create_session(ready, "resume-watched", 1003)
+    saved(ready, watched)
+    let other = create_session(ready, "resume-other", 1004)
+    saved(ready, other)
+    let _ = member(ready, "ui-refused", held, access.Operator)
+    also_holds(ready, "ui-refused", watched, access.Observer)
+    let #(standing, tickets) = standing_of(ready, "ui-refused", access.Operator)
+    let resume = fn(standing, open, target) {
+      ui_socket.resume_for(standing, tickets, open, target, within: 2000)
+    }
+
+    // An observer member is told to ask an operator, as the control command's
+    // own check refuses, and the session stays saved.
+    assert resume(standing, page_open, watched)
+      == sessions.Declined(sessions.NotOperator)
+
+    // A session the principal holds nothing in, one that does not exist and
+    // text that is no identity are the same refusal.
+    list.each(
+      [other, "01900000-0000-7000-8000-000000000000", "not a session", ""],
+      fn(target) {
+        assert resume(standing, page_open, target)
+          == sessions.Declined(sessions.NotHeld)
+      },
+    )
+
+    // A page minted to read opens nothing, though its principal operates the
+    // session, and a page that has ended asks nothing.
+    assert resume(
+        ui_socket.Standing(..standing, ceiling: access.Observer),
+        page_open,
+        held,
+      )
+      == sessions.Declined(sessions.NotHeld)
+    assert resume(standing, fn() { Error(Nil) }, held)
+      == sessions.Declined(sessions.NotHeld)
+
+    assert is_saved(ready, held)
+    assert is_saved(ready, watched)
+    assert is_saved(ready, other)
+  })
+}
+
+// A session that is not resident within the wait is refused in the fixed words,
+// and the refusal minted nothing: a later exchange of any ticket would find
+// none for it.
+pub fn an_open_that_outlasts_the_wait_mints_nothing_test() {
+  fixture(fn(ready, _, _) {
+    let session = create_session(ready, "slow-wait", 1005)
+    let _ = member(ready, "ui-slow", session, access.Operator)
+    let #(standing, tickets) = standing_of(ready, "ui-slow", access.Operator)
+    saved(ready, session)
+    assert ui_socket.resume_for(
+        standing,
+        tickets,
+        page_open,
+        session,
+        within: 200,
+      )
+      == sessions.Declined(sessions.NotOpened)
+    assert sessions.reason_words(sessions.NotOpened)
+      == "That session did not open. Resume it from a terminal."
+  })
+}
+
+// The wait runs in a task of its own: the call that starts it returns before
+// the slow session has opened, and the answer arrives afterwards from the task,
+// as the message the page's component is waiting for.
+pub fn the_wait_runs_off_the_callers_process_test() {
+  fixture(fn(ready, _, _) {
+    let session = create_session(ready, "slow-task", 1006)
+    let _ = member(ready, "ui-task", session, access.Operator)
+    let #(standing, tickets) = standing_of(ready, "ui-task", access.Operator)
+    saved(ready, session)
+    let answers = process.new_subject()
+    ui_socket.resume_task(standing, tickets, page_open, session, fn(answer) {
+      process.send(answers, #(answer, process.self()))
+    })
+    assert process.receive(answers, 0) == Error(Nil)
+    let assert Ok(#(sessions.Ticketed(path), task)) =
+      process.receive(answers, 10_000)
+      as "the task answers once the session is resident"
+    assert string.starts_with(path, "/ui/sessions/" <> session <> "?ticket=")
+    assert task != process.self()
+  })
+}
+
+// An observer page's socket gate refuses before any task starts, so nothing is
+// opened for it, and an operator's page starts the work.
+pub fn only_an_operators_page_starts_the_task_test() {
+  let refused = process.new_subject()
+  let started = process.new_subject()
+  let deliver = fn(answer) { process.send(refused, answer) }
+  let start = fn() { process.send(started, Nil) }
+  ui_socket.resumed_for(ui_socket.Observing, deliver, start)
+  assert process.receive(refused, 0) == Ok(sessions.Declined(sessions.NotHeld))
+  assert process.receive(started, 0) == Error(Nil)
+  ui_socket.resumed_for(ui_socket.Operating, deliver, start)
+  ui_socket.resumed_for(ui_socket.Owning, deliver, start)
+  assert process.receive(started, 0) == Ok(Nil)
+  assert process.receive(started, 0) == Ok(Nil)
+  assert process.receive(refused, 0) == Error(Nil)
+}
+
+// The whole path through the router: a press on a saved session's row on an
+// operator home opens it, and the ticket becomes a page of that session in the
+// tab, a `Workspace` page like any a home opens.
+pub fn a_saved_session_opens_from_the_home_and_the_tab_lands_on_it_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let session = create_session(ready, "home-resume", 1007)
+    saved(ready, session)
+    let home = enter(port, operator_home(port, credential))
+    let asked =
+      home_socket(port, home, [
+        #("x-switch-target", session),
+        #("x-resume", "task"),
+      ])
+    assert asked.status == 290
+    assert reach_of(asked) == "workspace"
+    assert string.starts_with(
+      asked.body,
+      "/ui/sessions/" <> session <> "?ticket=",
+    )
+    assert is_saved(ready, session) == False
+    let page = enter(port, asked.body)
+    assert open_page(port, page).status == 200
+    assert open_page(port, home).status == 200
+    assert exchange(port, asked.body).status == 401
+  })
+}
+
+// A home minted to read is refused for a forged resume, and the session stays
+// saved: the daemon decides from the grant it holds, whatever the socket
+// forwarded.
+pub fn an_observer_homes_forged_resume_is_refused_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let session = create_session(ready, "home-observer-resume", 1008)
+    saved(ready, session)
+    let home = enter(port, home_link(port, credential, []))
+    let refused =
+      home_socket(port, home, [
+        #("x-switch-target", session),
+        #("x-resume", "task"),
+      ])
+    assert refused.status == 291
+    assert refused.body == "NotHeld"
+    assert is_saved(ready, session)
+  })
+}
+
+// An operator-ceiling page may not open a session its principal only observes,
+// from the home or from a session page, whatever the ceiling says: the daemon
+// takes the principal's own role in the target, as the control command does.
+pub fn an_observer_member_cannot_resume_from_an_operator_page_test() {
+  fixture_with(Switching, fn(ready, port, _) {
+    let left = create_session(ready, "resume-left", 1009)
+    let target = create_session(ready, "resume-target", 1010)
+    let credential = member(ready, "ui-observer-of", left, access.Operator)
+    also_holds(ready, "ui-observer-of", target, access.Observer)
+    saved(ready, target)
+    let operator = [#("page", json.String("operator"))]
+    let home = enter(port, home_link(port, credential, operator))
+    let from_home =
+      home_socket(port, home, [
+        #("x-switch-target", target),
+        #("x-resume", "task"),
+      ])
+    assert from_home.status == 291
+    assert from_home.body == "NotOperator"
+
+    let page = enter(port, operate(port, credential, left))
+    let from_page = ask_with(port, page, target, [#("x-resume", "task")])
+    assert from_page.status == 291
+    assert from_page.body == "NotOperator"
+    assert is_saved(ready, target)
+  })
+}
+
+// An observer's session page has no resume at all: the socket's gate refuses
+// before the daemon is asked, in the words for a session not held.
+pub fn an_observer_session_page_cannot_resume_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let left = create_session(ready, "observer-page", 1011)
+    let target = create_session(ready, "observer-target", 1012)
+    saved(ready, target)
+    let page = enter(port, link(port, credential, left))
+    let refused = ask_with(port, page, target, [#("x-resume", "task")])
+    assert refused.status == 291
+    assert refused.body == "NotHeld"
+    assert is_saved(ready, target)
+  })
+}
+
+// A home that has ended but whose socket is still up resumes nothing.
+pub fn an_ended_home_resumes_nothing_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let session = create_session(ready, "ended-resume", 1013)
+    saved(ready, session)
+    let home = enter(port, operator_home(port, credential))
+    let refused =
+      home_socket(port, home, [
+        #("x-switch-target", session),
+        #("x-resume", "task"),
+        #("x-switch-ended", "yes"),
+      ])
+    assert refused.status == 291
+    assert refused.body == "NotHeld"
+    assert is_saved(ready, session)
+  })
 }

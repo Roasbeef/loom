@@ -8,9 +8,12 @@
 //// session that can be opened is a button whose one handler sends the
 //// message its caller gave, naming that row's session. A row is a button only
 //// where pressing it can work: a session that a process runs and that is not
-//// the one on screen. The session on screen and a saved session are text, so
-//// the sidebar never offers a press the daemon would refuse or that would do
-//// nothing. The session named by a button's message is the catalogue's
+//// the one on screen, or a saved one on a page that may resume it
+//// (`view/resume`, protocol-change/065, the third pull request). The session
+//// on screen is text, and so is a saved session elsewhere, so the sidebar
+//// never offers a press the daemon would refuse or that would do nothing.
+//// While a resume is out its row reads "opening" and every other saved row is
+//// text. The session named by a button's message is the catalogue's
 //// identity, drawn when the tree was, and never a value the browser sends.
 ////
 //// The sidebar is the second child of the page's frame (`view/shell`),
@@ -64,7 +67,8 @@ import lustre/element/html
 import lustre/event
 import session_view/agent_view
 import session_view/turns
-import web_view/sessions.{type Entry, type Group, Live, Saved}
+import web_view/sessions.{type Entry, type Group, Blocked, Live, Saved}
+import web_view/view/resume.{type Resume}
 import web_view/view/strip
 
 /// One live strand's bar on the current row: its hue and whether it is
@@ -121,55 +125,64 @@ fn pulse(status: agent_view.Status) -> Pulse {
 }
 
 /// The sidebar for `groups`, with the session named `current` marked, the
-/// current session's strand `bars`, and `open` the message a press of another
-/// live session's row sends, given that session's identity.
+/// current session's strand `bars`, `open` the message a press of another
+/// live session's row sends, given that session's identity, and `resume` what
+/// the page offers for a saved session's row.
 ///
 /// With no group it is `element.none()`, so a page whose daemon listed
 /// nothing, or could not, draws no empty column. The result is memoized on
 /// the groups, the identity and the bars, so a page that re-read an unchanged
-/// list diffs nothing. `open` is not part of the memo's key, so a caller
-/// passes the same function every time, as a constructor is.
+/// list diffs nothing. `open` and the resume's `press` are not part of the
+/// memo's key, so a caller passes the same functions every time, as a
+/// constructor is; the session whose resume is out is, so its row changes when
+/// the resume starts and when it ends.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // sidebar.view(component.session_groups(model), component.session_id(model), [], Opening)
+/// // sidebar.view(component.session_groups(model), component.session_id(model), [], Opening, resume.Never)
 /// ```
 pub fn view(
   groups: List(Group),
   current: String,
   bars: List(Bar),
   open: fn(String) -> message,
+  resume: Resume(message),
 ) -> Element(message) {
   use <- element.memo([
     element.ref(groups),
     element.ref(current),
     element.ref(bars),
+    element.ref(resume.pending(resume)),
   ])
-  column(groups, element.none(), current, bars, open)
+  column(groups, element.none(), current, bars, open, resume)
 }
 
 /// The sidebar the home page draws (protocol-change/065): the same groups, with
 /// a "Home" entry in the navigation slot marked as the page on screen. No row
 /// names a session as current, so every running session's row is a button
 /// whose message is `open` applied to that session's identity, and a saved
-/// session's row is text. The "Home" entry is text. Every handler is therefore
+/// session's row is what `resume` says. The "Home" entry is text. Every handler is therefore
 /// beneath the sidebar's own path (`home.sidebar_path`), which is the one place
 /// the home's socket admits a click on this column.
 ///
-/// With no group it is `element.none()`, as `view` is. `open` is not part of
-/// the memo's key, as in `view`.
+/// With no group it is `element.none()`, as `view` is. `open` and the
+/// resume's `press` are not part of the memo's key, as in `view`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // sidebar.home(home.groups(model), Opening)
+/// // sidebar.home(home.groups(model), Opening, resume.Never)
 /// ```
 pub fn home(
   groups: List(Group),
   open: fn(String) -> message,
+  resume: Resume(message),
 ) -> Element(message) {
-  use <- element.memo([element.ref(groups)])
+  use <- element.memo([
+    element.ref(groups),
+    element.ref(resume.pending(resume)),
+  ])
   let lead =
     html.p(
       [
@@ -178,7 +191,7 @@ pub fn home(
       ],
       [html.text("Home")],
     )
-  column(groups, lead, "", [], open)
+  column(groups, lead, "", [], open, resume)
 }
 
 // The column itself: its title, the navigation slot, and one section per
@@ -190,6 +203,7 @@ fn column(
   current: String,
   bars: List(Bar),
   open: fn(String) -> message,
+  resume: Resume(message),
 ) -> Element(message) {
   case groups {
     [] -> element.none()
@@ -203,7 +217,7 @@ fn column(
         [
           html.h2([attribute.class("sidebar-title")], [html.text("Sessions")]),
           nav,
-          ..list.map(groups, group(_, current, bars, open))
+          ..list.map(groups, group(_, current, bars, open, resume))
         ],
       )
   }
@@ -214,6 +228,7 @@ fn group(
   current: String,
   bars: List(Bar),
   open: fn(String) -> message,
+  resume: Resume(message),
 ) -> Element(message) {
   html.section([attribute.class("workspace-group")], [
     html.h3([attribute.class("workspace"), attribute.title(group.workspace)], [
@@ -224,25 +239,30 @@ fn group(
     ]),
     html.ul(
       [attribute.class("sessions")],
-      list.map(group.entries, entry(_, current, bars, open)),
+      list.map(group.entries, entry(_, current, bars, open, resume)),
     ),
   ])
 }
 
 // One row. The session on screen is marked and is text. Another session that
-// a process runs is a button, since a page for it can be opened; a saved
-// session is text, since the daemon would refuse a ticket for it and a page
-// opened for it would have nothing to show. Only the session on screen draws
-// strand bars, between its name and its residency.
+// a process runs is a button, since a page for it can be opened. A saved
+// session is what `view/resume` says: a button on a page that may ask the
+// daemon to resume it, the words "opening" while its resume is out, and text
+// otherwise, including for a session the daemon will not resume from a page.
+// Only the session on screen draws strand bars, between its name and its
+// residency.
 fn entry(
   entry: Entry,
   current: String,
   bars: List(Bar),
   open: fn(String) -> message,
+  resume: Resume(message),
 ) -> Element(message) {
-  let residency = case entry.residency {
-    Live -> #("live", "●", "resident")
-    Saved -> #("saved", "○", "saved")
+  let kind = resume.kind(resume, entry)
+  let residency = case entry.residency, kind {
+    Live, _ -> #("live", "●", "resident")
+    Saved, resume.Opening -> #("opening", "…", "opening")
+    Saved, _ | Blocked, _ -> #("saved", "○", "saved")
   }
   let name =
     html.span([attribute.class("session-name")], [
@@ -279,7 +299,23 @@ fn entry(
           words,
         ),
       ])
-    False, Saved -> html.li([attribute.class("session")], words)
+    False, Saved | False, Blocked ->
+      case kind {
+        resume.Button(press:) ->
+          html.li([attribute.class("session")], [
+            html.button(
+              [
+                attribute.type_("button"),
+                attribute.class("session-open"),
+                attribute.title("Resume this session"),
+                event.on_click(press),
+              ],
+              words,
+            ),
+          ])
+        resume.Text | resume.Opening ->
+          html.li([attribute.class("session")], words)
+      }
   }
 }
 

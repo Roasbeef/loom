@@ -62,6 +62,7 @@ import web_view/invites
 import web_view/sessions
 import web_view/view/controls
 import web_view/view/lane
+import web_view/view/resume
 import web_view/view/share
 import web_view/view/shell
 import web_view/view/sidebar
@@ -98,6 +99,13 @@ pub type Msg(socket) {
   /// wrote. The daemon decides whether the page's principal may have it
   /// (protocol-change/051, the addendum on switching sessions).
   Opening(session: String)
+
+  /// A saved sidebar row's button: the operator asks the daemon to resume that
+  /// session and open its page (protocol-change/065, the third pull request).
+  /// The identity is the catalogue's, as for `Opening`, and the daemon checks
+  /// the page's ceiling and the principal's role in the session before it opens
+  /// anything.
+  Resuming(session: String)
 
   /// One of the invitation control's two buttons: the owner asks the daemon
   /// to invite a person to this session, in the role the button names. The
@@ -153,6 +161,7 @@ pub fn update(
     Controlled(control:) -> component.control(model, control)
     Replying(key:) -> component.reply(model, key)
     Opening(session:) -> component.switch_to(model, session)
+    Resuming(session:) -> component.resume(model, session)
     Inviting(role:) -> component.invite(model, role)
     Dismissing -> #(component.dismiss_invitation(model), effect.none())
   }
@@ -271,6 +280,7 @@ fn sidebar_place(model: component.Model(socket)) -> shell.Sidebar(Msg(socket)) {
         component.session_id(model),
         sidebar.bars(component.strip(model)),
         Opening,
+        resume.Offered(Resuming, component.resuming_session(model)),
       ))
   }
 }

@@ -19,6 +19,7 @@ import session_view/turns
 import web_view/component
 import web_view/operator_page
 import web_view/sessions.{type Entry, Entry, Live, Saved}
+import web_view/view/resume
 import web_view/view/sidebar
 
 @external(erlang, "page_events_ffi", "handlers")
@@ -263,9 +264,9 @@ pub fn an_empty_list_draws_no_sidebar_test() {
   assert !string.contains(drawn, "<aside aria-label=\"Sessions\"")
 }
 
-// The sidebar adds one handler to the operator's page for each running
-// session other than the one on screen, a click beneath its own path, and none
-// to the observer's. No row is a link or a form, and the paths the observer's
+// The sidebar adds one handler to the operator's page for each session other
+// than the one on screen that is running or saved, a click beneath its own
+// path, and none to the observer's. No row is a link or a form, and the paths the observer's
 // socket admits and the operator's composer are exactly where they were.
 pub fn the_sidebar_adds_only_its_session_buttons_test() {
   let bare =
@@ -274,13 +275,13 @@ pub fn the_sidebar_adds_only_its_session_buttons_test() {
   let listed = listed_page(listing())
   assert handlers(component.view(listed)) == handlers(component.view(bare))
 
-  // `B` is the only running session that is not on screen.
+  // `B` is running, and `C`, `D` and `E` are saved; none is on screen.
   let others = handlers(operator_page.view(bare))
   let added =
     list.filter(handlers(operator_page.view(listed)), fn(key) {
       !list.contains(others, key)
     })
-  assert list.length(added) == 1
+  assert list.length(added) == 4
   assert list.all(added, fn(key) {
     string.starts_with(key, component.sidebar_path <> "\t")
     && string.ends_with(key, "\nclick")
@@ -291,7 +292,7 @@ pub fn the_sidebar_adds_only_its_session_buttons_test() {
   assert !string.contains(sidebar, "<form")
   assert !string.contains(sidebar, "href")
   assert !string.contains(sidebar, "onclick")
-  assert list.length(string.split(sidebar, "<button")) == 2
+  assert list.length(string.split(sidebar, "<button")) == 5
 }
 
 // The markup of the sidebar alone: from its opening tag to the first closing
@@ -338,7 +339,13 @@ pub fn an_observers_page_draws_no_sidebar_test() {
 // A sidebar over `listing()` with the given bars, as the page's frame would
 // draw it, for the tests of the strand bars.
 fn sidebar_with(bars: List(sidebar.Bar)) -> Element(Nil) {
-  sidebar.view(sessions.grouped(listing(), "A"), "A", bars, fn(_) { Nil })
+  sidebar.view(
+    sessions.grouped(listing(), "A"),
+    "A",
+    bars,
+    fn(_) { Nil },
+    resume.Never,
+  )
 }
 
 // The current row draws one bar per live strand in the strand's hue, with

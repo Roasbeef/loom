@@ -73,6 +73,16 @@
 //// began from. A page a link for one session opened has `OneSession` reach and
 //// is handed no capability to go home.
 ////
+//// A saved session is opened by the same two pages, and only when the page was
+//// minted to operate (protocol-change/065, the third pull request).
+//// `resume_for` is the control command's `OpenSession` run on the page's behalf
+//// with the page's credential digest: the authority check, the registry's own
+//// open, a bounded wait for the session to become resident, and then the
+//// ticket `ticket_for` mints. The wait is long, so `resume_task` runs it in a
+//// weft run of its own and the page's runtime, which called it, returns at
+//// once; the run's last act is to hand its answer back as the message the
+//// component is waiting for.
+////
 //// ## Flow
 ////
 //// `upgrade` → `websocket` → `admit` → `start_page` → `serve` → `closing`
@@ -142,6 +152,8 @@ import web_view/invites
 import web_view/operator_page
 import web_view/page
 import web_view/sessions
+import weft
+import weft/poll
 
 /// The inbound frame limit on an operator's page socket: 12 MiB, which holds
 /// a text prompt and up to `web_view/image.max_attached_bytes` of images (8 MiB
@@ -154,6 +166,14 @@ import web_view/sessions
 /// submit: the frame, the event string, the parsed images, their decoded bytes
 /// and the re-encoding, five copies of at most 12 MiB.
 pub const operator_frame_limit = 12_582_912
+
+/// How long a page's request to resume a saved session waits for the session to
+/// become resident, in milliseconds. A session that is not resident by then is
+/// refused in the fixed words and no ticket is minted, though the registry may
+/// still finish the open and the session then shows as running on the next
+/// read. Thirty seconds is a terminal's patience for the same open, and the
+/// bound is on the wait and not on the open, which the registry owns.
+pub const resume_wait_ms = 30_000
 
 // How long a request for an image waits for the component's answer, in
 // milliseconds. The component answers from a lane it holds in memory, so a
@@ -547,6 +567,9 @@ pub fn upgrade_home(
       daemon,
       attachment,
       fn(target) { ticket_for(standing, tickets, open, target) },
+      fn(target, deliver) {
+        resume_task(standing, tickets, open, target, deliver)
+      },
       open,
       ceiling,
       signals,
@@ -615,6 +638,7 @@ fn admit_home(
   daemon: root.Root(instance),
   attachment: server.HomeAttachment(instance),
   opening: fn(String) -> sessions.Answer,
+  resuming: fn(String, fn(sessions.Answer) -> Nil) -> Nil,
   open: fn() -> Result(Int, Nil),
   ceiling: access.Role,
   signals: process.Subject(Signal),
@@ -633,6 +657,7 @@ fn admit_home(
         })
       },
       open: opening,
+      resume: resuming,
     )
   let started = case transferred {
     Error(reason) -> {
@@ -826,6 +851,11 @@ fn admit(
       open: fn(target) {
         opened_for(role, fn() { ticket_for(standing, tickets, open, target) })
       },
+      resume: fn(target, deliver) {
+        resumed_for(role, deliver, fn() {
+          resume_task(standing, tickets, open, target, deliver)
+        })
+      },
       invite:,
       home: home_capability(reach, fn() {
         home_ticket_for(standing, tickets, open)
@@ -970,6 +1000,33 @@ pub fn opened_for(role: Role, ask: fn() -> sessions.Answer) -> sessions.Answer {
   case role {
     Observing -> sessions.Declined(sessions.NotHeld)
     Operating | Owning -> ask()
+  }
+}
+
+/// Starts the resume of a saved session for an operator's page, and answers a
+/// refusal for an observer's without starting anything. `start` is the task
+/// that does the work and `deliver` is where the refusal goes.
+///
+/// As `opened_for`, this is the third independent layer for an observer's page:
+/// the observer's view draws no sidebar and its message type has no resume, its
+/// socket drops every click beneath the sidebar, and the daemon refuses here.
+/// The refusal is `NotHeld`, the words for a session the principal does not
+/// hold, so a page learns nothing about sessions it may not open.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.resumed_for(Observing, deliver, start)
+/// ```
+@internal
+pub fn resumed_for(
+  role: Role,
+  deliver: fn(sessions.Answer) -> Nil,
+  start: fn() -> Nil,
+) -> Nil {
+  case role {
+    Observing -> deliver(sessions.Declined(sessions.NotHeld))
+    Operating | Owning -> start()
   }
 }
 
@@ -1200,6 +1257,180 @@ pub fn ticket_for(
     Ok(issued) -> sessions.Ticketed(page.exchange_path(target, issued.ticket))
     Error(reason) -> sessions.Declined(reason)
   }
+}
+
+/// Resumes a saved session for the asking page's principal and mints a ticket
+/// for the page it opens, waiting at most `within` milliseconds for the session
+/// to become resident, or gives the reason there is no ticket
+/// (protocol-change/065, the third pull request). It blocks the calling process
+/// for the wait, so a page's component never calls it directly: `resume_task`
+/// runs it in a run of its own.
+///
+/// It is the control command's `OpenSession` (`client/daemon/server`) made on
+/// the page's behalf. Each step is the daemon's and is made afresh, with the
+/// digest of the credential the page was admitted under, and none is taken from
+/// the page:
+///
+/// 0. The asking page must still be open (`open` answers its deadline). That is
+///    also the page's epoch: a page's UI session lives in this daemon's memory,
+///    so a page that is open was admitted by this daemon and by no earlier one,
+///    which is the check the control command makes by comparing epochs.
+/// 1. The page's ceiling must be Operator. An observer-ceiling page's home and
+///    session pages are refused as a session the principal does not hold, so
+///    they learn nothing about it.
+/// 2. `target` must be a canonical session identity, and
+///    `manager.session_authority` must find the principal Owner or Operator in
+///    it. An observer member gets `NotOperator`, the words the control command's
+///    own refusal ("forbidden") has, and a principal with no membership gets
+///    `NotHeld` as `ticket_for` does.
+/// 3. `manager.open` is the registry turn `sessions.open` runs: capacity, a
+///    reserved creation, an archived session, the domain slot. Any refusal is
+///    `NotOpened`, and its detail stays in the daemon.
+/// 4. The registry is read until the session is resident, for at most `within`.
+///    A session still opening is waited for. A session that stops being
+///    openable (back to saved, stopping, blocked) or an unreadable registry
+///    ends the wait at once, and a wait that runs out is `NotOpened` too: no
+///    ticket exists for a session that did not open in time.
+/// 5. `ticket_for` mints as it does for a switch, after checking the page,
+///    membership and residency a second time, since the wait was long.
+///
+/// A ticket that `ticket_for` would refuse as `NotRunning` is `NotOpened` here:
+/// the session was resident a moment ago and is not now.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.resume_for(standing, tickets, open, target, within: 30_000)
+/// ```
+@internal
+pub fn resume_for(
+  standing: Standing(instance),
+  tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
+  target: String,
+  within within: Int,
+) -> sessions.Answer {
+  let outcome = {
+    use _ <- result.try(open() |> result.replace_error(sessions.NotHeld))
+    use _ <- result.try(operating_ceiling(standing.ceiling))
+    use _ <- result.try(
+      ids.parse_session_id(target) |> result.replace_error(sessions.NotHeld),
+    )
+    use #(_, authority) <- result.try(
+      manager.session_authority(standing.registry, standing.digest, target)
+      |> result.map_error(not_held),
+    )
+    use _ <- result.try(operating_authority(authority))
+    use _ <- result.try(
+      manager.open(standing.registry, target)
+      |> result.replace_error(sessions.NotOpened),
+    )
+    resident_within(standing.registry, target, within)
+  }
+  case outcome {
+    Error(reason) -> sessions.Declined(reason)
+    Ok(Nil) ->
+      case ticket_for(standing, tickets, open, target) {
+        sessions.Declined(sessions.NotRunning) ->
+          sessions.Declined(sessions.NotOpened)
+        answer -> answer
+      }
+  }
+}
+
+// Only a page minted to operate may ask the daemon to run a session. The
+// refusal is the one for a session the principal does not hold, as an
+// observer's switch is refused.
+fn operating_ceiling(ceiling: access.Role) -> Result(Nil, sessions.Reason) {
+  case ceiling {
+    access.Operator -> Ok(Nil)
+    access.Observer -> Error(sessions.NotHeld)
+  }
+}
+
+// The control command's own role check for an open: Owner or Operator.
+fn operating_authority(
+  authority: access.Authority,
+) -> Result(Nil, sessions.Reason) {
+  case authority {
+    access.Owner | access.Participant(access.Operator) -> Ok(Nil)
+    access.Participant(access.Observer) -> Error(sessions.NotOperator)
+  }
+}
+
+// Reads the registry until `target` is resident or the wait ends, by
+// `weft/poll`. A status that cannot become resident without a new request ends
+// the wait at once rather than burning the budget on it.
+fn resident_within(
+  registry: manager.Manager(instance),
+  target: String,
+  within: Int,
+) -> Result(Nil, sessions.Reason) {
+  let outcome =
+    poll.until(within:, every: 50, attempt: fn() {
+      case manager.get(registry, target) {
+        Error(_) -> poll.Fail(sessions.NotOpened)
+        Ok(view) ->
+          case view.status {
+            manager.Resident(_) -> poll.Done(Nil)
+            manager.Opening(_) -> poll.Retry
+            manager.Reserved
+            | manager.Saved
+            | manager.Stopping(_)
+            | manager.RecoveryBlocked(_) -> poll.Fail(sessions.NotOpened)
+          }
+      }
+    })
+  case outcome {
+    poll.Answered(Nil) -> Ok(Nil)
+    poll.Failed(reason) -> Error(reason)
+    poll.Expired -> Error(sessions.NotOpened)
+  }
+}
+
+/// Starts `resume_for` in a run of its own and returns at once, so the page's
+/// runtime is free while a session starts; `deliver` is called, from that run,
+/// with the answer, whatever it is.
+///
+/// The run is a weft run with one task, linked to the calling process, which
+/// is the page's runtime: a page that goes away cancels the wait, and the open
+/// it already asked for finishes on the registry's own custody as any open
+/// does. The task's last act is `deliver`, so a page that stays open is always
+/// answered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.resume_task(standing, tickets, open, target, deliver)
+/// ```
+@internal
+pub fn resume_task(
+  standing: Standing(instance),
+  tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
+  target: String,
+  deliver: fn(sessions.Answer) -> Nil,
+) -> Nil {
+  // The run has no deadline of its own. Every step of `resume_for` is bounded
+  // by its own call timeouts (the wait by `resume_wait_ms`, each registry call
+  // by its own few seconds), so the task always answers within about a minute;
+  // a deadline could only kill a task that would have answered. The link to
+  // the runtime still cancels it when the page goes away.
+  let _ =
+    weft.new([
+      fn() {
+        deliver(resume_for(
+          standing,
+          tickets,
+          open,
+          target,
+          within: resume_wait_ms,
+        ))
+        Ok(Nil)
+      },
+    ])
+    |> weft.start_witnessed
+  Nil
 }
 
 /// The daemon's answer to an owner's page asking to invite a person to the
@@ -1452,7 +1683,8 @@ fn running(status: manager.Status) -> Result(Nil, sessions.Reason) {
 }
 
 /// One catalogue view as the sidebar's entry: the identity, name, workspace
-/// and creation time, and whether a process runs the session. The database
+/// and creation time, whether a process runs the session and, for one that
+/// does not, whether a page may ask the daemon to resume it. The database
 /// path, the request key and the configuration reference the registration
 /// also holds have no place in an entry, so none reaches a page.
 ///
@@ -1472,8 +1704,8 @@ pub fn listed_entry(view: manager.View) -> sessions.Entry {
     residency: case view.status {
       manager.Opening(..) | manager.Resident(..) | manager.Stopping(..) ->
         sessions.Live
-      manager.Reserved | manager.Saved | manager.RecoveryBlocked(..) ->
-        sessions.Saved
+      manager.Saved -> sessions.Saved
+      manager.Reserved | manager.RecoveryBlocked(..) -> sessions.Blocked
     },
   )
 }

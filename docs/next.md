@@ -1330,9 +1330,16 @@ each invitation is a durable membership the owner can revoke.
 submit's decode chain holds at once. A change to the frame limit changes the
 reservation with it.
 
-**Operator surfaces do not open saved sessions.** The CLI and the terminal
-use the membership- and epoch-checked control protocol, and a
-listing is never permission to activate a saved target.
+**A listing is never permission to open a saved session; the control
+command's own checks are.** The CLI and the terminal use the membership- and
+epoch-checked control protocol, and a listing is never permission to activate a
+saved target. This ruling used to read "operator surfaces do not open saved
+sessions". The owner lifted the second half on 2026-10-03 for pages minted to
+operate, and protocol-change/065's third addendum (2026-10-04) implements it: a
+web page's press runs `OpenSession`'s own authority check (Owner or Operator in
+the target), the registry's own open and a bounded wait, in the daemon, and an
+observer-ceiling page or an observer member is refused. The listing still
+grants nothing; the principal's role in the target does.
 
 ## Deliberately open and carried forward
 

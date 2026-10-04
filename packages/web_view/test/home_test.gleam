@@ -6,8 +6,9 @@
 //// saved are told apart in words, that every catalogue field is drawn as
 //// escaped text, that the only handlers are a running session's row beneath the
 //// two regions the socket admits and that a press asks the daemon for a ticket,
-//// when the page reads its list, and how a page that can no longer be served
-//// ends.
+//// which saved rows are presses at which ceiling and what a resume does and
+//// refuses, when the page reads its list, and how a page that can no longer be
+//// served ends.
 
 import gleam/erlang/process.{type Subject}
 import gleam/list
@@ -17,7 +18,7 @@ import lustre/element.{type Element}
 import web_view/ending
 import web_view/home
 import web_view/page
-import web_view/sessions.{type Entry, Entry, Live, Saved}
+import web_view/sessions.{type Entry, Blocked, Entry, Live, Saved}
 import web_view/view/home_table
 
 @external(erlang, "page_events_ffi", "handlers")
@@ -50,6 +51,7 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     refresh_ms: 5,
     sessions: read,
     open: fn(_) { sessions.Declined(sessions.NotHeld) },
+    resume: fn(_, _) { Nil },
   )
 }
 
@@ -169,34 +171,134 @@ pub fn the_page_escapes_what_the_catalogue_holds_test() {
   assert string.contains(html, "/src/&lt;x&gt;")
 }
 
-// Two running sessions, `A` and `B`, are the only rows with a press: each is a
-// button in the table and another in the sidebar, so four handlers in all, each
-// a click beneath one of the two regions the daemon's socket admits, at either
-// ceiling. A saved session's row is text, and nothing is a link or a form.
-pub fn only_running_rows_carry_a_press_beneath_the_two_regions_test() {
-  let #(operator, _) = opened(start())
+// On a page minted to read, two running sessions, `A` and `B`, are the only
+// rows with a press: each is a button in the table and another in the sidebar,
+// so four handlers in all, each a click beneath one of the two regions the
+// daemon's socket admits. A saved session's row is text, and nothing is a link
+// or a form.
+pub fn an_observer_homes_only_running_rows_carry_a_press_test() {
   let #(observer, _) =
     opened(start_with(home.ObserverCeiling, fn() { home.Listed(listing()) }))
-  list.each([operator, observer], fn(model) {
-    let keys = handlers(home.view(model))
-    assert list.length(keys) == 4
-    assert list.all(keys, fn(key) {
-      string.ends_with(key, "\nclick")
-      && {
-        string.starts_with(key, home.table_path <> "\t")
-        || string.starts_with(key, home.sidebar_path <> "\t")
-      }
-    })
-    assert list.length(
-        list.filter(keys, string.starts_with(_, home.table_path <> "\t")),
-      )
-      == 2
-    let html = element.to_string(home.view(model))
-    assert list.length(string.split(html, "<button")) == 5
-    assert !string.contains(html, "<a ")
-    assert !string.contains(html, "<form")
-    assert !string.contains(html, "href")
-  })
+  let keys = handlers(home.view(observer))
+  assert list.length(keys) == 4
+  assert list.all(keys, beneath_the_two_regions)
+  assert list.length(
+      list.filter(keys, string.starts_with(_, home.table_path <> "\t")),
+    )
+    == 2
+  let html = element.to_string(home.view(observer))
+  assert list.length(string.split(html, "<button")) == 5
+  assert !string.contains(html, "<a ")
+  assert !string.contains(html, "<form")
+  assert !string.contains(html, "href")
+}
+
+fn beneath_the_two_regions(key: String) -> Bool {
+  string.ends_with(key, "\nclick")
+  && {
+    string.starts_with(key, home.table_path <> "\t")
+    || string.starts_with(key, home.sidebar_path <> "\t")
+  }
+}
+
+// On a page minted to operate, the two saved sessions `C` and `D` are presses
+// too, in the table and in the sidebar, beneath the same two regions, so the
+// socket admits nothing new. A session that is `Blocked` is text at either
+// ceiling.
+pub fn an_operator_home_presses_saved_rows_too_test() {
+  let with_blocked = [
+    entry("E", "stuck", "/src/notes", 1, Blocked),
+    ..listing()
+  ]
+  let #(operator, _) =
+    opened(start_with(home.OperatorCeiling, fn() { home.Listed(with_blocked) }))
+  let keys = handlers(home.view(operator))
+  assert list.length(keys) == 8
+  assert list.all(keys, beneath_the_two_regions)
+  let html = element.to_string(home.view(operator))
+  assert list.length(string.split(html, "<button")) == 9
+  assert string.contains(html, "title=\"Resume this session\"")
+  assert string.contains(html, "stuck")
+
+  let #(observer, _) =
+    opened(start_with(home.ObserverCeiling, fn() { home.Listed(with_blocked) }))
+  assert list.length(handlers(home.view(observer))) == 4
+}
+
+// A resume press hands the session to the daemon's task and returns: the row
+// reads "opening", no saved row has a press while it is out, and a second press
+// asks nothing, even one that names another saved row.
+pub fn a_resume_marks_its_row_and_a_second_press_asks_nothing_test() {
+  let asked = process.new_subject()
+  let #(model, _) =
+    opened(home.Start(..start(), resume: fn(id, _) { process.send(asked, id) }))
+  let model = run(model, home.Resuming("C"))
+  assert process.receive(asked, 0) == Ok("C")
+  let html = drawn(model)
+  assert string.contains(html, "opening")
+  assert string.contains(html, "It may take a moment.")
+
+  // Only the two running rows keep a press, in each region.
+  assert list.length(handlers(home.view(model))) == 4
+
+  let model = run(model, home.Resuming("D"))
+  let model = run(model, home.Resuming("C"))
+  assert process.receive(asked, 0) == Error(Nil)
+  assert list.length(handlers(home.view(model))) == 4
+}
+
+// The task's answer arrives as a message from the task's own process: a ticket
+// becomes the address the hidden element navigates to and clears the pending
+// row, and a refusal is the reason's fixed words with the presses restored.
+pub fn the_tasks_answer_departs_or_words_the_refusal_test() {
+  let ticket = "/ui/sessions/C?ticket=t"
+  let #(model, _) =
+    opened(
+      home.Start(..start(), resume: fn(_, deliver) {
+        deliver(sessions.Ticketed(ticket))
+      }),
+    )
+  let model = run(model, home.Resuming("C"))
+  let html = drawn(model)
+  assert string.contains(html, "to=\"" <> ticket <> "\"")
+  assert !string.contains(html, "<span class=\"residency opening\"")
+  assert list.length(handlers(home.view(model))) == 8
+
+  let #(model, _) =
+    opened(
+      home.Start(..start(), resume: fn(_, deliver) {
+        deliver(sessions.Declined(sessions.NotOpened))
+      }),
+    )
+  let model = run(model, home.Resuming("C"))
+  let html = drawn(model)
+  assert string.contains(html, sessions.reason_words(sessions.NotOpened))
+  assert !string.contains(html, " to=")
+  assert list.length(handlers(home.view(model))) == 8
+}
+
+// A page minted to read has no resume to ask for, even if a frame named a
+// saved row: the update drops the message. A page that ended asks nothing
+// either.
+pub fn a_resume_is_dropped_on_an_observer_or_ended_page_test() {
+  let asked = process.new_subject()
+  let ask = fn(id, _) { process.send(asked, id) }
+  let #(observer, _) =
+    opened(
+      home.Start(
+        ..start_with(home.ObserverCeiling, fn() { home.Listed(listing()) }),
+        resume: ask,
+      ),
+    )
+  let observer = run(observer, home.Resuming("C"))
+  assert process.receive(asked, 0) == Error(Nil)
+  assert !string.contains(drawn(observer), "Opening that session")
+
+  let #(operator, _) = opened(home.Start(..start(), resume: ask))
+  let ended = run(operator, home.Answered(home.Closed(ending.AccessRevoked)))
+  let ended = run(ended, home.Resuming("C"))
+  assert process.receive(asked, 0) == Error(Nil)
+  assert !string.contains(drawn(ended), "Opening that session")
 }
 
 // A press asks the daemon to open the row's session in the component's own

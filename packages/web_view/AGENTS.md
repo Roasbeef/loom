@@ -83,12 +83,12 @@ page keys and nonces, and the relay into the session's gateway.
   strand it was held for when that is not the one on screen.
 - **The home page** (protocol-change/065). `web_view/home` is a server
   component bound to no session: `Start(name, ceiling, refresh_ms, sessions,
-  open)` with `sessions: fn() -> Listing` (`Listed(entries) | Unread |
+  open, resume)` with `sessions: fn() -> Listing` (`Listed(entries) | Unread |
   Closed(ending)`), read when the timer is wired and every `refresh_ms`
   (`home.refresh_ms`, 30 s), in the component's process. `Closed` ends the page
   (`Status`: `Connecting | Connected | Ended`) and stops the reads; `Unread`
   keeps the last list. The view is `shell.view(shell.Home, ...)`:
-  `view/home_bar`, `sidebar.home(groups, open)` (a "Home" entry, then the rows),
+  `view/home_bar`, `sidebar.home(groups, open, resume)` (a "Home" entry, then the rows),
   `view/home_table` (a table per workspace: name, resident or saved in words,
   created in UTC) and no panel; the stylesheet hides the panel column for the
   frame class `loom-home`. `view/switch.view(address)` draws the hidden
@@ -98,15 +98,22 @@ page keys and nonces, and the relay into the session's gateway.
   attribute of the centre's last child, a hidden `<loom-switch>`, or the
   `home-notice` before the table (an empty node when none, so the table keeps
   its path). `home.table_path` and `home.sidebar_path` are the two regions the
-  daemon's socket admits a click beneath; saved rows are text.
+  daemon's socket admits a click beneath. A saved row is a button only on an
+  `OperatorCeiling` page (`view/resume`): `home.Resuming(id)` calls
+  `Start.resume(id, deliver)`, which starts the daemon's task and returns, sets
+  `resuming` and draws the row "opening"; `deliver` dispatches `Linked` from
+  the task. A second press, an observer ceiling and an ended page ask nothing.
   `ending.home_headline` and
   `home_advice`, `ended.home`, `page.home_shell`, `home_path`,
   `home_exchange_path`, `home_refusal` word and address it. `home_test` reads
   all of it.
 - **The session sidebar.** `web_view/sessions` holds `Entry`, `Residency`
-  (`Live | Saved`), `Group` and `grouped(entries, current)` (the current
+  (`Live | Saved | Blocked`; `Blocked` is a saved row no page may resume),
+  `Group` and `grouped(entries, current)` (the current
   session's workspace first, then by newest session, sessions newest first,
-  ties by identity and path). `view/sidebar.view(groups, current, bars, open)`
+  ties by identity and path). `view/resume` is the one rule for a saved row
+  (`Never | Offered(press, pending)`, `kind` giving `Text | Button | Opening`),
+  shared by the sidebar and the home's table. `view/sidebar.view(groups, current, bars, open, resume)`
   draws it as the frame's second child (`aside.sidebar`, the left column;
   `element.none()` where a page draws none), memoized on the groups, the
   identity and the bars. `bars` is `sidebar.bars(component.strip(model))`: one
@@ -115,7 +122,10 @@ page keys and nonces, and the relay into the session's gateway.
   no handler). A `nav()` child, `element.none()` today, sits before the first
   group for the app's navigation. A row for a running
   session other than the one on screen is a `button.session-open` whose
-  message is `open(id)`; the current row and a saved session are text. A workspace is a
+  message is `open(id)`; a saved session is one whose message is the resume's
+  `press(id)` on an operator page (`operator_page.Resuming`, which
+  `component.resume` handles through `Transport.resume`); the current row is
+  text, and so is a saved row while another resume is out. A workspace is a
   section whose label the stylesheet draws as a small uppercase eyebrow with
   the session count, and a hairline in the divider colour separates one
   section from the next (team feedback, 2026-09-29); the list's own heading

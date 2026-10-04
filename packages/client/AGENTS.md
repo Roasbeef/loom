@@ -299,6 +299,17 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   on any refusal). The home's socket takes a click beneath `home.table_path` or
   `home.sidebar_path` (`home_accepts`) and its `Start.open` is `ticket_for` with
   the home's `Standing`.
+  A saved session opens through `resume_for(standing, tickets, open, target,
+  within:)` (protocol-change/065, the third addendum): the page open, ceiling
+  Operator, a canonical identity, `session_authority` Owner or Operator
+  (`NotOperator` for an observer member), `manager.open` (any refusal is
+  `NotOpened`), a `weft/poll` over `manager.get` until `Resident` for at most
+  `resume_wait_ms` (30 s), then `ticket_for`. `resume_task` runs it in a weft
+  run of its own (one task, no deadline, `start_witnessed`, linked
+  to the Lustre runtime that called) and returns at once; the task's last act
+  is `deliver(answer)`, which the component dispatches as `Linked`. `resumed_for`
+  is the socket's gate: an observer role is refused `NotHeld` before any task.
+  `listed_entry` maps `Reserved` and `RecoveryBlocked` to `sessions.Blocked`.
   `ui.link` and a switch build the exchange path with `page.exchange_path`.
   An owner's operator page can also invite (protocol-change/051, the addendum
   on inviting from the session page). `ui_socket.Role` has a third value,
