@@ -263,6 +263,14 @@ page keys and nonces, and the relay into the session's gateway.
   per row and ends a cut row with one line saying so. The rows are memoized per
   line (`fold_row.line_row`). Session text is drawn as text nodes: a program is
   a Markdown code block, so a `<pre><code>` holding text.
+- **Diffs.** Every diff the page draws goes through `view/diff`: the opened
+  edit step (a `ToolPatch` line, drawn by `lane.line_element`) and the Changes
+  tab. `session_view/diff_view` reads the text into lines of a closed kind and
+  `view/diff` draws each as its own row: the old and new numbers in a quiet
+  gutter, the sign, and the text in a span, all text nodes. Added lines are
+  green with a green `+`, removed red with a red `−`, a hunk header sits in a
+  quiet band. The box scrolls sideways and never wraps. A diff is cut at
+  `diff_view.max_lines` with `n more lines not shown`.
 - **Prompts, spawns, results and reviews.** A person's message is
   `turns.Prompt`: `lane` draws its sender as a line of its own (`<span
   class="who-name">Owner</span> · operator`) above the words in a bubble. The

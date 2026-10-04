@@ -106,19 +106,24 @@ pub fn rows_carry_a_class_from_their_kind_and_their_text_test() {
       ]),
     )
 
+  // Each line is its own element, its class from its kind, with the old and
+  // new line numbers in a gutter, the sign, and the text in a span.
   assert string.contains(
     html,
-    "<div class=\"diff-row diff-hunk\">@@ -1 +1 @@</div>",
+    "<div class=\"diff-row diff-hunk\"><span class=\"diff-text\">@@ -1 +1 @@</span></div>",
   )
   assert string.contains(
     html,
-    "<div class=\"diff-row diff-context\"> same</div>",
+    "<div class=\"diff-row diff-context\"><span class=\"diff-num\">1</span><span class=\"diff-num\">1</span><span class=\"diff-sign\"> </span><span class=\"diff-text\">same</span></div>",
   )
   assert string.contains(
     html,
-    "<div class=\"diff-row diff-removed\">-old</div>",
+    "<div class=\"diff-row diff-removed\"><span class=\"diff-num\">2</span><span class=\"diff-num\"></span><span class=\"diff-sign\">−</span><span class=\"diff-text\">old</span></div>",
   )
-  assert string.contains(html, "<div class=\"diff-row diff-added\">+new</div>")
+  assert string.contains(
+    html,
+    "<div class=\"diff-row diff-added\"><span class=\"diff-num\"></span><span class=\"diff-num\">2</span><span class=\"diff-sign\">+</span><span class=\"diff-text\">new</span></div>",
+  )
 }
 
 pub fn a_path_and_a_row_are_only_ever_text_nodes_test() {
@@ -133,7 +138,7 @@ pub fn a_path_and_a_row_are_only_ever_text_nodes_test() {
     )
 
   assert string.contains(html, "&lt;img src=x onerror=alert(1)&gt;")
-  assert string.contains(html, "+&lt;script&gt;alert(1)&lt;/script&gt;")
+  assert string.contains(html, "&lt;script&gt;alert(1)&lt;/script&gt;")
   assert !string.contains(html, "<img")
   assert !string.contains(html, "<script")
   assert !string.contains(html, "onmouseover=\"x\"")
@@ -223,7 +228,7 @@ pub fn a_diff_on_a_page_is_escaped_text_test() {
   let model = page([lane_fixture.edited([#("<b>x</b>.gleam", diff)])])
 
   list.each([operator(model), observer(model)], fn(html) {
-    assert string.contains(html, "+&lt;script&gt;alert(1)&lt;/script&gt;")
+    assert string.contains(html, "&lt;script&gt;alert(1)&lt;/script&gt;")
     assert string.contains(html, "&lt;b&gt;x&lt;/b&gt;.gleam")
     assert !string.contains(html, "<script")
     assert !string.contains(html, "<b>x")
@@ -250,8 +255,9 @@ pub fn the_section_stays_within_a_fixed_size_test() {
   let assert Ok(#(section, _)) =
     string.split_once(from, "<section aria-label=\"Session\"")
   // The board holds `max_rows` rows of at most `max_row_characters`
-  // characters, plus the markup around each row and each file.
-  assert string.length(section) < 220_000
+  // characters, plus the markup around each row (a gutter and a sign) and
+  // each file.
+  assert string.length(section) < 420_000
   assert list.length(string.split(section, "diff-row")) - 1
     == changes_view.max_rows
   assert string.contains(section, "36 more files not shown")

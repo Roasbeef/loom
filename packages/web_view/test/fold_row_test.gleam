@@ -296,3 +296,58 @@ pub fn a_figure_and_an_unnamed_subject_draw_no_subject_span_test() {
   assert string.contains(html, "<span class=\"verb\">Checked context</span>")
   assert !string.contains(html, "None")
 }
+
+pub fn an_opened_edit_draws_its_diff_a_line_at_a_time_in_colour_test() {
+  let patch =
+    Line(
+      transcript_line.ToolPatch,
+      "@@ -4,2 +4,2 @@\n keep <b>\n-old\n+new\n\\ No newline at end of file",
+    )
+  let html =
+    drawn([
+      work([
+        step(Words("Edit", Mono("calc.py"), Some(Change(1, 1))), turns.Done, [
+          patch,
+        ]),
+      ]),
+    ])
+  assert string.contains(html, "<div class=\"diff\">")
+  assert string.contains(
+    html,
+    "<div class=\"diff-row diff-hunk\"><span class=\"diff-text\">@@ -4,2 +4,2 @@</span></div>",
+  )
+  assert string.contains(
+    html,
+    "<div class=\"diff-row diff-removed\"><span class=\"diff-num\">5</span><span class=\"diff-num\"></span><span class=\"diff-sign\">−</span><span class=\"diff-text\">old</span></div>",
+  )
+  assert string.contains(
+    html,
+    "<div class=\"diff-row diff-added\"><span class=\"diff-num\"></span><span class=\"diff-num\">5</span><span class=\"diff-sign\">+</span><span class=\"diff-text\">new</span></div>",
+  )
+  assert string.contains(html, "diff-row diff-note")
+
+  // The file's own text is a text node, and the patch is not drawn as one
+  // preformatted block.
+  assert string.contains(html, "keep &lt;b&gt;")
+  assert !string.contains(html, "<b>")
+  assert !string.contains(html, "tool-patch")
+}
+
+pub fn a_diff_past_the_bound_says_how_many_lines_it_left_out_test() {
+  let many =
+    list.repeat("+x", 430)
+    |> string.join("\n")
+  let html =
+    drawn([
+      work([
+        step(Words("Wrote", Mono("big.txt"), None), turns.Done, [
+          Line(transcript_line.ToolPatch, "@@ -0,0 +1,430 @@\n" <> many),
+        ]),
+      ]),
+    ])
+  assert count(html, "diff-row diff-added") == 399
+  assert string.contains(
+    html,
+    "<p class=\"diff-cut\">31 more lines not shown</p>",
+  )
+}

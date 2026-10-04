@@ -63,6 +63,7 @@ import session_view/transcript_lines.{type Block}
 import session_view/turns
 import web_view/image
 import web_view/markdown_view
+import web_view/view/diff
 import web_view/view/fold_row
 import web_view/view/live
 import web_view/view/strip
@@ -862,6 +863,9 @@ fn thumbnail(session: String, ref: String, position: Int) -> Element(message) {
 
 fn line_element(line: Line) -> Element(message) {
   case body_of(line.speaker) {
+    // A patch is a diff, drawn in colour a line at a time by `view/diff`.
+    Literal if line.speaker == transcript_line.ToolPatch ->
+      diff.of_text(line.text)
     Literal ->
       html.pre([attribute.class("line"), speaker_class(line.speaker)], [
         html.text(line.text),
