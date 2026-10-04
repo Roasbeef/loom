@@ -291,6 +291,17 @@ pub fn a_closed_page_draws_its_ending_and_reads_no_more_test() {
   assert home.status(model) == home.Ended(ending.AccessRevoked)
   assert process.receive(reads, 0) == Error(Nil)
   assert process.receive(timer, 20) == Error(Nil)
+
+  // The read that answers `Closed` is itself the last: it arms no timer, so
+  // no tick follows it to ask again.
+  let #(model, timer) =
+    opened(
+      start_with(home.OperatorCeiling, fn() {
+        home.Closed(ending.AccessRevoked)
+      }),
+    )
+  assert home.status(model) == home.Ended(ending.AccessRevoked)
+  assert process.receive(timer, 50) == Error(Nil)
 }
 
 // The page keeps at most the catalogue's first page of sessions.

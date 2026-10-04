@@ -213,16 +213,20 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 }
 
 // The read, and then the arming of the timer for the next one. Both are
-// one effect so that the read is made before the interval starts.
+// one effect so that the read is made before the interval starts. A read that
+// answers `Closed` arms nothing: that page has ended, so the read is its last.
 fn refreshing(model: Model) -> Effect(Msg) {
   use dispatch <- effect.from
-  dispatch(Answered(model.start.sessions()))
-  case model.timer {
-    Some(timer) -> {
+  let listing = model.start.sessions()
+  dispatch(Answered(listing))
+
+  case listing, model.timer {
+    Closed(..), _ -> Nil
+    _, None -> Nil
+    _, Some(timer) -> {
       let _ = process.send_after(timer, model.start.refresh_ms, Nil)
       Nil
     }
-    None -> Nil
   }
 }
 
