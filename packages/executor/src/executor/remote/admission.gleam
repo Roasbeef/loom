@@ -622,3 +622,15 @@ fn match_result(
     False -> Error(ResultConflict)
   }
 }
+
+/// Projects the validated lifetime bound for durable metadata.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(bound) = admission.capacity(2)
+/// assert admission.capacity_value(bound) == 2
+/// ```
+pub fn capacity_value(capacity: Capacity) -> Int {
+  capacity.value
+}

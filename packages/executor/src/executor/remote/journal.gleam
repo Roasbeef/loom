@@ -1,0 +1,766 @@
+//// SQLite custody for one exact executor scope, before any native action.
+////
+//// A weft actor owns each connection. Every operation takes SQLite's immediate
+//// writer lock, reads the current version, reduces against that committed book,
+//// and commits changed evidence before replying. Independent opens therefore
+//// share SQLite's serialization point, even across VMs. A stale actor replays
+//// the bounded journal through admission, discarding every historical effect.
+////
+//// Fresh creation never replaces tables. Recovery never initializes them. The
+//// metadata binds exact scope, capacity, row count and encoded-byte count; gaps,
+//// extra rows, unknown commands and invalid transitions refuse recovery. Exact
+//// duplicates write nothing. Each retained key has at most six changed records,
+//// plus one closure record, so storage grows only with reserved lifetime slots.
+////
+//// A database error poisons and closes the connection. `Uncertain` can include
+//// a committed transition; callers must recover and inspect the original key.
+//// Timeout also means uncertainty, never definite refusal. Recovery returns no
+//// launch decisions. The live caller must apply a returned Launch at most once;
+//// this module neither launches processes nor proves native restart recovery.
+
+import executor/remote/admission
+import executor/remote/identity
+import executor/remote/journal_codec as codec
+import gleam/bit_array
+import gleam/dynamic/decode
+import gleam/erlang/process
+import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/result
+import gleam/string
+import simplifile
+import sqlight
+import weft/actor
+
+/// A serialized custody endpoint; the database connection never leaves its actor.
+pub opaque type Journal {
+  /// Only module functions construct requests and receive bounded responses.
+  Journal(
+    /// The private actor address, never a database handle or native capability.
+    subject: process.Subject(Message),
+  )
+}
+
+/// A bounded failure whose meaning never depends on caller-controlled SQL text.
+pub type Error {
+  /// Durability requires an absolute filesystem path, not a SQLite memory URI.
+  InvalidPath
+
+  /// Fresh creation found an existing filesystem path.
+  AlreadyExists
+
+  /// Recovery found no existing file; it creates no ledger.
+  Missing
+
+  /// Stored scope or capacity differs, including an unknown metadata version.
+  BindingMismatch
+
+  /// Rows, counts, bytes or reducer history fail complete validation.
+  Corrupt
+
+  /// The pure reducer refused the request without changing durable evidence.
+  Rejected(
+    /// The reducer's fixed, payload-free refusal.
+    reason: admission.AdmissionError,
+  )
+
+  /// Database or reply failure; a write may have committed. Recover exact evidence.
+  Uncertain
+
+  /// The endpoint was released or poisoned; reopen through recovery.
+  Closed
+
+  /// The weft actor could not start; no launch decision was returned.
+  StartFailed
+}
+
+/// A committed live decision, without exposing a duplicable replacement book.
+pub type Decision {
+  /// Evidence and launch permission are exposed only after the commit succeeds.
+  Decision(
+    /// The exact current reducer evidence.
+    evidence: admission.Evidence,
+    /// A live first-launch decision; historical effects never cross recovery.
+    effect: admission.Effect,
+  )
+}
+
+type Mode {
+  Fresh
+  Recover
+}
+
+type Config {
+  Config(path: String, scope: identity.Scope, capacity: admission.Capacity)
+}
+
+type Snapshot {
+  Snapshot(book: admission.Book, version: Int, bytes: Int)
+}
+
+type State {
+  Waiting(config: Config)
+  Ready(config: Config, connection: sqlight.Connection, snapshot: Snapshot)
+}
+
+type Message {
+  Initialise(mode: Mode, reply: process.Subject(Result(Nil, Error)))
+  Change(
+    command: codec.Command,
+    reply: process.Subject(Result(Option(Decision), Error)),
+  )
+  Inspect(
+    key: identity.RequestKey,
+    digest: identity.Digest,
+    reply: process.Subject(Result(admission.Evidence, Error)),
+  )
+  Release(reply: process.Subject(Result(Nil, Error)))
+}
+
+const schema =
+  "CREATE TABLE custody_meta (id INTEGER PRIMARY KEY CHECK(id=1), binding BLOB NOT NULL, capacity INTEGER NOT NULL, version INTEGER NOT NULL CHECK(version>=0 AND version<=capacity*6+1), bytes INTEGER NOT NULL CHECK(bytes>=0 AND bytes<=version*138)); CREATE TABLE custody_event (seq INTEGER PRIMARY KEY, payload BLOB NOT NULL);"
+
+const timeout_ms = 30_000
+
+/// Creates custody for an unused database path. Existing evidence is never reset.
+/// Metadata and schema commit together before this endpoint is returned.
+/// Paths must be absolute filesystem names of at most 4096 bytes without NUL.
+///
+/// ## Examples
+///
+/// ```gleam
+/// journal.fresh(path, scope, capacity) // -> Ok(journal) for an unused path.
+/// ```
+pub fn fresh(
+  path: String,
+  scope: identity.Scope,
+  capacity: admission.Capacity,
+) -> Result(Journal, Error) {
+  start(Config(path, scope, capacity), Fresh)
+}
+
+/// Opens existing custody and replays changed commands without returning effects.
+/// Scope and capacity must match the original creation exactly.
+///
+/// ## Examples
+///
+/// ```gleam
+/// journal.recover(path, scope, capacity) // -> retained evidence, never Launch.
+/// ```
+pub fn recover(
+  path: String,
+  scope: identity.Scope,
+  capacity: admission.Capacity,
+) -> Result(Journal, Error) {
+  start(Config(path, scope, capacity), Recover)
+}
+
+/// Durably reserves bounded evidence before acknowledging the admission.
+/// An exact duplicate returns existing evidence and does not append a record.
+///
+/// ## Examples
+///
+/// ```gleam
+/// journal.admit(journal, key, digest) // -> Ok(Decision(_, NoLaunch)).
+/// ```
+pub fn admit(
+  journal: Journal,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+) -> Result(Decision, Error) {
+  change(journal, codec.Admit(key, digest)) |> require_decision
+}
+
+/// Commits changed custody before exposing its acknowledgement or first Launch.
+/// The trusted native adapter supplies retirement and durable receipt evidence.
+///
+/// ## Examples
+///
+/// ```gleam
+/// journal.apply(journal, key, digest, admission.AuthorizeLaunch)
+/// // -> Launch only for the first successfully committed live authorization.
+/// ```
+pub fn apply(
+  journal: Journal,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+  event: admission.Event,
+) -> Result(Decision, Error) {
+  change(journal, codec.Apply(key, digest, event)) |> require_decision
+}
+
+/// Permanently closes this scope's admission epoch without releasing evidence.
+/// Repeated closure writes nothing; settlement and exact inspection remain valid.
+///
+/// ## Examples
+///
+/// ```gleam
+/// journal.close_epoch(journal) // -> Ok(Nil) after the closure commits.
+/// ```
+pub fn close_epoch(journal: Journal) -> Result(Nil, Error) {
+  change(journal, codec.CloseEpoch) |> result.map(fn(_) { Nil })
+}
+
+/// Inspects the latest committed exact key, including after closure or compaction.
+/// Independent writers are observed under the same SQLite transaction discipline.
+///
+/// ## Examples
+///
+/// ```gleam
+/// journal.inspect(journal, key, digest) // -> Ok(retained_evidence).
+/// ```
+pub fn inspect(
+  journal: Journal,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+) -> Result(admission.Evidence, Error) {
+  exchange(journal, Inspect(key, digest, _))
+}
+
+/// Releases this connection without closing the epoch or declaring native drain.
+/// The endpoint remains closed; recovery is a separate, explicit operation.
+///
+/// ## Examples
+///
+/// ```gleam
+/// journal.release(journal) // -> Ok(Nil); journal.recover restores the ledger.
+/// ```
+pub fn release(journal: Journal) -> Result(Nil, Error) {
+  case exchange(journal, Release) {
+    Error(Closed) -> Ok(Nil)
+    outcome -> outcome
+  }
+}
+
+fn start(config: Config, mode: Mode) -> Result(Journal, Error) {
+  use Nil <- result.try(
+    case
+      string.starts_with(config.path, "/")
+      && string.byte_size(config.path) <= 4096
+      && !string.contains(config.path, "\u{0}")
+    {
+      True -> Ok(Nil)
+      False -> Error(InvalidPath)
+    },
+  )
+  use started <- result.try(
+    actor.new(Waiting(config))
+    |> actor.on_message(handle)
+    |> actor.on_shutdown(shutdown)
+    |> actor.unlinked
+    |> actor.start
+    |> result.map_error(fn(_) { StartFailed }),
+  )
+  let journal = Journal(started.data)
+  case exchange(journal, Initialise(mode, _)) {
+    Ok(Nil) -> Ok(journal)
+    Error(error) -> {
+      // Startup uncertainty may leave initialization queued. Releasing behind
+      // it ensures that an endpoint withheld from the caller cannot linger.
+      process.send(journal.subject, Release(process.new_subject()))
+      Error(error)
+    }
+  }
+}
+
+fn change(
+  journal: Journal,
+  command: codec.Command,
+) -> Result(Option(Decision), Error) {
+  exchange(journal, Change(command, _))
+}
+
+fn exchange(
+  journal: Journal,
+  make_request: fn(process.Subject(Result(a, Error))) -> Message,
+) -> Result(a, Error) {
+  use owner <- result.try(
+    process.subject_owner(journal.subject) |> result.map_error(fn(_) { Closed }),
+  )
+  use Nil <- result.try(case process.is_alive(owner) {
+    True -> Ok(Nil)
+    False -> Error(Closed)
+  })
+  let reply = process.new_subject()
+  let monitor = process.monitor(owner)
+  process.send(journal.subject, make_request(reply))
+  let answer =
+    process.new_selector()
+    |> process.select_map(reply, fn(value) { value })
+    |> process.select_specific_monitor(monitor, fn(_) { Error(Uncertain) })
+    |> process.selector_receive(timeout_ms)
+
+  // Death after sending cannot prove that the transaction did not commit.
+  // Demonitoring flushes its notification; timeout only abandons the wait.
+  process.demonitor_process(monitor)
+  result.unwrap(answer, Error(Uncertain))
+}
+
+fn require_decision(
+  value: Result(Option(Decision), Error),
+) -> Result(Decision, Error) {
+  use decision <- result.try(value)
+  case decision {
+    Some(value) -> Ok(value)
+    None -> Error(Corrupt)
+  }
+}
+
+fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+  case message, state {
+    Initialise(mode, reply), Waiting(config) -> {
+      case initialise(config, mode) {
+        Ok(#(connection, snapshot)) -> {
+          process.send(reply, Ok(Nil))
+          actor.continue(Ready(config, connection, snapshot))
+        }
+        Error(error) -> {
+          process.send(reply, Error(error))
+          actor.stop()
+        }
+      }
+    }
+    Change(command, reply), Ready(config, connection, snapshot) -> {
+      let outcome = transact(connection, config, snapshot, command)
+      settle_change(outcome, config, connection, snapshot, reply)
+    }
+    Inspect(key, digest, reply), Ready(config, connection, snapshot) -> {
+      let outcome = read_current(connection, config, snapshot)
+      settle_inspect(outcome, config, connection, key, digest, reply)
+    }
+    Release(reply), Ready(_, connection, _) -> {
+      process.send(reply, sqlight.close(connection) |> sql_error)
+      actor.stop()
+    }
+    Release(reply), Waiting(_) -> {
+      process.send(reply, Ok(Nil))
+      actor.stop()
+    }
+    Initialise(_, reply), Ready(_, _, _) -> {
+      process.send(reply, Error(Closed))
+      actor.continue(state)
+    }
+    Change(_, reply), Waiting(_) -> {
+      process.send(reply, Error(Closed))
+      actor.continue(state)
+    }
+    Inspect(_, _, reply), Waiting(_) -> {
+      process.send(reply, Error(Closed))
+      actor.continue(state)
+    }
+  }
+}
+
+fn initialise(
+  config: Config,
+  mode: Mode,
+) -> Result(#(sqlight.Connection, Snapshot), Error) {
+  use exists <- result.try(
+    simplifile.exists(config.path, False)
+    |> result.map_error(fn(_) { Uncertain }),
+  )
+  use Nil <- result.try(case mode, exists {
+    Fresh, True -> Error(AlreadyExists)
+    Recover, False -> Error(Missing)
+    Fresh, False | Recover, True -> Ok(Nil)
+  })
+  use connection <- result.try(sqlight.open(config.path) |> sql_error)
+  let outcome = setup(connection, config, mode)
+  case outcome {
+    Ok(snapshot) -> Ok(#(connection, snapshot))
+    Error(error) -> {
+      let _ = sqlight.exec("ROLLBACK", connection)
+      let _ = sqlight.close(connection)
+      Error(error)
+    }
+  }
+}
+
+fn setup(
+  connection: sqlight.Connection,
+  config: Config,
+  mode: Mode,
+) -> Result(Snapshot, Error) {
+  // Require a crash-safe journal mode rather than inheriting a database's
+  // configuration. FULL synchronization then makes commit the custody boundary.
+  use Nil <- result.try(
+    sqlight.exec("PRAGMA busy_timeout=5000", connection) |> sql_error,
+  )
+  use modes <- result.try(
+    sqlight.query(
+      "PRAGMA journal_mode=WAL",
+      connection,
+      [],
+      decode.field(0, decode.string, decode.success),
+    )
+    |> sql_error,
+  )
+  use Nil <- result.try(case modes {
+    ["wal"] -> Ok(Nil)
+    _ -> Error(Uncertain)
+  })
+  use Nil <- result.try(
+    sqlight.exec(
+      "PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; BEGIN IMMEDIATE",
+      connection,
+    )
+    |> sql_error,
+  )
+  use Nil <- result.try(case mode {
+    Fresh -> create(connection, config)
+    Recover -> Ok(Nil)
+  })
+  use snapshot <- result.try(load(connection, config))
+  use Nil <- result.try(sqlight.exec("COMMIT", connection) |> sql_error)
+  Ok(snapshot)
+}
+
+fn create(
+  connection: sqlight.Connection,
+  config: Config,
+) -> Result(Nil, Error) {
+  use Nil <- result.try(
+    sqlight.exec(schema, connection)
+    |> sql_error,
+  )
+  sqlight.query(
+    "INSERT INTO custody_meta VALUES (1, ?, ?, 0, 0)",
+    connection,
+    [
+      sqlight.blob(codec.binding(config.scope)),
+      sqlight.int(admission.capacity_value(config.capacity)),
+    ],
+    decode.int,
+  )
+  |> sql_error
+  |> result.map(fn(_) { Nil })
+}
+
+fn metadata(
+  connection: sqlight.Connection,
+  config: Config,
+) -> Result(#(Int, Int), Error) {
+  let decoder = {
+    use binding <- decode.field(0, decode.bit_array)
+    use capacity <- decode.field(1, decode.int)
+    use version <- decode.field(2, decode.int)
+    use bytes <- decode.field(3, decode.int)
+    decode.success(#(binding, capacity, version, bytes))
+  }
+
+  // SQLite affinity permits blobs in integer columns. Project only bounded
+  // scalars so corruption cannot allocate a blob before the decoder refuses it.
+  use rows <- result.try(
+    sqlight.query(
+      "SELECT CASE WHEN typeof(binding)='blob' AND length(binding)<=303 THEN binding ELSE NULL END, CASE WHEN typeof(capacity)='integer' THEN capacity ELSE NULL END, CASE WHEN typeof(version)='integer' THEN version ELSE NULL END, CASE WHEN typeof(bytes)='integer' THEN bytes ELSE NULL END FROM custody_meta LIMIT 2",
+      connection,
+      [],
+      decoder,
+    )
+    |> result.map_error(fn(_) { Corrupt }),
+  )
+  case rows {
+    [#(binding, capacity, version, bytes)] -> {
+      use Nil <- result.try(
+        case
+          binding == codec.binding(config.scope)
+          && capacity == admission.capacity_value(config.capacity)
+        {
+          True -> Ok(Nil)
+          False -> Error(BindingMismatch)
+        },
+      )
+      let max_records = capacity * 6 + 1
+      case
+        version >= 0
+        && version <= max_records
+        && bytes >= 0
+        && bytes <= version * codec.record_bytes
+      {
+        True -> Ok(#(version, bytes))
+        False -> Error(Corrupt)
+      }
+    }
+    _ -> Error(Corrupt)
+  }
+}
+
+fn load(
+  connection: sqlight.Connection,
+  config: Config,
+) -> Result(Snapshot, Error) {
+  use meta <- result.try(metadata(connection, config))
+  load_rows(connection, config, meta)
+}
+
+fn load_rows(
+  connection: sqlight.Connection,
+  config: Config,
+  meta: #(Int, Int),
+) -> Result(Snapshot, Error) {
+  let #(version, bytes) = meta
+  let decoder = {
+    use sequence <- decode.field(0, decode.int)
+    use payload <- decode.field(1, decode.bit_array)
+    decode.success(#(sequence, payload))
+  }
+  use rows <- result.try(
+    sqlight.query(
+      "SELECT seq, CASE WHEN typeof(payload)='blob' AND length(payload)<=138 THEN payload ELSE NULL END FROM custody_event ORDER BY seq LIMIT ?",
+      connection,
+      [sqlight.int(admission.capacity_value(config.capacity) * 6 + 2)],
+      decoder,
+    )
+    |> result.map_error(fn(_) { Corrupt }),
+  )
+  use snapshot <- result.try(
+    list.try_fold(
+      rows,
+      Snapshot(admission.new(config.scope, config.capacity), 0, 0),
+      fn(snapshot, row) { replay(snapshot, row, config.scope) },
+    ),
+  )
+  case snapshot.version == version && snapshot.bytes == bytes {
+    True -> Ok(snapshot)
+    False -> Error(Corrupt)
+  }
+}
+
+fn replay(
+  snapshot: Snapshot,
+  row: #(Int, BitArray),
+  scope: identity.Scope,
+) -> Result(Snapshot, Error) {
+  let #(sequence, payload) = row
+  use Nil <- result.try(case sequence == snapshot.version + 1 {
+    True -> Ok(Nil)
+    False -> Error(Corrupt)
+  })
+  use command <- result.try(
+    codec.decode(payload, scope) |> result.map_error(fn(_) { Corrupt }),
+  )
+  use changed <- result.try(
+    reduce(snapshot.book, command) |> result.map_error(fn(_) { Corrupt }),
+  )
+  let #(book, _historical_decision) = changed
+
+  // A durable record must represent a real change. Discarding the historical
+  // decision prevents recovery from exposing the first authorization again.
+  case book != snapshot.book {
+    True ->
+      Ok(Snapshot(book, sequence, snapshot.bytes + bit_array.byte_size(payload)))
+    False -> Error(Corrupt)
+  }
+}
+
+fn reduce(
+  book: admission.Book,
+  command: codec.Command,
+) -> Result(#(admission.Book, Option(Decision)), Error) {
+  case command {
+    codec.CloseEpoch -> Ok(#(admission.close(book), None))
+    codec.Admit(key, digest) -> {
+      use transition <- result.try(
+        admission.admit(book, key, digest) |> result.map_error(Rejected),
+      )
+      Ok(#(
+        transition.next,
+        Some(Decision(transition.evidence, transition.effect)),
+      ))
+    }
+    codec.Apply(key, digest, event) -> {
+      use transition <- result.try(
+        admission.reduce(book, key, digest, event) |> result.map_error(Rejected),
+      )
+      Ok(#(
+        transition.next,
+        Some(Decision(transition.evidence, transition.effect)),
+      ))
+    }
+  }
+}
+
+fn current(
+  connection: sqlight.Connection,
+  config: Config,
+  snapshot: Snapshot,
+) -> Result(Snapshot, Error) {
+  use meta <- result.try(metadata(connection, config))
+  case meta == #(snapshot.version, snapshot.bytes) {
+    True -> Ok(snapshot)
+    False -> load_rows(connection, config, meta)
+  }
+}
+
+fn transact(
+  connection: sqlight.Connection,
+  config: Config,
+  snapshot: Snapshot,
+  command: codec.Command,
+) -> Result(#(Snapshot, Option(Decision)), Error) {
+  use Nil <- result.try(
+    sqlight.exec("BEGIN IMMEDIATE", connection) |> sql_error,
+  )
+  let outcome = persist(connection, config, snapshot, command)
+  finish_transaction(connection, outcome)
+}
+
+fn persist(
+  connection: sqlight.Connection,
+  config: Config,
+  snapshot: Snapshot,
+  command: codec.Command,
+) -> Result(#(Snapshot, Option(Decision)), Error) {
+  use latest <- result.try(current(connection, config, snapshot))
+  use changed <- result.try(reduce(latest.book, command))
+  let #(book, decision) = changed
+  case book == latest.book {
+    True -> Ok(#(latest, decision))
+    False -> {
+      use next <- result.try(append(
+        connection,
+        latest,
+        book,
+        codec.encode(command),
+      ))
+      Ok(#(next, decision))
+    }
+  }
+}
+
+fn append(
+  connection: sqlight.Connection,
+  old: Snapshot,
+  book: admission.Book,
+  payload: BitArray,
+) -> Result(Snapshot, Error) {
+  let version = old.version + 1
+  let bytes = old.bytes + bit_array.byte_size(payload)
+  use _ <- result.try(
+    sqlight.query(
+      "INSERT INTO custody_event VALUES (?, ?)",
+      connection,
+      [sqlight.int(version), sqlight.blob(payload)],
+      decode.int,
+    )
+    |> sql_error,
+  )
+
+  // The writer lock makes this CAS uncontended in normal operation. Checking
+  // its returned row also refuses a schema or trigger that lost the head update.
+  use rows <- result.try(
+    sqlight.query(
+      "UPDATE custody_meta SET version=?, bytes=? WHERE id=1 AND version=? AND bytes=? RETURNING version",
+      connection,
+      [
+        sqlight.int(version),
+        sqlight.int(bytes),
+        sqlight.int(old.version),
+        sqlight.int(old.bytes),
+      ],
+      decode.field(0, decode.int, decode.success),
+    )
+    |> sql_error,
+  )
+  case rows {
+    [value] if value == version -> Ok(Snapshot(book, version, bytes))
+    _ -> Error(Uncertain)
+  }
+}
+
+fn finish_transaction(
+  connection: sqlight.Connection,
+  outcome: Result(a, Error),
+) -> Result(a, Error) {
+  case outcome {
+    Ok(value) -> {
+      use Nil <- result.try(sqlight.exec("COMMIT", connection) |> sql_error)
+      Ok(value)
+    }
+    Error(error) -> {
+      case sqlight.exec("ROLLBACK", connection) {
+        Ok(Nil) -> Error(error)
+        Error(_) -> Error(Uncertain)
+      }
+    }
+  }
+}
+
+fn read_current(
+  connection: sqlight.Connection,
+  config: Config,
+  snapshot: Snapshot,
+) -> Result(Snapshot, Error) {
+  use Nil <- result.try(
+    sqlight.exec("BEGIN IMMEDIATE", connection) |> sql_error,
+  )
+  finish_transaction(connection, current(connection, config, snapshot))
+}
+
+fn settle_change(
+  outcome: Result(#(Snapshot, Option(Decision)), Error),
+  config: Config,
+  connection: sqlight.Connection,
+  previous: Snapshot,
+  reply: process.Subject(Result(Option(Decision), Error)),
+) -> actor.Next(State, Message) {
+  case outcome {
+    Ok(#(snapshot, decision)) -> {
+      process.send(reply, Ok(decision))
+      actor.continue(Ready(config, connection, snapshot))
+    }
+    Error(Rejected(reason)) -> {
+      process.send(reply, Error(Rejected(reason)))
+
+      // A reducer rejection rolled back safely. A cached older version stays
+      // valid: the next transaction reloads if another connection advanced it.
+      actor.continue(Ready(config, connection, previous))
+    }
+    Error(error) -> {
+      let _ = sqlight.exec("ROLLBACK", connection)
+      let _ = sqlight.close(connection)
+      process.send(reply, Error(error))
+      actor.stop()
+    }
+  }
+}
+
+fn settle_inspect(
+  outcome: Result(Snapshot, Error),
+  config: Config,
+  connection: sqlight.Connection,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+  reply: process.Subject(Result(admission.Evidence, Error)),
+) -> actor.Next(State, Message) {
+  case outcome {
+    Ok(snapshot) -> {
+      process.send(
+        reply,
+        admission.inspect(snapshot.book, key, digest)
+          |> result.map_error(Rejected),
+      )
+      actor.continue(Ready(config, connection, snapshot))
+    }
+    Error(error) -> {
+      let _ = sqlight.exec("ROLLBACK", connection)
+      let _ = sqlight.close(connection)
+      process.send(reply, Error(error))
+      actor.stop()
+    }
+  }
+}
+
+fn sql_error(value: Result(a, sqlight.Error)) -> Result(a, Error) {
+  result.map_error(value, fn(_) { Uncertain })
+}
+
+fn shutdown(state: State, _reason: process.ExitReason) -> Nil {
+  case state {
+    Ready(_, connection, _) -> {
+      let _ = sqlight.close(connection)
+      Nil
+    }
+    Waiting(_) -> Nil
+  }
+}
