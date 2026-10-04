@@ -417,7 +417,7 @@
      row's text until it is hovered or focused. */
   li.session:has(>.session-open){padding:0;}
   .session-open{flex:1 1 auto;display:flex;align-items:baseline;justify-content:space-between;gap:8px;min-width:0;margin:0;padding:3px 7px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;}
-  .session-open:hover{background:var(--color-bg-raised);}
+  .session-open:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);}
   .session-open:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
   /* The home page (web_view/home, protocol-change/065): the same frame with
      no strand panel. The frame's element draws the panel's column and its
@@ -448,7 +448,7 @@
      keyboard focus, no shadow. A saved session's name is text and its row has
      no tint. */
   .home-table tr.home-row{position:relative;}
-  .home-table tr.home-row:has(.home-open):hover{background:var(--color-bg-raised);}
+  .home-table tr.home-row:has(.home-open):hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);}
   .home-table tr.home-row:has(.home-open:focus-visible){outline:2px solid var(--color-current);outline-offset:-2px;}
   .home-open{margin:0;padding:0;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;}
   .home-open::after{content:"";position:absolute;inset:0;}
@@ -459,14 +459,26 @@
   .session-head .home-link{margin:0;padding:2px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:12px/1.4 var(--font-sans);cursor:pointer;}
   .session-head .home-link:hover{background:var(--color-bg-raised);}
   .session-head .home-link:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
-  .ring{display:inline-block;width:10px;height:10px;border-radius:50%;flex:0 0 auto; border:2px solid var(--color-divider);}
+  .ring{display:inline-flex;align-items:center;justify-content:center;width:10px;height:10px;border-radius:50%;flex:0 0 auto; border:2px solid var(--color-divider);}
   .ring.ring-head{border-color:var(--color-current);background:color-mix(in srgb,var(--color-current) 25%,transparent);}
   .ring.ring-tail{border-color:var(--color-divider);border-top-color:var(--color-signal);transform:rotate(45deg);}
   .ring.ring-idle{border-color:var(--color-fg-faint);}
   .ring.ring-elapsed{border:2px dashed var(--color-fg-faint);}
-  .ring.ring-none{border-color:var(--color-divider);}
   .ring.ring-card{box-sizing:border-box;width:34px;height:34px;border-width:4px;}
   .ring.ring-detail{box-sizing:border-box;width:44px;height:44px;border-width:5px;}
+  /* The state's glyph inside a held ring, in quiet text. The tail ring is
+     turned 45 degrees to put its signal arc at the top, so its glyph is
+     turned back. */
+  .ring-glyph{color:var(--color-fg-quiet);font:12px/1 var(--font-sans);}
+  .ring.ring-detail .ring-glyph{font-size:15px;}
+  .ring.ring-tail .ring-glyph{transform:rotate(-45deg);}
+  /* A strand with no cache outlook is drawn as an avatar, not a hollow ring:
+     a disc tinted toward the strand's hue with its first letter in the
+     hue's text colour. The letter's contrast on the tint is held by
+     scripts/web_client_contrast_check.sh, which blends the same 8%. */
+  .avatar{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;box-sizing:border-box;border-radius:50%;background:color-mix(in srgb,var(--hue) 8%,transparent);color:var(--hue-text);font:600 14px/1 var(--font-sans);user-select:none;}
+  .avatar.avatar-card{width:34px;height:34px;}
+  .avatar.avatar-detail{width:44px;height:44px;font-size:17px;}
   /* The transcript's scroll container: the client component draws the lane
      inside it and scrolls it (web_client/follow). Its height is what the
      frame leaves, so it never grows with the rows. Scroll anchoring is off
@@ -639,10 +651,6 @@
   .peer-from{min-width:0;overflow-wrap:anywhere;}
   .receipt{margin-left:auto;border:1px solid var(--color-divider);border-radius:999px;padding:0 8px;font-size:11px;}
   pre.card-body{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.5 var(--font-sans);}
-  /* The advisor's commentary hairline in the lane: one quiet line per
-     review, in the advisor's colour, never the full body. The dot beside
-     it focuses the advisor's own transcript, where the bodies live. */
-  p.commentary-mark{margin:0;color:var(--color-advisor-text);font:12px/1.4 var(--font-sans);}
   /* The commentary section in the Strands pane: the review bodies, under
      the strand cards. Read-only, no handler, hidden with the detail view
      while the advisor itself is on screen, and like the nudges card hidden

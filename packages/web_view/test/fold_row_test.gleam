@@ -3,7 +3,7 @@
 //// behind it, a row with nothing behind it has no chevron, the memory context
 //// and a reasoning block are rows of the same shape, a prompt names its
 //// sender on a line of its own, a spawn and a result are lines and not cards,
-//// and reviews that follow each other are one line that counts them.
+//// and the advisor's reviews draw no row in the lane at all.
 ////
 //// The tests read the HTML the lane draws (`lane.view`) and never a page, so
 //// each states the shape and nothing about the session around it. What the
@@ -234,13 +234,13 @@ pub fn a_spawn_and_a_one_line_result_are_lines_not_cards_test() {
         turns.Sub(0),
       ),
     ])
-  assert string.contains(html, "<p class=\"who spawn hue-2\">Spawned sub:scan")
+  assert string.contains(html, "<p class=\"who spawn hue-2\">Spawned scan")
   assert string.contains(
     html,
     "<span class=\"spawn-purpose\"> · scan the repo</span>",
   )
   assert string.contains(html, "<div class=\"result hue-2\">")
-  assert string.contains(html, "sub:scan finished</p>")
+  assert string.contains(html, "scan finished</p>")
   assert string.contains(html, "<p class=\"result-line\">Found two files.</p>")
   assert !string.contains(html, "article")
   assert !string.contains(html, "card-head")
@@ -317,15 +317,17 @@ fn review(key: String) -> Block {
   ])
 }
 
-pub fn consecutive_reviews_are_one_line_that_counts_them_test() {
+pub fn the_advisors_reviews_draw_no_row_in_the_lane_test() {
+  // The panel's commentary section is the record of every review, so a
+  // review, or a run of them, is neither a row nor a dot in the lane.
   let one = drawn([turns.Commentary(review("3.0"), 1)])
-  assert string.contains(one, " · reviewed the plan</p>")
-  assert !string.contains(one, "reviews")
+  assert !string.contains(one, "commentary-mark")
+  assert !string.contains(one, "tl-row")
+  assert !string.contains(one, "reviewed the plan")
 
   let two = drawn([turns.Commentary(review("3.0"), 2)])
-  assert string.contains(two, " · 2 reviews</p>")
-  assert !string.contains(two, "reviewed the plan")
-  assert count(two, "commentary-mark") == 1
+  assert !string.contains(two, "commentary-mark")
+  assert !string.contains(two, "reviews")
 }
 
 pub fn a_figure_and_an_unnamed_subject_draw_no_subject_span_test() {
