@@ -102,8 +102,22 @@ digest, session and role are provenance, never additional budget axes.
 `client/codemode.execute_managed` accepts a trusted custody `Invocation.key`
 and checks operation/step/source index before any local setup. It does not
 recompute the original argument envelope. Existing local entry points remain
-unmanaged. Native compiler and launcher provenance is implemented; nested
-satellite capability admission and production remote assembly remain deferred.
+unmanaged. Native compiler and launcher provenance is implemented.
+
+Both satellite host modes retain that original managed parent for native
+capability commands. After router acceptance and both lifetime/outstanding
+ceilings, `identity.capability_origin` derives
+`AdmittedCapability(cap, existing_per_cap_ordinal, NativeCommand)`.
+`run_collector` preserves it through `broker.clear_call_from`. A managed Build
+phase, invalid name or oversized ordinal returns `invalid_origin` before
+admitted tally or worker creation. Refused router/host/derivation attempts
+consume no ordinal; admitted effects that later refuse do consume one.
+Different names at ordinal zero are disjoint, and persistent hosts use each
+invocation's original parent and reset its tally. Source indices and child
+roles never become additional pooled-ledger coordinates. `ServedHere` and
+`ScopedService` remain owner callbacks and reserve no native child; a remote
+semantic workspace service is deferred until an actual remote consumer exists.
+Production remote command custody and resource assembly remain deferred.
 The owner satellite host still checks tokens, routes capabilities and owns
 settlement. A remote assembly must replace the token/socket resource callbacks
 as well as the compiler and launcher; mixing a remote compiler with local
@@ -131,7 +145,7 @@ The shared host adds the existing `gleam_json` dependency for profile encoding.
   place in the pipeline an operation, a step, a budget *or an approval's
   grants* can be written.
 - `codemode/identity.{ExecIdentity, PhaseIdentity, Phase, BuildLedger,
-  for_execution, for_managed_execution, command_origin,
+  for_execution, for_managed_execution, command_origin, capability_origin,
   with_own_build_ledger, under_budget, widened_by,
   build_phase, run_phase, grants, ledger_keys}` — the identity one
   execution runs under, the approval that widens it, and

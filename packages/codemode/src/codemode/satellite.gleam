@@ -94,7 +94,7 @@
 ////
 //// # Pooled budget
 ////
-//// Every `cap_call` becomes a `broker.clear_call` under one shared
+//// Every native `cap_call` clears through the broker under one shared
 //// `{op_id, step_id}`, so the broker pools budget across the whole
 //// execution: fan-out buys parallelism, not extra resources (design §6.5;
 //// the broker `CLAUDE.md` invariant "Budget is pooled per execution").
@@ -141,8 +141,11 @@
 ////    `handle_bytes`, which splits payloads with `deframe` and passes each to
 ////    `handle_frame`.
 //// 3. `handle_cap_call` checks the token, `route_cap_call` asks the router for a
-////    plan, and `dispatch_cap_call` runs it in a worker, `run_collector`
-////    settling it and `handle_cap_done` writing the answer with `emit`.
+////    plan. `admit_cap_call` checks lifetime and outstanding ceilings;
+////    `dispatch_cap_call` uses `admitted_origin` before tally or spawn.
+////    `run_collector` preserves the original origin through owner clearance;
+////    `handle_cap_done` writes the answer with `emit`. Owner callbacks retain
+////    their existing service custody and reserve no native child.
 //// 4. The terminal outcome frame arrives in `finish_from_payload`, and
 ////    `terminate` destroys the node and only then reports, so the enforcement
 ////    report travels with the outcome; `await_result` is the caller's wait.
@@ -150,7 +153,9 @@
 ////    runs the `Phase` machine `host_step`, and `invoke` asks it for one
 ////    answer under a fresh token.
 //// 6. `begin` opens an invocation, `read_frame` and `serve_cap_call` serve its
-////    capability calls, and `perish` is every way a host is destroyed;
+////    capability calls. `admit_invocation_call` checks the same ceilings and
+////    `dispatch_invocation_call` derives provenance from this invocation,
+////    rather than the node's launch identity. `perish` destroys the host;
 ////    `stop` asks for the node's report.
 ////
 //// ## Transitions
@@ -174,6 +179,7 @@ import codemode/enforcement.{type Report}
 import codemode/identity.{type PhaseIdentity}
 import core/clock.{type Clock}
 import core/msgpack.{type MsgPackValue}
+import core/remote_tool
 import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Subject}
@@ -1226,8 +1232,8 @@ fn admit_cap_call(
   }
 }
 
-// Admitted for real: the tally moves, the call becomes cancellable, and a
-// process of its own carries it.
+// Both ceilings have passed. Native provenance must validate before the tally
+// moves and a cancellable worker is spawned; a refusal leaves the ordinal free.
 fn dispatch_cap_call(
   state: State,
   now: Int,
@@ -1238,36 +1244,51 @@ fn dispatch_cap_call(
   plan: CapPlan,
   check: fn() -> Result(Nil, CapOutcome),
 ) -> State {
-  let #(ledger, seq) = call_record.admit(state.ledger, cap, args, now)
-  let admitted = dict.insert(state.admitted, cap, already + 1)
-  let service =
-    spawn_worker(
-      Settling(
-        started: fn(handle) {
-          process.send(state.commands, CapStarted(id:, handle:))
-        },
-        done: fn(outcome) {
-          process.send(state.commands, CapDone(id:, outcome:))
-        },
-      ),
-      state.broker,
-      plan,
-      check,
-      state.call_timeout_ms,
-    )
-  let inflight =
-    dict.insert(
-      state.inflight,
-      id,
-      InFlight(handle: None, cancelled: False, service:),
-    )
-  State(
-    ..state,
-    inflight:,
-    admitted:,
-    ledger:,
-    seqs: dict.insert(state.seqs, id, seq),
-  )
+  case admitted_origin(state.identity, cap, already, plan) {
+    Error(reason) ->
+      refuse_cap_call(
+        state,
+        now,
+        id,
+        cap,
+        args,
+        "invalid_origin",
+        origin_denial(reason),
+      )
+    Ok(origin) -> {
+      let #(ledger, seq) = call_record.admit(state.ledger, cap, args, now)
+      let admitted = dict.insert(state.admitted, cap, already + 1)
+      let service =
+        spawn_worker(
+          Settling(
+            started: fn(handle) {
+              process.send(state.commands, CapStarted(id:, handle:))
+            },
+            done: fn(outcome) {
+              process.send(state.commands, CapDone(id:, outcome:))
+            },
+          ),
+          state.broker,
+          origin,
+          plan,
+          check,
+          state.call_timeout_ms,
+        )
+      let inflight =
+        dict.insert(
+          state.inflight,
+          id,
+          InFlight(handle: None, cancelled: False, service:),
+        )
+      State(
+        ..state,
+        inflight:,
+        admitted:,
+        ledger:,
+        seqs: dict.insert(state.seqs, id, seq),
+      )
+    }
+  }
 }
 
 // A call the host refused before dispatching it: it is on the record as
@@ -1317,6 +1338,27 @@ fn close_call(
         seqs: dict.delete(state.seqs, id),
       )
   }
+}
+
+// Native provenance is derived only after routing and both host ceilings.
+// Owner callbacks carry no native command, even when they hold scoped custody.
+fn admitted_origin(
+  phase: PhaseIdentity,
+  cap: String,
+  ordinal: Int,
+  plan: CapPlan,
+) -> Result(Option(remote_tool.ChildOrigin), String) {
+  case plan {
+    ClearedCall(..) ->
+      identity.capability_origin(phase, cap, ordinal, remote_tool.NativeCommand)
+    ServedHere(_) | ScopedService(_) -> Ok(None)
+  }
+}
+
+// Constructor errors are bounded fixed prose, never an echoed peer payload.
+// Refusal precedes tally and worker creation, so the next admission keeps its ordinal.
+fn origin_denial(reason: String) -> CapOutcome {
+  framing.CapErr(code: "invalid_origin", message: reason)
 }
 
 // How many calls of `cap` this execution has already admitted.
@@ -1380,6 +1422,7 @@ type Settling {
 fn spawn_worker(
   settling: Settling,
   broker: Broker,
+  origin: Option(remote_tool.ChildOrigin),
   plan: CapPlan,
   check: fn() -> Result(Nil, CapOutcome),
   call_timeout_ms: Int,
@@ -1401,7 +1444,14 @@ fn spawn_worker(
       Ok(Nil) ->
         case plan {
           ClearedCall(spec:, render:) ->
-            run_collector(settling, broker, spec, render, call_timeout_ms)
+            run_collector(
+              settling,
+              broker,
+              origin,
+              spec,
+              render,
+              call_timeout_ms,
+            )
           ServedHere(serve:) ->
             run_service(settling, serve, call_timeout_ms, None)
           ScopedService(serve:) ->
@@ -1420,12 +1470,24 @@ fn spawn_worker(
 fn run_collector(
   settling: Settling,
   broker: Broker,
+  origin: Option(remote_tool.ChildOrigin),
   spec: CallSpec,
   render: fn(Collected) -> CapOutcome,
   call_timeout_ms: Int,
 ) -> Nil {
   let events = process.new_subject()
-  case broker.clear_call(broker, spec, events:, waiting: clear_timeout_ms) {
+  let cleared = case origin {
+    None -> broker.clear_call(broker, spec, events:, waiting: clear_timeout_ms)
+    Some(origin) ->
+      broker.clear_call_from(
+        broker,
+        origin,
+        spec,
+        events:,
+        waiting: clear_timeout_ms,
+      )
+  }
+  case cleared {
     Error(refusal) -> settling.done(refusal_outcome(refusal))
     Ok(handle) -> {
       settling.started(handle)
@@ -3100,30 +3162,34 @@ fn dispatch_invocation_call(
   already: Int,
   plan: CapPlan,
 ) -> Hosting {
-  // The long-lived host serves no strand and asks no tool question:
-  // `HostConfig` has no precheck, so this admits every call.
-  let service =
-    spawn_worker(
-      host_settling(hosting, id),
-      hosting.config.broker,
-      plan,
-      fn() { Ok(Nil) },
-      hosting.config.call_timeout_ms,
-    )
-  Hosting(
-    ..hosting,
-    open: Some(
-      Open(
-        ..open,
-        inflight: dict.insert(
-          open.inflight,
-          id,
-          InFlight(handle: None, cancelled: False, service:),
+  case admitted_origin(open.invoking.identity, cap, already, plan) {
+    Error(reason) -> emit_cap_result(hosting, id, origin_denial(reason))
+    Ok(origin) -> {
+      let service =
+        spawn_worker(
+          host_settling(hosting, id),
+          hosting.config.broker,
+          origin,
+          plan,
+          fn() { Ok(Nil) },
+          hosting.config.call_timeout_ms,
+        )
+      Hosting(
+        ..hosting,
+        open: Some(
+          Open(
+            ..open,
+            inflight: dict.insert(
+              open.inflight,
+              id,
+              InFlight(handle: None, cancelled: False, service:),
+            ),
+            admitted: dict.insert(open.admitted, cap, already + 1),
+          ),
         ),
-        admitted: dict.insert(open.admitted, cap, already + 1),
-      ),
-    ),
-  )
+      )
+    }
+  }
 }
 
 fn spent(open: Open, cap: String) -> Int {
