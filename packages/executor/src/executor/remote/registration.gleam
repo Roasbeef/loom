@@ -12,9 +12,11 @@
 //// mounts are conservatively refused by this adapter too. Kernel enforcement
 //// still owns races after validation; this is not a replacement for the jail.
 
+import broker/enrollment
 import broker/exec
 import broker/policy
 import core/msgpack
+import core/workspace
 import executor/remote/identity
 import executor/remote/journal_codec
 import executor/remote/wire
@@ -107,6 +109,36 @@ pub fn scope(registered: Registration) -> identity.Scope {
 /// ```
 pub fn digest(registered: Registration) -> identity.Digest {
   registered.digest
+}
+
+/// Describes exact native facts without exporting the local canonicalizer.
+/// The shared Scope conversion preserves the session and both original epochs;
+/// no digest bytes or registration encoding are changed by this projection.
+///
+/// ## Examples
+///
+/// `describe(registered)` returns facts for a later pinned session enrollment.
+pub fn describe(
+  registered: Registration,
+) -> Result(enrollment.NativeFacts, Nil) {
+  let #(session, name, executor, session_epoch, workspace_epoch) =
+    identity.scope_fields(registered.scope)
+  use scope <- result.try(
+    workspace.scope_from_fields(
+      session,
+      name,
+      executor,
+      session_epoch,
+      workspace_epoch,
+    )
+    |> result.replace_error(Nil),
+  )
+  Ok(enrollment.NativeFacts(
+    scope:,
+    working_roots: registered.working_roots,
+    ceiling: registered.ceiling,
+    demand: registered.demand,
+  ))
 }
 
 /// Validates exact native materialization without widening or rewriting it.
