@@ -35,7 +35,14 @@ machine ProductScenario {
     on eView do (v: tReply) {
       send productOwner, eProductView, v;
       if (v.answer == Prior && v.row.phase == Running) {
-        if (v.request.key.execution == 2 && mode == ProductLaunchLoss && stage == 1) {
+        if (v.request.key.execution == 1 && mode == ProductColdRun && stage == 0) {
+          stage = 4; send productOwner, eProductCompileElapsed;
+        } else if (v.request.key.execution == 1 && mode == ProductPostSendDelay && stage == 0) {
+          stage = 5;
+          send productOwner, eProductAdvanceTime, 120000;
+          send productOwner, eProductOwnerCrash;
+          send productOwner, eProductRecoverCommand, 1;
+        } else if (v.request.key.execution == 2 && mode == ProductLaunchLoss && stage == 1) {
           stage = 2;
           send productOwner, eProductLoseLaunch;
         } else if (mode == ProductFaults && v.request.key.execution == 2 && stage == 1) {
@@ -54,6 +61,12 @@ machine ProductScenario {
         }
         if (rowSafe(v.row)) { nativeDone += (v.request.key.execution); advance(); }
       }
+    }
+    on eProductRunTimeDone do { stage = 0; send helper, eFinishNative; }
+    on eProductBudgetDone do {
+      if (mode == ProductExpiredOffer && stage == 0) {
+        stage = 6; send productOwner, eProductOwnerCrash; send productOwner, eProductRecoverCommand, 1;
+      } else { finish(); }
     }
     on eProductOuterDone do (p: tProductResult) { outerDone += (p.service.id); advance(); }
     on eProductResourceObserved do (status: tResourceViewKind) {
@@ -106,10 +119,14 @@ machine ProductScenario {
     }
     ignore eControlDone;
   }
-  state Finished { ignore eView, eProductOuterDone, eProductResourceObserved, eProductLossDone, eControlDone, eTick; }
+  state Finished { ignore eProductBudgetDone, eProductRunTimeDone, eView, eProductOuterDone, eProductResourceObserved, eProductLossDone, eControlDone, eTick; }
   fun advance() {
+    var launch: tService;
     if (stage == 0 && 1 in outerDone && 1 in nativeDone) {
-      stage = 1; send productOwner, eProductBegin, productService(2);
+      stage = 1; launch = productService(2);
+      if (mode == ProductForeignAssociation) { launch.association = 1; }
+      if (mode == ProductForeignArtifact) { launch.artifact = 2; }
+      send productOwner, eProductBegin, launch;
     } else if (stage == 1 && 2 in outerDone && 2 in nativeDone) {
       stage = 2;
       if (mode == ProductChildOnlyRecovery) { send productOwner, eProductRecoverFinal; }

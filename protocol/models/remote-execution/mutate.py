@@ -9,11 +9,25 @@ from runner import ROOT, check_case, compile_model, record, snapshot_model
 
 # These alter actual state/effect decisions, leaving monitor code unchanged.
 MUTATIONS = {
+    "preparation-foreign-issued-artifact": ("PSrc/ProductExecutor.p", "s.association == producer.resultDigest && s.artifact == producer.artifact &&", "s.association == producer.resultDigest &&", "tcProductForeignArtifact", "launch ready changed retained compile or launch input"),
+    'preparation-compile-offer-before-ready': ('PSrc/ProductExecutor.p', 'announce mProductAdmission, s;', 'announce mProductAdmission, s;\n      if (s.id == 1) { send owner, eProductConstruct, 1; }', 'tcProductLifecycle', 'wall selected before resource ready'),
+    'preparation-compile-recreate': ('PSrc/ProductExecutor.p', 'claims -= (id);\n      if (id in claims) { createResource(rows[id]); }', 'claims += (id);\n      if (id in claims) { createResource(rows[id]); }', 'tcProductCompileUnknown', 'resource created without original live claim'),
+    'preparation-dead-issued-lease': ('PSrc/ProductExecutor.p', 'if (id in leases && (id == 1 || resourceOwnerAlive) && phases[id] == PreparedResource)', 'if (id in leases)', 'tcProductDeadResource', 'dead resource owner restored launch authority'),
+    'preparation-foreign-compile-association': ('PSrc/ProductExecutor.p', 'return s.association == producer.resultDigest && s.artifact == producer.artifact && s.compileRequest == producer.service.requestDigest &&\n      s.scope == producer.service.scope && s.enrollment == producer.service.enrollment &&\n      s.tokenCommitment == 1;', 'return true;', 'tcProductForeignAssociation', 'launch ready changed retained compile or launch input'),
+    'preparation-bad-fingerprint': ('PSrc/ProductExecutor.p', 'if (id == 2 && fingerprint != rows[id].artifact)', 'if (false)', 'tcProductBadFingerprint', 'launch fingerprint mismatch admitted'),
+    'preparation-initial-budget': ('PSrc/ProductOwner.p', 'w = productWall(retained[id].deadline - elapsed, retained[id].ceiling);', 'w = productWall(retained[id].deadline, retained[id].ceiling);', 'tcProductBudgetBelowCap', 'selected wall exceeded original remaining authority'),
+    'preparation-round-up-wall': ('PSrc/ProductTypes.p', 'w = (remaining - 1100 - productAllowance()) / 1000;', 'w = (remaining - 1100 - productAllowance() + 999) / 1000;', 'tcProductBudgetBelowCap', 'selected wall exceeded original remaining authority'),
+    'preparation-clearance-as-admission': ('PSrc/ProductOwner.p', 'announce mProductCleared, o;', 'announce mProductCleared, o;\n    send service, eProductNativeAdmission, (offer = o, native = request(id, 1, 1));', 'tcProductLifecycle', 'service admission lacked actual native evidence'),
+    'preparation-foreign-native-terminal': ('PSrc/ProductExecutor.p', 'if (candidate.native != associated[n.key.execution].native) {\n        announce mProductTerminalRefused, n;\n        return;\n      }', '', 'tcProductForeignNativeTerminal', 'outer completion used a different native child'),
+    'preparation-reselect-retained-wall': ('PSrc/ProductOwner.p', 'o = offers[id];', 'o = offers[id];\n    o.wall = productWall(retained[id].deadline - elapsed, retained[id].ceiling);', 'tcProductExpiredOffer', 'retained offer or original deadline changed'),
+    'preparation-renew-retained-deadline': ('PSrc/ProductOwner.p', 'o = offers[id];', 'o = offers[id];\n    o.deadline = o.deadline + elapsed;', 'tcProductExpiredOffer', 'retained offer or original deadline changed'),
+    'preparation-reclear-native-child': ('PSrc/ProductOwner.p', ('on eProductRecoverCommand do (id: int) {\n      if (id in nativeRows) {\n        queryNative(id);', '    if (id in nativeRows) { queryNative(id); return; }\n', '    if (id in cleared) { return; }\n'), ('on eProductRecoverCommand do (id: int) {\n      if (id in nativeRows) {\n        clearOffer(id);', '', ''), 'tcProductPostSendDelay', 'native custody authorized a second clearance'),
+
     'product-change-cleared-offer': ('PSrc/ProductOwner.p', 'candidate.commandDigest = accepted.commandDigest;', 'candidate.commandDigest = 2;', 'tcProductLifecycle', 'native command differed from owner-cleared offer'),
-    'product-remint-uncertain': ('PSrc/ProductOwner.p', 'original.key.execution = nativeRows[2].key.execution;', 'original.key.execution = 3;', 'tcProductLaunchLoss', 'uncertain command allocated replacement identity'),
+    'product-remint-uncertain': ('PSrc/ProductOwner.p', 'original.key.execution = nativeRows[id].key.execution;', 'original.key.execution = 3;', 'tcProductLaunchLoss', 'uncertain command allocated replacement identity'),
     'product-cap-name-alias': ('PSrc/ProductOwner.p', 'address.name = p.logical.name;', 'address.name = 0;', 'tcProductChildAddresses', 'distinct product children shared an address'),
-    'product-recreate-resource': ('PSrc/ProductExecutor.p', 'liveClaim = false;\n        if (liveClaim) { createResource(rows[2]); }', 'liveClaim = true;\n        if (liveClaim) { createResource(rows[2]); }', 'tcProductResourceUnknown', 'resource created without original live claim'),
-    'product-foreign-lease': ('PSrc/ProductExecutor.p', 'if (candidate.artifact == rows[2].artifact && candidate.scope == rows[2].scope &&\n        candidate.compileRequest == rows[1].requestDigest && candidate.resources == rows[2].resources)', 'if (created)', 'tcProductOfferConflict', 'issued resource did not match admitted artifact'),
+    'product-recreate-resource': ('PSrc/ProductExecutor.p', 'claims -= (id);\n      if (id in claims) { createResource(rows[id]); }', 'claims += (id);\n      if (id in claims) { createResource(rows[id]); }', 'tcProductResourceUnknown', 'resource created without original live claim'),
+    'product-foreign-lease': ('PSrc/ProductExecutor.p', 'if (candidate.artifact == rows[candidate.service.id].artifact && candidate.scope == rows[candidate.service.id].scope &&\n        candidate.compileRequest == rows[1].requestDigest && candidate.resources == rows[candidate.service.id].resources)', 'if (sizeof(created) > 0)', 'tcProductOfferConflict', 'issued resource did not match admitted artifact'),
     'product-loss-as-refusal': ('PSrc/ProductOwner.p', 'neverLaunched = false', 'neverLaunched = true', 'tcProductLaunchLoss', 'possible native launch reported never launched'),
     'product-early-outer-receipt': ('PSrc/ProductExecutor.p', 'announce mProductCompleted, p;', 'announce mProductReceipt, p;\n        announce mProductCompleted, p;', 'tcProductLifecycle', 'outer receipt preceded exact owner completion'),
     'product-final-from-children': ('PSrc/ProductOwner.p', 'if (finalResult != 0) {', 'if (sizeof(completions) == 2) {', 'tcProductChildOnlyRecovery', 'child evidence fabricated final tool outcome'),
@@ -70,9 +84,12 @@ def main() -> None:
         snapshot_model(project, baseline)
         source = project / path
         content = source.read_text()
-        if content.count(old) != 1:
-            raise RuntimeError(f"{name}: expected exactly one mutation site in {path}")
-        source.write_text(content.replace(old, new))
+        replacements = [(old, new)] if isinstance(old, str) else list(zip(old, new, strict=True))
+        for before, after in replacements:
+            if content.count(before) != 1:
+                raise RuntimeError(f"{name}: expected exactly one mutation site in {path}: {before!r}")
+            content = content.replace(before, after)
+        source.write_text(content)
         compilation = compile_model(project, out / name)
         mutant = check_case(project, out / name / "mutant", case,
                             args.schedules, args.seed, marker)
