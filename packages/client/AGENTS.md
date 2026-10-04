@@ -5883,3 +5883,19 @@ refuses a present value that is not a profile name
 and only for a page that holds the creation capability; `ui_socket.create_for`
 takes the chosen profile and maps `unknown_profile` to
 `creations.UnknownProfile`.
+
+## Remote owner custody
+
+`remote/custodian` owns the separate per-session request and final-report
+journal under a supervised weft actor. Atomic fresh admission starts a bounded
+weft task; retained evidence never reruns it. Exact final bytes commit before
+the caller ticket is answered, and task slots remain held until weft's drain
+notification. `remote/tool_custody` wraps only ToolSurface run/recover and keeps
+clearance and scheduling metadata unchanged. `remote/outcome` validates exact
+call identity and actual reserved session-result readback before collection.
+
+Managed versus local is an explicit assembly choice. Missing managed evidence
+returns unknown, never the local replay fallback. Daemon configuration and
+remote workspace/transport wiring remain required; these modules are not yet
+a shipped remote deployment. See [remote custody](../../docs/architecture/remote-custody.md)
+for identities, bounds, recovery and remaining end-to-end acceptance.
