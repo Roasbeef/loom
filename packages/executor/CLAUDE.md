@@ -10,7 +10,7 @@ for one reason: its dependency list is the compile-time proof that the
 service needs no session runtime, provider, web view or daemon. It depends on
 `broker`, `core`, `codemode` and `telemetry` (for `log.discard()`), plus `weft`, `argv`,
 `envoy`, `gleam_json`, `gleam_time`, `gleam_erlang`, `simplifile` and
-`sqlight_loom`, `parrot` and `tools`, and never on `host` or `client`.
+`sqlight_loom`, `parrot`, `tools` and `codemode`, and never on `host` or `client`.
 `tools` supplies the closed semantic workspace host and codec; it imports
 `broker` but does not depend on this package, so this edge has no cycle.
 
@@ -27,6 +27,38 @@ A standalone executor has no caller until the distributed-runtime epic
 `broker/dispatch.Dispatcher`, which is the whole adapter: a remote
 transport is a `Dispatcher` whose `start` forwards a `Dispatch` to a peer.
 No second type names it.
+
+## Closed Compile completion
+
+`remote/compile_completion.CompileCompletion` retains the original whole Compile
+ServiceKey and a closed pre-native error, native-associated error or successful
+executor artifact. Success accepts admitted `service_resources.CompileLocations`,
+actual native RequestKey/Digest and exact terminal bytes, plus physical
+`compile.BuildProducts`; it derives every ExecutorArtifact field and the complete
+`enforcement.of_call` report. There is no local Artifact or separate report
+argument. The native exit must have zero code/signal and no timeout/cancellation.
+Products use the exact admitted root plus `build.beam_directory` and a canonical
+`sha256-` fingerprint; the opaque issuer ID is the original Compile UUID.
+
+The canonical versioned MessagePack frame embeds core's complete ServiceKey and
+reuses journal_codec.Admit bytes solely as native identity/digest encoding, with
+scope supplied by the checked whole original key. This reuse applies no reducer
+and proves no admission. The native UUID is independent of the original Compile
+UUID; its scope/operation must match. Its Prepared digest never substitutes for
+an input or terminal digest. Native terminal bytes remain exact and canonical.
+Outer preflight limits are 256 KiB, 2048 nodes, depth 16, containers 128, strings
+8 KiB and binaries 128 KiB; terminal bytes stop at 32 KiB and every CompileError
+text at 8000 bytes before retention. Native-derived Unreported text is also bounded.
+
+`decode(enrolled, expected, bytes)` pins the complete expected original identity
+and enrollment, reuses the native terminal decoder and readmits the closed
+outcome, then checks exact canonical bytes. `original`, `native_association` and
+`compiled` expose historical comparison evidence. The actual authenticated native
+journal readback, matching Prepared step, physical hashing and live allocation
+custody remain caller duties. Recovery grants neither a claim nor authority to
+reissue an artifact. The codemode dependency supplies these existing concrete
+product/report/Ready types and fixed layout; codemode has no executor dependency.
+No resource effects, journal transitions or production service wiring occur here.
 
 ## Key Types
 
