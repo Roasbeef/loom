@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ ● Owner · operator                                                                                                     
+    Here is the latency chart. Why does the p99 line jump after 14:00?                                                  
+   ▣ image 1 · image/png · 1200×700 · 84 KB · o opens externally                                                        
+     this terminal answered no graphics query                                                                           
+     ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡠⠊                                                                                           
+     ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡠⠔⠊⠁⠀⠀⠀⠀                                                                                           
+     ⣀⣀⡠⠤⠤⠒⠒⠒⠉⠉⠉⠉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀ braille preview · optional                                                                
+                                                                                                                        
+ ● main                                                                                                                 
+   The jump lines up with the 14:00 deploy: the p99 doubles while p50 stays flat, which points at a slow path rather    
+   than load.                                                                                                           
+ ○ main · idle                                                                                     Ctrl+T selects a row 
+╭─ To main · Enter queues · Tab steers ──────────────────────────────────────────────────────────────────── ws · main ─╮
+│ › ← sessions · ↓ strands · / commands                                                                                │
+╰─ kimi-k3 · low › pi-gui › main *1 › ctx ~41% › est $1.86 ─────────────────────────────────────────────── 0 need you ─╯

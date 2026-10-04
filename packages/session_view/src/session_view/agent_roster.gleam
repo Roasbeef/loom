@@ -433,6 +433,21 @@ fn listed(row: agent_view.Row, active: String) -> Bool {
   }
 }
 
+/// One agent's line whether or not a strip would list it.
+///
+/// `lines` lists only the agents worth watching; a host that shows every
+/// agent, as the terminal's workspace list does, describes the rest with
+/// the same words and figures through this.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agent_roster.describe(roster, finished_row).status == agent_view.Finished
+/// ```
+pub fn describe(roster: Roster, row: agent_view.Row) -> Line {
+  line(roster, row)
+}
+
 fn line(roster: Roster, row: agent_view.Row) -> Line {
   let current = case row.operation {
     Some(operation) -> current_glance(roster.glances, row.id, operation)

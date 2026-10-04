@@ -1,0 +1,24 @@
+ Strands ¹  Changes  Trace  Session                                             
+─━━━━━━━━━──────────────────────────────────────────────────────────────────────
+ STRANDS · 4                                                   ctx · cache left 
+                                                                                
+ ❯ ● main       Working · code_mode                                    41k · 3m 
+   ? sub:tests  Needs approval                                          9k · 4m 
+   ✓ sub:docs   Finished 1m 12s                                             12k 
+   ◆ advisor    1 nudge pending                                        18k · 1m 
+                                                                                
+ PEERS                                                                          
+ ↑↓ select · Enter focus · ←→ tabs · Esc back to transcript                     
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ ◐ main · code_mode · 1.2s                                       Esc interrupts 
+╭─ To main · Tab steers ─────────────────────────────────────────── ws · main ─╮
+│ › ← sessions · ↓ strands · / commands                                        │
+╰─ kimi-k3 › ctx ~41% › $1.86 ─────────────────────────────────── 1 needs you ─╯

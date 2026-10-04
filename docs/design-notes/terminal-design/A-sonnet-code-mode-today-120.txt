@@ -1,0 +1,40 @@
+ ◆ loom   ws · pi-gui (main)                                                                   kimi-k3 · Ctrl+g details 
+ transcript / main                                                                                                      
+ ◆ main                                                                                                                 
+   Checking the new function with a program.                                                                            
+                                                                                                                        
+ ╭─ ✓ code_mode · read_config.gleam · 14 lines ────────────────────────────────────────────────────────────────────────╮
+ │ result: ok · config parsed, 3 keys                                                                                  │
+ ╰─ Ctrl+g shows the program ──────────────────────────────────────────────────────────────────────────────────────────╯
+                                                                                                                        
+ ╭─ × code_mode · check_subtract.gleam · failed ───────────────────────────────────────────────────────────────────────╮
+ │ import cap/proc                                                                                                     │
+ │ let assert Ok(out) = proc.run("gleam", ["test"])                                                                    │
+ │ + 11 more lines                                                                                                     │
+ │                                                                                                                     │
+ │ result: failed · the program exited with status 2                                                                   │
+ │ details: assertion failed at line 2 (message and details as returned)                                               │
+ ╰─ Ctrl+g: full program and result ───────────────────────────────────────────────────────────────────────────────────╯
+                                                                                                                        
+ ● code_mode fix_subtract.gleam · running 1.2s                                                                          
+ ╭─ running fix_subtract.gleam ────────────────────────────────────────────────────────────────────────────────────────╮
+ │ let assert Ok(src) = fs.read("src/calc.gleam")                                                                      │
+ │ let patched = string.replace(src, "a + b", "a - b")                                                                 │
+ │ + 9 more lines                                                                                                      │
+ ╰─ the call list is not on the wire; only the program and its result are ─────────────────────────────────────────────╯
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+─ To main · enter queues · tab steers ──────────────────────────────────────────────────────────────────────────────────
+ ›                                                                                                                      
+ ◒ streaming (3s) · esc to interrupt                                                                                    
+                                                                                                                        
+ baseten-kimi-k3 · ctx ~41% · est $1.86 · ↓ strip · ← sessions · ⇧Tab panel          3 agents · 2 working · 1 needs you 

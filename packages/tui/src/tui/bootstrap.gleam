@@ -695,7 +695,19 @@ pub fn default_catalogue_path(state_directory: String) -> String {
   filepath.join(state_directory, "loom.toml")
 }
 
-fn state_directory(override: String) -> Result(String, String) {
+/// The launcher's state root: `override` when it is not empty, otherwise
+/// `~/.loom`, made absolute.
+///
+/// The terminal keeps its own files here beside the launcher's, such as the
+/// layout memory (`layout_memory`), so every one of them follows the
+/// operator's `--state-dir`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert bootstrap.state_directory("/var/loom") == Ok("/var/loom")
+/// ```
+pub fn state_directory(override: String) -> Result(String, String) {
   case override {
     "" -> {
       use home <- result.try(

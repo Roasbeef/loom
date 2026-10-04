@@ -35,7 +35,12 @@ fn drawn(pieces: List(turns.Piece)) -> String {
 }
 
 fn work(items: List(turns.Item)) -> turns.Piece {
-  turns.Work("work:1.0", turns.Worked(Some(22_000), 2, 1), items, turns.Folded)
+  turns.Work(
+    "work:1.0",
+    turns.Worked(Some(22_000), 2, 1, 0),
+    items,
+    turns.Folded,
+  )
 }
 
 fn step(

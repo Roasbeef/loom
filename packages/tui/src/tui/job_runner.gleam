@@ -64,7 +64,9 @@ import tui/connection
 import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
+import tui/image_open
 import tui/job.{type Arrival, type ControlKey, type Key}
+import tui/view_link
 import weft
 
 /// The jobs this terminal has started and not yet heard the end of, by
@@ -191,6 +193,7 @@ pub fn file(
       running,
       job.ConfigurationArrived(key:, reply:),
     )
+    job.ImageArrived(key:, reply:) -> #(running, job.ImageArrived(key:, reply:))
   }
 }
 
@@ -306,6 +309,18 @@ pub fn start(running: Running, key: Key, spec: job.Spec) -> Running {
         fn() { bootstrap.session_configuration(options) },
         configuration_timeout_ms,
         job.ConfigurationArrived,
+      )
+
+    // The opener is waited on for at most `view_link.opener_wait_ms`, and
+    // writing the file reads no network, so the job's deadline is that wait
+    // and a little for the write.
+    job.OpenImage(mime_type:, data:) ->
+      start_task(
+        running,
+        key,
+        fn() { image_open.open(mime_type, data, view_link.quiet_opener()) },
+        view_link.opener_wait_ms + 2000,
+        job.ImageArrived,
       )
   }
 }
@@ -469,7 +484,8 @@ pub fn dropped(arrival: Arrival(daemon_selection.Host)) -> Nil {
     | job.ControlArrived(..)
     | job.ReconnectArrived(..)
     | job.ActivityArrived(..)
-    | job.ConfigurationArrived(..) -> Nil
+    | job.ConfigurationArrived(..)
+    | job.ImageArrived(..) -> Nil
   }
 }
 

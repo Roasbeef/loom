@@ -1,0 +1,24 @@
+ ● code_mode  check_subtract.gleam  · running 1.2s · Trace tab                  
+                                                                                
+ ● sub:tests waits for approval · fetch https://proxy.golang.org · a reviews    
+                                                                                
+ ● main                                                                         
+   I added subtract next to add. Both tests should pass once sub:tests reports  
+   back, then I will update the README example.                                 
+────────────────────────────────────────────────────────────────────────────────
+ ? sub:tests wants network access                                        1 of 1 
+                                                                                
+   fetch https://proxy.golang.org/gleam_stdlib/@v/list                          
+                                                                                
+   grant                                                                        
+   net · proxy.golang.org:443                                                   
+   session approval is available for this grant                                 
+                                                                                
+   1  Allow once                                                                
+   2  Allow for session                                                         
+   3  Deny                                                                      
+                                                                                
+ 1-3 or ↑↓ select · Enter confirms · d raw request · Esc defers                 
+╭─ To main · locked while deciding ──────────────────────────────── ws · main ─╮
+│ › ← sessions · ↓ strands · / commands                                        │
+╰─ kimi-k3 › ctx ~41% › $1.86 ─────────────────────────────────── 1 needs you ─╯

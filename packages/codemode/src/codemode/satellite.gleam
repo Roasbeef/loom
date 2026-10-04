@@ -184,6 +184,7 @@ import gleam/otp/actor
 import gleam/result
 import gleam/string
 import simplifile
+import tools/call_record.{type CallLog, type Ledger}
 import tools/tool.{type Collected}
 import weft
 import weft/state_machine as sm
@@ -226,8 +227,15 @@ pub type Outcome {
 /// report. A run whose node was never launched, or whose helper never
 /// reported, carries an `Unreported` saying which — never silence for a
 /// reader to mistake for confinement (`codemode/enforcement`, issue #5).
+///
+/// `calls` applies the same discipline to what the program did. The host
+/// writes the record of its capability calls from what the host decided
+/// and what its own clock read, never from the program's `outcome` frame,
+/// and it rides on the result so a run that failed (a deadline, a dead
+/// satellite) still says which calls it had made. A run that never
+/// launched carries the empty log.
 pub type Run {
-  Run(outcome: Result(Outcome, RunError), node: Report)
+  Run(outcome: Result(Outcome, RunError), node: Report, calls: CallLog)
 }
 
 /// Why an execution did not return an `Outcome`. Every variant is a value;
@@ -596,6 +604,12 @@ type State {
     destroy: Option(fn() -> Report),
     pending_out: List(BitArray),
     inflight: Dict(Int, InFlight),
+    // The record of this execution's calls, and which sequence number each
+    // in-flight frame id was admitted under. Kept beside `inflight` rather
+    // than inside it because the persistent host shares `InFlight` and
+    // records nothing.
+    ledger: Ledger,
+    seqs: Dict(Int, Int),
     result: Subject(Run),
   )
 }
@@ -656,6 +670,7 @@ fn never_launched(error: RunError) -> Run {
   Run(
     outcome: Error(error),
     node: enforcement.Unreported("no node was launched"),
+    calls: call_record.empty(),
   )
 }
 
@@ -755,6 +770,8 @@ fn await_result(
           "the host produced no terminal result, so the node's report was "
           <> "never collected",
         ),
+        // The host owned the record and never handed it back.
+        calls: call_record.empty(),
       )
     }
   }
@@ -819,7 +836,7 @@ fn start_host(
   token_path: String,
   result_subject: Subject(Run),
 ) -> Result(RunHost, actor.StartError) {
-  let #(_now, clock) = clock.read(config.clock)
+  let #(started, clock) = clock.read(config.clock)
   actor.new_with_initialiser(host_init_timeout_ms, fn(commands) {
     let wire = process.new_subject()
     let selector =
@@ -853,6 +870,8 @@ fn start_host(
         destroy: None,
         pending_out: [],
         inflight: dict.new(),
+        ledger: call_record.start(started),
+        seqs: dict.new(),
         result: result_subject,
       )
     actor.initialised(state)
@@ -942,7 +961,8 @@ fn handle_cap_done(
 ) -> actor.Next(State, Msg) {
   case dict.get(state.inflight, id) {
     Error(Nil) -> actor.continue(state)
-    Ok(_) -> {
+    Ok(entry) -> {
+      let state = close_call(state, id, entry, outcome)
       let state = emit(state, id, outcome)
       actor.continue(State(..state, inflight: dict.delete(state.inflight, id)))
     }
@@ -1052,7 +1072,16 @@ fn handle_cap_call(
         id,
         framing.CapErr(code: "unauthorized", message: refusal_text(refusal)),
       ))
-    Ok(_binding) -> FrameContinue(route_cap_call(state, id, cap, args))
+    Ok(_binding) ->
+      case dict.has_key(state.inflight, id) {
+        // The frame `id` is the satellite's to choose, and a second call
+        // under a live one would overwrite its entry and have the second
+        // settlement finalise the wrong record. An honest cap runtime
+        // allocates each id once, so refusing costs nothing; an id whose
+        // call has settled is free to be reused.
+        True -> FrameDone(state, Error(ChannelFaulted("duplicate cap_call id")))
+        False -> FrameContinue(route_cap_call(state, now, id, cap, args))
+      }
   }
 }
 
@@ -1078,6 +1107,7 @@ fn finish_from_payload(state: State, payload: BitArray) -> FrameStep {
 // so leaves the ordinal for the next call to claim.
 fn route_cap_call(
   state: State,
+  now: Int,
   id: Int,
   cap: String,
   args: MsgPackValue,
@@ -1095,12 +1125,16 @@ fn route_cap_call(
     )
   case state.router(request) {
     Error(denial) ->
-      emit(
+      refuse_cap_call(
         state,
+        now,
         id,
+        cap,
+        args,
+        denial.code,
         framing.CapErr(code: denial.code, message: denial.message),
       )
-    Ok(plan) -> admit_cap_call(state, id, cap, plan)
+    Ok(plan) -> admit_cap_call(state, now, id, cap, args, plan)
   }
 }
 
@@ -1118,15 +1152,40 @@ fn route_cap_call(
 // with a loop needs one. It is checked before the outstanding cap so that
 // a program at its ceiling reads the refusal that will still be true a
 // moment later, rather than a transient "too many in flight".
-fn admit_cap_call(state: State, id: Int, cap: String, plan: CapPlan) -> State {
+fn admit_cap_call(
+  state: State,
+  now: Int,
+  id: Int,
+  cap: String,
+  args: MsgPackValue,
+  plan: CapPlan,
+) -> State {
   let already = admitted_count(state, cap)
   case ceiling_reached(state, cap, already) {
-    Some(ceiling) -> emit(state, id, ceiling_denial(ceiling))
+    Some(ceiling) ->
+      refuse_cap_call(
+        state,
+        now,
+        id,
+        cap,
+        args,
+        ceiling.code,
+        ceiling_denial(ceiling),
+      )
     None -> {
       let outstanding = pooled(state).max_outstanding
       case dict.size(state.inflight) >= outstanding {
-        True -> emit(state, id, budget_denial(outstanding))
-        False -> dispatch_cap_call(state, id, cap, already, plan)
+        True ->
+          refuse_cap_call(
+            state,
+            now,
+            id,
+            cap,
+            args,
+            "budget",
+            budget_denial(outstanding),
+          )
+        False -> dispatch_cap_call(state, now, id, cap, args, already, plan)
       }
     }
   }
@@ -1136,11 +1195,14 @@ fn admit_cap_call(state: State, id: Int, cap: String, plan: CapPlan) -> State {
 // process of its own carries it.
 fn dispatch_cap_call(
   state: State,
+  now: Int,
   id: Int,
   cap: String,
+  args: MsgPackValue,
   already: Int,
   plan: CapPlan,
 ) -> State {
+  let #(ledger, seq) = call_record.admit(state.ledger, cap, args, now)
   let admitted = dict.insert(state.admitted, cap, already + 1)
   let service =
     spawn_worker(
@@ -1162,7 +1224,62 @@ fn dispatch_cap_call(
       id,
       InFlight(handle: None, cancelled: False, service:),
     )
-  State(..state, inflight:, admitted:)
+  State(
+    ..state,
+    inflight:,
+    admitted:,
+    ledger:,
+    seqs: dict.insert(state.seqs, id, seq),
+  )
+}
+
+// A call the host refused before dispatching it: it is on the record as
+// failed under the refusal's code, took no time, and is answered at once.
+// It never enters `inflight`, so its `id` is free for the satellite's next
+// call.
+fn refuse_cap_call(
+  state: State,
+  now: Int,
+  id: Int,
+  cap: String,
+  args: MsgPackValue,
+  code: String,
+  refusal: CapOutcome,
+) -> State {
+  let ledger = call_record.refuse(state.ledger, cap, args, code, now)
+  emit(State(..state, ledger:), id, refusal)
+}
+
+// Puts a settled call on the record. The host's own decision is what is
+// recorded: a call the satellite cancelled before it settled is cancelled
+// whatever the worker then answered, and the code is the `CapErr` code the
+// host holds, never its message.
+fn close_call(
+  state: State,
+  id: Int,
+  entry: InFlight,
+  outcome: CapOutcome,
+) -> State {
+  let #(now, clock) = clock.read(state.clock)
+  let status = case entry.cancelled, outcome {
+    True, _ -> call_record.CallCancelled
+    False, framing.CapErr(..) -> call_record.CallFailed
+    False, framing.CapOk(..) -> call_record.CallOk
+  }
+  let error = case outcome {
+    framing.CapErr(code:, ..) -> Some(code)
+    framing.CapOk(..) -> None
+  }
+  case dict.get(state.seqs, id) {
+    Error(Nil) -> State(..state, clock:)
+    Ok(seq) ->
+      State(
+        ..state,
+        clock:,
+        ledger: call_record.settle(state.ledger, seq, status, error, now),
+        seqs: dict.delete(state.seqs, id),
+      )
+  }
 }
 
 // How many calls of `cap` this execution has already admitted.
@@ -1419,8 +1536,13 @@ fn terminate(
   state: State,
   outcome_result: Result(Outcome, RunError),
 ) -> actor.Next(State, Msg) {
+  // The execution settles here, so the calls still in flight are closed
+  // at this instant, before teardown, whose own latency is not the
+  // program's.
+  let #(now, _clock) = clock.read(state.clock)
+  let calls = call_record.finish(state.ledger, dict.values(state.seqs), now)
   let node = cleanup(state)
-  process.send(state.result, Run(outcome: outcome_result, node:))
+  process.send(state.result, Run(outcome: outcome_result, node:, calls:))
   actor.stop()
 }
 

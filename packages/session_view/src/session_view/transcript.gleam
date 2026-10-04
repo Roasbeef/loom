@@ -212,6 +212,7 @@ fn presented(
       compact_entry_cache: dict.new(),
       compact_call_cache: dict.new(),
       worktree: worktree_view.new(),
+      clock: None,
     )
   #(
     records,

@@ -31,13 +31,16 @@ import session_view/model.{ComposerSubmission, OverlaySubmission, Shared} as ses
 import session_view/msg
 import session_view/operator
 import session_view/protocol
+import session_view/surfaces
 import session_view/worktree_view
+import tui/agent_strip
 import tui/agents
 import tui/attachment
 import tui/effect
 import tui/inbound
 import tui/job
 import tui/layout
+import tui/layout_memory
 import tui/model.{
   type Model, ActivityAsking, ActivityDue, ActivityResting, AgentInspector,
   DiffHidden, DiffVisible, Model, ModelSelector, NoOverlay, PromptNext,
@@ -46,6 +49,7 @@ import tui/model.{
 import tui/model_selector
 import tui/note_panel
 import tui/queue_editor
+import tui/rail
 import tui/session_control
 import tui/side_surfaces
 
@@ -116,6 +120,7 @@ fn submit_surface(model: Model, surface: command.Surface) -> Model {
     False, _
     | True, command.QueueInspect
     | True, command.Diff
+    | True, command.Trace
     | True, command.Summary
     | True, command.Context
     | True, command.ContextAll
@@ -236,6 +241,7 @@ fn surface_command(model: Model, surface: command.Surface) -> Model {
       ))
     command.QueueInspect -> open_queue(cleared)
     command.Summary -> side_surfaces.open_summary(cleared)
+    command.Trace -> open_trace_tab(cleared)
     command.Context ->
       side_surfaces.open_context(cleared, context_view.Overview)
     command.ContextAll -> side_surfaces.open_context(cleared, context_view.All)
@@ -420,21 +426,52 @@ pub fn interrupt_and_insert(model: Model, character: String) -> Model {
   )
 }
 
-/// Shows or hides the agent rail.
+/// Docks or hides the rail, and records the choice.
+///
+/// The choice is what the layout memory keeps. On a terminal too narrow to
+/// dock the rail the same key opens and closes the sheet instead, which is
+/// not a choice and is not recorded: it is the rail's form for a terminal that
+/// cannot spare a column. While the changes are open the rail is on Changes
+/// and cannot be hidden, so the same key closes them.
 @internal
 pub fn toggle_agent_rail(model: Model) -> Model {
-  let visible = !model.view.agent_rail_visible
-  Model(
-    shared: Shared(..model.shared, notice: case visible {
-      True -> "agent rail shown"
-      False -> "agent rail hidden"
-    }),
-    view: View(
-      ..model.view,
-      agent_rail_visible: visible,
-      repaint_phase: !model.view.repaint_phase,
-    ),
-  )
+  case layout.diff_shown(model) && layout.rail_present(model) {
+    True ->
+      Model(
+        shared: Shared(..model.shared, notice: "changes closed"),
+        view: View(
+          ..model.view,
+          diff_view: DiffHidden,
+          repaint_phase: !model.view.repaint_phase,
+        ),
+      )
+    False ->
+      case model.view.width >= rail.narrowest {
+        False ->
+          case layout.sheet_shown(model) {
+            True -> close_sheet(model)
+            False -> open_sheet(model)
+          }
+        True -> {
+          let docked = layout.rail_columns(model) > 0
+          let choice = case docked {
+            True -> layout_memory.RailHidden
+            False -> layout_memory.RailShown
+          }
+          Model(
+            shared: Shared(..model.shared, notice: case docked {
+              True -> "rail hidden"
+              False -> "rail docked"
+            }),
+            view: View(
+              ..model.view,
+              rail: Some(choice),
+              repaint_phase: !model.view.repaint_phase,
+            ),
+          )
+        }
+      }
+  }
 }
 
 /// Expands or collapses transcript details such as reasoning and tool
@@ -562,6 +599,208 @@ pub fn switch_active_strand(model: Model, strand: String) -> Model {
     )
   let around = inbound.surroundings(selected)
   inbound.run_settled(selected, commands.load_strand(_, strand, around))
+}
+
+/// Shows `tab` on the rail, docking the rail if it can be and is not.
+///
+/// This is what the digit keys and the `/diff`, `/trace` and `/summary`
+/// commands do. Changes opens the changes, which is the changes setting's.
+/// Any other tab closes them if they were open, is remembered as the
+/// operator's tab, and starts at its top. Strands gives the keyboard back to
+/// the composer, and Session asks for a fresh read of the live jobs, which
+/// its jobs row reports.
+///
+/// A terminal too narrow to dock the rail has nowhere to show a tab, so it is
+/// left as it is. The caller says so in a notice.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = submit.select_rail_tab(model, rail.Trace)
+/// ```
+@internal
+pub fn select_rail_tab(model: Model, tab: rail.Tab) -> Model {
+  let chosen = choose_rail_tab(model, tab)
+
+  // The sheet is a place the keyboard goes to, so choosing a tab in it
+  // leaves the keyboard there; the docked rail leaves it where it was.
+  case layout.sheet_shown(chosen) {
+    True -> focus_sheet(chosen)
+    False -> chosen
+  }
+}
+
+fn choose_rail_tab(model: Model, tab: rail.Tab) -> Model {
+  case tab {
+    rail.Changes ->
+      case layout.diff_shown(model) {
+        True -> model
+        False -> open_diff(model)
+      }
+    rail.Strands | rail.Trace | rail.Session -> {
+      let closed = case layout.diff_shown(model) {
+        True -> open_diff(model)
+        False -> model
+      }
+      let chosen =
+        Model(
+          ..closed,
+          view: View(
+            ..closed.view,
+            rail_tab: rail.remembered(tab),
+            rail_scroll: 0,
+            rail_focus: tui_model.FocusComposer,
+            sheet: sheet_for(closed),
+            rail: docked_choice(closed),
+          ),
+        )
+      let left =
+        tui_model.store_strip(
+          chosen,
+          agent_strip.leave(tui_model.strip(chosen)),
+        )
+      let read = case tab {
+        rail.Session ->
+          Model(
+            ..left,
+            shared: Shared(..left.shared, jobs_refresh: worktree_view.Requested),
+          )
+          |> tui_model.run_shared(surfaces.service_jobs_read)
+        rail.Strands | rail.Changes | rail.Trace -> left
+      }
+      read
+      |> tui_model.invalidate_transcript
+      |> tui_model.invalidate_frame
+    }
+  }
+}
+
+// The rail's choice after something asks for it to be shown: shown, when the
+// terminal is wide enough to dock it and the rail is not already docked, and
+// what it was otherwise. A rail docked by default at 160 columns is not a
+// choice, so choosing a tab on it must not make it dock at 120 next launch.
+fn docked_choice(model: Model) -> Option(layout_memory.Rail) {
+  case model.view.width >= rail.narrowest, layout.rail_columns(model) {
+    True, 0 -> Some(layout_memory.RailShown)
+    True, _ | False, _ -> model.view.rail
+  }
+}
+
+// Whether choosing a tab on this terminal opens the sheet: it does where the
+// rail cannot dock, and means nothing where it can.
+fn sheet_for(model: Model) -> tui_model.Sheet {
+  case model.view.width < rail.narrowest {
+    True -> tui_model.SheetOpen
+    False -> model.view.sheet
+  }
+}
+
+/// Opens the sheet on the tab the operator left the rail on, and gives it
+/// the keyboard.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = submit.open_sheet(model)
+/// ```
+@internal
+pub fn open_sheet(model: Model) -> Model {
+  Model(..model, view: View(..model.view, sheet: tui_model.SheetOpen))
+  |> focus_sheet
+  |> tui_model.invalidate_transcript
+  |> tui_model.invalidate_frame
+}
+
+/// Closes the sheet and gives the keyboard back to the composer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = submit.close_sheet(model)
+/// ```
+@internal
+pub fn close_sheet(model: Model) -> Model {
+  let closed =
+    Model(
+      ..model,
+      view: View(
+        ..model.view,
+        sheet: tui_model.SheetClosed,
+        rail_focus: tui_model.FocusComposer,
+      ),
+    )
+  tui_model.store_strip(closed, agent_strip.leave(tui_model.strip(closed)))
+  |> tui_model.invalidate_transcript
+  |> tui_model.invalidate_frame
+}
+
+// The keyboard goes to the sheet. On Strands, with agents to choose among,
+// that is the list's cursor; otherwise, and on every other tab but Changes,
+// which has its own focus, it is the tab itself.
+fn focus_sheet(model: Model) -> Model {
+  case layout.rail_tab(model) {
+    rail.Changes -> model
+    rail.Strands ->
+      case layout.strands_listed(model) {
+        True ->
+          tui_model.store_strip(
+            model,
+            agent_strip.enter(
+              tui_model.strip(model),
+              layout.strip_lines(model),
+              model.shared.active_strand,
+            ),
+          )
+        False ->
+          Model(
+            ..model,
+            view: View(..model.view, rail_focus: tui_model.FocusTab),
+          )
+      }
+    rail.Trace | rail.Session ->
+      Model(..model, view: View(..model.view, rail_focus: tui_model.FocusTab))
+  }
+}
+
+/// Hands the sheet off to the rail when a resize makes the terminal wide
+/// enough to dock one: the sheet is closed, so it does not come back if the
+/// terminal narrows again. The other direction is not followed: narrowing a
+/// terminal that had the rail docked leaves the sheet closed, because opening
+/// it would cover the transcript the person was reading.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = submit.hand_off_sheet(model)
+/// ```
+@internal
+pub fn hand_off_sheet(model: Model) -> Model {
+  case model.view.sheet, model.view.width >= rail.narrowest {
+    tui_model.SheetOpen, True ->
+      Model(
+        ..model,
+        shared: Shared(
+          ..model.shared,
+          notice: "sheet closed · Shift+Tab docks the rail on "
+            <> rail.name(layout.rail_tab(model)),
+        ),
+      )
+      |> close_sheet
+    tui_model.SheetOpen, False | tui_model.SheetClosed, _ -> model
+  }
+}
+
+/// `/trace`: the Trace tab, on the docked rail where there is one and on the
+/// sheet where there is not.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = submit.open_trace_tab(model)
+/// ```
+@internal
+pub fn open_trace_tab(model: Model) -> Model {
+  select_rail_tab(model, rail.Trace)
 }
 
 /// Opens held-input inspection without touching composer text or attachments.

@@ -9,6 +9,29 @@
 //// `refresh_diff_cache` does the same for the changes panel. The rows are
 //// anchored to durable identities, so a scrolled-back reader keeps their
 //// place when earlier history arrives.
+////
+//// ## Flow
+////
+//// `refresh_render_cache` → `refresh_diff_cache` → `refresh_record_cache`
+//// → `cached_record_lines` → `rendered_layout_for` → `record_anchors_for`
+//// → `rendered_lines` → `line_rows`
+////
+//// 1. `refresh_render_cache` compares the model before and after an event
+////    and does nothing unless a revision, the width, a surface or the
+////    active strand moved.
+//// 2. `refresh_diff_cache` is the changes panel's own cache, kept on the
+////    same before-and-after comparison and refreshed first.
+//// 3. `refresh_record_cache` decides whether the cached record rows still
+////    describe the records, and appends the pending ones or rebuilds.
+//// 4. `cached_record_lines` wraps each record line once and keeps the
+////    result keyed by the line, so a settled record reuses its rows.
+//// 5. `rendered_layout_for` adds what is not a record: help, the reading
+////    surface and the transient lines of the live stream.
+//// 6. `record_anchors_for` pairs the rows with the durable entry each
+////    belongs to, so a reader scrolled back keeps their place.
+//// 7. `rendered_lines` turns the lines into rows and copy gutters together,
+////    and `line_rows` sends a live answer through the live tail and
+////    everything else through `render.render_line`.
 
 import core/entry
 import core/ids
@@ -22,17 +45,22 @@ import gleam/result
 import gleam/string
 import session_view/advisor_history
 import session_view/composer
+import session_view/image_header
 import session_view/model.{Shared} as session_model
 import session_view/notes_view
 import session_view/tool_activity
 import session_view/transcript_line.{
-  type Line, type Speaker, type Stream, Assistant, Failure, Line, Reasoning,
-  ReasoningDigest, Spacer, SummarizedAdvice, SummarizedReasoning, System,
-  ToolCall, ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
+  type Line, type Speaker, type Stream, Assistant, Failure, ImageRow, Line,
+  PeerMessage, ProgramFailure, ProgramRunning, Reasoning, ReasoningDigest,
+  SentMessage, Spacer, StrandMessage, SummarizedAdvice, SummarizedReasoning,
+  System, ToolCall, ToolDetail, ToolFailure, ToolGroup, ToolPatch, ToolResult,
+  User,
 }
 import session_view/transcript_lines.{
   BetweenEntries, Projected, Transient, WithinResponse,
 }
+import tui/image_box
+import tui/image_support
 import tui/layout
 import tui/live_tail
 import tui/markdown
@@ -51,7 +79,7 @@ pub fn refresh_render_cache(before: Model, after: Model) -> Model {
     after.shared.render_revision != after.view.rendered_revision
     || tui_model.reading_history(before) != tui_model.reading_history(after)
     || before.view.width != after.view.width
-    || before.view.agent_rail_visible != after.view.agent_rail_visible
+    || layout.rail_columns(before) != layout.rail_columns(after)
     || before.shared.details_expanded != after.shared.details_expanded
     || before.view.help_open != after.view.help_open
     || before.view.notes_open != after.view.notes_open
@@ -241,6 +269,9 @@ fn refresh_diff_cache(before: Model, after: Model) -> Model {
             |> cached_record_lines(
               layout.diff_width(after),
               previous_diff_layout(before, after),
+              after.shared.active_strand,
+              after.view.image_support,
+              after.view.height,
             )
           let count = list.length(rows)
           Model(
@@ -311,8 +342,22 @@ pub fn viewport_height_changed(before: Int, after: Int) -> Bool {
 fn record_cache_matches(model: Model, width: Int) -> Bool {
   model.shared.record_cache_valid
   && model.view.record_cache_width == width
+  && same_image_height(model)
   && model.view.record_cache_strand == model.shared.active_strand
   && model.view.record_cache_details == model.shared.details_expanded
+}
+
+// A short terminal gives a picture fewer rows, so rows built for another
+// number of picture rows are not the rows of this one. The number comes from
+// the terminal's height, so typing never changes it. On a terminal that draws
+// nothing no row depends on it, and a resize that changes it keeps the cache.
+fn same_image_height(model: Model) -> Bool {
+  case model.view.image_support {
+    image_support.TextOnly(..) -> True
+    image_support.KittyPlaceholders(..) | image_support.Iterm2Inline(..) ->
+      model.view.record_cache_height
+      == image_box.picture_rows(model.view.height)
+  }
 }
 
 fn refresh_record_cache(model: Model, width: Int) -> Model {
@@ -344,6 +389,8 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
     False, _ -> {
       let previous = case
         model.view.record_cache_width == width
+        && same_image_height(model)
+        && model.view.record_cache_strand == model.shared.active_strand
         && model.view.caches.record_cache_epoch
         == model.shared.record_cache_epoch
       {
@@ -353,9 +400,16 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
       let #(lines, compact_call_cache, compact_entry_cache) =
         record_projection(model)
       let #(record_rows, record_line_cache, record_gutters) =
-        model.shared.transcript
+        transcript_lines.separated_lines(model.shared.transcript)
         |> list.append(lines)
-        |> cached_record_lines(width, previous)
+        |> noted_images(model)
+        |> cached_record_lines(
+          width,
+          previous,
+          model.shared.active_strand,
+          model.view.image_support,
+          model.view.height,
+        )
       Model(
         shared: Shared(
           ..model.shared,
@@ -374,6 +428,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
           ),
           record_gutters:,
           record_cache_width: width,
+          record_cache_height: image_box.picture_rows(model.view.height),
           record_cache_strand: model.shared.active_strand,
           record_cache_details: model.shared.details_expanded,
         ),
@@ -391,7 +446,14 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
       let #(newest_rows, appended, newest_gutters) =
         lines
         |> separated_from_screen(model)
-        |> cached_record_lines(width, model.view.caches.record_line_cache)
+        |> noted_images(model)
+        |> cached_record_lines(
+          width,
+          model.view.caches.record_line_cache,
+          model.shared.active_strand,
+          model.view.image_support,
+          model.view.height,
+        )
 
       // Every cache here describes the current projection, and the appended
       // records have just joined it. Merging rather than replacing keeps the
@@ -451,6 +513,116 @@ fn separated_from_screen(lines: List(Line), model: Model) -> List(Line) {
   }
 }
 
+// An image's row says why the picture is not drawn when this terminal
+// knows: inside Herdr, which passes no pane graphics through, or on a
+// terminal that would draw it but for the image itself (too large, or a
+// format its protocol cannot carry). The note is added here, to the line,
+// so the rows and the anchors built from the same lines agree on the row it
+// adds.
+fn noted_images(lines: List(Line), model: Model) -> List(Line) {
+  let #(done, _) =
+    list.fold(lines, #([], AfterOther), fn(acc, line) {
+      let #(done, previous) = acc
+      case image_of(line.speaker) {
+        None -> #([line, ..done], AfterOther)
+        Some(picture) -> {
+          let noted = case image_note(model, picture) {
+            Some(note) -> Line(line.speaker, line.text <> "\n" <> note)
+            None -> line
+          }
+          #([noted, ..stacked(done, previous, model)], AfterImage)
+        }
+      }
+    })
+  list.reverse(done)
+}
+
+// What the line before the one being read was: an image or anything else.
+type Previous {
+  AfterImage
+  AfterOther
+}
+
+// One blank row between two images in a row, so two boxes (or two
+// placeholder rows with their notes) do not run together. It is added only
+// on a terminal that draws images, where the images are boxes.
+fn stacked(done: List(Line), previous: Previous, model: Model) -> List(Line) {
+  case previous, model.view.image_support {
+    AfterImage, image_support.KittyPlaceholders(..)
+    | AfterImage, image_support.Iterm2Inline(..)
+    -> [Line(Spacer, ""), ..done]
+    AfterImage, image_support.TextOnly(..) | AfterOther, _ -> done
+  }
+}
+
+// The picture an image row carries, and nothing for any other speaker. Every
+// speaker is named, so a new one is a compile error here rather than
+// quietly not an image.
+fn image_of(speaker: Speaker) -> Option(Option(image_header.Picture)) {
+  case speaker {
+    ImageRow(picture) -> Some(picture)
+    System
+    | User
+    | Assistant
+    | Reasoning
+    | ReasoningDigest
+    | SummarizedReasoning
+    | SummarizedAdvice
+    | ToolGroup
+    | ToolCall
+    | ToolResult
+    | ToolDetail
+    | ToolPatch
+    | ToolFailure
+    | Failure
+    | SentMessage
+    | StrandMessage
+    | PeerMessage
+    | ProgramRunning
+    | ProgramFailure
+    | Spacer -> None
+  }
+}
+
+// The reason a picture is not drawn, when the terminal can name it.
+fn image_note(
+  model: Model,
+  picture: Option(image_header.Picture),
+) -> Option(String) {
+  case model.view.herdr_reporter, picture {
+    Some(_), _ -> Some("inside Herdr: pane graphics are not passed through")
+    None, Some(picture) -> image_box.refusal(model.view.image_support, picture)
+    None, None -> None
+  }
+}
+
+// The rows of a line. An image the terminal can draw becomes a box; every
+// other line, and every image it cannot draw, is the line `render_line`
+// draws.
+fn line_rows_for(
+  line: Line,
+  width: Int,
+  strand: String,
+  support: image_support.Support,
+  height: Int,
+) -> List(span.Line) {
+  case image_of(line.speaker) {
+    Some(Some(picture)) ->
+      case image_box.verdict(support, picture, width, height) {
+        image_box.Draw(drawing) ->
+          image_box.rows(
+            support,
+            drawing,
+            string.split(line.text, "\n") |> list.first |> result.unwrap(""),
+            width,
+          )
+        image_box.Keep | image_box.Refuse(..) ->
+          render.render_line(line, width, strand)
+      }
+    Some(None) | None -> render.render_line(line, width, strand)
+  }
+}
+
 // Each line is rendered independently, including its speaker prefix and
 // trailing blank rows. Reusing that complete result preserves wrapping and
 // styling without parsing or measuring unchanged text again. The next map is
@@ -460,12 +632,17 @@ fn cached_record_lines(
   lines: List(Line),
   width: Int,
   previous: Dict(Line, List(span.Line)),
+  strand: String,
+  support: image_support.Support,
+  height: Int,
 ) -> #(List(span.Line), Dict(Line, List(span.Line)), List(Int)) {
   list.fold(lines, #([], dict.new(), []), fn(acc, line) {
     let #(rows, cached, gutters) = acc
     let rendered =
       dict.get(previous, line)
-      |> result.lazy_unwrap(fn() { render.render_line(line, width) })
+      |> result.lazy_unwrap(fn() {
+        line_rows_for(line, width, strand, support, height)
+      })
     let rendered_count = list.length(rendered)
     let line_gutters =
       list.index_map(rendered, fn(_, index) {
@@ -540,7 +717,7 @@ fn record_anchors_for(
         case spliced {
           Transient(text, seq) -> #(seq, [#("", [Line(System, text)])])
           Projected(value) ->
-            anchored_entry_blocks(value, model)
+            anchored_entry_blocks(value, model, None)
             |> list.map(fn(block) {
               #(dict.get(results, block.0) |> result.unwrap(block.0), block.1)
             })
@@ -558,7 +735,8 @@ fn record_anchors_for(
     // compact history. Inside a group or a response every spacer is already
     // placed, and a spacer's own row is blank, so this pass adds only the
     // gaps between items.
-    False ->
+    False -> {
+      let found = transcript_lines.joined(entries)
       entries
       |> tool_activity.project_split(
         transcript_lines.advisor_splits(visible_advisor_history(model)),
@@ -571,10 +749,18 @@ fn record_anchors_for(
       |> list.map(fn(spliced) {
         case spliced {
           Transient(text, seq) -> #(seq, [#("", [Line(System, text)])])
-          Projected(tool_activity.Narrative(value)) -> #(
-            value.seq,
-            anchored_entry_blocks(value, model),
-          )
+
+          // A result that its call's row draws is no rows, as
+          // `record_lines` draws it, and a response's calls are drawn from
+          // the results joined to them, which can change their height.
+          Projected(tool_activity.Narrative(value)) ->
+            case transcript_lines.absorbed(found, value) {
+              True -> #(value.seq, [#(ids.entry_id_to_string(value.id), [])])
+              False -> #(
+                value.seq,
+                anchored_entry_blocks(value, model, Some(found)),
+              )
+            }
           Projected(tool_activity.Tools(calls)) -> {
             let heading = [transcript_lines.activity_heading(calls)]
             let called =
@@ -596,26 +782,59 @@ fn record_anchors_for(
               ),
               [
                 #("", heading),
-                ..transcript_lines.separated_tool_blocks(called, WithinResponse)
+                ..called
+                |> transcript_lines.collapse_repeats(
+                  fn(block) { block.1 },
+                  fn(block) { transcript_lines.repeated_call(block.1) },
+                  fn(block, rows) { #(block.0, rows) },
+                )
+                |> transcript_lines.separated_tool_blocks(WithinResponse)
               ],
             )
           }
         }
       })
+      // The same fold `record_lines` applies to a repeated provider error,
+      // over the same items, so the anchors stay paired with the rows.
+      |> transcript_lines.collapse_repeats(
+        fn(item) { list.flat_map(item.1, fn(block) { block.1 }) },
+        fn(item) {
+          case item.1 {
+            [#(_, rows)] -> transcript_lines.repeated_failure(rows)
+            [] | [_, _, ..] -> False
+          }
+        },
+        fn(item, rows) {
+          case item.1 {
+            [#(id, _)] -> #(item.0, [#(id, rows)])
+            [] | [_, _, ..] -> item
+          }
+        },
+      )
       |> transcript_lines.merge_sequence_blocks(
         advisor_anchor_blocks(visible_advisor_history(model)),
       )
       |> list.flat_map(fn(group) { group.1 })
       |> transcript_lines.separated_tool_blocks(BetweenEntries)
+    }
   }
-  [#("", model.shared.transcript), ..blocks]
+  [#("", transcript_lines.separated_lines(model.shared.transcript)), ..blocks]
   |> list.flat_map(fn(block) {
     block.1
+    |> noted_images(model)
     |> list.index_map(fn(line, part) { #(line, part) })
     |> list.flat_map(fn(pair) {
       let rendered =
         dict.get(model.view.caches.record_line_cache, pair.0)
-        |> result.lazy_unwrap(fn() { render.render_line(pair.0, width) })
+        |> result.lazy_unwrap(fn() {
+          line_rows_for(
+            pair.0,
+            width,
+            model.shared.active_strand,
+            model.view.image_support,
+            model.view.height,
+          )
+        })
       list.index_map(rendered, fn(_, wrapped) {
         case block.0 {
           "" -> None
@@ -630,7 +849,13 @@ fn record_anchors_for(
 // Tool calls keep the same block identity in compact and expanded views.
 // Provider IDs are qualified by their durable owner, since a later response
 // may legitimately reuse them. Text and reasoning use their source index.
-fn anchored_entry_blocks(value: entry.Entry, model: Model) {
+// `joined` is the compact window's joined results (`transcript_lines.joined`),
+// or `None` in expanded history, which draws each result as its own entry.
+fn anchored_entry_blocks(
+  value: entry.Entry,
+  model: Model,
+  joined: Option(transcript_lines.Joined),
+) {
   let details = model.shared.details_expanded
   let owner = transcript_lines.solo_owner(model.shared.captured)
   let id = ids.entry_id_to_string(value.id)
@@ -653,7 +878,13 @@ fn anchored_entry_blocks(value: entry.Entry, model: Model) {
               id <> "/block/" <> int.to_string(index)
           }
           let label = list.key_find(found, index) |> option.from_result
-          #(key, transcript_lines.assistant_block_lines(block, details, label))
+          let lines = case joined {
+            Some(joined) ->
+              transcript_lines.joined_block_lines(block, label, value, joined)
+            None ->
+              transcript_lines.assistant_block_lines(block, details, label)
+          }
+          #(key, lines)
         })
         |> transcript_lines.separated_tool_blocks(WithinResponse)
       let terminal =
@@ -707,7 +938,13 @@ fn rendered_layout_for(
       {
         Some(lines) -> {
           let #(rows, gutters, _) =
-            rendered_lines(lines, width, [], live_tail.begin(live_tail.new()))
+            rendered_lines(
+              lines,
+              width,
+              [],
+              live_tail.begin(live_tail.new()),
+              model.shared.active_strand,
+            )
           #(rows, gutters, model.view.caches.live_tail)
         }
         None -> {
@@ -717,6 +954,7 @@ fn rendered_layout_for(
               width,
               live_sources(model),
               live_tail.begin(model.view.caches.live_tail),
+              model.shared.active_strand,
             )
           #(rows, gutters, live_tail.finish(pass))
         }
@@ -741,10 +979,11 @@ fn rendered_lines(
   width: Int,
   sources: List(#(Speaker, Stream)),
   pass: live_tail.Pass,
+  strand: String,
 ) -> #(List(span.Line), List(Int), live_tail.Pass) {
   list.fold(lines, #([], [], pass), fn(acc, line) {
     let #(rows, gutters, pass) = acc
-    let #(rendered, pass) = line_rows(line, width, sources, pass)
+    let #(rendered, pass) = line_rows(line, width, sources, pass, strand)
     let rendered_count = list.length(rendered)
     let line_gutters =
       list.index_map(rendered, fn(_, index) {
@@ -764,6 +1003,7 @@ fn line_rows(
   width: Int,
   sources: List(#(Speaker, Stream)),
   pass: live_tail.Pass,
+  strand: String,
 ) -> #(List(span.Line), live_tail.Pass) {
   let bytes = string.byte_size(line.text)
   case list.filter(sources, fn(source) { source.0 == line.speaker }) {
@@ -772,12 +1012,12 @@ fn line_rows(
         live_tail.Layout(
           room: render.markdown_room(speaker, width),
           finish: fn(rows, run) {
-            render.finish_markdown_rows(speaker, rows, run)
+            render.finish_markdown_rows(speaker, rows, run, strand)
           },
         )
       live_tail.rows(pass, speaker, line.text, stream.fragments, layout)
     }
-    _ -> #(render.render_line(line, width), pass)
+    _ -> #(render.render_line(line, width, strand), pass)
   }
 }
 
@@ -806,14 +1046,20 @@ fn live_sources(model: Model) -> List(#(Speaker, Stream)) {
 // those begin after these fixed cells and are never inspected here.
 fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
   case line.speaker {
-    Assistant | Reasoning if index > 1 -> 2
+    Assistant | Reasoning if index > 0 -> 2
 
     // A summary's rows sit under its header behind a two-cell indent.
     SummarizedReasoning | SummarizedAdvice if index > 0 -> 2
-    User if index == 1 -> 1
-    User if index > 1 && index < row_count - 1 -> 3
+    User if index < row_count - 1 -> 2
+
+    // A message's bar is painted in the margin, outside these cells, so
+    // the gutter counts only the indent before the heading and the body.
+    SentMessage | StrandMessage if index == 0 -> 1
+    SentMessage | StrandMessage if index < row_count - 1 -> 3
+    PeerMessage if index > 0 && index < row_count - 1 -> 4
     ToolDetail -> 2
     System
+    | ToolGroup
     | User
     | Assistant
     | Reasoning
@@ -825,7 +1071,13 @@ fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
     | ToolPatch
     | ToolFailure
     | Failure
-    | Spacer -> 0
+    | Spacer
+    | SentMessage
+    | StrandMessage
+    | PeerMessage
+    | ProgramRunning
+    | ProgramFailure
+    | ImageRow(..) -> 0
   }
 }
 

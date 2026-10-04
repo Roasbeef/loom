@@ -1,0 +1,24 @@
+ ◆ loom          demo · ~/code/pi-gui (main)           baseten-kimi-k3 · Ctrl+g…
+ transcript / main
+ ◇╭ SESSIONS · active ───────────────────────────────────────────────────────╮
+  │                                                                          │
+  │  All 7  Needs you 1  Working 2  Idle 1  Inactive 3            Tab filter │
+ ∴│ ──────────────────────────────────────────────────────────────────────── │
+  │ /Users/operator/code/pi-gui 3                                            │
+  │ ▸ ● ws · main                                                    current │
+ └│     working · 01a0a1e2-af88                                              │
+  │   ○ fix readme badge                                                     │
+ ◆│     idle · 01a0a1e2-af88                                                 │
+  │   · extension api probe                                                  │
+  │     saved · 01a0a1e2-af88                                                │
+  │                                                                          │
+  │ /Users/operator/code/lnd-review 2                                        │
+  │   ● review htlc interceptor                                              │
+─ │     working · 01a0a1e2-af88                                              │ ─
+ ◓│   ! nightly: deps bump                                                   │
+  │                                                                          │
+──│ ↑↓ select · Enter open · Tab filter · l link · n new · r rename · d arc… │──
+ i│                                                                          │
+ 3╰──────────────────────────────────────────────────────────────────────────╯
+› ● main             streaming
+  ● catalog audit    running tools

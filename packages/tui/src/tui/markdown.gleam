@@ -92,8 +92,8 @@ type RowKind {
   // gutter repeated, because a word wrapper would collapse its indentation.
   CodeRow
 
-  // Already laid out against the width, such as a table's grid or a user
-  // block's shaded body. Re-wrapping would destroy the alignment.
+  // Already laid out against the width, such as a table's grid or a
+  // reasoning digest. Re-wrapping would destroy the alignment.
   FixedRow
 
   // Flowing prose, word-wrapped at the width.
@@ -643,7 +643,6 @@ fn row_kind(line: span.Line) -> RowKind {
   let code = list.any(spans, fn(value) { value.content == code_gutter })
   let grid = list.any(spans, is_grid_span)
   let digest = list.any(spans, fn(value) { value.content == digest_mark })
-  let shaded = list.any(spans, is_user_body_span)
 
   // The code gutter is tested first because a grid glyph is a single
   // character and a tokenised code row emits every punctuation character as
@@ -651,10 +650,10 @@ fn row_kind(line: span.Line) -> RowKind {
   // is exactly the grid's vertical bar. Reading that row as a grid row would
   // cost it both its hard wrap and its continuation gutter. The converse
   // cannot happen: a grid row never carries the code gutter.
-  case code, grid, digest, shaded {
-    True, _, _, _ -> CodeRow
-    _, True, _, _ | _, _, True, _ | _, _, _, True -> FixedRow
-    False, False, False, False -> FlowingRow
+  case code, grid, digest {
+    True, _, _ -> CodeRow
+    _, True, _ | _, _, True -> FixedRow
+    False, False, False -> FlowingRow
   }
 }
 
@@ -663,15 +662,6 @@ fn is_grid_span(value: span.Span) -> Bool {
     "│" | "┌" | "┬" | "┐" | "├" | "┼" | "┤" | "└" | "┴" | "┘" -> True
     _ -> False
   }
-}
-
-// User rows have a three-space gutter painted on a shaded background.
-// Additional leading whitespace is source indentation; word wrapping would
-// collapse it and the alignment it carries.
-fn is_user_body_span(value: span.Span) -> Bool {
-  let span.Span(content:, style: row_style, ..) = value
-  row_style == style.new(theme.paper, theme.user_background, style.none())
-  && string.starts_with(content, "    ")
 }
 
 fn render_block(block: tree.Block, width: Int) -> List(span.Line) {
