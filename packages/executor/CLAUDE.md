@@ -9,13 +9,15 @@ entrypoint that boots them without the harness. It exists as a package
 for one reason: its dependency list is the compile-time proof that the
 service needs no session runtime, provider, web view or daemon. It depends on
 `broker`, `core` and `telemetry` (for `log.discard()`), plus `weft`, `argv`,
-`envoy`, `gleam_json`, `gleam_time`, `gleam_erlang` and `simplifile`, and
+`envoy`, `gleam_json`, `gleam_time`, `gleam_erlang`, `simplifile` and
+`sqlight_loom`, and
 never on `host` or `client`.
 
 It defines no socket, listener, frame or registration service. The pure
 `executor/remote/{identity,admission}` modules provide validated names and a
-bounded admission/custody reducer for #697, without transport or persistence.
-They have no production callers yet and do not change local executor behavior.
+bounded admission/custody reducer for #697. `executor/remote/journal` adds
+serialized SQLite persistence over that reducer. No native adapter consumes
+its decisions yet, so these modules do not change local executor behavior.
 A standalone executor has no caller until the distributed-runtime epic
 (#697) supplies a transport, and that work implements
 `broker/dispatch.Dispatcher`, which is the whole adapter: a remote
@@ -58,18 +60,20 @@ No second type names it.
 Depends on `broker` (`broker`, `budget`, `census`, `exec`, `executor`,
 `policy`, `token`), `core` (`clock`, `ids`) and `telemetry` (`log`). Nothing
 depends on it. The new remote modules import only `core/ids`, each other
-and pure stdlib modules, with no I/O, processes, FFI or Dynamic. They do
-not implement or change the `broker/dispatch.Dispatcher` seam.
+and pure stdlib modules, with no I/O, processes, FFI or Dynamic. The journal
+imports those modules, `sqlight`, `simplifile` and `weft/actor`; its private
+actor owns the database connection. None of these modules implements or
+changes the `broker/dispatch.Dispatcher` seam.
 `make executor-smoke` builds the helper and runs the entrypoint; CI runs it in the jail job and `scripts/signoff.sh` in its
 enforcement lane, both of which have bwrap.
 
 ## Traffic
 
-The remote foundation has no actor, store or wire traffic. Typed
+The pure remote foundation has no actor, store or wire traffic. Typed
 `admission.Event` values reduce an already admitted key into a
 `Transition(next: Book, evidence: Evidence, effect: Effect)`.
 `Effect.Launch(RequestKey)` is a decision for a future adapter, not a
-native action. No code persists or performs it in this wave.
+native action. The journal persists these decisions but does not perform their native effects.
 
 ## Pure remote admission contract
 
@@ -117,8 +121,49 @@ events depend on truthful evidence from the trusted adapter.
 
 `new` is for an unused scope, never recovery. Disposing of an entire epoch
 requires a permanent durable closure fence and settled custody/receipts
-outside this reducer. This foundation supplies no codec, database, network,
-authentication, scheduler or automatic failover, and wires no remote execution.
+outside this reducer. The journal supplies the codec and database described below. Network,
+authentication, scheduler and automatic failover remain outside these modules;
+no remote execution is wired yet.
+
+## Durable admission journal
+
+`journal.fresh(path, scope, capacity)` creates only at an unused absolute
+path. `recover` requires an existing exact scope/capacity binding and replays
+the bounded command history through the actual reducer. Recovery exposes no
+historical Launch. `release` closes the actor and its connection without
+closing the authority epoch or asserting native retirement.
+
+A `weft/actor` serializes each handle. Every change also takes SQLite's
+`BEGIN IMMEDIATE` writer lock, reloads a newer committed head, appends its
+command and updates the metadata head in one transaction. Required WAL and
+FULL synchronization precede use. The reply follows successful COMMIT;
+independent opens therefore share database serialization. Exact duplicates
+and no-change events append nothing. `inspect` reads current evidence under
+the same writer discipline.
+
+`journal_codec.Command` is Admit, Apply or CloseEpoch. Scope metadata binds
+all identity fields and capacity, with an exact row count and encoded-byte
+count. Each record is at most 138 bytes and the binding is at most 303 bytes.
+A retained key reserves at most six changed records, plus one epoch-closure
+record. SQL bounds rows and blob lengths before decoding. Replay checks
+sequence continuity, counts, canonical encoding, valid transitions and the
+absence of durable no-ops. Tombstones keep their lifetime capacity reservation.
+These are encoded-history bounds, not an exact limit on SQLite page/WAL size.
+
+Database failures close the endpoint. Uncertain may include a committed
+transition; reply timeout abandons only the wait. Recovery inspects the
+original key and never authorizes an execution again from retained intent.
+A live returned Launch remains a duplicable value, so the trusted native
+adapter must apply it at most once. The journal stores request/result digests,
+not command bodies, terminal payloads or output streams. Those storage and
+native-reconciliation obligations remain with the adapter.
+
+The real SQLite regressions cover independent concurrent opens, restart at
+each admission/custody phase, refusal provenance, corruption, bounds and
+append/head-update/COMMIT failures. They establish journal behavior, not
+power-loss testing, multi-host transport or native-process restart recovery.
+An active WAL database requires a consistent SQLite backup cut for movement;
+copying only its main file is insufficient.
 
 ## Invariants
 
