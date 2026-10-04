@@ -2255,3 +2255,24 @@ assembly's absolute size depends on the host it ran on.
   do `make e2e-multiplayer`'s five filters — including `tui_e2e_test`, which
   drives a real TUI against a real daemon over a real websocket upgrade — and
   `make soak-daemon`.
+
+## 2026-10-04: what the `tools.run` reference still costs
+
+Measured on a release daemon built from `perf/startup-memory` (based on
+`63d5f1991`), smoke configuration, one session admitted over the control
+plane. Walking every readable process state for the session's tool registry
+finds 29 copies, at 294 KiB each: about 8.3 MiB of the 10.8 MiB of RSS a
+session adds. 27 of them are inside one closure, the `run` slot of
+`client/wiring.build_effects`, which the 2026-09-20 section above classed as
+ownership rather than mis-scoped capture: `tools.run` dispatches through the
+registry, so narrowing cannot remove it. Every holder of the session's
+`Effects` (18 static-supervisor child specs, 5 factory-supervisor specs, 5
+actors) therefore holds one registry each.
+
+Removing those copies takes a per-session owner for the configuration
+`run_tool` reads, which is option A narrowed to the one slot that needs it, and
+an owner means a new kind in `client/internal/instance_owner`'s custody set.
+The registry copy itself is 155 KiB `code_mode`, of which 136 KiB is
+`client/codemode`'s `Config` twice, because `tools/codemode.CodeMode` has two
+closure slots that each capture it. `docs/design-notes/startup-and-memory.md`
+has the measurement method and the rest of that work.
