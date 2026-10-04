@@ -144,8 +144,8 @@ protocol (spec Part 1.4). WP-G.
 - `broker/policy.{session_lease, LeaseOutput}` — the base a session-lived
   jailed process clears under: `wall_s` and `cpu_s` zeroed on the *base*
   (a zero requirement against a non-zero base is a narrowing
-  `RefuseNarrowed` refuses), and `output_bytes` zeroed only for
-  `OutputIsWire`. An extension host's stdout is a log and keeps its cap; a
+  `RefuseNarrowed` refuses), and a finite 64 MiB per-stream output allowance
+  for `OutputIsWire`. An extension host's stdout is a log and keeps its cap; a
   language server's stdout is its JSON-RPC wire (ADR-015). The lease's
   real bound is the pooled budget deadline the relay enforces.
 - `broker/policy.{Mount, MountAccess, MountRequirement}` — one explicit
@@ -651,10 +651,11 @@ protocol (spec Part 1.4). WP-G.
   1 MiB cap with a caller that reads nothing for 2 s: the mailbox received
   exactly 1 MiB in 34 events and the cancel settled in 3 ms. Production
   caps: `policy.workspace_default` sets 4 MiB (`policy.gleam`), hooks and
-  goal checks 1 MiB, the LSP manager 4 MiB; **a session lease whose output
-  is a wire (`policy.session_lease(.., OutputIsWire)`, used by the language
-  server jail) sets `output_bytes: 0`, which the helper reads as no cap**, so
-  for those long-lived streams the mailbox is bounded only by the consumer.
+  goal checks 1 MiB, and a protocol wire lease 64 MiB per stream. The
+  `a_wire_lease_bounds_a_nonreading_consumer` regression exercises that actual
+  lease allowance with a flooding producer and unread consumer. LSP treats
+  truncated stdout as a fatal stream and cancels it. This lifetime quota
+  bounds payload reaching the final mailbox; it is not flow control.
   `twenty_sequential_runs_on_one_real_helper_see_no_busy_window` pins that
   back-to-back runs on a pool of one never meet `HelperBusy` in this lane.
 - **Executor service: an orphaned `start` costs a slot and cannot wedge.** The
