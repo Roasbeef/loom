@@ -4,7 +4,9 @@
 //// final chunk. The header commits the direction, total length and SHA-256;
 //// each chunk commits its offset. The receiver refuses the length before
 //// retaining content, and never asks the peer to allocate an arbitrary frame.
-//// At most 144 invocation chunks or 512 completion chunks are admitted.
+//// At most 144 invocation chunks, 512 workspace completion chunks or four
+//// Compile completion chunks are admitted. Closed direction tags remain 0, 1
+//// and 2 respectively; existing frames retain their exact encoding.
 ////
 //// This boundary transfers bytes, not execution permission. Its caller must
 //// authenticate the application scope before receiving and validate the
@@ -30,6 +32,11 @@ import tools/workspace_codec
 /// Fixed payload size below the existing 256-KiB TLS frame ceiling.
 pub const chunk_bytes = 65_536
 
+// Compile completion's closed codec uses core/bounded_msgpack's 256-KiB
+// aggregate limit. This is a semantic content ceiling, independent of the TLS
+// frame ceiling; the fixed chunk protocol still carries it in four frames.
+const max_compile_completion_bytes = 262_144
+
 /// The semantic direction fixes the total admissible content before allocation.
 pub type Kind {
   /// One canonical invocation, bounded to nine MiB.
@@ -37,6 +44,9 @@ pub type Kind {
 
   /// One canonical completion, bounded to thirty-two MiB.
   Completion
+
+  /// One closed physical Compile completion, bounded to 256 KiB.
+  CompileCompletion
 }
 
 /// A validated bounded sender, with no socket or authority of its own.
@@ -229,6 +239,7 @@ fn check_length(kind: Kind, size: Int) -> Result(Nil, Error) {
   let maximum = case kind {
     Invocation -> workspace_codec.max_invocation_bytes
     Completion -> workspace_codec.max_completion_bytes
+    CompileCompletion -> max_compile_completion_bytes
   }
   case size > 0 && size <= maximum {
     True -> Ok(Nil)
@@ -247,6 +258,7 @@ fn tag(kind: Kind) -> Int {
   case kind {
     Invocation -> 0
     Completion -> 1
+    CompileCompletion -> 2
   }
 }
 
