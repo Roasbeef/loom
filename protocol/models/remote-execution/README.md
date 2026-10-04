@@ -29,7 +29,7 @@ bash protocol/models/remote-execution/check.sh
 
 The gate compiles a source snapshot, checks every declared normal case,
 requires every `tcProbe*` to produce its exact intended assertion, and checks
-all five mutations. It exits zero only if every check succeeds. Compiler
+all fourteen mutations. It exits zero only if every check succeeds. Compiler
 errors, timeout, memory exhaustion, max-step exhaustion, unrelated assertions,
 missing test cases and probes without witnesses fail the gate. Safety cases
 must explore the entire requested schedule count. Each invocation has separate
@@ -180,7 +180,7 @@ or restores live model sources or git state.
 
 ## Recorded verification
 
-The final local `bash protocol/models/remote-execution/check.sh` run on
+The original native-only local `bash protocol/models/remote-execution/check.sh` run on
 2026-10-04 exited **0** with the default counts and seed 697. All six normal
 cases explored 1000 schedules and reported zero bugs (checker exit 0).
 All thirteen probes reported their exact expected assertions (checker exit
@@ -277,3 +277,19 @@ receipt before compaction. The `remote_admission_test.gleam` regressions and
 bounded event enumeration exercise that implementation, including rejection
 of refusal after live or recovered launch intent. That refusal/receipt/
 compaction path is tested code, not a property checked by this P model.
+
+
+## Semantic workspace product composition
+
+[PRODUCT.md](PRODUCT.md) records the additive ProductSystem actors, finite
+classes, safety histories, eight normal cases, nine positive controls and
+nine product mutations. Existing System actors, native monitors and test
+sources are preserved byte for byte. The local runner discovers all 36 test
+cases, and the mutation runner now checks fourteen mutations in total.
+Source manifests beside the immutable snapshots record SHA-256 hashes.
+
+ProductSystem joins the existing Owner, Executor and Helper with ProductOwner
+and ProductExecutor. Actual native start, terminal and retirement remain events
+of those original actors. Outer completion and its owner receipt use separate
+product facts. These checks do not establish production assembly or the
+separate-host product acceptance gate.
