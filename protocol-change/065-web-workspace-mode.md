@@ -3,7 +3,9 @@
 **Status**: DRAFT 2026-10-03, amended the same day for the owner's rulings
 (a thirty-day browser login that is itself a macaroon-style credential; a
 browser claimant is never shown a key; creation only in a known workspace;
-operator-ceiling pages open saved sessions); nothing implemented · **Affects**:
+operator-ceiling pages open saved sessions), and again on 2026-10-04 for
+the login's security review and two further rulings (the addendum at the
+end); PR 1 of the plan is on `main` · **Affects**:
 Part 1.6 client protocol (`ui.link`, `credentials.claim`, `principals.list`,
 four new control commands, new `/ui` routes), the `loom ui`, `loom claim`
 and `loom access` command lines, the catalogue schema (version 5), and four
@@ -67,8 +69,8 @@ ui`), so "invite people" to a web UI implies the browser can do both.
   row per login for revocation, keyed like every credential; the token is
   stored nowhere. It fits the existing hashed-credential model because the
   row's digest is the digest of the token's identifier, so every check that
-  takes a digest runs unchanged. It can be narrowed later by appending a
-  caveat, without the daemon.
+  takes a digest runs unchanged, once every lookup names the credential's
+  kind. It can be narrowed later by the daemon appending a caveat.
 - **A key shown once and a sign-in form** (the first draft). Withdrawn by
   the owner's ruling: nobody is handed a key.
 
@@ -148,10 +150,12 @@ ui`), so "invite people" to a web UI implies the browser can do both.
 `ui_sessions.Grant` becomes:
 
 ```
-Grant(scope: Scope, credential: Digest, principal: String,
+Grant(scope: Scope, credential: Digest, kind: Kind, principal: String,
       ceiling: Role, reach: Reach, remember: Remember)
 
-Scope    = Session(id: String) | Home | Admin
+Scope    = Session(id: String) | Home(origin: Origin) | Admin
+Origin   = Fresh | Resumed
+Kind     = Bearer | Browser
 Reach    = OneSession | Workspace
 Remember = Remembered | Forgotten
 ```
@@ -175,6 +179,15 @@ Remember = Remembered | Forgotten
   without `--no-remember`, by a device link, or by the claim. A remembered
   exchange sets the login (below) as well as the page. A ticket a page
   mints for a switch or for the way home is `Forgotten`.
+- `kind` names the credential table the grant's digest is looked up in:
+  `Bearer` for a ticket `ui.link` minted over a bearer, `Browser` for a
+  ticket the login or the claim minted. Every check the page makes passes
+  it ("Authentication carries the kind", below).
+- `Home(origin)` records how the home was reached: `Fresh` for a `loom
+  ui` exchange or a claim, `Resumed` for a home the login minted. A ticket
+  a page mints for a switch or the way home carries the minting page's
+  origin. Only a `Fresh` home mints an `Admin` ticket or a device link
+  (ruled by the owner, 2026-10-04).
 - A ticket is redeemed only at the exchange of its scope: a `Session(id)`
   ticket at `/ui/sessions/<id>`, a `Home` ticket at `/ui/home`, an `Admin`
   ticket at `/ui/admin`. Presented elsewhere it is spent and refused, as a
@@ -186,30 +199,49 @@ A login is a credential the daemon mints and verifies from a root key, in
 the first-party macaroon construction: an identifier, a list of caveats,
 and an HMAC-SHA256 chain over them. The browser carries it as a cookie.
 
-**Token.** ASCII, at most 512 bytes:
+**Token.** This is the grammar, written once; the design note's shape
+defers to it. The token is ASCII; its parser refuses more than 384 bytes
+before reading a field, and refuses an uppercase hex digit anywhere rather
+than lowering it.
 
 ```
-loomb1:<id>:<caveat>|<caveat>|...|<caveat>:<sig>
+token   = "loomb1:" id ":" caveats ":" sig
+id      = 32 lowercase hex digits, the hex encoding of 16 bytes from
+          crypto.strong_random_bytes
+caveats = caveat *( "|" caveat )              ; at least the six below
+caveat  = name "=" value
+name    = one byte in [a-z]
+value   = 1..128 bytes in [A-Za-z0-9._-]
+sig     = 64 lowercase hex digits, the hex encoding of sigN
 
-id      = 32 lowercase hex digits (16 random bytes)
-caveat  = <name>=<value>; name is one lowercase letter;
-          value is 1..128 bytes of [A-Za-z0-9._-]
-sig     = 64 lowercase hex digits
-sig0    = HMAC-SHA256(key: root, data: "loomb1:" <> id)
-sigN    = HMAC-SHA256(key: sigN-1, data: caveatN)
+sig0    = HMAC-SHA256(key: root, data: the ASCII bytes of "loomb1:" <> id)
+sigN    = HMAC-SHA256(key: sigN-1, data: the ASCII bytes of caveatN,
+                      "name=value" with no separator)
+
+row digest = hex(SHA-256(the 32 ASCII bytes of id))
+n          = hex(SHA-256(the 64 ASCII bytes of the nonce as the browser posts it))
 ```
 
 `:` and `|` are legal cookie-value bytes and outside the value alphabet,
 which is the alphabet of a principal ID (`storage/access.gleam:1074`), so
-the token parses without escaping. `gleam_crypto` 1.6.0, already a
-dependency of `host`, provides `hmac` and `secure_compare`; no new
-dependency and no new FFI.
+the token parses without escaping. Hashes are over the ASCII text and
+never over decoded bytes, which is the convention every digest in the
+tree already uses. 384 bytes is the longest token the grammar allows with
+a 128-byte principal ID. `gleam_crypto` 1.6.0, already a dependency of
+`host`, provides `hmac` and `secure_compare`; no new dependency and no
+new FFI.
 
 **Root key.** 32 bytes from `crypto.strong_random_bytes`, written once to
 `<state-dir>/browser.key` at mode `0600` with `atomic_write_private`
-(`host/bootstrap.gleam:403`), read at start, regenerated if absent. It never
-enters a token, a log or a reply. Deleting it and restarting ends every
-login.
+(`host/bootstrap.gleam:403`) and read at start through
+`read_private_bounded` (`host/bootstrap.gleam:359`), the owner-and-`0600`
+check `owner.token` is read through. At start: a readable file of exactly
+32 bytes is the key; a file that is present but unreadable, of another
+size, a link, or another user's refuses start and is never regenerated; a
+missing file is drawn fresh and, in the same start, every `active`
+`browser` row is marked `revoked` in one update and one line,
+`daemon.logins_revoked` with the count, is logged. The key never enters a
+token, a log or a reply.
 
 **Caveats at minting**, all six, in this order; the daemon refuses a token
 missing any of them:
@@ -223,38 +255,67 @@ missing any of them:
 | `k` | 32 hex digits | the login key: the cookie's path and the route's `<key>` must match |
 | `n` | 64 hex digits | the SHA-256 of the login nonce the browser posts |
 
-**Intersection.** A name may repeat, and a repeat narrows: `c` takes the
-smallest ceiling, `e` the earliest instant, a future `s` (a session ID)
-restricts every ticket the login mints to that session and two different
-`s` values allow nothing, and `p`, `r`, `k` and `n` may not repeat with
-another value. A name the daemon does not know refuses the token. Nothing
-in this change appends a caveat; the rules are what let a later holder
-narrow a token without the daemon and never widen one.
+**Intersection.** A name may repeat, and a repeat narrows; a wider repeat
+is ignored and the narrower value holds: `c` takes the smallest ceiling,
+`e` the earliest instant, a future `s` (a session ID) restricts the login
+to that session and two different `s` values allow nothing, and `p`, `r`,
+`k` and `n` may not repeat with another value. A name the daemon does not
+know refuses the token. Attenuation is a daemon act: the cookie is
+`HttpOnly`, so no browser script can read a token or extend its chain, and
+a narrower token is minted by the daemon from the root key where the wide
+one was. Nothing in this change mints one. A token carrying `s` mints only
+a session ticket for that session and never a `Home`, since a home's asks
+(sign-ins, "sign out everywhere", a device link) are the principal's and
+not the session's.
 
-**Storage.** One row in `access_credentials` per login: `digest =
-SHA-256(id bytes)` as 64 hex, the principal, `state`, and three columns
-added at catalogue version 5:
+**Storage.** One row in `access_credentials` per login: `digest` as the
+grammar defines it, the principal, `state`, and three columns added at
+catalogue version 5:
 
 ```sql
 ALTER TABLE access_credentials ADD COLUMN kind TEXT NOT NULL DEFAULT 'bearer'
   CHECK(kind IN ('bearer', 'browser'));
 ALTER TABLE access_credentials ADD COLUMN issued_at_ms INTEGER;
-ALTER TABLE access_credentials ADD COLUMN last_seen_ms INTEGER;
+ALTER TABLE access_credentials ADD COLUMN last_resumed_ms INTEGER;
 ```
 
 The forward migration at `user_version` (`storage/catalogue.gleam:150`)
 moves 4 to 5; an older daemon refuses a version 5 catalogue, as 053 says
 of version 4. Every existing row is `bearer`. Keying the row by the digest
 of the identifier is what lets every existing check run unchanged: a page
-minted from a login carries `SHA-256(id)` as `Grant.credential`, and
+minted from a login carries that digest as `Grant.credential`, and
 `manager.authenticate`, `session_authority`, `frame_authority` and
-`administer` take it as they take a bearer's digest. A login presented as
-a bearer on `/v2/control` is `401`, because the daemon hashes the whole
-token and finds no row; `loom --token` and `--token-file` refuse a value
-beginning `loomb1:` as they refuse `loomclaim_`. `revoke_member` and
+`administer` take it as they take a bearer's digest. `revoke_member` and
 `rotate_member` revoke `browser` rows as they revoke `bearer` rows.
 `storage/access.claim` takes a `kind`, so a browser claim binds a `browser`
 row under 053's rules 1 to 5 unchanged.
+
+**Authentication carries the kind.** The identifier is public, and its
+digest is the row's key, so without a further rule `Authorization: Bearer
+<id>` on `/v2/control` would authenticate as the principal with no caveat
+(the review finding of 2026-10-04). The rule, in three layers:
+
+- every place a presented string is hashed into a digest, which is
+  `/v2/control`, `/v2/claim` and the session attach (`credential`
+  (`client/daemon/server.gleam:718`)), looks up `kind = 'bearer'` rows
+  only; a page grant looks up only the kind its ticket names (`Browser`
+  for a login's or a claim's ticket, `Bearer` for `ui.link`'s);
+- the kind is a parameter of the lookup itself: `access_credential`
+  (`storage/sql.gleam:70`) gains `AND kind = ?` and `authenticate`
+  (`storage/access.gleam:827`) takes the kind, so no caller can omit it;
+- `credential` refuses a presented bearer that is not exactly 64 lowercase
+  hex characters before hashing it.
+
+So the bare identifier, the whole token, the identifier's digest and any
+string that is not a 64-hex bearer are `401` on every `/v2` route, and a
+bearer's digest never satisfies a page grant minted under `Browser`. `loom
+--token` and `--token-file` also refuse a value beginning `loomb1:`, as a
+courtesy. Two more queries gain `kind = 'bearer'` so a login never stands
+in for a bearer in a listing: `principal_active_credential`
+(`storage/sql.gleam:273`) and `active_member_credentials`
+(`storage/sql.gleam:223`). 053's "rule 3 is what lets `credential` be one
+value per principal" (its "Listing principals") holds for bearers; logins
+are counted beside it as `logins`.
 
 **Cookie.** On a loopback page origin:
 
@@ -268,37 +329,68 @@ Under 052's `Remote(origin)`:
 __Host-loom_login=<token>; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000
 ```
 
-The page cookie is unchanged and keeps no `Max-Age`.
+The page cookie is unchanged and keeps no `Max-Age`. The `__Host-` form has
+`Path=/`, so under 052 a browser holds one login per origin: a second
+`loom ui` on the same browser overwrites the first's cookie and leaves its
+row live until it expires or is revoked, and `k` then names only the row
+a resume is for; the sign-in list shows the orphan as not this browser.
+
+Cookies ignore the port and `SameSite=Strict` treats two loopback ports as
+one site, so a page on another loopback port can receive the login cookie
+if it serves a path under `/ui/l/<key>/` and lures a navigation, which
+needs the key, and can make the browser send it to the daemon, which is
+refused by `Sec-Fetch-Site` on both the `GET` and the `POST` and by the
+nonce. `localhost` and `127.0.0.1` are different cookie hosts; `loom ui`
+prints one stable host and the resume page names it.
 
 **Login nonce.** 32 random bytes, hex, delivered once in the body of the
 response that sets the login cookie (a remembered exchange, or the claim),
 as a `data-login-nonce` attribute beside the page nonce. The enter script
 keeps it in `localStorage` under `loom.login.<key>` and the page nonce in
 `sessionStorage` as today. The daemon keeps its digest as caveat `n` and
-nothing else.
+nothing else. `n` buys two things: a cookie planted by another port cannot
+fix the person to an attacker's login, since the attacker's token carries
+the attacker's `k` and the victim holds no nonce under it; and a
+disclosure of the cookie jar alone (a cookie file, a `Cookie` header in a
+proxy or a log under 052) is useless without it. It buys nothing against a
+profile read, nothing beyond `Sec-Fetch-Site` against a cross-port
+request, and nothing against 052's proxy operator, who sees cookie and
+nonce alike and is in the trusted computing base.
 
 **Verification**, at `POST /ui/l/<key>/home`, in this order, each refusal
-`401` with a fixed document and no echo: the cookie named for the page
-origin parses as the shape above; the chain recomputes from the root key
-and `secure_compare` matches `sig`; every caveat holds (`k` equals the
-path's key, `n` equals the SHA-256 of the body's `nonce`, `e` is after
-now, no unknown name, no widening repeat); the row for `SHA-256(id)` is
-found, `active` and `browser`, and its principal is `p`. The catalogue is
-not consulted before the chain verifies. The daemon then mints and redeems
-a `Home` grant (`credential: SHA-256(id)`, `ceiling` from `c`, `reach:
-Workspace`, `remember: Forgotten`) and answers the enter page. It writes
-`last_seen_ms` when the row's value is older than an hour.
+`401` with a fixed document and no echo: every value of the cookie named
+for the page origin is tried, up to four, in the order the browser sent
+them, and the first that parses as the grammar and whose chain recomputes
+from the root key with `secure_compare` matching `sig` is the login (a
+value planted under a longer path sorts first and is passed over); every
+caveat of that token holds (`k` equals the path's key, `n` equals the
+SHA-256 of the body's `nonce`, `e` is after now, no unknown name; a wider
+repeat is ignored); the row for its digest is found, `active` and
+`browser`, and its principal is `p`. The catalogue is not consulted before
+a chain verifies. The daemon then mints and redeems a `Home(Resumed)`
+grant (`credential` the row's digest, `kind: Browser`, `ceiling` from `c`,
+`reach: Workspace`, `remember: Forgotten`) and answers the enter page. It
+logs `daemon.login_resumed` with the login's fingerprint and writes
+`last_resumed_ms` when the row's value is older than an hour.
 
-**Device link.** A `Home` ticket with `remember: Remembered` and the
-lifetime `device_ms`, minted by `ui_socket.device_link_for` for any home
-page's own principal and ceiling, counted against the credential's grant
-allowance (`reserve_invite`, three an hour), and shown once as an absolute
-exchange address in a copy box. Its exchange sets a login on the device
-that opens it.
+**Device link.** A `Home(Fresh)` ticket with `remember: Remembered` and the
+lifetime `device_ms`, minted by `ui_socket.device_link_for` only for a
+`Home(Fresh)` page, for its own principal and ceiling, counted against the
+credential's grant allowance (`reserve_invite`, three an hour), and shown
+once as an absolute exchange address in a copy box. Its exchange sets a
+login on the device that opens it. When the minting page was itself opened
+by a remembered exchange, the new login's `e` is the issuing login's `e`,
+so a family of logins ends with the one it began from; a page with no
+issuing login (a `loom ui --no-remember` home) gives a full thirty days.
+A `Home(Resumed)` page draws no device-link control and the daemon
+refuses `device_link()` from one (ruled by the owner, 2026-10-04).
 
 **Logging.** No token, root key, nonce or login key is ever logged. The
-daemon logs `daemon.login_issued` and `daemon.login_revoked` with the
-principal ID and the credential's fingerprint.
+daemon logs `daemon.login_issued` with the principal ID, the new login's
+fingerprint and, when there is one, the issuing login's fingerprint;
+`daemon.login_resumed` and `daemon.login_revoked` with the principal ID
+and the login's fingerprint; and `daemon.logins_revoked` with a count at a
+start that drew a new root key.
 
 ### Routes
 
@@ -311,18 +403,23 @@ All under 051's prefix, host-checked first, with 051's headers and policy.
 | `GET /ui/home?ticket=<t>` | loopback host; `Sec-Fetch-Site` `none` or `same-origin`; redeem a `Home` ticket | the enter page; the page cookie; the page nonce in the body; for a `Remembered` ticket also the login cookie and the login nonce |
 | `GET /ui/p/<key>/home` | host; `Sec-Fetch-Site`; page cookie under the key names a live `Home` page; credential authenticates | the shell |
 | `GET /ui/p/<key>/home/ws?csrf-token=<n>` | host; `Origin` is `http://` and the `Host`; page nonce; page cookie; credential | the home socket |
-| `GET /ui/l/<key>/home` | host; `Sec-Fetch-Site` `none` or `same-origin`; `<key>` is 32 hex | the fixed resume page, whose script posts the login nonce from `localStorage` to the same path |
-| `POST /ui/l/<key>/home` | host; `Sec-Fetch-Site` `same-origin`; body at most 1,024 bytes, `application/x-www-form-urlencoded`; the login verifies | the enter page for a new `Home` grant |
+| `GET /ui/l/<key>/home` | host; `Sec-Fetch-Site` `none` or `same-origin`; `<key>` is 32 hex | the fixed resume page, whose script posts the login nonce from `localStorage` to the same path; served with `form-action 'self'` |
+| `POST /ui/l/<key>/home` | host; `Sec-Fetch-Site` `same-origin`; body at most 1,024 bytes, `application/x-www-form-urlencoded`; the login verifies | the enter page for a new `Home(Resumed)` grant |
 | `GET /ui/admin?ticket=<t>` | as the home exchange, for an `Admin` ticket | the enter page |
 | `GET /ui/p/<key>/admin` | as the home page, for an `Admin` page, and the credential is the owner's | the shell |
 | `GET /ui/p/<key>/admin/ws?csrf-token=<n>` | as the home socket, and the owner | the admin socket |
-| `GET /ui/claim` | host; `Sec-Fetch-Site` `none` or `same-origin` | a fixed document with the two fields |
+| `GET /ui/claim` | host; `Sec-Fetch-Site` `none` or `same-origin` | a fixed document with the two fields, served with `form-action 'self'` |
 | `POST /ui/claim` | host; `Sec-Fetch-Site` `none` or `same-origin`; body at most 1,024 bytes; `token` is `loomclaim_` and 64 hex; `name` empty or valid; the claim redeems | the enter page for a new `Home` grant, with the login cookie and nonce |
 
 The page and socket of a `Session` grant are unchanged. A `Home` and an
 `Admin` grant have no session, so their `page_grant` checks the page
 cookie, the key and the credential, and the admin's additionally that the
 principal's kind is `OwnerPrincipal`; the membership check is skipped.
+
+The resume page and the claim form are the only two `/ui` documents whose
+policy says `form-action 'self'`; every other document keeps
+`form-action 'none'` (`content_security_policy` (`web_view/page.gleam:314`)),
+and nothing else in the policy widens for them.
 
 `POST /ui/l/<key>/home` and `POST /ui/claim` take a control-class parser
 permit and are refused `503` when the daemon is not `Serving`. Each
@@ -363,9 +460,9 @@ asks nothing.
 | `home()` | any `Workspace` page | mint a `Home` ticket with the page's principal, ceiling and deadline, `Forgotten` |
 | `signins()` | `Home`, any ceiling | the principal's own `credentials.signins` |
 | `revoke_login(fp)`, `revoke_logins()` | `Home`, any ceiling | `credentials.revoke_login` for the principal's own; all of them |
-| `device_link()` | `Home`, any ceiling | `reserve_invite`; mint a `Remembered` `Home` ticket living `device_ms` with the page's principal and ceiling |
+| `device_link()` | `Home(Fresh)`, any ceiling | `reserve_invite`; mint a `Remembered` `Home(Fresh)` ticket living `device_ms` with the page's principal and ceiling, and the issuing login's `e` when there is one; refused from a `Home(Resumed)` page |
 | `create(index, name, scope)` | `Owning` `Home` page | resolve `index` against the listing this socket last drew; `name` as `valid_name`; `scope` `workspace_private` or `session_only`; key `page-<serial>-<n>`; `manager.create_scoped` with configuration `""`; then `resume(id)`; counted by `reserve_creation` (ten an hour per credential) |
-| `admin()` | `Owning` `Home` page | mint an `Admin` ticket with the page's principal and deadline |
+| `admin()` | `Owning` `Home(Fresh)` page | mint an `Admin` ticket with the page's principal and deadline; refused from a `Home(Resumed)` page, which draws no Admin button |
 | `principals()`, `memberships(p)`, `members(s)`, `signins(p)` | `Admin` page | the owner-only reads with the page's digest |
 | `invite(s, role, name)` | `Admin` page | `reserve_invite`; `manager.administer(Invite)` as `invite_for` does, into session `s` with `name`, claim `claim_ttl_ms` (one hour); release on a refusal that made nothing |
 | `set_role(s, p, role)` | `Admin` page | `reserve_invite` when `role` is operator and the current role is observer; `administer(SetRole)` |
@@ -417,7 +514,8 @@ per member. The SQL is one new query over `access_memberships` joined to
 c→s: {v:2, id, cmd:"credentials.signins", body:{principal_id?, after?:<fingerprint>}}
 s→c: {v:2, reply_to, event:"credentials.signins",
       body:{principal_id,
-            signins:[{fingerprint:"<16 hex>", issued_at_ms, last_seen_ms?}],
+            signins:[{fingerprint:"<16 hex>", issued_at_ms, last_resumed_ms?,
+                      issued_by?:"<16 hex>"}],
             next?:<fingerprint>}}
 
 c→s: {v:2, id, cmd:"credentials.revoke_login",
@@ -433,7 +531,9 @@ login and authenticates nothing. A revoked login refuses its next
 `POST /ui/l/<key>/home` and ends every page it minted at that page's next
 frame. `loom access signins PRINCIPAL` and `loom access revoke-login
 PRINCIPAL FINGERPRINT` print and send them. The listing's `expires` is
-`issued_at_ms` plus thirty days, by rule, and is not stored.
+`issued_at_ms` plus thirty days, by rule, and is not stored; `issued_by`
+is the fingerprint of the login whose device link this one came from,
+when there was one, so a family is traceable from any member.
 
 ### `principals.list`
 
@@ -487,6 +587,8 @@ Part 1.6 only.
 | New routes `/ui/home`, `/ui/p/<key>/home`, `/ui/p/<key>/home/ws`, `/ui/l/<key>/home` (`GET`, `POST`), `/ui/admin`, `/ui/p/<key>/admin`, `/ui/p/<key>/admin/ws`, `GET` and `POST /ui/claim` | new routes under the prefix 051 fixed |
 | `credentials.claim`: optional `name` | additive |
 | `principals.list`: `logins` per row | additive |
+| Authentication by kind: a bearer presented on `/v2/control`, `/v2/claim` or a session attach is exactly 64 lowercase hex and matches only a `bearer` credential; a login matches only a `browser` one | a rule Part 1.6 states; every bearer issued today already has that shape |
+| The resume page and the claim form are served with `form-action 'self'` | a header rule under 051's prefix |
 | New owner-only read `sessions.members` | new command |
 | New `credentials.signins`, `credentials.revoke_login` | new commands |
 | New `principals.rename` | new command, optional |
@@ -513,9 +615,13 @@ and no list. A fifth is new: a browser may hold a thirty-day credential
 - `host/login` (new): the token's grammar, minting, parsing, chain
   verification with `crypto.hmac` and `crypto.secure_compare`, and the
   intersection rules; pure functions over the root key and a clock.
-- `client/daemon/root` or `main`: the root key file beside `owner.token`.
-- `client/daemon/ui_sessions`: `Scope`, `Reach`, `Remember`, `admin_ms`,
-  `device_ms`, the per-scope page bound, `reserve_creation`.
+- `client/daemon/root` or `main`: the root key file beside `owner.token`,
+  its three start-time cases, and the revocation a fresh key performs.
+- `client/daemon/server`: `credential` refusing a bearer that is not 64
+  lowercase hex, and every wire-bearer lookup naming `bearer`.
+- `client/daemon/ui_sessions`: `Scope` with `Home(origin)`, `Kind`,
+  `Reach`, `Remember`, `admin_ms`, `device_ms`, the per-scope page bound,
+  `reserve_creation`.
 - `client/daemon/ui_http`: the new `Route` variants, the login cookie's
   name and attributes by page origin, the two `POST` bodies' bounds.
 - `client/daemon/server`: the routes, `page_grant` by scope, the one
@@ -526,9 +632,12 @@ and no list. A fifth is new: a browser may hold a thirty-day credential
 - `client/daemon/ui_socket`: `resume_for`, `home_ticket_for`,
   `device_link_for`, `create_for`, `admin_ticket_for`, the admin and
   sign-in asks; the home and admin sockets' admission rules.
-- `client/daemon/manager`, `storage/access`, `storage/catalogue`: `claim`
-  with a name and a kind; `members_page`; `signins_page`; `revoke_login`;
-  `last_seen`; `rename` exposed; version 5.
+- `client/daemon/manager`, `storage/access`, `storage/catalogue`,
+  `storage/sql`: `authenticate` and `access_credential` taking the kind;
+  `principal_active_credential` and `active_member_credentials` restricted
+  to `bearer`; `claim` with a name and a kind; `members_page`;
+  `signins_page`; `revoke_login`; `last_resumed`; `rename` exposed;
+  version 5.
 - `host/access`, `tui`: `loom access members`, `signins`, `revoke-login`;
   `loom claim --name`; `loom ui` without `--session`, `--observe`,
   `--no-remember`; `--token` refusing `loomb1:`.
@@ -568,21 +677,40 @@ and no list. A fifth is new: a browser may hold a thirty-day credential
   and device links, a demotion and every revocation do not; a member's
   `sessions.members` is `forbidden`; no frame on the admin socket carries
   `loomclaim_` but the one that shows the owner their invitation.
+- Credential kinds: a version 4 catalogue migrates to 5 with every
+  credential `bearer`; a `browser` row authenticates on no `/v2` route and
+  under no `Bearer` page grant, and a `bearer` row under no `Browser`
+  grant; a 32-character, a 63-character and an uppercase-hex bearer are
+  `401` before the catalogue is read; `principals.list` for a principal
+  holding one `bearer` and one `browser` row reports the bearer and
+  `logins: 1`.
 - The login: a remembered exchange sets the cookie with exactly the
   attributes above for its page origin and the nonce in the body; the
-  resume route mints a home the next day and refuses it on the thirtieth;
-  a token with a wrong signature, a missing caveat, an unknown name, a
-  widening repeat, a key not matching the path, a nonce not matching, or
-  an expired `e` is `401` with no catalogue read (the registry stub
-  records none); a token narrowed by an appended `c=observer` or an
-  earlier `e` verifies and is held to the narrower value; a revoked row is
-  `401`; a login on `/v2/control` is `401`; `--token` refuses `loomb1:`;
-  deleting the root key and restarting refuses every login; `last_seen_ms`
-  moves at most once an hour; a token never appears under the state root
-  or in `daemon.log`; a device link redeems once inside `device_ms`, sets a
-  login, is listed, and costs one allowance unit; `revoke_login` ends that
+  resume route mints a `Home(Resumed)` the next day and refuses it on the
+  thirtieth; a token with a wrong signature, a missing caveat, an unknown
+  name, uppercase hex anywhere, more than 384 bytes, a key not matching
+  the path, a nonce not matching, or an expired `e` is `401`, with no
+  catalogue read for the first five (the registry stub records none); a
+  wider repeat is ignored and the narrower value holds; a token narrowed by
+  an appended `c=observer` or an earlier `e` verifies and is held to the
+  narrower value, and one carrying `s` mints a session ticket for that
+  session and no `Home`; a revoked row is `401`; the bare identifier, the
+  whole token and the identifier's digest presented as a bearer on
+  `/v2/control` are each `401`; `--token` refuses `loomb1:`; a planted
+  `loom_login` under a longer path does not deny the real one, and a
+  fifth value is not read; a missing root key at start refuses every login
+  and marks every `browser` row revoked with one log line, and a truncated
+  or group-readable key file refuses start; `last_resumed_ms` moves at
+  most once an hour and `daemon.login_resumed` is logged on every resume;
+  a token never appears under the state root or in `daemon.log`; a
+  `Home(Resumed)` draws no Admin button and no device-link control and the
+  daemon refuses `admin()` and `device_link()` from it; a device link
+  redeems once inside `device_ms`, sets a login whose `e` is the issuing
+  login's, is listed with `issued_by`, is logged with its parent's
+  fingerprint, and costs one allowance unit; `revoke_login` ends that
   login's pages and no other; `revoke-credentials` and `rotate` end every
-  login; a version 4 catalogue migrates to 5 with every credential `bearer`.
+  login; the resume and claim documents carry `form-action 'self'` and
+  every other `/ui` document `'none'`.
 - A claim with a `name` binds and the first attach's presence row carries
   it; an invalid name binds nothing and the claim stays open; `loom claim
   --name` sends it.
@@ -598,15 +726,27 @@ and no list. A fifth is new: a browser may hold a thirty-day credential
   `create` accepting a path; `resume` skipping the authority check; the
   chain compared with `==`; the row read before the chain is verified; `e`
   extended on use; a repeated `c` taking the larger; the page cookie given
-  a `Max-Age`; a switch ticket minted `Remembered`.
+  a `Max-Age`; a switch ticket minted `Remembered`; the kind dropped from
+  the `authenticate` query (the bare identifier then authenticates, and
+  the test must fail); the 64-hex shape check removed from `credential`;
+  `principal_active_credential` without its kind; a `Home(Resumed)`
+  offered the Admin button or a device link; a device-link login given
+  thirty days under an issuing login; a fresh root key drawn without the
+  revocation; only the first `loom_login` value read; the resume document
+  served with `form-action 'none'`.
 
 ## Cost
 
 - **A thirty-day credential in a browser.** A stolen login is worth
-  everything a home at its ceiling can do for a month, until revoked; for
-  the owner that includes sessions in known workspaces (ten an hour) and
-  admin pages (grants three an hour). Fixed expiry, listing, last-seen,
-  per-login revocation and the root key bound it; nothing shortens it.
+  everything a resumed home at its ceiling can do for a month, until
+  revoked; for the owner that includes sessions in known workspaces (ten
+  an hour) but no admin page and no device link, which only a fresh home
+  mints. Fixed expiry, listing, last-resumed, per-login revocation and the
+  root key bound it; nothing shortens it.
+- **A stolen fresh home is worth a login.** Inside its eight hours it can
+  mint a device link, three an hour, and each is a thirty-day credential
+  at the page's ceiling until revoked, listed and traceable to its parent;
+  051's eight-hour price no longer covers a fresh home on its own.
 - **A root key file** the daemon's host must keep private, beside
   `owner.token`, and a credential model with two kinds of row.
 - **The catalogue moves to version 5**, so a downgrade needs the catalogue
@@ -641,8 +781,12 @@ page's allowance and reduces freely. A key shown once and a sign-in form,
 a random-cookie table, rotate-on-use, a free path field, an unbounded
 admin page and a second credential kind were considered and not taken.
 The owner ruled the lifetime, the macaroon, the known-workspace rule and
-the saved-session open on 2026-10-03; the rest of the design note's
-answers stand as recommended.
+the saved-session open on 2026-10-03, and on 2026-10-04 that the admin
+page and device links come only from a fresh home; the rest of the design
+note's answers stand as recommended. The security review of 2026-10-04
+(the addendum below) changed the credential model so that the login's
+public identifier authenticates nothing, and bounded the root key, device
+links and the resume as the addendum records.
 
 ## Open
 
@@ -650,11 +794,75 @@ answers stand as recommended.
   pages and the login (with the `__Host-` cookie) and never `Admin` or the
   create control; the claim address the admin page shows needs the proxy's
   origin, which is 052's `--ui-origin`.
-- **Attenuation in the browser.** The intersection rules are enforced from
-  the first cut; a control that appends `s=<session>` and `c=observer` to
-  hand out a one-session read-only link needs WebCrypto HMAC in
-  `web_client` and a decision on who may.
+- **Narrowed tokens.** The intersection rules are enforced from the first
+  cut; a daemon-side control that mints a token with `s=<session>` and
+  `c=observer`, to hand out a one-session read-only link, needs a decision
+  on who may ask and a page kind for what the holder reaches, since such
+  a token mints no `Home`.
 - **`loom access page`** from 053 phase 4, unbuilt; the home's button
   covers it.
 - **Stop from the browser.** One fixed button per running session on the
   owner's home, through `administer`, if asked for.
+
+## Addendum: the login security review (2026-10-04)
+
+**Status**: folded into the proposal above; the body reads as amended, and
+this addendum records what moved and why, in the order the review found
+it. The owner ruled two of its questions on 2026-10-04.
+
+### Problem
+
+The review of the macaroon login found one defect and three trade-offs.
+The defect: the login row was keyed by the digest of the token's public
+identifier, and every wire-bearer path hashes any presented string into a
+digest with no shape check and no kind, so the identifier alone, which
+every holder of the cookie can read, would have authenticated on
+`/v2/control` as the principal with none of the token's caveats. For the
+owner's login that is owner authority. The trade-offs: a device link from
+any home turned a stolen eight-hour page into a thirty-day credential; an
+admin page re-mintable from a resumed home made 053's fifteen minutes a
+page lifetime rather than a credential bound; and a regenerated root key
+left every revoked login listed as live. The rest were clarity: the
+grammar in two places with two sizes, a CSP that would have blocked the
+two forms, a planted cookie denying the resume, a column named for more
+than it recorded, and queries that assume one active credential.
+
+### What was considered
+
+For the defect, keying the row by `HMAC-SHA256(root, id)` so no
+presentable string hashes to it was considered; it couples every row to
+the root key, and the kind filter is the smaller change and uses the
+column the catalogue is gaining anyway. For the admin page, three answers
+were offered: accept the thirty days and say so; a `Fresh | Resumed`
+origin on the home grant with `Admin` minted only from `Fresh`; or a
+shorter `e` for the owner's logins. The owner chose the origin. For device
+links, the same origin, an inherited `e` and a logged parent.
+
+### Decision
+
+- Authentication carries the credential kind, in the query; a presented
+  bearer is 64 lowercase hex or `401` before any lookup; the two
+  one-credential queries name `bearer`. This is its own pull request,
+  ahead of the login, so it is reviewed alone.
+- `Home` grants carry `Fresh | Resumed`; `Admin` tickets and device links
+  are minted only from `Fresh` (ruled by the owner, 2026-10-04); a
+  device-link login inherits the issuing login's `e`; `daemon.login_issued`
+  names the parent, and `credentials.signins` reports it as `issued_by`.
+- A missing root key is drawn and every `browser` row revoked in the same
+  start; an unreadable or wrong-sized key refuses start; the key is read
+  through `read_private_bounded` and written with `atomic_write_private`.
+- Attenuation is a daemon act; a token with `s` mints no `Home`.
+- The two form documents carry `form-action 'self'`; the grammar is
+  written once with byte-level hash inputs, a 384-byte bound, uppercase
+  refused, and "a wider repeat is ignored"; up to four `loom_login` values
+  are tried; `last_resumed_ms` replaces `last_seen_ms` and
+  `daemon.login_resumed` is logged per resume; `__Host-` means one login
+  per origin under 052; the ports and the nonce are stated plainly.
+
+### Cost
+
+A stolen fresh home is now priced as a login, which is the true price and
+was not stated before. The owner runs `loom ui` on a day they administer
+or add a device, which is one command. One more field on the home grant,
+one more kind on every credential lookup, and a start-time rule for one
+file.
