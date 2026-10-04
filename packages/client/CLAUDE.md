@@ -5695,6 +5695,15 @@ notification. `remote/tool_custody` wraps only ToolSurface run/recover and keeps
 clearance and scheduling metadata unchanged. `remote/outcome` validates exact
 call identity and actual reserved session-result readback before collection.
 
+`remote/dispatch_binding` turns that custodian into the native remote
+adapter's reservation and receipt callbacks. It binds the original ChildOrigin
+to the actual physical operation and step, full scope, owner label and exact
+Prepared bytes before transmission. Duplicate reservations return the original
+UUID. Receipt verification checks that same immutable envelope before committing
+ordered output and terminal bytes; cancellation persists even before a request
+UUID exists. Failure to retain a cancellation invokes the embedding host's
+mandatory fatal fence. The adapter does not provide a reconciliation scheduler.
+
 Managed versus local is an explicit assembly choice. Missing managed evidence
 returns unknown, never the local replay fallback. Daemon configuration and
 remote workspace/transport wiring remain required; these modules are not yet
