@@ -428,6 +428,7 @@ fn started(now: fn() -> Int) -> component.Start(Wire) {
       resume: fn(_, _) { Nil },
       invite: None,
       home: None,
+      rename: None,
     ),
   )
 }

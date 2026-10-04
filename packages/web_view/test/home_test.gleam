@@ -12,12 +12,14 @@
 
 import gleam/erlang/process.{type Subject}
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/string
 import lustre/effect
 import lustre/element.{type Element}
 import web_view/ending
 import web_view/home
 import web_view/page
+import web_view/renames
 import web_view/sessions.{type Entry, Blocked, Entry, Live, Saved}
 import web_view/view/home_table
 
@@ -31,7 +33,7 @@ fn entry(
   created_at: Int,
   residency: sessions.Residency,
 ) -> Entry {
-  Entry(id:, name:, workspace:, created_at:, residency:)
+  Entry(id:, name:, workspace:, created_at:, residency:, subtitle: None)
 }
 
 // The instant the page reads the clock at: two hours and a few minutes after
@@ -58,6 +60,7 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     resume: fn(_, _) { Nil },
     now: fn() { now },
     activity: fn(_, _) { Nil },
+    rename: None,
   )
 }
 
@@ -737,4 +740,209 @@ pub fn every_ending_has_home_words_test() {
   })
   assert ending.home_headline(ending.AccessRevoked)
     == "Your access was revoked or changed."
+}
+
+// The first prompt's first line leads a session's quiet line in place of its
+// age (protocol-change/066): the subtitle, then the standing's words. A session
+// with none keeps the age it always had, and the subtitle is only ever a text
+// node.
+pub fn a_subtitle_leads_the_quiet_line_in_place_of_the_age_test() {
+  let subtitled =
+    list.map(listing(), fn(row) {
+      case row.id {
+        "B" -> Entry(..row, subtitle: Some("Fix the flaky retry test"))
+        "C" -> Entry(..row, subtitle: Some("Port the parser"))
+        _ -> row
+      }
+    })
+  let #(model, _) =
+    opened(start_with(home.OperatorCeiling, fn() { home.Listed(subtitled) }))
+  let html = drawn(model)
+  assert string.contains(
+    html,
+    "<span class=\"home-subtitle\">Fix the flaky retry test</span> · resident",
+  )
+  assert string.contains(
+    html,
+    "<span class=\"home-subtitle\">Port the parser</span> · saved",
+  )
+
+  // A and D have no subtitle, so they read as before.
+  assert string.contains(html, "resident · created ")
+  assert string.contains(html, "saved · <time")
+  assert list.length(string.split(html, "home-subtitle")) == 3
+}
+
+pub fn a_subtitle_is_never_an_attribute_test() {
+  let hostile = "\"><img src=x onerror=alert(1)>"
+  let rows = [
+    Entry(
+      ..entry("A", "web ui", "/src/loom", 100, Live),
+      subtitle: Some(hostile),
+    ),
+  ]
+  let #(model, _) =
+    opened(start_with(home.OperatorCeiling, fn() { home.Listed(rows) }))
+  let html = drawn(model)
+  assert !string.contains(html, "<img")
+  assert string.contains(html, "&lt;img src=x onerror=alert(1)&gt;")
+
+  // The table and the sidebar both draw it, each time as escaped text.
+  assert list.length(string.split(html, "onerror"))
+    == list.length(string.split(html, "onerror=alert(1)&gt;"))
+  assert !string.contains(html, "title=\"" <> hostile)
+}
+
+// An owner's home draws a Rename button after each row's own button, so the
+// row's handler keeps its place, and the new handlers are clicks beneath the
+// region the socket already admits. Without the capability the page is as it
+// was: no button, no form.
+pub fn an_owners_home_draws_a_rename_button_after_each_row_test() {
+  let ask = fn(_session, _name, _deliver) { Nil }
+  let #(owner, _) = opened(home.Start(..start(), rename: Some(ask)))
+  let html = drawn(owner)
+  assert list.length(string.split(html, "class=\"home-rename\"")) == 5
+  assert string.contains(html, "renamable")
+  assert !string.contains(html, "<form")
+
+  let with = handlers(home.view(owner))
+  let #(member, _) = opened(start())
+  let without = handlers(home.view(member))
+  assert list.length(with) == list.length(without) + 4
+  assert list.all(with, beneath_the_two_regions)
+
+  // Every handler a member's page has is on the owner's page at the same path.
+  assert list.all(without, fn(key) { list.contains(with, key) })
+
+  // The row's own handler is the item's, first in the row; the button is the
+  // second child, so no existing path moved.
+  let added = list.filter(with, fn(key) { !list.contains(without, key) })
+  assert list.length(added) == 4
+  assert list.all(added, fn(key) {
+    string.starts_with(key, home.table_path <> "\t")
+    && string.ends_with(key, "\t1\nclick")
+  })
+
+  let plain = drawn(member)
+  assert !string.contains(plain, "home-rename")
+  assert !string.contains(plain, "<form")
+}
+
+// A press on a row's Rename opens that row's form in place of its words: the
+// current name is a text node in the lead, the field carries none of it, and the
+// handlers beneath the table are the form's submit and the Cancel button.
+pub fn pressing_rename_opens_that_rows_form_test() {
+  let ask = fn(_session, _name, _deliver) { Nil }
+  let #(owner, _) = opened(home.Start(..start(), rename: Some(ask)))
+  let model = run(owner, home.EditRequested("B"))
+  let html = drawn(model)
+  assert string.contains(html, "home-rename-form")
+  assert string.contains(html, "Rename vetting lint")
+  assert string.contains(html, "name=\"text\"")
+  assert !string.contains(html, "value=\"vetting lint")
+  assert !string.contains(html, "placeholder=\"vetting lint")
+  assert list.length(string.split(html, "<form")) == 2
+
+  let keys = handlers(home.view(model))
+  let submits = list.filter(keys, string.ends_with(_, "\nsubmit"))
+  assert list.length(submits) == 1
+  assert list.all(submits, string.starts_with(_, home.table_path <> "\t"))
+  assert list.all(
+    list.filter(keys, fn(key) { !string.ends_with(key, "\nsubmit") }),
+    beneath_the_two_regions,
+  )
+
+  // Opening another row's form closes this one: one form at a time.
+  let model = run(model, home.EditRequested("A"))
+  let html = drawn(model)
+  assert list.length(string.split(html, "<form")) == 2
+  assert string.contains(html, "Rename web ui")
+  assert !string.contains(html, "Rename vetting lint")
+
+  let model = run(model, home.EditCancelled)
+  assert !string.contains(drawn(model), "<form")
+}
+
+// A submit asks the daemon once, for the row whose form is open, and the
+// daemon's answer becomes the row's name and the page's notice.
+pub fn a_submit_asks_once_and_the_answer_names_the_row_test() {
+  let asked = process.new_subject()
+  let ask = fn(session, name, deliver) {
+    process.send(asked, #(session, name))
+    deliver(renames.Renamed("review auth"))
+  }
+  let #(owner, _) = opened(home.Start(..start(), rename: Some(ask)))
+  let model = run(owner, home.EditRequested("B"))
+  let model = run(model, home.Renaming("B", "review auth"))
+  assert process.receive(asked, 0) == Ok(#("B", "review auth"))
+  assert process.receive(asked, 0) == Error(Nil)
+  let html = drawn(model)
+  assert string.contains(html, "review auth")
+  assert !string.contains(html, "vetting lint")
+  assert string.contains(html, "Renamed.")
+  assert !string.contains(html, "<form")
+}
+
+// While a request is out a second submit asks nothing; a submit for a row whose
+// form is not open asks nothing either, so a frame cannot name another session.
+pub fn a_second_or_forged_submit_asks_nothing_test() {
+  let asked = process.new_subject()
+  let ask = fn(session, name, _deliver) {
+    process.send(asked, #(session, name))
+  }
+  let #(owner, _) = opened(home.Start(..start(), rename: Some(ask)))
+
+  // No form is open, so nothing is asked, whichever session is named.
+  let model = run(owner, home.Renaming("A", "x"))
+  assert process.receive(asked, 0) == Error(Nil)
+
+  // The form of B is open: a submit naming A is dropped, and B's goes through
+  // once.
+  let model = run(model, home.EditRequested("B"))
+  let model = run(model, home.Renaming("A", "forged"))
+  assert process.receive(asked, 0) == Error(Nil)
+  let model = run(model, home.Renaming("B", "first"))
+  let model = run(model, home.Renaming("B", "second"))
+  assert process.receive(asked, 0) == Ok(#("B", "first"))
+  assert process.receive(asked, 0) == Error(Nil)
+  assert string.contains(drawn(model), "disabled")
+
+  // The form cannot be closed or moved while the request is out.
+  let model = run(model, home.EditCancelled)
+  let model = run(model, home.EditRequested("A"))
+  assert string.contains(drawn(model), "Rename vetting lint")
+}
+
+// A page the daemon handed no capability ignores every rename message: it draws
+// no form and asks nothing.
+pub fn a_page_without_the_capability_ignores_rename_messages_test() {
+  let #(member, _) = opened(start())
+  let model = run(member, home.EditRequested("B"))
+  let model = run(model, home.Renaming("B", "x"))
+  assert !string.contains(drawn(model), "<form")
+  assert drawn(model) == drawn(member)
+}
+
+// A refusal is worded in the reason's fixed words inside the open form, which
+// stays open so the name can be corrected.
+pub fn a_refusal_is_worded_in_the_open_form_test() {
+  let ask = fn(_session, _name, deliver) {
+    deliver(renames.Declined(renames.InvalidName))
+  }
+  let #(owner, _) = opened(home.Start(..start(), rename: Some(ask)))
+  let model = run(owner, home.EditRequested("B"))
+  let model = run(model, home.Renaming("B", "bad"))
+  let html = drawn(model)
+  assert string.contains(html, renames.reason_words(renames.InvalidName))
+  assert string.contains(html, "<form")
+  assert string.contains(html, "vetting lint")
+}
+
+// An answer nobody asked for is dropped: no daemon message changes a name unless
+// a request is out.
+pub fn an_unsolicited_rename_answer_is_dropped_test() {
+  let ask = fn(_session, _name, _deliver) { Nil }
+  let #(owner, _) = opened(home.Start(..start(), rename: Some(ask)))
+  let model = run(owner, home.RenameAnswered(renames.Renamed("forged")))
+  assert drawn(model) == drawn(owner)
 }
