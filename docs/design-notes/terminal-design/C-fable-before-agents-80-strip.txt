@@ -1,0 +1,24 @@
+ ◆ loom       native-fixture · native UI fixture       fixture-model · Ctrl+g d…
+  worktree · COMPOSER Ctrl+d  / main
+ captured fixture worktree · 1 added · 1 deleted
+ ▸ [ALL] 2 files
+ All files · observation complete · 0 omitted
+ ◇ Observation complete · 0 files omitted
+
+
+╭ queue · 3 pending · Alt+q inspect ───────────────────────────────────────────╮
+│Review the failed compact-layout assertion. Confirm th… · [STEER] [EDIT] · 1/3│
+│Prepare the native layout report with the wide and com… · [QUEUE] [EDIT] · 2/3│
+│This captured input belongs to an attachment with… · [QUEUE] [READ-ONLY] · 3/3│
+╰──────────────────────────────────────────────────────────────────────────────╯
+─ To main · ↑↓ select agent · enter opens · x stops · esc back                 ─
+ ◒ Message to sub:protocol-review (3s)
+ goal paused (you paused it) · 51200/400000 tokens · 3 continuations · Finish …
+ advisor nudges pending (1) · held for your next prompt to main
+
+────────────────────────────────────────────────────────────────────────────────
+ agents closed · fixture-model · ctx — · est $0.00
+ 6 agents · 2 working · 3 attention
+› ● main             agent_send                                               3s
+❯ ? sub:protocol-re… Approval required                                        3s
+  ! sub:paused-revi… Operation aborted

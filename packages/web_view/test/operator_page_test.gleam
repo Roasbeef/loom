@@ -855,6 +855,7 @@ pub fn a_denied_approval_leaves_a_who_line_in_the_lane_test() {
       "printf hi",
       owner,
       approval.Unavailable("this decision is already resolved"),
+      strand: None,
     )
   }
   let model =

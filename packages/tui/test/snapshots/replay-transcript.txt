@@ -1,24 +1,24 @@
- ◆ loom                  demo · replay                   baseten-kimi-k3 · Ctrl+g d…
- transcript / main
+ ◆ replay · demo · strand main                                      baseten-kimi-k3
  ◇ attached to session demo
 
+ › run the tests
 
-  › User
-    run the tests
+ ▸ tools · 1 call · 1 failed · Ctrl+g expands details
 
- ◇ tools · 1 call · 1 failed · Ctrl+g expands details
-
- └ × Bash(make check-tui)
- └ error: compilation failed
+ × Bash(make check-tui)
+   └ error: compilation failed
      test/tui_test.gleam:12
 
- ◆ Looking at the failure now.
+ ◆ main
+   Looking at the failure now.
 
 
 
 
-─ To main · prompt · enter sends · / commands                                      ─
 
-────────────────────────────────────────────────────────────────────────────────────
- streaming text · baseten-kimi-k3 · ctx — · est $0.00
- 0 agents · 0 working · 0 attention
+
+
+╭─ To main · Enter sends ────────────────────────────────────────── ○ main · idle ─╮
+│ streaming text                                                                   │
+│ ›  / commands                                                                    │
+╰─ baseten-kimi-k3 › ctx — › $0.00 ────────────────────────────────────────────────╯

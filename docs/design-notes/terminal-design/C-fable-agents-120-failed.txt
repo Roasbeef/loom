@@ -1,0 +1,40 @@
+ ◆ loom                       loom-herdr-update · ~/code/loom-herdr-update (herdr-update)      GLM-5.3 · Ctrl+g details 
+ ╭ AGENTS · 7 · 4 working · 1 needs you · 1 failed ──────────────────────────────────────────── ↑↓ select · esc close ╮ 
+ │    name                   now                          elapsed │ sub:terminal-checks · Failed · ran 4m 10s · 12k … │ 
+ │› ◷ main                   Waiting · 2 subagents          1m 34s│ sub:main/terminal-checks-0a1b · kimi-k3           │ 
+ │  ? adversarial-co…-48f3c1 Needs approval · network       2m 45s│                                                   │ 
+ │  ● documentation-…-0455ab Writing an early note before…  2m 38s│ TASK                                              │ 
+ │  ● adversarial-co…-ec14f0 Grep herdr:loom references a…  1m 03s│ Exercise small terminals, Unicode names, and con… │ 
+ │  ● documentation-…-9b1a77 Grepping bootstrap.gleam for…     51s│                                                   │ 
+ │❯ × sub:terminal-checks    Failed · label check failed …        │ FAILED                                            │ 
+ │  ○ advisor                Idle · 0 nudges                      │ × label check failed at 40 columns: expected 'To… │ 
+ │                                                                │ enter opens the transcript at the failure · x is… │ 
+ │                                                                │                                                   │ 
+ │                                                                │ MESSAGES                                          │ 
+ │                                                                │ ← main        Exercise small terminals…         … │ 
+ │                                                                │ INBOX  0 unread · nothing pending                 │ 
+ │                                                                │                                                   │ 
+ │                                                                │ RECENT                                            │ 
+ │                                                                │ × bash gleam test --target erlang · exit 1        │ 
+ │                                                                │ ✓ fs_read packages/tui/test/snapshot_test.gleam   │ 
+ │                                                                │                                                   │ 
+ │                                                                │                                                   │ 
+ │                                                                │                                                   │ 
+ │                                                                │                                                   │ 
+ │                                                                │                                                   │ 
+ │                                                                │                                                   │ 
+ │                                                                │                                                   │ 
+ │                                                                │                                                   │ 
+ │                                                                │                                                   │ 
+ │                                                                │                                                   │ 
+ │                                                                │                                                   │ 
+ │                                                                │                                                   │ 
+ │                                                                │                                                   │ 
+ │  enter opens transcript · a approval · x stops · n next attention · m messages · p peer link · tab writes          │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+─ To main · Tab writes · enter opens agent ───────────────────────────────────────────────────────── loom-herdr-update ─
+ ◐ agent_wait · 2 subagents · 51s · esc interrupts                                                                      
+                                                                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                        
+ agent workspace · GLM-5.3 · ctx ~24% · est $13.42                                   7 agents · 5 working · 2 attention 

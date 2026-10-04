@@ -38,8 +38,8 @@
 ////
 //// `view` and `cached_frame` lead to `render_frame`.
 //// `render_frame` divides the screen and calls the owned rendering sections.
-//// For held input, `render_frame` passes `input_title` to
-//// `render_composer_chrome`; `input_title` calls `input_behavior`.
+//// For held input, `render_frame` builds the input frame's `frame_status`,
+//// whose keys come from `input_title_keys`, which asks `layout.input_keys`.
 //// Follow `render_inline_queue` for the matching queue hint.
 //// Both read the same shared projection rather than an old interrupt notice.
 //// `goal_availability` derives the inspector command state from the shared
@@ -50,7 +50,7 @@ import core/json
 import core/message
 import core/register
 import etui/buffer
-import etui/geometry.{type Rect, Fill, Length}
+import etui/geometry.{type Rect, Length}
 import etui/span
 import etui/style
 import etui/text
@@ -58,6 +58,7 @@ import etui/widgets/block
 import etui/widgets/paragraph
 import etui/widgets/statusbar
 import etui/widgets/textarea as text_area
+import filepath
 import gleam/bool
 import gleam/dict
 import gleam/int
@@ -65,23 +66,27 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import session_view/advisor_pending
 import session_view/agent_messages
+import session_view/agent_roster
+import session_view/agent_view
+import session_view/approval
 import session_view/command
 import session_view/completion_summary
 import session_view/composer
 import session_view/context_view
+import session_view/lane_fold
 import session_view/live_jobs
-import session_view/model.{Disconnected} as session_model
 import session_view/notes_view
 import session_view/protocol
 import session_view/queued_input
 import session_view/snapshot_view
+import session_view/strand_card
 import session_view/text_hygiene
 import session_view/transcript_line.{
-  type Line, type Speaker, Assistant, Failure, Line, Reasoning, ReasoningDigest,
-  Spacer, SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
-  ToolFailure, ToolPatch, ToolResult, User,
+  type Line, type Speaker, Assistant, Failure, ImageRow, Line, PeerMessage,
+  ProgramFailure, ProgramRunning, Reasoning, ReasoningDigest, SentMessage,
+  Spacer, StrandMessage, SummarizedAdvice, SummarizedReasoning, System, ToolCall,
+  ToolDetail, ToolFailure, ToolGroup, ToolPatch, ToolResult, User,
 }
 import session_view/transcript_lines
 import session_view/worktree_view
@@ -95,19 +100,23 @@ import tui/collaboration_view
 import tui/context_panel
 import tui/diff_panel
 import tui/focused_goal_panel
+import tui/input_frame
 import tui/layout
 import tui/live_tail
 import tui/markdown
+import tui/message_rows
 import tui/model.{
   type Model, AccessManager, AgentInspector, ApprovalInspector, DaemonSelector,
   FrameCache, GoalInspector, Model, ModelSelector, NoOverlay, PeerLinkManager,
-  PromptNext, ReconnectAttempting, ReconnectIdle, ReconnectSpent, SteerNow, View,
+  View,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
 import tui/peer_links
+import tui/program_rows
 import tui/queue_editor
 import tui/queue_panel
+import tui/rail_view
 import tui/selection
 import tui/session_selector
 import tui/summary_panel
@@ -171,13 +180,14 @@ pub fn render_frame(
     layout.layout(screen, model)
   let #(conversation_area, queue_area) =
     layout.queue_body_layout(body_area, model)
-  let #(transcript_panel, agent_panel, changes_panel) =
-    layout.body_layout(conversation_area, model)
-  let transcript_area = layout.panel_inner(transcript_panel)
+  let transcript_panel = conversation_area
+  let changes_panel = layout.changes_panel_area(screen, model)
+  let transcript_area = layout.transcript_inner(transcript_panel)
   let #(pending_area, composer_area) =
     layout.pending_layout(layout.panel_inner(input_area), model)
   let #(paste_area, editor_area) =
     layout.input_layout(composer_area, model.shared.attachments)
+  let editor_area = input_frame.prompt_area(editor_area)
   let #(footer_area, strip_area) = layout.footer_split(footer_area, model)
   let strip = layout.strip_lines(model)
 
@@ -199,21 +209,18 @@ pub fn render_frame(
   // only their borders over it, and the palette and overlays land last.
   let base =
     repaint_canvas(screen, model.view.repaint_phase)
-    |> render_header(header_area, model)
-    |> render_conversation_heading(transcript_panel, model)
+    |> input_frame.render_identity(header_area, identity(model, strip))
+    |> render_reading_row(transcript_panel, model)
     |> render_transcript(transcript_area, model)
-    |> render_agent_rail(agent_panel, model)
+    |> rail_view.render(screen, model)
     |> render_changes_panel(changes_panel, model)
     |> render_inline_queue(queue_area, model)
     |> render_todo_panel(layout.todo_area(body_area, model), model)
-    |> render_composer_chrome(
-      input_area,
-      input_title(model),
-      agent_strip.badge(strip, model.shared.active_strand),
-    )
+    |> input_frame.render(input_area, frame_status(model, strip))
     |> render_pending_band(pending_area, model)
     |> render_paste_chip(paste_area, model.shared.attachments)
     |> text_area.render(editor_area, editor, input_view)
+    |> input_frame.render_prompt(editor_area, placeholder(model, strip))
     |> render_footer(footer_area, model)
     |> agent_strip.render(
       strip_area,
@@ -236,10 +243,14 @@ pub fn render_frame(
     AgentInspector(selected) ->
       agents.render_inspection(
         base,
-        body_area,
+        layout.workspace_area(screen, body_area, selected),
         layout.displayed_agents(model),
         model.shared.active_strand,
         selected,
+        agents.Facts(
+          roster: model.shared.roster,
+          messages: model.shared.agent_messages,
+        ),
         agent_detail_content(model, selected),
       )
     GoalInspector(state) ->
@@ -249,10 +260,29 @@ pub fn render_frame(
         state,
         goal_availability(model),
       )
-    DaemonSelector(selector) -> session_selector.render(base, screen, selector)
+    DaemonSelector(selector) ->
+      session_selector.render(
+        base,
+        below_identity(screen),
+        selector,
+        model.view.wall_ms,
+      )
     PeerLinkManager(state) -> peer_links.render(base, screen, state)
     AccessManager(state) -> access_overlay.render(base, screen, state)
-    ApprovalInspector(panel) -> approval_panel.render(base, screen, panel)
+    ApprovalInspector(panel) ->
+      approval_panel.render(
+        base,
+        geometry.rect_new(
+          screen.position.x,
+          screen.position.y + 1,
+          screen.size.width,
+          int.max(0, input_area.position.y - screen.position.y - 1),
+        ),
+        panel,
+        waiting: list.count(model.shared.approvals, fn(review) {
+          review.status == approval.Pending
+        }),
+      )
   }
 
   let rendered = case model.view.overlay {
@@ -273,7 +303,6 @@ pub fn render_frame(
       let current_area =
         [
           transcript_area,
-          layout.panel_inner(agent_panel),
           layout.panel_inner(changes_panel),
           layout.panel_inner(input_area),
         ]
@@ -315,6 +344,17 @@ pub fn render_frame(
   let #(rendered, cursor) =
     render_context_surface(rendered, cursor, screen, model)
   #(appearance.apply(rendered, model.view.palette), cursor)
+}
+
+// The screen under its first row, which the identity line keeps while a
+// full-screen surface is open, so the session it belongs to stays named.
+fn below_identity(screen: Rect) -> Rect {
+  geometry.rect_new(
+    screen.position.x,
+    screen.position.y + 1,
+    screen.size.width,
+    int.max(0, screen.size.height - 1),
+  )
 }
 
 /// Draws a rounded border and a left-aligned title, leaving the interior alone.
@@ -407,88 +447,9 @@ fn render_changes_panel(
   model: Model,
 ) -> buffer.Buffer {
   case area.size.width > 0 {
-    True ->
-      buf
-      |> render_panel_border(area, diff_title(model), theme.divider)
-      |> render_diff_view(layout.panel_inner(area), model)
+    True -> render_diff_view(buf, layout.panel_inner(area), model)
     False -> buf
   }
-}
-
-fn render_agent_rail(
-  buf: buffer.Buffer,
-  area: Rect,
-  model: Model,
-) -> buffer.Buffer {
-  case area.size.width > 0 {
-    True -> {
-      let extra = studio_observation_lines(model)
-      let panes =
-        geometry.split_v(area, [
-          Fill,
-          Length(int.min(6, list.length(extra) + 1)),
-        ])
-      case panes {
-        [roster, observations] ->
-          buf
-          |> agents.render_rail(
-            roster,
-            layout.displayed_agents(model),
-            model.shared.active_strand,
-          )
-          |> paragraph.render_styled(
-            observations,
-            list.map(extra, fn(row) {
-              span.line_new([
-                span.span_styled(
-                  text.truncate(" " <> row, observations.size.width, "…"),
-                  theme.quiet_text(),
-                ),
-              ])
-            }),
-          )
-        _ ->
-          agents.render_rail(
-            buf,
-            area,
-            layout.displayed_agents(model),
-            model.shared.active_strand,
-          )
-      }
-    }
-    False -> buf
-  }
-}
-
-// The rail reports captured observations. Opening /diff owns refreshing Git;
-// a missing or stale observation must not become a fabricated clean worktree.
-fn studio_observation_lines(model: Model) -> List(String) {
-  let advice = case model.shared.nudges {
-    Some(board) -> list.take(advisor_pending.lines(board), 1)
-    None ->
-      case
-        list.any(model.shared.strands, fn(strand) { strand.id == "advisor" })
-      {
-        True -> ["Advisor nudges · not observed"]
-        False -> []
-      }
-  }
-  let changes = case model.shared.worktree.board {
-    None -> ["CHANGES · /diff (not observed)"]
-    Some(board) -> [
-      "CHANGES · " <> int.to_string(board.total) <> " files · /diff",
-      ..board.files
-      |> list.take(2)
-      |> list.map(fn(file) {
-        file.index_status
-        <> file.worktree_status
-        <> " "
-        <> text_hygiene.single_line(file.path)
-      })
-      |> list.append([model.shared.worktree.message])
-    ]
-  }
-  list.append(advice, changes)
 }
 
 // Names are presentation only. Pairing one with its identity prevents a
@@ -500,115 +461,163 @@ fn session_title(model: Model) -> String {
   }
 }
 
-fn render_header(
-  buf: buffer.Buffer,
-  area: Rect,
+// The identity line's facts: what does not change while a turn runs.
+fn identity(
   model: Model,
-) -> buffer.Buffer {
-  let identity = " ◆ loom "
-  let details =
-    text.truncate(
-      " "
-        <> text_hygiene.single_line(model.shared.current_model)
-        <> " · Ctrl+g details ",
-      int.max(0, area.size.width / 3),
-      "…",
-    )
-
-  // A long checkout path must not hide which session owns this terminal.
-  // Reserve the two fixed ends before fitting the session and its context.
-  let room =
-    int.max(
-      0,
-      area.size.width - text.cell_width(identity) - text.cell_width(details),
-    )
-  let context =
-    text.truncate(
-      text_hygiene.single_line(session_title(model))
-        <> " · "
-        <> text_hygiene.single_line(workspace.label(model.view.workspace)),
-      room,
-      "…",
-    )
-  let bar =
-    statusbar.statusbar_new()
-    |> statusbar.with_style(theme.paper, theme.graphite)
-    |> statusbar.with_left([
-      span.line_new([span.span_styled(identity, theme.signal_bold())]),
-    ])
-    |> statusbar.with_center([span.line_plain(context)])
-    |> statusbar.with_right([
-      span.line_new([span.span_styled(details, theme.quiet_text())]),
-    ])
-  statusbar.render(buf, area, bar)
-}
-
-// A reading surface needs a heading and gutter, not four persistent edges.
-// Keeping its interior geometry preserves selection and semantic anchors.
-fn render_conversation_heading(
-  buf: buffer.Buffer,
-  area: Rect,
-  model: Model,
-) -> buffer.Buffer {
-  buffer.set_string(
-    buf,
-    area.position,
-    text.truncate(
-      case tui_model.reading_history(model) {
-        True -> " ↓ Scrollback · click for latest · End with empty prompt "
-        False -> transcript_title(model)
-      },
-      area.size.width,
-      "…",
-    ),
-    theme.quiet_text(),
+  strip: List(agent_strip.Line),
+) -> input_frame.Identity {
+  input_frame.Identity(
+    workspace: filepath.base_name(model.view.workspace.path),
+    session: session_title(model),
+    strand: model.shared.active_strand,
+    task: agent_strip.badge(strip, model.shared.active_strand),
+    model: short_model(model.shared.current_model),
+    effort: effort(model),
   )
 }
 
-// Horizontal rules distinguish input from output without boxing the whole
-// conversation. The editor keeps its established inset for selection/copy.
-// The badge names the task of the agent being viewed, right-aligned on the
-// composer's top rule, so an operator who opened a sub-agent from the strip
-// can see which task the transcript and the composer now belong to. It
-// yields to the title: the send mode is never truncated to fit a badge.
-fn render_composer_chrome(
-  buf: buffer.Buffer,
-  area: Rect,
-  title: String,
-  badge: Option(String),
-) -> buffer.Buffer {
-  let width = int.max(0, area.size.width - 2)
-  let border = style.new(theme.signal, style.Default, style.none())
-  let title = text.truncate(title, width, "…")
-  let badge = case badge {
-    None -> ""
-    Some(words) ->
-      text.truncate(
-        " " <> text_hygiene.single_line(words) <> " ",
-        int.max(0, width - text.cell_width(title) - 2),
-        "… ",
+// A model reads by its last path segment, `Kimi-K3`; the full identity is
+// in the workspace detail and `/model`.
+fn short_model(model: String) -> String {
+  model
+  |> text_hygiene.single_line
+  |> string.split("/")
+  |> list.last
+  |> result.unwrap(model)
+}
+
+// The viewed strand's reasoning effort, from the capture's configuration.
+fn effort(model: Model) -> Option(String) {
+  case model.shared.captured {
+    Some(#(_, view)) ->
+      dict.get(view.configurations, model.shared.active_strand)
+      |> result.map(fn(config) {
+        lane_fold.thinking_name(config.configuration.thinking_level)
+      })
+      |> option.from_result
+    None -> None
+  }
+}
+
+// How many things wait on the operator: the agents whose rows say they
+// need input, and each open approval whose strand is not one of them, which
+// covers a question main itself asked.
+fn needs_you(model: Model, strip: List(agent_strip.Line)) -> Int {
+  let waiting =
+    strip
+    |> list.filter(fn(line) { line.status == agent_view.NeedsInput })
+    |> list.map(fn(line) { line.id })
+  strand_card.needing(strip)
+  + list.count(model.shared.approvals, fn(review) {
+    review.status == approval.Pending
+    && case review.strand {
+      Some(strand) -> !list.contains(waiting, strand)
+      None -> True
+    }
+  })
+}
+
+// Every live fact the input frame's rules carry.
+fn frame_status(
+  model: Model,
+  strip: List(agent_strip.Line),
+) -> input_frame.Status {
+  let activity = case layout.active_status_label(model) {
+    None -> input_frame.Resting
+    Some(doing) ->
+      input_frame.Busy(
+        glyph: layout.activity_glyph(model.view.activity_frame),
+        doing: text_hygiene.single_line(doing),
+        elapsed: case model.shared.activity_elapsed_s {
+          seconds if seconds > 0 -> agent_roster.duration(seconds)
+          _ -> ""
+        },
       )
   }
-  let gap = int.max(0, width - text.cell_width(title) - text.cell_width(badge))
-  buf
-  |> buffer.set_string(
-    area.position,
-    "─" <> title <> string.repeat(" ", gap + text.cell_width(badge)) <> "─",
-    border,
+  input_frame.Status(
+    target: recipient_label(model),
+    keys: string.trim(input_title_keys(model)),
+    activity:,
+    queued: list.length(layout.queue_rows(model)),
+    strand: model.shared.active_strand,
+    model: short_model(model.shared.current_model),
+    effort: effort(model),
+    context: context_view.footer(model.shared.context),
+    cost: transcript_lines.money(model.shared.usage.cost.total),
+    needs: needs_you(model, strip),
+    lock: case model.view.overlay {
+      ApprovalInspector(_) -> input_frame.Deciding
+      _ -> input_frame.Unlocked
+    },
   )
-  |> buffer.set_string(
-    geometry.Position(
-      area.position.x + 1 + text.cell_width(title) + gap,
-      area.position.y,
-    ),
-    badge,
-    style.new(theme.graphite, theme.current, style.bold()),
-  )
-  |> buffer.set_string(
-    geometry.Position(area.position.x, geometry.bottom(area) - 1),
-    string.repeat("─", area.size.width),
-    style.new(theme.divider, style.Default, style.none()),
-  )
+}
+
+// The key hints an empty draft shows, for the keys that do something right
+// now: Left only opens the picker from an empty composer with daemon
+// control, and Down enters the strip only while the strip is drawn.
+fn placeholder(model: Model, strip: List(agent_strip.Line)) -> Option(String) {
+  let composing = case model.view.overlay, model.view.strip_focus {
+    NoOverlay, agent_strip.Composing -> True
+    _, _ -> False
+  }
+  case composing, text_area.value(model.view.input) {
+    True, "" ->
+      [
+        sessions_hint("", model.shared.attachments, model.view.daemon_host),
+        case agent_strip.visible(strip) {
+          True -> "↓ agents"
+          False -> ""
+        },
+        "/ commands",
+      ]
+      |> list.filter(fn(piece) { piece != "" })
+      |> string.join(" · ")
+      |> Some
+    _, _ -> None
+  }
+}
+
+// A reading surface needs a gutter, not four persistent edges or a heading:
+// the identity line names the strand. While the reader is above the tail,
+// the panel's bottom row names the way back and how far it is, just above
+// the input frame where the eye returns to type. The row is the panel's own
+// spare edge, so the transcript keeps every row it had.
+fn render_reading_row(
+  buf: buffer.Buffer,
+  area: Rect,
+  model: Model,
+) -> buffer.Buffer {
+  case tui_model.reading_history(model), surface_title(model) {
+    // Help, the notes and a diff borrow the transcript's area, so the
+    // bottom row says which of them is showing and for which strand.
+    False, Some(title) ->
+      buffer.set_string(
+        buf,
+        geometry.Position(area.position.x, geometry.bottom(area) - 1),
+        text.truncate(title, area.size.width, "…"),
+        theme.quiet_text(),
+      )
+    False, None -> buf
+    True, _ -> {
+      let below = model.view.scroll_offset + tui_model.viewport_backlog(model)
+      buffer.set_string(
+        buf,
+        geometry.Position(area.position.x, geometry.bottom(area) - 1),
+        text.truncate(
+          " ↑ reading · "
+            <> int.to_string(below)
+            <> case below {
+            1 -> " row below"
+            _ -> " rows below"
+          }
+            <> " · End jumps to latest · click to jump ",
+          area.size.width,
+          "…",
+        ),
+        theme.signal_bold(),
+      )
+    }
+  }
 }
 
 fn render_transcript(
@@ -616,20 +625,19 @@ fn render_transcript(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
-  case model.view.notes_open, layout.main_shows_diff(model) {
-    True, _ ->
+  case model.view.notes_open {
+    True ->
       paragraph.render_styled(
         buffer.clear(buf, area),
         area,
         notes_content(model, area, model.shared.active_strand).lines,
       )
-    False, True -> render_diff_view(buf, area, model)
-    False, False ->
+    False ->
       render_rows(
         buf,
         area,
         model.view.caches.rendered_rows,
-        model.view.scroll_offset + tui_model.viewport_backlog(model),
+        transcript_offset(model),
       )
   }
 }
@@ -641,14 +649,65 @@ fn render_rows(
   offset: Int,
 ) -> buffer.Buffer {
   let visible =
-    rows
-    |> list.drop(offset)
-    |> list.take(area.size.height)
-    |> list.reverse
+    window(rows, offset, area.size.height)
     |> list.index_map(fn(line, row) { #(line, row) })
   list.fold(visible, buf, fn(buf, row) {
     render_transcript_row(buf, area, row.0, row.1)
   })
+}
+
+// The rows a viewport shows, top first. The rows are held newest first, and
+// `offset` counts rows from the newest, so the viewport is a slice of the
+// held list that is then turned over.
+fn window(rows: List(span.Line), offset: Int, height: Int) -> List(span.Line) {
+  rows
+  |> list.drop(offset)
+  |> list.take(height)
+  |> list.reverse
+}
+
+/// The rectangle the transcript rows are painted into on a screen: the
+/// panel the layout gives the main strand, less its border and margin.
+///
+/// Anything that reasons about where a transcript row landed on screen reads
+/// it here rather than from `layout` itself, so that it asks the same
+/// question `render_frame` answers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let area = render.transcript_area(model, geometry.rect_new(0, 0, 80, 24))
+/// ```
+@internal
+pub fn transcript_area(model: Model, screen: Rect) -> Rect {
+  let #(_, body_area, _, _) = layout.layout(screen, model)
+  let #(conversation_area, _) = layout.queue_body_layout(body_area, model)
+  let transcript_panel = conversation_area
+  layout.transcript_inner(transcript_panel)
+}
+
+/// The transcript rows the frame shows in `area`, top first: exactly the
+/// rows `render_transcript` paints, so a row's place in this list is its
+/// distance in rows from the top of `area`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let rows = render.transcript_window(model, area)
+/// ```
+@internal
+pub fn transcript_window(model: Model, area: Rect) -> List(span.Line) {
+  window(
+    model.view.caches.rendered_rows,
+    transcript_offset(model),
+    area.size.height,
+  )
+}
+
+// How many rows the viewport is above the newest: the reader's scroll plus
+// the rows the pacing walk has not revealed yet.
+fn transcript_offset(model: Model) -> Int {
+  model.view.scroll_offset + tui_model.viewport_backlog(model)
 }
 
 // The speaker's background continues to the right edge. Padding has a known
@@ -663,9 +722,22 @@ fn render_transcript_row(
 ) -> buffer.Buffer {
   let position = geometry.Position(area.position.x, area.position.y + row)
   case line.spans {
+    // A message's bar belongs to the margin column the transcript keeps to
+    // its left, so it is painted there and the rest of the row is painted
+    // where any row is. The transcript area always has that column
+    // (`layout.transcript_inner`).
+    [first, ..rest] if first.content == message_rows.margin_bar ->
+      buffer.set_string(
+        buf,
+        geometry.Position(position.x - 1, position.y),
+        first.content,
+        first.style,
+      )
+      |> render_transcript_row(area, span.Line(..line, spans: rest), row)
+
     [first, ..]
       if first.style.bg == theme.user_background
-      || first.style.bg == theme.assistant_background
+      || first.style.bg == theme.raised
     -> {
       let width = span.line_width(line)
 
@@ -687,27 +759,30 @@ fn render_transcript_row(
   }
 }
 
-fn transcript_title(model: Model) -> String {
-  let surface = case
-    model.view.help_open,
-    model.view.notes_open,
-    layout.main_shows_diff(model)
-  {
-    True, _, _ -> "help"
-    False, True, _ -> "agent notes"
-    False, False, True -> diff_title(model)
-    False, False, False -> "transcript"
+// What borrows the transcript's area, named with its strand, or `None` for
+// the transcript itself.
+fn surface_title(model: Model) -> Option(String) {
+  let surface = case model.view.help_open, model.view.notes_open {
+    True, _ -> Some("help")
+    False, True -> Some("agent notes")
+    False, False -> None
   }
-  " "
-  <> surface
-  <> " / "
-  <> text_hygiene.single_line(model.shared.active_strand)
-  <> " "
+  option.map(surface, fn(surface) {
+    " "
+    <> surface
+    <> " / "
+    <> text_hygiene.single_line(model.shared.active_strand)
+    <> " "
+  })
 }
 
-fn transcript_content(lines: List(Line), width: Int) -> span.Text {
+fn transcript_content(
+  lines: List(Line),
+  width: Int,
+  strand: String,
+) -> span.Text {
   lines
-  |> list.flat_map(render_line(_, width))
+  |> list.flat_map(render_line(_, width, strand))
   |> span.text_new
 }
 
@@ -721,20 +796,36 @@ fn transcript_content(lines: List(Line), width: Int) -> span.Text {
 /// back to exactly `width`. A second pass over them would re-measure every
 /// span of every row to arrive at the rows it was handed, and the live stream
 /// re-renders its whole body on every delta, so that pass was paid per token.
+///
+/// `strand` is the strand whose transcript the line belongs to, which names
+/// an answer's heading (`◆ main`).
 @internal
-pub fn render_line(line: Line, width: Int) -> List(span.Line) {
+pub fn render_line(line: Line, width: Int, strand: String) -> List(span.Line) {
   case line.speaker {
-    Assistant | Reasoning -> speaker_rows(line, width)
+    Assistant | Reasoning -> speaker_rows(line, width, strand)
 
     // A summarized block lays out its own rows to the pane: a clipped
     // header and at most `summary_rows` wrapped secondary rows. A second
     // wrap could only add rows the bound was there to prevent.
-    SummarizedReasoning | SummarizedAdvice -> speaker_rows(line, width)
+    SummarizedReasoning | SummarizedAdvice -> speaker_rows(line, width, strand)
+
+    // A message wraps its body to the room its bar leaves, and its first
+    // span is a bar painted in the margin, outside the row's width; a second
+    // wrap would count that bar against the pane. The operator's turn wraps
+    // each typed line under its mark, which a second wrap would undo.
+    SentMessage | StrandMessage | PeerMessage | User ->
+      speaker_rows(line, width, strand)
+
+    // A program block cuts every row to its box; a wrap could only break
+    // the box's right edge onto a row of its own. An image's row is cut to
+    // the pane, so its key stays at the end of the one row.
+    ProgramRunning | ProgramFailure | ImageRow(..) ->
+      speaker_rows(line, width, strand)
 
     // Every other body is laid out against the full pane and has never been
     // measured, so it is wrapped on the way out.
     System
-    | User
+    | ToolGroup
     | ReasoningDigest
     | ToolCall
     | ToolResult
@@ -742,7 +833,7 @@ pub fn render_line(line: Line, width: Int) -> List(span.Line) {
     | ToolPatch
     | ToolFailure
     | Failure
-    | Spacer -> speaker_rows(line, width) |> markdown.wrap_lines(width)
+    | Spacer -> speaker_rows(line, width, strand) |> markdown.wrap_lines(width)
   }
 }
 
@@ -767,7 +858,9 @@ pub fn markdown_room(speaker: Speaker, width: Int) -> Int {
   // column zero — which is the two-left-edges bug itself. Measuring every row
   // against the widest of the two prefixes is what the fix costs: a
   // continuation row stops a few cells short of the pane, in exchange for one
-  // left edge shared by a wrapped paragraph, a list and a fence alike.
+  // left edge shared by a wrapped paragraph, a list and a fence alike. An
+  // answer's mark sits on a heading row of its own, so each of its rows pays
+  // only the gutter, which is the width of that mark.
   let #(mark, _) = speaker_mark(speaker, "")
 
   // The mark is measured in cells rather than codepoints for the same reason
@@ -777,12 +870,13 @@ pub fn markdown_room(speaker: Speaker, width: Int) -> Int {
 }
 
 /// Turns wrapped Markdown rows of `speaker` into the rows `render_line`
-/// paints, less the blank row that opens the line.
+/// paints.
 ///
-/// The first row of the line carries the speaker's mark and every other row
-/// the gutter; an answer's rows are also shaded. `run` says whether `rows`
-/// begin the line or continue rows already finished, which is what lets the
-/// live tail finish the settled part of an answer once and the rest of it on
+/// An answer opens with a heading naming `strand`, `◆ main`, and its body
+/// sits under it behind the gutter. Every other speaker's first row carries
+/// its mark and every later row the gutter. `run` says whether `rows` begin
+/// the line or continue rows already finished, which is what lets the live
+/// tail finish the settled part of an answer once and the rest of it on
 /// every frame. Every row is finished on its own, so finishing a list in two
 /// runs gives the rows finishing it in one would.
 ///
@@ -792,10 +886,75 @@ pub fn markdown_room(speaker: Speaker, width: Int) -> Int {
 /// let rows =
 ///   markdown.render("hello", 78)
 ///   |> markdown.wrap_lines(78)
-///   |> render.finish_markdown_rows(transcript_line.Assistant, _, live_tail.OpensLine)
+///   |> render.finish_markdown_rows(
+///     transcript_line.Assistant,
+///     _,
+///     live_tail.OpensLine,
+///     "main",
+///   )
 /// ```
 @internal
 pub fn finish_markdown_rows(
+  speaker: Speaker,
+  rows: List(span.Line),
+  run: live_tail.RowRun,
+  strand: String,
+) -> List(span.Line) {
+  case speaker {
+    // The heading is a row of its own, so the body's first row is indented
+    // like every other: an answer has one left edge, two cells in, and a
+    // run that opens the line differs from one that continues it only by
+    // the heading above it.
+    Assistant -> {
+      let body =
+        list.map(rows, fn(line) {
+          span.Line(..line, spans: [
+            span.span_plain(speaker_gutter),
+            ..line.spans
+          ])
+        })
+      case run {
+        live_tail.OpensLine -> [answer_heading(strand), ..body]
+        live_tail.ContinuesLine -> body
+      }
+    }
+    Reasoning
+    | System
+    | ToolGroup
+    | User
+    | ReasoningDigest
+    | SummarizedReasoning
+    | SummarizedAdvice
+    | ToolCall
+    | ToolResult
+    | ToolDetail
+    | ToolPatch
+    | ToolFailure
+    | Failure
+    | Spacer
+    | SentMessage
+    | StrandMessage
+    | PeerMessage
+    | ProgramRunning
+    | ProgramFailure
+    | ImageRow(..) -> marked_rows(speaker, rows, run)
+  }
+}
+
+// The row an answer opens with: the answer's mark and the name of the
+// strand that gave it, which is what the operator reads to know whose
+// words follow.
+fn answer_heading(strand: String) -> span.Line {
+  span.line_new([
+    span.span_styled("◆ ", theme.current_bold()),
+    span.span_styled(
+      text_hygiene.single_line(strand),
+      style.new(theme.paper, style.Default, style.bold()),
+    ),
+  ])
+}
+
+fn marked_rows(
   speaker: Speaker,
   rows: List(span.Line),
   run: live_tail.RowRun,
@@ -817,22 +976,7 @@ pub fn finish_markdown_rows(
         alignment:,
       )
     })
-  case speaker {
-    Assistant -> assistant_rows(marked)
-    Reasoning
-    | System
-    | User
-    | ReasoningDigest
-    | SummarizedReasoning
-    | SummarizedAdvice
-    | ToolCall
-    | ToolResult
-    | ToolDetail
-    | ToolPatch
-    | ToolFailure
-    | Failure
-    | Spacer -> marked
-  }
+  marked
 }
 
 // The mark that opens a speaker's first row and the style it is drawn in. A
@@ -841,6 +985,10 @@ pub fn finish_markdown_rows(
 fn speaker_mark(speaker: Speaker, text: String) -> #(String, style.Style) {
   case speaker {
     System -> #("◇ ", theme.quiet_text())
+
+    // A tool group's heading folds its calls, so it takes the mark a reader
+    // knows as "more inside"; `◇` stays the harness's own.
+    ToolGroup -> #("▸ ", theme.quiet_text())
     User -> #("› ", theme.signal_bold())
     Assistant -> #("◆ ", theme.current_bold())
     Reasoning -> #("∴ Reasoning ", theme.quiet_text())
@@ -852,11 +1000,20 @@ fn speaker_mark(speaker: Speaker, text: String) -> #(String, style.Style) {
         True -> #("✓ ", theme.success_text())
         False -> #("● ", theme.current_bold())
       }
-    ToolResult -> #("└ ", theme.quiet_text())
+
+    // A result hangs under its call, two cells in, and the call keeps the
+    // gutter with its own glyph, the way Codex draws a step.
+    ToolResult -> #("  └ ", theme.quiet_text())
     ToolDetail | ToolPatch -> #("  ", theme.quiet_text())
-    ToolFailure -> #("└ × ", theme.danger_text())
+    ToolFailure -> #("× ", theme.danger_text())
     Failure -> #("! error ", theme.danger_text())
-    Spacer -> #("", theme.quiet_text())
+    Spacer
+    | SentMessage
+    | StrandMessage
+    | PeerMessage
+    | ProgramRunning
+    | ProgramFailure -> #("", theme.quiet_text())
+    ImageRow(..) -> #("▣ ", theme.current_bold())
   }
 }
 
@@ -864,7 +1021,7 @@ fn speaker_mark(speaker: Speaker, text: String) -> #(String, style.Style) {
 // not already do for itself. Every arm ends by handing its mark to
 // `prefix_rendered_lines` or drawing it inline, so the mark and the gutter
 // beneath it are decided in one place.
-fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
+fn speaker_rows(line: Line, width: Int, strand: String) -> List(span.Line) {
   let #(mark, mark_style) = speaker_mark(line.speaker, line.text)
   let body = case
     line.speaker == ToolCall && string.starts_with(line.text, "✓ ")
@@ -873,38 +1030,45 @@ fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
     False -> line.text
   }
   case line.speaker {
+    // The operator's turn is its own text in a shaded band, opened by the
+    // prompt's mark and wrapped under itself; the band, not a title row,
+    // says who wrote it. Each source line is wrapped on its own, so the
+    // operator's line breaks and indentation stay where they were typed.
     User -> {
       let body_style =
         style.new(theme.paper, theme.user_background, style.none())
-      let label_style =
+      let mark_style =
         style.new(theme.signal, theme.user_background, style.bold())
-
-      // A separate label and shaded block identify the speaker without
-      // depending on hue. Wrapped rows retain the same background, and copy
-      // continues to read the exact visible frame rather than another layout.
-      [
-        span.line_plain(""),
-        span.line_new([span.span_styled(" › User", label_style)]),
-        ..line.text
+      let room = int.max(1, width - 2)
+      let rows =
+        line.text
         |> text_hygiene.multiline
         |> string.split("\n")
-        |> list.map(fn(text) {
-          span.line_new([span.span_styled("   " <> text, body_style)])
+        |> list.flat_map(fn(text) {
+          markdown.wrap_line(span.line_plain(text), room)
         })
-        |> list.append([span.line_plain("")])
-      ]
+        |> list.index_map(fn(row, index) {
+          let prefix = case index == 0 {
+            True -> span.span_styled("› ", mark_style)
+            False -> span.span_styled(speaker_gutter, body_style)
+          }
+          span.Line(..row, spans: [
+            prefix,
+            ..list.map(row.spans, fn(value) {
+              span.Span(..value, style: body_style)
+            })
+          ])
+        })
+      list.append(rows, [span.line_plain("")])
     }
 
     // The live tail builds these rows in pieces from the same three calls
     // (`live_tail`), so they are the only way an answer becomes rows.
     Assistant | Reasoning -> {
       let room = markdown_room(line.speaker, width)
-      [
-        span.line_plain(""),
-        ..markdown.render(line.text, room)
-        |> markdown.wrap_lines(room)
-        |> finish_markdown_rows(line.speaker, _, live_tail.OpensLine)
-      ]
+      markdown.render(line.text, room)
+      |> markdown.wrap_lines(room)
+      |> finish_markdown_rows(line.speaker, _, live_tail.OpensLine, strand)
     }
     ToolPatch -> markdown.diff(line.text)
 
@@ -925,6 +1089,20 @@ fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
     // live and settled forms show the same summary and so the same rows.
     SummarizedReasoning -> summarized_rows(line.text, mark, mark_style, width)
 
+    // A message between agents draws its heading from the speaker and its
+    // body as body (`message_rows`).
+    SentMessage | StrandMessage | PeerMessage ->
+      message_rows.rows(line.speaker, line.text, width)
+
+    // A program still awaiting its result, or one that failed, is a titled
+    // block (`program_rows`).
+    ProgramRunning | ProgramFailure ->
+      program_rows.rows(line.speaker, line.text, width)
+
+    // An image's row names it and the key that opens it; a second row, when
+    // the projection gives one, says why the picture itself is not drawn.
+    ImageRow(..) -> image_rows(line.text, mark, mark_style, width)
+
     // Advice closes with a blank like every other system row.
     SummarizedAdvice ->
       summarized_rows(line.text, mark, mark_style, width)
@@ -933,7 +1111,7 @@ fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
     ToolDetail ->
       markdown.render(line.text, width - string.length(mark))
       |> prefix_rendered_lines(mark, mark_style)
-    System | ToolCall | ToolResult | ToolFailure | Failure ->
+    System | ToolGroup | ToolCall | ToolResult | ToolFailure | Failure ->
       body
       |> text_hygiene.multiline
       |> string.split("\n")
@@ -954,28 +1132,44 @@ fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
   }
 }
 
-// Plain Markdown spans share one shaded style for the whole block. Rebuilding
-// that identical record for every word makes the bounded live tail retain
-// hundreds of duplicate style tuples. Emphasis keeps its own foreground and
-// modifiers, while blank rows carry the same background to the pane edge.
-fn assistant_rows(rows: List(span.Line)) -> List(span.Line) {
-  let plain = style.default_style()
-  let shaded = style.with_bg(plain, theme.assistant_background)
-  list.map(rows, fn(line) {
-    let span.Line(spans:, alignment:) = line
-    let spans = case spans {
-      [] -> [span.span_styled(" ", shaded)]
-      spans ->
-        list.map(spans, fn(value) {
-          let painted = case value.style == plain {
-            True -> shaded
-            False -> style.with_bg(value.style, theme.assistant_background)
-          }
-          span.Span(..value, style: painted)
-        })
-    }
-    span.Line(spans:, alignment:)
-  })
+/// The key an image's row offers, at the end of its words.
+pub const image_key = "o opens externally"
+
+// An image's row: the mark, the words cut so the key fits beside them, and
+// the key. A note after a newline is a quiet row of its own under the words.
+fn image_rows(
+  text: String,
+  mark: String,
+  mark_style: style.Style,
+  width: Int,
+) -> List(span.Line) {
+  let #(words, note) = case string.split_once(text, "\n") {
+    Ok(#(words, note)) -> #(words, Some(note))
+    Error(Nil) -> #(text, None)
+  }
+  let room = int.max(0, width - 2 - 3 - string.length(image_key))
+  let words = text.truncate(text_hygiene.single_line(words), room, "…")
+  let first =
+    span.line_new([
+      span.span_styled(mark, mark_style),
+      span.span_styled(
+        words,
+        style.new(theme.paper, style.Default, style.none()),
+      ),
+      span.span_styled("   " <> image_key, theme.quiet_text()),
+    ])
+  case note {
+    Some(note) -> [
+      first,
+      span.line_new([
+        span.span_styled(
+          speaker_gutter <> text_hygiene.single_line(note),
+          theme.quiet_text(),
+        ),
+      ]),
+    ]
+    None -> [first]
+  }
 }
 
 /// The mark a summarized reasoning block's header row opens with. The
@@ -1218,7 +1412,7 @@ pub fn prepared_notes(
               | note_panel.Readable, notes_view.Excerpt
               -> Line(ToolResult, note.text)
             }
-            transcript_content([value], width).lines
+            transcript_content([value], width, target).lines
           }
         }
         note_panel.Row(
@@ -1255,6 +1449,7 @@ fn historical_note_rows(model: Model, target: String, width: Int) {
             },
           ],
           width,
+          target,
         ).lines,
       ),
     ]
@@ -1539,7 +1734,7 @@ fn footer_sections(
         " "
           <> transcript_lines.compact(
           project_text,
-          footer_project_limit(model.view.width),
+          footer_project_limit(layout.column_width(model)),
         )
           <> " ",
         theme.footer_text(),
@@ -1570,7 +1765,7 @@ fn footer_sections(
             context_view.footer(model.shared.context),
             ..list.append(spend, rate)
           ],
-          footer_usage_limit(model.view.width),
+          footer_usage_limit(layout.column_width(model)),
         )
           <> " ",
         theme.footer_text(),
@@ -1600,7 +1795,7 @@ fn model_footer_status(model: Model) -> String {
   footer_status(
     agents.summary_rows(layout.displayed_agents(model)),
     model.shared.notice,
-    footer_status_limit(model.view.width),
+    footer_status_limit(layout.column_width(model)),
   )
 }
 
@@ -1799,6 +1994,15 @@ fn render_pending_band(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
+  // The band's rows start one cell in from the frame's side, where the
+  // prompt's own text starts, rather than against the border.
+  let area =
+    geometry.rect_new(
+      area.position.x + 1,
+      area.position.y,
+      int.max(0, area.size.width - 1),
+      area.size.height,
+    )
   paragraph.render_styled(
     buf,
     area,
@@ -1813,15 +2017,20 @@ fn render_pending_band(
   )
 }
 
-fn input_title(model: Model) -> String {
-  let behavior = case model.view.overlay, model.view.strip_focus {
+// What the next key does, for the input frame's top rule after the
+// recipient. The strip and the workspace own the keyboard while they are
+// browsed, so they name their own keys instead.
+fn input_title_keys(model: Model) -> String {
+  case model.view.overlay, model.view.strip_focus {
     AgentInspector(agents.Inspector(focus: agents.Browsing, ..)), _ ->
-      " Tab writes · Enter opens agent "
+      " w writes · Enter opens agent "
     _, agent_strip.Browsing(_) ->
-      " ↑↓ select agent · enter opens · x stops · esc back "
-    _, agent_strip.Composing -> input_behavior(model)
+      case layout.rail_lists_strands(model) {
+        True -> ""
+        False -> " ↑↓ select agent · Enter opens · x stops · Esc back "
+      }
+    _, agent_strip.Composing -> layout.input_keys(model).0
   }
-  " To " <> recipient_label(model) <> " ·" <> behavior
 }
 
 // A long child ID must not hide whether Enter sends, queues, or steers.
@@ -1830,44 +2039,8 @@ fn recipient_label(model: Model) -> String {
   model.shared.active_strand
   |> text_hygiene.single_line
   |> string.reverse
-  |> text.truncate(int.max(8, int.min(32, model.view.width / 3)), "…")
+  |> text.truncate(int.max(8, int.min(32, layout.column_width(model) / 3)), "…")
   |> string.reverse
-}
-
-// Composer guidance answers what the next Enter does. The agent rail can
-// still display the last operation's outcome, so its terminal status alone
-// cannot establish whether this idle strand retains queued input.
-fn input_behavior(model: Model) -> String {
-  use <- bool.guard(
-    model.shared.captured != None
-      && !session_model.is_known_strand(
-      model.shared.strands,
-      model.shared.active_strand,
-    ),
-    " recipient unavailable · draft retained · ^O agents ",
-  )
-  use <- bool.guard(
-    model.shared.peer == Disconnected,
-    case model.view.reconnect {
-      ReconnectAttempting(..) -> " Reconnecting to the daemon · draft retained "
-      ReconnectIdle | ReconnectSpent ->
-        " Disconnected · /sessions to reconnect · draft retained "
-    },
-  )
-  use <- bool.guard(
-    tui_model.active_queue_halted(model),
-    " stopped · enter sends held input with your message ",
-  )
-  case
-    session_model.active_interrupt(model.shared),
-    layout.active_status_label(model),
-    model.view.submission_mode
-  {
-    Some(_), _, _ -> " stopped · enter sends held input with your message "
-    None, None, _ -> " prompt · enter sends · / commands "
-    None, Some(_), SteerNow -> " steer this turn · enter steers · tab queues "
-    None, Some(_), PromptNext -> " enter queues · tab steers "
-  }
 }
 
 fn render_paste_chip(

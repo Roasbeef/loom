@@ -67,6 +67,9 @@ pub type Item {
     seq: Int,
     /// The matching result state, or `SendPending` when absent.
     state: State,
+    /// When the invocation entry was written, in Unix milliseconds, so a
+    /// host can show the same clock time the transcript's heading shows.
+    ts: Int,
   )
 }
 
@@ -80,6 +83,7 @@ type Candidate {
     body_extent: BodyExtent,
     seq: Int,
     state: State,
+    ts: Int,
   )
 }
 
@@ -252,12 +256,13 @@ fn invocation(record: protocol.EntryRecord, source: String) -> List(Candidate) {
     entry.MessageEntry(
       message: message.AssistantMessage(content:, ..),
       seq: seq,
+      ts: ts,
       ..,
     ) ->
       content
       |> list.filter_map(fn(block) {
         case block {
-          message.AssistantToolCall(call) -> parse_call(call, source, seq)
+          message.AssistantToolCall(call) -> parse_call(call, source, seq, ts)
           message.AssistantText(..) | message.AssistantThinking(..) ->
             Error(Nil)
         }
@@ -276,6 +281,7 @@ fn parse_call(
   call: message.ToolCall,
   source: String,
   seq: Int,
+  ts: Int,
 ) -> Result(Candidate, Nil) {
   case call.name, call.arguments {
     "agent_send", json.Object(fields) -> {
@@ -291,6 +297,7 @@ fn parse_call(
         seq:,
         call_id: call.id,
         state: SendPending,
+        ts:,
       ))
     }
     _, _ -> Error(Nil)
@@ -404,6 +411,7 @@ fn to_item(candidate: Candidate) -> Item {
     body_extent: candidate.body_extent,
     seq: candidate.seq,
     state: candidate.state,
+    ts: candidate.ts,
   )
 }
 

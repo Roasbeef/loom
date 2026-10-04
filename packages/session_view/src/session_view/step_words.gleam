@@ -187,6 +187,24 @@ pub fn reasoning(took_ms: Option(Int)) -> Words {
 ///   == "Worked 22s · 10 steps · 2 files"
 /// ```
 pub fn worked(duration_ms: Option(Int), steps: Int, files: Int) -> String {
+  worked_with_failures(duration_ms, steps, files, 0)
+}
+
+/// The same summary with the number of calls that failed, when it is not
+/// zero: `Worked 22s · 10 steps · 2 files · 1 failed`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert step_words.worked_with_failures(Some(22_000), 10, 2, 1)
+///   == "Worked 22s · 10 steps · 2 files · 1 failed"
+/// ```
+pub fn worked_with_failures(
+  duration_ms: Option(Int),
+  steps: Int,
+  files: Int,
+  failed: Int,
+) -> String {
   let time = case duration_ms {
     Some(ms) -> "Worked " <> duration(ms)
     None -> "Worked"
@@ -195,6 +213,7 @@ pub fn worked(duration_ms: Option(Int), steps: Int, files: Int) -> String {
     time,
     counted_or_none(steps, "step", "steps"),
     counted_or_none(files, "file", "files"),
+    counted_or_none(failed, "failed", "failed"),
   ]
   |> list.filter(fn(part) { part != "" })
   |> string.join(" · ")

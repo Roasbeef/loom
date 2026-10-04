@@ -227,6 +227,7 @@ fn visible_texts(line: Line) -> List(String) {
     | transcript_line.ToolDetail ->
       list.flat_map(markdown.parse(line.text), block_texts)
     transcript_line.System
+    | transcript_line.ToolGroup
     | transcript_line.User
     | transcript_line.ReasoningDigest
     | transcript_line.SummarizedReasoning
@@ -236,7 +237,13 @@ fn visible_texts(line: Line) -> List(String) {
     | transcript_line.ToolPatch
     | transcript_line.ToolFailure
     | transcript_line.Failure
-    | transcript_line.Spacer -> [line.text]
+    | transcript_line.Spacer
+    | transcript_line.SentMessage
+    | transcript_line.StrandMessage
+    | transcript_line.PeerMessage
+    | transcript_line.ProgramRunning
+    | transcript_line.ProgramFailure
+    | transcript_line.ImageRow(..) -> [line.text]
   }
 }
 

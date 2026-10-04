@@ -1,0 +1,24 @@
+                                                                                
+ ╭ AGENT WORKSPACE 0 agents · 0 working · 0 attention ────────────────────────╮ 
+ │ ▸ Selected strand unavailable                                              │ 
+ │                                                                            │ 
+ │ Selected strand unavailable                                                │ 
+ │ Its draft remains with its original recipient. Use ↑/↓ to inspect another  │ 
+ │ strand.                                                                    │ 
+ │                                                                            │ 
+ │                                                                            │ 
+ │                                                                            │ 
+ │                                                                            │ 
+ │                                                                            │ 
+ │                                                                            │ 
+ │                                                                            │ 
+ │                                                                            │ 
+ │                                                                            │ 
+ │                                                                            │ 
+ │                                                                            │ 
+ │                                                                            │ 
+ │ To: main · Enter opens selected transcript                                 │ 
+ │ ↑/↓ inspect · n attention · a review permission                            │ 
+ │ 1/2/3/4 view · PgUp/Dn scroll · Tab write · Esc close                      │ 
+ ╰────────────────────────────────────────────────────────────────────────────╯ 
+                                                                                

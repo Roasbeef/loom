@@ -10,6 +10,8 @@
 //// without the terminal.
 
 import core/ids
+import gleam/option.{type Option}
+import session_view/image_header.{type Picture}
 
 /// Who a transcript line belongs to, which is the whole of its styling.
 pub type Speaker {
@@ -38,6 +40,10 @@ pub type Speaker {
   /// the way `SummarizedReasoning` draws its label.
   SummarizedAdvice
 
+  /// The heading of a compact group of tool calls: how many calls it holds,
+  /// how many failed, and the key that expands them.
+  ToolGroup
+
   ToolCall
   ToolResult
   ToolDetail
@@ -47,6 +53,51 @@ pub type Speaker {
 
   ToolFailure
   Failure
+
+  /// A message this strand sent to another with `agent_send`. The text is
+  /// a heading, a newline, and the body: the heading names the recipient
+  /// and what the result says happened to the message (`→ to sub:tests ·
+  /// agent_send · admitted to its queue`), all of it read from the call's
+  /// arguments and its result, never from the body.
+  SentMessage
+
+  /// A message another strand of this session sent through the Agency,
+  /// selected by its stored `StrandOrigin` and by nothing in its text. The
+  /// text is a heading naming the sender (`← from sub:docs · strand
+  /// message`), a newline, and the body with the Agency's framing removed.
+  StrandMessage
+
+  /// A message another session's agent sent, selected by its stored
+  /// `PeerOrigin`, which the admission host writes after it authenticates
+  /// the sender. The text is a heading naming the source session and strand
+  /// and ending in `origin_checked`, a newline, and the body.
+  PeerMessage
+
+  /// A code-mode program the transcript has no result for yet, drawn as a
+  /// titled block. The text is the title, a newline, the foot, a newline,
+  /// and the body: a `PROGRAM` line counting the program's lines, the
+  /// program's opening lines each numbered (`  1 │ import cap/fs`), and a
+  /// `RESULT · none yet` line.
+  ProgramRunning
+
+  /// A code-mode program that failed: refused by vetting, rejected by the
+  /// compiler, stopped, or reporting a failure of its own. The text is laid
+  /// out as `ProgramRunning`'s, and its body is the error, with the source
+  /// lines a compiler diagnostic names numbered the same way.
+  ProgramFailure
+
+  /// The placeholder row of one image a tool returned or a person attached:
+  /// its place among its row's images, its media type, its pixel size when
+  /// the header says, and its byte size (`image 1 · image/png · 1200×700 ·
+  /// 84 KB`). A host that cannot draw the picture shows this row, and so do
+  /// scrollback, a replay and `loom replay`. A host that can draw it replaces
+  /// the row with a box that carries the same words.
+  ///
+  /// `picture` identifies the image for a host that can draw it, and is
+  /// `None` when the header could not be read, which leaves nothing to
+  /// size a box with. It is small and never holds the data, because a line
+  /// is a cache key.
+  ImageRow(picture: Option(Picture))
 
   /// One blank row, placed by the projection that knows it is needed.
   ///

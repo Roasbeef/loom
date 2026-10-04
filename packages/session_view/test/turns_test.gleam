@@ -288,7 +288,8 @@ pub fn a_settled_turn_folds_its_work_behind_one_divider_test() {
       "nudge",
     ]
   let assert [_, turns.Work(worked:, items:, ..), ..] = laid
-  assert worked == turns.Worked(duration_ms: Some(48_000), steps: 3, files: 2)
+  assert worked
+    == turns.Worked(duration_ms: Some(48_000), steps: 3, files: 2, failed: 0)
   assert turns.divider(worked) == "Worked 48s · 3 steps · 2 files"
 
   // The response's reasoning and its two edits, each joined to its result,
@@ -302,6 +303,14 @@ pub fn a_settled_turn_folds_its_work_behind_one_divider_test() {
   ] = items
   assert step_words.text(edit) == "Edit a.gleam"
   assert standing == turns.Done
+}
+
+// A failed call is counted on the divider, so a folded turn says it went
+// wrong before anyone opens it.
+pub fn the_divider_counts_failed_calls_test() {
+  assert turns.divider(turns.Worked(Some(48_000), 4, 2, 1))
+    == "Worked 48s · 4 steps · 2 files · 1 failed"
+  assert turns.divider(turns.Worked(None, 2, 0, 0)) == "Worked · 2 steps"
 }
 
 pub fn a_running_turn_is_drawn_open_test() {

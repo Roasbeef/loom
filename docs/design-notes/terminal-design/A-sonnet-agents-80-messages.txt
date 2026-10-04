@@ -1,0 +1,24 @@
+ ◆ loom   ws · pi-gui (main)                           kimi-k3 · Ctrl+g details 
+ ╭ AGENT WORKSPACE · 6 agents · 2 working · 2 need you ───────────────────────╮ 
+ │  AGENTS · 6                                                  !1 needs you  │ 
+ │    ● main                     Waiting for 2 reviewers     1m34  259k       │ 
+ │  ▸ ? docs-accuracy-review     Needs approval · fs_write   2m38   74k       │ 
+ │    × grep-refs                Failed · provider 429 ×3    1m03  144k       │ 
+ │    ● adversarial-code-review  Tracing publish_herdr path  2m45   65k       │ 
+ │    ● bootstrap                Reading bootstrap.gleam     0m51  119k       │ 
+ │    ✓ lint-pass                Finished                    1m12   31k       │ 
+ │ ────────────────────────────────────────────────────────────────────────── │ 
+ │  1 Activity   2 Messages   3 Notes   4 Collaborate                         │ 
+ │                                                                            │ 
+ │ ? docs-accuracy-review                                                     │ 
+ │ needs input · 2m38s · 74k ctx · Kimi-K3                                    │ 
+ │                                                                            │ 
+ │ MESSAGES                                                                   │ 
+ │ ← main  2m ago · received                                                  │ 
+ │   │ Review the docs for drift; report, do not edit.                        │ 
+ │ → main  41s ago · sent · accepted                                          │ 
+ │   │ Two citations drifted in docs/next.md. Fixing them now.                │ 
+ │                                                                            │ 
+ │ ↑↓ · Enter open · n attention · 1-4 · Esc                                  │ 
+ ╰────────────────────────────────────────────────────────────────────────────╯ 
+                                                                                

@@ -1,0 +1,40 @@
+                                                                                                                        
+ ╭ AGENT WORKSPACE 5 agents · 2 working · 2 attention ────────────────────────────────────────────────────────────────╮ 
+ │ SESSION                             [1 Activity]  2 Messages  3 Notes  4 Collaborate                               │ 
+ │   main · to                                                                                                        │ 
+ │   Coordinate the herdr update and…  docs-accuracy-review                                                           │ 
+ │   ● Working · …ocs-accuracy-review  ? Needs input                                                                  │ 
+ │                                                                                                                    │ 
+ │ STRANDS                             TASK                                                                           │ 
+ │   adversarial-code-review           Check doc comments against behaviour                                           │ 
+ │   Review the wire format, effect …                                                                                 │ 
+ │   ● Working · … session_step.gleam  CURRENT STATE                                                                  │ 
+ │                                     Needs approval: fs_write docs/next.md                                          │ 
+ │ ▸ docs-accuracy-review                                                                                             │ 
+ │   Check doc comments against beha…  LATEST UPDATE                                                                  │ 
+ │   ? Needs input · …te docs/next.md  Latest update: Needs approval: fs_write docs/next.md                           │ 
+ │                                                                                                                    │ 
+ │   grep-refs                         RECENT ACTIVITY                                                                │ 
+ │   Find every reference to herdr     read                                                                           │ 
+ │   × Failed · … after three retries  grep                                                                           │ 
+ │                                     bash                                                                           │ 
+ │   bootstrap                                                                                                        │ 
+ │   Read bootstrap.gleam for resume…  INPUT                                                                          │ 
+ │   ✓ Finished · Finished             No pending input                                                               │ 
+ │                                                                                                                    │ 
+ │                                     IDENTITY                                                                       │ 
+ │                                     a2 · moonshotai/Kimi-K3                                                        │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │ To: main · Enter opens selected transcript                                                                         │ 
+ │ ↑/↓ inspect · n attention · a review permission                                                                    │ 
+ │ 1/2/3/4 view · PgUp/Dn scroll · Tab write · Esc close                                                              │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+                                                                                                                        

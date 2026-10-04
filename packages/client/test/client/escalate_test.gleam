@@ -59,6 +59,7 @@ import simplifile
 import support/addresses
 import support/provider as provider_test
 import support/tool_registry
+import tools/call_record
 import tools/codemode as codemode_tool
 import weft/actor
 
@@ -1512,6 +1513,7 @@ fn narrowed_code_mode() -> codemode_tool.CodeMode {
               ),
             ),
             refusal: codemode_tool.NothingRefused,
+            calls: call_record.empty(),
           )
         False ->
           codemode_tool.Execution(
@@ -1534,6 +1536,7 @@ fn narrowed_code_mode() -> codemode_tool.CodeMode {
               ),
               deadline_ms: code_mode_deadline_ms,
             ),
+            calls: call_record.empty(),
           )
       }
     },

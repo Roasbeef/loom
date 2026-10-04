@@ -1204,9 +1204,10 @@ fn brief_message(
       ),
     ],
     timestamp: now,
-    // Release N+1 of protocol-change 059 sets `StrandOrigin(caller.strand)`
-    // here; release N only reads and renders it.
-    origin: None,
+    // The origin is attribution from the authenticated caller, never from
+    // anything the model emitted, and it is not authority: no check may read
+    // it to grant or skip anything (protocol-change 059).
+    origin: Some(message.StrandOrigin(strand: caller.strand)),
   )
 }
 
@@ -1601,9 +1602,10 @@ fn send(
         ),
       ],
       timestamp: now,
-      // Release N+1 of protocol-change 059 sets `StrandOrigin(caller.strand)`
-      // here; release N only reads and renders it.
-      origin: None,
+      // The same attribution as a brief carries: the sender is the
+      // authenticated caller, and the framing text above stays the
+      // model-facing hint (protocol-change 059).
+      origin: Some(message.StrandOrigin(strand: caller.strand)),
     )
   let delivery = case upward, custody {
     True, Some(owner) ->

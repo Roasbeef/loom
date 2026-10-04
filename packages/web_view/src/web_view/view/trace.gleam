@@ -96,11 +96,30 @@ fn latest_program(program: Program) -> Element(message) {
         html.p([attribute.class("trace-sandbox")], [html.text(line)])
       None -> element.none()
     },
+    calls(program.calls),
     html.details([attribute.class("trace-budget")], [
       html.summary([], [html.text("Budget")]),
       html.p([], [html.text(trace_view.budget_line(program))]),
     ]),
   ])
+}
+
+// The rows of the call record the result carried: a heading and one row per
+// call, as text nodes. A program with no record draws nothing here.
+fn calls(rows: List(String)) -> Element(message) {
+  case rows {
+    [] -> element.none()
+    [heading, ..rest] ->
+      html.div([attribute.class("trace-calls")], [
+        html.p([attribute.class("trace-calls-heading")], [html.text(heading)]),
+        html.ul(
+          [attribute.class("trace-call-list")],
+          list.map(rest, fn(row) {
+            html.li([attribute.class("trace-call")], [html.text(row)])
+          }),
+        ),
+      ])
+  }
 }
 
 // The earlier programs, newest first under the latest, and a line for any

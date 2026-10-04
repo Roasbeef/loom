@@ -28,6 +28,7 @@ import tui/connection
 import tui/frame
 import tui/inbound
 import tui/layout
+import tui/layout_memory
 import tui/model as tui_model
 import tui/render
 import tui/workspace
@@ -258,7 +259,7 @@ pub fn the_diff_panel_shows_only_successful_captured_edits_test() {
     )
   let #(opened, text) = painted(opened)
   assert opened.view.diff_view == tui_model.DiffVisible
-  assert string.contains(text, "captured changes")
+  assert string.contains(text, "Captured edits")
   assert string.contains(text, "-old")
   assert string.contains(text, "+new")
   assert !string.contains(text, "awaiting result")
@@ -317,31 +318,35 @@ pub fn wide_diff_keeps_the_conversation_visible_on_the_left_test() {
     changes_model("--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+new")
     |> toggle_diff
     |> painted_buffer(160)
-  let left = columns(drawn, 0, 88)
-  let right = columns(drawn, 88, 72)
-  assert string.contains(left, "transcript / main")
+  // At 160 columns the rail is 57 columns (a separator and 56 cells), so the
+  // conversation keeps the 103 on the left and the changes fill the rail.
+  let left = columns(drawn, 0, 103)
+  let right = columns(drawn, 104, 56)
   assert string.contains(left, "CONVERSATION_MARKER")
-  assert string.contains(right, "captured changes")
+  assert string.contains(right, "Captured edits")
   assert string.contains(right, "+new")
   assert !string.contains(right, "CONVERSATION_MARKER")
 
   // Copy selection is clipped to the pane, rather than spanning the live
   // conversation and unrelated diff cells on the same terminal row.
-  let right_area = layout.hit_area(opened, geometry.Position(100, 10))
-  assert right_area.position.x == 89
-  assert right_area.size.width == 70
+  let right_area = layout.hit_area(opened, geometry.Position(130, 10))
+  assert right_area.position.x == 105
+  assert right_area.size.width == 54
 }
 
 pub fn diff_resize_uses_one_panel_below_the_readable_split_width_test() {
+  // The rail docks from 120 columns, where the conversation keeps 75.
   let #(wide, _) =
-    changes_model("-old\n+new") |> toggle_diff |> painted_buffer(140)
-  let #(narrow, single) = painted_buffer(wide, 139)
+    changes_model("-old\n+new") |> toggle_diff |> painted_buffer(120)
+  assert layout.rail_columns(wide) == 45
+  let #(narrow, single) = painted_buffer(wide, 119)
   let text = frame.buffer_to_text(single)
-  assert string.contains(text, "captured changes")
+  assert string.contains(text, "Captured edits")
+    as "below 120 columns the changes are in the sheet"
   assert !string.contains(text, "CONVERSATION_MARKER")
   let #(restored, split) = painted_buffer(narrow, 160)
-  assert string.contains(columns(split, 0, 88), "CONVERSATION_MARKER")
-  assert string.contains(columns(split, 88, 72), "+new")
+  assert string.contains(columns(split, 0, 103), "CONVERSATION_MARKER")
+  assert string.contains(columns(split, 104, 56), "+new")
   assert restored.view.diff_view == tui_model.DiffVisible
 }
 
@@ -367,7 +372,7 @@ pub fn diff_and_conversation_scroll_independently_test() {
     |> painted_buffer(160)
   assert opened.view.rendered_row_count > 40
     as "both panes must contain enough rows to exercise independent scrolling"
-  let right = tui.update(backend.MouseScroll(100, 10, True), opened)
+  let right = tui.update(backend.MouseScroll(130, 10, True), opened)
   assert right.view.diff_scroll_offset == 3
   assert right.view.scroll_offset == opened.view.scroll_offset
   let left = tui.update(backend.MouseScroll(10, 10, True), right)
@@ -423,21 +428,25 @@ pub fn an_open_diff_keeps_up_with_new_captured_edits_test() {
   assert string.contains(columns(drawn, 0, 88), "CONVERSATION_MARKER")
 }
 
-pub fn diff_toggle_restores_the_agent_rail_preference_test() {
+// The rail is one column. The operator chose to hide it; opening the changes
+// docks it on its Changes tab anyway, and closing them puts it back as it was
+// chosen, hidden.
+pub fn diff_toggle_restores_the_rail_choice_test() {
   let base = {
     let base = changes_model("-old\n+new")
     tui_model.Model(
       ..base,
-      view: tui_model.View(..base.view, agent_rail_visible: True),
+      view: tui_model.View(..base.view, rail: Some(layout_memory.RailHidden)),
     )
   }
   let #(opened, _) = base |> toggle_diff |> painted_buffer(160)
-  assert opened.view.agent_rail_visible
-  assert layout.hit_area(opened, geometry.Position(100, 10)).position.x == 89
+  assert layout.rail_columns(opened) == 57
+    as "the changes dock the rail beside the transcript"
+  assert layout.hit_area(opened, geometry.Position(150, 10)).position.x == 105
   let #(closed, _) = opened |> toggle_diff |> painted_buffer(160)
   assert closed.view.diff_view == tui_model.DiffHidden
-  assert closed.view.agent_rail_visible
-  assert layout.hit_area(closed, geometry.Position(140, 10)).position.x == 127
+  assert closed.view.rail == Some(layout_memory.RailHidden)
+  assert layout.rail_columns(closed) == 0
 }
 
 pub fn compact_history_keeps_reasoning_between_tool_batches_test() {
@@ -551,7 +560,7 @@ pub fn successful_edits_show_inline_patches_in_compact_history_test() {
     |> received(outcome(2, "edit", False, details))
     |> painted
   assert !completed.shared.details_expanded
-  assert completed.view.diff_view == tui_model.DiffAutomatic
+  assert completed.view.diff_view == tui_model.DiffHidden
   assert string.contains(visible, "✓ fs_edit · src/file.gleam")
   assert string.contains(visible, "-    old")
   assert string.contains(visible, "+    new")
@@ -624,7 +633,7 @@ pub fn messages_show_readable_recipient_and_complete_expanded_body_test() {
     ])
   let pending = model() |> received(call(1, "send", "agent_send", arguments))
   let #(compact, shown) = painted(pending)
-  assert string.contains(shown, "Message to sub:main/reviewer-0123456789abcdef")
+  assert string.contains(shown, "→ to sub:main/reviewer-0123456789abcdef")
   assert string.contains(shown, "Review request")
   assert string.contains(shown, "Please check the ownership boundary.")
   assert !string.contains(shown, "{\"to\"")
@@ -660,8 +669,18 @@ pub fn collapsing_a_long_result_keeps_its_call_visible_at_video_dimensions_test(
             )
           _ -> result
         }
+        // Each call edits its own file. A run of identical settled calls
+        // folds into one counted row anchored to the newest of them, so a
+        // reader's place on one call of such a run is not what this pins.
+        let edit =
+          json.Object([
+            #(
+              "path",
+              json.String("src/file-" <> int.to_string(index) <> ".gleam"),
+            ),
+          ])
         state
-        |> received(call(index * 2 - 1, key, "fs_edit", args()))
+        |> received(call(index * 2 - 1, key, "fs_edit", edit))
         |> received(result)
       },
     )
@@ -783,7 +802,7 @@ pub fn compact_code_mode_summarizes_success_and_keeps_exact_expansion_test() {
   let arguments = json.Object([#("program", json.String(source))])
   let #(pending, before) =
     model() |> received(call(1, "code", "code_mode", arguments)) |> painted
-  assert string.contains(before, "code_mode · awaiting result")
+  assert string.contains(before, "code_mode · awaiting its result")
   assert string.contains(before, "import cap/report")
   assert string.contains(before, "report.text(\"hello\")")
   assert !string.contains(before, "{\"program\"")

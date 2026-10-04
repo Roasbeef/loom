@@ -233,12 +233,18 @@ binaries does not establish backward compatibility of future durable data
 formats either: check the release's compatibility notes.
 
 A client built before protocol-change/059 cannot decode a message whose origin
-is `{"kind":"strand"}`, and one such entry makes the whole session unreadable
-to it: the snapshot, the live `entries` frame and `loom replay` all fail. The
-first release that reads and draws that origin writes none. A later release
-that writes it must not be selected while an older client build is installed.
-Rerun installation so the `client` link names a build from the writing release
-before the `server` link does.
+is `{"kind":"strand"}`. The next release cut from `main` both reads and writes
+that origin: `v0.2.0` predates the reader, so no release exists that reads it
+without writing it. From that release on, the Agency records the sending strand
+on every `agent_send` message and spawn brief, so an ordinary session that uses
+sub-agents holds such an entry. Every client older than that release must
+therefore be stopped before the new release is selected. That includes a
+long-lived client that survived an in-place `loom update`, because a running
+process keeps the build it started with. An older client that reaches a session
+holding one such entry fails the whole session, not just that message: the
+snapshot, the live `entries` frame and `loom replay` all fail to decode. Rerun
+installation so the `client` link names the new build, and restart every client
+before selecting the new `server`.
 
 ## Manual cleanup
 

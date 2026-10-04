@@ -4,9 +4,16 @@
 //// terminal adapts the completed frame once, before it enters the frame cache;
 //// idle views still reuse that exact buffer. Cell content, links, and wide
 //// character continuation markers are never reconstructed by this pass.
+////
+//// One kind of cell is not recoloured at all: a kitty image placeholder.
+//// Its foreground colour is its address, the low 24 bits of the id of the
+//// image it shows, so a remap that moved it to a theme colour would show a
+//// different image or none. The pass reads the cell's content to tell, which
+//// costs one prefix test per cell and only on the palettes that remap.
 
 import etui/buffer
 import etui/geometry
+import etui/graphics/kitty
 import etui/style
 import gleam/int
 import gleam/list
@@ -111,13 +118,14 @@ fn cells(
         )
       let cell = buffer.get_cell(frame, position)
       let colors = cell.style
-      let remapped =
-        style.Style(
-          ..colors,
-          fg: foreground(colors.fg, palette),
-          bg: background(colors.bg, palette),
-          underline_color: foreground(colors.underline_color, palette),
-        )
+      let remapped = case cell.content {
+        buffer.Content(symbol:, ..) ->
+          case string.starts_with(symbol, kitty.placeholder) {
+            True -> colors
+            False -> remap(colors, palette)
+          }
+        buffer.Continuation -> remap(colors, palette)
+      }
       let frame = case remapped == colors {
         True -> frame
         False ->
@@ -126,6 +134,15 @@ fn cells(
       cells(frame, palette, area, index + 1, size)
     }
   }
+}
+
+fn remap(colors: style.Style, palette: Palette) -> style.Style {
+  style.Style(
+    ..colors,
+    fg: foreground(colors.fg, palette),
+    bg: background(colors.bg, palette),
+    underline_color: foreground(colors.underline_color, palette),
+  )
 }
 
 fn foreground(color: style.Color, palette: Palette) -> style.Color {
@@ -167,7 +184,6 @@ fn background(color: style.Color, palette: Palette) -> style.Color {
         value if value == theme.graphite -> style.Rgb(243, 245, 248)
         value if value == theme.raised -> style.Rgb(220, 231, 243)
         value if value == theme.user_background -> style.Rgb(251, 241, 221)
-        value if value == theme.assistant_background -> style.Rgb(228, 242, 243)
         value if value == theme.added_bg -> style.Rgb(224, 242, 228)
         value if value == theme.removed_bg -> style.Rgb(249, 228, 232)
         other -> other

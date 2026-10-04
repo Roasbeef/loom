@@ -44,7 +44,7 @@
    input b756b87db6ed5d5244f76a68c74f125f21aa61358027f13d32fb5d57eb0ec116  packages/web_view/src/web_view/view/heading.gleam
    input cff8e956e7b1c75c697a81d24a763c38300253544e045eba6fcdde561a4ebd39  packages/web_view/src/web_view/view/home_bar.gleam
    input d6c442a77c786179488d4cbe4757fc45f1db661a3c98f075f83ae858529b984c  packages/web_view/src/web_view/view/home_table.gleam
-   input 98d9adeefcbca1bb9218ec56222825b080fccbb1291cafc3d9f8b767b79453ae  packages/web_view/src/web_view/view/lane.gleam
+   input 70efa77791be1c45a626e7a746fae05dc2f8bff34cc43533e0c2b7ba019433c5  packages/web_view/src/web_view/view/lane.gleam
    input 36f1332f76b68807f672eb24b292a8bc8dcec754683e679bf9aac8840c4d9f22  packages/web_view/src/web_view/view/live.gleam
    input b73fc47db8d46314a208fafdaa47629322aab80946ca9fd60fd1e1d1448742cb  packages/web_view/src/web_view/view/nudges.gleam
    input a0b961499958920cafaf9587cbbfebad4f7481c421d708c013181201db9df13e  packages/web_view/src/web_view/view/panel.gleam
@@ -56,7 +56,7 @@
    input 88b52ec67126a35eaf0d9eba09ef76ec9d0b2718db2cd83ca69062f06aaf2027  packages/web_view/src/web_view/view/strip.gleam
    input 4c2450374b2bac23b881725092cf3933d6a9bc11e128055ba9d66a291da07bbf  packages/web_view/src/web_view/view/switch.gleam
    input bf6b7b255c1d05895c541403c357e1885cf0dea123eb4d24eaad44786d8dd4d9  packages/web_view/src/web_view/view/todo_panel.gleam
-   input 0ffdd7b2ad88815d58fa2f4732ca82f55f1b428145200065e8db4dd23034984d  packages/web_view/src/web_view/view/trace.gleam
+   input 00929844b5cdfb49e457cd23080ce28cbdbcc1ba0c64706583cb67c2732b9dea  packages/web_view/src/web_view/view/trace.gleam
    body c8b5450aaad1796c37ad7883883065724963e587e60f8a7575f8d81b79f8d242
 */
 /* --- generated body: the digests above cover everything below this line --- */

@@ -1,0 +1,40 @@
+ ◆ loom                                     ws · main · ~/code/pi-gui (main)                   kimi-k3 · Ctrl+g details 
+  transcript / main                                                                                                     
+ │ › Owner · operator                                                                                                   
+ │ ╭ SESSIONS  All 7  Needs you 0  Working 2  Idle 1  Inactive 3 ─────────────────────────── tab filter · esc close ╮   
+ │ │                                                                                                                │   
+ │ │                                                                                                                │   
+ │ │  No session needs you.                                                                                         │   
+   │  Tab shows All 7 · n creates a session · esc closes                                                            │   
+   │                                                                                                                │   
+   │                                                                                                                │   
+   │                                                                                                                │   
+   │                                                                                                                │   
+   │                                                                                                                │   
+   │                                                                                                                │   
+   │                                                                                                                │   
+   │                                                                                                                │   
+   │                                                                                                                │   
+   │                                                                                                                │   
+   │                                                                                                                │   
+   │                                                                                                                │   
+   │                                                                                                                │   
+   │                                                                                                                │   
+   │                                                                                                                │   
+   │                                                                                                                │   
+   │                                                                                                                │   
+   │                                                                                                                │   
+   │                                                                                                                │   
+   │                                                                                                                │   
+   │                                                                                                                │   
+   │                                                                                                                │   
+   │────────────────────────────────────────────────────────────────────────────────────────────────────────────────│   
+   │  ↑↓ move · enter open · l link · n new · r rename · d archive · a archived · ←→ page                           │   
+   ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯   
+                                                                                                                        
+                                                                                                                        
+─ To main · enter queues · tab steers ────────────────────────────────────────────────────────────────────── ws · main ─
+ ◐ thinking · 9s · esc interrupts                                                                                       
+                                                                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ cache ≤3m · kimi-k3 · ctx ~41% · est $1.86                                          5 agents · 2 working · 1 attention 

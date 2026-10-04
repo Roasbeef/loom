@@ -1,0 +1,24 @@
+ Strands · 7                                                           Esc back 
+ All 7   Needs 1   Work 4   Fail 1                                          Tab 
+     name                    doing                        time     ctx          
+   ● main                    Waiting for 2 reviewers    4m 10s    259k          
+ ❯ ? sub:tests               Needs approval · network      34s      9k          
+   × sub:terminal-checks     Failed · wide-label check… 1m 02s     31k          
+   ● sub:adversarial-…-48f3  Tracing quit-path publish… 2m 45s     65k          
+   ● sub:adversarial-…-ec14  Grep-searching herdr:loom… 1m 03s    144k          
+     +2 more · ↓ scrolls                                                        
+────────────────────────────────────────────────────────────────────────────────
+ ? sub:tests · Needs approval · 34s · 9k                                        
+ Task  Run gleam test and report failures.                                      
+ Now   waiting for approval · proxy.golang.org                                  
+ Inbox 1 queued from main                                                       
+ ↑↓ Enter open · a approval · n next · 1-4 detail · Esc                         
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ ◐ main · agent_wait · 51s                                             Esc back 
+╭─ To main ──────────────────────────────────────────────────────── ws · main ─╮
+│ ›                                                                            │
+╰─ kimi-k3 › ctx ~41% › $1.86 ─────────────────────────────────── 1 needs you ─╯

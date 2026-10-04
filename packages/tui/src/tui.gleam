@@ -70,6 +70,8 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set
 import gleam/string
+import gleam/time/calendar
+import gleam/time/duration
 import host/bootstrap as host_bootstrap
 import host/build_identity
 import host/claim as claim_token
@@ -108,16 +110,21 @@ import tui/connection
 import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
+import tui/demo_image
 import tui/effect
 import tui/frame
+import tui/image_plan
+import tui/image_shown
+import tui/image_support
 import tui/inbound
 import tui/interaction
 import tui/internal/ffi_terminal
 import tui/job
 import tui/job_runner
 import tui/layout
+import tui/layout_save
 import tui/model.{
-  type Model, DiffAutomatic, Model, Newer, NoClipboard, NoOverlay, Older,
+  type Model, DiffHidden, Model, Newer, NoClipboard, NoOverlay, Older,
   PromptNext, ReconnectIdle, TerminalClipboard,
 } as tui_model
 import tui/msg
@@ -130,6 +137,7 @@ import tui/render
 import tui/runtime
 import tui/session_control
 import tui/session_table
+import tui/submit
 import tui/summary_panel
 import tui/tick
 import tui/update
@@ -513,7 +521,18 @@ pub fn new_model(
   inbox: Subject(connection_event.Message),
   project: workspace.Context,
 ) -> Model {
-  new_model_with_clock(inbox, project, host_bootstrap.monotonic_time_ms)
+  let model =
+    new_model_with_clock(inbox, project, host_bootstrap.monotonic_time_ms)
+
+  // The reader's zone is read once, when the terminal starts, so a message's
+  // heading can show the local time it arrived. A model built for a test
+  // keeps no offset and draws no times, which keeps its frames the same in
+  // every zone.
+  let offset =
+    calendar.local_offset()
+    |> duration.to_seconds_and_nanoseconds
+    |> fn(pair) { pair.0 / 60 }
+  Model(..model, shared: Shared(..model.shared, clock_offset: Some(offset)))
 }
 
 /// Creates a presentation state whose timing is controlled by its caller.
@@ -543,6 +562,7 @@ pub fn new_model_with_clock(
     runtime.read_stamp(monotonic_time_ms, host_bootstrap.monotonic_time_ms)
   Model(
     shared: Shared(
+      clock_offset: None,
       quit: False,
       parked_scrollback: dict.new(),
       attachments: [],
@@ -652,6 +672,9 @@ pub fn new_model_with_clock(
       width: 80,
       height: 24,
       palette: appearance.Dark,
+      image_support: image_support.TextOnly(image_support.NotProbed),
+      images: image_shown.new(),
+      layout_target: None,
       input: text_area.state_new(),
       strand_workspaces: dict.new(),
       restored_workspace: None,
@@ -668,7 +691,7 @@ pub fn new_model_with_clock(
       summary_job_selected: 0,
       help_open: False,
       notes_open: False,
-      diff_view: DiffAutomatic,
+      diff_view: DiffHidden,
       diff_scroll_offset: 0,
       diff_row_count: 0,
       diff_worktree_source: #(None, 0),
@@ -687,10 +710,15 @@ pub fn new_model_with_clock(
       reconnect: ReconnectIdle,
       creation_key: None,
       configuring: None,
+      opening_image: None,
       prompted_approvals: [],
       inspecting_approval: None,
       next_attempt: 1,
-      agent_rail_visible: False,
+      rail: None,
+      rail_tab: None,
+      sheet: tui_model.SheetClosed,
+      rail_focus: tui_model.FocusComposer,
+      rail_scroll: 0,
       repaint_phase: False,
       activity_frame: 0,
       reading_lines: None,
@@ -702,6 +730,7 @@ pub fn new_model_with_clock(
       rendered_gutters: [],
       record_gutters: [],
       record_cache_width: 0,
+      record_cache_height: 0,
       record_cache_strand: "",
       record_cache_details: False,
       frame_debt: pacing.FrameSettled,
@@ -744,8 +773,11 @@ fn interactive(launch: Launch, record: String) -> Nil {
     | ClaimAccess(..)
     | Enroll(..)
     | Access(..)
-    | View(..)
-    | Demo -> base
+    | View(..) -> base
+
+    // The demo has no session, so the one image it shows is seeded into its
+    // entries (`demo_image`), where a box finds the data to draw.
+    Demo -> demo_image.seed(base)
     Local(options, selected) -> {
       // The footer names the workspace the session was launched for, which
       // is only the current directory when no `--workspace` was given; a
@@ -815,6 +847,42 @@ fn interactive(launch: Launch, record: String) -> Nil {
     )
     |> start_herdr_reporter_for(launch)
 
+  // Only a launch that is a real session remembers its layout. The rest
+  // print and exit, replay, or show the demo, and read and write no file.
+  let initial = case launch {
+    Local(options, _) ->
+      layout_save.remember_launch(initial, options.state_directory)
+    Remote(..) -> layout_save.remember_launch(initial, "")
+    Version
+    | Forward(..)
+    | Update(..)
+    | Replay(..)
+    | Sessions(..)
+    | ClaimAccess(..)
+    | Enroll(..)
+    | Access(..)
+    | View(..)
+    | Demo
+    | Invalid(..) -> initial
+  }
+
+  // The probe has to run in this process, because it leaves the terminal in
+  // raw mode for the backend that follows, and before that backend enters
+  // the alternate screen, because its replies are read raw and must not be
+  // drawn. It is the last thing before the loop so that nothing printed
+  // earlier can be mistaken for a reply, and the plain-palette rule is
+  // applied first, inside `probe_terminal`.
+  let initial =
+    Model(
+      ..initial,
+      view: tui_model.View(
+        ..initial.view,
+        image_support: image_support.probe_terminal(
+          initial.view.palette,
+          host_bootstrap.getenv,
+        ),
+      ),
+    )
   let _ =
     app.run_buffered_cursor_adaptive(
       default.new_with_options(backend.Options(mouse: True, paste: True)),
@@ -2153,6 +2221,8 @@ fn apply_input(event: msg.Event, model: Model) -> Model {
           caches: tui_model.Caches(..model.view.caches, selection_frame: None),
         ),
       )
+      |> image_plan.resized
+      |> submit.hand_off_sheet
       |> tui_model.mark_activity
       |> tui_model.invalidate_frame
     msg.Ticked -> tick.update_tick(model)
@@ -2246,6 +2316,8 @@ fn settle_update(event: msg.Event, model: Model, updated: Model) -> Model {
       ),
     ),
   )
+  |> image_plan.settle
+  |> layout_save.settle
 }
 
 // A gesture aimed at the transcript owns the viewport outright: pacing

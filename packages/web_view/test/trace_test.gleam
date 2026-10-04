@@ -34,6 +34,7 @@ fn program(state: trace_view.State, label: String) -> trace_view.Program {
     sandbox: Some(
       "sandbox · build enforced 4 layers; skipped 0 · satellite enforced 4 layers; skipped 0",
     ),
+    calls: [],
   )
 }
 
@@ -71,7 +72,7 @@ pub fn the_newest_program_leads_and_the_earlier_ones_follow_test() {
     "first.gleam",
     "trace-failed",
     "2 older programs not shown",
-    "Capability calls are not recorded yet.",
+    "a program with no record lists none.",
   ])
 }
 
@@ -87,6 +88,7 @@ pub fn a_label_and_an_excerpt_are_only_ever_text_nodes_test() {
           within_ms: None,
           vetting: trace_view.Passed,
           sandbox: None,
+          calls: ["CALLS · 1 call · 1 failed", "× " <> hostile],
         ),
       ],
       omitted: 0,
@@ -95,6 +97,7 @@ pub fn a_label_and_an_excerpt_are_only_ever_text_nodes_test() {
   assert string.contains(html, "&lt;img src=x onerror=alert(1)&gt;")
   assert !string.contains(html, "<img")
   assert !string.contains(html, "onmouseover=\"x\"")
+  assert string.contains(html, "trace-call") as "the call row is drawn, as text"
   assert string.contains(html, "default wall budget · vetted")
 }
 

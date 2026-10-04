@@ -121,10 +121,57 @@ for a host with no surfaces.
   `session_wire.Reply`: total decoders for the daemon's frames.
 - `transcript_line.Line(speaker, text)` and `Speaker`, with the live
   observations that become lines: `Stream`, `ToolTail`, `CacheNotice`,
-  `Submission`.
+  `Submission`. Agent traffic has three speakers, `SentMessage`,
+  `StrandMessage` and `PeerMessage`, chosen from the `agent_send` call or
+  the stored origin and never from the text; the text is a heading, a
+  newline and the body. A peer heading ends in
+  `transcript_lines.origin_checked`, and every heading in the local clock
+  time when `Presentation.clock` (from `Shared.clock_offset`) knows the
+  zone. `agent_messages.Item.ts` keeps the send's time for the workspace.
+- `transcript_lines.joined` joins every tool result in a compact window to
+  its call, for responses whose calls are drawn as narrative: the call is
+  drawn with the rows a tool group draws for it (`call_rows`), settled,
+  failed with its reason, a send with its admission, a program with its
+  value, an image result with its image's row, `absorbed` says which result entries draw nothing,
+  `reads_joined` names the responses that bypass the entry cache, and
+  `joined_entry_lines`/`joined_block_lines` draw a response with the
+  results joined. A compact `code_mode` call is one `✓ code_mode ·
+  completed · result …` row once it settles, and otherwise a
+  `ProgramRunning` or `ProgramFailure` block, whose text is a title, a
+  foot and a body: the program's opening lines under their numbers, or the
+  error, with a compiler diagnostic cut to its heading (`· line N`) and the
+  source it quotes. Both block speakers open and close bare, like a call.
+  With a `call_tree` record the settled row counts the calls and a failure
+  block ends in a `CALLS · …` section, grouped by capability and ending.
+- `call_tree.{read, summary, CallLog, Call, Status}` (protocol 060): the
+  total decoder for the `calls` key of a `code_mode` result's `details` and
+  the one-line summary (`7 calls · 1 failed`). An absent key and a
+  malformed one both read as `None`, and `transcript_lines` then renders the
+  result exactly as it did before the record existed. A `code_mode` failure
+  with a readable record shows the summary and rows under the failure text.
+  The golden JSON in `call_tree_test` is the same literal `tools` asserts
+  its encoder writes.
+- `ImageRow` is an image's placeholder row under the call or turn that
+  carries it, worded by `image_header.describe` (`image 1 · image/png ·
+  1200×700 · 84 KB`); `image_header.dimensions` reads the pixel size from a
+  PNG, JPEG or GIF header totally, and answers `None` for anything else.
+  `ImageRow` carries `image_header.picture`, which is `None` when the header
+  cannot be read: a fingerprint (byte count and three 32-byte samples of the
+  base64 text, cheap on a large image), the media type, the pixel size and
+  the byte count. A line is a cache key, so it never holds the data; a host
+  that draws the image finds the data again from its entry by fingerprint.
 - `transcript_lines.Presentation`: everything the line builders read of a
   client's state. A host fills it; the terminal does so in
   `tui_model.presentation`.
+- `transcript_lines.collapse_repeats` folds a run of identical consecutive
+  items into the newest of them with `×N` on its first row, in compact
+  history only. Two predicates say what may fold: `repeated_call` (a call
+  that settled successfully on one row, such as an `agent_wait` poll) inside
+  a tool group, and `repeated_failure` (an entry that draws only a provider
+  error) between items. The terminal's anchor fold in `tui/projection`
+  applies the same fold over the same items, so rows and anchors stay
+  paired; a folded run anchors to its newest call. A failure row opens bare,
+  so it gets a gap under a call's bare last row.
 - `transcript_lines.response_awaited(records, operations, stream)` says
   whether a live response is still owed to a host that draws only captures:
   its request's identity names an entry that `records` do not hold and the
@@ -177,7 +224,8 @@ for a host with no surfaces.
   person's message (the sender is a field, not a `name:` line of the text;
   `turns.attributed` sets the reader's own role on the reader's messages), one
   `Work` divider per turn (`Folded`, or `Open` while the strand runs or waits
-  on an approval; its `Worked` figures come from the records). The fold's
+  on an approval; its `Worked` figures come from the records, failed calls included, which
+  `turns.divider` prints as `· 1 failed`). The fold's
   items are `Narrated` blocks (each with `took`, the response's time, which a
   reasoning row reads), `Step`s (`words` from `step_words.of_call`) and
   `Memory`, the memory context the daemon recorded ahead of a prompt: it is no
@@ -241,7 +289,8 @@ for a host with no surfaces.
   `running_ms`, `context`). A strand that is idle and has no operation has
   never run (a fresh fork waiting for its first prompt), and it is listed
   among the live cards rather than settled; one that ran and is idle again
-  has an operation and is settled.
+  has an operation and is settled. `describe` gives any row the same line
+  whether or not a strip would list it; the terminal's workspace list uses it.
   Its internal `listed_count` uses the same membership predicate without
   constructing display lines, for hosts measuring geometry. The roster test
   compares that count with `lines` across every status and active-strand choice.
@@ -427,11 +476,20 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   them newest first, into the session's `code_mode` programs, oldest first:
   each with a closed `State` read from the result's `status` word (`Running`
   while it has no result), a label (the `program_path`, else the text of the
-  program's leading `//` comment after any imports, else `Program N`), a result excerpt, the `within_ms` the call named and
-  a closed `Vetting`. It lists programs because no per-capability call is
-  recorded yet (protocol-change/060). Bounded: `max_programs` 12 (older ones
-  counted in `omitted`) and `max_characters` 160 per label and excerpt, both
-  single-line and free of control characters. Portable, no externals.
+  program's leading `//` comment after any imports, else `Program N`), a result
+  excerpt, the `within_ms` the call named, a closed `Vetting`, and `calls`, the
+  rows of the protocol-change/060 call record the result carries (`CALLS · …`
+  and one row per call, from `transcript_lines.call_section`; nothing for a
+  running call or a result with no readable record). `newest(records, strand)`
+  is the terminal's form: one strand's newest program from a window that holds
+  several strands, in entry order whatever order the records arrive in, with
+  `source`, the program's opening twelve lines numbered. `state_title` words a
+  state as the transcript's failure block does (`compile error`, `refused by
+  vetting`), and `state_word` is the web's. `first_call` is a program's first
+  call row, else its label. Bounded: `max_programs` 12 (older ones counted in
+  `omitted`) and `max_characters` 160 per label and excerpt, both single-line
+  and free of control characters. Both hosts draw it: the web view's Trace pane
+  from `fold`, the terminal's Trace tab from `newest`. Portable, no externals.
 - `changes_view.fold(records)` folds a strand's records, as a branch holds
   them newest first, into the board of the session's own edits: the files
   the successful `fs_edit` results named, each with the diff the result

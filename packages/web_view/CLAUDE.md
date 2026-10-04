@@ -423,9 +423,10 @@ page keys and nonces, and the relay into the session's gateway.
   before the nudges, so `strip_path` and `invite_path` do not move), on both
   pages from `component.trace(model)`, the `session_view/trace_view` fold of
   the same records `relaned` folds the Changes board from. It lists the
-  session's `code_mode` programs, and not the capability calls inside them:
-  no capability call is recorded on the page's wire (protocol-change/060
-  proposes the record), and the pane says so in its last line. The newest
+  session's `code_mode` programs. The newest program also lists the rows of
+  the protocol-change/060 call record its result carried (`Program.calls`, as
+  text nodes under `trace-calls`), and a program with no record lists none; the
+  pane's last line says so (`trace_view.capability_calls_recorded`). The newest
   program leads with its state chip, result excerpt and a collapsed `Budget`
   `<details>`; earlier programs are rows under it. Labels and excerpts are
   text nodes, a state's class is one of three literals chosen from the closed
@@ -503,6 +504,11 @@ page keys and nonces, and the relay into the session's gateway.
   terminal renders as Markdown (assistant, reasoning, tool detail) and for
   the bodies of the result, nudge and peer cards, which are agent prose
   the terminal draws as tool-detail rows; every other row stays a `pre`.
+  The three message speakers (`sent-message`, `strand-message`,
+  `peer-message`) are among those: their text is a heading line and a
+  body, and a `pre` keeps the heading a line of its own. So are the two
+  program blocks (`program-running`, `program-failure`), whose text is
+  already laid out line by line, and an image's row (`image-row`).
   The model holds no trees. `lane.view` draws every transcript line and
   card body inside its own `element.memo` keyed on that line or body, with
   no memo around them (`lane.rows`), so a line is parsed and drawn when it

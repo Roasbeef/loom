@@ -216,18 +216,18 @@ pub fn owner_banner_tracks_solo_and_multiplayer_presence_test() {
   // rather than constructing the banner or its presence predicate in a test.
   let solo = run([peer("connection")])
   assert solo.final.shared.replay_error == None
-  assert solo.final.shared.notice == "1 present"
+  assert !string.contains(solo.final.shared.notice, "present")
   assert list.any(solo.final.shared.transcript, fn(line) {
-    line.text == "Attached · 1 present"
+    string.starts_with(line.text, "Attached · 1 present")
   })
   assert !list.any(solo.final.shared.transcript, fn(line) {
     string.contains(line.text, "Owner")
   })
   let multiplayer = run([peer("connection"), peer("other-tab")])
   assert multiplayer.final.shared.replay_error == None
-  assert multiplayer.final.shared.notice == "Owner · owner · 2 present"
+  assert !string.contains(multiplayer.final.shared.notice, "present")
   assert list.any(multiplayer.final.shared.transcript, fn(line) {
-    line.text == "Attached as: Owner · owner · 2 present"
+    string.starts_with(line.text, "Attached as: Owner · owner · 2 present")
   })
 }
 
