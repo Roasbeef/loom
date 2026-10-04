@@ -2,13 +2,38 @@
 
 ## Dispatch origin
 
-`dispatch.Dispatch.context` carries `CallContext(operation, step)` copied from
-the actual cleared `CallSpec` in `broker.start_execution`. Physical calls may
-share this context while having different dispatcher sequence numbers. A remote
-adapter must allocate and retain each logical request identity separately;
-sequence numbers, PIDs and tokens cannot reconstruct it. Internal local step
-names remain unchanged. The remote boundary validates them with
-`core/workspace.step` before admission. Protocol 067 records the added field.
+`dispatch.Dispatch.context` carries `CallContext(operation, step, origin)` from
+the actual cleared call. `clear_call_from` supplies an opaque remote child
+origin; ordinary `clear_call` supplies `None`. Congestion retries preserve the
+origin. It binds the original tool or named system invocation to its durable
+physical child request, including derived build steps and detached jobs.
+Provenance grants no authority and does not change pooled budget accounting.
+
+A remote adapter requires that origin before reserving its stable request ID.
+Sequence numbers, PIDs, tokens and connection generations cannot reconstruct
+it. Internal local step names remain unchanged; the remote boundary validates
+them with `core/workspace.step`. Protocol 067 records the interface additions.
+
+## Remote native admission
+
+`executor.dispatcher_with_native_deadline` checks that the unchanged native
+wall policy fits the remaining admitted deadline after helper checkout.
+`exec.run_before` carries that same clock and deadline into the helper actor,
+which checks again when it consumes the queued request. A delayed request
+cannot receive a fresh wall allowance. Finite admission requires a positive
+wall limit; session admission requires an explicit zero-wall policy.
+
+An expired checkout returns its idle helper without starting a relay. Expiry
+at the helper actor sends no native start frame and settles through the
+existing relay. The relay still owns cancellation at the aggregate deadline;
+cleanup grace and proof of native retirement remain separate obligations.
+These checks do not promise hard real-time execution across BEAM suspension
+or native port delivery. The ordinary local dispatcher retains its existing
+aggregate-deadline behavior.
+
+`exec.RemoteOutcomeUncertain` names an exchange without definitive remote
+outcome evidence. Callers reconcile the retained identity rather than retrying
+under a new one. It proves neither non-execution nor native retirement.
 
 ## Purpose
 
