@@ -14,9 +14,9 @@ wall-clock and peak resident memory per process:
   e  session growth       ten sessions admitted over the control socket; the
                           time is one admission, the memory is the daemon's
                           growth per session between the first and the tenth
-  f  long session         loom attached to a copy of a real session database
-                          (DB=...), until its first frame and until the
-                          transcript has been drawn
+  f  long session         loom reopening a copy of a real session database
+                          (DB=...) whose search index is already built, until
+                          its first frame and until the transcript is drawn
 
 Why each measurement is taken the way it is:
 
@@ -727,12 +727,63 @@ def long_profile(name, db, ident):
 ATTACHED = r"Enter(sends|queues)"
 
 
+def cpu_seconds(pid):
+    out = subprocess.run(["ps", "-o", "time=", "-p", str(pid)],
+                         capture_output=True, text=True).stdout.strip()
+    total = 0.0
+    for part in out.split(":"):
+        total = total * 60 + float(part)
+    return total
+
+
+def await_idle(pid, within_s=120):
+    """Waits until the process uses under 2% of a core over half a second."""
+    deadline = time.monotonic() + within_s
+    last = cpu_seconds(pid)
+    while time.monotonic() < deadline:
+        time.sleep(0.5)
+        now = cpu_seconds(pid)
+        if now - last < 0.01:
+            return
+        last = now
+    raise BenchError("daemon never went idle")
+
+
+def first_open(profile, ident):
+    """Opens the long session once and lets the daemon finish with it.
+
+    The first time a session's history enters its workspace domain, the
+    daemon indexes every entry for search, and that index persists. A
+    person reopening a long session paid for that once, long ago, so the
+    timed runs reopen a session whose index is already built.
+    """
+    d = Daemon(profile)
+    control = Control(profile, d.port)
+    with open(os.path.join(profile.state, "daemon.endpoint")) as handle:
+        epoch = json.load(handle)["epoch"]
+    control.request("sessions.open", {"session_id": ident, "epoch": epoch})
+    deadline = time.monotonic() + 60
+    while control.request("sessions.get", {"session_id": ident}) \
+            .get("status", {}).get("state") != "resident":
+        if time.monotonic() > deadline:
+            raise BenchError("long session never became resident")
+        time.sleep(0.01)
+    await_idle(d.proc.pid)
+    control.close()
+    d.stop()
+
+
 def scenario_f(runs, db):
-    """A client attached to a long real session, and the daemon serving it."""
+    """A client reopening a long real session, and the daemon serving it.
+
+    Every run reopens the same session in the same state root, as a person
+    returning to it does.
+    """
     ident = session_id_of(db)
     client, drawn, daemon = series(), series(), series()
-    for i in range(runs):
-        profile = long_profile("f-%d" % i, db, ident)
+    profile = long_profile("f", db, ident)
+    first_open(profile, ident)
+    for _ in range(runs):
         d = Daemon(profile)
         c = Client(profile, client_args(profile, "--session", ident))
         client["time_ms"].append(c.await_first_frame())
@@ -740,8 +791,6 @@ def scenario_f(runs, db):
         c.await_settled()
         client["rss_kib"].append(c.stop())
         daemon["rss_kib"].append(d.stop())
-        profile.remove()
-    profile = long_profile("f-census", db, ident)
     d = Daemon(profile, profiled=True)
     c = Client(profile, client_args(profile, "--session", ident, "--profile"))
     c.await_first_frame()
