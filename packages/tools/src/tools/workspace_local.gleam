@@ -112,6 +112,15 @@ pub fn new(
   Host(scope:, local:, observer:, git: None, guidance: None, initialize: None)
 }
 
+/// Reads the immutable administrative scope without exposing local authority.
+///
+/// ## Examples
+///
+/// `scope(host)` must equal the durable journal scope before a service starts.
+pub fn scope(host: Host) -> core_workspace.Scope {
+  host.scope
+}
+
 /// Binds the existing Git host which owns exact-command owner clearance.
 /// Successful results and stderr must be bounded by that host before return.
 ///

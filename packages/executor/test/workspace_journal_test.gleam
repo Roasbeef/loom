@@ -324,6 +324,7 @@ pub fn schema_and_named_queries_match_generated_artifacts_test() {
     sql.finish_workspace(<<>>, 1, <<>>, <<>>).0,
     sql.acknowledge_workspace(<<>>).0,
     sql.cancel_workspace(<<>>).0,
+    sql.seal_workspace().0,
   ]
   assert normalize(source) == normalize(string.join(generated, "\n"))
 }

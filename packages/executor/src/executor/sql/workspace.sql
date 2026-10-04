@@ -1,9 +1,10 @@
 -- ASCII-only static workspace queries for Parrot/sqlc.
 -- name: InitializeWorkspace :exec
-INSERT INTO workspace_meta(id, format, binding, row_limit, byte_limit) VALUES(1, 1, ?, ?, ?);
+INSERT INTO workspace_meta(id, format, mode, binding, row_limit, byte_limit) VALUES(1, 2, 0, ?, ?, ?);
 
 -- name: WorkspaceMetadata :many
-SELECT CAST(CASE WHEN typeof(id)='integer' AND id=1 AND typeof(format)='integer' AND format=1 AND typeof(binding)='blob' AND length(binding)<=303 THEN binding ELSE NULL END AS BLOB) AS binding,
+SELECT CAST(CASE WHEN typeof(id)='integer' AND id=1 AND typeof(format)='integer' AND format=2 AND typeof(binding)='blob' AND length(binding)<=303 THEN binding ELSE NULL END AS BLOB) AS binding,
+       CAST(CASE WHEN typeof(mode)='integer' AND mode IN (0,1) THEN mode ELSE NULL END AS INTEGER) AS mode,
        CAST(CASE WHEN typeof(row_limit)='integer' THEN row_limit ELSE NULL END AS INTEGER) AS row_limit,
        CAST(CASE WHEN typeof(byte_limit)='integer' THEN byte_limit ELSE NULL END AS INTEGER) AS byte_limit
 FROM workspace_meta LIMIT 2;
@@ -44,3 +45,7 @@ UPDATE workspace_call SET phase=3,request=X'',result=X'' WHERE id=? AND phase=2 
 
 -- name: CancelWorkspace :many
 UPDATE workspace_call SET phase=4 WHERE id=? AND phase=0 RETURNING phase;
+
+-- A sealed scope never reopens; retained completions and receipts remain usable.
+-- name: SealWorkspace :many
+UPDATE workspace_meta SET mode=1 WHERE id=1 RETURNING mode;

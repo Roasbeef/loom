@@ -1,7 +1,8 @@
 -- Whole semantic workspace custody. Logical reservation is not a disk/WAL bound.
 CREATE TABLE workspace_meta (
   id INTEGER PRIMARY KEY CHECK(id = 1),
-  format INTEGER NOT NULL CHECK(format = 1),
+  format INTEGER NOT NULL CHECK(format = 2),
+  mode INTEGER NOT NULL CHECK(mode IN (0, 1)),
   binding BLOB NOT NULL CHECK(length(binding) <= 303),
   row_limit INTEGER NOT NULL CHECK(row_limit BETWEEN 1 AND 4096),
   byte_limit INTEGER NOT NULL CHECK(byte_limit BETWEEN 1 AND 268435456)

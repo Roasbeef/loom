@@ -4,6 +4,11 @@
 //// the full codec completion ceiling. A first claim commits Started before
 //// returning execution permission. No recovery or duplicate creates a claim;
 //// uncertainty therefore survives a crash without replaying a mutation.
+//// Schema version two adds a permanent scope seal. Every writer rereads it
+//// under BEGIN IMMEDIATE; Sealed blocks new reservations and first claims,
+//// including Accepted rows recovered through another endpoint. Exact completion,
+//// acknowledgement, cancellation and query reconciliation remain available.
+//// Version/schema mismatches refuse recovery; no old database is migrated.
 ////
 //// A weft actor owns each connection. BEGIN IMMEDIATE serializes independent
 //// opens, including separate VMs. Every transaction validates bounded scalar
@@ -24,6 +29,7 @@
 //// `claim` and `cancel` validate before `exchange`; `finish` validates against
 //// its opaque claim. `handle` commits `transact` before replying. `inventory`
 //// validates metadata and headers; `retained` then validates bounded bodies.
+//// `mode` and `seal` enter `metadata_transaction` with the same writer lock.
 //// `execute` changes one exact row and never launches filesystem work itself.
 
 import core/ids
@@ -151,6 +157,9 @@ pub type Error {
   /// A transaction or reply may have committed; recover without executing again.
   Uncertain
 
+  /// Durable closure prevents new admissions and first execution claims.
+  Sealed
+
   /// This actor is closed or poisoned.
   Closed
 
@@ -167,9 +176,27 @@ type Validated {
   )
 }
 
+/// Durable authority disposition, independent from the endpoint lifetime.
+pub type ScopeMode {
+  /// New admissions and the first claim of Accepted evidence are permitted.
+  Open
+
+  /// New admissions and first claims are permanently fenced.
+  SealedScope
+}
+
 type Mode {
   Fresh
   Recover
+}
+
+type MetadataCommand {
+  ObserveMode
+  SealScope
+}
+
+type Inventory {
+  Inventory(mode: ScopeMode, rows: List(sql.WorkspaceHeaders))
 }
 
 type Config {
@@ -202,6 +229,7 @@ type Answer {
 type Message {
   Initialise(Mode, process.Subject(Result(Nil, Error)))
   Run(Command, process.Subject(Result(Answer, Error)))
+  Metadata(MetadataCommand, process.Subject(Result(ScopeMode, Error)))
   Release(process.Subject(Result(Nil, Error)))
 }
 
@@ -337,6 +365,35 @@ pub fn digest(bytes: BitArray) -> BitArray {
   crypto.hash(crypto.Sha256, bytes)
 }
 
+/// Reads the immutable full registration to check service assembly before effects.
+///
+/// ## Examples
+///
+/// `scope(journal)` must equal `workspace_local.scope(host)`.
+pub fn scope(journal: Journal) -> cw.Scope {
+  journal.scope
+}
+
+/// Reads the checked committed scope mode under the database writer lock.
+///
+/// ## Examples
+///
+/// `mode(journal)` returns SealedScope after a successful `seal(journal)`.
+pub fn mode(journal: Journal) -> Result(ScopeMode, Error) {
+  exchange(journal, Metadata(ObserveMode, _))
+}
+
+/// Permanently fences new admissions and first claims, including other opens.
+/// Existing exact completion, acknowledgement and query reconciliation survives.
+/// A lost commit reply is uncertainty and never permission to reopen authority.
+///
+/// ## Examples
+///
+/// `seal(journal)` is idempotent and returns only after the durable fence commits.
+pub fn seal(journal: Journal) -> Result(ScopeMode, Error) {
+  exchange(journal, Metadata(SealScope, _))
+}
+
 /// Closes this endpoint without changing durable evidence or granting permission.
 ///
 /// ## Examples
@@ -457,6 +514,19 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         Ok(_) | Error(_) -> actor.continue(state)
       }
     }
+    Ready(config, connection), Metadata(command, reply) -> {
+      let outcome = metadata_transaction(connection, config, command)
+      process.send(reply, outcome)
+      case outcome {
+        Error(Uncertain) | Error(Corrupt) | Error(BindingMismatch) ->
+          actor.stop()
+        Ok(_) | Error(_) -> actor.continue(state)
+      }
+    }
+    Waiting(_), Metadata(_, reply) -> {
+      process.send(reply, Error(Closed))
+      actor.continue(state)
+    }
     Ready(_, connection), Release(reply) -> {
       process.send(reply, sqlight.close(connection) |> sql_error)
       actor.stop()
@@ -542,8 +612,8 @@ fn setup(
       }
       Recover -> Ok(Nil)
     })
-    use rows <- result.try(inventory(connection, config))
-    list.try_each(rows, fn(row) {
+    use inventory <- result.try(inventory(connection, config))
+    list.try_each(inventory.rows, fn(row) {
       retained(connection, config, row) |> result.replace(Nil)
     })
   }
@@ -570,16 +640,21 @@ fn binding(scope: cw.Scope) -> BitArray {
 fn inventory(
   connection: sqlight.Connection,
   config: Config,
-) -> Result(List(sql.WorkspaceHeaders), Error) {
+) -> Result(Inventory, Error) {
   use metadata <- result.try(
     query(connection, sql.workspace_metadata()) |> result.replace_error(Corrupt),
   )
-  use Nil <- result.try(case metadata {
-    [sql.WorkspaceMetadata(actual, rows, bytes)]
+  use mode <- result.try(case metadata {
+    [sql.WorkspaceMetadata(actual, mode, rows, bytes)]
       if rows == config.limits.rows && bytes == config.limits.bytes
     -> {
       case actual == binding(config.scope) {
-        True -> Ok(Nil)
+        True ->
+          case mode {
+            0 -> Ok(Open)
+            1 -> Ok(SealedScope)
+            _ -> Error(Corrupt)
+          }
         False -> Error(BindingMismatch)
       }
     }
@@ -614,7 +689,7 @@ fn inventory(
   case
     list.drop(rows, config.limits.rows) == [] && reserved <= config.limits.bytes
   {
-    True -> Ok(rows)
+    True -> Ok(Inventory(mode, rows))
     False -> Error(Corrupt)
   }
 }
@@ -691,10 +766,46 @@ fn transact(
     sqlight.exec("BEGIN IMMEDIATE", connection) |> sql_error,
   )
   let outcome = {
-    use rows <- result.try(inventory(connection, config))
-    execute(connection, config, rows, command)
+    use inventory <- result.try(inventory(connection, config))
+    execute(connection, config, inventory, command)
   }
   complete_transaction(connection, outcome)
+}
+
+// Metadata shares the same transaction and preflight as effect claims. A second
+// open cannot admit or claim using a cached Open value after this seal commits.
+fn metadata_transaction(
+  connection: sqlight.Connection,
+  config: Config,
+  command: MetadataCommand,
+) -> Result(ScopeMode, Error) {
+  use Nil <- result.try(
+    sqlight.exec("BEGIN IMMEDIATE", connection) |> sql_error,
+  )
+  let outcome = {
+    use inventory <- result.try(inventory(connection, config))
+    case command, inventory.mode {
+      ObserveMode, mode -> Ok(mode)
+      SealScope, SealedScope -> Ok(SealedScope)
+      SealScope, Open -> {
+        use Nil <- result.try(phase_change(
+          connection,
+          sql.seal_workspace(),
+          fn(row) { row.mode },
+          1,
+        ))
+        Ok(SealedScope)
+      }
+    }
+  }
+  complete_transaction(connection, outcome)
+}
+
+fn require_open(mode: ScopeMode) -> Result(Nil, Error) {
+  case mode {
+    Open -> Ok(Nil)
+    SealedScope -> Error(Sealed)
+  }
 }
 
 fn command_input(command: Command) -> Validated {
@@ -711,14 +822,17 @@ fn command_input(command: Command) -> Validated {
 fn execute(
   connection: sqlight.Connection,
   config: Config,
-  rows: List(sql.WorkspaceHeaders),
+  inventory: Inventory,
   command: Command,
 ) -> Result(Answer, Error) {
   let input = command_input(command)
-  case list.find(rows, fn(row) { row.id == input.id }) {
+  case list.find(inventory.rows, fn(row) { row.id == input.id }) {
     Error(_) -> {
       case command {
-        Admit(_) -> insert(connection, config, rows, input)
+        Admit(_) -> {
+          use Nil <- result.try(require_open(inventory.mode))
+          insert(connection, config, inventory.rows, input)
+        }
         Inspect(_)
         | TakeClaim(_)
         | Complete(_, _)
@@ -753,7 +867,7 @@ fn execute(
           }
         }
       })
-      transition(connection, row, status, command)
+      transition(connection, inventory.mode, row, status, command)
     }
   }
 }
@@ -797,12 +911,14 @@ fn insert(
 
 fn transition(
   connection: sqlight.Connection,
+  mode: ScopeMode,
   row: sql.WorkspaceHeaders,
   status: Status,
   command: Command,
 ) -> Result(Answer, Error) {
   case command, status {
     TakeClaim(_), Accepted -> {
+      use Nil <- result.try(require_open(mode))
       use Nil <- result.try(phase_change(
         connection,
         sql.claim_workspace(row.id),
