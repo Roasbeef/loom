@@ -1035,6 +1035,7 @@ fn absolute(path: String) -> String {
 fn settings_at(test_root: String) -> serve.Settings {
   serve.Settings(
     peer_directory: None,
+    first_prompt: None,
     codemode_sockets: None,
     secrets: secret.env(),
     secret_failures: [],

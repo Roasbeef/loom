@@ -378,6 +378,10 @@ pub type Options {
     /// Where the blocks a `block_summaries` read found no summary for are
     /// sent to be summarized on demand (protocol 050). `None` asks nothing.
     summary_demand: Option(fn(List(#(String, Int))) -> Nil),
+    /// Told the text of the first human prompt this hub accepts on the main
+    /// strand, once (`protocol-change/067`). The daemon fills it with the
+    /// catalogue's subtitle write; a host with no catalogue passes `None`.
+    first_prompt: Option(fn(String) -> Nil),
   )
 }
 
@@ -434,6 +438,10 @@ type State {
     context: Option(fn(String) -> Result(JsonValue, String)),
     /// On-demand summarization of blocks a read found unsummarized.
     summary_demand: Option(fn(List(#(String, Int))) -> Nil),
+    // The report of the first accepted main-strand prompt, until it is made.
+    // `None` is both a host with no catalogue and a report already sent, so
+    // the check on the hot path is one pattern match.
+    first_prompt: Option(fn(String) -> Nil),
     delivery: Delivery,
     health: Health,
     admission: Admission,
@@ -513,6 +521,7 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     live_jobs: None,
     context: None,
     summary_demand: None,
+    first_prompt: None,
   )
 }
 
@@ -549,6 +558,25 @@ pub fn with_summary_demand(
   demand: fn(List(#(String, Int))) -> Nil,
 ) -> Options {
   Options(..options, summary_demand: Some(demand))
+}
+
+/// Supplies the report of the session's first accepted human prompt, which the
+/// daemon turns into the catalogue's subtitle (`protocol-change/067`).
+///
+/// The hub calls it at most once, in its own process and without waiting, with
+/// the prompt's first text block exactly as the person wrote it. What becomes
+/// of the text is the callee's: the hub neither trims nor judges it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_first_prompt(options, fn(text) { manager.seed_subtitle(registry, id, text) })
+/// ```
+pub fn with_first_prompt(
+  options: Options,
+  report: fn(String) -> Nil,
+) -> Options {
+  Options(..options, first_prompt: Some(report))
 }
 
 /// Supplies the authenticated session directory administration door.
@@ -918,6 +946,10 @@ type Held {
     /// drain time would credit whoever happens to be attached when the
     /// strand goes idle, which is the wrong human.
     prompt: AgentMessage,
+    /// The same message as the person typed it, before a skill expansion
+    /// rewrote it. The subtitle is derived from this (protocol-change/067),
+    /// so a `/skill` first prompt is not subtitled with the skill's body.
+    typed: AgentMessage,
     /// Where a drain *failure* is reported. Not where the entry goes: a
     /// successful drain reaches every terminal, submitter included, as
     /// an ordinary notice. A submitter that has detached by then is an
@@ -1040,6 +1072,7 @@ fn start_with_delivery(
         live_jobs: options.live_jobs,
         context: options.context,
         summary_demand: options.summary_demand,
+        first_prompt: options.first_prompt,
         delivery:,
         health: Reading,
         admission: Accepting,
@@ -5185,7 +5218,7 @@ fn prompt_message(
   prompt: AgentMessage,
 ) -> State {
   use <- known_strand(state, connection, id, strand)
-  use prompt <- or_reply(
+  use expanded <- or_reply(
     skills.expand_message(state.skills, prompt)
       |> result.map_error(fn(reason) { #(protocol.code_bad_request, reason) }),
     state,
@@ -5197,11 +5230,11 @@ fn prompt_message(
   // normal prompt must join existing custody even when the runtime is already
   // idle, or it would bypass a held steer and the ordinary FIFO behind it.
   use <- bool.lazy_guard(dict.has_key(state.held, strand), fn() {
-    hold_prompt(state, connection, id, strand, prompt, AfterTurn)
+    hold_prompt(state, connection, id, strand, expanded, prompt, AfterTurn)
     |> pull_and_broadcast
   })
   let target = api.on_strand(state.runtime, strand)
-  let admitted = api.prompt(target, [prompt])
+  let admitted = api.prompt(target, [expanded])
   case admitted {
     // A busy strand is a scheduling question, not a conflict. Ordinary
     // prompts and follow-ups mean "next turn", and holding them lets two
@@ -5210,7 +5243,7 @@ fn prompt_message(
     // commits under the origin recorded now rather than one resolved at
     // drain time.
     Error(api.AcceptRejected(reason: acceptance.StrandBusy)) ->
-      hold_prompt(state, connection, id, strand, prompt, AfterTurn)
+      hold_prompt(state, connection, id, strand, expanded, prompt, AfterTurn)
 
     Ok(_) | Error(_) -> {
       use _op <- or_reply(
@@ -5219,6 +5252,10 @@ fn prompt_message(
         connection,
         id,
       )
+
+      // The subtitle comes from what the person typed, before a skill
+      // expansion rewrote it, and only once the runtime has accepted it.
+      let state = report_first_prompt(state, strand, prompt)
       reply_with_matched(state, connection, id, fn(emit) {
         case emit.event {
           protocol.EntryEvent(record: EntryRecord(strand: on, entry:)) ->
@@ -5242,6 +5279,7 @@ fn hold_prompt(
   id: Int,
   strand: String,
   prompt: AgentMessage,
+  typed: AgentMessage,
   order: InputOrder,
 ) -> State {
   use author <- or_reply(input_author(state, connection), state, connection, id)
@@ -5278,6 +5316,7 @@ fn hold_prompt(
         Held(
           id: int.to_string(connection) <> ":" <> int.to_string(state.next_held),
           prompt:,
+          typed:,
           submitter: connection,
           request: id,
           order:,
@@ -5637,7 +5676,8 @@ fn edit_queued_input(
       ])
     other -> other
   }
-  let updated = Held(..item, prompt:, revision: item.revision + 1)
+  let updated =
+    Held(..item, prompt:, typed: prompt, revision: item.revision + 1)
   use _board <- or_reply(queued_board(strand, updated), state, connection, id)
   let queue =
     held_items(state, strand)
@@ -5719,7 +5759,13 @@ fn admit_held(
   case api.prompt(target, list.map(batch, fn(item) { item.prompt })) {
     // Original queue acknowledgements already transferred custody. Each
     // admitted message now reaches the peers through ordinary notices.
-    Ok(_op) -> put_held(state, strand, rest)
+    Ok(_op) ->
+      case batch {
+        [first, ..] ->
+          report_first_prompt(state, strand, first.typed)
+          |> put_held(strand, rest)
+        [] -> put_held(state, strand, rest)
+      }
 
     // Another admission can win between the register read and this call.
     // Keep both the messages and their drain policy for the next retirement.
@@ -5742,6 +5788,42 @@ fn admit_held(
       })
       drain_strand(put_held(state, strand, rest), strand)
     }
+  }
+}
+
+// The strand a session's own conversation runs on, which is the one whose first
+// prompt names the session.
+const main_strand = "main"
+
+// Tells the host, once, what the first accepted human prompt on the main
+// strand said. The report is cleared before it is made, so a prompt accepted
+// while the callee is slow cannot be reported twice, and a message with no
+// text block (an image alone) leaves the report waiting for one that has text.
+// The callee returns at once: the catalogue write runs on the daemon's
+// registry, never on this hub's turn.
+fn report_first_prompt(
+  state: State,
+  strand: String,
+  prompt: AgentMessage,
+) -> State {
+  case state.first_prompt, strand == main_strand, prompt {
+    Some(report), True, message.UserMessage(content:, ..) ->
+      case list.find_map(content, first_text) {
+        Ok(text) -> {
+          report(text)
+          State(..state, first_prompt: None)
+        }
+        Error(Nil) -> state
+      }
+    Some(_), False, _ | None, _, _ -> state
+    Some(_), True, _ -> state
+  }
+}
+
+fn first_text(block: UserBlock) -> Result(String, Nil) {
+  case block {
+    message.UserText(text:, ..) -> Ok(text)
+    message.UserImage(..) -> Error(Nil)
   }
 }
 
@@ -5862,14 +5944,15 @@ fn steer(
   text: String,
 ) -> State {
   use <- known_strand(state, connection, id, strand)
+  let typed = user_message(state, connection, text)
   use message <- or_reply(
-    skills.expand_message(state.skills, user_message(state, connection, text))
+    skills.expand_message(state.skills, typed)
       |> result.map_error(fn(reason) { #(protocol.code_bad_request, reason) }),
     state,
     connection,
     id,
   )
-  hold_prompt(state, connection, id, strand, message, SteerNext)
+  hold_prompt(state, connection, id, strand, message, typed, SteerNext)
 }
 
 // Follow-up is a queued turn. It belongs outside the current operation so

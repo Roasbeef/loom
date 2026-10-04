@@ -347,9 +347,30 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   page's own session with a claim from `server.claim_enrollment` that lives
   `invites.claim_ttl_ms`. A refusal that made nothing gives the reservation
   back and an unknown outcome keeps it. The socket's admission is split:
-  `operator_accepts` drops a click at or beneath `component.invite_path`,
-  `owner_accepts` admits it, and the observer's socket admits neither.
-  `start_page` takes the `Role`.
+  `operator_accepts` drops an event at or beneath `component.invite_path` or
+  `component.rename_path`, `owner_accepts` admits them, and the observer's
+  socket admits neither. `start_page` takes the `Role`.
+  `rename_for(standing, open, epoch, target, name)` is the owner page's rename
+  (protocol-change/067): the page open, the ceiling operating, the credential
+  authenticating as the page's principal and that principal the owner, `target`
+  a canonical identity, the trimmed name through `catalogue.display_name`, and
+  then `manager.rename` (owner and epoch again, and the catalogue refuses an
+  identity it does not hold). Every non-owner standing, forged identity and
+  unknown session is `renames.NotOwner`; a bad name is `InvalidName`.
+  `rename_task` runs it in a weft run linked to the page's runtime, as
+  `resume_task` does, and `deliver` is its last act. The session page passes the
+  attachment's own session id; the home passes the row's, and is handed the
+  capability only for the owner on an operating page
+  (`home_rename_capability`), with `home_owner_accepts` admitting a submit
+  beneath `home.table_path` for that page alone.
+- **A session's subtitle.** The hub reports the first accepted human prompt on
+  the main strand through `Options.first_prompt` (`gateway.with_first_prompt`,
+  filled from `serve.Settings.first_prompt`, which `daemon/main` sets):
+  from the direct admission in `prompt_message` and from `admit_held` for a held
+  prompt or steer, once, as typed before skill expansion, and never for a
+  message with no text. The callee is `manager.seed_subtitle`, a cast to the
+  registry that calls `catalogue.seed_subtitle` in its own turn. `server.view_json`
+  adds `subtitle` only when present (protocol-change/067).
 - `daemon/ui_relay`: the page's stand-in for a session socket. `start`
   returns before the attach, which runs as the relay's first message and
   answers on the component's `opened` subject, so a slow gateway cannot

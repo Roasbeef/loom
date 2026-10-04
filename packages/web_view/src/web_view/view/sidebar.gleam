@@ -271,7 +271,10 @@ fn group(
 // daemon to resume it, the words "opening" while its resume is out, and text
 // otherwise, including for a session the daemon will not resume from a page.
 // Only the session on screen draws strand bars, between its name and its
-// residency.
+// residency. A session with a subtitle draws it in a quiet line under its name
+// (protocol-change/067), as a text node: the subtitle is a person's own prompt,
+// so it is never an attribute, a class or a title, and a row without one is
+// the two words it always was.
 fn entry(
   entry: Entry,
   current: String,
@@ -289,6 +292,14 @@ fn entry(
     html.span([attribute.class("session-name")], [
       html.text(sessions.label(entry)),
     ])
+  let lead = case entry.subtitle {
+    Some(subtitle) ->
+      html.span([attribute.class("session-text")], [
+        name,
+        html.span([attribute.class("session-subtitle")], [html.text(subtitle)]),
+      ])
+    None -> name
+  }
   let residency =
     html.span([attribute.class("residency"), attribute.class(residency.0)], [
       html.span([attribute.class("glyph"), attribute.aria_hidden(True)], [
@@ -296,7 +307,7 @@ fn entry(
       ]),
       html.text(residency.2),
     ])
-  let words = [name, residency]
+  let words = [lead, residency]
 
   case entry.id == current, entry.residency {
     True, _ ->
@@ -306,7 +317,7 @@ fn entry(
           attribute.class("current"),
           attribute.attribute("aria-current", "true"),
         ],
-        [name, ..list.append(dots(bars), [residency])],
+        [lead, ..list.append(dots(bars), [residency])],
       )
     False, Live ->
       html.li([attribute.class("session")], [

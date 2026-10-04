@@ -19,7 +19,14 @@ import tui/session_selector
 import tui/workspace
 
 fn row(id: String) -> protocol.Session {
-  protocol.Session(id, "/work", "Session " <> id, 0, protocol.Saved)
+  protocol.Session(
+    id,
+    "/work",
+    "Session " <> id,
+    0,
+    protocol.Saved,
+    option.None,
+  )
 }
 
 fn page() -> session_selector.State {

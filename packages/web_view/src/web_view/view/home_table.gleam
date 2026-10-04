@@ -41,17 +41,44 @@
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/string
-import lustre/attribute
+import lustre/attribute.{type Attribute}
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
+import web_view/renames.{type Control}
 import web_view/sessions.{
   type Activity, type Entry, type Group, Blocked, Idle, Live, NeedsYou, Saved,
   Working,
 }
 import web_view/view/heading
 import web_view/view/resume.{type Resume}
+
+/// What the table offers for renaming a session (protocol-change/067).
+pub type Rename(message) {
+  /// No control is drawn: the page's principal is not the daemon's owner, or
+  /// the page was not minted to operate.
+  Never
+
+  /// Each row has a Rename button, and the one row named by `open` has its form
+  /// in place of its words. `edit` is the message the button sends given the
+  /// row's identity, `cancel` is the form's Cancel button, and `submit` builds
+  /// the form's submit handler for a row's identity. The identities are the
+  /// catalogue's, drawn into the tree by the server, so a browser's event never
+  /// names a session.
+  Offered(
+    edit: fn(String) -> message,
+    cancel: message,
+    submit: fn(String) -> Attribute(message),
+    open: Option(Open),
+  )
+}
+
+/// The row whose rename form is open, and where the control stands.
+pub type Open {
+  Open(session: String, control: Control)
+}
 
 /// The centre column's content: a heading, and one list for each group, or a
 /// line that says there is nothing to list. `activity` is what the daemon last
@@ -62,7 +89,9 @@ import web_view/view/resume.{type Resume}
 /// memoized on the groups, the activity, the instant and the session whose
 /// resume is out, so a refresh that brings back what is drawn diffs nothing;
 /// `open` and the resume's `press` are not part of the key, so a caller passes
-/// the same functions every time, as a constructor is.
+/// the same functions every time, as a constructor is. `rename` is what the page
+/// offers for renaming a row (`Rename`); the row whose form is open is part of
+/// the key, and so is the control's state.
 ///
 /// ## Examples
 ///
@@ -75,12 +104,14 @@ pub fn view(
   now: Int,
   open: fn(String) -> message,
   resume: Resume(message),
+  rename: Rename(message),
 ) -> Element(message) {
   use <- element.memo([
     element.ref(groups),
     element.ref(activity),
     element.ref(now),
     element.ref(resume.pending(resume)),
+    element.ref(open_form(rename)),
   ])
   html.section([attribute.class("home-sessions")], [
     html.h2([attribute.class("home-heading")], [html.text("Sessions")]),
@@ -92,7 +123,7 @@ pub fn view(
           ),
         ]),
       ]
-      [_, ..] -> list.map(groups, group(_, activity, now, open, resume))
+      [_, ..] -> list.map(groups, group(_, activity, now, open, resume, rename))
     }
   ])
 }
@@ -104,6 +135,7 @@ fn group(
   now: Int,
   open: fn(String) -> message,
   resume: Resume(message),
+  rename: Rename(message),
 ) -> Element(message) {
   html.section([attribute.class("home-group")], [
     html.h3(
@@ -118,7 +150,7 @@ fn group(
     html.ul(
       [attribute.class("home-list")],
       list.map(group.entries, fn(entry) {
-        row(entry, dict.get(activity, entry.id), now, open, resume)
+        row(entry, dict.get(activity, entry.id), now, open, resume, rename)
       }),
     ),
   ])
@@ -161,14 +193,27 @@ fn activity_class(activity: Activity) -> String {
   }
 }
 
+// The form that is open, for the memo's key: the page's own state, which is
+// the row's identity and the control's word.
+fn open_form(rename: Rename(message)) -> Option(Open) {
+  case rename {
+    Never -> None
+    Offered(open:, ..) -> open
+  }
+}
+
 // One session's list item. The whole item is one button when a press can open
-// it and one block of text when not, so the words read the same either way.
+// it and one block of text when not, so the words read the same either way. On
+// a page that may rename, a second button follows it, after the item so that the
+// item's own path is the same on every page; the row whose form is open is the
+// form and nothing else.
 fn row(
   entry: Entry,
   activity: Result(Activity, Nil),
   now: Int,
   open: fn(String) -> message,
   resume: Resume(message),
+  rename: Rename(message),
 ) -> Element(message) {
   let kind = resume.kind(resume, entry)
   let standing = standing(entry, activity, kind)
@@ -183,29 +228,144 @@ fn row(
       html.span([attribute.class("home-sub")], quiet_line(standing, entry, now)),
     ]),
   ]
-  html.li([attribute.class("home-row"), attribute.class(standing.class)], [
-    case entry.residency, kind {
-      Live, _ -> pressable("Open this session", open(entry.id), body)
-      Saved, resume.Button(press:) ->
-        pressable("Resume this session", press, body)
-      Saved, _ | Blocked, _ -> html.div([attribute.class("home-item")], body)
-    },
-  ])
+  let item = case entry.residency, kind {
+    Live, _ -> pressable("Open this session", open(entry.id), body)
+    Saved, resume.Button(press:) ->
+      pressable("Resume this session", press, body)
+    Saved, _ | Blocked, _ -> html.div([attribute.class("home-item")], body)
+  }
+  case rename {
+    Never ->
+      html.li([attribute.class("home-row"), attribute.class(standing.class)], [
+        item,
+      ])
+    Offered(open: Some(Open(session:, control:)), cancel:, submit:, ..)
+      if session == entry.id
+    ->
+      html.li(
+        [
+          attribute.class("home-row"),
+          attribute.class(standing.class),
+          attribute.class("editing"),
+        ],
+        [editing(entry, control, cancel, submit(entry.id))],
+      )
+    Offered(edit:, ..) ->
+      html.li(
+        [
+          attribute.class("home-row"),
+          attribute.class(standing.class),
+          attribute.class("renamable"),
+        ],
+        [
+          item,
+          html.button(
+            [
+              attribute.type_("button"),
+              attribute.class("home-rename"),
+              attribute.title("Rename this session"),
+              event.on_click(edit(entry.id)),
+            ],
+            [html.text("Rename")],
+          ),
+        ],
+      )
+  }
 }
 
-// The quiet line under the name: the standing's words joined by a middle dot,
-// then the age. A running session's age says it was created; a saved one's is
-// the bare age, since "saved" already says what it is.
+// A row's rename form, in place of the row's words. The session's current name
+// is a text node in the lead, and never the field's `value` or `placeholder`,
+// which are attributes. The field is uncontrolled, and the one submit sends its
+// text under the name `text`; Cancel is a button that closes the form. While a
+// request is out the buttons are disabled, though the handlers stay, because the
+// component is the layer that ignores a second one. A refusal is in the reason's
+// fixed words.
+fn editing(
+  entry: Entry,
+  control: Control,
+  cancel: message,
+  submit: Attribute(message),
+) -> Element(message) {
+  let asking = case control {
+    renames.Asking -> [attribute.disabled(True)]
+    renames.Withheld | renames.Ready | renames.Done | renames.Refused(..) -> []
+  }
+  html.form(
+    [
+      attribute.class("home-rename-form"),
+      attribute.aria_label("Rename this session"),
+      submit,
+    ],
+    [
+      html.p([attribute.class("home-rename-lead")], [
+        html.text("Rename " <> sessions.label(entry)),
+      ]),
+      html.div([attribute.class("home-rename-fields")], [
+        html.input([
+          attribute.type_("text"),
+          attribute.name("text"),
+          attribute.aria_label("New name"),
+          attribute.placeholder("New name"),
+          attribute.attribute("maxlength", "256"),
+          attribute.attribute("autocomplete", "off"),
+        ]),
+        html.button([attribute.type_("submit"), ..asking], [
+          html.text("Rename"),
+        ]),
+        html.button(
+          [attribute.type_("button"), event.on_click(cancel), ..asking],
+          [html.text("Cancel")],
+        ),
+      ]),
+      status(control),
+    ],
+  )
+}
+
+// The status line: empty except after a refusal, so the form's children keep
+// their places.
+fn status(control: Control) -> Element(message) {
+  case control {
+    renames.Refused(reason:) ->
+      html.p(
+        [
+          attribute.class("rename-status"),
+          attribute.class("refused"),
+          attribute.role("status"),
+        ],
+        [html.text(renames.reason_words(reason))],
+      )
+    renames.Withheld | renames.Ready | renames.Asking | renames.Done ->
+      html.p([attribute.class("rename-status"), attribute.role("status")], [])
+  }
+}
+
+// The quiet line under the name. A session with a subtitle leads with it, then
+// the standing's words, and says no age: the subtitle is what tells sessions of
+// one workspace apart (protocol-change/067), and the creation time stays in the
+// session's own page. Any other session reads as it always did: the standing's
+// words joined by a middle dot, then the age, where a running session's says it
+// was created and a saved one's is the bare age, since "saved" already says
+// what it is. The subtitle is a person's own prompt, so it is a text node and
+// nothing else.
 fn quiet_line(
   standing: Standing,
   entry: Entry,
   now: Int,
 ) -> List(Element(message)) {
   let lead = string.join(standing.words, " · ")
-  let age = created(entry.created_at, sessions.ago(now, entry.created_at))
-  case entry.residency {
-    Live -> [html.text(lead <> " · created "), age]
-    Saved | Blocked -> [html.text(lead <> " · "), age]
+  case entry.subtitle {
+    Some(subtitle) -> [
+      html.span([attribute.class("home-subtitle")], [html.text(subtitle)]),
+      html.text(" · " <> lead),
+    ]
+    None -> {
+      let age = created(entry.created_at, sessions.ago(now, entry.created_at))
+      case entry.residency {
+        Live -> [html.text(lead <> " · created "), age]
+        Saved | Blocked -> [html.text(lead <> " · "), age]
+      }
+    }
   }
 }
 

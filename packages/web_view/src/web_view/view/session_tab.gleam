@@ -57,12 +57,14 @@ import session_view/session_summary.{
 /// is the operator's goal buttons and Fork form (`view/controls.session`), or
 /// `element.none()` on an observer's page. It is the pane's fourth child,
 /// after the invitation control and not before it, so that adding it moved no
-/// path the socket admits.
+/// path the socket admits. `rename` is the owner's rename control
+/// (`view/rename`), or `element.none()` on any other page, and is the pane's
+/// fifth and last child for the same reason.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // session_tab.view([], "$0.12", component.jobs(model), Some(component.viewers(model)), element.none(), element.none())
+/// // session_tab.view([], "$0.12", component.jobs(model), Some(component.viewers(model)), element.none(), element.none(), element.none())
 /// ```
 pub fn view(
   goal: List(String),
@@ -71,6 +73,7 @@ pub fn view(
   viewers: Option(Viewers),
   share: Element(message),
   controls: Element(message),
+  rename: Element(message),
 ) -> Element(message) {
   html.section(
     [
@@ -83,6 +86,7 @@ pub fn view(
       rows(goal, cost, jobs, viewers),
       share,
       controls,
+      rename,
     ],
   )
 }

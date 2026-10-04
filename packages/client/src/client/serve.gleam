@@ -354,6 +354,10 @@ pub type Settings {
     domain_paths: Option(DomainPaths),
     /// Resident-only peer lookups supplied by the owning daemon.
     peer_directory: Option(peers.Directory),
+    /// Told the first human prompt the session accepts on its main strand,
+    /// once, so the daemon can seed the catalogue's subtitle
+    /// (`protocol-change/067`). `None` for a host with no catalogue.
+    first_prompt: Option(fn(String) -> Nil),
     /// Where code-mode cap sockets are bound: `<state root>/run` for a
     /// daemon-managed session, `None` to bind them under the workspace's
     /// `.codemode`. A field because only the daemon knows its state root,
@@ -1465,6 +1469,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     workspace:,
     domain_paths: None,
     peer_directory: None,
+    first_prompt: None,
     codemode_sockets: None,
     base_policy: admitting_config_mounts(
       base_policy_for(
@@ -4473,6 +4478,7 @@ fn assemble_in(
               |> result.map_error(string.inspect)
             })
             |> hub.with_catalog(hub_catalog)
+            |> with_first_prompt(settings.first_prompt)
             |> hub.with_registry(tool_registry)
             |> hub.with_extension_refusals(extension_refusals)
             |> hub.with_skills(skills)
@@ -7176,6 +7182,17 @@ fn summary_tap(
         blocksummary.live_admission(catalogue, route.provider),
       )
     None -> fn(_spec, _generation) { fn(_event) { Nil } }
+  }
+}
+
+// The report of the session's first prompt, when the host listens for one.
+fn with_first_prompt(
+  options: hub.Options,
+  report: Option(fn(String) -> Nil),
+) -> hub.Options {
+  case report {
+    Some(report) -> hub.with_first_prompt(options, report)
+    None -> options
   }
 }
 

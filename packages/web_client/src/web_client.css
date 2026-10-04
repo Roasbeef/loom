@@ -399,6 +399,8 @@
   li.session{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:3px 7px;border:1px solid transparent;border-radius:6px;font-size:13px;}
   li.session.current{background:color-mix(in srgb,var(--color-current) 10%,var(--color-bg-raised));border-color:color-mix(in srgb,var(--color-current) 28%,transparent);}
   .session-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .session-text{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px;}
+  .session-subtitle{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-fg-quiet);font:11px/1.4 var(--font-sans);}
   .residency{flex:0 0 auto;color:var(--color-fg-quiet);font:11px/1.4 var(--font-sans);}
   .residency .glyph{margin-right:4px;}
   .residency.live .glyph{color:var(--color-current);}
@@ -460,6 +462,18 @@
   .home-name{font:500 14px/1.4 var(--font-sans);overflow-wrap:anywhere;}
   .home-sub{font:12px/1.4 var(--font-sans);color:var(--color-fg-quiet);overflow-wrap:anywhere;}
   .home-row.needs-you .home-sub{color:var(--color-signal-text);}
+  /* The owner's rename button sits after the row's own button and is placed
+     over its right side, beside the chevron, so the row's own path and its
+     whole-row target are the same on every page. */
+  li.home-row.renamable{position:relative;}
+  li.home-row.renamable .home-text{padding-right:84px;}
+  .home-rename{position:absolute;top:50%;right:34px;transform:translateY(-50%);margin:0;padding:2px 8px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);cursor:pointer;}
+  .home-rename:hover{background:var(--color-bg-raised);color:var(--color-fg);}
+  .home-rename:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  form.home-rename-form{display:flex;flex-direction:column;gap:6px;padding:8px 10px;}
+  .home-rename-lead{margin:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  .home-rename-fields{display:flex;flex-wrap:wrap;gap:6px;}
+  .home-rename-fields input{flex:1 1 14em;min-width:0;background:var(--color-bg);color:var(--color-fg);border:1px solid var(--color-divider);border-radius:4px;padding:5px 8px;font:13px/1.4 var(--font-sans);}
   .home-chevron{flex:0 0 auto;color:var(--color-fg-quiet);font-size:16px;line-height:1;}
   .home-open:hover .home-chevron{color:var(--color-fg);}
   .home-notice{margin:0 0 12px 0;padding:8px 12px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font-size:13px;}
@@ -770,6 +784,8 @@
   button.share-operate{border-color:var(--color-signal);color:var(--color-signal-text);}
   button.share-observe:disabled,button.share-operate:disabled{opacity:.45;cursor:default;}
   .share-status{margin:6px 0 0 0;min-height:1.4em;color:var(--color-danger-text);}
+  .rename-status{margin:6px 0 0 0;min-height:1.4em;color:var(--color-fg-quiet);font-size:12px;}
+  .rename-status.refused{color:var(--color-danger-text);}
   .share-field{margin:6px 0;}
   .share-label{display:block;color:var(--color-fg-quiet);font-size:12px;}
   loom-copy{display:block;}

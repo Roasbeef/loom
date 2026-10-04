@@ -2220,7 +2220,18 @@ pub fn view_json(view: manager.View) -> JsonValue {
     #("name", json.String(view.registration.name)),
     #("created_at", json.Int(view.registration.created_at)),
     #("status", status_json(view.status)),
+    ..subtitle_field(view.registration.subtitle)
   ])
+}
+
+// The optional `subtitle` of `protocol-change/067`. A session with none omits
+// the field, so a frame for it is byte-for-byte what an older daemon sent, and
+// a client that does not know the field reads the rest as before.
+fn subtitle_field(subtitle: Option(String)) -> List(#(String, JsonValue)) {
+  case subtitle {
+    Some(text) -> [#("subtitle", json.String(text))]
+    None -> []
+  }
 }
 
 fn status_json(status) {

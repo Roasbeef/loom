@@ -67,6 +67,7 @@ pub fn settings() -> serve.Settings {
     )
   serve.Settings(
     peer_directory: None,
+    first_prompt: None,
     codemode_sockets: None,
     secrets: secret.env(),
     secret_failures: [],
