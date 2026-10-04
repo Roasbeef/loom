@@ -5,7 +5,7 @@ spec ProductSafety observes mProductCustody, mProductAdmission, mProductCleared,
   mRetired, mProductChildCandidate, mProductResourceIntent, mProductResourceCreated,
   mProductClaimRevoked, mProductLease, mProductResourceObserved, mProductCompleted, mProductOwnerStored,
   mProductReceipt, mProductFinalStored, mProductFinalRecovered,
-  mProductLaunchObservation, mProductCleanupObservation {
+  mProductLaunchObservation, mProductCleanupObservation, mCompileBeforeCommitted {
   var custody: map[int, tService];
   var cleared: map[int, tOffer];
   var native: map[int, tRequest];
@@ -72,7 +72,15 @@ spec ProductSafety observes mProductCustody, mProductAdmission, mProductCleared,
     }
     on mProductCompleted do (p: tProductResult) {
       assert p.service == custody[p.service.id] && p.kind == p.service.id, "outer completion changed service type or identity";
-      assert native[p.service.id].key in nativeStored, "outer completion preceded native owner storage";
+      if (p.provenance == NativeCompletion) {
+        assert native[p.service.id].key in nativeStored, "outer completion preceded native owner storage";
+      }
+      if (p.service.id in completed) { assert completed[p.service.id] == p, "retained outer completion changed"; }
+      completed[p.service.id] = p;
+    }
+    on mCompileBeforeCommitted do (p: tProductResult) {
+      assert p.service == custody[p.service.id] && p.provenance == BeforeNativeFailure && p.artifact == 0,
+        "before-native completion changed service identity";
       completed[p.service.id] = p;
     }
     on mProductOwnerStored do (p: tProductResult) {

@@ -15,6 +15,8 @@ machine ProductOwner {
   var children: map[tAddress, tAddress];
   var finalResult: int;
   var resourceObservation: map[int, tResourceView];
+  var deferredAssociation: tProductAdmission;
+  var deferredSubmit: tRequest;
   start state Init {
     entry (p: (driver: machine, service: machine, nativeOwner: machine, mode: tProductMode)) {
       driver = p.driver; service = p.service; nativeOwner = p.nativeOwner; mode = p.mode;
@@ -114,7 +116,11 @@ machine ProductOwner {
         announce mProductTime, elapsed;
         announce mProductControlComplete, (offer = candidate, native = n);
       }
-      send nativeOwner, ePrepare, n;
+      if (mode == CompileSubmitUnassociated) {
+        deferredSubmit = n;
+        // A canonical Request/Prepared without a native row is not admission.
+        send service, eProductNativeAdmission, (prepared = (offer = candidate, native = n), evidence = default(tReply));
+      } else { send nativeOwner, ePrepare, n; }
     }
     on eProductView do (v: tReply) {
       var foreign: tRequest;
@@ -124,16 +130,17 @@ machine ProductOwner {
           nativeRows[v.request.key.execution] == v.request) {
         if (!(v.request.key.execution in notified)) {
           notified += (v.request.key.execution);
-          send service, eProductNativeAdmission, (offer = offers[v.request.key.execution], native = v.request);
+          deferredAssociation = (prepared = (offer = offers[v.request.key.execution], native = v.request), evidence = v);
+          if (mode != CompileSubmitUnassociated) { send service, eProductNativeAdmission, deferredAssociation; }
         }
         // This directed boundary input uses the existing changed-digest class.
         // FIFO from this sender places it after association and before the
         // genuine terminal, so the control must exercise the real refusal.
         if (mode == ProductForeignNativeTerminal && v.request.key.execution == 1 && v.row.phase == Running) {
           foreign = v.request; foreign.digest = 2;
-          send service, eProductNativeTerminal, foreign;
+          send service, eProductNativeTerminal, terminalRead(foreign, v.row);
         }
-        if (v.row.phase == Terminal) { send service, eProductNativeTerminal, v.request; }
+        if (v.row.phase == Terminal) { send service, eProductNativeTerminal, terminalRead(v.request, v.row); }
       }
     }
     on eProductCompleted do (p: tProductResult) {
@@ -141,13 +148,18 @@ machine ProductOwner {
       if (!(p.service.id in completions)) {
         completions[p.service.id] = p;
         announce mProductOwnerStored, p;
-        send service, eProductReceipt, p;
+        if (mode != CompileIndependentReceipts && mode != CompileFailLateReady) { send service, eProductReceipt, p; }
         if (p.service.id == 2 && mode != ProductChildOnlyRecovery) {
           finalResult = 1;
           announce mProductFinalStored, finalResult;
         }
         send driver, eProductOuterDone, p;
       }
+    }
+    on eCompileContinueSubmit do { send nativeOwner, ePrepare, deferredSubmit; }
+    on eCompileReleaseAssociation do { send service, eProductNativeAdmission, deferredAssociation; }
+    on eCompileAcknowledge do (id: int) {
+      if (id in completions) { send service, eProductReceipt, completions[id]; }
     }
     on eProductLoseLaunch do {
       announce mProductLaunchObservation, (native = nativeRows[2].key, neverLaunched = false);
@@ -194,6 +206,11 @@ machine ProductOwner {
       // The abstract atomic stores survive. Recovery does not rerun a tool.
       send nativeOwner, eOwnerCrash;
     }
+  }
+  fun terminalRead(n: tRequest, row: tRow): tProductTerminal {
+    return (native = n, evidence = row,
+      payload = (request = n, native = (key = n.key, boot = row.launchBoot),
+        digest = row.terminalDigest, outcome = row.outcome));
   }
   fun clearOffer(id: int) {
     var o: tOffer;

@@ -9,6 +9,11 @@ import re
 from runner import ROOT, check_case, compile_model, record, snapshot_model
 
 PROBES = {
+    "tcProbeCompileFailPreparationLateReady": "witness: original Preparing failure fenced late Ready and recovered exact acknowledged error",
+    "tcProbeCompileReadySubmitUnassociated": "witness: Request-only and Ready in-flight Submit refused Before then exact native association settled",
+    "tcProbeCompileTerminalPayloadPending": "witness: recovered terminal payload refused before reducer commit then exact native terminal settled",
+    "tcProbeCompileIndependentReceipts": "witness: outer ACK cleanup native receipt and retirement retained independently",
+
     "tcProbeProductForeignNativeTerminal": "witness: same-key foreign native terminal refused before genuine completion",
     "tcProbeProductForeignArtifact": "witness: foreign issued artifact refused before launch preparation",
     "tcProbeProductBudgetReduced": "witness: ready remaining 150000 selected immutable wall 100",
