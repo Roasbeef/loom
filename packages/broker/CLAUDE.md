@@ -1,5 +1,37 @@
 # broker
 
+## Exact command offers
+
+`command.CommandOffer` is an opaque bounded proposal beneath the complete
+`core/command.CommandRef`. Its ordered `RegionMapping` list uses closed
+Workspace, Toolchain, Build, Artifact, Channel and Scratch purposes with
+exact absolute roots. `CommandData` retains argv, environment, cwd and every
+`policy.SandboxPolicy` field. An offer grants no authority. The owner still
+has to derive its closed compile or launch expectation from retained service
+input, trusted enrollment and independently admitted resources before
+clearance. This codec performs no enrollment, resource preparation or launch.
+
+`command.offer` caps argv at 128, environment pairs at 64 and every other
+list at 128. Writable, readable, mount and scratch access paths also share a
+128-path bound. It checks counts by bounded prefix traversal and string
+bytes before converting policy trees, then counts exact canonical encoded
+bytes and nodes before encoding. It refuses duplicate environment names,
+duplicate mappings, NULs, noncanonical absolute paths and invalid complete
+policies without rewriting any data. Path validation is lexical; trusted
+executor provisioning still owns filesystem canonicalization.
+
+`command.decode` applies `core/bounded_msgpack.decode` before term decoding:
+256 KiB total, 2,048 nodes, depth 16, 128 array elements/map entries, 8 KiB
+strings and 128 KiB binaries. Policy is an embedded MessagePack value decoded
+through `policy.from_msgpack` and validated through the same constructor.
+The complete reference occupies a canonical core JSON string bounded to
+8 KiB; its JSON parser and closed identity decoder validate that header
+separately. The outer node count treats the header as one string.
+Re-encoding must reproduce the entire original frame, including the header,
+so alternate encodings and trailing data are refused. These are logical data
+bounds, not a resident-memory claim. SHA-256 remains at existing owner and
+executor boundaries over the returned canonical bytes.
+
 ## Dispatch origin
 
 `dispatch.Dispatch.context` carries `CallContext(operation, step, origin)` from
