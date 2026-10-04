@@ -29,7 +29,7 @@ bash protocol/models/remote-execution/check.sh
 
 The gate compiles a source snapshot, checks every declared normal case,
 requires every `tcProbe*` to produce its exact intended assertion, and checks
-all fourteen mutations. It exits zero only if every check succeeds. Compiler
+all twenty-seven mutations. It exits zero only if every check succeeds. Compiler
 errors, timeout, memory exhaustion, max-step exhaustion, unrelated assertions,
 missing test cases and probes without witnesses fail the gate. Safety cases
 must explore the entire requested schedule count. Each invocation has separate
@@ -165,7 +165,9 @@ expected assertion cannot conceal a safety failure in the normal cases.
 
 ## Mutation witnesses
 
-`mutate.py` copies the model before editing one source site. It first requires
+`mutate.py` copies the model before applying each specified mutation. Most
+mutations change one site; the recovery-routing control changes three exact
+sites while preserving the existing path instrumentation. It first requires
 the selected unmodified case to pass, then compiles the mutant and requires
 the intended monitor assertion. Monitor sources are unchanged. It never edits
 or restores live model sources or git state.
@@ -284,8 +286,9 @@ compaction path is tested code, not a property checked by this P model.
 [PRODUCT.md](PRODUCT.md) records the additive ProductSystem actors, finite
 classes, safety histories, eight normal cases, nine positive controls and
 nine product mutations. Existing System actors, native monitors and test
-sources are preserved byte for byte. The local runner discovers all 36 test
-cases, and the mutation runner now checks fourteen mutations in total.
+sources are preserved byte for byte. The original product snapshot had 36 cases and fourteen mutations. The
+preparation extension below adds directed cases and controls; the current
+runner discovers 71 cases and checks twenty-seven mutations in total.
 Source manifests beside the immutable snapshots record SHA-256 hashes.
 
 ProductSystem joins the existing Owner, Executor and Helper with ProductOwner
@@ -293,3 +296,100 @@ and ProductExecutor. Actual native start, terminal and retirement remain events
 of those original actors. Outer completion and its owner receipt use separate
 product facts. These checks do not establish production assembly or the
 separate-host product acceptance gate.
+
+
+## Preparation, exact wall and native association
+
+The preparation extension keeps the original native actors, their four safety
+monitors, and every existing native/product case. `ProductExecutor` now has two
+service-keyed preparation rows. It commits Preparing before a separate creation
+turn, then commits Ready in another turn. CompileLocations therefore precede
+CompileCommand. The compiled artifact follows native Compile completion and
+must match retained Launch input before Launch preparation. The exact result
+digest class and its separately issued artifact class are both compared;
+matching the result digest alone cannot admit a substituted artifact. A distinct executor
+fingerprint check precedes native Satellite start. The model does not represent
+source files, sockets, token bytes or hash cryptography.
+
+A live Launch resource owner is separate from its durable issued lease and from
+the executor control actor. Control restart revokes unfinished claims without
+killing that independent resource owner. Its death makes a Ready lease unusable;
+historical issue evidence remains. Ready reply loss while the owner is live
+returns the exact original lease. Compile creation/crash/readback and Compile
+Ready/reply-loss/readback now have separate directed cases and historical probes.
+
+ProductOwner constructs an offer from accepted Ready and retained service input,
+selects its exact positive wall, and retains that offer before a separate
+clearance turn. There is no executor confirmation of the owner-built offer.
+The original deadline and ceiling remain in service input; the final wall stays
+in the immutable offer. Actual forwarded native admission evidence, naming the
+exact retained key/digest, creates the physical service association. Clearance
+alone cannot establish it. Outer completion must use that association.
+
+Time is injected as finite elapsed events. With the selected model contract
+`E=5000 ms`, `S=38000+2E=48000 ms` and `C=180 s`, selection is
+`min(C, floor((R-1100-S)/1000))`, refusing below one second. Seven directed
+Ready-time remaining profiles are 0, 50,099, 50,100, 150,000, 229,099, 229,100 and
+270,000 milliseconds. They check refusal, positive-one-second and cap/floor
+boundaries, preparation-driven shrinkage and the cold 180-second wall. The
+300-second original budget, 30-second preparation, six-second control/start
+allowance actually spent, and seventy-second compile duration reach actual
+native start and exact Compile completion. The modeled elapsed events are
+abstract durations, not measured compiler performance or hard real-time bounds.
+
+The 120-second delayed-first-clearance trace refuses the same retained
+180-second offer twice, including recovery, without a native identity. A separate
+post-start delay/restart trace queries its original native key and exact offer
+without clearance. These witnesses retain independently observed creation,
+Ready, elapsed, native start and query histories rather than trusting scenario
+stage labels. `PreparationSafety` also checks immutable original authority,
+wall fit at clearance/native start, actual native admission, producer association,
+and dead-resource usability. Exact byte encodings and real clock assembly still
+need implementation tests.
+
+There are at most two outer rows, two preparation rows, two retained offers,
+two native associations and two native rows. Preparation has five retained
+phases plus absence, so at most 36 phase pairs before reachability constraints.
+The helper still has one active native slot and two pending cancels. Each timing
+case has one fixed initial preparation delay and at most one recovery delay;
+there is no millisecond tick loop or unbounded retry producer. The existing
+mixed-fault workload retains its twelve actions. A conservative updated traffic
+bound reserves 256 messages for bootstrap/fixed completion chains and 32 for
+each of twelve actions, totaling 640 messages. Exact duplicate responses cannot
+create repeated receipt producers. This is finite workload accounting, not a
+production mailbox, disk or resident-memory ceiling.
+
+The strict runner now discovers **71 cases**: 31 normal cases and 40 exact
+positive probes. The mutation runner preserves all fourteen previous mutations
+and adds thirteen decision mutations: Compile construction before Ready, Compile
+recreation, dead issued lease reuse, foreign producer association, foreign issued artifact, bad
+fingerprint acceptance, initial-budget reuse, rounded-up wall, clearance as
+admission, foreign native terminal, wall reselection, deadline renewal and
+clearance after native custody. Every mutant must compile and fail its exact
+intended assertion after the corresponding unmodified control passes.
+
+The foreign-terminal case delivers the existing same-key/digest-2 class to the
+real service terminal handler. Its normal control requires actual refusal before
+genuine Compile completion, and its positive probe independently witnesses that
+ordering. Removing only the equality guard admits the foreign input. The
+re-clear mutation reroutes recovery into `clearOffer` and removes its native-custody
+and prior-clearance guards; the existing clearance instrumentation remains intact.
+Earlier versions of these two mutations injected false announcements and did not
+establish the claimed handler or recovery-path failures. Their original recorded
+gates remain historical evidence, subject to this correction.
+
+Runner limits remain 1,000 scheduling steps, 60 checker seconds, a 65-second
+outer checker deadline and a 1-GiB checker memory bound. Compile has its separate
+120-second outer deadline. Each invocation records scheduling-point statistics,
+wall duration and, on macOS with `MODEL_MEASURE_MEMORY=1` and the existing `/usr/bin/time`,
+per-invocation peak resident bytes. This measurement needs permission for
+macOS resource statistics; ordinary runs omit measurement and retain the
+checker memory limit. Measured process memory is separate from the checker limit.
+Final source hashes, actual counts and gate exits belong in the frozen evidence
+report; a small smoke run does not establish the default gate.
+
+Channel PlusCal, the other distributed-authority algorithms and the existing
+Lean admission proof/684-case bridge are unchanged. This P extension introduces
+no new proof project, and proves no production refinement. The selected control
+allowance must be rechecked against concrete serial calls before physical
+assembly can rely on its successful-path schedule.

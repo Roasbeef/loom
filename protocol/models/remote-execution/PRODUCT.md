@@ -1,5 +1,10 @@
 # Exact product command and outcome custody
 
+This page preserves the initial product composition and its verification
+snapshot. The preparation extension in [README.md](README.md#preparation-exact-wall-and-native-association)
+supersedes its resource scheduling and communication bounds. The original
+measurements below remain historical evidence for that earlier source.
+
 ProductSystem is an additive composition over the unchanged native Owner,
 Executor and Helper. ProductOwner persists outer service requests before send,
 retains exact cleared offers, allocates native Prepared identities and retains
@@ -87,7 +92,7 @@ source is changed in a mutation.
 | product-final-from-children | child evidence fabricated final tool outcome |
 | product-cleanup-as-retirement | resource cleanup fabricated native retirement |
 
-## Bounds and production obligations
+## Initial product bounds and production obligations
 
 Outer and native stores each retain at most two rows. The native helper keeps
 one active execution and two pending cancels. The reliable product workload
@@ -127,7 +132,7 @@ the original P model's missing pre-launch refusal transition remains covered
 by the existing Gleam reducer tests rather than this composition.
 
 
-## Final-source verification
+## Initial product-source verification
 
 On 2026-10-04 the strict full runner exited zero for all 36 cases: fourteen
 normal cases each passed 1,000 schedules, and twenty-two probes reported their
