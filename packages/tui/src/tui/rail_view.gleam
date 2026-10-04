@@ -234,6 +234,15 @@ fn hint(
   model: Model,
   tab: rail.Tab,
 ) -> buffer.Buffer {
+  // The sheet is closed rather than hidden: it has nothing to dock back to.
+  let hides = case layout.rail_lead(model) {
+    0 -> "closes"
+    _ -> "hides"
+  }
+  let escape = case layout.rail_lead(model) {
+    0 -> "closes"
+    _ -> "to composer"
+  }
   let words = case tab, model.view.strip_focus, model.view.rail_focus {
     rail.Changes, _, _ -> "Esc or Shift+Tab closes the changes"
     rail.Strands, agent_strip.Browsing(_), _ ->
@@ -241,16 +250,18 @@ fn hint(
         True -> "↑↓ · Enter focus · x stop · Esc"
         False -> "↑↓ · Enter focus · Esc"
       }
-    rail.Strands, agent_strip.Composing, _ ->
+    rail.Strands, agent_strip.Composing, tui_model.FocusTab ->
+      "1-4 tab · Esc " <> escape
+    rail.Strands, agent_strip.Composing, tui_model.FocusComposer ->
       case layout.strands_listed(model) {
-        True -> "↓ select an agent · Shift+Tab hides"
-        False -> "Shift+Tab hides"
+        True -> "↓ select an agent · Shift+Tab " <> hides
+        False -> "Shift+Tab " <> hides
       }
     rail.Trace, _, tui_model.FocusTab | rail.Session, _, tui_model.FocusTab ->
-      "1-4 tab · ↑↓ scroll · Esc to composer"
+      "1-4 tab · ↑↓ scroll · Esc " <> escape
     rail.Trace, _, tui_model.FocusComposer
     | rail.Session, _, tui_model.FocusComposer
-    -> "↓ then 1-4 tab · Shift+Tab hides"
+    -> "↓ then 1-4 tab · Shift+Tab " <> hides
   }
   let width = int.max(0, area.size.width - layout.rail_lead(model) - 1)
   paragraph.render_styled(

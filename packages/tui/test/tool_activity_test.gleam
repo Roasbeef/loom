@@ -330,8 +330,8 @@ pub fn wide_diff_keeps_the_conversation_visible_on_the_left_test() {
   // Copy selection is clipped to the pane, rather than spanning the live
   // conversation and unrelated diff cells on the same terminal row.
   let right_area = layout.hit_area(opened, geometry.Position(130, 10))
-  assert right_area.position.x == 104
-  assert right_area.size.width == 56
+  assert right_area.position.x == 105
+  assert right_area.size.width == 54
 }
 
 pub fn diff_resize_uses_one_panel_below_the_readable_split_width_test() {
@@ -442,7 +442,7 @@ pub fn diff_toggle_restores_the_rail_choice_test() {
   let #(opened, _) = base |> toggle_diff |> painted_buffer(160)
   assert layout.rail_columns(opened) == 57
     as "the changes dock the rail beside the transcript"
-  assert layout.hit_area(opened, geometry.Position(150, 10)).position.x == 104
+  assert layout.hit_area(opened, geometry.Position(150, 10)).position.x == 105
   let #(closed, _) = opened |> toggle_diff |> painted_buffer(160)
   assert closed.view.diff_view == tui_model.DiffHidden
   assert closed.view.rail == Some(layout_memory.RailHidden)

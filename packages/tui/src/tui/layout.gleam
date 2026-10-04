@@ -377,12 +377,14 @@ pub fn changes_panel_area(screen: Rect, model: Model) -> Rect {
       // The panel's geometry is `panel_inner` of its rectangle everywhere, so
       // the rectangle is the content grown by the cell a border would take.
       // No border is drawn in the rail: the tab is the title and the
-      // separator is the edge.
+      // separator is the edge. The panel's content is inset one cell on each
+      // side, so its text keeps the margin the Trace and Session rows have
+      // and does not touch the separator or the screen's edge.
       let content = rail_content_area(screen, model)
       geometry.rect_new(
-        content.position.x - 1,
+        content.position.x,
         content.position.y - 1,
-        content.size.width + 2,
+        content.size.width,
         content.size.height + 2,
       )
     }

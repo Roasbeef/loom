@@ -779,12 +779,13 @@ pub fn hand_off_sheet(model: Model) -> Model {
     tui_model.SheetOpen, True ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          sheet: tui_model.SheetClosed,
-          rail_focus: tui_model.FocusComposer,
+        shared: Shared(
+          ..model.shared,
+          notice: "sheet closed · Shift+Tab docks the rail on "
+            <> rail.name(layout.rail_tab(model)),
         ),
       )
+      |> close_sheet
     tui_model.SheetOpen, False | tui_model.SheetClosed, _ -> model
   }
 }

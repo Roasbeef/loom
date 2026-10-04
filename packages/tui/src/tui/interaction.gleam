@@ -1137,7 +1137,20 @@ fn update_main_key(key: keys.Key, model: Model) -> Model {
     | Some(rail.Strands), Error(Nil)
     -> update_tab_key(key, model)
 
-    Some(rail.Changes), Error(Nil) | None, _ -> composer_takes(key, model)
+    // Changes has a focus of its own, so a key that is not a digit is the
+    // composer's and the changes' to act on as it was before the rail held
+    // the keyboard. Escape in particular reaches the surface on top, which
+    // closes the changes, in one press.
+    Some(rail.Changes), Error(Nil) ->
+      update_main_key_strip(
+        key,
+        Model(
+          ..model,
+          view: View(..model.view, rail_focus: tui_model.FocusComposer),
+        ),
+      )
+
+    None, _ -> composer_takes(key, model)
   }
 }
 

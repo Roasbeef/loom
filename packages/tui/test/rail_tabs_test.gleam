@@ -508,11 +508,21 @@ pub fn escape_closes_the_sheet_instead_of_interrupting_test() {
 
   let changes = key(key(key(at(ended(), 80, 24), "backtab"), "3"), "2")
   assert layout.sheet_shown(changes)
-  let #(first, first_sent) = escape_sends(changes)
-  let #(second, second_sent) = escape_sends(first)
-  assert !layout.sheet_shown(second)
-  assert second.view.diff_view == tui_model.DiffHidden
-  assert !first_sent && !second_sent as "neither Escape interrupts"
+  let #(closed_changes, sent) = escape_sends(changes)
+  assert !layout.sheet_shown(closed_changes)
+    as "one Escape closes the sheet on Changes"
+  assert closed_changes.view.diff_view == tui_model.DiffHidden
+  assert !sent as "and sends no interrupt"
+
+  // The docked rail on Changes behaves the same: one Escape closes them.
+  let docked =
+    submit.select_rail_tab(at(ended(), 200, 50), rail.Trace)
+    |> key("down")
+    |> key("2")
+  assert docked.view.diff_view == tui_model.DiffVisible
+  let #(closed_docked, docked_sent) = escape_sends(docked)
+  assert closed_docked.view.diff_view == tui_model.DiffHidden
+  assert !docked_sent
 }
 
 pub fn a_click_on_the_sheets_bottom_row_does_not_scroll_the_transcript_test() {

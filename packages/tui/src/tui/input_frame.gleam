@@ -345,7 +345,11 @@ fn top_left(status: Status) -> List(#(String, style.Style)) {
     Deciding -> "locked while deciding"
     Unlocked -> status.keys
   }
-  [#(" To " <> status.target <> " · " <> keys <> " ", bold)]
+  let tail = case keys {
+    "" -> ""
+    _ -> " · " <> keys
+  }
+  [#(" To " <> status.target <> tail <> " ", bold)]
 }
 
 // What the strand is doing. The pieces give way from the end, so the glyph
