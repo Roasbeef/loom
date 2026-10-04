@@ -1641,6 +1641,7 @@ fn strip_of(shared: Session(socket)) -> strip.Strip {
       running_ms: running_ms(shared, line.id),
       model: option.map(row, fn(row) { row.model }) |> option.unwrap(""),
       recent: option.map(row, fn(row) { row.recent }) |> option.unwrap([]),
+      answer: row |> option.then(answer_line),
     )
   }
   let #(drawn, older) = list.split(chips.settled, strip.settled_limit)
@@ -1670,7 +1671,19 @@ fn settled_chip(
     running_ms: None,
     model: "",
     recent: [],
+    answer: None,
   )
+}
+
+// The first line of a strand's latest answer, or nothing while it has given
+// none: the row's excerpt is only an answer when it names the entry it came
+// from, and `agent_view` words the excerpt of an entry outside the loaded
+// history as unavailable, which is not an answer either.
+fn answer_line(row: agent_view.Row) -> Option(String) {
+  case row.update_entry, row.update {
+    Some(_), "Latest update unavailable" | None, _ -> None
+    Some(_), update -> Some(text_hygiene.single_line(update))
+  }
 }
 
 // A strand's agent row, which carries what its own view shows beyond the

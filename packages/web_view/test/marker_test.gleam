@@ -294,6 +294,7 @@ fn chip(
     running_ms: running,
     model:,
     recent:,
+    answer: option.None,
   )
 }
 
@@ -302,8 +303,12 @@ fn chip(
 pub fn a_figure_that_is_not_known_is_not_drawn_test() {
   let bare =
     element.to_string(strand_detail.view(chip("", None, None, None, [])))
-  assert !string.contains(bare, "detail-term")
+  assert !string.contains(bare, "Model")
+  assert !string.contains(bare, "Cache")
   assert !string.contains(bare, "loom-elapsed")
+
+  // A context the roster does not report is said so, not left a blank.
+  assert string.contains(bare, "not reported")
   assert string.contains(bare, "No tools yet.")
   assert string.contains(bare, "Working · reading")
 
@@ -319,7 +324,8 @@ pub fn a_figure_that_is_not_known_is_not_drawn_test() {
         ),
       ),
     )
-  assert string.contains(full, "<dd class=\"detail-value\">glm-5.2</dd>")
+  assert string.contains(full, "<span title=\"glm-5.2\">glm-5.2</span>")
+  assert !string.contains(full, "not reported")
   assert string.contains(full, "136.5k tokens")
   assert string.contains(full, "<dd class=\"detail-value\">cache expired</dd>")
   assert string.contains(full, "offset=\"7000\"")
