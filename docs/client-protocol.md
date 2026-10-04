@@ -442,6 +442,44 @@ Credential, membership and epoch checks precede that read; other failures
 never quote the request or a private path.
 Source: (`client/daemon/server.gleam:1039`).
 
+#### Registered workspace compatibility
+
+Protocol 067 adds an optional envelope field,
+`"accepts": ["registered_workspace_v1"]`, for clients that can preserve typed
+workspace identity. The list allows at most eight distinct names, each one
+to 64 ASCII bytes in `0x21..0x7e` (no spaces or controls). It asserts codec
+support on that request; it does not grant access or persist across requests.
+
+Commands that select a workspace accept either the existing `"workspace"`
+pathname or a closed `"workspace_selection"` object, never both. A registered
+selection has this shape:
+
+```json
+{"kind":"registered","executor":"build-host","workspace":"loom"}
+```
+
+The selector contains no endpoint, physical root, certificate pin or authority
+epoch. Owner-controlled administration resolves those facts. Creation persists
+the resulting binding; a retry with the same creation key revalidates that
+binding instead of replacing its epochs.
+
+Registered metadata replies carry `workspace_binding` and omit the legacy
+`workspace` pathname. After authorization and existing page bounds, a reply
+containing a registered binding requires the feature assertion. Otherwise the
+request fails with `unsupported_workspace`; rows are not silently filtered.
+Local-only replies keep their existing representation. Rename, archive and
+restore check this support before changing a registered session: an old client
+must not mutate the catalogue and then fail to decode the successful reply.
+`operations.get` applies the same check before returning a registered view.
+Membership and stale-epoch refusals still precede compatibility checks.
+
+A native resident WebSocket upgrade also requires the exact header
+`x-loom-accepts: registered_workspace_v1` for a registered session. This header
+does not replace authentication. Browser WebSockets cannot set it, so this
+slice does not enable registered browser attachment. Production daemon
+assembly still uses the local authority adapter and refuses registered
+startup; the codec and catalogue support alone do not enable remote execution.
+
 ### 3.3 `status`
 
 Reads daemon readiness and capacity. Body is `{}`. Requires no epoch and
