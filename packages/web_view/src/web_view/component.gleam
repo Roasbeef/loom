@@ -195,6 +195,7 @@ import web_view/view/session_tab
 import web_view/view/shell
 import web_view/view/strand_detail
 import web_view/view/strip
+import web_view/view/switch
 import web_view/view/todo_panel
 import web_view/view/trace
 
@@ -3023,17 +3024,7 @@ fn observer_words(model: Model(socket)) -> String {
 /// // component.switch(model)
 /// ```
 pub fn switch(model: Model(socket)) -> Element(message) {
-  element.element(
-    "loom-switch",
-    [
-      attribute.attribute("hidden", ""),
-      ..case departure(model) {
-        Some(address) -> [attribute.attribute("to", address)]
-        None -> []
-      }
-    ],
-    [],
-  )
+  switch.view(departure(model))
 }
 
 /// The strand panel both pages draw: the Strands pane with a card for each

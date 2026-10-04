@@ -91,7 +91,8 @@ page keys and nonces, and the relay into the session's gateway.
   `view/home_bar`, `sidebar.home(groups, open)` (a "Home" entry, then the rows),
   `view/home_table` (a table per workspace: name, resident or saved in words,
   created in UTC) and no panel; the stylesheet hides the panel column for the
-  frame class `loom-home`. The one input is a running session's row, in the
+  frame class `loom-home`. `view/switch.view(address)` draws the hidden
+  `<loom-switch>` for both this page and the session page. The one input is a running session's row, in the
   table and in the sidebar: `home.Opening(id)` asks `Start.open` (in the
   component's process) for a ticket, and `Linked(answer)` becomes the `to`
   attribute of the centre's last child, a hidden `<loom-switch>`, or the

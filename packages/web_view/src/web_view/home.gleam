@@ -58,6 +58,7 @@ import web_view/view/home_bar
 import web_view/view/home_table
 import web_view/view/shell
 import web_view/view/sidebar
+import web_view/view/switch
 
 /// The Lustre event path of the sidebar on the home page: it is the second
 /// child of the page's frame (`view/shell`), as on a session's page
@@ -387,7 +388,7 @@ pub fn view(model: Model) -> Element(Msg) {
     [
       press_notice(model.notice),
       home_table.view(model.groups, Opening),
-      departure(model.departure),
+      switch.view(model.departure),
     ],
     element.none(),
     0,
@@ -412,23 +413,6 @@ fn press_notice(notice: Option(String)) -> Element(Msg) {
         html.text(words),
       ])
   }
-}
-
-// The element that moves the browser to the page the daemon minted a ticket
-// for. It is hidden and carries the address only after a ticket exists
-// (`web_client/switch`, which checks the address again before it navigates).
-fn departure(address: Option(String)) -> Element(Msg) {
-  element.element(
-    "loom-switch",
-    [
-      attribute.attribute("hidden", ""),
-      ..case address {
-        Some(address) -> [attribute.attribute("to", address)]
-        None -> []
-      }
-    ],
-    [],
-  )
 }
 
 fn ceiling_words(ceiling: Ceiling) -> String {
