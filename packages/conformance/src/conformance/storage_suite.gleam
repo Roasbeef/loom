@@ -1137,8 +1137,60 @@ fn entry_scan_checks(backend: Backend(handle)) -> Nil {
         |> storage.entry_limit(-100),
     )
   assert very_negative == []
+
+  // The heads read is the same query projected to id, parent and seq, so
+  // it must agree with the full read on every shape above, in rows and in
+  // order. The expected heads are also written out for the unfiltered scan,
+  // so two backends wrong in the same way (a swapped parent, say) cannot
+  // pass by agreeing with each other.
+  let assert Ok(all_heads) =
+    storage.scan_entry_heads(store, storage.entry_scan())
+  assert all_heads
+    == [
+      storage.EntryHead(id: m1.id, parent: None, seq: 1),
+      storage.EntryHead(id: c2.id, parent: Some(m1.id), seq: 2),
+      storage.EntryHead(id: x3.id, parent: Some(c2.id), seq: 3),
+      storage.EntryHead(id: x4.id, parent: Some(x3.id), seq: 4),
+      storage.EntryHead(id: m5.id, parent: Some(x4.id), seq: 5),
+    ]
+  list.each(entry_scan_shapes(), fn(q) {
+    let assert Ok(full) = storage.scan_entries(store, q)
+    let assert Ok(heads) = storage.scan_entry_heads(store, q)
+    assert heads == list.map(full, storage.entry_head_of)
+  })
   let assert Ok(Nil) = storage.close(store)
   Nil
+}
+
+// Every query shape `entry_scan_checks` exercises on `scan_entries`, plus
+// combinations of its filters, so the heads read is held to each of them.
+fn entry_scan_shapes() -> List(storage.EntryScan) {
+  let base = storage.entry_scan()
+  [
+    base,
+    base |> storage.entry_order(storage.NewestFirst),
+    base |> storage.entry_kind(storage.Message),
+    base |> storage.entry_custom_type("note"),
+    base |> storage.entry_seq_range(Some(2), Some(4)),
+    base |> storage.entry_seq_range(Some(4), None),
+    base |> storage.entry_seq_range(None, Some(2)),
+    base |> storage.entry_seq_range(Some(9), None),
+    base |> storage.entry_limit(2),
+    base |> storage.entry_limit(0),
+    base |> storage.entry_limit(-1),
+    base |> storage.entry_kind(storage.Message) |> storage.entry_limit(-100),
+    base
+      |> storage.entry_kind(storage.Custom)
+      |> storage.entry_order(storage.NewestFirst)
+      |> storage.entry_limit(1),
+    base
+      |> storage.entry_custom_type("other")
+      |> storage.entry_seq_range(Some(1), Some(5)),
+    base
+      |> storage.entry_order(storage.NewestFirst)
+      |> storage.entry_seq_range(Some(2), None)
+      |> storage.entry_limit(3),
+  ]
 }
 
 // Proves the usage-ledger scan: row shape (entry-attributed vs.
