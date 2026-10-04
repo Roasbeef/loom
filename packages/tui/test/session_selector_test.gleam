@@ -30,6 +30,7 @@ fn sessions() -> List(protocol.Session) {
       "loom · main",
       1,
       protocol.RecoveryBlocked,
+      option.None,
     )
   })
 }
@@ -161,6 +162,7 @@ pub fn session_selector_scroll_keeps_the_selected_record_visible_test() {
         "loom · main",
         1,
         protocol.Resident("generation"),
+        option.None,
       )
     })
   let state =
@@ -232,7 +234,14 @@ pub fn session_picker_prefers_workspace_and_preserves_group_order_test() {
       #("distant", "/elsewhere"),
     ]
     |> list.map(fn(pair) {
-      protocol.Session(pair.0, pair.1, pair.0, 1, protocol.RecoveryBlocked)
+      protocol.Session(
+        pair.0,
+        pair.1,
+        pair.0,
+        1,
+        protocol.RecoveryBlocked,
+        option.None,
+      )
     })
   let page =
     protocol.Page(7, rows, None)

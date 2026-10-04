@@ -34,7 +34,7 @@ fn session(
   age: Int,
   status: protocol.Lifecycle,
 ) -> protocol.Session {
-  protocol.Session(id, workspace, name, now - age, status)
+  protocol.Session(id, workspace, name, now - age, status, option.None)
 }
 
 // Eight sessions over four workspaces, in every presence the picker draws.

@@ -426,6 +426,11 @@ pub type Session {
     created_at: Int,
     /// Current registry observation, not persisted execution state.
     status: Lifecycle,
+    /// The first line of the owner's first prompt, at most 60 characters
+    /// (`protocol-change/066`). Absent from an older daemon's frames and from a
+    /// session no prompt has reached; a present value that is not a bounded
+    /// string reads as absent, since a display aid must not fail a listing.
+    subtitle: Option(String),
   )
 }
 
@@ -1109,7 +1114,20 @@ fn session(body: json.JsonValue) {
   use created <- result.try(number_at(body, "created_at"))
   use status <- result.try(field(body, "status"))
   use status <- result.map(lifecycle(status))
-  Session(id, workspace, name, created, status)
+  Session(id, workspace, name, created, status, subtitle_of(body))
+}
+
+// The optional subtitle. Every way of not being a nonblank string of at most 60
+// characters reads as none, rather than refusing the row it is on.
+fn subtitle_of(body: json.JsonValue) -> Option(String) {
+  case text_at(body, "subtitle", 240) {
+    Ok(text) ->
+      case text != "" && string.length(text) <= 60 {
+        True -> Some(text)
+        False -> None
+      }
+    Error(_) -> None
+  }
 }
 
 // The activity rows. Only the identity is required: a row the terminal

@@ -2,6 +2,7 @@ import etui/buffer
 import etui/geometry.{Position}
 import etui/style
 import gleam/list
+import gleam/option
 import gleam/string
 import tui/daemon/protocol as control_protocol
 import tui/frame
@@ -15,6 +16,7 @@ fn session(id: String, status: control_protocol.Lifecycle, name: String) {
     name:,
     created_at: 0,
     status:,
+    subtitle: option.None,
   )
 }
 
