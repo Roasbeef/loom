@@ -6,9 +6,9 @@ approval and budget authority. A compiler result names an executor-owned
 artifact, so the owner never interprets its location as a local filesystem path.
 
 The components described here implement the storage and validation boundaries in
-[protocol 067](../../protocol-change/067-remote-workspace-services.md). The live
-Compile service, its command routing and the shipped remote deployment still
-require assembly. The sequence below specifies that assembly's required order;
+[protocol 067](../../protocol-change/067-remote-workspace-services.md). The native command admission engine is implemented. The whole Compile service,
+server-side command forwarding and shipped remote deployment still require
+assembly. The sequence below specifies that assembly's required order;
 it does not claim that a separate-host workflow has passed acceptance.
 
 ## Three records describe different work
@@ -77,9 +77,24 @@ sequenceDiagram
     Owner->>Owner: Commit receipt before acknowledgement
 ```
 
-The resource journal now implements that live association boundary. Native service
-assembly must call it between native admission and launch intent. The historical
-association API remains available for reconciliation, but returns no launch permit.
+The native service now calls the live association boundary between native
+admission and launch intent. Its opaque `CommandContext` holds either the original
+preparation claim or historical input. The live constructor derives that input
+from the claim and checks the complete service key and concrete native journal
+endpoint. It cannot combine a peer-selected row with another service's claim.
+
+Only a live context can request a challenge or submit a compiler command. Its
+challenge ticket includes the complete command reference, so another route cannot
+reuse the nonce. The service refuses session-lifetime compiler commands before
+authorization. After the resource association commits, the service compares the
+permit's exact endpoint, reference, native key and digest before continuing to
+launch. The existing deadline check still applies after that wait.
+
+Historical contexts can query, cancel, send stdin or acknowledge an already
+associated command. Each operation checks the retained reference, key and digest
+before applying an effect or returning native evidence. Both duplicate Submit
+paths perform the same check. Retained input alone grants none of these controls;
+the exact association establishes which native command belongs to the service.
 
 ### Cancellation and admission share one transaction order
 
@@ -131,10 +146,10 @@ The connection checks the complete returned reference and transport generation
 before exposing a native answer. An ordinary native reply cannot satisfy a
 command exchange.
 
-These wire checks establish correspondence, not permission. The native service
-must still prove the exact retained resource association before forwarding
-historical control or returning an existing command's output. Fresh admission
-also needs the original live claim and association permit described above.
+The wire checks establish correspondence. The native service separately checks
+the exact retained resource association before historical control or returning an
+existing command's output. Fresh admission requires the original live claim and
+association permit described above.
 The current server reader accepts ordinary native envelopes only; enabling the
 command route awaits that service assembly. The
 [routing review](../review/distributed-physical-command-routing.md) records the
@@ -185,8 +200,11 @@ behavior.
 
 The [live-admission review](../review/distributed-live-compile-admission.md)
 records the resource transaction controls, complete-identity mutations and
-independent executor gate. These checks precede the native service wiring shown
-in the sequence above.
+independent executor gate. The [native-command review](../review/distributed-native-command-admission.md)
+records the next boundary: actual compiler output, cross-command control refusal,
+resource fencing before native launch and exact historical recovery. The native
+service API is implemented, while its listener and whole-service callers remain
+the next assembly work.
 
 Production acceptance still requires the live Compile/Launch services, exact
 command routing, executor registration and ordinary tool consumers. The final

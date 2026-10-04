@@ -2,6 +2,15 @@
 
 ## Distributed runtime implementation (issue #697)
 
+The latest component implements native Compile admission under the original
+preparation claim. Its independent review found no actionable defect, and the
+integrated executor gate passed 241 tests with no skips. The
+[native-command review](review/distributed-native-command-admission.md) separates
+that evidence from the pending whole Compile service, server forwarding, owner
+consumer and separate-host acceptance. Owner command binding and the updated P
+live-association model are being validated independently. Atomic initial Compile
+admission and cancellation are the next resource-journal slice.
+
 The [user journeys and ownership design](design-notes/distributed-runtime.md)
 and [API and delivery plan](design-notes/distributed-runtime-api.md) separate
 existing multiplayer access from remote execution and later clustered
