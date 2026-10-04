@@ -245,6 +245,16 @@ time builds anything.
   from `shell_rule.label` and `shell_rule.tab_label`. A tab press changes
   the custom state and nothing else: closing and reopening the panel keeps the
   tab.
+- `shell_rule.Frame` (`Wide` | `Narrow`), `narrow_query` (`(max-width: 1211px)`,
+  the stylesheet's breakpoint), `sidebar_state`, `sidebar_pressed`,
+  `Dismissal` (`Dismiss` | `Leave`), `dismissal`, `scrimmed` and
+  `presses_button`: below 1212px the sidebar is a drawer over the centre
+  behind a scrim. `<loom-shell>` keeps a `Frame` from a `matchMedia` listener
+  (`ffi_dom.media_query`, `media_matches`) and a drawer `State` beside the
+  layout; the drawer is never saved, starts closed, and closes when the frame
+  changes. The sidebar's button and Command/Control B flip it, a click on the
+  scrim or on a button in the sidebar (read from the click's composed path)
+  closes it, and `Escape` closes it before it leaves a strand.
 - `layout_rule.Workspace` (`Identified(digest)` | `Anonymous`), with
   `workspace` (a total decoder of the `workspace` attribute: exactly 64
   lower-case hex digits, else `Anonymous`), `layout_key` (`loom.layout.v1.` and
@@ -288,7 +298,7 @@ time builds anything.
   `children`, `closest`, `query_selector`, `query_selector_all`, `dataset_get`,
   `text_content`, `scroll_top`, `set_scroll_top`, `scroll_by`,
   `scroll_height`, `client_height`, `offset_top`, `offset_height`,
-  `bounding_top`, `add_passive_listener`, `add_listener` (called with the
+  `bounding_top`, `media_query`, `media_matches`, `add_passive_listener`, `add_listener` (called with the
   event, and may cancel it), `remove_listener`, `get_document`, `composed_path`,
   `tag_name`, `attribute`, `is_content_editable`, `prevent_default`,
   `resize_observer`, `observe`, `mutation_observer`, `observe_child_list`,

@@ -681,7 +681,8 @@ page keys and nonces, and the relay into the session's gateway.
   scrolling) and makes `<loom-follow>` the scroll container between them
   and the dock. The element's two buttons hide and show the sidebar and the
   panel (a hidden column is `inert`, so its content leaves the tab order),
-  with nothing kept across a reload. The sidebar is dropped below 1212px, and below 980px the
+  with nothing kept across a reload. Below 1212px the sidebar is a drawer over the page
+  (opened by its bar button or Command/Control B, never saved), and below 980px the
   panel becomes a row of cards under the bar. It keeps the
   newest row in view while the reader is at the bottom, shows a "Jump to
   latest" button while they are not, and keeps the reader's place when a

@@ -704,3 +704,25 @@ pub fn replace_location(address: String) -> Nil
 /// ```
 @external(javascript, "./dom.mjs", "write_clipboard")
 pub fn write_clipboard(text: String, done: fn(Result(Nil, Nil)) -> Nil) -> Nil
+
+/// A media query's live answer (`window.matchMedia`), an event target whose
+/// `change` event carries the new `matches`. The shell asks it whether the
+/// page is narrow, which only the browser knows.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let narrow = ffi_dom.media_query("(max-width: 1211px)")
+/// ```
+@external(javascript, "./dom.mjs", "media_query")
+pub fn media_query(query: String) -> Element
+
+/// Whether a media query from `media_query` matches now (`matches`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.media_matches(narrow)
+/// ```
+@external(javascript, "./dom.mjs", "media_matches")
+pub fn media_matches(query: Element) -> Bool
