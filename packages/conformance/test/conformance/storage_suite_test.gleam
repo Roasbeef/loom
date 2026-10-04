@@ -207,6 +207,30 @@ pub fn sqlite_branch_scan_plan_test() {
   let assert Ok(Nil) = storage.close(store)
 }
 
+// The entry-heads read orders by seq. It must walk `ix_entry_seq` and never
+// sort, with and without each filter an `EntryScan` can carry.
+pub fn sqlite_entry_heads_plan_test() {
+  let store = open_sqlite("heads_plan")
+  let base = storage.entry_scan()
+  list.each(
+    [
+      base,
+      base |> storage.entry_order(storage.NewestFirst),
+      base |> storage.entry_kind(storage.Message),
+      base |> storage.entry_custom_type("note"),
+      base |> storage.entry_seq_range(Some(2), Some(4)),
+      base |> storage.entry_limit(10),
+    ],
+    fn(q) {
+      let assert Ok(lines) = sqlite.scan_entry_heads_plan(store.handle, q)
+      let plan = string.join(lines, with: "\n")
+      assert string.contains(plan, "ix_entry_seq")
+      assert !string.contains(plan, "TEMP B-TREE")
+    },
+  )
+  let assert Ok(Nil) = storage.close(store)
+}
+
 // --- branch-index metadata invariants ------------------------------------
 
 pub fn sqlite_branch_meta_invariants_test() {
