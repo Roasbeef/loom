@@ -11,8 +11,12 @@ consumer and separate-host acceptance. Owner command binding passed independent 
 the full storage gate. Its integrated client gate exited zero with 2767 reported
 passes and 15 optional skips. The updated P live-association model passed its
 safety, reachability and mutation gates; the review record retains the bounded
-proof limits. Atomic initial Compile
-admission and cancellation are the next resource-journal slice.
+proof limits. Atomic initial Compile admission and cancellation are implemented
+and passed independent review. The integrated executor gate passed 259 tests
+with no skips; the [first-admission review](review/distributed-compile-first-admission.md)
+records the SQLite races, commit failures and mutations. Whole Compile assembly
+is next, with the original elapsed deadline and exact terminal evidence retained
+through preparation, native admission and finalization.
 
 The [user journeys and ownership design](design-notes/distributed-runtime.md)
 and [API and delivery plan](design-notes/distributed-runtime-api.md) separate

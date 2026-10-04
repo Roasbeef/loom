@@ -834,3 +834,25 @@ alone are insufficient when two services have different parents. Challenge
 tickets MUST retain the closed native/command route and complete command
 reference. Server-side forwarding and whole Compile ownership remain separate
 assembly obligations.
+
+## Addendum: Atomic first preparation and cancellation
+
+The original whole Compile service MUST admit preparation through one transaction
+that inserts absent input, reserves its complete lifetime capacity, and enters
+Preparing before returning a live Claim. Only a successful commit of that absent
+row may return fresh authority. Every matching existing row, including Reserved,
+MUST return historical status without a Claim. Recovery MUST NOT combine the
+separate reservation and claim APIs to reconstruct a live continuation.
+
+Cancellation MUST fence the original input before following a retained native
+association. Missing input requires bounded insertion and an Unknown phase in
+the same transaction. Existing Reserved, Preparing and Ready rows become Unknown
+without discarding Ready, native association or completion evidence. Existing
+Unknown and Released rows return their checked history. A sealed scope may
+satisfy absent-input cancellation only after excluding an address collision.
+
+Both transactions MUST compare the complete immutable identity and input before
+returning history. Failed or ambiguous COMMIT MUST return uncertainty and fence
+the endpoint, never a fresh Claim or positive fence acknowledgement. A committed
+resource fence does not establish native retirement: association may have won
+the race, and cancellation must then follow that exact retained native command.
