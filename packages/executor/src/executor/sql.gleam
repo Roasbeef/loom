@@ -176,6 +176,279 @@ pub fn insert_custody_payload(
   ])
 }
 
+pub fn initialize_resources(
+  enrollment enrollment: BitArray,
+  row_limit row_limit: Int,
+  byte_limit byte_limit: Int,
+) {
+  let sql =
+    "INSERT INTO resource_meta(id,format,mode,enrollment,row_limit,byte_limit)
+VALUES(1,1,0,?,?,?)"
+  #(sql, [
+    dev.ParamBitArray(enrollment),
+    dev.ParamInt(row_limit),
+    dev.ParamInt(byte_limit),
+  ])
+}
+
+pub type ResourceMetadata {
+  ResourceMetadata(
+    enrollment: BitArray,
+    mode: Int,
+    row_limit: Int,
+    byte_limit: Int,
+  )
+}
+
+pub fn resource_metadata() {
+  let sql =
+    "SELECT CAST(CASE WHEN typeof(id)='integer' AND id=1 AND typeof(format)='integer' AND format=1
+                 AND typeof(enrollment)='blob' AND length(enrollment) BETWEEN 1 AND 262144
+                 THEN enrollment ELSE NULL END AS BLOB) AS enrollment,
+       CAST(CASE WHEN typeof(mode)='integer' AND mode IN (0,1) THEN mode ELSE NULL END AS INTEGER) AS mode,
+       CAST(CASE WHEN typeof(row_limit)='integer' AND row_limit BETWEEN 1 AND 65536 THEN row_limit ELSE NULL END AS INTEGER) AS row_limit,
+       CAST(CASE WHEN typeof(byte_limit)='integer' AND byte_limit>0 THEN byte_limit ELSE NULL END AS INTEGER) AS byte_limit
+FROM resource_meta LIMIT 2"
+  #(sql, [], resource_metadata_decoder())
+}
+
+pub fn resource_metadata_decoder() -> decode.Decoder(ResourceMetadata) {
+  use enrollment <- decode.field(0, decode.bit_array)
+  use mode <- decode.field(1, decode.int)
+  use row_limit <- decode.field(2, decode.int)
+  use byte_limit <- decode.field(3, decode.int)
+  decode.success(ResourceMetadata(enrollment:, mode:, row_limit:, byte_limit:))
+}
+
+pub type ResourceHeaders {
+  ResourceHeaders(
+    id: BitArray,
+    address_size: Int,
+    header_size: Int,
+    role: Int,
+    input_digest: BitArray,
+    input_size: Int,
+    phase: Int,
+    ready_digest: BitArray,
+    ready_size: Int,
+    valid: Int,
+  )
+}
+
+pub fn resource_headers(limit limit: Int) {
+  let sql =
+    "SELECT CAST(CASE WHEN typeof(id)='blob' AND length(id)=36 THEN id ELSE NULL END AS BLOB) AS id,
+       CAST(CASE WHEN typeof(address)='blob' AND length(address) BETWEEN 1 AND 8192 THEN length(address) ELSE NULL END AS INTEGER) AS address_size,
+       CAST(CASE WHEN typeof(service_header)='blob' AND length(service_header) BETWEEN 1 AND 8192 THEN length(service_header) ELSE NULL END AS INTEGER) AS header_size,
+       CAST(CASE WHEN typeof(role)='integer' AND role IN (0,1) THEN role ELSE NULL END AS INTEGER) AS role,
+       CAST(CASE WHEN typeof(input_digest)='blob' AND length(input_digest)=32 THEN input_digest ELSE NULL END AS BLOB) AS input_digest,
+       CAST(CASE WHEN typeof(input_size)='integer' AND input_size BETWEEN 1 AND 9437184 THEN input_size ELSE NULL END AS INTEGER) AS input_size,
+       CAST(CASE WHEN typeof(phase)='integer' AND phase BETWEEN 0 AND 4 THEN phase ELSE NULL END AS INTEGER) AS phase,
+       CAST(CASE WHEN typeof(ready_digest)='blob' AND length(ready_digest) IN (0,32) THEN ready_digest ELSE NULL END AS BLOB) AS ready_digest,
+       CAST(CASE WHEN typeof(ready_size)='integer' AND ready_size BETWEEN 0 AND 262144 THEN ready_size ELSE NULL END AS INTEGER) AS ready_size,
+       CAST(CASE WHEN typeof(input)='blob' AND length(input)=input_size
+                 AND typeof(ready)='blob' AND length(ready)=ready_size
+                 AND ((ready_size=0 AND length(ready_digest)=0 AND phase IN (0,1,3,4))
+                   OR (ready_size>0 AND length(ready_digest)=32 AND phase IN (2,3,4)))
+                 THEN 1 ELSE 0 END AS INTEGER) AS valid
+FROM resource_call ORDER BY id LIMIT ?"
+  #(sql, [dev.ParamInt(limit)], resource_headers_decoder())
+}
+
+pub fn resource_headers_decoder() -> decode.Decoder(ResourceHeaders) {
+  use id <- decode.field(0, decode.bit_array)
+  use address_size <- decode.field(1, decode.int)
+  use header_size <- decode.field(2, decode.int)
+  use role <- decode.field(3, decode.int)
+  use input_digest <- decode.field(4, decode.bit_array)
+  use input_size <- decode.field(5, decode.int)
+  use phase <- decode.field(6, decode.int)
+  use ready_digest <- decode.field(7, decode.bit_array)
+  use ready_size <- decode.field(8, decode.int)
+  use valid <- decode.field(9, decode.int)
+  decode.success(ResourceHeaders(
+    id:,
+    address_size:,
+    header_size:,
+    role:,
+    input_digest:,
+    input_size:,
+    phase:,
+    ready_digest:,
+    ready_size:,
+    valid:,
+  ))
+}
+
+pub type ResourceBodies {
+  ResourceBodies(
+    address: BitArray,
+    service_header: BitArray,
+    input: BitArray,
+    ready: BitArray,
+  )
+}
+
+pub fn resource_bodies(id id: BitArray) {
+  let sql =
+    "SELECT CAST(CASE WHEN typeof(address)='blob' AND length(address) BETWEEN 1 AND 8192 THEN address ELSE NULL END AS BLOB) AS address,
+       CAST(CASE WHEN typeof(service_header)='blob' AND length(service_header) BETWEEN 1 AND 8192 THEN service_header ELSE NULL END AS BLOB) AS service_header,
+       CAST(CASE WHEN typeof(input)='blob' AND length(input) BETWEEN 1 AND 9437184 THEN input ELSE NULL END AS BLOB) AS input,
+       CAST(CASE WHEN typeof(ready)='blob' AND length(ready)<=262144 THEN ready ELSE NULL END AS BLOB) AS ready
+FROM resource_call WHERE id=? LIMIT 2"
+  #(sql, [dev.ParamBitArray(id)], resource_bodies_decoder())
+}
+
+pub fn resource_bodies_decoder() -> decode.Decoder(ResourceBodies) {
+  use address <- decode.field(0, decode.bit_array)
+  use service_header <- decode.field(1, decode.bit_array)
+  use input <- decode.field(2, decode.bit_array)
+  use ready <- decode.field(3, decode.bit_array)
+  decode.success(ResourceBodies(address:, service_header:, input:, ready:))
+}
+
+pub type InsertResource {
+  InsertResource(id: BitArray)
+}
+
+pub fn insert_resource(
+  id id: BitArray,
+  address address: BitArray,
+  service_header service_header: BitArray,
+  role role: Int,
+  input_digest input_digest: BitArray,
+  input_size input_size: Int,
+  input input: BitArray,
+) {
+  let sql =
+    "INSERT INTO resource_call(id,address,service_header,role,input_digest,input_size,input,phase,ready_digest,ready_size,ready)
+VALUES(?,?,?,?,?,?,?,0,X'',0,X'') RETURNING id"
+  #(
+    sql,
+    [
+      dev.ParamBitArray(id),
+      dev.ParamBitArray(address),
+      dev.ParamBitArray(service_header),
+      dev.ParamInt(role),
+      dev.ParamBitArray(input_digest),
+      dev.ParamInt(input_size),
+      dev.ParamBitArray(input),
+    ],
+    insert_resource_decoder(),
+  )
+}
+
+pub fn insert_resource_decoder() -> decode.Decoder(InsertResource) {
+  use id <- decode.field(0, decode.bit_array)
+  decode.success(InsertResource(id:))
+}
+
+pub type ClaimResource {
+  ClaimResource(phase: Int)
+}
+
+pub fn claim_resource(id id: BitArray) {
+  let sql =
+    "UPDATE resource_call SET phase=1 WHERE resource_call.id=? AND resource_call.phase=0
+AND EXISTS(SELECT 1 FROM resource_meta WHERE resource_meta.id=1 AND resource_meta.mode=0) RETURNING phase"
+  #(sql, [dev.ParamBitArray(id)], claim_resource_decoder())
+}
+
+pub fn claim_resource_decoder() -> decode.Decoder(ClaimResource) {
+  use phase <- decode.field(0, decode.int)
+  decode.success(ClaimResource(phase:))
+}
+
+pub type CommitResourceReady {
+  CommitResourceReady(phase: Int)
+}
+
+pub fn commit_resource_ready(
+  ready_digest ready_digest: BitArray,
+  ready_size ready_size: Int,
+  ready ready: BitArray,
+  id id: BitArray,
+) {
+  let sql =
+    "UPDATE resource_call SET phase=2,ready_digest=?,ready_size=?,ready=?
+WHERE id=? AND phase=1 RETURNING phase"
+  #(
+    sql,
+    [
+      dev.ParamBitArray(ready_digest),
+      dev.ParamInt(ready_size),
+      dev.ParamBitArray(ready),
+      dev.ParamBitArray(id),
+    ],
+    commit_resource_ready_decoder(),
+  )
+}
+
+pub fn commit_resource_ready_decoder() -> decode.Decoder(CommitResourceReady) {
+  use phase <- decode.field(0, decode.int)
+  decode.success(CommitResourceReady(phase:))
+}
+
+pub type MarkResourceUnknown {
+  MarkResourceUnknown(phase: Int)
+}
+
+pub fn mark_resource_unknown(id id: BitArray) {
+  let sql =
+    "UPDATE resource_call SET phase=3 WHERE id=? AND phase IN (1,2) RETURNING phase"
+  #(sql, [dev.ParamBitArray(id)], mark_resource_unknown_decoder())
+}
+
+pub fn mark_resource_unknown_decoder() -> decode.Decoder(MarkResourceUnknown) {
+  use phase <- decode.field(0, decode.int)
+  decode.success(MarkResourceUnknown(phase:))
+}
+
+pub type ReleaseResource {
+  ReleaseResource(phase: Int)
+}
+
+pub fn release_resource(id id: BitArray) {
+  let sql =
+    "UPDATE resource_call SET phase=4 WHERE id=? AND phase IN (1,2,3) RETURNING phase"
+  #(sql, [dev.ParamBitArray(id)], release_resource_decoder())
+}
+
+pub fn release_resource_decoder() -> decode.Decoder(ReleaseResource) {
+  use phase <- decode.field(0, decode.int)
+  decode.success(ReleaseResource(phase:))
+}
+
+pub type SealResources {
+  SealResources(mode: Int)
+}
+
+pub fn seal_resources() {
+  let sql = "UPDATE resource_meta SET mode=1 WHERE id=1 RETURNING mode"
+  #(sql, [], seal_resources_decoder())
+}
+
+pub fn seal_resources_decoder() -> decode.Decoder(SealResources) {
+  use mode <- decode.field(0, decode.int)
+  decode.success(SealResources(mode:))
+}
+
+pub type ResourceAddress {
+  ResourceAddress(id: BitArray)
+}
+
+pub fn resource_address(address address: BitArray) {
+  let sql =
+    "SELECT CAST(CASE WHEN typeof(id)='blob' AND length(id)=36 THEN id ELSE NULL END AS BLOB) AS id
+FROM resource_call WHERE address=? LIMIT 2"
+  #(sql, [dev.ParamBitArray(address)], resource_address_decoder())
+}
+
+pub fn resource_address_decoder() -> decode.Decoder(ResourceAddress) {
+  use id <- decode.field(0, decode.bit_array)
+  decode.success(ResourceAddress(id:))
+}
+
 pub fn initialize_workspace(
   binding binding: BitArray,
   row_limit row_limit: Int,
