@@ -7,7 +7,9 @@
 //// This region fills it with the two things the terminal draws for that
 //// interval: a reasoning row that says the model is reasoning and for how
 //// long, `Reasoning · 7s`, with the summarizer's headline beneath it when one
-//// has been pushed (protocol 050), and the answer as it grows. The lane gives
+//// has been pushed (protocol 050), and the answer as it grows. A turn that has
+//// opened and streamed nothing yet draws `Thinking · 0:03` in the reasoning
+//// row's place, so a model that sends no reasoning text still shows progress. The lane gives
 //// the region a timeline dot of its own and pulses it while the region exists.
 ////
 //// The rows are `component.live`'s, taken from the shared record's streams,
@@ -59,6 +61,15 @@ pub type Row {
     headline: Option(String),
   )
 
+  /// A turn that has opened and has streamed nothing yet: the request is out
+  /// and the model has said nothing, which is every wait a model that streams
+  /// no reasoning text makes. It is drawn as `Thinking · 0:03` so the lane is
+  /// not silent, and a streamed row replaces it.
+  Opened(
+    /// How long the generation had run, as in `Thinking`.
+    elapsed_ms: Option(Int),
+  )
+
   /// The answer so far, as the transcript's line for an assistant answer.
   Answer(line: Line)
 }
@@ -90,6 +101,17 @@ pub fn view(
 fn row(row: Row, draw: fn(Line) -> Element(message)) -> Element(message) {
   case row {
     Answer(line:) -> draw(line)
+
+    // The turn is open and nothing has streamed. The same row the reasoning
+    // text will fill, headed `Thinking`, so that the hand-over changes a word
+    // and not the row's place. The lane's own dot pulses beside it.
+    Opened(elapsed_ms:) ->
+      html.div([attribute.class("thinking")], [
+        html.p([attribute.class("who"), attribute.class("thinking-head")], [
+          html.text("Thinking"),
+          ..elapsed(elapsed_ms)
+        ]),
+      ])
 
     // The row says what the model is doing and for how long, `Reasoning ·
     // 7s`, with the summarizer's headline beneath it once one is pushed. The

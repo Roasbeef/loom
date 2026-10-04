@@ -505,3 +505,83 @@ pub fn the_live_rows_are_plain_values_test() {
   assert string.contains(none, ">Reasoning</p>")
   assert !string.contains(none, "loom-elapsed")
 }
+
+// A turn that has opened and streamed nothing is not silent. The row stands
+// from the strand's `assistant` phase, which is when the request goes out and
+// the generation clock starts, and not from the first fragment, which a model
+// that streams no reasoning text never sends before its answer.
+pub fn an_opened_turn_shows_thinking_before_anything_streams_test() {
+  let generation = lane_fixture.generation(2)
+  let #(model, clock) = timed([running()])
+  let model = at(model, clock, 1000)
+
+  // A running operation that has not reached the generating phase draws no
+  // row, as an idle lane does not.
+  list.each(pages(model), fn(view) {
+    assert region(view) == ""
+  })
+
+  let model =
+    component.apply(model, [
+      session_channel.Auxiliary(protocol.OperationChanged("main", "assistant")),
+    ])
+  let model = at(model, clock, 4000)
+
+  // The browser counts the reading on, as it does for the reasoning row.
+  list.each(pages(model), fn(view) {
+    let drawn = region(view)
+    assert string.contains(
+      drawn,
+      "Thinking · <loom-elapsed class=\"elapsed\" offset=\"3000\"></loom-elapsed></p>",
+    )
+    assert !string.contains(drawn, "Reasoning")
+  })
+
+  // Reasoning text arriving gives the row its old shape, and the opened row
+  // is gone: one row, never both.
+  let reasoning =
+    component.apply(model, [
+      lane_fixture.fragment(generation, "thinking", "first thought"),
+    ])
+  list.each(pages(reasoning), fn(view) {
+    let drawn = region(view)
+    assert string.contains(drawn, "Reasoning · <loom-elapsed")
+    assert !string.contains(drawn, "Thinking")
+  })
+
+  // An answer streaming with no reasoning does the same.
+  let answering =
+    component.apply(model, [lane_fixture.fragment(generation, "text", "Hi")])
+  list.each(pages(answering), fn(view) {
+    let drawn = region(view)
+    assert string.contains(drawn, "Hi")
+    assert !string.contains(drawn, "Thinking")
+    assert !string.contains(drawn, "Reasoning")
+  })
+
+  // The turn ending releases the region.
+  let done =
+    component.apply(model, [
+      session_channel.Auxiliary(protocol.OperationChanged("main", "done")),
+      lane_fixture.asked(None),
+    ])
+  list.each(pages(done), fn(view) {
+    assert region(view) == ""
+  })
+}
+
+// The opened row rides the lane's own dot, which pulses while a region
+// exists, and carries no animation of its own that reduced motion would
+// have to cancel.
+pub fn the_opened_row_sits_beside_the_pulsing_dot_test() {
+  let model =
+    page([
+      running(),
+      session_channel.Auxiliary(protocol.OperationChanged("main", "assistant")),
+    ])
+  list.each(pages(model), fn(view) {
+    let drawn = element.to_string(view)
+    assert string.contains(drawn, "class=\"dot pulse\"")
+    assert string.contains(region(view), "Thinking")
+  })
+}
