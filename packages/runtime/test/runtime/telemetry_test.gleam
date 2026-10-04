@@ -7,15 +7,19 @@
 //// seam: a package under test never has to emit to be observed.
 
 import core/clock
+import core/ids
+import gleam/erlang/atom
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import runtime/api
 import runtime/effects
 import runtime/supervisor
 import session/session.{type Session}
 import support/fake
 import support/harness
+import support/internal/ffi_memory
 import support/recorder
 import telemetry/level
 import telemetry/log
@@ -166,4 +170,24 @@ pub fn the_default_runtime_logs_nothing_test() {
   // library test never has to tolerate output it did not ask for.
   assert log.threshold(api.default_options(harness.configuration()).logger)
     == level.Error
+}
+
+pub fn the_strand_driver_labels_itself_for_the_ownership_inspector_test() {
+  // The driver adopts its logger as `strand_driver`, so an inspector that
+  // reads `process_info(Pid, label)` can attribute the driver's memory to
+  // its session and strand (protocol-change/065).
+  let #(_sess, rt, _inbox) =
+    boot(fn(_spec) { fake.Reply(fake.answer("unused", 1)) })
+  let assert Ok(subject) = supervisor.strand_subject(rt.tree, "main")
+    as "the main strand's driver must be running"
+  let assert Ok(driver) = process.subject_owner(subject)
+    as "the driver owns its subject"
+  let label =
+    ffi_memory.process_info(driver, atom.create("label")) |> string.inspect
+  assert string.contains(label, "PickglassOwner")
+  assert string.contains(label, "strand_driver")
+  assert string.contains(label, "main")
+  assert string.contains(label, ids.session_id_to_string(api.session_id(rt)))
+
+  process.kill(rt.tree.supervisor)
 }

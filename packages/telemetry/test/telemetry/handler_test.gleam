@@ -14,6 +14,7 @@ import telemetry/field
 import telemetry/handler
 import telemetry/level
 import telemetry/log
+import telemetry/owner
 
 const clearance_hex =
   "3f5a9c1d7b2e4086af13c5d9e07b6482913ac5de7f024b8619cd3a5e7f01b2c4"
@@ -44,10 +45,13 @@ pub fn a_foreign_line_is_scrubbed_test() {
 }
 
 pub fn a_foreign_line_carries_the_stamped_context_test() {
-  log.adopt(log.scoped(
-    log.discard(),
-    context.for_session("sess-5") |> context.with_strand("main"),
-  ))
+  log.adopt(
+    log.scoped(
+      log.discard(),
+      context.for_session("sess-5") |> context.with_strand("main"),
+    ),
+    owner.EffectWorker,
+  )
   let line = ffi_format.format_string(level.Error, "boom")
   assert string.contains(line, "\"session\":\"sess-5\"")
   assert string.contains(line, "\"strand\":\"main\"")

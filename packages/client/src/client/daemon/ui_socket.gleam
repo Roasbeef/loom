@@ -124,6 +124,7 @@ import session_view/snapshot
 import session_view/transcript_image
 import storage/access
 import storage/catalogue
+import telemetry/owner
 import web_view/component
 import web_view/ending
 import web_view/home
@@ -1321,6 +1322,11 @@ fn serve(
     message,
 ) -> Result(Page, Nil) {
   use #(runtime, page) <- result.map(launch(app, start, admits))
+
+  // This process owns the component and ends with it, so it is the page's
+  // owner for the inspector; the component's own process belongs to Lustre
+  // and stays unlabelled.
+  owner.label([#("session", start.session_id)], owner.PageSocket)
 
   // The reader belongs to this socket's process, which owns the component and
   // ends with it. A request that arrives after the socket ended is refused

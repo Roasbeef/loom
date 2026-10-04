@@ -50,7 +50,15 @@ stays the billing source of truth (§3.4).
 - `telemetry/log.{debug, info, warn, error}` — the four call sites.
 - `telemetry/log.{adopt, process_context}` — the metadata half of the
   propagation decision: stamp this process's `logger` metadata so lines
-  we do *not* author land correlated, and read it back.
+  we do *not* author land correlated, and read it back. `adopt` takes an
+  `owner.Role` and also labels the process for the ownership inspector.
+- `telemetry/owner.{Role, role_name, path, label, label_for}` — the
+  ownership label `protocol-change/065` freezes:
+  `proc_lib:set_label({pickglass_owner, 1, Path, Role})`, with the path
+  derived from a logger's session and strand. `Role` is a closed set
+  (`StrandDriver`, `EffectWorker`, `ProviderEffectWorker`, `Gateway`,
+  `PageSocket`, `PageSessions`); `label` takes an explicit path for a
+  process with no logger in reach.
 - `telemetry/handler.{install, threshold_named, level_variable}` — the
   boot-time installation an entry point (and only an entry point) calls,
   and the `LOOM_LOG_LEVEL` resolution behind it.
@@ -68,7 +76,8 @@ stays the billing source of truth (§3.4).
 - **FFI**: `telemetry/internal/ffi_logger` over `telemetry_ffi.erl` —
   `logger:update_handler_config/3`, `logger:set_primary_config/2`,
   `logger:log/3`, `logger:set_process_metadata/1`,
-  `logger:get_process_metadata/0`, plus the handler's `format/2`.
+  `logger:get_process_metadata/0`, `proc_lib:set_label/1`, plus the
+  handler's `format/2`.
   Nothing in the shim decides what a line says; `format/2`'s one
   judgement call is delegated back to `telemetry@field:scrub_text/1` so
   the redaction rules have exactly one implementation.
@@ -102,6 +111,13 @@ stays the billing source of truth (§3.4).
   `log.adopt` stamps the same context onto the spawned process so an
   OTP crash report from an effect process is not orphaned. Our own
   lines never read it.
+- **A process has one label, and it means ownership.**
+  `proc_lib:set_label/1` replaces whatever label the process set before,
+  so nothing in Loom labels a process for any other purpose. The label is
+  per process and is not inherited by a spawn, so a spawned body labels
+  itself (`log.adopt` does, as does `owner.label`). Loom never reads a
+  label back. A process that never labels is shown by the inspector as
+  `unknown`.
 - **No log line carries a token, an API key, or a capability token**
   (spec §3.3.4, `docs/architecture/effects.md`). Two independent rules,
   because either alone has a known hole: a **key rule** replaces any

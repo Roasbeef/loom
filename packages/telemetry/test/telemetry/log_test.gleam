@@ -16,6 +16,7 @@ import telemetry/context
 import telemetry/field
 import telemetry/level
 import telemetry/log
+import telemetry/owner
 import telemetry/record
 
 fn capture() -> #(log.Logger, process.Subject(record.Record)) {
@@ -115,7 +116,7 @@ pub fn adopting_stamps_the_context_on_this_process_test() {
   let reply = process.new_subject()
   let _pid =
     process.spawn_unlinked(fn() {
-      log.adopt(scoped)
+      log.adopt(scoped, owner.EffectWorker)
       process.send(reply, log.process_context())
     })
   let assert Ok(seen) = process.receive(reply, within: 2000)

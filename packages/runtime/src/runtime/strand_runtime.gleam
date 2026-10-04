@@ -139,6 +139,7 @@ import storage/storage
 import telemetry/context
 import telemetry/field
 import telemetry/log.{type Logger}
+import telemetry/owner
 import weft
 import weft/actor
 import weft/registry as address
@@ -445,8 +446,9 @@ pub fn start(
 
     // Every line this incarnation writes is correlated from here on;
     // the driver process itself also stamps the context so an OTP crash
-    // report about *this* process is not orphaned.
-    log.adopt(logger)
+    // report about *this* process is not orphaned. The same call labels the
+    // process with its session, strand and role for the ownership inspector.
+    log.adopt(logger, owner.StrandDriver)
 
     // The reaper performs the potentially long predecessor claim after it has
     // handed its command subject back to this initializer. The actor can
@@ -2161,7 +2163,13 @@ fn spawn_effect(
   let pid =
     process.spawn_unlinked(fn() {
       let self = process.self()
-      adopt_and_run(reaper, logger, fn() { process.kill(self) }, body)
+      adopt_and_run(
+        reaper,
+        logger,
+        owner.EffectWorker,
+        fn() { process.kill(self) },
+        body,
+      )
     })
   #(pid, fn() { process.kill(pid) })
 }
@@ -2179,9 +2187,13 @@ fn spawn_provider_effect(
     process.spawn_unlinked(fn() {
       let stop = process.new_subject()
       process.send(ready, stop)
-      adopt_and_run(reaper, logger, fn() { process.send(stop, Nil) }, fn() {
-        body(stop)
-      })
+      adopt_and_run(
+        reaper,
+        logger,
+        owner.ProviderEffectWorker,
+        fn() { process.send(stop, Nil) },
+        fn() { body(stop) },
+      )
     })
   let stop = process.receive_forever(ready)
   #(pid, fn() { process.send(stop, Nil) })
@@ -2190,6 +2202,7 @@ fn spawn_provider_effect(
 fn adopt_and_run(
   reaper: Reaper,
   logger: Logger,
+  role: owner.Role,
   stop: fn() -> Nil,
   body: fn() -> Nil,
 ) -> Nil {
@@ -2204,8 +2217,9 @@ fn adopt_and_run(
       case weft.adopt_leaf(ledger, owner: process.self(), cancel: stop) {
         weft.Adopted -> {
           // The context travels inside `body`; stamping it here also
-          // correlates a crash report emitted by this worker process.
-          log.adopt(logger)
+          // correlates a crash report emitted by this worker process and
+          // labels it with its owner and role for the ownership inspector.
+          log.adopt(logger, role)
           body()
         }
         weft.Refused -> Nil

@@ -5,7 +5,7 @@
 %% in `support/internal/ffi_format.gleam`.
 -module(telemetry_test_ffi).
 
--export([format_report/2, format_string/2]).
+-export([format_report/2, format_string/2, owner_label/0]).
 
 %% A loom-authored event: the message is a report carrying the already
 %% rendered JSON line under the `loom` key.
@@ -26,4 +26,14 @@ meta() ->
     case logger:get_process_metadata() of
         undefined -> #{};
         Map -> Map
+    end.
+
+%% What the calling process's label says, as the Gleam side's
+%% `Option(#(List(#(String, String)), String))`. Only a label of the
+%% frozen `{pickglass_owner, 1, Path, Role}` shape counts: anything else,
+%% or no label at all, is `none`, which is how the inspector reads it.
+owner_label() ->
+    case process_info(self(), label) of
+        {label, {pickglass_owner, 1, Path, Role}} -> {some, {Path, Role}};
+        _ -> none
     end.
