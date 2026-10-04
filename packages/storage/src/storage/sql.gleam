@@ -620,6 +620,7 @@ pub type FindRegistrations {
     session_id: String,
     path: String,
     workspace: String,
+    workspace_binding: Option(String),
     name: String,
     configuration: String,
     created_at: Int,
@@ -635,7 +636,7 @@ pub fn find_registrations(
   path path: String,
 ) {
   let sql =
-    "SELECT session_id, path, workspace, name, configuration, created_at, request_key, state, profile
+    "SELECT session_id, path, workspace, workspace_binding, name, configuration, created_at, request_key, state, profile
 FROM catalogue_sessions
 WHERE session_id = ? OR request_key = ? OR path = ?"
   #(
@@ -653,16 +654,18 @@ pub fn find_registrations_decoder() -> decode.Decoder(FindRegistrations) {
   use session_id <- decode.field(0, decode.string)
   use path <- decode.field(1, decode.string)
   use workspace <- decode.field(2, decode.string)
-  use name <- decode.field(3, decode.string)
-  use configuration <- decode.field(4, decode.string)
-  use created_at <- decode.field(5, decode.int)
-  use request_key <- decode.field(6, decode.string)
-  use state <- decode.field(7, decode.string)
-  use profile <- decode.field(8, decode.string)
+  use workspace_binding <- decode.field(3, decode.optional(decode.string))
+  use name <- decode.field(4, decode.string)
+  use configuration <- decode.field(5, decode.string)
+  use created_at <- decode.field(6, decode.int)
+  use request_key <- decode.field(7, decode.string)
+  use state <- decode.field(8, decode.string)
+  use profile <- decode.field(9, decode.string)
   decode.success(FindRegistrations(
     session_id:,
     path:,
     workspace:,
+    workspace_binding:,
     name:,
     configuration:,
     created_at:,
@@ -684,12 +687,42 @@ pub fn insert_registration(
 ) {
   let sql =
     "INSERT INTO catalogue_sessions
-  (session_id, path, workspace, name, configuration, created_at, request_key, state, profile)
-VALUES (?, ?, ?, ?, ?, ?, ?, 'reserved', ?)"
+  (session_id, path, workspace, workspace_binding, name, configuration, created_at, request_key, state, profile)
+VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 'reserved', ?)"
   #(sql, [
     dev.ParamString(session_id),
     dev.ParamString(path),
     dev.ParamString(workspace),
+    dev.ParamString(name),
+    dev.ParamString(configuration),
+    dev.ParamInt(created_at),
+    dev.ParamString(request_key),
+    dev.ParamString(profile),
+  ])
+}
+
+pub fn insert_registered_registration(
+  session_id session_id: String,
+  path path: String,
+  workspace workspace: String,
+  workspace_binding workspace_binding: Option(String),
+  name name: String,
+  configuration configuration: String,
+  created_at created_at: Int,
+  request_key request_key: String,
+  profile profile: String,
+) {
+  let sql =
+    "INSERT INTO catalogue_sessions
+  (session_id, path, workspace, workspace_binding, name, configuration, created_at, request_key, state, profile)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?)"
+  #(sql, [
+    dev.ParamString(session_id),
+    dev.ParamString(path),
+    dev.ParamString(workspace),
+    dev.ParamNullable(
+      option.map(workspace_binding, fn(v) { dev.ParamString(v) }),
+    ),
     dev.ParamString(name),
     dev.ParamString(configuration),
     dev.ParamInt(created_at),
@@ -764,6 +797,7 @@ pub type RegistrationPage {
     session_id: String,
     path: String,
     workspace: String,
+    workspace_binding: Option(String),
     name: String,
     configuration: String,
     created_at: Int,
@@ -776,7 +810,7 @@ pub type RegistrationPage {
 
 pub fn registration_page(after after: String, archived archived: Int) {
   let sql =
-    "SELECT s.session_id, s.path, s.workspace, CAST(COALESCE(n.name, s.name) AS TEXT) AS name,
+    "SELECT s.session_id, s.path, s.workspace, s.workspace_binding, CAST(COALESCE(n.name, s.name) AS TEXT) AS name,
        s.configuration, s.created_at, s.request_key, s.state, s.profile, t.subtitle
 FROM catalogue_sessions AS s
 LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
@@ -797,17 +831,19 @@ pub fn registration_page_decoder() -> decode.Decoder(RegistrationPage) {
   use session_id <- decode.field(0, decode.string)
   use path <- decode.field(1, decode.string)
   use workspace <- decode.field(2, decode.string)
-  use name <- decode.field(3, decode.string)
-  use configuration <- decode.field(4, decode.string)
-  use created_at <- decode.field(5, decode.int)
-  use request_key <- decode.field(6, decode.string)
-  use state <- decode.field(7, decode.string)
-  use profile <- decode.field(8, decode.string)
-  use subtitle <- decode.field(9, decode.optional(decode.string))
+  use workspace_binding <- decode.field(3, decode.optional(decode.string))
+  use name <- decode.field(4, decode.string)
+  use configuration <- decode.field(5, decode.string)
+  use created_at <- decode.field(6, decode.int)
+  use request_key <- decode.field(7, decode.string)
+  use state <- decode.field(8, decode.string)
+  use profile <- decode.field(9, decode.string)
+  use subtitle <- decode.field(10, decode.optional(decode.string))
   decode.success(RegistrationPage(
     session_id:,
     path:,
     workspace:,
+    workspace_binding:,
     name:,
     configuration:,
     created_at:,
@@ -837,6 +873,7 @@ pub type MemberRegistrationPage {
     session_id: String,
     path: String,
     workspace: String,
+    workspace_binding: Option(String),
     name: String,
     configuration: String,
     created_at: Int,
@@ -852,7 +889,7 @@ pub fn member_registration_page(
   session_id session_id: String,
 ) {
   let sql =
-    "SELECT s.session_id, s.path, s.workspace, CAST(COALESCE(n.name, s.name) AS TEXT) AS name, s.configuration,
+    "SELECT s.session_id, s.path, s.workspace, s.workspace_binding, CAST(COALESCE(n.name, s.name) AS TEXT) AS name, s.configuration,
        s.created_at, s.request_key, s.state, s.profile, t.subtitle
 FROM access_memberships AS m
 JOIN catalogue_sessions AS s ON s.session_id = m.session_id
@@ -877,17 +914,19 @@ pub fn member_registration_page_decoder() -> decode.Decoder(
   use session_id <- decode.field(0, decode.string)
   use path <- decode.field(1, decode.string)
   use workspace <- decode.field(2, decode.string)
-  use name <- decode.field(3, decode.string)
-  use configuration <- decode.field(4, decode.string)
-  use created_at <- decode.field(5, decode.int)
-  use request_key <- decode.field(6, decode.string)
-  use state <- decode.field(7, decode.string)
-  use profile <- decode.field(8, decode.string)
-  use subtitle <- decode.field(9, decode.optional(decode.string))
+  use workspace_binding <- decode.field(3, decode.optional(decode.string))
+  use name <- decode.field(4, decode.string)
+  use configuration <- decode.field(5, decode.string)
+  use created_at <- decode.field(6, decode.int)
+  use request_key <- decode.field(7, decode.string)
+  use state <- decode.field(8, decode.string)
+  use profile <- decode.field(9, decode.string)
+  use subtitle <- decode.field(10, decode.optional(decode.string))
   decode.success(MemberRegistrationPage(
     session_id:,
     path:,
     workspace:,
+    workspace_binding:,
     name:,
     configuration:,
     created_at:,
