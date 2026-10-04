@@ -619,3 +619,56 @@ recovery queries that original UUID; it cannot select another wall, re-clear
 or renew authority. The extended preparation model checks these transitions;
 production resource custody and separate-host acceptance must establish their
 implementation separately.
+
+## Addendum: concrete compiler and launch inputs
+
+Remote program compilation uses a provisioned contract for each enabled
+Workspace or Orchestration program seam. That contract pins the complete
+enrollment, the host's actual effective vetting policy, the fixed ordered
+dependency table and the approved generated-module catalogue. The owner and
+executor receive those values through trusted setup. A peer-selected seam
+name or import list cannot widen them. Extension and resident loaders retain
+their separate admission contracts.
+
+Compile input contains the exact program text, its ordered selection of
+generated module names and source, dependencies, original policy seed and
+positive build timeout. The executor re-vets the source with the provisioned
+policy. It filters the trusted catalogue by the resulting imports and requires
+exact ordered equality with the submitted generated selection. Comparing
+module names alone would admit changed privileged prelude code. The fixed
+entry module, project table and seed layout remain implementation-owned.
+
+The input body has a version byte, a closed role byte, a big-endian u32
+enrollment length and canonical enrollment bytes, then a big-endian u32
+metadata length and canonical MessagePack metadata. Compile source bodies
+follow in metadata-declared order as exact UTF-8 bytes. Launch has no source
+bodies. The enrollment and metadata together may occupy at most 256 KiB;
+each segment passes its bounded decoder before any body is parsed. Selected
+generated modules are limited to 128, and launch environment pairs to 64.
+
+The existing service envelope remains limited to 9 MiB, including its
+four-byte header length and canonical service-key header of at most 8 KiB.
+Every source body consumes that aggregate allowance. A source body is not a
+metadata string and therefore does not inherit the metadata string ceiling.
+The decoder checks declared counts, lengths and their exact sum before UTF-8
+conversion or vetting. Unknown versions, noncanonical segments, truncation,
+invalid UTF-8 and trailing bytes refuse. The request digest covers the exact
+canonical input body, excluding the outer header that contains that digest.
+
+Launch input retains the complete producing Compile service key, every field
+of its executor-issued artifact, original environment, relative cwd, policy
+seed and the commitment to the original 32-byte capability token. It contains
+no raw token, local Artifact, owner grants, budget or renewed deadline. Before
+preparation, admission requires the original retained successful Compile
+completion and exact artifact equality. Prepared compile locations alone are
+insufficient. Artifact operation and step match the Compile service's physical
+coordinates; Compile and Launch must share the complete original parent but
+may have different physical steps.
+
+Syntax validation and input decoding grant no resource or execution authority.
+The resource service must recompute the input digest, enforce the pinned
+contract, commit preparation intent and retain the original successful Compile
+evidence. It resolves the artifact only in the producing allocation and checks
+the physical fingerprint before launch. Input limits bound retained bytes;
+they do not establish an equal BEAM memory bound or a parser CPU bound.
+Managed preparation remains subject to the original service deadline.
