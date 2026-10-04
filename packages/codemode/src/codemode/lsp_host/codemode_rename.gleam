@@ -1,16 +1,17 @@
-//// The applied rename code mode's `lsp.rename` reaches, composed where the
-//// write authority lives.
+//// The applied rename code mode's `lsp.rename` reaches, composed beside the
+//// physical workspace with the execution's admitted write authority.
 ////
-//// # Why the client composes it
+//// # Why the physical host composes it
 ////
 //// `codemode/lsp` serves `lsp.rename` with `mode: apply` by calling a
 //// closure it is handed and never by writing a file itself (its module
 //// doc). Somebody has to build that closure out of three things that live
 //// in three places: the door's `prepare_rename`, which computes every
 //// file's edited text and writes nothing; `tools/lsp.land`, the one
-//// hashline landing the `lsp_rename` tool also uses; and the write
-//// boundary a code-mode program is held to. Only the client holds all
-//// three, so this module is where they meet (ADR-015 §4 and §6).
+//// hashline landing shared by rename callers; and the write boundary a
+//// code-mode program is held to. The physical host combines those inputs
+//// so lookup and landing use the same workspace. The owner client remains
+//// the current local constructor (ADR-015 §4 and §6).
 ////
 //// # Which write boundary
 ////
