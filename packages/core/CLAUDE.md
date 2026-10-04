@@ -208,3 +208,20 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
 binary data, non-text or duplicate object keys, and excessive nesting on the
 msgpack-to-JSON path. The satellite report helpers and host note/orchestration
 routers share this pure conversion.
+
+## Remote tool identity (protocol 067)
+
+`core/remote_tool.ToolKey` is opaque and contains the session, operation,
+step, source index, canonical effective-argument SHA-256 digest and reserved
+result-entry identity. Its logical address excludes the digest and result ID
+so a changed immutable identity finds the existing fence and conflicts. The
+owner computes the hash with an existing effect-layer facility; this module
+adds no I/O, FFI or BEAM dependency. Names, digest spelling and indices are
+bounded before construction. `ChildOrigin` distinguishes compile, launch,
+capability ordinal and explicit system service origins; connection generation
+is absent from both tool and child identity.
+
+Parent tool steps validate with `core/workspace.step` and its 1024-byte UTF-8
+bound; explicit system service names retain their independent 128-byte bound.
+`remote_tool.operation` and `remote_tool.step` expose original parent coordinates
+for broker clearance without deriving them from physical child operation names.
