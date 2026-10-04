@@ -45,6 +45,7 @@ import core/message
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import session_view/text_hygiene
 import session_view/todo_board
@@ -273,8 +274,8 @@ pub fn change_text(change: Option(Change)) -> String {
   }
 }
 
-/// The first capability a `code_mode` program calls, with its first string
-/// argument when it has one: `fs.read calc.py`. `None` when the program
+/// The first capability a `code_mode` program calls, with its first argument
+/// when that is a string literal: `fs.read calc.py`. `None` when the program
 /// imports no capability module or calls none in its first lines.
 ///
 /// A capability is a module the program imports from the prelude
@@ -442,16 +443,7 @@ fn called(
   |> list.filter_map(fn(pair) { call_in(line, pair.0, pair.1) })
   |> list.sort(fn(a, b) { int.compare(a.0, b.0) })
   |> list.first
-  |> result_map_second
-}
-
-fn result_map_second(
-  found: Result(#(Int, String), Nil),
-) -> Result(String, Nil) {
-  case found {
-    Ok(#(_, words)) -> Ok(words)
-    Error(Nil) -> Error(Nil)
-  }
+  |> result.map(fn(pair) { pair.1 })
 }
 
 // One module's first call on a line, with where on the line it stood.
@@ -464,7 +456,9 @@ fn call_in(
     Error(Nil) -> Error(Nil)
     Ok(#(before, after)) ->
       case name_ends(before), take_name(after) {
-        True, _ -> call_in(after, local, module) |> shifted(before)
+        True, _ ->
+          call_in(after, local, module)
+          |> shifted(string.length(before) + string.length(local) + 1)
         False, #("", _) -> Error(Nil)
         False, #(function, rest) ->
           case string.starts_with(rest, "(") {
@@ -480,16 +474,13 @@ fn call_in(
 }
 
 // A match inside a longer name (`profs.` for `fs.`) is not a call of the
-// module; the search goes on after it, and its position is moved past what
-// was skipped.
+// module; the search goes on after it, and its position is moved past the
+// `skipped` characters it left behind.
 fn shifted(
   found: Result(#(Int, String), Nil),
-  skipped: String,
+  skipped: Int,
 ) -> Result(#(Int, String), Nil) {
-  case found {
-    Ok(#(at, words)) -> Ok(#(at + string.length(skipped) + 1, words))
-    Error(Nil) -> Error(Nil)
-  }
+  result.map(found, fn(pair) { #(pair.0 + skipped, pair.1) })
 }
 
 // Whether text ends in a character a name can contain.
@@ -500,16 +491,18 @@ fn name_ends(before: String) -> Bool {
   }
 }
 
-// The first string literal in the arguments that follow a call's name, as
-// ` literal`, or nothing when the call's first argument is not a literal.
+// The call's first argument, when it is a string literal: ` literal`. Only
+// the first argument is read, so a call whose first argument is a name or an
+// expression says no argument, and a later call on the same line is not
+// mistaken for this one's.
 fn argument(rest: String) -> String {
-  case string.split_once(rest, "\"") {
-    Ok(#(_, after)) ->
+  case string.trim_start(string.drop_start(rest, 1)) {
+    "\"" <> after ->
       case string.split_once(after, "\"") {
         Ok(#("", _)) | Error(Nil) -> ""
         Ok(#(literal, _)) -> " " <> path(text_hygiene.single_line(literal))
       }
-    Error(Nil) -> ""
+    _ -> ""
   }
 }
 

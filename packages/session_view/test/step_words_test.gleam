@@ -205,3 +205,29 @@ pub fn a_huge_tool_or_function_name_is_clipped_test() {
     step_words.of_call(called("code_mode", [#("program", text(program))], None))
   assert string.length(shown) == step_words.subject_limit
 }
+
+// Only the call's own first argument is read: a name or an expression there
+// says no argument, and a literal belonging to a later call is not taken.
+pub fn only_the_calls_own_first_argument_is_read_test() {
+  assert step_words.first_call(
+      "import cap/fs\nimport cap/proc\n\npub fn main() {\n  fs.read(path); proc.run(\"ls\")\n}",
+    )
+    == Some("fs.read")
+  assert step_words.first_call(
+      "import cap/fs\n\npub fn main() {\n  fs.read(name <> \".txt\")\n}",
+    )
+    == Some("fs.read")
+  assert step_words.first_call(
+      "import cap/fs\n\npub fn main() {\n  fs.read( \"calc.py\" )\n}",
+    )
+    == Some("fs.read calc.py")
+}
+
+// A longer name that merely ends in the module's name is skipped, and the real
+// call after it still wins over a later module on the line.
+pub fn a_skipped_longer_name_does_not_reorder_the_calls_test() {
+  assert step_words.first_call(
+      "import cap/fs\nimport cap/proc\n\npub fn main() {\n  profs.x(1) fs.read(\"a\") proc.run(\"b\")\n}",
+    )
+    == Some("fs.read a")
+}
