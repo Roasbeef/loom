@@ -1089,27 +1089,33 @@ fn sessions_usage() -> String {
   <> "  session the daemon still holds open; stop it first"
 }
 
-/// What `loom ui` was asked for: the daemon options, the session to link,
-/// which page to link, and whether to open the link as well as print it.
+/// What `loom ui` was asked for: the daemon options, the session to link
+/// (`None` for the home page, protocol-change/065), which page to link, and
+/// whether to open the link as well as print it.
 @internal
 pub type ViewRequest {
   ViewRequest(
     options: bootstrap.Options,
-    session: String,
+    session: Option(String),
     page: control_protocol.WebPage,
     delivery: view_link.Delivery,
   )
 }
 
 /// Parses the words after `loom ui` (or what is left of argv once `--ui`
-/// is taken out): `--session <id>`, an optional `--operate`, an optional
-/// `--open`, and the shared local options `--state-dir`, `--config`,
-/// `--server` and `--workspace`, in any order.
-/// `--operate` asks for an operator's page; the daemon still caps it with
-/// the principal's membership.
+/// is taken out): an optional `--session <id>`, an optional `--operate` or
+/// `--observe`, an optional `--open`, and the shared local options
+/// `--state-dir`, `--config`, `--server` and `--workspace`, in any order.
 ///
-/// The two switches are taken out first because they have no value, and
-/// the local option parser reads its arguments in flag-and-value pairs.
+/// With no `--session` the request is for the home page, which is a link for
+/// oneself and so an operator's page unless `--observe` asks for a read-only
+/// one. With `--session` it is that session's page, which is the link a
+/// person hands to someone else and so is read-only unless `--operate` asks
+/// for an operator's. In both the daemon still caps the page with the
+/// principal's membership. `--operate` and `--observe` together are refused.
+///
+/// The switches are taken out first because they have no value, and the local
+/// option parser reads its arguments in flag-and-value pairs.
 ///
 /// ## Examples
 ///
@@ -1117,29 +1123,73 @@ pub type ViewRequest {
 /// let assert Ok(request) = tui.view_request(["--session", "s", "--open"])
 /// assert request.delivery == view_link.OpenInBrowser
 /// assert request.page == control_protocol.ObserverPage
+/// let assert Ok(home) = tui.view_request(["--open"])
+/// assert home.session == None
+/// assert home.page == control_protocol.OperatorPage
 /// ```
 @internal
 pub fn view_request(arguments: List(String)) -> Result(ViewRequest, String) {
-  let #(page, arguments) = case take_switch(arguments, "--operate") {
-    #(True, remaining) -> #(control_protocol.OperatorPage, remaining)
-    #(False, remaining) -> #(control_protocol.ObserverPage, remaining)
+  let #(operate, arguments) = take_switch(arguments, "--operate")
+  let #(observe, arguments) = take_switch(arguments, "--observe")
+  let #(open, rest) = take_switch(arguments, "--open")
+  let delivery = case open {
+    True -> view_link.OpenInBrowser
+    False -> view_link.PrintLink
   }
-  let #(delivery, rest) = case take_switch(arguments, "--open") {
-    #(True, remaining) -> #(view_link.OpenInBrowser, remaining)
-    #(False, remaining) -> #(view_link.PrintLink, remaining)
+  use session <- result.try(view_session(rest))
+  let asked = case operate, observe {
+    True, True -> AskedBoth
+    True, False -> AskedOperator
+    False, True -> AskedObserver
+    False, False -> AskedNeither
   }
-  case session_control.flag_value(rest, "--session") {
-    Error(_) -> Error("loom ui needs --session <id>\n" <> ui_usage())
-    Ok(session) ->
-      case
-        parse_local_options(
-          without_flag(rest, "--session"),
-          default_bootstrap_options(),
-        )
-      {
-        Ok(options) -> Ok(ViewRequest(options:, session:, page:, delivery:))
-        Error(reason) -> Error(reason <> "\n" <> ui_usage())
-      }
+  use page <- result.try(view_page(session, asked))
+  case
+    parse_local_options(
+      without_flag(rest, "--session"),
+      default_bootstrap_options(),
+    )
+  {
+    Ok(options) -> Ok(ViewRequest(options:, session:, page:, delivery:))
+    Error(reason) -> Error(reason <> "\n" <> ui_usage())
+  }
+}
+
+// The session `--session` names, or none for the home. A `--session` with no
+// value after it is an error, so a forgotten id is never read as a request
+// for the home.
+fn view_session(arguments: List(String)) -> Result(Option(String), String) {
+  case list.contains(arguments, "--session") {
+    False -> Ok(None)
+    True ->
+      session_control.flag_value(arguments, "--session")
+      |> result.map(Some)
+      |> result.replace_error(
+        "loom ui needs a session id after --session\n" <> ui_usage(),
+      )
+  }
+}
+
+// Which of the two ceiling switches `loom ui` was given.
+type PageAsked {
+  AskedOperator
+  AskedObserver
+  AskedBoth
+  AskedNeither
+}
+
+// The page's ceiling: the home is an operator's page unless `--observe`, and a
+// session's an observer's unless `--operate`, as `view_request` says why.
+fn view_page(
+  session: Option(String),
+  asked: PageAsked,
+) -> Result(control_protocol.WebPage, String) {
+  case asked, session {
+    AskedBoth, _ ->
+      Error("loom ui takes --operate or --observe, not both\n" <> ui_usage())
+    AskedOperator, _ | AskedNeither, None -> Ok(control_protocol.OperatorPage)
+    AskedObserver, _ | AskedNeither, Some(_) ->
+      Ok(control_protocol.ObserverPage)
   }
 }
 
@@ -1153,7 +1203,8 @@ fn without_flag(arguments: List(String), flag: String) -> List(String) {
 
 // Resolves the daemon (starting it with `--ui` when none runs), refuses a
 // running daemon that does not serve the view, opens the session if it is
-// not resident, and prints the link its `ui.link` returns. It never stops
+// not resident (a home link names none), and prints the link its `ui.link`
+// returns. It never stops
 // or relaunches a running daemon: other people's terminals may be on it.
 //
 // Once the link is minted the command succeeds whatever the opener does.
@@ -1176,7 +1227,7 @@ fn run_view(request: ViewRequest) -> Nil {
         connected.paths.token,
         control,
       ))
-      use _target <- result.try(daemon_selection.open(host, session))
+      use Nil <- result.try(opened_for_link(host, session))
       use reply <- result.try(
         daemon.request(control, control_protocol.UiLink(session, page), 5000)
         |> result.map_error(daemon_selection.failure),
@@ -1202,6 +1253,15 @@ fn run_view(request: ViewRequest) -> Nil {
       ffi_terminal.halt(1)
       Nil
     }
+  }
+}
+
+// A session's link needs the session to be resident, so it is opened first. The
+// home is bound to no session and opens none.
+fn opened_for_link(host, session: Option(String)) -> Result(Nil, String) {
+  case session {
+    None -> Ok(Nil)
+    Some(id) -> daemon_selection.open(host, id) |> result.replace(Nil)
   }
 }
 
@@ -1577,11 +1637,12 @@ fn launch_usage() -> String {
   <> "  update [TAG|COMMIT]  Install a release and restart the daemon.\n"
   <> "  replay <path>       Render a recorded terminal session.\n"
   <> "  sessions list|rm    List or remove saved sessions.\n"
-  <> "  ui --session <id> [--operate] [--open]\n"
-  <> "                      Print a link to the session's web view; read-only\n"
-  <> "                      unless --operate, which lets an operator act.\n"
-  <> "                      --open also opens it in the default browser.\n"
-  <> "                      --ui is still accepted as another spelling.\n"
+  <> "  ui [--session <id>] [--operate | --observe] [--open]\n"
+  <> "                      Print a link to your home page (sessions by\n"
+  <> "                      workspace), or with --session to one session,\n"
+  <> "                      which is read-only unless --operate. --open also\n"
+  <> "                      opens it in the default browser. --ui is still\n"
+  <> "                      accepted as another spelling.\n"
   <> "  access <command>    Owner access: list, show, invite, rotate, revoke.\n"
   <> "                      Runs against the local daemon, or a remote one\n"
   <> "                      with --addr and --token-file.\n"
@@ -1599,12 +1660,16 @@ fn launch_usage() -> String {
 }
 
 fn ui_usage() -> String {
-  "usage: loom ui --session <id> [--operate] [--open] "
+  "usage: loom ui [--session <id>] [--operate | --observe] [--open] "
   <> "[--state-dir <path>] [--config <loom.toml>] [--server <path>]\n"
-  <> "  Print a link to the session's web view, starting a daemon that serves\n"
-  <> "  it when none runs. The page is read-only unless --operate asks for an\n"
-  <> "  operator's; --open also opens it in the default browser. Options may\n"
-  <> "  come in any order. `loom --ui ...` is the same command."
+  <> "  Print a link to the web view, starting a daemon that serves it when\n"
+  <> "  none runs. With no --session the link opens your home page, which\n"
+  <> "  lists your sessions by workspace and is an operator's page unless\n"
+  <> "  --observe asks for a read-only one. With --session it opens that\n"
+  <> "  session, read-only unless --operate asks for an operator's, which is\n"
+  <> "  the link to hand to someone who may only watch. --open also opens the\n"
+  <> "  link in the default browser. Options may come in any order.\n"
+  <> "  `loom --ui ...` is the same command."
 }
 
 fn replay_usage() -> String {
