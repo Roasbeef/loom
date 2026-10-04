@@ -743,7 +743,7 @@ runs on its own spawned process. `client/wiring.run_tool` builds a fresh
 registry (`run_tool`, `client/wiring.gleam:1745`). All four come from the driver, so a
 model that names another strand in its arguments does not become it.
 
-`tool.dispatch` is total (`tools/tool.gleam:659`): an unknown name yields
+`tool.dispatch` is total (`tools/tool.gleam:726`): an unknown name yields
 an in-band error result rather than a crash, and so does every other
 failure a tool can meet. Tool failures are **data**. That is what makes
 "tools never crash the strand" a structural claim rather than a
