@@ -119,8 +119,12 @@ pub fn every_pane_is_drawn_in_a_fixed_order_on_both_pages_test() {
       "pane pane-changes",
       "pane pane-session",
     ])
-    assert count(panel, "<section") == 3
   })
+
+  // The operator's Session pane also holds its controls, a section of their
+  // own after the invitation control's place.
+  assert count(panel_of(operator(quiet())), "<section") == 4
+  assert count(panel_of(observer(quiet())), "<section") == 3
 }
 
 // The panel is the last child of the frame: nothing is drawn after it, so a
@@ -174,10 +178,12 @@ pub fn the_panel_carries_no_decision_control_test() {
   assert !string.contains(panel, "approval-")
   assert !string.contains(panel, "Allow")
   assert !string.contains(panel, "Deny")
-  assert !string.contains(panel, "<form")
   assert !string.contains(panel, "<textarea")
-  assert !string.contains(panel, "<input")
-  assert count(panel, "<button") == count(panel, "chip-hit")
+
+  // The Session pane's Fork form is the one other control, and it decides
+  // nothing: its submit is the only button that is not a strand's card.
+  assert count(panel, "<button") == count(panel, "chip-hit") + 1
+  assert count(panel, "<form") == 1
 }
 
 // An observer has no dock and no card, and its panel still names the strand

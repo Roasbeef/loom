@@ -329,7 +329,8 @@ fn piece_key(piece: turns.Piece) -> String {
     | turns.Nudged(key:, ..)
     | turns.Peer(key:, ..)
     | turns.Sibling(key:, ..)
-    | turns.Missed(key:, ..) -> key
+    | turns.Missed(key:, ..)
+    | turns.Decided(key:, ..) -> key
   }
 }
 
@@ -362,10 +363,10 @@ fn timeline_row(
 // session's message is nobody's here.
 fn belongs_to(piece: turns.Piece, marks: Marks) -> #(turns.Hue, Option(Int)) {
   case piece {
-    turns.Plain(..)
-    | turns.Work(..)
-    | turns.Missed(..)
-    | turns.Decided(..) -> #(marks.hue, None)
+    turns.Plain(..) | turns.Work(..) | turns.Missed(..) | turns.Decided(..) -> #(
+      marks.hue,
+      None,
+    )
     turns.Spawned(child:, hue:, ..) -> #(
       hue,
       option.then(child, position(marks, _)),

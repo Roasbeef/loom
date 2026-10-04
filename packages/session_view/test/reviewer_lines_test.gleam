@@ -5,12 +5,21 @@ import gleam/list
 import gleam/string
 import session_view/reviewer_status.{Row}
 
-const feed = "[advisor feed: what the primary did since your last review] user: Write the single line and then keep going for a long while"
+const feed =
+  "[advisor feed: what the primary did since your last review] user: Write the single line and then keep going for a long while"
 
 pub fn the_advisor_row_never_prints_its_feed_test() {
   let lines =
     reviewer_status.lines(
-      [Row("advisor", "op-1", feed, "assistant", "1 received, awaiting delivery")],
+      [
+        Row(
+          "advisor",
+          "op-1",
+          feed,
+          "assistant",
+          "1 received, awaiting delivery",
+        ),
+      ],
       "main",
     )
   assert lines
@@ -49,7 +58,8 @@ pub fn a_brief_with_no_sentence_end_is_cut_at_the_bound_test() {
 
 pub fn an_idle_advisor_has_no_row_on_a_page_test() {
   let idle = Row("advisor", "op-1", feed, "assistant", "no pending input")
-  let waiting = Row("advisor", "op-1", feed, "assistant", "1 received, awaiting delivery")
+  let waiting =
+    Row("advisor", "op-1", feed, "assistant", "1 received, awaiting delivery")
   let sub = Row("sub:tests", "op-2", "Review it.", "bash", "no pending input")
   assert reviewer_status.without_idle_advisor([idle, sub]) == [sub]
   assert reviewer_status.without_idle_advisor([waiting]) == [waiting]

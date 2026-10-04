@@ -47,8 +47,7 @@ pub fn the_goal_head_is_offered_and_continues_test() {
   let assert Ok(head) =
     list.find(completion.rows(), fn(row) { row.command == "/goal" })
   assert head.takes_argument
-  assert head.description
-    == "show status; add a space for goal actions"
+  assert head.description == "show status; add a space for goal actions"
   assert string.contains(completion.table(), "\"c\":\"/goal\"")
 }
 

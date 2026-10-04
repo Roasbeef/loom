@@ -181,6 +181,13 @@ fn dock(html: String) -> String {
   dock
 }
 
+// The Session pane's markup, from its opening to the end of the page.
+fn session_pane(html: String) -> String {
+  let assert Ok(#(_, pane)) = string.split_once(html, "pane pane-session")
+    as "the page draws a Session pane"
+  pane
+}
+
 fn simulation(model) {
   simulate.application(
     init: fn(_) { #(model, effect.none()) },
@@ -399,23 +406,47 @@ fn pinned(status: String, reason: json.JsonValue) -> Boards {
   Boards(nudges: None, goal: Some(goal_board(status, reason)))
 }
 
-// A running goal can be held or cleared, and the row that offers them is
-// armed, so a click that was heading for another control cannot land on one.
-pub fn a_running_goal_offers_pause_and_clear_test() {
+// A running goal has one line in the dock, with the button that holds it,
+// and the row that offers it is armed, so a click that was heading for
+// another control cannot land on one. Clear and Fork are in the Session tab.
+pub fn a_running_goal_offers_pause_in_the_dock_and_clear_in_the_tab_test() {
   let #(model, _) = page("operator", pinned("active", json.Null))
   let html = drawn(model)
   assert in_order(dock(html), [
-    "class=\"controls\"",
-    "class=\"control-goal\"",
+    "class=\"dock-goal\"",
     "class=\"control-actions arming\"",
     "goal active",
     "get &lt;b&gt;the&lt;/b&gt; branch green",
     "Pause goal",
-    "Clear goal",
     "class=\"composer\"",
+  ])
+  assert !string.contains(dock(html), "Clear goal")
+  assert !string.contains(dock(html), "control-fork")
+  assert in_order(session_pane(html), [
+    "class=\"controls\"",
+    "class=\"control-goal\"",
+    "class=\"control-actions arming\"",
+    "Pause goal",
+    "Clear goal",
+    "control-fork",
   ])
   assert !string.contains(html, "Resume goal")
   assert !string.contains(html, "get <b>the</b>")
+}
+
+// With no goal, or one that is finished, the dock holds the todo line and the
+// composer only: nothing to steer, so no line.
+pub fn the_dock_holds_no_goal_line_unless_a_goal_is_running_or_held_test() {
+  let #(model, _) = page("operator", nothing())
+  assert !string.contains(dock(drawn(model)), "control")
+  assert !string.contains(dock(drawn(model)), "dock-goal")
+  assert string.contains(session_pane(drawn(model)), "control-fork")
+
+  let #(model, _) = page("operator", pinned("complete", json.Null))
+  assert !string.contains(dock(drawn(model)), "dock-goal")
+
+  let #(model, _) = page("operator", pinned("paused", json.String("operator")))
+  assert in_order(dock(drawn(model)), ["dock-goal", "Resume goal"])
 }
 
 pub fn a_held_goal_offers_resume_and_clear_test() {
@@ -469,7 +500,7 @@ pub fn pressing_pause_in_the_page_sends_the_command_test() {
   // The simulator drops the effect that writes the frame, so what shows is
   // the step's own record that the command went out.
   assert component.notice(simulate.model(clicked))
-    == component.Said("goal_pause sent")
+    == component.Said("Pausing the goal")
 }
 
 // The page draws no Stop button, whether the strand is idle or running: the
@@ -507,7 +538,7 @@ pub fn the_fork_form_is_a_submit_the_page_carries_test() {
     ])
   assert component.sent_forms(simulate.model(submitted)) == 1
   assert component.notice(simulate.model(submitted))
-    == component.Said("fork sent")
+    == component.Said("Forking")
 
   let refused =
     simulation(model)
@@ -670,18 +701,18 @@ pub fn an_observer_page_draws_no_controls_test() {
   assert list.all(handlers(component.view(model)), is_chip_click)
 }
 
-// The bar sits above the approvals and the composer in the dock, and the
-// approvals stay directly above the composer.
-pub fn the_bar_is_in_the_dock_above_the_approvals_test() {
+// The approvals stay directly above the composer in the dock, and the
+// session controls are in the Session pane, after the invitation control's
+// place, which is the pane's third child.
+pub fn the_controls_leave_the_dock_for_the_session_pane_test() {
   let #(model, _) =
     page_with("operator", nothing(), [
       page_fixture.escalation("esc-1", 7, "fs_write", "write the file"),
     ])
-  assert in_order(dock(drawn(model)), [
-    "class=\"controls\"",
-    "class=\"approvals\"",
-    "class=\"composer\"",
-  ])
+  let html = drawn(model)
+  assert in_order(dock(html), ["class=\"approvals\"", "class=\"composer\""])
+  assert !string.contains(dock(html), "class=\"controls\"")
+  assert string.contains(session_pane(html), "class=\"controls\"")
 }
 
 // The controls add no event the socket did not already admit.

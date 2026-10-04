@@ -840,7 +840,13 @@ pub fn framing_text_without_a_strand_origin_never_becomes_a_sibling_test() {
 // newer than every piece goes last.
 pub fn a_decision_line_is_placed_by_its_sequence_test() {
   let decide = fn(seq, verdict) {
-    decisions.Decision(seq:, strand: "main", who: "Owner", verdict:, tool: "bash")
+    decisions.Decision(
+      seq:,
+      strand: "main",
+      who: "Owner",
+      verdict:,
+      tool: "bash",
+    )
   }
   let laid =
     pieces([])

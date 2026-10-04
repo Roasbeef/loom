@@ -20,7 +20,7 @@
 //// fall back on `done`, which is the one place the command table lives.
 
 /// The words for a command that has just been written to the wire and has
-/// not been answered. Most are the plain fact that the command went; a goal
+/// not been answered. Most say only that the command is on its way; a goal
 /// command, which the server answers within a round trip, says what is being
 /// done.
 ///
@@ -28,7 +28,7 @@
 ///
 /// ```gleam
 /// assert notice_words.sent("goal_set") == "Pinning the goal"
-/// assert notice_words.sent("notes") == "Sent"
+/// assert notice_words.sent("notes") == "Sending"
 /// ```
 pub fn sent(command: String) -> String {
   case command {
@@ -42,7 +42,7 @@ pub fn sent(command: String) -> String {
     "deny" -> "Denying"
     "approve" -> "Allowing"
     "abort" -> "Stopping"
-    _ -> "Sent"
+    _ -> "Sending"
   }
 }
 

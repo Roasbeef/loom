@@ -82,13 +82,8 @@ pub fn from_cells(
 
 // One cell as a decision for `strand`, or nothing: a record that does not
 // decode, one still pending, and one raised on another strand are skipped.
-fn decision(
-  cell: snapshot_view.Cell,
-  strand: String,
-) -> Result(Decision, Nil) {
-  use review <- result.try(
-    approval.decode(cell) |> result.replace_error(Nil),
-  )
+fn decision(cell: snapshot_view.Cell, strand: String) -> Result(Decision, Nil) {
+  use review <- result.try(approval.decode(cell) |> result.replace_error(Nil))
   use verdict <- result.try(case review.status {
     approval.Pending -> Error(Nil)
     approval.Approved | approval.Consumed -> Ok(Allowed)
@@ -124,6 +119,28 @@ fn raised_on(value: json.JsonValue) -> Result(String, Nil) {
     Ok(json.String(strand)) -> Ok(strand)
     _ -> Error(Nil)
   }
+}
+
+/// The strand each escalation was raised on, by the escalation's identity,
+/// for every record the cells hold, pending or decided. A card for a request
+/// that waits names the strand that is waiting, which the ledger's own
+/// summary does not keep.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert decisions.strands([]) == []
+/// ```
+pub fn strands(cells: List(snapshot_view.Cell)) -> List(#(String, String)) {
+  list.filter_map(cells, fn(cell) {
+    use <- bool.guard(
+      cell.namespace != register.FactCustom
+        || !string.starts_with(cell.key, "escalation/"),
+      Error(Nil),
+    )
+    use strand <- result.try(raised_on(cell.value))
+    Ok(#(string.drop_start(cell.key, 11), strand))
+  })
 }
 
 /// The words of a decision's line, as the terminal and the page both say

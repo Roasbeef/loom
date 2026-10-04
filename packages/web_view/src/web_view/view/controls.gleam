@@ -11,14 +11,21 @@
 //// terminal's Escape, and a goal can still be pinned by typing `/goal ...`
 //// in the composer, which the page has parsed as a command since S5.
 ////
-//// The bar sits in the dock, above the composer, so it is where Send and
-//// Steer are and moves no more than they do. Two things keep a click from
-//// landing on the wrong control. The goal's one steering button and its
-//// Clear are drawn in a keyed row that carries `arming`, so when the
-//// goal's status changes the row is inserted afresh and the stylesheet
-//// refuses clicks on it for 600 ms, as it does for an approval card. And
-//// the form is keyed by how many have been sent, so a sent form is
-//// replaced by a closed empty one.
+//// The controls live in two places. The Session tab holds all of them, as
+//// the operator's one place to steer the session: the goal's buttons beside
+//// its row, and the Fork form under it (`session`). The dock draws one line
+//// of them, and only while a goal is running or held (`dock`): the goal's
+//// words and its one steering button, since a loop that is spending tokens
+//// is the thing an operator wants a hand on without opening a tab. A goal
+//// that is complete or limited, and no goal at all, leave the dock to the
+//// todo line and the composer.
+////
+//// Two things keep a click from landing on the wrong control. The goal's
+//// steering button and its Clear are drawn in a keyed row that carries
+//// `arming`, so when the goal's status changes the row is inserted afresh
+//// and the stylesheet refuses clicks on it for 600 ms, as it does for an
+//// approval card. And the form is keyed by how many have been sent, so a
+//// sent form is replaced by a closed empty one.
 ////
 //// The goal row's words are the terminal's own (`goal_view.row`), and the
 //// server's, so the page words nothing about the goal itself. They and the
@@ -55,14 +62,16 @@ pub type Bar(message) {
   )
 }
 
-/// The bar: the goal row when a goal is known, then the fork form.
+/// The Session tab's controls: the goal row with its buttons, then the Fork
+/// form. It is the Session pane's last child and always drawn, so the pane's
+/// other paths do not depend on whether a goal exists.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // controls.view(controls.Bar(goal: None, ..))
+/// // controls.session(controls.Bar(goal: None, ..))
 /// ```
-pub fn view(bar: Bar(message)) -> Element(message) {
+pub fn session(bar: Bar(message)) -> Element(message) {
   html.section(
     [attribute.class("controls"), attribute.aria_label("Session controls")],
     [
@@ -74,6 +83,52 @@ pub fn view(bar: Bar(message)) -> Element(message) {
   )
 }
 
+/// The dock's one line: while a goal is active or paused, its words and the
+/// button that steers it. Any other state draws an empty node, so the dock's
+/// children keep their places.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // controls.dock(controls.Bar(goal: None, ..))
+/// ```
+pub fn dock(bar: Bar(message)) -> Element(message) {
+  case bar.goal {
+    Some(goal_view.Pinned(status: goal_view.Active, ..) as pinned) ->
+      dock_line(pinned, goal_view.Active, bar)
+    Some(goal_view.Pinned(status: goal_view.Paused(_) as status, ..) as pinned) ->
+      dock_line(pinned, status, bar)
+    Some(goal_view.Pinned(..)) | Some(goal_view.NoGoal(..)) | None ->
+      element.none()
+  }
+}
+
+// The line itself: the goal's first row of words and its one steering
+// button, keyed by the status so a change of status arms the row afresh.
+fn dock_line(
+  pinned: goal_view.Board,
+  status: goal_view.Status,
+  bar: Bar(message),
+) -> Element(message) {
+  html.section([attribute.class("dock-goal"), attribute.aria_label("Goal")], [
+    keyed.div([attribute.class("control-row")], [
+      #(
+        goal_view.status_word(status),
+        html.div(
+          [attribute.class("control-actions"), attribute.class("arming")],
+          [
+            html.span(
+              [attribute.class("control-goal-text")],
+              list.map(list.take(goal_view.row(pinned), 1), html.text),
+            ),
+            steering(status, bar),
+          ],
+        ),
+      ),
+    ]),
+  ])
+}
+
 // The goal, in the terminal's row words, and the buttons its status offers:
 // a goal that is running can be held, one that is held or stopped short can
 // continue, and any goal can be cleared. The row is keyed by the status, so
@@ -83,7 +138,7 @@ fn goal(bar: Bar(message)) -> Element(message) {
     None -> element.none()
     Some(goal_view.NoGoal(..)) ->
       html.span([attribute.class("control-goal")], [
-        html.text("No goal is pinned"),
+        html.text("No goal is pinned. Type /goal and an objective to pin one."),
       ])
     Some(goal_view.Pinned(status:, ..) as pinned) ->
       keyed.div([attribute.class("control-goal")], [

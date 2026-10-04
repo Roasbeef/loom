@@ -464,6 +464,29 @@ pub fn presentation(record: Review) -> Result(Presentation, String) {
   Ok(Presentation(question(record.tool), preview, authority))
 }
 
+/// What a request for `tool` asks to do, in words a reader would write:
+/// `run a command`, `write a file`. The tools the table names are the
+/// harness's own, so the words are fixed; any other tool is `use <tool>`,
+/// and its name is the caller's to draw as text.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert approval.wants("bash") == "run a command"
+/// assert approval.wants("fs_write") == "write a file"
+/// assert approval.wants("") == "make a request"
+/// ```
+pub fn wants(tool: String) -> String {
+  case tool {
+    "bash" | "shell" -> "run a command"
+    "fs_read" -> "read a file"
+    "fs_write" -> "write a file"
+    "fs_edit" -> "edit a file"
+    "" -> "make a request"
+    tool -> "use " <> tool
+  }
+}
+
 fn question(tool: String) -> String {
   case tool {
     "bash" | "shell" -> "Allow this command?"

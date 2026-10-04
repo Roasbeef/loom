@@ -33,7 +33,7 @@ pub fn a_prompt_the_daemon_booked_says_so_test() {
 }
 
 pub fn a_command_the_table_does_not_list_is_still_words_test() {
-  assert notice_words.sent("something_new") == "Sent"
+  assert notice_words.sent("something_new") == "Sending"
   assert notice_words.outcome("something_new", "admitted") == "Done"
   assert notice_words.outcome("something_new", "queued") == "Queued"
 }

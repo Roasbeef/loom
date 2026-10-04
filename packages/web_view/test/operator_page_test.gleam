@@ -11,7 +11,7 @@
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 import lane_fixture
 import lustre/dev/query
@@ -192,7 +192,7 @@ pub fn the_composer_form_submits_its_draft_test() {
     ])
   assert component.drafts(simulate.model(submitted)) == 1
   assert component.notice(simulate.model(submitted))
-    == component.Said("prompt sent")
+    == component.Said("Sending")
 }
 
 // Enter in the editor is a newline: no key handler exists for it, and a
@@ -288,7 +288,7 @@ pub fn a_later_outcome_replaces_the_notice_test() {
   assert component.notice(model) == component.Warned("Nothing to send.")
 
   let model = send(model, [operator_page.Submitted("hi", operator.Prompt, [])])
-  assert component.notice(model) == component.Said("prompt sent")
+  assert component.notice(model) == component.Said("Sending")
 
   let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
     as "one prompt is one command"
@@ -296,7 +296,7 @@ pub fn a_later_outcome_replaces_the_notice_test() {
     send(model, [
       reply(frame, "\"mutation_outcome\",\"body\":{\"status\":\"admitted\"}"),
     ])
-  assert component.notice(model) == component.Said("prompt admitted")
+  assert component.notice(model) == component.Said("Sent")
 }
 
 // A command the daemon refuses replaces the "sent" notice with the refusal,
@@ -306,7 +306,7 @@ pub fn a_refusal_replaces_the_sent_notice_test() {
   let #(model, wire) = running("operator")
   let model =
     send(model, [operator_page.Submitted("go left", operator.Steer, [])])
-  assert component.notice(model) == component.Said("steer sent")
+  assert component.notice(model) == component.Said("Sending")
 
   let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
     as "one steer is one command"
@@ -360,7 +360,7 @@ pub fn background_events_do_not_speak_over_a_command_test() {
     component.apply(model, [
       session_channel.Streamed("main", "op-1", "gen-1", "text", "hello"),
     ])
-  assert component.notice(model) == component.Said("prompt sent")
+  assert component.notice(model) == component.Said("Sending")
 }
 
 // A command that says nothing leaves the page quiet rather than repeating
@@ -738,4 +738,130 @@ pub fn only_the_operators_composer_draws_the_attach_element_test() {
   let observer = element.to_string(component.view(model))
   assert !string.contains(observer, "loom-attach")
   assert !string.contains(observer, "images")
+}
+
+// --- the composer as a card -----------------------------------------------------
+
+fn composer_of(html: String) -> String {
+  let assert Ok(#(_, from_form)) =
+    string.split_once(html, "<form aria-label=\"Composer\"")
+    as "the page draws the composer"
+  let assert Ok(#(form, _)) = string.split_once(from_form, "</form>")
+    as "the form is closed"
+  form
+}
+
+// The composer is three rows: a `To` line with the strand's tag, the editor,
+// and a footer holding the hint, the attach element, who the page acts as and
+// the actions. The tag is a label with no handler.
+pub fn the_composer_is_a_to_line_an_editor_and_a_footer_test() {
+  let #(model, _) = page("operator", [])
+  let form = composer_of(element.to_string(operator_page.view(model)))
+  assert in_order(form, [
+    "class=\"to\"",
+    "To",
+    "class=\"to-tag hue-main\"",
+    "main",
+    "class=\"editor\"",
+    "<textarea",
+    "placeholder=\"Message main\"",
+    "class=\"composer-actions\"",
+    "<loom-attach",
+    "class=\"hint\"",
+    "Cmd+Enter to send",
+    "class=\"who\"",
+    "class=\"send\"",
+  ])
+  assert !string.contains(form, "identity")
+  assert !string.contains(form, "role-badge")
+  assert !string.contains(form, "Turn is busy")
+}
+
+pub fn a_busy_turn_says_so_in_the_footer_and_offers_queue_and_steer_test() {
+  let #(model, _) = running("operator")
+  let form = composer_of(element.to_string(operator_page.view(model)))
+  assert string.contains(form, "Turn is busy · Cmd+Enter to send")
+  assert in_order(form, ["class=\"queue\"", "class=\"steer\""])
+  assert !string.contains(form, "class=\"send\"")
+}
+
+// A notice is keyed by how many times it changed, so a new one is a new
+// element and the stylesheet's fade starts for it; a refused input stays
+// until the next, as a warning is not faded.
+pub fn each_new_notice_is_a_new_element_and_a_warning_is_not_faded_test() {
+  let #(model, _) = page("operator", [])
+  let before = component.notice_serial(model)
+  let model = send(model, [operator_page.Submitted("hi", operator.Prompt, [])])
+  assert component.notice_serial(model) == before + 1
+  let html = element.to_string(operator_page.view(model))
+  assert string.contains(html, "class=\"notice\"")
+  assert string.contains(html, "Sending")
+  assert !string.contains(html, "prompt sent")
+
+  let model = send(model, [operator_page.Submitted("   ", operator.Prompt, [])])
+  assert component.notice_serial(model) == before + 2
+  assert string.contains(
+    element.to_string(operator_page.view(model)),
+    "notice warned",
+  )
+
+  // A message that leaves the words alone leaves the key alone.
+  let same = send(model, [operator_page.Observed(component.Ticked)])
+  assert component.notice_serial(same) == before + 2
+}
+
+// The card says who waits and what for, in a sentence a reader would write,
+// and shows its arming delay as words while the row refuses clicks.
+pub fn an_approval_card_is_worded_for_a_reader_test() {
+  let #(model, _) =
+    page("operator", [page_fixture.waiting("esc-1", 7, "bash", "sub:tests")])
+  let html = element.to_string(operator_page.view(model))
+  assert in_order(html, [
+    "class=\"approval-head\"",
+    "<b class=\"approval-strand\">sub:tests</b>",
+    " wants to run a command",
+    "class=\"approval-question\"",
+    "Deny bash",
+    "Allow bash once",
+    "class=\"arm-note\"",
+    "Arming…",
+  ])
+  assert !string.contains(html, "Waits for approval")
+}
+
+// A decided approval leaves a line in the lane, from the escalation record
+// the capture already carries: who answered, what, and for which tool. The
+// strand that raised the request owns the line.
+pub fn a_denied_approval_leaves_a_who_line_in_the_lane_test() {
+  let #(model, _) = page("operator", [])
+  let model =
+    component.apply(model, [
+      lane_fixture.captured_cells(10, None, [], [
+        page_fixture.decided("esc-9", 5, "bash", "rejected", "Owner", "main"),
+        page_fixture.decided(
+          "esc-10",
+          8,
+          "fs_write",
+          "approved",
+          "Owner",
+          "main",
+        ),
+        page_fixture.decided("esc-11", 9, "bash", "rejected", "Owner", "sub:x"),
+      ]),
+    ])
+  let html = element.to_string(operator_page.view(model))
+  assert in_order(html, [
+    "class=\"decided decided-denied\"",
+    "<span class=\"decided-who\">Owner</span>",
+    " denied ",
+    "<span class=\"decided-tool\">bash</span>",
+    "class=\"decided decided-allowed\"",
+    " allowed ",
+    "fs_write",
+  ])
+  assert count(html, "class=\"decided ") == 2
+}
+
+fn count(html: String, part: String) -> Int {
+  list.length(string.split(html, part)) - 1
 }

@@ -184,14 +184,8 @@ pub fn a_finished_board_is_one_row_test() {
       ),
       [],
     )
-  assert has(html, ["✓", "all 3 tasks closed across 2 phases"])
+  assert has(html, ["todo-line", "Todo", " · 3 of 3 done"])
   assert !string.contains(html, "todo-tasks")
-}
-
-pub fn a_single_closed_task_is_singular_test() {
-  let html = drawn(Some(Board([Phase("One", [Task("a", Done)])])), [])
-  assert string.contains(html, "all 1 task closed")
-  assert !string.contains(html, "across")
 }
 
 pub fn session_text_is_only_ever_a_text_node_test() {
@@ -345,4 +339,15 @@ fn in_order(haystack: String, needles: List(String)) -> Bool {
         Error(Nil) -> False
       }
   }
+}
+
+// A board whose tasks are all closed is one sans line, with no heading row
+// and no tick, worded as an open board's is.
+pub fn a_finished_board_is_one_line_test() {
+  let html =
+    drawn(Some(Board([Phase("One", [Task("a", Done), Task("b", Done)])])), [])
+  assert string.contains(html, "Todo")
+  assert string.contains(html, " · 2 of 2 done")
+  assert !string.contains(html, "all 2 tasks closed")
+  assert !string.contains(html, "TODO")
 }
