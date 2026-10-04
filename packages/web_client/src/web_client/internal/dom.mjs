@@ -290,3 +290,11 @@ export function write_clipboard(text, done) {
     done(new Error(undefined));
   }
 }
+
+export function media_query(query) {
+  return window.matchMedia(query);
+}
+
+export function media_matches(query) {
+  return query.matches;
+}

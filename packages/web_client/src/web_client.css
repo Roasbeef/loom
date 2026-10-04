@@ -235,7 +235,9 @@
      most 780px. Each side column is dropped where it would leave the
      transcript under 640px: the sidebar below 1212px (232 + 340 + 640), and
      the panel, which then becomes a row of cards beneath the bar, below 980px
-     (340 + 640). There is no drawer. */
+     (340 + 640). Where the sidebar is dropped it is a drawer: the same
+     wrapper placed over the centre behind a scrim (the narrow frames at the
+     end of this sheet). */
   loom-shell.loom-session{display:block;height:100dvh;min-width:0;overflow:hidden;background:var(--color-bg);}
   /* The top bar. It is 44px tall, and taller only when the ended page's
      notice wraps onto a row of its own. The shell draws the bar's border and
@@ -256,11 +258,11 @@
      no width, is not painted and is inert, which also takes its content out
      of the tab order, and it hides only after the width has finished
      shrinking. Opening shows it at once. Below the breakpoints of the frame
-     above the wrapper of the sidebar is not drawn, and the panel's wrapper
-     goes above the centre. */
+     above the wrapper of the sidebar is not drawn unless the reader opened
+     the drawer, and the panel's wrapper goes above the centre. */
   .shell{display:flex;flex-direction:column;height:100%;min-width:0;}
   .shell-bar{flex:0 0 auto;display:flex;align-items:stretch;min-width:0;background:var(--color-bg-raised);border-bottom:1px solid var(--color-divider);}
-  .shell-body{flex:1 1 0;display:flex;min-height:0;min-width:0;}
+  .shell-body{position:relative;flex:1 1 0;display:flex;min-height:0;min-width:0;}
   .shell-centre{flex:1 1 0;display:flex;min-width:0;min-height:0;}
   .region{flex:0 0 auto;min-height:0;overflow:hidden;transition:width 180ms ease;}
   .region-sidebar{width:232px;}
@@ -380,7 +382,7 @@
   ul.detail-tools{list-style:none;margin:0;padding:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-mono);overflow-wrap:anywhere;}
   /* The session sidebar, the left column: the principal's sessions by
      workspace, read-only. It is a column of the frame and scrolls on its own.
-     Below 1212px it is not drawn. */
+     Below 1212px it is a drawer over the centre, opened from the bar. */
   aside.sidebar{position:relative;width:232px;height:100%;box-sizing:border-box;min-height:0;padding:12px 10px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin; background:var(--color-bg-sunk);border-right:1px solid var(--color-divider);}
   /* The sections are set apart quietly: a small eyebrow above each group, a
      one-pixel hairline in the divider colour between groups, and space on
@@ -766,14 +768,14 @@
   /* The approvals sit in the dock above the composer. Their height is
      capped and they scroll on their own, so a long action preview or
      several pending cards cannot push the composer off the screen. */
-  section.approvals{margin:0 0 8px 0;max-height:35vh;overflow-y:auto;overscroll-behavior:contain;}
-  article.approval-card{background:var(--color-bg-raised);border:1px solid var(--color-danger);border-radius:10px;padding:12px 16px;margin:0 0 8px 0;}
+  section.approvals{margin:0 0 6px 0;max-height:35vh;overflow-y:auto;overscroll-behavior:contain;}
+  article.approval-card{background:var(--color-bg-raised);border:1px solid var(--color-danger);border-radius:10px;padding:10px 12px;margin:0 0 6px 0;}
   article.approval-card:last-child{margin-bottom:0;}
   .approval-head{margin:0 0 2px 0;color:var(--color-fg);font:14px/1.4 var(--font-sans);}
   .approval-strand{font-weight:600;}
-  .approval-question{margin:0 0 8px 0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);}
-  pre.approval-action{margin:0 0 8px 0;padding:8px;background:var(--color-bg);white-space:pre-wrap; overflow-wrap:anywhere;font:13px/1.4 var(--font-mono);}
-  ul.approval-authority{margin:0 0 12px 0;padding-left:20px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);}
+  .approval-question{margin:0 0 6px 0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);}
+  pre.approval-action{margin:0 0 6px 0;padding:6px 8px;background:var(--color-bg);white-space:pre-wrap; overflow-wrap:anywhere;font:13px/1.4 var(--font-mono);}
+  ul.approval-authority{margin:0 0 8px 0;padding-left:20px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);}
   .approval-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;}
   /* The arming note: shown for the 600 ms the row refuses clicks, and
      hidden after, so the delay is visible as words and not only as a dim. */
@@ -899,15 +901,24 @@
   button.approval-deny{border-color:var(--color-danger);color:var(--color-danger-text);}
   button.approval-allow{border-color:var(--color-added);color:var(--color-added-text);}
   button:focus-visible,textarea:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
-  /* The narrow frames. Below 1212px the sidebar's column and its button are
-     dropped. Below 980px the panel moves under the bar, one row of cards that
-     scrolls sideways, and the body is one column; its button still hides the
-     row. Below 640px the centre's padding shrinks. */
-  @media (max-width:1211px){.region-sidebar,.toggle-sidebar{display:none;}}
+  /* The narrow frames. Below 1212px the sidebar's column is dropped, and the
+     sidebar is a 232px drawer over the page, opened by its bar button or the
+     shortcut, behind a scrim that a click closes (web_client/shell). The
+     drawer floats, so it alone takes the float shadow. Below 980px the panel
+     moves under the bar, one row of cards that scrolls sideways, and the body
+     is one column; its button still hides the row. The panel then takes the
+     height its content has: the strip's cards, never a clipped 41px of tabs.
+     Below 640px the centre's padding shrinks. */
+  @media (max-width:1211px){
+    .region-sidebar{display:none;}
+    .region-sidebar.drawer{display:block;position:absolute;z-index:20;top:0;bottom:0;left:0;box-shadow:var(--shadow-float);}
+    .drawer-scrim{position:absolute;z-index:19;inset:0;background:color-mix(in srgb,var(--color-bg) 60%,transparent);}
+  }
   @media (max-width:979px){
     .shell-body{flex-direction:column;}
-    .region-panel{order:-1;width:auto;border-left:0;border-bottom:1px solid var(--color-divider);}
-    .region-panel.closed{width:auto;height:0;transition:none;}
+    .region-panel{order:-1;width:auto;height:auto;overflow:visible;border-left:0;border-bottom:1px solid var(--color-divider);}
+    .region-panel.closed{width:auto;height:0;overflow:hidden;transition:none;}
+    .panel-body{flex:0 0 auto;}
     aside.panel{width:auto;height:auto;max-height:132px;padding:8px 16px;}
     aside.panel > section.nudges{display:none;}
     .pane-strands .panel-title,.pane-strands > section.commentary{display:none;}

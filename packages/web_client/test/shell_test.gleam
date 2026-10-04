@@ -586,3 +586,73 @@ pub fn the_path_decides_what_a_key_does_test() {
   assert shell_rule.intent(with([node("button"), region()], escape), Listed)
     == None
 }
+
+// A wide page's sidebar is the saved column, and a narrow page's is the
+// drawer; the saved layout never shows through on a narrow page, so a column
+// saved as closed does not close the drawer, and a saved-open column does not
+// open it.
+pub fn the_sidebar_follows_the_layout_when_wide_and_the_drawer_when_narrow_test() {
+  let saved_open = shell_rule.initial()
+  let saved_closed = shell_rule.toggled(saved_open, Sidebar)
+
+  assert shell_rule.sidebar_state(saved_open, shell_rule.Wide, Closed) == Open
+  assert shell_rule.sidebar_state(saved_closed, shell_rule.Wide, Open) == Closed
+  assert shell_rule.sidebar_state(saved_open, shell_rule.Narrow, Closed)
+    == Closed
+  assert shell_rule.sidebar_state(saved_closed, shell_rule.Narrow, Open) == Open
+}
+
+// The press that hides the column on a wide page opens the drawer on a narrow
+// one, and the layout, which is what is saved, comes back unchanged from it.
+// A wide page's press leaves the drawer as it was.
+pub fn a_narrow_press_moves_only_the_drawer_and_a_wide_press_only_the_layout_test() {
+  let layout = shell_rule.initial()
+
+  let #(after, drawer) =
+    shell_rule.sidebar_pressed(layout, shell_rule.Narrow, Closed)
+  assert after == layout
+  assert drawer == Open
+
+  let #(closed_again, drawer) =
+    shell_rule.sidebar_pressed(after, shell_rule.Narrow, drawer)
+  assert closed_again == layout
+  assert drawer == Closed
+
+  let #(after, drawer) =
+    shell_rule.sidebar_pressed(layout, shell_rule.Wide, Closed)
+  assert after == Layout(sidebar: Closed, panel: Open, tab: Strands)
+  assert drawer == Closed
+}
+
+// `Escape` closes the drawer first and leaves the strand only when there is
+// none to close; a wide page has no drawer, whatever state a stale one holds.
+pub fn escape_closes_an_open_drawer_before_it_leaves_a_strand_test() {
+  assert shell_rule.dismissal(shell_rule.Narrow, Open) == shell_rule.Dismiss
+  assert shell_rule.dismissal(shell_rule.Narrow, Closed) == shell_rule.Leave
+  assert shell_rule.dismissal(shell_rule.Wide, Open) == shell_rule.Leave
+  assert shell_rule.dismissal(shell_rule.Wide, Closed) == shell_rule.Leave
+}
+
+// The scrim is drawn for exactly the states in which `Escape` dismisses.
+pub fn the_scrim_is_drawn_only_behind_an_open_drawer_test() {
+  assert shell_rule.scrimmed(shell_rule.Narrow, Open)
+  assert !shell_rule.scrimmed(shell_rule.Narrow, Closed)
+  assert !shell_rule.scrimmed(shell_rule.Wide, Open)
+  assert !shell_rule.scrimmed(shell_rule.Wide, Closed)
+}
+
+// A press on a row closes the drawer wherever in the row it lands, since the
+// click's path holds the row's button; a click on a heading or the padding
+// does not.
+pub fn a_press_on_a_button_in_the_sidebar_closes_the_drawer_test() {
+  assert shell_rule.presses_button(["span", "button", "li", "ul", "aside"])
+  assert shell_rule.presses_button(["button"])
+  assert !shell_rule.presses_button(["h2", "section", "aside"])
+  assert !shell_rule.presses_button([])
+}
+
+// The listener's query and the stylesheet's breakpoint are the same number:
+// 1212 px is where a sidebar, a 340 px panel and a 640 px transcript fit.
+pub fn the_narrow_query_is_the_stylesheets_breakpoint_test() {
+  assert shell_rule.narrow_query() == "(max-width: 1211px)"
+}
