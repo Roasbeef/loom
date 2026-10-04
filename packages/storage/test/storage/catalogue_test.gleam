@@ -16,6 +16,7 @@ import storage/access
 import storage/catalogue
 import storage/catalogue_archives_schema
 import storage/catalogue_claims_schema
+import storage/catalogue_credential_kinds_schema
 import storage/catalogue_names_schema
 import storage/catalogue_subtitles_schema
 import storage/sql
@@ -37,6 +38,9 @@ pub fn embedded_schema_matches_the_sqlc_input_test() {
   let assert Ok(claims) = simplifile.read("sql/catalogue_claims.sql")
     as "claim migration is checked in"
   assert catalogue_claims_schema.schema == claims
+  let assert Ok(kinds) = simplifile.read("sql/catalogue_credential_kinds.sql")
+    as "credential-kind migration is checked in"
+  assert catalogue_credential_kinds_schema.schema == kinds
   let assert Ok(subtitles) = simplifile.read("sql/catalogue_subtitles.sql")
     as "subtitle migration is checked in"
   assert catalogue_subtitles_schema.schema == subtitles
@@ -68,7 +72,7 @@ pub fn version_three_catalogue_migrates_claims_without_losing_principals_test() 
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; PRAGMA user_version=3",
+      "ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; PRAGMA user_version=3",
       on: old,
     )
     == Ok(Nil)
@@ -77,8 +81,9 @@ pub fn version_three_catalogue_migrates_claims_without_losing_principals_test() 
   // The migration adds the claim table and moves the version in one step,
   // leaving every principal, credential and membership as it was.
   let assert Ok(migrated) = catalogue.open(path) as "version three migrates"
-  assert access.authenticate(migrated, owner_digest) == Ok(owner)
-  assert access.authenticate(migrated, member_digest) == Ok(member)
+  assert access.authenticate(migrated, owner_digest, access.Bearer) == Ok(owner)
+  assert access.authenticate(migrated, member_digest, access.Bearer)
+    == Ok(member)
   assert access.authorization(migrated, member.id, record.id)
     == Ok(access.Participant(access.Operator))
   let assert Ok(claim) = access.claim_digest(string.repeat("c", 64))
@@ -98,7 +103,7 @@ pub fn version_three_catalogue_migrates_claims_without_losing_principals_test() 
       with: [],
       expecting: decode.at([0], decode.int),
     )
-    == Ok([5])
+    == Ok([6])
   assert sqlight.close(check) == Ok(Nil)
 }
 
@@ -191,7 +196,7 @@ pub fn version_one_catalogue_migrates_without_losing_creation_test() {
   let assert Ok(old) = sqlight.open(path)
     as "fixture downgrades only its new empty table"
   assert sqlight.exec(
-      "DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; DROP TABLE catalogue_session_archives; DROP TABLE catalogue_session_names; PRAGMA user_version=1",
+      "ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; DROP TABLE catalogue_session_archives; DROP TABLE catalogue_session_names; PRAGMA user_version=1",
       on: old,
     )
     == Ok(Nil)
@@ -563,7 +568,7 @@ pub fn version_two_catalogue_migrates_archive_without_losing_names_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; DROP TABLE catalogue_session_archives; PRAGMA user_version=2",
+      "ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; DROP TABLE catalogue_session_archives; PRAGMA user_version=2",
       on: old,
     )
     == Ok(Nil)
@@ -626,7 +631,7 @@ pub fn version_four_catalogue_migrates_subtitles_without_losing_names_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_session_subtitles; PRAGMA user_version=4",
+      "ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; PRAGMA user_version=4",
       on: old,
     )
     == Ok(Nil)
@@ -648,7 +653,7 @@ pub fn version_four_catalogue_migrates_subtitles_without_losing_names_test() {
       with: [],
       expecting: decode.at([0], decode.int),
     )
-    == Ok([5])
+    == Ok([6])
   assert sqlight.close(check) == Ok(Nil)
 }
 
@@ -835,4 +840,98 @@ pub fn a_display_name_refuses_controls_and_direction_marks_test() {
   assert catalogue.rename(store, "no-such-session", "fine")
     == Error(catalogue.Missing)
   assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn version_five_catalogue_migrates_every_credential_to_bearer_test() {
+  let path = fresh_path("kind-migration")
+  let assert Ok(store) = catalogue.open(path) as "fixture catalogue opens"
+  let assert Ok(owner_digest) = access.credential_digest(string.repeat("a", 64))
+    as "owner digest is valid"
+  let assert Ok(owner) =
+    access.bootstrap_owner(store, "owner", "Owner", owner_digest)
+    as "the owner predates the migration"
+  assert catalogue.close(store) == Ok(Nil)
+  let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
+  assert sqlight.exec(
+      "ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; PRAGMA user_version=5",
+      on: old,
+    )
+    == Ok(Nil)
+  assert sqlight.close(old) == Ok(Nil)
+
+  // The migration adds the columns with the bearer default and moves the
+  // version in one step, so the owner's credential keeps authenticating as
+  // the only kind that existed, and as no other.
+  let assert Ok(migrated) = catalogue.open(path) as "version five migrates"
+  assert access.authenticate(migrated, owner_digest, access.Bearer) == Ok(owner)
+  assert access.authenticate(migrated, owner_digest, access.Browser)
+    == Error(catalogue.Missing)
+  assert catalogue.close(migrated) == Ok(Nil)
+
+  // Opening the migrated catalogue again changes nothing.
+  let assert Ok(again) = catalogue.open(path) as "version six reopens"
+  assert access.authenticate(again, owner_digest, access.Bearer) == Ok(owner)
+  assert catalogue.close(again) == Ok(Nil)
+  let assert Ok(check) = sqlight.open(path) as "kinds are readable"
+  assert sqlight.query(
+      "SELECT kind, issued_at_ms IS NULL, last_resumed_ms IS NULL FROM access_credentials",
+      on: check,
+      with: [],
+      expecting: {
+        use kind <- decode.field(0, decode.string)
+        use issued <- decode.field(1, decode.int)
+        use resumed <- decode.field(2, decode.int)
+        decode.success(#(kind, issued, resumed))
+      },
+    )
+    == Ok([#("bearer", 1, 1)])
+  assert sqlight.close(check) == Ok(Nil)
+}
+
+pub fn migrations_end_at_the_current_version_test() {
+  // The versions are consecutive and the last is the one a catalogue is
+  // stamped with, so a migration added without raising `current_version`, or
+  // a version raised without a migration, fails here and not on a user's disk.
+  let versions = list.map(catalogue.migrations(), fn(migration) { migration.0 })
+  let expected =
+    int.range(
+      from: 2,
+      to: catalogue.current_version + 1,
+      with: [],
+      run: fn(all, n) { [n, ..all] },
+    )
+    |> list.reverse
+  assert versions == expected
+}
+
+pub fn version_four_catalogue_migrates_through_subtitles_and_kinds_test() {
+  let path = fresh_path("both-migrations")
+  let assert Ok(store) = catalogue.open(path) as "fixture catalogue opens"
+  let assert Ok(owner_digest) = access.credential_digest(string.repeat("a", 64))
+    as "owner digest is valid"
+  let assert Ok(owner) =
+    access.bootstrap_owner(store, "owner", "Owner", owner_digest)
+    as "the owner predates the migrations"
+  assert catalogue.close(store) == Ok(Nil)
+  let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
+  assert sqlight.exec(
+      "ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; PRAGMA user_version=4",
+      on: old,
+    )
+    == Ok(Nil)
+  assert sqlight.close(old) == Ok(Nil)
+
+  // One open applies both migrations in order and stamps the final version.
+  let assert Ok(migrated) = catalogue.open(path) as "version four migrates"
+  assert access.authenticate(migrated, owner_digest, access.Bearer) == Ok(owner)
+  assert catalogue.close(migrated) == Ok(Nil)
+  let assert Ok(check) = sqlight.open(path) as "version is readable"
+  assert sqlight.query(
+      "PRAGMA user_version",
+      on: check,
+      with: [],
+      expecting: decode.at([0], decode.int),
+    )
+    == Ok([6])
+  assert sqlight.close(check) == Ok(Nil)
 }

@@ -13,10 +13,13 @@ INSERT INTO access_principals(principal_id, display_name, kind) VALUES (?, ?, ?)
 UPDATE access_principals SET display_name = ? WHERE principal_id = ?;
 
 -- name: AccessCredential :many
+SELECT digest, principal_id, state FROM access_credentials WHERE digest = ? AND kind = ?;
+
+-- name: AccessCredentialAnyKind :many
 SELECT digest, principal_id, state FROM access_credentials WHERE digest = ?;
 
 -- name: InsertAccessCredential :exec
-INSERT INTO access_credentials(digest, principal_id, state) VALUES (?, ?, 'active');
+INSERT INTO access_credentials(digest, principal_id, state, kind) VALUES (?, ?, 'active', ?);
 
 -- name: RevokeAccessCredential :exec
 UPDATE access_credentials SET state = 'revoked' WHERE digest = ?;
@@ -47,7 +50,7 @@ UPDATE access_claims SET state = 'claimed', credential_digest = ?, claimed_at_ms
 UPDATE access_claims SET state = 'void' WHERE principal_id = ? AND state = 'open';
 
 -- name: ActiveMemberCredentials :many
-SELECT digest FROM access_credentials WHERE principal_id = ? AND state = 'active' LIMIT 1;
+SELECT digest FROM access_credentials WHERE principal_id = ? AND state = 'active' AND kind = 'bearer' LIMIT 1;
 
 -- name: ClaimMemberships :many
 SELECT session_id, role FROM access_memberships WHERE principal_id = ? ORDER BY session_id LIMIT 16;
@@ -58,7 +61,7 @@ SELECT principal_id, display_name, kind FROM access_principals WHERE principal_i
 -- name: PrincipalActiveCredential :many
 SELECT c.digest, k.claimed_at_ms FROM access_credentials AS c
 LEFT JOIN access_claims AS k ON k.credential_digest = c.digest
-WHERE c.principal_id = ? AND c.state = 'active'
+WHERE c.principal_id = ? AND c.state = 'active' AND c.kind = 'bearer'
 ORDER BY c.digest LIMIT 1;
 
 -- name: PrincipalOpenClaim :many

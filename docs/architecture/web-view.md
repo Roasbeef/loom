@@ -240,12 +240,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:254`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:261`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:2059`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:2365`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -857,6 +857,47 @@ Owner or Operator in the target (an observer member is `NotOperator`),
 Any refusal of the open or a wait that runs out is `NotOpened`, in fixed words,
 and mints nothing. `ui_route_test` runs each step against a real registry and
 `home_test` and `session_switch_test` read the rows and the messages.
+
+### Creating a session
+
+The fourth pull request of 065 lets the owner's home make a session. The owner
+picks a workspace the owner already has a session in; there is no path field.
+`ui_socket.home_create_capability` hands `Start.create` to a page whose principal
+is the daemon's owner and whose ceiling is Operator, and to no other, so any
+other home draws nothing (`view/create` has `Never`) and drops the messages.
+With it `view/home_table` draws a "New session" button at the head of each
+workspace and, under the one pressed, a form: an optional name, a "Shareable"
+checkbox and Create and Cancel. The workspace is the catalogue's text carried by
+the message the server drew (`home.Choosing`, `home.Creating`), and the form's
+fields are decoded totally (`view/create.fields`: one `name`, at most one
+`shareable` that reads `on`, nothing else). A tick of Shareable creates the
+session `session_only`, the scope an invitation needs (`NotIsolated` otherwise),
+so the invite control is not a dead end afterwards.
+
+`ui_socket.create_task` runs `create_for` in a weft run of its own (one task, no
+deadline, linked to the runtime) and returns at once; the answer arrives as
+`home.Created`. `create_for` is the control command's `sessions.create`
+(`server.create_session`, the one function both call) made on the page's behalf
+and re-derived from the grant: the page is still open (which is also the epoch
+check, since a page lives in this daemon's memory), the ceiling is Operator, the
+credential still authenticates as the principal the page was admitted for and
+that principal is the owner, the name passes `creations.chosen_name`, the
+workspace is one the owner's own authorized read lists, and the credential has a
+creation left (`ui_sessions.reserve_creation`, ten an hour, counted apart from
+invitations). Then `create` makes the session under a key drawn for the call,
+`daemon.session_created` is logged with the principal and the session, and the
+session is opened and ticketed as a resume's is (`opened_ticket`). A session made
+and not opened is `NotOpened`, in words that say it exists. The socket takes the
+form's `submit` beneath `home.table_path` for that page only. That admission is
+the one rename already has (`home_owner_accepts`, protocol-change/067): the owner's
+socket admits a submit beneath the table when its home holds either the rename or
+the creation capability, which are separate and are given on the same condition,
+and every other home keeps `home_accepts`, which admits clicks alone. The socket
+admits by path and does not say which form a submit is. The two forms sit at
+different paths, each handler has its own decoder, and the decoders refuse each
+other's fields (`text` for a rename, `name` and `shareable` for a creation), so a
+submit reaches one handler and one message. `ui_route_test`, `ui_socket_test`, `ui_sessions_test` and
+`home_test` read each refusal and the admission.
 
 ## Expanding a row
 

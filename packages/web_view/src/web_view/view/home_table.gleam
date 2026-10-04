@@ -52,6 +52,7 @@ import web_view/sessions.{
   type Activity, type Entry, type Group, Blocked, Idle, Live, NeedsYou, Saved,
   Working,
 }
+import web_view/view/create.{type Create}
 import web_view/view/heading
 import web_view/view/resume.{type Resume}
 
@@ -91,12 +92,15 @@ pub type Open {
 /// `open` and the resume's `press` are not part of the key, so a caller passes
 /// the same functions every time, as a constructor is. `rename` is what the page
 /// offers for renaming a row (`Rename`); the row whose form is open is part of
-/// the key, and so is the control's state.
+/// the key, and so is the control's state. `offer` is what the page offers for
+/// making a session (`view/create`): under each workspace's heading a button, and
+/// below it the form when that workspace's is open. Its state is in the key, so a
+/// group changes when its form opens, closes or starts waiting.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // home_table.view(home.groups(model), dict.new(), now, Opening, resume.Never)
+/// // home_table.view(home.groups(model), dict.new(), now, Opening, resume.Never, Never, create.Never)
 /// ```
 pub fn view(
   groups: List(Group),
@@ -105,6 +109,7 @@ pub fn view(
   open: fn(String) -> message,
   resume: Resume(message),
   rename: Rename(message),
+  offer: Create(message),
 ) -> Element(message) {
   use <- element.memo([
     element.ref(groups),
@@ -112,6 +117,7 @@ pub fn view(
     element.ref(now),
     element.ref(resume.pending(resume)),
     element.ref(open_form(rename)),
+    element.ref(create.state(offer)),
   ])
   html.section([attribute.class("home-sessions")], [
     html.h2([attribute.class("home-heading")], [html.text("Sessions")]),
@@ -123,7 +129,8 @@ pub fn view(
           ),
         ]),
       ]
-      [_, ..] -> list.map(groups, group(_, activity, now, open, resume, rename))
+      [_, ..] ->
+        list.map(groups, group(_, activity, now, open, resume, rename, offer))
     }
   ])
 }
@@ -136,17 +143,22 @@ fn group(
   open: fn(String) -> message,
   resume: Resume(message),
   rename: Rename(message),
+  offer: Create(message),
 ) -> Element(message) {
   html.section([attribute.class("home-group")], [
-    html.h3(
-      [attribute.class("home-workspace"), attribute.title(group.workspace)],
-      [
-        html.text(heading.shorten_path(group.workspace)),
-        html.span([attribute.class("home-count")], [
-          html.text(int.to_string(list.length(group.entries))),
-        ]),
-      ],
-    ),
+    html.div([attribute.class("home-group-head")], [
+      html.h3(
+        [attribute.class("home-workspace"), attribute.title(group.workspace)],
+        [
+          html.text(heading.shorten_path(group.workspace)),
+          html.span([attribute.class("home-count")], [
+            html.text(int.to_string(list.length(group.entries))),
+          ]),
+        ],
+      ),
+      create.button(offer, group.workspace),
+    ]),
+    create.form(offer, group.workspace),
     html.ul(
       [attribute.class("home-list")],
       list.map(group.entries, fn(entry) {

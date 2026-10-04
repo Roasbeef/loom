@@ -165,7 +165,7 @@ specifies them and [the web view](architecture/web-view.md) describes them.
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:225-180`).
+Source: `handle` (`client/daemon/server.gleam:232-180`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -401,7 +401,7 @@ carries the daemon epoch that most control commands must echo.
 | `ui.path` | string | optional | Present only when the daemon was started with `--ui`: the web view's route prefix, `"/ui"`. A client that does not know the field ignores it. |
 
 Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:1014`).
+`hello_view` (`client/daemon/server.gleam:1043`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -536,7 +536,7 @@ Source: (`client/daemon/server.gleam:839-860`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:1839`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:1872`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -706,7 +706,11 @@ reply can contain a secret: a single-use claim token, never a bearer.
 | `epoch` | string | required | Current daemon epoch. |
 
 `claim_ttl_ms` and `credential_digest` together are `bad_request`, as is
-a `claim_ttl_ms` outside its range. Source:
+a `claim_ttl_ms` outside its range. The secret behind a
+`credential_digest` must itself be 64 lowercase hex: the daemon refuses any
+other bearer with `401` before it hashes it (protocol-change/065, PR 7), so a
+digest enrolled from a shorter, longer, uppercase or non-hex secret no longer
+authenticates. Re-enroll with `loom enroll`, which draws a conforming secret. Source:
 (`client/daemon/protocol.gleam:367`) and
 (`client/daemon/protocol.gleam:475`).
 
@@ -925,7 +929,7 @@ While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:1333-1114`).
+`control_use` (`client/daemon/server.gleam:1362-1114`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 

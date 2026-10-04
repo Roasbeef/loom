@@ -75,14 +75,14 @@ check anywhere.
 
 ### 1.1 What exists
 
-A UI session is a `Grant` (`ui_sessions.gleam:162`) of one session, one
+A UI session is a `Grant` (`ui_sessions.gleam:181`) of one session, one
 credential digest, one principal and one ceiling, kept with the digests of
 the page's cookie, key and nonce in one actor. A ticket for it is minted
-only by `UiLink` (`client/daemon/server.gleam:1399`) over the principal's own
+only by `UiLink` (`client/daemon/server.gleam:1428`) over the principal's own
 control connection, after `session_authority`
 (`client/daemon/manager.gleam:936`) finds a membership, and by a page
-switching to another session (`ticket_for` (`ui_socket.gleam:1248`)). The
-exchange redeems it once (`redeem` (`ui_sessions.gleam:414`)), the page and
+switching to another session (`ticket_for` (`ui_socket.gleam:1326`)). The
+exchange redeems it once (`redeem` (`ui_sessions.gleam:470`)), the page and
 its socket are re-authorized on every request (`page_grant`
 (`client/daemon/server.gleam:356`)), and every route is checked in 051's
 order: `loopback_host` (`ui_http.gleam:156`), then `navigation_allowed`
@@ -91,7 +91,7 @@ the socket, then the cookie under the key. The cookie's `Path` is the key's
 (`set_cookie` (`ui_http.gleam:283`)), so it reaches no other page and no other
 loopback port. A UI session lives eight hours (`session_ms`
 (`ui_sessions.gleam:79`)); a chain of switches ends with the page it began
-from (`mint_before` (`ui_sessions.gleam:351`)).
+from (`mint_before` (`ui_sessions.gleam:383`)).
 
 The operator page already lists the principal's sessions in a sidebar,
 read with the page's credential digest (`listed_for`
@@ -104,7 +104,7 @@ sidebar, by ruling (051, the addendum on the session sidebar): an observer
 link is the one a person hands to someone who may only watch one session.
 
 A credential is a 32-byte bearer whose SHA-256 the catalogue keeps
-(`bootstrap_owner` (`storage/access.gleam:310`)); every check anywhere takes
+(`bootstrap_owner` (`storage/access.gleam:336`)); every check anywhere takes
 a digest. Nothing in the tree signs or verifies a token: `gleam_crypto`
 1.6.0 is a dependency of `host` already and provides `hmac` and
 `secure_compare`, which section 1.4 uses, so the macaroon needs no new
@@ -301,7 +301,7 @@ anyone who sees the cookie knows it, and the row's digest is the digest of
 it. The first edition of this note said a login presented as a bearer is
 refused because the daemon would hash the whole token; that was true and
 beside the point, because the daemon hashes any presented string
-(`credential` (`client/daemon/server.gleam:739`)), and `Authorization:
+(`credential` (`client/daemon/server.gleam:728`)), and `Authorization:
 Bearer <id>` would have hashed to the row and authenticated as the
 principal with no ceiling, no expiry, no key and no nonce: for the owner's
 login, owner authority on the control socket. The review of 2026-10-04
@@ -326,8 +326,8 @@ satisfies a page grant minted from a login. `loom --token` and
 `--token-file` refuse a value beginning `loomb1:` as they refuse
 `loomclaim_`, which is a courtesy to the person and not a defence. The two
 queries that assume one active credential per principal,
-`principal_active_credential` (`storage/sql.gleam:273`) and
-`active_member_credentials` (`storage/sql.gleam:223`), gain `kind =
+`principal_active_credential` (`storage/sql.gleam:301`) and
+`active_member_credentials` (`storage/sql.gleam:251`), gain `kind =
 'bearer'` as well, so `principals.list` keeps reporting the bearer or the
 claim and never a login's fingerprint in its place; 053's "rule 3 is what
 lets `credential` be one value per principal" holds for bearers, and
@@ -514,7 +514,7 @@ their bearer, since a login is not a claim.
 | `POST /ui/claim` | host, `Sec-Fetch-Site`, body at most 1 KiB, claim redeems | the enter page, with the login cookie and nonce (section 5.3) |
 
 A `Home` ticket presented at a session's exchange, or a session ticket at
-the home's, is spent and refused, as `OtherScope` (`ui_sessions.gleam:216`)
+the home's, is spent and refused, as `OtherScope` (`ui_sessions.gleam:241`)
 spends one presented against the wrong session today. The scope is part of
 the redemption, in the same actor message, so the property 053 wanted from a
 separate admin ticket table (a session ticket never redeems at the admin
@@ -689,7 +689,7 @@ the registry's capacity and `max_pages`, and prompt them at operator role.
 That is a new agent in a workspace the owner already runs agents in, at
 the sandbox policy that workspace's registrations carry. It can fill the
 catalogue with sessions; a count per credential per hour, as
-`reserve_invite` (`ui_sessions.gleam:377`) keeps for invitations, bounds it
+`reserve_invite` (`ui_sessions.gleam:409`) keeps for invitations, bounds it
 (065 proposes ten an hour). The daemon logs no line for a creation today;
 065 adds one, `daemon.session_created` with the principal's ID, so a run of
 creations from a stolen page is visible in `daemon.log`.
@@ -722,7 +722,7 @@ and the epoch the page was admitted in:
 1. the page is open and its ceiling is Operator;
 2. `session_authority` finds Owner or Operator authority in the target: an
    observer member is refused with the words "ask an operator to resume
-   it", the check `OpenSession` (`client/daemon/server.gleam:1421`) makes;
+   it", the check `OpenSession` (`client/daemon/server.gleam:1450`) makes;
 3. `open` (`client/daemon/manager.gleam:1018`) is called, which is the same
    registry turn `sessions.open` runs: capacity, `Reserved`, archived, the
    domain slot;
@@ -877,7 +877,7 @@ grant Owner.
 A principal has a stable ID and a display name (`Principal`
 (`storage/access.gleam:202`)), set by the inviter (`loomd access invite
 SESSION PRINCIPAL ROLE NAME`, and `Guest <digits>` from the page). The
-catalogue can rename one (`rename` (`storage/access.gleam:895`)) and no control
+catalogue can rename one (`rename` (`storage/access.gleam:941`)) and no control
 command exposes it (053, Open). A claim binds a credential to the principal
 (`claim` (`client/daemon/manager.gleam:677`)) and carried no name before this change. The name
 reaches everyone through the roster: the gateway stamps each connection and
