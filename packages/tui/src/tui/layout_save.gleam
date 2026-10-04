@@ -1,0 +1,126 @@
+//// Joining the terminal's layout to its memory file.
+////
+//// `layout_memory` is the file and its decoder, over plain values. This
+//// module is the part that knows the model: it applies what the file
+//// remembered when a terminal starts, and after each step it notices that the
+//// layout the person chose has changed and asks the runtime to save it.
+////
+//// ## Flow
+////
+//// `remember_launch` → `apply` → `settle`
+////
+//// 1. `remember_launch` runs once, in the launcher, before the loop. It
+////    names the file under the state root, reads it (total: an unreadable
+////    file is the default layout), and applies the workspace's remembered
+////    rail choice to the model through `apply`. A launch that keeps nothing, such as a replay
+////    or the demo, never calls it, so its model has no target and neither
+////    reads nor writes a file.
+//// 2. `settle` runs at the end of every step. It compares the layout the
+////    model has now with the one last saved and queues a `SaveLayout` effect
+////    only when they differ, so a tick, a keystroke in the composer or a
+////    scroll writes nothing. A toggle of the rail is one write.
+////
+//// The remembered layout is only the choices a person made. A workspace
+//// whose rail was never toggled has no entry, and `settle` does not create
+//// one: with no remembered choice and the default rail, the layout is still
+//// the default.
+
+import filepath
+import gleam/option.{type Option, None, Some}
+import tui/bootstrap
+import tui/effect
+import tui/layout_memory.{type Layout, Layout, Target}
+import tui/model.{type Model, Model, View} as tui_model
+
+/// Reads the layout memory under the state root and applies this
+/// workspace's layout to the model.
+///
+/// `state_override` is the operator's `--state-dir`, empty for the default
+/// `~/.loom`. If the state root cannot be resolved the model keeps no
+/// target and the layout simply is not remembered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = layout_save.remember_launch(model, "")
+/// ```
+pub fn remember_launch(model: Model, state_override: String) -> Model {
+  case bootstrap.state_directory(state_override) {
+    Error(_) -> model
+    Ok(root) -> {
+      let path = filepath.join(filepath.join(root, "tui"), "layout.json")
+      let key = layout_memory.workspace_key(model.view.workspace.path)
+      let saved = layout_memory.lookup(layout_memory.load(path), key)
+      apply(model, Target(path:, key:, saved:))
+    }
+  }
+}
+
+/// The model with `target`'s remembered layout in force and `target` kept
+/// to compare later changes with.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = layout_save.apply(model, target)
+/// ```
+pub fn apply(model: Model, target: layout_memory.Target) -> Model {
+  let visible = case target.saved.rail {
+    Some(layout_memory.RailShown) -> True
+    Some(layout_memory.RailHidden) | None -> model.view.agent_rail_visible
+  }
+  Model(
+    ..model,
+    view: View(
+      ..model.view,
+      agent_rail_visible: visible,
+      layout_target: Some(target),
+    ),
+  )
+}
+
+/// Queues a save when the layout is no longer the one last saved.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = layout_save.settle(model)
+/// ```
+pub fn settle(model: Model) -> Model {
+  case model.view.layout_target {
+    None -> model
+    Some(target) -> {
+      let current = current(model, target.saved)
+      case current == target.saved {
+        True -> model
+        False ->
+          Model(
+            ..model,
+            view: View(
+              ..model.view,
+              layout_target: Some(Target(..target, saved: current)),
+            ),
+          )
+          |> tui_model.emit(effect.SaveLayout(
+            path: target.path,
+            key: target.key,
+            layout: current,
+          ))
+      }
+    }
+  }
+}
+
+// The layout the model has now. A rail that is hidden, in a workspace that
+// never chose, is no choice and stays out of the file.
+fn current(model: Model, saved: Layout) -> Layout {
+  let rail: Option(layout_memory.Rail) = case
+    model.view.agent_rail_visible,
+    saved.rail
+  {
+    True, _ -> Some(layout_memory.RailShown)
+    False, None -> None
+    False, Some(_) -> Some(layout_memory.RailHidden)
+  }
+  Layout(rail:)
+}
