@@ -72,7 +72,7 @@
 //// profile means the same thing in either file and is refused with the
 //// same words.
 
-import client/lsp/profile.{type LspServer}
+import codemode/lsp_host/profile.{type LspServer}
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/int

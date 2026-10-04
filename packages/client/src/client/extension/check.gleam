@@ -84,13 +84,14 @@ import client/extension/archive
 import client/extension/installed
 import client/extension/manifest.{type Check, type Manifest}
 import client/extension/record.{type Record, type Root}
-import client/lsp/jail
-import client/lsp/leases
-import client/lsp/manager
-import client/lsp/profile.{type LspServer, type Places}
+import client/internal/ffi_os
 import client/lsp/profile_check.{type CheckOutcome}
 import client/serve
 import codemode/enforcement
+import codemode/lsp_host/jail
+import codemode/lsp_host/leases
+import codemode/lsp_host/manager
+import codemode/lsp_host/profile.{type LspServer, type Places}
 import core/clock.{type Clock}
 import filepath
 import gleam/int
@@ -424,7 +425,10 @@ fn on_plane(
       // daemon's `PATH`, as a session's is when code mode located none.
       // A check must run where no build seed exists, as a profile install
       // does, and the `gleam` on `PATH` is the one an operator runs.
-      toolchain: None,
+      executables: jail.Executables(
+        gleam_path: None,
+        find: ffi_os.find_executable,
+      ),
       places: setup.places,
       reading: setup.reading,
       run: tool.broker_runner(

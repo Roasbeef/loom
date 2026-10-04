@@ -54,7 +54,7 @@
 
 import client/extension/manifest.{type Manifest, type Tier}
 import client/extension/source.{type Source}
-import client/lsp/profile.{type LspServer}
+import codemode/lsp_host/profile.{type LspServer}
 import gleam/dynamic/decode.{type Decoder}
 import gleam/int
 import gleam/json.{type Json}

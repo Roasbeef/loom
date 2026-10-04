@@ -3,9 +3,9 @@
 //// checked document intervals and cancellation without stopping the shared lease.
 
 import client/internal/ffi_os
-import client/lsp/manager
-import client/lsp/profile
-import client/lsp/resolve
+import codemode/lsp_host/manager
+import codemode/lsp_host/profile
+import codemode/lsp_host/resolve
 import core/json
 import gleam/erlang/process
 import gleam/int

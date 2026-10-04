@@ -6,8 +6,8 @@
 //// as to the exact records the documented examples parse to.
 
 import client/catalog
-import client/lsp/profile
 import client/serve
+import codemode/lsp_host/profile
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}

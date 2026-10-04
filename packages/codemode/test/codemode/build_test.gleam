@@ -12,6 +12,7 @@ import codemode/build
 import codemode/compile
 import codemode/enforcement
 import codemode/identity
+import codemode/physical
 import codemode/seed
 import core/clock
 import core/ids
@@ -68,7 +69,7 @@ fn build_phase() -> identity.PhaseIdentity {
 fn config(seed_root: String) -> build.BuildConfig {
   build.BuildConfig(
     observe: tool.ignore_output(),
-    broker: idle_broker(),
+    runner: physical.local(idle_broker()),
     seed_root:,
     gleam_path: "/usr/local/bin/gleam",
     base_policy: policy.SandboxPolicy(

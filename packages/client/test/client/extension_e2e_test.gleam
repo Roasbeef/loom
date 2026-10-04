@@ -261,10 +261,10 @@ fn drive(ready: Ready) -> Nil {
         || string.contains(pair.1, secret_value)
       })
       let #(now, _clock) = clock.read(wall_clock())
-      assert !list.contains(
-        launch.node_requirements(spec, host_mounts: [], now_ms: now).env_allow,
-        extensions.fetcher_env,
-      )
+      let assert Ok(requirements) =
+        launch.node_requirements(spec, host_mounts: [], now_ms: now)
+        as "the local artifact must have local launch requirements"
+      assert !list.contains(requirements.env_allow, extensions.fetcher_env)
 
       // Nor did any frame on the capability channel, in either
       // direction. The tap wraps the production launcher, so these are

@@ -43,6 +43,7 @@ import broker/token
 import client/serve
 import codemode/build
 import codemode/compile
+import codemode/physical
 import core/clock
 import gleam/list
 import gleam/string
@@ -145,7 +146,7 @@ fn build_requirements(
   build.build_requirements(
     build.BuildConfig(
       observe: tool.ignore_output(),
-      broker: idle_broker(),
+      runner: physical.local(idle_broker()),
       seed_root: root <> "/seed",
       gleam_path: "/usr/local/bin/gleam",
       base_policy: serve.build_plane_policy(root, root <> "-state"),

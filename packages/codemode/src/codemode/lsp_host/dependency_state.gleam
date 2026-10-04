@@ -6,16 +6,17 @@
 //// and every read passes the same real-path and protection gate as LSP
 //// answer reads, using the authorized workspace as its outer boundary.
 
-import client/lsp/resolve
+import codemode/lsp_host/resolve
 import filepath
+import gleam/bit_array
 import gleam/bool
 import gleam/dict
 import gleam/list
 import gleam/result
 import gleam/string
-import host/claim
 import simplifile
 import tom
+import tools/blob
 
 /// Fingerprints dependency inputs and the selected package's installation.
 ///
@@ -51,7 +52,7 @@ pub fn fingerprint(
     authorized,
     root <> "/build/packages/packages.toml",
   ))
-  Ok(claim.digest(string.join([manifest, inventory, ..configs], "\n")))
+  Ok(digest(string.join([manifest, inventory, ..configs], "\n")))
 }
 
 // Cycles in path dependencies do not turn a query into an unbounded walk.
@@ -96,7 +97,7 @@ fn walk(
         authorized,
         list.append(rest, children),
         [real, ..seen],
-        [real <> ":" <> claim.digest(config), ..digests],
+        [real <> ":" <> digest(config), ..digests],
       )
     }
   }
@@ -138,7 +139,7 @@ fn generated(
     Ok(False) -> Ok(path <> ":missing")
     Ok(True) ->
       metadata(admitted)
-      |> result.map(fn(text) { path <> ":" <> claim.digest(text) })
+      |> result.map(fn(text) { path <> ":" <> digest(text) })
     Error(error) -> Error(path <> ": " <> simplifile.describe_error(error))
   }
 }
@@ -215,4 +216,10 @@ fn admit(
     False ->
       Error(path <> " is outside the session's authorized dependency roots")
   }
+}
+
+// Keep the existing SHA-256 text fingerprints without importing owner claim
+// administration. The shared blob address uses the same digest bytes.
+fn digest(value: String) -> String {
+  blob.ref_for(bit_array.from_string(value)) |> string.drop_start(7)
 }

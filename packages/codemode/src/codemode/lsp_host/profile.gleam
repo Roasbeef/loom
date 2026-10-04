@@ -1,3 +1,10 @@
+//// Shared approved language-profile data and its total decoders.
+////
+//// Host placement consumes these values beside the physical checkout.
+//// Selection, installation, approval and extension administration remain on
+//// the owner. Sharing this decoder preserves their exact policy vocabulary
+//// without an lsp-to-codemode dependency cycle through vetting policy.
+////
 //// A language profile: one `[lsp.<name>]` table, decoded (ADR-016 §§1–2).
 ////
 //// # Why this is its own module
@@ -1743,7 +1750,7 @@ pub fn approval_lines(server: LspServer) -> List(String) {
 // What the jail mounts for the command itself. It is derived from where
 // the executable is found rather than written in the table, which is why
 // it has to be printed: a grant the approval never showed is one nobody
-// approved. The rule is the jail's (`client/lsp/jail.regions`).
+// approved. The rule is the jail's (`codemode/lsp_host/jail.regions`).
 fn executable_text(server: LspServer) -> String {
   let head = case server.command {
     [head, ..] -> head

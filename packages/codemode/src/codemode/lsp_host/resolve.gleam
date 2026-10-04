@@ -4,7 +4,7 @@
 ////
 //// # Why this is its own module
 ////
-//// The manager (`client/lsp/manager`) is a process story: one server per
+//// The manager (`codemode/lsp_host/manager`) is a process story: one server per
 //// session, a start that many callers wait on, a restart after death.
 //// What this module holds is the part of the door that is *judgement*
 //// rather than process: ownership and containment, splitting a qualified
@@ -85,7 +85,7 @@
 //// ```
 
 import broker/policy
-import client/lsp/profile.{type LspServer, type ModuleCase}
+import codemode/lsp_host/profile.{type LspServer, type ModuleCase}
 import filepath
 import gleam/bool
 import gleam/int
