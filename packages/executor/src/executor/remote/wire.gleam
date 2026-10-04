@@ -19,11 +19,23 @@
 //// bounded-msgpack preflight: depth 16, 2048 nodes, arrays/maps 128 entries,
 //// strings 8192 bytes, binary 128 KiB, total frame 256 KiB. Stdin is 8 KiB;
 //// output payloads 16 KiB; terminal 32 KiB. Unknown/extra fields fail closed.
+////
+//// ## Flow
+////
+//// `encode` and `decode` preserve the original native envelope.
+//// `command_envelope` validates physical correspondence; `encode_command` and
+//// `decode_command` add the closed route using `envelope_value` and
+//// `decode_envelope_value`. `command_value` embeds the native value, while
+//// `command_key` excludes administrative traffic. `prepared_digest` retains the
+//// original immutable command encoding.
 
 import broker/dispatch
 import broker/exec
 import broker/framing
 import core/bounded_msgpack
+import core/command
+import core/ids
+import core/json
 import core/msgpack as mp
 import core/workspace
 import executor/remote/identity
@@ -31,7 +43,7 @@ import executor/remote/journal_codec as codec
 import gleam/bit_array
 import gleam/crypto
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 
 /// The exact schema revision exchanged before any mutation.
@@ -245,8 +257,13 @@ pub type Error {
 /// wire.encode(envelope) // -> bounded canonical msgpack.
 /// ```
 pub fn encode(envelope: Envelope) -> Result(BitArray, Error) {
+  use value <- result.try(envelope_value(envelope))
+  pack(value)
+}
+
+fn envelope_value(envelope: Envelope) -> Result(mp.MsgPackValue, Error) {
   use body <- result.try(body_value(envelope.body))
-  pack(
+  Ok(
     mp.ArrayValue([
       mp.IntValue(1),
       mp.StringValue(schema),
@@ -276,6 +293,16 @@ pub fn decode(
   scope: identity.Scope,
 ) -> Result(Envelope, Error) {
   use value <- result.try(unpack(bytes))
+  decode_envelope_value(value, role, owner, executor, scope)
+}
+
+fn decode_envelope_value(
+  value: mp.MsgPackValue,
+  role: Role,
+  owner: String,
+  executor: String,
+  scope: identity.Scope,
+) -> Result(Envelope, Error) {
   use fields <- result.try(case value {
     mp.ArrayValue([
       mp.IntValue(1),
@@ -309,6 +336,209 @@ pub fn decode(
     False -> Error(Invalid)
   })
   Ok(Envelope(role, owner, executor, generation, scope, body))
+}
+
+/// A complete physical command route beside an unchanged native envelope value.
+/// Construction checks scope, operation, role and Submit step correspondence.
+/// It does not prove durable ownership of a native key: authenticated server
+/// assembly must establish that association before forwarding any control.
+pub opaque type CommandEnvelope {
+  /// Only checked construction can attach a physical service route.
+  CommandEnvelope(
+    /// The complete original service and physical command reference.
+    ref: command.CommandRef,
+    /// The unchanged native envelope after role and coordinate validation.
+    native: Envelope,
+  )
+}
+
+/// Validates the closed route without allocating authority or a request UUID.
+/// Hello and scope retirement belong to the ordinary native connection lane.
+/// The enclosing frame shares the native 256 KiB, 2048-node, depth-16 bounds;
+/// Prepared retains its separate 128 KiB bound.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert wire.command_envelope(ref, wire.Envelope(..native, body: wire.Hello))
+///   == Error(wire.Invalid)
+/// ```
+pub fn command_envelope(
+  ref: command.CommandRef,
+  native: Envelope,
+) -> Result(CommandEnvelope, Error) {
+  // The Prepared codec's separate bound is not the enclosing TLS frame ceiling.
+  use Nil <- result.try(case native.body {
+    Submit(_, _, prepared, _, _) ->
+      encode_prepared(prepared) |> result.map(fn(_) { Nil })
+    _ -> Ok(Nil)
+  })
+  use value <- result.try(envelope_value(native))
+  use _ <- result.try(decode_envelope_value(
+    value,
+    native.role,
+    native.owner,
+    native.executor,
+    native.scope,
+  ))
+  use key <- result.try(command_key(native.body))
+  let #(scope, operation, step) = command.coordinates(command.service(ref))
+  let #(session, workspace_id, executor_id, session_epoch, workspace_epoch) =
+    identity.scope_fields(native.scope)
+  use native_scope <- result.try(
+    workspace.scope_from_fields(
+      session,
+      workspace_id,
+      executor_id,
+      session_epoch,
+      workspace_epoch,
+    )
+    |> result.map_error(fn(_) { Invalid }),
+  )
+  use Nil <- result.try(case native_scope == scope {
+    True -> Ok(Nil)
+    False -> Error(Invalid)
+  })
+  use Nil <- result.try(case key {
+    Some(key) -> {
+      let #(op, _) = identity.key_fields(key)
+      case
+        identity.key_scope(key) == native.scope
+        && op == ids.op_id_to_string(operation)
+      {
+        True -> Ok(Nil)
+        False -> Error(Invalid)
+      }
+    }
+    None -> Ok(Nil)
+  })
+  use Nil <- result.try(case native.body {
+    Submit(_, _, prepared, _, _) ->
+      case prepared.step == workspace.step_string(step) {
+        True -> Ok(Nil)
+        False -> Error(Invalid)
+      }
+    _ -> Ok(Nil)
+  })
+
+  // Validate the aggregate before an opaque route can leave this boundary.
+  use _ <- result.try(pack(command_value(ref, value)))
+  Ok(CommandEnvelope(ref, native))
+}
+
+/// Returns the complete retained service and physical command reference.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(envelope) = wire.command_envelope(ref, native)
+/// assert wire.command_ref(envelope) == ref
+/// ```
+pub fn command_ref(envelope: CommandEnvelope) -> command.CommandRef {
+  envelope.ref
+}
+
+/// Returns the unchanged native value, never a second encoded binary frame.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(envelope) = wire.command_envelope(ref, native)
+/// assert wire.native_envelope(envelope) == native
+/// ```
+pub fn native_envelope(envelope: CommandEnvelope) -> Envelope {
+  envelope.native
+}
+
+/// Encodes the closed discriminator, canonical full ref JSON and native value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(envelope) = wire.command_envelope(ref, native)
+/// let assert Ok(bytes) = wire.encode_command(envelope)
+/// assert wire.decode_command(bytes, native.role, native.owner,
+///   native.executor, native.scope) == Ok(envelope)
+/// ```
+pub fn encode_command(envelope: CommandEnvelope) -> Result(BitArray, Error) {
+  use value <- result.try(envelope_value(envelope.native))
+  pack(command_value(envelope.ref, value))
+}
+
+/// Decodes canonical command framing against authenticated native configuration.
+/// Shape correspondence is separate from the server's durable ownership proof.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert wire.decode_command(<<>>, wire.Owner, "owner", "executor", scope)
+///   == Error(wire.Invalid)
+/// ```
+pub fn decode_command(
+  bytes: BitArray,
+  role: Role,
+  owner: String,
+  executor: String,
+  scope: identity.Scope,
+) -> Result(CommandEnvelope, Error) {
+  use value <- result.try(unpack(bytes))
+  use fields <- result.try(case value {
+    mp.ArrayValue([
+      mp.IntValue(1),
+      mp.StringValue("loom.remote.command/1"),
+      mp.StringValue(ref_json),
+      native,
+    ]) -> Ok(#(ref_json, native))
+    _ -> Error(Invalid)
+  })
+  use json_value <- result.try(
+    json.parse(fields.0) |> result.map_error(fn(_) { Invalid }),
+  )
+  use ref <- result.try(
+    command.decode_ref(json_value) |> result.map_error(fn(_) { Invalid }),
+  )
+  use native <- result.try(decode_envelope_value(
+    fields.1,
+    role,
+    owner,
+    executor,
+    scope,
+  ))
+  use envelope <- result.try(command_envelope(ref, native))
+  use canonical <- result.try(encode_command(envelope))
+  case canonical == bytes {
+    True -> Ok(envelope)
+    False -> Error(Invalid)
+  }
+}
+
+fn command_value(
+  ref: command.CommandRef,
+  native: mp.MsgPackValue,
+) -> mp.MsgPackValue {
+  mp.ArrayValue([
+    mp.IntValue(1),
+    mp.StringValue("loom.remote.command/1"),
+    mp.StringValue(json.to_string(command.encode_ref(ref))),
+    native,
+  ])
+}
+
+fn command_key(body: Body) -> Result(Option(identity.RequestKey), Error) {
+  case body {
+    ChallengeRequest(key, _)
+    | Challenge(key, _, _, _)
+    | Submit(key, _, _, _, _)
+    | Query(key, _, _)
+    | Stdin(key, _, _, _, _)
+    | Cancel(key, _)
+    | DurableReceipt(key, _, _)
+    | Evidence(key, _, _, _)
+    | Output(key, _, _, _)
+    | Terminal(key, _, _) -> Ok(Some(key))
+    Rejected(_) -> Ok(None)
+    Hello | CloseScope | ScopeRetirement -> Error(Invalid)
+  }
 }
 
 /// Computes content evidence over exact canonical prepared materialization.
