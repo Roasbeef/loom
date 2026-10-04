@@ -26,6 +26,9 @@
 //// native endpoint. Completion, cleanup, native retirement and outer receipt stay
 //// distinct. A recovered Reserved row does not establish a fresh original deadline;
 //// the physical caller must independently hold live original service authority.
+//// Whole-service admission uses admit_preparation: only its own insertion can
+//// issue a Claim. fence_preparation can retain a cancelled original before Submit.
+//// Both commits precede replies; retained Reserved history never reissues authority.
 //// Launch capacity is reserved but its outcome API remains unsupported.
 ////
 //// Historical Input lookup reconstructs data, never the original live Claim.
@@ -57,6 +60,9 @@
 //// `native_launch_binding` exposes only its committed exact binding.
 //// `live_authority` checks the original native actor's canonical finite authority.
 //// `native_endpoint` and `claim_journal` expose exact local handles for trusted routing.
+//// `admit_preparation` shares `execute` and `insert` under the original writer lock.
+//// `fence_preparation` enters `fence_transaction` and `fence_input`; sealed missing
+//// inputs return only the durable scope disposition, after checking address conflicts.
 
 import broker/command as offer
 import broker/enrollment
@@ -174,6 +180,36 @@ pub type Claimed {
 
   /// Retained evidence grants no new preparation permission.
   Existing(status: Status)
+}
+
+/// Whole-service first admission distinguishes local issuance from retained data.
+/// A lost reply or historical Reserved row cannot reconstruct original authority.
+@internal
+pub type FirstAdmission {
+  /// This transaction inserted the original and committed Preparing before reply.
+  FreshClaim(
+    /// Original copyable local permission; the trusted adapter owes one use.
+    claim: Claim,
+  )
+
+  /// Exact retained history, including Reserved, grants no fresh permission.
+  Retained(
+    /// Historical disposition checked against the complete immutable input.
+    status: Status,
+  )
+}
+
+/// Committed cancellation disposition, separate from resource cleanup or retirement.
+@internal
+pub type PreparationFence {
+  /// The exact row is Unknown or Released, retaining any original Ready evidence.
+  InputFenced(
+    /// Historical data; an associated native request can still be in flight.
+    status: Status,
+  )
+
+  /// No row exists, and the committed scope seal already blocks new admission.
+  ScopeFenced
 }
 
 /// Cleanup is a trusted owner witness, separate from endpoint/native retirement.
@@ -375,6 +411,7 @@ type Command {
   Reserve(Validated)
   Inspect(Validated)
   TakeClaim(Validated)
+  AdmitFirst(Validated)
   CommitReady(Validated, BitArray)
   LoseResources(Validated)
   RetireResources(Validated)
@@ -392,6 +429,7 @@ type Answer {
 type Message {
   Initialise(Mode, process.Subject(Result(Nil, Error)))
   Run(Command, process.Subject(Result(Answer, Error)))
+  FencePreparation(Validated, process.Subject(Result(PreparationFence, Error)))
   ReadInput(command.ServiceKey, process.Subject(Result(Input, Error)))
   Metadata(MetadataCommand, process.Subject(Result(ScopeMode, Error)))
   Custody(CustodyCommand, process.Subject(Result(CustodyAnswer, Error)))
@@ -535,6 +573,53 @@ pub fn claim_preparation(
     Granted -> Ok(Claimed(Claim(journal, validated)))
     Withheld -> Ok(Existing(answer.status))
   }
+}
+
+/// Atomically inserts and claims only a previously absent original invocation.
+/// Trusted assembly must hold the original finite authority and re-vetted input.
+/// Existing Reserved rows return data even after reopen; they cannot recreate a
+/// live continuation. FreshClaim is issued only after COMMIT, never after a lost
+/// or ambiguous reply. The explicit reserve/claim APIs keep their component use.
+///
+/// ## Examples
+///
+/// ```gleam
+/// resource_journal.admit_preparation(book, original)
+/// // -> Ok(resource_journal.FreshClaim(claim)) on this original insertion only.
+/// ```
+@internal
+pub fn admit_preparation(
+  book: Journal,
+  original: Input,
+) -> Result(FirstAdmission, Error) {
+  use validated <- result.try(validate(book.enrolled, original))
+  use answer <- result.try(exchange(book, Run(AdmitFirst(validated), _)))
+  case answer.permission {
+    Granted -> Ok(FreshClaim(Claim(book, validated)))
+    Withheld -> Ok(Retained(answer.status))
+  }
+}
+
+/// Commits an original cancellation fence before the caller follows native work.
+/// Missing input reserves the same lifetime capacity before becoming Unknown.
+/// Full immutable evidence is compared even when sealed. ScopeFenced records
+/// only an already committed seal for an absent identity, never a fabricated row.
+/// A lost reply remains Uncertain; no successful disposition proves cleanup or
+/// absence of an already associated native submission.
+///
+/// ## Examples
+///
+/// ```gleam
+/// resource_journal.fence_preparation(book, original)
+/// // -> Ok(resource_journal.InputFenced(resource_journal.Unknown(None))).
+/// ```
+@internal
+pub fn fence_preparation(
+  book: Journal,
+  original: Input,
+) -> Result(PreparationFence, Error) {
+  use validated <- result.try(validate(book.enrolled, original))
+  exchange(book, FencePreparation(validated, _))
 }
 
 /// Returns the exact original key/body for the trusted physical service.
@@ -1089,6 +1174,19 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         Ok(_) | Error(_) -> actor.continue(state)
       }
     }
+    Ready(config, connection), FencePreparation(original, reply) -> {
+      let outcome = fence_transaction(connection, config, original)
+      process.send(reply, outcome)
+      case outcome {
+        Error(Uncertain) | Error(Corrupt) | Error(BindingMismatch) ->
+          actor.stop()
+        Ok(_) | Error(_) -> actor.continue(state)
+      }
+    }
+    Waiting(_), FencePreparation(_, reply) -> {
+      process.send(reply, Error(Closed))
+      actor.continue(state)
+    }
     Ready(config, connection), ReadInput(key, reply) -> {
       let outcome = input_transaction(connection, config, key)
       process.send(reply, outcome)
@@ -1418,6 +1516,68 @@ fn transact(
   complete_transaction(connection, outcome)
 }
 
+fn fence_transaction(
+  connection: sqlight.Connection,
+  config: Config,
+  original: Validated,
+) -> Result(PreparationFence, Error) {
+  use Nil <- result.try(
+    sqlight.exec("BEGIN IMMEDIATE", connection) |> sql_error,
+  )
+  let outcome = {
+    use inventory <- result.try(inventory(connection, config))
+    fence_input(connection, config, inventory, original)
+  }
+  complete_transaction(connection, outcome)
+}
+
+fn fence_input(
+  connection: sqlight.Connection,
+  config: Config,
+  inventory: Inventory,
+  original: Validated,
+) -> Result(PreparationFence, Error) {
+  let row = list.find(inventory.rows, fn(row) { row.id == original.id })
+  case row, inventory.mode {
+    Error(_), SealedScope -> {
+      use addresses <- result.try(
+        query(connection, sql.resource_address(original.address))
+        |> result.replace_error(Corrupt),
+      )
+
+      // The scope seal suffices only when neither original identity fence exists.
+      case addresses {
+        [] -> Ok(ScopeFenced)
+        [_] -> Error(Conflict)
+        _ -> Error(Corrupt)
+      }
+    }
+    _, _ -> {
+      // Reserve shares the complete immutable comparison and missing-row capacity
+      // guard. It executes under this same lock, never as a separate actor ask.
+      use answer <- result.try(execute(
+        connection,
+        config,
+        inventory,
+        Reserve(original),
+      ))
+      case row {
+        Ok(row) if row.phase == 3 || row.phase == 4 ->
+          Ok(InputFenced(answer.status))
+        Ok(_) | Error(_) -> {
+          use Nil <- result.try(phase_change(
+            connection,
+            sql.fence_resource_preparation(original.id),
+            fn(row) { row.phase },
+            3,
+          ))
+          Ok(InputFenced(Unknown(historical(answer.status))))
+        }
+      }
+    }
+  }
+}
+
 fn input_transaction(
   connection: sqlight.Connection,
   config: Config,
@@ -1496,6 +1656,7 @@ fn command_input(command: Command) -> Validated {
     Reserve(original)
     | Inspect(original)
     | TakeClaim(original)
+    | AdmitFirst(original)
     | CommitReady(original, _)
     | LoseResources(original)
     | RetireResources(original) -> original
@@ -1520,6 +1681,22 @@ fn execute(
         _ -> Error(Conflict)
       })
       case command {
+        AdmitFirst(_) -> {
+          use Nil <- result.try(require_open(inventory.mode))
+          use _ <- result.try(insert(
+            connection,
+            config,
+            inventory.rows,
+            original,
+          ))
+          use Nil <- result.try(phase_change(
+            connection,
+            sql.claim_resource(original.id),
+            fn(row) { row.phase },
+            1,
+          ))
+          Ok(Answer(Unknown(None), Granted))
+        }
         Reserve(_) -> {
           use Nil <- result.try(require_open(inventory.mode))
           insert(connection, config, inventory.rows, original)
@@ -1665,7 +1842,7 @@ fn transition(
       ))
       Ok(Answer(Released(historical(status)), Withheld))
     }
-    Reserve(_), _ | Inspect(_), _ | TakeClaim(_), _ ->
+    Reserve(_), _ | Inspect(_), _ | TakeClaim(_), _ | AdmitFirst(_), _ ->
       Ok(Answer(status, Withheld))
   }
 }

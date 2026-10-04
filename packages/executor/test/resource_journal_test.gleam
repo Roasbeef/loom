@@ -502,6 +502,7 @@ pub fn schema_and_named_queries_match_generated_artifacts_test() {
     sql.claim_resource(<<>>).0,
     sql.commit_resource_ready(<<>>, 1, <<>>, <<>>).0,
     sql.mark_resource_unknown(<<>>).0,
+    sql.fence_resource_preparation(<<>>).0,
     sql.release_resource(<<>>).0,
     sql.seal_resources().0,
     sql.resource_address(<<>>).0,
