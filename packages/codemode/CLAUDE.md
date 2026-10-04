@@ -87,6 +87,13 @@ or renewed deadline. Exact offer equality refuses any received field change.
 causes distinct. Remote artifacts remain executor references throughout; no
 local Artifact is constructed to pass the existing launch guard.
 
+Historical Compile custody uses internal `compile_from_input` beneath that same
+factory. It reconstructs expectation data from bounded retained input without
+inventing a compilation contract or source admission. The live admitted wrapper
+still owns the source-vetting boundary; physical effects require that separate
+admission. Native journal comparison retains the cleared policy and checks it is
+no broader than requested, allowing tighter limits and added protected paths.
+
 ## Purpose
 
 Code mode: a model writes a *program*, not a tool call, and the program

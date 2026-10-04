@@ -690,3 +690,57 @@ Independent review found no production framing defect. Its scanner test-specific
 finding was corrected and the focused real-TLS gate rerun; the
 [review record](../docs/review/distributed-compile-transfer.md) separates byte
 transport evidence from production service acceptance.
+
+## Addendum: Compile completion custody
+
+The preparation journal also owns exact Compile completion custody. A fresh
+resource-format-2 reservation charges the full bounded input, Ready receipt,
+native association and 256-KiB completion allowance before the first preparation
+claim. Reservations remain charged after receipt, cleanup and recovery. Existing
+format-1 stores are refused explicitly before querying format-2 columns; recovery
+must neither silently upgrade old evidence nor remove its fences.
+
+The resource actor pins the actual native journal under the same complete scope.
+Associating a native child requires canonical retained Prepared bytes and actual
+committed admission for that exact native key and Prepared digest. Request bytes
+alone are insufficient because request retention precedes native admission. The
+association is immutable, and one native UUID cannot serve two outer invocations
+in the same scoped resource database. Trusted provisioning must select that
+single database for the scope.
+
+Compiler expectation data comes from the retained original input, exact Ready
+locations and pinned enrollment. Historical reconstruction does not create source
+admission or invent a compilation contract. Native argv, environment order and
+cwd must match exactly. The cleared policy may narrow requested authority and
+add protected paths; it must not broaden the compiler's fixed requirements.
+Comparison uses the existing policy composition without grants, preserves the
+recorded Prepared unchanged and performs no new filesystem resolution or
+clearance. The original stage and policy ceilings still bound its finite wall.
+
+A new native-backed completion requires both exact retained terminal bytes and
+matching committed terminal reducer evidence. The Prepared digest, native
+terminal digest and outer completion digest identify different objects. Retaining
+terminal bytes can precede reducer settlement, so that intermediate state remains
+pending. Positive admission and terminal facts survive native retirement and
+payload retention; the resource actor can read those facts before taking its own
+SQLite writer lock, then revalidate the exact resource row under that lock.
+
+Before-native failure is narrower. Only the original live Preparing claim can
+retain it, while no Ready or native association exists. Its transaction commits
+the error and fences late Ready together. Once Ready has been published, missing
+native evidence cannot prove that submission was impossible. This version adds
+no post-Ready no-submit proof or replay permission.
+
+Completion retention commits before returning its opaque retained-result handle.
+Checked historical inspection can reconstruct that handle, including after a
+Before-native reply is lost. Exact already-retained retries need no live native
+endpoint; new association or settlement still requires authenticated readback.
+Failed COMMIT or unchecked update cardinality must return no positive receipt.
+An uncertain endpoint is fenced until explicit recovery.
+
+The original owner retains exact completion bytes before acknowledging their
+digest. That outer receipt remains separate from native owner receipt, native
+retirement and resource cleanup. None can substitute for another or renew a
+claim, deadline, wall selection, UUID or clearance. Launch rows reserve the same
+fixed outcome allowance, but Compile-only settlement APIs refuse Launch until a
+closed Launch completion and its admission checks exist.
