@@ -165,7 +165,7 @@ specifies them and [the web view](architecture/web-view.md) describes them.
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:213-180`).
+Source: `handle` (`client/daemon/server.gleam:258-180`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -401,7 +401,7 @@ carries the daemon epoch that most control commands must echo.
 | `ui.path` | string | optional | Present only when the daemon was started with `--ui`: the web view's route prefix, `"/ui"`. A client that does not know the field ignores it. |
 
 Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:993`).
+`hello_view` (`client/daemon/server.gleam:1050`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -441,6 +441,44 @@ next admitted operation clears the old failure memo.
 Credential, membership and epoch checks precede that read; other failures
 never quote the request or a private path.
 Source: (`client/daemon/server.gleam:1039`).
+
+#### Registered workspace compatibility
+
+Protocol 067 adds an optional envelope field,
+`"accepts": ["registered_workspace_v1"]`, for clients that can preserve typed
+workspace identity. The list allows at most eight distinct names, each one
+to 64 ASCII bytes in `0x21..0x7e` (no spaces or controls). It asserts codec
+support on that request; it does not grant access or persist across requests.
+
+Commands that select a workspace accept either the existing `"workspace"`
+pathname or a closed `"workspace_selection"` object, never both. A registered
+selection has this shape:
+
+```json
+{"kind":"registered","executor":"build-host","workspace":"loom"}
+```
+
+The selector contains no endpoint, physical root, certificate pin or authority
+epoch. Owner-controlled administration resolves those facts. Creation persists
+the resulting binding; a retry with the same creation key revalidates that
+binding instead of replacing its epochs.
+
+Registered metadata replies carry `workspace_binding` and omit the legacy
+`workspace` pathname. After authorization and existing page bounds, a reply
+containing a registered binding requires the feature assertion. Otherwise the
+request fails with `unsupported_workspace`; rows are not silently filtered.
+Local-only replies keep their existing representation. Rename, archive and
+restore check this support before changing a registered session: an old client
+must not mutate the catalogue and then fail to decode the successful reply.
+`operations.get` applies the same check before returning a registered view.
+Membership and stale-epoch refusals still precede compatibility checks.
+
+A native resident WebSocket upgrade also requires the exact header
+`x-loom-accepts: registered_workspace_v1` for a registered session. This header
+does not replace authentication. Browser WebSockets cannot set it, so this
+slice does not enable registered browser attachment. Production daemon
+assembly still uses the local authority adapter and refuses registered
+startup; the codec and catalogue support alone do not enable remote execution.
 
 ### 3.3 `status`
 
@@ -535,7 +573,7 @@ Source: (`client/daemon/server.gleam:839-860`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:1816`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:1897`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -924,7 +962,7 @@ While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:1310-1114`).
+`control_use` (`client/daemon/server.gleam:1367-1114`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -1072,7 +1110,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:684`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:692`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -3353,7 +3391,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:394`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:404`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
    `protocol-change/053` adds a third route, `/v2/claim`, with its one

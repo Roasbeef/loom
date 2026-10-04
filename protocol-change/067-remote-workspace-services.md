@@ -438,6 +438,29 @@ creating, opening or selecting a registered session. Server advertisement alone
 is not negotiation. Registered replies carry a typed binding and omit the
 legacy local pathname. Administrative configuration owns enrollment and pins.
 
+The accepts envelope list contains at most eight distinct ASCII names of
+1..64 bytes, each byte in `0x21..0x7e` (no spaces or controls). Only the exact
+`registered_workspace_v1` name changes behavior.
+An authorized bounded list or get that would return registered metadata also
+requires this feature; an unsupported caller receives `unsupported_workspace`,
+not filtered rows or a registered key disguised as a path. Rename, archive and
+restore MUST check support before mutating a registered row, after existing
+membership and epoch checks. `operations.get` MUST check support before
+returning a registered view. Local-only legacy catalogues retain their wire
+representation. A mixed catalogue therefore needs
+an updated client; compatibility does not promise that an old decoder can read
+new registered rows. Native resident upgrades independently assert the exact
+`x-loom-accepts: registered_workspace_v1` header before resolving an instance.
+This is a feature assertion, never an authentication or authorization grant.
+Browser attachment needs its own bounded assertion before that path is enabled,
+since browser WebSockets cannot set arbitrary request headers.
+
+Attaching to an already resident session grants access to owner-held session
+state under existing membership checks; it does not renew executor authority.
+An executor outage MUST NOT by itself prevent that attachment. Creation and
+reopen revalidate the retained binding, and effect admission rechecks current
+registration authority independently of an attached client's presence.
+
 `tool.Ctx.workspace` becomes a closed WorkspaceAccess: LocalWorkspace retains
 its root and FileSystem; RegisteredWorkspace retains only the validated scope.
 Local-only consumers MUST project LocalWorkspace before resolution, I/O or

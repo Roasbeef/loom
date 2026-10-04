@@ -73,7 +73,7 @@ check anywhere.
 A UI session is a `Grant` (`ui_sessions.gleam:162`) of one session, one
 credential digest, one principal and one ceiling, kept with the digests of
 the page's cookie, key and nonce in one actor. A ticket for it is minted
-only by `UiLink` (`client/daemon/server.gleam:1376`) over the principal's own
+only by `UiLink` (`client/daemon/server.gleam:1405`) over the principal's own
 control connection, after `session_authority`
 (`client/daemon/manager.gleam:936`) finds a membership, and by a page
 switching to another session (`ticket_for` (`ui_socket.gleam:760`)). The
@@ -581,7 +581,7 @@ and the epoch the page was admitted in:
 1. the page is open and its ceiling is Operator;
 2. `session_authority` finds Owner or Operator authority in the target: an
    observer member is refused with the words "ask an operator to resume
-   it", the check `OpenSession` (`client/daemon/server.gleam:1398`) makes;
+   it", the check `OpenSession` (`client/daemon/server.gleam:1423`) makes;
 3. `open` (`client/daemon/manager.gleam:991`) is called, which is the same
    registry turn `sessions.open` runs: capacity, `Reserved`, archived, the
    domain slot;
@@ -811,7 +811,7 @@ Part 1.6 only; 065 has the exact shapes.
 No session-protocol frame changes. The catalogue moves from version 4 to
 5 for three columns on `access_credentials` (`kind`, `issued_at_ms`,
 `last_seen_ms`); the schema is not a Part 1 interface, and the migration
-is the forward one at `user_version` (`storage/catalogue.gleam:150`). The
+is the forward one at `user_version` (`storage/catalogue.gleam:166`). The
 per-session members read and the sign-ins read are new queries over the
 existing tables (`make gen-sql`).
 
