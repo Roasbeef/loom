@@ -188,6 +188,14 @@ its recovery duties can be transferred. Root's combined gates passed 170 core,
 [command-custody review](review/distributed-command-custody.md). Command template
 validation, enrollment/resources and whole physical assembly remain ahead.
 
+The broker command codec now preserves bounded canonical proposal bytes with
+full policy and identity checks. Its 13 focused controls and independent
+421-test broker gate pass, with two existing Darwin `/proc` witness skips.
+Preflight and field-drop mutations fail the intended controls; independent
+review found no actionable defect. See the
+[command-codec review](review/distributed-command-codec.md). Enrollment and
+owner-side closed command templates still precede physical assembly.
+
 The product P and Channel PlusCal models now cover exact command offers,
 resource/launch uncertainty, separate native/outer receipts and final-consumer
 credit in both directions. Independent review found and repaired two vacuous
