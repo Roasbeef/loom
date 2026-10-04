@@ -12,13 +12,16 @@
 
 import gleam/erlang/process.{type Subject}
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/string
 import lustre/effect
 import lustre/element.{type Element}
+import web_view/creations
 import web_view/ending
 import web_view/home
 import web_view/page
 import web_view/sessions.{type Entry, Blocked, Entry, Live, Saved}
+import web_view/view/create
 import web_view/view/home_table
 
 @external(erlang, "page_events_ffi", "handlers")
@@ -58,6 +61,7 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     resume: fn(_, _) { Nil },
     now: fn() { now },
     activity: fn(_, _) { Nil },
+    create: None,
   )
 }
 
@@ -737,4 +741,224 @@ pub fn every_ending_has_home_words_test() {
   })
   assert ending.home_headline(ending.AccessRevoked)
     == "Your access was revoked or changed."
+}
+
+// ---------------------------------------------------------------------------
+// Creating a session (protocol-change/065, the fourth pull request).
+// ---------------------------------------------------------------------------
+
+// A page that may create: the owner's, minted to operate. `ask` is what the
+// daemon's task does with the request, and the page's own state is what the
+// tests read.
+fn creator(
+  ask: fn(String, String, creations.Sharing, fn(creations.Answer) -> Nil) -> Nil,
+) -> home.Start {
+  home.Start(..start(), create: Some(ask))
+}
+
+fn recording(
+  asked: Subject(#(String, String, creations.Sharing)),
+) -> fn(String, String, creations.Sharing, fn(creations.Answer) -> Nil) -> Nil {
+  fn(workspace, name, sharing, _) {
+    process.send(asked, #(workspace, name, sharing))
+  }
+}
+
+// A member's page and an observer-ceiling page have no capability, so they draw
+// no button, no form and no field, and the messages that would open or send one
+// change nothing and ask nothing.
+pub fn a_page_without_the_capability_draws_no_creation_control_test() {
+  let #(model, _) = opened(start())
+  let html = drawn(model)
+  assert !string.contains(html, "New session")
+  assert !string.contains(html, "<form")
+  assert !string.contains(html, "<input")
+  assert !string.contains(html, "<label")
+
+  let model = run(model, home.Choosing("/src/loom"))
+  let model =
+    run(model, home.Creating("/src/loom", "name", creations.Shareable))
+  assert drawn(model) == html
+  assert list.length(handlers(home.view(model))) == 8
+}
+
+// The owner's page has one button under each workspace and no form until a
+// button is pressed. The new handlers are clicks beneath the table, which the
+// socket already admits, and the sidebar and the table keep their own.
+pub fn the_owner_has_a_button_under_each_workspace_test() {
+  let asked = process.new_subject()
+  let #(model, _) = opened(creator(recording(asked)))
+  let html = drawn(model)
+  assert list.length(string.split(html, "class=\"home-new\"")) == 4
+  assert !string.contains(html, "<form")
+  let keys = handlers(home.view(model))
+  assert list.length(keys) == 11
+  assert list.all(keys, beneath_the_two_regions)
+}
+
+// A press opens the form under its workspace only. The form is one name field,
+// one checkbox and two buttons, its submit is the one new event kind and sits
+// beneath the table, and nothing about the workspace or a name is an attribute.
+pub fn a_press_opens_one_form_under_its_workspace_test() {
+  let asked = process.new_subject()
+  let #(model, _) = opened(creator(recording(asked)))
+  let model = run(model, home.Choosing("/src/loom"))
+  let html = drawn(model)
+  assert list.length(string.split(html, "<form")) == 2
+  assert string.contains(html, "name=\"name\"")
+  assert string.contains(html, "name=\"shareable\"")
+  assert string.contains(html, "type=\"checkbox\"")
+  assert string.contains(html, "Create session")
+  assert string.contains(html, "Left blank, the session is named <b>loom</b>.")
+  assert process.receive(asked, 0) == Error(Nil)
+
+  // The form's submit and its Cancel are beneath the table.
+  let keys = handlers(home.view(model))
+  let submits = list.filter(keys, string.ends_with(_, "\nsubmit"))
+  assert list.length(submits) == 1
+  assert list.all(submits, string.starts_with(_, home.table_path <> "\t"))
+  assert list.all(keys, string.starts_with(_, "0\t"))
+
+  // Another workspace's button moves the form, and Cancel closes it.
+  let moved = run(model, home.Choosing("/src/weft"))
+  assert string.contains(drawn(moved), "named <b>weft</b>.")
+  assert !string.contains(drawn(moved), "named <b>loom</b>.")
+  let closed = run(moved, home.Cancelled)
+  assert !string.contains(drawn(closed), "<form")
+}
+
+// A submit asks the daemon once, with the workspace the form was drawn under,
+// and the page then waits: the form is disabled, no button has a press, and a
+// second submit asks nothing.
+pub fn a_submit_asks_once_and_the_page_waits_test() {
+  let asked = process.new_subject()
+  let #(model, _) = opened(creator(recording(asked)))
+  let model = run(model, home.Choosing("/src/loom"))
+  let model =
+    run(model, home.Creating("/src/loom", "review", creations.Shareable))
+  assert process.receive(asked, 0)
+    == Ok(#("/src/loom", "review", creations.Shareable))
+  let html = drawn(model)
+  assert string.contains(html, "Creating the session.")
+  assert string.contains(html, "Creating</button>")
+  assert string.contains(html, "disabled")
+
+  let again =
+    run(model, home.Creating("/src/loom", "second", creations.Private))
+  let elsewhere = run(model, home.Choosing("/src/weft"))
+  let _ = run(elsewhere, home.Creating("/src/weft", "third", creations.Private))
+  assert process.receive(asked, 0) == Error(Nil)
+  assert drawn(again) == html
+}
+
+// A submit is honoured only for the form that is open: with no form, or for
+// another workspace's, nothing is asked.
+pub fn a_submit_for_a_form_that_is_not_open_asks_nothing_test() {
+  let asked = process.new_subject()
+  let #(model, _) = opened(creator(recording(asked)))
+  let _ = run(model, home.Creating("/src/loom", "x", creations.Private))
+  let open = run(model, home.Choosing("/src/loom"))
+  let _ = run(open, home.Creating("/src/weft", "x", creations.Private))
+  assert process.receive(asked, 0) == Error(Nil)
+}
+
+// The answer arrives from the task: a ticket departs for the new session and
+// closes the form, and a refusal is the reason's fixed words with the form back
+// for a correction, except for a session that was made and did not open.
+pub fn the_answer_departs_or_words_the_refusal_test() {
+  let ticket = "/ui/sessions/N?ticket=t"
+  let #(model, _) =
+    opened(
+      creator(fn(_, _, _, deliver) { deliver(creations.Ticketed(ticket)) }),
+    )
+  let model = run(model, home.Choosing("/src/loom"))
+  let model = run(model, home.Creating("/src/loom", "", creations.Private))
+  let html = drawn(model)
+  assert string.contains(html, "to=\"" <> ticket <> "\"")
+  assert !string.contains(html, "<form")
+
+  let refuse = fn(reason) {
+    let #(model, _) =
+      opened(
+        creator(fn(_, _, _, deliver) { deliver(creations.Declined(reason)) }),
+      )
+    let model = run(model, home.Choosing("/src/loom"))
+    run(model, home.Creating("/src/loom", "", creations.Private))
+  }
+  let invalid = drawn(refuse(creations.InvalidName))
+  assert string.contains(invalid, creations.reason_words(creations.InvalidName))
+  assert string.contains(invalid, "<form")
+  assert !string.contains(invalid, " to=")
+
+  let unopened = drawn(refuse(creations.NotOpened))
+  assert string.contains(unopened, creations.reason_words(creations.NotOpened))
+  assert !string.contains(unopened, "<form")
+}
+
+// What the browser's submit lists is decoded totally: one name, at most one
+// checkbox that reads `on`, and no other field.
+pub fn the_form_fields_decode_totally_test() {
+  assert create.fields([#("name", "review")])
+    == Ok(#("review", creations.Private))
+  assert create.fields([#("name", ""), #("shareable", "on")])
+    == Ok(#("", creations.Shareable))
+  assert create.fields([#("shareable", "on"), #("name", "x")])
+    == Ok(#("x", creations.Shareable))
+  assert create.fields([]) == Error(Nil)
+  assert create.fields([#("shareable", "on")]) == Error(Nil)
+  assert create.fields([#("name", "a"), #("name", "b")]) == Error(Nil)
+  assert create.fields([#("name", "a"), #("shareable", "yes")]) == Error(Nil)
+  assert create.fields([#("name", "a"), #("workspace", "/etc")]) == Error(Nil)
+  assert create.fields([#("name", "a"), #("shareable", "on"), #("x", "y")])
+    == Error(Nil)
+}
+
+// The one rule for a name: trimmed, blank means the folder's name, a bound in
+// bytes, and no text the page would change.
+pub fn a_name_is_trimmed_bounded_and_clean_test() {
+  assert creations.chosen_name("  review  ", "/src/loom") == Ok("review")
+  assert creations.chosen_name("", "/src/loom") == Ok("loom")
+  assert creations.chosen_name("   ", "/src/loom/") == Ok("loom")
+  assert creations.chosen_name("a\nb", "/src/loom") == Error(Nil)
+  assert creations.chosen_name("a\u{202e}b", "/src/loom") == Error(Nil)
+  assert creations.chosen_name("a\u{200b}b", "/src/loom") == Error(Nil)
+  assert creations.chosen_name(string.repeat("a", 256), "/w")
+    == Ok(string.repeat("a", 256))
+  assert creations.chosen_name(string.repeat("a", 257), "/w") == Error(Nil)
+  assert creations.chosen_name("", "/") == Ok("New session")
+  assert creations.folder("/") == "New session"
+}
+
+// Every reason has its own fixed words, and none carries text from the daemon.
+pub fn every_creation_refusal_has_its_own_words_test() {
+  let reasons = [
+    creations.NotOwner,
+    creations.NotKnown,
+    creations.InvalidName,
+    creations.TooMany,
+    creations.Full,
+    creations.NotOpened,
+    creations.Unavailable,
+  ]
+  let words = list.map(reasons, creations.reason_words)
+  assert list.length(list.unique(words)) == 7
+}
+
+// A workspace, a name or a folder from the catalogue is a text node: it is
+// escaped, and it is not in any attribute of the form, whose placeholder and
+// labels are fixed words.
+pub fn the_form_draws_the_workspace_only_as_text_test() {
+  let hostile = "/src/<script>alert(1)</script>"
+  let #(model, _) =
+    opened(
+      home.Start(..creator(fn(_, _, _, _) { Nil }), sessions: fn() {
+        home.Listed([entry("Z", "x", hostile, 1, Live)])
+      }),
+    )
+  let model = run(model, home.Choosing(hostile))
+  let html = drawn(model)
+  assert !string.contains(html, "<script>")
+  assert string.contains(html, "&lt;script&gt;")
+  assert string.contains(html, "placeholder=\"Session name (optional)\"")
+  assert !string.contains(html, "value=")
 }

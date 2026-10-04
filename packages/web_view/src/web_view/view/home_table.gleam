@@ -50,6 +50,7 @@ import web_view/sessions.{
   type Activity, type Entry, type Group, Blocked, Idle, Live, NeedsYou, Saved,
   Working,
 }
+import web_view/view/create.{type Create}
 import web_view/view/heading
 import web_view/view/resume.{type Resume}
 
@@ -62,12 +63,15 @@ import web_view/view/resume.{type Resume}
 /// memoized on the groups, the activity, the instant and the session whose
 /// resume is out, so a refresh that brings back what is drawn diffs nothing;
 /// `open` and the resume's `press` are not part of the key, so a caller passes
-/// the same functions every time, as a constructor is.
+/// the same functions every time, as a constructor is. `offer` is what the page
+/// offers for making a session (`view/create`): under each workspace's heading a
+/// button, and below it the form when that workspace's is open. Its state is in
+/// the key, so a group changes when its form opens, closes or starts waiting.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // home_table.view(home.groups(model), dict.new(), now, Opening, resume.Never)
+/// // home_table.view(home.groups(model), dict.new(), now, Opening, resume.Never, create.Never)
 /// ```
 pub fn view(
   groups: List(Group),
@@ -75,12 +79,14 @@ pub fn view(
   now: Int,
   open: fn(String) -> message,
   resume: Resume(message),
+  offer: Create(message),
 ) -> Element(message) {
   use <- element.memo([
     element.ref(groups),
     element.ref(activity),
     element.ref(now),
     element.ref(resume.pending(resume)),
+    element.ref(create.state(offer)),
   ])
   html.section([attribute.class("home-sessions")], [
     html.h2([attribute.class("home-heading")], [html.text("Sessions")]),
@@ -92,7 +98,7 @@ pub fn view(
           ),
         ]),
       ]
-      [_, ..] -> list.map(groups, group(_, activity, now, open, resume))
+      [_, ..] -> list.map(groups, group(_, activity, now, open, resume, offer))
     }
   ])
 }
@@ -104,17 +110,22 @@ fn group(
   now: Int,
   open: fn(String) -> message,
   resume: Resume(message),
+  offer: Create(message),
 ) -> Element(message) {
   html.section([attribute.class("home-group")], [
-    html.h3(
-      [attribute.class("home-workspace"), attribute.title(group.workspace)],
-      [
-        html.text(heading.shorten_path(group.workspace)),
-        html.span([attribute.class("home-count")], [
-          html.text(int.to_string(list.length(group.entries))),
-        ]),
-      ],
-    ),
+    html.div([attribute.class("home-group-head")], [
+      html.h3(
+        [attribute.class("home-workspace"), attribute.title(group.workspace)],
+        [
+          html.text(heading.shorten_path(group.workspace)),
+          html.span([attribute.class("home-count")], [
+            html.text(int.to_string(list.length(group.entries))),
+          ]),
+        ],
+      ),
+      create.button(offer, group.workspace),
+    ]),
+    create.form(offer, group.workspace),
     html.ul(
       [attribute.class("home-list")],
       list.map(group.entries, fn(entry) {
