@@ -3,7 +3,7 @@
 ////
 //// The policy tests are pure and state ADR-015 §1 as assertions: what the
 //// project root may and may not be written, which extra roots and names the
-//// operator's table adds, that the per-command limits are zero on both sides
+//// operator's table adds, that the time limits are zero and output is finite on both sides
 //// so composition narrows nothing, and that the network is off whatever the
 //// session's base allows. The lease tests run the counter at
 //// `exec.min_pool_size`, where the cap is one. The relay tests drive the
@@ -288,21 +288,22 @@ pub fn the_tmpdir_is_pinned_under_a_writable_root_test() {
   assert !string.starts_with(tmp, "/tmp")
 }
 
-pub fn the_lease_limits_are_zero_and_survive_composition_test() {
+pub fn finite_wire_limits_survive_composition_test() {
   let built = built(server(profile.ProjectWritable))
 
-  // The session base carries a command's limits; the lease base does not.
+  // The session base carries command limits; the wire lease changes time
+  // ownership and supplies a larger finite protocol allowance.
   assert session_base().limits.output_bytes > 0
   assert built.base.limits.wall_s == 0
   assert built.base.limits.cpu_s == 0
-  assert built.base.limits.output_bytes == 0
+  assert built.base.limits.output_bytes == 67_108_864
 
-  // Composed with the requirements, nothing narrows and the zeros stand,
-  // while the memory and process ceilings are the session's.
+  // Both sides request the same finite output allowance. Time remains
+  // session-owned, while memory and process ceilings stay unchanged.
   let final = composed(built)
   assert final.limits.wall_s == 0
   assert final.limits.cpu_s == 0
-  assert final.limits.output_bytes == 0
+  assert final.limits.output_bytes == 67_108_864
   assert final.limits.mem_bytes == session_base().limits.mem_bytes
   assert final.limits.pids == session_base().limits.pids
 }

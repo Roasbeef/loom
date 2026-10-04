@@ -356,3 +356,50 @@ pub fn twenty_sequential_runs_on_one_real_helper_see_no_busy_window_test() {
     }
   }
 }
+
+/// The production wire lease also bounds an unread consumer. This reaches the
+/// real helper through broker clearance with the actual session lease policy,
+/// then proves truncation and prompt cancellation without reading while it runs.
+pub fn a_wire_lease_bounds_a_nonreading_consumer_test() {
+  case helper_config() {
+    Error(reason) -> io.println_error("SKIP wire_lease_nonreading: " <> reason)
+    Ok(config) -> {
+      let lease = policy.session_lease(config.base_policy, policy.OutputIsWire)
+      let plane =
+        planes.start(
+          size: 1,
+          spawn: fn() {
+            exec.prepare_helper(exec.SpawnConfig(..config, base_policy: lease))
+          },
+          clock: clock.fixed(at: 1_700_000_000_000),
+        )
+      let events = process.new_subject()
+      let original = real_spec(["/usr/bin/yes"])
+      let spec =
+        broker.CallSpec(..original, base_policy: lease, requirements: lease)
+      let assert Ok(handle) =
+        broker.clear_call(plane.broker, spec, events:, waiting: 10_000)
+        as "the finite wire lease must clear"
+
+      // The consumer is deliberately idle while the native producer reaches
+      // its cumulative allowance. Cancellation uses its independent channel.
+      process.sleep(2000)
+      let asked_at = host.now_us()
+      broker.cancel(plane.broker, handle)
+      let seen = planes.collect(events, within: 5000)
+      let settled_ms = { host.now_us() - asked_at } / 1000
+      let assert Ok(broker.CallSettled(broker.CallExited(result))) =
+        list.last(seen)
+        as "the native call must settle after cancellation"
+      assert result.cancelled
+      assert settled_ms < 1000
+        as { "wire cancel settled in " <> int.to_string(settled_ms) <> " ms" }
+
+      let #(bytes, truncated) = payload_of(seen)
+      assert bytes <= lease.limits.output_bytes
+        as { "wire mailbox held " <> int.to_string(bytes) <> " bytes" }
+      assert truncated as "the flood must cross the actual wire quota"
+      planes.stop(plane)
+    }
+  }
+}
