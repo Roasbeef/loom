@@ -3,7 +3,7 @@
 //// nudges drawn under them.
 ////
 //// The panel is the page's last child (`view/shell`). It is an `aside` whose
-//// children are the three panes, always in the same order and all drawn, so
+//// children are the four panes, always in the same order and all drawn, so
 //// no pane's place depends on what another holds, and then the advisor's
 //// pending nudges, drawn by `view/nudges` as a section of their own under
 //// the panes. The nudge card is not a pane: the tab rules hide a tab's

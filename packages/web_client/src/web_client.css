@@ -418,7 +418,7 @@
      runs the session, and when it was created. The table scrolls in the
      centre, which does not scroll itself. */
   :host(.loom-home) .region-panel,:host(.loom-home) .toggle-panel{display:none;}
-  .sidebar-home{margin:0 0 12px 0;padding:4px 8px;border-radius:6px;background:var(--color-bg-raised);box-shadow:inset 2px 0 0 var(--color-current);font-size:12px;}
+  .sidebar-home{margin:0 0 12px 0;padding:4px 8px;border:1px solid color-mix(in srgb,var(--color-current) 40%,var(--color-divider));border-radius:6px;background:color-mix(in srgb,var(--color-current) 7%,var(--color-bg-raised));font-size:12px;}
   .session-head .home-who{color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);}
   .home-badge{margin-left:8px;padding:0 6px;border:1px solid var(--color-divider);border-radius:99px;font:600 11px/1.4 var(--font-mono);}
   main.centre > .home-sessions{flex:1 1 0;min-height:0;max-width:960px;padding-bottom:24px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
@@ -483,7 +483,7 @@
   .dot[data-loom-focus]::after{content:"";position:absolute;inset:-6px;}
   .dot[data-loom-focus]:hover{box-shadow:0 0 0 3px color-mix(in srgb,var(--hue,var(--color-current)) 28%,transparent);}
   .transcript.lane > .block.live{padding-left:22px;}
-  button.tag{margin:0;padding:0 5px;border:1px solid var(--hue,var(--color-fg-quiet));border-radius:4px;background:transparent;color:var(--hue-text,var(--color-fg));font:11px/1.5 var(--font-mono);cursor:pointer;transition:background-color 120ms,box-shadow 120ms;}
+  button.tag{margin:0;padding:0 5px;border:1px solid var(--hue,var(--color-fg-quiet));border-radius:4px;background:transparent;color:var(--hue-text,var(--color-fg));font:11px/1.5 var(--font-mono);cursor:pointer;transition:background-color 120ms;}
   button.tag:hover{background:color-mix(in srgb,var(--hue,var(--color-fg-quiet)) 10%,transparent);}
   /* The breadcrumb above the transcript while a strand other than main is in
      focus (web_view/view/crumb), in the centre column's 780px width. */
@@ -716,7 +716,7 @@
   .approval-actions.arming button,.control-actions.arming button{animation:loom-arm-look 600ms steps(1,end);}
   @keyframes loom-arm{from{pointer-events:none;}to{pointer-events:none;}}
   @keyframes loom-arm-look{from{opacity:.45;}to{opacity:.45;}}
-  /* The advisor's pending nudges, in the strand panel under the three panes
+  /* The advisor's pending nudges, in the strand panel under the four panes
      on every tab. Read-only: the card has no button. The panel itself
      scrolls, so the card needs no cap of its own. */
   aside.panel > section.nudges{margin:10px 0 0 0;padding:9px 12px;background:var(--color-bg-raised);border:1px solid var(--color-advisor);border-radius:10px;font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;}
