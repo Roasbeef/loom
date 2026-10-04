@@ -66,6 +66,7 @@ import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Monitor, type Pid, type Subject}
 import gleam/int
 import gleam/list
+import gleam/option.{type Option}
 import gleam/result
 import gleam/string
 import host/bootstrap
@@ -421,6 +422,7 @@ type Message(instance) {
   Claim(
     access.ClaimDigest,
     access.Digest,
+    Option(String),
     Int,
     Subject(Result(access.Claimed, ClaimError)),
   )
@@ -663,6 +665,10 @@ pub fn administer(
 /// Redeems a claim for the presented credential digest in one serialized
 /// dispatch, like every administration mutation.
 ///
+/// `name` is the invitee's chosen display name, or `None` to keep the
+/// inviter's; it is applied in the transaction that binds the credential, and
+/// a refused name (`InvalidClaimName`) binds nothing.
+///
 /// `now_ms` is the wall-clock instant the expiry is judged against and the
 /// one recorded as the claim instant. A timeout is an unknown outcome; the
 /// claim socket reports it as `unavailable`, and a rerun with the same claim
@@ -671,18 +677,20 @@ pub fn administer(
 /// ## Examples
 ///
 /// ```gleam
-/// // manager.claim(registry, claim, credential, now_ms: bootstrap.system_time_ms())
+/// // manager.claim(registry, claim, credential, None, now_ms: bootstrap.system_time_ms())
 /// ```
 @internal
 pub fn claim(
   manager: Manager(instance),
   claim: access.ClaimDigest,
   credential: access.Digest,
+  name: Option(String),
   now_ms now_ms: Int,
 ) -> Result(access.Claimed, ClaimError) {
   call.try_call(manager.commands, waiting: 5000, sending: Claim(
     claim,
     credential,
+    name,
     now_ms,
     _,
   ))
@@ -1560,10 +1568,17 @@ fn handle(
     // remembered answer can depend on. The memo is dropped anyway, so the
     // rule stays "every writer of the access tables drops it" rather than an
     // argument about which writes are harmless.
-    Claim(claim, credential, now_ms, reply) -> {
+    Claim(claim, credential, name, now_ms, reply) -> {
       let outcome = case phase {
         Ready ->
-          access.claim(book.catalogue, claim, credential, now_ms, same_digest)
+          access.claim(
+            book.catalogue,
+            claim,
+            credential,
+            name,
+            now_ms,
+            same_digest,
+          )
           |> result.map_error(ClaimRefused)
         ShuttingDown -> Error(ClaimUnavailable)
       }

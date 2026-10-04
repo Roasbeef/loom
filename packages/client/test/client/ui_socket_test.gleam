@@ -411,6 +411,20 @@ pub fn a_member_operators_page_drops_the_invitation_click_test() {
   page.shutdown()
 }
 
+// The session controls sit beneath their own path in the Session pane, which
+// is not the invitation's: a member operator's socket admits a click or a
+// submit there, and an observer's admits neither.
+pub fn the_session_controls_are_admitted_for_an_operator_not_an_observer_test() {
+  let beneath = component.session_controls_path <> "\t1\t0\t0"
+  assert ui_socket.operator_accepts(click_on(beneath))
+  assert ui_socket.owner_accepts(click_on(beneath))
+  assert !ui_socket.observer_accepts(click_on(beneath))
+  assert !string.starts_with(
+    component.session_controls_path,
+    component.invite_path,
+  )
+}
+
 fn view(status: manager.Status) -> manager.View {
   manager.View(
     registration: catalogue.Registration(

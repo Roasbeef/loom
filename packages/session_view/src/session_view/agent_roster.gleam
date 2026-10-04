@@ -343,8 +343,10 @@ pub fn tick(roster: Roster, now_ms: Int) -> #(Roster, Repaint) {
 ///
 /// `main` always leads, since it is the way back to the primary. After it
 /// come the active strand and every strand whose state needs watching:
-/// working, waiting, needing input or halted. Settled strands leave the
-/// strip; the workspace keeps their outcomes. The advisor has its own band
+/// working, waiting, needing input or halted, and a strand that has never run
+/// an operation, which is idle because it waits for its first prompt (a fresh
+/// fork). Settled strands leave the strip; the workspace keeps their
+/// outcomes. The advisor has its own band
 /// and is listed only while it is the active strand.
 ///
 /// ## Examples
@@ -417,6 +419,7 @@ fn listed(row: agent_view.Row, active: String) -> Bool {
   case row.id == active, row.id, row.status {
     True, _, _ -> True
     False, "advisor", _ -> False
+    False, _, agent_view.Idle if row.operation == None -> True
     False, _, agent_view.Working
     | False, _, agent_view.Waiting
     | False, _, agent_view.NeedsInput

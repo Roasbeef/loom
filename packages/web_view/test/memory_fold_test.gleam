@@ -2,11 +2,11 @@
 ////
 //// The daemon records distilled memory as a user message of its own ahead
 //// of the owner's prompt. Drawn like a prompt it reads as the owner typing
-//// twenty kilobytes at the start of every turn, so both pages fold it to
-//// one line, `memory context (n lines)`, and hold the whole message as the
-//// row's expansion (`<loom-expand>`). These tests check the folded line,
-//// that the expansion still holds every digest line, and that the owner's
-//// own prompt is drawn as before.
+//// twenty kilobytes at the start of every turn, so both pages make it the
+//// first step of the turn's fold, `Memory · n lines`, and hold the whole
+//// message behind that line (`<loom-expand>`). These tests check the line,
+//// that the body still holds every digest line, and that the owner's own
+//// prompt is drawn as before.
 
 import gleam/string
 import lane_fixture
@@ -21,12 +21,17 @@ fn model() {
 }
 
 fn assert_folded(drawn: String) {
-  // The compact slot holds the one-line summary, not the attribution.
-  assert string.contains(drawn, "memory context (2 lines)")
+  // The row's line is `Memory · 2 lines`, the fold's first step, not the
+  // attribution the daemon wrote.
+  assert string.contains(
+    drawn,
+    "<span class=\"verb\">Memory</span><span class=\"figure\">· 2 lines</span>",
+  )
+  assert !string.contains(drawn, "memory context (2 lines)")
   assert !string.contains(drawn, "[Ctrl+G to expand]")
 
-  // The full slot holds the whole message, every digest line, escaped.
-  assert string.contains(drawn, "slot=\"full\"")
+  // The body holds the whole message, every digest line, escaped.
+  assert string.contains(drawn, "slot=\"body\"")
   assert string.contains(drawn, "the gate is make check")
   assert string.contains(drawn, "keep &lt;b&gt;R6&lt;/b&gt; portable")
   assert !string.contains(drawn, "<b>R6</b>")

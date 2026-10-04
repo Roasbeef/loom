@@ -6,8 +6,11 @@
 //// available to it and this module does not ask for one (owner ruling,
 //// 2026-09-29, issue #569). What a page does hold is the strand's records,
 //// and a successful `fs_edit` result carries the `path` it changed and the
-//// `diff` of the change as headerless unified hunks. `fold` reads those and
-//// nothing else. The board is therefore what the agent wrote, not what is in
+//// `diff` of the change as headerless unified hunks. A successful `fs_write`
+//// replaces a whole file and reports no diff, but its call's `content`
+//// argument is the file's new text and its result names the `path`, so the
+//// fold reads that as one hunk in which every line is added. `fold` reads
+//// those and nothing else. The board is therefore what the agent wrote, not what is in
 //// the tree: it omits a change made outside the session (a shell command, an
 //// editor) and keeps an edit the tree has since reverted. A host that shows
 //// it says so, with `label`.
@@ -73,6 +76,16 @@ pub type Kind {
   Context
 }
 
+/// How a file's changes came to be, which decides how a host words them.
+pub type Origin {
+  /// At least one of the changes is an `fs_edit`, whose hunks are real.
+  Edited
+
+  /// Every change is an `fs_write`, so the rows are the file's new text,
+  /// each line added, and no line is known to have been removed.
+  Written
+}
+
 /// One line of a diff.
 pub type Row {
   Row(
@@ -90,6 +103,8 @@ pub type File {
     /// The path as the edit named it, cut to `max_path_characters`. Session
     /// text.
     path: String,
+    /// Whether the file was edited or only written whole.
+    origin: Origin,
     /// Lines the file's edits added, all of them, held or not.
     added: Int,
     /// Lines the file's edits removed, all of them, held or not.
@@ -157,13 +172,37 @@ pub fn totals(board: Board) -> String {
   <> int.to_string(board.removed)
 }
 
+/// What a file's line says about its size: `+14 -2` for a file with an edit
+/// in it, and `written · 23 lines` for one the session only wrote whole,
+/// where a removed count would claim a diff nobody computed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // changes_view.counts_words(file) == "+14 -2"
+/// ```
+pub fn counts_words(file: File) -> String {
+  case file.origin {
+    Edited ->
+      "+" <> int.to_string(file.added) <> " -" <> int.to_string(file.removed)
+    Written ->
+      "written · "
+      <> int.to_string(file.added)
+      <> case file.added {
+        1 -> " line"
+        _ -> " lines"
+      }
+  }
+}
+
 /// Folds a strand's records, newest first, as a branch holds them, into the
 /// board of the edits they carry.
 ///
 /// A call counts when its result is in the records, succeeded, and named a
-/// path and a diff. A call whose result is outside the window, a failed edit,
-/// and a result with no diff (an older record) add nothing. Two edits of one
-/// path are one file, with the second edit's hunks after the first's.
+/// path and a diff, or, for `fs_write`, named a path and the call carried the
+/// text it wrote. A call whose result is outside the window, a failed edit,
+/// and a result with no diff (an older record) add nothing. Two changes of one
+/// path are one file, with the second change's rows after the first's.
 ///
 /// ## Examples
 ///
@@ -171,14 +210,14 @@ pub fn totals(board: Board) -> String {
 /// assert changes_view.fold([]) == changes_view.empty()
 /// ```
 pub fn fold(records: List(protocol.EntryRecord)) -> Board {
-  let edits =
+  let changes =
     records
     |> list.reverse
     |> list.map(fn(record) { record.entry })
     |> tool_activity.project
     |> list.flat_map(calls)
-    |> list.filter_map(edit)
-  let #(order, diffs) = group(edits)
+    |> list.filter_map(change)
+  let #(order, diffs) = group(changes)
   let files =
     list.map(order, fn(path) {
       file(path, result.unwrap(dict.get(diffs, path), []))
@@ -201,8 +240,14 @@ fn calls(item: tool_activity.Item) -> List(tool_activity.Call) {
   }
 }
 
-// One successful `fs_edit` as its path and diff, or nothing.
-fn edit(call: tool_activity.Call) -> Result(#(String, String), Nil) {
+// One change a call made: its path, the diff lines it stands for and how it
+// was made. Only a successful `fs_edit` or `fs_write` is one.
+type Change {
+  Change(path: String, diff: String, origin: Origin)
+}
+
+// One successful `fs_edit` or `fs_write` as a change, or nothing.
+fn change(call: tool_activity.Call) -> Result(Change, Nil) {
   case call.invocation.name, call.outcome {
     "fs_edit",
       Some(message.ToolResultMessage(
@@ -212,11 +257,43 @@ fn edit(call: tool_activity.Call) -> Result(#(String, String), Nil) {
       ))
     -> {
       use path <- result.try(text(fields, "path"))
-      use diff <- result.try(text(fields, "diff"))
-      Ok(#(path, diff))
+      use diff <- result.map(text(fields, "diff"))
+      Change(path:, diff:, origin: Edited)
+    }
+    "fs_write",
+      Some(message.ToolResultMessage(
+        is_error: False,
+        details: Some(json.Object(fields)),
+        ..,
+      ))
+    -> {
+      use path <- result.try(text(fields, "path"))
+      use content <- result.map(written_text(call.invocation.arguments))
+      Change(path:, diff: all_added(content), origin: Written)
     }
     _, _ -> Error(Nil)
   }
+}
+
+// The text an `fs_write` call carried, from its `content` argument.
+fn written_text(arguments: json.JsonValue) -> Result(String, Nil) {
+  case arguments {
+    json.Object(fields) -> text(fields, "content")
+    _ -> Error(Nil)
+  }
+}
+
+// A whole file's text as one hunk's lines, each added. A final newline ends
+// the last line and does not begin another, so it adds no empty row.
+fn all_added(content: String) -> String {
+  let lines = case list.reverse(string.split(content, "\n")) {
+    ["", ..rest] -> list.reverse(rest)
+    all -> list.reverse(all)
+  }
+
+  lines
+  |> list.map(fn(line) { "+" <> line })
+  |> string.join("\n")
 }
 
 fn text(
@@ -229,35 +306,43 @@ fn text(
   }
 }
 
-// The paths in the order they were first edited, and each path's diffs,
+// The paths in the order they were first changed, and each path's changes,
 // oldest first.
-fn group(
-  edits: List(#(String, String)),
-) -> #(List(String), Dict(String, List(String))) {
-  let #(order, diffs) =
-    list.fold(edits, #([], dict.new()), fn(seen, edit) {
-      let #(order, diffs) = seen
-      let #(path, diff) = edit
+fn group(changes: List(Change)) -> #(List(String), Dict(String, List(Change))) {
+  let #(order, grouped) =
+    list.fold(changes, #([], dict.new()), fn(seen, change) {
+      let #(order, grouped) = seen
 
-      case dict.get(diffs, path) {
-        Ok(earlier) -> #(order, dict.insert(diffs, path, [diff, ..earlier]))
-        Error(Nil) -> #([path, ..order], dict.insert(diffs, path, [diff]))
+      case dict.get(grouped, change.path) {
+        Ok(earlier) -> #(
+          order,
+          dict.insert(grouped, change.path, [change, ..earlier]),
+        )
+        Error(Nil) -> #(
+          [change.path, ..order],
+          dict.insert(grouped, change.path, [change]),
+        )
       }
     })
 
   #(
     list.reverse(order),
-    dict.map_values(diffs, fn(_, later) { list.reverse(later) }),
+    dict.map_values(grouped, fn(_, later) { list.reverse(later) }),
   )
 }
 
-// One file: every diff's raw lines, classified and counted whole, and only
+// One file: every change's raw lines, classified and counted whole, and only
 // the rows the file's bound keeps go through text hygiene. A diff can be as
 // large as a record is, and this runs each time the page projects, so nothing
 // proportional to the diff is done to a row that is not kept.
-fn file(path: String, diffs: List(String)) -> File {
-  let lines = list.flat_map(diffs, string.split(_, "\n"))
+fn file(path: String, changes: List(Change)) -> File {
+  let lines =
+    list.flat_map(changes, fn(change) { string.split(change.diff, "\n") })
   let #(added, removed) = counts(lines)
+  let origin = case list.all(changes, fn(change) { change.origin == Written }) {
+    True -> Written
+    False -> Edited
+  }
 
   File(
     path: text_hygiene.fit_tail(
@@ -266,6 +351,7 @@ fn file(path: String, diffs: List(String)) -> File {
     ),
     added:,
     removed:,
+    origin:,
     rows: lines |> list.take(max_file_rows) |> list.map(clipped),
     cut: int.max(0, list.length(lines) - max_file_rows),
   )

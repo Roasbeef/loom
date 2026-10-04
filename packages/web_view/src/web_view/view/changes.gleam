@@ -23,11 +23,10 @@
 //// before it. Everything a diff carries is session text: the path and every
 //// row. Each is drawn as a text node, never as an attribute or a class; the
 //// path is also the file's key, as a single line with no separator
-//// character, and no handler sits beneath it. A row's
-//// class is chosen from `changes_view.Kind`, a closed type the fold computed
-//// from the row's first characters, and every class is a complete literal,
-//// so no diff can name one. The view carries no handler, so an observer's
-//// page draws it as an operator's does. The board is bounded by the fold
+//// character, and no handler sits beneath it. Each diff is drawn by
+//// `view/diff`, in colour, which chooses a line's class from a closed kind and
+//// never from its text. The view carries no handler, so an observer's page
+//// draws it as an operator's does. The board is bounded by the fold
 //// (`changes_view.max_files`, `max_file_rows`, `max_rows`), and a cut is
 //// drawn as a line saying how much is not shown, so the pane's size in
 //// every viewer's document has a fixed ceiling.
@@ -38,9 +37,9 @@ import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/element/keyed
-import session_view/changes_view.{
-  type Board, type File, type Kind, type Row, Added, Context, Hunk, Removed,
-}
+import session_view/changes_view.{type Board, type File}
+import session_view/diff_view
+import web_view/view/diff
 
 /// The Changes pane for `board`.
 ///
@@ -122,48 +121,24 @@ fn file(
     html.summary([attribute.class("changes-file-line")], [
       html.span([attribute.class("changes-path")], [html.text(file.path)]),
       html.span([attribute.class("changes-counts")], [
-        html.text(
-          " +"
-          <> int.to_string(file.added)
-          <> " -"
-          <> int.to_string(file.removed),
-        ),
+        html.text(" " <> changes_view.counts_words(file)),
       ]),
     ]),
-    html.div(
-      [attribute.class("diff")],
-      list.append(list.map(file.rows, row), cut(file)),
-    ),
+    diff.view(diff_view.of_lines(diff_lines(file)), file.cut),
   ])
 }
 
-// A row: its text as a text node, its class from its kind.
-fn row(row: Row) -> Element(message) {
-  html.div([attribute.class("diff-row"), kind_class(row.kind)], [
-    html.text(row.text),
-  ])
-}
-
-// The class of a row's kind, a literal from a closed set. It is never
-// derived from the row's text or from the kind's name.
-fn kind_class(kind: Kind) -> attribute.Attribute(message) {
-  case kind {
-    Hunk -> attribute.class("diff-hunk")
-    Added -> attribute.class("diff-added")
-    Removed -> attribute.class("diff-removed")
-    Context -> attribute.class("diff-context")
-  }
-}
-
-// The line that says rows were left out of a file, or nothing.
-fn cut(file: File) -> List(Element(message)) {
-  case file.cut {
-    0 -> []
-    left -> [
-      html.p([attribute.class("changes-cut")], [
-        html.text(int.to_string(left) <> " more lines not shown"),
-      ]),
-    ]
+// The lines the shared diff reader is given. An edit's rows are headerless
+// hunks, which the reader takes as they are. A file the session only wrote has
+// no hunk header at all, and the reader reads lines before the first hunk as
+// plain context, so its added lines would be drawn uncoloured; a header that
+// opens the new file at line one puts them inside a hunk, in green and with
+// their line numbers.
+fn diff_lines(file: File) -> List(String) {
+  let rows = list.map(file.rows, fn(row) { row.text })
+  case file.origin {
+    changes_view.Written -> ["@@ -0,0 +1 @@", ..rows]
+    changes_view.Edited -> rows
   }
 }
 

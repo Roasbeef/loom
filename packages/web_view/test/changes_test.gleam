@@ -30,7 +30,35 @@ fn row(kind: changes_view.Kind, text: String) -> changes_view.Row {
 }
 
 fn file(path: String, rows: List(changes_view.Row)) -> changes_view.File {
-  changes_view.File(path:, added: 1, removed: 1, rows:, cut: 0)
+  changes_view.File(
+    path:,
+    origin: changes_view.Edited,
+    added: 1,
+    removed: 1,
+    rows:,
+    cut: 0,
+  )
+}
+
+// A file the session only wrote whole says so where an edit's counts go, and
+// draws its lines as added rows.
+pub fn a_written_file_says_written_where_the_counts_go_test() {
+  let written =
+    changes_view.File(
+      path: "calc.py",
+      origin: changes_view.Written,
+      added: 23,
+      removed: 0,
+      rows: [row(changes_view.Added, "+a = 1")],
+      cut: 22,
+    )
+  let html = drawn(board([written, file("b.gleam", [])]))
+
+  assert string.contains(html, "calc.py")
+  assert string.contains(html, "written · 23 lines")
+  assert !string.contains(html, "+23 -0")
+  assert string.contains(html, "diff-row diff-added")
+  assert string.contains(html, " +1 -1")
 }
 
 fn board(files: List(changes_view.File)) -> changes_view.Board {
@@ -106,19 +134,24 @@ pub fn rows_carry_a_class_from_their_kind_and_their_text_test() {
       ]),
     )
 
+  // Each line is its own element, its class from its kind, with the old and
+  // new line numbers in a gutter, the sign, and the text in a span.
   assert string.contains(
     html,
-    "<div class=\"diff-row diff-hunk\">@@ -1 +1 @@</div>",
+    "<div class=\"diff-row diff-hunk\"><span class=\"diff-text\">@@ -1 +1 @@</span></div>",
   )
   assert string.contains(
     html,
-    "<div class=\"diff-row diff-context\"> same</div>",
+    "<div class=\"diff-row diff-context\"><span class=\"diff-num\">1</span><span class=\"diff-num\">1</span><span class=\"diff-sign\"> </span><span class=\"diff-text\">same</span></div>",
   )
   assert string.contains(
     html,
-    "<div class=\"diff-row diff-removed\">-old</div>",
+    "<div class=\"diff-row diff-removed\"><span class=\"diff-num\">2</span><span class=\"diff-num\"></span><span class=\"diff-sign\">−</span><span class=\"diff-text\">old</span></div>",
   )
-  assert string.contains(html, "<div class=\"diff-row diff-added\">+new</div>")
+  assert string.contains(
+    html,
+    "<div class=\"diff-row diff-added\"><span class=\"diff-num\"></span><span class=\"diff-num\">2</span><span class=\"diff-sign\">+</span><span class=\"diff-text\">new</span></div>",
+  )
 }
 
 pub fn a_path_and_a_row_are_only_ever_text_nodes_test() {
@@ -133,7 +166,7 @@ pub fn a_path_and_a_row_are_only_ever_text_nodes_test() {
     )
 
   assert string.contains(html, "&lt;img src=x onerror=alert(1)&gt;")
-  assert string.contains(html, "+&lt;script&gt;alert(1)&lt;/script&gt;")
+  assert string.contains(html, "&lt;script&gt;alert(1)&lt;/script&gt;")
   assert !string.contains(html, "<img")
   assert !string.contains(html, "<script")
   assert !string.contains(html, "onmouseover=\"x\"")
@@ -223,7 +256,7 @@ pub fn a_diff_on_a_page_is_escaped_text_test() {
   let model = page([lane_fixture.edited([#("<b>x</b>.gleam", diff)])])
 
   list.each([operator(model), observer(model)], fn(html) {
-    assert string.contains(html, "+&lt;script&gt;alert(1)&lt;/script&gt;")
+    assert string.contains(html, "&lt;script&gt;alert(1)&lt;/script&gt;")
     assert string.contains(html, "&lt;b&gt;x&lt;/b&gt;.gleam")
     assert !string.contains(html, "<script")
     assert !string.contains(html, "<b>x")
@@ -250,8 +283,9 @@ pub fn the_section_stays_within_a_fixed_size_test() {
   let assert Ok(#(section, _)) =
     string.split_once(from, "<section aria-label=\"Session\"")
   // The board holds `max_rows` rows of at most `max_row_characters`
-  // characters, plus the markup around each row and each file.
-  assert string.length(section) < 220_000
+  // characters, plus the markup around each row (a gutter and a sign) and
+  // each file.
+  assert string.length(section) < 420_000
   assert list.length(string.split(section, "diff-row")) - 1
     == changes_view.max_rows
   assert string.contains(section, "36 more files not shown")

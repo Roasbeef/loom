@@ -13,10 +13,10 @@ renders again just for it:
 - `<loom-elapsed offset="<ms>">` counts an operation's elapsed time once a
   second, on from a duration the server measured.
 - `<loom-fold>` opens and closes a turn's folded work with no round trip.
-- `<loom-expand>` shows a row compact or in full, as the terminal's `Ctrl+g`
-  does. The server draws both forms as children (`slot="compact"` and
-  `slot="full"`); the element holds one button and the slot the reader chose,
-  with no round trip.
+- `<loom-expand>` is a row of a turn's fold: one line with one chevron, and a
+  body behind it. The server draws the line and the body as children
+  (`slot="head"` and `slot="body"`); the element holds one button around the
+  head and the body slot while the row is open, with no round trip.
 - `<loom-follow>` is the transcript's scroll container: the page's frame is
   pinned and only it scrolls. It scrolls itself to a row that lands below
   its view while the reader is at the bottom; once the reader scrolls up it
@@ -148,10 +148,10 @@ time builds anything.
   shadow root holds one button carrying the `summary` slot and, while open,
   the default slot. Each toggle emits `fold.toggled_event`
   (`loom-fold-toggled`, bubbling and composed, no data).
-- `expand_rule.Shown` (`Compact` | `Full`), `expand_rule.toggled`, `slot`,
-  `words` and `glyph`, and `expand.Msg` (`Toggled`): the element's shadow
-  root holds one button (fixed words, `aria-expanded`) and the named slot for
-  the state. It starts `Compact`, and the server never renders the state, so
+- `expand_rule.Shown` (`Closed` | `Open`), `expand_rule.toggled` and
+  `glyph`, and `expand.Msg` (`Toggled`): the element's shadow root holds one
+  button (the chevron and the head slot, `aria-expanded`) and, while open, the
+  body slot. It has no words of its own. It starts `Closed`, and the server never renders the state, so
   a patch leaves the reader's choice alone. Each toggle emits
   `fold.toggled_event`, so `<loom-follow>` hears it as it hears a fold's: it
   sets `Reading`, and expanding the newest row at the bottom does not scroll
@@ -310,7 +310,7 @@ time builds anything.
 What the components decide is in six modules that import neither Lustre nor
 `ffi_dom`: `attach_rule` (the limits, which files are accepted and refused,
 the held images and the form field they make), `follow_rule` (the scroll rule, `Reader` and its transitions,
-`keeping`), `expand_rule` (the two states and the button's words), `shell_rule`
+`keeping`), `expand_rule` (the two states and the chevron), `shell_rule`
 (which columns are open, the buttons' words, what a closed column lets the
 keyboard reach), `composer_rule` (the table, `matching`, `intent`, `hear`, `taken`,
 `joined`, `revealed`) and `duration`. `follow`, `composer` and `elapsed` are

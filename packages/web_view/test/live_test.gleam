@@ -162,19 +162,19 @@ pub fn a_reasoning_row_counts_lines_and_the_browser_counts_its_time_test() {
 
   // The generation began at the reading the first fragment was stamped
   // with, and the row carries the seconds since as a reading the browser
-  // counts on from, as an agent chip's time is. The thinking itself is not
-  // drawn.
+  // counts on from, as an agent chip's time is. The row says `Reasoning`
+  // and keeps the line count to its title. The thinking itself is not drawn.
   let model = at(model, clock, 5500)
   list.each(pages(model), fn(view) {
     let drawn = region(view)
-    assert string.contains(drawn, "2 lines")
+    assert string.contains(drawn, "title=\"2 lines\"")
     assert string.contains(
       drawn,
-      "<loom-elapsed class=\"elapsed\" offset=\"4500\"></loom-elapsed> so far",
+      "Reasoning · <loom-elapsed class=\"elapsed\" offset=\"4500\"></loom-elapsed></p>",
     )
-    assert string.contains(drawn, "reasoning-digest")
     assert !string.contains(drawn, "first thought")
-    assert !string.contains(drawn, "summarized-reasoning")
+    assert !string.contains(drawn, "thinking-headline")
+    assert !string.contains(drawn, "so far")
   })
 
   // Another fragment moves the count, and the reading is fresh.
@@ -185,12 +185,12 @@ pub fn a_reasoning_row_counts_lines_and_the_browser_counts_its_time_test() {
   let model = at(model, clock, 9000)
   list.each(pages(model), fn(view) {
     let drawn = region(view)
-    assert string.contains(drawn, "3 lines")
+    assert string.contains(drawn, "title=\"3 lines\"")
     assert string.contains(drawn, "offset=\"8000\"")
   })
 }
 
-pub fn a_headline_sits_beneath_the_count_as_text_test() {
+pub fn a_headline_sits_beneath_the_reasoning_row_as_text_test() {
   let generation = lane_fixture.generation(2)
   let model =
     page([
@@ -198,7 +198,7 @@ pub fn a_headline_sits_beneath_the_count_as_text_test() {
       lane_fixture.fragment(generation, "thinking", "a\nb"),
     ])
   list.each(pages(model), fn(view) {
-    assert !string.contains(region(view), "summarized-reasoning")
+    assert !string.contains(region(view), "thinking-headline")
   })
 
   // The summarizer's label for the stream so far (protocol 050). It is
@@ -212,11 +212,12 @@ pub fn a_headline_sits_beneath_the_count_as_text_test() {
     ])
   list.each(pages(model), fn(view) {
     let drawn = region(view)
-    assert string.contains(drawn, "summarized-reasoning")
-    assert string.contains(drawn, "2 lines")
-    assert string.contains(drawn, "Checking &lt;b&gt;the lock&lt;/b&gt; order")
+    assert string.contains(
+      drawn,
+      "<p class=\"thinking-headline\">Checking &lt;b&gt;the lock&lt;/b&gt; order</p>",
+    )
+    assert string.contains(drawn, "title=\"2 lines\"")
     assert !string.contains(drawn, "<b>")
-    assert !string.contains(drawn, "reasoning-digest")
   })
 }
 
@@ -231,7 +232,7 @@ pub fn reasoning_and_the_answer_beside_it_are_both_drawn_in_order_test() {
   list.each(pages(model), fn(view) {
     let drawn = region(view)
     let assert Ok(#(before, _)) = string.split_once(drawn, "The answer")
-    assert string.contains(before, "1 line")
+    assert string.contains(before, "Reasoning")
   })
 }
 
@@ -493,12 +494,14 @@ pub fn the_live_rows_are_plain_values_test() {
     |> element.to_string
   assert string.contains(
     drawn,
-    "2 lines · <loom-elapsed class=\"elapsed\" offset=\"1500\"></loom-elapsed> so far",
+    "Reasoning · <loom-elapsed class=\"elapsed\" offset=\"1500\"></loom-elapsed>",
   )
+  assert string.contains(drawn, "title=\"2 lines\"")
   let none =
     live.view([live.Thinking("1 line", None, None)], fn(line: Line) {
       html.text(line.text)
     })
     |> element.to_string
-  assert string.contains(none, ">1 line so far<")
+  assert string.contains(none, ">Reasoning</p>")
+  assert !string.contains(none, "loom-elapsed")
 }
