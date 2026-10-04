@@ -647,7 +647,9 @@ parent, and global offer count is capped by the already persisted child limit.
 Offer admission reserves the entire configured allowance capped at 256 KiB.
 Frozen fences retain identity/digest and continue consuming count/byte capacity.
 Every header checks types, lengths, scalar projections and the full unused
-allowance before a BLOB value query.
+allowance before a BLOB value query. Both address and native-origin offer headers
+project non-integer reserved_bytes as the integer sentinel -1; a corrupt BLOB
+reservation therefore cannot materialize through the generated integer decoder.
 
 `admit_offer` compares exact retained original service envelope bytes inside its
 transaction. `admit_command_child` joins that service and exact offer to the
@@ -656,6 +658,18 @@ UUID on exact duplicate. Storage neither clears commands nor interprets broker
 policy. `cancel_service` atomically fences the outer service, offers and already
 allocated native rows; original native bytes survive and matching late receipt
 remains admissible. No partial Prepared, offer UUID or process ledger exists.
+
+`command_offer_for_origin(store, ChildOrigin)` is a historical indexed read on the
+lifetime-UNIQUE native_origin column. It admits only CompileCommand and
+SatelliteCommand, checks the complete retained managed parent/session, and uses
+LIMIT 2 with guarded scalar lengths before the existing bounded value query.
+Shared header accounting checks the full unused offer allowance before loading
+bytes; canonical full CommandRef, service, address and native-origin equality
+then bind the result. Exact cancelled offers remain readable for cancellation
+and recovery; frozen offers, services and collected parents refuse. Reading an
+offer allocates no native UUID and grants no clearance or reservation. The existing
+atomic `admit_command_child` still refuses cancelled authority. No scan, new
+schema, table, or origin-rebinding operation is introduced.
 
 `collect` returns CollectionPending before any freeze whenever either deterministic
 outer Compile/Launch child or any offer exists for its verified ToolKey. This
