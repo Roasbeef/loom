@@ -15,6 +15,9 @@ UPDATE access_principals SET display_name = ? WHERE principal_id = ?;
 -- name: AccessCredential :many
 SELECT digest, principal_id, state FROM access_credentials WHERE digest = ? AND kind = ?;
 
+-- name: AccessCredentialAnyKind :many
+SELECT digest, principal_id, state FROM access_credentials WHERE digest = ?;
+
 -- name: InsertAccessCredential :exec
 INSERT INTO access_credentials(digest, principal_id, state, kind) VALUES (?, ?, 'active', ?);
 
