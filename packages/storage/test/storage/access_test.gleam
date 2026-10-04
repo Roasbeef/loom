@@ -8,6 +8,7 @@ import gleam/dynamic/decode
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import simplifile
 import sqlight
@@ -705,6 +706,48 @@ pub fn a_refused_name_binds_nothing_and_leaves_the_claim_open_test() {
   let assert Ok(access.Claimed(answered, _)) =
     access.claim(store, claim_of("1"), digest("b"), Some(limit), 10, same)
   assert answered.display_name == limit
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_stored_name_with_an_invisible_character_still_decodes_test() {
+  let #(file, store, _, member) = claim_fixture("claim-old-name", 944)
+  let assert Ok(Nil) =
+    access.revoke_member(store, member.id) |> result.replace(Nil)
+  let old_name = "Alex\u{202E}"
+
+  // A row written before new names were held to the stricter rule.
+  let assert Ok(db) = sqlight.open(file) as "a separate connection opens"
+  assert sqlight.query(
+      "UPDATE access_principals SET display_name = ? WHERE principal_id = ?",
+      on: db,
+      with: [sqlight.text(old_name), sqlight.text(member.id)],
+      expecting: decode.success(Nil),
+    )
+    == Ok([])
+  assert sqlight.close(db) == Ok(Nil)
+
+  // It still decodes and lists; only a new write is refused.
+  let assert Ok(found) = access.get(store, member.id)
+  assert found.display_name == old_name
+  let assert Ok(page) = access.principals_page(store, "", 0)
+  assert list.any(page.entries, fn(row) {
+    row.principal.display_name == old_name
+  })
+  assert access.rename(store, member.id, old_name)
+    == Error(catalogue.Invalid(
+      "display name must be nonblank, at most 256 bytes, and contain no controls or invisible characters",
+    ))
+  assert access.invite_member(
+      store,
+      "other",
+      "Bad\u{200B}",
+      claimed_by("2"),
+      "unused",
+      access.Observer,
+    )
+    == Error(catalogue.Invalid(
+      "display name must be nonblank, at most 256 bytes, and contain no controls or invisible characters",
+    ))
   assert catalogue.close(store) == Ok(Nil)
 }
 
