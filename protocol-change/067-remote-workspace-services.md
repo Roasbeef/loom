@@ -374,3 +374,32 @@ original ChildOrigin and MUST NOT authorize a new UUID, a replay or an ACK.
 The caller recovers the same child to establish its durable outcome. The
 embedding session still owns a finite aggregate caller-admission limit; a
 bounded observer wait alone does not bound another actor's mailbox.
+
+## Addendum: native filesystem tool consumers
+
+`tools/workspace_tools` supplies service-backed `fs_read`, `fs_write` and
+`fs_edit` constructors. Its trusted Service callback receives the original
+`tool.Ctx` and one closed `workspace.Request`, returning
+`Result(workspace_local.Completed, workspace.ServiceError)`. The adapter does
+not mint request IDs or derive authority from a pathname. Owner assembly binds
+that callback to the original durable tool and workspace child.
+
+The constructors reuse the existing tool schemas, argument validation and pure
+result rendering. Narrow internal callback doors in `tools/fs` keep those
+projections shared without importing workspace contracts back into the lower
+filesystem module. Existing local constructors retain their current behavior
+and Safe replay metadata. Remote constructors declare Never: recovery belongs
+to durable original-child reconciliation, not a repeated tool body.
+
+Virtual read schemes are resolved by the existing owner-supplied Scheme list
+before ordinary path dispatch. Unknown schemes refuse without falling back to
+a filesystem. Ordinary remote paths must pass RelativePath validation before
+the semantic callback runs. The adapter must not resolve `Ctx.workspace` or
+invoke the owner's FileSystem for those paths. Completion variants must match
+the requested operation, and retained images, anchors, stale-edit evidence and
+post-write diagnostics keep their existing projections.
+
+OutcomeUnknown reports that an effect may have happened and the original
+request needs recovery. It must not describe a pre-effect refusal or suggest
+issuing a new mutation. These constructors become shipped remote behavior only
+when daemon selection and owner custody install the concrete callback.
