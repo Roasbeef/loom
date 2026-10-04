@@ -1,6 +1,6 @@
 # Current handoff
 
-## Distributed runtime foundations (issue #697)
+## Distributed runtime implementation (issue #697)
 
 The [user journeys and ownership design](design-notes/distributed-runtime.md)
 and [API and delivery plan](design-notes/distributed-runtime-api.md) separate
@@ -19,22 +19,86 @@ launch, preserve uncertain launch intent, and retain replay evidence until
 native retirement and durable owner receipt are established. A request refused
 before launch has its own phase and cannot be confused with authorized work.
 The shipped local executor is unchanged; these modules do not enable remote
-execution.
+execution. Foundation PR [#756](https://github.com/Roasbeef/loom/pull/756)
+precedes durable-journal PR [#758](https://github.com/Roasbeef/loom/pull/758)
+in the `gh stack` chain. The latter stores bounded admission history in
+SQLite, serializes independent opens and never replays a recovered launch
+effect. It stores digests; the adapter still owes exact command/result
+payloads and native-process reconciliation.
 
 The [PlusCal ownership model](../protocol/models/distributed-authority/README.md)
 and [P execution model](../protocol/models/remote-execution/README.md) have
 separate bounded runners, reachability controls and mutations. Run both local
 runners: the existing generic `make model-check` discovers P projects but does
 not run TLC or the stricter model-local mutation gates. A model pass is not a
-proof of a durable adapter, TLS transport or kernel cleanup. Lean remains
-reserved for a small settled invariant with a maintained implementation bridge.
+proof of a durable adapter, TLS transport or kernel cleanup. The
+[Lean admission proof](../protocol/models/admission-proof/README.md) now
+proves twelve reducer properties. Its executable bridge checks 684 bounded
+cases against the actual Gleam reducer, and its reauthorization mutation is
+rejected. This is not an end-to-end refinement proof; the runner and review
+record state the finite bridge's limits.
 
-Next, implement and test the serialized durable executor journal and its
-native adapter against these contracts, then authenticated transport and
-executor-resident workspace operations. Ordinary tools, code mode and LSP
-must all observe the same remote checkout before the first usable remote
-execution phase passes. Scheduler placement, cluster metadata and planned
-session ownership movement are later slices. Phone/laptop screen switching
+[Protocol 067](../protocol-change/067-remote-workspace-services.md) records
+the next integration boundary. Physical compilation moves as a whole, before
+source preparation accesses disk. The satellite capability router and the
+single budget authority stay on the owner. Semantic workspace operations and
+the complete LSP host run beside the executor checkout. A remote artifact
+must never be interpreted as an owner-local pathname.
+
+The service stack adds authenticated TLS, semantic workspace contracts, whole
+physical compiler/LSP-host interfaces and bounded session-wire output. PRs
+[#762](https://github.com/Roasbeef/loom/pull/762),
+[#767](https://github.com/Roasbeef/loom/pull/767) and
+[#769](https://github.com/Roasbeef/loom/pull/769) follow the journal. These
+interfaces still need production remote assembly. The TLS primitive passed
+21 real-network tests; native DNS has a documented OTP resolver limit, so
+connection establishment also runs in a bounded supervised task.
+
+The next committed component is [owner custody](architecture/remote-custody.md).
+It uses a separate bounded SQLite journal and generated Parrot/sqlc queries.
+An atomic Fresh admission grants execution once; retained rows never do.
+The supervised custodian commits exact ToolOutcome bytes before replying.
+Original child identities carry cancellation fences and ordered binary
+receipts. Runtime recovery distinguishes unmanaged local work, exact remote
+results, pending observation and unknown remote outcomes. An already-aborted
+operation cannot begin another pending recovery wait.
+
+Component validation passed 151 core tests, 143 storage tests, 187 runtime
+tests and nine client owner-binding tests. Two cancellation regressions fail
+against the previous runtime implementation. The owner test kills a real
+supervised custodian, observes its replacement and verifies retained evidence
+without body re-execution. Independent Astra reviews found no remaining
+functional defect in these reviewed components. These results are not the
+full product gate or remote end-to-end acceptance.
+
+The next working slice connects exact executor payload custody, native
+execution and pinned TLS to that owner journal. A local semantic workspace
+host is also under review. Preserve their uncommitted work while integrating;
+neither is enabled by the shipped daemon yet. Bind every workspace consumer
+to the selected executor, then run the two-host acceptance fixture: the owner
+must have no copy of the target checkout, while ordinary file tools, Bash,
+code mode and LSP all operate there. Test lost replies and restarts without
+replaying a mutation, cancellation, and witnessed native cleanup.
+
+The Khepri compatibility experiment exercised three OTP 29 nodes with Khepri
+0.19.3 and Ra 3.2.0. Contested conditional updates, majority/minority fencing,
+monotone epochs, timeout followed by a committed receipt, and persistent
+restart worked in the fixture. Adoption remains gated: a consistency read
+exceeded its supplied timeout, and a transaction could return an outer Ok
+containing a timeout while later committing. Do not classify outer Ok as
+Applied, expose an unbounded read, or select a wrapper dependency from that
+partial result. Snapshot/upgrade and the compiled Gleam transaction bridge
+still need validation.
+
+Linux signoff at journal commit `0cc11097d912` passed the release/helper/code-mode
+checks and clean skip census. It predates these service and recovery changes;
+it does not establish their signoff.
+
+The owner's completion criterion is working end-to-end behavior. Foundation
+PRs alone do not finish this task. Executor pools, trusted-cluster ownership
+and routing, durable cross-node messaging and planned session movement remain
+in scope after the first remote-workspace phase. Automatic failover and
+workspace snapshot migration remain deferred. Phone/laptop screen switching
 continues to use existing multiplayer.
 
 ## Executor service (issue #696)

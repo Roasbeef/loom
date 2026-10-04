@@ -329,7 +329,7 @@ handle behind a suspended poll, the pending payloads for every queued id
 state exists to go stale, which is why a pass after a restart runs the
 same code as a pass mid-run.
 
-`plan` (`runtime/strand_runtime.gleam:1093`) then calls the one frozen
+`plan` (`runtime/strand_runtime.gleam:1154`) then calls the one frozen
 entry point:
 
 ```gleam
@@ -498,7 +498,7 @@ to rerun.
 
 ## 8. The request
 
-`start_effect` (`runtime/strand_runtime.gleam:1629`) projects the context
+`start_effect` (`runtime/strand_runtime.gleam:1709`) projects the context
 and hands a `RequestSpec` to the injected provider surface. The
 projection is a branch scan from the leaf that stops at the first
 compaction entry, run through `session.project_scan`
@@ -729,10 +729,10 @@ clearance proceeds under the base policy; a crash after consumption
 spends the approval without an execution. Both directions fail safe: one
 approval is worth at most one widened execution of exactly the call a
 human approved. What the clearance won then travels onto the dispatch it
-authorized — `take_cleared` (`runtime/strand_runtime.gleam:1686`) hands
+authorized — `take_cleared` (`runtime/strand_runtime.gleam:1766`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
-`Ctx.grants` (`run_grants`, `client/wiring.gleam:1904`). That is the
+`Ctx.grants` (`run_grants`, `client/wiring.gleam:1910`). That is the
 whole channel: an approval a human gave for this call, reaching the
 policy composition this call is judged by. It used to stop at the query.
 
@@ -766,7 +766,7 @@ through this door and no other.
 
 ### Through the door
 
-`broker.clear_call` (`broker/broker.gleam:489`) is a call into the broker
+`broker.clear_call` (`broker/broker.gleam:495`) is a call into the broker
 actor, and from the moment it succeeds the caller is guaranteed exactly
 one settlement event, whatever happens downstream. Five steps, in order
 (`broker/broker.gleam:499` and `:519`):
@@ -810,7 +810,7 @@ may be newer.
 
 ### Into the jail
 
-`spawn_helper` (`broker/exec.gleam:2716`) is where the Erlang side meets
+`spawn_helper` (`broker/exec.gleam:2793`) is where the Erlang side meets
 the OS. The helper's base policy has to arrive on file descriptor 3, and
 Erlang ports cannot map arbitrary descriptors, so the broker writes the
 policy to a mode-0600 file inside a mode-0700 directory and starts the

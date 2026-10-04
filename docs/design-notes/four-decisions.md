@@ -84,7 +84,7 @@ and returns, never touching the query's grants; `tool_context`
 the static session config instead (`config.grants`,
 `packages/client/src/client/wiring.gleam:1031`), which `serve` sets to the
 empty list once at boot (`packages/client/src/client/serve.gleam:765`); and
-`ToolRun` (`packages/runtime/src/runtime/effects.gleam:220`) had no grants
+`ToolRun` (`packages/runtime/src/runtime/effects.gleam:229`) had no grants
 field at all, so the clearance-time grants *could not* reach the run-time
 context without changing the runtime-internal effects seam. The seam is not
 Part-1 frozen, so the fix needs no protocol-change proposal — but until it
@@ -343,7 +343,7 @@ exotic favor" into "consume the standard delegation contract".
 
 **The new finding, which raises the stakes:** the gap is *silent at the
 strict tier*. `FullEnforcement`'s contract
-(`EnforcementDemand`, `packages/broker/src/broker/exec.gleam:163`) is that
+(`EnforcementDemand`, `packages/broker/src/broker/exec.gleam:169`) is that
 any layer the policy called for and the helper did not apply refuses the
 result — the settle path keys on `skip:` entries
 (`packages/broker/src/broker/exec.gleam:875`). But when no cgroup
