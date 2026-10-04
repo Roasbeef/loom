@@ -403,3 +403,140 @@ OutcomeUnknown reports that an effect may have happened and the original
 request needs recovery. It must not describe a pre-effect refusal or suggest
 issuing a new mutation. These constructors become shipped remote behavior only
 when daemon selection and owner custody install the concrete callback.
+
+## Addendum: production owner and executor assembly
+
+The first product binds one owner to one administratively enrolled remote
+workspace. Pools, clustered ownership and migration remain later phases. The
+contracts below govern implementation; their presence in this proposal does
+not claim that the shipped daemon already installs the components.
+
+### Persisted identity and local compatibility
+
+The owner MUST persist the resolved workspace Binding before workspace startup.
+An internal session Creation carries this Binding. A repeated creation key
+reads the retained registration first, compares immutable requested identity
+and metadata, and revalidates its original epochs. It MUST NOT resolve new
+epochs and silently substitute them after partial creation. Reopen of stale or
+unavailable enrollment refuses without local fallback.
+
+WorkspaceKey groups defaults and shared domains by canonical local path or
+validated registered selector; epochs remain in each session Binding. Existing
+local SQL workspace keys and domain IDs retain their exact representation.
+Registered keys use `registered:<executor>:<workspace>` with validated labels
+that cannot contain colons. This is a catalogue key, never a filesystem path.
+Registrations add nullable canonical JSON TEXT binding content, and total DAL
+decoders require exact agreement between key and content. Local rows retain
+NULL content and their original pathname. The schema version advances so older
+daemons refuse the new database. Named Parrot/sqlc queries and regenerated
+bindings own persistence; no handwritten row SQL substitutes for them.
+
+Legacy local wire frames remain compatible. Tagged registered selections carry
+only selector identity, never endpoints, roots, pins or epochs. Clients MUST
+assert `registered_workspace_v1` in a bounded per-request accepts list before
+creating, opening or selecting a registered session. Server advertisement alone
+is not negotiation. Registered replies carry a typed binding and omit the
+legacy local pathname. Administrative configuration owns enrollment and pins.
+
+`tool.Ctx.workspace` becomes a closed WorkspaceAccess: LocalWorkspace retains
+its root and FileSystem; RegisteredWorkspace retains only the validated scope.
+Local-only consumers MUST project LocalWorkspace before resolution, I/O or
+clearance, otherwise return an explicit unsupported-local-operation result.
+OwnerBlobs separately retains owner output storage root and FileSystem. No
+fake local pathname or refusal-stub filesystem represents remote access. Remote
+constructors capture semantic service callbacks; WorkspaceAccess contains no
+callback dependency cycle. Owner state, clock and original tool coordinates
+remain distinct from physical workspace access.
+
+Owner assembly chooses local or registered workspace before any local Git,
+toolchain, guidance, seed, home or temporary-root probe. Only the local branch
+may resolve those physical facts on owner disk. The registered branch obtains
+executor facts through enrolled services. Conversation, catalogue, memory,
+index and owner blobs remain owner-local independently of workspace selection.
+
+### Exact command clearance and provenance
+
+Each physical service reserves its exact bounded ServiceKey before send. A
+CommandRef adds a closed command role; the retained CommandOffer includes the
+full scope, registration digest, bounded registered region mappings and exact
+argv, environment, cwd and requirements. It carries no owner grants, fresh
+budget or broker token. The owner validates the offer against the admitted
+service purpose, exact original input and administrative mapping ceiling,
+then constructs AcceptedCommand with its original ChildOrigin and authority.
+Paths are literal executor command data, never owner filesystem inputs. No
+substring rewriting guesses paths inside shell, argv or environment strings.
+
+Native UUID allocation stays in the existing durable Prepared reservation,
+where the exact cleared envelope is retained before first send. An offer does
+not preallocate another native UUID or reserve partial content in that slot.
+Recovery follows the original child and never re-clears with a new token to
+recover an uncertain command. CommandCleared reports owner clearance only;
+CommandAdmitted requires retained native admission evidence. Native and outer
+service completions have separate commit-before-receipt obligations.
+
+Compile and Launch remain outer service roles. CompileCommand and
+SatelliteCommand are disjoint native roles. A new admitted capability role
+uses the bounded canonical tuple of trusted capability name, its existing
+per-capability ordinal and closed semantic/native purpose. Legacy Capability
+addresses and decoding remain intact. No global counter is introduced. Child
+reservation happens after trusted capability admission, and the existing
+64-child-per-parent ceiling remains. Managed nested proc clearance carries
+ChildOrigin through the broker rather than merely copying operation/step.
+
+Shared command types reside below executor codecs; codemode MUST NOT import
+executor wire types. Owner-derived demand, stream policy and lifetime stay out
+of the executor's command offer. Preparation, clearance and exchange consume
+the original finite authority. Transport generations grant no renewal.
+
+### Resources, launch and stream custody
+
+Resource preparation belongs to the original retained Launch invocation. Its
+intent commits before creation; the issued lease commits before reply. An
+executor lease binds full scope, original service identity and admitted compile
+artifact. Local resource adapters accept only local artifacts/resources.
+Executor adapters accept only matching remote artifacts/resources. Lost replies
+after possible creation remain ResourceOutcomeUnknown under the original ID.
+
+Launcher returns typed LaunchRefused or LaunchOutcomeUnknown. Only a witnessed
+pre-dispatch refusal can claim that no node launched. Cleanup status remains
+separate from the program result, native retirement and owner receipt; neither
+resource release nor channel death proves native retirement. Compilation must
+likewise preserve possible execution after a lost reply.
+
+Both capability channel directions use bounded frames and consumption credit.
+A naked Subject or successful network write is not recipient consumption.
+The first product permits one frame in flight per direction. Credit returns
+only after the final recipient consumes the frame into bounded state; observer
+timeout does not remint it. Credit-owner death retires the channel. Delivery
+success means admission to its fixed bounded writer window; a host callback
+must not block waiting on processing that depends on that same host. Ordered
+outcome and hook frames share cumulative accounting. Separate bounded cancel
+capacity and independent native cleanup prevent a blocked writer from owning
+retirement. Dropped or exhausted streams cannot report prefix success.
+
+The complete LSP host may attach an opaque executor-local input handle to the
+exact owner-returned native key/digest associated with its retained CommandRef.
+Attachment validates that association and the live row. The handle can only
+feed ordered bytes/EOF through the existing service.feed reducer and its
+quotas, with one stable pending credit. It cannot Submit, Hello, renew, change
+identity or expose native.Running. Uncertain delivery fences and closes input;
+a Nil-returning stdin callback is not consumption proof. If this exact scoped
+attachment cannot be established, use the closed owner-mediated input protocol
+instead, after reviewing that implementation choice.
+
+### Verification boundary
+
+Executable bounded models must cover changed offers, distinct child roles,
+lost resource/launch replies, separate native/outer receipts and both-direction
+consumption credit. Mutation controls must violate the intended invariant with
+an actual trace, not pass through setup failure. Existing P admission, launch,
+receipt and cancellation invariants and PlusCal ingress custody remain binding.
+These finite checks do not claim liveness or implementation refinement.
+
+The product gate remains a shipped owner and shipped executor on disjoint
+hosts/filesystems, with no owner copy or bind of the target checkout. Ordinary
+session admission must exercise remote files, mutations, foreground and Auto
+Bash, Git/guidance, compilation, satellite launch, workspace and owner-state
+capabilities, and LSP. Reopen, original-identity recovery and cleanup faults
+require independent evidence. Component tests, full gates, hosted CI and this
+separate-host acceptance must be reported separately.
