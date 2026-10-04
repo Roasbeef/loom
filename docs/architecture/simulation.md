@@ -43,8 +43,10 @@ the same place under every schedule" is a claim worth checking rather than
 a tautology with exceptions.
 
 Both runs use the real supervision tree, the real writer, the real strand
-driver, and the real machine over an in-memory session. Only the effects
-are scripted, and only the storage record is wrapped.
+driver, and the real machine over an in-memory session. The provider and
+the hooks are scripted, the storage record is wrapped, and each tool call
+runs through the real executor service over fake helpers (see "The effect
+plane" below).
 
 ## Keying, and why it is not a counter
 
@@ -245,6 +247,8 @@ Each check has a name, and a failure reports it.
 | `convergence/outcome` | The faulted run's operations ended the same way the fault-free run's did |
 | `convergence/projection` | The final projected transcripts match |
 | `convergence/ledger` | The usage totals match |
+| `effects/no-orphan` | No execution outlives the effect that started it: once the tree is killed, the executor holds no row, the pool has nothing borrowed and every relay is dead |
+| `effects/one-settlement` | Every execution a tool started settled exactly once: a caller that stayed heard one settlement and nothing after it, and the executor's books show what it started as completed, failed or lost |
 
 The placement invariant (`invariant/boundary`) is checked *inside* the
 commit path, so a violation is reported at the transaction that caused it
@@ -299,6 +303,30 @@ prepare overflow compactions. The runner builds compaction and navigation
 acceptance directly with its logical clock and prepared structural inputs,
 using the same `machine/acceptance` planner and writer as `api.compact` and
 `api.navigate`.
+
+## The effect plane
+
+A simulated tool call is no longer only a scripted result. Before the fault
+schedule is consulted, `surface.execute` starts a real execution through
+`conformance/simulation/plane`: a broker over the real `broker/executor`
+service over a pool of fake helpers (`simulation/fake_jail`, which speaks the
+real protocol and holds an execution until it is cancelled). The schedule is
+then applied with the execution in flight, and only an effect that survives it
+cancels the execution, waits for its one settlement and returns the scripted
+result. A `CrashDuringEffect`, a `RestartStrand`, a `SlowEffect` park or an
+intervention rendezvous therefore lands while an execution is live, which no
+earlier test could stage: the effect process that started it is reaped, and the
+relay has to notice its caller is gone, cancel, and settle, and the broker has
+to return the helper.
+
+The plane belongs to the runner and not to the tree, so a tree kill leaves it
+standing to be inspected. The scripted result never depends on it: the
+execution is a witness, and convergence still compares what the script said.
+After the tree is killed the runner asks the plane to `verify`
+(`effects/no-orphan`, `effects/one-settlement` above), giving the effects a
+couple of seconds of real time to unwind. The coverage assertion requires the
+sweep to reach `effect-plane-execution` and `fault-during-execution`, and
+`simulation_plane_test` shows each check failing on an execution nobody ends.
 
 ## Reproducing a failure
 
@@ -592,10 +620,19 @@ behaviour is the storage conformance suite's subject, and the cold open
 test proves a session reopens from a file. Multi-strand interleaving does
 not exist yet.
 
-**No real effect plane.** The provider, the tools, and the hooks are
-scripted; the broker, the helper, and the sandbox are not in the loop. The
-jailed end-to-end suite covers that seam, and the wire property covers the
-framing between them, but a simulated session never executes anything.
+**The effect plane is fake below the executor.** The provider and the hooks
+are scripted, and the tools run through the real broker and executor service,
+but over fake helpers: no OS process, no jail, no helper binary. The executor's
+own lifecycle is therefore exercised under the schedule, and what a helper does
+to a payload is not. The jailed end-to-end suite covers that seam, and the wire
+property covers the framing between them. The schedule has no fault aimed at a
+helper (a crash of one, a stalled cancel); the executor service's own seeded
+property test (`broker/test/broker/executor_property_test`) draws those. Two
+more limits: a tool's execution lives only from the effect's start to its
+scripted end, so the generator does not reach an execution that outlasts the
+effect that owns it on purpose (a background job), and the plane's real-time
+unwind wait is a backstop of the same kind as `control.attempt`'s, not part of
+a seed.
 
 **Scripts are shallow in one direction.** A generated script has one run
 operation followed by at most one standalone compaction or navigation, at
@@ -616,7 +653,9 @@ rather than tested, and a clock that jumps backwards is not simulated.
 | `conformance/simulation/fault.gleam` | The fault taxonomy, schedule generation, and shrinking |
 | `conformance/simulation/control.gleam` | The counters, one-shot claims, and runtime handle that outlive the tree |
 | `conformance/simulation/store.gleam` | The instrumented session: commit counting, stale refusals, read faults, the stealable lease |
-| `conformance/simulation/surface.gleam` | The scripted provider, tools, and hooks |
+| `conformance/simulation/surface.gleam` | The scripted provider, tools, and hooks; the tools open an execution through the plane |
+| `conformance/simulation/plane.gleam` | The effect plane: a broker over the executor over fake helpers, and the two `effects/` checks |
+| `conformance/simulation/fake_jail.gleam` | The fake helper the plane's pool runs |
 | `conformance/simulation/invariant.gleam` | The named per-run checks |
 | `conformance/simulation/runner.gleam` | Seed to verdict: execute, compare, shrink, report |
 | `conformance/simulation/wire.gleam` | The framing properties |
