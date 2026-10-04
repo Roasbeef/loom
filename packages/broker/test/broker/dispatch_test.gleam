@@ -8,6 +8,7 @@ import broker/token
 import core/clock
 import core/ids
 import gleam/erlang/process.{type Pid, type Subject}
+import gleam/list
 import gleam/option.{type Option, None, Some}
 
 // These tests drive the broker through a hand-written `Dispatcher`, so what
@@ -112,12 +113,15 @@ pub fn clear_call_hands_the_dispatcher_a_complete_dispatch_test() {
   let observed = process.new_subject()
   let started = broker_over(fake(observed, refusing: None))
   let events = process.new_subject()
+  let spec = capped_spec(op(), 4)
   let assert Ok(_handle) =
-    broker.clear_call(started, capped_spec(op(), 4), events:, waiting: 2000)
+    broker.clear_call(started, spec, events:, waiting: 2000)
 
   // The deadline is the pooled budget's, the sequence is the broker's
   // first call id, and the caller is the process that owns `events`.
   let assert Started(request:, guarantor: _) = next(observed)
+  assert request.context
+    == dispatch.CallContext(operation: spec.op_id, step: spec.step_id)
   assert request.deadline_ms == 100_000
   assert request.seq == 1
   assert request.caller == Some(process.self())
@@ -273,4 +277,51 @@ pub fn execution_ids_name_their_incarnation_and_sequence_test() {
   assert dispatch.seq(id) == 12
   assert id != dispatch.execution_id(incarnation: 4, seq: 12)
   assert id == dispatch.execution_id(incarnation: 3, seq: 12)
+}
+
+/// Shared op/step can own multiple physical calls; seq is never the logical key.
+pub fn successive_cleared_calls_keep_context_independent_of_sequence_test() {
+  let observed = process.new_subject()
+  let started = broker_over(fake(observed, refusing: None))
+  let base = capped_spec(op(), 4)
+  let events = process.new_subject()
+  let names = [
+    "job/j1",
+    "turn-4-build",
+    "hook:before-tool/fs_read",
+    "00000000-0000-7000-8000-000000000001",
+  ]
+
+  // No path/label grammar is imposed on the broker's legitimate internal steps.
+  list.each(names, fn(name) {
+    let spec = broker.CallSpec(..base, step_id: name)
+    let assert Ok(_) = broker.clear_call(started, spec, events:, waiting: 2000)
+    let assert Started(request: first, guarantor: _) = next(observed)
+    let assert Ok(_) = broker.clear_call(started, spec, events:, waiting: 2000)
+    let assert Started(request: second, guarantor: _) = next(observed)
+    assert first.context
+      == dispatch.CallContext(operation: spec.op_id, step: name)
+    assert second.context == first.context
+    assert second.seq == first.seq + 1
+  })
+
+  // A different durable operation survives the same broker instance as well.
+  let assert Ok(other_operation) =
+    ids.parse_op_id("00000000-0000-7000-8000-000000000002")
+  let other_spec =
+    broker.CallSpec(
+      ..base,
+      op_id: other_operation,
+      step_id: "worktree-observation",
+    )
+  let assert Ok(_) =
+    broker.clear_call(started, other_spec, events:, waiting: 2000)
+  let assert Started(request: other, guarantor: _) = next(observed)
+  assert other.context
+    == dispatch.CallContext(
+      operation: other_spec.op_id,
+      step: other_spec.step_id,
+    )
+  assert other.context.operation != base.op_id
+  broker.stop(started)
 }

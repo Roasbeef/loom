@@ -1,5 +1,15 @@
 # broker
 
+## Dispatch origin
+
+`dispatch.Dispatch.context` carries `CallContext(operation, step)` copied from
+the actual cleared `CallSpec` in `broker.start_execution`. Physical calls may
+share this context while having different dispatcher sequence numbers. A remote
+adapter must allocate and retain each logical request identity separately;
+sequence numbers, PIDs and tokens cannot reconstruct it. Internal local step
+names remain unchanged. The remote boundary validates them with
+`core/workspace.step` before admission. Protocol 067 records the added field.
+
 ## Purpose
 
 The ToolBroker: the single door between the harness and the outside world.

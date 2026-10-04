@@ -1165,6 +1165,7 @@ fn start_execution(
     )
   let dispatch_request =
     dispatch.Dispatch(
+      context: dispatch.CallContext(operation: spec.op_id, step: spec.step_id),
       request:,
       seq: call_id,
       deadline_ms: spec.budget.deadline_ms,
