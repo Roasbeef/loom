@@ -57,7 +57,7 @@ sequenceDiagram
     Owner-->>Runtime: Final ToolOutcome
     Runtime->>Session: Commit originally reserved result entry
     Owner->>Session: Verify exact result-entry readback
-    Owner->>Owner: Collect payloads, retain identity fences
+    Owner->>Owner: Collect eligible payloads, retain identity fences
 ```
 
 A child process result is not the tool's final report. A code-mode program
@@ -117,8 +117,47 @@ forgetting an old request and making it executable again.
 
 The custodian admits at most four active tasks. That cap and bounded asks do
 not bound an OTP mailbox. Daemon assembly must also bound concurrent callers.
-The format is version 2; incompatible version-1 evidence is refused and must
-be preserved rather than silently replaced.
+The format is version 3. A transactional migration validates version-2
+metadata, configured limits and existing reservations before adding the offer
+table. Valid cancelled or collected child fences can have no UUID. Incompatible
+version-1 evidence is refused and must be preserved rather than replaced.
+
+## Physical service and command custody
+
+A compiler or satellite service owns more than a native command. Its original
+ServiceKey retains the parent ToolKey, full workspace scope, physical step,
+service UUID and input, registration and contract digests. The physical
+operation must agree with the parent. A closed CommandRef pairs Compile with
+CompileCommand, or Launch with SatelliteCommand; offers allocate no new UUID.
+
+The owner retains the complete service request in its child row before storing
+an immutable command offer. Native reservation then verifies the original
+service and exact offer in one transaction before retaining a complete cleared
+request. A duplicate returns the original native UUID and bytes. Changed
+content conflicts; a partially prepared native request has no storage slot.
+
+Each offer reserves its full bounded payload allowance and participates in
+persistent global count and byte limits. The two fixed service roles permit
+at most two offers per parent. The existing 64 actual-child limit remains;
+outer service and native command each consume a child row. Queries check bounded
+headers and reservations before transferring payloads. All row operations use
+named SQL and generated Parrot/sqlc bindings.
+
+Cancelling a service atomically fences its outer row, offers and any allocated
+native child. A late native receipt can still be retained under its original
+identity. Neither cancellation nor that receipt proves physical cleanup.
+
+Collection is deliberately conservative for these physical services. Any
+Compile or Launch child row, or any offer, prevents parent collection even
+after exact final-result readback. This includes a service that failed before
+producing an offer and a final unknown outcome. A later whole-service recovery
+handoff must establish which evidence may be released; a final tool report
+alone cannot establish it.
+
+These APIs preserve exact bounded bytes. Trusted assembly must still validate
+the command template, complete SandboxPolicy, cleared native envelope and
+service-specific completion associations. Storage opacity does not establish
+those semantic checks or authorize execution.
 
 ## Verification and remaining integration
 
