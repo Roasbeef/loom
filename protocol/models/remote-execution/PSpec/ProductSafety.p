@@ -55,9 +55,9 @@ spec ProductSafety observes mProductCustody, mProductAdmission, mProductCleared,
     }
     on mProductLease do (p: tLease) {
       assert p.service.id in custody && p.service.id in created && p.service == custody[p.service.id] &&
-        p.artifact == custody[2].artifact && p.scope == custody[2].scope &&
-        p.compileRequest == custody[1].requestDigest && p.compileRequest == custody[2].compileRequest &&
-        p.resources == custody[2].resources,
+        p.artifact == custody[p.service.id].artifact && p.scope == custody[p.service.id].scope &&
+        p.compileRequest == custody[1].requestDigest && p.compileRequest == custody[p.service.id].compileRequest &&
+        p.resources == custody[p.service.id].resources,
         "issued resource did not match admitted artifact";
       if (p.service.id in issued) {
         assert issued[p.service.id] == p, "issued resource did not match admitted artifact";
