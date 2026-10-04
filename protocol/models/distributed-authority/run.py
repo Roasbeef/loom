@@ -32,6 +32,13 @@ JAR_URL = f"https://github.com/tlaplus/tlaplus/releases/download/v{VERSION}/tla2
 # must exist while all safety predicates still hold. Mutants select a safety
 # invariant that exposes the actual defect, rather than an earlier symptom.
 CASES = {
+    "IngressSafety": None,
+    "IngressSafetyOne": None,
+    "IngressReachTimeout": "NoTimedOutRecovery",
+    "IngressReachReuse": "NoReuseAfterTimeout",
+    "IngressReachCrash": "NoCrashWithPending",
+    "IngressMutantTimeout": "QueueBound",
+    "IngressMutantRestart": "QueueBound",
     "Safety": None,
     "ReachHandoff": "NoSuccessfulHandoff",
     "ReachRecovery": "NoRecoveredHandoff",
@@ -59,6 +66,13 @@ CASES = {
     "MetadataMutantABA": "MonotonicFence",
     "MetadataMutantReceipt": "ReceiptRetained",
 }
+
+
+def model_for_case(case: str) -> str:
+    """Select the closed model family for a named control."""
+    if case.startswith("Ingress"):
+        return "Ingress"
+    return "Metadata" if case.startswith("Metadata") else "Ownership"
 
 
 def provision() -> Path:
@@ -128,7 +142,7 @@ def check(java: str, jar: Path, run: Path, case: str, timeout: int) -> dict:
     """Require exhaustive success or a counterexample to the expected predicate."""
     work = run / case
     work.mkdir()
-    model = "Metadata" if case.startswith("Metadata") else "Ownership"
+    model = model_for_case(case)
     shutil.copyfile(run / f"{model}.tla", work / f"{model}.tla")
     shutil.copyfile(ROOT / f"{case}.cfg", work / f"{case}.cfg")
     command = [java, "-Xmx512m", "-XX:MaxDirectMemorySize=64m", "-cp", str(jar),
@@ -172,7 +186,7 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=60,
                         help="Seconds per TLC case (1..120; timeout fails the run).")
     parser.add_argument("--translate", action="store_true",
-                        help="Regenerate both PlusCal models only; do not run TLC.")
+                        help="Regenerate all PlusCal models only; do not run TLC.")
     args = parser.parse_args()
     if not 1 <= args.timeout <= 120:
         parser.error("--timeout must be between 1 and 120 seconds")
@@ -186,8 +200,9 @@ def main() -> int:
                "results": []}
     try:
         jar = provision()
-        models = (["Metadata" if args.case.startswith("Metadata") else "Ownership"]
-                  if args.case and not args.translate else ["Ownership", "Metadata"])
+        models = ([model_for_case(args.case)]
+                  if args.case and not args.translate
+                  else ["Ownership", "Metadata", "Ingress"])
         summary["translation"] = {model: translate(args.java, jar, run, args.translate, model)
                                   for model in models}
         summary["model_sha256"] = {model: hashlib.sha256((run / f"{model}.tla").read_bytes()).hexdigest()
