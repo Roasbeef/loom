@@ -221,8 +221,9 @@ page keys and nonces, and the relay into the session's gateway.
   says `Esc`. `strand_detail.view(chip)` is a strand's own view, the
   Strands pane's third child after the list while a strand other than `main`
   is in focus (`component.detail`): a `← Strands` link (the marker `0`), the
-  ring, the name and status line, the figures the card leaves out (Model,
-  Context, Cache, Running, each drawn only when known; the cache words are
+  ring, the name and status line, the figures the card leaves out (Task,
+  Model by its last path segment with the whole in a `title`, Context, which
+  says `not reported` while unknown, Cache, Running, the rest only when known; the cache words are
   `cache_miss.outlook_label`'s and no others; no Cost, since the session keeps
   cost as one total) and the tools the strand ran lately. The pane carries the
   class `detailed`, which hides the title and the list in the stylesheet; the
@@ -283,10 +284,12 @@ page keys and nonces, and the relay into the session's gateway.
   move out of the dock).
 - `commentary.view(board)` draws the advisor's settled commentary
   (`Shared.advisor_history`, narrowed by `advisor_history.visible`: a board
-  for `main` only) in the Strands pane under the strand cards: the newest
-  three reviews whole, each a request label the projection worded and the
-  advisor's full text as text nodes, a `+n earlier reviews` count, and the
-  board's not-loaded line. Read-only, no handler, hidden while the advisor is
+  for `main` only) in the Strands pane under the strand cards as one closed
+  native `<details>` whose summary is `Advisor · 3 reviews · last: <first
+  line>`; inside, the newest three reviews, each a request label the
+  projection worded and the advisor's text drawn through the lane's Markdown
+  drawer (`markdown_view`), a `+n earlier reviews` count, and the board's
+  not-loaded line. Read-only, no handler, hidden while the advisor is
   on screen (its own transcript already holds the same words as its ordinary
   entries) and below 980px. The lane keeps one line per review
   (`view/lane`'s `commentary-mark`): the advisor's tag and the request's
@@ -356,7 +359,8 @@ page keys and nonces, and the relay into the session's gateway.
   heading is `Changes · 2 files · +14 -2` with `from this session's edits`
   under it, then one `<details>` per file with the first open. Paths and diff
   rows are text nodes; a row's class is one of four literals chosen from the
-  fold's `Kind`. It has no handler and is memoized on the board. With no edit
+  fold's `Kind`; a file the session only wrote reads `written · N lines` where
+  an edit's counts go. It has no handler and is memoized on the board. With no edit
   it is the heading and one line saying so, so the pane is always drawn and
   the panes after it never move. It reads no worktree: the daemon serves
   worktree bytes to an Owner binding only.
@@ -365,8 +369,9 @@ page keys and nonces, and the relay into the session's gateway.
   `share`, the invitation control's place, in that order so the control's path
   never moves. The rows are the goal (the terminal's own row, `goal_view.row`, or
   `none`), the followed strand's live jobs, where the page shows them the
-  attached viewers (`session_view/session_summary`) and the estimated cost the
-  top bar shows. Schedules are not a row: the shared record keeps a schedule
+  attached viewers (`session_view/session_summary`, one line per principal:
+  `Owner · owner, operator · 3 pages · you`) and the estimated cost, the
+  figure alone since the row's label says estimate. Schedules are not a row: the shared record keeps a schedule
   listing only as transcript lines the page does not draw. The component asks
   for the jobs on a `Ticked` when the page opened or last asked
   `jobs_refresh_ms` (10 s) ago and no answer is outstanding. The clock starts

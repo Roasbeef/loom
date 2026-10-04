@@ -46,14 +46,19 @@ for a host with no surfaces.
 
 ## Key Types
 
-- `strand_card.status_line(line)`, `strand_card.needing(lines)` and
-  `strand_card.context_words(tokens)`: the one status line under a strand's
-  name on its card (`Needs approval` for a strand that waits on a decision,
-  whatever the request was; the state word and the activity after ` · ` for a
-  working one; `Finished` and how long it ran), how many strands wait on a
-  decision, the count on the web view's Strands tab, and the words for a
-  strand's context size in its own view. Both hosts can read them so the
-  terminal can word a card the same way.
+- `strand_card.status_line(line)`, `status_title(line)`, `glyph(status)`,
+  `model_name(model)`, `needing(lines)` and `context_words(tokens)`: the one
+  status line under a strand's name on its card (`Needs approval` for a
+  strand that waits on a decision, whatever the request was; the state word
+  and what the strand is doing after ` · ` for a working one, where the
+  engine's phase `assistant` reads `thinking`, a tool is named without its
+  command and a state word the activity already says is not said twice;
+  `Finished` and how long it ran), the whole activity text for a tooltip
+  (`status_title`, cut to `title_limit`), the state's one-character glyph,
+  a model's last path segment, how many strands wait on a decision (the count
+  on the web view's Strands tab), and the words for a strand's context size
+  in its own view. Both hosts can read them so the terminal can word a card
+  the same way.
 - `command.Command`: a parsed draft, `Surface(command.Surface)` for a
   command the host carries out with its own machinery (a panel, the model
   selector, daemon control, a change of strand, the host's exit) or
@@ -204,7 +209,10 @@ for a host with no surfaces.
   terminal's agent rail and strip and the web view's chips.
   `agent_roster.{Roster, Line, Chips}` is which strands a strip lists, in
   what order, with elapsed time and context size (`lines`, `chips`,
-  `running_ms`, `context`).
+  `running_ms`, `context`). A strand that is idle and has no operation has
+  never run (a fresh fork waiting for its first prompt), and it is listed
+  among the live cards rather than settled; one that ran and is idle again
+  has an operation and is settled.
   Its internal `listed_count` uses the same membership predicate without
   constructing display lines, for hosts measuring geometry. The roster test
   compares that count with `lines` across every status and active-strand choice.
@@ -390,7 +398,11 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   them newest first, into the board of the session's own edits: the files
   the successful `fs_edit` results named, each with the diff the result
   reported as rows of a closed `Kind` (`Hunk`, `Added`, `Removed`,
-  `Context`) and the `+` and `-` totals. It reads no worktree, so it is what
+  `Context`) and the `+` and `-` totals, and the successful `fs_write` calls:
+  a write reports no diff, so its file is one hunk whose every line is added,
+  from the call's `content` argument, with `origin: Written` and the words
+  `written · 23 lines` (`counts_words`) in place of counts. A file that was
+  also edited is `Edited` and counts both. It reads no worktree, so it is what
   the agent wrote in the window and not the state of the tree, and it says so
   (`label`). It is bounded (`max_files` 24, `max_file_rows` 200, `max_rows`
   600, `max_row_characters` 240) and every cut is counted. The web page's
@@ -401,8 +413,9 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   supplies. Jobs are the `live_jobs` board for the strand asked about, its
   lines cut to `max_job_rows` with the rest counted, or `Unread` when there is
   no board or it names another strand (never a count of zero). Viewers are the
-  cut's presence rows, one per attachment, at most `max_viewer_rows`, each
-  with a role word and whether it is the host's own. Whether a host shows the
+  cut's presence rows grouped by principal, at most `max_viewer_rows`, each
+  with its role words, how many pages (attachments) it holds and whether one is
+  the host's own; `total` still counts attachments. Whether a host shows the
   viewers is the host's choice: the web page shows them on an operator's page
   only.
 
