@@ -22,7 +22,7 @@ import simplifile
 import tui/effect
 import tui/layout_memory.{Layout, Target}
 import tui/layout_save
-import tui/model.{type Model, Model, View}
+import tui/model.{type Model}
 import tui_test/stepping
 
 // A directory of this test's own, removed first so a run never reads the
