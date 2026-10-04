@@ -27,6 +27,8 @@
 
 import filepath
 import gleam/option.{type Option, None, Some}
+import gleam/result
+import host/bootstrap as host_bootstrap
 import tui/bootstrap
 import tui/effect
 import tui/layout_memory.{type Layout, Layout, Target}
@@ -49,11 +51,18 @@ pub fn remember_launch(model: Model, state_override: String) -> Model {
     Error(_) -> model
     Ok(root) -> {
       let path = filepath.join(filepath.join(root, "tui"), "layout.json")
-      let key = layout_memory.workspace_key(model.view.workspace.path)
+      let key = layout_memory.workspace_key(absolute(model.view.workspace.path))
       let saved = layout_memory.lookup(layout_memory.load(path), key)
       apply(model, Target(path:, key:, saved:))
     }
   }
+}
+
+// The workspace path made absolute, so `loom --workspace .` is keyed by the
+// directory it names and not by the one-character string. A path that cannot
+// be resolved is keyed as given.
+fn absolute(path: String) -> String {
+  host_bootstrap.absolute_path(path) |> result.unwrap(path)
 }
 
 /// The model with `target`'s remembered layout in force and `target` kept
@@ -67,7 +76,8 @@ pub fn remember_launch(model: Model, state_override: String) -> Model {
 pub fn apply(model: Model, target: layout_memory.Target) -> Model {
   let visible = case target.saved.rail {
     Some(layout_memory.RailShown) -> True
-    Some(layout_memory.RailHidden) | None -> model.view.agent_rail_visible
+    Some(layout_memory.RailHidden) -> False
+    None -> model.view.agent_rail_visible
   }
   Model(
     ..model,

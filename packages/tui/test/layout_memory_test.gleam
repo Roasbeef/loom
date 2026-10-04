@@ -22,7 +22,8 @@ import simplifile
 import tui/effect
 import tui/layout_memory.{Layout, Target}
 import tui/layout_save
-import tui/model.{type Model}
+import tui/model.{type Model, Model, View}
+import tui/workspace
 import tui_test/stepping
 
 // A directory of this test's own, removed first so a run never reads the
@@ -53,7 +54,7 @@ fn key(seed: String) -> String {
 
 // ------------------------------------------------------------- the key
 
-pub fn the_key_is_the_workspace_digest_the_web_view_uses_test() {
+pub fn the_key_is_a_sha256_digest_of_the_path_test() {
   // SHA-256 of "abc" is the standard test vector.
   assert layout_memory.workspace_key("abc")
     == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
@@ -280,18 +281,22 @@ fn saves(effects: List(effect.Effect)) -> List(effect.Effect) {
   })
 }
 
+// The model starts with the rail visible, as it will when a wide terminal
+// docks it by default, so that a remembered `hidden` is seen to win over the
+// default rather than agree with it.
 pub fn a_remembered_rail_is_applied_at_launch_test() {
-  let model =
-    with_target(frame_scene.model(), target("/x/layout.json", shown()))
+  let base = frame_scene.model()
+  let visible = Model(..base, view: View(..base.view, agent_rail_visible: True))
+  let model = with_target(visible, target("/x/layout.json", shown()))
   assert model.view.agent_rail_visible
-  let model =
-    with_target(frame_scene.model(), target("/x/layout.json", hidden()))
+  let model = with_target(visible, target("/x/layout.json", hidden()))
   assert !model.view.agent_rail_visible
+    as "a remembered hidden beats a rail that would be visible"
   let model =
-    with_target(
-      frame_scene.model(),
-      target("/x/layout.json", layout_memory.default()),
-    )
+    with_target(visible, target("/x/layout.json", layout_memory.default()))
+  assert model.view.agent_rail_visible as "no choice leaves the default"
+  let model =
+    with_target(base, target("/x/layout.json", layout_memory.default()))
   assert !model.view.agent_rail_visible
 }
 
@@ -352,8 +357,28 @@ pub fn the_launcher_reads_the_file_under_the_state_root_test() {
 }
 
 // The numbers from one to `last`.
-
 fn numbers(last: Int) -> List(Int) {
   int.range(from: 1, to: last + 1, with: [], run: fn(all, n) { [n, ..all] })
   |> list.reverse
+}
+
+// A relative workspace such as `--workspace .` is keyed by the directory it
+// names, so every repository launched that way does not share sha256(".").
+pub fn a_relative_workspace_is_keyed_by_its_absolute_path_test() {
+  let dir = scratch("relative")
+  let base = frame_scene.model()
+  let relative =
+    Model(
+      ..base,
+      view: View(
+        ..base.view,
+        workspace: workspace.Context(path: ".", branch: None),
+      ),
+    )
+  let model = layout_save.remember_launch(relative, dir)
+  let assert Some(target) = model.view.layout_target
+  assert target.key != layout_memory.workspace_key(".")
+  let assert Ok(absolute) = host_bootstrap.absolute_path(".")
+  assert target.key == layout_memory.workspace_key(absolute)
+  let _ = simplifile.delete_all([dir])
 }

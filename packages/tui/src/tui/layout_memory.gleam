@@ -3,9 +3,12 @@
 //// The web view keeps a reader's layout in the browser's storage, keyed by a
 //// digest of the workspace (`web_client/layout_rule`). The terminal has no
 //// browser, so it keeps the same thing in one small file in the launcher's
-//// state root, `<state-dir>/tui/layout.json`, under the same key: the
-//// lower-case SHA-256 of the workspace path, in hex. A path is never written
-//// to the file, and neither is anything a session says. The file holds the
+//// state root, `<state-dir>/tui/layout.json`, under a key of the same
+//// construction: the lower-case SHA-256 of a workspace path, in hex. The
+//// path is the one the terminal discovered for its workspace, made absolute,
+//// which is not always the string the daemon hashes for the web page, so the
+//// two stores do not share keys and nothing relies on them matching. A path
+//// is never written to the file, and neither is anything a session says. The file holds the
 //// layout words and nothing else: not the transcript, not the focused
 //// strand, not the session. Those are not layout, and a launch shows `main`
 //// of the session it was asked for.
@@ -126,9 +129,9 @@ pub fn empty() -> Memory {
   Memory(entries: [])
 }
 
-/// The key of a workspace: the lower-case SHA-256 of its path in hex, which
-/// is how the daemon names a workspace to the web view. The path is not
-/// recoverable from it.
+/// The key of a workspace: the lower-case SHA-256 of its path in hex, the
+/// construction the daemon uses to name a workspace to the web view. The path
+/// is not recoverable from it.
 ///
 /// ## Examples
 ///
