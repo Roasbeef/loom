@@ -20,9 +20,13 @@
 //// COMMIT precedes replies. SQL failure poisons this endpoint as uncertain.
 //// Logical reservation ceilings do not bound SQLite pages/WAL or resident memory.
 //// No timer, row collection, native process owner or effect retry lives here.
-//// This store reserves input and Ready metadata only. The trusted physical
-//// service must separately reserve exact outer outcome capacity before asking
-//// for preparation; Ready never substitutes for terminal service custody.
+//// Format 2 reserves input, Ready, native association and closed completion capacity
+//// before preparation. Format 1 cannot be upgraded into permission. Actual native
+//// readback precedes the resource writer lock; historical retries need no live
+//// native endpoint. Completion, cleanup, native retirement and outer receipt stay
+//// distinct. A recovered Reserved row does not establish a fresh original deadline;
+//// the physical caller must independently hold live original service authority.
+//// Launch capacity is reserved but its outcome API remains unsupported.
 ////
 //// ## Flow
 ////
@@ -34,14 +38,31 @@
 //// monotone state changes. `seal` enters `metadata_transaction` under the same
 //// writer lock. `decode_header` uses core's full key decoder; `ready_for` checks
 //// historical location association. `reservation` keeps lifetime byte accounting.
+//// `custody_request` checks historical retries before native readback and releases
+//// the writer lock before asking another actor. `custody_transition` retains the
+//// immutable native tuple, completion or outer ACK. `checked_custody` recovers
+//// checked retention handles; `native_readback` requires actual admission and
+//// `option_terminal` projects its bounded terminal slot. `native_template` checks
+//// exact hermetic facts without repeating clearance or filesystem canonicalization.
 
+import broker/command as offer
 import broker/enrollment
+import broker/policy
+import codemode/service_command
 import codemode/service_input as input
 import codemode/service_resources as resources
 import core/command
 import core/ids
 import core/json
 import core/remote_tool
+import core/workspace
+import executor/remote/admission
+import executor/remote/compile_completion as completion
+import executor/remote/identity
+import executor/remote/journal as native_journal
+import executor/remote/journal_codec
+import executor/remote/payload
+import executor/remote/wire
 import executor/resource_schema
 import executor/sql
 import gleam/bit_array
@@ -63,7 +84,7 @@ pub opaque type Limits {
   Limits(
     /// Permanent original UUID slots.
     rows: Int,
-    /// Logical input/header/address and complete Ready reservations.
+    /// Logical input/header/address, Ready, native association and completion reservations.
     bytes: Int,
   )
 }
@@ -175,8 +196,98 @@ pub type Error {
   /// Endpoint is closed or poisoned.
   Closed
 
+  /// This closed first cut reserves Launch capacity but settles Compile only.
+  UnsupportedRole
+
   /// Connection-owning actor could not start.
   StartFailed
+}
+
+/// Immutable native identity and exact Prepared; historical data grants no launch.
+pub type NativeStatus {
+  /// No actual native association has committed.
+  Unassociated
+
+  /// Actual native journal admission was read before this immutable tuple committed.
+  Associated(
+    /// Original full closed command reference.
+    ref: command.CommandRef,
+    /// Independent native UUID, operation and full enrolled scope.
+    key: identity.RequestKey,
+    /// SHA-256 of the unchanged canonical Prepared.
+    digest: identity.Digest,
+    /// Exact recorded cleared materialization, never a reconstructed policy.
+    prepared: wire.Prepared,
+  )
+}
+
+/// Outer receipt is separate from native receipt, retirement and resource cleanup.
+pub type OuterReceipt {
+  /// The original owner has not acknowledged these exact completion bytes.
+  ReceiptPending
+
+  /// The authenticated owner adapter reported its durable exact-byte receipt.
+  ReceiptAcknowledged
+}
+
+/// A checked local durable completion handle, recoverable without a live native endpoint.
+pub opaque type RetainedCompile {
+  RetainedCompile(
+    /// The decoded closed result retaining the complete original service identity.
+    decoded: completion.CompileCompletion,
+    /// Exact canonical retained bytes.
+    bytes: BitArray,
+    /// SHA-256 naming completion bytes, independent of Prepared and terminal hashes.
+    digest: identity.Digest,
+  )
+}
+
+/// Historical Compile custody, never another preparation or native permission.
+pub type CompileStatus {
+  /// No exact closed result has committed.
+  CompilePending
+
+  /// A local retention handle and its independent outer receipt state.
+  CompileRetained(
+    /// Exact bytes can be retrieved even after a lost Before-native reply.
+    retained: RetainedCompile,
+    /// Only authenticated owner acknowledgement advances this field.
+    receipt: OuterReceipt,
+  )
+}
+
+type CustodyCommand {
+  ObserveNative(Validated)
+  AssociateNative(
+    Validated,
+    command.CommandRef,
+    identity.RequestKey,
+    identity.Digest,
+  )
+  ObserveCompile(Validated)
+  SettleCompile(Validated, completion.CompileCompletion, BitArray)
+  FailPreparation(Validated, completion.CompileCompletion, BitArray)
+  AcknowledgeCompile(Validated, identity.Digest)
+}
+
+type CustodyAnswer {
+  NativeAnswer(NativeStatus)
+  CompileAnswer(CompileStatus)
+  RetainedAnswer(RetainedCompile)
+  NeedReadback
+}
+
+type NativeReadback {
+  NativeReadback(
+    prepared: wire.Prepared,
+    bytes: BitArray,
+    evidence: admission.Evidence,
+    terminal: Option(BitArray),
+  )
+}
+
+type CustodyRow {
+  CustodyRow(native: NativeStatus, compiled: CompileStatus)
 }
 
 type Validated {
@@ -206,7 +317,12 @@ type Inventory {
 }
 
 type Config {
-  Config(path: String, enrolled: enrollment.SessionEnrollment, limits: Limits)
+  Config(
+    path: String,
+    enrolled: enrollment.SessionEnrollment,
+    limits: Limits,
+    native: native_journal.Journal,
+  )
 }
 
 type State {
@@ -236,6 +352,7 @@ type Message {
   Initialise(Mode, process.Subject(Result(Nil, Error)))
   Run(Command, process.Subject(Result(Answer, Error)))
   Metadata(MetadataCommand, process.Subject(Result(ScopeMode, Error)))
+  Custody(CustodyCommand, process.Subject(Result(CustodyAnswer, Error)))
   CloseEndpoint(process.Subject(Result(Nil, Error)))
 }
 
@@ -255,29 +372,31 @@ pub fn limits(rows: Int, bytes: Int) -> Result(Limits, Error) {
 ///
 /// ## Examples
 ///
-/// `fresh(path, enrolled, limits)` refuses existing evidence.
+/// `fresh(path, enrolled, limits, native)` refuses existing evidence.
 pub fn fresh(
   path: String,
   enrolled: enrollment.SessionEnrollment,
   limits: Limits,
+  native: native_journal.Journal,
 ) -> Result(Journal, Error) {
-  start(Config(path, enrolled, limits), Fresh)
+  start(Config(path, enrolled, limits, native), Fresh)
 }
 
 /// Recovers checked historical evidence without returning any preparation claim.
 ///
 /// ## Examples
 ///
-/// `recover(path, enrolled, limits)` refuses changed snapshot or quotas.
+/// `recover(path, enrolled, limits, native)` refuses changed snapshot or quotas.
 pub fn recover(
   path: String,
   enrolled: enrollment.SessionEnrollment,
   limits: Limits,
+  native: native_journal.Journal,
 ) -> Result(Journal, Error) {
-  start(Config(path, enrolled, limits), Recover)
+  start(Config(path, enrolled, limits, native), Recover)
 }
 
-/// Reserves exact input, original identity and full Ready allowance before effects.
+/// Reserves exact input, identity, full Ready and eventual completion capacity before effects.
 ///
 /// ## Examples
 ///
@@ -403,6 +522,194 @@ pub fn release_endpoint(journal: Journal) -> Result(Nil, Error) {
   case exchange(journal, CloseEndpoint) {
     Error(Closed) -> Ok(Nil)
     outcome -> outcome
+  }
+}
+
+/// Reads historical native association without consulting the native endpoint.
+///
+/// ## Examples
+///
+/// `inspect_native(book, original)` returns Unassociated before actual admission.
+pub fn inspect_native(
+  book: Journal,
+  original: Input,
+) -> Result(NativeStatus, Error) {
+  use original <- result.try(compile_original(book, original))
+  use answer <- result.try(exchange(book, Custody(ObserveNative(original), _)))
+  case answer {
+    NativeAnswer(value) -> Ok(value)
+    CompileAnswer(_) | RetainedAnswer(_) | NeedReadback -> Error(Corrupt)
+  }
+}
+
+/// Associates only exact actual admitted Prepared read from the pinned journal.
+/// A committed exact retry succeeds from history even if the native endpoint died.
+///
+/// ## Examples
+///
+/// `associate_native(book, original, ref, key, digest)` never admits or launches.
+pub fn associate_native(
+  book: Journal,
+  original: Input,
+  ref: command.CommandRef,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+) -> Result(NativeStatus, Error) {
+  use original <- result.try(compile_original(book, original))
+  use answer <- result.try(
+    exchange(book, Custody(AssociateNative(original, ref, key, digest), _)),
+  )
+  case answer {
+    NativeAnswer(value) -> Ok(value)
+    CompileAnswer(_) | RetainedAnswer(_) | NeedReadback -> Error(Corrupt)
+  }
+}
+
+/// Recovers a checked retention handle, including a Before-native lost reply.
+///
+/// ## Examples
+///
+/// `inspect_compile(book, original)` never recreates preparation authority.
+pub fn inspect_compile(
+  book: Journal,
+  original: Input,
+) -> Result(CompileStatus, Error) {
+  use original <- result.try(compile_original(book, original))
+  use answer <- result.try(exchange(book, Custody(ObserveCompile(original), _)))
+  case answer {
+    CompileAnswer(value) -> Ok(value)
+    NativeAnswer(_) | RetainedAnswer(_) | NeedReadback -> Error(Corrupt)
+  }
+}
+
+/// Commits one exact canonical native-associated result after actual terminal readback.
+/// Historical retries compare retained bytes before requiring a live native journal.
+///
+/// ## Examples
+///
+/// `commit_compile(book, original, value)` returns local retention after COMMIT.
+pub fn commit_compile(
+  book: Journal,
+  original: Input,
+  value: completion.CompileCompletion,
+) -> Result(RetainedCompile, Error) {
+  use original <- result.try(compile_original(book, original))
+  use bytes <- result.try(completion_bytes(book.enrolled, original, value))
+  retained_answer(book, SettleCompile(original, value, bytes))
+}
+
+/// Settles failure only through the original live Preparing claim before Ready.
+/// The atomic Unknown transition fences a later Ready; absence after Ready proves nothing.
+///
+/// ## Examples
+///
+/// `fail_preparation(claim, value)` refuses a native-associated or post-Ready value.
+pub fn fail_preparation(
+  claim: Claim,
+  value: completion.CompileCompletion,
+) -> Result(RetainedCompile, Error) {
+  use original <- result.try(compile_original(
+    claim.journal,
+    claim.original.original,
+  ))
+  use bytes <- result.try(completion_bytes(
+    claim.journal.enrolled,
+    original,
+    value,
+  ))
+  retained_answer(claim.journal, FailPreparation(original, value, bytes))
+}
+
+/// Returns exact local durable bytes, never an owner receipt or execution permit.
+///
+/// ## Examples
+///
+/// `retained_compile_bytes(retained)` is unchanged across recovery and ACK.
+pub fn retained_compile_bytes(retained: RetainedCompile) -> BitArray {
+  retained.bytes
+}
+
+/// Returns the completion hash, distinct from Prepared and native-terminal hashes.
+///
+/// ## Examples
+///
+/// `retained_compile_digest(retained)` names only the exact outer completion.
+pub fn retained_compile_digest(retained: RetainedCompile) -> identity.Digest {
+  retained.digest
+}
+
+/// Returns the decoded closed historical result without artifact issuance authority.
+///
+/// ## Examples
+///
+/// `retained_compile_value(retained)` retains the original full Compile identity.
+pub fn retained_compile_value(
+  retained: RetainedCompile,
+) -> completion.CompileCompletion {
+  retained.decoded
+}
+
+/// Records authenticated original-owner durable acknowledgement of exact result bytes.
+/// The adapter must authenticate and commit before calling; this is not native receipt.
+///
+/// ## Examples
+///
+/// `acknowledge_compile(book, original, digest)` refuses a different completion hash.
+pub fn acknowledge_compile(
+  book: Journal,
+  original: Input,
+  digest: identity.Digest,
+) -> Result(CompileStatus, Error) {
+  use original <- result.try(compile_original(book, original))
+  use answer <- result.try(
+    exchange(book, Custody(AcknowledgeCompile(original, digest), _)),
+  )
+  case answer {
+    CompileAnswer(value) -> Ok(value)
+    NativeAnswer(_) | RetainedAnswer(_) | NeedReadback -> Error(Corrupt)
+  }
+}
+
+fn compile_original(
+  book: Journal,
+  original: Input,
+) -> Result(Validated, Error) {
+  use Nil <- result.try(case command.service_role(original.key) {
+    command.CompileService -> Ok(Nil)
+    command.LaunchService -> Error(UnsupportedRole)
+  })
+  validate(book.enrolled, original)
+}
+
+fn completion_bytes(
+  enrolled: enrollment.SessionEnrollment,
+  original: Validated,
+  value: completion.CompileCompletion,
+) -> Result(BitArray, Error) {
+  use Nil <- result.try(
+    case completion.original(value) == original.original.key {
+      True -> Ok(Nil)
+      False -> Error(Conflict)
+    },
+  )
+  use bytes <- result.try(
+    completion.encode(value) |> result.replace_error(InvalidInput),
+  )
+  use _ <- result.try(
+    completion.decode(enrolled, original.original.key, bytes)
+    |> result.replace_error(InvalidInput),
+  )
+  Ok(bytes)
+}
+
+fn retained_answer(
+  book: Journal,
+  command: CustodyCommand,
+) -> Result(RetainedCompile, Error) {
+  use answer <- result.try(exchange(book, Custody(command, _)))
+  case answer {
+    RetainedAnswer(value) -> Ok(value)
+    NativeAnswer(_) | CompileAnswer(_) | NeedReadback -> Error(Corrupt)
   }
 }
 
@@ -546,6 +853,11 @@ fn start(config: Config, mode: Mode) -> Result(Journal, Error) {
       False -> Error(InvalidPath)
     },
   )
+  use scope <- result.try(native_scope(config.enrolled))
+  use Nil <- result.try(case native_journal.scope(config.native) == scope {
+    True -> Ok(Nil)
+    False -> Error(BindingMismatch)
+  })
   use started <- result.try(
     actor.new(Waiting(config))
     |> actor.on_message(handle)
@@ -612,6 +924,19 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           actor.stop()
         Ok(_) | Error(_) -> actor.continue(state)
       }
+    }
+    Ready(config, connection), Custody(command, reply) -> {
+      let outcome = custody_request(connection, config, command)
+      process.send(reply, outcome)
+      case outcome {
+        Error(Uncertain) | Error(Corrupt) | Error(BindingMismatch) ->
+          actor.stop()
+        Ok(_) | Error(_) -> actor.continue(state)
+      }
+    }
+    Waiting(_), Custody(_, reply) -> {
+      process.send(reply, Error(Closed))
+      actor.continue(state)
     }
     Ready(config, connection), Metadata(command, reply) -> {
       let outcome = metadata_transaction(connection, config, command)
@@ -735,6 +1060,14 @@ fn inventory(
   connection: sqlight.Connection,
   config: Config,
 ) -> Result(Inventory, Error) {
+  use formats <- result.try(
+    query(connection, sql.resource_format()) |> result.replace_error(Corrupt),
+  )
+  use Nil <- result.try(case formats {
+    [sql.ResourceFormat(1)] -> Error(BindingMismatch)
+    [sql.ResourceFormat(2)] -> Ok(Nil)
+    _ -> Error(Corrupt)
+  })
   use metadata <- result.try(
     query(connection, sql.resource_metadata()) |> result.replace_error(Corrupt),
   )
@@ -793,12 +1126,24 @@ fn inventory(
       }
     }),
   )
+  use _ <- result.try(
+    list.try_fold(rows, set.new(), fn(seen, row) {
+      case row.native_id {
+        <<>> -> Ok(seen)
+        id ->
+          case set.contains(seen, id) {
+            True -> Error(Corrupt)
+            False -> Ok(set.insert(seen, id))
+          }
+      }
+    }),
+  )
   Ok(Inventory(mode, rows))
 }
 
 fn reservation(row: sql.ResourceHeaders) -> Int {
   // All original blobs plus UUID and both digest slots remain reserved forever.
-  row.address_size + row.header_size + row.input_size + 262_144 + 100
+  row.address_size + row.header_size + row.input_size + 663_826
 }
 
 fn retained(
@@ -862,7 +1207,15 @@ fn checked_row(
     4, _ -> Ok(Released(ready))
     _, _ -> Error(Corrupt)
   }
-  result.map(status, fn(status) { #(status, validated.address) })
+  use status <- result.try(status)
+  use _ <- result.try(checked_custody(
+    config.enrolled,
+    validated,
+    row,
+    body,
+    status,
+  ))
+  Ok(#(status, validated.address))
 }
 
 fn decode_header(bytes: BitArray) -> Result(command.ServiceKey, Error) {
@@ -999,8 +1352,7 @@ fn insert(
     bit_array.byte_size(original.address)
     + bit_array.byte_size(original.header)
     + bit_array.byte_size(original.original.body)
-    + 262_144
-    + 100
+    + 663_826
   use Nil <- result.try(
     case
       list.drop(rows, config.limits.rows - 1) == []
@@ -1110,6 +1462,688 @@ fn historical(status: Status) -> Option(resources.Ready) {
   }
 }
 
+fn custody_request(
+  connection: sqlight.Connection,
+  config: Config,
+  command: CustodyCommand,
+) -> Result(CustodyAnswer, Error) {
+  use first <- result.try(custody_transaction(connection, config, command, None))
+  case first {
+    NeedReadback -> {
+      // Only new positive facts need another actor; no resource writer lock is held.
+      use readback <- result.try(read_for_command(config, command))
+      custody_transaction(connection, config, command, Some(readback))
+    }
+    NativeAnswer(_) | CompileAnswer(_) | RetainedAnswer(_) -> Ok(first)
+  }
+}
+
+fn custody_transaction(
+  connection: sqlight.Connection,
+  config: Config,
+  command: CustodyCommand,
+  readback: Option(NativeReadback),
+) -> Result(CustodyAnswer, Error) {
+  use Nil <- result.try(
+    sqlight.exec("BEGIN IMMEDIATE", connection) |> sql_error,
+  )
+  let outcome = {
+    use inventory <- result.try(inventory(connection, config))
+    let original = custody_original(command)
+    use row <- result.try(
+      list.find(inventory.rows, fn(row) { row.id == original.id })
+      |> result.replace_error(Missing),
+    )
+    use status <- result.try(retained(connection, config, row))
+    use bodies <- result.try(
+      query(connection, sql.resource_bodies(row.id))
+      |> result.replace_error(Corrupt),
+    )
+    use body <- result.try(case bodies {
+      [body]
+        if body.input == original.original.body
+        && body.service_header == original.header
+        && body.address == original.address
+      -> Ok(body)
+      [_] -> Error(Conflict)
+      _ -> Error(Corrupt)
+    })
+    use custody <- result.try(checked_custody(
+      config.enrolled,
+      original,
+      row,
+      body,
+      status,
+    ))
+    custody_transition(
+      connection,
+      config,
+      row,
+      status,
+      custody,
+      command,
+      readback,
+    )
+  }
+  complete_transaction(connection, outcome)
+}
+
+fn custody_original(command: CustodyCommand) -> Validated {
+  case command {
+    ObserveNative(original)
+    | AssociateNative(original, _, _, _)
+    | ObserveCompile(original)
+    | SettleCompile(original, _, _)
+    | FailPreparation(original, _, _)
+    | AcknowledgeCompile(original, _) -> original
+  }
+}
+
+fn custody_transition(
+  connection: sqlight.Connection,
+  config: Config,
+  row: sql.ResourceHeaders,
+  status: Status,
+  custody: CustodyRow,
+  command: CustodyCommand,
+  readback: Option(NativeReadback),
+) -> Result(CustodyAnswer, Error) {
+  case command {
+    ObserveNative(_) -> Ok(NativeAnswer(custody.native))
+    ObserveCompile(_) -> Ok(CompileAnswer(custody.compiled))
+    AssociateNative(original, ref, key, digest) -> {
+      case custody.native {
+        Associated(saved_ref, saved_key, saved_digest, _) -> {
+          case #(ref, key, digest) == #(saved_ref, saved_key, saved_digest) {
+            True -> Ok(NativeAnswer(custody.native))
+            False -> Error(Conflict)
+          }
+        }
+        Unassociated ->
+          associate_new(
+            connection,
+            config,
+            row,
+            status,
+            original,
+            ref,
+            key,
+            digest,
+            readback,
+          )
+      }
+    }
+    SettleCompile(original, value, bytes) -> {
+      case custody.compiled {
+        CompileRetained(retained, _) -> exact_retained(retained, bytes)
+        CompilePending ->
+          settle_new(
+            connection,
+            row,
+            custody.native,
+            original,
+            value,
+            bytes,
+            readback,
+          )
+      }
+    }
+    FailPreparation(_, value, bytes) -> {
+      case custody.compiled {
+        CompileRetained(retained, _) -> exact_retained(retained, bytes)
+        CompilePending -> {
+          use Nil <- result.try(
+            case
+              row.phase == 1
+              && row.ready_size == 0
+              && custody.native == Unassociated
+              && completion.native_association(value) == None
+            {
+              True -> Ok(Nil)
+              False -> Error(Conflict)
+            },
+          )
+          use retained <- result.try(retain_value(value, bytes))
+          use Nil <- result.try(blob_change(
+            connection,
+            sql.fail_resource_preparation(
+              identity.digest_bytes(retained.digest),
+              bytes,
+              row.id,
+            ),
+            fn(row) { row.completion_digest },
+            identity.digest_bytes(retained.digest),
+          ))
+          Ok(RetainedAnswer(retained))
+        }
+      }
+    }
+    AcknowledgeCompile(_, digest) -> {
+      case custody.compiled {
+        CompilePending -> Error(Missing)
+        CompileRetained(retained, receipt) -> {
+          use Nil <- result.try(case retained.digest == digest {
+            True -> Ok(Nil)
+            False -> Error(Conflict)
+          })
+          use Nil <- result.try(case receipt {
+            ReceiptAcknowledged -> Ok(Nil)
+            ReceiptPending ->
+              phase_change(
+                connection,
+                sql.acknowledge_resource_compile(
+                  row.id,
+                  identity.digest_bytes(digest),
+                ),
+                fn(row) { row.outer_receipt },
+                1,
+              )
+          })
+          Ok(CompileAnswer(CompileRetained(retained, ReceiptAcknowledged)))
+        }
+      }
+    }
+  }
+}
+
+fn exact_retained(
+  retained: RetainedCompile,
+  bytes: BitArray,
+) -> Result(CustodyAnswer, Error) {
+  case retained.bytes == bytes {
+    True -> Ok(RetainedAnswer(retained))
+    False -> Error(Conflict)
+  }
+}
+
+fn associate_new(
+  connection: sqlight.Connection,
+  config: Config,
+  row: sql.ResourceHeaders,
+  status: Status,
+  original: Validated,
+  ref: command.CommandRef,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+  readback: Option(NativeReadback),
+) -> Result(CustodyAnswer, Error) {
+  use Nil <- result.try(case historical(status) {
+    Some(resources.CompileReady(_)) if row.completion_size == 0 -> Ok(Nil)
+    Some(resources.LaunchReady(_)) -> Error(UnsupportedRole)
+    _ -> Error(Conflict)
+  })
+  case readback {
+    None -> Ok(NeedReadback)
+    Some(material) -> {
+      use prepared <- result.try(native_template(
+        config.enrolled,
+        original,
+        status,
+        ref,
+        key,
+        digest,
+        material.bytes,
+      ))
+      let id = native_id(key)
+      use owners <- result.try(
+        query(connection, sql.resource_native_owner(Some(id)))
+        |> result.replace_error(Corrupt),
+      )
+      use Nil <- result.try(case owners {
+        [] -> Ok(Nil)
+        _ -> Error(Conflict)
+      })
+      let encoded = journal_codec.encode(journal_codec.Admit(key, digest))
+      use Nil <- result.try(case bit_array.byte_size(encoded) == 106 {
+        True -> Ok(Nil)
+        False -> Error(Corrupt)
+      })
+      use Nil <- result.try(blob_change(
+        connection,
+        sql.associate_resource_native(
+          ref_bytes(ref),
+          Some(id),
+          encoded,
+          material.bytes,
+          row.id,
+        ),
+        fn(row) { option.lazy_unwrap(row.native_id, fn() { <<>> }) },
+        id,
+      ))
+      Ok(NativeAnswer(Associated(ref, key, digest, prepared)))
+    }
+  }
+}
+
+fn settle_new(
+  connection: sqlight.Connection,
+  row: sql.ResourceHeaders,
+  native: NativeStatus,
+  original: Validated,
+  value: completion.CompileCompletion,
+  bytes: BitArray,
+  readback: Option(NativeReadback),
+) -> Result(CustodyAnswer, Error) {
+  use association <- result.try(matching_completion(native, value))
+  case readback {
+    None -> Ok(NeedReadback)
+    Some(material) -> {
+      use Nil <- result.try(case native {
+        Associated(_, _, _, prepared) if prepared == material.prepared -> Ok(Nil)
+        _ -> Error(Conflict)
+      })
+      use Nil <- result.try(case material.terminal {
+        Some(terminal) if terminal == association.terminal -> Ok(Nil)
+        _ -> Error(Conflict)
+      })
+      use terminal_digest <- result.try(
+        wire.digest(association.terminal) |> result.replace_error(InvalidInput),
+      )
+
+      // Terminal bytes can precede reducer settlement; matching committed phase is required.
+      use Nil <- result.try(case admission.phase(material.evidence) {
+        admission.Terminal(saved, _, _)
+          | admission.Refused(saved, _)
+          | admission.Retired(saved)
+          | admission.RetiredRefusal(saved)
+          if saved == terminal_digest
+        -> Ok(Nil)
+        _ -> Error(Conflict)
+      })
+      use Nil <- result.try(
+        case completion.original(value) == original.original.key {
+          True -> Ok(Nil)
+          False -> Error(Conflict)
+        },
+      )
+      use retained <- result.try(retain_value(value, bytes))
+      use Nil <- result.try(blob_change(
+        connection,
+        sql.commit_resource_compile(
+          identity.digest_bytes(retained.digest),
+          bytes,
+          row.id,
+        ),
+        fn(row) { row.completion_digest },
+        identity.digest_bytes(retained.digest),
+      ))
+      Ok(RetainedAnswer(retained))
+    }
+  }
+}
+
+fn matching_completion(
+  native: NativeStatus,
+  value: completion.CompileCompletion,
+) -> Result(completion.NativeAssociation, Error) {
+  case native, completion.native_association(value) {
+    Associated(_, key, digest, _), Some(association)
+      if key == association.key && digest == association.digest
+    -> Ok(association)
+    _, _ -> Error(Conflict)
+  }
+}
+
+fn retain_value(
+  value: completion.CompileCompletion,
+  bytes: BitArray,
+) -> Result(RetainedCompile, Error) {
+  use hash <- result.try(wire.digest(bytes) |> result.replace_error(Corrupt))
+  Ok(RetainedCompile(value, bytes, hash))
+}
+
+fn read_for_command(
+  config: Config,
+  command: CustodyCommand,
+) -> Result(NativeReadback, Error) {
+  case command {
+    AssociateNative(_, _, key, digest) ->
+      native_readback(config.native, key, digest)
+    SettleCompile(_, value, _) -> {
+      use association <- result.try(case completion.native_association(value) {
+        Some(value) -> Ok(value)
+        None -> Error(Conflict)
+      })
+      native_readback(config.native, association.key, association.digest)
+    }
+    ObserveNative(_)
+    | ObserveCompile(_)
+    | FailPreparation(_, _, _)
+    | AcknowledgeCompile(_, _) -> Error(Corrupt)
+  }
+}
+
+fn native_readback(
+  book: native_journal.Journal,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+) -> Result(NativeReadback, Error) {
+  use items <- result.try(
+    native_journal.payloads(book, key, digest)
+    |> result.replace_error(Uncertain),
+  )
+  use request <- result.try(
+    list.find(items, fn(item) {
+      case item {
+        payload.Request(_) -> True
+        payload.Authority(_)
+        | payload.Output(_, _)
+        | payload.Terminal(_)
+        | payload.Cancellation(_) -> False
+      }
+    })
+    |> result.replace_error(Conflict),
+  )
+  use bytes <- result.try(case request {
+    payload.Request(bytes) -> Ok(bytes)
+    payload.Authority(_)
+    | payload.Output(_, _)
+    | payload.Terminal(_)
+    | payload.Cancellation(_) -> Error(Conflict)
+  })
+  use prepared <- result.try(
+    wire.decode_prepared(bytes) |> result.replace_error(InvalidInput),
+  )
+  use canonical <- result.try(
+    wire.encode_prepared(prepared) |> result.replace_error(InvalidInput),
+  )
+  use computed <- result.try(
+    wire.prepared_digest(prepared) |> result.replace_error(InvalidInput),
+  )
+  use Nil <- result.try(case canonical == bytes && computed == digest {
+    True -> Ok(Nil)
+    False -> Error(Conflict)
+  })
+
+  // Payload retention can precede Admit; only the actual journal supplies this fact.
+  use evidence <- result.try(
+    native_journal.inspect(book, key, digest)
+    |> result.map_error(fn(error) {
+      case error {
+        native_journal.Rejected(_) -> Conflict
+        _ -> Uncertain
+      }
+    }),
+  )
+  let terminal =
+    list.find(items, fn(item) {
+      case item {
+        payload.Terminal(_) -> True
+        payload.Authority(_)
+        | payload.Output(_, _)
+        | payload.Request(_)
+        | payload.Cancellation(_) -> False
+      }
+    })
+    |> option.from_result
+    |> option_terminal
+  Ok(NativeReadback(prepared, bytes, evidence, terminal))
+}
+
+fn option_terminal(value: Option(payload.Item)) -> Option(BitArray) {
+  case value {
+    Some(payload.Terminal(bytes)) -> Some(bytes)
+    _ -> None
+  }
+}
+
+fn checked_custody(
+  enrolled: enrollment.SessionEnrollment,
+  original: Validated,
+  row: sql.ResourceHeaders,
+  body: sql.ResourceBodies,
+  status: Status,
+) -> Result(CustodyRow, Error) {
+  use Nil <- result.try(
+    case
+      bit_array.byte_size(body.command_ref) == row.ref_size
+      && bit_array.byte_size(body.native_identity) == row.identity_size
+      && bit_array.byte_size(body.native_prepared) == row.prepared_size
+      && bit_array.byte_size(body.completion) == row.completion_size
+    {
+      True -> Ok(Nil)
+      False -> Error(Corrupt)
+    },
+  )
+  use native <- result.try(case body.native_identity {
+    <<>> -> Ok(Unassociated)
+    record -> {
+      use scope <- result.try(native_scope(enrolled))
+      use decoded <- result.try(
+        journal_codec.decode(record, scope) |> result.replace_error(Corrupt),
+      )
+      use pair <- result.try(case decoded {
+        journal_codec.Admit(key, digest) -> Ok(#(key, digest))
+        journal_codec.Apply(_, _, _) | journal_codec.CloseEpoch ->
+          Error(Corrupt)
+      })
+      use Nil <- result.try(
+        case
+          native_id(pair.0) == row.native_id
+          && journal_codec.encode(decoded) == record
+          && original.role == 0
+        {
+          True -> Ok(Nil)
+          False -> Error(Corrupt)
+        },
+      )
+      use ref <- result.try(decode_ref(body.command_ref))
+      use prepared <- result.try(
+        native_template(
+          enrolled,
+          original,
+          status,
+          ref,
+          pair.0,
+          pair.1,
+          body.native_prepared,
+        )
+        |> result.replace_error(Corrupt),
+      )
+      Ok(Associated(ref, pair.0, pair.1, prepared))
+    }
+  })
+  use compiled <- result.try(case body.completion {
+    <<>> -> Ok(CompilePending)
+    bytes -> {
+      use Nil <- result.try(
+        case original.role == 0 && digest(bytes) == row.completion_digest {
+          True -> Ok(Nil)
+          False -> Error(Corrupt)
+        },
+      )
+      use value <- result.try(
+        completion.decode(enrolled, original.original.key, bytes)
+        |> result.replace_error(Corrupt),
+      )
+      use Nil <- result.try(case native, completion.native_association(value) {
+        Unassociated, None
+          if row.ready_size == 0
+          && row.phase == 3
+          || row.ready_size == 0
+          && row.phase == 4
+        -> Ok(Nil)
+        Associated(_, _, _, _), Some(_) ->
+          matching_completion(native, value)
+          |> result.replace(Nil)
+          |> result.replace_error(Corrupt)
+        _, _ -> Error(Corrupt)
+      })
+      use receipt <- result.try(case row.outer_receipt {
+        0 -> Ok(ReceiptPending)
+        1 -> Ok(ReceiptAcknowledged)
+        _ -> Error(Corrupt)
+      })
+      use retained <- result.try(retain_value(value, bytes))
+      Ok(CompileRetained(retained, receipt))
+    }
+  })
+  Ok(CustodyRow(native, compiled))
+}
+
+fn native_template(
+  enrolled: enrollment.SessionEnrollment,
+  original: Validated,
+  status: Status,
+  ref: command.CommandRef,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+  bytes: BitArray,
+) -> Result(wire.Prepared, Error) {
+  use locations <- result.try(case historical(status) {
+    Some(resources.CompileReady(locations)) -> Ok(locations)
+    _ -> Error(Conflict)
+  })
+  use prepared <- result.try(
+    wire.decode_prepared(bytes) |> result.replace_error(InvalidInput),
+  )
+  use canonical <- result.try(
+    wire.encode_prepared(prepared) |> result.replace_error(InvalidInput),
+  )
+  use hash <- result.try(
+    wire.prepared_digest(prepared) |> result.replace_error(InvalidInput),
+  )
+  use scope <- result.try(native_scope(enrolled))
+  let #(operation, step) = #(
+    command.coordinates(original.original.key).1,
+    command.coordinates(original.original.key).2,
+  )
+  let #(native_operation, _) = identity.key_fields(key)
+  let #(registration, _) = enrollment.digests(enrolled)
+  use Nil <- result.try(
+    case
+      canonical == bytes
+      && bit_array.byte_size(bytes) <= 131_072
+      && hash == digest
+      && identity.key_scope(key) == scope
+      && native_operation == ids.op_id_to_string(operation)
+      && prepared.step == workspace.step_string(step)
+      && string.lowercase(
+        bit_array.base16_encode(identity.digest_bytes(prepared.registration)),
+      )
+      == registration
+      && prepared.stream == wire.Logs
+    {
+      True -> Ok(Nil)
+      False -> Error(Conflict)
+    },
+  )
+  use actual <- result.try(case prepared.request.policy {
+    Some(policy) -> Ok(policy)
+    None -> Error(InvalidInput)
+  })
+  use Nil <- result.try(
+    policy.validate(actual) |> result.replace_error(InvalidInput),
+  )
+  use Nil <- result.try(case prepared.lifetime {
+    wire.Finite(ms) if ms >= actual.limits.wall_s * 1000 -> Ok(Nil)
+    _ -> Error(Conflict)
+  })
+  use original_input <- result.try(
+    input.decode_compile(original.original.body)
+    |> result.replace_error(InvalidInput),
+  )
+  use expected <- result.try(
+    service_command.compile_from_input(
+      enrolled,
+      original.original.key,
+      original_input,
+      locations,
+      actual.limits.wall_s,
+    )
+    |> result.replace_error(Conflict),
+  )
+  let proposal = service_command.offer(expected)
+  let data = offer.data(proposal)
+
+  // The pure meet admits narrowing and added protections without re-running clearance.
+  let #(bounded, _) = policy.compose(data.requirements, actual, [])
+  use Nil <- result.try(
+    case
+      ref == offer.reference(proposal)
+      && prepared.request.argv == data.argv
+      && prepared.request.env == data.env
+      && prepared.request.cwd == data.cwd
+      && normalize_policy(bounded) == normalize_policy(actual)
+    {
+      True -> Ok(Nil)
+      False -> Error(Conflict)
+    },
+  )
+  Ok(prepared)
+}
+
+fn normalize_policy(value: policy.SandboxPolicy) -> policy.SandboxPolicy {
+  // Composition may reorder only these semantically unordered policy dimensions.
+  policy.SandboxPolicy(
+    ..value,
+    protected: list.sort(value.protected, string.compare),
+    env_allow: list.sort(value.env_allow, string.compare),
+  )
+}
+
+fn native_scope(
+  enrolled: enrollment.SessionEnrollment,
+) -> Result(identity.Scope, Error) {
+  let #(session, binding) =
+    workspace.scope_fields(enrollment.native_facts(enrolled).scope)
+  let #(selector, workspace_epoch, session_epoch) =
+    workspace.binding_fields(binding)
+  let #(executor, name) = workspace.selector_fields(selector)
+  use name <- result.try(
+    identity.workspace_id(name) |> result.replace_error(BindingMismatch),
+  )
+  use executor <- result.try(
+    identity.executor_id(executor) |> result.replace_error(BindingMismatch),
+  )
+  use session_epoch <- result.try(
+    identity.epoch(session_epoch) |> result.replace_error(BindingMismatch),
+  )
+  use workspace_epoch <- result.try(
+    identity.epoch(workspace_epoch) |> result.replace_error(BindingMismatch),
+  )
+  Ok(identity.scope(session, name, executor, session_epoch, workspace_epoch))
+}
+
+fn native_id(key: identity.RequestKey) -> BitArray {
+  bit_array.from_string(identity.key_fields(key).1)
+}
+
+fn ref_bytes(ref: command.CommandRef) -> BitArray {
+  command.encode_ref(ref) |> json.to_string |> bit_array.from_string
+}
+
+fn decode_ref(bytes: BitArray) -> Result(command.CommandRef, Error) {
+  use text <- result.try(
+    bit_array.to_string(bytes) |> result.replace_error(Corrupt),
+  )
+  use value <- result.try(json.parse(text) |> result.replace_error(Corrupt))
+  use ref <- result.try(
+    command.decode_ref(value) |> result.replace_error(Corrupt),
+  )
+  case ref_bytes(ref) == bytes {
+    True -> Ok(ref)
+    False -> Error(Corrupt)
+  }
+}
+
+fn blob_change(
+  connection: sqlight.Connection,
+  generated: #(String, List(dev.Param), decode.Decoder(a)),
+  field: fn(a) -> BitArray,
+  expected: BitArray,
+) -> Result(Nil, Error) {
+  use rows <- result.try(query(connection, generated))
+  case rows {
+    [row] ->
+      case field(row) == expected {
+        True -> Ok(Nil)
+        False -> Error(Uncertain)
+      }
+    _ -> Error(Uncertain)
+  }
+}
+
 fn phase_change(
   connection: sqlight.Connection,
   generated: #(String, List(dev.Param), decode.Decoder(a)),
@@ -1165,6 +2199,8 @@ fn query(
       case value {
         dev.ParamInt(value) -> Ok(sqlight.int(value))
         dev.ParamBitArray(value) -> Ok(sqlight.blob(value))
+        dev.ParamNullable(Some(dev.ParamBitArray(value))) ->
+          Ok(sqlight.blob(value))
         dev.ParamString(_)
         | dev.ParamFloat(_)
         | dev.ParamBool(_)
