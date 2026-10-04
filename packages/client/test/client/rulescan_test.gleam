@@ -542,6 +542,7 @@ fn answer(text: String) -> AgentMessage {
 
 fn refusing_tools() -> effects.ToolSurface {
   effects.ToolSurface(
+    recover: fn(_run, _complete) { effects.UnmanagedLocal },
     clear: fn(_query) {
       effects.ClearanceRefused(reason: "no tools in this harness")
     },

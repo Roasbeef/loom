@@ -79,6 +79,7 @@ fn runtime(seed: Int) -> api.Runtime {
           },
         ),
         tools: effects.ToolSurface(
+          recover: fn(_run, _complete) { effects.UnmanagedLocal },
           clear: fn(_) { effects.ClearanceRefused("no tools") },
           run: fn(_) { effects.ToolFailed("no tools") },
           replay_still_safe: fn(_) { False },

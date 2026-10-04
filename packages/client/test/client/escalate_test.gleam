@@ -273,6 +273,7 @@ fn start(setup: Setup) -> Harness {
           stream_handle_that_never_settles()
         }),
         tools: effects.ToolSurface(
+          recover: fn(_run, _complete) { effects.UnmanagedLocal },
           clear: fn(_query) {
             effects.ClearanceRefused(reason: "no clearance in this harness")
           },
@@ -315,6 +316,7 @@ fn bash_run(call_id: String) -> effects.ToolRun {
     ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 1))
   let arguments = bash_arguments("true", 120_000)
   effects.ToolRun(
+    result_entry: ids.mint_entry(ids.generator(clock.fixed(at: 0), seed: 991)).0,
     operation:,
     step_id: "turn-1:tools",
     source_index: 0,
@@ -1625,6 +1627,7 @@ fn code_mode_run(call_id: String, program: String) -> effects.ToolRun {
     ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 1))
   let arguments = code_mode_arguments(program)
   effects.ToolRun(
+    result_entry: ids.mint_entry(ids.generator(clock.fixed(at: 0), seed: 991)).0,
     operation:,
     step_id: "turn-1:tools",
     source_index: 0,

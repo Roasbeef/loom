@@ -79,6 +79,7 @@ pub fn local_and_remote_steering_reach_the_next_provider_context_test() {
           stream.immediate(events, fn() { Nil })
         }),
         tools: effects.ToolSurface(
+          recover: fn(_run, _complete) { effects.UnmanagedLocal },
           clear: fn(query) {
             effects.Cleared(query.call.arguments, operation.ReplaySafe)
           },

@@ -958,3 +958,36 @@ names and idle interval. Readiness does not replace lifecycle: a finished or
 lost record may retain its endpoint declaration. Peer entries carry the core
 `PeerOrigin` variant through the same durable conversation codec as human
 entries; grant and receipt checks remain in the existing admission transaction.
+
+## Owner remote tool recovery (protocol 067)
+
+`effects.ToolRun.result_entry` carries the already reserved durable result ID
+to the live owner adapter. `ToolSurface.recover` runs before orphan policy on
+a reaper-owned effect, preserving operation, step, source index, call and
+persisted effective arguments and clearing every grant. It returns the closed
+`ToolRecovery`: unmanaged local, exact recovered outcome, pending reconciliation
+or unknown with retained evidence. Only unmanaged calls reach the previous
+local orphan/replay policy. Live tool callback loss also consults recovery
+before synthesizing failure; its unmanaged fallback retains the previous live
+failure behavior.
+
+A pending effect waits on a completion/cancellation selector. The independently
+supervised owner custodian must persist final bytes before `RecoveryCompleted`
+or retain evidence before `RecoveryUnknown`. Checkpoint ticks see the live
+original token, so they cannot redispatch that request or ask the model to poll.
+Before waiting, recovery also reads the operation's durable control state. A
+pending verdict under `CancelRequested` becomes unknown immediately. This
+prevents callback loss after the abort sweep, or restart after a persisted
+abort, from creating a fresh observer that nobody will cancel.
+
+Completions use the existing durable settlement and reserved-entry commit path;
+a duplicate wake cannot settle twice. Recovered completed messages are checked
+against the original tool call ID and name.
+
+`encode_tool_outcome` and `decode_tool_outcome` preserve the complete outcome
+through core/json and the existing core/message codec, with an outer byte
+bound before decoding. Storage sees opaque payload bytes and has no runtime
+dependency. Production constructor wiring, hashing, owner service supervision,
+transport reconciliation and collection after verified session readback belong
+to the client assembly. Runtime tests exercise actual session and custody SQLite
+across callback loss, strand restart, child-only unknown and pending completion.
