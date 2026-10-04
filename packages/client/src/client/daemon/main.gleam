@@ -741,9 +741,7 @@ fn run(
       )
       case config.view {
         ViewOn ->
-          io.println(
-            "loomd: web view on; run `loom ui --session <id>` for a link",
-          )
+          io.println("loomd: web view on; run `loom ui` for your home page")
         ViewOff -> Nil
       }
       log.info(logger, "daemon.listening", [
@@ -785,6 +783,9 @@ fn web_view(
               register,
               ceiling,
             )
+          },
+          home: fn(request, attachment, open, ceiling) {
+            ui_socket.upgrade_home(daemon, request, attachment, open, ceiling)
           },
         ),
       )

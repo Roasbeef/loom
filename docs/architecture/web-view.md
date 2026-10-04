@@ -240,12 +240,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:209`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:242`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:1090`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:1301`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -725,6 +725,39 @@ from the session page). It is the last child of the Session pane, at
   invitations an hour for its credential, and each is a membership that
   outlives the page; 051's addendum prices that.
 
+## The home page
+
+Protocol-change/065 and `docs/design-notes/web-workspace-mode.md` add a page
+bound to no session: the principal's home, which lists the sessions the
+credential may see, grouped by workspace, with resident and saved marked.
+`loom ui` with no `--session` sends `ui.link` without a `session_id`
+(an operator's page unless `--observe`; `loom ui --session ID` keeps its
+observer default) and prints `/ui/home?ticket=<t>`.
+
+A `ui_sessions.Grant` now names a `Scope` (`Session(id)` or `Home`) and a
+`Reach` (`OneSession` or `Workspace`; only a later change reads it). The
+scope is part of redemption: a session's ticket at the home exchange and a
+home's at a session's are each spent and refused (`OtherScope`). The page cap
+(`max_pages`) is counted per principal and per scope, and a home lives
+`ui_sessions.session_ms`, as a session page does. The router adds `GET /ui/home`, `GET /ui/p/<key>/home`
+and `GET /ui/p/<key>/home/ws`, checked in the session routes' order against a
+`Home` grant (`server.home_grant`); there is no membership check, since there
+is no session. One function (`server.entered`) builds the exchange response
+for both kinds of ticket.
+
+The socket (`ui_socket.upgrade_home`) shares `websocket` with the session
+page and starts `web_view/home` with no relay. The component draws the A2
+frame with the sidebar (`sidebar.home`, a "Home" entry above text rows), a
+table per workspace (`view/home_table`), and no strand panel (the frame class
+`loom-home` hides the panel column in the stylesheet). It reads the sessions
+with the page's credential digest when it opens and every 30 s
+(`ui_socket.home_listing`); that read is also the page's check: a UI session
+that ended or a credential that no longer authenticates answers `Closed`, the
+page draws the home's words (`ending.home_headline`, `home_advice`) and
+the socket closes. The read runs in the component's process, as the
+sidebar's does. The view attaches no handler and the socket admits no browser
+frame (`ui_socket.home_accepts`).
+
 ## Expanding a row
 
 The terminal's `Ctrl+g` expands every row at once; the page lets the reader
@@ -947,6 +980,7 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/page.gleam` | The shell, the exchange page, the two scripts, the stylesheet, the keyed paths and the content security policy. |
 | `packages/client/src/client/daemon/server.gleam` | `/ui` routing and its check order, `ui.link`, and the `hello` `ui` field. |
 | `packages/client/src/client/daemon/ui_http.gleam` | Pure request checks and response headers: route, host, `Sec-Fetch-Site`, origin, cookies. |
+| `packages/web_view/src/web_view/home.gleam`, `view/home_bar.gleam`, `view/home_table.gleam` | The home page's component, top bar and per-workspace tables (protocol-change/065). |
 | `packages/client/src/client/daemon/ui_sessions.gleam` | The ticket and UI-session actor: mint, single-use redeem, lookup, key and nonce comparison, sweep, and the page-minted invitations' allowance (three an hour per credential). |
 | `packages/client/src/client/daemon/ui_socket.gleam` | The page's WebSocket: permit custody, the component chosen by role (observer, member operator, owner), frame filtering by role, the session ticket and the invitation the daemon makes for a page, shutdown. |
 | `packages/client/src/client/daemon/ui_relay.gleam` | The relay into the gateway, the role cap, and the four ways a page ends. |

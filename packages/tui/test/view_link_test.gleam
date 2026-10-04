@@ -1,5 +1,6 @@
 import gleam/erlang/process.{type Subject}
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/string
 import tui
 import tui/daemon/protocol as control_protocol
@@ -31,11 +32,11 @@ fn deliver_with(
 
 pub fn view_arguments_parse_test() {
   let assert Ok(printed) = tui.view_request(["--session", "s"])
-  assert printed.session == "s"
+  assert printed.session == Some("s")
   assert printed.delivery == view_link.PrintLink
 
   let assert Ok(opened) = tui.view_request(["--open", "--session", "s"])
-  assert opened.session == "s"
+  assert opened.session == Some("s")
   assert opened.delivery == view_link.OpenInBrowser
 
   // `--open` has no value, so it must not take the next flag with it, and
@@ -45,13 +46,63 @@ pub fn view_arguments_parse_test() {
   assert request.delivery == view_link.OpenInBrowser
   assert request.options.state_directory == "/state"
 
-  let assert Error(reason) = tui.view_request(["--open"])
-    as "a link names a session"
-  assert string.contains(reason, "needs --session")
-  let assert Error(_) = tui.view_request(["--session", "--open"])
+  // No `--session` is the home, which opens like any other link.
+  let assert Ok(home) = tui.view_request(["--open"])
+  assert home.session == None
+  assert home.delivery == view_link.OpenInBrowser
+
+  // A `--session` with nothing after it is a forgotten id, and never the home.
+  let assert Error(reason) = tui.view_request(["--session", "--open"])
     as "--open is not a session id"
+  assert string.contains(reason, "needs a session id")
+  let assert Error(_) = tui.view_request(["--open", "--session"])
+    as "a trailing --session has no id"
   let assert Error(_) = tui.view_request(["--session", "s", "--opened", "x"])
     as "an unknown flag is refused, not taken for --open"
+}
+
+// Protocol-change/065, the third question: the home is a link for oneself, so
+// it is an operator's page unless `--observe` asks for a read-only one, while
+// a session's link keeps the observer default because it is the one a person
+// hands out. `--operate` and `--observe` together are refused.
+pub fn the_home_defaults_to_an_operators_page_test() {
+  let assert Ok(home) = tui.view_request([])
+  assert home.session == None
+  assert home.page == control_protocol.OperatorPage
+  assert home.delivery == view_link.PrintLink
+
+  let assert Ok(observed) = tui.view_request(["--observe"])
+  assert observed.session == None
+  assert observed.page == control_protocol.ObserverPage
+
+  let assert Ok(operated) = tui.view_request(["--operate", "--open"])
+  assert operated.session == None
+  assert operated.page == control_protocol.OperatorPage
+
+  let assert Ok(session) = tui.view_request(["--session", "s"])
+  assert session.page == control_protocol.ObserverPage
+  let assert Ok(watching) = tui.view_request(["--observe", "--session", "s"])
+  assert watching.page == control_protocol.ObserverPage
+  let assert Ok(driving) = tui.view_request(["--session", "s", "--operate"])
+  assert driving.page == control_protocol.OperatorPage
+
+  let assert Error(reason) = tui.view_request(["--operate", "--observe"])
+  assert string.contains(reason, "not both")
+}
+
+// `loom ui` and `loom --ui` with the daemon options around them reach the
+// same parser without a session, and the daemon options still apply.
+pub fn the_home_takes_the_daemon_options_in_any_order_test() {
+  let assert Ok(home) =
+    tui.launch_view(["ui", "--state-dir", "/s", "--open", "--observe"])
+  assert home.session == None
+  assert home.options.state_directory == "/s"
+  assert home.page == control_protocol.ObserverPage
+  assert home.delivery == view_link.OpenInBrowser
+
+  let assert Ok(spelled) = tui.launch_view(["--state-dir", "/s", "--ui"])
+  assert spelled.session == None
+  assert spelled.page == control_protocol.OperatorPage
 }
 
 pub fn view_page_and_delivery_parse_together_test() {
@@ -72,31 +123,32 @@ pub fn view_page_and_delivery_parse_together_test() {
     tui.view_request(["--open", "--operate", "--session", "s"])
   assert swapped.page == control_protocol.OperatorPage
   assert swapped.delivery == view_link.OpenInBrowser
-  assert swapped.session == "s"
+  assert swapped.session == Some("s")
 }
 
 // `loom ui` is the command and `--ui` its older spelling. Both reach the one
 // parser, so each takes the daemon options in any order around it.
 pub fn ui_subcommand_routes_to_the_view_test() {
   let assert Ok(plain) = tui.launch_view(["ui", "--session", "x"])
-  assert plain.session == "x"
+  assert plain.session == Some("x")
   assert plain.page == control_protocol.ObserverPage
   assert plain.delivery == view_link.PrintLink
 
   let assert Ok(operated) =
     tui.launch_view(["ui", "--state-dir", "/s", "--session", "x", "--operate"])
-  assert operated.session == "x"
+  assert operated.session == Some("x")
   assert operated.options.state_directory == "/s"
   assert operated.page == control_protocol.OperatorPage
 
-  let assert Error(reason) = tui.launch_view(["ui", "--state-dir", "/s"])
-    as "a link names a session"
-  assert string.contains(reason, "loom ui needs --session")
+  let assert Error(reason) =
+    tui.launch_view(["ui", "--state-dir", "/s", "--session"])
+    as "a --session with no id is refused, not read as the home"
+  assert string.contains(reason, "loom ui needs a session id")
 }
 
 pub fn ui_alias_reads_options_in_any_order_test() {
   let assert Ok(first) = tui.launch_view(["--ui", "--session", "x"])
-  assert first.session == "x"
+  assert first.session == Some("x")
 
   // The live drive that motivated the subcommand: the daemon options came
   // before `--ui`, and the launcher refused `--ui` as an unknown local option.
@@ -104,7 +156,7 @@ pub fn ui_alias_reads_options_in_any_order_test() {
     tui.launch_view([
       "--state-dir", "/s", "--config", "/s/loom.toml", "--ui", "--session", "x",
     ])
-  assert late.session == "x"
+  assert late.session == Some("x")
   assert late.options.state_directory == "/s"
   assert late.options.config == "/s/loom.toml"
 
@@ -112,9 +164,6 @@ pub fn ui_alias_reads_options_in_any_order_test() {
     tui.launch_view(["--session", "x", "--open", "--ui", "--operate"])
   assert opened.delivery == view_link.OpenInBrowser
   assert opened.page == control_protocol.OperatorPage
-
-  let assert Error(reason) = tui.launch_view(["--state-dir", "/s", "--ui"])
-  assert string.contains(reason, "needs --session")
 
   let assert Error(_) = tui.launch_view(["--state-dir", "/s", "--session", "x"])
     as "without ui or --ui the launch is the terminal's, not the view's"

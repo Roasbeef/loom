@@ -70,23 +70,23 @@ check anywhere.
 
 ### 1.1 What exists
 
-A UI session is a `Grant` (`ui_sessions.gleam:127`) of one session, one
+A UI session is a `Grant` (`ui_sessions.gleam:162`) of one session, one
 credential digest, one principal and one ceiling, kept with the digests of
 the page's cookie, key and nonce in one actor. A ticket for it is minted
-only by `UiLink` (`client/daemon/server.gleam:1534`) over the principal's own
+only by `UiLink` (`client/daemon/server.gleam:1376`) over the principal's own
 control connection, after `session_authority`
 (`client/daemon/manager.gleam:936`) finds a membership, and by a page
-switching to another session (`ticket_for` (`ui_socket.gleam:735`)). The
-exchange redeems it once (`redeem` (`ui_sessions.gleam:367`)), the page and
+switching to another session (`ticket_for` (`ui_socket.gleam:760`)). The
+exchange redeems it once (`redeem` (`ui_sessions.gleam:403`)), the page and
 its socket are re-authorized on every request (`page_grant`
 (`client/daemon/server.gleam:356`)), and every route is checked in 051's
-order: `loopback_host` (`ui_http.gleam:138`), then `navigation_allowed`
-(`ui_http.gleam:202`) for a page, `origin_matches` (`ui_http.gleam:217`) for
+order: `loopback_host` (`ui_http.gleam:156`), then `navigation_allowed`
+(`ui_http.gleam:202`) for a page, `origin_matches` (`ui_http.gleam:235`) for
 the socket, then the cookie under the key. The cookie's `Path` is the key's
-(`set_cookie` (`ui_http.gleam:265`)), so it reaches no other page and no other
+(`set_cookie` (`ui_http.gleam:283`)), so it reaches no other page and no other
 loopback port. A UI session lives eight hours (`session_ms`
 (`ui_sessions.gleam:79`)); a chain of switches ends with the page it began
-from (`mint_before` (`ui_sessions.gleam:306`)).
+from (`mint_before` (`ui_sessions.gleam:342`)).
 
 The operator page already lists the principal's sessions in a sidebar,
 read with the page's credential digest (`listed_for`
@@ -383,7 +383,7 @@ their bearer, since a login is not a claim.
 | `POST /ui/claim` | host, `Sec-Fetch-Site`, body at most 1 KiB, claim redeems | the enter page, with the login cookie and nonce (section 5.3) |
 
 A `Home` ticket presented at a session's exchange, or a session ticket at
-the home's, is spent and refused, as `OtherSession` (`ui_sessions.gleam:184`)
+the home's, is spent and refused, as `OtherScope` (`ui_sessions.gleam:216`)
 spends one presented against the wrong session today. The scope is part of
 the redemption, in the same actor message, so the property 053 wanted from a
 separate admin ticket table (a session ticket never redeems at the admin
@@ -397,7 +397,7 @@ is eight hours, and only the login is thirty days.
 
 ### 1.6 What the home draws
 
-The home is the A2 shell (`view` (`web_view/view/shell.gleam:91`)) with the
+The home is the A2 shell (`view` (`web_view/view/shell.gleam:100`)) with the
 same four children in the same order, so the two pages feel like one app
 and the stylesheet needs no second layout:
 
@@ -548,7 +548,7 @@ the registry's capacity and `max_pages`, and prompt them at operator role.
 That is a new agent in a workspace the owner already runs agents in, at
 the sandbox policy that workspace's registrations carry. It can fill the
 catalogue with sessions; a count per credential per hour, as
-`reserve_invite` (`ui_sessions.gleam:332`) keeps for invitations, bounds it
+`reserve_invite` (`ui_sessions.gleam:368`) keeps for invitations, bounds it
 (065 proposes ten an hour). The daemon logs no line for a creation today;
 065 adds one, `daemon.session_created` with the principal's ID, so a run of
 creations from a stolen page is visible in `daemon.log`.
@@ -581,7 +581,7 @@ and the epoch the page was admitted in:
 1. the page is open and its ceiling is Operator;
 2. `session_authority` finds Owner or Operator authority in the target: an
    observer member is refused with the words "ask an operator to resume
-   it", the check `OpenSession` (`client/daemon/server.gleam:1630`) makes;
+   it", the check `OpenSession` (`client/daemon/server.gleam:1398`) makes;
 3. `open` (`client/daemon/manager.gleam:991`) is called, which is the same
    registry turn `sessions.open` runs: capacity, `Reserved`, archived, the
    domain slot;

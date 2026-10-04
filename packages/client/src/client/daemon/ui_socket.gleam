@@ -57,12 +57,20 @@
 //// decides which is which, one closed type for both the words and the code
 //// (protocol-change/051, the addendum on an ended page).
 ////
+//// The home page (protocol-change/065) is the other page this socket serves.
+//// It is bound to no session, so `upgrade_home` starts `web_view/home`
+//// with no relay, over the same `websocket`, and its reads of the principal's
+//// sessions (`home_listing`) are also what end it: a page whose UI session
+//// ended or whose credential was revoked is told so by its next read.
+////
 //// ## Flow
 ////
-//// `upgrade` → `admit` → `start_page` → `serve` → `closing`
+//// `upgrade` → `websocket` → `admit` → `start_page` → `serve` → `closing`
 ////
 //// 1. `upgrade` reads the page's `role_of` its attachment, builds the relay
-////    `Attach` and the invitation capability, and opens the websocket.
+////    `Attach` and the invitation capability, and opens `websocket`.
+////    `upgrade_home` opens the same `websocket` for a home, whose `admit_home`
+////    starts its component through `launch` in place of `start_page`.
 //// 2. The socket's first turn handles `Admit`, which calls `admit`: it takes
 ////    the permit's custody with `root.transfer`, then builds the component's
 ////    transport from `listed_for`, `opened_for` and `ticket_for`.
@@ -118,6 +126,7 @@ import storage/access
 import storage/catalogue
 import web_view/component
 import web_view/ending
+import web_view/home
 import web_view/invites
 import web_view/operator_page
 import web_view/page
@@ -373,6 +382,36 @@ pub fn upgrade(
     invite_capability(role, fn(chosen) {
       invite_for(attachment, tickets, open, address, chosen)
     })
+  websocket(request, limit, settled, fn(signals) {
+    admit(
+      daemon,
+      attachment,
+      attach,
+      tickets,
+      open,
+      register,
+      invite,
+      expected,
+      signals,
+      settled,
+    )
+  })
+}
+
+// The WebSocket both kinds of page run on: a page of a session
+// (`upgrade`) and the home (`upgrade_home`). `admit` is what the socket does
+// in its first handler turn, which differs: it takes the permit's custody and
+// starts the component the page calls for. Everything after that is the same
+// for both: the browser's frames go to the component's `forward`, the
+// component's frames go to the browser, and an ending closes the socket.
+// The HTTP process waits on `settled` for the custody transfer to have been
+// attempted, so its release of the permit cannot overtake the transfer.
+fn websocket(
+  request: Request(mist.Connection),
+  limit: Int,
+  settled: process.Subject(Nil),
+  admit: fn(process.Subject(Signal)) -> mist.Next(Phase, Signal),
+) -> Response(mist.ResponseData) {
   let response =
     mist.websocket_with_options(
       request:,
@@ -390,19 +429,7 @@ pub fn upgrade(
       },
       handler: fn(phase, event, socket) {
         case phase, event {
-          Pending(signals), mist.Custom(Admit) ->
-            admit(
-              daemon,
-              attachment,
-              attach,
-              tickets,
-              open,
-              register,
-              invite,
-              expected,
-              signals,
-              settled,
-            )
+          Pending(signals), mist.Custom(Admit) -> admit(signals)
 
           // Nothing can reach a pending socket before its own `Admit`; the
           // arms are spelled out so a change to that order fails closed.
@@ -468,6 +495,177 @@ pub fn upgrade(
     mist.Bytes(_) | mist.Chunked | mist.File(..) | mist.ServerSentEvents -> Nil
   }
   response
+}
+
+/// Upgrades one checked home request to the home component's socket
+/// (protocol-change/065).
+///
+/// The home is bound to no session, so there is no relay, no lane and no
+/// gateway: the socket starts `web_view/home`, which asks the daemon for the
+/// principal's sessions when it opens and on a timer, and draws them. The
+/// permit is an observer's, whose frame limit is the one this socket takes,
+/// since the home's view attaches no handler and `home_accepts` admits no
+/// browser frame at all.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.upgrade_home(root, request, attachment, open, access.Operator)
+/// ```
+pub fn upgrade_home(
+  daemon: root.Root(instance),
+  request: Request(mist.Connection),
+  attachment: server.HomeAttachment(instance),
+  open: fn() -> Result(Int, Nil),
+  ceiling: access.Role,
+) -> Response(mist.ResponseData) {
+  let settled = process.new_subject()
+  let limit = root.message_limit(root.Observer)
+  websocket(request, limit, settled, fn(signals) {
+    admit_home(daemon, attachment, open, ceiling, signals, settled)
+  })
+}
+
+/// The browser messages a home page takes: none. The home draws no handler,
+/// so no event can name one, and every frame is dropped before it costs the
+/// component a render. The component's own messages are sent from this side
+/// of the socket, which a browser frame cannot produce.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !ui_socket.home_accepts("{\"kind\":1,\"name\":\"click\"}")
+/// ```
+pub fn home_accepts(_frame: String) -> Bool {
+  False
+}
+
+// Takes the permit in the socket's first handler turn, as `admit` does, and
+// then starts the home component with the read of the principal's sessions
+// as it is: a closure over the attachment, run in the component's process.
+fn admit_home(
+  daemon: root.Root(instance),
+  attachment: server.HomeAttachment(instance),
+  open: fn() -> Result(Int, Nil),
+  ceiling: access.Role,
+  signals: process.Subject(Signal),
+  settled: process.Subject(Nil),
+) -> mist.Next(Phase, Signal) {
+  let transferred = root.transfer(daemon, attachment.permit, within: 1000)
+  process.send(settled, Nil)
+  let start =
+    home.Start(
+      name: attachment.principal.display_name,
+      ceiling: home_ceiling(ceiling),
+      refresh_ms: home.refresh_ms,
+      sessions: fn() {
+        home_listing(attachment, open, fn(reason) {
+          process.send(signals, Ended(reason))
+        })
+      },
+    )
+  let started = case transferred {
+    Error(reason) -> {
+      upgrade_log.closed_early(upgrade_log.Page, "transfer", reason)
+      Error(Nil)
+    }
+    Ok(Nil) ->
+      launch(home.app(), start, home_accepts)
+      |> result.map_error(fn(_) {
+        upgrade_log.closed_early(
+          upgrade_log.Page,
+          "start_page",
+          "the component did not start",
+        )
+      })
+  }
+  case started {
+    // The permit transfer was slow or the component's start ran over its
+    // budget: the close is one the client runtime retries.
+    Error(Nil) -> closing(ending.close(ending.DaemonNotReady))
+    Ok(#(_, page)) -> serving(page, signals)
+  }
+}
+
+// The ceiling a home page was minted with, as the home words it.
+fn home_ceiling(ceiling: access.Role) -> home.Ceiling {
+  case ceiling {
+    access.Operator -> home.OperatorCeiling
+    access.Observer -> home.ObserverCeiling
+  }
+}
+
+// Why a read of the home's sessions gave no list.
+type Failure {
+  // The page can no longer be served, for this reason.
+  Gone(reason: ending.Ending)
+
+  // The registry did not answer. The page keeps the list it has.
+  Unreadable
+}
+
+/// The home's list of sessions, read as the page's principal with the digest
+/// of the credential the page was admitted under. A member is listed only the
+/// sessions they hold a membership in, an owner every active session, and the
+/// catalogue's own fields are all an entry carries (`listed_entry`).
+///
+/// The read is the home's frame check as well. A page whose UI session has
+/// ended, or whose credential no longer authenticates, is not listed anything:
+/// the answer is `Closed`, and `ended` tells the socket, which closes after
+/// the component has drawn why. A registry that does not answer is `Unread`,
+/// which keeps the page's last list and ends nothing, since a slow registry
+/// is no reason to sign a person out.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.home_listing(attachment, open, ended) == home.Listed([])
+/// ```
+@internal
+pub fn home_listing(
+  attachment: server.HomeAttachment(instance),
+  open: fn() -> Result(Int, Nil),
+  ended: fn(ending.Ending) -> Nil,
+) -> home.Listing {
+  case home_read(attachment, open) {
+    Ok(entries) -> home.Listed(entries)
+    Error(Unreadable) -> home.Unread
+    Error(Gone(reason)) -> {
+      ended(reason)
+      home.Closed(reason)
+    }
+  }
+}
+
+// The two steps of a home's read, each made afresh: the page is live, and the
+// catalogue's authorized page is read with the credential, which authenticates
+// it first.
+fn home_read(
+  attachment: server.HomeAttachment(instance),
+  open: fn() -> Result(Int, Nil),
+) -> Result(List(sessions.Entry), Failure) {
+  use _ <- result.try(open() |> result.replace_error(Gone(ending.PageEnded)))
+  use #(_, views) <- result.map(
+    manager.authorized_page(attachment.registry, attachment.digest, after: "")
+    |> result.map_error(authentication_failure),
+  )
+  list.map(views, listed_entry)
+}
+
+// The catalogue holding no such credential is a revoked one. Every other
+// refusal is the registry failing to answer, which is not the person's doing.
+fn authentication_failure(error: manager.Error) -> Failure {
+  case error {
+    manager.Catalogue(catalogue.Missing) -> Gone(ending.AccessRevoked)
+    manager.Catalogue(_)
+    | manager.NotInitialized
+    | manager.SessionArchived
+    | manager.Capacity
+    | manager.Unavailable
+    | manager.StaleOperation
+    | manager.StartFailed(_)
+    | manager.Preparation(_) -> Unreadable
+  }
 }
 
 /// What the admitted page is: an observer's, an operator's, or an operator's
@@ -598,16 +796,23 @@ fn admit(
 
     // The page's images are readable from the moment its component is, and a
     // reload's new socket replaces the reader the old one left.
-    Ok(Page(forward:, shutdown:, frames:, images:)) -> {
-      register(images)
-      mist.continue(Serving(forward, shutdown, signals))
-      |> mist.with_selector(
-        process.new_selector()
-        |> process.select(signals)
-        |> process.merge_selector(process.map_selector(frames, Client)),
-      )
+    Ok(page) -> {
+      register(page.images)
+      serving(page, signals)
     }
   }
+}
+
+// A started page as the socket serves it: its browser frames go to the
+// component, and what the component sends, like a signal of the socket's own,
+// arrives in this process's mailbox.
+fn serving(page: Page, signals: process.Subject(Signal)) {
+  mist.continue(Serving(page.forward, page.shutdown, signals))
+  |> mist.with_selector(
+    process.new_selector()
+    |> process.select(signals)
+    |> process.merge_selector(process.map_selector(page.frames, Client)),
+  )
 }
 
 // Ends the page's socket with the close code the ending calls for. Mist
@@ -753,13 +958,18 @@ pub fn ticket_for(
       |> result.replace_error(sessions.Unavailable),
     )
     use _ <- result.try(running(view.status))
+
+    // The switch's page keeps the reach every session page has until a home
+    // can open one (protocol-change/065, the second pull request): a page
+    // that came from a home will carry its own reach onto the ticket.
     ui_sessions.mint_before(
       tickets,
       ui_sessions.Grant(
-        session_id: target,
+        scope: ui_sessions.Session(target),
         credential: attachment.digest,
         principal: attachment.principal.id,
         ceiling:,
+        reach: ui_sessions.OneSession,
       ),
       until,
     )
@@ -1100,11 +1310,9 @@ pub fn start_page(
   }
 }
 
-// Starts one component and returns what the socket needs of it: how a
-// browser frame reaches it, how to shut it down, and a selector over the
-// subject its client messages arrive on, encoding each as it is received.
-// `admits` says which browser frames reach it, and `ask` builds the message
-// that asks it for an image, in the application's own message type.
+// Starts a session's component and returns what the socket needs of it,
+// including the reader of its images: the message that asks the component for
+// one, `ask`, is built in the application's own message type.
 fn serve(
   app: lustre.App(component.Start(ui_relay.Relay), model, message),
   start: component.Start(ui_relay.Relay),
@@ -1112,51 +1320,66 @@ fn serve(
   ask: fn(String, Int, process.Subject(Result(transcript_image.Image, Nil))) ->
     message,
 ) -> Result(Page, Nil) {
-  case lustre.start_server_component(app, start) {
-    Error(_) -> Error(Nil)
-    Ok(runtime) -> {
-      // The component's messages for the browser arrive on a subject this
-      // socket owns, and are written from this process's own turns.
-      let client = process.new_subject()
-      lustre.send(runtime, server_component.register_subject(client))
-      let encoded =
-        process.new_selector()
-        |> process.select_map(client, server_component.client_message_to_json)
-      let forward = fn(text) {
-        case admits(text) {
-          False -> Nil
-          True ->
-            case json.parse(text, server_component.runtime_message_decoder()) {
-              Ok(message) -> lustre.send(runtime, message)
-              Error(_) -> Nil
-            }
-        }
-      }
+  use #(runtime, page) <- result.map(launch(app, start, admits))
 
-      // The reader belongs to this socket's process, which owns the
-      // component and ends with it. A request that arrives after the socket
-      // ended is refused without a message, and one that arrives while it is
-      // up waits for the component's own answer on a subject of the asking
-      // process.
-      let socket = process.self()
-      let images = fn(ref, position) {
-        case process.is_alive(socket) {
-          False -> Error(Nil)
-          True -> {
-            let reply = process.new_subject()
-            lustre.send(runtime, lustre.dispatch(ask(ref, position, reply)))
-            process.receive(reply, image_wait_ms) |> result.flatten
-          }
-        }
+  // The reader belongs to this socket's process, which owns the component and
+  // ends with it. A request that arrives after the socket ended is refused
+  // without a message, and one that arrives while it is up waits for the
+  // component's own answer on a subject of the asking process.
+  let socket = process.self()
+  let images = fn(ref, position) {
+    case process.is_alive(socket) {
+      False -> Error(Nil)
+      True -> {
+        let reply = process.new_subject()
+        lustre.send(runtime, lustre.dispatch(ask(ref, position, reply)))
+        process.receive(reply, image_wait_ms) |> result.flatten
       }
-      Ok(Page(
-        forward:,
-        shutdown: fn() { lustre.send(runtime, lustre.shutdown()) },
-        frames: encoded,
-        images:,
-      ))
     }
   }
+  Page(..page, images:)
+}
+
+// Starts one component and returns its runtime and what the socket needs of
+// it: how a browser frame reaches it, how to shut it down, and a selector over
+// the subject its client messages arrive on, encoding each as it is received.
+// `admits` says which browser frames reach it. The page has no image reader
+// until `serve` makes one, and the home never does.
+fn launch(
+  app: lustre.App(arguments, model, message),
+  start: arguments,
+  admits: fn(String) -> Bool,
+) -> Result(#(lustre.Runtime(message), Page), Nil) {
+  use runtime <- result.map(
+    lustre.start_server_component(app, start) |> result.replace_error(Nil),
+  )
+
+  // The component's messages for the browser arrive on a subject this socket
+  // owns, and are written from this process's own turns.
+  let client = process.new_subject()
+  lustre.send(runtime, server_component.register_subject(client))
+  let encoded =
+    process.new_selector()
+    |> process.select_map(client, server_component.client_message_to_json)
+  let forward = fn(text) {
+    case admits(text) {
+      False -> Nil
+      True ->
+        case json.parse(text, server_component.runtime_message_decoder()) {
+          Ok(message) -> lustre.send(runtime, message)
+          Error(_) -> Nil
+        }
+    }
+  }
+  #(
+    runtime,
+    Page(
+      forward:,
+      shutdown: fn() { lustre.send(runtime, lustre.shutdown()) },
+      frames: encoded,
+      images: fn(_, _) { Error(Nil) },
+    ),
+  )
 }
 
 // The same check a terminal socket makes, with the digest of the credential

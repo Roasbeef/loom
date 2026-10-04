@@ -71,6 +71,20 @@ page keys and nonces, and the relay into the session's gateway.
   the shared step's commands read `active_strand`. A prompt the daemon hands
   back for any strand of the session is kept, and the notice names the
   strand it was held for when that is not the one on screen.
+- **The home page** (protocol-change/065). `web_view/home` is a server
+  component bound to no session: `Start(name, ceiling, refresh_ms, sessions)`
+  with `sessions: fn() -> Listing` (`Listed(entries) | Unread | Closed(ending)`),
+  read when the timer is wired and every `refresh_ms` (`home.refresh_ms`,
+  30 s), in the component's process. `Closed` ends the page (`Status`:
+  `Connecting | Connected | Ended`) and stops the reads; `Unread` keeps the
+  last list. The view is `shell.view(shell.Home, ...)`: `view/home_bar`,
+  `sidebar.home(groups)` (a "Home" entry, text rows), `view/home_table` (a
+  table per workspace: name, resident or saved in words, created in UTC) and
+  no panel; the stylesheet hides the panel column for the frame class
+  `loom-home`. It attaches no handler. `ending.home_headline` and
+  `home_advice`, `ended.home`, `page.home_shell`, `home_path`,
+  `home_exchange_path`, `home_refusal` word and address it. `home_test` reads
+  all of it.
 - **The session sidebar.** `web_view/sessions` holds `Entry`, `Residency`
   (`Live | Saved`), `Group` and `grouped(entries, current)` (the current
   session's workspace first, then by newest session, sessions newest first,
