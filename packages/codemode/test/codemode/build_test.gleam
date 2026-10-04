@@ -14,6 +14,8 @@ import codemode/enforcement
 import codemode/identity
 import codemode/physical
 import codemode/seed
+import codemode/vet
+import codemode/vet/policy as vet_policy
 import core/clock
 import core/ids
 import gleam/list
@@ -250,4 +252,171 @@ pub fn other_native_files_do_not_join_the_artifact_hash_test() {
   let assert Ok(after_extra) = build.fingerprint_directory(root)
     as "the admitted set still has an address"
   assert original == after_extra
+}
+
+// These on-disk products reach the real flattening and fingerprint path. A
+// terminal guard removed by mutation must produce success, rather than fail
+// later because the fixture lacks the pinned entry or package directories.
+fn produced_root(name: String) -> String {
+  let root = fresh_dir(name)
+  let package = root <> "/build/dev/erlang/" <> compile.package_name <> "/ebin"
+  let assert Ok(Nil) = simplifile.create_directory_all(package)
+    as "the actual product package must exist"
+  let assert Ok(here) = simplifile.current_directory()
+    as "the fixture compiler directory must be available"
+  let fixture = here <> "/build/dev/erlang/codemode/ebin/loom_satellite.beam"
+  let assert Ok(Nil) =
+    simplifile.copy_file(
+      fixture,
+      package <> "/" <> compile.entry_module <> ".beam",
+    )
+    as "the actual product must contain the genuine compiled entry"
+  root
+}
+
+fn successful_native_result() -> exec.ExecResult {
+  exec.ExecResult(
+    code: 0,
+    signal: 0,
+    stdout_bytes: 0,
+    stderr_bytes: 0,
+    stdout_truncated: False,
+    stderr_truncated: False,
+    enforcement: ["seatbelt", "skip:rlimit_as: platform"],
+    degraded: False,
+    wall_ms: 12,
+    timed_out: False,
+    cancelled: False,
+  )
+}
+
+fn collected(result: exec.ExecResult) -> tool.Collected {
+  tool.Collected(
+    stdout: <<>>,
+    stderr: <<>>,
+    stdout_truncated: False,
+    stderr_truncated: False,
+    outcome: broker.CallExited(result),
+  )
+}
+
+pub fn successful_settlement_flattens_and_fingerprints_actual_products_test() {
+  let root = produced_root("finalize-success")
+  let built = build.finalize(root, collected(successful_native_result()))
+  let assert Ok(products) = built.result
+    as "the normal native success must produce the actual artifact"
+  assert products.beam_dir == root <> "/" <> build.beam_directory
+  let assert Ok(here) = simplifile.current_directory()
+    as "the original compiled fixture must remain available"
+  assert simplifile.read_bits(products.beam_dir <> "/loom_satellite.beam")
+    == simplifile.read_bits(
+      here <> "/build/dev/erlang/codemode/ebin/loom_satellite.beam",
+    )
+  assert build.fingerprint_directory(products.beam_dir)
+    == Ok(products.manifest_hash)
+  assert built.enforcement
+    == enforcement.Reported(["seatbelt", "skip:rlimit_as: platform"], True)
+}
+
+pub fn cancelled_code_zero_never_flattens_valid_products_test() {
+  let root = produced_root("finalize-cancelled-zero")
+  let terminal = exec.ExecResult(..successful_native_result(), cancelled: True)
+  let built = build.finalize(root, collected(terminal))
+  assert built.result
+    == Error(compile.BuildUnavailable("the hermetic build was cancelled"))
+  assert built.enforcement == enforcement.of_result(terminal)
+  assert simplifile.is_directory(root <> "/" <> build.beam_directory)
+    == Ok(False)
+}
+
+pub fn signalled_code_zero_never_flattens_valid_products_test() {
+  let root = produced_root("finalize-signalled-zero")
+  let terminal = exec.ExecResult(..successful_native_result(), signal: 15)
+  let built = build.finalize(root, collected(terminal))
+  assert built.result
+    == Error(compile.BuildUnavailable("the hermetic build ended on a signal"))
+  assert built.enforcement == enforcement.of_result(terminal)
+  assert simplifile.is_directory(root <> "/" <> build.beam_directory)
+    == Ok(False)
+}
+
+pub fn timed_out_code_zero_never_flattens_valid_products_test() {
+  let root = produced_root("finalize-timeout-zero")
+  let terminal = exec.ExecResult(..successful_native_result(), timed_out: True)
+  let built = build.finalize(root, collected(terminal))
+  assert built.result
+    == Error(compile.BuildUnavailable(
+      "the hermetic build hit its wall limit and was killed",
+    ))
+  assert built.enforcement == enforcement.of_result(terminal)
+  assert simplifile.is_directory(root <> "/" <> build.beam_directory)
+    == Ok(False)
+}
+
+pub fn nonzero_settlement_never_flattens_valid_products_test() {
+  let root = produced_root("finalize-nonzero")
+  let terminal = exec.ExecResult(..successful_native_result(), code: 1)
+  let built = build.finalize(root, collected(terminal))
+  assert built.result == Error(compile.BuildRejected(diagnostics: ""))
+  assert built.enforcement == enforcement.of_result(terminal)
+  assert simplifile.is_directory(root <> "/" <> build.beam_directory)
+    == Ok(False)
+}
+
+pub fn failed_native_settlement_preserves_its_unreported_reason_test() {
+  let root = produced_root("finalize-helper-failure")
+  let observed =
+    tool.Collected(
+      ..collected(successful_native_result()),
+      outcome: broker.CallFailed(exec.ChannelClosed(status: 9)),
+    )
+  let built = build.finalize(root, observed)
+  let assert Error(compile.BuildUnavailable(_)) = built.result
+    as "a failed native call cannot issue an artifact"
+  assert built.enforcement == enforcement.of_call(observed.outcome)
+  assert simplifile.is_directory(root <> "/" <> build.beam_directory)
+    == Ok(False)
+}
+
+pub fn seed_preparation_preserves_sources_and_installs_generated_after_clone_test() {
+  let root = fresh_dir("physical-preparation")
+  let seed_root = fresh_dir("physical-seed")
+  let dependencies = compile.default_dependencies()
+  let source =
+    "import cap/report\npub fn main() { report.text(\"admitted\") }\n"
+  let assert vet.Passed(program) = vet.vet(source, vet_policy.default())
+    as "the fixture source must be admitted"
+  let assert Ok(root) = compile.prepare_workspace(program, root, dependencies)
+    as "the fixed source step must complete without an execution identity"
+
+  let assert Ok(Nil) = seed.prepare(seed_root, [], dependencies)
+    as "the original seed dependency manifest must exist"
+  let original = compile.generated_path(seed_root, "cap/mcp/alpha")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(seed_root <> "/vendor/cap/src/cap/mcp")
+    as "the seed's original generated source directory must exist"
+  let assert Ok(Nil) = simplifile.write(original, "old generated source")
+    as "the seed must contain a replaced generated module"
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(seed_root <> "/build/packages")
+    as "the seed's offline cache directory must exist"
+  let assert Ok(Nil) =
+    simplifile.write(seed_root <> "/build/packages/packages.toml", "cache")
+    as "the bounded fixture cache must pass the existing presence check"
+  let assert Ok(Nil) =
+    simplifile.write(seed_root <> "/manifest.toml", "resolved")
+    as "the seed must carry its original resolved manifest"
+
+  let preparation = build.PreparationConfig(seed_root:, dependencies:)
+  let assert Ok(Nil) =
+    build.prepare_seed(preparation, root, [
+      #("cap/mcp/alpha", "admitted generated source"),
+    ])
+    as "seed cloning must precede installing the admitted module"
+  assert simplifile.read(compile.generated_path(root, "cap/mcp/alpha"))
+    == Ok("admitted generated source")
+  assert simplifile.read(root <> "/src/loom_program.gleam") == Ok(source)
+  assert simplifile.read(root <> "/manifest.toml") == Ok("resolved")
+  assert simplifile.read(root <> "/gleam.toml")
+    == Ok(compile.project_toml(dependencies))
 }
