@@ -1045,3 +1045,20 @@ sequence number; the persistent host shares `InFlight` and records nothing.
   attach it to `details`. `execution_value` never does.
 - A run that never launched, or whose host never answered, carries
   `call_record.empty()`.
+
+## Remote preparation receipts
+
+`codemode/service_resources` admits exact Compile and Launch location receipts
+against the pinned `broker/enrollment.SessionEnrollment`. Opaque
+`CompileLocations` and `LaunchResources` retain complete original service keys;
+Launch also retains the producing Compile key under the same full ToolKey.
+The two physical steps may differ. Literal enrollment-derived paths must match,
+so aliases do not become acceptable through normalization.
+
+The closed `Ready` codec uses bounded MessagePack scanning before conversion
+through `core/json_wire` and the shared `core/command` key decoder. Canonical
+re-encoding rejects alternative encodings, trailing data and extra fields.
+These records contain only identity and path data. They establish neither an
+existing directory nor a successful compile, live listener, token custody or
+permission to recreate a resource. The durable preparation journal and live
+resource owner must establish those facts separately before physical execution.
