@@ -658,8 +658,8 @@
      refuses clicks and its buttons are dimmed, so a click already heading
      for the bottom of the transcript cannot land on Allow. Both keyframes
      hold the same values and the animation keeps no fill, so the row goes
-     back to its own style when it ends. The delay (loom-arm) is exempt from
-     the reduced-motion rule below; only the dimming (loom-arm-look) obeys
+     back to its own style when it ends. The delay (loom-arm) and the note (loom-arm-note) are exempt from
+     the reduced-motion rule below, so the note shows under it too; only the dimming (loom-arm-look) obeys
      it. */
   .approval-actions.arming,.control-actions.arming{animation:loom-arm 600ms steps(1,end);}
   .approval-actions.arming button,.control-actions.arming button{animation:loom-arm-look 600ms steps(1,end);}
@@ -789,5 +789,5 @@
     ul.settled-chips{flex-direction:column;}
   }
   @media (max-width:640px){main.centre{padding:12px 12px 0;}li.chip{width:200px;} .line.user{padding:6px 10px;} .hint{display:none;}}
-  @media (prefers-reduced-motion:reduce){*:not(.arming){transition:none!important;animation:none!important;}}
+  @media (prefers-reduced-motion:reduce){*:not(.arming):not(.arm-note){transition:none!important;animation:none!important;}}
 }
