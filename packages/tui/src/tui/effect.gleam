@@ -51,6 +51,7 @@ import tui/connection
 import tui/herdr
 import tui/image_shown
 import tui/job
+import tui/layout_memory
 import tui/recording
 
 /// One side effect a reducer step decided on.
@@ -105,6 +106,12 @@ pub type Effect {
   /// the frame just built has been drawn rather than at the next tick. An
   /// iTerm2 picture is owed until that frame exists.
   WakeLoop
+
+  /// Saves this workspace's layout into the layout memory file
+  /// (`layout_memory.save`). The step only decides that the layout changed;
+  /// reading and writing the file is the runtime's, so a replay and a test
+  /// never touch it.
+  SaveLayout(path: String, key: String, layout: layout_memory.Layout)
 
   /// Announces the session identity to the Herdr pane.
   AnnounceHerdr(reporter: herdr.Reporter, session: String)

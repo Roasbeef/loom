@@ -122,6 +122,7 @@ import tui/internal/ffi_terminal
 import tui/job
 import tui/job_runner
 import tui/layout
+import tui/layout_save
 import tui/model.{
   type Model, DiffAutomatic, Model, Newer, NoClipboard, NoOverlay, Older,
   PromptNext, ReconnectIdle, TerminalClipboard,
@@ -672,6 +673,7 @@ pub fn new_model_with_clock(
       palette: appearance.Dark,
       image_support: image_support.TextOnly(image_support.NotProbed),
       images: image_shown.new(),
+      layout_target: None,
       input: text_area.state_new(),
       strand_workspaces: dict.new(),
       restored_workspace: None,
@@ -839,6 +841,25 @@ fn interactive(launch: Launch, record: String) -> Nil {
       record,
     )
     |> start_herdr_reporter_for(launch)
+
+  // Only a launch that is a real session remembers its layout. The rest
+  // print and exit, replay, or show the demo, and read and write no file.
+  let initial = case launch {
+    Local(options, _) ->
+      layout_save.remember_launch(initial, options.state_directory)
+    Remote(..) -> layout_save.remember_launch(initial, "")
+    Version
+    | Forward(..)
+    | Update(..)
+    | Replay(..)
+    | Sessions(..)
+    | ClaimAccess(..)
+    | Enroll(..)
+    | Access(..)
+    | View(..)
+    | Demo
+    | Invalid(..) -> initial
+  }
 
   // The probe has to run in this process, because it leaves the terminal in
   // raw mode for the backend that follows, and before that backend enters
@@ -2290,6 +2311,7 @@ fn settle_update(event: msg.Event, model: Model, updated: Model) -> Model {
     ),
   )
   |> image_plan.settle
+  |> layout_save.settle
 }
 
 // A gesture aimed at the transcript owns the viewport outright: pacing
