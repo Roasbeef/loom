@@ -64,6 +64,29 @@ around their existing clearance and collection. A future physical service must
 bind Collected to its exact original admitted native child before finalization;
 these internal helpers supply no durable association or remote execution wiring.
 
+## Expected remote native commands
+
+`service_command.ExpectedCommand` derives a complete bounded `broker/command`
+offer from independently pinned enrollment, admitted original input and exact
+Ready resources. Compile/Launch keys, producing Compile identity and every
+snapshot field must agree before the shared `native_command` templates select
+argv, ordered environment, cwd and policy. Compiler mounts remain the original
+seed policy's mounts; satellites use enrolled host mounts. Both retain untouched
+policy dimensions and force network off. Region mappings follow literal command
+usage, retaining ordered toolchains and only an identical enrolled host scratch.
+A differing requested ScratchPath refuses rather than silently becoming tmpfs.
+
+The selected positive whole-second wall fits the original policy ceiling and,
+for Compile, floor(original stage milliseconds / 1000). Zero policy wall is an
+unbounded ceiling, not an infinite command. The caller supplies that wall only
+after durable Ready and still owes remaining original authority, the assembled
+serial control bound and single selection in existing CommandRef custody. This
+pure constructor creates no filesystem resources, token, native UUID, clearance
+or renewed deadline. Exact offer equality refuses any received field change.
+`AssociationMismatch`, `InvalidWall` and `InvalidCommand` keep those refusal
+causes distinct. Remote artifacts remain executor references throughout; no
+local Artifact is constructed to pass the existing launch guard.
+
 ## Purpose
 
 Code mode: a model writes a *program*, not a tool call, and the program
