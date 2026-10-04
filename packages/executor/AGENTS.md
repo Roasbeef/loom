@@ -346,6 +346,27 @@ before Submit, without inventing a prepared command. Lost replies preserve the
 original identity. A journal failure cannot prevent local cancellation or an
 attempted witnessed drain, but never produces a durable retirement claim.
 
+The internal `service.CommandContext` keeps the exact bounded original Input,
+resource endpoint and full Compile CommandRef. `live_command_context` derives
+Input from `resource_journal.original(claim)` and checks complete key equality;
+`command_context` reads bounded historical Input without constructing a Claim.
+Both bind the concrete native journal endpoint and full scope. The typed
+`send_command_exchange` door enters the same admission engine as ordinary native
+work. Tickets distinguish Native from each complete CommandRef; command Session
+and historical Challenge/Submit refuse before native payload writes.
+
+First command Submit keeps Request -> Authority -> Admit ordering, then obtains
+and checks the resource actor's committed live NativeLaunchPermit before existing
+AuthorizeLaunch/helper startup. The saved deadline is rechecked afterward without
+renewal. Resource cancellation which wins association prevents a permit;
+cancellation afterward may race OS startup. Every command Query/Cancel/Stdin/
+DurableReceipt and both duplicate Submit readback branches require exact retained
+ref/key/digest association. Unassociated remains uncertain; mismatches refuse.
+Historical contexts can recover exact native evidence after reopen, without new
+launch eligibility. `command_native_service_test` uses actual SQLite journals,
+real fixed compiler execution and guarded helper checkout; it supplies component
+evidence, while the listener/whole Compile assembly remains root-owned.
+
 `remote/native` dispatches through the existing executor with strict native
 start-window checks. Its Publisher factory starts the persistence sink inside
 the native control actor. Linked parent lifetime handles startup failure and
