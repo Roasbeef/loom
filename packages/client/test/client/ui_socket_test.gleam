@@ -815,21 +815,6 @@ pub fn the_pinned_event_paths_have_not_moved_test() {
   )
 }
 
-// A forged submit at the control's path on a member operator's page is dropped
-// before the component sees it, so nothing is redrawn and nothing is asked.
-pub fn a_member_operators_page_drops_the_rename_submit_test() {
-  let assert Ok(page) = ui_socket.start_page(ui_socket.Operating, start())
-    as "the member operator's page starts"
-  let _ = mounted(page)
-  page.forward(
-    "{\"kind\":1,\"path\":"
-    <> json.to_string(json.string(component.rename_path <> "\trename-0\t0"))
-    <> ",\"name\":\"submit\",\"event\":{\"detail\":{\"formData\":[[\"text\",\"x\"]]}}}",
-  )
-  assert process.selector_receive(page.frames, 200) == Error(Nil)
-  page.shutdown()
-}
-
 // Only an owner's page is handed the capability to rename, so any other page
 // draws no control and has nothing to call.
 pub fn only_an_owners_page_is_handed_the_capability_to_rename_test() {

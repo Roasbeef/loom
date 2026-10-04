@@ -105,6 +105,8 @@ versions 1 to 4. One member added to a frame every client already decodes. A
 `Registration` gains a field, which touches every place that builds one, and the
 terminal's `Session` gains the same field, which touches its fixtures.
 
+The invisible-character set includes U+200D, so a ZWJ emoji sequence in a subtitle draws as separate glyphs and a display name containing one is refused, the same policy as `session_view/text_hygiene`.
+
 A rename that used to succeed with a zero-width or direction-changing character
 in the name now fails, and names already stored with one still read. A session
 whose first prompt is an image alone is subtitled by the next prompt with text.

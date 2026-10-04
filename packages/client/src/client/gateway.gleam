@@ -945,6 +945,10 @@ type Held {
     /// drain time would credit whoever happens to be attached when the
     /// strand goes idle, which is the wrong human.
     prompt: AgentMessage,
+    /// The same message as the person typed it, before a skill expansion
+    /// rewrote it. The subtitle is derived from this (protocol-change/066),
+    /// so a `/skill` first prompt is not subtitled with the skill's body.
+    typed: AgentMessage,
     /// Where a drain *failure* is reported. Not where the entry goes: a
     /// successful drain reaches every terminal, submitter included, as
     /// an ordinary notice. A submitter that has detached by then is an
@@ -5038,7 +5042,7 @@ fn prompt_message(
   // normal prompt must join existing custody even when the runtime is already
   // idle, or it would bypass a held steer and the ordinary FIFO behind it.
   use <- bool.lazy_guard(dict.has_key(state.held, strand), fn() {
-    hold_prompt(state, connection, id, strand, expanded, AfterTurn)
+    hold_prompt(state, connection, id, strand, expanded, prompt, AfterTurn)
     |> pull_and_broadcast
   })
   let target = api.on_strand(state.runtime, strand)
@@ -5051,7 +5055,7 @@ fn prompt_message(
     // commits under the origin recorded now rather than one resolved at
     // drain time.
     Error(api.AcceptRejected(reason: acceptance.StrandBusy)) ->
-      hold_prompt(state, connection, id, strand, expanded, AfterTurn)
+      hold_prompt(state, connection, id, strand, expanded, prompt, AfterTurn)
 
     Ok(_) | Error(_) -> {
       use _op <- or_reply(
@@ -5087,6 +5091,7 @@ fn hold_prompt(
   id: Int,
   strand: String,
   prompt: AgentMessage,
+  typed: AgentMessage,
   order: InputOrder,
 ) -> State {
   use author <- or_reply(input_author(state, connection), state, connection, id)
@@ -5123,6 +5128,7 @@ fn hold_prompt(
         Held(
           id: int.to_string(connection) <> ":" <> int.to_string(state.next_held),
           prompt:,
+          typed:,
           submitter: connection,
           request: id,
           order:,
@@ -5482,7 +5488,8 @@ fn edit_queued_input(
       ])
     other -> other
   }
-  let updated = Held(..item, prompt:, revision: item.revision + 1)
+  let updated =
+    Held(..item, prompt:, typed: prompt, revision: item.revision + 1)
   use _board <- or_reply(queued_board(strand, updated), state, connection, id)
   let queue =
     held_items(state, strand)
@@ -5567,7 +5574,7 @@ fn admit_held(
     Ok(_op) ->
       case batch {
         [first, ..] ->
-          report_first_prompt(state, strand, first.prompt)
+          report_first_prompt(state, strand, first.typed)
           |> put_held(strand, rest)
         [] -> put_held(state, strand, rest)
       }
@@ -5749,14 +5756,15 @@ fn steer(
   text: String,
 ) -> State {
   use <- known_strand(state, connection, id, strand)
+  let typed = user_message(state, connection, text)
   use message <- or_reply(
-    skills.expand_message(state.skills, user_message(state, connection, text))
+    skills.expand_message(state.skills, typed)
       |> result.map_error(fn(reason) { #(protocol.code_bad_request, reason) }),
     state,
     connection,
     id,
   )
-  hold_prompt(state, connection, id, strand, message, SteerNext)
+  hold_prompt(state, connection, id, strand, message, typed, SteerNext)
 }
 
 // Follow-up is a queued turn. It belongs outside the current operation so

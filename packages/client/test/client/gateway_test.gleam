@@ -39,6 +39,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/system
 import gleam/result
 import gleam/string
+import host/skill
 import machine/codec
 import machine/operation
 import machine/planner
@@ -6285,4 +6286,38 @@ pub fn a_first_prompt_that_arrives_as_a_steer_is_reported_when_admitted_test() {
   subscribe(harness)
   send(harness, 920, protocol.Steer("main", "steer first"))
   assert process.receive(reported, within: 5000) == Ok("steer first")
+}
+
+/// A held first prompt that is a skill invocation seeds the subtitle with what
+/// the person typed, not with the skill body the hub expanded it into. A steer
+/// is always held and submitted from the drain, so it exercises the held path.
+pub fn a_held_skill_invocation_is_reported_as_typed_test() {
+  let root = "build/gateway-skill-" <> int.to_string(int.random(1_000_000_000))
+  let assert Ok(Nil) = simplifile.create_directory_all(root <> "/sample")
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/sample/SKILL.md",
+      "---\nname: sample\ndescription: d\n---\nSKILL BODY for $ARGUMENTS.\n",
+    )
+  let catalogue = skill.discover([root])
+  let reported = process.new_subject()
+  let harness =
+    start_harness_adjusted(
+      None,
+      None,
+      None,
+      None,
+      SettlingProvider,
+      None,
+      None,
+      fn(options) {
+        options
+        |> gateway.with_skills(catalogue)
+        |> gateway.with_first_prompt(fn(text) { process.send(reported, text) })
+      },
+    )
+  subscribe(harness)
+  send(harness, 930, protocol.Steer("main", "/sample the queue"))
+  assert process.receive(reported, within: 5000) == Ok("/sample the queue")
+  let assert Ok(Nil) = simplifile.delete(root)
 }
