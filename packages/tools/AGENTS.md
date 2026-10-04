@@ -1111,3 +1111,7 @@ the surrounding service must preserve an uncertain mutation outcome if it
 cannot retain its result. Encoding creates its semantic projection before
 checking final size, so only decoding has the stated pre-allocation guarantee.
 No codec call starts an effect or acknowledges durable receipt.
+
+`workspace_local.scope` exposes only the host's immutable registered scope. The
+remote service compares it with its journal before startup; this accessor
+performs no path lookup and grants no new workspace authority.

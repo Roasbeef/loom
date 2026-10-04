@@ -305,3 +305,27 @@ transferring fixed chunks. Its opaque sender/receiver cursors enforce direction,
 length, offset and final digest. The caller owes authenticated application
 scope, a whole-exchange deadline and bounded connection credits. Content
 transfer grants no permission to execute or acknowledge durable receipt.
+
+## Semantic workspace service and exchange
+
+`remote/workspace_service.configure` requires identical local-host and journal
+scopes, one to four active tasks, and a finite task deadline. Each newly claimed
+invocation runs the concrete `tools/workspace_local` host in a managed weft task.
+Exact completion bytes commit before the task reports success. Lost replies,
+crashes and encoding or persistence failures preserve Unknown; they never
+permit a second effect. Task capacity returns only after the final drain report.
+
+Workspace journal format 2 adds Open/Sealed metadata. Seal commits before close
+cancels and joins workers. Each admission or first claim rereads metadata in its
+transaction, so an independent connection cannot claim after sealing. Query,
+finish and acknowledgement may reconcile retained evidence after sealing. Older
+formats are refused without migration. An untrappable kill cannot run the seal
+hook; the enclosing owner must reconcile that uncertain shutdown.
+
+`remote/workspace_connection` authenticates a domain-separated hello against the
+configured peer and complete scope, then transfers the exact invocation for
+Submit, Query or Acknowledge. A single weft deadline covers the whole exchange.
+`remote/listener.configure_workspace` uses the existing bounded acceptor pool.
+Connection loss ends transport ownership, not the separately owned effect task.
+The embedding host must close listener admission before sealing the service and
+release the journal only after its own retirement obligations are satisfied.
