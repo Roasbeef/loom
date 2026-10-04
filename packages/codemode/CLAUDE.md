@@ -1,5 +1,20 @@
 # codemode
 
+## Shared native command construction
+
+`native_command` contains the pure compiler argv/environment/policy construction
+and the satellite boot arguments, pinned capability handles and access policy.
+Local `build` and `launch` delegate to it while retaining their existing phase
+authority, artifact checks and resource lifecycle. Remote owner acceptance can
+therefore derive the same literal command without constructing a local
+Artifact or resolving executor paths on the owner.
+
+These records carry command facts, not clearance. The caller still validates
+remote enrollment, original service input and prepared resources. Satellite
+access accepts a caller-selected wall without reading a clock; local launch
+retains its existing deadline calculation, while remote acceptance must freeze
+its wall only after preparation under the original service deadline.
+
 ## Purpose
 
 Code mode: a model writes a *program*, not a tool call, and the program

@@ -119,6 +119,7 @@ import codemode/compile.{type Artifact}
 import codemode/enforcement.{type Report}
 import codemode/identity
 import codemode/internal/ffi_unix.{type Listener, type Socket}
+import codemode/native_command
 import codemode/physical
 import codemode/satellite.{type CapConnection, type LaunchSpec}
 import core/clock.{type Clock}
@@ -140,11 +141,11 @@ import weft/state_machine as sm
 /// `cap/runtime.sock_env`; the host does not depend on the `cap` package
 /// (it must never link model-facing code), so the name is restated here
 /// and pinned by a test against the boot contract.
-pub const sock_env = "LOOM_CAP_SOCK"
+pub const sock_env = native_command.sock_env
 
 /// The environment variable naming the private cap-token file. Mirrors
 /// `cap/runtime.token_env`; see `sock_env`.
-pub const token_env = "LOOM_CAP_TOKEN_FILE"
+pub const token_env = native_command.token_env
 
 /// Where the Go helper mounts a `ScratchTmpfs` policy's scratch area
 /// (`jail.ScratchMount`). A cap socket under this path is invisible inside
@@ -987,24 +988,11 @@ pub fn node_argv(
   artifact: Artifact,
 ) -> Result(List(String), String) {
   use beam_dir <- result.try(local_beam_dir(artifact))
-  Ok([
+  Ok(native_command.node_argv(
     erl_path,
-    "-noshell",
-    "-boot",
-    "no_dot_erlang",
-    "-pa",
     beam_dir,
-    "-proto_dist",
-    "none",
-    "-start_epmd",
-    "false",
-    "-run",
     compile.artifact_entry(artifact),
-    "main",
-    "-s",
-    "init",
-    "stop",
-  ])
+  ))
 }
 
 /// The node's environment: the two cap-channel handles the boot runtime
@@ -1014,13 +1002,7 @@ pub fn node_argv(
 /// here — a caller's `env` cannot shadow them into pointing a satellite at
 /// somebody else's socket or token.
 pub fn node_env(spec: LaunchSpec) -> List(#(String, String)) {
-  let permitted =
-    list.filter(spec.env, fn(pair) { pair.0 != sock_env && pair.0 != token_env })
-  [
-    #(sock_env, spec.cap_socket_path),
-    #(token_env, spec.token_path),
-    ..permitted
-  ]
+  native_command.node_env(spec.cap_socket_path, spec.token_path, spec.env)
 }
 
 /// What the jailed node requires of the session base: the toolchain and
@@ -1061,24 +1043,19 @@ pub fn node_requirements(
   now_ms now_ms: Int,
 ) -> Result(SandboxPolicy, String) {
   use beam_dir <- result.try(local_beam_dir(spec.artifact))
-  let wanted = [
-    directory_of(spec.cap_socket_path),
-    directory_of(spec.token_path),
-    beam_dir,
-  ]
-  let base = spec.base_policy
   Ok(
-    policy.SandboxPolicy(
-      ..base,
-      readable_roots: list.unique(list.append(base.readable_roots, wanted)),
+    native_command.node_requirements(native_command.NodeAccess(
+      beam_dir:,
+      socket_path: spec.cap_socket_path,
+      token_path: spec.token_path,
+      base: spec.base_policy,
       mounts: host_mounts,
-      network: policy.NetworkOff,
-      limits: policy.Limits(
-        ..base.limits,
-        wall_s: bound_wall(base.limits.wall_s, remaining_seconds(spec, now_ms)),
+      env: spec.env,
+      wall_s: bound_wall(
+        spec.base_policy.limits.wall_s,
+        remaining_seconds(spec, now_ms),
       ),
-      env_allow: list.map(node_env(spec), fn(pair) { pair.0 }),
-    ),
+    )),
   )
 }
 
