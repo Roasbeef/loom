@@ -563,3 +563,59 @@ Bash, Git/guidance, compilation, satellite launch, workspace and owner-state
 capabilities, and LSP. Reopen, original-identity recovery and cleanup faults
 require independent evidence. Component tests, full gates, hosted CI and this
 separate-host acceptance must be reported separately.
+
+## Addendum: pinned enrollment and preparation before wall selection
+
+This refines command construction and extends preparation custody to Compile
+as well as Launch. The owner pins one exact per-session enrollment snapshot
+under the persisted scope and both authority epochs. It includes native
+registration facts and the configured workspace, allocation areas, compiler,
+BEAM executable, seed, toolchains, host mounts and build PATH. Trusted
+provisioning canonicalizes those paths on the executor. An unchanged digest
+claim cannot authorize different snapshot contents on reopen.
+
+Compile and Launch allocations use their original service UUIDs beneath
+separate enrolled areas. Both areas are disjoint from ordinary workspace
+write authority, and seed/toolchain inputs remain immutable. Paths derive
+from the retained identity and fixed layout; a collision refuses preparation
+rather than choosing another suffix. Owner code compares literal path data
+without probing its own filesystem.
+
+Both services reserve their original exact input and completion capacity
+before preparation. The executor commits Preparing before any directory,
+source, token or socket creation. Only the first live claim performs creation;
+queries and recovery never produce another claim. Ready evidence commits
+before reply. For Launch, the usable socket remains in the supervised resource
+owner's custody: persisted lease metadata alone cannot rebind it after that
+owner dies. Compile completion, resource cleanup, native retirement and owner
+receipt remain distinct facts.
+
+The initial service input retains the owner-selected wall ceiling. The final
+native wall is selected only after durable preparation has completed. Selecting
+it earlier would reserve compilation time that cold preparation then consumes,
+causing the unchanged command to fail its first admission check.
+
+Let R be the original remaining authority in milliseconds at Ready, C the
+positive original native wall ceiling, and S the sum of bounds on the remaining
+control path. Select `w = min(C, floor((R - 1100 - S) / 1000))` and refuse when
+w is less than one. The 1,100 ms is the existing native attempt allowance.
+S must derive from the actual serial custody, clearance, exchange and startup
+calls; it is not another configurable margin. Already elapsed preparation
+and completed control calls must not be deducted twice. Expiry checks remain
+authoritative during scheduler delays; bounded calls are not hard real-time
+guarantees.
+
+The Ready receipt supplies canonical resource facts. The owner derives the
+complete final command with the shared closed template, retains its exact
+bytes in the existing CommandRef offer slot, then clears directly. No extra
+executor confirmation exchange is required. A retained offer is neither
+clearance nor native admission. Only actual retained native key/digest and
+admission evidence may associate the physical service with its native child.
+
+Every continuation retains the same selected wall, offer and original
+deadline. Before first clearance, insufficient remaining authority refuses
+without allocating a native UUID. Once native transmission is possible,
+recovery queries that original UUID; it cannot select another wall, re-clear
+or renew authority. The extended preparation model checks these transitions;
+production resource custody and separate-host acceptance must establish their
+implementation separately.
