@@ -3572,7 +3572,10 @@ section's under the cards run only in one.
 
 **Amended 2026-10-04 (`web/b9-strands`)**: the lane draws no commentary row at
 all, neither the hairline nor a rule; the panel's section is the record, and
-the advisor's dot on a nudge card is the way into its transcript.
+the advisor's dot on a nudge card is the way into its transcript. Below 980 px
+the section is hidden (`.pane-strands > section.commentary` is `display:none`),
+so there the only record of the reviews is the advisor's own transcript,
+reached by focusing its card, which stays in the strip row at 800 px.
 
 ## Addendum: the session controls move to the Session tab (2026-10-03)
 
