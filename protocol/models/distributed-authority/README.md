@@ -24,11 +24,11 @@ python3 protocol/models/distributed-authority/run.py --case MutantAdmission
 python3 protocol/models/distributed-authority/run.py --translate
 ```
 
-The full runner exits **0** only when safety passes and all nine ownership controls and fourteen metadata controls produce their
+The full runner exits **0** only when safety passes and all ownership, metadata and ingress controls produce their
 intended witnesses. Both metadata capacity bounds must exhaust safely. A control requires TLC exit **12**, the
 exact named invariant, a state count, and a multi-state trace. A parse error,
 wrong invariant, unavailable tool, or timeout fails the runner with exit **1**.
-`--translate` updates only the generated sections of both models and does
+`--translate` updates only the generated sections of all three models and does
 not run TLC. Ordinary checking regenerates into an isolated directory and
 fails on any byte difference after trimming the translator's trailing
 whitespace, without editing the checked-in model.
@@ -60,7 +60,7 @@ The TLC command inside each case directory is:
 ```
 
 The runner bounds each TLC process to **60 seconds**, a **512 MiB heap**,
-**64 MiB direct memory**, and **one worker**. Twenty-six sequential cases give a 1560-second TLC budget, plus two
+**64 MiB direct memory**, and **one worker**. Thirty-three sequential cases give a 1980-second TLC budget, plus three
 30-second translations and an optional 60-second download. JVM native memory and retained log/state disk space are not capped
 by those JVM flags. `--timeout N` accepts 1..120 seconds; exceeding that budget
 is a failure, never a partial success. TLC performs complete breadth-first
@@ -257,3 +257,44 @@ receipt retention horizons are outside this bounded model. Compaction is only
 a projection that must retain the modeled facts. No automatic failover or
 unconditional progress is claimed. The existing Lean/Gleam admission bridge
 checks a different reducer and does not close these metadata gaps.
+
+## Ingress credit custody
+
+`Ingress.tla` models the service-mailbox lifetime found during the workspace
+exchange review. Safety runs cover one and two finite credits with three
+requests. The mutant configurations use one credit: send one request, time out
+its socket, reuse that credit, and send another request while the first remains
+queued. A separate mutation replaces a crashed acceptor while its earlier
+service request survives. Both violate QueueBound.
+
+The corrected ordering retains a listener credit until the socket worker has
+ended and its service request has been consumed with a delivered final reply.
+A crashed listener loses its credit rather than reminting one. Service death
+empties that incarnation's mailbox and prevents new admission. The model makes
+service consumption and reply delivery separate actions; neither socket death
+nor consumption alone supplies the reply the credit owner awaits.
+
+| Control | Expected evidence | Observed distinct states |
+| --- | --- | --- |
+| IngressSafety | Exhaustive safety, two credits | 5,116 |
+| IngressSafetyOne | Exhaustive safety, one credit | 310 |
+| IngressReachTimeout | A consumed reply after socket timeout is reachable | 39 |
+| IngressReachReuse | A timed-out credit is reused after reply and socket completion | 87 |
+| IngressReachCrash | A crashed credit owner with pending work is reachable | 8 |
+| IngressMutantTimeout | QueueBound violation after timeout-based reuse | 18 |
+| IngressMutantRestart | QueueBound violation after acceptor replacement | 24 |
+
+Each negative control requires exit 12 and the named invariant; setup failures
+cannot count as witnesses. Run a single case with `--case IngressSafety` or run
+all families with the default runner. The checked-in translation is regenerated
+and compared before TLC runs, using the same pinned toolchain as ownership.
+
+These are bounded safety checks, with no fairness or liveness claim. They do not
+model byte allocation, TLS, journal transactions, arbitrary trusted callers,
+multiple independently constructed listener pools, or service reincarnation.
+The implementation bridge must establish that there is one fixed acceptor pool
+per service, that all remote service asks pass through its stable owners, that
+late request signals cannot admit a second outstanding service ask, and that a
+supervisor cannot recreate credits while the old service mailbox survives.
+The real stalled-service regressions and code review must check those details;
+the model alone does not establish them.
