@@ -479,6 +479,7 @@ pub fn generated_access_queries_match_sqlc_input_test() {
     sql.insert_access_principal("", "", "").0,
     sql.rename_access_principal("", "").0,
     sql.access_credential("", "").0,
+    sql.access_credential_any_kind("").0,
     sql.insert_access_credential("", "", "").0,
     sql.revoke_access_credential("").0,
     sql.revoke_member_credentials("").0,

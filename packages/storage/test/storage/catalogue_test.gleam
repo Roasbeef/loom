@@ -658,3 +658,19 @@ pub fn version_four_catalogue_migrates_every_credential_to_bearer_test() {
     == Ok([#("bearer", 1, 1)])
   assert sqlight.close(check) == Ok(Nil)
 }
+
+pub fn migrations_end_at_the_current_version_test() {
+  // The versions are consecutive and the last is the one a catalogue is
+  // stamped with, so a migration added without raising `current_version`, or
+  // a version raised without a migration, fails here and not on a user's disk.
+  let versions = list.map(catalogue.migrations(), fn(migration) { migration.0 })
+  let expected =
+    int.range(
+      from: 2,
+      to: catalogue.current_version + 1,
+      with: [],
+      run: fn(all, n) { [n, ..all] },
+    )
+    |> list.reverse
+  assert versions == expected
+}

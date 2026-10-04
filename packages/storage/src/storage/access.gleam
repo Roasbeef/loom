@@ -1140,11 +1140,15 @@ fn credential(store: Catalogue, digest: Digest, kind: CredentialKind) {
     sql.access_credential(digest.value, kind_name(kind)),
   ))
   use row <- result.try(one(rows))
-  use _digest <- result.try(credential_digest(row.digest))
-  use Nil <- result.try(valid_id(row.principal_id))
-  case row.state {
-    "active" -> Ok(Credential(row.principal_id, Active))
-    "revoked" -> Ok(Credential(row.principal_id, Revoked))
+  decoded_credential(row.digest, row.principal_id, row.state)
+}
+
+fn decoded_credential(digest: String, principal_id: String, state: String) {
+  use _digest <- result.try(credential_digest(digest))
+  use Nil <- result.try(valid_id(principal_id))
+  case state {
+    "active" -> Ok(Credential(principal_id, Active))
+    "revoked" -> Ok(Credential(principal_id, Revoked))
     _ -> Error(Invalid("unknown persisted credential state"))
   }
 }
@@ -1159,10 +1163,12 @@ fn kind_name(kind: CredentialKind) -> String {
 // A digest is one primary key across both kinds, so "is this digest free" and
 // "does this digest exist" ask both kinds. Only an authentication names one.
 fn held(store: Catalogue, digest: Digest) {
-  case credential(store, digest, Bearer) {
-    Error(Missing) -> credential(store, digest, Browser)
-    found -> found
-  }
+  use rows <- result.try(catalogue.query(
+    store,
+    sql.access_credential_any_kind(digest.value),
+  ))
+  use row <- result.try(one(rows))
+  decoded_credential(row.digest, row.principal_id, row.state)
 }
 
 fn unused(store: Catalogue, digest: Digest) -> Result(Nil, Error) {
