@@ -847,6 +847,22 @@ def print_report(rows, results, baseline):
                   + "".join("%11.2f" % values[k] for k in MEMORY_KEYS))
 
 
+def warm_up():
+    """One untimed daemon boot and client attach before any series.
+
+    A release just rebuilt is not yet in the page cache, so the first run
+    after a build reads it from disk. Left in, that run is the p95 of the
+    first scenario and measures the disk rather than Loom.
+    """
+    profile = Profile("warm-up")
+    d = Daemon(profile)
+    c = Client(profile, client_args(profile))
+    c.await_first_frame()
+    c.stop()
+    d.stop()
+    profile.remove()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--runs", type=int, default=10)
@@ -866,6 +882,7 @@ def main():
                             capture_output=True, text=True).stdout.strip()
     print("bench-startup-memory at %s, %d runs per scenario" % (commit, options.runs))
 
+    warm_up()
     runners = {
         "a": lambda: scenario_a(options.runs),
         "b": lambda: scenario_b(options.runs),
