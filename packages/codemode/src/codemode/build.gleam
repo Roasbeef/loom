@@ -5,6 +5,10 @@
 //// module name, the generated satellite entry, and a `gleam.toml` that
 //// pins exactly the prelude and one standard-library version) and then
 //// hands that root to a `Builder`. This is the one that runs for real.
+//// `prepare_seed` and `finalize` expose its existing physical steps so a
+//// service can finish preparation before Ready, then wait for owner-cleared
+//// native evidence without fabricating a Runner or an owner PhaseIdentity.
+//// The local Builder uses those same steps around its existing clearance.
 ////
 //// # What makes the build hermetic
 ////
@@ -106,6 +110,24 @@ const settle_margin_ms = 10_000
 // How much compiler output to carry back as diagnostics.
 const diagnostics_limit = 8000
 
+/// Facts needed to clone the exact offline seed before command selection.
+/// This physical preparation step owns no Runner, grants, phase or deadline.
+///
+/// ## Examples
+///
+/// `PreparationConfig(seed_root: seed, dependencies: compile.default_dependencies())`
+/// pins only the administratively selected seed and dependency table.
+@internal
+pub type PreparationConfig {
+  /// The seed is verified before any of its content is cloned.
+  PreparationConfig(
+    /// Exact executor-local seed provisioned for the retained compile contract.
+    seed_root: String,
+    /// Ordered dependencies used by the fixed project and verified seed.
+    dependencies: List(Dependency),
+  )
+}
+
 /// Everything the production builder needs beyond the build phase's
 /// identity and the build root.
 ///
@@ -181,7 +203,13 @@ fn build(
   root: String,
   generated: List(#(String, String)),
 ) -> Built {
-  case prepare(config, root, generated) {
+  case
+    prepare_seed(
+      PreparationConfig(config.seed_root, config.dependencies),
+      root,
+      generated,
+    )
+  {
     Error(error) ->
       Built(
         result: Error(error),
@@ -193,8 +221,17 @@ fn build(
   }
 }
 
-fn prepare(
-  config: BuildConfig,
+/// Verifies and clones the seed, then installs the admitted generated modules.
+/// A physical service calls this after fixed source preparation and before
+/// publishing Ready. Its original live claim, not this value, permits the writes.
+///
+/// ## Examples
+///
+/// `prepare_seed(preparation, root, generated)` installs generated modules after
+/// the clone, so their privileged source is not overwritten by the seed.
+@internal
+pub fn prepare_seed(
+  config: PreparationConfig,
   root: String,
   generated: List(#(String, String)),
 ) -> Result(Nil, CompileError) {
@@ -388,12 +425,26 @@ fn collect_build(
     )
   {
     Error(Nil) -> build_unsettled()
-    Ok(collected) ->
-      Built(
-        result: result.try(settle(collected), fn(_nil) { products(root) }),
-        enforcement: enforcement.of_call(collected.outcome),
-      )
+    Ok(collected) -> finalize(root, collected)
   }
+}
+
+/// Checks actual native settlement before flattening and fingerprinting products.
+/// Cancelled, timed-out, signalled or nonzero builds issue no usable products,
+/// even if a partial or complete beam set exists. The actual enforcement report
+/// accompanies both success and failure. A physical service must have associated
+/// this collection with its exact original native child before calling here.
+///
+/// ## Examples
+///
+/// `finalize(root, collected)` returns the same Built as the local Builder after
+/// settlement, without needing a Runner or owner PhaseIdentity.
+@internal
+pub fn finalize(root: String, collected: Collected) -> Built {
+  Built(
+    result: result.try(settle(collected), fn(_nil) { products(root) }),
+    enforcement: enforcement.of_call(collected.outcome),
+  )
 }
 
 fn build_unsettled() -> Built {
@@ -421,17 +472,24 @@ fn settle_exit(
   result: ExecResult,
   diagnostics: String,
 ) -> Result(Nil, CompileError) {
-  case result.timed_out, result.code {
-    True, _ ->
+  // A zero exit does not undo cancellation or a signalled termination. The
+  // helper can report cancelled code zero for backgrounded work, so these
+  // independent terminal facts must all permit success before products exist.
+  case result.timed_out, result.cancelled, result.signal, result.code {
+    True, _, _, _ ->
       Error(compile.BuildUnavailable(
         "the hermetic build hit its wall limit and was killed",
       ))
-    False, 0 -> Ok(Nil)
+    False, True, _, _ ->
+      Error(compile.BuildUnavailable("the hermetic build was cancelled"))
+    False, False, signal, _ if signal != 0 ->
+      Error(compile.BuildUnavailable("the hermetic build ended on a signal"))
+    False, False, 0, 0 -> Ok(Nil)
 
     // A build that reached for Hex is a broken *seed*, not a broken
     // program, and saying so is the difference between "fix your code"
     // and "rebuild the package cache".
-    False, _ -> diagnose_failure(diagnostics)
+    False, False, _, _ -> diagnose_failure(diagnostics)
   }
 }
 
