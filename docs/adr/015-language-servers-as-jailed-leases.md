@@ -544,3 +544,26 @@ keeps shared rename landing, diagnostics rendering and the post-write observer,
 plus clipping and changed-span helpers used by code mode. Their focused coverage
 and the real-server code-mode fixtures remain. Language hints stay in admitted
 code-mode discovery; no compatibility registry is added.
+
+
+## Addendum: finite protocol output (2026-10-04)
+
+Issue #703 identified an unbounded mailbox path in `OutputIsWire`: its zero
+output limit let a chatty server keep sending when the consumer stopped
+reading. The native helper's per-stream cap is the bound before those bytes
+enter BEAM mailboxes, so a bounded ring at a later consumer cannot repair it.
+
+`session_lease` now assigns wire output a finite 64 MiB allowance per stream.
+LSP requirements carry that same allowance; unlimited requirements are refused
+as narrowed. Wall and CPU time remain session-owned. The allowance covers one
+lease's lifetime, not a rolling window: at most 128 MiB of stdout/stderr payload
+can be queued for an unread consumer, plus bounded protocol/message overhead.
+The helper emits a truncation indication at exhaustion. Truncated stdout is a
+failed JSON-RPC stream, cancels its lease and cannot become a clean response.
+
+This changes the original zero-output decision above. It trades indefinite
+protocol traffic for a finite producer bound while preserving ordinary local
+behavior below the allowance. A later consumption-credit protocol may remove
+the cumulative ceiling, but a larger queue or consumer-side ring cannot.
+The real-helper regression leaves a flooding wire consumer unread, verifies
+the cap and truncation, and checks that cancellation still settles promptly.
