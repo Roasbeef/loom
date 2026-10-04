@@ -528,9 +528,11 @@ pub fn a_refused_home_names_no_session_test() {
   list.each(ending.all(), fn(reason) {
     let refusal = page.home_refusal(reason)
     assert string.contains(refusal, "role=\"alert\"")
-    assert string.contains(refusal, "Run `loom ui`")
+    assert string.contains(refusal, "subject=\"link\" text=\"loom ui\"")
     assert !string.contains(refusal, "--session")
-    assert !string.contains(refusal, "<script")
+
+    // The only script is the page's own client bundle.
+    assert list.length(string.split(refusal, "<script")) == 2
   })
 }
 

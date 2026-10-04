@@ -27,6 +27,7 @@
 //// the key can fetch that HTML.
 
 import gleam/erlang/application
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import houdini
 import web_view/ending.{type Ending}
@@ -211,8 +212,11 @@ pub fn waiting_notice(session_id: String) -> String {
 /// session under this key" to a person who had done nothing wrong.
 ///
 /// The status code is the caller's and does not change; this is only the
-/// body. It carries the stylesheet and no script, so it is served under the
-/// same policy as every `/ui` response and needs nothing more from it.
+/// body. It carries the brand, the stylesheet and the client bundle, whose
+/// `<loom-copy>` element draws the command for a fresh link with a copy button.
+/// The bundle is the page's own file from this origin, so the document is served
+/// under the same policy as every `/ui` response and needs nothing more from
+/// it.
 ///
 /// ## Examples
 ///
@@ -220,7 +224,7 @@ pub fn waiting_notice(session_id: String) -> String {
 /// // page.refusal(ending.PageEnded, "0198c0de-...")
 /// ```
 pub fn refusal(reason: Ending, session_id: String) -> String {
-  ended_document(ending.headline(reason), ending.advice(reason, session_id))
+  ended_document(ending.headline(reason), ending.advised(reason, session_id))
 }
 
 /// What a home page says while it has no socket: the daemon may still be
@@ -247,24 +251,50 @@ pub fn home_waiting_notice() -> String {
 /// // page.home_refusal(ending.PageEnded)
 /// ```
 pub fn home_refusal(reason: Ending) -> String {
-  ended_document(ending.home_headline(reason), ending.home_advice(reason))
+  ended_document(ending.home_headline(reason), ending.home_advised(reason))
 }
 
-// The document a refused request is answered with: a headline and its advice
-// in the ended notice's own classes, the stylesheet, and no script.
-fn ended_document(headline: String, advice: String) -> String {
+// The document a refused request is answered with: the brand, a headline, the
+// advice's lead, and the command that mints a fresh link as a `<loom-copy>`
+// box. The box's light content is the same command in a `code` element, which
+// shows until the client bundle registers the element and which is all a
+// browser without scripts sees. The only script is the page's own client
+// bundle, from this origin, so the policy is the one every `/ui` response has.
+fn ended_document(headline: String, advice: ending.Advice) -> String {
   "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
   <> "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
   <> "<title>Loom</title>"
   <> "<link rel=\"stylesheet\" href=\""
   <> asset_path(stylesheet_asset)
-  <> "\"></head><body>"
-  <> "<section class=\"ended-notice ended-document\" role=\"alert\">"
+  <> "\"><script type=\"module\" src=\""
+  <> asset_path(client_asset)
+  <> "\"></script></head><body><main class=\"ended-page\">"
+  <> "<section class=\"ended-document\" role=\"alert\">"
+  <> "<p class=\"ended-brand\">Loom</p>"
   <> "<p class=\"ended-headline\">"
   <> houdini.escape(headline)
   <> "</p><p class=\"ended-advice\">"
-  <> houdini.escape(advice)
-  <> "</p></section></body></html>\n"
+  <> houdini.escape(advice.lead)
+  <> "</p>"
+  <> fresh_link_box(advice.command)
+  <> "</section></main></body></html>\n"
+}
+
+// The command that mints a fresh link and a button that copies it, or nothing
+// for an ending a fresh link would not help.
+fn fresh_link_box(command: Option(String)) -> String {
+  case command {
+    None -> ""
+    Some(command) -> {
+      let escaped = houdini.escape(command)
+      "<p class=\"ended-advice\">Run this in a terminal for a fresh link.</p>"
+      <> "<loom-copy subject=\"link\" text=\""
+      <> escaped
+      <> "\"><code class=\"ended-command\">"
+      <> escaped
+      <> "</code></loom-copy>"
+    }
+  }
 }
 
 /// The page the ticket exchange answers with. Its body names the keyed page

@@ -2057,7 +2057,7 @@ pub fn a_revoked_credential_ends_the_home_test() {
       reloaded.body,
       ending.home_headline(ending.AccessRevoked),
     )
-    assert string.contains(reloaded.body, "Run `loom ui`")
+    assert string.contains(reloaded.body, "subject=\"link\" text=\"loom ui\"")
     assert !string.contains(reloaded.body, "--session")
     assert home_socket(port, page, []).status == 401
   })
