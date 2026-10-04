@@ -562,7 +562,9 @@
   .commentary-body{color:var(--color-fg);font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;margin:0;}
   .commentary-more,.commentary-unloaded{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);margin:4px 0 0;}
   p.cache-miss{margin:0;padding:6px 10px;border:1px dashed var(--color-signal);border-radius:6px; color:var(--color-signal-text);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
-  .observer-bar{flex:0 0 auto;margin:16px 0 0 0;padding:12px 16px;border-top:1px solid var(--color-divider); color:var(--color-fg-quiet);font-size:13px;}
+  .observer-bar{flex:0 0 auto;display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:8px 0 0 0;padding:10px 4px 12px;border-top:1px solid var(--color-divider);color:var(--color-fg-quiet);font-size:13px;}
+  .observer-bar .pill{border:1px solid var(--color-divider);color:var(--color-fg);}
+  .observer-note{min-width:0;}
   .page-note{margin:16px;color:var(--color-fg-quiet);}
   /* The notice for a page with no session (web_view/view/ended): a row of
      its own in the heading, and the whole of a refused page's document. */
@@ -575,15 +577,15 @@
      composer in the operator's dock and above the observer's bar. Its height
      is capped and it scrolls on its own, so a long phase cannot cover the
      transcript, which is the flexible item and shrinks instead. */
-  section.todo-panel{flex:0 0 auto;min-height:0;max-height:28vh;overflow-y:auto;overscroll-behavior:contain;box-sizing:border-box; margin:8px 0 0 0;padding:8px 12px;background:var(--color-bg-raised);border:1px solid var(--color-divider);border-radius:10px; font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;}
+  section.todo-panel{flex:0 0 auto;min-height:0;max-height:28vh;overflow-y:auto;overscroll-behavior:contain;box-sizing:border-box;margin:8px 0 0 0;padding:0 4px;background:none;border:0;border-radius:0;font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;}
   footer.dock > section.todo-panel{margin:0 0 8px 0;}
   .todo-board p,.todo-reviewers p{margin:0;}
   .todo-head{display:flex;flex-wrap:wrap;gap:0 8px;align-items:baseline;}
-  .todo-label{color:var(--color-signal-text);font-weight:700;}
+  .todo-label{color:var(--color-fg);font-weight:600;}
   .todo-phase{color:var(--color-fg);font-weight:700;}
   .todo-quiet{color:var(--color-fg-quiet);}
   loom-fold.todo-fold{display:block;}
-  .todo-current{color:var(--color-signal-text);font-weight:700;}
+  .todo-current{color:var(--color-current);font-weight:500;}
   .todo-detail{padding-top:4px;}
   /* The Changes pane (web_view/view/changes): the session's own edits, in
      the strand panel. The panel scrolls on its own, so an open diff cannot
@@ -639,13 +641,19 @@
      capped and they scroll on their own, so a long action preview or
      several pending cards cannot push the composer off the screen. */
   section.approvals{margin:0 0 8px 0;max-height:35vh;overflow-y:auto;overscroll-behavior:contain;}
-  article.approval-card{background:var(--color-bg-raised);border:1px solid var(--color-signal); border-radius:10px;padding:12px 16px;margin:0 0 8px 0;}
+  article.approval-card{background:var(--color-bg-raised);border:1px solid var(--color-danger);border-radius:10px;padding:12px 16px;margin:0 0 8px 0;}
   article.approval-card:last-child{margin-bottom:0;}
-  .approval-head{margin:0 0 4px 0;color:var(--color-signal-text);font:12px/1.4 var(--font-sans);}
-  .approval-question{margin:0 0 8px 0;font-weight:600;}
+  .approval-head{margin:0 0 2px 0;color:var(--color-fg);font:14px/1.4 var(--font-sans);}
+  .approval-strand{font-weight:600;}
+  .approval-question{margin:0 0 8px 0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);}
   pre.approval-action{margin:0 0 8px 0;padding:8px;background:var(--color-bg);white-space:pre-wrap; overflow-wrap:anywhere;font:13px/1.4 var(--font-mono);}
   ul.approval-authority{margin:0 0 12px 0;padding-left:20px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);}
-  .approval-actions{display:flex;flex-wrap:wrap;gap:8px;}
+  .approval-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;}
+  /* The arming note: shown for the 600 ms the row refuses clicks, and
+     hidden after, so the delay is visible as words and not only as a dim. */
+  .arm-note{margin-left:auto;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);opacity:0;}
+  .arming .arm-note{animation:loom-arm-note 600ms steps(1,end);}
+  @keyframes loom-arm-note{from{opacity:1;}to{opacity:1;}}
   /* The arming delay: for 600 ms after a card is inserted its action row
      refuses clicks and its buttons are dimmed, so a click already heading
      for the bottom of the transcript cannot land on Allow. Both keyframes
@@ -667,7 +675,7 @@
   .nudge-more{margin:4px 0 0 0;color:var(--color-fg-quiet);font-size:12px;}
   /* The operator's session controls, in the dock above the approvals: the
      goal's buttons and the fork form. Stop and Set goal left the page. */
-  section.controls{flex:0 0 auto;margin:0 0 8px 0;font-size:13px;}
+  section.controls{flex:0 0 auto;margin:12px 0 0 0;padding-top:10px;border-top:1px solid var(--color-divider);font-size:13px;}
   .control-row{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;}
   button.control-clear{border-color:var(--color-danger);color:var(--color-danger-text);}
   button.control-pause,button.control-resume{border-color:var(--color-signal);color:var(--color-signal-text);}
@@ -687,11 +695,9 @@
      takes what is left above it, so a card appearing or the editor growing
      shrinks the transcript and never covers its last row. */
   footer.dock{flex:0 0 auto;margin-top:8px;padding:8px 0 max(12px,env(safe-area-inset-bottom)); background:var(--color-bg);}
-  form.composer{margin:0;background:var(--color-bg-raised);border:1px solid var(--color-divider); border-radius:12px;padding:12px;}
-  .identity{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;font-size:12px;margin-bottom:8px;}
-  .identity-name{color:var(--color-fg);}
-  .role-badge{border:1px solid var(--color-signal);color:var(--color-signal-text);border-radius:999px;padding:0 8px;}
-  .addressed{color:var(--color-current);}
+  form.composer{position:relative;margin:0;background:var(--color-bg-raised);border:1px solid var(--color-divider);border-radius:12px;padding:0;}
+  .to{display:flex;gap:8px;align-items:center;padding:8px 12px 0;font-size:12px;color:var(--color-fg-quiet);}
+  .to-tag{border:1px solid var(--hue,var(--color-fg-quiet));border-radius:4px;padding:0 5px;color:var(--hue-text,var(--color-fg));font:11px/1.5 var(--font-mono);}
   .outlook{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--color-divider);border-radius:999px; padding:0 8px;color:var(--color-fg-quiet);font:11px/1.6 var(--font-sans);}
   .outlook::before{content:"";width:9px;height:9px;border-radius:50%;border:2px solid var(--color-divider);}
   .outlook.ring-head::before{border-color:var(--color-current);}
@@ -699,15 +705,17 @@
   .outlook.ring-tail::before{border-color:var(--color-divider);border-top-color:var(--color-signal);}
   .outlook.ring-idle::before{border-color:var(--color-fg-faint);}
   .outlook.ring-elapsed::before{border-style:dashed;border-color:var(--color-fg-quiet);}
-  .editor textarea{field-sizing:content;min-height:4.5em;max-height:30vh;width:100%;background:var(--color-bg);color:var(--color-fg);border:1px solid var(--color-divider); border-radius:4px;padding:8px;font:14px/1.5 var(--font-sans);resize:vertical;}
+  .editor textarea{field-sizing:content;min-height:3em;max-height:30vh;width:100%;box-sizing:border-box;background:transparent;color:var(--color-fg);border:0;border-radius:0;padding:6px 12px 8px;font:14px/1.5 var(--font-sans);resize:none;}
+  .editor textarea:focus-visible{outline:none;}
+  form.composer:has(textarea:focus-visible){border-color:var(--color-fg-quiet);}
   /* The composer's element and its list of commands. The list is drawn in
      the element's shadow root, above the editor in the flow, so opening it
      grows the dock upward and leaves the editor and its buttons where they
      were. It is capped and scrolls on its own. */
   loom-composer{display:block;}
-  ul.completions{position:relative;list-style:none;margin:0 0 6px 0;padding:4px;max-height:min(16em,30vh); overflow-y:auto;background:var(--color-bg);border:1px solid var(--color-divider);border-radius:6px;}
+  ul.completions{position:absolute;bottom:100%;left:0;right:0;z-index:20;list-style:none;margin:0 0 6px 0;padding:4px;max-height:min(16em,30vh);overflow-y:auto;background:var(--color-bg-raised);border:1px solid var(--color-divider);border-radius:10px;box-shadow:var(--shadow-float);}
   li.completion{display:flex;flex-wrap:wrap;gap:0 12px;align-items:baseline;padding:4px 8px;border-radius:4px;cursor:pointer;}
-  li.completion.current{background:color-mix(in srgb,var(--color-current) 12%,var(--color-bg-raised));}
+  li.completion.current{background:color-mix(in srgb,var(--color-current) 14%,var(--color-bg-raised));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--color-current) 35%,transparent);}
   .completion-command{font:13px/1.4 var(--font-mono);color:var(--color-current);}
   .completion-hint{color:var(--color-fg-quiet);font-size:12px;}
   /* The composer's image attachments (web_client/attach): a button that opens
@@ -718,7 +726,8 @@
   .draft{display:flex;flex-direction:column;gap:6px;min-width:0;}
   loom-attach{display:block;min-width:0;}
   .attach-bar{display:flex;align-items:center;gap:8px;}
-  button.attach-add{border-color:var(--color-fg-quiet);color:var(--color-fg-quiet);font-size:12px;}
+  button.attach-add{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border-color:transparent;background:transparent;color:var(--color-fg-quiet);font:16px/1 var(--font-sans);}
+  button.attach-add:hover:not(:disabled){background:color-mix(in srgb,var(--color-fg) 8%,transparent);color:var(--color-fg);}
   button.attach-add:disabled{opacity:.5;cursor:default;}
   ul.attachments{list-style:none;margin:6px 0 0 0;padding:0;display:flex;flex-wrap:wrap;gap:6px;}
   li.attachment{display:inline-flex;align-items:center;gap:8px;max-width:100%;padding:2px 4px 2px 10px;border:1px solid var(--color-divider);border-radius:999px;background:var(--color-bg);font:12px/1.4 var(--font-mono);}
@@ -726,9 +735,29 @@
   .attachment-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   button.attachment-remove{padding:0 8px;border-radius:999px;font-size:12px;border-color:transparent;color:var(--color-fg-quiet);}
   button.attachment-remove:hover{color:var(--color-danger-text);}
-  .composer-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:flex-end;margin-top:8px;}
-  .notice{margin:0 auto 0 0;color:var(--color-fg-quiet);font-size:13px;min-width:0;}
+  .composer-actions{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;padding:6px 10px;border-top:1px solid var(--color-divider);color:var(--color-fg-quiet);font-size:12px;}
+  /* The attach element and the notice flow in the footer as its own
+     children: their hosts draw no box, so the button, the chips and the
+     notice are items of the footer row. The chips go first, on a row of
+     their own. */
+  .attach-slot,.notice-slot,loom-attach{display:contents;}
+  loom-attach ul.attachments{order:-1;flex:1 0 100%;margin:0 0 2px 0;}
+  .foot-space{flex:1 1 auto;}
+  .hint,.who{color:var(--color-fg-quiet);}
+  .notice{margin:0;color:var(--color-fg-quiet);font-size:12px;min-width:0;}
   .notice.warned{color:var(--color-danger-text);}
+  /* An outcome notice is transient: it fades after a few seconds, and a
+     warning stays. Reduced motion keeps it, because the rule below turns
+     every animation off. */
+  .notice:not(.warned){animation:loom-fade 4s forwards;}
+  @keyframes loom-fade{0%,75%{opacity:1;}100%{opacity:0;}}
+  /* One line of the goal in the dock, while a goal is active or paused. */
+  section.dock-goal{flex:0 0 auto;margin:0 0 8px 0;padding:0 4px;font-size:13px;}
+  /* An approval decision in the lane, as a who line. */
+  p.decided{margin:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);overflow-wrap:anywhere;}
+  .decided-who{color:var(--color-fg);font-weight:500;}
+  p.decided-denied .decided-tool{color:var(--color-danger-text);}
+  p.decided-allowed .decided-tool{color:var(--color-added-text);}
   button{font:13px/1.4 var(--font-sans);border-radius:6px;padding:4px 10px;cursor:pointer; border:1px solid var(--color-divider);background:var(--color-bg);color:var(--color-fg);}
   /* One filled primary per region, the rest quiet outlines. */
   button.send,button.queue{background:var(--color-primary-button);border-color:var(--color-primary-button);color:var(--color-bg);}
@@ -759,6 +788,6 @@
     li.settled-group{flex:0 0 auto;}
     ul.settled-chips{flex-direction:column;}
   }
-  @media (max-width:640px){main.centre{padding:12px 12px 0;}li.chip{width:200px;} .line.user{padding:6px 10px;}}
+  @media (max-width:640px){main.centre{padding:12px 12px 0;}li.chip{width:200px;} .line.user{padding:6px 10px;} .hint{display:none;}}
   @media (prefers-reduced-motion:reduce){*:not(.arming){transition:none!important;animation:none!important;}}
 }
