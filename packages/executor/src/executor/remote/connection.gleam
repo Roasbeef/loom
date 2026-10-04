@@ -10,15 +10,17 @@
 //// service and watchdog never run inside this reader/writer worker. An exchange
 //// failure after possible send is uncertain, irrespective of TLS error detail.
 ////
-//// Executor serve_one accepts exactly one socket and one command. Its bounded
-//// managed lifetime closes idle/nonreading peers; no further frame is read until
-//// the service's bounded admission ask completes. Root supplies a bounded pool
-//// of at most four such workers and owns listener shutdown. This API does not
-//// silently create unlimited connection workers or an insecure fallback.
+//// The production listener calls serve_relayed inside its own bounded run.
+//// The decoded Hello and operation are handed to that stable credit, which
+//// sends to the service and owns the actual reply beyond socket-worker death.
+//// Serial waits permit only one unresolved handoff. The compatibility serve_one
+//// helper shares this parser through a direct route; its return proves only
+//// socket closure and must never recycle a production service-ingress credit.
 
 import executor/remote/service
 import executor/remote/tls
 import executor/remote/wire
+import gleam/erlang/process
 import gleam/result
 import weft
 
@@ -53,6 +55,21 @@ pub type Error {
   Uncertain
 }
 
+/// A decoded request can only be created by this module's protocol reader.
+/// Its worker reply endpoint carries no arbitrary service callback.
+@internal
+pub opaque type Request {
+  Request(
+    envelope: wire.Envelope,
+    reply: process.Subject(Result(wire.Body, service.Error)),
+  )
+}
+
+type Route {
+  Direct(service.Service)
+  Relayed(process.Subject(Request))
+}
+
 /// Exchanges one closed owner command with bounded caller-owned socket custody.
 ///
 /// ## Examples
@@ -64,8 +81,9 @@ pub fn exchange(config: Config, body: wire.Body) -> Result(wire.Body, Error) {
   bounded(config.within_ms, fn() { client_exchange(config, body) })
 }
 
-/// Accepts and serves one connection; root bounds concurrent calls/listeners.
-/// Returns only after socket closure or its worker has been killed and joined.
+/// Compatibility helper for standalone exchanges with caller-owned admission.
+/// Return proves socket closure, not consumption of a queued service ask. The
+/// production listener uses serve_relayed and retains that independent custody.
 ///
 /// ## Examples
 ///
@@ -79,10 +97,70 @@ pub fn serve_one(
 ) -> Result(Nil, Error) {
   bounded(within_ms, fn() {
     use socket <- result.try(tls.accept(listener) |> transport)
-    let outcome = server_exchange(socket, executor)
+    let outcome = server_exchange(socket, executor, Direct(executor))
     tls.close(socket)
     outcome
   })
+}
+
+/// Runs socket I/O inside the listener's already bounded relayed run.
+/// Decoded asks go to the stable listener credit; this worker never sends to
+/// the service. Its death closes the socket without releasing service custody.
+///
+/// ## Examples
+///
+/// `serve_relayed(listener, executor, requests)` is one listener task.
+@internal
+pub fn serve_relayed(
+  listener: tls.Listener,
+  executor: service.Service,
+  requests: process.Subject(Request),
+) -> Result(Nil, Error) {
+  use socket <- result.try(tls.accept(listener) |> transport)
+  let outcome = server_exchange(socket, executor, Relayed(requests))
+  tls.close(socket)
+  outcome
+}
+
+/// Sends the closed decoded envelope with a reply endpoint owned by the credit.
+///
+/// ## Examples
+///
+/// `dispatch(request, executor, reply)` transfers one service ask.
+@internal
+pub fn dispatch(
+  request: Request,
+  executor: service.Service,
+  reply: process.Subject(Result(wire.Body, service.Error)),
+) -> Nil {
+  service.send_exchange(executor, request.envelope, reply)
+}
+
+/// Forwards an actual service answer; a dead socket worker receives no work.
+///
+/// ## Examples
+///
+/// `respond(request, response)` completes the worker's serial ask.
+@internal
+pub fn respond(
+  request: Request,
+  response: Result(wire.Body, service.Error),
+) -> Nil {
+  process.send(request.reply, response)
+}
+
+fn ask(
+  route: Route,
+  envelope: wire.Envelope,
+) -> Result(wire.Body, service.Error) {
+  case route {
+    Direct(executor) -> service.exchange(executor, envelope)
+    Relayed(requests) -> {
+      let reply = process.new_subject()
+      process.send(requests, Request(envelope, reply))
+      process.receive_forever(reply)
+    }
+  }
 }
 
 fn bounded(within: Int, work: fn() -> Result(a, Error)) -> Result(a, Error) {
@@ -158,6 +236,7 @@ fn owner_exchange(
 fn server_exchange(
   socket: tls.Connection,
   executor: service.Service,
+  route: Route,
 ) -> Result(Nil, Error) {
   let config = service.configuration(executor)
   use hello <- result.try(read(
@@ -171,7 +250,7 @@ fn server_exchange(
     True -> Ok(Nil)
     False -> Error(Uncertain)
   })
-  use body <- result.try(service.exchange(executor, hello) |> transport)
+  use body <- result.try(ask(route, hello) |> transport)
   use Nil <- result.try(write(socket, hello, body))
   use command <- result.try(read(
     socket,
@@ -184,7 +263,7 @@ fn server_exchange(
     True -> Ok(Nil)
     False -> Error(Uncertain)
   })
-  let response = case service.exchange(executor, command) {
+  let response = case ask(route, command) {
     Ok(body) -> body
     Error(service.Invalid) -> wire.Rejected(1)
     Error(service.Capacity) -> wire.Rejected(2)
