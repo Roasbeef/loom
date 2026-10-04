@@ -656,3 +656,73 @@ pub fn only_an_owning_page_is_handed_the_capability_test() {
   assert ui_socket.invite_capability(ui_socket.Operating, ask) == None
   let assert Some(_) = ui_socket.invite_capability(ui_socket.Owning, ask)
 }
+
+// A page whose transport hands it the capability to go home that
+// `home_capability` gives a page of `reach`, and whose `ask` reports each
+// press on `asked` before it answers with a ticket. What is under test is the
+// daemon's glue, not the component: the reach decides whether the page draws a
+// Home button, and the button's press arrives at the asker.
+fn going_home(
+  reach: ui_sessions.Reach,
+  asked: process.Subject(Nil),
+) -> component.Start(ui_relay.Relay) {
+  let ask = fn() {
+    process.send(asked, Nil)
+    sessions.Ticketed("/ui/exchange?ticket=home-ticket")
+  }
+  let start = start()
+  component.Start(
+    ..start,
+    transport: component.Transport(
+      ..start.transport,
+      home: ui_socket.home_capability(reach, ask),
+    ),
+  )
+}
+
+// The frame a browser sends for a click at `path`.
+fn click_at(path: String) -> String {
+  "{\"kind\":1,\"path\":"
+  <> json.to_string(json.string(path))
+  <> ",\"name\":\"click\",\"event\":{}}"
+}
+
+// Reads frames until one contains `text`, or the page goes quiet.
+fn frames_contain(page: ui_socket.Page, text: String) -> Bool {
+  case process.selector_receive(page.frames, 1000) {
+    Error(Nil) -> False
+    Ok(frame) ->
+      case string.contains(json.to_string(frame), text) {
+        True -> True
+        False -> frames_contain(page, text)
+      }
+  }
+}
+
+// A page opened from a home (`Workspace` reach) draws the Home button, and a
+// click at its path reaches the daemon's asker and navigates to its ticket,
+// for an observer's and an operator's page alike. A page a link for one
+// session opened (`OneSession`) draws no button, and the same frame asks
+// nothing.
+pub fn a_workspace_page_goes_home_and_a_one_session_page_cannot_test() {
+  list.each([ui_socket.Observing, ui_socket.Operating], fn(role) {
+    let asked = process.new_subject()
+    let assert Ok(page) =
+      ui_socket.start_page(role, going_home(ui_sessions.Workspace, asked))
+      as "the workspace page starts"
+    assert string.contains(mounted(page), "home-link")
+    page.forward(click_at(component.home_path))
+    assert process.receive(asked, 1000) == Ok(Nil)
+    assert frames_contain(page, "home-ticket")
+    page.shutdown()
+
+    let asked = process.new_subject()
+    let assert Ok(page) =
+      ui_socket.start_page(role, going_home(ui_sessions.OneSession, asked))
+      as "the one-session page starts"
+    assert !string.contains(mounted(page), "home-link")
+    page.forward(click_at(component.home_path))
+    assert process.receive(asked, 300) == Error(Nil)
+    page.shutdown()
+  })
+}

@@ -1507,7 +1507,7 @@ fn operator_image(
 }
 
 /// Starts the component a page of `role` gets: an observer's page, which
-/// takes one click at two places, or an operator's, which takes only the
+/// takes one click at three places, or an operator's, which takes only the
 /// events its view attaches, with an owner's also taking the invitation
 /// control's. Called from the socket's own process, which then owns the
 /// subject the component's messages arrive on.
