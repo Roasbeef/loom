@@ -20,16 +20,19 @@
 
 import broker/broker
 import broker/budget
+import broker/dispatch
 import broker/escalation
 import broker/exec
 import broker/framing
 import broker/policy
+import broker/token
 import client/agency
 import client/async_codemode
 import client/async_runs
 import client/codemode
 import client/peer_mail
 import client/peers
+import client/remote/tool_custody
 import client/serve
 import client/workflows
 import codemode/artifact
@@ -43,6 +46,7 @@ import codemode/orchestration
 import codemode/satellite
 import codemode/search as search_router
 import codemode/tool_gate
+import codemode/seed
 import codemode/vet
 import codemode/vet/policy as vet_policy
 import codemode/workspace
@@ -52,12 +56,14 @@ import core/ids.{type OpId}
 import core/json
 import core/message
 import core/msgpack
+import core/remote_tool
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import machine/operation
 import machine/strand as machine_strand
 import provider/secret
 import provider/stream
@@ -2748,4 +2754,140 @@ pub fn async_worker_does_not_duplicate_unrelated_configuration_test() {
   process.unlink(service.pid)
   process.kill(service.pid)
   let _ = broker.stop(broker_actor)
+}
+
+// The trusted entry is exercised with the actual custody constructor rather
+// than a reconstructed key. Provider metadata and canonical arguments remain
+// on the original Invocation while this adapter validates its coordinates.
+fn managed_invocation(
+  request: codemode_tool.Request,
+) -> tool_custody.Invocation {
+  let generator = ids.generator(clock.fixed(1000), 711)
+  let #(session, generator) = ids.mint_session(generator)
+  let #(result_entry, _) = ids.mint_entry(generator)
+  let arguments = json.Object([#("source", json.String(request.source))])
+  let run =
+    effects.ToolRun(
+      operation: request.op_id,
+      step_id: request.step_id,
+      source_index: request.source_index,
+      result_entry:,
+      strand: request.strand,
+      call: message.ToolCall(
+        id: "original-code-mode",
+        name: "code_mode",
+        arguments:,
+        thought_signature: Some("original-signature"),
+        namespace: None,
+      ),
+      arguments:,
+      replay: operation.ReplayNever,
+      grants: [],
+    )
+  let assert Ok(invocation) =
+    tool_custody.invocation(session, <<"original-authority">>, run)
+    as "Actual runtime metadata constructs the original retained Invocation."
+  invocation
+}
+
+fn managed_owner(seen: Subject(dispatch.Dispatch)) -> broker.Broker {
+  let assert Ok(owner) =
+    broker.start_dispatching(
+      entropy: token.production_entropy(),
+      clock: clock.fixed(1000),
+      dispatcher: dispatch.Dispatcher(start: fn(call) {
+        process.send(seen, call)
+        Error(dispatch.NotStarted)
+      }),
+    )
+    as "The production broker is available for the managed entry."
+  owner
+}
+
+pub fn managed_coordinates_refuse_before_workspace_setup_or_dispatch_test() {
+  let request = request_at("original-tools", 3)
+  let invocation = managed_invocation(request)
+  let seen = process.new_subject()
+  let owner = managed_owner(seen)
+  let config =
+    codemode.Config(
+      ..config_for(owner),
+      work_root: "/dev/null/managed-must-not-create",
+      socket_root: None,
+    )
+  list.each(
+    [
+      codemode_tool.Request(..request, op_id: an_op(99)),
+      codemode_tool.Request(..request, step_id: "different-step"),
+      codemode_tool.Request(..request, source_index: 4),
+    ],
+    fn(changed) {
+      assert codemode.execute_managed(config, invocation.key, changed)
+        == Error(
+          "managed code-mode request does not match its original invocation",
+        )
+    },
+  )
+  assert process.receive(seen, 50) == Error(Nil)
+  assert simplifile.is_directory(config.work_root) != Ok(True)
+  broker.stop(owner)
+}
+
+pub fn managed_invocation_reaches_real_compile_clearance_with_original_key_test() {
+  let assert Ok(here) = simplifile.current_directory()
+    as "The fixture has its own checkout directory."
+  let root = here <> "/build/managed-entry-fixture"
+  let seed_root = root <> "/seed"
+  let assert Ok(Nil) =
+    seed.prepare(
+      root: seed_root,
+      vendored: [],
+      dependencies: compile.default_dependencies(),
+    )
+    as "The production seed writer pins this entry's dependency table."
+  let assert Ok(Nil) = simplifile.create_directory_all(seed_root <> "/vendor")
+    as "The seed has the vendored clone directory."
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(seed_root <> "/build/packages")
+    as "The seed has the cache layout the builder verifies."
+  let assert Ok(Nil) = simplifile.write(seed_root <> "/manifest.toml", "")
+    as "The recording refusal does not execute a compiler."
+  let assert Ok(Nil) =
+    simplifile.write(seed_root <> "/build/packages/packages.toml", "")
+    as "The builder can proceed through actual clone preparation."
+  let request =
+    codemode_tool.Request(
+      ..request_at("original-tools", 3),
+      source: "import cap/report\npub fn main() { report.text(\"managed\") }",
+      base_policy: policy.SandboxPolicy(
+        ..policy.workspace_default(root),
+        readable_roots: ["/"],
+      ),
+    )
+  let invocation = managed_invocation(request)
+  let seen = process.new_subject()
+  let owner = managed_owner(seen)
+  let config =
+    codemode.Config(
+      ..config_for(owner),
+      work_root: root <> "/work",
+      socket_root: Some("/private/tmp/loom-managed-entry-sockets"),
+      seed_root:,
+    )
+  let assert Ok(execution) =
+    codemode.execute_managed(config, invocation.key, request)
+    as "The original coordinates admit trusted managed execution."
+  let assert codemode_tool.CompileFailed(_) = execution.result
+    as "The controlled dispatcher refuses after observing actual clearance."
+  let assert Ok(call) = process.receive(seen, 2000)
+    as "Client entry must reach the real builder and broker dispatcher."
+  let assert Some(origin) = call.context.origin
+    as "Original Invocation provenance survives every production adapter."
+  assert remote_tool.child_tool(origin) == Ok(invocation.key)
+  assert remote_tool.child_role(origin) == Ok(remote_tool.CompileCommand)
+  assert call.context.operation == request.op_id
+  assert call.context.step == request.step_id
+  assert call.deadline_ms == 1000 + request.within_ms
+  assert remote_tool.source_index(invocation.key) == 3
+  broker.stop(owner)
 }

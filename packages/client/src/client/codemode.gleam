@@ -238,6 +238,7 @@ import codemode/vet/policy as vet_policy
 import codemode/workspace
 import core/clock.{type Clock}
 import core/ids.{type OpId}
+import core/remote_tool
 import filepath
 import gleam/bit_array
 import gleam/bool
@@ -1666,6 +1667,39 @@ pub fn execute(
   config: Config,
   request: codemode_tool.Request,
 ) -> codemode_tool.Execution {
+  execute_with_parent(config, request, None)
+}
+
+/// Executes under the original tool invocation retained by owner custody.
+/// Coordinates must match before any workspace setup or clearance occurs.
+/// The parent is supplied by trusted assembly, never decoded from model input.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.execute_managed(config, invocation.key, request)
+/// ```
+pub fn execute_managed(
+  config: Config,
+  parent: remote_tool.ToolKey,
+  request: codemode_tool.Request,
+) -> Result(codemode_tool.Execution, String) {
+  use <- bool.guard(
+    when: remote_tool.operation(parent) != request.op_id
+      || remote_tool.step(parent) != request.step_id
+      || remote_tool.source_index(parent) != request.source_index,
+    return: Error(
+      "managed code-mode request does not match its original invocation",
+    ),
+  )
+  Ok(execute_with_parent(config, request, Some(parent)))
+}
+
+fn execute_with_parent(
+  config: Config,
+  request: codemode_tool.Request,
+  parent: Option(remote_tool.ToolKey),
+) -> codemode_tool.Execution {
   // A seam this host does not serve, before anything is dispatched. The
   // tool shell has already refused one, so this is for a caller that
   // built its own `Request`: it must not be silently reinterpreted as the
@@ -1688,7 +1722,7 @@ pub fn execute(
     vet.vet(request.source, seam_allowlist(config, vetting_seam(request.seam)))
   {
     vet.Rejected(rejections) -> vet_rejected_execution(rejections)
-    vet.Passed(_vetted) -> execute_after_vetting(config, request)
+    vet.Passed(_vetted) -> execute_after_vetting(config, request, parent)
   }
 }
 
@@ -1697,6 +1731,7 @@ pub fn execute(
 fn execute_after_vetting(
   config: Config,
   request: codemode_tool.Request,
+  parent: Option(remote_tool.ToolKey),
 ) -> codemode_tool.Execution {
   let root = exec_root(config, request)
   let sockets = exec_socket_directory(config, request)
@@ -1734,12 +1769,13 @@ fn execute_after_vetting(
         pipeline.execute(
           request.source,
           watching(
-            exec_config(
+            exec_config_for(
               config,
               request,
               root,
               deadline_ms,
-              widened_by: approved_grants(request),
+              approved_grants(request),
+              parent,
             ),
             config.clock,
             host_mounts: config.host_mounts,
@@ -2466,6 +2502,17 @@ pub fn exec_config(
   deadline_ms: Int,
   widened_by grants: List(Grant),
 ) -> pipeline.ExecConfig {
+  exec_config_for(config, request, root, deadline_ms, grants, None)
+}
+
+fn exec_config_for(
+  config: Config,
+  request: codemode_tool.Request,
+  root: String,
+  deadline_ms: Int,
+  grants: List(Grant),
+  parent: Option(remote_tool.ToolKey),
+) -> pipeline.ExecConfig {
   let config = Config(..config, fixed_deadline: Some(deadline_ms))
   let pooled = pooled_budget(config, deadline_ms)
   let sockets = exec_socket_directory(config, request)
@@ -2489,11 +2536,15 @@ pub fn exec_config(
       build: build.builder(build_config(config, request)),
     )),
     broker: config.broker,
-    identity: identity.for_execution(
-      op_id: request.op_id,
-      step_id: request.step_id,
-      budget: pooled,
-    )
+    identity: case parent {
+      None ->
+        identity.for_execution(
+          op_id: request.op_id,
+          step_id: request.step_id,
+          budget: pooled,
+        )
+      Some(parent) -> identity.for_managed_execution(parent, budget: pooled)
+    }
       |> identity.widened_by(grants:),
     satellite: satellite.SatelliteConfig(
       base_policy:,
