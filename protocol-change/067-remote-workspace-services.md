@@ -146,7 +146,8 @@ already settled tool callback a second time. Runtime recovery must consume
 that evidence under the original durable operation identity.
 
 Tool recovery uses a complete ToolKey: session, operation, step, source index
-and persisted argument digest. A persisted child-request map distinguishes
+persisted argument digest and reserved result-entry identity. A persisted
+child-request map distinguishes
 compile, launch and nested capability calls within that tool. System-origin
 broker calls have an explicit system origin. Operation ID alone cannot key
 result recovery.
