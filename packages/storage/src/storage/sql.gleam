@@ -1655,7 +1655,8 @@ pub fn owner_command_offer_header(address address: String) {
   CAST(CASE WHEN typeof(identity) = 'blob' THEN length(identity) ELSE -1 END AS INTEGER) AS identity_bytes,
   CAST(CASE WHEN typeof(offer) = 'blob' THEN length(offer) ELSE -1 END AS INTEGER) AS offer_bytes,
   CASE WHEN state IN ('retained', 'cancelled', 'frozen') THEN state ELSE '' END AS state,
-  reserved_bytes FROM owner_custody_command_offers WHERE address = ?1 LIMIT 2"
+  CAST(CASE WHEN typeof(reserved_bytes) = 'integer' THEN reserved_bytes ELSE -1 END AS INTEGER) AS reserved_bytes
+  FROM owner_custody_command_offers WHERE address = ?1 LIMIT 2"
   #(sql, [dev.ParamString(address)], owner_command_offer_header_decoder())
 }
 
@@ -1672,6 +1673,71 @@ pub fn owner_command_offer_header_decoder() -> decode.Decoder(
   use state <- decode.field(7, decode.string)
   use reserved_bytes <- decode.field(8, decode.int)
   decode.success(OwnerCommandOfferHeader(
+    parent:,
+    service_origin:,
+    service_id:,
+    native_origin:,
+    offer_digest:,
+    identity_bytes:,
+    offer_bytes:,
+    state:,
+    reserved_bytes:,
+  ))
+}
+
+pub type OwnerCommandOfferHeaderByNativeOrigin {
+  OwnerCommandOfferHeaderByNativeOrigin(
+    address: String,
+    parent: String,
+    service_origin: String,
+    service_id: String,
+    native_origin: String,
+    offer_digest: String,
+    identity_bytes: Int,
+    offer_bytes: Int,
+    state: String,
+    reserved_bytes: Int,
+  )
+}
+
+pub fn owner_command_offer_header_by_native_origin(
+  native_origin native_origin: String,
+) {
+  let sql =
+    "SELECT
+  CASE WHEN typeof(address) = 'text' AND length(CAST(address AS BLOB)) <= 8192 THEN address ELSE '' END AS address,
+  CASE WHEN typeof(parent) = 'text' AND length(CAST(parent AS BLOB)) <= 8192 THEN parent ELSE '' END AS parent,
+  CASE WHEN typeof(service_origin) = 'text' AND length(CAST(service_origin AS BLOB)) <= 8192 THEN service_origin ELSE '' END AS service_origin,
+  CASE WHEN typeof(service_id) = 'text' AND length(CAST(service_id AS BLOB)) = 36 THEN service_id ELSE '' END AS service_id,
+  CASE WHEN typeof(native_origin) = 'text' AND length(CAST(native_origin AS BLOB)) <= 8192 THEN native_origin ELSE '' END AS native_origin,
+  CASE WHEN typeof(offer_digest) = 'text' AND length(CAST(offer_digest AS BLOB)) = 64 THEN offer_digest ELSE '' END AS offer_digest,
+  CAST(CASE WHEN typeof(identity) = 'blob' THEN length(identity) ELSE -1 END AS INTEGER) AS identity_bytes,
+  CAST(CASE WHEN typeof(offer) = 'blob' THEN length(offer) ELSE -1 END AS INTEGER) AS offer_bytes,
+  CASE WHEN state IN ('retained', 'cancelled', 'frozen') THEN state ELSE '' END AS state,
+  CAST(CASE WHEN typeof(reserved_bytes) = 'integer' THEN reserved_bytes ELSE -1 END AS INTEGER) AS reserved_bytes
+  FROM owner_custody_command_offers WHERE native_origin = ?1 LIMIT 2"
+  #(
+    sql,
+    [dev.ParamString(native_origin)],
+    owner_command_offer_header_by_native_origin_decoder(),
+  )
+}
+
+pub fn owner_command_offer_header_by_native_origin_decoder() -> decode.Decoder(
+  OwnerCommandOfferHeaderByNativeOrigin,
+) {
+  use address <- decode.field(0, decode.string)
+  use parent <- decode.field(1, decode.string)
+  use service_origin <- decode.field(2, decode.string)
+  use service_id <- decode.field(3, decode.string)
+  use native_origin <- decode.field(4, decode.string)
+  use offer_digest <- decode.field(5, decode.string)
+  use identity_bytes <- decode.field(6, decode.int)
+  use offer_bytes <- decode.field(7, decode.int)
+  use state <- decode.field(8, decode.string)
+  use reserved_bytes <- decode.field(9, decode.int)
+  decode.success(OwnerCommandOfferHeaderByNativeOrigin(
+    address:,
     parent:,
     service_origin:,
     service_id:,
