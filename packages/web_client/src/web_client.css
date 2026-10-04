@@ -405,6 +405,23 @@
   .home-table td{padding:8px 12px 8px 0;vertical-align:baseline;border-bottom:1px solid var(--color-divider);}
   .home-table td.home-name{min-width:0;overflow-wrap:anywhere;}
   .home-table td.home-created{color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);white-space:nowrap;}
+  /* A running session's row opens it (protocol-change/065, the second pull
+     request). The name is a button whose ::after covers the row, so the whole
+     row is the target and reads as one list row: a tint on hover, a ring on
+     keyboard focus, no shadow. A saved session's name is text and its row has
+     no tint. */
+  .home-table tr.home-row{position:relative;}
+  .home-table tr.home-row:has(.home-open):hover{background:var(--color-bg-raised);}
+  .home-table tr.home-row:has(.home-open:focus-visible){outline:2px solid var(--color-current);outline-offset:-2px;}
+  .home-open{margin:0;padding:0;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;}
+  .home-open::after{content:"";position:absolute;inset:0;}
+  .home-open:focus-visible{outline:none;}
+  .home-notice{margin:0 0 12px 0;padding:8px 12px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font-size:13px;}
+  /* The way back to the home, on a session page opened from one: a quiet
+     button after the brand, tinted on hover like a list row. */
+  .session-head .home-link{margin:0;padding:2px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:12px/1.4 var(--font-sans);cursor:pointer;}
+  .session-head .home-link:hover{background:var(--color-bg-raised);}
+  .session-head .home-link:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
   .ring{display:inline-block;width:10px;height:10px;border-radius:50%;flex:0 0 auto; border:2px solid var(--color-divider);}
   .ring.ring-head{border-color:var(--color-current);background:color-mix(in srgb,var(--color-current) 25%,transparent);}
   .ring.ring-tail{border-color:var(--color-divider);border-top-color:var(--color-signal);transform:rotate(45deg);}
