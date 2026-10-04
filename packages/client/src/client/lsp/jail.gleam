@@ -1850,7 +1850,9 @@ pub fn settled_text(outcome: broker.CallOutcome, stderr: BitArray) -> String {
 fn missing_layers(failure: exec.ExecFailure) -> String {
   case failure {
     exec.DegradedExecution(result:) ->
-      case list.filter(result.enforcement, string.starts_with(_, "skip:")) {
+      case
+        list.filter(result.enforcement, string.starts_with(_, exec.skip_prefix))
+      {
         [] -> ""
         skipped -> " (" <> string.join(skipped, ", ") <> ")"
       }

@@ -13,7 +13,7 @@ import broker/executor_view
 import broker/framing
 import broker/relay
 import broker/support/fake_helper
-import broker/support/lanes
+import broker/support/planes
 import core/clock
 import gleam/erlang/process
 import gleam/list
@@ -26,25 +26,22 @@ import weft/poll
 
 // --- fixtures -------------------------------------------------------------
 
-fn plane(script: fake_helper.Script, size size: Int) -> lanes.Plane {
-  lanes.start_scripted(lanes.Service, size:, script: fn() {
-    fake_helper.start_helper(script)
-  })
+fn plane(script: fake_helper.Script, size size: Int) -> planes.Plane {
+  planes.start_scripted(size:, script: fn() { fake_helper.start_helper(script) })
 }
 
-fn service_of(plane: lanes.Plane) -> executor.Executor {
-  let assert Some(service) = plane.service as "a service-lane plane"
-  service
+fn service_of(plane: planes.Plane) -> executor.Executor {
+  plane.service
 }
 
-fn call(plane: lanes.Plane, deadline_ms: Int) {
+fn call(plane: planes.Plane, deadline_ms: Int) {
   call_spec(
     plane,
-    lanes.spec(lanes.op(), argv: ["/bin/echo", "hi"], deadline_ms:),
+    planes.spec(planes.op(), argv: ["/bin/echo", "hi"], deadline_ms:),
   )
 }
 
-fn call_spec(plane: lanes.Plane, spec: broker.CallSpec) {
+fn call_spec(plane: planes.Plane, spec: broker.CallSpec) {
   let events = process.new_subject()
   let assert Ok(handle) =
     broker.clear_call(plane.broker, spec, events:, waiting: 2000)
@@ -54,7 +51,7 @@ fn call_spec(plane: lanes.Plane, spec: broker.CallSpec) {
 // Polls the snapshot until `holds`, so a test reads state the service has
 // reached and not state it is about to reach.
 fn snapshot_where(
-  plane: lanes.Plane,
+  plane: planes.Plane,
   holds: fn(executor_view.Snapshot) -> Bool,
 ) -> executor_view.Snapshot {
   let assert poll.Answered(snapshot) =
@@ -102,8 +99,8 @@ pub fn a_live_execution_is_one_true_row_test() {
   assert snapshot.metrics.started == 1
 
   broker.cancel(plane.broker, handle)
-  let assert [broker.CallSettled(_)] = lanes.collect(events, within: 2000)
-  lanes.stop(plane)
+  let assert [broker.CallSettled(_)] = planes.collect(events, within: 2000)
+  planes.stop(plane)
 }
 
 /// A cancel is visible on the row as a cause and, once the execution has
@@ -114,7 +111,7 @@ pub fn a_cancel_is_measured_to_its_settlement_test() {
   let _ = snapshot_where(plane, fn(snapshot) { snapshot.live != [] })
 
   broker.cancel(plane.broker, handle)
-  let assert [broker.CallSettled(_)] = lanes.collect(events, within: 2000)
+  let assert [broker.CallSettled(_)] = planes.collect(events, within: 2000)
   let snapshot =
     snapshot_where(plane, fn(snapshot) { snapshot.metrics.completed == 1 })
 
@@ -123,7 +120,7 @@ pub fn a_cancel_is_measured_to_its_settlement_test() {
   let assert [settled] = snapshot.recent
   assert settled.cancel == execution.Asked(execution.ByBroker)
   let assert executor_view.Completed(..) = settled.outcome
-  lanes.stop(plane)
+  planes.stop(plane)
 }
 
 /// Output is reported to the service on the first chunk and then at most
@@ -145,13 +142,13 @@ pub fn progress_is_thinned_and_exact_at_settlement_test() {
   assert row.output.stdout_bytes > 0
 
   broker.cancel(plane.broker, handle)
-  let _ = lanes.collect(events, within: 2000)
+  let _ = planes.collect(events, within: 2000)
   let snapshot =
     snapshot_where(plane, fn(snapshot) { snapshot.metrics.completed == 1 })
   let assert [settled] = snapshot.recent
   assert settled.stdout_bytes == 40
   assert snapshot.metrics.output_bytes == 40
-  lanes.stop(plane)
+  planes.stop(plane)
 }
 
 /// A flood of chunks inside one `progress_interval_ms` costs the service the
@@ -211,7 +208,7 @@ pub fn the_recent_ring_holds_sixty_four_test() {
   let plane = plane(fake_helper.EchoArgv, size: 1)
   list.each(list.repeat(Nil, 70), fn(_) {
     let #(_handle, events) = call(plane, 0)
-    let assert [_, ..] = lanes.collect(events, within: 3000)
+    let assert [_, ..] = planes.collect(events, within: 3000)
     Nil
   })
   let snapshot =
@@ -226,7 +223,7 @@ pub fn the_recent_ring_holds_sixty_four_test() {
   // Newest first: the head is the last execution, sequence seventy.
   let assert [newest, ..] = snapshot.recent
   assert dispatch.seq(newest.id) == 70
-  lanes.stop(plane)
+  planes.stop(plane)
 }
 
 /// A lost execution is a failure the snapshot remembers, with its identity.
@@ -238,14 +235,14 @@ pub fn the_last_failure_names_the_lost_execution_test() {
     broker.relay_pid(plane.broker, handle, waiting: 1000)
 
   process.kill(relay_pid)
-  let _ = lanes.collect(events, within: 2000)
+  let _ = planes.collect(events, within: 2000)
   let snapshot =
     snapshot_where(plane, fn(snapshot) { snapshot.metrics.lost == 1 })
 
   let assert Some(failure) = snapshot.last_failure
   assert failure.outcome == executor_view.Lost(cause: exec.RelayDown)
   assert dispatch.seq(failure.id) == 1
-  lanes.stop(plane)
+  planes.stop(plane)
 }
 
 /// A start refused for want of a helper is counted by its reason.
@@ -257,9 +254,9 @@ pub fn refused_starts_are_counted_by_reason_test() {
   let refused =
     broker.clear_call(
       plane.broker,
-      lanes.spec(lanes.op(), argv: ["/bin/echo", "hi"], deadline_ms: 100_000),
+      planes.spec(planes.op(), argv: ["/bin/echo", "hi"], deadline_ms: 100_000),
       events: process.new_subject(),
-      waiting: 200,
+      waiting: 1000,
     )
   assert refused == Error(broker.NoHelper(error: exec.AllBusy(size: 1)))
   let snapshot =
@@ -268,8 +265,8 @@ pub fn refused_starts_are_counted_by_reason_test() {
   assert snapshot.metrics.pool_unavailable == 0
 
   broker.cancel(plane.broker, handle)
-  let _ = lanes.collect(events, within: 2000)
-  lanes.stop(plane)
+  let _ = planes.collect(events, within: 2000)
+  planes.stop(plane)
 }
 
 // --- nothing a request held ------------------------------------------------------
@@ -279,7 +276,7 @@ const marker = "MARKER-4f1c9e77a0b3"
 // A call whose argv, environment and working directory all carry the marker.
 fn marked_spec() -> broker.CallSpec {
   broker.CallSpec(
-    ..lanes.spec(lanes.op(), argv: ["/bin/echo", marker], deadline_ms: 0),
+    ..planes.spec(planes.op(), argv: ["/bin/echo", marker], deadline_ms: 0),
     env: [#("PATH", "/usr/bin"), #("SECRET", marker)],
     cwd: "/work/" <> marker,
   )
@@ -300,8 +297,8 @@ pub fn a_live_snapshot_carries_no_request_test() {
   assert_no_marker(string.inspect(snapshot))
 
   broker.cancel(plane.broker, handle)
-  let _ = lanes.collect(events, within: 2000)
-  lanes.stop(plane)
+  let _ = planes.collect(events, within: 2000)
+  planes.stop(plane)
 }
 
 /// A request whose argv, environment, working directory and token all carry
@@ -312,8 +309,7 @@ pub fn the_settled_snapshot_and_the_log_carry_no_request_test() {
   let lines = process.new_subject()
   let logger = log.new(sink: log.to_subject(lines), threshold: level.Debug)
   let plane =
-    lanes.start_logged(
-      lanes.Service,
+    planes.start_logged(
       size: 2,
       spawn: fn() { Ok(fake_helper.start_helper(fake_helper.EchoArgv)) },
       clock: clock.fixed(at: 1000),
@@ -322,7 +318,7 @@ pub fn the_settled_snapshot_and_the_log_carry_no_request_test() {
 
   // Through the broker: argv, environment and working directory.
   let #(_handle, events) = call_spec(plane, marked_spec())
-  let assert [_, ..] = lanes.collect(events, within: 3000)
+  let assert [_, ..] = planes.collect(events, within: 3000)
 
   // Directly: a capability token carrying the marker.
   let settlements = process.new_subject()
@@ -359,7 +355,7 @@ pub fn the_settled_snapshot_and_the_log_carry_no_request_test() {
   assert_no_marker(string.inspect(first))
   assert_no_marker(string.inspect(second))
   assert_no_marker(record.render(second))
-  lanes.stop(plane)
+  planes.stop(plane)
 }
 
 /// A completed execution is an Info line and a lost one a Warning, each
@@ -368,8 +364,7 @@ pub fn settlement_lines_are_info_for_completions_and_warnings_otherwise_test() {
   let lines = process.new_subject()
   let logger = log.new(sink: log.to_subject(lines), threshold: level.Debug)
   let plane =
-    lanes.start_logged(
-      lanes.Service,
+    planes.start_logged(
       size: 1,
       spawn: fn() { Ok(fake_helper.start_helper(fake_helper.SleepUntilCancel)) },
       clock: clock.fixed(at: 1000),
@@ -378,7 +373,7 @@ pub fn settlement_lines_are_info_for_completions_and_warnings_otherwise_test() {
   let #(handle, events) = call(plane, 100_000)
   let _ = snapshot_where(plane, fn(snapshot) { snapshot.live != [] })
   broker.cancel(plane.broker, handle)
-  let _ = lanes.collect(events, within: 2000)
+  let _ = planes.collect(events, within: 2000)
   let assert Ok(done) = process.receive(lines, 2000)
   assert done.level == level.Info
   assert string.contains(record.render(done), "\"outcome\":\"completed\"")
@@ -389,11 +384,11 @@ pub fn settlement_lines_are_info_for_completions_and_warnings_otherwise_test() {
   let assert Ok(relay_pid) =
     broker.relay_pid(plane.broker, handle, waiting: 1000)
   process.kill(relay_pid)
-  let _ = lanes.collect(events, within: 2000)
+  let _ = planes.collect(events, within: 2000)
   let assert Ok(lost) = process.receive(lines, 2000)
   assert lost.level == level.Warning
   assert string.contains(record.render(lost), "\"outcome\":\"lost\"")
-  lanes.stop(plane)
+  planes.stop(plane)
 }
 
 /// The close writes its verdict as a line of its own.
@@ -401,8 +396,7 @@ pub fn closing_logs_its_verdict_test() {
   let lines = process.new_subject()
   let logger = log.new(sink: log.to_subject(lines), threshold: level.Debug)
   let plane =
-    lanes.start_logged(
-      lanes.Service,
+    planes.start_logged(
       size: 1,
       spawn: fn() { Ok(fake_helper.start_helper(fake_helper.EchoArgv)) },
       clock: clock.fixed(at: 1000),
@@ -414,6 +408,49 @@ pub fn closing_logs_its_verdict_test() {
   assert closed.event == "executor.closed"
   assert closed.level == level.Info
   broker.stop(plane.broker)
+}
+
+/// An observer waiting on the pool delays nothing the service owes a caller.
+/// The pool's custody is read in the observer's own process, so a pool that
+/// is slow to answer holds the snapshot and no one else. The test holds the
+/// custody query for two seconds, takes a snapshot into it, and cancels a
+/// running call meanwhile: the settlement has to come back long before the
+/// custody query does. A service that asked the pool from inside its own
+/// serial loop would sit in the query, and the relay's request for leave to
+/// settle would wait behind it.
+pub fn a_snapshot_waiting_on_the_pool_does_not_delay_a_settlement_test() {
+  let held = process.new_subject()
+  let plane =
+    planes.start_custody_intercepted(
+      size: 1,
+      spawn: fn() { Ok(fake_helper.start_helper(fake_helper.SleepUntilCancel)) },
+      clock: clock.fixed(at: 1000),
+      intercept: fn(custody) {
+        process.send(held, Nil)
+        process.sleep(2000)
+        custody()
+      },
+    )
+  let #(handle, events) = call(plane, 0)
+
+  // The observer enters the custody query, and stays there.
+  let answers = process.new_subject()
+  process.spawn_unlinked(fn() {
+    process.send(answers, executor.snapshot(service_of(plane), waiting: 5000))
+  })
+  let assert Ok(Nil) = process.receive(held, 1000)
+    as "the snapshot reached the custody query"
+
+  broker.cancel(plane.broker, handle)
+  let asked_at = poll.monotonic().now()
+  let assert [broker.CallSettled(_)] = planes.collect(events, within: 1500)
+    as "the settlement came while the custody query was still held"
+  assert poll.monotonic().now() - asked_at < 1000
+
+  // The held snapshot then completes, with the pool's answer.
+  let assert Ok(Ok(snapshot)) = process.receive(answers, 4000)
+  let assert Ok(_custody) = snapshot.pool
+  planes.stop(plane)
 }
 
 /// A snapshot of a service that is gone is `Unreachable`, not a fault.
@@ -451,7 +488,7 @@ pub fn a_spawn_failure_in_custody_leaves_no_payload_test() {
   let assert Ok(snapshot) = executor.snapshot(service, waiting: 2000)
   assert snapshot.pool == Error(executor_view.PoolSpawnFailed)
   assert_no_marker(string.inspect(snapshot))
-  lanes.stop(plane)
+  planes.stop(plane)
 }
 
 /// A start refused because the service is closing is counted as a pool
@@ -469,12 +506,12 @@ pub fn a_start_refused_while_closing_is_counted_test() {
   })
   process.sleep(200)
 
-  let spec = lanes.spec(lanes.op(), argv: ["/usr/bin/true"], deadline_ms: 0)
+  let spec = planes.spec(planes.op(), argv: ["/usr/bin/true"], deadline_ms: 0)
   assert broker.clear_call(
       plane.broker,
       spec,
       events: process.new_subject(),
-      waiting: 500,
+      waiting: 1000,
     )
     == Error(broker.NoHelper(error: exec.PoolUnavailable))
   let snapshot =
@@ -487,6 +524,6 @@ pub fn a_start_refused_while_closing_is_counted_test() {
   // A helper that ignores cancel is not retired, so the verdict is an
   // error; only that the close ended matters here.
   let assert Ok(_) = process.receive(verdicts, 4000)
-  let _ = lanes.collect(events, within: 1000)
+  let _ = planes.collect(events, within: 1000)
   broker.stop(plane.broker)
 }

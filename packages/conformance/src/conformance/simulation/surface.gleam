@@ -47,6 +47,7 @@
 
 import conformance/simulation/control.{type Control}
 import conformance/simulation/fault.{type Schedule}
+import conformance/simulation/plane.{type Plane}
 import conformance/simulation/script.{type Script, type Settle, type Trigger}
 import conformance/simulation/vclock.{type Clockwork}
 import core/json
@@ -154,6 +155,30 @@ pub fn build(
   raw: Session,
   strand strand: String,
 ) -> Effects {
+  build_on(ctl, vc, script, schedule, raw, strand:, plane: None)
+}
+
+/// `build` with the tools running through an effect plane: each tool call
+/// starts a real execution through the executor before the schedule's faults
+/// are applied and ends it before the scripted result is returned, so a fault
+/// can land while the execution is in flight (`conformance/simulation/plane`).
+/// With no plane the tools are only scripted, as in `build`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // surface.build_on(ctl, vc, script, schedule, raw, strand: "main", plane: Some(plane))
+/// ```
+///
+pub fn build_on(
+  ctl: Control,
+  vc: Clockwork,
+  script: Script,
+  schedule: Schedule,
+  raw: Session,
+  strand strand: String,
+  plane effect_plane: Option(Plane),
+) -> Effects {
   effects.Effects(
     clock: vclock.clock(vc),
     entropy: fn() { 1_000_000 + control.bump(ctl, "entropy") * 104_729 },
@@ -166,7 +191,9 @@ pub fn build(
       clear: fn(query: effects.ClearanceQuery) {
         clearance(ctl, script, strand, query)
       },
-      run: fn(run) { execute(ctl, vc, script, schedule, strand, run) },
+      run: fn(run) {
+        execute(ctl, vc, script, schedule, strand, effect_plane, run)
+      },
       replay_still_safe: fn(name) {
         list.key_find(script.registry, name) == Ok(ReplaySafe)
       },
@@ -707,18 +734,39 @@ fn execute(
   script: Script,
   schedule: Schedule,
   strand: String,
+  effect_plane: Option(Plane),
   run: effects.ToolRun,
 ) -> effects.ToolOutcome {
   let index = control.bump(ctl, "effect")
   let _invocations =
     control.bump(ctl, "tool:" <> run.call.name <> ":" <> run.call.id)
+
+  // The execution is opened before the schedule is consulted, so the fault
+  // that kills the tree or the strand lands with it in flight. An effect the
+  // fault kills never reaches `finish`, and the plane is then holding an
+  // execution whose caller is gone, which is what it is there to be checked
+  // on.
+  let execution = case effect_plane {
+    Some(active) ->
+      option.map(plane.begin(active, ctl), fn(open) { #(active, open) })
+    None -> None
+  }
   case
     effect_fault(ctl, vc, schedule, index, strand:, loss_allowed: LossRefused)
   {
-    Killed | Starved ->
+    Killed | Starved -> {
+      case execution {
+        Some(_) -> control.mark(ctl, "fault-during-execution")
+        None -> Nil
+      }
       effects.ToolFailed(reason: "the tree was killed mid-execution")
+    }
     Ran -> {
       intervene(ctl, script, Some(script.DuringCall(call: run.call.id)))
+      case execution {
+        Some(#(active, open)) -> plane.finish(active, open)
+        None -> Nil
+      }
       let #(text, is_error) = case list.key_find(script.tools, run.call.name) {
         Ok(script.ToolOk(text:)) -> #(text, False)
         Ok(script.ToolErr(text:)) -> #(text, True)

@@ -647,7 +647,7 @@ pub fn a_waiting_call_holds_no_budget_slot_test() {
   assert process.receive(parked, 300) == Error(Nil)
   // The ledger's second slot is free, so the probe reaches the pool and
   // is turned away by *it* — the parked caller is holding neither.
-  let probe = clear_elsewhere(started, two_at_a_time, waiting: 120)
+  let probe = clear_elsewhere(started, two_at_a_time, waiting: 1000)
   let assert Ok(Error(broker.NoHelper(error: exec.AllBusy(size: 1)))) =
     process.receive(probe, 3000)
   // And the parked caller still gets its helper when one comes back.
@@ -955,7 +955,9 @@ pub fn a_broker_outlives_a_pool_that_will_not_answer_test() {
 /// the broker dispatches to it a few microseconds later from inside the
 /// same handler. That gap used to be fatal to the broker. It settles in
 /// band now — one `CallSettled` carrying the dispatch failure, exactly
-/// as a helper's own refusal would.
+/// as a helper's own refusal would. The service's relay monitors the
+/// helper actor it was handed, so it names the death
+/// (`ExecutionLost(HelperActorDown)`) and not a call that went unanswered.
 pub fn a_broker_outlives_a_helper_that_died_before_dispatch_test() {
   let #(started, helper, _checkins) =
     broker_with(fake_helper.EchoArgv, at: 1000)
@@ -964,8 +966,12 @@ pub fn a_broker_outlives_a_helper_that_died_before_dispatch_test() {
   let events = process.new_subject()
   let assert Ok(_handle) =
     broker.clear_call(started, spec(op()), events:, waiting: 2000)
-  let assert Ok(broker.CallSettled(broker.CallFailed(exec.HelperUnresponsive))) =
-    process.receive(events, 2000)
+  assert process.receive(events, 2000)
+    == Ok(
+      broker.CallSettled(
+        broker.CallFailed(exec.ExecutionLost(cause: exec.HelperActorDown)),
+      ),
+    )
   let assert Ok(broker_pid) = broker.pid(started)
   assert process.is_alive(broker_pid)
   broker.stop(started)

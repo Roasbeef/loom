@@ -48,6 +48,7 @@
 import conformance/simulation/control.{type Control}
 import conformance/simulation/fault.{type Schedule}
 import conformance/simulation/invariant
+import conformance/simulation/plane
 import conformance/simulation/random
 import conformance/simulation/script.{type Op, type Script}
 import conformance/simulation/store
@@ -127,6 +128,12 @@ pub type Report {
     /// only place a real clock decided anything, so a run with none of
     /// them has no wall-clock wait to blame.
     waits: List(String),
+    /// Executions the tools cleared through the effect plane.
+    executions: Int,
+    /// What the effect plane found wrong once the tree was killed, one
+    /// `check: detail` line each (`effects/no-orphan`,
+    /// `effects/one-settlement`).
+    effect_violations: List(String),
   )
 }
 
@@ -644,7 +651,27 @@ fn sound(which: String, report: Report) -> Result(Nil, Failure) {
   use _ <- result.try(check_terminated(which, report))
   use _ <- result.try(check_no_violation(which, report))
   use _ <- result.try(check_replay_once(which, report))
+  use _ <- result.try(check_effects(which, report))
   check_terminal_writes_once(which, report)
+}
+
+// The effect plane's own two checks, which hold of one run on its own: no
+// execution outlived its caller, and each settled once. A violation line is
+// `check: detail`, and the check's name is what the failure carries.
+fn check_effects(which: String, report: Report) -> Result(Nil, Failure) {
+  case report.effect_violations {
+    [] -> Ok(Nil)
+    [first, ..] ->
+      case string.split_once(first, ": ") {
+        Ok(#(check, detail)) ->
+          Error(Failure(check:, detail: which <> " run: " <> detail))
+        Error(Nil) ->
+          Error(Failure(
+            check: "effects/no-orphan",
+            detail: which <> " run: " <> first,
+          ))
+      }
+  }
 }
 
 fn check_terminated(which: String, report: Report) -> Result(Nil, Failure) {
@@ -871,7 +898,17 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
     as "the memory session must open"
   let instrumented =
     store.instrument(raw, ctl, schedule, strand:, lease_interval_ms: 5)
-  let surfaces = surface.build(ctl, vc, script, schedule, raw, strand:)
+  let effect_plane = plane.start()
+  let surfaces =
+    surface.build_on(
+      ctl,
+      vc,
+      script,
+      schedule,
+      raw,
+      strand:,
+      plane: Some(effect_plane),
+    )
   let events: process.Subject(writer.Event) = process.new_subject()
   let base = api.default_options(configuration())
 
@@ -978,12 +1015,24 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
       coverage: control.marks(ctl),
       effects: control.read(ctl, "effect"),
       waits: control.waits(ctl),
+      executions: 0,
+      effect_violations: [],
     )
   process.kill(runtime.tree.supervisor)
+
+  // The tree is dead, so every effect it was running is unwinding: the
+  // plane is asked whether each execution those effects started was ended
+  // and settled once.
+  let observed = plane.verify(effect_plane)
+  plane.stop(effect_plane)
   let _closed = session.close(raw)
   vclock.stop(vc)
   control.stop(ctl)
-  report
+  Report(
+    ..report,
+    executions: observed.executions,
+    effect_violations: observed.violations,
+  )
 }
 
 // Waits, briefly and boundedly, for commit accounting and the writer's

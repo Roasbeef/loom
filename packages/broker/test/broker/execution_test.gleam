@@ -13,6 +13,7 @@ import broker/execution.{
   ExecOutput, GraceExpired, HelperDown, SendCancel, Settle, Streaming,
 }
 import broker/framing
+import broker/support/seeded
 import gleam/bit_array
 import gleam/int
 import gleam/list
@@ -193,40 +194,12 @@ pub fn helper_death_after_a_terminal_event_changes_nothing_test() {
 
 // --- properties -----------------------------------------------------------
 
-type Seed {
-  Seed(state: Int)
-}
-
-const mask_64 = 0xFFFFFFFFFFFFFFFF
-
-fn next(seed: Seed) -> #(Int, Seed) {
-  let state = int.bitwise_and(seed.state + 0x9E3779B97F4A7C15, mask_64)
-  let z =
-    int.bitwise_and(
-      int.bitwise_exclusive_or(state, int.bitwise_shift_right(state, 30))
-        * 0xBF58476D1CE4E5B9,
-      mask_64,
-    )
-  let z =
-    int.bitwise_and(
-      int.bitwise_exclusive_or(z, int.bitwise_shift_right(z, 27))
-        * 0x94D049BB133111EB,
-      mask_64,
-    )
-  #(int.bitwise_exclusive_or(z, int.bitwise_shift_right(z, 31)), Seed(state:))
-}
-
-fn int_between(seed: Seed, min: Int, max: Int) -> #(Int, Seed) {
-  let #(raw, seed) = next(seed)
-  #(min + raw % { max - min + 1 }, seed)
-}
-
 // One random event. Output is the commonest so that sequences have chunks
 // to order, and chunk text is its index so a reordering is visible.
-fn event_from(seed: Seed, index: Int) -> #(Event, Seed) {
-  let #(kind, seed) = int_between(seed, 0, 11)
-  let #(truncated, seed) = int_between(seed, 0, 3)
-  let #(width, seed) = int_between(seed, 0, 6)
+fn event_from(seed: seeded.Seed, index: Int) -> #(Event, seeded.Seed) {
+  let #(kind, seed) = seeded.between(seed, 0, 11)
+  let #(truncated, seed) = seeded.between(seed, 0, 3)
+  let #(width, seed) = seeded.between(seed, 0, 6)
   let text = int.to_string(index) <> string_of(width)
   let event = case kind {
     0 | 1 | 2 ->
@@ -263,8 +236,8 @@ fn string_of(width: Int) -> String {
 }
 
 fn sequence_from(seed_value: Int) -> List(Event) {
-  let seed = Seed(state: seed_value)
-  let #(length, seed) = int_between(seed, 1, 14)
+  let seed = seeded.new(seed_value)
+  let #(length, seed) = seeded.between(seed, 1, 14)
   let #(events, _seed) =
     count_to(length)
     |> list.fold(#([], seed), fn(state, index) {

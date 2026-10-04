@@ -8,7 +8,18 @@
 //// or one `kill(1)`; none changes what the pool does.
 ////
 //// Linux only. `/proc` is the interface, and the benchmark's gate refuses to
-//// run where the helper has no jail to measure.
+//// run where the helper has no jail to measure. The three functions that
+//// do not read `/proc` (`port_os_pids`, `suspend` and `resume`) work on any
+//// host, and are bound straight to OTP's `erlang` and `sys` modules rather
+//// than to a shim.
+
+import gleam/dynamic.{type Dynamic}
+import gleam/dynamic/decode
+import gleam/erlang/atom
+import gleam/erlang/port.{type Port}
+import gleam/erlang/process.{type Pid}
+import gleam/list
+import gleam/result
 
 /// The value of an environment variable, or `Error(Nil)` when it is unset.
 ///
@@ -137,3 +148,81 @@ pub fn signal(pid: Int, name: String) -> Nil
 /// ```
 @external(erlang, "bench_exec_ffi", "census")
 pub fn census(markers: List(String)) -> List(#(Int, String, String))
+
+@external(erlang, "erlang", "ports")
+fn all_ports() -> List(Port)
+
+@external(erlang, "erlang", "port_info")
+fn port_info(port: Port, item: atom.Atom) -> Dynamic
+
+/// The OS pids of every port this node holds that is backed by an OS
+/// process. Unlike `helper_os_pids` it reads no `/proc`, so a test can take
+/// the pid of the helper it just spawned by differencing two readings on a
+/// host that has none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let before = bench_host.port_os_pids()
+/// ```
+pub fn port_os_pids() -> List(Int) {
+  let os_pid = atom.create("os_pid")
+  list.filter_map(all_ports(), fn(port) {
+    // A port that is not an OS process answers `undefined`, and one that
+    // closed between the listing and the query answers `undefined` too.
+    decode.run(port_info(port, os_pid), decode.at([1], decode.int))
+    |> result.replace_error(Nil)
+  })
+}
+
+@external(erlang, "sys", "suspend")
+fn sys_suspend(pid: Pid) -> Dynamic
+
+@external(erlang, "sys", "resume")
+fn sys_resume(pid: Pid) -> Dynamic
+
+/// Stops an OTP process from handling messages. They keep arriving, in
+/// order, and wait in its mailbox until `resume`. A test uses it to fix the
+/// order in which two events reach an actor that would otherwise read them
+/// as they come.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // bench_host.suspend(actor_pid)
+/// ```
+pub fn suspend(pid: Pid) -> Nil {
+  let _ = sys_suspend(pid)
+  Nil
+}
+
+/// Lets a suspended OTP process handle the messages that queued behind it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // bench_host.resume(actor_pid)
+/// ```
+pub fn resume(pid: Pid) -> Nil {
+  let _ = sys_resume(pid)
+  Nil
+}
+
+@external(erlang, "erlang", "process_info")
+fn process_info(pid: Pid, item: atom.Atom) -> Dynamic
+
+/// How many messages wait in a process's mailbox, or `0` once it has
+/// exited. A suspended actor's mailbox only grows, so a test reads it to
+/// know that a request it sent has arrived before it does the next thing,
+/// without guessing how long the send takes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // bench_host.queued(actor_pid)
+/// ```
+pub fn queued(pid: Pid) -> Int {
+  process_info(pid, atom.create("message_queue_len"))
+  |> decode.run(decode.at([1], decode.int))
+  |> result.unwrap(0)
+}

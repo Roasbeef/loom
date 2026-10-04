@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -298,4 +299,160 @@ func TestMissingControllers(t *testing.T) {
 			t.Fatalf("missingControllers(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
+}
+
+// diedExcept makes Sweep read every pid but the ones named here as gone.
+func diedExcept(t *testing.T, alive ...int) {
+	t.Helper()
+	was := pidAlive
+	pidAlive = func(pid int) bool {
+		for _, a := range alive {
+			if a == pid {
+				return true
+			}
+		}
+		return false
+	}
+	t.Cleanup(func() { pidAlive = was })
+}
+
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// The leak of #702: a killed helper leaves exec-<id>-<pid> behind. The sweep
+// removes the ones whose execution has gone, and only those: a live one (the
+// execution's process still exists, even though its cgroup is empty until
+// Enter), one the kernel reports populated, a name that is not an execution's
+// at all, and a plain file are all left.
+func TestSweepRemovesOnlyTheCgroupsOfExecutionsThatHaveGone(t *testing.T) {
+	base := t.TempDir()
+	diedExcept(t, 1111)
+	for name, events := range map[string]string{
+		"exec-3-4242":       "",              // gone, empty: swept
+		"exec-5-1111":       "populated 0\n", // live pid, empty until Enter: kept
+		"exec-7-99":         "populated 1\n", // gone pid, still has members: kept
+		"loom-exec-probe-1": "",              // not an execution's name: kept
+		"exec-8":            "",              // no pid: kept
+		"exec-8-9-10":       "",              // not the pattern: kept
+		"other":             "",              // kept
+	} {
+		dir := filepath.Join(base, name)
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if events != "" {
+			if err := os.WriteFile(filepath.Join(dir, "cgroup.events"), []byte(events), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := os.WriteFile(filepath.Join(base, "exec-1-5"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := Sweep(base)
+	if removed != 1 || err != nil {
+		t.Fatalf("Sweep = %d, %v; want 1, nil", removed, err)
+	}
+	if exists(filepath.Join(base, "exec-3-4242")) {
+		t.Fatal("the gone, empty cgroup was not removed")
+	}
+	for _, kept := range []string{"exec-5-1111", "exec-7-99", "loom-exec-probe-1", "exec-8", "exec-8-9-10", "other", "exec-1-5"} {
+		if !exists(filepath.Join(base, kept)) {
+			t.Errorf("%s was removed and must not have been", kept)
+		}
+	}
+}
+
+// Child cgroups go first and the directory last, each by rmdir, as Cleanup
+// does for a release.
+func TestSweepRemovesAChildCgroupBeforeItsParent(t *testing.T) {
+	base := t.TempDir()
+	diedExcept(t)
+	if err := os.MkdirAll(filepath.Join(base, "exec-2-77", "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := Sweep(base)
+	if err != nil || removed != 1 {
+		t.Fatalf("Sweep = %d, %v; want 1, nil", removed, err)
+	}
+	if exists(filepath.Join(base, "exec-2-77")) {
+		t.Fatal("the nested cgroup tree was left behind")
+	}
+}
+
+// The removal is rmdir and never a recursive delete: a directory that holds
+// something rmdir refuses (on a real cgroupfs, a process-holding child that
+// raced the check) is reported and left with its contents, and the sweep goes
+// on to the next candidate.
+func TestSweepNeverDeletesRecursively(t *testing.T) {
+	base := t.TempDir()
+	diedExcept(t)
+	kept := filepath.Join(base, "exec-1-50", "keep.txt")
+	if err := os.MkdirAll(filepath.Dir(kept), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(kept, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(base, "exec-2-51"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := Sweep(base)
+	if err == nil || !strings.Contains(err.Error(), "exec-1-50") {
+		t.Fatalf("Sweep error = %v, want one naming exec-1-50", err)
+	}
+	if removed != 1 || exists(filepath.Join(base, "exec-2-51")) {
+		t.Fatalf("the later candidate was not swept (removed %d)", removed)
+	}
+	if !exists(kept) {
+		t.Fatal("a directory rmdir refused was deleted recursively")
+	}
+}
+
+func TestSweepReportsAnUnreadableBase(t *testing.T) {
+	if _, err := Sweep(filepath.Join(t.TempDir(), "absent")); err == nil {
+		t.Fatal("sweeping a base that does not exist reported nothing")
+	}
+}
+
+// On a host with a delegated cgroup v2 base, the leak itself: a cgroup of a
+// dead execution made by Setup, removed by Sweep, while one with a live pid in
+// its name is left. Hosts without a base skip; only the Linux signoff with a
+// delegated cgroup runs this, and the cases above cover the logic everywhere.
+func TestSweepRemovesARealCgroup(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("cgroups exist only on Linux")
+	}
+	base, reason := DetectBase(BaseFromEnv())
+	if base == "" {
+		t.Skipf("no delegated cgroup v2 base to sweep: %s", reason)
+	}
+	// A pid no process holds: past the kernel's largest pid_max.
+	const gone = 4194305
+	dead := mustSetup(t, base, "exec-9001-"+strconv.Itoa(gone))
+	live := mustSetup(t, base, "exec-9002-"+strconv.Itoa(os.Getpid()))
+	defer Cleanup(live)
+	defer Cleanup(dead)
+
+	if _, err := Sweep(base); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if exists(dead) {
+		t.Fatal("the cgroup of a dead execution was left behind")
+	}
+	if !exists(live) {
+		t.Fatal("the cgroup of a live execution was removed")
+	}
+}
+
+func mustSetup(t *testing.T, base, name string) string {
+	t.Helper()
+	dir, err := Setup(base, name, LimitsView{})
+	if err != nil {
+		t.Skipf("cannot create a cgroup under %s: %v", base, err)
+	}
+	return dir
 }

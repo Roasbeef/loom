@@ -8,8 +8,8 @@
 //// wrapping that session's helper pool. It borrows a helper for each
 //// execution, starts a `broker/relay` to watch the execution, dispatches
 //// the helper, and keeps a row for the execution until the broker releases
-//// it. Four properties that the direct lane left to convention are
-//// properties of this module's structure.
+//// it. Four properties that the per-call relay this service replaced left to
+//// convention are properties of this module's structure.
 ////
 //// ## One sender
 ////
@@ -56,8 +56,8 @@
 //// the service cancels the helper, returns it (the pool retires a helper
 //// returned while busy), removes the row and settles the caller as
 //// `ExecutionLost(RelayDown)`. The second arrival finds no row and is
-//// dropped. The caller therefore always hears a settlement in this lane;
-//// the direct lane gives none when its relay dies.
+//// dropped. The caller therefore always hears a settlement, even when its
+//// relay dies, which the per-call relay this service replaced never did.
 ////
 //// That claim holds for a `Granted` row too, by an argument about order.
 //// The broker's `settle` closure sends the broker its `Settle` message
@@ -86,7 +86,7 @@
 //// budget (`drain_ms`). Executions still live at that point are settled
 //// `ExecutionLost(ExecutorClosing)`, their relays killed and their helpers
 //// returned busy. Then it closes the pool with the pool's own budget
-//// (`helpers_ms`, the 5000 the direct lane gave `close_pool`) and replies
+//// (`helpers_ms`, the 5000 `close_pool` is given when called alone) and replies
 //// with the pool's verdict. The two are separate arguments so that the
 //// pool is never given only what a slow drain left over.
 ////
@@ -223,32 +223,14 @@ pub type ExecutorConfig {
 
 /// A handle on a running service.
 pub opaque type Executor {
-  Executor(subject: Subject(Msg), pid: Pid, incarnation: Int)
-}
-
-/// One execution the service holds, as an observer sees it.
-pub type LiveRow {
-  LiveRow(
-    /// The execution's identity.
-    id: dispatch.ExecutionId,
-    /// When the execution started, in the session clock's milliseconds.
-    started_at: Int,
-  )
-}
-
-/// The service's books at one instant: the executions it holds and the
-/// pool's census beside them. A row exists only while the service holds a
-/// helper for it, so the list is never longer than the pool.
-pub type Inventory {
-  Inventory(
-    /// The service's incarnation.
+  // `custody` is the pool's query, kept in the handle and not asked by the
+  // service: an observer calls it in its own process, so a pool that is slow
+  // to answer holds the observer and never the service's serial loop.
+  Executor(
+    subject: Subject(Msg),
+    pid: Pid,
     incarnation: Int,
-    /// Every execution the service holds, in start order. A row stays from
-    /// dispatch until the broker releases it, so it includes executions
-    /// whose settlement has been granted and not yet released.
-    live: List(LiveRow),
-    /// The pool's answer, or why it gave none.
-    pool: Result(exec.PoolCensus, executor_view.CustodyUnavailable),
+    custody: fn() -> Result(exec.PoolCustody, exec.CheckoutError),
   )
 }
 
@@ -276,9 +258,8 @@ pub opaque type Msg {
   Release(id: dispatch.ExecutionId)
   Abandon(id: dispatch.ExecutionId)
   RelayDown(down: process.Down)
-  Report(reply: Subject(Inventory))
-  Observe(reply: Subject(executor_view.Snapshot))
-  QueryCensus(reply: Subject(Census))
+  Observe(reply: Subject(executor_view.Observation))
+  QueryPhase(reply: Subject(executor_view.ServicePhase))
   Close(
     draining: Int,
     helpers: Int,
@@ -392,11 +373,11 @@ fn start_budget_ms() -> Int {
 /// own TERM-to-KILL ladder, so a helper that honours cancel has answered.
 pub const drain_ms = 2000
 
-/// How long the pool is given to show every helper retired. The direct
-/// lane gave `close_pool` exactly this, and the service lane keeps it
-/// whole: draining is the service's own work and is paid for separately,
-/// so a shutdown with executions in flight does not make the pool report
-/// `RetirementPending` where the direct lane would have succeeded.
+/// How long the pool is given to show every helper retired. The service
+/// keeps it whole: draining is the service's own work and is paid for
+/// separately, so a shutdown with executions in flight does not make the
+/// pool report `RetirementPending` where an idle shutdown would have
+/// succeeded.
 pub const helpers_ms = 5000
 
 // The caller of `close` waits this much past the two budgets, because the
@@ -445,6 +426,7 @@ pub fn start(config: ExecutorConfig) -> Result(Executor, actor.StartError) {
       subject: started.data,
       pid: started.pid,
       incarnation: config.incarnation,
+      custody: config.custody,
     )
   })
 }
@@ -486,37 +468,17 @@ pub fn dispatcher(executor: Executor) -> Dispatcher {
   })
 }
 
-/// The service's books, answered by the service so that rows and census
-/// describe one instant. `waiting` is the observer's window in
-/// milliseconds.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let assert Ok(books) = executor.inventory(service, waiting: 1000)
-/// assert books.live == []
-/// ```
-///
-pub fn inventory(
-  executor: Executor,
-  waiting timeout: Int,
-) -> Result(Inventory, Unreachable) {
-  case call.try_call(executor.subject, waiting: timeout, sending: Report) {
-    Ok(books) -> Ok(books)
-    Error(call.NoReply) | Error(call.CalleeGone) -> Error(Unreachable)
-  }
-}
-
 /// The service's version census: the three version numbers the service
 /// speaks, and the hello features of its newest helper (`broker/census`
 /// says why features are reported and never refused).
 ///
 /// The pool records each helper's features when its handshake completes, so
-/// the census reads them from the pool's custody query. It borrows nothing
-/// and spawns nothing: a census on a pool that has never spawned a helper
-/// answers no features, and so does one whose pool does not answer within
-/// the custody window or whose service is closing. An empty list therefore
-/// means "unknown", never "none".
+/// the census reads them from the pool's custody query, which the caller runs
+/// in its own process after the service has said whether it is serving. It
+/// borrows nothing and spawns nothing: a census on a pool that has never
+/// spawned a helper answers no features, and so does one whose pool does not
+/// answer within the custody window or whose service is closing. An empty
+/// list therefore means "unknown", never "none".
 ///
 /// ## Examples
 ///
@@ -529,8 +491,9 @@ pub fn census(
   executor: Executor,
   waiting timeout: Int,
 ) -> Result(Census, Unreachable) {
-  case call.try_call(executor.subject, waiting: timeout, sending: QueryCensus) {
-    Ok(here) -> Ok(here)
+  case call.try_call(executor.subject, waiting: timeout, sending: QueryPhase) {
+    Ok(executor_view.Serving) -> Ok(census.local(newest_features(executor)))
+    Ok(executor_view.Closing) | Ok(executor_view.Closed) -> Ok(census.local([]))
     Error(call.NoReply) | Error(call.CalleeGone) -> Error(Unreachable)
   }
 }
@@ -543,9 +506,15 @@ pub fn census(
 ///
 /// The figures are the service's own books and the relays' last progress
 /// reports, so no relay and no helper is asked anything: a wedged execution
-/// cannot delay the answer. `waiting` is the observer's window in
-/// milliseconds; the service itself may spend up to a second of it asking
-/// the pool for its custody.
+/// cannot delay the answer. The pool's custody is the one thing the service
+/// does not know, and it is read here, in the caller's process, after the
+/// service has answered. A pool that is slow to spawn therefore delays this
+/// call by up to a second (the custody query's own bound) and delays no
+/// settlement. The two halves are not one instant, then: the rows describe
+/// the moment the service answered, the custody a moment after, and a row
+/// whose helper the pool no longer lists has no spawn ordinal. `waiting` is
+/// the observer's window in milliseconds for the service's answer; the
+/// custody query is bounded separately.
 ///
 /// ## Examples
 ///
@@ -559,7 +528,8 @@ pub fn snapshot(
   waiting timeout: Int,
 ) -> Result(executor_view.Snapshot, Unreachable) {
   case call.try_call(executor.subject, waiting: timeout, sending: Observe) {
-    Ok(snapshot) -> Ok(snapshot)
+    Ok(observation) ->
+      Ok(executor_view.completed(observation, pool: custody_of(executor)))
     Error(call.NoReply) | Error(call.CalleeGone) -> Error(Unreachable)
   }
 }
@@ -686,38 +656,26 @@ fn handle(
     phase, Release(id:) -> conclude(phase, release_row(state, id))
     phase, Abandon(id:) -> conclude(phase, abandon_row(state, id))
     phase, RelayDown(down:) -> conclude(phase, relay_gone(state, down))
-    _phase, Report(reply:) -> {
-      process.send(reply, books(state))
-      state_machine.keep(state)
-    }
     phase, Observe(reply:) -> {
-      process.send(reply, snapshot_of(phase, state))
+      process.send(reply, observation_of(phase, state))
       state_machine.keep(state)
     }
 
     // A census is a question about the helpers, so only a serving service
-    // can answer it in full: a closing one is retiring them.
-    phase, QueryCensus(reply:) -> {
-      process.send(reply, census_of(phase, state))
+    // can answer it in full: a closing one is retiring them. The service
+    // says which it is, and the caller asks the pool the rest.
+    phase, QueryPhase(reply:) -> {
+      process.send(reply, phase_view(phase))
       state_machine.keep(state)
     }
   }
 }
 
-// The census, with features taken from the pool's custody and from no
-// helper: the pool heard them at the handshake. A closing service is
-// retiring its helpers, so it reports none.
-fn census_of(phase: Phase, state: State) -> Census {
-  case phase {
-    Serving -> census.local(newest_features(state))
-    Closing(..) | Closed(..) -> census.local([])
-  }
-}
-
 // Helpers are listed oldest first, so the newest that has said hello is the
-// last non-empty answer. A pool that cannot answer yields unknown.
-fn newest_features(state: State) -> List(String) {
-  case state.config.custody() {
+// last non-empty answer. A pool that cannot answer yields unknown. This runs
+// in the observer's process, never the service's.
+fn newest_features(executor: Executor) -> List(String) {
+  case executor.custody() {
     Ok(custody) ->
       list.reverse(custody.helpers)
       |> list.find(fn(view) { view.features != [] })
@@ -820,8 +778,8 @@ fn dispatch_execution(
       cancelled_mono: None,
     )
 
-  // A refusal here still reaches the caller through the relay, as the
-  // direct lane does, so the caller sees one settlement either way. The
+  // A refusal here still reaches the caller through the relay, so the
+  // caller sees one settlement either way. The
   // service sends it on the relay's own subject, which the relay reads as
   // the helper's failure event.
   case
@@ -848,15 +806,7 @@ fn start_relay(
   helper: Helper,
   id: dispatch.ExecutionId,
 ) -> Result(relay.Relay, dispatch.StartRefusal) {
-  let subject = state.subject
-  let link =
-    relay.Link(
-      cancel: fn() { ask_to_cancel(subject, id, waiting: relay.cancel_wait_ms) },
-      may_settle: fn(verdict) {
-        ask_to_settle(subject, id, verdict, waiting: relay.settle_wait_ms)
-      },
-      progress: fn(progress) { process.send(subject, Progress(id:, progress:)) },
-    )
+  let link = link_over(state.subject, id)
   let config =
     relay.Config(
       caller: request.caller,
@@ -878,6 +828,43 @@ fn start_relay(
       Error(dispatch.NotStarted)
     }
   }
+}
+
+// The relay's way back to this service, built once per execution. Every
+// closure sends to the service and names the execution by identity, so a late
+// one finds its row gone and is dropped.
+//
+// `cancel` is where the single-sender fence lives. The link holds no helper,
+// so a relay has nothing to send a cancel to except this service: a relay's
+// cancel that went straight to the helper would be a second sender beside
+// this service, and nothing would order it before the `Run` this service
+// sends for the next execution on a reused helper. `a_stale_relay_cancel_never_reaches_the_next_execution_test`
+// shows a stale cancel through this link doing nothing and, as the control,
+// through a link that does send directly cancelling the next execution.
+fn link_over(subject: Subject(Msg), id: dispatch.ExecutionId) -> relay.Link {
+  relay.Link(
+    cancel: fn() { ask_to_cancel(subject, id, waiting: relay.cancel_wait_ms) },
+    may_settle: fn(verdict) {
+      ask_to_settle(subject, id, verdict, waiting: relay.settle_wait_ms)
+    },
+    progress: fn(progress) { process.send(subject, Progress(id:, progress:)) },
+  )
+}
+
+/// The link a relay of execution `id` is given, so a test can
+/// hold it and call its `cancel` late, as a relay delayed between deciding to
+/// cancel and cancelling would. Not part of the service's API: nothing outside
+/// the service has a reason to build one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let link = executor.relay_link(service, execution.id)
+/// link.cancel()
+/// ```
+@internal
+pub fn relay_link(executor: Executor, id: dispatch.ExecutionId) -> relay.Link {
+  link_over(executor.subject, id)
 }
 
 // The relay's own cancel, asked from the relay's process. The service
@@ -1237,20 +1224,6 @@ fn has_live_row(state: State) -> Bool {
 
 // --- observation --------------------------------------------------------
 
-fn books(state: State) -> Inventory {
-  let live =
-    dict.to_list(state.rows)
-    |> list.sort(fn(left, right) { int.compare(left.0, right.0) })
-    |> list.map(fn(entry) {
-      LiveRow(id: { entry.1 }.id, started_at: { entry.1 }.started_at_ms)
-    })
-  Inventory(
-    incarnation: state.config.incarnation,
-    live:,
-    pool: custody_of(state) |> result.map(fn(custody) { custody.census }),
-  )
-}
-
 // The relay's report, kept on the row it names. A report for a granted row
 // is dropped: the verdict carried the final counters. One for a row that is
 // gone is a late cast and finds nothing.
@@ -1270,35 +1243,29 @@ fn observe_progress(
 }
 
 // The pool's custody with its refusal reduced to a name. The refusal can
-// carry a helper's message, so nothing past this function sees it.
+// carry a helper's message, so nothing past this function sees it. The query
+// runs in the caller's process: see `Executor`.
 fn custody_of(
-  state: State,
+  executor: Executor,
 ) -> Result(exec.PoolCustody, executor_view.CustodyUnavailable) {
-  state.config.custody()
-  |> result.map_error(fn(refusal) {
-    case refusal {
-      exec.AllBusy(..) -> executor_view.PoolBusy
-      exec.PoolUnavailable -> executor_view.PoolNotAnswering
-      exec.SpawnFailed(..) -> executor_view.PoolSpawnFailed
-    }
-  })
+  executor.custody()
+  |> result.map_error(executor_view.custody_unavailable)
 }
 
-// The books, the live rows and the pool's custody, rendered at one instant.
+// What the service knows of itself, rendered at one instant: the books and
+// the live rows, without the pool's custody, which only an observer reads.
 // Every field is a counter, an enum or an identity, so what an observer is
 // given cannot contain a request.
-fn snapshot_of(phase: Phase, state: State) -> executor_view.Snapshot {
-  let pool = custody_of(state)
+fn observation_of(phase: Phase, state: State) -> executor_view.Observation {
   let now = now_ms()
   let live =
     dict.to_list(state.rows)
     |> list.sort(fn(left, right) { int.compare(left.0, right.0) })
-    |> list.map(fn(entry) { live_view(entry.1, pool, now) })
-  executor_view.Snapshot(
+    |> list.map(fn(entry) { live_view(entry.1, now) })
+  executor_view.Observation(
     incarnation: state.config.incarnation,
     phase: phase_view(phase),
     live:,
-    pool:,
     metrics: executor_view.metrics(state.books),
     recent: executor_view.recent(state.books),
     last_failure: executor_view.last_failure(state.books),
@@ -1313,19 +1280,8 @@ fn phase_view(phase: Phase) -> executor_view.ServicePhase {
   }
 }
 
-fn live_view(
-  row: Row,
-  pool: Result(exec.PoolCustody, executor_view.CustodyUnavailable),
-  now: Int,
-) -> executor_view.LiveView {
+fn live_view(row: Row, now: Int) -> executor_view.LiveView {
   let helper = exec.pid(row.helper)
-  let ordinal = case pool {
-    Ok(custody) ->
-      list.find(custody.helpers, fn(view) { view.pid == helper })
-      |> result.map(fn(view) { view.ordinal })
-      |> option.from_result
-    Error(_) -> None
-  }
   executor_view.LiveView(
     id: row.id,
     status: case row.status {
@@ -1339,7 +1295,7 @@ fn live_view(
     deadline_ms: row.deadline_ms,
     demand: row.demand,
     helper:,
-    helper_ordinal: ordinal,
+    helper_ordinal: None,
     age_ms: now - row.started_mono,
   )
 }

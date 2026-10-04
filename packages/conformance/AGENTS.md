@@ -27,6 +27,22 @@ storage suite over the backends.
   The reproduction text includes `make replay-simulation SIM_SEED=<seed>`,
   which selects only the single-seed soak test rather than rerunning the
   entire conformance package.
+- `conformance/simulation/plane.{Plane, start, begin, finish, verify, stop}`
+  and `simulation/fake_jail.start_helper` — the effect plane. Each simulated
+  tool call starts a real execution through a broker over `broker/executor`
+  over a pool of fake helpers *before* the fault schedule is consulted, so a
+  crash, a strand kill, a slow park or an intervention lands with it in flight;
+  an effect the fault does not kill cancels it, hears its one settlement and
+  returns the scripted result, which never depends on the execution. The plane
+  belongs to `runner.execute`, not the tree, so a tree kill leaves it to be
+  inspected, and `verify` (called after the kill, with two seconds of real time
+  for effects to unwind) gives `effects/no-orphan` (no executor row, nothing
+  borrowed, every relay dead) and `effects/one-settlement` (a caller heard one
+  settlement and nothing after, and the executor's started equals its
+  completed + failed + lost). `Report.executions` and `Report.effect_violations`
+  carry them, `sound` raises them as named failures, and the coverage
+  assertion requires `effect-plane-execution` and `fault-during-execution`.
+  `simulation_plane_test` shows the checks failing on an execution nobody ends.
 - `conformance/simulation/script.{Script, Op, Settle, Intervention}` — the
   semantic half: what the session is *asked* to do. `Script.subagent` is
   the multi-strand coda: an optional brief that spawns a subagent strand
