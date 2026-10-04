@@ -16,7 +16,8 @@
 //// `execute` → `begin` → `reported` retains exact final tool outcomes.
 //// `reserve_service_child` → `admit_offer` → `reserve_command_child` commits
 //// service/offer/complete native custody through the same serialized `handle`.
-//// `service_child`, `offer` and `command_child` recover original evidence;
+//// `service_child`, `offer`, `command_offer_for_origin` and `command_child`
+//// recover original evidence;
 //// `cancel_service` fences those links in one transaction. `collect` defers
 //// physical-service payload deletion until independent recovery transfer exists.
 
@@ -134,6 +135,12 @@ pub opaque type Message {
   /// Header-first readback of a retained command offer.
   ReadOffer(
     command.CommandRef,
+    process.Subject(Result(custody.CommandOfferPayload, custody.Error)),
+  )
+
+  /// Indexed historical offer data, including exact cancelled evidence.
+  ReadOfferForOrigin(
+    remote_tool.ChildOrigin,
     process.Subject(Result(custody.CommandOfferPayload, custody.Error)),
   )
 
@@ -458,6 +465,21 @@ pub fn offer(
   ask(owner, fn(reply) { ReadOffer(ref, reply) })
 }
 
+/// Reads a complete historical offer through its original native origin.
+/// The existing five-second custodian ask grants no live clearance or reservation.
+/// Exact cancellation history remains available; frozen evidence refuses.
+///
+/// ## Examples
+///
+/// `command_offer_for_origin(owner, command.native_origin(ref))` reads retained
+/// identity and bytes after cancellation without allocating a native UUID.
+pub fn command_offer_for_origin(
+  owner: Handle,
+  origin: remote_tool.ChildOrigin,
+) -> Result(custody.CommandOfferPayload, custody.Error) {
+  ask(owner, fn(reply) { ReadOfferForOrigin(origin, reply) })
+}
+
 /// Reserves COMPLETE post-clearance native content under the original offer.
 /// Exact duplicates return the original UUID, even with another candidate.
 ///
@@ -696,6 +718,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
     ReadOffer(ref, reply) -> {
       process.send(reply, custody.offer(state.store, ref))
+      resume(state)
+    }
+    ReadOfferForOrigin(origin, reply) -> {
+      process.send(reply, custody.command_offer_for_origin(state.store, origin))
       resume(state)
     }
     ReserveCommand(offer, candidate, request, reply) -> {
