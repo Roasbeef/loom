@@ -384,12 +384,16 @@ type State {
 /// `config.checkout` and returned through `config.checkin`, carried out by an
 /// executor service that this call starts over those two seams.
 ///
-/// The service is linked to the caller and ends with it. It answers no
-/// custody (`config` has no pool to ask) and closes no helpers, so a caller
-/// that owns a pool stops the pool itself, which is what every caller of
-/// this function already does; a session, which needs the service's
-/// `close` as a custody step, starts the service itself and uses
-/// `start_dispatching`.
+/// The service is linked to the caller, so it dies if the caller crashes.
+/// A caller that returns normally does not take it down, and `stop` stops
+/// only the broker, so the service then stays idle, holding no rows or
+/// monitors, until the node ends. Every caller of this function is a test or
+/// the demo, where that is the whole of the cost. It answers no custody
+/// (`config` has no pool to ask, so a snapshot reports the pool as not
+/// answering) and closes no helpers, so a caller that owns a pool stops the
+/// pool itself, which is what every caller of this function already does. A
+/// session, which needs the service's `close` as a custody step, starts the
+/// service itself and uses `start_dispatching`.
 ///
 /// ## Examples
 ///
@@ -408,7 +412,7 @@ pub fn start(config: BrokerConfig) -> Result(Broker, actor.StartError) {
     executor.start(executor.ExecutorConfig(
       checkout: config.checkout,
       checkin: config.checkin,
-      custody: fn() { Error(exec.AllBusy(size: 0)) },
+      custody: fn() { Error(exec.PoolUnavailable) },
       close_helpers: fn(_ms) { Ok(Nil) },
       incarnation: 0,
       log: log.discard(),
