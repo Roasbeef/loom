@@ -148,6 +148,7 @@ import session_view/command
 import session_view/composer
 import session_view/connection_event
 import session_view/context_view
+import session_view/decisions
 import session_view/goal_view
 import session_view/history_view
 import session_view/inbox
@@ -1402,6 +1403,9 @@ fn relaned(model: Model(socket)) -> Model(socket) {
       let #(blocks, fit) =
         held(lead, opened, branch.unloaded, limit(model.view.paging))
       let latest = turns.latest(view, shared.agent_rows, shared.active_strand)
+
+      // The register's decided approvals are drawn as lines among the
+      // pieces, because no transcript record says who answered a request.
       let pieces =
         turns.pieces(
           blocks,
@@ -1409,6 +1413,10 @@ fn relaned(model: Model(socket)) -> Model(socket) {
           latest,
           turns.Expand(expansion.capped),
         )
+        |> turns.with_decisions(decisions.from_cells(
+          view.cells,
+          shared.active_strand,
+        ))
       let #(scrollback, earlier) = case fit, branch.unloaded {
         Whole, None -> #(shared.scrollback, Reached)
         Whole, Some(_) ->
@@ -2068,6 +2076,7 @@ fn peer_named(piece: turns.Piece, key: String) -> Result(String, Nil) {
     | turns.Returned(..)
     | turns.Nudged(..)
     | turns.Missed(..)
+    | turns.Decided(..)
     | turns.Commentary(..) -> Error(Nil)
   }
 }
@@ -3048,7 +3057,10 @@ pub fn plan(model: Model(socket)) -> Element(message) {
 
   todo_panel.view(
     option.from_result(dict.get(model.shared.todo_boards, strand)),
-    reviewer_status.lines(model.shared.reviewer_rows, strand),
+    reviewer_status.lines(
+      reviewer_status.without_idle_advisor(model.shared.reviewer_rows),
+      strand,
+    ),
   )
 }
 

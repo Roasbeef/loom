@@ -33,8 +33,23 @@ fn commands(rows: List(command.Suggestion)) -> List(String) {
 
 pub fn every_row_is_one_the_terminal_offers_with_its_name_and_hint_test() {
   list.each(completion.rows(), fn(row) {
-    assert list.contains(terminal(), row)
+    assert list.any(terminal(), fn(shown) {
+      shown.command == row.command && shown.description == row.description
+    })
   })
+}
+
+// The terminal's `/goal` shows the goal's status, which the page does not
+// run, so the table once held no row to find `/goal check` from. The head is
+// offered with the terminal's own hint and marked as taking an argument, so
+// choosing it leaves `/goal ` in the editor.
+pub fn the_goal_head_is_offered_and_continues_test() {
+  let assert Ok(head) =
+    list.find(completion.rows(), fn(row) { row.command == "/goal" })
+  assert head.takes_argument
+  assert head.description
+    == "show status; add a space for goal actions"
+  assert string.contains(completion.table(), "\"c\":\"/goal\"")
 }
 
 pub fn a_command_the_page_runs_is_offered_test() {

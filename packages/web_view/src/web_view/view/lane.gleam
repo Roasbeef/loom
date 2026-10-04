@@ -55,6 +55,7 @@ import lustre/element/html
 import lustre/element/keyed
 import lustre/event
 import session_view/agent_roster
+import session_view/decisions
 import session_view/markdown
 import session_view/transcript_image.{type Image}
 import session_view/transcript_line.{type Line}
@@ -361,7 +362,10 @@ fn timeline_row(
 // session's message is nobody's here.
 fn belongs_to(piece: turns.Piece, marks: Marks) -> #(turns.Hue, Option(Int)) {
   case piece {
-    turns.Plain(..) | turns.Work(..) | turns.Missed(..) -> #(marks.hue, None)
+    turns.Plain(..)
+    | turns.Work(..)
+    | turns.Missed(..)
+    | turns.Decided(..) -> #(marks.hue, None)
     turns.Spawned(child:, hue:, ..) -> #(
       hue,
       option.then(child, position(marks, _)),
@@ -525,6 +529,35 @@ fn piece_element(
 
     turns.Missed(text:, ..) ->
       html.p([attribute.class("cache-miss")], [html.text(text)])
+
+    // An approval decision, as the register recorded it: who answered, and
+    // what. The names are the principal's and the tool's, text nodes both;
+    // the class is chosen from the closed verdict.
+    turns.Decided(decision:, ..) ->
+      html.p(
+        [
+          attribute.class("decided"),
+          attribute.class(case decision.verdict {
+            decisions.Allowed -> "decided-allowed"
+            decisions.Denied -> "decided-denied"
+          }),
+        ],
+        [
+          html.span([attribute.class("decided-who")], [
+            html.text(decision.who),
+          ]),
+          html.text(case decision.verdict {
+            decisions.Allowed -> " allowed "
+            decisions.Denied -> " denied "
+          }),
+          html.span([attribute.class("decided-tool")], [
+            html.text(case decision.tool {
+              "" -> "a request"
+              tool -> tool
+            }),
+          ]),
+        ],
+      )
 
     // The advisor's own commentary, captured on its strand and not sent to
     // the primary. The primary never saw it, so the lane keeps only its
