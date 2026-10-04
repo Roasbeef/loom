@@ -41,10 +41,35 @@ transaction control remain explicit in the actor.
 
 ## Preparation grants one live continuation
 
-The resource journal reserves room for the input, preparation receipt, native
-association and completion before returning a preparation claim. That opaque
-claim belongs to the original journal endpoint and original input. A reopened
-journal can inspect the row, but cannot recover the claim from it.
+The original service calls `admit_preparation` to insert its input and enter
+Preparing in one SQLite transaction. That transaction reserves room for the
+input, preparation receipt, native association and completion. Only a successful
+commit of this new row returns `FreshClaim`. The opaque claim belongs to the
+original journal endpoint and original input.
+
+Every matching existing row returns `Retained`, including Reserved. This rule
+matters when the process stops between reservation and preparation: reopening
+the database must not turn an old reservation into a new live continuation.
+The earlier, separate reserve/claim APIs remain available to their component
+callers; the whole Compile service must use atomic first admission.
+
+`fence_preparation` orders cancellation against that first admission. If the
+input is absent, it reserves capacity and inserts an Unknown row in the same
+transaction. If the row is Reserved, Preparing or Ready, it changes the phase
+to Unknown while preserving any Ready bytes and native association. A late
+admission then reads history. If admission won first, its late Ready or native
+association still has to pass the committed fence.
+
+Both operations compare the complete immutable input under the writer lock.
+An existing row with a different body or service identity returns a conflict.
+For absent input in a sealed scope, cancellation can return `ScopeFenced`
+after excluding an address collision. That response confirms the scope's seal;
+it does not invent an input row or claim that an earlier process has stopped.
+
+A failed or ambiguous commit returns `Uncertain` and fences the journal
+endpoint. No live claim or successful cancellation acknowledgement escapes
+that path. The caller must preserve the uncertainty instead of retrying as
+new work.
 
 The physical service must exclusively create the allocation, prepare fixed
 sources and the offline seed, and then commit Ready. An existing allocation is a
@@ -200,7 +225,9 @@ behavior.
 
 The [live-admission review](../review/distributed-live-compile-admission.md)
 records the resource transaction controls, complete-identity mutations and
-independent executor gate. The [native-command review](../review/distributed-native-command-admission.md)
+independent executor gate. The [first-admission review](../review/distributed-compile-first-admission.md)
+records the atomic insertion and cancellation controls, including independent
+SQLite opens and commit failures. The [native-command review](../review/distributed-native-command-admission.md)
 records the next boundary: actual compiler output, cross-command control refusal,
 resource fencing before native launch and exact historical recovery. The native
 service API is implemented, while its listener and whole-service callers remain
