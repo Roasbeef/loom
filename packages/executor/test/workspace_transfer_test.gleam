@@ -2,6 +2,7 @@
 //// Small model cases exercise malformed framing; real TLS carries both maximum
 //// content directions without increasing the existing frame ceiling.
 
+import core/bounded_msgpack
 import executor/remote/tls
 import executor/remote/workspace_transfer as transfer
 import gleam/bit_array
@@ -118,6 +119,135 @@ pub fn digest_and_chunk_direction_are_checked_test() {
     as "Chunk direction must match the checked header."
 }
 
+pub fn compile_completion_exact_limit_roundtrips_four_chunks_test() {
+  // The outer array and two bounded binary headers consume eleven bytes. The
+  // remaining body lands exactly on the closed codec scanner's aggregate limit.
+  let bytes = <<
+    0x92, 0xc6, 131_066:32, 0:size(
+      131_066
+      * 8
+    ), 0xc6, 131_067:32, 0:size(
+      131_067
+      * 8
+    ),
+  >>
+  let assert True = bit_array.byte_size(bytes) == 262_144
+    as "The closed preflight and transfer agree on the exact aggregate bound."
+  let assert Ok(_) = bounded_msgpack.decode(bytes)
+    as "The shared closed completion preflight admits the exact aggregate size."
+  let assert Ok(#(header, sender)) =
+    transfer.begin_send(transfer.CompileCompletion, bytes)
+    as "The maximum Compile completion sender is bounded."
+  let digest = crypto.hash(crypto.Sha256, bytes)
+  let assert True = header == <<"LWC", 1, 2, 262_144:32, digest:bits>>
+    as "Compile completion uses stable tag two without changing header framing."
+  let assert Ok(receiver) =
+    transfer.begin_receive(transfer.CompileCompletion, header)
+    as "The exact maximum header constructs only a bounded receiver."
+  let #(actual, frames) = collect(sender, receiver, 0)
+  let assert True = actual == bytes as "All four chunks retain exact content."
+  let assert True = frames == 4
+    as "The aggregate ceiling requires exactly four frames."
+
+  list.each([#(transfer.Invocation, 0), #(transfer.Completion, 1)], fn(pair) {
+    let assert Ok(#(legacy, _)) = transfer.begin_send(pair.0, <<7>>)
+      as "Existing directions remain admissible."
+    let digest = crypto.hash(crypto.Sha256, <<7>>)
+    let assert True = legacy == <<"LWC", 1, pair.1, 1:32, digest:bits>>
+      as "Invocation and Completion tag and header bytes stay unchanged."
+  })
+}
+
+pub fn compile_completion_sender_and_header_refuse_first_excess_byte_test() {
+  // Both binaries still fit their individual bounds; the second length adds
+  // only one byte to the otherwise valid exact-limit MessagePack shape.
+  let bytes = <<
+    0x92, 0xc6, 131_066:32, 0:size(
+      131_066
+      * 8
+    ), 0xc6, 131_068:32, 0:size(
+      131_068
+      * 8
+    ),
+  >>
+  let assert Error(transfer.InvalidLength) =
+    transfer.begin_send(transfer.CompileCompletion, bytes)
+    as "One excess byte refuses before a hashing/sending cursor can be retained."
+  let assert Error(_) = bounded_msgpack.decode(bytes)
+    as "The shared closed completion preflight also refuses excess aggregate bytes."
+  let digest = crypto.hash(crypto.Sha256, <<1>>)
+  list.each([0, 262_145, 4_294_967_295], fn(size) {
+    let assert Error(transfer.InvalidLength) =
+      transfer.begin_receive(transfer.CompileCompletion, <<
+        "LWC",
+        1,
+        2,
+        size:32,
+        digest:bits,
+      >>)
+      as "Declared excess refuses before any body chunk or receiver exists."
+  })
+  let assert Error(transfer.InvalidLength) =
+    transfer.begin_send(transfer.CompileCompletion, <<0:9>>)
+    as "Compile completion cannot round partial bytes into a content claim."
+}
+
+pub fn compile_completion_direction_order_duplicate_and_digest_refuse_test() {
+  let bytes = <<0:size(262_144 * 8)>>
+  let assert Ok(#(header, sender)) =
+    transfer.begin_send(transfer.CompileCompletion, bytes)
+    as "Four bounded chunks construct."
+  let assert Ok(receiver) =
+    transfer.begin_receive(transfer.CompileCompletion, header)
+    as "Compile direction retains its bounded digest."
+  let assert Some(#(first, tail)) = transfer.next(sender)
+    as "First chunk exists."
+  let assert Some(#(second, tail)) = transfer.next(tail)
+    as "Second chunk exists."
+  let assert Some(#(third, tail)) = transfer.next(tail) as "Third chunk exists."
+  let assert Some(#(fourth, _)) = transfer.next(tail) as "Fourth chunk exists."
+  let assert Error(transfer.InvalidFrame) = transfer.accept(receiver, second)
+    as "A future offset cannot skip the first chunk."
+  let assert Ok(transfer.Receiving(next)) = transfer.accept(receiver, first)
+    as "Only the exact first chunk is retained."
+  let assert Error(transfer.InvalidFrame) = transfer.accept(next, first)
+    as "A duplicate cannot consume another retention slot."
+  let assert Error(transfer.InvalidFrame) = transfer.accept(next, third)
+    as "A skipped middle offset refuses."
+  let assert <<"LWD", 1, 2, offset:32, content:bits>> = second
+    as "The direction byte is independent of the checked offset and body."
+  list.each([0, 1, 3], fn(direction) {
+    let assert Error(transfer.InvalidFrame) =
+      transfer.accept(next, <<"LWD", 1, direction, offset:32, content:bits>>)
+      as "Legacy or unknown directions cannot enter Compile retention."
+  })
+  let assert Ok(transfer.Receiving(next)) = transfer.accept(next, second)
+    as "The exact second chunk advances once."
+  let assert Ok(transfer.Receiving(next)) = transfer.accept(next, third)
+    as "The exact third chunk advances once."
+  let assert <<"LWD", 1, 2, offset:32, byte, remainder:bits>> = fourth
+    as "A body byte can be corrupted without changing framing."
+  let changed = byte + 1
+  let assert Error(transfer.InvalidFrame) =
+    transfer.accept(next, <<"LWD", 1, 2, offset:32, changed, remainder:bits>>)
+    as "A correct offset and length cannot bypass the final digest."
+  let assert Ok(transfer.Complete(actual)) = transfer.accept(next, fourth)
+    as "The original final chunk still releases exact complete bytes."
+  let assert True = actual == bytes
+    as "No malformed attempt mutated the receiver value."
+
+  list.each([transfer.Invocation, transfer.Completion], fn(legacy) {
+    let assert Error(transfer.InvalidFrame) =
+      transfer.begin_receive(legacy, header)
+      as "Legacy directions cannot admit the new semantic header."
+    let assert Ok(#(legacy_header, _)) = transfer.begin_send(legacy, <<1>>)
+      as "Legacy headers remain valid only in their own directions."
+    let assert Error(transfer.InvalidFrame) =
+      transfer.begin_receive(transfer.CompileCompletion, legacy_header)
+      as "Compile completion cannot be widened to an existing larger direction."
+  })
+}
+
 pub fn maximum_content_uses_existing_real_tls_frames_test() {
   let assert Ok(Nil) = tls.start() as "SSL must start."
   let credentials = fixture()
@@ -143,7 +273,13 @@ pub fn maximum_content_uses_existing_real_tls_frames_test() {
             bit_array.byte_size(bytes) == workspace_codec.max_invocation_bytes
             as "Maximum invocation must arrive intact."
           let completion = <<0:size(workspace_codec.max_completion_bytes * 8)>>
-          transfer.send(socket, transfer.Completion, completion)
+          use Nil <- result.try(transfer.send(
+            socket,
+            transfer.Completion,
+            completion,
+          ))
+          let compiled = <<0:size(262_144 * 8)>>
+          transfer.send(socket, transfer.CompileCompletion, compiled)
         }
         tls.close(socket)
         answer
@@ -174,6 +310,12 @@ pub fn maximum_content_uses_existing_real_tls_frames_test() {
         let assert True =
           completion == <<0:size(workspace_codec.max_completion_bytes * 8)>>
           as "Real transport must preserve all content bytes."
+        use compiled <- result.try(transfer.receive(
+          socket,
+          transfer.CompileCompletion,
+        ))
+        let assert True = compiled == <<0:size(262_144 * 8)>>
+          as "Compile completion uses the same real bounded authenticated frames."
         Ok(Nil)
       }
       tls.close(socket)

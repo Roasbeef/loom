@@ -345,7 +345,14 @@ reserved bytes; they do not bound physical WAL growth.
 
 `remote/workspace_transfer` preserves the existing TLS frame ceiling by
 transferring fixed chunks. Its opaque sender/receiver cursors enforce direction,
-length, offset and final digest. The caller owes authenticated application
+length, offset and final digest. Its closed direction tags preserve Invocation
+(0, nine MiB) and Completion (1, thirty-two MiB); CompileCompletion (2) adds the
+closed Compile codec's 256-KiB aggregate bound, at most four existing 64-KiB
+chunks. The aggregate limit is independent of the TLS frame ceiling. Sender and
+header checks refuse excess before hashing/retaining transfer state. Integrity
+only releases bytes: the caller must still decode `compile_completion` against
+its exact enrollment/original key and retain custody independently. The caller
+owes authenticated application
 scope, a whole-exchange deadline and bounded connection credits. Content
 transfer grants no permission to execute or acknowledge durable receipt.
 
