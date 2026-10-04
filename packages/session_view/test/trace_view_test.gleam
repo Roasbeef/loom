@@ -228,6 +228,28 @@ pub fn a_failed_build_keeps_its_diagnostics_apart_from_the_models_text_test() {
 
   assert shown.state == CompileFailed
   assert shown.detail == Some("error: no module")
+
+  // The compiler's progress and warnings before the first error are not the
+  // reason, so the detail starts at the error.
+  let noisy =
+    Some(#(
+      "text",
+      status("compile_failed", [
+        #(
+          "detail",
+          json.String(
+            "Compiling app\nwarning: unused import\n\nerror: Unknown module\n  fs.nope",
+          ),
+        ),
+      ]),
+      True,
+    ))
+  assert only(
+      trace_view.fold(
+        window([exchange(0, program("pub fn main() {}", None), noisy)]),
+      ),
+    ).detail
+    == Some("error: Unknown module\n  fs.nope")
   assert trace_view.budget_words(shown) == "default"
   assert trace_view.budget_words(
       trace_view.Program(..shown, within_ms: Some(30_000)),

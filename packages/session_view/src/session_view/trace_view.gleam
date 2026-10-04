@@ -481,11 +481,13 @@ pub const max_detail = 800
 
 // The result's `detail` text, with its lines and a bound on its length. A
 // result that has none, or an empty one, has nothing to say apart from its
-// excerpt.
+// excerpt. A compiler opens its output with progress and warnings
+// (`Compiling ...`, `warning: unused ...`), and the line a reader wants is the
+// first error, so the text starts there when it has one.
 fn detail(fields: List(#(String, json.JsonValue))) -> Option(String) {
   case list.key_find(fields, "detail") {
     Ok(json.String(text)) ->
-      case string.trim(text_hygiene.multiline(text)) {
+      case string.trim(from_first_error(text_hygiene.multiline(text))) {
         "" -> None
         shown ->
           case string.length(shown) > max_detail {
@@ -611,6 +613,16 @@ fn excerpt(
       })
       |> string.join(" ")
       |> clipped
+  }
+}
+
+// The text from its first `error` line on, or the whole text when it has no
+// such line.
+fn from_first_error(text: String) -> String {
+  let lines = string.split(text, "\n")
+  case list.drop_while(lines, fn(line) { !string.starts_with(line, "error") }) {
+    [] -> text
+    [_, ..] as from -> string.join(from, "\n")
   }
 }
 
