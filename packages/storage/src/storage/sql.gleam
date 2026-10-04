@@ -359,6 +359,34 @@ pub fn principal_memberships_decoder() -> decode.Decoder(PrincipalMemberships) {
   decode.success(PrincipalMemberships(session_id:, name:, role:))
 }
 
+pub type SessionMembers {
+  SessionMembers(principal_id: String, display_name: String, role: String)
+}
+
+pub fn session_members(
+  session_id session_id: String,
+  principal_id principal_id: String,
+) {
+  let sql =
+    "SELECT m.principal_id, p.display_name, m.role
+FROM access_memberships AS m
+JOIN access_principals AS p ON p.principal_id = m.principal_id
+WHERE m.session_id = ? AND m.principal_id > ?
+ORDER BY m.principal_id LIMIT 101"
+  #(
+    sql,
+    [dev.ParamString(session_id), dev.ParamString(principal_id)],
+    session_members_decoder(),
+  )
+}
+
+pub fn session_members_decoder() -> decode.Decoder(SessionMembers) {
+  use principal_id <- decode.field(0, decode.string)
+  use display_name <- decode.field(1, decode.string)
+  use role <- decode.field(2, decode.string)
+  decode.success(SessionMembers(principal_id:, display_name:, role:))
+}
+
 pub fn initialize_catalogue_revision() {
   let sql =
     "
