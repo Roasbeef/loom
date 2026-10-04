@@ -10,15 +10,16 @@ for one reason: its dependency list is the compile-time proof that the
 service needs no session runtime, provider, web view or daemon. It depends on
 `broker`, `core` and `telemetry` (for `log.discard()`), plus `weft`, `argv`,
 `envoy`, `gleam_json`, `gleam_time`, `gleam_erlang`, `simplifile` and
-`sqlight_loom` and `parrot`, and
-never on `host` or `client`.
+`sqlight_loom` and `parrot`, and never on `host` or `client`.
 
-The TLS primitive supplies pinned mutual authentication and bounded frames;
-no remote execution or registration service is wired yet. The pure
+The remote components now join pinned TLS, registration, native execution
+and durable custody in component fixtures. The shipped daemon still needs
+explicit remote deployment assembly. The pure
 `executor/remote/{identity,admission}` modules provide validated names and a
 bounded admission/custody reducer for #697. `executor/remote/journal` adds
-serialized SQLite persistence over that reducer. No native adapter consumes
-its decisions yet, so these modules do not change local executor behavior.
+serialized SQLite persistence over that reducer. The native service consumes
+its decisions through the existing broker executor; local deployment defaults
+remain unchanged.
 A standalone executor has no caller until the distributed-runtime epic
 (#697) supplies a transport, and that work implements
 `broker/dispatch.Dispatcher`, which is the whole adapter: a remote
@@ -59,8 +60,8 @@ No second type names it.
 ## Relationships
 
 Depends on `broker` (`broker`, `budget`, `census`, `exec`, `executor`,
-`policy`, `token`), `core` (`clock`, `ids`) and `telemetry` (`log`). Nothing
-depends on it. The pure identity and admission modules import only `core/ids`, each other
+`policy`, `token`), `core` (`clock`, `ids`) and `telemetry` (`log`).
+`client` consumes its remote dispatch boundary for owner-side assembly. The pure identity and admission modules import only `core/ids`, each other
 and pure stdlib modules, with no I/O, processes, FFI or Dynamic. The journal
 imports those modules, generated `executor/sql`, `sqlight`, `parrot`,
 `simplifile` and `weft/actor`; its private
@@ -266,3 +267,19 @@ and separate-host end-to-end assembly remain unfinished.
   [API plan](../../docs/design-notes/distributed-runtime-api.md) describe the
   intended later adapters and authority service.
 - [Root guidance](../../CLAUDE.md) records package boundaries and style.
+
+
+## Registered host lifetime
+
+`remote/host.configure` validates service, registration and journal scope before
+listening, and replaces the supplied verifier with `registration.verify`.
+The host owns its TLS listener, linked admission actor and bounded acceptor
+subtree. Its supervision specification is Temporary: restarting over the same
+native custody is not an admission policy. A late startup failure may follow
+peer admission and therefore cannot roll back the epoch or authorize replay.
+
+Explicit close first stops listener admission, quiesces the service and stops
+acceptors. It releases the journal only after durable epoch closure, witnessed
+native retirement and owned service exit. Uncertain cleanup retains evidence.
+Actor or socket death alone never establishes native retirement; an untrappable
+host kill still requires reconciliation by the enclosing owner.

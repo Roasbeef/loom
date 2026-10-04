@@ -53,6 +53,8 @@ pub opaque type Journal {
   Journal(
     /// The private actor address, never a database handle or native capability.
     subject: process.Subject(Message),
+    /// Scope validated against durable metadata before this handle is returned.
+    scope: identity.Scope,
   )
 }
 
@@ -144,6 +146,17 @@ type Message {
 }
 
 const timeout_ms = 30_000
+
+/// Returns the original validated binding, never a re-registration capability.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // journal.scope(book) == configured_scope
+/// ```
+pub fn scope(journal: Journal) -> identity.Scope {
+  journal.scope
+}
 
 /// Creates custody for an unused database path. Existing evidence is never reset.
 /// Metadata and schema commit together before this endpoint is returned.
@@ -308,7 +321,7 @@ fn start(config: Config, mode: Mode) -> Result(Journal, Error) {
     |> actor.start
     |> result.map_error(fn(_) { StartFailed }),
   )
-  let journal = Journal(started.data)
+  let journal = Journal(started.data, config.scope)
   case exchange(journal, Initialise(mode, _)) {
     Ok(Nil) -> Ok(journal)
     Error(error) -> {

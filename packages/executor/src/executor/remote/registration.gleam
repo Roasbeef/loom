@@ -87,6 +87,17 @@ pub fn new(
   Ok(Registration(scope, working_roots, ceiling, demand, canonicalize, digest))
 }
 
+/// Returns the immutable validated scope without refreshing authority.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // registration.scope(registered) == provisioned_scope
+/// ```
+pub fn scope(registered: Registration) -> identity.Scope {
+  registered.scope
+}
+
 /// Returns the digest the owner must clear with the prepared command.
 ///
 /// ## Examples
