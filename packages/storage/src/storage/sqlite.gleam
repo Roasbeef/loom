@@ -90,10 +90,10 @@ import storage/session_schema
 import storage/snapshot
 import storage/sqlite_policy
 import storage/storage.{
-  type BranchScan, type EntryScan, type Register, type ScanOrder,
+  type BranchScan, type EntryHead, type EntryScan, type Register, type ScanOrder,
   type SessionStats, type Storage, type StorageError, type UsageScan,
-  BackendFault, CorruptRow, HandleClosed, NewestFirst, OldestFirst, Register,
-  SessionStats, Storage, UnknownEntry,
+  BackendFault, CorruptRow, EntryHead, HandleClosed, NewestFirst, OldestFirst,
+  Register, SessionStats, Storage, UnknownEntry,
 }
 
 /// How to open a session file. Built with `config` and the setters below.
@@ -148,6 +148,18 @@ pub opaque type Message {
 
   /// Entry inventory scan.
   ScanEntries(q: EntryScan, reply: Subject(Result(List(Entry), StorageError)))
+
+  /// Entry inventory scan, projected to heads.
+  ScanEntryHeads(
+    q: EntryScan,
+    reply: Subject(Result(List(EntryHead), StorageError)),
+  )
+
+  /// The query plan of an entry-heads scan, for the conformance assertions.
+  ScanEntryHeadsPlan(
+    q: EntryScan,
+    reply: Subject(Result(List(String), StorageError)),
+  )
 
   /// Ledger read.
   ScanUsage(q: UsageScan, reply: Subject(Result(List(UsageRow), StorageError)))
@@ -801,6 +813,9 @@ fn start_actor(
           scan_entries: fn(handle, q) {
             process.call_forever(handle, ScanEntries(q, _))
           },
+          scan_entry_heads: fn(handle, q) {
+            process.call_forever(handle, ScanEntryHeads(q, _))
+          },
           scan_usage: fn(handle, q) {
             process.call_forever(handle, ScanUsage(q, _))
           },
@@ -1090,6 +1105,25 @@ pub fn scan_branch_plan(
   order: ScanOrder,
 ) -> Result(List(String), StorageError) {
   process.call_forever(handle, ScanBranchPlan(order, _))
+}
+
+/// The `EXPLAIN QUERY PLAN` detail lines of the entry-heads query for `q`,
+/// for the conformance suite's plan assertions: the plan must read `entries`
+/// in seq order through `ix_entry_seq` and contain no `TEMP B-TREE FOR
+/// ORDER BY` step, whatever filters `q` carries.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(lines) =
+///   sqlite.scan_entry_heads_plan(store.handle, storage.entry_scan())
+/// ```
+///
+pub fn scan_entry_heads_plan(
+  handle: Subject(Message),
+  q: EntryScan,
+) -> Result(List(String), StorageError) {
+  process.call_forever(handle, ScanEntryHeadsPlan(q, _))
 }
 
 /// The branch-index segment metadata, for diagnostics and conformance
@@ -1910,6 +1944,8 @@ fn handle_closed(
     RenewLease(reply:) -> answer(state, reply, Error(HandleClosed))
     RecordIdentity(reply:, ..) -> answer(state, reply, Error(HandleClosed))
     ScanBranchPlan(reply:, ..) -> answer(state, reply, Error(HandleClosed))
+    ScanEntryHeads(reply:, ..) -> answer(state, reply, Error(HandleClosed))
+    ScanEntryHeadsPlan(reply:, ..) -> answer(state, reply, Error(HandleClosed))
     Segments(reply:) -> answer(state, reply, Error(HandleClosed))
   }
 }
@@ -1995,6 +2031,14 @@ fn handle_open(
         do_record_identity(state, now, session_id, parent_session_id),
       )
       actor.continue(ActorState(..state, clock:))
+    }
+    ScanEntryHeads(q:, reply:) -> {
+      process.send(reply, do_scan_entry_heads(state.conn, q))
+      actor.continue(state)
+    }
+    ScanEntryHeadsPlan(q:, reply:) -> {
+      process.send(reply, do_scan_entry_heads_plan(state.conn, q))
+      actor.continue(state)
     }
     ScanBranchPlan(order:, reply:) -> {
       process.send(reply, do_scan_branch_plan(state.conn, order))
@@ -2828,10 +2872,15 @@ fn like_prefix_pattern(prefix: String) -> String {
   escaped <> "%"
 }
 
-fn do_scan_entries(
-  conn: Connection,
+// The statement behind both entry inventory reads. They differ only in the
+// columns they select, and sharing the filters, ordering and limit is what
+// makes `scan_entry_heads` answer the same rows as `scan_entries` in the same
+// order. Every shape orders by `seq`, so it is served from `ix_entry_seq`
+// with no sort step.
+fn entry_scan_statement(
+  columns: String,
   q: EntryScan,
-) -> Result(List(Entry), StorageError) {
+) -> #(String, List(sqlight.Value)) {
   let #(clauses, arguments) =
     []
     |> add_clause(q.kind, fn(kind) {
@@ -2844,11 +2893,21 @@ fn do_scan_entries(
     |> add_clause(q.to_seq, fn(seq) { #("seq <= ?", sqlight.int(seq)) })
     |> finish_clauses
   let sql =
-    "SELECT payload FROM entries"
+    "SELECT "
+    <> columns
+    <> " FROM entries"
     <> where_sql(clauses)
     <> " ORDER BY seq "
     <> direction_sql(q.order)
     <> limit_sql(q.limit)
+  #(sql, arguments)
+}
+
+fn do_scan_entries(
+  conn: Connection,
+  q: EntryScan,
+) -> Result(List(Entry), StorageError) {
+  let #(sql, arguments) = entry_scan_statement("payload", q)
   let rows =
     run(conn, sql, arguments, decode.at([0], decode.bit_array))
     |> result.map_error(fail_to_storage_error)
@@ -2856,6 +2915,55 @@ fn do_scan_entries(
   list.try_map(rows, fn(blob) {
     entry_of_blob(blob) |> result.map_error(CorruptRow)
   })
+}
+
+// The same rows as `do_scan_entries`, read from the three columns that
+// already hold an entry's place in the tree, so no payload is read or
+// decoded. A damaged id column is the same `CorruptRow` a damaged payload
+// would be.
+fn do_scan_entry_heads(
+  conn: Connection,
+  q: EntryScan,
+) -> Result(List(EntryHead), StorageError) {
+  let head_decoder = {
+    use id <- decode.field(0, decode.string)
+    use parent <- decode.field(1, decode.optional(decode.string))
+    use seq <- decode.field(2, decode.int)
+    decode.success(#(id, parent, seq))
+  }
+  let #(sql, arguments) = entry_scan_statement("id, parent_id, seq", q)
+  let rows =
+    run(conn, sql, arguments, head_decoder)
+    |> result.map_error(fail_to_storage_error)
+  use rows <- result.try(rows)
+  list.try_map(rows, fn(row) {
+    let #(id_text, parent_text, seq) = row
+    use id <- result.try(
+      ids.parse_entry_id(id_text) |> result.map_error(CorruptRow),
+    )
+    use parent <- result.map(case parent_text {
+      Some(text) ->
+        ids.parse_entry_id(text)
+        |> result.map(Some)
+        |> result.map_error(CorruptRow)
+      None -> Ok(None)
+    })
+    EntryHead(id:, parent:, seq:)
+  })
+}
+
+fn do_scan_entry_heads_plan(
+  conn: Connection,
+  q: EntryScan,
+) -> Result(List(String), StorageError) {
+  let #(sql, arguments) = entry_scan_statement("id, parent_id, seq", q)
+  run(
+    conn,
+    "EXPLAIN QUERY PLAN " <> sql,
+    arguments,
+    decode.at([3], decode.string),
+  )
+  |> result.map_error(fail_to_storage_error)
 }
 
 fn do_scan_usage(

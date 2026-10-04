@@ -160,6 +160,7 @@ import client/escalate.{type Escalations}
 import client/grants
 import client/notes
 import client/permissions
+import client/tool_holder
 import client/vision
 import core/clock.{type Clock}
 import core/entry
@@ -366,6 +367,51 @@ pub fn unobserved() -> fn(effects.ToolRun) -> fn(tool.OutputTail) -> Nil {
 /// ```
 ///
 pub fn build_effects(config: Config) -> Effects {
+  effects_over(config, fn(run) { run_tool(config, run) })
+}
+
+/// Builds the production `Effects` record with a `run` slot that fetches
+/// its configuration from `holder` instead of capturing it.
+///
+/// `build_effects` closes the `run` slot over the whole `Config`, and
+/// `Effects` is copied into every process and supervisor child
+/// specification that holds a session's runtime, so each holder carried
+/// its own copy of the tool registry. Here the slot captures only the
+/// holder's address, and each tool run asks the holder for the
+/// configuration, runs against that one copy, and releases it. A session
+/// that assembles through this function holds the registry once in the
+/// holder rather than once per holder of the effects.
+///
+/// A holder that is gone or silent cannot supply the configuration, and the
+/// slot still has to answer `ToolCompleted`: see `run_tool_held`. The
+/// caller owns the holder and must keep it alive for as long as the
+/// runtime can run a tool.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(holder) = tool_holder.start(config)
+/// // let effects = wiring.build_effects_held(config, holder)
+/// ```
+///
+pub fn build_effects_held(
+  config: Config,
+  holder: tool_holder.Holder(Config),
+) -> Effects {
+  // The failure path has no configuration to read a timestamp from, so the
+  // clock is captured by itself. It is a small record of one function and
+  // holds neither the registry nor the session.
+  let clock = config.clock
+  effects_over(config, fn(run) { run_tool_held(holder, clock, run) })
+}
+
+// The record both builders share, differing only in the `run` slot. The
+// configuration this function receives is read for projections and field
+// copies; nothing it builds other than `run` may close over `config`.
+fn effects_over(
+  config: Config,
+  run: fn(effects.ToolRun) -> effects.ToolOutcome,
+) -> Effects {
   // The two declaration slots below read two words out of a registration
   // and nothing else, so they are given the projected declaration table
   // rather than the configuration the registry hangs off. `Effects` is a
@@ -394,7 +440,7 @@ pub fn build_effects(config: Config) -> Effects {
     ),
     tools: effects.ToolSurface(
       clear: fn(query) { clear(declared, query) },
-      run: fn(run) { run_tool(config, run) },
+      run:,
       replay_still_safe: fn(name) { replay_still_safe(declared, name) },
       execution_mode: fn(name) { execution_mode(declared, name) },
     ),
@@ -1719,6 +1765,64 @@ pub fn run_tool(config: Config, run: effects.ToolRun) -> effects.ToolOutcome {
     }
   }
   let #(now, _clock) = clock.read(config.clock)
+  completed(outcome, run, now)
+}
+
+/// `run_tool` over the configuration a `tool_holder` keeps for the session.
+///
+/// The fetch is bounded by `holder_deadline_ms`. A holder that has exited or
+/// does not answer is not a reason to crash the effect process: the runtime
+/// is owed a `ToolCompleted` for the call, and an in-band error result is the
+/// shape every other tool failure already takes, so the model sees that the
+/// call failed and the strand carries on. `clock` supplies the timestamp
+/// because the configuration the usual one comes from is the thing which
+/// could not be fetched.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert effects.ToolCompleted(result:, ..) =
+/// //   wiring.run_tool_held(holder, config.clock, run)
+/// ```
+///
+pub fn run_tool_held(
+  holder: tool_holder.Holder(Config),
+  clock: Clock,
+  run: effects.ToolRun,
+) -> effects.ToolOutcome {
+  case tool_holder.fetch(holder, within_ms: holder_deadline_ms) {
+    Ok(config) -> run_tool(config, run)
+    Error(unavailable) -> {
+      let reason = case unavailable {
+        tool_holder.Gone -> "the session's tool configuration is gone"
+        tool_holder.TimedOut ->
+          "the session's tool configuration did not answer in time"
+      }
+      let #(now, _clock) = clock.read(clock)
+      completed(
+        tool.failure(
+          "the tool `" <> run.call.name <> "` did not run: " <> reason,
+        ),
+        run,
+        now,
+      )
+    }
+  }
+}
+
+// How long a tool run waits for the holder to hand back the configuration.
+// The holder does nothing but answer, so this is a scheduler stall's worth
+// of patience rather than an operation's; a holder that has exited answers
+// at once through its monitor and never reaches it.
+const holder_deadline_ms = 5000
+
+// The one place a tool outcome becomes the effect plane's answer, shared by
+// the executed and the refused-to-run paths so both build the same shape.
+fn completed(
+  outcome: tool.ToolOutcome,
+  run: effects.ToolRun,
+  now: Int,
+) -> effects.ToolOutcome {
   effects.ToolCompleted(
     result: tool.to_result_message(
       outcome,

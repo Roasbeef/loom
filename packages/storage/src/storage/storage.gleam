@@ -56,6 +56,9 @@ pub type Storage(handle) {
     scan_branch: fn(handle, BranchScan) -> Result(List(Entry), StorageError),
     /// See `storage.scan_entries`.
     scan_entries: fn(handle, EntryScan) -> Result(List(Entry), StorageError),
+    /// See `storage.scan_entry_heads`.
+    scan_entry_heads: fn(handle, EntryScan) ->
+      Result(List(EntryHead), StorageError),
     /// See `storage.scan_usage`.
     scan_usage: fn(handle, UsageScan) -> Result(List(UsageRow), StorageError),
     /// See `storage.stats`.
@@ -178,6 +181,28 @@ pub type EntryScan {
     order: ScanOrder,
     /// Maximum rows returned.
     limit: Option(Int),
+  )
+}
+
+/// An entry reduced to its place in the tree: its id, its parent and its
+/// seq, with no payload.
+///
+/// This is what `scan_entry_heads` returns. Attribution and ordering
+/// questions need only these three fields, and a backend can answer them
+/// without reading or decoding a payload. A head is a view of a committed
+/// entry, never a second source of truth about it, and it cannot be
+/// committed.
+///
+/// Constructor invariants: the fields are those of the entry with this
+/// `id`; `parent` is `None` exactly for a root entry.
+pub type EntryHead {
+  EntryHead(
+    /// The entry's id.
+    id: EntryId,
+    /// The entry's parent, or `None` for a root.
+    parent: Option(EntryId),
+    /// The seq the entry was committed under.
+    seq: Seq,
   )
 }
 
@@ -341,6 +366,26 @@ pub fn scan_entries(
   q: EntryScan,
 ) -> Result(List(Entry), StorageError) {
   storage.scan_entries(storage.handle, q)
+}
+
+/// Runs the same query as `scan_entries` and returns each entry as an
+/// `EntryHead`: the same rows in the same order, with the same filtering,
+/// ordering and limit rules, and no payload read. A backend that cannot
+/// skip the payload still has to answer identically; the conformance suite
+/// asserts that this equals `scan_entries` projected, for every query
+/// shape it uses ([protocol-change/066](../../../protocol-change/066-entry-heads-scan.md)).
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(heads) = storage.scan_entry_heads(store, storage.entry_scan())
+/// ```
+///
+pub fn scan_entry_heads(
+  storage: Storage(handle),
+  q: EntryScan,
+) -> Result(List(EntryHead), StorageError) {
+  storage.scan_entry_heads(storage.handle, q)
 }
 
 /// Reads usage-ledger rows in seq order. A consumer that persists the
@@ -663,6 +708,23 @@ pub fn kind_of(entry: Entry) -> EntryKind {
     CompactionEntry(..) -> Compaction
     BranchSummaryEntry(..) -> BranchSummary
     CustomEntry(..) -> Custom
+  }
+}
+
+/// The head of an entry: its id, parent and seq.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let head = storage.entry_head_of(message_entry)
+/// ```
+///
+pub fn entry_head_of(entry: Entry) -> EntryHead {
+  case entry {
+    MessageEntry(id:, parent:, seq:, ..)
+    | CompactionEntry(id:, parent:, seq:, ..)
+    | BranchSummaryEntry(id:, parent:, seq:, ..)
+    | CustomEntry(id:, parent:, seq:, ..) -> EntryHead(id:, parent:, seq:)
   }
 }
 

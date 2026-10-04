@@ -148,8 +148,12 @@ with these forks: they define the same modules.
   discard the outer transaction's writes.
 - `storage/storage.Storage(handle)` — a record of functions closed over a
   backend handle: `commit`, `get_entries`, `get_register`,
-  `list_registers`, `scan_branch`, `scan_entries`, `scan_usage`, `stats`,
-  `close`. `session` erases the handle type to `Storage(Nil)`.
+  `list_registers`, `scan_branch`, `scan_entries`, `scan_entry_heads`,
+  `scan_usage`, `stats`, `close`. `scan_entry_heads` is `scan_entries`
+  projected to `EntryHead` (id, parent, seq) with no payload read; the
+  conformance suite pins it to the full scan
+  ([protocol-change/066](../../protocol-change/066-entry-heads-scan.md)).
+  `session` erases the handle type to `Storage(Nil)`.
 - `storage/storage.{BranchScan, EntryScan, UsageScan}` — the three query
   shapes, built with the pipeline builders (`branch_scan`,
   `branch_stop_at_kind`, `branch_cursor`, `entry_seq_range`, ...).
