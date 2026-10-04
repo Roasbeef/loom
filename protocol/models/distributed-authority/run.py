@@ -32,6 +32,21 @@ JAR_URL = f"https://github.com/tlaplus/tlaplus/releases/download/v{VERSION}/tla2
 # must exist while all safety predicates still hold. Mutants select a safety
 # invariant that exposes the actual defect, rather than an earlier symptom.
 CASES = {
+    'ChannelSafety': None,
+    'ChannelSafetyQuota': None,
+    'ChannelReachOutcome': 'NoCompleteStream',
+    'ChannelReachHookResult': 'NoCompleteStream',
+    'ChannelReachBidirectional': 'NoBidirectionalPending',
+    'ChannelReachLateAck': 'NoLateConsumptionAck',
+    'ChannelReachQuota': 'NoQuotaFailure',
+    'ChannelReachCancel': 'NoCancelUnderPressure',
+    'ChannelMutantNetworkAck': 'ConsumerBound',
+    'ChannelMutantTimeout': 'ConsumerBound',
+    'ChannelMutantRestart': 'ConsumerBound',
+    'ChannelMutantQuota': 'LifetimeBytesBound',
+    'ChannelMutantDroppedSuccess': 'NoSuccessAfterLoss',
+    'ChannelMutantControl': 'ControlIndependent',
+
     "IngressSafety": None,
     "IngressSafetyOne": None,
     "IngressReachTimeout": "NoTimedOutRecovery",
@@ -70,6 +85,8 @@ CASES = {
 
 def model_for_case(case: str) -> str:
     """Select the closed model family for a named control."""
+    if case.startswith("Channel"):
+        return "Channel"
     if case.startswith("Ingress"):
         return "Ingress"
     return "Metadata" if case.startswith("Metadata") else "Ownership"
@@ -202,7 +219,7 @@ def main() -> int:
         jar = provision()
         models = ([model_for_case(args.case)]
                   if args.case and not args.translate
-                  else ["Ownership", "Metadata", "Ingress"])
+                  else ["Ownership", "Metadata", "Ingress", "Channel"])
         summary["translation"] = {model: translate(args.java, jar, run, args.translate, model)
                                   for model in models}
         summary["model_sha256"] = {model: hashlib.sha256((run / f"{model}.tla").read_bytes()).hexdigest()
