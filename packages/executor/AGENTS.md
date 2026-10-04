@@ -194,8 +194,10 @@ They do not establish the remote service or its end-to-end delivery guarantees.
 ## Remote native service
 
 `remote/wire` defines closed versioned msgpack envelopes and total bounded
-codecs. `connection` applies one supervised budget to pinned TLS establishment,
-framing and exchange. `listener` uses a fixed pool of one to four acceptors;
+codecs. Its native payload and envelope decoders share the fixed raw
+preflight in `core/bounded_msgpack`, mapping every refusal to `wire.Invalid`.
+Encoding retains the existing encode-then-preflight behavior. `connection` applies
+one supervised budget to pinned TLS establishment, framing and exchange. `listener` uses a fixed pool of one to four acceptors;
 idle peers consume those slots until their finite deadline, without owning
 native cancellation or journal custody.
 
