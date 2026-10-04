@@ -1676,3 +1676,12 @@ missing parent-substitution cases are covered. See
 [the input review](review/distributed-service-input.md). Hash authentication,
 physical command construction, durable outcome custody and two-host acceptance
 remain outstanding; serialized input alone grants no authority.
+
+The physical preparation journal now persists exact canonical input and reserves
+complete Ready capacity through named Parrot/sqlc queries. Only the first committed
+claim permits preparation; recovered state grants no replay. Historical receipts
+survive uncertainty and cleanup. The independent 176-test executor gate and both
+compiling mutation controls pass. The review's row-masked byte test is corrected;
+[the journal review](review/distributed-preparation-journal.md) records that change
+and the SQL generator's false-success fix. Final outcome capacity and physical
+resource ownership still need production assembly.
