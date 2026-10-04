@@ -2738,8 +2738,10 @@ without the anchors.
 The terminal remembers the person's layout choices per workspace in one file,
 `<state-dir>/tui/layout.json` (`~/.loom/tui/layout.json` unless `--state-dir`
 says otherwise), the way the web view remembers its layout in the browser. The
-key is the lower-case SHA-256 of the workspace path in hex, the digest the
-daemon gives the web page, so a path never reaches the file. The file holds
+key is the lower-case SHA-256 of the workspace path in hex, the same
+construction as the daemon's web digest but over the terminal's own discovered
+workspace root made absolute, so the two stores do not share keys, and a path
+never reaches the file. The file holds
 `{"version":1,"workspaces":[{"key":"<digest>","rail":"shown"}]}`, most
 recently changed first, at most 64 entries. `rail` is `shown` or `hidden` and
 is absent for a workspace whose rail was never toggled, so a remembered choice

@@ -556,8 +556,11 @@ reads nor writes it. It needs no new FFI, because `simplifile` is already a
 dependency.
 
 *As built (slice 12).* The key is the lower-case SHA-256 of the workspace path,
-the digest the daemon already gives the web page, so a path is never written and
-both views name a workspace the same way. The file is read with the launcher's
+the same construction as the daemon's web digest, over the terminal's discovered
+workspace root made absolute, so a path is never written. The daemon hashes the
+canonical workspace directory it was given, which can differ from the terminal's
+discovered root, so the two stores keep separate keys and nothing relies on them
+matching. The file is read with the launcher's
 `read_private_bounded` rather than `read_small_regular`, which also refuses a
 file another user owns or can read, and written with `atomic_write_private` in a
 `0700` directory, and the JSON is `core/json`'s, so `tui` gains no dependency and
