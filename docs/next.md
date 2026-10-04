@@ -2,6 +2,12 @@
 
 ## Distributed runtime implementation (issue #697)
 
+Delivery now uses one draft integration PR against `main`, on
+`codex/distributed-runtime-integration`. The [integration reading guide](design-notes/distributed-runtime-integration.md)
+maps the components, the remaining assembly and the acceptance criteria.
+Earlier component PR references below preserve review history; new worker
+commits enter the integration branch after focused checks and independent review.
+
 The latest component implements native Compile admission under the original
 preparation claim. Its independent review found no actionable defect, and the
 integrated executor gate passed 241 tests with no skips. The
