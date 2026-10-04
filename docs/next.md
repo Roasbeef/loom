@@ -1703,3 +1703,11 @@ passes 395 code-mode tests and 191 executor tests without reported skips; see
 extends the existing resource journal to reserve and retain complete outcomes,
 then connects actual native admission and physical execution. A missing native
 record after Ready remains uncertain and cannot authorize a retry.
+
+The owner-derived Compile and Launch command expectations now join the physical
+steps and completion codec. Exact matching covers ordered command data, full
+identity and region mappings; selected walls must fit original ceilings.
+Independent review is clean and the integrated code-mode gate passes 408 tests
+without reported skips against the refreshed private seed. See
+[the command expectation review](review/distributed-expected-commands.md).
+Live wall selection and actual native association remain assembly obligations.
