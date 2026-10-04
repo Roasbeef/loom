@@ -202,6 +202,18 @@ pub type MembershipPage {
   MembershipPage(entries: List(MembershipEntry), remainder: Remainder)
 }
 
+/// One member of a session: the principal's recovery ID, its display name and
+/// the role it holds in that session.
+pub type SessionMember {
+  SessionMember(principal_id: String, name: String, role: Role)
+}
+
+/// One page of `SessionMember` rows in principal-ID order, at most
+/// `listing_limit`.
+pub type SessionMemberPage {
+  SessionMemberPage(entries: List(SessionMember), remainder: Remainder)
+}
+
 // The three persisted claim states, decoded totally from the row.
 type ClaimState {
   OpenClaim
@@ -881,6 +893,49 @@ pub fn memberships_page(
     )
     let #(entries, remainder) = split_page(listed)
     MembershipPage(entries, remainder)
+  })
+}
+
+/// Lists one session's members after the principal `after`, in principal-ID
+/// order, with each member's display name and role in that session.
+///
+/// An unknown session is `Missing`. The owner holds no membership rows, so it
+/// never appears. The query reads `access_memberships` by session, which its
+/// primary key (principal, session) does not index: the table holds one row per
+/// invitee and session, the call is the owner's alone and a page is bounded, so
+/// the scan is accepted rather than adding an index and a catalogue version.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.session_members_page(store, session_id, "")
+/// ```
+@internal
+pub fn session_members_page(
+  store: Catalogue,
+  session_id: String,
+  after: String,
+) -> Result(SessionMemberPage, Error) {
+  use Nil <- result.try(case after {
+    "" -> Ok(Nil)
+    id -> valid_id(id)
+  })
+  catalogue.coherent(store, fn() {
+    use _found <- result.try(catalogue.get(store, session_id))
+    use rows <- result.try(catalogue.query(
+      store,
+      sql.session_members(session_id, after),
+    ))
+    use listed <- result.map(
+      list.try_map(rows, fn(row) {
+        use role <- result.try(role_from(row.role))
+        use _ <- result.try(valid_id(row.principal_id))
+        use _ <- result.map(stored_name(row.display_name))
+        SessionMember(row.principal_id, row.display_name, role)
+      }),
+    )
+    let #(entries, remainder) = split_page(listed)
+    SessionMemberPage(entries, remainder)
   })
 }
 
