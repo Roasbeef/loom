@@ -1087,3 +1087,27 @@ custody must preserve uncertainty after a landed mutation whose reply is lost.
 The local production filesystem remains authoritative until remote assembly
 explicitly selects this host; no owner-local fallback is permitted for a remote
 binding.
+
+## Semantic workspace content
+
+`workspace_codec` encodes the entire immutable invocation, including both
+scope epochs, original operation/step and tool provenance, into canonical
+positional MessagePack. Completion encoding preserves the typed response and
+post-write diagnostics. Both encode and decode require the retained request
+when checking a completion, so a read projection cannot satisfy a write.
+
+Invocation content is limited to nine MiB and completion content to thirty-two
+MiB. The larger result reservation covers an eight-MiB edit preimage, a nearly
+sixteen-MiB postimage, diagnostics and envelope overhead. These are content
+ceilings, not network frame sizes. Decode scans byte lengths, depth, container
+size and total nodes before allocating MessagePack values; maximum depth is
+32, container size 8,192 and aggregate nodes 65,536. Canonical re-encoding
+rejects alternate representations of the same durable identity.
+
+This codec carries data, not actor handles, closures or arbitrary Erlang exit
+terms. An existing `Abnormal(Dynamic)` nested failure is explicitly
+unrepresentable. Oversized observations also return a fixed codec refusal;
+the surrounding service must preserve an uncertain mutation outcome if it
+cannot retain its result. Encoding creates its semantic projection before
+checking final size, so only decoding has the stated pre-allocation guarantee.
+No codec call starts an effect or acknowledges durable receipt.
