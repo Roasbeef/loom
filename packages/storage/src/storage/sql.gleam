@@ -1379,23 +1379,26 @@ VALUES (1, ?1, ?2, ?3, ?4, ?5)"
 }
 
 pub type OwnerCustodyBudget {
-  OwnerCustodyBudget(tools: Int, children: Int, bytes: Int)
+  OwnerCustodyBudget(tools: Int, children: Int, offers: Int, bytes: Int)
 }
 
 pub fn owner_custody_budget() {
   let sql =
     "SELECT CAST((SELECT COUNT(*) FROM owner_custody_tools) AS INTEGER) AS tools,
   CAST((SELECT COUNT(*) FROM owner_custody_children) AS INTEGER) AS children,
+  CAST((SELECT COUNT(*) FROM owner_custody_command_offers) AS INTEGER) AS offers,
   CAST(COALESCE((SELECT SUM(reserved_bytes) FROM owner_custody_tools), 0)
-    + COALESCE((SELECT SUM(reserved_bytes) FROM owner_custody_children), 0) AS INTEGER) AS bytes"
+    + COALESCE((SELECT SUM(reserved_bytes) FROM owner_custody_children), 0)
+    + COALESCE((SELECT SUM(reserved_bytes) FROM owner_custody_command_offers), 0) AS INTEGER) AS bytes"
   #(sql, [], owner_custody_budget_decoder())
 }
 
 pub fn owner_custody_budget_decoder() -> decode.Decoder(OwnerCustodyBudget) {
   use tools <- decode.field(0, decode.int)
   use children <- decode.field(1, decode.int)
-  use bytes <- decode.field(2, decode.int)
-  decode.success(OwnerCustodyBudget(tools:, children:, bytes:))
+  use offers <- decode.field(2, decode.int)
+  use bytes <- decode.field(3, decode.int)
+  decode.success(OwnerCustodyBudget(tools:, children:, offers:, bytes:))
 }
 
 pub type OwnerToolHeader {
@@ -1633,6 +1636,206 @@ ON CONFLICT(origin) DO UPDATE SET state = CASE WHEN state = 'frozen' THEN 'froze
     dev.ParamString(parent),
     dev.ParamInt(reserved_bytes),
   ])
+}
+
+pub type OwnerLegacyCustodyBudget {
+  OwnerLegacyCustodyBudget(tools: Int, children: Int, bytes: Int)
+}
+
+pub fn owner_legacy_custody_budget() {
+  let sql =
+    "SELECT CAST((SELECT COUNT(*) FROM owner_custody_tools) AS INTEGER) AS tools,
+  CAST((SELECT COUNT(*) FROM owner_custody_children) AS INTEGER) AS children,
+  CAST(COALESCE((SELECT SUM(reserved_bytes) FROM owner_custody_tools), 0)
+    + COALESCE((SELECT SUM(reserved_bytes) FROM owner_custody_children), 0) AS INTEGER) AS bytes"
+  #(sql, [], owner_legacy_custody_budget_decoder())
+}
+
+pub fn owner_legacy_custody_budget_decoder() -> decode.Decoder(
+  OwnerLegacyCustodyBudget,
+) {
+  use tools <- decode.field(0, decode.int)
+  use children <- decode.field(1, decode.int)
+  use bytes <- decode.field(2, decode.int)
+  decode.success(OwnerLegacyCustodyBudget(tools:, children:, bytes:))
+}
+
+pub type OwnerLegacyInvalidHeaders {
+  OwnerLegacyInvalidHeaders(invalid: Int)
+}
+
+pub fn owner_legacy_invalid_headers(payload_limit payload_limit: Int) {
+  let sql =
+    "SELECT CAST(
+  (SELECT COUNT(*) FROM owner_custody_tools WHERE
+    typeof(address) != 'text' OR length(CAST(address AS BLOB)) > 8192
+    OR typeof(identity) != 'blob' OR length(identity) > 8192
+    OR typeof(arguments) != 'blob' OR length(arguments) > CAST(?1 AS INTEGER)
+    OR typeof(request) != 'blob' OR length(request) > CAST(?1 AS INTEGER)
+    OR (outcome IS NOT NULL AND (typeof(outcome) != 'blob' OR length(outcome) > CAST(?1 AS INTEGER)))
+    OR state NOT IN ('retained', 'frozen') OR typeof(reserved_bytes) != 'integer'
+    OR reserved_bytes < length(identity) + length(CAST(address AS BLOB)) + 128
+      + CASE WHEN state = 'frozen' THEN 0 ELSE length(arguments) + length(request) + CAST(?1 AS INTEGER) END)
+  + (SELECT COUNT(*) FROM owner_custody_children WHERE
+    typeof(origin) != 'text' OR length(CAST(origin AS BLOB)) > 8192
+    OR typeof(parent) != 'text' OR length(CAST(parent AS BLOB)) > 8192
+    OR (request_id IS NULL AND (state NOT IN ('cancelled', 'frozen') OR length(request) != 0 OR terminal IS NOT NULL))
+    OR (request_id IS NOT NULL AND (typeof(request_id) != 'text' OR length(CAST(request_id AS BLOB)) != 36))
+    OR typeof(request) != 'blob' OR length(request) > CAST(?1 AS INTEGER)
+    OR (terminal IS NOT NULL AND (typeof(terminal) != 'blob' OR length(terminal) > CAST(?1 AS INTEGER)))
+    OR state NOT IN ('retained', 'cancelled', 'frozen') OR typeof(reserved_bytes) != 'integer'
+    OR reserved_bytes < length(CAST(origin AS BLOB)) + length(CAST(parent AS BLOB)) + 164
+      + CASE WHEN state = 'frozen' THEN 0 ELSE length(request) + CASE WHEN request_id IS NULL THEN 0 ELSE CAST(?1 AS INTEGER) END END)
+  AS INTEGER) AS invalid"
+  #(sql, [dev.ParamInt(payload_limit)], owner_legacy_invalid_headers_decoder())
+}
+
+pub fn owner_legacy_invalid_headers_decoder() -> decode.Decoder(
+  OwnerLegacyInvalidHeaders,
+) {
+  use invalid <- decode.field(0, decode.int)
+  decode.success(OwnerLegacyInvalidHeaders(invalid:))
+}
+
+pub type OwnerCommandOfferHeader {
+  OwnerCommandOfferHeader(
+    parent: String,
+    service_origin: String,
+    service_id: String,
+    native_origin: String,
+    offer_digest: String,
+    identity_bytes: Int,
+    offer_bytes: Int,
+    state: String,
+    reserved_bytes: Int,
+  )
+}
+
+pub fn owner_command_offer_header(address address: String) {
+  let sql =
+    "SELECT
+  CASE WHEN typeof(parent) = 'text' AND length(CAST(parent AS BLOB)) <= 8192 THEN parent ELSE '' END AS parent,
+  CASE WHEN typeof(service_origin) = 'text' AND length(CAST(service_origin AS BLOB)) <= 8192 THEN service_origin ELSE '' END AS service_origin,
+  CASE WHEN typeof(service_id) = 'text' AND length(CAST(service_id AS BLOB)) = 36 THEN service_id ELSE '' END AS service_id,
+  CASE WHEN typeof(native_origin) = 'text' AND length(CAST(native_origin AS BLOB)) <= 8192 THEN native_origin ELSE '' END AS native_origin,
+  CASE WHEN typeof(offer_digest) = 'text' AND length(CAST(offer_digest AS BLOB)) = 64 THEN offer_digest ELSE '' END AS offer_digest,
+  CAST(CASE WHEN typeof(identity) = 'blob' THEN length(identity) ELSE -1 END AS INTEGER) AS identity_bytes,
+  CAST(CASE WHEN typeof(offer) = 'blob' THEN length(offer) ELSE -1 END AS INTEGER) AS offer_bytes,
+  CASE WHEN state IN ('retained', 'cancelled', 'frozen') THEN state ELSE '' END AS state,
+  reserved_bytes FROM owner_custody_command_offers WHERE address = ?1 LIMIT 2"
+  #(sql, [dev.ParamString(address)], owner_command_offer_header_decoder())
+}
+
+pub fn owner_command_offer_header_decoder() -> decode.Decoder(
+  OwnerCommandOfferHeader,
+) {
+  use parent <- decode.field(0, decode.string)
+  use service_origin <- decode.field(1, decode.string)
+  use service_id <- decode.field(2, decode.string)
+  use native_origin <- decode.field(3, decode.string)
+  use offer_digest <- decode.field(4, decode.string)
+  use identity_bytes <- decode.field(5, decode.int)
+  use offer_bytes <- decode.field(6, decode.int)
+  use state <- decode.field(7, decode.string)
+  use reserved_bytes <- decode.field(8, decode.int)
+  decode.success(OwnerCommandOfferHeader(
+    parent:,
+    service_origin:,
+    service_id:,
+    native_origin:,
+    offer_digest:,
+    identity_bytes:,
+    offer_bytes:,
+    state:,
+    reserved_bytes:,
+  ))
+}
+
+pub type OwnerCommandOfferValue {
+  OwnerCommandOfferValue(identity: BitArray, offer: BitArray)
+}
+
+pub fn owner_command_offer_value(
+  address address: String,
+  offer_limit offer_limit: Int,
+) {
+  let sql =
+    "SELECT identity, offer FROM owner_custody_command_offers WHERE address = ?1
+  AND typeof(identity) = 'blob' AND length(identity) <= 8192
+  AND typeof(offer) = 'blob' AND length(offer) <= CAST(?2 AS INTEGER) LIMIT 2"
+  #(
+    sql,
+    [dev.ParamString(address), dev.ParamInt(offer_limit)],
+    owner_command_offer_value_decoder(),
+  )
+}
+
+pub fn owner_command_offer_value_decoder() -> decode.Decoder(
+  OwnerCommandOfferValue,
+) {
+  use identity <- decode.field(0, decode.bit_array)
+  use offer <- decode.field(1, decode.bit_array)
+  decode.success(OwnerCommandOfferValue(identity:, offer:))
+}
+
+pub type OwnerCommandOfferCount {
+  OwnerCommandOfferCount(offers: Int)
+}
+
+pub fn owner_command_offer_count(parent parent: String) {
+  let sql =
+    "SELECT CAST(COUNT(*) AS INTEGER) AS offers FROM owner_custody_command_offers WHERE parent = ?1"
+  #(sql, [dev.ParamString(parent)], owner_command_offer_count_decoder())
+}
+
+pub fn owner_command_offer_count_decoder() -> decode.Decoder(
+  OwnerCommandOfferCount,
+) {
+  use offers <- decode.field(0, decode.int)
+  decode.success(OwnerCommandOfferCount(offers:))
+}
+
+pub fn insert_owner_command_offer(
+  address address: String,
+  parent parent: String,
+  service_origin service_origin: String,
+  service_id service_id: String,
+  identity identity: BitArray,
+  native_origin native_origin: String,
+  offer_digest offer_digest: String,
+  offer offer: BitArray,
+  reserved_bytes reserved_bytes: Int,
+) {
+  let sql =
+    "INSERT INTO owner_custody_command_offers(address, parent, service_origin, service_id, identity,
+  native_origin, offer_digest, offer, state, reserved_bytes)
+VALUES (?1, ?2, ?3, ?4, ?5,
+  ?6, ?7, ?8, 'retained', ?9)"
+  #(sql, [
+    dev.ParamString(address),
+    dev.ParamString(parent),
+    dev.ParamString(service_origin),
+    dev.ParamString(service_id),
+    dev.ParamBitArray(identity),
+    dev.ParamString(native_origin),
+    dev.ParamString(offer_digest),
+    dev.ParamBitArray(offer),
+    dev.ParamInt(reserved_bytes),
+  ])
+}
+
+pub fn cancel_owner_command_offers(service_origin service_origin: String) {
+  let sql =
+    "UPDATE owner_custody_command_offers SET state = CASE WHEN state = 'frozen' THEN 'frozen' ELSE 'cancelled' END
+WHERE service_origin = ?1"
+  #(sql, [dev.ParamString(service_origin)])
+}
+
+pub fn cancel_owner_allocated_child(origin origin: String) {
+  let sql =
+    "UPDATE owner_custody_children SET state = CASE WHEN state = 'frozen' THEN 'frozen' ELSE 'cancelled' END
+WHERE origin = ?1"
+  #(sql, [dev.ParamString(origin)])
 }
 
 pub type SnapshotSession {
