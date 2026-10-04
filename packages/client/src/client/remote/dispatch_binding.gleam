@@ -3,7 +3,9 @@
 //// `new` captures one immutable administrative connection and the assembly's
 //// trusted preparation, identity and fatal-fence capabilities. `configuration`
 //// projects the dispatcher's callbacks without introducing transport, actors or
-//// retries. Preparation preserves the exact broker-cleared request and actual
+//// retries. `with_commands` installs explicit closed compiler callbacks over
+//// the same owner/scope/prepare/mint, and `is_command_origin` preserves other lanes.
+//// Preparation preserves the exact broker-cleared request and actual
 //// physical operation/step; a parent ToolKey cannot reconstruct those coordinates.
 ////
 //// Reservation commits a closed envelope containing the owner, full scope,
@@ -18,6 +20,8 @@
 //// mandatory assembly fence rather than acknowledging a durable cancellation.
 
 import broker/dispatch
+import broker/enrollment
+import client/remote/command_binding
 import client/remote/custodian
 import core/ids
 import core/msgpack as mp
@@ -129,6 +133,111 @@ pub fn configuration(binding: Binding) -> dispatcher.Config {
     cancel_reserved: cancel_reserved(binding, _),
     now: binding.now,
   )
+}
+
+/// Adds closed Compile command custody to the original session dispatcher.
+/// Missing command custody never falls through to ordinary child reservation.
+/// Root assembly retains its one Broker and original PhaseIdentity/clearance;
+/// this projection creates no Broker, transport, grants or per-call registry.
+/// SatelliteCommand explicitly refuses until its closed Launch assembly exists.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert result.is_ok(dispatch_binding.with_commands(binding, enrolled))
+/// ```
+pub fn with_commands(
+  binding: Binding,
+  enrolled: enrollment.SessionEnrollment,
+) -> Result(dispatcher.Config, custody.Error) {
+  use commands <- result.try(command_binding.new(
+    binding.owner,
+    enrolled,
+    binding.connection.scope,
+    binding.prepare,
+    binding.mint,
+  ))
+  let original = configuration(binding)
+  Ok(
+    dispatcher.Config(
+      ..original,
+      reserve: fn(request) { reserve_with_commands(binding, commands, request) },
+      receive: fn(origin, key, digest, outputs, terminal) {
+        case is_command_origin(origin) {
+          True ->
+            command_binding.receive(
+              commands,
+              origin,
+              key,
+              digest,
+              outputs,
+              terminal,
+            )
+            |> failed
+          False -> receive(binding, origin, key, digest, outputs, terminal)
+        }
+      },
+      cancel_reserved: fn(request) {
+        cancel_with_commands(binding, commands, request)
+      },
+    ),
+  )
+}
+
+fn reserve_with_commands(
+  binding: Binding,
+  commands: command_binding.Binding,
+  request: dispatch.Dispatch,
+) -> Result(dispatcher.Reserved, Nil) {
+  use origin <- result.try(original_origin(binding, request))
+  case is_command_origin(origin) {
+    False -> reserve(binding, request)
+    True -> {
+      case command_binding.reserve(commands, request) {
+        Ok(reserved) -> Ok(reserved)
+        Error(custody.Missing) -> {
+          // Legitimate dispatch starts after offer custody. Missing evidence
+          // cannot reconstruct its full service key or permit generic fallback.
+          binding.fatal_fence(custody.Missing)
+          Error(Nil)
+        }
+        Error(_) -> Error(Nil)
+      }
+    }
+  }
+}
+
+fn cancel_with_commands(
+  binding: Binding,
+  commands: command_binding.Binding,
+  request: dispatch.Dispatch,
+) -> Nil {
+  let outcome = {
+    use origin <- result.try(
+      original_origin(binding, request)
+      |> result.replace_error(custody.Invalid("missing or foreign child origin")),
+    )
+    case is_command_origin(origin) {
+      True -> command_binding.cancel(commands, origin)
+      False -> custodian.cancel_child(binding.owner, origin)
+    }
+  }
+  case outcome {
+    Ok(Nil) -> Nil
+    Error(error) -> binding.fatal_fence(error)
+  }
+}
+
+fn is_command_origin(origin: remote_tool.ChildOrigin) -> Bool {
+  case remote_tool.child_role(origin) {
+    Ok(remote_tool.CompileCommand) | Ok(remote_tool.SatelliteCommand) -> True
+    Ok(remote_tool.Compile)
+    | Ok(remote_tool.Launch)
+    | Ok(remote_tool.AdmittedCapability(_, _, _))
+    | Ok(remote_tool.Capability(_))
+    | Ok(remote_tool.Workspace(_))
+    | Error(_) -> False
+  }
 }
 
 fn reserve(
