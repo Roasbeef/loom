@@ -342,7 +342,6 @@ fn chip_element(
 ) -> Element(message) {
   let line = chip.line
   html.li(chip_attributes(chip, followed), [
-    html.span([attribute.class("swatch"), attribute.aria_hidden(True)], []),
     html.button(
       [
         attribute.type_("button"),

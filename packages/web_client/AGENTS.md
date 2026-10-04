@@ -75,7 +75,7 @@ renders again just for it:
   `layout_rule` for the stored layout (the two columns and the active tab,
   nothing else; the focused strand is never kept, so a reload shows `main`),
   and every change writes it back through `ffi_dom.storage_write`. A page
-  with no digest keeps nothing. A Theme button in the bar cycles the page
+  with no digest keeps nothing. A Theme icon button in the bar (a sun, moon or half disc drawn from fixed shapes, labelled by `layout_rule.label`) cycles the page
   through following the system, light and dark (`layout_rule.next_theme`) by
   setting or removing `data-theme` on `<html>`, which the stylesheet reads;
   the choice is kept per browser under its own item, and `assets/web_view_page.js` applies it from that item before first paint, since the shell connects only after the socket opens (`js_check` pins the item name to `layout_rule.theme_key`). The server never learns
@@ -414,7 +414,15 @@ sends the server nothing.
   token is under 4.5:1 on a surface it is drawn on (`bg`, `bg-raised`,
   `bg-sunk`, `bg-user`, `code`, and the diff backgrounds for `added-text` and
   `danger-text`) in either theme, or if a rule sets `color:` from a mark
-  token, `--hue` or `fg-faint`. It has its own self-test.
+  token, `--hue` or `fg-faint`. It has its own self-test. `on-danger` (the
+  tab badge's text) is held against `danger`, and `bg` against `fg` for the
+  filled primary buttons.
+- **The monospace face is for code.** Labels, rows and headings are
+  `--font-sans`; `--font-mono` is for code, paths, tags, diffs and tool
+  output. `scripts/web_client_css_check.sh`, run by `make lint`, fails a rule
+  whose selector names `.line`, `.step`, `.chip` or `.panel-title` and sets
+  the monospace face; a row that carries code names the code's own class
+  (`pre.tool-result`, `.step-summary`, `.diff-row`). It has its own self-test.
 - **Tokens live on `:root`; a shadow root only inherits them.** The Theme
   button sets `data-theme` on `<html>`, and custom properties inherit through
   every shadow root under it. Tailwind's `@theme` also writes the dark palette
