@@ -55,7 +55,7 @@ text_tokens="fg fg-quiet current signal-text advisor-text peer-text danger-text 
 surfaces="bg bg-raised bg-sunk bg-user code"
 
 # The pairs the diff draws on a coloured surface, as `token:surface`.
-extra_pairs="added-text:added-bg danger-text:removed-bg fg:added-bg fg:removed-bg"
+extra_pairs="added-text:added-bg danger-text:removed-bg fg:added-bg fg:removed-bg on-danger:danger bg:fg"
 
 # The mark tokens a `color:` may not read.
 marks='signal|advisor|peer|danger|added|strand-[2-6]|fg-faint'
