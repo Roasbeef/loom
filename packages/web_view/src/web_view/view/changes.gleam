@@ -122,12 +122,7 @@ fn file(
     html.summary([attribute.class("changes-file-line")], [
       html.span([attribute.class("changes-path")], [html.text(file.path)]),
       html.span([attribute.class("changes-counts")], [
-        html.text(
-          " +"
-          <> int.to_string(file.added)
-          <> " -"
-          <> int.to_string(file.removed),
-        ),
+        html.text(" " <> changes_view.counts_words(file)),
       ]),
     ]),
     html.div(

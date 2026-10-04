@@ -192,11 +192,117 @@ pub fn a_call_with_no_result_in_the_window_adds_nothing_test() {
 
 pub fn another_tool_with_a_diff_field_adds_nothing_test() {
   let other = [
-    record(1, call("c", "fs_write")),
-    record(2, result("c", "fs_write", edit_details("w.gleam", "+a"), False)),
+    record(1, call("c", "bash")),
+    record(2, result("c", "bash", edit_details("w.gleam", "+a"), False)),
   ]
 
   assert changes_view.fold(other) == changes_view.empty()
+}
+
+// --- fs_write -----------------------------------------------------------------
+
+fn write_call(call_id: String, path: String, content: String) {
+  assistant([
+    message.AssistantToolCall(message.ToolCall(
+      call_id,
+      "fs_write",
+      json.Object([
+        #("path", json.String(path)),
+        #("content", json.String(content)),
+      ]),
+      None,
+      None,
+    )),
+  ])
+}
+
+fn write_details(path: String) -> Option(json.JsonValue) {
+  Some(json.Object([#("path", json.String(path)), #("bytes", json.Int(9))]))
+}
+
+// A write's records, newest first as a branch holds them, the call at
+// sequence `first` and its result after it.
+fn written_from(
+  first: Int,
+  path: String,
+  content: String,
+  failed: Bool,
+) -> List(protocol.EntryRecord) {
+  let call_id = "w" <> int.to_string(first)
+
+  [
+    record(first + 1, result(call_id, "fs_write", write_details(path), failed)),
+    record(first, write_call(call_id, path, content)),
+  ]
+}
+
+fn written(
+  path: String,
+  content: String,
+  failed: Bool,
+) -> List(protocol.EntryRecord) {
+  written_from(1, path, content, failed)
+}
+
+pub fn a_write_is_a_file_whose_lines_are_all_added_test() {
+  let board = changes_view.fold(written("calc.py", "a = 1\nb = 2\n", False))
+
+  let assert [file] = board.files as "one file for one write"
+  assert file.path == "calc.py"
+  assert file.origin == changes_view.Written
+  assert #(file.added, file.removed) == #(2, 0)
+  assert list.map(file.rows, fn(row) { row.kind }) == [Added, Added]
+  assert list.map(file.rows, fn(row) { row.text }) == ["+a = 1", "+b = 2"]
+  assert changes_view.counts_words(file) == "written · 2 lines"
+  assert changes_view.totals(board) == "1 file · +2 -0"
+}
+
+pub fn a_one_line_write_is_singular_test() {
+  let assert [file] = changes_view.fold(written("a", "x", False)).files
+  assert changes_view.counts_words(file) == "written · 1 line"
+}
+
+pub fn a_failed_write_and_a_write_with_no_content_add_nothing_test() {
+  assert changes_view.fold(written("a.py", "x = 1", True))
+    == changes_view.empty()
+
+  let no_content = [
+    record(2, result("w", "fs_write", write_details("a.py"), False)),
+    record(1, call("w", "fs_write")),
+  ]
+  assert changes_view.fold(no_content) == changes_view.empty()
+}
+
+// A file the session edited and later wrote is one file, listed as edited:
+// its counts are the sum of a real hunk and a whole write.
+pub fn a_file_that_was_edited_and_written_counts_as_edited_test() {
+  let board =
+    changes_view.fold(list.append(
+      written_from(3, "a.py", "x\ny", False),
+      records([edited("a.py", "@@ -1 +1 @@\n-one\n+two")]),
+    ))
+
+  let assert [file] = board.files as "one file"
+  assert file.origin == changes_view.Edited
+  assert #(file.added, file.removed) == #(3, 1)
+  assert changes_view.counts_words(file) == "+3 -1"
+}
+
+// A write's text is a file's, so it can hold anything: it stays one text row
+// per line, with its markup intact and never interpreted, and the file's row
+// bound cuts it and says so.
+pub fn a_writes_markup_stays_text_and_its_rows_are_bounded_test() {
+  let assert [file] =
+    changes_view.fold(written("p.html", "<script>alert(1)</script>", False)).files
+  assert list.map(file.rows, fn(row) { row.text })
+    == ["+<script>alert(1)</script>"]
+
+  let long =
+    string.join(list.repeat("line", changes_view.max_file_rows + 5), "\n")
+  let assert [big] = changes_view.fold(written("big.txt", long, False)).files
+  assert list.length(big.rows) == changes_view.max_file_rows
+  assert big.cut == 5
+  assert big.added == changes_view.max_file_rows + 5
 }
 
 pub fn markup_in_a_diff_stays_text_and_a_hostile_kind_is_impossible_test() {
