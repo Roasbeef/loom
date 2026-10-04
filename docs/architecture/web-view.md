@@ -740,19 +740,22 @@ The full text is already in the model. When `component.relaned` projects a
 capture it asks `turns.pieces` for the terminal's own expanded rows, cut by
 the page's budget, and stores them on the pieces: `Step.full` for a call,
 `thoughts` for a reasoning row. They are built once per projection, not per
-render, and no piece holds the uncapped text. The lane draws a row that has
-more to show as `<loom-expand>` holding both forms as children, and for a
-response only the reasoning row is an expander, so an answer beside it is
-drawn once. A
-button in the element's shadow root chooses which child is slotted. That
-choice is the browser's alone, as a fold's is: no read, no page event and no
-new entry in the socket's accepted list, so it works on an observer's page,
-and the server never renders which form is open, so a later patch leaves the
-reader's choice alone. The alternative, sending the expanded row on request,
-would need a new event and a round trip for text the page already holds.
+render, and no piece holds the uncapped text. A step reads as one line
+(`session_view/step_words`: `Edit calc.py +3 −1`, `Memory · 4 lines`,
+`Reasoning · 4s`), and `view/fold_row` draws a row that has a body as
+`<loom-expand>` holding the line in a child marked `slot="head"` and the body
+in one marked `slot="body"`. The element draws the row's one chevron, so a
+turn of ten steps has ten chevrons and no "Expand" buttons, and a row with
+nothing behind it has none. The body is the full form when the page holds one.
+A button in the element's shadow root shows or hides the body. That choice is
+the browser's alone, as a fold's is: no read, no page event and no new entry
+in the socket's accepted list, so it works on an observer's page, and the
+server never renders which rows are open, so a later patch leaves the reader's
+choice alone. The alternative, sending the expanded row on request, would need
+a new event and a round trip for text the page already holds.
 
-The cost is that both forms are in every viewer's document whether or not
-anyone opens them, so each expanded row is cut to 300 lines or 8,000
+The cost is that every body is in every viewer's document whether or not
+anyone opens it, so each expanded row is cut to 300 lines or 8,000
 characters (`view/expansion`), with one line after a cut row saying so. The
 terminal shows all of it. The element emits the fold's toggle event, so
 `<loom-follow>` treats an expansion as the reader's doing: the reader at the

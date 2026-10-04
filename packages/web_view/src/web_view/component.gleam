@@ -122,6 +122,7 @@
 //// 8. `view` lays the derived pieces out, through `heading`, `panel`, `live`
 ////    and the `web_view/view` modules, and reads nothing the model does not hold.
 
+import core/message
 import gleam/dict
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -1409,6 +1410,7 @@ fn relaned(model: Model(socket)) -> Model(socket) {
           latest,
           turns.Expand(expansion.capped),
         )
+        |> self_attributed(cut.attachment)
       let #(scrollback, earlier) = case fit, branch.unloaded {
         Whole, None -> #(shared.scrollback, Reached)
         Whole, Some(_) ->
@@ -1438,6 +1440,25 @@ fn relaned(model: Model(socket)) -> Model(socket) {
         ),
       ))
     }
+  }
+}
+
+// The page's own role set on the messages the page's person sent, so the lane
+// can draw `Owner · operator` for them. The records name who sent a message
+// and not in what capacity, so the role is the one the attachment holds; a
+// peer or strand attachment is not a person and has none to set.
+fn self_attributed(
+  pieces: List(turns.Piece),
+  attachment: snapshot.Attachment,
+) -> List(turns.Piece) {
+  case attachment.origin {
+    message.Origin(principal:, ..) ->
+      turns.attributed(pieces, principal, case attachment.role {
+        snapshot.Owner -> "owner"
+        snapshot.Operator -> "operator"
+        snapshot.Observer -> "observer"
+      })
+    message.PeerOrigin(..) | message.StrandOrigin(..) -> pieces
   }
 }
 
@@ -2063,6 +2084,7 @@ fn peer_named(piece: turns.Piece, key: String) -> Result(String, Nil) {
     turns.Peer(..)
     | turns.Sibling(..)
     | turns.Plain(..)
+    | turns.Prompt(..)
     | turns.Work(..)
     | turns.Spawned(..)
     | turns.Returned(..)

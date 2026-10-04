@@ -595,8 +595,8 @@ keeps these rules, which `packages/web_client/CLAUDE.md` repeats:
   `session_view` and built for the page by `web_view/completion`.
 - **Session text reaches it only as the server's children.** `<loom-fold>`
   shows the divider and the work through a named and a default slot,
-  `<loom-expand>` shows a row's compact or full form through one of two named
-  slots, and
+  `<loom-expand>` shows a row's line and, once opened, its body through two
+  named slots (`head` and `body`), and
   `<loom-follow>` shows the lane through a default slot, and `<loom-shell>`
   shows the top bar, the sidebar, the centre and the strand panel through
   slots named `bar`, `left`, the default and `right`; the words are

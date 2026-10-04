@@ -167,14 +167,22 @@ for a host with no surfaces.
   is parsed.
 
 - `turns.pieces(blocks, strands, latest)`: one strand's lane as turns for a
-  host that draws more than rows (the web view): `Plain` blocks, one `Work`
-  divider per turn (`Folded`, or `Open` while the strand runs or waits on an
-  approval; its `Worked` figures come from the records), `Spawned` and
+  host that draws more than rows (the web view): `Plain` blocks, `Prompt` for a
+  person's message (the sender is a field, not a `name:` line of the text;
+  `turns.attributed` sets the reader's own role on the reader's messages), one
+  `Work` divider per turn (`Folded`, or `Open` while the strand runs or waits
+  on an approval; its `Worked` figures come from the records). The fold's
+  items are `Narrated` blocks (each with `took`, the response's time, which a
+  reasoning row reads), `Step`s (`words` from `step_words.of_call`) and
+  `Memory`, the memory context the daemon recorded ahead of a prompt: it is no
+  input, `split` and `grouped` hold it for the next input, and it is the first
+  item of that turn's fold. `Spawned` and
   `Returned` rows for sub-agents, `Nudged` for a delivered advisor frame,
   `Peer` for another session's message, `Sibling` for a message a strand of
   the same session sent (stored origin `StrandOrigin`, framing removed by
   `strand_framing.strip`, a brief's result-contract trailer kept apart),
-  `Missed` for a cache notice and `Commentary` for the advisor's board. It reads
+  `Missed` for a cache notice and `Commentary` for the advisor's board (reviews that
+  stand next to each other are one piece with a `reviews` count). It reads
   `transcript_lines.keyed_record_blocks` (`transcript.blocks`), which tags
   each block with its `Source`. `turns.grouped(blocks, strands)` splits
   the same blocks at their inputs, the lead before the first input and

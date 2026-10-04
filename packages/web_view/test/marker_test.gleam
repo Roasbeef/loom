@@ -99,12 +99,12 @@ pub fn a_dot_and_a_tag_hold_the_position_of_the_strand_they_name_test() {
   assert in_order(html, [
     "class=\"tl-row hue-2\">",
     "<span aria-hidden=\"true\" class=\"dot\" data-loom-focus=\"1\"></span>",
-    "↳ agent_spawn · ",
+    "Spawned ",
     "<button class=\"tag\" data-loom-focus=\"1\" type=\"button\">sub:&lt;b&gt;review</button>",
     "class=\"tl-row hue-2\">",
     "<span aria-hidden=\"true\" class=\"dot\" data-loom-focus=\"1\"></span>",
     "<button class=\"tag\" data-loom-focus=\"1\" type=\"button\">sub:&lt;b&gt;review</button>",
-    " · result · completed",
+    " finished",
   ])
 
   // The nudge belongs to the advisor, whose card is last.

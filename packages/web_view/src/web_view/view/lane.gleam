@@ -56,12 +56,14 @@ import lustre/element/keyed
 import lustre/event
 import session_view/agent_roster
 import session_view/markdown
+import session_view/step_words
 import session_view/transcript_image.{type Image}
 import session_view/transcript_line.{type Line}
 import session_view/transcript_lines.{type Block}
 import session_view/turns
 import web_view/image
 import web_view/markdown_view
+import web_view/view/fold_row
 import web_view/view/live
 import web_view/view/strip
 
@@ -251,7 +253,7 @@ pub fn rows(
             timeline_row(piece, draw, replies, marks, session),
           )
         }),
-        live_entry(live, draw),
+        live_entry(live, draw, marks),
       ),
     ),
   ])
@@ -259,14 +261,31 @@ pub fn rows(
 
 // The live region as the lane's last entry, or no entry while nothing is
 // streaming. Its key is a word, and a piece's key is a sequence, so the two
-// never collide.
+// never collide. It is a row of the timeline like any other, in the hue of the
+// strand on screen, and its dot pulses: something is being written.
 fn live_entry(
   rows: List(live.Row),
   draw: fn(Line) -> Element(message),
+  marks: Marks,
 ) -> List(#(String, Element(message))) {
   case rows {
     [] -> []
-    [_, ..] -> [#("live", live.view(rows, draw))]
+    [_, ..] -> [
+      #(
+        "live",
+        html.div([attribute.class("tl-row"), strip.hue_class(marks.hue)], [
+          html.span(
+            [
+              attribute.class("dot"),
+              attribute.class("pulse"),
+              attribute.aria_hidden(True),
+            ],
+            [],
+          ),
+          html.div([attribute.class("tl-body")], [live.view(rows, draw)]),
+        ]),
+      ),
+    ]
   }
 }
 
@@ -311,17 +330,11 @@ fn boundary(top: Top, load: message) -> Element(message) {
   ])
 }
 
-// One transcript line, drawn once and kept while the line is unchanged.
-fn line_row(
-  line: Line,
-  draw: fn(Line) -> Element(message),
-) -> Element(message) {
-  element.memo([element.ref(line)], fn() { draw(line) })
-}
-
 fn piece_key(piece: turns.Piece) -> String {
   case piece {
-    turns.Plain(block:, ..) | turns.Commentary(block:) -> block.key
+    turns.Plain(block:, ..)
+    | turns.Prompt(block:, ..)
+    | turns.Commentary(block:, ..) -> block.key
     turns.Work(key:, ..)
     | turns.Spawned(key:, ..)
     | turns.Returned(key:, ..)
@@ -361,7 +374,10 @@ fn timeline_row(
 // session's message is nobody's here.
 fn belongs_to(piece: turns.Piece, marks: Marks) -> #(turns.Hue, Option(Int)) {
   case piece {
-    turns.Plain(..) | turns.Work(..) | turns.Missed(..) -> #(marks.hue, None)
+    turns.Plain(..) | turns.Prompt(..) | turns.Work(..) | turns.Missed(..) -> #(
+      marks.hue,
+      None,
+    )
     turns.Spawned(child:, hue:, ..) -> #(
       hue,
       option.then(child, position(marks, _)),
@@ -418,8 +434,23 @@ fn piece_element(
   session: String,
 ) -> Element(message) {
   case piece {
-    turns.Plain(block:, thoughts:) ->
-      block_element(block, thoughts, draw, session)
+    turns.Plain(block:, thoughts:, took:) ->
+      block_element(block, thoughts, took, draw, session)
+
+    // A person's message: who sent it on a line of its own, and the words in
+    // a bubble beneath. The sender's name is session text, a text node, and
+    // the role is the reader's own and a fixed word from the host.
+    turns.Prompt(block:, name:, role:, ..) ->
+      html.div([attribute.class("prompt")], [
+        html.p([attribute.class("who")], [
+          html.span([attribute.class("who-name")], [html.text(name)]),
+          ..case role {
+            Some(role) -> [html.text(" · " <> role)]
+            None -> []
+          }
+        ]),
+        block_element(block, dict.new(), None, draw, session),
+      ])
 
     // A settled turn's work is a `<loom-fold>` (`packages/web_client`),
     // collapsed until the reader opens it. The fold opens and closes in the
@@ -450,30 +481,47 @@ fn piece_element(
         work_items(items, draw, session),
       )
 
+    // A spawn is a line of the strand that made it: the verb the step words
+    // use, the child's tag, and the purpose it was given. The purpose is the
+    // model's text, a text node.
     turns.Spawned(child:, purpose:, hue:, standing:, ..) ->
-      html.div([attribute.class("spawn"), strip.hue_class(hue)], [
-        html.span([attribute.class("spawn-head")], [
-          html.text("↳ agent_spawn · "),
-          case child {
-            Some(child) ->
-              tag(
-                "sub:" <> agent_roster.short_name(child),
-                position(marks, child),
-              )
-            None -> html.text(standing_text(standing))
-          },
-        ]),
-        html.span([attribute.class("spawn-purpose")], [html.text(purpose)]),
-      ])
+      html.p(
+        [attribute.class("who"), attribute.class("spawn"), strip.hue_class(hue)],
+        [
+          html.text("Spawned"),
+          ..list.append(
+            case child {
+              Some(child) -> [
+                html.text(" "),
+                tag(
+                  "sub:" <> agent_roster.short_name(child),
+                  position(marks, child),
+                ),
+              ]
+              None -> [html.text(" · " <> standing_text(standing))]
+            },
+            case purpose {
+              "" -> []
+              _ -> [
+                html.span([attribute.class("spawn-purpose")], [
+                  html.text(" · " <> purpose),
+                ]),
+              ]
+            },
+          )
+        ],
+      )
 
+    // A child's result is a line naming it, and the report beneath it as
+    // the first line the reader scans, opened to the whole report from that
+    // line. A report of one short line has nothing to open.
     turns.Returned(child:, outcome:, report:, hue:, ..) ->
-      html.article([attribute.class("result-card"), strip.hue_class(hue)], [
-        html.p([attribute.class("card-head")], [
-          html.text("from "),
+      html.div([attribute.class("result"), strip.hue_class(hue)], [
+        html.p([attribute.class("who")], [
           tag("sub:" <> agent_roster.short_name(child), position(marks, child)),
-          html.text(" · result · " <> outcome),
+          html.text(" " <> step_words.returned(outcome)),
         ]),
-        card_body(report),
+        ..result_report(report)
       ])
 
     turns.Nudged(frame:, body:, ..) ->
@@ -535,8 +583,15 @@ fn piece_element(
     // who wants it beside the strands (`view/commentary`). The words are
     // the projection's own label row, so the marker claims a request
     // only, never a delivery: the tool result may still downgrade it.
-    turns.Commentary(block:) -> {
-      let label = commentary_label(block)
+    //
+    // Reviews with nothing between them are one line that counts them: the
+    // projection's label says what one review requested, and two of them
+    // would say the same words twice.
+    turns.Commentary(block:, reviews:) -> {
+      let label = case reviews {
+        1 -> commentary_label(block)
+        _ -> int.to_string(reviews) <> " reviews"
+      }
       html.p([attribute.class("commentary-mark")], [
         tag("advisor", position(marks, agent_roster.advisor)),
         html.text(" · " <> label),
@@ -640,52 +695,43 @@ fn work_items(
   list.map(items, fn(item) {
     let key = case item {
       turns.Narrated(block:, ..) -> block.key
-      turns.Step(key:, ..) -> key
+      turns.Step(key:, ..) | turns.Memory(key:, ..) -> key
     }
     #(key, item_element(item, draw, session))
   })
 }
 
+// One item of the fold, each a line with the rest behind it. A call's body is
+// its whole program and result when the page holds them, and the rows the
+// transcript draws under the call when it does not; the two say the same
+// thing, so only one is drawn.
 fn item_element(
   item: turns.Item,
   draw: fn(Line) -> Element(message),
   session: String,
 ) -> Element(message) {
   case item {
-    turns.Narrated(block:, thoughts:) ->
-      block_element(block, thoughts, draw, session)
-    turns.Step(key:, standing:, summary:, detail:, full:, images:) ->
-      html.div([attribute.class("step"), standing_class(standing)], [
-        html.p([attribute.class("step-head")], [
-          html.span([attribute.class("glyph"), attribute.aria_hidden(True)], [
-            html.text(standing_glyph(standing)),
-          ]),
-          html.span([attribute.class("step-summary")], [html.text(summary)]),
-          html.span([attribute.class("step-state")], [
-            html.text(standing_text(standing)),
-          ]),
-        ]),
-        ..list.append(
-          expander(detail, full, draw),
+    turns.Narrated(block:, thoughts:, took:) ->
+      block_element(block, thoughts, took, draw, session)
+    turns.Memory(lines:, full:, ..) ->
+      fold_row.memory(
+        step_words.memory(lines),
+        list.map(full, fold_row.line_row(_, draw)),
+      )
+    turns.Step(key:, standing:, words:, detail:, full:, images:) -> {
+      let rows = case full {
+        [] -> detail
+        [_, ..] -> full
+      }
+      fold_row.step(
+        standing,
+        words,
+        list.append(
+          list.map(rows, fold_row.line_row(_, draw)),
           pictures(session, transcript_image.ref(key), images),
-        )
-      ])
-  }
-}
-
-fn standing_class(standing: turns.Standing) -> attribute.Attribute(message) {
-  case standing {
-    turns.Pending -> attribute.class("pending")
-    turns.Done -> attribute.class("done")
-    turns.Failed -> attribute.class("failed")
-  }
-}
-
-fn standing_glyph(standing: turns.Standing) -> String {
-  case standing {
-    turns.Pending -> "●"
-    turns.Done -> "✓"
-    turns.Failed -> "✕"
+        ),
+      )
+    }
   }
 }
 
@@ -699,20 +745,28 @@ fn standing_text(standing: turns.Standing) -> String {
 
 // A block drawn as the transcript draws it, one line per row. The blank a
 // terminal places between tool groups is spacing here, so a spacer block
-// never reaches the lane. A reasoning row that has a full form
-// (`thoughts`, by the row's key) is an expander of its own, so the rest of
-// the block, an answer beside the reasoning, is not drawn twice.
+// never reaches the lane. A reasoning row is a row of its own, `Reasoning ·
+// 4s`, opened to the full reasoning when the page holds it (`thoughts`, by
+// the row's key) and to its opening line when that is all there is.
 fn block_element(
   block: transcript_lines.Block,
   thoughts: Dict(String, List(Line)),
+  took: Option(Int),
   draw: fn(Line) -> Element(message),
   session: String,
 ) -> Element(message) {
   let rows =
-    list.flat_map(block.rows, fn(row) {
-      case dict.get(thoughts, row.0) {
-        Ok(full) -> expander([row.1], full, draw)
-        Error(Nil) -> [line_row(row.1, draw)]
+    list.map(block.rows, fn(row) {
+      case row.1.speaker {
+        transcript_line.ReasoningDigest ->
+          fold_row.reasoning(
+            took,
+            list.map(
+              result.unwrap(dict.get(thoughts, row.0), [row.1]),
+              fold_row.line_row(_, draw),
+            ),
+          )
+        _ -> fold_row.line_row(row.1, draw)
       }
     })
   html.div(
@@ -726,6 +780,38 @@ fn block_element(
       ),
     ),
   )
+}
+
+// A child's report under its who-line: nothing for an empty report, the text
+// alone for one short line, and otherwise the report's first line as the row
+// a reader scans, with the whole report in Markdown behind it.
+fn result_report(report: String) -> List(Element(message)) {
+  let first = first_line(report)
+  case first, string.trim(report) == first {
+    "", _ -> []
+    _, True -> [html.p([attribute.class("result-line")], [html.text(first)])]
+    _, False -> [fold_row.reading(first, [card_body(report)])]
+  }
+}
+
+// The first line of a report that says something, without the Markdown
+// marker it opens with and cut to a line's width.
+fn first_line(report: String) -> String {
+  let line =
+    report
+    |> string.split("\n")
+    |> list.map(string.trim)
+    |> list.find(fn(line) { line != "" })
+    |> result.unwrap("")
+    |> string.drop_start(0)
+  let bare = case line {
+    "#" <> rest | ">" <> rest | "-" <> rest | "*" <> rest -> string.trim(rest)
+    _ -> line
+  }
+  case string.length(bare) > 120 {
+    True -> string.slice(bare, 0, 119) <> "…"
+    False -> bare
+  }
 }
 
 // The pictures of a row's images, or nothing: a strip of thumbnails after the
@@ -771,42 +857,6 @@ fn thumbnail(session: String, ref: String, position: Int) -> Element(message) {
       ]),
     ]),
   ])
-}
-
-// Rows the reader may expand. With nothing more to show they are the rows,
-// each in its memo. With more (`Step.full`, `Piece.Plain.thoughts`, which
-// `turns` built once for the capture and the host's cap already cut), they
-// are one `<loom-expand>` (`packages/web_client`) holding the compact rows
-// in its `compact` slot and the full ones in its `full` slot. Both are the
-// server's children, escaped text nodes like every other row; the element
-// shows one slot at a time in the browser, so opening it costs no message,
-// and the server never renders which is open. The full rows are memoized
-// per line as the compact ones are, so an unchanged call draws nothing
-// again.
-fn expander(
-  compact: List(Line),
-  full: List(Line),
-  draw: fn(Line) -> Element(message),
-) -> List(Element(message)) {
-  let shown = list.map(compact, line_row(_, draw))
-  case full {
-    [] -> shown
-    [_, ..] -> [
-      element.element("loom-expand", [attribute.class("expand")], [
-        html.div(
-          [
-            attribute.attribute("slot", "compact"),
-            attribute.class("expand-compact"),
-          ],
-          shown,
-        ),
-        html.div(
-          [attribute.attribute("slot", "full"), attribute.class("expand-full")],
-          list.map(full, line_row(_, draw)),
-        ),
-      ]),
-    ]
-  }
 }
 
 fn line_element(line: Line) -> Element(message) {

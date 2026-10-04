@@ -41,11 +41,11 @@ fn operator(update) -> String {
 pub fn a_code_mode_call_expands_to_its_whole_program_test() {
   let drawn = observer(lane_fixture.programmed(program(), "the output"))
 
-  // The program is in the full slot as escaped text, all twelve lines; the
-  // compact slot holds what the lane always drew.
-  assert string.contains(drawn, "<loom-expand class=\"expand\">")
-  assert string.contains(drawn, "slot=\"compact\"")
-  assert string.contains(drawn, "slot=\"full\"")
+  // The step is one line, `code_mode`, with the program behind it: the line
+  // is the head slot and the whole program, as escaped text, is the body.
+  assert string.contains(drawn, "class=\"expand step done\">")
+  assert string.contains(drawn, "slot=\"head\"")
+  assert string.contains(drawn, "slot=\"body\"")
   assert string.contains(drawn, "let a12 = &lt;x12&gt;")
   assert !string.contains(drawn, "<x12>")
   assert string.contains(drawn, "the output")
@@ -59,7 +59,7 @@ pub fn reasoning_expands_to_the_whole_block_test() {
 
 pub fn the_operators_page_draws_the_same_expanders_test() {
   let drawn = operator(lane_fixture.programmed(program(), "the output"))
-  assert string.contains(drawn, "<loom-expand class=\"expand\">")
+  assert string.contains(drawn, "class=\"expand step done\">")
   assert string.contains(drawn, "let a12 = &lt;x12&gt;")
 }
 
