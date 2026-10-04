@@ -793,7 +793,7 @@ already have.
 | Surface | Opened by | Data it shows | Modules |
 |---|---|---|---|
 | Approval dialog | Automatically, when a new exact escalation is pending | The captured action, requesting strand and exact grants; Allow once, Allow for session, Deny | `approval`, `approval_panel` |
-| Changes tab and navigator | `/diff` (the docked rail's Changes tab at 120 columns or wider; the main panel below that) | A bounded Git observation from `worktree_diff`, with captured `fs_edit` patches as a labelled fallback | `worktree_view`, `diff_panel` |
+| Changes tab and navigator | `/diff` (the Changes tab of the docked rail at 120 columns or wider, of the sheet below that) | A bounded Git observation from `worktree_diff`, with captured `fs_edit` patches as a labelled fallback | `worktree_view`, `diff_panel` |
 | Agent workspace | `/agents` or F2; `Shift+Tab` docks or hides the rail, which lists the same rows | One row per strand in attention order, the strip's row shape (`agent_row`); Tab filters, `w` writes to the unchanged recipient; Activity, Messages, Notes and Collaborate views | `agents`, `agent_row`, `agent_view`, `agent_activity`, `agent_messages`, `agent_message_panel`, `reviewer_status` |
 | Notes | `/notes`, or the inspector's Notes tab | The current `notes` observation with its revisions | `notes_view`, `note_panel` |
 | Queue inspector and editor | `/queue`, `Alt+q` | Held inputs and one fetched queue document | `queue_panel`, `queue_editor` |
