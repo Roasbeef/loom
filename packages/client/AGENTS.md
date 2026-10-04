@@ -183,6 +183,9 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   `session_id` mints a `Home` grant; the home routes (`ui_http.HomeExchange`,
   `HomePage`, `HomeSocket`, `server.home_grant`/`home_socket`) and
   `ui_socket.upgrade_home` serve it, a home living `ui_sessions.session_ms`.
+  The router hands each page's `grant.reach` to `ui_socket.upgrade` and
+  `upgrade_home`, which build the page's `Standing`, and every ticket a page
+  mints carries it.
   Redemption is one message: it spends
   the ticket, answers `UnknownTicket` or `OtherScope`, and mints three
   secrets, ending no other page except the principal's oldest when it
@@ -275,17 +278,27 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   `daemon/main` holds), so an operator page can open another session
   (protocol-change/051, the addendum on switching sessions): the transport's
   `open` is `opened_for(role, ..)`, which declines an observer's page without
-  asking, and otherwise `ticket_for(attachment, tickets, ceiling, target)`,
+  asking, and otherwise `ticket_for(standing, tickets, open, target)` (a
+  `Standing` is the registry, credential digest, principal, ceiling and reach of
+  the asking page, from `page_standing` or, for a home, `home_standing`),
   which checks with the page's credential digest that the identity is a
   canonical session's (after `open()` says the asking page is still open, which
   also yields its deadline, carried onto the ticket by
   `ui_sessions.mint_before`, so a chain of switches never outlives the page it
   began from; `ui.link` tickets keep eight hours), that `manager.session_authority` finds the principal's
   membership in it and that `manager.get` reports it resident, then mints a
-  ticket into the same table with the page's own principal and ceiling
+  ticket into the same table with the page's own principal, ceiling and reach
   (`sessions.Ticketed(path)`, else `Declined(NotHeld | NotRunning |
   Unavailable)`). `observer_accepts` still drops a click beneath
-  `component.sidebar_path`; `operator_accepts` admits any click, as before.
+  `component.sidebar_path` and now also admits one at exactly
+  `component.home_path`; `operator_accepts` admits any click, as before. A page
+  of `Workspace` reach is handed `Transport.home` (`home_capability`), whose
+  `home_ticket_for` checks the page is open and the credential still
+  authenticates as its principal, then mints a `Home` ticket (`Workspace`
+  reach, the page's deadline and ceiling, never remembered, `Declined(NoHome)`
+  on any refusal). The home's socket takes a click beneath `home.table_path` or
+  `home.sidebar_path` (`home_accepts`) and its `Start.open` is `ticket_for` with
+  the home's `Standing`.
   `ui.link` and a switch build the exchange path with `page.exchange_path`.
   An owner's operator page can also invite (protocol-change/051, the addendum
   on inviting from the session page). `ui_socket.Role` has a third value,

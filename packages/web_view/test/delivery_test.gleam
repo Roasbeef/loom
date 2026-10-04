@@ -73,6 +73,7 @@ fn started() -> Page {
       sessions: fn() { [] },
       open: fn(_) { sessions.Declined(sessions.NotHeld) },
       invite: None,
+      home: None,
     )
   let start =
     component.Start(

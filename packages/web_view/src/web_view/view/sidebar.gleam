@@ -43,10 +43,12 @@
 //// the groups keep their positions whatever the slot holds.
 ////
 //// The home page draws the same column through `home` (protocol-change/065):
-//// a "Home" entry in the `nav` slot, marked as the page on screen, and every
-//// row text. `Rows` is how the two differ: a row is a button that sends the
-//// caller's message, or text, and the column, the groups and the row's words
-//// are written once.
+//// a "Home" entry in the `nav` slot, marked as the page on screen, and a row
+//// for every session. No row is the current one on the home, so each running
+//// session's row is a button that sends the caller's message and each saved
+//// session's is text. The column, the groups and the row's words are written
+//// once, and the two pages differ only in the nav entry, the strand bars and
+//// which session is current.
 ////
 //// The module takes `sessions.Group`s and the current identity, and imports
 //// nothing from `web_view/component`, which imports it.
@@ -144,22 +146,29 @@ pub fn view(
     element.ref(current),
     element.ref(bars),
   ])
-  column(groups, element.none(), current, bars, Pressable(open))
+  column(groups, element.none(), current, bars, open)
 }
 
 /// The sidebar the home page draws (protocol-change/065): the same groups, with
-/// a "Home" entry in the navigation slot marked as the page on screen, and
-/// every row text. No row names a session as current and none carries a
-/// handler, so the sidebar adds no path a browser frame could name.
+/// a "Home" entry in the navigation slot marked as the page on screen. No row
+/// names a session as current, so every running session's row is a button
+/// whose message is `open` applied to that session's identity, and a saved
+/// session's row is text. The "Home" entry is text. Every handler is therefore
+/// beneath the sidebar's own path (`home.sidebar_path`), which is the one place
+/// the home's socket admits a click on this column.
 ///
-/// With no group it is `element.none()`, as `view` is.
+/// With no group it is `element.none()`, as `view` is. `open` is not part of
+/// the memo's key, as in `view`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // sidebar.home(home.groups(model))
+/// // sidebar.home(home.groups(model), Opening)
 /// ```
-pub fn home(groups: List(Group)) -> Element(message) {
+pub fn home(
+  groups: List(Group),
+  open: fn(String) -> message,
+) -> Element(message) {
   use <- element.memo([element.ref(groups)])
   let lead =
     html.p(
@@ -169,14 +178,7 @@ pub fn home(groups: List(Group)) -> Element(message) {
       ],
       [html.text("Home")],
     )
-  column(groups, lead, "", [], Plain)
-}
-
-// What a row may be: a button that sends a message naming its session, or
-// text.
-type Rows(message) {
-  Pressable(open: fn(String) -> message)
-  Plain
+  column(groups, lead, "", [], open)
 }
 
 // The column itself: its title, the navigation slot, and one section per
@@ -187,7 +189,7 @@ fn column(
   nav: Element(message),
   current: String,
   bars: List(Bar),
-  rows: Rows(message),
+  open: fn(String) -> message,
 ) -> Element(message) {
   case groups {
     [] -> element.none()
@@ -201,7 +203,7 @@ fn column(
         [
           html.h2([attribute.class("sidebar-title")], [html.text("Sessions")]),
           nav,
-          ..list.map(groups, group(_, current, bars, rows))
+          ..list.map(groups, group(_, current, bars, open))
         ],
       )
   }
@@ -211,7 +213,7 @@ fn group(
   group: Group,
   current: String,
   bars: List(Bar),
-  rows: Rows(message),
+  open: fn(String) -> message,
 ) -> Element(message) {
   html.section([attribute.class("workspace-group")], [
     html.h3([attribute.class("workspace"), attribute.title(group.workspace)], [
@@ -222,7 +224,7 @@ fn group(
     ]),
     html.ul(
       [attribute.class("sessions")],
-      list.map(group.entries, entry(_, current, bars, rows)),
+      list.map(group.entries, entry(_, current, bars, open)),
     ),
   ])
 }
@@ -236,7 +238,7 @@ fn entry(
   entry: Entry,
   current: String,
   bars: List(Bar),
-  rows: Rows(message),
+  open: fn(String) -> message,
 ) -> Element(message) {
   let residency = case entry.residency {
     Live -> #("live", "●", "resident")
@@ -255,8 +257,8 @@ fn entry(
     ])
   let words = [name, residency]
 
-  case entry.id == current, entry.residency, rows {
-    True, _, _ ->
+  case entry.id == current, entry.residency {
+    True, _ ->
       html.li(
         [
           attribute.class("session"),
@@ -265,7 +267,7 @@ fn entry(
         ],
         [name, ..list.append(dots(bars), [residency])],
       )
-    False, Live, Pressable(open) ->
+    False, Live ->
       html.li([attribute.class("session")], [
         html.button(
           [
@@ -277,8 +279,7 @@ fn entry(
           words,
         ),
       ])
-    False, Live, Plain | False, Saved, _ ->
-      html.li([attribute.class("session")], words)
+    False, Saved -> html.li([attribute.class("session")], words)
   }
 }
 

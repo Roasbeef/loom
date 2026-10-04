@@ -19,6 +19,7 @@ fn drawn(
 ) -> String {
   heading.view(
     session_id: "0192ab34cd",
+    home: element.none(),
     name:,
     workspace:,
     status: "connected",

@@ -214,7 +214,7 @@ pub fn update(
 pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
   shell.view(
     shell.Operator,
-    component.heading(model),
+    component.heading(model, Observed(component.GoingHome)),
     sidebar_place(model),
     [
       component.crumb(model),
@@ -235,7 +235,10 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
         approvals(component.pending(model), component.raised_on(model)),
         composer(model),
       ]),
-      departure(model),
+
+      // The element that moves the browser to another page is always the
+      // centre's last child, so no admitted path moves with it.
+      component.switch(model),
     ],
     component.panel(
       model,
@@ -283,25 +286,6 @@ fn openable(
   |> option.map(fn(entry) {
     lane.Destination(label: sessions.label(entry), press: Opening(entry.id))
   })
-}
-
-// The element that moves the browser to another session's page. It is always
-// the centre's last child, so no admitted path moves with it, and it carries
-// the address only after the daemon has minted a ticket
-// (`web_client/switch`, which checks the address again before it navigates).
-// It is hidden and holds nothing the reader sees.
-fn departure(model: component.Model(socket)) -> Element(Msg(socket)) {
-  element.element(
-    "loom-switch",
-    [
-      attribute.attribute("hidden", ""),
-      ..case component.departure(model) {
-        Some(address) -> [attribute.attribute("to", address)]
-        None -> []
-      }
-    ],
-    [],
-  )
 }
 
 // The controls, with what each sends. The fork form sends its text as one

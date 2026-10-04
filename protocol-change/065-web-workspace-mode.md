@@ -812,6 +812,68 @@ links and the resume as the addendum records.
 - **Stop from the browser.** One fixed button per running session on the
   owner's home, through `administer`, if asked for.
 
+## Addendum: navigation, the second pull request (2026-10-03)
+
+**Status**: IMPLEMENTED in the change that adds it. It builds the "home row
+opens a session" and "Home" controls of the design note's PR 2 and adds no
+route, no frozen interface and no kind of wire frame. It does change two
+things 065 and 051 said, and says so here.
+
+**The home admits one browser event.** The first pull request's home drew no
+handler and its socket admitted no browser frame at all
+(`ui_socket.home_accepts` answered `False`). It now admits exactly one event:
+a `click`, alone or in a batch, at a path beneath `home.table_path` (the
+sessions table's section) or `home.sidebar_path` (the sidebar column), where
+the only handlers are the rows of running sessions. Each row's message is
+`home.Opening(id)` with the catalogue's identity drawn when the tree was, so a
+frame chooses among the rows the page drew and cannot name a session. Every
+other frame, a `submit`, a `keydown`, a click on the region's own path or on
+any other child of the frame, and a batch containing any of them, is dropped
+before it reaches the component. The same holds at either ceiling: an
+observer-ceiling home opens observer pages.
+
+**The daemon checks again.** A press asks `ui_socket.ticket_for`, now over a
+`Standing` (the registry, credential digest, principal, ceiling and reach of
+the asking page): the page must still be open, the identity canonical, the
+principal a member of the session (`manager.session_authority`) and the
+session resident. A forged press for a session the principal does not hold, one
+that does not exist and text that is not an identity are each `NotHeld`; a saved
+session is `NotRunning`. The ticket carries the page's credential, principal,
+ceiling, deadline and **reach**. The first pull request's `ticket_for` minted
+`OneSession` for every switch; a page now carries its own reach onto the pages
+it opens, so a page a home opened is a `Workspace` page and a page a link for
+one session opened stays `OneSession`.
+
+**The way home.** A session page whose grant has `Workspace` reach, an
+observer's included, draws a "Home" button as the top bar's second child, at
+`component.home_path`, and its transport holds the capability that mints a
+home ticket (`ui_socket.home_capability`, `home_ticket_for`). The press sends
+`component.GoingHome`, which carries nothing. The daemon checks that the page
+is open and that its credential still authenticates as the page's principal,
+and mints a `Home` ticket for that credential, principal and ceiling with the
+page's deadline, reach `Workspace` and no login. The three layers 051 keeps for
+switching hold here too, each enough alone: the observer component has the one
+message only with the capability; the observer's socket admits a click at
+exactly `component.home_path` and nowhere new; the daemon refuses from the grant
+it holds. A page a link for one session opened (`OneSession`) is handed no
+capability and draws nothing: the observer-sidebar ruling for handed-out links
+is unchanged, and an observer page opened from one still has no sidebar and no
+Home control. An observer `Workspace` page has no list, no sidebar and no
+switch, only the Home button.
+
+**The browser.** `switch_rule.target` accepts a second shape,
+`/ui/home?ticket=<64 hex digits>`, and nothing else new. Both pages and the
+home draw the same hidden `<loom-switch>` as the centre column's last child, so
+no admitted path moves with it.
+
+**What a stolen page is worth.** A stolen home page can already list sessions
+and mint a ticket for any running session its principal holds, which a stolen
+operator session page could do after 051's switching addendum; it now does it
+through a click on a row. A stolen `Workspace` session page can mint a home
+ticket for its own principal at its own ceiling and deadline, which opens no
+session its principal could not already open. A chain of tickets never outlives
+the first page's deadline (`mint_before`).
+
 ## Addendum: the login security review (2026-10-04)
 
 **Status**: folded into the proposal above; the body reads as amended, and

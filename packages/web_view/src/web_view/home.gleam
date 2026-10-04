@@ -17,13 +17,20 @@
 //// allowed to take longer, opening a saved session, will run in its own
 //// process when that arrives, since the page cannot be frozen behind it.
 ////
-//// The component draws a list and takes no input. Its view attaches no
-//// handler, its message type holds no command and the daemon's socket drops
-//// every browser frame (`client/daemon/ui_socket.home_accepts`), so nothing a
-//// browser sends reaches `update`. Every name and path is a catalogue field,
-//// drawn as a text node (`view/home_table`, `view/sidebar`). The page names
-//// the principal and the most the page may do in its top bar, so a person who
-//// holds two homes can tell them apart.
+//// The component draws a list and takes one input (protocol-change/065, the
+//// second pull request): the press of a running session's row, in the table or
+//// in the sidebar. Its message is `Opening`, whose session is the catalogue's
+//// identity drawn into the tree by the server, so the browser's event names
+//// only the path it fired at and never a session. The daemon's socket admits a
+//// click beneath `table_path` or `sidebar_path` and drops every other frame
+//// (`client/daemon/ui_socket.home_accepts`), and `Start.open` makes the
+//// daemon check the principal's membership and the session's residency again
+//// before it mints a ticket. The answer is a ticket's address, which the
+//// hidden `<loom-switch>` element navigates to, or a refusal worded in the
+//// page's notice. Every name and path is a catalogue field, drawn as a text
+//// node (`view/home_table`, `view/sidebar`). The page names the principal and
+//// the most the page may do in its top bar, so a person who holds two homes
+//// can tell them apart.
 ////
 //// ## Transitions
 ////
@@ -39,8 +46,10 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import lustre
+import lustre/attribute
 import lustre/effect.{type Effect}
 import lustre/element.{type Element}
+import lustre/element/html
 import lustre/server_component
 import web_view/ending.{type Ending}
 import web_view/sessions.{type Entry, type Group}
@@ -49,6 +58,22 @@ import web_view/view/home_bar
 import web_view/view/home_table
 import web_view/view/shell
 import web_view/view/sidebar
+import web_view/view/switch
+
+/// The Lustre event path of the sidebar on the home page: it is the second
+/// child of the page's frame (`view/shell`), as on a session's page
+/// (`component.sidebar_path`). Every handler beneath it is one running
+/// session's row, which asks the daemon for a ticket to open that session. The
+/// home's socket admits a click beneath this path and beneath `table_path` and
+/// no other event; `home_test` fails if the view moves either region.
+pub const sidebar_path = "0\t1"
+
+/// The Lustre event path of the sessions table on the home page: the centre
+/// column is the third child of the frame, and the table's section is the
+/// centre's second child, after the notice's place. Every handler beneath it is
+/// one running session's name, which asks the daemon for a ticket to open that
+/// session.
+pub const table_path = "0\t2\t1"
 
 /// How long the page's list stands before it is read again, in milliseconds.
 /// The list changes when a session is created, renamed, archived or opened,
@@ -95,6 +120,12 @@ pub type Start {
     /// when the page opens and every `refresh_ms` after, and it must not run
     /// long: the page's runtime waits for it.
     sessions: fn() -> Listing,
+    /// Asks the daemon for a ticket to open the named session: the daemon
+    /// checks that the page is open, that its principal holds the session and
+    /// that a process runs it, and mints a ticket with the page's own ceiling
+    /// and deadline. It runs in the component's process when a row is
+    /// pressed, and it must not run long: the page's runtime waits for it.
+    open: fn(String) -> sessions.Answer,
   )
 }
 
@@ -122,6 +153,13 @@ pub opaque type Model {
     status: Status,
     /// The refresh timer's subject, known once the runtime has made it.
     timer: Option(Subject(Nil)),
+    /// The ticket exchange the daemon minted for the session the person
+    /// chose, which `<loom-switch>` navigates to. It stays until the next
+    /// press replaces it: the ticket is single use and lives 60 seconds.
+    departure: Option(String),
+    /// What the page last said about a press, in the daemon's fixed words: that
+    /// it is opening a session, or why it could not.
+    notice: Option(String),
   )
 }
 
@@ -137,6 +175,16 @@ pub type Msg {
 
   /// The answer to a read.
   Answered(listing: Listing)
+
+  /// A running session's row was pressed: ask the daemon for a ticket to open
+  /// it. The identity is the catalogue's, fixed when the tree was drawn, and
+  /// the daemon decides whether the page's principal may have it.
+  Opening(session: String)
+
+  /// The daemon answered a request to open a session. It is the effect's own
+  /// message, dispatched from the component's process, and no handler carries
+  /// it, so a browser cannot send one.
+  Linked(answer: sessions.Answer)
 }
 
 /// The application the daemon's socket starts, one per home page.
@@ -159,7 +207,14 @@ pub fn app() -> lustre.App(Start, Model, Msg) {
 /// // let model = home.new(start)
 /// ```
 pub fn new(start: Start) -> Model {
-  Model(start:, groups: [], status: Connecting, timer: None)
+  Model(
+    start:,
+    groups: [],
+    status: Connecting,
+    timer: None,
+    departure: None,
+    notice: None,
+  )
 }
 
 /// The component's first state and the one subscription it runs for its life:
@@ -209,7 +264,43 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       }
 
     Answered(listing:) -> #(answered(model, listing), effect.none())
+
+    // A press asks the daemon in the component's own process. An ended page
+    // asks nothing: its principal's access is gone, and the daemon would
+    // refuse.
+    Opening(session:) ->
+      case model.status {
+        Ended(_) -> #(model, effect.none())
+        Connecting | Connected -> #(
+          Model(..model, notice: Some("Asking to open it.")),
+          asking(model.start.open, session),
+        )
+      }
+
+    // The answer: a ticket becomes the address `<loom-switch>` navigates to,
+    // and a refusal is the page's notice in the reason's fixed words.
+    Linked(answer:) ->
+      case answer {
+        sessions.Ticketed(path:) -> #(
+          Model(
+            ..model,
+            departure: Some(path),
+            notice: Some("Opening that session."),
+          ),
+          effect.none(),
+        )
+        sessions.Declined(reason:) -> #(
+          Model(..model, notice: Some(sessions.reason_words(reason))),
+          effect.none(),
+        )
+      }
   }
+}
+
+// The daemon's answer, in the component's process, as a message.
+fn asking(open: fn(String) -> sessions.Answer, session: String) -> Effect(Msg) {
+  use dispatch <- effect.from
+  dispatch(Linked(open(session)))
 }
 
 // The read, and then the arming of the timer for the next one. Both are
@@ -274,6 +365,11 @@ pub fn status(model: Model) -> Status {
 /// bar names the page, the principal and the most the page may do, and carries
 /// the notice of a page that ended.
 ///
+/// The centre's children are, in order, the notice of the last press (an
+/// empty node when there is none, so the table keeps its path), the tables
+/// (`table_path`), and the hidden `<loom-switch>` element, last so that no
+/// admitted path moves with it.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -289,7 +385,11 @@ pub fn view(model: Model) -> Element(Msg) {
       notice: ended.home(ended_ending(model.status)),
     ),
     shell_sidebar(model.groups),
-    [home_table.view(model.groups)],
+    [
+      press_notice(model.notice),
+      home_table.view(model.groups, Opening),
+      switch.view(model.departure),
+    ],
     element.none(),
     0,
     "",
@@ -300,7 +400,18 @@ pub fn view(model: Model) -> Element(Msg) {
 fn shell_sidebar(groups: List(Group)) -> shell.Sidebar(Msg) {
   case groups {
     [] -> shell.Unlisted
-    [_, ..] -> shell.Listed(sidebar.home(groups))
+    [_, ..] -> shell.Listed(sidebar.home(groups, Opening))
+  }
+}
+
+// The words of the last press, or the empty node that keeps the table's place.
+fn press_notice(notice: Option(String)) -> Element(Msg) {
+  case notice {
+    None -> element.none()
+    Some(words) ->
+      html.p([attribute.class("home-notice"), attribute.role("status")], [
+        html.text(words),
+      ])
   }
 }
 

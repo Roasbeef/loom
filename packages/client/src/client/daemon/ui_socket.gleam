@@ -63,6 +63,16 @@
 //// sessions (`home_listing`) are also what end it: a page whose UI session
 //// ended or whose credential was revoked is told so by its next read.
 ////
+//// A page and the home lead to each other by tickets (the second pull
+//// request). A running session's row on the home asks `ticket_for` for a page
+//// of that session, and a session page opened from a home asks
+//// `home_ticket_for` for the way back. Both mint with the asking page's own
+//// `Standing`: its credential, principal, ceiling and reach, so the page they
+//// open can do no more than the page that asked, and both carry the asking
+//// page's deadline, so a chain home, session, home never outlives the page it
+//// began from. A page a link for one session opened has `OneSession` reach and
+//// is handed no capability to go home.
+////
 //// ## Flow
 ////
 //// `upgrade` → `websocket` → `admit` → `start_page` → `serve` → `closing`
@@ -185,7 +195,7 @@ type Phase {
 }
 
 /// The browser messages an observer's page takes: exactly one kind,
-/// Lustre's `EventFired` for a `click`, and only at two places. One is
+/// Lustre's `EventFired` for a `click`, and only at three places. One is
 /// `component.older_path`, the lane's "Load older" button, whose message asks
 /// for a read of older history and nothing else (protocol-change/051, the
 /// addendum on history paging). The other is any path beneath
@@ -194,7 +204,11 @@ type Phase {
 /// strand, which is a change of what the page reads and sends no command (the
 /// addendum on strand focus). The strand is named by the message the server
 /// drew and not by the frame, so the frame chooses among the chips and cannot
-/// name a strand. Every other message is dropped here, a batch included, so
+/// name a strand. The third is `component.home_path`, the "Home" button of a
+/// page opened from a home, whose message carries nothing and whose answer is
+/// a ticket the daemon mints for the page's own principal and ceiling
+/// (`home_ticket_for`; protocol-change/065, the second pull request). Every
+/// other message is dropped here, a batch included, so
 /// it costs the component no render; the gateway refuses any mutation from an
 /// observer's binding on its own, whatever reaches it. A click beneath
 /// `component.sidebar_path`, where an operator's page has its session
@@ -220,11 +234,12 @@ fn observer_click() -> decode.Decoder(Bool) {
   decode.success(kind == 1 && name == "click" && observer_path(path))
 }
 
-// The two places an observer's click may fire: the older button, and a chip
-// beneath the strip's list. The list's own path is not a chip, so the prefix
-// includes the separator.
+// The three places an observer's click may fire: the older button, the Home
+// button, and a chip beneath the strip's list. The list's own path is not a
+// chip, so the prefix includes the separator.
 fn observer_path(path: String) -> Bool {
   path == component.older_path
+  || path == component.home_path
   || string.starts_with(path, component.strip_path <> "\t")
 }
 
@@ -331,6 +346,7 @@ pub fn upgrade(
   open: fn() -> Result(Int, Nil),
   register: fn(ui_sessions.Images) -> Nil,
   ceiling: access.Role,
+  reach: ui_sessions.Reach,
 ) -> Response(mist.ResponseData) {
   let role = role_of(attachment)
   let limit = case role {
@@ -392,6 +408,7 @@ pub fn upgrade(
       open,
       register,
       invite,
+      reach,
       expected,
       signals,
       settled,
@@ -505,48 +522,99 @@ fn websocket(
 /// gateway: the socket starts `web_view/home`, which asks the daemon for the
 /// principal's sessions when it opens and on a timer, and draws them. The
 /// permit is an observer's, whose frame limit is the one this socket takes,
-/// since the home's view attaches no handler and `home_accepts` admits no
-/// browser frame at all.
+/// since the home takes only clicks, `home_accepts` admits nothing else, and a
+/// click is a few dozen bytes.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.upgrade_home(root, request, attachment, open, access.Operator)
+/// // ui_socket.upgrade_home(root, request, attachment, tickets, open, access.Operator, ui_sessions.Workspace)
 /// ```
 pub fn upgrade_home(
   daemon: root.Root(instance),
   request: Request(mist.Connection),
   attachment: server.HomeAttachment(instance),
+  tickets: ui_sessions.Sessions,
   open: fn() -> Result(Int, Nil),
   ceiling: access.Role,
+  reach: ui_sessions.Reach,
 ) -> Response(mist.ResponseData) {
   let settled = process.new_subject()
   let limit = root.message_limit(root.Observer)
+  let standing = home_standing(attachment, ceiling, reach)
   websocket(request, limit, settled, fn(signals) {
-    admit_home(daemon, attachment, open, ceiling, signals, settled)
+    admit_home(
+      daemon,
+      attachment,
+      fn(target) { ticket_for(standing, tickets, open, target) },
+      open,
+      ceiling,
+      signals,
+      settled,
+    )
   })
 }
 
-/// The browser messages a home page takes: none. The home draws no handler,
-/// so no event can name one, and every frame is dropped before it costs the
-/// component a render. The component's own messages are sent from this side
-/// of the socket, which a browser frame cannot produce.
+/// The browser messages a home page takes: Lustre's `EventFired` for a
+/// `click`, alone or batched, at a path beneath `home.table_path` or
+/// `home.sidebar_path`, where the home's only handlers are, and nothing else.
+/// Each handler is one running session's row, whose message names the session
+/// the server drew and not one the frame chose, so the frame can choose only
+/// among the rows that were drawn. Every other frame is dropped before it costs
+/// the component a render, a batch with one of them included.
+///
+/// The paths and the separator are exact, so a path that merely begins with the
+/// same digits is not admitted. The daemon refuses a row whose session the
+/// principal does not hold or that no process runs (`ticket_for`), whatever
+/// frame reached it, and the home's component sends its own messages from this
+/// side of the socket, which a browser frame cannot produce.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert !ui_socket.home_accepts("{\"kind\":1,\"name\":\"click\"}")
+/// assert !ui_socket.home_accepts("{\"kind\":1,\"name\":\"submit\"}")
 /// ```
-pub fn home_accepts(_frame: String) -> Bool {
-  False
+pub fn home_accepts(frame: String) -> Bool {
+  case json.parse(frame, home_click()) {
+    Ok(accepted) -> accepted
+    Error(_) -> False
+  }
+}
+
+fn home_click() -> decode.Decoder(Bool) {
+  use kind <- decode.field("kind", decode.int)
+  case kind {
+    1 -> {
+      use name <- decode.field("name", decode.string)
+      use path <- decode.field("path", decode.string)
+      decode.success(name == "click" && home_row_path(path))
+    }
+    3 -> {
+      use messages <- decode.field(
+        "messages",
+        decode.list(decode.recursive(home_click)),
+      )
+      decode.success(messages != [] && list.all(messages, fn(ok) { ok }))
+    }
+    _ -> decode.success(False)
+  }
+}
+
+// A row's button is beneath the table's section or the sidebar's column. The
+// region's own path is not a row, so the prefix includes the separator.
+fn home_row_path(path: String) -> Bool {
+  string.starts_with(path, home.table_path <> "\t")
+  || string.starts_with(path, home.sidebar_path <> "\t")
 }
 
 // Takes the permit in the socket's first handler turn, as `admit` does, and
 // then starts the home component with the read of the principal's sessions
-// as it is: a closure over the attachment, run in the component's process.
+// and the request to open one as they are: closures over the attachment, run
+// in the component's process.
 fn admit_home(
   daemon: root.Root(instance),
   attachment: server.HomeAttachment(instance),
+  opening: fn(String) -> sessions.Answer,
   open: fn() -> Result(Int, Nil),
   ceiling: access.Role,
   signals: process.Subject(Signal),
@@ -564,6 +632,7 @@ fn admit_home(
           process.send(signals, Ended(reason))
         })
       },
+      open: opening,
     )
   let started = case transferred {
     Error(reason) -> {
@@ -734,11 +803,13 @@ fn admit(
   open: fn() -> Result(Int, Nil),
   register: fn(ui_sessions.Images) -> Nil,
   invite: Option(fn(invites.Role) -> invites.Answer),
+  reach: ui_sessions.Reach,
   expected: snapshot.Expected,
   signals: process.Subject(Signal),
   settled: process.Subject(Nil),
 ) -> mist.Next(Phase, Signal) {
   let role = role_of(attachment)
+  let standing = page_standing(attachment, attach.ceiling, reach)
   let transferred = root.transfer(daemon, attachment.permit, within: 1000)
   process.send(settled, Nil)
   let transport =
@@ -753,11 +824,12 @@ fn admit(
       now: bootstrap.monotonic_time_ms,
       sessions: fn() { listed_for(role, fn() { listed(attachment) }) },
       open: fn(target) {
-        opened_for(role, fn() {
-          ticket_for(attachment, tickets, attach.ceiling, open, target)
-        })
+        opened_for(role, fn() { ticket_for(standing, tickets, open, target) })
       },
       invite:,
+      home: home_capability(reach, fn() {
+        home_ticket_for(standing, tickets, open)
+      }),
     )
   let start =
     component.Start(
@@ -901,8 +973,159 @@ pub fn opened_for(role: Role, ask: fn() -> sessions.Answer) -> sessions.Answer {
   }
 }
 
-/// A ticket for the operator's page's principal to open `target`, or the
-/// reason there is none.
+/// What a page that asks for a ticket stands for: the registry that answers
+/// its questions, the digest of the credential it was admitted under, its
+/// principal, the ceiling it was minted with and the reach it was minted for.
+/// The daemon builds it from the attachment the router authenticated and never
+/// from anything the page said, and every ticket the page asks for carries its
+/// credential, principal, ceiling and reach, so a page can mint nothing that
+/// stands for more than it does. A session page and a home page are asked for
+/// tickets in the same way, which is why they share it.
+pub type Standing(instance) {
+  Standing(
+    /// The registry the page's questions go to.
+    registry: manager.Manager(instance),
+    /// The credential the page was admitted under. Every later check
+    /// authenticates it again.
+    digest: access.Digest,
+    /// The authenticated principal's identity.
+    principal: String,
+    /// The most the page may do, which caps the role every page it opens is
+    /// admitted with.
+    ceiling: access.Role,
+    /// What the page was minted for, carried onto every page it opens.
+    reach: ui_sessions.Reach,
+  )
+}
+
+/// The standing of a session page, from its attachment and the grant it was
+/// admitted under.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.page_standing(attachment, access.Operator, ui_sessions.Workspace)
+/// ```
+@internal
+pub fn page_standing(
+  attachment: server.Attachment(instance),
+  ceiling: access.Role,
+  reach: ui_sessions.Reach,
+) -> Standing(instance) {
+  Standing(
+    registry: attachment.registry,
+    digest: attachment.digest,
+    principal: attachment.principal.id,
+    ceiling:,
+    reach:,
+  )
+}
+
+/// The standing of a home page, from its attachment and the grant it was
+/// admitted under.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.home_standing(attachment, access.Operator, ui_sessions.Workspace)
+/// ```
+@internal
+pub fn home_standing(
+  attachment: server.HomeAttachment(instance),
+  ceiling: access.Role,
+  reach: ui_sessions.Reach,
+) -> Standing(instance) {
+  Standing(
+    registry: attachment.registry,
+    digest: attachment.digest,
+    principal: attachment.principal.id,
+    ceiling:,
+    reach:,
+  )
+}
+
+/// The capability to go home that a page of `reach` is handed: `ask` for a
+/// page that was opened from a home, and none for a page a link for one
+/// session opened, which is the whole of who draws the "Home" button.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.home_capability(ui_sessions.OneSession, ask) == None
+/// ```
+@internal
+pub fn home_capability(
+  reach: ui_sessions.Reach,
+  ask: fn() -> sessions.Answer,
+) -> Option(fn() -> sessions.Answer) {
+  case reach {
+    ui_sessions.Workspace -> Some(ask)
+    ui_sessions.OneSession -> None
+  }
+}
+
+/// A ticket for the home page of the asking page's principal, or the reason
+/// there is none (protocol-change/065, the second pull request).
+///
+/// Each step is the daemon's own and is made afresh, and none is taken from
+/// the page:
+///
+/// 0. The asking page must still be open, as for `ticket_for`: `open` answers
+///    its deadline while the page's UI session is live and unreplaced. The
+///    deadline goes on the ticket, so the home it becomes ends no later than
+///    this page, and a chain home, session, home never outlives the home it
+///    began from.
+/// 1. The credential the page was admitted under must still authenticate, and
+///    must still be the principal's: a revoked credential gets no way back.
+/// 2. The ticket carries the page's own credential, principal and ceiling, so
+///    a home reached from an observer page is an observer's home. Its reach is
+///    `Workspace`, and it is never remembered: nothing a page mints sets a
+///    browser login.
+///
+/// Every refusal is `NoHome`, whose words do not say which step failed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.home_ticket_for(standing, tickets, open)
+/// ```
+@internal
+pub fn home_ticket_for(
+  standing: Standing(instance),
+  tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
+) -> sessions.Answer {
+  let outcome = {
+    use until <- result.try(open() |> result.replace_error(sessions.NoHome))
+    use principal <- result.try(
+      manager.authenticate(standing.registry, standing.digest)
+      |> result.replace_error(sessions.NoHome),
+    )
+    use _ <- result.try(case principal.id == standing.principal {
+      True -> Ok(Nil)
+      False -> Error(sessions.NoHome)
+    })
+    ui_sessions.mint_before(
+      tickets,
+      ui_sessions.Grant(
+        scope: ui_sessions.Home,
+        credential: standing.digest,
+        principal: standing.principal,
+        ceiling: standing.ceiling,
+        reach: ui_sessions.Workspace,
+      ),
+      until,
+    )
+    |> result.replace_error(sessions.NoHome)
+  }
+  case outcome {
+    Ok(issued) -> sessions.Ticketed(page.home_exchange_path(issued.ticket))
+    Error(reason) -> sessions.Declined(reason)
+  }
+}
+
+/// A ticket for the asking page's principal to open `target`, or the reason
+/// there is none. The asking page is a session page's operator or a home.
 ///
 /// Each step is the daemon's own and is made afresh, with the digest of the
 /// credential the page was admitted under, and none is taken from the page:
@@ -923,9 +1146,11 @@ pub fn opened_for(role: Role, ask: fn() -> sessions.Answer) -> sessions.Answer {
 ///    otherwise be refused at its socket with nothing to say why.
 /// 4. The ticket carries the page's own ceiling, which caps the role the new
 ///    page is admitted with and never grants one, so a switch cannot raise
-///    what a link allowed. It is single use and lives 60 seconds like any
-///    other, and is minted into the same table, so the page cap and the
-///    redemption rules are unchanged.
+///    what a link allowed, and its own reach, so a page opened from a home
+///    draws its way back and a page opened from a link for one session does
+///    not. It is single use and lives 60 seconds like any other, and is minted
+///    into the same table, so the page cap and the redemption rules are
+///    unchanged.
 ///
 /// The reasons are `NotHeld` for an identity that is not a session's or is
 /// not the principal's, `NotRunning` for a saved session and `Unavailable`
@@ -935,13 +1160,12 @@ pub fn opened_for(role: Role, ask: fn() -> sessions.Answer) -> sessions.Answer {
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.ticket_for(attachment, tickets, access.Operator, target)
+/// // ui_socket.ticket_for(standing, tickets, open, target)
 /// ```
 @internal
 pub fn ticket_for(
-  attachment: server.Attachment(instance),
+  standing: Standing(instance),
   tickets: ui_sessions.Sessions,
-  ceiling: access.Role,
   open: fn() -> Result(Int, Nil),
   target: String,
 ) -> sessions.Answer {
@@ -951,26 +1175,22 @@ pub fn ticket_for(
       ids.parse_session_id(target) |> result.replace_error(sessions.NotHeld),
     )
     use _ <- result.try(
-      manager.session_authority(attachment.registry, attachment.digest, target)
+      manager.session_authority(standing.registry, standing.digest, target)
       |> result.map_error(not_held),
     )
     use view <- result.try(
-      manager.get(attachment.registry, target)
+      manager.get(standing.registry, target)
       |> result.replace_error(sessions.Unavailable),
     )
     use _ <- result.try(running(view.status))
-
-    // The switch's page keeps the reach every session page has until a home
-    // can open one (protocol-change/065, the second pull request): a page
-    // that came from a home will carry its own reach onto the ticket.
     ui_sessions.mint_before(
       tickets,
       ui_sessions.Grant(
         scope: ui_sessions.Session(target),
-        credential: attachment.digest,
-        principal: attachment.principal.id,
-        ceiling:,
-        reach: ui_sessions.OneSession,
+        credential: standing.digest,
+        principal: standing.principal,
+        ceiling: standing.ceiling,
+        reach: standing.reach,
       ),
       until,
     )
@@ -1287,7 +1507,7 @@ fn operator_image(
 }
 
 /// Starts the component a page of `role` gets: an observer's page, which
-/// takes one click at two places, or an operator's, which takes only the
+/// takes one click at three places, or an operator's, which takes only the
 /// events its view attaches, with an owner's also taking the invitation
 /// control's. Called from the socket's own process, which then owns the
 /// subject the component's messages arrive on.

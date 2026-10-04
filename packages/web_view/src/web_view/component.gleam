@@ -118,7 +118,8 @@
 ////    `commanded` wrap a command as the step's message. `switch_to` asks the
 ////    daemon to open another session.
 //// 7. `older`, `focus` and `invite` are the other public entries that change
-////    what the page shows; `apply` folds lane updates a caller took from the lane itself.
+////    what the page shows; `going_home` asks the daemon for a ticket to the
+////    home page; `apply` folds lane updates a caller took from the lane itself.
 //// 8. `view` lays the derived pieces out, through `heading`, `panel`, `live`
 ////    and the `web_view/view` modules, and reads nothing the model does not hold.
 
@@ -196,6 +197,7 @@ import web_view/view/session_tab
 import web_view/view/shell
 import web_view/view/strand_detail
 import web_view/view/strip
+import web_view/view/switch
 import web_view/view/todo_panel
 import web_view/view/trace
 
@@ -291,6 +293,19 @@ pub const sidebar_path = "0\t1"
 /// (`client/daemon/ui_socket.invite_for`). `invite_test` fails if the view
 /// moves the control or a handler leaves the region.
 pub const invite_path = "0\t3\t2\t2"
+
+/// The Lustre event path of the "Home" button, on both pages: it is the
+/// second child of the top bar (`view/heading`), after the brand, and the top
+/// bar is the first child of the page's frame (`view/shell`). The button is
+/// drawn only on a page opened from a home, and its one handler asks the
+/// daemon for a ticket to that home (protocol-change/065, the second pull
+/// request). The observer's socket admits a `click` at exactly this path and
+/// nowhere else beyond the two it always admitted
+/// (`client/daemon/ui_socket.observer_accepts`), and the daemon decides again
+/// whether the page's principal and ceiling may have a ticket
+/// (`client/daemon/ui_socket.home_ticket_for`). `page_events_test` fails if
+/// the view moves the button.
+pub const home_path = "0\t0\t1"
 
 /// The Lustre event path of the operator's session controls, the goal's
 /// buttons and the Fork form: the fourth child of the Session pane, after the
@@ -412,6 +427,15 @@ pub type Transport(socket) {
     /// component's process, and it must not run long: the page's runtime
     /// waits for it.
     invite: Option(fn(invites.Role) -> invites.Answer),
+    /// Asks the daemon for a ticket to the principal's home page, for a page
+    /// that was opened from a home (protocol-change/065): the daemon mints it
+    /// for the page's own principal, with the page's own ceiling and deadline,
+    /// and answers with the exchange address or the reason it did not. It is
+    /// `None` on a page a link for one session opened, which draws no way home
+    /// and so offers no capability. The daemon checks the page again when this
+    /// is called. It runs in the component's process, and it must not run
+    /// long: the page's runtime waits for it.
+    home: Option(fn() -> sessions.Answer),
   )
 }
 
@@ -713,6 +737,13 @@ pub type Msg(socket) {
   /// carry it (protocol-change/051, the addendum on strand focus).
   FocusRequested(strand: String)
 
+  /// The "Home" button was pressed. It carries nothing: the daemon mints a
+  /// ticket for this page's own principal, so the press cannot name a place
+  /// to go. It is the second message a browser can send an observer's page,
+  /// and the button exists only on a page opened from a home
+  /// (protocol-change/065).
+  GoingHome
+
   /// The sidebar's read of the principal's sessions answered. It is the
   /// effect's own message, dispatched from the component's process, and no
   /// handler carries it, so a browser cannot send one.
@@ -732,6 +763,10 @@ pub type Msg(socket) {
   /// effect's own message, dispatched from the component's process, and no
   /// handler carries it, so a browser cannot send one.
   Linked(answer: sessions.Answer)
+
+  /// The daemon answered a request to go home. Like `Linked` it is the
+  /// effect's own message and no handler carries it.
+  Homed(answer: sessions.Answer)
 
   /// The daemon answered a request to invite. It is the effect's own
   /// message, dispatched from the component's process, and no handler
@@ -955,6 +990,8 @@ pub fn update(
 
     FocusRequested(strand:) -> focus_at(model, strand, at)
 
+    GoingHome -> going_home(model)
+
     // The sidebar's list is the catalogue's own order and the page groups it,
     // at most `listed_limit` sessions. Nothing about the lane moved.
     SessionsListed(entries:) -> #(
@@ -979,7 +1016,15 @@ pub fn update(
       answering(reply, turns.picture(model.view.pieces, ref, position)),
     )
 
-    Linked(answer:) -> #(linked(model, answer), effect.none())
+    Linked(answer:) -> #(
+      linked(model, answer, saying: "Opening that session."),
+      effect.none(),
+    )
+
+    Homed(answer:) -> #(
+      linked(model, answer, saying: "Going to the home page."),
+      effect.none(),
+    )
 
     Invited(answer:) -> #(invited(model, answer), effect.none())
   }
@@ -997,8 +1042,14 @@ fn answering(
 // The daemon's answer to a request to open another session. A ticket becomes
 // the address `<loom-switch>` navigates to. A refusal is shown in the
 // composer's notice in the fixed words for its reason, and a switch that
-// succeeded says so in the same place until the browser has left.
-fn linked(model: Model(socket), answer: sessions.Answer) -> Model(socket) {
+// succeeded says `saying` in the same place until the browser has left. The
+// answer to a request to go home is folded in the same way as the answer to
+// a request to open a session: both end in one navigation.
+fn linked(
+  model: Model(socket),
+  answer: sessions.Answer,
+  saying saying: String,
+) -> Model(socket) {
   case answer {
     sessions.Ticketed(path:) ->
       Model(
@@ -1007,7 +1058,7 @@ fn linked(model: Model(socket), answer: sessions.Answer) -> Model(socket) {
           ..model.view,
           departure: Some(path),
           refusal: None,
-          outcome: "Opening that session.",
+          outcome: saying,
         ),
       )
     sessions.Declined(reason:) ->
@@ -2245,8 +2296,50 @@ fn asking(transport: Transport(socket), target: String) -> Effect(Msg(socket)) {
   dispatch(Linked(transport.open(target)))
 }
 
+/// Asks the daemon for a ticket to the principal's home page, when the "Home"
+/// button was pressed.
+///
+/// The page sends nothing but the press. The daemon mints the ticket for this
+/// page's own principal, with this page's ceiling and deadline, so the home it
+/// opens can do no more than this page could, and the answer arrives as
+/// `Homed`. A page with no capability to go home (`Transport.home` is `None`)
+/// ignores the message: it draws no button, and a frame that named the path
+/// anyway finds no handler. This page's lane and record are not touched, so
+/// the page left behind stays open until its own deadline, as after a switch.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.going_home(model)
+/// ```
+pub fn going_home(
+  model: Model(socket),
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case model.view.transport.home {
+    None -> #(model, effect.none())
+    Some(ask) -> #(
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          refusal: None,
+          outcome: "Asking for the home page.",
+        ),
+      ),
+      homing(ask),
+    )
+  }
+}
+
+// The daemon's answer, in the component's process, as a message.
+fn homing(ask: fn() -> sessions.Answer) -> Effect(Msg(socket)) {
+  use dispatch <- effect.from
+  dispatch(Homed(ask()))
+}
+
 /// The address `<loom-switch>` is to move the browser to, once the daemon has
-/// minted a ticket for the session the operator chose. `None` until then.
+/// minted a ticket for the session the operator chose, or for the home page.
+/// `None` until then.
 ///
 /// ## Examples
 ///
@@ -2995,7 +3088,7 @@ pub fn session_id(model: Model(socket)) -> String {
 pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
   shell.view(
     shell.Observer,
-    heading(model),
+    heading(model, GoingHome),
     shell.Unlisted,
     [
       crumb(model),
@@ -3014,16 +3107,47 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
           html.text("Observer · read-only"),
         ]),
         html.span([attribute.class("observer-note")], [
-          html.text(
-            "You can follow this session. Ask the owner for operator access.",
-          ),
+          html.text(observer_words(model)),
         ]),
       ]),
+      case model.view.transport.home {
+        Some(_) -> switch(model)
+        None -> element.none()
+      },
     ],
     panel(model, FocusRequested, None, element.none(), element.none()),
     needing(model),
     workspace_digest(model),
   )
+}
+
+// The observer bar's note beside the "Observer · read-only" pill: the fixed
+// words that say how to get operator access, or, after a press of "Home" that the daemon refused, the reason in its fixed
+// words. The observer's page has no composer to hold a notice, and it is the
+// only refusal the page can have.
+fn observer_words(model: Model(socket)) -> String {
+  case notice(model) {
+    Warned(text) | Said(text) -> text
+    Quiet ->
+      "You can follow this session. Ask the owner for operator access."
+  }
+}
+
+/// The element that moves the browser to another page. It is hidden, holds
+/// nothing the reader sees, and carries an address in its `to` attribute only
+/// after the daemon has minted a ticket for one (`web_client/switch`, which
+/// checks the address again before it navigates). Each page draws it as the
+/// centre column's last child, so no admitted path moves with it: the
+/// operator's page always, and an observer's only when it was opened from a
+/// home and so may go back to it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.switch(model)
+/// ```
+pub fn switch(model: Model(socket)) -> Element(message) {
+  switch.view(departure(model))
 }
 
 /// The strand panel both pages draw: the Strands pane with a card for each
@@ -3252,14 +3376,23 @@ pub fn viewers(model: Model(socket)) -> session_summary.Viewers {
 /// the words as plain values, because it cannot import the types this module
 /// defines.
 ///
+/// `going_home` is the message the bar's "Home" button sends, which the page's
+/// own message type wraps. The button is drawn only when the transport has the
+/// capability to go home, and otherwise the bar's second child is an empty
+/// node.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // component.heading(model)
+/// // component.heading(model, GoingHome)
 /// ```
-pub fn heading(model: Model(socket)) -> Element(message) {
+pub fn heading(model: Model(socket), going_home: message) -> Element(message) {
   heading.view(
     session_id: model.shared.session,
+    home: case model.view.transport.home {
+      Some(_) -> heading.home_link(going_home)
+      None -> element.none()
+    },
     name: option.map(model.view.label, fn(label) { label.name }),
     workspace: option.map(model.view.label, fn(label) { label.workspace }),
     status: status_text(model.view.status),

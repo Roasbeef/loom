@@ -44,9 +44,11 @@ renders again just for it:
   and its listener on the form is removed when the element leaves. The chips
   are the person's own file names as text nodes, and the element draws no image.
 - `<loom-switch to="/ui/sessions/<id>?ticket=<t>">` moves the browser to
-  another session's page. The operator's page draws it hidden and writes `to`
+  another session's page, or, as `to="/ui/home?ticket=<t>"`, to the home. The
+  operator's page draws it hidden (an observer's page too, when it was opened
+  from a home), and so does the home, and each writes `to`
   once the daemon has minted a ticket; `switch_rule.target` accepts exactly
-  that address shape and nothing else, and the element then calls
+  those two address shapes and nothing else, and the element then calls
   `location.replace` (one export in `dom.mjs`), so the old page leaves no
   history entry for Back to reopen without a nonce. It renders nothing, takes no
   focus and listens for no event (protocol-change/051, the addendum on
@@ -203,7 +205,8 @@ time builds anything.
   subject when it draws and when it copies, because the two attributes may
   arrive in either order.
 - `switch_rule.target(value)`: `Ok(value)` only for exactly
-  `/ui/sessions/<canonical identity>?ticket=<64 hex digits>`, `Error(Nil)` for
+  `/ui/sessions/<canonical identity>?ticket=<64 hex digits>` or
+  `/ui/home?ticket=<64 hex digits>`, `Error(Nil)` for
   anything else, an absolute URL or another path included. `<loom-switch>`
   navigates only to what it returns.
 - `shell_rule.Motion` (`Still` | `Animated`) and `frame_classes`: the frame
