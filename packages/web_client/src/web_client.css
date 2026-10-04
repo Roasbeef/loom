@@ -48,8 +48,8 @@
   --color-on-danger: #141517;
   --color-added: #51cf66;
   --color-added-text: #51cf66;
-  --color-added-bg: #17301f;
-  --color-removed-bg: #3a1a26;
+  --color-added-bg: #1f4d2e;
+  --color-removed-bg: #4a1a29;
   --color-strand-2: #3cc9b4;
   --color-strand-2-text: #3cc9b4;
   --color-strand-3: #a3b85a;
@@ -117,8 +117,8 @@
     --color-on-danger: #ffffff;
     --color-added: #2f9e44;
     --color-added-text: #237833;
-    --color-added-bg: #e6f4ea;
-    --color-removed-bg: #fbe9ef;
+    --color-added-bg: #d3efda;
+    --color-removed-bg: #fce6ec;
     --color-strand-2: #0f9d8a;
     --color-strand-2-text: #0b7567;
     --color-strand-3: #7a8a3a;
@@ -154,8 +154,8 @@
   --color-on-danger: #ffffff;
   --color-added: #2f9e44;
   --color-added-text: #237833;
-  --color-added-bg: #e6f4ea;
-  --color-removed-bg: #fbe9ef;
+  --color-added-bg: #d3efda;
+  --color-removed-bg: #fce6ec;
   --color-strand-2: #0f9d8a;
   --color-strand-2-text: #0b7567;
   --color-strand-3: #7a8a3a;
@@ -632,11 +632,25 @@
   details.changes-file{margin:6px 0 0 0;}
   .changes-file-line{cursor:pointer;overflow-wrap:anywhere;font:12px/1.5 var(--font-mono);}
   .changes-counts{color:var(--color-fg-quiet);}
-  .pane-changes .diff{margin-top:4px;border-radius:6px;overflow-x:auto;background:var(--color-bg);}
-  .diff-row{padding:0 8px;min-height:1.5em;white-space:pre;font:12px/1.5 var(--font-mono);}
-  .diff-hunk{color:var(--color-fg-quiet);}
+  /* A diff (web_view/view/diff), the one drawer of the opened edit step and
+     the Changes tab. A line is its own row: the old and new line numbers in a
+     quiet gutter, the sign, and the text. Added lines are tinted green with a
+     green `+`, removed lines red with a red `−`, a hunk header sits in a
+     quiet band and context is plain. The box scrolls sideways and a line
+     never wraps; the grid makes every row as wide as the widest, so a tint
+     runs the whole way across. */
+  .diff{display:grid;grid-template-columns:minmax(max-content,1fr);margin:4px 0;border:1px solid var(--color-divider);border-radius:6px;overflow-x:auto;background:var(--color-bg);}
+  .diff-row{display:flex;min-height:1.5em;white-space:pre;color:var(--color-fg);font:12px/1.5 var(--font-mono);}
+  .diff-num{flex:0 0 auto;background:var(--color-bg-sunk);min-width:3.5ch;padding:0 6px;text-align:right;color:var(--color-fg-quiet);user-select:none;}
+  .diff-sign{flex:0 0 auto;width:2ch;text-align:center;user-select:none;}
+  .diff-text{flex:1 0 auto;padding:0 8px 0 2px;}
+  .diff-hunk,.diff-file,.diff-note{background:var(--color-bg-sunk);color:var(--color-fg-quiet);}
+  .diff-hunk .diff-text,.diff-file .diff-text,.diff-note .diff-text{padding-left:8px;}
   .diff-added{background:var(--color-added-bg);}
+  .diff-added .diff-sign,.diff-added .diff-text{color:var(--color-added-text);}
   .diff-removed{background:var(--color-removed-bg);}
+  .diff-removed .diff-sign,.diff-removed .diff-text{color:var(--color-danger-text);}
+  .diff-cut{margin:0;padding:2px 8px;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);}
   .changes-cut{margin:4px 0 0 0;color:var(--color-fg-quiet);}
   /* The Session pane (web_view/view/session_tab): the goal, the live jobs,
      on an operator's page the attached viewers, and the estimated cost. */
