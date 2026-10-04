@@ -4,14 +4,19 @@
 INSERT INTO catalogue_meta (singleton, revision) VALUES (1, 0);
 
 -- name: FindRegistrations :many
-SELECT session_id, path, workspace, name, configuration, created_at, request_key, state, profile
+SELECT session_id, path, workspace, workspace_binding, name, configuration, created_at, request_key, state, profile
 FROM catalogue_sessions
 WHERE session_id = ? OR request_key = ? OR path = ?;
 
 -- name: InsertRegistration :exec
 INSERT INTO catalogue_sessions
-  (session_id, path, workspace, name, configuration, created_at, request_key, state, profile)
-VALUES (?, ?, ?, ?, ?, ?, ?, 'reserved', ?);
+  (session_id, path, workspace, workspace_binding, name, configuration, created_at, request_key, state, profile)
+VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 'reserved', ?);
+
+-- name: InsertRegisteredRegistration :exec
+INSERT INTO catalogue_sessions
+  (session_id, path, workspace, workspace_binding, name, configuration, created_at, request_key, state, profile)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?);
 
 -- name: ConfirmRegistration :exec
 UPDATE catalogue_sessions SET state = 'saved' WHERE session_id = ?;
@@ -34,7 +39,7 @@ INSERT INTO catalogue_session_names (session_id, name) VALUES (?, ?)
 ON CONFLICT(session_id) DO UPDATE SET name = excluded.name;
 
 -- name: RegistrationPage :many
-SELECT s.session_id, s.path, s.workspace, CAST(COALESCE(n.name, s.name) AS TEXT) AS name,
+SELECT s.session_id, s.path, s.workspace, s.workspace_binding, CAST(COALESCE(n.name, s.name) AS TEXT) AS name,
        s.configuration, s.created_at, s.request_key, s.state, s.profile, t.subtitle
 FROM catalogue_sessions AS s
 LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
@@ -49,7 +54,7 @@ LIMIT 100;
 SELECT revision FROM catalogue_meta WHERE singleton = 1;
 
 -- name: MemberRegistrationPage :many
-SELECT s.session_id, s.path, s.workspace, CAST(COALESCE(n.name, s.name) AS TEXT) AS name, s.configuration,
+SELECT s.session_id, s.path, s.workspace, s.workspace_binding, CAST(COALESCE(n.name, s.name) AS TEXT) AS name, s.configuration,
        s.created_at, s.request_key, s.state, s.profile, t.subtitle
 FROM access_memberships AS m
 JOIN catalogue_sessions AS s ON s.session_id = m.session_id
