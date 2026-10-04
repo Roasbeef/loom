@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the bounded ownership model and require named negative witnesses.
+"""Check bounded ownership and metadata models with named negative witnesses.
 
 The runner owns only this directory. It pins the official tools jar by release
 and SHA-256, regenerates PlusCal in an isolated run directory, and rejects a
@@ -42,6 +42,22 @@ CASES = {
     "MutantDirectory": "OneEffectiveWriter",
     "MutantAdmission": "NoOverlappingAuthority",
     "MutantCut": "ActivationHasEvidence",
+    "MetadataSafety": None,
+    "MetadataSafetyCapacity": None,
+    "MetadataReachUnknown": "NoUnknownCommit",
+    "MetadataReachMissing": "NoMissingThenCommit",
+    "MetadataReachReconcile": "NoLostReconciliation",
+    "MetadataReachLate": "NoLateReply",
+    "MetadataReachStale": "NoStaleRejection",
+    "MetadataReachConflict": "NoDigestConflict",
+    "MetadataReachCapacity": "NoCapacityRefusal",
+    "MetadataReachMinority": "NoMinorityThenHeal",
+    "MetadataReachCompacted": "NoCompactedReconciliation",
+    "MetadataMutantTimeout": "NoFalseNoCommit",
+    "MetadataMutantRetry": "OneLogicalCommit",
+    "MetadataMutantMinority": "NoMinorityAck",
+    "MetadataMutantABA": "MonotonicFence",
+    "MetadataMutantReceipt": "ReceiptRetained",
 }
 
 
@@ -85,15 +101,15 @@ def execute(command: list[str], cwd: Path, log: Path, timeout: int) -> dict:
             "log": str(log.relative_to(ROOT))}
 
 
-def translate(java: str, jar: Path, run: Path, update: bool) -> dict:
+def translate(java: str, jar: Path, run: Path, update: bool, model: str) -> dict:
     """Regenerate in isolation; ordinary checking never rewrites source files."""
-    source = ROOT / "Ownership.tla"
+    source = ROOT / f"{model}.tla"
     generated = run / source.name
     shutil.copyfile(source, generated)
     command = [java, "-Xmx512m", "-cp", str(jar), "pcal.trans", "-nocfg",
                "-unixEOL", str(generated)]
-    result = execute(command, run, run / "translation.log", 30)
-    output = (run / "translation.log").read_text()
+    result = execute(command, run, run / f"translation-{model}.log", 30)
+    output = (run / f"translation-{model}.log").read_text()
     if result["exit_code"] != 0 or "Translation completed." not in output:
         raise RuntimeError(f"PlusCal translation failed: {result['log']}\n{output}")
     # The pinned translator emits trailing spaces on declarations. Normalize
@@ -112,12 +128,13 @@ def check(java: str, jar: Path, run: Path, case: str, timeout: int) -> dict:
     """Require exhaustive success or a counterexample to the expected predicate."""
     work = run / case
     work.mkdir()
-    shutil.copyfile(run / "Ownership.tla", work / "Ownership.tla")
+    model = "Metadata" if case.startswith("Metadata") else "Ownership"
+    shutil.copyfile(run / f"{model}.tla", work / f"{model}.tla")
     shutil.copyfile(ROOT / f"{case}.cfg", work / f"{case}.cfg")
     command = [java, "-Xmx512m", "-XX:MaxDirectMemorySize=64m", "-cp", str(jar),
                "tlc2.TLC", "-workers", "1", "-seed", "1", "-fp", "0",
                "-metadir", str(work / "states"),
-               "-config", f"{case}.cfg", "Ownership.tla"]
+               "-config", f"{case}.cfg", f"{model}.tla"]
     result = execute(command, work, work / "tlc.log", timeout)
     output = (work / "tlc.log").read_text()
     expected = CASES[case]
@@ -134,8 +151,8 @@ def check(java: str, jar: Path, run: Path, case: str, timeout: int) -> dict:
         failures = re.findall(r"Error: Invariant (\w+) is violated\.", output)
         passed = (result["exit_code"] == 12 and failures == [expected]
                   and result["trace_states"] > 1 and bool(stats))
-    result.update(case=case, expected_invariant=expected, passed=passed,
-                  model_sha256=hashlib.sha256((work / "Ownership.tla").read_bytes()).hexdigest(),
+    result.update(case=case, model=model, expected_invariant=expected, passed=passed,
+                  model_sha256=hashlib.sha256((work / f"{model}.tla").read_bytes()).hexdigest(),
                   config_sha256=hashlib.sha256((work / f"{case}.cfg").read_bytes()).hexdigest())
     print(f"{case}: {'PASS' if passed else 'FAIL'}, exit={result['exit_code']}, "
           f"distinct={result.get('distinct_states')}, "
@@ -155,7 +172,7 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=60,
                         help="Seconds per TLC case (1..120; timeout fails the run).")
     parser.add_argument("--translate", action="store_true",
-                        help="Regenerate Ownership.tla only; do not run TLC.")
+                        help="Regenerate both PlusCal models only; do not run TLC.")
     args = parser.parse_args()
     if not 1 <= args.timeout <= 120:
         parser.error("--timeout must be between 1 and 120 seconds")
@@ -169,8 +186,12 @@ def main() -> int:
                "results": []}
     try:
         jar = provision()
-        summary["translation"] = translate(args.java, jar, run, args.translate)
-        summary["model_sha256"] = hashlib.sha256((run / "Ownership.tla").read_bytes()).hexdigest()
+        models = (["Metadata" if args.case.startswith("Metadata") else "Ownership"]
+                  if args.case and not args.translate else ["Ownership", "Metadata"])
+        summary["translation"] = {model: translate(args.java, jar, run, args.translate, model)
+                                  for model in models}
+        summary["model_sha256"] = {model: hashlib.sha256((run / f"{model}.tla").read_bytes()).hexdigest()
+                                   for model in models}
         if not args.translate:
             for case in ([args.case] if args.case else CASES):
                 summary["results"].append(check(args.java, jar, run, case, args.timeout))
