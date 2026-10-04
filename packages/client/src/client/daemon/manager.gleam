@@ -74,6 +74,7 @@ import simplifile
 import storage/access
 import storage/catalogue
 import storage/domain
+import telemetry/owner
 import weft/state_machine as sm
 
 /// Live lifecycle state, joined with the durable initialization the registry
@@ -2329,6 +2330,7 @@ fn prepare_domain_slot(
       results:,
       faults:,
       failures:,
+      label: fn() { owner.label([#("session", record.id)], owner.SessionHost) },
     )
   {
     Error(reason) -> #(book, Error(Preparation(reason)))
@@ -2470,6 +2472,7 @@ fn prepare_shared_domain(book: Book(instance), selected: domain.Domain) {
           results:,
           faults:,
           failures:,
+          label: fn() { owner.label([], owner.DomainHost) },
         )
       {
         Error(reason) -> #(book, Error(Preparation(reason)))

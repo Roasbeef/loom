@@ -351,6 +351,19 @@ bench-server: ## Benchmark the server's per-step hot paths (DB=<copy of a sessio
 	@test -n "$(DB)" || { echo "usage: make bench-server DB=<copy of a session .db>"; exit 2; }
 	@cd packages/client && gleam dev -- "$(DB)"
 
+# Startup time and resident memory of the self-contained releases: daemon cold
+# boot, client cold start and attach to the first frame, a one-shot command,
+# the daemon's growth per session, and a client opening a long real session.
+# It rebuilds both releases first, because a measurement of a stale release
+# is a measurement of the wrong commit. DB is a session .db to copy for the
+# long-session scenario; BENCH_ARGS passes --runs, --only, --label and
+# --compare through. scripts/bench_startup_memory.py says how each number is
+# taken.
+.PHONY: bench-startup-memory
+bench-startup-memory: ## Time and weigh daemon and client startup (DB=<session .db>)
+	@$(MAKE) -j1 codemode-seed release release-client
+	@python3 scripts/bench_startup_memory.py --db "$(DB)" $(BENCH_ARGS)
+
 # The exec helper pool against the real `loom-exec` under the real jail: spawn
 # to ready, warm round trip, the first wide batch, cancel to settle, a flood,
 # a leak census and resident memory, one JSON line per probe in

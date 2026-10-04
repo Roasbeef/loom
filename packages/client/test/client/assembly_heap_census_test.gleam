@@ -481,6 +481,7 @@ fn worked_session(seed: Int) -> serve.Instance {
       results:,
       faults: process.new_subject(),
       failures: process.new_subject(),
+      label: fn() { Nil },
     )
     as "the fixture prepares ownership before beginning assembly"
   host.begin(prepared)

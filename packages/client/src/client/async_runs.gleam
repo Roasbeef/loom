@@ -28,6 +28,7 @@
 //// 8. `abort_operation` revokes an initiating operation ahead of the broker.
 
 import client/agency
+import client/internal/session_owner
 import client/notice
 import core/clock
 import core/ids
@@ -41,6 +42,7 @@ import gleam/result
 import gleam/string
 import runtime/api
 import runtime/async_execution as execution
+import telemetry/owner
 import weft
 import weft/actor
 import weft/poll
@@ -206,6 +208,10 @@ pub fn start(
   wiring: Wiring,
 ) -> actor.StartResult(Subject(Message)) {
   actor.new_with_initialiser(5000, fn(subject) {
+    // The initialiser runs in the actor's own process, so this label names
+    // it to the ownership inspector under its session.
+    session_owner.label(wiring.runtime, owner.AsyncRuns)
+
     actor.initialised(State(
       wiring:,
       self: subject,

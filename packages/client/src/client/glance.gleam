@@ -70,6 +70,7 @@ import client/advisor
 import client/distill.{type Distiller}
 import client/glancepace
 import client/glanceslice
+import client/internal/session_owner
 import client/notes
 import core/clock.{type Clock}
 import core/entry.{type Entry, type UsageRow}
@@ -94,6 +95,7 @@ import session/session.{type Session}
 import storage/storage
 import telemetry/field
 import telemetry/log.{type Logger}
+import telemetry/owner
 import weft
 import weft/actor
 import weft/registry as address
@@ -351,6 +353,11 @@ fn builder(
   wiring: Wiring,
 ) -> sm.Builder(Phase, Data, Message, Subject(Message)) {
   sm.new_with_initialiser(5000, fn(inbox) {
+    // The initialiser runs in the machine's own process, so this label
+    // names it to the ownership inspector under its session. The runtime
+    // is only borrowed here, and a refused borrow leaves it unlabelled.
+    session_owner.label_borrowed(wiring.runtime, owner.Glance)
+
     sm.initialised(
       Watching,
       Data(wiring:, inbox:, book: glancepace.new(), flights: dict.new()),

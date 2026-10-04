@@ -28,6 +28,7 @@ pub fn prepared_host_does_no_work_and_begins_only_once_test() {
       results:,
       faults:,
       failures:,
+      label: fn() { Nil },
     )
     as "host prepared without effects"
   assert process.receive(acquired, 20) == Error(Nil)
@@ -42,6 +43,25 @@ pub fn prepared_host_does_no_work_and_begins_only_once_test() {
   assert process.receive(failures, 0) == Error(Nil)
 }
 
+pub fn the_host_runs_its_label_in_its_own_process_before_assembly_test() {
+  let results = process.new_subject()
+  let faults = process.new_subject()
+  let failures = process.new_subject()
+  let labelled = process.new_subject()
+  let assert Ok(prepared) =
+    host.prepare(
+      build: fn(_) { Ok("instance") },
+      fatal: fn(_) { [] },
+      results:,
+      faults:,
+      failures:,
+      label: fn() { process.send(labelled, process.self()) },
+    )
+    as "host prepared without effects"
+  assert process.receive(labelled, 1000) == Ok(host.builder(prepared))
+  assert host.close(prepared, within_ms: 1000) == custody.Closed
+}
+
 pub fn opening_job_return_does_not_close_the_instance_test() {
   let results = process.new_subject()
   let faults = process.new_subject()
@@ -53,6 +73,7 @@ pub fn opening_job_return_does_not_close_the_instance_test() {
       results:,
       faults:,
       failures:,
+      label: fn() { Nil },
     )
     as "registry creates and retains custody before dispatching an open"
   let job = process.spawn_unlinked(fn() { host.begin(instance) })
@@ -88,6 +109,7 @@ pub fn raw_builder_kill_still_runs_published_cleanup_test() {
       results:,
       faults:,
       failures:,
+      label: fn() { Nil },
     )
     as "host prepared"
   let watch = process.monitor(host.owner(instance))
@@ -124,6 +146,7 @@ pub fn failed_assembly_reports_before_eventual_cleanup_test() {
       results:,
       faults:,
       failures:,
+      label: fn() { Nil },
     )
     as "host prepared"
   let watch = process.monitor(host.owner(instance))

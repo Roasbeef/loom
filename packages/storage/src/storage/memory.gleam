@@ -59,10 +59,10 @@ import storage/internal/snapshot_call
 import storage/internal/snapshot_memory
 import storage/snapshot
 import storage/storage.{
-  type BranchScan, type EntryScan, type Register, type SessionStats,
-  type Storage, type StorageError, type UsageScan, BackendFault, CorruptRow,
-  HandleClosed, NewestFirst, OldestFirst, Register, SessionStats, Storage,
-  UnknownEntry,
+  type BranchScan, type EntryHead, type EntryScan, type Register,
+  type SessionStats, type Storage, type StorageError, type UsageScan,
+  BackendFault, CorruptRow, HandleClosed, NewestFirst, OldestFirst, Register,
+  SessionStats, Storage, UnknownEntry,
 }
 
 /// One session's complete in-memory state. All fields are consistent with
@@ -115,6 +115,12 @@ pub opaque type Message {
 
   /// Entry inventory scan.
   ScanEntries(q: EntryScan, reply: Subject(Result(List(Entry), StorageError)))
+
+  /// Entry inventory scan, projected to heads.
+  ScanEntryHeads(
+    q: EntryScan,
+    reply: Subject(Result(List(EntryHead), StorageError)),
+  )
 
   /// Ledger read.
   ScanUsage(q: UsageScan, reply: Subject(Result(List(UsageRow), StorageError)))
@@ -560,6 +566,25 @@ pub fn scan_entries(
   |> Ok
 }
 
+/// The entry inventory as heads: `scan_entries` projected to id, parent
+/// and seq. The memory backend holds decoded entries, so there is no
+/// payload to skip, and defining the projection over `scan_entries` is
+/// what guarantees the two agree on rows, order and limit.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert memory.scan_entry_heads(memory.new(), storage.entry_scan()) == Ok([])
+/// ```
+///
+pub fn scan_entry_heads(
+  state: MemoryState,
+  q: EntryScan,
+) -> Result(List(EntryHead), StorageError) {
+  scan_entries(state, q)
+  |> result.map(list.map(_, storage.entry_head_of))
+}
+
 /// Usage-ledger read in seq order.
 ///
 /// ## Examples
@@ -697,6 +722,9 @@ pub fn open(clock: Clock) -> Result(Storage(Subject(Message)), StorageError) {
           },
           scan_entries: fn(handle, q) {
             process.call_forever(handle, ScanEntries(q, _))
+          },
+          scan_entry_heads: fn(handle, q) {
+            process.call_forever(handle, ScanEntryHeads(q, _))
           },
           scan_usage: fn(handle, q) {
             process.call_forever(handle, ScanUsage(q, _))
@@ -842,6 +870,10 @@ fn handle_message(
       process.send(reply, Error(HandleClosed))
       actor.continue(actor_state)
     }
+    ScanEntryHeads(reply:, ..), True -> {
+      process.send(reply, Error(HandleClosed))
+      actor.continue(actor_state)
+    }
     ScanUsage(reply:, ..), True -> {
       process.send(reply, Error(HandleClosed))
       actor.continue(actor_state)
@@ -881,6 +913,10 @@ fn handle_message(
     }
     ScanEntries(q:, reply:), False -> {
       process.send(reply, scan_entries(actor_state.state, q))
+      actor.continue(actor_state)
+    }
+    ScanEntryHeads(q:, reply:), False -> {
+      process.send(reply, scan_entry_heads(actor_state.state, q))
       actor.continue(actor_state)
     }
     ScanUsage(q:, reply:), False -> {

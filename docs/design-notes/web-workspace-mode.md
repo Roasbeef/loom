@@ -289,7 +289,7 @@ that adds it says what the narrowed holder may ask.
 
 Keying the row by the digest of the identifier is what makes a login fit
 the existing model: every check in the tree takes a credential digest
-(`authenticate` (`client/daemon/manager.gleam:945`), `session_authority`,
+(`authenticate` (`client/daemon/manager.gleam:946`), `session_authority`,
 `frame_authority`, `administer`), and a page minted from a login carries
 that digest as its `Grant.credential`. The page's socket, its relay, the
 gateway's per-frame re-check and the admin dispatch all run unchanged
@@ -633,7 +633,7 @@ login add these cases.
 `sessions.create` is owner-only (`CreateSession`
 (`client/daemon/server.gleam:1604`)): it canonicalizes a workspace path on the
 daemon's host, canonicalizes or inherits a configuration path, and runs
-`create_scoped` (`client/daemon/manager.gleam:1051`) under an idempotency key.
+`create_scoped` (`client/daemon/manager.gleam:1052`) under an idempotency key.
 The terminal builds that key from its own identity, the wall clock and a
 counter (`CreateSession` (`tui/session_control.gleam:672`)), names the session
 from the workspace, and then opens and attaches. A page has no path to any
@@ -762,8 +762,8 @@ membership is.
 053 designed the admin page in full (phase 4) and the owner ruled on
 2026-09-30 that it waits for use of the terminal's `/access` overlay
 (`tui/access_overlay.gleam`). The daemon serves the two owner-only reads it
-needs, `principal_page` (`client/daemon/manager.gleam:832`) and
-`membership_page` (`client/daemon/manager.gleam:855`), and every mutation
+needs, `principal_page` (`client/daemon/manager.gleam:833`) and
+`membership_page` (`client/daemon/manager.gleam:856`), and every mutation
 through one dispatch, `administer` (`client/daemon/manager.gleam:648`): invite,
 set-role, revoke membership, rotate, revoke credentials, isolate. The owner's
 session page already starts one of those from a browser, `invite_for`
@@ -916,7 +916,7 @@ invitee chooses their name in the UI, so the claim has a browser form.
 
 1. host and `Sec-Fetch-Site` as for the exchange; body at most 1 KiB;
 2. the token must be `loomclaim_` and 64 hex digits, checked before any
-   lookup, and `claim_known` (`client/daemon/manager.gleam:709`) must find
+   lookup, and `claim_known` (`client/daemon/manager.gleam:707`) must find
    it open;
 3. the daemon draws a login (section 1.4): an identifier, a login key, a
    login nonce, and the token with its six caveats for this principal at

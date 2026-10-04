@@ -114,4 +114,13 @@ pub fn the_refused_document_offers_the_command_in_a_copy_box_test() {
 
   let stopped = page.refusal(ending.SessionStopped, "0192ab")
   assert !string.contains(stopped, "loom-copy")
+
+  // An identity the element would refuse to copy (the router's placeholder, an
+  // empty route, one too long) gets no box, and the lead still says what
+  // happened.
+  list.each(["<id>", "", "not-hex", string.repeat("a", 65)], fn(identity) {
+    let document = page.refusal(ending.LinkExpired, identity)
+    assert !string.contains(document, "loom-copy")
+    assert string.contains(document, "A link works once, within 60 seconds.")
+  })
 }

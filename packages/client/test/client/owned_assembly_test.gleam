@@ -130,6 +130,7 @@ fn opened(settings: serve.Settings, id: ids.SessionId) {
       results:,
       faults: process.new_subject(),
       failures: process.new_subject(),
+      label: fn() { Nil },
     )
     as "manager prepares ownership before beginning assembly"
   let watch = process.monitor(host.owner(prepared))
@@ -269,6 +270,7 @@ pub fn complete_runtime_shutdown_keeps_lease_until_effect_retirement_test() {
       results:,
       faults: process.new_subject(),
       failures: process.new_subject(),
+      label: fn() { Nil },
     )
     as "the host owns the complete session"
   let watch = process.monitor(host.owner(prepared))
@@ -346,6 +348,7 @@ pub fn owned_assembly_refuses_another_saved_identity_before_effects_test() {
       results:,
       faults: process.new_subject(),
       failures: process.new_subject(),
+      label: fn() { Nil },
     )
     as "the manager prepares custody for the attempted reopen"
   let watch = process.monitor(host.owner(prepared))
@@ -394,6 +397,7 @@ fn interrupted_assembly(cleanup_result: Result(Nil, String)) {
       results: process.new_subject(),
       faults: process.new_subject(),
       failures: process.new_subject(),
+      label: fn() { Nil },
     )
     as "manager retains the original custody witness"
   let watch = process.monitor(host.owner(prepared))

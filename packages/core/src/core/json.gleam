@@ -570,16 +570,19 @@ fn clean_run(rest: BitArray, count: Int) -> Int {
 // cut made at an ASCII byte of valid UTF-8 is valid UTF-8, so the error
 // arm is the totality the durability boundary demands rather than a case
 // that can occur.
+//
+// Both pieces come out of one binary match rather than two
+// `bit_array.slice` calls: a slice is a function call wrapped in an
+// exception handler and answers a fresh tuple, and this runs for every run
+// of every string in every entry a session reads.
 fn cut(
   cursor: Cursor,
   length: Int,
 ) -> Result(#(String, BitArray), CorruptionReport) {
-  let size = bit_array.byte_size(cursor.rest)
-  let pieces = {
-    use run <- result.try(bit_array.slice(cursor.rest, 0, length))
-    use text <- result.try(bit_array.to_string(run))
-    use after <- result.try(bit_array.slice(cursor.rest, length, size - length))
-    Ok(#(text, after))
+  let pieces = case cursor.rest {
+    <<run:bytes-size(length), after:bits>> ->
+      bit_array.to_string(run) |> result.map(fn(text) { #(text, after) })
+    _shorter -> Error(Nil)
   }
   result.map_error(pieces, fn(_) { fail(cursor, "a valid utf-8 string") })
 }

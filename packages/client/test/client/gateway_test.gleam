@@ -399,6 +399,14 @@ fn start_harness_adjusted(
                 None -> panic as "network path must not scan whole entries"
               }
             },
+            // The prime reads entry heads rather than entries, so the
+            // same bound is enforced on that read too.
+            scan_entry_heads: fn(handle, query: storage.EntryScan) {
+              case query.from_seq {
+                Some(_) -> backend.scan_entry_heads(handle, query)
+                None -> panic as "network path must not scan whole entry heads"
+              }
+            },
             scan_branch: fn(handle, query: storage.BranchScan) {
               case query.cursor {
                 Some(_) -> backend.scan_branch(handle, query)

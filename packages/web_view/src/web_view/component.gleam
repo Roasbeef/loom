@@ -123,7 +123,6 @@
 //// 8. `view` lays the derived pieces out, through `heading`, `panel`, `live`
 ////    and the `web_view/view` modules, and reads nothing the model does not hold.
 
-import core/message
 import gleam/dict
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -1556,7 +1555,7 @@ fn relaned(model: Model(socket)) -> Model(socket) {
           latest,
           turns.Expand(expansion.capped),
         )
-        |> self_attributed(cut.attachment)
+        |> turns.attributed(turns.authors(view.peers))
       let #(scrollback, earlier) = case fit, branch.unloaded {
         Whole, None -> #(shared.scrollback, Reached)
         Whole, Some(_) ->
@@ -1588,25 +1587,6 @@ fn relaned(model: Model(socket)) -> Model(socket) {
         ),
       ))
     }
-  }
-}
-
-// The page's own role set on the messages the page's person sent, so the lane
-// can draw `Owner · operator` for them. The records name who sent a message
-// and not in what capacity, so the role is the one the attachment holds; a
-// peer or strand attachment is not a person and has none to set.
-fn self_attributed(
-  pieces: List(turns.Piece),
-  attachment: snapshot.Attachment,
-) -> List(turns.Piece) {
-  case attachment.origin {
-    message.Origin(principal:, ..) ->
-      turns.attributed(pieces, principal, case attachment.role {
-        snapshot.Owner -> "owner"
-        snapshot.Operator -> "operator"
-        snapshot.Observer -> "observer"
-      })
-    message.PeerOrigin(..) | message.StrandOrigin(..) -> pieces
   }
 }
 
@@ -2990,8 +2970,11 @@ pub fn pieces(model: Model(socket)) -> List(turns.Piece) {
 ///
 /// The elapsed time is a reading, not a running clock: the browser counts
 /// on from it (`<loom-elapsed>`), so the server draws again when a fragment
-/// arrives and not to move a second. A tool call the model is composing is
-/// not drawn; the capture draws it as a running call as soon as it commits.
+/// arrives and not to move a second. A turn that has opened and streamed
+/// nothing yet is one `Opened` row, drawn from the phase change with the
+/// generation clock's reading when that clock has started and no time before
+/// it. A tool call the model is composing is not drawn; the capture draws it
+/// as a running call as soon as it commits.
 ///
 /// ## Examples
 ///
@@ -3004,19 +2987,34 @@ pub fn live(model: Model(socket)) -> List(live.Row) {
     option.map(shared.generation_started_ms, fn(started) {
       int.max(0, shared.stamp.now_ms - started)
     })
-  list.filter_map(model.view.streams, fn(stream) {
-    let text = stream.fragments |> list.reverse |> string.concat
-    case stream.kind {
-      "thinking" ->
-        Ok(live.Thinking(
-          progress: transcript_lines.line_count(text),
-          elapsed_ms:,
-          headline: block_summary.live(shared.summaries, stream.generation),
-        ))
-      "tool_call" -> Error(Nil)
-      _ -> Ok(live.Answer(Line(Assistant, text)))
-    }
-  })
+  let streamed =
+    list.filter_map(model.view.streams, fn(stream) {
+      let text = stream.fragments |> list.reverse |> string.concat
+      case stream.kind {
+        "thinking" ->
+          Ok(live.Thinking(
+            progress: transcript_lines.line_count(text),
+            elapsed_ms:,
+            headline: block_summary.live(shared.summaries, stream.generation),
+          ))
+        "tool_call" -> Error(Nil)
+        _ -> Ok(live.Answer(Line(Assistant, text)))
+      }
+    })
+
+  // A strand in its `assistant` phase with nothing streamed yet is a turn
+  // that has opened: the request is out and the model has said nothing. The
+  // row stands from the phase change and not from the first fragment, which
+  // a model that streams no reasoning text never sends before its answer.
+  //
+  // Only the generation clock is ever drawn. Until it starts, on an operation
+  // event or a first fragment, the row says `Thinking` with no time: the
+  // operation's own clock also counts earlier generations of the turn, so it
+  // would read minutes under an answer that just landed.
+  case streamed, session_model.active_strand_phase(shared) {
+    [], Some("assistant") -> [live.Opened(elapsed_ms:)]
+    _, _ -> streamed
+  }
 }
 
 /// The sidebar's groups: the principal's sessions by workspace, newest

@@ -144,6 +144,7 @@ import storage/snapshot
 import storage/storage
 import telemetry/field
 import telemetry/log.{type Logger}
+import telemetry/owner
 import weft
 import weft/actor
 import weft/registry as address
@@ -984,6 +985,12 @@ fn builder(
   wiring: Wiring,
 ) -> sm.Builder(Phase, Data, Message, Subject(Message)) {
   sm.new_with_initialiser(5000, fn(inbox) {
+    // The initialiser runs in the machine's own process. The host scopes
+    // the wiring's logger to the session, so adopting it labels the
+    // process for the ownership inspector under the same session its log
+    // lines carry.
+    log.adopt(wiring.logger, owner.BlockSummarizer)
+
     use commits <- result.try(address.register_self(wiring.commits))
     let data =
       Data(

@@ -195,6 +195,7 @@
 
 import client/agency
 import client/cron
+import client/internal/session_owner
 import client/schedule.{type Schedule}
 import core/clock
 import core/ids.{type EntryId}
@@ -214,6 +215,7 @@ import runtime/lineage
 import storage/storage
 import telemetry/field
 import telemetry/log.{type Logger}
+import telemetry/owner
 import weft/actor
 import weft/registry as address
 import weft/state_machine as sm
@@ -455,6 +457,10 @@ fn builder(
   name: address.Address(Message),
 ) -> sm.Builder(Phase, State, Message, Subject(Message)) {
   sm.new_with_initialiser(5000, fn(subject) {
+    // The initialiser runs in the machine's own process, so this label
+    // names it to the ownership inspector under its session.
+    session_owner.label(runtime, owner.ScheduleScanner)
+
     sm.initialised(Watching, State(options:, runtime:))
     |> sm.returning(subject)
     |> Ok

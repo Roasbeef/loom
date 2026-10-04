@@ -15,6 +15,16 @@
 //// end, so every delivered message is followed by a wake within one
 //// interval. That bound is the whole contract, and it holds without the
 //// reader telling the socket anything back.
+////
+//// There is one exception to the pacing, and it is the reader's own doing. A
+//// reader that has just sent a frame is waiting for its answer, and a request
+//// and its reply are one round trip, not a burst: pacing the reply's wake to
+//// the interval's end made every round trip cost most of an interval, and an
+//// attach that reads a long session as fifty stop-and-wait fragments spent
+//// half a second on nothing else. So the first delivery after the reader
+//// sends wakes it at once. A burst the reader did not ask for is paced as
+//// before, and wakes stay bounded by the reader's own sends, since every
+//// early wake answers one of them.
 
 import gleam/erlang/process.{type Subject}
 import gleam/http/request
@@ -67,6 +77,10 @@ pub type Pacing {
   /// A delivery landed inside the interval and its wake is scheduled for the
   /// interval's end.
   Scheduled
+
+  /// The reader sent a frame while no wake was scheduled, so the next
+  /// delivery is most likely the answer it waits on, and wakes it at once.
+  Asked
 }
 
 /// What one delivery asks of the wake schedule.
@@ -226,7 +240,10 @@ pub fn connect_waking(
           |> stratus.continue
         stratus.User(SendText(text)) ->
           case stratus.send_text_message(socket, text) {
-            Ok(Nil) -> stratus.continue(delivery)
+            Ok(Nil) ->
+              stratus.continue(
+                Delivery(..delivery, pacing: asked(delivery.pacing)),
+              )
             Error(reason) ->
               deliver(delivery, map(NetworkFault(string.inspect(reason))))
               |> stratus.continue
@@ -327,7 +344,9 @@ pub fn start_pacing(now: Int) -> Pacing {
 /// opens `interval_ms` later. Inside it, the first delivery schedules one
 /// wake for the interval's end and later ones are covered by it. Every
 /// delivery is therefore followed by a wake no later than `interval_ms`
-/// after it, and no two wakes are closer than `interval_ms`.
+/// after it, and no two wakes are closer than `interval_ms` unless the
+/// later one answers the reader's own send (`asked`), which wakes at once
+/// and opens the next interval from there.
 ///
 /// ## Examples
 ///
@@ -345,6 +364,29 @@ pub fn pace(pacing: Pacing, now: Int, interval_ms: Int) -> #(Pacing, Pace) {
     Open(open_at:) if now >= open_at -> #(Open(now + interval_ms), WakeNow)
     Open(open_at:) -> #(Scheduled, WakeIn(open_at - now))
     Scheduled -> #(Scheduled, Covered)
+    Asked -> #(Open(now + interval_ms), WakeNow)
+  }
+}
+
+/// What the reader sending a frame does to the wake schedule.
+///
+/// With no wake scheduled, the next delivery is the answer the reader waits
+/// on and is let through at once. A wake already scheduled is left alone:
+/// its timer cannot be cancelled, so waking early as well would spend a
+/// second wake on the same deliveries, and the scheduled one comes within
+/// the interval anyway.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert websocket.asked(websocket.Open(5)) == websocket.Asked
+/// assert websocket.asked(websocket.Scheduled) == websocket.Scheduled
+/// ```
+@internal
+pub fn asked(pacing: Pacing) -> Pacing {
+  case pacing {
+    Open(..) | Asked -> Asked
+    Scheduled -> Scheduled
   }
 }
 

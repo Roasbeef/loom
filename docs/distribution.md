@@ -516,6 +516,56 @@ does not reach code-mode emulators. Use `--profile` for normal profiling
 because it creates a unique node and credential without a wrapper script.
 `make install` restores the normal stripped artifacts and launcher on disk.
 
+### Inspecting a running daemon with pickglass
+
+[Pickglass](https://github.com/Roasbeef/pickglass) is a separate inspector for
+BEAM nodes that attributes memory, reductions and ETS tables to the session
+that owns them, which Observer cannot do. It attaches to the node that
+`loomd --profile` publishes and needs nothing else from Loom:
+
+```sh
+loomd --profile --state-dir /private/loom-profile
+pickglass attach --state-dir /private/loom-profile
+pickglass open --state-dir /private/loom-profile
+```
+
+`attach` prints one census (memory by owner, the largest processes, ETS) and
+detaches. `open` serves pages on loopback and prints a one-time URL; Owners,
+Processes and Process show heap, mailbox and reductions per owner, and the
+Process page lists a process's initial call, registered name, spawner and the
+ETS tables it owns. Without `--state-dir` it reads `~/.loom`, and
+`--pid` selects one daemon when several are profiled. The path must be spelled
+as it was given to `loomd`, because pickglass matches it against the daemon's
+launch arguments and does not resolve symbolic links. Pickglass reads the
+cookie from the same private directory the launcher created and never takes it
+as an argument. `docs/attach.md` in the pickglass repository covers attaching
+to a node by name, the security model, and profiling.
+
+A BEAM process cannot be attributed to a session from its pid, so Loom labels
+the processes it owns with `proc_lib:set_label/1`, once, from the process
+itself ([protocol-change/065](../protocol-change/065-pickglass-owner-label.md)).
+An owner is a path and a role. `session:ID (gateway)` is a session's client
+gateway; `session:ID/strand:main (strand_driver)` is that strand's driver; a
+role with no path, such as `page_sessions`, belongs to the daemon and to no
+session. The session roles are `gateway`, `session_host`, `agency`,
+`escalation`, `async_runs`, `background_jobs`, `advisor`, `glance`,
+`block_summarizer`, `rule_scanner`, `schedule_scanner`, and the per-strand
+`strand_driver`, `effect_worker` and `provider_effect_worker`.
+
+`unknown` means a process Loom did not label, and it is expected to be large.
+Supervisors that Loom builds with `gleam_otp` start inside the library and
+cannot label themselves, and the heap of a session's supervisors is mostly the
+child specifications they retain, so a large `unknown` entry led by
+hibernating `supervisor` processes is that retention and not a leak. OTP's own
+processes (`code_server`, `application_controller`, `logger`) and the ETS
+tables they own, together with the `pg` scope and weft's per-scope registry
+tables, are also `unknown` by design. The protocol-change lists every role and
+what stays unlabelled.
+
+A label exposes session and strand ids to anyone who can attach to the node.
+That principal already has full control of it, and the node's owner-only
+cookie remains the only gate.
+
 ## Cross-compilation: there is none
 
 A release targets one platform, and `make dist` does not produce
