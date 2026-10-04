@@ -555,6 +555,23 @@ A change is a `SaveLayout` effect, so the step stays pure, and a replay neither
 reads nor writes it. It needs no new FFI, because `simplifile` is already a
 dependency.
 
+*As built (slice 12).* The key is the lower-case SHA-256 of the workspace path,
+the same construction as the daemon's web digest, over the terminal's discovered
+workspace root made absolute, so a path is never written. The daemon hashes the
+canonical workspace directory it was given, which can differ from the terminal's
+discovered root, so the two stores keep separate keys and nothing relies on them
+matching. The file is read with the launcher's
+`read_private_bounded` rather than `read_small_regular`, which also refuses a
+file another user owns or can read, and written with `atomic_write_private` in a
+`0700` directory, and the JSON is `core/json`'s, so `tui` gains no dependency and
+no FFI. The file is `{"version":1,"workspaces":[{"key":...,"rail":...}]}`, newest
+first, and only the rail choice is stored today: the rail's tab and the todo line
+do not exist until slices 13 and 14, and each will add one optional word, which
+an older terminal ignores. A save re-reads the file and rewrites only its own
+workspace's entry, so two terminals keep each other's workspaces; on one
+workspace the later change wins. `packages/tui/CLAUDE.md` ("Layout memory") has
+the rest.
+
 ## 13. Slicing plan, in build order
 
 Each slice builds and passes `make check` alone, and each that changes what is

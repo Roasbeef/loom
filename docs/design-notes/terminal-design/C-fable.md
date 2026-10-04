@@ -749,7 +749,7 @@ No single key sends a decision.
 | Sessions column, picker | rows, activity | yes, minus an age | section 1.1 |
 | Approval block | the exact escalation | yes | `approvals` (`session_view/model.gleam:342`), `render` (`tui/approval_panel.gleam:286`) |
 | Todo line | the strand's board | yes | `height` (`tui/todo_panel.gleam:50`), `todo_boards` (`session_view/model.gleam:297`) |
-| Scrollback position | rows above the tail | yes | `reading_history` (`tui/model.gleam:1293`), `viewport_backlog` (`tui/model.gleam:709`) |
+| Scrollback position | rows above the tail | yes | `reading_history` (`tui/model.gleam:1301`), `viewport_backlog` (`tui/model.gleam:717`) |
 | Images | bytes, type, pixel size | partly | `Image` (`session_view/transcript_image.gleam:29`) holds the bytes and type; the pixel size is decoded client-side from the PNG, JPEG, GIF or WebP header, no wire change; drawing needs etui |
 | Layout memory | the three preferences | new | section 10 |
 

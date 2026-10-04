@@ -128,6 +128,7 @@ import tui/image_shown
 import tui/image_support
 import tui/job
 import tui/job_runner
+import tui/layout_memory
 import tui/live_tail
 import tui/model_selector
 import tui/msg
@@ -432,6 +433,9 @@ pub type View {
     /// What the terminal has been told about images (`image_shown`), which
     /// `image_plan` compares with each frame.
     images: image_shown.Shown,
+    /// Where this terminal keeps its layout between launches, or none for a
+    /// run that keeps nothing (`layout_save`).
+    layout_target: Option(layout_memory.Target),
     /// The composer's editor, including its cursor and selection.
     input: text_area.TextAreaState,
     /// Unsent drafts and reading endpoints never cross session identities.
