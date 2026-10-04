@@ -60,6 +60,61 @@ reissue an artifact. The codemode dependency supplies these existing concrete
 product/report/Ready types and fixed layout; codemode has no executor dependency.
 No resource effects, journal transitions or production service wiring occur here.
 
+## Resource preparation and Compile custody
+
+`remote/resource_journal` owns one SQLite actor/database for original preparation,
+immutable native association and closed Compile completion. Format 2 reserves
+663826 bytes plus exact address/header/input lengths per lifetime row before the
+first preparation Claim: full Ready, 8-KiB CommandRef, canonical 106-byte native
+Admit identity, independent 36-byte native UUID, 128-KiB Prepared, 256-KiB outer
+completion and its digest. Released rows and receipts never return capacity.
+These logical limits do not bound SQLite pages/WAL, RSS or scheduler delay.
+
+`fresh` and `recover` pin enrollment, row/byte limits and a concrete native
+`journal.Journal` with the same full scope. Recovery reads a guarded format scalar
+before new columns and explicitly refuses format 1; this unreleased component has
+no silent migration. Native identity encoding omits scope, so the pinned scope is
+checked separately. Recovery never creates another preparation or native permit,
+wall, token, UUID, clearance or original whole-service deadline. Trusted physical
+assembly still owns source re-vetting, artifact verification, live caller authority
+and at-most-once consumption of Gleam's copyable Claim.
+
+`associate_native` reads canonical retained Request and actual exact-key admission
+from the pinned native journal before acquiring the resource writer lock, then
+revalidates the original row and independent native UUID uniqueness. Prepared's
+full step, scope/operation, registration, closed CommandRef, literal argv/cwd and
+ordered environment bind the retained input and Ready via the shared pure compiler
+factory. The actual cleared policy remains unchanged; the existing pure policy
+meet refuses widening against compiler requirements, with order-insensitive
+comparison only for protected paths and policy environment permissions. This is
+neither filesystem canonicalization nor a second clearance.
+
+`commit_compile` requires the retained association and exact canonical native
+Terminal bytes plus matching committed terminal/refusal/retired reducer evidence.
+Request without Admit and terminal payload before reducer settlement cannot
+advance custody. Prepared, terminal and completion have separate hashes.
+`fail_preparation` accepts a Before-native result only through the original live
+Preparing Claim before Ready, atomically retaining completion and fencing late
+Ready. Missing native evidence after Ready remains uncertainty, never a proof
+that Submit was impossible.
+
+`inspect_compile` returns `CompileRetained(RetainedCompile, OuterReceipt)`, including
+recoverable Before-native bytes after a lost reply. Exact association/completion/
+ACK retries use committed resource history before requiring a live native endpoint.
+The opaque retention handle follows COMMIT and checked historical recovery only.
+`acknowledge_compile` records an authenticated original-owner durable exact-byte
+receipt; the adapter must commit before sending that ACK. It creates no native
+receipt or retirement. Resource cleanup, native receipt/retirement and outer ACK
+stay separate. This component creates no physical resources and enables no remote
+production service by itself. Launch reserves the same fixed allowance but its
+outcome/association APIs refuse UnsupportedRole until a closed Launch codec exists.
+
+Named Parrot/sqlc queries persist all rows and enforce checked RETURNING cardinality;
+handwritten SQL is confined to transaction/PRAGMA control and generated schema
+installation. SQLite fault controls exercise split commits, suppressed writes and
+real deferred-FK COMMIT failure. A discarded reply control is a simulation, not
+power-loss testing or a two-host acceptance result.
+
 ## Key Types
 
 - `executor.main()` — the entrypoint (`gleam run`). Helper path from
@@ -388,8 +443,8 @@ canonical Compile/Launch syntax and historical Ready locations. This introduces
 no client/daemon edge. Source inputs are decoded data, never wire `Vetted` or
 proofs of successful Compile. Trusted physical services must re-vet Compile or
 admit exact retained successful Compile evidence for Launch before requesting a
-preparation claim. They must also reserve final outer outcome capacity first:
-this journal reserves preparation input and Ready metadata only.
+preparation claim. Format 2 now reserves the full closed completion allowance before that claim,
+as described above; it does not turn Ready into a successful outcome.
 
 `fresh` and `recover` pin the entire exact SessionEnrollment and immutable Limits.
 Named queries live in `src/executor/sql/resources.sql`; `sql/resources.sql` and
