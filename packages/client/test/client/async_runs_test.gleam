@@ -23,6 +23,7 @@ import runtime/async_execution
 import runtime/effects
 import session/session
 import support/addresses
+import support/owner_probe
 import weft/actor
 import weft/poll
 import weft/registry as address
@@ -338,6 +339,25 @@ pub fn only_successful_delivery_resets_the_typed_idle_interval_test() {
     )
     == Ok(json.Object([#("idle", json.Bool(True))]))
   stop(service)
+  close_harness(harness)
+}
+
+pub fn the_service_labels_itself_with_its_session_test() {
+  let harness = start_harness()
+  let assert Ok(service) =
+    async_runs.start(
+      addresses.new(),
+      async_runs.Wiring(
+        runtime: harness.runtime,
+        clock: harness.clock,
+        abort: fn(_, _) { Nil },
+        heartbeat_ms: 0,
+      ),
+    )
+  let session = ids.session_id_to_string(api.session_id(harness.runtime))
+  assert owner_probe.label_of(service.pid)
+    == Some(#([#("session", session)], "async_runs"))
+  stop(service.pid)
   close_harness(harness)
 }
 

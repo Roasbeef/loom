@@ -118,3 +118,72 @@ but the owner-only distribution cookie remains the only gate.
 
 The roles above are a contract with a separately released reader. Renaming one
 silently regroups an inspector's view, which is why the set lives here.
+
+## Addendum: roles added after a live census (issue #720)
+
+A census of a profiled `loomd` with two open sessions, taken through pickglass
+and a hidden node, showed 221 processes and 79.7 MiB under `unknown`. This
+addendum adds the roles that attribute the session-owned part of it and
+records what stays unlabelled. The shape of the label, the path kinds and
+the version are unchanged.
+
+### Roles added
+
+| Role | Path | Process |
+| --- | --- | --- |
+| `session_host` | session | The resident builder that assembled the session and stays as its cleanup custodian (`client/internal/instance_host`, started from `client/daemon/manager`). |
+| `domain_host` | none | The same builder and custodian for a workspace domain. It serves no one session. |
+| `agency` | session | The session's agency actor (`client/agency`), which holds the runtime and the child-strand ledger. |
+| `escalation` | session | The session's escalation holder (`client/escalate`). |
+| `async_runs` | session | The asynchronous code-mode run supervisor (`client/async_runs`). |
+| `background_jobs` | session | The background jobs actor (`client/jobs`). |
+| `advisor` | session | The advisor actor (`client/advisor`). |
+| `glance` | session | The glance loop (`client/glance`). |
+| `block_summarizer` | session | The block summarizer (`client/blocksummary`). |
+| `rule_scanner` | session | The rule scanner (`client/rulescan`). |
+| `schedule_scanner` | session | The schedule scanner (`client/schedulescan`). |
+
+The path of each session role is the canonical session id from the runtime the
+process was wired with (`client/internal/session_owner`), which is the key the
+gateway already uses. The block summarizer has no runtime in its wiring, so the
+host scopes the logger it receives to the session and the machine adopts it
+(`log.adopt`), the same route the strand driver takes. The advisor, glance and
+background jobs actors hold the runtime only as a borrow through the agency;
+their initialisers ask for it once, and a refused borrow leaves the process
+unlabelled instead of failing its start. Each label is set in the initialiser
+of the process it names. The `async_runs` and `escalation` labels are covered
+by tests that read `process_info(Pid, label)`, the host's label hook by a test
+that runs it in the host's own process, and the role names by the
+`telemetry/owner` test; a live census confirmed every role except
+`rule_scanner`, which a session with no rules does not start.
+
+### Still unlabelled, and why
+
+- **The supervisors.** `gleam_otp`'s static and factory supervisors run their
+  `init` inside the library, and a process labels only itself, so Loom has no
+  seam. They hold most of what remains under `unknown`: a session's top
+  supervisor was about 9.8 MiB hibernating, and its `sys:get_state` is
+  about 20 MiB of child specifications before sharing, because each
+  `supervision.worker(fn() { ... })` retains the closure it restarts from. That
+  is retained configuration, and it is a separate finding for #720 rather than
+  a labelling gap.
+- **Every ETS owner.** None of the 47 tables was owned by a process Loom
+  starts and can label. They belong to OTP (`code_server`, `logger`,
+  `application_controller`, `inet_db`, `global_name_server`, `auth`,
+  `net_kernel`, `httpc_manager`, `ssl_manager`, `ssl_pem_cache`,
+  `inet_gethost_native`, `dtls_listener_sup`), to dependencies (`mist_clock`,
+  `gun_pools`), to the `loom_events` `pg` scope that
+  `events/internal/ffi_pg` starts and OTP runs, and to weft's per-scope
+  registry actors (`weft_registry_ffi`, about 0.5 KiB each). Of the 1.8 MiB,
+  `code_server` accounts for 1.2 MiB. The weft registries belong to weft, which
+  does not depend on telemetry and should not.
+- **OTP's own processes**, notably `code_server` (about 4 MiB) and
+  `application_controller`.
+- **Small Loom actors**, each under 0.1 MiB: the broker's executor and exec
+  machines, the session writer (`runtime/api`), the language-server manager and
+  its keepers (still without a session id in its `Config`), and the other
+  small service actors, such as the scratch store.
+
+After the change a census of the same shape (two fresh sessions) showed 201
+processes and 42.1 MiB under `unknown`. The two runs differ in session age, so
+the figure shows the order of the change and not an exact delta.

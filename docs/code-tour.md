@@ -1173,7 +1173,7 @@ closure on the **Agency** record (`tools/agent.gleam`) — and everything
 with teeth lives on the far side of that seam, in `client/agency.gleam`,
 where a live runtime is visible.
 
-`spawn` (`client/agency.gleam:578`) reads the durable lineage ledger,
+`spawn` (`client/agency.gleam:592`) reads the durable lineage ledger,
 checks the depth cap, and mints the child's name from coordinates that
 are already durable in the intent (`client/agency.gleam:520`):
 `sub:{parent}/{slug}-{digest}`, where the slug is the purpose bounded and
@@ -1632,7 +1632,7 @@ the record's scope to the call standing at the door now, because a retry
 always arrives under a call id the provider has just minted and a scope
 frozen to the first attempt would leave an approval nothing can spend.
 Then, *if* the host says
-someone is attached, `park` (`client/escalate.gleam:596`) holds the call —
+someone is attached, `park` (`client/escalate.gleam:606`) holds the call —
 on the tool's own effect process, never on the driver, so `Nudge`,
 `RequestAbort` and `PollTick` keep being served while a human decides. An
 approval is consumed by CAS — after a scope check that is still exact

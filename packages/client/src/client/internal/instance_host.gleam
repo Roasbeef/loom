@@ -52,11 +52,15 @@ type Book(instance) {
 /// process; only assembly runs out of line. The caller must trap exits and monitor
 /// `owner(host)` before `begin`. Result and fault subjects belong to it too.
 ///
+/// `label` runs once in the host's own process, before assembly, and is how
+/// the host names itself to the ownership inspector: a process labels only
+/// itself, and the caller alone knows which session or domain this host serves.
+///
 /// ## Examples
 ///
 /// ```gleam
 /// // let assert Ok(host) = instance_host.prepare(build:, fatal:,
-/// //   results:, faults:, failures:)
+/// //   results:, faults:, failures:, label:)
 /// // let watch = process.monitor(instance_host.owner(host))
 /// // instance_host.begin(host)
 /// ```
@@ -67,10 +71,13 @@ pub fn prepare(
   results results: Subject(Result(instance, String)),
   faults faults: Subject(String),
   failures failures: Subject(custody.Failure),
+  label label: fn() -> Nil,
 ) -> Result(Host, String) {
   let consumer = process.self()
   use started <- result.try(
     sm.new_with_initialiser(1000, fn(commands) {
+      label()
+
       let selector =
         process.new_selector()
         |> process.select(commands)

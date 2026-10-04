@@ -163,6 +163,7 @@ import storage/catalogue
 import storage/domain
 import storage/sqlite
 import storage/storage.{type StorageError}
+import telemetry/context
 import telemetry/field
 import telemetry/log.{type Logger}
 import tom
@@ -7189,7 +7190,12 @@ fn with_block_summarizer(
           },
           publish: fn(event) { bus.publish(event_bus, session: key, event:) },
           pace: blocksummarybook.default_pace,
-          logger:,
+          logger: log.scoped(
+            logger,
+            context.for_session(
+              ids.session_id_to_string(api.session_id(runtime)),
+            ),
+          ),
           name:,
           commits:,
         )

@@ -148,6 +148,7 @@
 //// nothing else, and the replacement rebuilds its cursors from the
 //// durable marks.
 
+import client/internal/session_owner
 import client/rules.{type Rule}
 import core/clock
 import core/entry.{type Entry}
@@ -172,6 +173,7 @@ import session/session
 import storage/storage
 import telemetry/field
 import telemetry/log.{type Logger}
+import telemetry/owner
 import weft/actor
 import weft/registry as address
 
@@ -313,7 +315,15 @@ pub fn start(
   runtime: Runtime,
   name: address.Address(writer.Event),
 ) -> actor.StartResult(Subject(writer.Event)) {
-  actor.new(State(options:, runtime:, progress: dict.new()))
+  actor.new_with_initialiser(5000, fn(subject) {
+    // The initialiser runs in the scanner's own process, so this label
+    // names it to the ownership inspector under its session.
+    session_owner.label(runtime, owner.RuleScanner)
+
+    actor.initialised(State(options:, runtime:, progress: dict.new()))
+    |> actor.returning(subject)
+    |> Ok
+  })
   |> actor.on_message(handle)
   |> actor.addressed(name)
   |> actor.hibernate_after(residency.hibernate_after_ms)
