@@ -61,6 +61,46 @@ pub type Role {
   /// The daemon's table of web view tickets and UI sessions. It belongs
   /// to no Loom session.
   PageSessions
+
+  /// The resident builder that assembled one session and stays alive as
+  /// the session's cleanup custodian (`client/internal/instance_host`).
+  SessionHost
+
+  /// The same builder and custodian for one workspace domain. It belongs
+  /// to no Loom session.
+  DomainHost
+
+  /// The session's agency: the actor that mints and tracks child strands
+  /// and holds the session's runtime for them.
+  Agency
+
+  /// The session's escalation seam, which lends out the runtime a policy
+  /// refusal is raised against.
+  Escalation
+
+  /// The session's asynchronous code-mode run supervisor
+  /// (`client/async_runs`).
+  AsyncRuns
+
+  /// The session's background jobs actor (`client/jobs`).
+  BackgroundJobs
+
+  /// The session's advisor actor, which reviews the primary strand and
+  /// drives the goal loop.
+  Advisor
+
+  /// The session's glance loop, which titles strands.
+  Glance
+
+  /// The session's block summarizer, which labels committed reasoning
+  /// blocks.
+  BlockSummarizer
+
+  /// The session's rule scanner.
+  RuleScanner
+
+  /// The session's schedule scanner.
+  ScheduleScanner
 }
 
 /// The role's wire name: lowercase snake case, as the protocol freezes it.
@@ -80,6 +120,17 @@ pub fn role_name(role: Role) -> String {
     Gateway -> "gateway"
     PageSocket -> "page_socket"
     PageSessions -> "page_sessions"
+    SessionHost -> "session_host"
+    DomainHost -> "domain_host"
+    Agency -> "agency"
+    Escalation -> "escalation"
+    AsyncRuns -> "async_runs"
+    BackgroundJobs -> "background_jobs"
+    Advisor -> "advisor"
+    Glance -> "glance"
+    BlockSummarizer -> "block_summarizer"
+    RuleScanner -> "rule_scanner"
+    ScheduleScanner -> "schedule_scanner"
   }
 }
 
