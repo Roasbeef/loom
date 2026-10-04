@@ -197,16 +197,22 @@ was asked.
   prompt's available-tools index, and `None` omits the tool from that
   index without making it any less callable — the wire tool array is the
   authoritative definition and the index is prose.
-- `tools/tool.Ctx` — every seam a tool may touch: workspace root, the
-  driver's own coordinates (`strand`, `op_id`, `step_id`,
-  `source_index`), base policy and grants, enforcement demand, the
-  constructed env, the clock, a `FileSystem` record of functions
-  (`read`, `write`, `create_directory_all`, `is_file`, `read_link`, and
-  `rename` — the last for the atomic staging the blob store needs),
-  `blob_root`, `clear_call` — the broker seam every jailed execution
-  flows through — `raise_refusal`, the other door onto the same
-  escalation plane, and `observe_output`, the seam a running execution's
-  rolling output tail is shown to after every chunk (issue #186).
+- `tools/tool.Ctx` carries `workspace: WorkspaceAccess`, the driver's own
+  coordinates (`strand`, `op_id`, `step_id`, `source_index`), base policy and
+  grants, enforcement demand, constructed environment, clock, and
+  `owner_blobs: OwnerBlobs`. `WorkspaceAccess` contains either
+  `LocalWorkspace(root, filesystem)` or `RegisteredWorkspace(scope)`.
+  `OwnerBlobs(root, filesystem)` supplies the separate durable result store.
+  `clear_call` is the broker seam for jailed execution; `raise_refusal` enters
+  the escalation plane, and `observe_output` publishes the rolling output tail
+  after each chunk (issue #186).
+- `tools/tool.require_local_workspace` returns `LocalWorkspaceAccess` or the
+  structured `local_workspace_required` refusal. Native filesystem, shell,
+  search, code-mode and extension execution project this access before path,
+  broker, job or extension effects. Registered contexts retain owner blob IO,
+  virtual read schemes and semantic workspace callbacks without gaining a
+  physical workspace root or its filesystem. Production remote assembly remains
+  unavailable; this type boundary guards callers that receive a registered Ctx.
 - `tools/tool.{OutputTail, tail_bytes, ignore_output, collect_observed}` —
   the observation seam. `collect_observed` is `collect_events` showing
   `observe` each stream's window after every `CallOutput` it folds;
@@ -683,8 +689,9 @@ was asked.
   may change its number, which is why refs carry both and both are checked.
   The digest is the full 16 hex plus the byte length, so a
   pre-image/post-image collision needs equal FNV-64 *and* equal length.
-- **Path discipline is the sole boundary for the filesystem tools.**
-  `fs_*` run in the harness and never pass through the broker or the kernel
+- **Local authority and path discipline bound the filesystem tools.**
+  Ordinary `fs_*` paths require explicit local workspace projection before IO.
+  These tools run in the harness and never pass through the broker or the kernel
   jail. `resolve_real` resolves symlinks component by component (at most
   `max_link_follows` = 40) and the resolved path must land under the
   equally-resolved workspace root, so neither `..` nor a symlink planted
@@ -1071,8 +1078,10 @@ first program rather than a large unrelated rewrite after each failure.
 
 ## Executor-local semantic workspace host
 
-`workspace_local.Host` binds the complete registered scope, executor-local
-Ctx and post-write observer. `run` refuses any scope mismatch before effects,
+`workspace_local.new` validates local access and returns either an opaque
+`Host` or `workspace.PermissionRefused`. The host retains that access, the
+complete registered scope, executor-local Ctx and post-write observer.
+`run` refuses any scope mismatch before effects,
 then performs the closed `workspace.Request` through existing filesystem,
 hashline and search semantics. Operation, step and real tool source index come
 from the unchanged invocation. System callers retain explicit system provenance.

@@ -16,6 +16,62 @@ A remote artifact cannot pass the local launcher or be treated as a local
 filesystem approval. Owner satellite token validation and capability routing
 remain on the owner; the extraction introduces no second budget authority.
 
+## Typed workspace selection and compatibility
+
+`daemon/manager.Creation.workspace` carries a `core/workspace.Binding` before
+session reservation and startup. `LocalBinding` retains the canonical directory;
+`Registered` retains administrative selector identity and both authority epochs.
+Registered selectors and catalogue keys are never physical paths. `daemon/server` receives
+trusted `WorkspaceAuthority` in its configuration: `resolve` resolves a fresh
+selection, and `revalidate` checks an exact retained binding. `creation_binding`
+reads an existing creation key first, compares the requested workspace identity,
+name, configuration and domain scope, then revalidates the retained binding.
+A retry cannot resolve newer epochs and silently replace the original authority.
+
+`daemon/protocol.Request.accepts` asserts decoder support for one request only.
+The total decoder permits at most eight distinct names, each 1..64 ASCII bytes
+in `0x21..0x7e`; omission preserves the legacy empty list. Only the exact
+`registered_workspace_v1` name enables registered metadata. After authentication
+and command-specific authorization, `daemon/server.registered_support` refuses
+unsupported registered create, open, default selection, rename, archive and restore
+before authority resolution, runtime admission or catalogue mutation. Open
+revalidates the retained authority. An authorized bounded list or get also
+refuses the whole reply with `unsupported_workspace` if its emitted page contains
+a registered binding and the request lacks support. It neither filters those
+rows nor encodes a registered key in the legacy pathname field. Local frames
+retain their existing representation; registered replies use `workspace_binding`.
+Server advertisement and unknown feature names grant no decoder support or
+workspace authority.
+
+A native resident session upgrade separately requires the exact
+`x-loom-accepts: registered_workspace_v1` header for registered metadata. It still
+checks membership and the observed resident incarnation. Attaching to the
+owner-held transcript does not revalidate or renew executor authority, so an
+executor outage alone does not prevent an otherwise authorized resident
+attachment. Browser attachment needs its own feature assertion before registered
+support can be enabled; browser WebSockets cannot set this header. Display labels
+in `daemon/ui_socket` distinguish a local directory from an administrative
+executor/workspace identity and are never consumed as host paths.
+
+Shipped registered workspace assembly remains unavailable. `daemon/main` installs
+`server.local_workspace_authority`, which resolves local directories and refuses
+registered selections or revalidation with `workspace_unavailable`.
+`serve.resolve_managed` refuses a registered binding before the local resolver can
+probe Git, toolchains, guidance or execution directories. The typed protocol,
+catalogue retention and authority seam do not install remote physical services.
+
+`wiring.tool_context` constructs `tools/tool.WorkspaceAccess` and independent
+`OwnerBlobs`: local configuration supplies `LocalWorkspace(root, FileSystem)`;
+a registered context carries only its validated scope. The old general filesystem
+and blob-root fields no longer belong to Ctx. Native paths, Bash, grep and code
+mode require `tool.require_local_workspace` before local effects. Extension
+`dispatch.coordinates` returns a fallible local projection before `hosts.invoke`.
+Their `local_workspace_required` result does not consult owner blob storage or
+substitute a local workspace. Blob IO remains available through OwnerBlobs;
+virtual read schemes and semantic workspace callbacks retain the original Ctx
+without projecting local access. Production wiring still constructs the local
+variant, independently of this guard for registered callers.
+
 ## LSP query handle ownership
 
 `lsp/manager.Manager` retains reachability, workspace/server identity,
@@ -392,10 +448,10 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   transport over `ui_relay` whose `connect` returns at once, and with the
   session's catalogue name and workspace for the page's heading, from the
   registration the route read when it resolved the session
-  (`server.Attachment.registration`), and a digest of that workspace path
+  (`server.Attachment.registration`), and a digest of that display identity
   (`component.Start.workspace_digest`, the lower-case SHA-256 in hex) that
-  the browser keys the reader's saved layout by, so a path is never an
-  attribute or a storage key. An observer's
+  the browser keys the reader's saved layout by, so a path or administrative
+  label is never an attribute or a storage key. An observer's
   socket forwards only the "Load older" click at `component.older_path`
   and drops every other browser message (`observer_accepts`,
   protocol-change/051, the addendum on history paging); an operator's

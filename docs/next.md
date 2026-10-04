@@ -117,6 +117,33 @@ must have no copy of the target checkout, while ordinary file tools, Bash,
 code mode and LSP all operate there. Test lost replies and restarts without
 replaying a mutation, cancellation, and witnessed native cleanup.
 
+The workspace-selection slice now persists typed bindings in catalogue schema
+version 5, using named Parrot/sqlc queries. Local SQL keys and shared-domain IDs
+retain their previous spelling. Registered sessions retain both authority
+epochs; exact creation retries revalidate those original epochs before any
+current administrative resolution. Tool contexts separate local workspace
+access from independent owner blob storage, and every local-only effect
+refuses registered access before resolution or clearance.
+
+Registered metadata requires a bounded `registered_workspace_v1` feature
+assertion. Independent review caught rename/archive/restore mutating before a
+legacy client could decode the reply; the check now precedes mutation after
+authorization and epoch validation. Operation reads apply the same reply check.
+Resident transcript attachment does not renew executor authority. Shipped
+registered session startup and registered browser attachment remain unavailable.
+The [selection review](review/distributed-workspace-selection.md) records the
+correction, four compiling mutation controls, component gates and limits.
+
+Core, storage, tools, executor, client and conformance component gates pass;
+the final client run has 2,747 tests and conformance has 96. Root's final lint,
+doc and prelude checks pass, and SQL regeneration reproduces the bindings
+exactly. The Linux PR #786 run found two timing-sensitive test assumptions and
+an outdated dependency expectation/manifest. Focused Linux reruns pass after
+the repairs; a fresh full Linux signoff remains outstanding. Next, preserve
+managed ChildOrigin through physical compiler and satellite clearance, then
+join retained command offers, executor resources and consumption-credit
+channels before production remote assembly and the separate-host product gate.
+
 The Khepri compatibility experiment exercised three OTP 29 nodes with Khepri
 0.19.3 and Ra 3.2.0. Contested conditional updates, majority/minority fencing,
 monotone epochs, timeout followed by a committed receipt, and persistent

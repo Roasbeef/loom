@@ -19,10 +19,11 @@ with these forks: they define the same modules.
 
 ## Key Types
 
-- The catalogue is at `user_version` 7. Each later version has its own embedded
+- The catalogue is at `user_version` 8. Each later version has its own embedded
   migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
   `catalogue_claims_schema`, `catalogue_subtitles_schema`,
-  `catalogue_credential_kinds_schema`, `catalogue_logins_schema`), and
+  `catalogue_credential_kinds_schema`, `catalogue_logins_schema`,
+  `catalogue_workspace_bindings_schema`), and
   `initialize_schema` applies every
   schema an
   older catalogue lacks, then moves the version, in one transaction; a fresh
@@ -156,7 +157,13 @@ with these forks: they define the same modules.
   key; `by_request_key` recovers the original registration before a retry
   allocates an id, path, or timestamp. `workspace_default` reads a workspace's
   saved choice; `set_workspace_default` changes it only to a registration in
-  that workspace. `member_page` applies membership in SQL before its 100-row
+  that stable `WorkspaceKey`. Version 5 retains the existing SQL workspace key
+  and adds nullable canonical binding JSON TEXT: local bindings use NULL;
+  registered bindings carry both epochs and must agree exactly with the key.
+  Every registration reader rejects missing, malformed or noncanonical payloads
+  and key/payload disagreement. Two named generated inserts encode local NULL
+  and registered TEXT without adding general nullable parameter handling.
+  `member_page` applies membership in SQL before its 100-row
   limit, so a continuation never exposes an unrelated session identity.
   The catalogue revision advances on registration, names, visibility, defaults, or membership changes,
   not on identical retries.
@@ -181,7 +188,9 @@ with these forks: they define the same modules.
   `storage/sql_schema` embeds catalogue `sql/schema.sql`; `session_schema`
   embeds conversation `sql/session.sql`; `catalogue_names_schema` embeds the
   version-2 name-override table; `catalogue_archives_schema` embeds the version-3
-  archive overlay. Generation loads all four schemas for
+  archive overlay; `catalogue_claims_schema` embeds version-4 claim enrollment;
+  `catalogue_workspace_bindings_schema` embeds version-5 binding persistence.
+  Generation loads the schema chain for
   query checking, but each database executes only its own schema. `make gen-sql`
   regenerates these artifacts, and tests pin them to their sources.
 - `storage/catalogue.{query, statement, atomic, coherent}` are internal
