@@ -279,8 +279,7 @@ fn entry(
           words,
         ),
       ])
-    False, Saved ->
-      html.li([attribute.class("session")], words)
+    False, Saved -> html.li([attribute.class("session")], words)
   }
 }
 
