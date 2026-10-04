@@ -215,6 +215,33 @@ resource release or scope closure. They do not renew a deadline, re-clear a
 command or repeat source preparation. Conflicting bytes fail instead of replacing
 the original record.
 
+### Observe a committed result before finalizing
+
+`executor/remote/compile_observation` implements the evidence boundary between
+the native journal and physical finalization. It first reads the native reducer's
+committed terminal state, then reads the immutable output and terminal payloads.
+Reading payloads first could mistake a concurrent commit for missing evidence;
+accepting payloads without the reducer commit could advertise unfinished custody.
+
+The adapter checks the original full service key, enrollment, Ready allocation,
+native request key and digest. An absent association or uncommitted terminal is
+pending. A committed terminal whose retained payload is absent or inconsistent
+is an error. Output ordinals must be contiguous; reconstruction preserves each
+stream's order and accumulated truncation status.
+
+The resulting opaque observation contains data for the original continuation.
+`finalize` calls the shared build finalizer against that original allocation and
+fingerprints actual compiler products. A recovered row cannot create a new live
+continuation, and copying an observation cannot establish permission to finalize
+again. The Compile service owns that once-only ordering and the subsequent
+outer-completion commit.
+
+Human-readable outer errors have an 8,000-byte UTF-8 ceiling, including a
+truncation marker. The error variant survives truncation, and exact native
+terminal and receipt bytes remain unchanged. The
+[observation review](../review/distributed-compile-observation.md) records the
+real-journal controls, compiler-product fixture and remaining integration limits.
+
 ## Receipts and cleanup are independent
 
 The outer Compile receipt means that the owner retained the exact Compile result.
