@@ -564,6 +564,25 @@ protocol (spec Part 1.4). WP-G.
   and it answers `RetirementOwnerGone`, as `close_pool` does after a clean `close_pool`.
   Worst-case blocking of `close_instance`: 8 s (`close` above), pinned in
   `executor_test`.
+- **Executor service: seeded interleavings hold the same invariants.**
+  `executor_property_test` draws plans from `support/seeded` (the generator
+  `machine` and `execution_test` use): a pool size and a list of steps
+  (starts of four kinds, broker and caller cancels, caller death, helper
+  crash, pause, a close mid-run), performed in order by a driver against a
+  real broker over fake helpers. Every plan keeps: each live caller hears
+  exactly one settlement and no trailing events; the inventory drains and every
+  relay dies; with the service open nothing is borrowed and held slots are
+  bounded by the faults; a quiet plan (no crash, no cancel-ignoring start)
+  closes `Ok`; a second `close` replays the stored verdict. A seed reproduces
+  the plan, printed whole in every failure, and not the schedule.
+  `LOOM_EXECUTOR_PROPERTY_SEEDS` (default 12) and
+  `LOOM_EXECUTOR_PROPERTY_ONLY=<seed>` size and replay a run;
+  `leak_census_test` takes `LOOM_LEAK_CENSUS_SEEDS` and
+  `LOOM_LEAK_CENSUS_ONLY`. Mutation checks recorded in the commit: releasing a
+  row without checking its helper in, replaying a recomputed instead of the
+  stored close verdict, and leaving a released row on the books each fail it.
+  `fake_helper.ByArgv` gained `flood` (two hundred chunks, then runs until
+  cancelled) for it.
 - **Executor service: the failure matrix is pinned, case by case.**
   `test/broker/failure_matrix_test.gleam` runs each fault through a real
   broker over fake helpers and asserts one settlement (or one refusal), the

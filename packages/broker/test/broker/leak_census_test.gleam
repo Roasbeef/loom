@@ -1,5 +1,10 @@
-//// A leak census for the service lane: a hundred mixed executions through
+//// A leak census for the executor service: a hundred mixed executions through
 //// one broker, and afterwards nothing is left that the executions made.
+////
+//// The mix is drawn from a seed (`support/seeded`), so a failure prints the
+//// seed that made it and the same hundred endings come back from it.
+//// `LOOM_LEAK_CENSUS_SEEDS` sets how many seeds a run draws (default 2), and
+//// `LOOM_LEAK_CENSUS_ONLY` replays one.
 ////
 //// One test, because the property is a sum. Each execution ends in one of
 //// five ways (it succeeds, it is cancelled, its caller dies, its helper
@@ -23,9 +28,11 @@ import broker/executor
 import broker/support/bench_host as host
 import broker/support/fake_helper
 import broker/support/planes
+import broker/support/seeded
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
+import gleam/result
 import weft/poll
 
 // How an execution is made to end.
@@ -37,34 +44,43 @@ type Ending {
   Escalated
 }
 
-// A hundred executions in a fixed mixed order: ten blocks of ten. Blocks
-// 0, 3, 6 and 9 hold an execution that ignores cancel and is escalated;
-// blocks 1, 4 and 7 open with a helper crash instead of a success. Both
-// leave the pool a slot it cannot show retired (the fake's helper cannot
-// attest to a kill), so seven slots stay held and the pool is sized
-// above that.
-fn endings() -> List(Ending) {
-  let base = [
-    Succeeds,
-    Succeeds,
-    Cancelled,
-    Succeeds,
-    CallerDies,
-    Succeeds,
-    Succeeds,
-    Cancelled,
-    Succeeds,
-    CallerDies,
-  ]
-  list.index_map(list.repeat(Nil, 10), fn(_, index) { index })
-  |> list.map(fn(index) {
-    case index % 3 {
-      0 -> list.flatten([list.take(base, 5), [Escalated], list.drop(base, 6)])
-      1 -> [HelperCrashes, ..list.drop(base, 1)]
-      _ -> base
-    }
-  })
-  |> list.flatten
+// The pool is sized above the most slots the faults can hold. A helper crash
+// or an escalated execution leaves a slot the pool cannot show retired,
+// because a fake helper cannot attest to a kill, so the draw stops making
+// them once it has made `fault_cap`.
+const fault_cap = 8
+
+// A hundred endings drawn from a seed: half succeed, a fifth are cancelled, a
+// fifth have their caller die, and one in twenty each crashes its helper or
+// ignores cancel until it is escalated, up to `fault_cap` of the last two.
+fn endings(seed_value: Int) -> List(Ending) {
+  let #(drawn, _seed) =
+    seeded.repeat(seeded.new(seed_value), 100, fn(seed) {
+      seeded.between(seed, 0, 19)
+    })
+  let #(endings, _faults) =
+    list.fold(drawn, #([], 0), fn(state, draw) {
+      let #(endings, faults) = state
+      let ending = case draw {
+        0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 -> Succeeds
+        10 | 11 | 12 | 13 -> Cancelled
+        14 | 15 | 16 | 17 -> CallerDies
+        18 -> HelperCrashes
+        _ -> Escalated
+      }
+      case ending, faults >= fault_cap {
+        HelperCrashes, False | Escalated, False -> #(
+          [ending, ..endings],
+          faults + 1,
+        )
+        HelperCrashes, True | Escalated, True -> #(
+          [Succeeds, ..endings],
+          faults,
+        )
+        _, _ -> #([ending, ..endings], faults)
+      }
+    })
+  list.reverse(endings)
 }
 
 fn argv_of(ending: Ending) -> List(String) {
@@ -75,9 +91,29 @@ fn argv_of(ending: Ending) -> List(String) {
   }
 }
 
-/// A hundred mixed executions leave the pool, the executor, the relays and
-/// the VM as they were.
+/// A hundred mixed executions, drawn from each seed, leave the pool, the
+/// executor, the relays and the VM as they were.
 pub fn a_hundred_mixed_executions_leak_nothing_test() {
+  list.each(seeds(), census_for)
+}
+
+// The seeds a run draws: `LOOM_LEAK_CENSUS_SEEDS` consecutive ones from 1, or
+// the one `LOOM_LEAK_CENSUS_ONLY` names.
+fn seeds() -> List(Int) {
+  case host.getenv("LOOM_LEAK_CENSUS_ONLY") |> result.try(int.parse) {
+    Ok(only) -> [only]
+    Error(Nil) -> {
+      let count =
+        host.getenv("LOOM_LEAK_CENSUS_SEEDS")
+        |> result.try(int.parse)
+        |> result.unwrap(2)
+      list.index_map(list.repeat(Nil, count), fn(_, offset) { offset + 1 })
+    }
+  }
+}
+
+fn census_for(seed_value: Int) -> Nil {
+  let at = "seed " <> int.to_string(seed_value) <> ": "
   let plane =
     planes.start_scripted(size: 12, script: fn() {
       fake_helper.start_helper_configured(
@@ -93,14 +129,17 @@ pub fn a_hundred_mixed_executions_leak_nothing_test() {
   let _ = run_one(plane, Succeeds)
   let #(_ports, processes_before, _bytes) = host.vm_counts()
 
-  let results = list.map(endings(), fn(ending) { run_one(plane, ending) })
-  assert list.length(results) == 100
+  let results =
+    list.map(endings(seed_value), fn(ending) { run_one(plane, ending) })
+  assert list.length(results) == 100 as { at <> "a hundred executions ran" }
 
   // Every caller that could hear did, and heard once.
   assert list.all(results, fn(result) { result.settlements <= 1 })
+    as { at <> "a caller heard more than one settlement" }
   let heard = list.filter(results, fn(result) { result.settlements == 1 })
   let mute = list.filter(results, fn(result) { result.settlements == 0 })
   assert list.all(mute, fn(result) { result.ending == CallerDies })
+    as { at <> "a caller that was alive heard no settlement" }
   assert list.length(heard) + list.length(mute) == 100
 
   // The pool holds only what the crashes and escalations meant it to.
@@ -126,19 +165,21 @@ pub fn a_hundred_mixed_executions_leak_nothing_test() {
   // unconfirmed (its actor died unobserved). Those are exactly the helpers
   // this run killed, and no slot is held by anything else.
   assert census.draining + census.unconfirmed + census.retiring == crashes
+    as { at <> "the pool holds slots no killed helper accounts for" }
 
   // The executor holds no row, and no relay is alive.
   let assert Ok(books) = executor.snapshot(service, waiting: 1000)
-  assert books.live == []
+  assert books.live == [] as { at <> "the executor kept a row" }
   let alive =
     list.filter(list.flat_map(results, fn(r) { r.relays }), process.is_alive)
-  assert alive == []
+  assert alive == [] as { at <> "a relay outlived its execution" }
 
   // The VM is where it was, give or take the helpers the pool replaced.
   let #(_ports, processes_after, _bytes) = host.vm_counts()
   assert int.absolute_value(processes_after - processes_before) <= 20
     as {
-      "process count moved from "
+      at
+      <> "process count moved from "
       <> int.to_string(processes_before)
       <> " to "
       <> int.to_string(processes_after)

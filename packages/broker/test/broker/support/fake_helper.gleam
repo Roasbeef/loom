@@ -35,9 +35,10 @@ pub type Script {
   ChunksThenSleep(count: Int)
 
   /// Behaves as the first word of the argv says, per execution: `ok`
-  /// exits cleanly at once, `sleep` runs until cancelled, and `stubborn`
-  /// runs and ignores cancel. Lets one pool of one script serve a mixed
-  /// workload.
+  /// exits cleanly at once, `sleep` runs until cancelled, `stubborn`
+  /// runs and ignores cancel, and `flood` writes two hundred output chunks
+  /// and then runs until cancelled. Lets one pool of one script serve a
+  /// mixed workload.
   ByArgv
 
   /// Reports cancellation after a controlled delay, exercising relay drain grace.
@@ -397,6 +398,10 @@ fn exec_start(
               )
             ["stubborn", ..] ->
               FakeState(..state, running: Some(#(id, <<>>)), ignoring: Some(id))
+            ["flood", ..] -> {
+              let state = emit_chunks(state, id, from: 0, to: 200)
+              FakeState(..state, running: Some(#(id, <<>>)))
+            }
             _sleeping -> FakeState(..state, running: Some(#(id, <<>>)))
           }
         ChunksThenSleep(count:) -> {
