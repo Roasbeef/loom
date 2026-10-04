@@ -47,7 +47,8 @@ for a host with no surfaces.
 ## Key Types
 
 - `strand_card.status_line(line)`, `status_title(line)`, `glyph(status)`,
-  `model_name(model)`, `needing(lines)` and `context_words(tokens)`: the one
+  `model_name(model)`, `task_words(title)` (a task, or nothing for the
+  roster's placeholders), `needing(lines)` and `context_words(tokens)`: the one
   status line under a strand's name on its card (`Needs approval` for a
   strand that waits on a decision, whatever the request was; the state word
   and what the strand is doing after ` · ` for a working one, where the

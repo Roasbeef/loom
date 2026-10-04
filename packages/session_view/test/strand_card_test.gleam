@@ -94,6 +94,15 @@ pub fn each_state_has_a_glyph_and_a_model_a_short_name_test() {
   assert strand_card.model_name("odd/") == "odd/"
 }
 
+// The roster words a task it cannot read as a placeholder, which a strand's
+// view leaves out rather than show as the task.
+pub fn a_placeholder_is_not_a_task_test() {
+  assert strand_card.task_words("Fix the parser") == Some("Fix the parser")
+  assert strand_card.task_words("") == None
+  assert strand_card.task_words("Task unavailable") == None
+  assert strand_card.task_words("Task brief outside loaded history") == None
+}
+
 pub fn a_finished_strand_adds_how_long_it_ran_when_known_test() {
   assert strand_card.status_line(line(agent_view.Finished, "done", Some(72)))
     == "Finished 1m 12s"

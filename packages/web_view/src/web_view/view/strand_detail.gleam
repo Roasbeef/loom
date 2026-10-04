@@ -78,9 +78,9 @@ pub fn view(chip: Chip) -> Element(message) {
 // not drawn: an empty row would read as a value.
 fn figures(chip: Chip) -> List(Element(message)) {
   list.flatten([
-    case chip.line.title {
-      "" -> []
-      task -> figure("Task", [html.text(task)])
+    case strand_card.task_words(chip.line.title) {
+      Some(task) -> figure("Task", [html.text(task)])
+      None -> []
     },
     case chip.model {
       "" -> []

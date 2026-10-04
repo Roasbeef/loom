@@ -121,6 +121,17 @@ pub fn a_strands_view_names_the_task_and_shortens_the_model_test() {
     "<span title=\"zai-org/GLM-5.3\">GLM-5.3</span>",
   )
   assert string.contains(drawn, "not reported")
+
+  // A placeholder the roster words for a task it cannot read is not a task.
+  let unread =
+    strip.Chip(
+      ..base,
+      line: agent_roster.Line(
+        ..base.line,
+        title: "Task brief outside loaded history",
+      ),
+    )
+  assert !string.contains(element.to_string(strand_detail.view(unread)), "Task")
 }
 
 pub fn a_strand_that_ran_no_tool_shows_its_answers_first_line_test() {

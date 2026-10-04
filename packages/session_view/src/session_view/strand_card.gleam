@@ -150,6 +150,25 @@ pub fn glyph(status: agent_view.Status) -> String {
   }
 }
 
+/// The task a strand's own view shows, or `None` when the roster holds only a
+/// placeholder. `agent_view` words a task it cannot read as `Task unavailable`
+/// or `Task brief outside loaded history`, which tell a reader nothing about
+/// the strand, so a view leaves the row out as it leaves out any figure it does
+/// not know.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert strand_card.task_words("Fix the parser") == Some("Fix the parser")
+/// assert strand_card.task_words("Task unavailable") == None
+/// ```
+pub fn task_words(title: String) -> Option(String) {
+  case string.lowercase(title) {
+    "" | "task unavailable" | "task brief outside loaded history" -> None
+    _ -> Some(title)
+  }
+}
+
 /// A model's name as a strand's own view shows it: the last path segment of
 /// its identifier, so `zai-org/GLM-5.3` reads `GLM-5.3`. A host keeps the
 /// whole identifier for a tooltip.
