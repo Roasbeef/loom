@@ -701,3 +701,87 @@ pub fn the_sweep_drops_aged_reservations_test() {
   ui_sessions.sweep(sessions)
   assert ui_sessions.reserve_invite(sessions, owner) == Ok(Nil)
 }
+
+// The creation allowance is counted for a credential: `creation_limit`
+// reservations are granted and the next is refused, whichever page asks, and
+// another credential's count is its own. The eleventh in an hour is refused.
+pub fn a_credential_may_reserve_only_the_creation_limit_test() {
+  let sessions = table(clock())
+  let owner = credential("a")
+  assert ui_sessions.creation_limit == 10
+  list.each(list.repeat(Nil, ui_sessions.creation_limit), fn(_) {
+    assert ui_sessions.reserve_creation(sessions, owner) == Ok(Nil)
+  })
+  assert ui_sessions.reserve_creation(sessions, owner) == Error(Nil)
+  assert ui_sessions.reserve_creation(sessions, owner) == Error(Nil)
+  assert ui_sessions.reserve_creation(sessions, credential("c")) == Ok(Nil)
+}
+
+// The two allowances are counted apart: spending every invitation leaves a
+// credential its creations and the reverse.
+pub fn creations_and_invitations_are_counted_apart_test() {
+  let sessions = table(clock())
+  let owner = credential("a")
+  list.each(list.repeat(Nil, ui_sessions.invite_limit), fn(_) {
+    assert ui_sessions.reserve_invite(sessions, owner) == Ok(Nil)
+  })
+  assert ui_sessions.reserve_invite(sessions, owner) == Error(Nil)
+  assert ui_sessions.reserve_creation(sessions, owner) == Ok(Nil)
+  list.each(list.repeat(Nil, ui_sessions.creation_limit - 1), fn(_) {
+    assert ui_sessions.reserve_creation(sessions, owner) == Ok(Nil)
+  })
+  assert ui_sessions.reserve_creation(sessions, owner) == Error(Nil)
+  assert ui_sessions.reserve_invite(sessions, owner) == Error(Nil)
+}
+
+// The window rolls: a creation's place is free again an hour after it was
+// taken, and not a moment before.
+pub fn a_creation_frees_an_hour_after_it_was_taken_test() {
+  let time = clock()
+  let sessions = table(time)
+  let owner = credential("a")
+  assert ui_sessions.reserve_creation(sessions, owner) == Ok(Nil)
+  process.send(time, Advance(1_800_000))
+  list.each(list.repeat(Nil, ui_sessions.creation_limit - 1), fn(_) {
+    assert ui_sessions.reserve_creation(sessions, owner) == Ok(Nil)
+  })
+  assert ui_sessions.reserve_creation(sessions, owner) == Error(Nil)
+  process.send(time, Advance(1_799_999))
+  assert ui_sessions.reserve_creation(sessions, owner) == Error(Nil)
+  process.send(time, Advance(1))
+  assert ui_sessions.reserve_creation(sessions, owner) == Ok(Nil)
+  assert ui_sessions.reserve_creation(sessions, owner) == Error(Nil)
+}
+
+// Many pages asking at once cannot create more than the limit between them.
+pub fn concurrent_creations_never_exceed_the_limit_test() {
+  let sessions = table(clock())
+  let owner = credential("a")
+  let results = process.new_subject()
+  list.each(list.repeat(Nil, 30), fn(_) {
+    process.spawn(fn() {
+      process.send(results, ui_sessions.reserve_creation(sessions, owner))
+    })
+  })
+  let outcomes =
+    list.map(list.repeat(Nil, 30), fn(_) {
+      let assert Ok(outcome) = process.receive(results, 5000)
+        as "every reservation answers"
+      outcome
+    })
+  assert list.count(outcomes, fn(outcome) { outcome == Ok(Nil) })
+    == ui_sessions.creation_limit
+}
+
+// The sweep reclaims a credential whose creations all aged out.
+pub fn the_sweep_drops_aged_creations_test() {
+  let time = clock()
+  let sessions = table(time)
+  let owner = credential("a")
+  list.each(list.repeat(Nil, ui_sessions.creation_limit), fn(_) {
+    assert ui_sessions.reserve_creation(sessions, owner) == Ok(Nil)
+  })
+  process.send(time, Advance(ui_sessions.creation_window_ms + 1))
+  ui_sessions.sweep(sessions)
+  assert ui_sessions.reserve_creation(sessions, owner) == Ok(Nil)
+}

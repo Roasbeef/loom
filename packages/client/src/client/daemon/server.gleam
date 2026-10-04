@@ -157,6 +157,14 @@ pub type HomeAttachment(instance) {
     /// deadline, so the page never calls it from its runtime
     /// (`ui_socket.activity_task`).
     activity: fn(List(String)) -> List(#(String, listed_sessions.Activity)),
+    /// Creates a session as the principal it is given, which is the control
+    /// command's own `create_session` over this daemon's registry and sessions
+    /// directory. It blocks for the registry's call, so the page never calls it
+    /// from its runtime (`ui_socket.create_task`). The principal is the one the
+    /// socket authenticated afresh at the press, and the function refuses all
+    /// but the owner.
+    create: fn(access.Principal, manager.Creation, domain.Scope) ->
+      Result(manager.View, String),
   )
 }
 
@@ -409,6 +417,16 @@ fn home_upgrade(
             permit:,
             registry: state.registry,
             activity: home_activity(config, state.registry, grant.credential),
+            create: fn(principal, request, scope) {
+              create_session(
+                config,
+                state.registry,
+                state.sessions_directory,
+                principal,
+                request,
+                scope,
+              )
+            },
           ),
           open,
           grant.ceiling,
@@ -1867,32 +1885,16 @@ fn dispatch_class(
       |> result.map_error(error_code)
       |> result.map(fn(view) { #("sessions.set_default", view_json(view)) })
     }
-    protocol.CreateSession(key, workspace, name, configuration, scope) -> {
-      use Nil <- result.try(owner(principal))
-      use workspace <- result.try(
-        bootstrap.canonical_directory(workspace)
-        |> result.replace_error("invalid_workspace"),
-      )
-      use configuration <- result.try(
-        case configuration {
-          // Absence is a registration choice, not the daemon's current path.
-          // Canonicalizing it would replace inherited defaults with a directory.
-          "" -> Ok("")
-          path -> bootstrap.canonical_path(path)
-        }
-        |> result.replace_error("invalid_configuration"),
-      )
-      manager.create_scoped(
+    protocol.CreateSession(key, workspace, name, configuration, scope) ->
+      create_session(
+        config,
         state.registry,
+        state.sessions_directory,
+        principal,
         manager.Creation(key, workspace, name, configuration),
-        directory: state.sessions_directory,
-        generator: config.generator(),
-        scope:,
-        configuration: config.domain_configuration,
+        scope,
       )
-      |> result.map_error(error_code)
       |> result.map(fn(view) { #("sessions.create", view_json(view)) })
-    }
     protocol.OpenSession(id, supplied) -> {
       use Nil <- result.try(epoch(state, supplied))
       use #(_, authority) <- result.try(authorized(state, digest, id))
@@ -1947,6 +1949,56 @@ fn dispatch_class(
       ))
     }
   }
+}
+
+/// The control command `sessions.create`, as a function of what it needs, so
+/// the control socket and a home page's creation (`ui_socket.create_for`) run
+/// one path. The caller must be the owner; the workspace is canonicalized on
+/// the daemon's host; a configuration path is canonicalized and an empty one is
+/// kept as the registration's own choice. The registry's own turn reserves the
+/// identity under `request.request_key`, which is stable across a retry.
+///
+/// The error is the control command's own code: `forbidden` for a caller that
+/// is not the owner, `invalid_workspace` and `invalid_configuration` for a path
+/// the host cannot canonicalize, and the registry's codes for the rest.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.create_session(config, registry, directory, owner, creation, domain.SessionOnly)
+/// ```
+@internal
+pub fn create_session(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  directory: String,
+  principal: access.Principal,
+  request: manager.Creation,
+  scope: domain.Scope,
+) -> Result(manager.View, String) {
+  use Nil <- result.try(owner(principal))
+  use workspace <- result.try(
+    bootstrap.canonical_directory(request.workspace)
+    |> result.replace_error("invalid_workspace"),
+  )
+  use configuration <- result.try(
+    case request.configuration {
+      // Absence is a registration choice, not the daemon's current path.
+      // Canonicalizing it would replace inherited defaults with a directory.
+      "" -> Ok("")
+      path -> bootstrap.canonical_path(path)
+    }
+    |> result.replace_error("invalid_configuration"),
+  )
+  manager.create_scoped(
+    registry,
+    manager.Creation(..request, workspace:, configuration:),
+    directory:,
+    generator: config.generator(),
+    scope:,
+    configuration: config.domain_configuration,
+  )
+  |> result.map_error(error_code)
 }
 
 fn operator(authority) {

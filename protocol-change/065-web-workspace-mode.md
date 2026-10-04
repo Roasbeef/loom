@@ -1088,3 +1088,88 @@ a call into the session's Agency actor and delays that session's other peer
 commands by the time its reads take, which is 050's own cost, paid at the
 interval of a page that is open, for at most 24 sessions. A page with no running
 session asks nothing.
+
+## Addendum: creating a session, the fourth pull request (2026-10-04)
+
+**Status**: IMPLEMENTED in the change that adds it. It builds the design note's
+PR 4 and the round-3 critique's F55, and adds no route, no frozen interface and
+no kind of wire frame. It adds one admitted event kind to one socket, and says so
+here.
+
+**The control.** On the home of the daemon's owner, minted to operate, each
+workspace's heading has a "New session" button. It opens one form under that
+workspace: an optional name, a "Shareable" checkbox, Create and Cancel. The
+workspace is never typed. It is the catalogue's own text for a workspace the
+owner already has a session in, carried by the message the server drew into the
+tree, so the browser's event names only the path it fired at. Left blank, the
+name is the workspace's folder name, as the terminal names a session. Every other
+home draws nothing: `ui_socket.home_create_capability` gives `Start.create` to a
+principal of kind owner at ceiling Operator and to no other, and the component
+ignores the creation messages without it.
+
+**F55.** The checkbox is the sharing choice at creation. Ticked, the session is
+created `session_only`, which is the scope an invitation needs (`NotIsolated`
+otherwise), so the owner who ticks it can invite from the new session's page
+without a terminal. Unticked, it is `workspace_private`, the terminal's default.
+The design note already ruled the box (section 2.2, "shareable"), so this makes
+no new decision. The box words what it allows, not the scope's name.
+
+**The admission.** The home's socket admitted clicks alone. The owner's home also
+admits a `submit` beneath `home.table_path`, where the form is. That is the
+admission protocol-change/067 added for the rename form
+(`ui_socket.home_owner_accepts`), and the two share it: the socket admits a
+submit for the owner's operating home, which holds both capabilities on one
+condition, and every other home keeps `home_accepts`. The socket cannot tell the
+forms apart and does not try. They sit at different paths, each has its own
+decoder, and each decoder refuses the other's fields (`text` against `name` and
+`shareable`), so a submit reaches only the handler drawn at its path. The
+two regions are unchanged and no pinned path moved: `strip_path`, `invite_path`,
+`session_controls_path`, `older_path`, `sidebar_path`, `home_path` and
+`home.table_path` are as they were, and `ui_socket_test` pins the owner's
+admission, the plain home's refusal of the same frame, and the owner's refusal of
+a submit anywhere else, of every other event kind and of a batch holding one.
+
+**The daemon.** `ui_socket.create_for` runs the control command's
+`sessions.create` on the page's behalf. The command's body is now
+`server.create_session`, which both call, so the owner check, the canonical
+workspace and configuration and the registry's own creation are one function.
+Each step is the daemon's and is made afresh, with the digest of the credential
+the page was admitted under: the page is still open (which is also the epoch
+check, since a page's UI session lives in this daemon's memory and no earlier
+daemon's page answers); the ceiling is Operator; the credential authenticates as
+the principal the page was admitted for and that principal is the owner (each is
+`NotOwner`); the name passes `creations.chosen_name` (nonblank after trimming, at
+most 256 bytes, unchanged by `text_hygiene.single_line`); the workspace is one
+the owner's own `authorized_page` read lists (`NotKnown`); and the credential has
+a creation left (`ui_sessions.reserve_creation`, ten in an hour, counted apart
+from invitations, `TooMany`). A refusal before the allowance costs nothing; a
+refusal after it keeps the place, since a reply that timed out may have created.
+Then `create` makes the session under a key drawn for the call, `web-` and
+sixteen random bytes in hex, so no retry or repeat can return another creation's
+session. `daemon.session_created` is logged with the principal and the session, as
+`daemon.upgrade_*` lines are, so a run of creations from a page shows in
+`daemon.log`. The session is then opened and ticketed as a resume's is
+(`opened_ticket`, shared with `resume_for`): the registry's open, a bounded wait
+for residency, and a ticket with the page's own ceiling, reach and deadline. A
+session that was created and did not open is `NotOpened`, in words that say it
+exists and will appear in the list.
+
+**The task.** The call can wait a minute, so `ui_socket.create_task` runs
+`create_for` in a weft run of its own, linked to the Lustre runtime, and returns
+at once. The answer arrives as `home.Created`, the effect's own message, which no
+handler carries. The component holds one creation at a time (`Waiting`): the
+form is drawn disabled, no button has a handler, and a second submit asks
+nothing, so a repeated press creates once; the key above makes a forged second
+request a second session, which the allowance bounds.
+
+**What a stolen page is worth.** A stolen owner home, fresh or resumed, can now
+create sessions in workspaces the owner already runs agents in, ten an hour, and
+prompt them at operator role; this is design note section 2.4's account and not
+more. It cannot name a path: a frame that names a directory the owner holds no
+session in is `NotKnown` and creates nothing. A member's or an observer-ceiling
+home draws no control, admits no submit and is refused by the daemon from the
+grant it holds, each layer enough alone.
+
+**Cost.** One event kind on one socket, `server.create_session` split out of the
+control command's dispatch, one more allowance table in `ui_sessions`, and a form
+on the owner's home.

@@ -91,6 +91,16 @@
 //// once; the run's last act is to hand its answer back as the message the
 //// component is waiting for.
 ////
+//// An owner's home page also draws a "New session" control under each workspace
+//// (protocol-change/065, the fourth pull request). It is admitted as the
+//// invitation control is: the socket takes a `submit` beneath `home.table_path`
+//// only for a home whose principal is the owner and which was minted to operate
+//// (`home_owner_accepts`, which the rename form shares), and `create_for` is the
+//// daemon's own check, made
+//// afresh in a task of its own (`create_task`). The page sends a workspace its
+//// own list drew, a name and a sharing choice, and nothing else, and the
+//// daemon creates only in a workspace the owner already holds a session in.
+////
 //// ## Flow
 ////
 //// `upgrade` → `websocket` → `admit` → `start_page` → `serve` → `closing`
@@ -152,8 +162,13 @@ import session_view/snapshot
 import session_view/transcript_image
 import storage/access
 import storage/catalogue
+import storage/domain
+import telemetry/field
+import telemetry/level
+import telemetry/log
 import telemetry/owner
 import web_view/component
+import web_view/creations
 import web_view/ending
 import web_view/home
 import web_view/invites
@@ -598,9 +613,14 @@ pub fn upgrade_home(
   let limit = root.message_limit(root.Observer)
   let standing = home_standing(attachment, ceiling, reach)
 
-  // An owner's operating page may rename the sessions it lists
-  // (protocol-change/067). It alone is handed the capability and has the
-  // submit admitted; every other home draws no control and drops the event.
+  // An owner's page minted to operate may rename the sessions it lists
+  // (protocol-change/067) and create new ones (protocol-change/065, the fourth
+  // pull request). Each is its own capability, handed to that page alone, and
+  // each is checked again by the daemon when the request runs (`rename_for`,
+  // `create_for`). Both forms submit beneath `home.table_path`, so the owner's
+  // socket admits a submit when it holds either capability, and every other home
+  // draws no control and drops the event. Which form a submit belongs to is
+  // decided by the component, where each form's own decoder and message are.
   let rename =
     home_rename_capability(
       attachment.principal,
@@ -609,9 +629,26 @@ pub fn upgrade_home(
         rename_task(standing, open, attachment.epoch, target, name, deliver)
       },
     )
-  let admits = case rename {
-    Some(_) -> home_owner_accepts
-    None -> home_accepts
+  let creating =
+    home_create_capability(
+      attachment.principal,
+      ceiling,
+      fn(workspace, name, sharing, deliver) {
+        create_task(
+          standing,
+          tickets,
+          open,
+          attachment.create,
+          workspace,
+          name,
+          sharing,
+          deliver,
+        )
+      },
+    )
+  let admits = case rename, creating {
+    None, None -> home_accepts
+    Some(_), _ | _, Some(_) -> home_owner_accepts
   }
   websocket(request, limit, settled, fn(signals) {
     admit_home(
@@ -622,6 +659,7 @@ pub fn upgrade_home(
         resume_task(standing, tickets, open, target, deliver)
       },
       rename,
+      creating,
       admits,
       open,
       ceiling,
@@ -647,6 +685,34 @@ pub fn home_rename_capability(
   ceiling: access.Role,
   ask: fn(String, String, fn(renames.Answer) -> Nil) -> Nil,
 ) -> Option(fn(String, String, fn(renames.Answer) -> Nil) -> Nil) {
+  case principal.kind, ceiling {
+    access.OwnerPrincipal, access.Operator -> Some(ask)
+    access.OwnerPrincipal, access.Observer
+    | access.MemberPrincipal, access.Operator
+    | access.MemberPrincipal, access.Observer
+    -> None
+  }
+}
+
+/// The capability to create a session that a home page minted for `principal`
+/// with `ceiling` is handed: `ask` for the daemon's owner on a page minted to
+/// operate, and none for any other (protocol-change/065, the fourth pull
+/// request). The daemon checks both facts again when the request runs
+/// (`create_for`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.home_create_capability(member, access.Operator, ask) == None
+/// ```
+@internal
+pub fn home_create_capability(
+  principal: access.Principal,
+  ceiling: access.Role,
+  ask: fn(String, String, creations.Sharing, fn(creations.Answer) -> Nil) -> Nil,
+) -> Option(
+  fn(String, String, creations.Sharing, fn(creations.Answer) -> Nil) -> Nil,
+) {
   case principal.kind, ceiling {
     access.OwnerPrincipal, access.Operator -> Some(ask)
     access.OwnerPrincipal, access.Observer
@@ -683,12 +749,19 @@ pub fn home_accepts(frame: String) -> Bool {
 }
 
 /// The browser messages an owner's home page takes: what `home_accepts` takes,
-/// and a `submit` beneath `home.table_path`, where the rename form of a row is
-/// (protocol-change/067). It is started only for a home whose principal is the
-/// daemon's owner on a page minted to operate, so a member's home and an
-/// observer-ceiling home drop the submit even if a frame names the path. A
-/// submit anywhere else, including the sidebar, is still dropped, and so is a
-/// batch with one in it.
+/// and a `submit` beneath `home.table_path`, where the forms of the owner's home
+/// are: a row's rename form (protocol-change/067) and a workspace's form that
+/// creates a session (protocol-change/065, the fourth pull request). It is
+/// started only for a home whose principal is the daemon's owner on a page
+/// minted to operate, so a member's home and an observer-ceiling home drop the
+/// submit even if a frame names the path. A submit anywhere else, including the
+/// sidebar, is still dropped, and so is a batch with one in it.
+///
+/// The socket does not say which form a submit belongs to, and cannot: it
+/// admits the event by path, as it does a click. Each form's decoder and message
+/// are in the component, which draws them at different places in the tree, so a
+/// frame that names one form's path reaches that form's handler and only its
+/// decoder, and no other.
 ///
 /// ## Examples
 ///
@@ -696,17 +769,17 @@ pub fn home_accepts(frame: String) -> Bool {
 /// assert !ui_socket.home_owner_accepts("{\"kind\":1,\"name\":\"submit\",\"path\":\"0\\t1\\t0\"}")
 /// ```
 pub fn home_owner_accepts(frame: String) -> Bool {
-  case json.parse(frame, home_event(Renaming)) {
+  case json.parse(frame, home_event(Submitting)) {
     Ok(accepted) -> accepted
     Error(_) -> False
   }
 }
 
 // What a home socket admits besides a click on a row: nothing, or the owner's
-// rename submit.
+// submit of one of its forms.
 type HomeRights {
   Browsing
-  Renaming
+  Submitting
 }
 
 fn home_event(rights: HomeRights) -> decode.Decoder(Bool) {
@@ -717,7 +790,8 @@ fn home_event(rights: HomeRights) -> decode.Decoder(Bool) {
       use path <- decode.field("path", decode.string)
       decode.success(case name, rights {
         "click", _ -> home_row_path(path)
-        "submit", Renaming -> string.starts_with(path, home.table_path <> "\t")
+        "submit", Submitting ->
+          string.starts_with(path, home.table_path <> "\t")
         _, _ -> False
       })
     }
@@ -749,6 +823,9 @@ fn admit_home(
   opening: fn(String) -> sessions.Answer,
   resuming: fn(String, fn(sessions.Answer) -> Nil) -> Nil,
   rename: Option(fn(String, String, fn(renames.Answer) -> Nil) -> Nil),
+  creating: Option(
+    fn(String, String, creations.Sharing, fn(creations.Answer) -> Nil) -> Nil,
+  ),
   admits: fn(String) -> Bool,
   open: fn() -> Result(Int, Nil),
   ceiling: access.Role,
@@ -774,6 +851,7 @@ fn admit_home(
         activity_task(attachment.activity, ids, deliver)
       },
       rename:,
+      create: creating,
     )
   let started = case transferred {
     Error(reason) -> {
@@ -1428,7 +1506,7 @@ pub fn resume_for(
   target: String,
   within within: Int,
 ) -> sessions.Answer {
-  let outcome = {
+  let checked = {
     use _ <- result.try(open() |> result.replace_error(sessions.NotHeld))
     use _ <- result.try(operating_ceiling(standing.ceiling))
     use _ <- result.try(
@@ -1438,7 +1516,27 @@ pub fn resume_for(
       manager.session_authority(standing.registry, standing.digest, target)
       |> result.map_error(not_held),
     )
-    use _ <- result.try(operating_authority(authority))
+    operating_authority(authority)
+  }
+  case checked {
+    Error(reason) -> sessions.Declined(reason)
+    Ok(Nil) -> opened_ticket(standing, tickets, open, target, within)
+  }
+}
+
+// Asks the registry to open `target`, waits for it to be resident and mints the
+// page's ticket, which is the part of a resume and of a creation that comes after
+// the page's standing has been checked. A ticket that `ticket_for` would refuse
+// as `NotRunning` is `NotOpened` here: the session was resident a moment ago and
+// is not now.
+fn opened_ticket(
+  standing: Standing(instance),
+  tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
+  target: String,
+  within: Int,
+) -> sessions.Answer {
+  let outcome = {
     use _ <- result.try(
       manager.open(standing.registry, target)
       |> result.replace_error(sessions.NotOpened),
@@ -1542,6 +1640,214 @@ pub fn resume_task(
           tickets,
           open,
           target,
+          within: resume_wait_ms,
+        ))
+        Ok(Nil)
+      },
+    ])
+    |> weft.start_witnessed
+  Nil
+}
+
+/// Creates a session for the asking page's owner in `workspace`, opens it and
+/// mints a ticket for its page, waiting at most `within` milliseconds for it to
+/// become resident, or gives the reason there is no ticket (protocol-change/065,
+/// the fourth pull request). It blocks the calling process, so a page's
+/// component never calls it directly: `create_task` runs it in a run of its own.
+///
+/// It is the control command `sessions.create` (`server.create_session`) made
+/// on the page's behalf. Each step is the daemon's and is made afresh, with the
+/// digest of the credential the page was admitted under, and nothing is taken
+/// from the page but the text of the name, the sharing it chose and the
+/// workspace its own list drew:
+///
+/// 0. The asking page must still be open (`open`). That is also the page's
+///    epoch, as for `resume_for`: a page that is open was admitted by this
+///    daemon and by no earlier one.
+/// 1. The page's ceiling must be Operator, and the credential must still
+///    authenticate as the principal the page was admitted for, and that
+///    principal must be the daemon's owner. Each is `NotOwner`, so a page
+///    learns nothing else about its standing.
+/// 2. The name must pass `creations.chosen_name` (`InvalidName`), and the
+///    workspace must be one the owner holds a session in, read afresh from the
+///    catalogue with the page's credential (`NotKnown`). The page never names a
+///    path the owner has no session in, whatever frame reached the daemon.
+/// 3. The credential must have a creation left (`ui_sessions.reserve_creation`),
+///    counted for the credential and not for the page (`TooMany`).
+/// 4. `create` makes the session under a key drawn here, which no other
+///    request shares, so a retry of this call is a new creation and a repeat of
+///    the page's press is stopped by the component, which has one out at a
+///    time. The sharing becomes the domain scope: `Shareable` is
+///    `session_only` and `Private` is `workspace_private`.
+/// 5. The session is opened and its ticket minted as a resume's is
+///    (`opened_ticket`), with the page's own ceiling, reach and deadline. A
+///    session that was created and did not open is `NotOpened`, which says it
+///    exists.
+///
+/// A success is logged as `daemon.session_created` with the principal and the
+/// session, so a run of creations from a page is visible in the daemon's log.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.create_for(standing, tickets, open, create, "/work/loom", "", creations.Private, within: 30_000)
+/// ```
+@internal
+pub fn create_for(
+  standing: Standing(instance),
+  tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
+  create: fn(access.Principal, manager.Creation, domain.Scope) ->
+    Result(manager.View, String),
+  workspace: String,
+  name: String,
+  sharing: creations.Sharing,
+  within within: Int,
+) -> creations.Answer {
+  let outcome = {
+    use _ <- result.try(open() |> result.replace_error(creations.NotOwner))
+    use _ <- result.try(
+      operating_ceiling(standing.ceiling)
+      |> result.replace_error(creations.NotOwner),
+    )
+    use principal <- result.try(
+      manager.authenticate(standing.registry, standing.digest)
+      |> result.replace_error(creations.NotOwner),
+    )
+    use _ <- result.try(case principal.id == standing.principal {
+      True -> owner_of(principal)
+      False -> Error(creations.NotOwner)
+    })
+    use name <- result.try(
+      creations.chosen_name(name, workspace)
+      |> result.replace_error(creations.InvalidName),
+    )
+    use _ <- result.try(known_workspace(standing, workspace))
+    use _ <- result.try(
+      ui_sessions.reserve_creation(tickets, standing.digest)
+      |> result.replace_error(creations.TooMany),
+    )
+    let key = "web-" <> hex_entropy(16)
+    manager.Creation(key, workspace, name, "")
+    |> create(principal, _, scope_of(sharing))
+    |> result.map(fn(view) { #(principal, view.registration.id) })
+    |> result.map_error(creation_refusal)
+  }
+  case outcome {
+    Error(reason) -> creations.Declined(reason)
+    Ok(#(principal, session)) -> {
+      // Both are identifiers the catalogue minted and carry no authority, so
+      // they are written as `ident`: the free-text rule would replace a long
+      // unbroken run, which a principal's identity can be, with a redaction
+      // marker, and the line exists so a run of creations can be attributed.
+      log.info(log.erlang(threshold: level.Info), "daemon.session_created", [
+        field.ident("principal", principal.id),
+        field.ident("session", session),
+        field.ident("via", "page"),
+      ])
+      case opened_ticket(standing, tickets, open, session, within) {
+        sessions.Ticketed(path:) -> creations.Ticketed(path)
+        sessions.Declined(_) -> creations.Declined(creations.NotOpened)
+      }
+    }
+  }
+}
+
+// Only the daemon's owner creates a session. A member's page is refused here
+// even if a message reached it.
+fn owner_of(principal: access.Principal) -> Result(Nil, creations.Reason) {
+  case principal.kind {
+    access.OwnerPrincipal -> Ok(Nil)
+    access.MemberPrincipal -> Error(creations.NotOwner)
+  }
+}
+
+// A workspace is known when the owner holds a session in it now. The read is the
+// home's own list, made with the page's credential, so the creation is possible
+// in exactly the workspaces the page could have drawn a button for.
+fn known_workspace(
+  standing: Standing(instance),
+  workspace: String,
+) -> Result(Nil, creations.Reason) {
+  case manager.authorized_page(standing.registry, standing.digest, after: "") {
+    Error(_) -> Error(creations.Unavailable)
+    Ok(#(_, views)) ->
+      case
+        list.any(views, fn(view) { view.registration.workspace == workspace })
+      {
+        True -> Ok(Nil)
+        False -> Error(creations.NotKnown)
+      }
+  }
+}
+
+fn scope_of(sharing: creations.Sharing) -> domain.Scope {
+  case sharing {
+    creations.Shareable -> domain.SessionOnly
+    creations.Private -> domain.WorkspacePrivate
+  }
+}
+
+// The control command's code for a refused creation, in the page's fixed words.
+// A workspace that cannot be canonicalized now is not one the owner can use, a
+// full registry is its own words, and the rest read alike: the daemon's detail
+// stays in the daemon.
+fn creation_refusal(code: String) -> creations.Reason {
+  case code {
+    "forbidden" -> creations.NotOwner
+    "invalid_workspace" -> creations.NotKnown
+    "capacity" -> creations.Full
+    _ -> creations.Unavailable
+  }
+}
+
+fn hex_entropy(bytes: Int) -> String {
+  token.production_entropy()(bytes)
+  |> bit_array.base16_encode
+  |> string.lowercase
+}
+
+/// Starts `create_for` in a run of its own and returns at once, so the page's
+/// runtime is free while a session is created and started; `deliver` is called,
+/// from that run, with the answer, whatever it is.
+///
+/// The run is a weft run with one task, linked to the calling process, which is
+/// the page's runtime, as `resume_task`'s is: a page that goes away cancels the
+/// wait, and a creation the registry has already begun finishes on the
+/// registry's own custody. The run has no deadline, since every step of
+/// `create_for` is bounded by its own call timeouts (the wait by
+/// `resume_wait_ms`) and a deadline could only kill a task that would have
+/// answered. Its last act is `deliver`, so a page that stays open is always
+/// answered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.create_task(standing, tickets, open, create, workspace, "", creations.Private, deliver)
+/// ```
+@internal
+pub fn create_task(
+  standing: Standing(instance),
+  tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
+  create: fn(access.Principal, manager.Creation, domain.Scope) ->
+    Result(manager.View, String),
+  workspace: String,
+  name: String,
+  sharing: creations.Sharing,
+  deliver: fn(creations.Answer) -> Nil,
+) -> Nil {
+  let _ =
+    weft.new([
+      fn() {
+        deliver(create_for(
+          standing,
+          tickets,
+          open,
+          create,
+          workspace,
+          name,
+          sharing,
           within: resume_wait_ms,
         ))
         Ok(Nil)

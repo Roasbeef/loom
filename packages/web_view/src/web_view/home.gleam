@@ -28,10 +28,11 @@
 //// not ask keeps a row that says only that it is resident. The runtime never
 //// waits for it: `activity` returns at once, as `resume` does.
 ////
-//// The component draws a list and takes two inputs (protocol-change/065, the
-//// second and third pull requests): the press of a running session's row, in
-//// the table or in the sidebar, and, on a page minted to operate, the press of
-//// a saved session's row. Their messages are `Opening` and `Resuming`, whose
+//// The component draws a list and takes three inputs (protocol-change/065, the
+//// second, third and fourth pull requests): the press of a running session's
+//// row, in the table or in the sidebar, on a page minted to operate the press of
+//// a saved session's row, and on the owner's such page the form that creates a
+//// session (`Start.create`, below). Their messages are `Opening` and `Resuming`, whose
 //// session is the catalogue's identity drawn into the tree by the server, so
 //// the browser's event names only the path it fired at and never a session.
 //// The daemon's socket admits a click beneath `table_path` or `sidebar_path`
@@ -45,6 +46,21 @@
 //// node (`view/home_table`, `view/sidebar`). The page names the principal and
 //// the most the page may do in its top bar, so a person who holds two homes
 //// can tell them apart.
+////
+//// Creating a session is the owner's act. `Start.create` is `Some` only for the
+//// owner's page minted to operate (the daemon decides, in
+//// `ui_socket.home_create_capability`), and a page without it draws nothing and ignores
+//// the messages. With it, each workspace's heading has a "New session" button
+//// (`Choosing`) that opens one form under it: a name, a checkbox, Create and
+//// Cancel (`view/create`). Submitting it (`Creating`) asks the daemon through
+//// `Start.create`, which starts the daemon's own task and returns, and the
+//// answer arrives as `Created`: a ticket departs for the new session through the
+//// same hidden `<loom-switch>` a switch uses, and a refusal is the reason's
+//// fixed words (`creations.reason_words`). While one creation is out the form is
+//// disabled and a second submit asks nothing. The workspace is the catalogue's
+//// text carried by the message the tree was drawn with, never a field the
+//// browser fills, and the daemon checks again that the owner already holds a
+//// session in it.
 ////
 //// ## Transitions
 ////
@@ -62,6 +78,14 @@
 //// | --- | --- | --- | --- |
 //// | none out | starts one, if the page may operate | nothing to answer | stays none |
 //// | one out | asks nothing | clears it, then departs or says why | clears it |
+////
+//// A creation is a third, in `Connected` and only on a page with `Start.create`:
+////
+//// | form | a workspace's button | the form is submitted | the daemon answers | Cancel |
+//// | --- | --- | --- | --- | --- |
+//// | `Idle` | `Composing` that workspace | asks nothing | nothing to answer | stays `Idle` |
+//// | `Composing(w)` | moves to the pressed workspace | asks the daemon if it is `w`'s form, then `Waiting(w)` | nothing to answer | `Idle` |
+//// | `Waiting(w)` | asks nothing | asks nothing | departs and `Idle`, or says why and `Composing(w)`, or `Idle` for a session made and not opened | stays `Waiting(w)` |
 
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
@@ -75,9 +99,11 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
 import lustre/server_component
+import web_view/creations.{type Sharing}
 import web_view/ending.{type Ending}
 import web_view/renames
 import web_view/sessions.{type Activity, type Entry, type Group, Live}
+import web_view/view/create.{type Create}
 import web_view/view/ended
 import web_view/view/heading
 import web_view/view/home_bar
@@ -180,6 +206,18 @@ pub type Start {
     /// the daemon could not ask, or that was slow to answer, is left out of the
     /// answer, and its row says nothing about what it is doing.
     activity: fn(List(String), fn(List(#(String, Activity))) -> Nil) -> Nil,
+    /// Asks the daemon to create a session in the named workspace with the
+    /// typed name and sharing, and mint a ticket for its page
+    /// (protocol-change/065, the fourth pull request). It is `Some` only for the
+    /// owner's page minted to operate, and then it is the page's whole offer: a
+    /// page with `None` draws no control and ignores every creation message. It
+    /// must return at once, and the answer goes to the function it is given,
+    /// from the daemon's own task, as `Created`'s message. The daemon checks the
+    /// page, its ceiling, the principal and the workspace again, whatever this
+    /// page said.
+    create: Option(
+      fn(String, String, Sharing, fn(creations.Answer) -> Nil) -> Nil,
+    ),
     /// Asks the daemon to rename the named session, for the owner's page that
     /// submitted a row's rename form (protocol-change/067): the daemon checks
     /// that the page is open and was minted to operate, that its credential
@@ -249,6 +287,10 @@ pub opaque type Model {
     /// asks the daemon and cleared by the answer, so a second press while it is
     /// set asks nothing.
     resuming: Option(String),
+    /// Where the person is in making a session: no form, a form open under one
+    /// workspace, or that workspace's creation out. Only a page with
+    /// `Start.create` leaves `Idle`.
+    creating: create.State,
     /// Which row's rename form is open, and where it stands.
     edit: Edit,
   )
@@ -287,6 +329,25 @@ pub type Msg {
   /// effect's own message, dispatched from the component's process or from the
   /// daemon's task, and no handler carries it, so a browser cannot send one.
   Linked(answer: sessions.Answer)
+
+  /// The "New session" button under this workspace was pressed: open its form.
+  /// The workspace is the catalogue's text, fixed when the tree was drawn. A page
+  /// with no `Start.create` ignores it.
+  Choosing(workspace: String)
+
+  /// The form's Cancel was pressed: close it.
+  Cancelled
+
+  /// The open form was submitted: ask the daemon to create the session. The
+  /// workspace is the one the form was drawn under; the name and the sharing are
+  /// what the browser's event listed (`view/create.fields`). The page asks only
+  /// for the form that is open, and only once.
+  Creating(workspace: String, name: String, sharing: Sharing)
+
+  /// The daemon answered a request to create a session. It is the effect's own
+  /// message, dispatched from the daemon's task, and no handler carries it, so
+  /// a browser cannot send one.
+  Created(answer: creations.Answer)
 
   /// A row's Rename button was pressed: open that row's form. Only an owner's
   /// page draws the button, and the daemon checks again when a name is sent. The
@@ -338,6 +399,7 @@ pub fn new(start: Start) -> Model {
     departure: None,
     notice: None,
     resuming: None,
+    creating: create.Idle,
     edit: NotEditing,
   )
 }
@@ -439,6 +501,23 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         -> #(model, effect.none())
       }
 
+    // The button opens the form under its workspace, if the page may create and
+    // no creation is out. Another workspace's button moves the form.
+    Choosing(workspace:) ->
+      case model.start.create, model.status, model.creating {
+        Some(_), Connected, create.Idle
+        | Some(_), Connected, create.Composing(_)
+        -> #(
+          Model(..model, creating: create.Composing(workspace), notice: None),
+          effect.none(),
+        )
+        Some(_), Connected, create.Waiting(_)
+        | Some(_), Connecting, _
+        | Some(_), Ended(_), _
+        | None, _, _
+        -> #(model, effect.none())
+      }
+
     // The rename form of one row opens, on a page that may rename. Opening a
     // form while a request is out would hide that request's answer, so it is
     // ignored until the request ends.
@@ -458,6 +537,57 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         | Some(_), Ended(_), _
         | None, _, _
         -> #(model, effect.none())
+      }
+
+    Cancelled ->
+      case model.creating {
+        create.Composing(_) -> #(
+          Model(..model, creating: create.Idle),
+          effect.none(),
+        )
+        create.Idle | create.Waiting(_) -> #(model, effect.none())
+      }
+
+    // A submit asks the daemon from its own task so the runtime stays free. It is
+    // honoured only for the form that is open, so a second submit while the
+    // first is out, a submit for a form that is not drawn, and a page that may
+    // not create ask nothing. These arms are the second layer: the daemon
+    // refuses the same requests from the grant it holds.
+    Creating(workspace:, name:, sharing:) ->
+      case model.start.create, model.status, model.creating {
+        Some(ask), Connected, create.Composing(open) if open == workspace -> #(
+          Model(
+            ..model,
+            creating: create.Waiting(workspace),
+            notice: Some("Creating the session. It may take a moment."),
+          ),
+          creation(ask, workspace, name, sharing),
+        )
+        Some(_), _, _ | None, _, _ -> #(model, effect.none())
+      }
+
+    // A ticket departs for the new session. A refusal says why in the daemon's
+    // fixed words and puts the form back, except for a session that was created
+    // and did not open, which exists and shows in the list at the next read.
+    Created(answer:) ->
+      case answer {
+        creations.Ticketed(path:) -> #(
+          Model(
+            ..model,
+            departure: Some(path),
+            notice: Some("Opening the new session."),
+            creating: create.Idle,
+          ),
+          effect.none(),
+        )
+        creations.Declined(reason:) -> #(
+          Model(
+            ..model,
+            notice: Some(creations.reason_words(reason)),
+            creating: reopened(model.creating, reason),
+          ),
+          effect.none(),
+        )
       }
 
     EditCancelled ->
@@ -575,6 +705,29 @@ fn resuming(
 ) -> Effect(Msg) {
   use dispatch <- effect.from
   resume(session, fn(answer) { dispatch(Linked(answer)) })
+}
+
+// Starts the daemon's creation task and returns at once; the answer arrives
+// later as `Created`, dispatched from the task's own process.
+fn creation(
+  ask: fn(String, String, Sharing, fn(creations.Answer) -> Nil) -> Nil,
+  workspace: String,
+  name: String,
+  sharing: Sharing,
+) -> Effect(Msg) {
+  use dispatch <- effect.from
+  ask(workspace, name, sharing, fn(answer) { dispatch(Created(answer)) })
+}
+
+// Where the form stands after a refusal: open again under the workspace it was
+// for, so the person can correct it, unless the session was made and did not
+// open, which leaves nothing to correct.
+fn reopened(state: create.State, reason: creations.Reason) -> create.State {
+  case state, reason {
+    create.Waiting(_), creations.NotOpened -> create.Idle
+    create.Waiting(workspace), _ -> create.Composing(workspace)
+    create.Idle, _ | create.Composing(_), _ -> state
+  }
 }
 
 // Starts the activity read for the running sessions the page lists, in the
@@ -696,6 +849,7 @@ pub fn view(model: Model) -> Element(Msg) {
         Opening,
         resume_offer(model),
         rename_offer(model),
+        create_offer(model),
       ),
       switch.view(model.departure),
     ],
@@ -755,6 +909,15 @@ fn form_field() -> decode.Decoder(#(String, String)) {
   use name <- decode.field(0, decode.string)
   use value <- decode.field(1, decode.string)
   decode.success(#(name, value))
+}
+
+// What the page offers for making a session: the owner's operating page has
+// `Start.create`, and every other page draws nothing.
+fn create_offer(model: Model) -> Create(Msg) {
+  case model.start.create {
+    Some(_) -> create.Offered(Choosing, Creating, Cancelled, model.creating)
+    None -> create.Never
+  }
 }
 
 // The sidebar's column, or the frame's word that there is none.

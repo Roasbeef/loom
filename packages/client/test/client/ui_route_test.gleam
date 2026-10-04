@@ -50,6 +50,7 @@ import storage/domain
 import support/addresses
 import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws
+import web_view/creations
 import web_view/ending
 import web_view/home
 import web_view/invites
@@ -219,8 +220,11 @@ fn fixture_lasting(
             // The home as a row press asks for a ticket: the same call the
             // home's transport makes, for the session a header names.
             Switching ->
-              case req.get_header(request, "x-switch-target") {
-                Ok(target) ->
+              case
+                req.get_header(request, "x-switch-target"),
+                req.get_header(request, "x-create-workspace")
+              {
+                Ok(target), _ ->
                   opening_from_home(
                     sessions,
                     request,
@@ -230,7 +234,17 @@ fn fixture_lasting(
                     open,
                     target,
                   )
-                Error(Nil) ->
+                Error(Nil), Ok(workspace) ->
+                  creating_from_home(
+                    sessions,
+                    request,
+                    attachment,
+                    ceiling,
+                    reach,
+                    open,
+                    workspace,
+                  )
+                Error(Nil), Error(Nil) ->
                   homed(ready.state_root, request, attachment, open, ceiling)
               }
 
@@ -417,6 +431,67 @@ fn opening_from_home(
   list.fold(deadline, reported(answer, reach), fn(answer, header) {
     response.set_header(answer, header.0, header.1)
   })
+}
+
+// The home's upgrade as the form that creates a session asks: the capability the
+// socket hands a page (`home_create_capability`) is consulted first, and a page
+// with none is answered 289 unless `x-create-force` asks the daemon anyway, as a
+// forged message from a page that was wrongly handed the capability would. The
+// request is run in the task the page uses (`create_task`) with the daemon's own
+// `create` and answered 290 and the ticket's address, or 291 and the reason. The
+// name and sharing come from headers; `x-switch-ended` asks as a page that has
+// ended but whose socket is still up.
+fn creating_from_home(
+  tickets,
+  request,
+  attachment: server.HomeAttachment(String),
+  ceiling,
+  reach: ui_sessions.Reach,
+  open: fn() -> Result(Int, Nil),
+  workspace: String,
+) {
+  let open = case req.get_header(request, "x-switch-ended") {
+    Ok(_) -> fn() { Error(Nil) }
+    Error(Nil) -> open
+  }
+  let standing = ui_socket.home_standing(attachment, ceiling, reach)
+  let name = result.unwrap(req.get_header(request, "x-create-name"), "")
+  let sharing = case req.get_header(request, "x-create-sharing") {
+    Ok("shareable") -> creations.Shareable
+    Ok(_) | Error(Nil) -> creations.Private
+  }
+  let ask = fn(workspace, name, sharing, deliver) {
+    ui_socket.create_task(
+      standing,
+      tickets,
+      open,
+      attachment.create,
+      workspace,
+      name,
+      sharing,
+      deliver,
+    )
+  }
+  let capability =
+    ui_socket.home_create_capability(attachment.principal, ceiling, ask)
+  let asked = case capability, req.get_header(request, "x-create-force") {
+    Some(ask), _ -> Some(ask)
+    None, Ok(_) -> Some(ask)
+    None, Error(Nil) -> None
+  }
+  case asked {
+    None -> stub(289, "no capability")
+    Some(ask) -> {
+      let answers = process.new_subject()
+      ask(workspace, name, sharing, fn(answer) { process.send(answers, answer) })
+      case process.receive(answers, 10_000) {
+        Ok(creations.Ticketed(path)) -> reported(stub(290, path), reach)
+        Ok(creations.Declined(reason)) ->
+          reported(stub(291, string.inspect(reason)), reach)
+        Error(Nil) -> stub(298, "the task never answered")
+      }
+    }
+  }
 }
 
 // The page's upgrade as an invitation asks for one: what `ui_socket.upgrade`
@@ -3250,5 +3325,424 @@ pub fn the_rename_runs_in_a_task_and_delivers_its_answer_test() {
     let assert Ok(#(_, refusal)) = process.receive(answered, 5000)
       as "the task answers a refusal"
     assert refusal == renames.Declined(renames.NotOwner)
+  })
+}
+
+// --- creating a session (protocol-change/065, the fourth pull request) --------
+
+// The digest of a plaintext credential, as the registry stores it.
+fn digest_of(credential: String) -> access.Digest {
+  let assert Ok(digest) =
+    credential
+    |> bit_array.from_string
+    |> bootstrap.sha256
+    |> bit_array.base16_encode
+    |> string.lowercase
+    |> access.credential_digest
+    as "the digest is valid"
+  digest
+}
+
+// How many sessions the owner's authorized read lists: what exists in the
+// catalogue, which a refused creation must leave as it was.
+fn session_count(ready: root.Ready(String), credential: String) -> Int {
+  let assert Ok(#(_, views)) =
+    manager.authorized_page(ready.registry, digest_of(credential), after: "")
+    as "the owner's read answers"
+  list.length(views)
+}
+
+// The identity in a ticket's exchange address, `/ui/sessions/<id>?ticket=...`.
+fn session_of(path: String) -> String {
+  let assert Ok(#(_, rest)) = string.split_once(path, "/ui/sessions/")
+    as "a session exchange"
+  let assert Ok(#(id, _)) = string.split_once(rest, "?") as "the ticket follows"
+  id
+}
+
+// The owner's standing, as the home's socket holds it, with a fresh table of
+// tickets to mint into.
+fn creator_standing(
+  ready: root.Ready(String),
+  credential: String,
+  ceiling: access.Role,
+) -> #(ui_socket.Standing(String), ui_sessions.Sessions) {
+  let assert Ok(tickets) =
+    ui_sessions.start(ui_sessions.Settings(
+      now: bootstrap.monotonic_time_ms,
+      entropy: token.production_entropy(),
+      ticket_ms: ui_sessions.ticket_ms,
+      session_ms: ui_sessions.session_ms,
+    ))
+    as "the web view's tables start"
+  #(
+    ui_socket.Standing(
+      registry: ready.registry,
+      digest: digest_of(credential),
+      principal: ready.owner.id,
+      ceiling:,
+      reach: ui_sessions.Workspace,
+    ),
+    tickets,
+  )
+}
+
+// A `create` that makes nothing and says how often it was asked, answering with
+// the view of a session that already exists, so a test can follow the daemon's
+// steps without a second session of the fixture's one seeded identity.
+fn counting_create(
+  ready: root.Ready(String),
+  existing: String,
+  asked: process.Subject(manager.Creation),
+) -> fn(access.Principal, manager.Creation, domain.Scope) ->
+  Result(manager.View, String) {
+  fn(_, creation, _) {
+    process.send(asked, creation)
+    manager.get(ready.registry, existing) |> result.replace_error("unavailable")
+  }
+}
+
+// The whole path through the router: a press on "New session" on the owner's
+// operator home creates a session in a workspace the owner already runs one in,
+// with the typed name and the scope the box chose, opens it and mints a ticket,
+// and the ticket becomes a page of the new session in the tab, a `Workspace`
+// page like any a home opens.
+pub fn an_owners_home_creates_a_session_and_the_tab_lands_on_it_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let _known = create_session(ready, "create-known", 1101)
+    let before = session_count(ready, credential)
+    let home = enter(port, operator_home(port, credential))
+    let asked =
+      home_socket(port, home, [
+        #("x-create-workspace", ready.state_root),
+        #("x-create-name", "  fresh session  "),
+        #("x-create-sharing", "shareable"),
+      ])
+    assert asked.status == 290
+    assert reach_of(asked) == "workspace"
+    assert string.starts_with(asked.body, "/ui/sessions/")
+    let created = session_of(asked.body)
+    assert session_count(ready, credential) == before + 1
+
+    // The registry holds what the form said, resident, in the owner's
+    // workspace, with the scope the box chose.
+    let assert Ok(view) = manager.get(ready.registry, created)
+    assert view.registration.name == "fresh session"
+    assert view.registration.workspace == ready.state_root
+    assert result.is_ok(manager.resolve(ready.registry, created))
+    let assert Ok(shared) = manager.session_domain(ready.registry, created)
+    assert shared.scope == domain.SessionOnly
+
+    // The tab lands on it, and the ticket is spent.
+    let page = enter(port, asked.body)
+    assert open_page(port, page).status == 200
+    assert open_page(port, home).status == 200
+    assert exchange(port, asked.body).status == 401
+  })
+}
+
+// Without the box and without a name the session is private and named for its
+// workspace's folder, as the terminal names one.
+pub fn a_blank_form_makes_a_private_session_named_for_its_folder_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let _known = create_session(ready, "create-blank", 1102)
+    let home = enter(port, operator_home(port, credential))
+    let asked =
+      home_socket(port, home, [#("x-create-workspace", ready.state_root)])
+    assert asked.status == 290
+    let created = session_of(asked.body)
+    let assert Ok(view) = manager.get(ready.registry, created)
+    let assert Ok(folder) = list.last(string.split(ready.state_root, "/"))
+    assert view.registration.name == folder
+    let assert Ok(private) = manager.session_domain(ready.registry, created)
+    assert private.scope == domain.WorkspacePrivate
+  })
+}
+
+// A member's operator home is handed no capability, and a forged creation that
+// reaches the daemon anyway is refused from the grant it holds, whatever the
+// frame said. An owner's page minted to read is refused the same way. Nothing
+// is created by any of them.
+pub fn a_members_and_an_observers_home_create_nothing_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let session = create_session(ready, "create-refused", 1103)
+    let before = session_count(ready, credential)
+    let operator = [#("page", json.String("operator"))]
+    let grant = member(ready, "ui-creator", session, access.Operator)
+    let members_home = enter(port, home_link(port, grant, operator))
+    let observers_home = enter(port, home_link(port, credential, []))
+    let ask = [#("x-create-workspace", ready.state_root)]
+
+    list.each([members_home, observers_home], fn(home) {
+      let plain = home_socket(port, home, ask)
+      assert plain.status == 289
+      let forced = home_socket(port, home, [#("x-create-force", "yes"), ..ask])
+      assert forced.status == 291
+      assert forced.body == "NotOwner"
+    })
+    assert session_count(ready, credential) == before
+  })
+}
+
+// The workspace is the owner's own list's and never a path: a directory the
+// owner holds no session in is refused and nothing is created, whatever the
+// frame named, and so is a name the page's text rule refuses.
+pub fn a_forged_workspace_or_name_creates_nothing_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let _known = create_session(ready, "create-forged", 1104)
+    let before = session_count(ready, credential)
+    let home = enter(port, operator_home(port, credential))
+    list.each(
+      ["/tmp", "/", ready.state_root <> "/..", "not a path", ""],
+      fn(workspace) {
+        let refused =
+          home_socket(port, home, [#("x-create-workspace", workspace)])
+        assert refused.status == 291
+        assert refused.body == "NotKnown"
+      },
+    )
+    list.each([string.repeat("n", 257)], fn(name) {
+      let refused =
+        home_socket(port, home, [
+          #("x-create-workspace", ready.state_root),
+          #("x-create-name", name),
+        ])
+      assert refused.status == 291
+      assert refused.body == "InvalidName"
+    })
+    assert session_count(ready, credential) == before
+  })
+}
+
+// A home that has ended but whose socket is still up creates nothing: its
+// `open` no longer answers, which is also the epoch check, since a page's UI
+// session lives in this daemon's memory and no earlier daemon's page answers.
+pub fn an_ended_home_creates_nothing_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let _known = create_session(ready, "create-ended", 1105)
+    let before = session_count(ready, credential)
+    let home = enter(port, operator_home(port, credential))
+    let refused =
+      home_socket(port, home, [
+        #("x-create-workspace", ready.state_root),
+        #("x-switch-ended", "yes"),
+      ])
+    assert refused.status == 291
+    assert refused.body == "NotOwner"
+    assert session_count(ready, credential) == before
+  })
+}
+
+// The steps of `create_for` against the real registry, one at a time, with a
+// `create` that counts its calls: an owner's page creates, and each of a revoked
+// credential, a principal that is not the one the page was admitted for, a page
+// minted to read, an ended page and a member's credential is refused before
+// `create` is asked.
+pub fn each_standing_that_is_not_the_owners_asks_nothing_test() {
+  fixture(fn(ready, _, credential) {
+    let existing = create_session(ready, "standing-known", 1106)
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Operator)
+    let asked = process.new_subject()
+    let create = counting_create(ready, existing, asked)
+    let attempt = fn(standing) {
+      ui_socket.create_for(
+        standing,
+        tickets,
+        page_open,
+        create,
+        ready.state_root,
+        "x",
+        creations.Private,
+        within: 2000,
+      )
+    }
+
+    // A principal that is not the one the credential authenticates as.
+    assert attempt(ui_socket.Standing(..standing, principal: "someone-else"))
+      == creations.Declined(creations.NotOwner)
+
+    // A page minted to read.
+    assert attempt(ui_socket.Standing(..standing, ceiling: access.Observer))
+      == creations.Declined(creations.NotOwner)
+
+    // A page that has ended.
+    assert ui_socket.create_for(
+        standing,
+        tickets,
+        fn() { Error(Nil) },
+        create,
+        ready.state_root,
+        "x",
+        creations.Private,
+        within: 2000,
+      )
+      == creations.Declined(creations.NotOwner)
+
+    // A member's credential, with the member's own principal.
+    let grant = member(ready, "ui-not-owner", existing, access.Operator)
+    let #(members, _) = creator_standing(ready, grant, access.Operator)
+    assert attempt(ui_socket.Standing(..members, principal: "ui-not-owner"))
+      == creations.Declined(creations.NotOwner)
+
+    // A revoked credential authenticates as nobody.
+    revoke(ready.state_root, credential)
+    assert attempt(standing) == creations.Declined(creations.NotOwner)
+    assert process.receive(asked, 0) == Error(Nil)
+  })
+}
+
+// The owner's page creates, and a creation the daemon refused before it asked
+// costs no allowance: an invalid name and an unknown workspace come first, and
+// then ten creations are granted and the eleventh in the hour is refused with
+// the counting `create` never asked a second time for it.
+pub fn the_eleventh_creation_in_an_hour_is_refused_test() {
+  fixture(fn(ready, _, credential) {
+    let existing = create_session(ready, "limit-known", 1107)
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Operator)
+    let asked = process.new_subject()
+    let create = counting_create(ready, existing, asked)
+    let attempt = fn(workspace, name) {
+      ui_socket.create_for(
+        standing,
+        tickets,
+        page_open,
+        create,
+        workspace,
+        name,
+        creations.Shareable,
+        within: 2000,
+      )
+    }
+    assert attempt(ready.state_root, "a\nb")
+      == creations.Declined(creations.InvalidName)
+    assert attempt("/nowhere", "ok") == creations.Declined(creations.NotKnown)
+    assert process.receive(asked, 0) == Error(Nil)
+
+    let granted =
+      list.index_map(list.repeat(Nil, ui_sessions.creation_limit), fn(_, index) {
+        let number = index + 1
+        let assert creations.Ticketed(path) =
+          attempt(ready.state_root, "session " <> int.to_string(number))
+          as "the creation is granted"
+        assert string.starts_with(path, "/ui/sessions/")
+        let assert Ok(creation) = process.receive(asked, 0)
+        assert creation.name == "session " <> int.to_string(number)
+        assert creation.workspace == ready.state_root
+        assert string.starts_with(creation.request_key, "web-")
+      })
+      |> list.length
+    assert granted == ui_sessions.creation_limit
+    assert attempt(ready.state_root, "one too many")
+      == creations.Declined(creations.TooMany)
+    assert process.receive(asked, 0) == Error(Nil)
+  })
+}
+
+// Two creations never share a key, so a press repeated by a program cannot be
+// mistaken for a retry of the first and silently return it.
+pub fn each_creation_draws_its_own_request_key_test() {
+  fixture(fn(ready, _, credential) {
+    let existing = create_session(ready, "keys-known", 1108)
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Operator)
+    let asked = process.new_subject()
+    let create = counting_create(ready, existing, asked)
+    list.each([1, 2], fn(_) {
+      let _ =
+        ui_socket.create_for(
+          standing,
+          tickets,
+          page_open,
+          create,
+          ready.state_root,
+          "k",
+          creations.Private,
+          within: 2000,
+        )
+      Nil
+    })
+    let assert Ok(first) = process.receive(asked, 0)
+    let assert Ok(second) = process.receive(asked, 0)
+    assert first.request_key != second.request_key
+  })
+}
+
+// A session that was made and did not open is reported as that, which says it
+// exists, and not as a refusal that says nothing was made.
+pub fn a_session_that_does_not_open_is_reported_as_created_test() {
+  fixture(fn(ready, _, credential) {
+    let existing = create_session(ready, "unopened-known", 1109)
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Operator)
+    let asked = process.new_subject()
+
+    // The creation answers with a session identity the registry cannot open.
+    let create = fn(principal, creation, scope) {
+      let _ = principal
+      let _ = scope
+      process.send(asked, creation)
+      let assert Ok(view) = manager.get(ready.registry, existing)
+      Ok(
+        manager.View(
+          ..view,
+          registration: catalogue.Registration(
+            ..view.registration,
+            id: "01900000-0000-7000-8000-000000000000",
+          ),
+        ),
+      )
+    }
+    assert ui_socket.create_for(
+        standing,
+        tickets,
+        page_open,
+        create,
+        ready.state_root,
+        "x",
+        creations.Private,
+        within: 300,
+      )
+      == creations.Declined(creations.NotOpened)
+    let assert Ok(_) = process.receive(asked, 0)
+    Nil
+  })
+}
+
+// The wait runs in a task of its own: the call that starts it returns before
+// the creation has answered, and the answer then arrives from the task, a
+// process other than the caller, as the message the page's component is
+// waiting for.
+pub fn the_creation_runs_off_the_callers_process_test() {
+  fixture(fn(ready, _, credential) {
+    let existing = create_session(ready, "task-known", 1110)
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Operator)
+    let slow = fn(principal, creation, scope) {
+      process.sleep(300)
+      counting_create(ready, existing, process.new_subject())(
+        principal,
+        creation,
+        scope,
+      )
+    }
+    let answers = process.new_subject()
+    ui_socket.create_task(
+      standing,
+      tickets,
+      page_open,
+      slow,
+      ready.state_root,
+      "slow",
+      creations.Private,
+      fn(answer) { process.send(answers, #(answer, process.self())) },
+    )
+    assert process.receive(answers, 0) == Error(Nil)
+    let assert Ok(#(creations.Ticketed(path), task)) =
+      process.receive(answers, 10_000)
+      as "the task answers once the session is resident"
+    assert string.starts_with(path, "/ui/sessions/")
+    assert task != process.self()
   })
 }

@@ -844,7 +844,10 @@ pub fn only_an_owners_operating_home_may_rename_test() {
 }
 
 // The home's socket admits a submit only beneath the sessions list's section,
-// where a row's rename form is, and only for an owner's home. A member's home
+// where a row's rename form and a workspace's form that creates a session are
+// (protocol-change/067 and 065), and only for an owner's home. It admits both
+// forms by path alone, as it admits a click, and which form a submit belongs to
+// is decided by the component. A member's home
 // still admits clicks on a row and drops every submit; the owner's admits a
 // submit beneath the list and nowhere else, not the sidebar, not the regions'
 // own paths and not a sibling that shares their digits, and it takes no other
@@ -853,7 +856,9 @@ pub fn the_home_socket_admits_a_rename_submit_only_for_an_owner_test() {
   let row = home.table_path <> "\t1\t2\t0\t0\t0"
   let form = home.table_path <> "\t1\t2\t0\t0"
   let sidebar_row = home.sidebar_path <> "\t1\t1\t0\t0"
+  let creation_form = home.table_path <> "\t1\t0\t3"
   assert ui_socket.home_owner_accepts(submit_on(form))
+  assert ui_socket.home_owner_accepts(submit_on(creation_form))
   assert ui_socket.home_owner_accepts(submit_on(row))
   assert ui_socket.home_owner_accepts(click_on(row))
   assert ui_socket.home_owner_accepts(click_on(sidebar_row))
@@ -867,6 +872,7 @@ pub fn the_home_socket_admits_a_rename_submit_only_for_an_owner_test() {
 
   // Not a member's home, whatever path it names.
   assert !ui_socket.home_accepts(submit_on(form))
+  assert !ui_socket.home_accepts(submit_on(creation_form))
   assert !ui_socket.home_accepts(submit_on(row))
   assert ui_socket.home_accepts(click_on(row))
   assert !ui_socket.home_accepts(
@@ -899,4 +905,18 @@ pub fn the_home_socket_admits_a_rename_submit_only_for_an_owner_test() {
       assert !ui_socket.home_owner_accepts(frame)
     },
   )
+}
+
+// The home's capability to create a session is the owner's on a page minted to
+// operate, as the rename capability is, and the two are separate: each is given
+// by its own function and neither implies the other.
+pub fn only_an_owners_operating_home_may_create_test() {
+  let ask = fn(_workspace, _name, _sharing, _deliver) { Nil }
+  let owner = home_principal(access.OwnerPrincipal)
+  let member = home_principal(access.MemberPrincipal)
+  let assert Some(_) =
+    ui_socket.home_create_capability(owner, access.Operator, ask)
+  assert ui_socket.home_create_capability(owner, access.Observer, ask) == None
+  assert ui_socket.home_create_capability(member, access.Operator, ask) == None
+  assert ui_socket.home_create_capability(member, access.Observer, ask) == None
 }
