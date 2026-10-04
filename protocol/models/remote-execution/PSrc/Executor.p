@@ -12,6 +12,9 @@ machine Executor {
   var rows: map[tKey, tRow];
   var route: map[tKey, tWire];
   var terminalPayloads: map[tKey, tTerminalPayload];
+  var commandRoutes: map[tKey, tPreparedProduct];
+  var pendingCommands: map[tKey, tAssociationRequest];
+  var launchPermits: map[tKey, tAssociationRequest];
 
   start state Init {
     entry (p: tSetup) {
@@ -29,11 +32,68 @@ machine Executor {
       helper = p.helper;
     }
     on eAdmit do (p: tWire) { admit(p); }
+    on eAdmitCommand do (p: tCommandWire) {
+      var k: tKey;
+      var a: tAssociationRequest;
+      k = p.wire.request.key;
+      if (p.command.prepared.native != p.wire.request) { return; }
+
+      // A retained UUID reconciles only through its complete original route.
+      // Historical custody cannot allocate another association continuation.
+      if (k in rows) {
+        if (k in commandRoutes && commandRoutes[k] == p.command.prepared) {
+          send p.command.resource, eCommandControl, (command = p.command, wire = p.wire, operation = CommandQuery);
+        }
+        return;
+      }
+
+      // Native Admit commits before the callback asks for resource association.
+      commandRoutes[k] = p.command.prepared;
+      admit(p.wire);
+      if (!(k in rows) || rows[k].request != p.wire.request || rows[k].phase != Admitted) { return; }
+      a = (command = p.command, executor = this, wire = p.wire, boot = boot,
+        evidence = (request = p.wire.request, answer = Prior, row = rows[k], connection = p.wire.connection, boot = boot));
+      pendingCommands[k] = a;
+      announce mCommandPending, a;
+      send p.command.resource, eAssociateCommand, a;
+    }
+    on eCommandPermit do (a: tAssociationRequest) {
+      var k: tKey;
+      k = a.command.prepared.native.key;
+
+      // The answer belongs to one original callback and one native boot.
+      if (!(k in pendingCommands) || pendingCommands[k] != a || a.boot != boot) {
+        announce mCommandPermitRefused, a;
+        send driver, eLivePermitRefused, a;
+        return;
+      }
+
+      // Consumption is volatile and one-shot, before irreversible native intent.
+      pendingCommands -= (k);
+      launchPermits[k] = a;
+      announce mCommandPermitConsumed, a;
+      send this, eLaunch, (key = k, boot = boot);
+    }
+    on eLoseCommandReply do (a: tAssociationRequest) {
+      // An abandoned original callback cannot be renewed from retained history.
+      pendingCommands -= (a.command.prepared.native.key);
+      announce mCommandReplyLost, a;
+      send driver, eControlDone;
+    }
+    on eCommandAssociationRefused do (a: tAssociationRequest) {
+      if (a.command.prepared.native.key in pendingCommands && pendingCommands[a.command.prepared.native.key] == a) {
+        pendingCommands -= (a.command.prepared.native.key);
+      }
+    }
     on eReconcile do (p: tWire) { reconcile(p); }
+    on eStdin do (p: tWire) { if (p.request.key in rows && rows[p.request.key].request == p.request) { reply(p, Prior); } }
     on eLaunch do (p: tNative) {
       if (closed || p.boot != boot || !(p.key in rows) || rows[p.key].phase != Admitted) {
         return;
       }
+      if (p.key in commandRoutes && (!(p.key in launchPermits) || launchPermits[p.key].boot != boot)) { return; }
+      if (p.key in launchPermits) { launchPermits -= (p.key); }
+
       // The durable intent is irrevocable: no retry resets it to Admitted.
       rows[p.key].phase = Intent;
       rows[p.key].launchBoot = boot;
@@ -178,7 +238,7 @@ machine Executor {
     route[k] = p;
     announce mAdmit, p.request;
     reply(p, Prior);
-    send this, eLaunch, (key = k, boot = boot);
+    if (!(k in commandRoutes)) { send this, eLaunch, (key = k, boot = boot); }
   }
 
   fun reconcile(p: tWire) {
@@ -226,6 +286,9 @@ machine Executor {
 
   fun recover() {
     boot = boot + 1;
+    pendingCommands = default(map[tKey, tAssociationRequest]);
+    launchPermits = default(map[tKey, tAssociationRequest]);
+    announce mCommandNativeRecovered, boot;
     announce mRecovered, (boot = boot, rows = rows);
     // Volatile routes are connection hints. We preserve them in this model
     // solely to publish a recovery view; they grant no launch permission.
