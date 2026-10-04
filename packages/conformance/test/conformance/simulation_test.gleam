@@ -125,6 +125,11 @@ const required_paths = [
   // RT-esc-double, or RT-restart-leak.
   "parallel-tools", "escalation-raised", "escalation-consumed",
   "strand-restart-during-effect",
+  // The effect plane: tool calls run through the real executor over fake
+  // helpers, and a scheduled fault lands while an execution is in flight. A
+  // sweep that never reached these could not regress on an execution that
+  // outlives the effect that started it.
+  "effect-plane-execution", "fault-during-execution",
 ]
 
 pub fn simulation_coverage_test() {

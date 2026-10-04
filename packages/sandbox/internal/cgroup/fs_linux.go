@@ -4,9 +4,7 @@ package cgroup
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -76,19 +74,12 @@ func awaitEmpty(dir string, bound time.Duration) {
 	}
 }
 
-// unpopulated reads cgroup.events; an unreadable file counts as empty,
-// because there is then no cgroup whose population could hold rmdir off.
-func unpopulated(events string) bool {
-	raw, err := os.ReadFile(events)
-	if err != nil {
-		return true
-	}
-	for _, line := range strings.Split(string(raw), "\n") {
-		if strings.TrimSpace(line) == "populated 0" {
-			return true
-		}
-	}
-	return false
+// processAlive reports whether a process with this pid exists. `kill(pid, 0)`
+// delivers nothing and only asks; EPERM means the process exists and belongs to
+// someone else, which is alive.
+func processAlive(pid int) bool {
+	err := unix.Kill(pid, 0)
+	return err == nil || err == unix.EPERM
 }
 
 // writableProcs reports whether the caller may write pids into the

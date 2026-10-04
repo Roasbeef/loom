@@ -48,9 +48,10 @@
 ////
 //// ## Why this is not a behaviour of its own
 ////
-//// `broker/direct` is the implementation that preserves what the broker did
-//// before the seam existed, line for line. This module defines vocabulary
-//// and nothing else: no process, no I/O.
+//// `broker/executor` is the implementation. This module defines vocabulary
+//// and nothing else: no process, no I/O. The seam stays a record of
+//// functions, and not a direct call to the service, so the broker's tests
+//// can hand it a fake dispatcher.
 
 import broker/exec
 import broker/framing.{type OutputStream}

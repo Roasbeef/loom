@@ -120,6 +120,22 @@ only Go module.
   write: distributing `memory` and `pids` to the base's children is
   `Setup`'s job, because detection answers a question and must not
   reconfigure the operator's tree to do so.
+  `Sweep(base)` removes what killed helpers left behind (#702): a SIGKILLed
+  helper never runs `Cleanup`, so each kill leaves an empty
+  `exec-<id>-<pid>` directory, about 120 KB of kernel memory. `loom-exec`
+  calls it once in server mode, after detection accepted a base and before it
+  serves (`sweepStaleCgroups`; best effort, silent when nothing was removed).
+  A directory goes only if its name is exactly that shape, the pid in it (the
+  execution's first process, **not** the helper's) no longer exists, and
+  `cgroup.events` is not populated; the removal is `Cleanup`'s rmdir
+  depth-first, never a recursive delete. The pid test is what protects a live
+  helper: a cgroup `Setup` has just made is empty until `Enter`, so
+  `populated 0` alone cannot tell it from a leftover, but the execution's
+  process is already forked then and answers `kill(pid, 0)`. A reused pid reads
+  as alive and costs one directory until a later sweep. Tested against a fake
+  base on any host (`TestSweep*`), and against a real delegated cgroup where
+  `LOOM_CGROUP_BASE` provides one (`TestSweepRemovesARealCgroup`, skipped
+  elsewhere).
 - `internal/jail.{CgroupSkip, CgroupSkipPrefix, CgroupCeilings}` — the
   enforcement entry emitted when a policy asked for a ceiling and no
   cgroup held it. `CgroupCeilings` names *which* of `memory.max` and

@@ -23,3 +23,8 @@ func writableProcs(procs string) bool { return false }
 // awaitEmpty has no population to wait for off Linux: no cgroup was ever
 // created, so Cleanup only ever meets a plain directory, or none.
 func awaitEmpty(dir string, bound time.Duration) {}
+
+// processAlive off Linux answers yes, so Sweep removes nothing: there are no
+// cgroups to have leaked, and a build that cannot ask whether a process exists
+// must not guess.
+func processAlive(pid int) bool { return true }

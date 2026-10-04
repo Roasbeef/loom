@@ -1,4 +1,4 @@
-//// The service lane's failure matrix: what each party observes when
+//// The executor service's failure matrix: what each party observes when
 //// something goes wrong, pinned case by case.
 ////
 //// Every case runs a real broker over a real pool of fake helpers and
@@ -7,19 +7,14 @@
 //// settlement is the one the case should produce. When the dust settles
 //// the pool's census is back to baseline (nothing borrowed, nothing
 //// draining or retiring, and nothing unconfirmed unless the case is meant
-//// to leave one). And in the service lane the executor's inventory is
-//// empty, so no row outlived its execution.
+//// to leave one). And the executor's inventory is empty, so no row
+//// outlived its execution.
 ////
-//// Where the two lanes behave alike the case runs in both, which is the
-//// cheapest statement that the seam is the right one. Where they differ
-//// the difference is the test: it is written out as two assertions, one
-//// per lane, so that a change which moves the line is a failing test and
-//// not a surprise. The differences are all the service lane being better:
+//// The cases from a helper actor that dies on are the service's own faults:
 //// a helper actor that dies settles its call as lost promptly rather than
-//// at a deadline that may not exist, and a relay that dies settles its
-//// caller. The last two cases are the service lane's own faults, a
-//// service killed mid-run and a shutdown during output, and have no
-//// direct-lane counterpart.
+//// at a deadline that may not exist, a relay that dies settles its caller,
+//// and a service killed mid-run or closed during output has its own
+//// pinned outcome.
 ////
 //// A caller that dies hears nothing, by definition, so those cases cannot
 //// assert a settlement. What they assert is that the broker, which saw the
@@ -31,31 +26,23 @@ import broker/dispatch
 import broker/exec
 import broker/executor
 import broker/support/fake_helper
-import broker/support/lanes.{type Lane}
+import broker/support/planes
 import core/clock
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{None}
 import telemetry/log
 import weft/poll
 
 // --- fixtures -------------------------------------------------------------
 
-const both = [lanes.Direct, lanes.Service]
-
-fn plane(
-  lane: Lane,
-  script: fake_helper.Script,
-  size size: Int,
-) -> lanes.Plane {
-  lanes.start_scripted(lane, size:, script: fn() {
-    fake_helper.start_helper(script)
-  })
+fn plane(script: fake_helper.Script, size size: Int) -> planes.Plane {
+  planes.start_scripted(size:, script: fn() { fake_helper.start_helper(script) })
 }
 
-fn call(plane: lanes.Plane, deadline_ms: Int) {
+fn call(plane: planes.Plane, deadline_ms: Int) {
   let events = process.new_subject()
-  let spec = lanes.spec(lanes.op(), argv: ["/bin/echo", "hi"], deadline_ms:)
+  let spec = planes.spec(planes.op(), argv: ["/bin/echo", "hi"], deadline_ms:)
   let assert Ok(handle) =
     broker.clear_call(plane.broker, spec, events:, waiting: 2000)
   #(handle, events)
@@ -65,7 +52,7 @@ fn call(plane: lanes.Plane, deadline_ms: Int) {
 // nothing on its way out. The broker releases a helper while it handles the
 // settlement, after the caller has been told, so this polls rather than
 // reading once.
-fn balanced_census(plane: lanes.Plane) -> exec.PoolCensus {
+fn balanced_census(plane: planes.Plane) -> exec.PoolCensus {
   let assert poll.Answered(census) =
     poll.until(within: 5000, every: 10, attempt: fn() {
       case exec.pool_census(plane.pool, waiting: 1000) {
@@ -83,27 +70,22 @@ fn balanced_census(plane: lanes.Plane) -> exec.PoolCensus {
   census
 }
 
-// The census is at baseline, with `unconfirmed` slots held, and in the
-// service lane the executor holds no row.
-fn assert_baseline(plane: lanes.Plane, unconfirmed unconfirmed: Int) -> Nil {
+// The census is at baseline, with `unconfirmed` slots held, and the
+// executor holds no row.
+fn assert_baseline(plane: planes.Plane, unconfirmed unconfirmed: Int) -> Nil {
   let census = balanced_census(plane)
   assert census.unconfirmed == unconfirmed
   assert_no_rows(plane)
 }
 
-fn assert_no_rows(plane: lanes.Plane) -> Nil {
-  case plane.service {
-    None -> Nil
-    Some(service) -> {
-      let assert Ok(books) = executor.inventory(service, waiting: 1000)
-      assert books.live == []
-    }
-  }
+fn assert_no_rows(plane: planes.Plane) -> Nil {
+  let assert Ok(books) = executor.snapshot(plane.service, waiting: 1000)
+  assert books.live == []
 }
 
 // The call's whole story: its events up to the settlement, then silence.
 fn story(events: process.Subject(broker.CallEvent)) -> List(broker.CallEvent) {
-  let seen = lanes.collect(events, within: 2000)
+  let seen = planes.collect(events, within: 2000)
   assert process.receive(events, 300) == Error(Nil)
   seen
 }
@@ -122,14 +104,15 @@ fn assert_cancelled_exit(seen: List(broker.CallEvent)) -> Nil {
 // A caller process: it clears a call, reports the handle, and then waits
 // to be killed. Its events subject is the process the relay monitors.
 fn doomed_caller(
-  plane: lanes.Plane,
+  plane: planes.Plane,
   deadline_ms: Int,
 ) -> #(process.Pid, process.Subject(Nil)) {
   let started = process.new_subject()
   let caller =
     process.spawn_unlinked(fn() {
       let events = process.new_subject()
-      let spec = lanes.spec(lanes.op(), argv: ["/bin/echo", "hi"], deadline_ms:)
+      let spec =
+        planes.spec(planes.op(), argv: ["/bin/echo", "hi"], deadline_ms:)
       let assert Ok(_handle) =
         broker.clear_call(plane.broker, spec, events:, waiting: 2000)
       process.send(started, Nil)
@@ -146,178 +129,161 @@ fn doomed_caller(
 // After a case, the plane still serves: a call on the same pool runs to its
 // own single settlement. Proves the helper came back and the budget and
 // token went with it.
-fn assert_next_call_runs(plane: lanes.Plane) -> Nil {
+fn assert_next_call_runs(plane: planes.Plane) -> Nil {
   let #(handle, events) = call(plane, 0)
   broker.cancel(plane.broker, handle)
   assert_cancelled_exit(story(events))
 }
 
-// --- the ordinary failures, in both lanes -----------------------------------
+// --- the ordinary failures ---------------------------------------------------
 
-/// A caller that dies mid-run cancels the execution in either lane, the
+/// A caller that dies mid-run cancels the execution, the
 /// helper comes back, and nothing is left on the books. The dead caller
 /// hears nothing; the following call is the witness that the broker
 /// settled.
 pub fn caller_crash_mid_run_cancels_and_balances_the_books_test() {
-  list.each(both, fn(lane) {
-    let plane = plane(lane, fake_helper.SleepUntilCancel, size: 1)
-    let #(caller, started) = doomed_caller(plane, 0)
-    let assert Ok(Nil) = process.receive(started, 3000)
-    let assert Ok(Nil) = process.receive(started, 3000)
+  let plane = plane(fake_helper.SleepUntilCancel, size: 1)
+  let #(caller, started) = doomed_caller(plane, 0)
+  let assert Ok(Nil) = process.receive(started, 3000)
+  let assert Ok(Nil) = process.receive(started, 3000)
 
-    process.kill(caller)
-    assert_baseline(plane, unconfirmed: 0)
-    assert_next_call_runs(plane)
-    lanes.stop(plane)
-  })
+  process.kill(caller)
+  assert_baseline(plane, unconfirmed: 0)
+  assert_next_call_runs(plane)
+  planes.stop(plane)
 }
 
 /// The caller's event subject dies in the middle of a flood of output. The
 /// relay delivers into a mailbox nobody reads, sees the caller's death,
 /// cancels, and the execution ends; the pool is whole again.
 pub fn output_pump_failure_when_the_events_owner_dies_test() {
-  list.each(both, fn(lane) {
-    let plane = plane(lane, fake_helper.ChunksThenSleep(count: 300), size: 1)
-    let #(caller, started) = doomed_caller(plane, 0)
-    let assert Ok(Nil) = process.receive(started, 3000)
-    let assert Ok(Nil) = process.receive(started, 3000)
+  let plane = plane(fake_helper.ChunksThenSleep(count: 300), size: 1)
+  let #(caller, started) = doomed_caller(plane, 0)
+  let assert Ok(Nil) = process.receive(started, 3000)
+  let assert Ok(Nil) = process.receive(started, 3000)
 
-    process.kill(caller)
-    assert_baseline(plane, unconfirmed: 0)
-    lanes.stop(plane)
-  })
+  process.kill(caller)
+  assert_baseline(plane, unconfirmed: 0)
+  planes.stop(plane)
 }
 
 /// A cancel that arrives the instant `clear_call` returns, before anyone
 /// has heard the helper speak, still reaches the execution and settles it
 /// once.
 pub fn cancel_before_dispatch_returns_settles_once_test() {
-  list.each(both, fn(lane) {
-    let plane = plane(lane, fake_helper.SleepUntilCancel, size: 1)
-    let #(handle, events) = call(plane, 0)
-    broker.cancel(plane.broker, handle)
+  let plane = plane(fake_helper.SleepUntilCancel, size: 1)
+  let #(handle, events) = call(plane, 0)
+  broker.cancel(plane.broker, handle)
 
-    assert_cancelled_exit(story(events))
-    assert_baseline(plane, unconfirmed: 0)
-    lanes.stop(plane)
-  })
+  assert_cancelled_exit(story(events))
+  assert_baseline(plane, unconfirmed: 0)
+  planes.stop(plane)
 }
 
 /// A cancel in the middle of output: the chunks that arrived are delivered
 /// in order, then the one cancelled exit.
 pub fn cancel_during_output_delivers_the_chunks_then_settles_once_test() {
-  list.each(both, fn(lane) {
-    let plane = plane(lane, fake_helper.ChunksThenSleep(count: 8), size: 1)
-    let #(handle, events) = call(plane, 0)
-    let assert Ok(broker.CallOutput(data: <<0>>, ..)) =
-      process.receive(events, 2000)
-    broker.cancel(plane.broker, handle)
+  let plane = plane(fake_helper.ChunksThenSleep(count: 8), size: 1)
+  let #(handle, events) = call(plane, 0)
+  let assert Ok(broker.CallOutput(data: <<0>>, ..)) =
+    process.receive(events, 2000)
+  broker.cancel(plane.broker, handle)
 
-    let seen = story(events)
-    let assert Ok(last) = list.last(seen)
-    assert_cancelled_exit([last])
-    let chunks = list.take(seen, list.length(seen) - 1)
-    assert list.all(chunks, fn(event) {
-      case event {
-        broker.CallOutput(..) -> True
-        broker.CallSettled(..) -> False
-      }
-    })
-    assert_baseline(plane, unconfirmed: 0)
-    lanes.stop(plane)
+  let seen = story(events)
+  let assert Ok(last) = list.last(seen)
+  assert_cancelled_exit([last])
+  let chunks = list.take(seen, list.length(seen) - 1)
+  assert list.all(chunks, fn(event) {
+    case event {
+      broker.CallOutput(..) -> True
+      broker.CallSettled(..) -> False
+    }
   })
+  assert_baseline(plane, unconfirmed: 0)
+  planes.stop(plane)
 }
 
 /// A cancel after the execution completed is a no-op: no second event, and
 /// the helper that finished cleanly is lent again rather than retired.
 pub fn cancel_after_completion_is_idempotent_test() {
-  list.each(both, fn(lane) {
-    let plane = plane(lane, fake_helper.EchoArgv, size: 1)
-    let #(handle, events) = call(plane, 0)
-    let assert [
-      broker.CallOutput(..),
-      broker.CallSettled(broker.CallExited(result)),
-    ] = lanes.collect(events, within: 2000)
-    assert result.code == 0
-    let census = balanced_census(plane)
+  let plane = plane(fake_helper.EchoArgv, size: 1)
+  let #(handle, events) = call(plane, 0)
+  let assert [
+    broker.CallOutput(..),
+    broker.CallSettled(broker.CallExited(result)),
+  ] = planes.collect(events, within: 2000)
+  assert result.code == 0
+  let census = balanced_census(plane)
 
-    broker.cancel(plane.broker, handle)
-    broker.cancel(plane.broker, handle)
-    assert process.receive(events, 400) == Error(Nil)
-    assert balanced_census(plane).available == census.available
-    assert_baseline(plane, unconfirmed: 0)
-    lanes.stop(plane)
-  })
+  broker.cancel(plane.broker, handle)
+  broker.cancel(plane.broker, handle)
+  assert process.receive(events, 400) == Error(Nil)
+  assert balanced_census(plane).available == census.available
+  assert_baseline(plane, unconfirmed: 0)
+  planes.stop(plane)
 }
 
 /// Cancelling twice settles once.
 pub fn double_cancel_settles_once_test() {
-  list.each(both, fn(lane) {
-    let plane = plane(lane, fake_helper.SleepUntilCancel, size: 1)
-    let #(handle, events) = call(plane, 0)
-    broker.cancel(plane.broker, handle)
-    broker.cancel(plane.broker, handle)
+  let plane = plane(fake_helper.SleepUntilCancel, size: 1)
+  let #(handle, events) = call(plane, 0)
+  broker.cancel(plane.broker, handle)
+  broker.cancel(plane.broker, handle)
 
-    assert_cancelled_exit(story(events))
-    assert_baseline(plane, unconfirmed: 0)
-    assert_next_call_runs(plane)
-    lanes.stop(plane)
-  })
+  assert_cancelled_exit(story(events))
+  assert_baseline(plane, unconfirmed: 0)
+  assert_next_call_runs(plane)
+  planes.stop(plane)
 }
 
 // --- acquiring a helper -------------------------------------------------------
 
 /// A pool that cannot spawn a helper refuses the call with the pool's own
-/// reason, in either lane, and holds nothing: ten refusals in a row do not
+/// reason, and holds nothing: ten refusals in a row do not
 /// use up a budget of eight outstanding calls.
 pub fn acquisition_failure_spawn_failed_refuses_and_holds_nothing_test() {
-  list.each(both, fn(lane) {
-    let plane =
-      lanes.start(
-        lane,
-        size: 1,
-        spawn: fn() { Error(exec.PortOpenFailed) },
-        clock: clock.fixed(at: 1000),
+  let plane =
+    planes.start(
+      size: 1,
+      spawn: fn() { Error(exec.PortOpenFailed) },
+      clock: clock.fixed(at: 1000),
+    )
+  list.each(list.repeat(Nil, 10), fn(_attempt) {
+    let spec = planes.spec(planes.op(), argv: ["/usr/bin/true"], deadline_ms: 0)
+    let events = process.new_subject()
+    assert broker.clear_call(plane.broker, spec, events:, waiting: 1000)
+      == Error(
+        broker.NoHelper(error: exec.SpawnFailed(error: exec.PortOpenFailed)),
       )
-    list.each(list.repeat(Nil, 10), fn(_attempt) {
-      let spec = lanes.spec(lanes.op(), argv: ["/usr/bin/true"], deadline_ms: 0)
-      let events = process.new_subject()
-      assert broker.clear_call(plane.broker, spec, events:, waiting: 1000)
-        == Error(
-          broker.NoHelper(error: exec.SpawnFailed(error: exec.PortOpenFailed)),
-        )
-      assert process.receive(events, 50) == Error(Nil)
-    })
-    assert_baseline(plane, unconfirmed: 0)
-    lanes.stop(plane)
+    assert process.receive(events, 50) == Error(Nil)
   })
+  assert_baseline(plane, unconfirmed: 0)
+  planes.stop(plane)
 }
 
 /// A full pool refuses with `AllBusy` once the caller's wait is spent, and
 /// the refusal leaves the running execution untouched.
 pub fn acquisition_failure_all_busy_refuses_and_holds_nothing_test() {
-  list.each(both, fn(lane) {
-    let plane = plane(lane, fake_helper.SleepUntilCancel, size: 1)
-    let #(handle, events) = call(plane, 0)
+  let plane = plane(fake_helper.SleepUntilCancel, size: 1)
+  let #(handle, events) = call(plane, 0)
 
-    let spec = lanes.spec(lanes.op(), argv: ["/usr/bin/true"], deadline_ms: 0)
-    let refused_events = process.new_subject()
-    assert broker.clear_call(
-        plane.broker,
-        spec,
-        events: refused_events,
-        waiting: 300,
-      )
-      == Error(broker.NoHelper(error: exec.AllBusy(size: 1)))
-    assert process.receive(refused_events, 50) == Error(Nil)
+  let spec = planes.spec(planes.op(), argv: ["/usr/bin/true"], deadline_ms: 0)
+  let refused_events = process.new_subject()
+  assert broker.clear_call(
+      plane.broker,
+      spec,
+      events: refused_events,
+      waiting: 1000,
+    )
+    == Error(broker.NoHelper(error: exec.AllBusy(size: 1)))
+  assert process.receive(refused_events, 50) == Error(Nil)
 
-    // The first execution never noticed.
-    assert process.receive(events, 100) == Error(Nil)
-    broker.cancel(plane.broker, handle)
-    assert_cancelled_exit(story(events))
-    assert_baseline(plane, unconfirmed: 0)
-    lanes.stop(plane)
-  })
+  // The first execution never noticed.
+  assert process.receive(events, 100) == Error(Nil)
+  broker.cancel(plane.broker, handle)
+  assert_cancelled_exit(story(events))
+  assert_baseline(plane, unconfirmed: 0)
+  planes.stop(plane)
 }
 
 /// The service's checkout seam refused at once, as a pool whose `AllBusy`
@@ -325,33 +291,30 @@ pub fn acquisition_failure_all_busy_refuses_and_holds_nothing_test() {
 /// relay is left behind.
 pub fn acquisition_refused_by_the_seam_leaves_no_row_test() {
   let plane =
-    lanes.start_intercepted(
-      lanes.Service,
+    planes.start_intercepted(
       size: 1,
       spawn: fn() { Ok(fake_helper.start_helper(fake_helper.EchoArgv)) },
       clock: clock.fixed(at: 1000),
       intercept: fn(_checkout) { Error(exec.AllBusy(size: 0)) },
     )
-  let spec = lanes.spec(lanes.op(), argv: ["/usr/bin/true"], deadline_ms: 0)
+  let spec = planes.spec(planes.op(), argv: ["/usr/bin/true"], deadline_ms: 0)
   assert broker.clear_call(
       plane.broker,
       spec,
       events: process.new_subject(),
-      waiting: 300,
+      waiting: 1000,
     )
     == Error(broker.NoHelper(error: exec.AllBusy(size: 0)))
   assert_baseline(plane, unconfirmed: 0)
-  lanes.stop(plane)
+  planes.stop(plane)
 }
 
-// --- where the lanes differ: the helper actor dies ------------------------------
+// --- the helper actor dies ------------------------------------------------------
 
-/// The helper actor dies mid-run. The service lane's relay monitors it and
-/// settles the call as lost at once. The direct lane has no one watching
-/// the actor: with no wall deadline the call never settles at all, which is
-/// the defect the service lane was built to remove.
-pub fn helper_actor_crash_mid_run_service_settles_lost_direct_hangs_test() {
-  let service = plane(lanes.Service, fake_helper.SleepUntilCancel, size: 1)
+/// The helper actor dies mid-run. The relay monitors it and settles the call
+/// as lost at once, with no wall deadline needed to notice.
+pub fn helper_actor_crash_mid_run_settles_lost_test() {
+  let service = plane(fake_helper.SleepUntilCancel, size: 1)
   let #(_handle, events) = call(service, 0)
   let assert Ok(helper) = process.receive(service.borrowed, 1000)
   process.kill(exec.pid(helper))
@@ -361,39 +324,7 @@ pub fn helper_actor_crash_mid_run_service_settles_lost_direct_hangs_test() {
   // the slot as unconfirmed rather than lend a helper it cannot vouch for.
   // That is the one case in the matrix meant to leave one.
   assert_baseline(service, unconfirmed: 1)
-  lanes.stop(service)
-
-  let direct = plane(lanes.Direct, fake_helper.SleepUntilCancel, size: 1)
-  let #(_handle, events) = call(direct, 0)
-  let assert Ok(helper) = process.receive(direct.borrowed, 1000)
-  process.kill(exec.pid(helper))
-  assert lanes.collect(events, within: 1500) == []
-  lanes.stop(direct)
-}
-
-/// With a wall deadline the direct lane does settle, but late: the
-/// deadline's cancel cannot reach a dead actor, so the verdict is the
-/// relay's grace running out, `CancelEscalated`, five seconds after the
-/// deadline. The service lane settled at the death.
-pub fn helper_actor_crash_with_a_deadline_direct_settles_after_the_grace_test() {
-  let direct =
-    lanes.start(
-      lanes.Direct,
-      size: 1,
-      spawn: fn() { Ok(fake_helper.start_helper(fake_helper.SleepUntilCancel)) },
-      clock: clock.fixed(at: 1000),
-    )
-  let events = process.new_subject()
-  let spec = lanes.spec(lanes.op(), argv: ["/bin/echo"], deadline_ms: 1300)
-  let assert Ok(_handle) =
-    broker.clear_call(direct.broker, spec, events:, waiting: 2000)
-  let assert Ok(helper) = process.receive(direct.borrowed, 1000)
-  process.kill(exec.pid(helper))
-
-  assert process.receive(events, 2000) == Error(Nil)
-  assert lanes.collect(events, within: 6000)
-    == [broker.CallSettled(broker.CallFailed(exec.CancelEscalated))]
-  lanes.stop(direct)
+  planes.stop(service)
 }
 
 // --- shutdown during output ---------------------------------------------------
@@ -404,11 +335,10 @@ pub fn helper_actor_crash_with_a_deadline_direct_settles_after_the_grace_test() 
 /// caller is never told `ExecutorClosing` for an execution that ended by
 /// itself.
 pub fn shutdown_during_output_delivers_the_real_exit_test() {
-  let plane =
-    plane(lanes.Service, fake_helper.ChunksThenSleep(count: 20), size: 1)
+  let plane = plane(fake_helper.ChunksThenSleep(count: 20), size: 1)
   let #(_handle, events) = call(plane, 0)
   let assert Ok(broker.CallOutput(..)) = process.receive(events, 2000)
-  let assert Some(service) = plane.service
+  let service = plane.service
 
   assert executor.close(service, draining: 2000, helpers: 2000) == Ok(Nil)
   let seen = story(events)
@@ -423,7 +353,7 @@ pub fn shutdown_during_output_delivers_the_real_exit_test() {
 /// it retires the helper the service gave up on.
 pub fn shutdown_during_output_with_a_stubborn_helper_settles_lost_test() {
   let plane =
-    lanes.start_scripted(lanes.Service, size: 1, script: fn() {
+    planes.start_scripted(size: 1, script: fn() {
       fake_helper.start_helper_configured(
         fake_helper.IgnoreCancel,
         cancel_grace_ms: 60_000,
@@ -431,7 +361,7 @@ pub fn shutdown_during_output_with_a_stubborn_helper_settles_lost_test() {
       )
     })
   let #(_handle, events) = call(plane, 0)
-  let assert Some(service) = plane.service
+  let service = plane.service
 
   assert executor.close(service, draining: 500, helpers: 2000) == Ok(Nil)
   assert story(events) == [lost(exec.ExecutorClosing)]
@@ -557,15 +487,14 @@ pub fn close_after_the_result_was_granted_does_not_settle_it_lost_test() {
 ///   helper, answers for itself.
 pub fn a_killed_service_does_not_report_completion_nor_lend_the_helper_test() {
   let plane =
-    lanes.start(
-      lanes.Service,
+    planes.start(
       size: 1,
       spawn: fn() { Ok(fake_helper.start_helper(fake_helper.SleepUntilCancel)) },
       clock: clock.fixed(at: 1000),
     )
-  let assert Some(service) = plane.service
+  let service = plane.service
   let events = process.new_subject()
-  let spec = lanes.spec(lanes.op(), argv: ["/bin/echo"], deadline_ms: 1300)
+  let spec = planes.spec(planes.op(), argv: ["/bin/echo"], deadline_ms: 1300)
   let assert Ok(handle) =
     broker.clear_call(plane.broker, spec, events:, waiting: 2000)
 
@@ -580,7 +509,7 @@ pub fn a_killed_service_does_not_report_completion_nor_lend_the_helper_test() {
 
   // The wall deadline fires 300 ms in and cannot reach the helper; the
   // relay's grace then reports the truth, five seconds later.
-  assert lanes.collect(events, within: 8000)
+  assert planes.collect(events, within: 8000)
     == [broker.CallSettled(broker.CallFailed(exec.CancelEscalated))]
   assert process.receive(events, 300) == Error(Nil)
 
@@ -589,7 +518,7 @@ pub fn a_killed_service_does_not_report_completion_nor_lend_the_helper_test() {
   assert census.borrowed == 1
   assert census.available == 0
   let refused_events = process.new_subject()
-  let next = lanes.spec(lanes.op(), argv: ["/usr/bin/true"], deadline_ms: 0)
+  let next = planes.spec(planes.op(), argv: ["/usr/bin/true"], deadline_ms: 0)
   assert broker.clear_call(
       plane.broker,
       next,

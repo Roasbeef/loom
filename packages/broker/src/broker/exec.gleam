@@ -29,8 +29,13 @@
 //// Darwin stay unconfirmed. A helper that dies unasked is judged the same
 //// way, so the two cases cannot disagree.
 ////
-//// A failed *write* is the one case that finds the port already closed, so
-//// there is nothing to wait for and the proof is lost (`mark_gone`).
+//// A failed *write* is the one case that finds the port already closed, and
+//// it is not a lost proof yet. A port opened with `exit_status` delivers
+//// `{exit_status, S}` and only then closes, so a write that fails after the
+//// helper died on its own finds that status already queued in the actor's
+//// mailbox. `mark_gone` therefore waits as well, with the port closed and
+//// nothing to kill (`PendingExit(Unprompted(..))`), and the same witness
+//// timeout turns a status that never comes into `LostExit`.
 ////
 //// ## A `Run` outlives the caller that timed out
 ////
@@ -136,7 +141,7 @@
 //// | `Idle` | ignored | `Dead`, protocol violation | `Running`; refused if the helper is degraded or the caller's events owner is gone | ignored | ignored | stale, ignored | `Dead` | `Dead`; a missed heartbeat also gives `Dead` |
 //// | `Running` | ignored | `Dead`, protocol violation | refused, `HelperBusy` | `Cancelling` after the TERM write, `Dead` if the write fails | the execution's own id gives `Idle`; other ids dropped | stale, ignored | `Dead`, in-flight caller told | `Dead`, in-flight caller told |
 //// | `Cancelling` | ignored | `Dead`, protocol violation | refused, `HelperBusy` | ignored, the first deadline keeps running | the execution's own id gives `Idle` and disarms the deadline | `CancelDeadline` kills the helper and keeps its port, `Dead` | `Dead`, in-flight caller told | `Dead`, in-flight caller told |
-//// | `Dead` | ignored | dropped | refused with the stored failure | ignored | dropped | stale, ignored; `KillWitnessDeadline` on a killed helper whose status never came closes the port and gives `LostExit` | ignored | the exit status of a retained port is the retirement proof; after a closed port it is ignored |
+//// | `Dead` | ignored | dropped | refused with the stored failure | ignored | dropped | stale, ignored; `KillWitnessDeadline` on a killed helper, or one whose write failed, whose status never came closes the port and gives `LostExit` | ignored | the exit status of a retained port is the retirement proof; after a closed port it is ignored |
 
 import broker/framing.{type Fault, type Frame, type OutputStream}
 import broker/internal/call
@@ -542,10 +547,11 @@ type Retirement {
   /// `begin` ends here.
   NoNativeResource
 
-  /// The helper has been told to go, by a shutdown frame or by SIGKILL, and
-  /// the port is deliberately still open. This is the state a caller's
-  /// timeout answers `RetirementPending` from, and the only one a later
-  /// exit event can still improve. `awaiting` is why the exit is awaited,
+  /// The helper has been told to go, by a shutdown frame or by SIGKILL, or a
+  /// write to it failed, and the port is deliberately still open or its
+  /// status is still queued. This is the state a caller's timeout answers
+  /// `RetirementPending` from, and the only one a later exit event can still
+  /// improve. `awaiting` is why the exit is awaited,
   /// which is what decides what the status will prove.
   PendingExit(awaiting: Awaiting)
 
@@ -557,9 +563,9 @@ type Retirement {
   NativeExit(status: Int, awaited: Awaiting)
 
   /// The channel was discarded before any exit status could be selected:
-  /// the port was closed, or its pid could not be signalled, or a write
-  /// failed on a port that had already gone. The OS process may still be
-  /// running, and no later event can repair this: proof lost is
+  /// the port was closed, or its pid could not be signalled, or the witness
+  /// timeout expired on a helper whose status never came. The OS process
+  /// may still be running, and no later event can repair this: proof lost is
   /// permanent, which is why it is a state and not an absence.
   LostExit
 }
@@ -585,7 +591,9 @@ type Awaiting {
   /// The port reported an exit nobody asked for: the helper died on its own
   /// in a live phase. It never ran its join either, so the verdict is the
   /// same as for a kill from the same phase, and the two are recorded
-  /// separately only so that a reader can tell them apart.
+  /// separately only so that a reader can tell them apart. It is also what
+  /// a failed write awaits: the helper was never asked to go, and the
+  /// status that may be queued behind the write is an unasked exit's.
   Unprompted(exposure: Exposure)
 }
 
@@ -1305,12 +1313,16 @@ fn handle(
     | Dead(..), CancelDeadline
     -> state_machine.keep(data)
 
-    // The killed helper never reported the status its SIGKILL should have
-    // produced. Closing the port abandons the wait, and the move to
-    // `LostExit` is an unequal state, so weft replays every postponed
-    // `AwaitRetirement` against it and the pool reads the proof as lost.
-    // This can only lose a proof: no arm here grants one.
+    // The helper never reported the status that was owed: its SIGKILL
+    // should have produced one, or the port closed under a failed write
+    // and its status never reached the mailbox. Closing the port abandons
+    // the wait (and is a no-op for a port that has already closed), and
+    // the move to `LostExit` is an unequal state, so weft replays every
+    // postponed `AwaitRetirement` against it and the pool reads the proof
+    // as lost. This can only lose a proof: no arm here grants one.
     Dead(failure:, retirement: PendingExit(AfterKill(..))), KillWitnessDeadline
+    | Dead(failure:, retirement: PendingExit(Unprompted(..))),
+      KillWitnessDeadline
     ->
       state_machine.transition(
         Dead(failure, close_transport(data.wire_out)),
@@ -1319,14 +1331,15 @@ fn handle(
 
     // Unreachable: the status arriving or the port closing leaves
     // `PendingExit`, which cancels the witness timeout, and no other state
-    // arms it. The arms exist because the matrix is exhaustive.
+    // arms it (`AfterShutdown` waits on the helper's own orderly teardown
+    // and is bounded by the caller's deadline instead). The arms exist
+    // because the matrix is exhaustive.
     AwaitingHello, KillWitnessDeadline
     | Idle(..), KillWitnessDeadline
     | Running(..), KillWitnessDeadline
     | Cancelling(..), KillWitnessDeadline
     | Dead(retirement: NoNativeResource, ..), KillWitnessDeadline
     | Dead(retirement: PendingExit(AfterShutdown), ..), KillWitnessDeadline
-    | Dead(retirement: PendingExit(Unprompted(..)), ..), KillWitnessDeadline
     | Dead(retirement: NativeExit(..), ..), KillWitnessDeadline
     | Dead(retirement: LostExit, ..), KillWitnessDeadline
     -> state_machine.keep(data)
@@ -1427,7 +1440,13 @@ fn entered(
     // arm in `handle` unreachable: a tick already in flight when the
     // machine dies carries a stale generation stamp and dies in weft's
     // timer book instead of reaching the handler.
-    Dead(retirement: PendingExit(AfterKill(..)), ..) ->
+    //
+    // A kill and a failed write both owe a status that may never come, so
+    // both arm the witness timeout. A shutdown does not: the helper is
+    // tearing its jail down in an orderly way, and how long that takes is
+    // for the caller's own deadline to bound.
+    Dead(retirement: PendingExit(AfterKill(..)), ..)
+    | Dead(retirement: PendingExit(Unprompted(..)), ..) ->
       state_machine.keep(data)
       |> state_machine.cancel_timeout(name: heartbeat_timer)
       |> state_machine.with_state_timeout(
@@ -1527,9 +1546,17 @@ fn handle_shutdown(machine: Machine) -> state_machine.Next(Phase, Data, Msg) {
     )
     transport_send(data.wire_out, bytes)
   }
+
+  // A write that fails here never delivered the shutdown, so a status is
+  // not the helper's account of an orderly teardown it was never asked for.
+  // Granting status 0 `AfterShutdown` would credit it with a join it had no
+  // request to perform. The exit is judged as one nobody asked for, by the
+  // jail of the phase the helper was in, and it is awaited under the
+  // witness timeout because the port may have closed with its status
+  // already queued, or with none.
   let retirement = case sent {
     Ok(Nil) -> PendingExit(AfterShutdown)
-    Error(Nil) -> LostExit
+    Error(Nil) -> PendingExit(Unprompted(exposure_of(machine.phase)))
   }
   state_machine.transition(
     Dead(ChannelClosed(0), retirement),
@@ -2462,8 +2489,8 @@ fn run_cleanup(data: Data) -> Data {
 // and a frame the broker could not encode (nothing was written, so the
 // port is as open as it was). Each kills the helper and keeps the port,
 // which leaves it `PendingExit(AfterKill(..))`, tagged with the jail the
-// phase it died in had, so the kill's exit status can still be selected. A write that failed is the other case, and
-// `mark_gone` takes it.
+// phase it died in had, so the kill's exit status can still be selected. A
+// write that failed is the other case, and `mark_gone` takes it.
 fn mark_dead(machine: Machine, failure: ExecFailure) -> Machine {
   case machine.phase {
     Prepared -> Machine(Dead(failure, NoNativeResource), machine.data)
@@ -2475,21 +2502,34 @@ fn mark_dead(machine: Machine, failure: ExecFailure) -> Machine {
   }
 }
 
-// `mark_dead` for a channel that is already gone: a write to the port
-// failed, which the port reports only once it has closed. There is no
-// exit status left to wait for, because a port delivers one only while
-// open, so waiting would leave the retirement pending for ever. The proof
-// is lost, as it always was for a write that found the port closed.
+// `mark_dead` for a write that failed. The port reports a failed write only
+// once it has closed, but a closed port is not an exit status lost: the port
+// sends `{exit_status, S}` first and closes after it, so a helper that died
+// on its own and then met a write leaves its status in the actor's mailbox
+// ahead of the failure being handled. Throwing the wait away here, as this
+// once did, dropped that status and cost the pool the slot for the life of
+// the session.
 //
-// A `ChannelTransport` cannot fail a write, so only a real port reaches
-// this; `real_helper_failed_write_loses_the_proof_test` closes a real
-// helper's port from outside to drive it.
+// So the machine waits for the status, as it does after a kill, and there is
+// simply nothing to kill and nothing to close: the port is already gone.
+// The exit is `Unprompted`, judged by the jail of the phase the helper was
+// in, which is how a helper that dies by itself is judged everywhere else.
+// A status that was never queued, because the port was closed from outside
+// or failed without one, becomes `LostExit` when the witness timeout fires,
+// so nothing waits for ever.
+//
+// A `ChannelTransport` cannot fail a write, so only a real port reaches this;
+// `real_helper_failed_write_keeps_a_queued_status_test` queues a real exit
+// status behind a write and `real_helper_failed_write_loses_the_proof_test`
+// closes a real helper's port from outside.
 fn mark_gone(machine: Machine, failure: ExecFailure) -> Machine {
   case machine.phase {
     Prepared -> Machine(Dead(failure, NoNativeResource), machine.data)
     Dead(..) -> machine
-    AwaitingHello | Idle(..) | Running(..) | Cancelling(..) ->
-      bury(machine, failure, close_transport)
+    AwaitingHello | Idle(..) | Running(..) | Cancelling(..) -> {
+      let exposure = exposure_of(machine.phase)
+      bury(machine, failure, fn(_) { PendingExit(Unprompted(exposure:)) })
+    }
   }
 }
 

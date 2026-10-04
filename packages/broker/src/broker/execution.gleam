@@ -52,7 +52,7 @@
 ////   emits `SendCancel` and `EnterDraining`. Draining is the grace window
 ////   in which the helper's own TERM-then-KILL ladder is trusted to produce
 ////   a terminal event; if the grace expires first the execution settles
-////   `Failed(CancelEscalated)`, exactly as the direct relay always has.
+////   `Failed(CancelEscalated)`.
 //// - **The broker cancelled** (`CancelRequested`): the service already
 ////   forwarded that cancel to the helper before it told the relay, so the
 ////   core records that a cancel was asked and emits nothing. It does not
@@ -291,9 +291,9 @@ fn step_open(core: Core, event: Event) -> #(Core, List(Effect)) {
 
     // The broker's cancel reached the helper through the service before
     // the relay heard of it, so there is nothing for the relay to send.
-    // The mode stays `Streaming`, as the direct relay's did: it never
-    // learned of a broker cancel at all, and the helper's own cancel
-    // grace is what bounds the wait.
+    // The mode stays `Streaming`: the relay does not time a cancel it
+    // did not send, and the helper's own cancel grace is what bounds the
+    // wait.
     CancelRequested -> #(Core(..core, cancel: ask(core.cancel, ByBroker)), [])
 
     // Nobody wants this execution any more: cancel and drain to the

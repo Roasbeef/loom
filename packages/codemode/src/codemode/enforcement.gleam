@@ -271,7 +271,7 @@ pub fn layers(report: Report) -> #(List(String), List(String)) {
       list.filter(entries, fn(entry) { !is_skip(entry) }),
       list.filter_map(entries, fn(entry) {
         case is_skip(entry) {
-          True -> Ok(string.drop_start(entry, string.length(skip_prefix)))
+          True -> Ok(string.drop_start(entry, string.length(exec.skip_prefix)))
           False -> Error(Nil)
         }
       }),
@@ -279,10 +279,6 @@ pub fn layers(report: Report) -> #(List(String), List(String)) {
   }
 }
 
-/// The prefix the helper puts on a layer it did not apply
-/// (`packages/sandbox/internal/jail/run.go`, `skip:` + the reason).
-pub const skip_prefix = "skip:"
-
 fn is_skip(entry: String) -> Bool {
-  string.starts_with(entry, skip_prefix)
+  string.starts_with(entry, exec.skip_prefix)
 }
