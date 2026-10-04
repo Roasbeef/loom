@@ -1169,7 +1169,11 @@ pub fn a_refused_page_never_repeats_an_address_it_cannot_parse_test() {
       ])
     assert refused.status == 401
     assert !string.contains(refused.body, "evil")
-    assert string.contains(refused.body, "loom ui --session &lt;id&gt;")
+
+    // The placeholder is no command `<loom-copy>` would copy, so the document
+    // draws no box rather than one the element would blank.
+    assert !string.contains(refused.body, "loom-copy")
+    assert !string.contains(refused.body, "--session")
   })
 }
 

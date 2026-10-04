@@ -1026,7 +1026,9 @@ and a saved row on an operator page open on press, as before; a saved row on an
 observer page, a blocked row, and a row whose resume is out are the same words
 in a block with no handler. The age is counted from `Start.now`, read once for
 each list, and the exact UTC minute is the `time` element's `title`. A session's
-name, a workspace's path and the principal's name are text nodes only.
+name and the principal's name are text nodes only. A workspace's path is a text
+node and, whole, the group heading's `title`, as on the session page's heading;
+both are the owner's and the host's catalogue fields, never a session agent's.
 
 **The bar and the Home entry.** The bar is the session bar's: the status is the
 `pill` with the page's `Tone` (online, pending, ended), the principal is in the

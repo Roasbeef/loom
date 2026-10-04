@@ -2349,7 +2349,12 @@ pub fn home_activity(
   registry: manager.Manager(instance),
   digest: access.Digest,
 ) -> fn(List(String)) -> List(#(String, listed_sessions.Activity)) {
-  fn(ids) { activity_states(config, registry, held(registry, digest, ids)) }
+  // The control command refuses a list past `activity_limit`; this read has no
+  // request to refuse, so it keeps the first ones and the bound holds here too.
+  fn(ids) {
+    let asked = list.take(ids, protocol.activity_limit)
+    activity_states(config, registry, held(registry, digest, asked))
+  }
 }
 
 // The identities among `ids` the credential holds a membership in, at any role,

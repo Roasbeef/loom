@@ -27,8 +27,10 @@
 //// the key can fetch that HTML.
 
 import gleam/erlang/application
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import houdini
 import web_view/ending.{type Ending}
 
@@ -224,7 +226,28 @@ pub fn waiting_notice(session_id: String) -> String {
 /// // page.refusal(ending.PageEnded, "0198c0de-...")
 /// ```
 pub fn refusal(reason: Ending, session_id: String) -> String {
-  ended_document(ending.headline(reason), ending.advised(reason, session_id))
+  let advice = ending.advised(reason, session_id)
+
+  // `<loom-copy>` copies only a command whose identity is hexadecimal digits
+  // and hyphens, and draws nothing for any other. An identity that is not one
+  // (the router answers an unparsed route with its placeholder) gets no box
+  // rather than a box the element would blank.
+  let advice = case copyable_identity(session_id) {
+    True -> advice
+    False -> ending.Advice(..advice, command: None)
+  }
+  ended_document(ending.headline(reason), advice)
+}
+
+// Whether `identity` has the shape `<loom-copy>` accepts in a `loom ui
+// --session` command: one to 64 hexadecimal digits and hyphens.
+fn copyable_identity(identity: String) -> Bool {
+  let graphemes = string.to_graphemes(identity)
+  graphemes != []
+  && list.length(graphemes) <= 64
+  && list.all(graphemes, fn(character) {
+    string.contains("0123456789abcdefABCDEF-", character)
+  })
 }
 
 /// What a home page says while it has no socket: the daemon may still be
