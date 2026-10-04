@@ -13,17 +13,22 @@
 ////
 //// ## Flow
 ////
-//// `layout` → `queue_body_layout` → `body_layout` → `footer_split` → `hit_area`
+//// `layout` → `queue_body_layout` → `footer_split` → `hit_area`
 ////
-//// 1. `layout` cuts the screen into header, body, composer and footer rows, asking
-////    `input_height` and `footer_height` (plus `strip_height`) how tall the last
-////    two must be.
+//// 1. `layout` cuts the screen into the identity line, then the rail's column
+////    (`rail_columns`, decided by `tui/rail`) from the right, and cuts what
+////    is left into body, composer and footer rows, asking `input_height` and
+////    `footer_height` (plus `strip_height`) how tall the last two must be. The
+////    rail runs the height under the identity line, so the composer and the
+////    footer span the transcript's column only, and every width they read is
+////    `column_width`, not the terminal's.
 //// 2. `queue_body_layout` takes the body and reserves the pinned todo panel and
 ////    the queue card (`body_split`, `queue_height`, `todo_height`), leaving the
 ////    conversation row.
-//// 3. `body_layout` splits the conversation row into transcript, agent rail and
-////    changes pane; the changes pane borrows the rail's column
-////    (`diff_pane_width`).
+//// 3. The conversation row is the transcript's whole. The rail is not part of
+////    it: `rail_area` is the rail's rectangle and `rail_content_area` is what
+////    its tab draws in, which is where the changes panel sits while the
+////    changes are open (`diff_pane_width`).
 //// 4. `footer_split` divides the footer rectangle into the footer proper and the
 ////    agent strip beneath it.
 //// 5. The composer's own shape comes from `input_layout`, `input_view_state` and
@@ -64,11 +69,11 @@ import tui/diff_panel
 import tui/input_frame
 import tui/model.{
   type Model, AccessManager, AgentInspector, ApprovalInspector, DaemonSelector,
-  DiffHidden, DiffVisible, GoalInspector, ModelSelector, NoOverlay,
-  PeerLinkManager,
+  DiffVisible, GoalInspector, ModelSelector, NoOverlay, PeerLinkManager,
 } as tui_model
 import tui/queue_editor
 import tui/queue_panel
+import tui/rail
 import tui/todo_panel
 
 /// The area inside a one-cell rounded border.
@@ -118,37 +123,81 @@ pub fn transcript_inner(panel: Rect) -> Rect {
 /// by the strip growing and shrinking.
 @internal
 pub fn layout(screen: Rect, model: Model) -> #(Rect, Rect, Rect, Rect) {
+  let #(header, below) = case geometry.split_v(screen, [Length(1), Fill]) {
+    [header, below] -> #(header, below)
+    _ -> #(screen, screen)
+  }
+  let column = case
+    geometry.split_h(below, [Fill, Length(rail_columns(model))])
+  {
+    [column, _] -> column
+    _ -> below
+  }
   case
-    geometry.split_v(screen, [
-      Length(1),
+    geometry.split_v(column, [
       Fill,
       Length(input_height(model)),
       Length(footer_height(model) + strip_height(model)),
     ])
   {
-    [header, body, input, footer] -> #(header, body, input, footer)
+    [body, input, footer] -> #(header, body, input, footer)
     _ -> #(screen, screen, screen, screen)
   }
 }
 
-/// The changes pane gets a readable column without squeezing the conversation
-/// below sixty-eight cells. It borrows the optional rail's place; closing it
-/// restores the operator's rail preference rather than changing that setting.
+/// The columns the rail takes, its separator included, or zero when it is
+/// not docked (`rail.columns`).
 @internal
-pub fn body_layout(body: Rect, model: Model) -> #(Rect, Rect, Rect) {
-  let changes = diff_pane_width(model)
-  let rail = case model.view.agent_rail_visible && model.view.width >= 100 {
-    True -> 34
-    False -> 0
+pub fn rail_columns(model: Model) -> Int {
+  rail.columns(
+    model.view.width,
+    model.view.rail,
+    rail.tab(model.view.diff_view),
+  )
+}
+
+/// The width of the transcript's column: the terminal less the rail. The
+/// composer wraps to it and the footer is sized by it.
+@internal
+pub fn column_width(model: Model) -> Int {
+  model.view.width - rail_columns(model)
+}
+
+/// The rail's rectangle: the columns on the right, from the row under the
+/// identity line to the last row. Its first column is the separator.
+/// Zero-sized when the rail is not docked.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // layout.rail_area(screen, model).size.width == layout.rail_columns(model)
+/// ```
+@internal
+pub fn rail_area(screen: Rect, model: Model) -> Rect {
+  case geometry.split_v(screen, [Length(1), Fill]) {
+    [_, below] ->
+      case geometry.split_h(below, [Fill, Length(rail_columns(model))]) {
+        [_, rail] -> rail
+        _ -> geometry.rect_zero()
+      }
+    _ -> geometry.rect_zero()
   }
-  let secondary = case changes > 0 {
-    True -> changes
-    False -> rail
-  }
-  case geometry.split_h(body, [Fill, Length(secondary)]) {
-    [main, side] if changes > 0 -> #(main, geometry.rect_zero(), side)
-    [main, side] -> #(main, side, geometry.rect_zero())
-    _ -> #(body, geometry.rect_zero(), geometry.rect_zero())
+}
+
+/// The rail's content: the rail less its separator, its tab bar and rule at
+/// the top, and its key hint at the bottom. A tab draws in this rectangle.
+@internal
+pub fn rail_content_area(screen: Rect, model: Model) -> Rect {
+  let area = rail_area(screen, model)
+  case area.size.width > 0 {
+    True ->
+      geometry.rect_new(
+        area.position.x + 1,
+        area.position.y + 2,
+        int.max(0, area.size.width - 1),
+        int.max(0, area.size.height - 3),
+      )
+    False -> geometry.rect_zero()
   }
 }
 
@@ -232,11 +281,39 @@ pub fn todo_area(body: Rect, model: Model) -> Rect {
   panel
 }
 
+// The width the changes panel has in the rail, or zero when the changes are
+// not open in a rail that is docked.
 fn diff_pane_width(model: Model) -> Int {
-  case model.view.diff_view != DiffHidden && model.view.width >= 140 {
-    True -> int.min(72, model.view.width / 2)
-    False -> 0
+  case rail.tab(model.view.diff_view), rail_columns(model) {
+    rail.Changes, columns if columns > 0 -> columns - 1
+    rail.Changes, _ | rail.Strands, _ -> 0
   }
+}
+
+/// The rectangle the changes panel is drawn in: the rail's content while the
+/// changes are open in a docked rail, and nothing otherwise.
+@internal
+pub fn changes_panel_area(screen: Rect, model: Model) -> Rect {
+  case diff_pane_width(model) > 0 {
+    True -> rail_content_area(screen, model)
+    False -> geometry.rect_zero()
+  }
+}
+
+/// Whether the rail is docked on the Strands tab, where it lists the agents
+/// the strip would list.
+@internal
+pub fn rail_lists_strands(model: Model) -> Bool {
+  rail.tab(model.view.diff_view) == rail.Strands && rail_columns(model) > 0
+}
+
+/// Whether the agents are listed anywhere the keyboard can enter: the strip
+/// under the input, or the rail on Strands.
+@internal
+pub fn strands_listed(model: Model) -> Bool {
+  strip_height(model) > 0
+  || rail_lists_strands(model)
+  && list.length(strip_lines(model)) >= 2
 }
 
 /// Reports whether captured edits are on screen, either as the main
@@ -263,19 +340,31 @@ pub fn footer_split(area: Rect, model: Model) -> #(Rect, Rect) {
   }
 }
 
-/// The rows the agent strip draws, from the same roster the workspace uses.
+/// The rows the agents are listed in, from the same roster the workspace uses.
+///
+/// Under the input the strip lists only the agents worth watching. While the
+/// rail is docked on Strands it lists every agent, in the workspace's
+/// attention order, settled ones and the advisor included, so the one cursor
+/// and its keys (`agent_strip.key`) walk exactly the rows the rail draws.
 @internal
 pub fn strip_lines(model: Model) -> List(agent_strip.Line) {
-  agent_strip.lines(
-    tui_model.strip(model),
-    displayed_agents(model),
-    model.shared.active_strand,
-  )
+  case rail_lists_strands(model) {
+    True ->
+      agents.listed(displayed_agents(model), agents.AllAgents)
+      |> list.map(agent_roster.describe(model.shared.roster, _))
+    False ->
+      agent_strip.lines(
+        tui_model.strip(model),
+        displayed_agents(model),
+        model.shared.active_strand,
+      )
+  }
 }
 
 /// The rows the agent strip takes on this screen.
 @internal
 pub fn strip_height(model: Model) -> Int {
+  use <- bool.guard(rail_lists_strands(model), 0)
   agent_strip.height_for_count(
     agent_roster.listed_count(
       displayed_agents(model),
@@ -296,7 +385,7 @@ fn footer_height(model: Model) -> Int {
     // takes rows only for Ctrl+g's accounting detail.
     False ->
       case model.shared.details_expanded {
-        True -> footer_rows(model.view.width)
+        True -> footer_rows(column_width(model))
         False -> 0
       }
   }
@@ -531,12 +620,7 @@ pub fn composer_status_lines(model: Model) -> List(String) {
   let reviewers = case model.view.overlay, queue_focused {
     _, True | AgentInspector(_), False -> []
     _, False ->
-      case
-        model.view.agent_rail_visible
-        && model.view.width >= 100
-        && diff_pane_width(model) == 0
-        || strip_height(model) > 0
-      {
+      case rail_lists_strands(model) || strip_height(model) > 0 {
         True -> []
         False -> reviewer_band_lines(model)
       }
@@ -546,7 +630,7 @@ pub fn composer_status_lines(model: Model) -> List(String) {
   // frame is too narrow to carry it beside the keys.
   let active = case
     active_status_label(model),
-    model.view.width < input_frame.carries_activity
+    column_width(model) < input_frame.carries_activity
   {
     Some(status), True -> [
       activity_glyph(model.view.activity_frame)
@@ -687,7 +771,7 @@ fn pending_status(model: Model) -> Option(String) {
 // Stacking the chips leaves the editor the full interior width, so the wrap
 // the operator sees no longer depends on what is attached.
 fn editor_content_width(model: Model) -> Int {
-  int.max(2, model.view.width - input_frame.prompt_margin)
+  int.max(2, column_width(model) - input_frame.prompt_margin)
 }
 
 /// How long the active strand has been busy, in the shape the prompt
@@ -841,7 +925,7 @@ pub fn note_detail_area(model: Model) -> Rect {
   let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
   let #(_, body, _, _) = layout(screen, model)
   let #(conversation, _) = queue_body_layout(body, model)
-  let #(transcript, _, _) = body_layout(conversation, model)
+  let transcript = conversation
   transcript_inner(transcript)
 }
 
@@ -913,12 +997,9 @@ pub fn hit_area(model: Model, at: geometry.Position) -> Rect {
   let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
   let #(_, body_area, input_area, _) = layout(screen, model)
   let #(conversation, queue) = queue_body_layout(body_area, model)
-  let #(transcript_panel, agent_panel, changes_panel) =
-    body_layout(conversation, model)
   [
-    transcript_inner(transcript_panel),
-    panel_inner(agent_panel),
-    panel_inner(changes_panel),
+    transcript_inner(conversation),
+    panel_inner(changes_panel_area(screen, model)),
     panel_inner(input_area),
     panel_inner(queue),
   ]
@@ -952,7 +1033,7 @@ pub fn transcript_width(model: Model) -> Int {
   let screen = model_screen(model)
   let #(_, body, _, _) = layout(screen, model)
   let #(conversation, _) = queue_body_layout(body, model)
-  let #(main, _, _) = body_layout(conversation, model)
+  let main = conversation
   int.max(1, main.size.width - 2)
 }
 
@@ -1085,10 +1166,10 @@ fn normal_diff_panel(model: Model) -> Rect {
   let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
   let #(_, body, _, _) = layout(screen, model)
   let #(conversation, _) = queue_body_layout(body, model)
-  let #(main, _, changes) = body_layout(conversation, model)
+  let main = conversation
   case main_shows_diff(model) {
     True -> main
-    False -> changes
+    False -> rail_content_area(screen, model)
   }
 }
 

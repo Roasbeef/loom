@@ -417,7 +417,8 @@ pub fn render(
 
 // When the rows outnumber the space, the window follows the cursor so the
 // selected agent is always drawn; otherwise it shows the top of the roster.
-fn window(lines: List(Line), focus: Focus, size: Int) -> List(Line) {
+@internal
+pub fn window(lines: List(Line), focus: Focus, size: Int) -> List(Line) {
   let at = case focus {
     Composing -> 0
     Browsing(cursor) ->

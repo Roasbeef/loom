@@ -68,7 +68,7 @@ fn compare_rows(rows: List(span.Line), width: Int) {
   let screen = geometry.rect_new(0, 0, width, 30)
   let #(_, body, _, _) = layout.layout(screen, base)
   let #(conversation, _) = layout.queue_body_layout(body, base)
-  let #(panel, _, _) = layout.body_layout(conversation, base)
+  let panel = conversation
   let area = layout.transcript_inner(panel)
   let alternate =
     model.Model(..base, view: model.View(..base.view, repaint_phase: True))

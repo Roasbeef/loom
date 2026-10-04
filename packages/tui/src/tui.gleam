@@ -713,7 +713,7 @@ pub fn new_model_with_clock(
       prompted_approvals: [],
       inspecting_approval: None,
       next_attempt: 1,
-      agent_rail_visible: False,
+      rail: None,
       repaint_phase: False,
       activity_frame: 0,
       reading_lines: None,

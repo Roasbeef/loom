@@ -50,7 +50,7 @@ import core/json
 import core/message
 import core/register
 import etui/buffer
-import etui/geometry.{type Rect, Fill, Length}
+import etui/geometry.{type Rect, Length}
 import etui/span
 import etui/style
 import etui/text
@@ -66,7 +66,6 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import session_view/advisor_pending
 import session_view/agent_messages
 import session_view/agent_roster
 import session_view/agent_view
@@ -117,6 +116,7 @@ import tui/peer_links
 import tui/program_rows
 import tui/queue_editor
 import tui/queue_panel
+import tui/rail_view
 import tui/selection
 import tui/session_selector
 import tui/summary_panel
@@ -180,8 +180,8 @@ pub fn render_frame(
     layout.layout(screen, model)
   let #(conversation_area, queue_area) =
     layout.queue_body_layout(body_area, model)
-  let #(transcript_panel, agent_panel, changes_panel) =
-    layout.body_layout(conversation_area, model)
+  let transcript_panel = conversation_area
+  let changes_panel = layout.changes_panel_area(screen, model)
   let transcript_area = layout.transcript_inner(transcript_panel)
   let #(pending_area, composer_area) =
     layout.pending_layout(layout.panel_inner(input_area), model)
@@ -212,7 +212,7 @@ pub fn render_frame(
     |> input_frame.render_identity(header_area, identity(model, strip))
     |> render_reading_row(transcript_panel, model)
     |> render_transcript(transcript_area, model)
-    |> render_agent_rail(agent_panel, model)
+    |> rail_view.render(screen, model)
     |> render_changes_panel(changes_panel, model)
     |> render_inline_queue(queue_area, model)
     |> render_todo_panel(layout.todo_area(body_area, model), model)
@@ -303,7 +303,6 @@ pub fn render_frame(
       let current_area =
         [
           transcript_area,
-          layout.panel_inner(agent_panel),
           layout.panel_inner(changes_panel),
           layout.panel_inner(input_area),
         ]
@@ -454,82 +453,6 @@ fn render_changes_panel(
       |> render_diff_view(layout.panel_inner(area), model)
     False -> buf
   }
-}
-
-fn render_agent_rail(
-  buf: buffer.Buffer,
-  area: Rect,
-  model: Model,
-) -> buffer.Buffer {
-  case area.size.width > 0 {
-    True -> {
-      let extra = studio_observation_lines(model)
-      let panes =
-        geometry.split_v(area, [
-          Fill,
-          Length(int.min(6, list.length(extra) + 1)),
-        ])
-      case panes {
-        [roster, observations] ->
-          buf
-          |> agents.render_rail(
-            roster,
-            layout.displayed_agents(model),
-            model.shared.active_strand,
-          )
-          |> paragraph.render_styled(
-            observations,
-            list.map(extra, fn(row) {
-              span.line_new([
-                span.span_styled(
-                  text.truncate(" " <> row, observations.size.width, "…"),
-                  theme.quiet_text(),
-                ),
-              ])
-            }),
-          )
-        _ ->
-          agents.render_rail(
-            buf,
-            area,
-            layout.displayed_agents(model),
-            model.shared.active_strand,
-          )
-      }
-    }
-    False -> buf
-  }
-}
-
-// The rail reports captured observations. Opening /diff owns refreshing Git;
-// a missing or stale observation must not become a fabricated clean worktree.
-fn studio_observation_lines(model: Model) -> List(String) {
-  let advice = case model.shared.nudges {
-    Some(board) -> list.take(advisor_pending.lines(board), 1)
-    None ->
-      case
-        list.any(model.shared.strands, fn(strand) { strand.id == "advisor" })
-      {
-        True -> ["Advisor nudges · not observed"]
-        False -> []
-      }
-  }
-  let changes = case model.shared.worktree.board {
-    None -> ["CHANGES · /diff (not observed)"]
-    Some(board) -> [
-      "CHANGES · " <> int.to_string(board.total) <> " files · /diff",
-      ..board.files
-      |> list.take(2)
-      |> list.map(fn(file) {
-        file.index_status
-        <> file.worktree_status
-        <> " "
-        <> text_hygiene.single_line(file.path)
-      })
-      |> list.append([model.shared.worktree.message])
-    ]
-  }
-  list.append(advice, changes)
 }
 
 // Names are presentation only. Pairing one with its identity prevents a
@@ -763,7 +686,7 @@ fn window(rows: List(span.Line), offset: Int, height: Int) -> List(span.Line) {
 pub fn transcript_area(model: Model, screen: Rect) -> Rect {
   let #(_, body_area, _, _) = layout.layout(screen, model)
   let #(conversation_area, _) = layout.queue_body_layout(body_area, model)
-  let #(transcript_panel, _, _) = layout.body_layout(conversation_area, model)
+  let transcript_panel = conversation_area
   layout.transcript_inner(transcript_panel)
 }
 

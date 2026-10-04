@@ -185,11 +185,11 @@ capture already projects.
 
 ## 2. What changes from today and why
 
-Today's terminal (`layout`, `tui/layout.gleam:97`) is a header, a body, a
+Today's terminal (`layout`, `tui/layout.gleam:105`) is a header, a body, a
 composer and a footer with the agent strip under it. The body holds the
 transcript and, at the right, either the agent rail (34 cells, from 100
 columns, `body_layout` at `tui/layout.gleam:138`) or the changes pane (up to
-72 cells, from 140 columns, `diff_pane_width` at `tui/layout.gleam:235`), never
+72 cells, from 140 columns, `diff_pane_width` at `tui/layout.gleam:286`), never
 both. Eight more surfaces are overlays or transcript replacements, each with
 its own keys: the agent workspace, the picker, the model selector, the
 approval dialog, the peer-link and access overlays, `/notes`, `/summary`,
@@ -250,7 +250,7 @@ Taken:
   per awaited strand (`└ sub:main/adversarial-…-48f3c1 still working after
   30s`) using the roster's own words.
 - **The activity line above the input with its cancel key**, which the band
-  already has (`composer_status_lines`, `tui/layout.gleam:497`) minus the key.
+  already has (`composer_status_lines`, `tui/layout.gleam:586`) minus the key.
 - **Tinted blocks, not boxes**, for the two things the terminal already tints:
   the user turn and the assistant's prose. Tool calls stay one-line rows
   without a tint, because the owner's recordings show that a wall of tinted
@@ -355,7 +355,7 @@ today, so the composer never loses width to a column.
 | < 100 | transcript | none beside it; `Shift+Tab` or `Ctrl+O` opens the panel over the transcript, `Esc` returns | drawn, from 16 rows and two agents, up to a quarter of the height |
 
 The transcript keeps at least 68 cells beside a panel, the rule
-`diff_pane_width` (`tui/layout.gleam:235`) applies today. The strip's height
+`diff_pane_width` (`tui/layout.gleam:286`) applies today. The strip's height
 rule is unchanged (`height_for_count`, `tui/agent_strip.gleam:212`). The
 rows a panel's tab needs are never taken from the composer.
 
@@ -388,7 +388,7 @@ when a strand needs a decision (`needing`,
 `session_view/strand_card.gleam:69`). The panel has keyboard focus or the
 composer does; the panel's border is drawn in the signal colour while it has
 focus, and the composer's top rule says what the keys do, as it does for the
-strip today (`input_title_keys`, `tui/render.gleam:2109`).
+strip today (`input_title_keys`, `tui/render.gleam:2032`).
 
 | Key, panel focused | Does |
 |---|---|
@@ -406,7 +406,7 @@ strip today (`input_title_keys`, `tui/render.gleam:2109`).
 
 | Key, composer focused | Does | Today |
 |---|---|---|
-| `Shift+Tab` | show or hide the panel | toggles the rail (`toggle_agent_rail`, `tui/submit.gleam:425`) |
+| `Shift+Tab` | show or hide the panel | toggles the rail (`toggle_agent_rail`, `tui/submit.gleam:432`) |
 | `Ctrl+O`, `F2` | show the panel on Strands and give it the keyboard; at < 100 columns, open the workspace over the transcript | opens the workspace (`open_agents`, `tui/submit.gleam:54`) |
 | `↓` on an idle composer | enter the Strands list (the strip when the panel is hidden) | enters the strip (`down_from_composer`, `tui/interaction.gleam:1402`) |
 | `Ctrl+D` | focus the Changes tab's navigator | toggles the diff navigator's focus (`tui/interaction.gleam:1173`, the `worktree` focus) |
@@ -731,7 +731,7 @@ No single key sends a decision.
 | Timeline gutter | each row's strand and hue | derivable | `pieces` (`session_view/turns.gleam:298`), `hue` (`session_view/turns.gleam:211`); new hue constants in `tui/theme.gleam` |
 | Counted repeated rows | consecutive identical calls and errors | derivable | the grouping in `project` (`session_view/tool_activity.gleam:55`) gains a run-length fold; shared with the web view |
 | Harness notes | `[loom]`-prefixed inputs, hook and job notices | partly | `harness_message_lines` (`session_view/transcript_lines.gleam:2487`) recognises advisor frames; `memory_context_lines` (`session_view/composer.gleam:356`) the memory context; the `[loom]` job and hook notices need the same recogniser extended, no wire change |
-| Strands tab, strip, workspace list | one row per strand | yes | `lines` (`session_view/agent_roster.gleam:355`), `Line` (`session_view/agent_roster.gleam:84`), `status_line` (`session_view/strand_card.gleam:38`), `status_mark` (`tui/agents.gleam:1441`) |
+| Strands tab, strip, workspace list | one row per strand | yes | `lines` (`session_view/agent_roster.gleam:355`), `Line` (`session_view/agent_roster.gleam:84`), `status_line` (`session_view/strand_card.gleam:38`), `status_mark` (`tui/agents.gleam:1369`) |
 | Strand detail | task, now, update, pending, recent, approvals | yes | `Row` (`session_view/agent_view.gleam:65`) |
 | Strand detail: messages out | sends with state | yes | `Item` (`session_view/agent_messages.gleam:52`) |
 | Strand detail: messages in, inbox | received messages, unread count | no | section 9.2; a strand origin on the admitted message and an inbox read need a protocol change |

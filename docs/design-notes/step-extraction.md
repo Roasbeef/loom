@@ -195,7 +195,7 @@ terminal, 4 handles, 3 split.
 | `next_id` | a | The command counter both hosts encode with. |
 | `usage` | a | The captured usage. |
 | `generation_started_ms`, `output_rate_tps` | a | The generation clock and the rate it yields. |
-| `agent_rail_visible` | b | A pane toggle. |
+| `rail` | b | The operator's choice about the docked rail, none until made. |
 | `details_expanded` | a | The extent the shared line builders read through `presentation` (`session_view/model.gleam:1143`), and `advance_generation_clock` checks it (`session_view/step.gleam:135`); a page will toggle it too. |
 | `repaint_phase`, `activity_frame` | b | Frame-local paint state. |
 | `activity_started_ms`, `activity_elapsed_s`, `generation_elapsed_s` | a | Elapsed readings the tick advances from the stamp; a chip shows the same figures. |
@@ -232,7 +232,7 @@ type and no job slot. What it does hold from `tui/` today moves with it:
 over its lane's handles) and the `Peer`, `Interrupt`,
 `UnconfirmedSubmission`, `SubmissionSource`, `GoalReport` and
 `ConnectionBacklog` types from `tui/model`. `agents.summary`
-(`tui/agents.gleam:357` (`summary`)) stays behind; the terminal derives
+(`tui/agents.gleam:1410` (`summary`)) stays behind; the terminal derives
 the footer string in its projection.
 
 ### The web view's `component.Model`
@@ -524,7 +524,7 @@ they reach that it misses.
   `mutation_refusal`, less the `clear_composer` call and the queue
   editor's `request_id`.
 - The command arms: `interrupt_active` (`session_view/commands.gleam:80`),
-  `stop_strand`, `switch_active_strand` (`tui/submit.gleam:546`),
+  `stop_strand`, `switch_active_strand` (`tui/submit.gleam:574`),
   `select_model`, `decide` (`session_view/commands.gleam:168`), `send_prompt_to`,
   `cancel_pending` and `service_history`.
 - The auxiliary reads and their edges: every `service_*_read` from
