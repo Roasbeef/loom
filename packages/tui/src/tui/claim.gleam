@@ -68,6 +68,9 @@ pub type Options {
     label: String,
     /// `--state-dir`, or empty for `$HOME/.loom`.
     state_directory: String,
+    /// `--name`, the display name the invitee wants, or empty to keep the
+    /// one the inviter chose. Only `loom claim` reads it.
+    name: String,
   )
 }
 
@@ -131,7 +134,7 @@ pub fn claim_main(arguments: List(String)) -> Nil {
       claim.validate_token(token) |> result.map_error(Invalid),
     )
     use remote <- result.try(remote(options) |> result.map_error(Invalid))
-    redeem(remote, token)
+    redeem(remote, token, options.name)
     |> result.map(fn(claimed) { #(remote, claimed) })
   }
   case outcome {
@@ -198,7 +201,7 @@ pub fn parse_claim(
   arguments: List(String),
 ) -> Result(#(Options, Option(String)), Failure) {
   use #(options, positional) <- result.try(
-    gather(arguments, Options("", "", ""), []),
+    gather(arguments, Options("", "", "", ""), []),
   )
   use Nil <- result.try(required_address(options))
   case positional {
@@ -217,9 +220,13 @@ pub fn parse_claim(
 /// ```
 pub fn parse_enroll(arguments: List(String)) -> Result(Options, Failure) {
   use #(options, positional) <- result.try(
-    gather(arguments, Options("", "", ""), []),
+    gather(arguments, Options("", "", "", ""), []),
   )
   use Nil <- result.try(required_address(options))
+  use Nil <- result.try(case options.name {
+    "" -> Ok(Nil)
+    _given -> Error(Invalid(usage))
+  })
   case positional {
     [] -> Ok(options)
     [_, ..] -> Error(Invalid(usage))
@@ -239,6 +246,9 @@ fn gather(
       gather(rest, Options(..options, label: value), positional)
     ["--state-dir", value, ..rest] if options.state_directory == "" ->
       gather(rest, Options(..options, state_directory: value), positional)
+    ["--name", "", ..] -> Error(Invalid("--name must not be empty"))
+    ["--name", value, ..rest] if options.name == "" ->
+      gather(rest, Options(..options, name: value), positional)
     [word, ..rest] ->
       case string.starts_with(word, "--") {
         True -> Error(Invalid(usage))
@@ -363,12 +373,23 @@ pub fn record_path(remote: Remote) -> String {
 /// written, then the connection is made. Only the credential's digest is
 /// sent. On success `remote.json` is written.
 ///
+/// `name` is the display name to be shown under, or empty to keep the one the
+/// inviter chose. The daemon trims and checks it in the transaction that
+/// binds, and refuses a bad one with `invalid_name` having bound nothing; that
+/// is reported as `Invalid`, and the stored credential is kept so that a rerun
+/// with another name redeems the same open claim. A rerun after a lost reply
+/// never renames: the daemon answers the principal as it stands.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // claim.redeem(remote, "loomclaim_…")
+/// // claim.redeem(remote, "loomclaim_…", "Alex Doe")
 /// ```
-pub fn redeem(remote: Remote, token: String) -> Result(Claimed, Failure) {
+pub fn redeem(
+  remote: Remote,
+  token: String,
+  name: String,
+) -> Result(Claimed, Failure) {
   use Nil <- result.try(
     claim.validate_token(token) |> result.map_error(Invalid),
   )
@@ -380,7 +401,7 @@ pub fn redeem(remote: Remote, token: String) -> Result(Claimed, Failure) {
     prepare(remote, token) |> result.map_error(Invalid),
   )
   let digest = claim.digest(credential)
-  case exchange(endpoint, token, digest) {
+  case exchange(endpoint, token, digest, name) {
     Error(failure) -> Error(failure)
     Ok(Answered(claimed)) -> {
       use Nil <- result.try(
@@ -407,6 +428,11 @@ pub fn redeem(remote: Remote, token: String) -> Result(Claimed, Failure) {
 
     // A definite refusal binds nothing, so the files authenticate nothing
     // and are removed; a later claim draws a fresh credential regardless.
+    Ok(Rejected) ->
+      Error(Invalid(
+        "the daemon refused the display name: it must be nonblank, at most 256 bytes and hold no control characters; the claim is still open, so rerun with another --name",
+      ))
+
     Ok(Final(code)) -> {
       let _ = simplifile.delete(credential_path(remote))
       let _ = simplifile.delete(claim_path(remote))
@@ -478,6 +504,10 @@ fn stored(path: String) -> Result(String, Nil) {
 type Answer {
   Answered(Claimed)
   Final(code: String)
+
+  // The name was refused and nothing was bound: not final, since the claim
+  // and the stored credential are both still good.
+  Rejected
 }
 
 /// Presents the claim over `/v2/claim` and sends one credential digest.
@@ -490,6 +520,7 @@ fn exchange(
   endpoint: String,
   token: String,
   digest: String,
+  name: String,
 ) -> Result(Answer, Failure) {
   let inbox = websocket.new_inbox()
   use socket <- result.try(
@@ -512,7 +543,7 @@ fn exchange(
           #("v", json.Int(2)),
           #("id", json.Int(1)),
           #("cmd", json.String("credentials.claim")),
-          #("body", json.Object([#("credential_digest", json.String(digest))])),
+          #("body", json.Object(claim_body(digest, name))),
         ]),
       ),
     )
@@ -520,6 +551,16 @@ fn exchange(
   }
   websocket.close(socket)
   outcome
+}
+
+// The name is sent only when one was chosen, so a claim without `--name` is
+// byte-for-byte the message older daemons accept.
+fn claim_body(digest: String, name: String) -> List(#(String, JsonValue)) {
+  let credential = #("credential_digest", json.String(digest))
+  case name {
+    "" -> [credential]
+    chosen -> [credential, #("name", json.String(chosen))]
+  }
 }
 
 fn hello(inbox) -> Result(Nil, Nil) {
@@ -534,7 +575,7 @@ fn hello(inbox) -> Result(Nil, Nil) {
   }
 }
 
-// Only these three refusals are final: the claim is unknown or void, it
+// Only the first three refusals are final: the claim is unknown or void, it
 // expired, or it is bound elsewhere. Anything else leaves the credential in
 // place for a rerun.
 fn answer(inbox, digest: String) -> Result(Answer, Failure) {
@@ -557,6 +598,7 @@ fn answer(inbox, digest: String) -> Result(Answer, Failure) {
         Ok(json.String("not_found")) -> Ok(Final("not_found"))
         Ok(json.String("expired")) -> Ok(Final("expired"))
         Ok(json.String("conflict")) -> Ok(Final("conflict"))
+        Ok(json.String("invalid_name")) -> Ok(Rejected)
         Ok(json.String(code)) ->
           Error(Unknown(
             "the daemon answered " <> code <> "; rerun the same command",

@@ -84,10 +84,14 @@ with these forks: they define the same modules.
   `ClaimDigest` is a separate opaque type from `Digest`, so a claim cannot be
   passed to `authenticate`. `Enrollment` is `ClaimEnrollment(claim,
   expires_at_ms)` (an open claim, no credential) or `DigestEnrollment(digest)`
-  (the invitee's own credential, no claim). `claim(store, claim, digest,
+  (the invitee's own credential, no claim). `claim(store, claim, digest, name,
   now_ms, equal)` binds a digest once in one transaction and answers
   `Claimed(principal, memberships)` (at most 16, in session order) or
-  `UnknownClaim`, `ExpiredClaim`, `ConflictingClaim` or `ClaimStore(error)`.
+  `UnknownClaim`, `ExpiredClaim`, `ConflictingClaim`, `InvalidClaimName` or
+  `ClaimStore(error)`. `name` is the invitee's optional display name: trimmed,
+  judged by `valid_name` before the first write, and applied in the binding
+  transaction only, so a refused name leaves the claim open and a replay never
+  renames.
   `claim_known` is the `/v2/claim` upgrade's filter (exists and not void), and
   `fingerprint` is a digest's first 16 hex characters.
 - `storage/access.{Listing, CredentialSummary, ListingPage, MembershipPage}`
