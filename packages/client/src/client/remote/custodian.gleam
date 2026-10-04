@@ -10,9 +10,19 @@
 //// active runs. These properties do not bound an OTP mailbox: root must bind
 //// the handle to its bounded ingress/effect pool. No unbounded cast writer,
 //// observer list, arbitrary SQL closure or process ledger is exposed here.
+////
+//// ## Flow
+////
+//// `execute` → `begin` → `reported` retains exact final tool outcomes.
+//// `reserve_service_child` → `admit_offer` → `reserve_command_child` commits
+//// service/offer/complete native custody through the same serialized `handle`.
+//// `service_child`, `offer` and `command_child` recover original evidence;
+//// `cancel_service` fences those links in one transaction. `collect` defers
+//// physical-service payload deletion until independent recovery transfer exists.
 
 import broker/internal/call
 import client/remote/outcome
+import core/command
 import core/ids
 import core/msgpack
 import core/remote_tool
@@ -96,6 +106,59 @@ pub opaque type Message {
     custody.WorkspaceCompletion,
     process.Subject(Result(Nil, custody.Error)),
   )
+
+  /// Exact outer service reservation; no transport or preparation is performed.
+  ReserveService(
+    custody.ServiceRequest,
+    process.Subject(Result(Nil, custody.Error)),
+  )
+
+  /// Readback of the original physical service and its independent completion.
+  ReadService(
+    command.ServiceKey,
+    process.Subject(
+      Result(
+        #(custody.ServiceRequest, option.Option(custody.Payload)),
+        custody.Error,
+      ),
+    ),
+  )
+
+  /// Exact immutable command offer admission after original service comparison.
+  AdmitOffer(
+    custody.ServiceRequest,
+    custody.CommandOfferPayload,
+    process.Subject(Result(custody.Admission, custody.Error)),
+  )
+
+  /// Header-first readback of a retained command offer.
+  ReadOffer(
+    command.CommandRef,
+    process.Subject(Result(custody.CommandOfferPayload, custody.Error)),
+  )
+
+  /// Complete native content reserved only by the post-clearance caller.
+  ReserveCommand(
+    custody.CommandOfferPayload,
+    ids.EntryId,
+    custody.Payload,
+    process.Subject(Result(#(ids.EntryId, custody.Payload), custody.Error)),
+  )
+
+  /// Readback preserves original native UUID/content and optional receipt.
+  ReadCommand(
+    command.CommandRef,
+    process.Subject(
+      Result(
+        #(ids.EntryId, custody.Payload, option.Option(custody.Payload)),
+        custody.Error,
+      ),
+    ),
+  )
+
+  /// One atomic fence across service, offers and allocated native commands.
+  CancelService(command.ServiceKey, process.Subject(Result(Nil, custody.Error)))
+
   ReadChild(
     remote_tool.ChildOrigin,
     process.Subject(
@@ -325,6 +388,127 @@ pub fn receive_workspace_child(
   ask(owner, fn(reply) { ReceiveWorkspace(origin, id, receipt, reply) })
 }
 
+/// Commits complete original Compile/Launch input before preparation or send.
+/// Bound checks precede the mailbox; the original service UUID is never minted here.
+///
+/// ## Examples
+///
+/// `reserve_service_child(owner, key, input)` returns only after the commit.
+pub fn reserve_service_child(
+  owner: Handle,
+  key: command.ServiceKey,
+  input: BitArray,
+) -> Result(custody.ServiceRequest, custody.Error) {
+  use request <- result.try(custody.service_request(owner.limits, key, input))
+  use Nil <- result.try(
+    ask(owner, fn(reply) { ReserveService(request, reply) }),
+  )
+  Ok(request)
+}
+
+/// Retrieves the exact original service and independent completion custody.
+///
+/// ## Examples
+///
+/// `service_child(owner, key)` never grants a second service execution.
+pub fn service_child(
+  owner: Handle,
+  key: command.ServiceKey,
+) -> Result(
+  #(custody.ServiceRequest, option.Option(custody.Payload)),
+  custody.Error,
+) {
+  ask(owner, fn(reply) { ReadService(key, reply) })
+}
+
+/// Commits an exact immutable offer after the original service input comparison.
+/// A capacity refusal leaves the executor responsible for retaining its offer.
+///
+/// ## Examples
+///
+/// `admit_offer(owner, original, offer)` returns Retained for an exact duplicate.
+pub fn admit_offer(
+  owner: Handle,
+  original: custody.ServiceRequest,
+  offer: custody.CommandOfferPayload,
+) -> Result(custody.Admission, custody.Error) {
+  use _ <- result.try(custody.workspace_request(
+    owner.limits,
+    custody.service_content(original),
+  ))
+  let #(ref, digest) = custody.offer_identity(offer)
+  use offer <- result.try(custody.command_offer_payload(
+    owner.limits,
+    ref,
+    digest,
+    custody.offer_content(offer),
+  ))
+  ask(owner, fn(reply) { AdmitOffer(original, offer, reply) })
+}
+
+/// Retrieves the original retained offer without allocating native identity.
+///
+/// ## Examples
+///
+/// `offer(owner, ref)` refuses changed identity and cancelled authority.
+pub fn offer(
+  owner: Handle,
+  ref: command.CommandRef,
+) -> Result(custody.CommandOfferPayload, custody.Error) {
+  ask(owner, fn(reply) { ReadOffer(ref, reply) })
+}
+
+/// Reserves COMPLETE post-clearance native content under the original offer.
+/// Exact duplicates return the original UUID, even with another candidate.
+///
+/// ## Examples
+///
+/// `reserve_command_child(owner, offer, id, prepared)` commits before native send.
+pub fn reserve_command_child(
+  owner: Handle,
+  offer: custody.CommandOfferPayload,
+  candidate: ids.EntryId,
+  prepared: BitArray,
+) -> Result(#(ids.EntryId, custody.Payload), custody.Error) {
+  let #(ref, digest) = custody.offer_identity(offer)
+  use offer <- result.try(custody.command_offer_payload(
+    owner.limits,
+    ref,
+    digest,
+    custody.offer_content(offer),
+  ))
+  use request <- result.try(custody.payload(owner.limits, prepared))
+  ask(owner, fn(reply) { ReserveCommand(offer, candidate, request, reply) })
+}
+
+/// Retrieves original complete native evidence for reconciliation after loss.
+///
+/// ## Examples
+///
+/// `command_child(owner, ref)` never re-clears uncertain native execution.
+pub fn command_child(
+  owner: Handle,
+  ref: command.CommandRef,
+) -> Result(
+  #(ids.EntryId, custody.Payload, option.Option(custody.Payload)),
+  custody.Error,
+) {
+  ask(owner, fn(reply) { ReadCommand(ref, reply) })
+}
+
+/// Atomically fences outer service, immutable offers and allocated native rows.
+/// Persistence failure requires the caller's existing fatal assembly fence.
+///
+/// ## Examples
+///
+/// `cancel_service(owner, key)` preserves the original native bytes for late receipt.
+pub fn cancel_service(
+  owner: Handle,
+  key: command.ServiceKey,
+) -> Result(Nil, custody.Error) {
+  ask(owner, fn(reply) { CancelService(key, reply) })
+}
+
 /// Retrieves stable UUID, outgoing bytes and optional exact child receipt.
 ///
 /// ## Examples
@@ -496,6 +680,37 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         reply,
         custody.receive_workspace_child(state.store, origin, id, receipt),
       )
+      resume(state)
+    }
+    ReserveService(request, reply) -> {
+      process.send(reply, custody.admit_service_child(state.store, request))
+      resume(state)
+    }
+    ReadService(key, reply) -> {
+      process.send(reply, custody.service_child(state.store, key))
+      resume(state)
+    }
+    AdmitOffer(original, offer, reply) -> {
+      process.send(reply, custody.admit_offer(state.store, original, offer))
+      resume(state)
+    }
+    ReadOffer(ref, reply) -> {
+      process.send(reply, custody.offer(state.store, ref))
+      resume(state)
+    }
+    ReserveCommand(offer, candidate, request, reply) -> {
+      process.send(
+        reply,
+        custody.admit_command_child(state.store, offer, candidate, request),
+      )
+      resume(state)
+    }
+    ReadCommand(ref, reply) -> {
+      process.send(reply, custody.command_child(state.store, ref))
+      resume(state)
+    }
+    CancelService(key, reply) -> {
+      process.send(reply, custody.cancel_service(state.store, key))
       resume(state)
     }
     ReadChild(origin, reply) -> {
