@@ -336,7 +336,7 @@
   .chip-status{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   /* The state's glyph leads the status line: it pulses while the strand
      works, and the line's words carry the state without it. */
-  .chip-status .st{display:inline-block;width:1.2em;font-size:11px;text-align:center;}
+  .chip-status .st{display:inline-block;min-width:1em;margin-right:.35em;font-size:11px;text-align:center;}
   .chip-status.running .st{color:var(--color-current);animation:loom-pulse 1.4s ease-in-out infinite;}
   @keyframes loom-pulse{50%{opacity:.35;}}
   .chip-status.needs-input{color:var(--color-signal-text);}
