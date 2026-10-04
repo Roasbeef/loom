@@ -6,6 +6,9 @@ machine ProductOwner {
   var nativeOwner: machine;
   var mode: tProductMode;
   var retained: map[int, tService];
+  var offers: map[int, tOffer];
+  var elapsed: int;
+  var notified: set[int];
   var cleared: map[int, tOffer];
   var nativeRows: map[int, tRequest];
   var completions: map[int, tProductResult];
@@ -26,6 +29,16 @@ machine ProductOwner {
       }
       send service, eProductReserve, (owner = this, service = s);
     }
+    on eProductAdvanceTime do (delta: int) {
+      elapsed = elapsed + delta;
+      announce mProductTime, elapsed;
+    }
+    on eProductCompileElapsed do {
+      elapsed = elapsed + 70000;
+      announce mProductTime, elapsed;
+      announce mProductCompileRunElapsed, 70000;
+      send driver, eProductRunTimeDone;
+    }
     on eProductResourceView do (p: tResourceView) {
       if (!(p.service.id in retained) || retained[p.service.id] != p.service) { return; }
       if (p.kind == ResourceLease || p.kind == ResourceLeaseRecovered) {
@@ -38,25 +51,47 @@ machine ProductOwner {
       announce mProductResourceObserved, p;
       if (p.kind == ResourceUnknown) { announce mProductWitness, ProductUnknownResource; }
       if (p.kind == ResourceLeaseRecovered) { announce mProductWitness, ProductRecoveredLease; }
+      if (mode == ProductDeadResource && p.service.id == 2 && p.kind == ResourceLease) {
+        send service, eProductResourceOwnerDeath;
+        send service, eProductResourceQueryFor, 2;
+      } else if (p.kind == ResourceLease || p.kind == ResourceLeaseRecovered) {
+        send this, eProductConstruct, p.service.id;
+      }
       if (p.kind != ResourceLease) { send driver, eProductResourceObserved, p.kind; }
     }
-    on eProductOffer do (o: tOffer) {
-      if (!(o.service.id in retained) || retained[o.service.id] != o.service ||
-          o != productOffer(retained[o.service.id]) ||
-          (o.commandRef in cleared && cleared[o.commandRef] != o) ||
-          (o.commandRef == 2 && (!(2 in resourceObservation) ||
-            (resourceObservation[2].kind != ResourceLease && resourceObservation[2].kind != ResourceLeaseRecovered)))) {
-        announce mProductOfferRejected, o;
-        announce mProductWitness, ProductConflict;
+    on eProductConstruct do (id: int) {
+      var o: tOffer;
+      var w: int;
+      if (id in offers) { return; }
+      w = productWall(retained[id].deadline - elapsed, retained[id].ceiling);
+      if (w < 1) {
+        announce mProductWallRefused, (service = retained[id], remaining = retained[id].deadline - elapsed);
+        send driver, eProductBudgetDone;
         return;
       }
-      if (!(o.commandRef in cleared)) {
-        cleared[o.commandRef] = o;
-        announce mProductCleared, o;
-        announce mProductWitness, ProductClearedPending;
-        // Submission is another turn: clearance alone grants no native fact.
-        send this, eProductSubmit, o;
+      o = productOffer(retained[id]); o.wall = w;
+      announce mProductWallSelected, (offer = o, remaining = retained[id].deadline - elapsed, allowance = productAllowance());
+      offers[id] = o;
+      announce mProductOfferRetained, o;
+      if (budgetProfile(mode)) { send driver, eProductBudgetDone; return; }
+      if (mode == ProductExpiredOffer && id == 1) {
+        send this, eProductAdvanceTime, 120000;
       }
+      send this, eProductClearOffer, id;
+    }
+    on eProductOffer do (o: tOffer) {
+      // A foreign proposal cannot replace the owner-derived canonical offer.
+      if (!(o.commandRef in offers) || offers[o.commandRef] != o) {
+        announce mProductOfferRejected, o;
+        announce mProductWitness, ProductConflict;
+      }
+    }
+    on eProductClearOffer do (id: int) { clearOffer(id); }
+    on eProductRecoverCommand do (id: int) {
+      if (id in nativeRows) {
+        queryNative(id);
+        if (mode == ProductPostSendDelay) { send driver, eProductLossDone; }
+      } else { clearOffer(id); }
     }
     on eProductSubmit do (accepted: tOffer) {
       var candidate: tOffer;
@@ -74,12 +109,31 @@ machine ProductOwner {
       n.digest = candidate.commandDigest;
       nativeRows[accepted.commandRef] = n;
       announce mProductNativeReserved, (offer = candidate, native = n);
+      if (mode == ProductColdRun && accepted.commandRef == 1) {
+        elapsed = elapsed + 6000;
+        announce mProductTime, elapsed;
+        announce mProductControlComplete, (offer = candidate, native = n);
+      }
       send nativeOwner, ePrepare, n;
     }
     on eProductView do (v: tReply) {
-      // The existing Owner commits the native terminal before this view.
-      if (v.answer == Prior && v.row.phase == Terminal) {
-        send service, eProductNativeTerminal, v.request;
+      var foreign: tRequest;
+      // Matching retained native evidence, rather than clearance, admits the
+      // physical service's association. The original Owner owns these facts.
+      if (v.answer == Prior && v.request.key.execution in nativeRows &&
+          nativeRows[v.request.key.execution] == v.request) {
+        if (!(v.request.key.execution in notified)) {
+          notified += (v.request.key.execution);
+          send service, eProductNativeAdmission, (offer = offers[v.request.key.execution], native = v.request);
+        }
+        // This directed boundary input uses the existing changed-digest class.
+        // FIFO from this sender places it after association and before the
+        // genuine terminal, so the control must exercise the real refusal.
+        if (mode == ProductForeignNativeTerminal && v.request.key.execution == 1 && v.row.phase == Running) {
+          foreign = v.request; foreign.digest = 2;
+          send service, eProductNativeTerminal, foreign;
+        }
+        if (v.row.phase == Terminal) { send service, eProductNativeTerminal, v.request; }
       }
     }
     on eProductCompleted do (p: tProductResult) {
@@ -101,15 +155,7 @@ machine ProductOwner {
       send this, eProductQuery;
       send this, eProductRelease;
     }
-    on eProductQuery do {
-      var original: tRequest;
-      if (2 in nativeRows) {
-        original = nativeRows[2];
-        original.key.execution = nativeRows[2].key.execution;
-        announce mProductNativeReserved, (offer = cleared[2], native = original);
-        send nativeOwner, eOwnerReconcile, original;
-      }
-    }
+    on eProductQuery do { if (2 in nativeRows) { queryNative(2); } }
     on eProductRelease do {
       if (2 in nativeRows) {
         // Resource custody ends independently of the still-running Helper.
@@ -141,11 +187,37 @@ machine ProductOwner {
       }
     }
     on eProductReplay do {
-      send service, eProductReserve, (owner = this, service = retained[2]);
+      if (2 in nativeRows) { queryNative(2); }
+      else { send service, eProductReserve, (owner = this, service = retained[2]); }
     }
     on eProductOwnerCrash do {
       // The abstract atomic stores survive. Recovery does not rerun a tool.
       send nativeOwner, eOwnerCrash;
     }
+  }
+  fun clearOffer(id: int) {
+    var o: tOffer;
+    if (!(id in offers)) { return; }
+    if (id in nativeRows) { queryNative(id); return; }
+    if (id in cleared) { return; }
+    o = offers[id];
+    announce mProductClearanceAttempt, (offer = o, remaining = retained[id].deadline - elapsed, allowance = productAllowance());
+    if (o.wall * 1000 + 1100 + productAllowance() > retained[id].deadline - elapsed) {
+      announce mProductClearanceRefused, o;
+      send driver, eProductBudgetDone;
+      return;
+    }
+    cleared[id] = o;
+    announce mProductCleared, o;
+    announce mProductWitness, ProductClearedPending;
+    send this, eProductSubmit, o;
+  }
+  fun queryNative(id: int) {
+    var original: tRequest;
+    original = nativeRows[id];
+    original.key.execution = nativeRows[id].key.execution;
+    announce mProductNativeReserved, (offer = cleared[id], native = original);
+    announce mProductNativeQuery, (offer = offers[id], native = original);
+    send nativeOwner, eOwnerReconcile, original;
   }
 }
