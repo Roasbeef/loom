@@ -38,6 +38,28 @@ model-written program through the whole pipeline against a real jail, and
 the last section says what that run proves and what it cannot prove on a
 kernel missing a layer.
 
+## Managed command provenance
+
+A managed execution keeps the original tool invocation identity separately from
+the broker's budget key. `identity.for_managed_execution` takes the retained
+`ToolKey`; build and run phases preserve that parent while projecting the
+existing operation/step ledger. A separately accounted build can still use its
+physical `-build` step without changing its original parent.
+
+The builder derives `CompileCommand` and the launcher derives
+`SatelliteCommand`. Both pass their origin through `physical.Runner` to
+`broker.clear_call_from`, so the dispatch boundary receives the complete parent
+rather than reconstructing it from operation and step. Build grants remain
+empty; run grants and cancellation keep their existing behavior.
+
+`client/codemode.execute_managed` checks the request's operation, step and source
+index against that original key before preparation. The assembly supplying the
+key remains responsible for its original arguments, authority and reserved
+result entry. Ordinary local execution still uses `execute`. This component
+preserves provenance through local physical preparation and clearance; it does
+not yet enable registered execution or give nested capability calls durable
+remote custody.
+
 ## Why Gleam is safe to run
 
 Pure Gleam cannot touch the world. It has no reflection, no `eval`, no
