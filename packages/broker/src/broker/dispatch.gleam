@@ -16,8 +16,9 @@
 ////
 //// One call crosses it in three steps.
 ////
-//// 1. The broker builds a `Dispatch` for a cleared call: the request, the
-////    wall deadline, the clock, the process whose death should cancel the
+//// 1. The broker builds a `Dispatch` for a cleared call: the request, its
+////    exact operation/step context, the wall deadline, the clock, the process
+////    whose death should cancel the
 ////    call, and two closures — `deliver` for each output chunk, `settle`
 ////    for the one terminal verdict — through which the dispatcher reports
 ////    back. The dispatcher never learns the broker's message type.
@@ -56,6 +57,7 @@
 import broker/exec
 import broker/framing.{type OutputStream}
 import core/clock.{type Clock}
+import core/ids.{type OpId}
 import gleam/erlang/process.{type Pid}
 import gleam/option.{type Option}
 
@@ -164,10 +166,27 @@ pub type Terminal {
   Failed(failure: exec.ExecFailure)
 }
 
+/// The cleared operation and step, copied from CallSpec without substitution.
+/// These are logical coordinates; seq, token and transport generations cannot
+/// reconstruct them. A remote adapter validates the step with core/workspace.step
+/// (1..1024 UTF-8 bytes, no controls) at its external boundary. The local broker
+/// preserves all internally generated names, including job and build suffixes.
+pub type CallContext {
+  /// Context comes from the actual cleared call, never a fresh operation ID.
+  CallContext(
+    /// The durable operation which owns the call.
+    operation: OpId,
+    /// The exact internal step name; external admission must bound it.
+    step: String,
+  )
+}
+
 /// What the broker hands a dispatcher for one cleared call. Every field is
 /// a decision the broker already made; the dispatcher carries them out.
 pub type Dispatch {
   Dispatch(
+    /// Logical identity from the cleared CallSpec, independent of call seq.
+    context: CallContext,
     /// The cleared request, token and final policy included.
     request: exec.ExecRequest,
     /// The identity's position within the dispatcher's incarnation. The

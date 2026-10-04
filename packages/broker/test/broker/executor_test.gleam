@@ -76,6 +76,7 @@ fn hand_dispatch(
   settlements: process.Subject(dispatch.Terminal),
 ) -> dispatch.Dispatch {
   dispatch.Dispatch(
+    context: dispatch.CallContext(operation: planes.op(), step: "fixture"),
     request: exec.ExecRequest(
       argv: ["/bin/sleep", "30"],
       env: [],
