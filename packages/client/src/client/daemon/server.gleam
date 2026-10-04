@@ -109,23 +109,26 @@ pub type Ui(instance) {
     /// a ticket it mints for a switch; the fourth records how the page's images
     /// are read, under the page's cookie (`ui_sessions.register_images`); the
     /// fifth is the page's ceiling, which the relay caps every authorization
-    /// with.
+    /// with; the sixth is the page's reach, which the socket carries onto every
+    /// ticket the page mints and which decides whether the page may go home.
     upgrade: fn(
       Request(mist.Connection),
       Attachment(instance),
       fn() -> Result(Int, Nil),
       fn(ui_sessions.Images) -> Nil,
       access.Role,
+      ui_sessions.Reach,
     ) -> Response(mist.ResponseData),
     /// Upgrades a checked home request to the home component's socket
     /// (protocol-change/065). It takes the same custody of the attachment's
     /// permit, and its third and fourth arguments are the page's deadline
-    /// check and ceiling, as for `upgrade`.
+    /// check, ceiling and reach, as for `upgrade`.
     home: fn(
       Request(mist.Connection),
       HomeAttachment(instance),
       fn() -> Result(Int, Nil),
       access.Role,
+      ui_sessions.Reach,
     ) -> Response(mist.ResponseData),
   )
 }
@@ -303,7 +306,14 @@ fn web_socket(
         id,
         PageRole(grant.ceiling),
         fn(request, attachment) {
-          ui.upgrade(request, attachment, open, register, grant.ceiling)
+          ui.upgrade(
+            request,
+            attachment,
+            open,
+            register,
+            grant.ceiling,
+            grant.reach,
+          )
         },
       )
     }
@@ -393,6 +403,7 @@ fn home_upgrade(
           ),
           open,
           grant.ceiling,
+          grant.reach,
         )
       root.release(config.daemon, permit)
       response

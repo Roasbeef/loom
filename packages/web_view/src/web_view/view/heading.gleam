@@ -15,6 +15,12 @@
 //// Transcript text must never reach this region, and no attribute here may
 //// be built from it.
 ////
+//// A page opened from the home (protocol-change/065) draws one more control, a
+//// "Home" button, as the bar's second child, straight after the brand. The
+//// bar always has that child, an empty node when the page has no way home, so
+//// the page socket can name the button's path (`component.home_path`) and
+//// the children after it keep their places whether or not it is drawn.
+////
 //// The ended page's notice is the bar's last child, so a page with no
 //// session says why without moving any region after it. The stylesheet
 //// wraps it onto a row of its own beneath the figures.
@@ -31,6 +37,7 @@ import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/event
 
 /// The page's top bar: the brand, the workspace and name that locate the
 /// session, the connection's status, and the context and cost figures.
@@ -43,6 +50,9 @@ import lustre/element/html
 /// owner and the host, never by the session's agent, and a `title` is
 /// inert, so neither needs the stricter handling transcript text gets.
 ///
+/// `home` is the bar's second child: `home_link`'s button on a page that may
+/// go home, and `element.none()` on a page that may not.
+///
 /// `name` and `workspace` are the catalogue label's two fields, or `None`
 /// when the host could not read the label; `status` is the connection's
 /// status as the page words it. `context` and `cost` are the two estimates
@@ -53,10 +63,11 @@ import lustre/element/html
 /// ## Examples
 ///
 /// ```gleam
-/// // heading.view("0192ab34cd", Some("docs"), Some("/src/loom"), "connected", "ctx ~41%", "est $0.04", element.none())
+/// // heading.view("0192ab34cd", element.none(), Some("docs"), Some("/src/loom"), "connected", "ctx ~41%", "est $0.04", element.none())
 /// ```
 pub fn view(
   session_id session_id: String,
+  home home: Element(message),
   name name: Option(String),
   workspace workspace: Option(String),
   status status: String,
@@ -68,6 +79,7 @@ pub fn view(
     [attribute.class("session-head"), attribute.attribute("slot", "bar")],
     [
       html.span([attribute.class("brand")], [html.text("Loom")]),
+      home,
       workspace_element(workspace),
       html.h1([attribute.title(session_id)], [
         html.text(session_name(session_id, name)),
@@ -87,6 +99,27 @@ pub fn view(
       ]),
       notice,
     ],
+  )
+}
+
+/// The "Home" button of a page opened from the home: one handler, whose
+/// message is the caller's and is fixed when the tree is drawn. A press asks
+/// the daemon for a home ticket; the browser never names where it goes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // heading.home_link(GoingHome)
+/// ```
+pub fn home_link(press: message) -> Element(message) {
+  html.button(
+    [
+      attribute.type_("button"),
+      attribute.class("home-link"),
+      attribute.title("Back to the list of your sessions"),
+      event.on_click(press),
+    ],
+    [html.text("Home")],
   )
 }
 

@@ -9,6 +9,11 @@
 //// composer's notice and moves nobody. A peer message's Open button asks the
 //// same way, and only for a session in the principal's own list of running
 //// sessions. The observer's page has none of it.
+////
+//// The last group is the way back (protocol-change/065, the second pull
+//// request): a page opened from a home draws a "Home" button on both pages,
+//// whose press asks the transport for a home ticket and whose answer is drawn
+//// on the same hidden element.
 
 import gleam/erlang/process.{type Subject}
 import gleam/list
@@ -185,10 +190,15 @@ pub fn a_declined_switch_is_worded_and_moves_nobody_test() {
 pub fn the_refusal_words_are_fixed_and_distinct_test() {
   let words =
     list.map(
-      [sessions.NotHeld, sessions.NotRunning, sessions.Unavailable],
+      [
+        sessions.NotHeld,
+        sessions.NotRunning,
+        sessions.Unavailable,
+        sessions.NoHome,
+      ],
       sessions.reason_words,
     )
-  assert list.length(list.unique(words)) == 3
+  assert list.length(list.unique(words)) == 4
 }
 
 // The session on screen is not a button, and a forged message naming it asks
@@ -272,4 +282,123 @@ pub fn an_observers_page_has_no_way_to_switch_test() {
   assert !string.contains(html, "peer-open")
   assert !string.contains(html, "loom-switch")
   assert sidebar_clicks(handlers(component.view(model))) == []
+}
+
+// --- the way home (protocol-change/065, the second pull request) -------------
+
+const home_ticket = "/ui/home?ticket=abc"
+
+// A page on session `A` that may go home: its transport answers a request to
+// go home with `answer` and reports that it was asked.
+fn homed(
+  answer: sessions.Answer,
+  asked: Subject(Nil),
+) -> component.Model(page_fixture.Wire) {
+  let start = page_fixture.start()
+  component.Start(
+    ..start,
+    transport: component.Transport(
+      ..start.transport,
+      home: option.Some(fn() {
+        process.send(asked, Nil)
+        answer
+      }),
+    ),
+  )
+  |> component.new
+  |> component.apply([lane_fixture.captured(10, None)])
+}
+
+// Performs `effects` and folds in the messages they dispatch, for the
+// observer's component, as `deliver` does for the operator's page.
+fn settle(
+  model: component.Model(page_fixture.Wire),
+  effects: effect.Effect(component.Msg(page_fixture.Wire)),
+) -> component.Model(page_fixture.Wire) {
+  let dispatched = process.new_subject()
+  effect.perform(
+    effects,
+    fn(next) { process.send(dispatched, next) },
+    fn(_, _) { Nil },
+    fn(_) { Nil },
+    fn() { panic as "no dynamic value" },
+    fn(_, _) { Nil },
+    fn(_, _) { Nil },
+    fn(_) { Nil },
+  )
+  case process.receive(dispatched, 0) {
+    Ok(next) -> {
+      let #(model, effects) = component.update(model, next)
+      settle(model, effects)
+    }
+    Error(Nil) -> model
+  }
+}
+
+// A page that was opened from a home draws a "Home" button as the top bar's
+// second child, on the operator's page and on the observer's, and a page that
+// was not draws none.
+pub fn only_a_page_opened_from_a_home_draws_the_home_button_test() {
+  let model = homed(sessions.Ticketed(home_ticket), process.new_subject())
+  list.each([element.to_string(component.view(model)), drawn(model)], fn(html) {
+    assert string.contains(html, "class=\"home-link\"")
+    assert string.contains(html, ">Home</button>")
+  })
+  let plain = page_fixture.start() |> component.new
+  list.each([element.to_string(component.view(plain)), drawn(plain)], fn(html) {
+    assert !string.contains(html, "home-link")
+  })
+}
+
+// The press is the page's only request: nothing names where to go. The answer
+// is a home ticket's address on the hidden element, the same element a switch
+// uses, and the observer's page draws it too, last in its centre.
+pub fn a_press_of_home_becomes_a_ticketed_address_on_both_pages_test() {
+  let asked = process.new_subject()
+  let model = homed(sessions.Ticketed(home_ticket), asked)
+  let operator = deliver(model, operator_page.Observed(component.GoingHome))
+  assert process.receive(asked, 0) == Ok(Nil)
+  assert component.departure(operator) == option.Some(home_ticket)
+  assert string.contains(
+    drawn(operator),
+    "<loom-switch hidden to=\"" <> home_ticket <> "\"></loom-switch>",
+  )
+
+  let #(observer, effects) = component.update(model, component.GoingHome)
+  let observer = settle(observer, effects)
+  assert process.receive(asked, 0) == Ok(Nil)
+  assert component.departure(observer) == option.Some(home_ticket)
+  let html = element.to_string(component.view(observer))
+  assert string.contains(
+    html,
+    "<loom-switch hidden to=\"" <> home_ticket <> "\"></loom-switch>",
+  )
+  assert component.departure(model) == None
+}
+
+// A refusal to go home is worded in its own fixed words and moves nobody, in
+// the composer's notice on the operator's page and in the observer's bar on the
+// observer's.
+pub fn a_declined_home_is_worded_and_moves_nobody_test() {
+  let model = homed(sessions.Declined(sessions.NoHome), process.new_subject())
+  let operator = deliver(model, operator_page.Observed(component.GoingHome))
+  assert component.departure(operator) == None
+  assert component.notice(operator)
+    == component.Warned(sessions.reason_words(sessions.NoHome))
+
+  let #(observer, effects) = component.update(model, component.GoingHome)
+  let observer = settle(observer, effects)
+  assert component.departure(observer) == None
+  let html = element.to_string(component.view(observer))
+  assert string.contains(html, sessions.reason_words(sessions.NoHome))
+  assert !string.contains(html, " to=\"")
+}
+
+// A page with no capability ignores the message, so a frame that named the
+// button's path on a page that drew none changes nothing.
+pub fn a_page_with_no_way_home_ignores_the_press_test() {
+  let model = page_fixture.start() |> component.new
+  let #(after, _) = component.update(model, component.GoingHome)
+  assert component.departure(after) == None
+  assert component.notice(after) == component.Quiet
 }
