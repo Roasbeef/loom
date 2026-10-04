@@ -879,6 +879,26 @@ pub fn service_content(request: ServiceRequest) -> BitArray {
   request.request.payload.bytes
 }
 
+/// Projects the exact canonical body without exposing storage's private frame codec.
+/// Both the full decoded identity and exact re-framed bytes must match this opaque
+/// request. This is historical data only, with no send or preparation authority.
+/// It performs no actor ask and never normalizes source or input bytes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert owner_custody.service_input(request) == Ok(original_input_bytes)
+/// ```
+@internal
+pub fn service_input(request: ServiceRequest) -> Result(BitArray, Error) {
+  use #(identity, input) <- result.try(unframe_header(service_content(request)))
+  let expected = command.encode_service(request.key)
+  use Nil <- result.try(equal_json(identity, expected))
+  use canonical <- result.try(frame_header(expected, input))
+  use Nil <- result.try(equal(canonical, service_content(request)))
+  Ok(input)
+}
+
 /// Returns the validated original service identity without granting send rights.
 ///
 /// ## Examples
