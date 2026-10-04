@@ -382,6 +382,29 @@
   .session-open{flex:1 1 auto;display:flex;align-items:baseline;justify-content:space-between;gap:8px;min-width:0;margin:0;padding:4px 8px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;}
   .session-open:hover{background:var(--color-bg-raised);}
   .session-open:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
+  /* The home page (web_view/home, protocol-change/065): the same frame with
+     no strand panel. The frame's element draws the panel's column and its
+     button around an empty slot, so the host's `loom-home` class leaves both
+     out. The sidebar leads with a "Home" entry marked as the page on screen,
+     and the centre is a table for each workspace: name, whether a process
+     runs the session, and when it was created. The table scrolls in the
+     centre, which does not scroll itself. */
+  :host(.loom-home) .region-panel,:host(.loom-home) .toggle-panel{display:none;}
+  .sidebar-home{margin:0 0 12px 0;padding:4px 8px;border-radius:6px;background:var(--color-bg-raised);box-shadow:inset 2px 0 0 var(--color-current);font-size:12px;}
+  .session-head .home-who{color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);}
+  .home-badge{margin-left:8px;padding:0 6px;border:1px solid var(--color-divider);border-radius:99px;font:600 11px/1.4 var(--font-mono);}
+  main.centre > .home-sessions{flex:1 1 0;min-height:0;max-width:960px;padding-bottom:24px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
+  .home-heading{margin:0 0 12px 0;font:600 15px/1.4 var(--font-sans);}
+  .home-empty{margin:0;color:var(--color-fg-quiet);}
+  table.home-table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:13px;}
+  .home-table th:nth-child(2){width:140px;}
+  .home-table th:nth-child(3){width:200px;}
+  table.home-table + table.home-table{margin-top:24px;}
+  .home-table caption{padding:0 0 6px 0;text-align:left;font:600 11px/1.4 var(--font-mono);letter-spacing:.04em;color:var(--color-fg-quiet);overflow-wrap:anywhere;}
+  .home-table th{padding:6px 12px 6px 0;text-align:left;font:500 12px/1.4 var(--font-mono);color:var(--color-fg-quiet);border-bottom:1px solid var(--color-divider);}
+  .home-table td{padding:8px 12px 8px 0;vertical-align:baseline;border-bottom:1px solid var(--color-divider);}
+  .home-table td.home-name{min-width:0;overflow-wrap:anywhere;}
+  .home-table td.home-created{color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);white-space:nowrap;}
   .ring{display:inline-block;width:10px;height:10px;border-radius:50%;flex:0 0 auto; border:2px solid var(--color-divider);}
   .ring.ring-head{border-color:var(--color-current);background:color-mix(in srgb,var(--color-current) 25%,transparent);}
   .ring.ring-tail{border-color:var(--color-divider);border-top-color:var(--color-signal);transform:rotate(45deg);}
