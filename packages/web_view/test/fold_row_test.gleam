@@ -306,7 +306,7 @@ pub fn no_row_names_the_terminals_key_test() {
     ])
   let html = drawn([turns.Plain(feed, dict.new(), None)])
 
-  assert !string.contains(html, "Ctrl+G")
+  assert !string.contains(string.lowercase(html), "ctrl+g")
   assert string.contains(html, "advisor feed: user:")
   assert string.contains(html, "[~500 tokens]")
 }

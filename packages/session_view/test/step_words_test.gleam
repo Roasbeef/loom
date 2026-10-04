@@ -161,6 +161,10 @@ pub fn a_todo_step_reads_in_a_readers_words_test() {
   assert step_words.text(words("todo", [#("op", text("done"))]))
     == "Todo · done"
 
+  let odd =
+    step_words.text(words("todo", [#("op", text(string.repeat("y", 90)))]))
+  assert string.length(odd) == string.length("Todo · ") + 60
+
   let long = string.repeat("x", 80)
   assert string.length(step_words.text(task("start", long)))
     == string.length("Todo · started: ") + 60

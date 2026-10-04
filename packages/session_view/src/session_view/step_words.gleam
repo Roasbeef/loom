@@ -457,7 +457,7 @@ fn todo_words(arguments: JsonValue) -> Words {
     "unblock" -> said("unblocked")
     "view" -> Words("Todo", Figure("viewed"), None)
     "" -> Words("Todo", Unnamed, None)
-    other -> Words("Todo", Figure(other), None)
+    other -> Words("Todo", Figure(clip_to(other, todo_task_limit)), None)
   }
 }
 

@@ -99,9 +99,12 @@ fn latest_program(program: Program) -> Element(message) {
 // nothing rather than that text. Every other state shows its excerpt.
 fn result(program: Program) -> Element(message) {
   case program.state, program.detail {
-    CompileFailed, Some(detail) | RunFailed, Some(detail) -> diagnostic(detail)
-    CompileFailed, None | RunFailed, None -> element.none()
-    Running, _ | Completed, _ | Errored, _ | Rejected, _ | Failed, _ ->
+    CompileFailed, Some(detail)
+    | RunFailed, Some(detail)
+    | Rejected, Some(detail)
+    -> diagnostic(detail)
+    CompileFailed, None | RunFailed, None | Rejected, None -> element.none()
+    Running, _ | Completed, _ | Errored, _ | Failed, _ ->
       case program.excerpt {
         Some(excerpt) ->
           html.p([attribute.class("trace-result")], [html.text(excerpt)])

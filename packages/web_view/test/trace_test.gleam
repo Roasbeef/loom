@@ -102,6 +102,16 @@ pub fn a_failed_program_shows_its_diagnostics_not_the_models_instructions_test()
   assert string.contains(html, "Budget · default")
   assert !string.contains(html, "default wall budget")
 
+  let refused =
+    trace_view.Program(
+      ..program(trace_view.Rejected, "vetoed.gleam"),
+      excerpt: Some("refused; fix the program and submit it again."),
+      detail: Some("import os is not allowed"),
+    )
+  let html = drawn(trace_view.Trace(programs: [refused], omitted: 0))
+  assert string.contains(html, "import os is not allowed")
+  assert !string.contains(html, "submit it again")
+
   let bare =
     trace_view.Program(..failed, detail: None)
     |> fn(program) { drawn(trace_view.Trace(programs: [program], omitted: 0)) }

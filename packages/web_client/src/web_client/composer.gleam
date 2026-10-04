@@ -358,6 +358,12 @@ fn restoring(after: Int, up_to: Int) -> Effect(Msg) {
 // when it opens. The buttons are the server's, drawn beside this element in
 // the form, so they are reached through the form and their own `disabled`
 // attribute: a disabled button raises no submit, and the stylesheet dims it.
+//
+// Known residual: the server swaps Send for Queue and Steer when the strand
+// turns busy, and the new buttons are fresh nodes this element has not gated,
+// so with an empty editor they start enabled until the next keystroke. The
+// server's "Nothing to send." still refuses that press, and no observer is
+// kept to catch the swap.
 fn gating(gate: Gate) -> Effect(Msg) {
   use _, root <- effect.after_paint
   let gated = {

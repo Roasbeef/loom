@@ -451,12 +451,13 @@ fn program(call: tool_activity.Call, position: Int) -> Program {
         _ -> []
       }
       let state = state(fields, is_error)
+      let shown = excerpt(fields, content, state)
       Program(
         sandbox: transcript_lines.sandbox_summary(fields),
-        detail: detail(fields),
+        detail: detail(fields, state, shown),
         state:,
         label:,
-        excerpt: Some(excerpt(fields, content, state)),
+        excerpt: Some(shown),
         within_ms:,
         vetting: vetting(state),
         calls: call_rows(details),
@@ -479,23 +480,71 @@ fn program(call: tool_activity.Call, position: Int) -> Program {
 /// The most characters of a failure's detail a program keeps.
 pub const max_detail = 800
 
-// The result's `detail` text, with its lines and a bound on its length. A
-// result that has none, or an empty one, has nothing to say apart from its
-// excerpt. A compiler opens its output with progress and warnings
-// (`Compiling ...`, `warning: unused ...`), and the line a reader wants is the
-// first error, so the text starts there when it has one.
-fn detail(fields: List(#(String, json.JsonValue))) -> Option(String) {
-  case list.key_find(fields, "detail") {
-    Ok(json.String(text)) ->
-      case string.trim(from_first_error(text_hygiene.multiline(text))) {
-        "" -> None
-        shown ->
-          case string.length(shown) > max_detail {
-            True -> Some(string.slice(shown, 0, max_detail - 1) <> "…")
-            False -> Some(shown)
+// What went wrong, for a state that is a failure to compile, vet or run. The
+// result's own `detail` is the reason (the compiler's diagnostics, a run's
+// reason), and a vetting refusal keeps its reasons in `rejections[].detail`.
+// A result with neither, or with empty ones, falls back to the first sentence
+// of its text, which states what happened before it tells the model what to
+// do next. So a failed program always has a reason to show, and never the
+// instruction.
+fn detail(
+  fields: List(#(String, json.JsonValue)),
+  state: State,
+  excerpt: String,
+) -> Option(String) {
+  case state {
+    CompileFailed | RunFailed | Rejected ->
+      case reason(fields) {
+        "" ->
+          case first_sentence(excerpt) {
+            "" -> None
+            sentence -> Some(sentence)
           }
+        text -> Some(bounded(text))
       }
-    _ -> None
+    Running | Completed | Errored | Failed -> None
+  }
+}
+
+fn reason(fields: List(#(String, json.JsonValue))) -> String {
+  let from_detail = case list.key_find(fields, "detail") {
+    Ok(json.String(text)) -> text
+    _ -> ""
+  }
+  let text = case
+    string.trim(from_detail),
+    list.key_find(fields, "rejections")
+  {
+    "", Ok(json.Array(rejections)) ->
+      rejections
+      |> list.filter_map(fn(rejection) {
+        case rejection {
+          json.Object(entry) ->
+            case list.key_find(entry, "detail") {
+              Ok(json.String(text)) -> Ok(text)
+              _ -> Error(Nil)
+            }
+          _ -> Error(Nil)
+        }
+      })
+      |> string.join("\n")
+    _, _ -> from_detail
+  }
+  string.trim(from_first_error(text_hygiene.multiline(text)))
+}
+
+fn bounded(text: String) -> String {
+  case string.length(text) > max_detail {
+    True -> string.slice(text, 0, max_detail - 1) <> "…"
+    False -> text
+  }
+}
+
+// The text up to its first full stop followed by a space, with the stop.
+fn first_sentence(text: String) -> String {
+  case string.split_once(text, ". ") {
+    Ok(#(first, _)) -> first <> "."
+    Error(Nil) -> string.trim(text)
   }
 }
 
