@@ -248,3 +248,21 @@ or NativeCommand); every field participates in the child address. The address
 encoding bounds and escapes each component so names and delimiters cannot
 alias another role. This adds no dynamic admission authority and leaves the
 original 64-row ceiling unchanged.
+
+
+## Physical service and command identity (protocol 067)
+
+`core/command.ServiceKey` retains the original managed ToolKey, closed
+CompileService/LaunchService purpose, full registered scope, parent's operation,
+explicit physical step, original outer request UUID and exact input/enrollment/
+contract digests. `CommandRef` pairs CompileService with CompileCommand or
+LaunchService with SatelliteCommand. Its deterministic address excludes content;
+changed input reaches the original fence rather than another row. The native
+origin remains disjoint from its outer service. No offer UUID is allocated.
+
+Smart constructors reject different parent session/operation, invalid digest
+spelling and crossed role pairs. Closed versioned JSON decoders return bounded
+CorruptionReport values and reconstruct through the same constructors. These
+values express identity only; hashing, policy acceptance, broker clearance,
+retention and actual execution remain outside this pure package. System/LSP and
+capability command identity are deliberately absent from this fixed-role slice.
