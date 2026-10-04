@@ -30,6 +30,23 @@ reply remains an unknown outcome under the original invocation. `response_matche
 rejects a response for a different operation or read/Git projection. Local tools
 continue to use their existing handlers until assembly selects a remote binding.
 
+## Semantic filesystem tool consumers
+
+`workspace_tools` supplies service-backed `fs_read`, `fs_write` and `fs_edit`.
+Its callback receives the original `tool.Ctx` and one closed `workspace.Request`;
+owner assembly must attach durable original-child custody. The constructors
+validate relative paths before calling the service and never resolve them on
+the owner's filesystem. Existing virtual read schemes still use their owner
+callbacks; an unknown scheme refuses without fallback.
+
+Narrow internal constructors in `fs` share argument decoding and pure result
+projections. Local tools keep Safe replay metadata; semantic tools use Never
+because recovery must reconcile the original child. Images, native anchors,
+stale-edit evidence and post-write diagnostics retain their native rendering.
+A mismatched completion or OutcomeUnknown reports possible effects and asks
+for original-request recovery, never a fresh mutation. These constructors do
+not themselves select a remote workspace in the shipped daemon.
+
 ## LSP observer callback ownership
 
 The retired top-level LSP constructors are removed. `lsp.diagnostics_observer`

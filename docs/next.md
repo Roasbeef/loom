@@ -90,9 +90,10 @@ actionable issue; [the record](review/distributed-owner-dispatch.md) separates
 this one-emulator proof from product recovery and two-host acceptance.
 The bounded semantic codec, explicit native-host lifetime, workspace custody
 and chunk transfer are now published in PRs #781, #782 and #783. The metadata
-formal model is in #779. The current workspace-exchange slice joins an owner
-reservation, real TLS, an executor filesystem effect and durable receipt before
-ACK. Its one-VM fixture passed lost-reply, duplicate-submission, custodian reopen,
+formal model is in #779. The workspace-exchange slice in
+[PR #785](https://github.com/Roasbeef/loom/pull/785) joins an owner reservation,
+real TLS, an executor filesystem effect and durable receipt before ACK. Its
+one-VM fixture passed lost-reply, duplicate-submission, custodian reopen,
 chunked readback and scope-refusal checks. Skipping the owner receipt commit
 fails the intended journal-readback assertion. This is not two-host acceptance.
 
@@ -105,6 +106,11 @@ regressions and old-listener/restart mutations distinguish the corrected bound.
 The owner consumer also bounds storage waits with one managed deadline and
 retains original identity after expiry or observer loss. See the
 [exchange review](review/distributed-workspace-exchange.md) for exact limits.
+The semantic filesystem constructors now share native argument validation and
+result projections while refusing owner-local fallback. Their independent
+review found no actionable findings, and the full tools gate passes 663 tests.
+An intentional local fallback compiled but failed the no-owner-filesystem
+regression. See the [consumer review](review/distributed-workspace-tools.md).
 None of these components is enabled by the shipped daemon yet. Bind every workspace consumer
 to the selected executor, then run the two-host acceptance fixture: the owner
 must have no copy of the target checkout, while ordinary file tools, Bash,
