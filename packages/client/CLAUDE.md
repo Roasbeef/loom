@@ -16,6 +16,13 @@ A remote artifact cannot pass the local launcher or be treated as a local
 filesystem approval. Owner satellite token validation and capability routing
 remain on the owner; the extraction introduces no second budget authority.
 
+Managed code-mode callers pass the original `tool_custody.Invocation.key` to
+`codemode.execute_managed`. It checks operation, step and source index before
+vetting or local preparation, then retains the complete parent through compiler
+and satellite clearance. Trusted assembly still binds the effective arguments,
+authority and reserved result entry; the coordinate check does not reconstruct
+that evidence. This entry does not yet select remote physical services.
+
 ## Typed workspace selection and compatibility
 
 `daemon/manager.Creation.workspace` carries a `core/workspace.Binding` before
