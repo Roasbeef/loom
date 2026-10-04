@@ -590,9 +590,14 @@ cancelled row has a NULL request ID, and later admission refuses that original
 origin. Cancellation after admission preserves the original UUID and request,
 and permits exact receipt readback while refusing new submission.
 
-The per-payload hard ceiling is 2 MiB for bounded encoded child output and terminal
-receipts. The total hard ceiling stays 256 MiB; runtime final ToolOutcome codecs
-keep their independent 256 KiB ceiling. Limits remain fixed across reopen. Header
+Ordinary Payload values retain their 2-MiB hard ceiling. Separate typed
+workspace request and receipt constructors admit at most 9 MiB and 32 MiB,
+respectively; the configured payload ceiling can therefore reach 32 MiB.
+Workspace admission reserves the entire configured receipt allowance before
+send, using the same named queries and checked aggregate accounting. Native
+custodian entry points keep their existing request and receipt limits. The
+total hard ceiling stays 256 MiB; runtime final ToolOutcome codecs keep their
+independent 256-KiB ceiling. Limits remain fixed across reopen. Header
 checks validate the full unused final/terminal allowance for retained rows, and
 the smaller frozen-fence formula for collected rows, before a terminal write can
 acknowledge new bytes. Version-1 journals are refused rather than silently opened
