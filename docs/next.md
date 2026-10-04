@@ -144,6 +144,16 @@ managed ChildOrigin through physical compiler and satellite clearance, then
 join retained command offers, executor resources and consumption-credit
 channels before production remote assembly and the separate-host product gate.
 
+The product P and Channel PlusCal models now cover exact command offers,
+resource/launch uncertainty, separate native/outer receipts and final-consumer
+credit in both directions. Independent review found and repaired two vacuous
+reachability claims: the mixed-fault driver now reaches actual Launch work,
+and the late-consumption witness now consumes after timeout under the original
+credit. Root independently reran all 36 P cases, fourteen mutations and 47 TLC
+cases successfully. The [product model review](review/distributed-product-model.md)
+records bounds and remaining implementation obligations. Existing Lean proofs
+remain separate; none of these checks establishes shipped remote behavior.
+
 The Khepri compatibility experiment exercised three OTP 29 nodes with Khepri
 0.19.3 and Ra 3.2.0. Contested conditional updates, majority/minority fencing,
 monotone epochs, timeout followed by a committed receipt, and persistent
