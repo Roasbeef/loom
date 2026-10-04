@@ -20,8 +20,8 @@
 //// **The policy** (`policy_for`) is pure over its inputs. It turns one
 //// `[lsp.<name>]` table, the project root a file was found in, and the
 //// session's base into the lease base and the requirements the clearance is
-//// judged under. The lease base is the session's own, with the three
-//// per-command limits zeroed (`broker/policy.session_lease`, `OutputIsWire`)
+//// judged under. The lease base is the session's own, with per-command time
+//// limits zeroed (`broker/policy.session_lease`, `OutputIsWire`)
 //// and widened by exactly what the operator wrote in `loom.toml` — the extra
 //// roots, the environment names, the private caches `cache_env` names
 //// under Loom's own `<cache>/loom/lsp/<server>/`, and the mount the
@@ -30,11 +30,10 @@
 //// cannot already reach is refused, never granted. The requirements then
 //// ask for the root (writable only for `ProjectWritable`), those extra
 //// roots and private caches, a private scratch
-//// directory for `TMPDIR`, the network off, and unlimited wall, CPU and
-//// output. The zeros are written into the requirements literally rather
-//// than derived from the base, so a base that kept a cap is a narrowing
-//// `RefuseNarrowed` refuses rather than a lease that silently dies of it
-//// hours in.
+//// directory for `TMPDIR`, the network off, session-owned time limits and
+//// the finite per-stream output allowance supplied by `session_lease`.
+//// Hitting that cumulative allowance fails the wire visibly. It is not an
+//// indefinitely replenished consumption credit.
 ////
 //// **The transport** (`transport`) is a `lsp/transport.ChannelTransport`
 //// whose `connect` starts a relay process. The relay acquires a helper
@@ -961,7 +960,7 @@ pub fn policy_for(
   let #(env, unset) = environment(placement, scratch, caches, reading)
   let names = list.map(env, fn(pair) { pair.0 })
 
-  // The lease base: the session's base with the per-command limits zeroed,
+  // The lease base: session-owned time and a finite protocol byte allowance,
   // then widened by what the operator's table names — its extra roots, its
   // environment names, and the executable's region. The project root and
   // the scratch directory are deliberately not added: both must already be
@@ -1000,10 +999,9 @@ pub fn policy_for(
       mounts:,
     )
 
-  // What the server asks for. The limits are written out rather than
-  // inherited from the base, so a base that kept any of the three caps is
-  // a narrowing and the lease is refused up front rather than killed at
-  // the cap some hours in.
+  // Requirements retain the finite wire allowance from the lease. Requesting
+  // zero here would mean unlimited output and correctly fail clearance as
+  // narrowed; time remains owned by the admitted session lifetime.
   let requirements =
     policy.SandboxPolicy(
       ..base,
@@ -1017,7 +1015,7 @@ pub fn policy_for(
         ]),
       ),
       network: policy.NetworkOff,
-      limits: policy.Limits(..base.limits, wall_s: 0, cpu_s: 0, output_bytes: 0),
+      limits: policy.Limits(..base.limits, wall_s: 0, cpu_s: 0),
       env_allow: names,
       mounts: wanted,
     )

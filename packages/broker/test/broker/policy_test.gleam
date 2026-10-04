@@ -1117,20 +1117,23 @@ fn unlimited_requirements() -> policy.SandboxPolicy {
   )
 }
 
-pub fn session_lease_composes_with_unlimited_requirements_test() {
+pub fn session_lease_composes_with_finite_wire_requirements_test() {
   let lease = policy.session_lease(base(), policy.OutputIsWire)
   let #(composed, narrowings) =
     policy.compose(
       base: lease,
-      requirements: unlimited_requirements(),
+      requirements: policy.SandboxPolicy(
+        ..unlimited_requirements(),
+        limits: lease.limits,
+      ),
       grants: [],
     )
 
-  // Zero met with zero stays zero, and nothing is reported short, so a
-  // clearance under `RefuseNarrowed` lets the lease through.
+  // Time remains session-owned while both sides agree on a finite output
+  // allowance. No narrowing permits accidental unlimited output.
   assert composed.limits.cpu_s == 0
   assert composed.limits.wall_s == 0
-  assert composed.limits.output_bytes == 0
+  assert composed.limits.output_bytes == 67_108_864
   assert narrowings == []
 }
 
@@ -1162,9 +1165,9 @@ pub fn session_lease_output_choice_test() {
   let log = policy.session_lease(base(), policy.OutputIsLog)
   let wire = policy.session_lease(base(), policy.OutputIsWire)
 
-  // A log keeps the base's per-stream cap; a wire has none.
+  // A log keeps the ordinary cap; a wire has a larger finite allowance.
   assert log.limits.output_bytes == base().limits.output_bytes
-  assert wire.limits.output_bytes == 0
+  assert wire.limits.output_bytes == 67_108_864
 
   // Either way the time limits are cleared and nothing else moves.
   assert log.limits.cpu_s == 0
@@ -1183,4 +1186,25 @@ pub fn session_lease_leaves_memory_and_processes_alone_test() {
   assert lease.limits.fsize_bytes == proxy_policy().limits.fsize_bytes
   assert policy.SandboxPolicy(..lease, limits: proxy_policy().limits)
     == proxy_policy()
+}
+
+/// An unlimited requirement cannot silently turn a wire lease back into an
+/// unbounded producer after composition.
+pub fn wire_lease_refuses_unlimited_output_requirement_test() {
+  let lease = policy.session_lease(base(), policy.OutputIsWire)
+  let #(composed, narrowings) =
+    policy.compose(
+      base: lease,
+      requirements: unlimited_requirements(),
+      grants: [],
+    )
+  assert composed.limits.output_bytes == 67_108_864
+  assert narrowings
+    == [
+      policy.NarrowedLimit(
+        field: policy.OutputBytes,
+        wanted: 0,
+        granted: 67_108_864,
+      ),
+    ]
 }

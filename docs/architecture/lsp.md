@@ -356,20 +356,19 @@ The requirements ask for:
 - `PATH`, `HOME`, `TMPDIR` and the table's `env` names, and no other
   environment.
 
-Limits need care. A one-shot command has a wall-clock limit, a CPU limit
-and an output cap, and a server must have none of them: the wall would
-kill it mid-session, and the output cap would cut its JSON-RPC stream
-mid-frame hours in. Limits compose by meet, with zero meaning unlimited,
-so a zero in the requirements against a non-zero base is a narrowing,
-and `RefuseNarrowed` refuses it. The zeros must therefore sit on the
-base. `broker/policy.session_lease` builds that base for both kinds of
-lease. Its `LeaseOutput` argument is `OutputIsLog` for an extension host,
-whose stdout is a log the cap may bound, and `OutputIsWire` for a
-language server, whose stdout is its protocol. The requirements then
-restate the zeros literally rather than deriving them, so a base that
-kept a cap is a refusal at clearance rather than a server that goes mute
-hours later. What bounds the lease instead is the pooled budget deadline,
-twelve hours out, as for extension hosts.
+Limits distinguish lifetime from retained output. A session lease removes the
+per-command wall and CPU deadlines; the pooled budget still owns its lifetime.
+`broker/policy.session_lease` keeps ordinary log limits for `OutputIsLog` and
+sets a cumulative 64 MiB limit on each stream for `OutputIsWire`. The language
+server's requirements retain those finite output limits, so clearance does not
+request unlimited output from a bounded base.
+
+This bounds the payload a server can queue even when its consumer stops reading.
+It is a lifetime byte allowance, not backpressure: a busy server can exhaust it.
+Stdout truncation closes the protocol and aborts that lease, because a partial
+JSON-RPC stream cannot be recovered by discarding bytes. A subsequent request
+can acquire a fresh lease. Stderr remains a bounded diagnostic tail. ADR-015's
+finite-output addendum records this tradeoff and the real-helper regression.
 
 ### The transport
 
