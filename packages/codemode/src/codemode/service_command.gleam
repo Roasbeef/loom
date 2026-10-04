@@ -4,6 +4,8 @@
 //// and exact Ready locations with the same closed native templates. A bounded
 //// peer offer is only syntax; `matches` compares it with this complete derived
 //// expectation before clearance. No peer argv, policy or path becomes authority.
+//// Historical Compile custody uses `compile_from_input` to reconstruct the same
+//// data from retained bounded input; that path performs no source admission.
 ////
 //// The caller supplies one positive whole native second after durable Ready.
 //// These constructors check the original stage/policy ceiling, not remaining
@@ -66,6 +68,29 @@ pub fn compile(
   selected_wall_s: Int,
 ) -> Result(ExpectedCommand, Error) {
   let #(service, original, _) = input.admitted_compile(admitted)
+  compile_from_input(enrolled, service, original, locations, selected_wall_s)
+}
+
+/// Reconstructs compiler expectation data from already retained bounded input.
+/// Historical journal comparison must not invent a trusted compilation contract
+/// merely to recover this data. This function performs no source vetting and
+/// grants no preparation, clearance or permission to launch. A live service must
+/// separately admit its source before effects; `compile` keeps that entry point.
+/// The journal compares the native bytes with this expectation while preserving
+/// the complete cleared policy and proving that it is no broader than requested.
+///
+/// ## Examples
+///
+/// `compile_from_input(enrolled, key, original, ready, wall)` recovers the same
+/// expected offer as `compile` when the retained original input is identical.
+@internal
+pub fn compile_from_input(
+  enrolled: enrollment.SessionEnrollment,
+  service: command.ServiceKey,
+  original: input.CompileInput,
+  locations: resources.CompileLocations,
+  selected_wall_s: Int,
+) -> Result(ExpectedCommand, Error) {
   let facts = input.compile_facts(original)
   let #(ready_service, root) = resources.compile_fields(locations)
   use <- bool.guard(service != ready_service, Error(AssociationMismatch))

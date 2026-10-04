@@ -952,3 +952,23 @@ pub fn changed_original_operation_and_offer_integer_boundary_refuse_test() {
     )
     == Error(expected.InvalidCommand(offer.InvalidEncoding))
 }
+
+/// Historical construction recovers data without minting source admission.
+pub fn retained_input_reconstructs_exact_compiler_expectation_test() {
+  let admitted = admitted_compile(enrolled(), compile_key(), base(), 180_000)
+  let #(key, original, _) = input.admitted_compile(admitted)
+  let ready = compile_ready(enrolled(), key)
+  let assert Ok(live) = expected.compile(enrolled(), admitted, ready, 1)
+    as "The live admitted entry derives an expectation."
+  let assert Ok(historical) =
+    expected.compile_from_input(enrolled(), key, original, ready, 1)
+    as "Retained bounded data can reconstruct the same expectation."
+  let assert True = live == historical
+    as "Both paths share every command field."
+  let assert Error(expected.AssociationMismatch) =
+    expected.compile_from_input(enrolled(), launch_key(), original, ready, 1)
+    as "Historical reconstruction cannot substitute another service role."
+  let assert Error(expected.InvalidWall) =
+    expected.compile_from_input(enrolled(), key, original, ready, 0)
+    as "Historical reconstruction preserves the finite original wall check."
+}
