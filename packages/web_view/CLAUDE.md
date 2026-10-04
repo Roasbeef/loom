@@ -209,7 +209,9 @@ page keys and nonces, and the relay into the session's gateway.
   spans, the status as a `.pill` whose class follows the `Tone`
   (`online | pending | ended`), the `ctx ~41%` estimate and the cost
   `transcript_lines.cost_words` words as `est $0.04` or `est —` when tokens
-  were spent and none priced, each as a word and a `span.num`), with the ended
+  were spent and none priced, each as a word and a `span.num`; a figure with no
+  value is not drawn, so no `est` for an unpriced model and no `ctx` on the
+  primary strand before its first turn), with the ended
   page's notice as its last child; `component.heading(model, going_home)` reads those
   values from the model, draws `heading.home_link(going_home)` as `home`
   when the transport has the capability, and stays the entry point both pages
