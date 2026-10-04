@@ -208,6 +208,15 @@ lifetime, without modifying already-cleared requests. The injected path resolver
 runs on the executor. Missing optional mounts are conservatively refused.
 The owner still owns approval and the pooled broker budget.
 
+`registration.describe` projects exact `broker/enrollment.NativeFacts`, with the
+full ceiling and enforcement demand but no canonicalizer callback. The total
+conversion to existing `core/workspace.Scope` returns `Error(Nil)` on refusal
+rather than bypassing its constructor. It preserves both original authority
+epochs and changes neither registration digest bytes nor digest encoding.
+Description does not establish the stricter enrollment isolation invariants;
+the owner must construct and pin the exact bounded SessionEnrollment through
+`broker/enrollment.new`.
+
 `remote/service` serializes challenges, admission and native controls over an
 already scoped journal and native executor. Exact payloads precede admission;
 LaunchIntent precedes the single live launch. Cancellation can fence an ID
