@@ -59,7 +59,7 @@ all from a toolchain the model can edit. Rule Zero (no model-influenced
 code in the harness VM) therefore applies to the server as it does to
 `bash`. The broker's ordinary jailed exec holds it, under the session's
 own enforcement demand, and a probe proves the jail is enforced before the
-server starts. `policy_for` (`codemode/lsp_host/jail.gleam:922`) builds the
+server starts. `policy_for` (`codemode/lsp_host/jail.gleam:937`) builds the
 policy. Its read view includes the session-authorized portion of the
 workspace for sibling dependencies; writes remain at the selected package.
 Only the operator's table adds roots outside that workspace. Answer paths
@@ -111,7 +111,7 @@ an answer, and the harness reads outside every jail. So every path out of
 an answer (a definition, a reference, a call edge, a published diagnostic,
 a rename's edit) becomes `Admitted` or `Withheld` through one function,
 `admit` (`codemode/lsp_host/resolve.gleam:399`), called from one place in the
-manager (`gate`, `codemode/lsp_host/manager.gleam:2202`). Without it, a hostile
+manager (`gate`, `codemode/lsp_host/manager.gleam:2220`). Without it, a hostile
 project's server could name `~/.loom/owner.token` and have the harness
 print its first line.
 
@@ -168,7 +168,7 @@ relative to its package's source root: `lsp/client.gleam` is
 | Module | Owns | Read first |
 |---|---|---|
 | `lsp/query.gleam` | The harness vocabulary and the `Door` contract every surface calls: `SymbolQuery`, `Site`, `Diagnostics`, `QueryError`. Types only. | its header |
-| `codemode/lsp_host/manager.gleam` | One server per session, the keepers that start servers, eviction, restart, the probe, the bare-symbol search, the gate on named paths, and `door`. | `## Flow` (`codemode/lsp_host/manager.gleam:100`), then `## Transitions of the manager` (`codemode/lsp_host/manager.gleam:124`) and `## Transitions of a keeper` (`codemode/lsp_host/manager.gleam:139`) |
+| `codemode/lsp_host/manager.gleam` | One server per session, the keepers that start servers, eviction, restart, the probe, the bare-symbol search, the gate on named paths, and `door`. | `## Flow` (`codemode/lsp_host/manager.gleam:106`), then `## Transitions of the manager` (`codemode/lsp_host/manager.gleam:124`) and `## Transitions of a keeper` (`codemode/lsp_host/manager.gleam:139`) |
 | `codemode/lsp_host/resolve.gleam` | The judgement half of the door: ownership, containment, the `admit` gate, qualified symbols, outline lookup and containers. | `## Flow` (`codemode/lsp_host/resolve.gleam:71`) |
 | `codemode/lsp_host/leases.gleam` | The per-session cap on session-lived helper leases. | its header |
 | `codemode/lsp_host/codemode_rename.gleam` | A program's applied rename, composed from the tools' landing and the program's write boundary. | its header |
@@ -204,7 +204,7 @@ privately.
 
 | Module | Owns | Read first |
 |---|---|---|
-| `codemode/lsp_host/profile.gleam` | The one `[lsp.<name>]` decoder (`LspServer`, `LspPath`, `ModuleCase`, `Places`), the extension-ownership check, `expand_path` and `cache_place`. Pure. | `## Flow` (`codemode/lsp_host/profile.gleam:62`) and `## Refusal rules` (`codemode/lsp_host/profile.gleam:87`) |
+| `codemode/lsp_host/profile.gleam` | The one `[lsp.<name>]` decoder (`LspServer`, `LspPath`, `ModuleCase`, `Places`), the extension-ownership check, `expand_path` and `cache_place`. Pure. | `## Flow` (`codemode/lsp_host/profile.gleam:69`) and `## Refusal rules` (`codemode/lsp_host/profile.gleam:94`) |
 | `client/lsp/profiles.gleam` | Combining `loom.toml` tables with installed profiles: the operator's file wins whole, and a conflict refuses the installed side. | its header |
 | `client/lsp/profile_check.gleam` | A profile's `[[check]]`s asked through the door and judged as sets of `path:line` (ADR-016 §5). | its header |
 | `client/extension/check.gleam` | `loomd ext check`: the scratch workspace, the check plane, the probe's jail line, and a manager over one server. | `## Flow` (`client/extension/check.gleam:58`) |
