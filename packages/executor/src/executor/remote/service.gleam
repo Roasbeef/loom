@@ -43,6 +43,7 @@
 import broker/dispatch
 import broker/exec
 import broker/executor as local
+import broker/internal/call
 import broker/policy
 import core/ids
 import core/msgpack as mp
@@ -58,6 +59,8 @@ import gleam/dict.{type Dict}
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/otp/actor as otp_actor
+import gleam/otp/supervision
 import gleam/result
 import weft/actor
 
@@ -87,7 +90,7 @@ pub type Config {
 /// A bounded actor owning serialized admission and live request controls.
 pub opaque type Service {
   /// Transport handlers ask, never publish unbounded native work via casts.
-  Service(config: Config, subject: process.Subject(Message))
+  Service(config: Config, subject: process.Subject(Message), pid: process.Pid)
 }
 
 /// Fixed errors leave possibly committed original evidence retained.
@@ -132,6 +135,11 @@ type Row {
   )
 }
 
+type AdmissionGate {
+  Accepting
+  Quiesced
+}
+
 type State {
   State(
     config: Config,
@@ -141,10 +149,13 @@ type State {
     covered: Dict(identity.RequestKey, identity.Digest),
     subject: process.Subject(Message),
     sequence: Int,
+    gate: AdmissionGate,
   )
 }
 
 type Message {
+  Quiesce(reply: process.Subject(Nil))
+  Shutdown(reply: process.Subject(Result(Nil, Error)))
   ControlDone(key: identity.RequestKey, digest: identity.Digest)
   Exchange(
     envelope: wire.Envelope,
@@ -182,21 +193,104 @@ type SinkMessage {
 /// service.start(config)
 /// ```
 pub fn start(config: Config) -> Result(Service, Error) {
+  use Nil <- result.try(validate(config))
+  builder(config)
+  |> actor.unlinked
+  |> actor.start
+  |> result.map(fn(started) { Service(config, started.data, started.pid) })
+  |> result.map_error(fn(_) { Uncertain })
+}
+
+/// Validates fixed identity before a host creates listening resources.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // service.validate(config) == Ok(Nil)
+/// ```
+pub fn validate(config: Config) -> Result(Nil, Error) {
   use _ <- result.try(
     identity.executor_id(config.owner) |> result.map_error(fn(_) { Invalid }),
   )
-  use Nil <- result.try(
-    case identity.scope_fields(config.scope).2 == config.executor {
-      True -> Ok(Nil)
-      False -> Error(Invalid)
-    },
-  )
-  use Nil <- result.try(
-    case config.generation > 0 && config.generation <= 2_147_483_647 {
-      True -> Ok(Nil)
-      False -> Error(Invalid)
-    },
-  )
+  case
+    identity.scope_fields(config.scope).2 == config.executor
+    && config.generation > 0
+    && config.generation <= 2_147_483_647
+    && journal.scope(config.journal) == config.scope
+  {
+    True -> Ok(Nil)
+    False -> Error(Invalid)
+  }
+}
+
+/// Describes linked admission custody without automatic same-scope resurrection.
+/// The caller owns the returned PID and must explicitly shut down the service.
+/// Parent exit stops this actor; native retirement remains a separate witness.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // service.supervised(config).start() -> Ok(started)
+/// ```
+pub fn supervised(config: Config) -> supervision.ChildSpecification(Service) {
+  supervision.worker(fn() {
+    use Nil <- result.try(
+      validate(config)
+      |> result.replace_error(otp_actor.InitFailed(
+        "invalid remote service binding",
+      )),
+    )
+    builder(config)
+    |> actor.start
+    |> result.map(fn(started) {
+      otp_actor.Started(started.pid, Service(config, started.data, started.pid))
+    })
+  })
+  |> supervision.restart(supervision.Temporary)
+}
+
+/// Returns the actor owned by the trusted local lifetime assembly.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // process.monitor(service.pid(remote))
+/// ```
+pub fn pid(service: Service) -> process.Pid {
+  service.pid
+}
+
+/// Serializes denial of new challenges and submissions before host drain.
+/// Queries, receipts and cancellation retain their existing custody meaning.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // service.quiesce(remote) == Ok(Nil)
+/// ```
+pub fn quiesce(service: Service) -> Result(Nil, Error) {
+  call.try_call(service.subject, waiting: 2000, sending: Quiesce)
+  |> result.replace(Nil)
+  |> result.replace_error(Uncertain)
+}
+
+/// Closes the durable epoch and drains native custody before actor termination.
+/// Failure leaves a quiesced actor and its original evidence retained. A dead
+/// actor returns uncertainty; process death never establishes native retirement.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // service.shutdown(remote) == Ok(Nil), after witnessed scoped drain.
+/// ```
+pub fn shutdown(service: Service) -> Result(Nil, Error) {
+  call.try_call(service.subject, waiting: 30_000, sending: Shutdown)
+  |> result.unwrap(Error(Uncertain))
+}
+
+fn builder(
+  config: Config,
+) -> actor.Builder(State, Message, process.Subject(Message)) {
   actor.new_with_initialiser(1000, fn(subject) {
     Ok(
       actor.initialised(State(
@@ -207,15 +301,13 @@ pub fn start(config: Config) -> Result(Service, Error) {
         dict.new(),
         subject,
         0,
+        Accepting,
       ))
       |> actor.returning(subject),
     )
   })
   |> actor.on_message(handle)
-  |> actor.unlinked
-  |> actor.start
-  |> result.map(fn(started) { Service(config, started.data) })
-  |> result.map_error(fn(_) { Uncertain })
+  |> actor.trapping_exits(True)
 }
 
 /// Executes one already decoded authenticated envelope via bounded admission ask.
@@ -264,6 +356,23 @@ pub fn attempt_budget(remaining_ms: Int) -> Result(Int, Error) {
 
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
+    Quiesce(reply) -> {
+      process.send(reply, Nil)
+      actor.continue(State(..state, gate: Quiesced, tickets: []))
+    }
+    Shutdown(reply) -> {
+      let state = State(..state, gate: Quiesced, tickets: [])
+      case close_scope(state) {
+        Ok(_) -> {
+          process.send(reply, Ok(Nil))
+          actor.stop()
+        }
+        Error(error) -> {
+          process.send(reply, Error(error))
+          actor.continue(state)
+        }
+      }
+    }
     ControlDone(key, digest) -> {
       let rows = case dict.get(state.rows, key) {
         Ok(row) if row.digest == digest -> dict.delete(state.rows, key)
@@ -311,6 +420,10 @@ fn apply_envelope(
     },
   )
   case envelope.body {
+    wire.ChallengeRequest(_, _)
+      | wire.Submit(_, _, _, _, _)
+      if state.gate == Quiesced
+    -> Error(Invalid)
     wire.Hello ->
       Ok(#(
         State(
