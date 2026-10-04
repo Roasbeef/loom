@@ -280,3 +280,46 @@ fn validate_label_loop(bytes: BitArray) -> Result(Nil, InputError) {
     _ -> Error(LabelCharacter)
   }
 }
+
+/// Projects validated scope fields for bounded persistence; no authority is granted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// identity.scope_fields(scope) // -> #(session, workspace, executor, epochs).
+/// ```
+pub fn scope_fields(scope: Scope) -> #(String, String, String, Int, Int) {
+  #(
+    ids.session_id_to_string(scope.session),
+    scope.workspace.value,
+    scope.executor.value,
+    scope.session_epoch.value,
+    scope.workspace_epoch.value,
+  )
+}
+
+/// Projects the two validated UUIDs for a persistence codec.
+///
+/// ## Examples
+///
+/// ```gleam
+/// identity.key_fields(key) // -> #(operation_uuid, request_uuid).
+/// ```
+pub fn key_fields(key: RequestKey) -> #(String, String) {
+  #(
+    ids.op_id_to_string(key.operation),
+    ids.entry_id_to_string(key.request.value),
+  )
+}
+
+/// Returns exactly 32 bytes for durable equality evidence.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(digest) = identity.digest(<<0:size(256)>>)
+/// assert identity.digest_bytes(digest) == <<0:size(256)>>
+/// ```
+pub fn digest_bytes(digest: Digest) -> BitArray {
+  digest.value
+}
