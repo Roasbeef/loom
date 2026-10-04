@@ -48,6 +48,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -548,7 +549,9 @@ fn piece_element(
 // last `System` row. Every commentary block carries exactly one, the
 // heading and the not-loaded notice aside, and the full text follows it as
 // `ToolDetail`; taking the last `System` row keeps the marker honest even
-// if the heading rows change.
+// if the heading rows change. The projection's label opens with
+// `Advisor · `, which the advisor's tag beside it already says, so the
+// marker keeps only the words after it.
 fn commentary_label(block: Block) -> String {
   block.rows
   |> list.filter_map(fn(row) {
@@ -558,7 +561,12 @@ fn commentary_label(block: Block) -> String {
     }
   })
   |> list.last
-  |> result.unwrap("advisor · commentary")
+  |> result.map(fn(text) {
+    string.split_once(text, " · ")
+    |> result.map(fn(parts) { parts.1 })
+    |> result.unwrap(text)
+  })
+  |> result.unwrap("commentary")
 }
 
 // The buttons of a peer card, or nothing on a lane that offers none. Reply is

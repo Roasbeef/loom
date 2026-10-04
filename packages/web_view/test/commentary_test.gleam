@@ -50,7 +50,7 @@ pub fn the_lane_keeps_one_quiet_line_per_review_test() {
 
   // The hairline: the advisor's tag, the request's words, one line.
   assert string.contains(drawn, "class=\"commentary-mark\"")
-  assert string.contains(drawn, "advisor</button> · Advisor · commentary")
+  assert string.contains(drawn, "advisor</button> · commentary</p>")
 
   // The full body and the heading are gone from the lane: everything
   // before the panel holds neither, and the panel's section holds both.
@@ -129,10 +129,11 @@ pub fn the_count_and_the_missing_edge_are_worded_test() {
       Some("an older parent"),
     )
   let drawn = element.to_string(commentary.view(many))
-  assert string.contains(drawn, "first")
-  assert string.contains(drawn, "second")
-  assert string.contains(drawn, "third")
-  assert !string.contains(drawn, "fourth")
+
+  // The board is oldest-first: the newest three are drawn, newest last,
+  // and the oldest is the one the count stands for.
+  assert !string.contains(drawn, "first")
+  assert in_order(drawn, ["second", "third", "fourth"])
   assert string.contains(drawn, "+ 1 earlier reviews")
   assert string.contains(drawn, "Earlier advisor commentary is not loaded")
 }

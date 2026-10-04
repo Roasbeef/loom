@@ -3488,7 +3488,8 @@ commentary section at all.
 
 - **The lane keeps a hairline, not the body.** Each `Commentary` piece now
   draws one line — the advisor's tag, then the projection's own request label
-  (`Advisor · quiet requested` and its siblings), in the advisor's colour.
+  without its `Advisor · ` prefix, which the tag already says (`advisor ·
+  quiet requested` and its siblings), in the advisor's colour.
   The label names the request only, never a delivery, exactly as the block it
   replaced did; the tool result still owns the verdict's fate. The dot beside
   the hairline carries `data-loom-focus` with the advisor card's position, as

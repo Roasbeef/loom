@@ -21,9 +21,9 @@
 //// ancestry the board says so, and the section repeats it, so a reader is
 //// never told this is the whole history when it is not.
 ////
-//// The section is drawn while any strand other than the advisor is on
-//// screen, and `element.none()` when there is nothing to say, so the
-//// panel's child list keeps one length and no handler's path moves.
+//// The section is drawn while `main` is on screen, and `element.none()`
+//// otherwise or when there is nothing to say, so the panel's child list
+//// keeps one length and no handler's path moves.
 
 import gleam/int
 import gleam/list
@@ -57,8 +57,10 @@ pub fn view(board: advisor_history.Board) -> Element(message) {
 }
 
 fn section(board: advisor_history.Board) -> Element(message) {
-  let shown = list.take(board.items, visible_items)
-  let omitted = list.length(board.items) - list.length(shown)
+  // The board is oldest-first, so the newest reviews are its tail. Keeping
+  // the tail in board order leaves the newest review last, as in the lane.
+  let omitted = int.max(0, list.length(board.items) - visible_items)
+  let shown = list.drop(board.items, omitted)
   html.section(
     [
       attribute.class("commentary"),

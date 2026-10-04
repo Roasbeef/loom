@@ -83,6 +83,7 @@ pub type Msg(socket) {
   Decided(id: String, seq: Int, answer: component.Answer)
 
   /// A session control: one of the goal's buttons, or the fork form with
+  /// the text it held.
   Controlled(control: component.Control)
 
   /// A peer message's Reply button, by the key of the piece it was drawn
