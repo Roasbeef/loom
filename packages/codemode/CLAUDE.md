@@ -44,6 +44,26 @@ access accepts a caller-selected wall without reading a clock; local launch
 retains its existing deadline calculation, while remote acceptance must freeze
 its wall only after preparation under the original service deadline.
 
+## Physical compile stages
+
+`compile.prepare_workspace(vetted, root, dependencies)` writes the fixed user
+module, satellite entry and project manifest. `build.PreparationConfig` contains
+only the exact seed path and ordered dependencies;
+`build.prepare_seed(config, root, generated)` verifies/clones that seed before
+installing the admitted generated modules. Both functions are internal physical
+steps without a Runner, PhaseIdentity, grants or deadline. The caller still owes
+its original preparation claim before these filesystem effects. Successful
+preparation establishes no native admission or compiled artifact.
+
+`build.finalize(root, collected)` checks the actual native settlement before
+flattening and fingerprinting its on-disk products. It accepts only zero code,
+zero signal, no timeout and no cancellation; cancelled code zero cannot issue an
+artifact. Success and failure preserve the actual enforcement report, including
+reported skips. The existing local compile and Builder call these same steps
+around their existing clearance and collection. A future physical service must
+bind Collected to its exact original admitted native child before finalization;
+these internal helpers supply no durable association or remote execution wiring.
+
 ## Purpose
 
 Code mode: a model writes a *program*, not a tool call, and the program

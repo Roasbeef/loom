@@ -271,3 +271,21 @@ pub fn the_local_service_prepares_before_the_existing_builder_test() {
   assert compiled.enforcement
     == enforcement.Reported(entries: ["bwrap"], degraded: False)
 }
+
+pub fn workspace_preparation_has_no_builder_or_phase_authority_test() {
+  let root = fresh_root("physical-workspace")
+  let source =
+    "import cap/report\npub fn main() { report.text(\"prepared\") }\n"
+  let dependencies = compile.default_dependencies()
+  let assert Ok(prepared) =
+    compile.prepare_workspace(vetted(source), root, dependencies)
+    as "fixed source preparation must need no Builder or PhaseIdentity"
+  assert prepared == root
+  assert simplifile.read(root <> "/src/loom_program.gleam") == Ok(source)
+  assert simplifile.read(root <> "/src/loom_satellite.gleam")
+    == Ok(compile.entry_source())
+  assert simplifile.read(root <> "/gleam.toml")
+    == Ok(compile.project_toml(dependencies))
+  assert simplifile.is_directory(root <> "/tmp") == Ok(True)
+  assert simplifile.is_directory(root <> "/ebin") == Ok(False)
+}

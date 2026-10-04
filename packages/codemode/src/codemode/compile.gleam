@@ -82,7 +82,8 @@
 //// # The physical service seam
 ////
 //// `CompileService` surrounds the whole local compiler, including the
-//// filesystem preparation before Builder. The owner pipeline vets and
+//// filesystem preparation before Builder. `prepare_workspace` exposes that
+//// fixed layout step for a physical service holding its original claim. The owner pipeline vets and
 //// selects generated imports before sending its CompileRequest. A local
 //// service closes over its root and Builder; a later executor service
 //// returns an issued ExecutorArtifact without exposing executor paths to
@@ -452,7 +453,7 @@ pub fn compile(
   config: CompileConfig,
   identity: PhaseIdentity,
 ) -> Compiled {
-  case prepare(vetted, config) {
+  case prepare_workspace(vetted, config.build_root, config.dependencies) {
     Error(error) ->
       Compiled(
         result: Error(error),
@@ -478,13 +479,20 @@ pub fn compile(
   }
 }
 
-// Writes the hermetic workspace, returning the build root the builder is
-// then handed.
-fn prepare(
+/// Writes the fixed program, entry and dependency manifest before seed cloning.
+/// The physical service must already own its one preparation claim and exact
+/// allocation. This step carries no clearance, grants or execution identity.
+///
+/// ## Examples
+///
+/// `prepare_workspace(program, root, default_dependencies())` returns that root
+/// after its fixed source layout is complete; it runs no compiler.
+@internal
+pub fn prepare_workspace(
   vetted: Vetted,
-  config: CompileConfig,
+  root: String,
+  dependencies: List(Dependency),
 ) -> Result(String, CompileError) {
-  let root = config.build_root
   let src_dir = root <> "/src"
   use _ <- result.try(make_directory(src_dir))
   use _ <- result.try(make_directory(root <> "/tmp"))
@@ -504,7 +512,7 @@ fn prepare(
   // Defence 2: the manifest pins exactly the prelude and stdlib.
   use _ <- result.try(write_source(
     root <> "/gleam.toml",
-    project_toml(config.dependencies),
+    project_toml(dependencies),
   ))
   Ok(root)
 }
