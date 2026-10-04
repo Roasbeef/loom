@@ -9,6 +9,7 @@
 import client/daemon/manager
 import client/daemon/root
 import client/daemon/ui_relay
+import client/daemon/ui_sessions
 import client/daemon/ui_socket
 import gleam/erlang/process
 import gleam/json
@@ -20,6 +21,7 @@ import session_view/snapshot
 import storage/access
 import storage/catalogue
 import web_view/component
+import web_view/home
 import web_view/image
 import web_view/invites
 import web_view/sessions
@@ -40,6 +42,7 @@ fn start() -> component.Start(ui_relay.Relay) {
       sessions: fn() { [] },
       open: fn(_) { sessions.Declined(sessions.NotHeld) },
       invite: None,
+      home: None,
     ),
   )
 }
@@ -156,6 +159,107 @@ pub fn an_observer_socket_accepts_a_chip_click_test() {
     ],
     fn(frame) {
       assert !ui_socket.observer_accepts(frame)
+    },
+  )
+}
+
+// Protocol-change/065, the second pull request: an observer's socket admits one
+// more click, at the "Home" button's exact path, and not its neighbours in the
+// top bar, anything beneath it, another event at it, or the path inside a
+// batch.
+pub fn an_observer_socket_accepts_the_home_click_at_its_exact_path_test() {
+  let click_at = fn(path, name) {
+    "{\"kind\":1,\"path\":"
+    <> json.to_string(json.string(path))
+    <> ",\"name\":\""
+    <> name
+    <> "\",\"event\":{}}"
+  }
+  assert ui_socket.observer_accepts(click_at(component.home_path, "click"))
+  list.each(
+    [
+      click_at(component.home_path, "submit"),
+      click_at(component.home_path, "keydown"),
+      click_at(component.home_path <> "\t0", "click"),
+      click_at("0\t0", "click"),
+      click_at("0\t0\t0", "click"),
+      click_at("0\t0\t2", "click"),
+      click_at("0\t0\t11", "click"),
+      "{\"kind\":3,\"messages\":["
+        <> click_at(component.home_path, "click")
+        <> "]}",
+    ],
+    fn(frame) {
+      assert !ui_socket.observer_accepts(frame)
+    },
+  )
+}
+
+// Only a page opened from a home is handed the capability to go home: a page
+// a link for one session opened is not, so it draws no button and cannot call.
+pub fn only_a_workspace_page_is_handed_the_way_home_test() {
+  let ask = fn() { sessions.Declined(sessions.NoHome) }
+  assert ui_socket.home_capability(ui_sessions.OneSession, ask) == None
+  let assert Some(_) = ui_socket.home_capability(ui_sessions.Workspace, ask)
+}
+
+// Protocol-change/065, the second pull request: the home's socket admits a
+// click beneath the sessions table's section or the sidebar's column, where a
+// running session's row is, and nothing else.
+pub fn the_home_socket_admits_only_a_click_on_a_row_test() {
+  let click_at = fn(path, name) {
+    "{\"kind\":1,\"path\":"
+    <> json.to_string(json.string(path))
+    <> ",\"name\":\""
+    <> name
+    <> "\",\"event\":{}}"
+  }
+  let table_row = home.table_path <> "\t1\t2\t0\t0\t0"
+  let sidebar_row = home.sidebar_path <> "\t1\t1\t0\t0"
+  assert ui_socket.home_accepts(click_at(table_row, "click"))
+  assert ui_socket.home_accepts(click_at(sidebar_row, "click"))
+  assert ui_socket.home_accepts(
+    "{\"kind\":3,\"messages\":["
+    <> click_at(table_row, "click")
+    <> ","
+    <> click_at(sidebar_row, "click")
+    <> "]}",
+  )
+  list.each(
+    [
+      // The regions themselves and a sibling that shares their digits.
+      click_at(home.table_path, "click"),
+      click_at(home.sidebar_path, "click"),
+      click_at(home.table_path <> "0\t1", "click"),
+      click_at(home.sidebar_path <> "0\t1", "click"),
+
+      // The frame's other children, the top bar's and the centre's others.
+      click_at("0\t0\t1", "click"),
+      click_at("0\t2\t0", "click"),
+      click_at("0\t2\t2", "click"),
+      click_at("0\t3", "click"),
+      click_at("0", "click"),
+
+      // Another event at a row, or none at all.
+      click_at(table_row, "submit"),
+      click_at(table_row, "keydown"),
+      click_at(sidebar_row, "input"),
+      "{\"kind\":1,\"name\":\"click\"}",
+
+      // A batch with one message outside a row, an empty one and other kinds.
+      "{\"kind\":3,\"messages\":["
+        <> click_at(table_row, "click")
+        <> ","
+        <> click_at("0\t0\t1", "click")
+        <> "]}",
+      "{\"kind\":3,\"messages\":[]}",
+      "{\"kind\":0,\"name\":\"route\",\"value\":\"/elsewhere\"}",
+      "{\"kind\":2,\"name\":\"value\"}",
+      "not json",
+      "",
+    ],
+    fn(frame) {
+      assert !ui_socket.home_accepts(frame)
     },
   )
 }
