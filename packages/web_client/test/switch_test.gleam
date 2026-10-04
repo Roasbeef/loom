@@ -22,6 +22,42 @@ pub fn a_ticket_exchange_for_a_session_is_an_address_test() {
 
 // Upper-case digits are hexadecimal too, and the daemon's own identities and
 // tickets are lower-case, so only the shape is checked.
+// The home's exchange is the one other address the daemon writes: a page
+// opened from a home goes back to it (protocol-change/065).
+pub fn a_ticket_exchange_for_the_home_is_an_address_test() {
+  let address = "/ui/home?ticket=" <> ticket()
+  assert switch_rule.target(address) == Ok(address)
+  let upper = "/ui/home?ticket=" <> string.uppercase(ticket())
+  assert switch_rule.target(upper) == Ok(upper)
+}
+
+// The home shape is as exact as the session's: no other origin, path, query,
+// fragment or ticket length reaches the browser through it.
+pub fn any_other_home_value_is_refused_test() {
+  list.each(
+    [
+      "/ui/home",
+      "/ui/home?ticket=",
+      "/ui/home/?ticket=" <> ticket(),
+      "/ui/homes?ticket=" <> ticket(),
+      "/ui/home?ticket=" <> string.drop_end(ticket(), 1),
+      "/ui/home?ticket=" <> ticket() <> "0",
+      "/ui/home?ticket=" <> ticket() <> "&next=/elsewhere",
+      "/ui/home?ticket=" <> ticket() <> "#fragment",
+      "/ui/home?ticket=" <> string.repeat("zz", 32),
+      "x/ui/home?ticket=" <> ticket(),
+      "//elsewhere.example/ui/home?ticket=" <> ticket(),
+      "https://elsewhere.example/ui/home?ticket=" <> ticket(),
+      "/ui/p/key/home?ticket=" <> ticket(),
+      "/ui/home?ticket=" <> ticket() <> "/ui/home?ticket=" <> ticket(),
+      "/ui/sessions/" <> session <> "/ui/home?ticket=" <> ticket(),
+    ],
+    fn(value) {
+      assert switch_rule.target(value) == Error(Nil)
+    },
+  )
+}
+
 pub fn hexadecimal_digits_of_either_case_are_accepted_test() {
   let address = exchange(string.uppercase(session), string.uppercase(ticket()))
   assert switch_rule.target(address) == Ok(address)

@@ -1,13 +1,16 @@
 //// What `<loom-switch>` decides: whether the address the server wrote is one
 //// the browser may be sent to.
 ////
-//// The operator's page opens another session by navigating to the ticket
-//// exchange of that session (protocol-change/051, the addendum on switching
-//// sessions). The server mints the ticket and writes the exchange's address
-//// into the element's `to` attribute, and the element moves the browser
-//// there. That is the one place a script acts on a value the server chose,
-//// so the value is held to the exact shape the daemon writes and nothing
-//// else: a path on this origin, `/ui/sessions/<id>?ticket=<ticket>`, where
+//// A page opens another session by navigating to the ticket exchange of that
+//// session (protocol-change/051, the addendum on switching sessions), and a
+//// page opened from a home goes back to the home by navigating to the home's
+//// exchange (protocol-change/065). The server mints the ticket and writes the
+//// exchange's address into the element's `to` attribute, and the element
+//// moves the browser there. That is the one place a script acts on a value the
+//// server chose, so the value is held to the exact shapes the daemon writes
+//// and nothing else: a path on this origin, either
+//// `/ui/home?ticket=<ticket>` or
+//// `/ui/sessions/<id>?ticket=<ticket>`, where
 //// the identity is the canonical form of eight, four, four, four and twelve
 //// hexadecimal digits and the ticket is the 64 hexadecimal digits the
 //// daemon's entropy source yields. Anything else, an absolute URL, a path
@@ -22,6 +25,8 @@ import gleam/string
 
 const prefix = "/ui/sessions/"
 
+const home_prefix = "/ui/home"
+
 const ticket_marker = "?ticket="
 
 const ticket_digits = 64
@@ -30,7 +35,7 @@ const ticket_digits = 64
 const identity_groups = [8, 4, 4, 4, 12]
 
 /// The address to navigate to, or a refusal for a value that is not exactly
-/// a ticket exchange for a canonical session identity.
+/// a ticket exchange for a canonical session identity or for the home page.
 ///
 /// ## Examples
 ///
@@ -38,6 +43,18 @@ const identity_groups = [8, 4, 4, 4, 12]
 /// assert switch_rule.target("https://elsewhere.example/") == Error(Nil)
 /// ```
 pub fn target(value: String) -> Result(String, Nil) {
+  case string.split_once(value, home_prefix <> ticket_marker) {
+    Ok(#("", ticket)) ->
+      case hexadecimal(ticket, ticket_digits) {
+        True -> Ok(value)
+        False -> Error(Nil)
+      }
+    Ok(#(_, _)) | Error(Nil) -> session_target(value)
+  }
+}
+
+// The session exchange's shape: the identity, then the ticket.
+fn session_target(value: String) -> Result(String, Nil) {
   case string.split_once(value, prefix) {
     Ok(#("", rest)) ->
       case string.split_once(rest, ticket_marker) {
