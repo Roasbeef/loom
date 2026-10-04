@@ -705,7 +705,11 @@ reply can contain a secret: a single-use claim token, never a bearer.
 | `epoch` | string | required | Current daemon epoch. |
 
 `claim_ttl_ms` and `credential_digest` together are `bad_request`, as is
-a `claim_ttl_ms` outside its range. Source:
+a `claim_ttl_ms` outside its range. The secret behind a
+`credential_digest` must itself be 64 lowercase hex: the daemon refuses any
+other bearer with `401` before it hashes it (protocol-change/065, PR 7), so a
+digest enrolled from a shorter, longer, uppercase or non-hex secret no longer
+authenticates. Re-enroll with `loom enroll`, which draws a conforming secret. Source:
 (`client/daemon/protocol.gleam:367`) and
 (`client/daemon/protocol.gleam:475`).
 

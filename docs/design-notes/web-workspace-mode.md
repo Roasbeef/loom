@@ -326,8 +326,8 @@ satisfies a page grant minted from a login. `loom --token` and
 `--token-file` refuse a value beginning `loomb1:` as they refuse
 `loomclaim_`, which is a courtesy to the person and not a defence. The two
 queries that assume one active credential per principal,
-`principal_active_credential` (`storage/sql.gleam:282`) and
-`active_member_credentials` (`storage/sql.gleam:232`), gain `kind =
+`principal_active_credential` (`storage/sql.gleam:301`) and
+`active_member_credentials` (`storage/sql.gleam:251`), gain `kind =
 'bearer'` as well, so `principals.list` keeps reporting the bearer or the
 claim and never a login's fingerprint in its place; 053's "rule 3 is what
 lets `credential` be one value per principal" holds for bearers, and

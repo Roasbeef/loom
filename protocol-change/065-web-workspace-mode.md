@@ -1033,3 +1033,18 @@ since a credential and a digest are the same 64-character shape.
 **The version number.** This is catalogue version 5 because `main` is at 4. The
 session-subtitle change (#806) also adds a migration and will take whichever
 number lands second; the later of the two renumbers at merge.
+
+**What it costs an existing enrollment.** A digest-enrolled secret that is not
+64 lowercase hex no longer authenticates after this change, because the daemon
+refuses such a bearer before hashing it. `loom enroll` and `loom claim` draw
+64-hex secrets, so only a hand-made digest is affected; re-enroll it with `loom
+enroll`.
+
+**Left for PR 8.** `claim`'s `bind` runs `no_active_credential`, which counts
+`bearer` rows only, for a `Browser` bind as well. That is correct for PR 7,
+where only a bearer claim exists in production. PR 8 must make it kind-aware, so
+that a login is counted beside the bearer and never in its place.
+
+**One version constant.** `storage/catalogue.gleam` names `current_version`
+once, and a test asserts it equals the highest migration, so a second change
+that adds a migration and forgets to raise it fails a test.
