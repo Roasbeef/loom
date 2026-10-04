@@ -1670,6 +1670,7 @@ fn strip_of(shared: Session(socket)) -> strip.Strip {
       running_ms: running_ms(shared, line.id),
       model: option.map(row, fn(row) { row.model }) |> option.unwrap(""),
       recent: option.map(row, fn(row) { row.recent }) |> option.unwrap([]),
+      answer: row |> option.then(answer_line),
     )
   }
   let #(drawn, older) = list.split(chips.settled, strip.settled_limit)
@@ -1699,7 +1700,20 @@ fn settled_chip(
     running_ms: None,
     model: "",
     recent: [],
+    answer: None,
   )
+}
+
+// The first line of a strand's latest answer, or nothing while it has given
+// none: the row's excerpt is only an answer when it names the entry it came
+// from, and `agent_view` words the excerpt of an entry outside the loaded
+// history as unavailable, which is not an answer either.
+fn answer_line(row: agent_view.Row) -> Option(String) {
+  case row.update_entry, row.update {
+    None, _ -> None
+    Some(_), update if update == agent_view.update_unavailable -> None
+    Some(_), update -> Some(text_hygiene.single_line(update))
+  }
 }
 
 // A strand's agent row, which carries what its own view shows beyond the
@@ -3044,7 +3058,7 @@ pub fn panel(
     changes.view(model.view.changes),
     session_tab.view(
       option.map(goal(model), goal_view.row) |> option.unwrap([]),
-      cost_text(model),
+      cost_figure(model),
       jobs(model),
       viewers,
       share,
@@ -3260,6 +3274,16 @@ pub fn heading(model: Model(socket)) -> Element(message) {
 // which is the terminal's footer's own words.
 fn cost_text(model: Model(socket)) -> String {
   transcript_lines.cost_words(model.shared.usage)
+}
+
+// The session's cost as a figure alone, for a row whose label says estimate:
+// the same words as `cost_text` without their leading "est", so an unpriced
+// session still reads "—" rather than a misleading "$0.00".
+fn cost_figure(model: Model(socket)) -> String {
+  case cost_text(model) {
+    "est " <> figure -> figure
+    words -> words
+  }
 }
 
 // The ending a page that has ended draws a notice for.

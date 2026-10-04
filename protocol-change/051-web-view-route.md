@@ -3666,3 +3666,102 @@ line drawn from a rejected and an approved ledger entry for the strand the
 page follows and not for another's. No browser was in the loop for the tests;
 the drive screenshots under `docs/design-notes/web-design/drive-b4/` show the
 rendered dock and Session tab.
+
+## Addendum: the right panel's content (2026-10-03)
+
+**Status**: PROPOSED, IMPLEMENTED with the web/b5-panel branch ·
+**Raised by**: the web UI critique, round 1 (F24, F25, F26, F28, F29, F31) and
+round 2 (F44, F45, F49)
+
+This addendum records what the strand panel now draws and one place where a
+tooltip carries session text. It adds no event to the socket's accepted list,
+no handler, no operation and no field on the wire, and it touches no frozen
+interface.
+
+### What changed
+
+- **The commentary section is closed by default.** The addendum of 2026-10-02
+  says the section is drawn open in the Strands pane. It is now one native
+  `details`, closed, whose summary is `Advisor · 3 reviews · last: <first line
+  of the newest review>`. Opening it is the browser's, as the settled group's
+  is, so the server draws no handler and never learns which state it is in.
+  Inside, the newest three reviews are drawn as before, but each body goes
+  through the lane's Markdown drawer (`markdown_view`), which keeps this
+  document's rule that nothing from the session becomes markup.
+- **A `title` attribute may carry bounded session text.** Rule 653 of this
+  proposal says no attribute is built from session content. Two tooltips are
+  an exception, both an escaped, inert string with no handler, link, style or
+  key: a strand card's `title` holds the whole activity text a tool's status
+  line left out (`Working · bash` shows, and the command is the tooltip), cut
+  to 240 characters, and the strand view's model row holds the whole model
+  identifier its shortened name came from. The sidebar's workspace `title` was
+  already such a case. A model's text is still never a class, an identifier, a
+  key, a `href`, a `src` or an event value.
+- **A strand that has never run is a live card.** `agent_roster.listed` lists
+  an idle strand with no operation, which is what a fresh fork is until its
+  first prompt. Before, it was drawn in the closed Settled group while the
+  operator who forked it looked for it. Focus is unchanged: the page that sent
+  the fork stays on the strand it was on. The terminal reads the same rule.
+- **Changes folds `fs_write`.** A successful `fs_write` is a file of one hunk
+  whose lines are all added, read from the call's `content` argument already
+  in the page's records and the `path` of the result's details. The file's line
+  says `written · 23 lines` where an edit's counts go, and a file the session
+  also edited counts as edited. The fold is `session_view`'s, so the terminal
+  can draw the same board.
+- **The Session tab words what it shows.** The cost row is the figure
+  (`$0.12`) under the label `Est. cost`; viewers are one line per principal
+  with its roles and page count (`Owner · owner, operator · 3 pages · you`),
+  and the total still counts attachments; a board with no live job reads
+  `none` with `At the last refresh` as its tooltip.
+- **Cards and strand views say more in fewer words.** A card is a 34 px cache
+  ring, the name and a status line that begins with the state's glyph; the
+  engine's phase `assistant` reads `thinking` and a state word the activity
+  repeats is dropped. A strand's own view adds the task, shortens the model to
+  its last path segment, says `not reported` for an unknown context, and
+  shows the first line of the strand's latest answer under Recent when no tool
+  ran.
+
+### What was considered
+
+- **Keep the commentary open and shrink it.** The section pushed the cards to
+  the fold on a short session, and its bodies are the advisor's own words,
+  which the focused transcript already holds. One summary line costs the
+  reader a click for the bodies, and the click is the browser's.
+- **Drop the command from the card without a tooltip.** The command is often
+  the one fact that says what a strand is doing. Showing it in the line made
+  the card unreadable, and hiding it entirely hid the fact; a tooltip is the
+  smallest place that keeps it.
+- **Focus the new strand on the page that forked it.** Focus is the page's, not
+  the server's, and the operator may have meant to stay where they were. The
+  card is enough to find the strand and one click focuses it.
+
+### Cost
+
+- Two more attributes hold session-derived text, both inert `title`s Lustre
+  escapes. The attributes that carry such text are now exactly these: the
+  active strand's identity (a slug of a model-supplied purpose, letters,
+  digits and dashes) as the composer's `aria-label` and `placeholder`
+  (`operator_page`), the session identity and the workspace path as `title`s
+  (`heading`, `sidebar`), and the two tooltips this addendum adds, a card's
+  activity text and a model's identifier. Everything else the session wrote
+  stays a text node, and a later change that adds another attribute must amend
+  this addendum.
+- The commentary's bodies are one click further away, and a short summary quotes
+  only the newest review's first line.
+- A card's activity text is cut at the first ` · ` when the part before it is a
+  single word. A model-written summary that happens to begin with one word and
+  a middle dot shows only that word, with the whole in the tooltip.
+
+### Verification
+
+`strand_card_test` pins the phase words, the repeated-word rule, the tool name
+without its command, the tooltip's cut and the glyphs. `agent_roster_test` pins
+that a never-run strand is listed and one that ran is settled.
+`changes_view_test` folds an `fs_write` whose content carries markup (kept as
+text), bounds a long one and shows a failed or content-free write adding
+nothing. `session_summary_test` groups three pages of one principal into one
+viewer. `right_panel_test` shows the glyph, the tooltip, a never-run strand
+drawn live without a focus change, and the strand view's new rows.
+`commentary_test` shows the closed `details`, the summary line and the Markdown
+body with markup still escaped. The drive screenshots under
+`docs/design-notes/web-design/drive-b5/` show the rendered panel.

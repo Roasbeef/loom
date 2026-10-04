@@ -81,6 +81,7 @@ fn chip(id: String, status: agent_view.Status) -> strip.Chip {
     running_ms: None,
     model: "",
     recent: [],
+    answer: None,
   )
 }
 
@@ -122,7 +123,8 @@ pub fn a_page_with_only_settled_strands_draws_a_closed_group_test() {
   assert string.contains(after_tests, "&lt;b&gt;review")
 
   // Each settled card says how its strand ended and has a button of its own.
-  assert string.contains(group, "<span class=\"chip-status idle\">Idle</span>")
+  assert string.contains(group, "<span class=\"chip-status done\">")
+  assert string.contains(group, "✓</span>Finished</span>")
   assert string.contains(group, "data-loom-card=\"2\"")
   assert string.contains(group, "data-loom-card=\"3\"")
 }
@@ -211,14 +213,10 @@ pub fn a_settled_card_says_how_the_strand_ended_test() {
       [chip("bad", agent_view.Failed), chip("good", agent_view.Finished)],
       0,
     ))
-  assert string.contains(
-    drawn,
-    "<span class=\"chip-status failed\">Failed</span>",
-  )
-  assert string.contains(
-    drawn,
-    "<span class=\"chip-status done\">Finished</span>",
-  )
+  assert string.contains(drawn, "<span class=\"chip-status failed\">")
+  assert string.contains(drawn, "×</span>Failed</span>")
+  assert string.contains(drawn, "<span class=\"chip-status done\">")
+  assert string.contains(drawn, "✓</span>Finished</span>")
   assert !string.contains(drawn, "loom-elapsed")
   assert !string.contains(drawn, "earlier")
 }

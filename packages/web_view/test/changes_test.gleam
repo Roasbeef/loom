@@ -30,7 +30,35 @@ fn row(kind: changes_view.Kind, text: String) -> changes_view.Row {
 }
 
 fn file(path: String, rows: List(changes_view.Row)) -> changes_view.File {
-  changes_view.File(path:, added: 1, removed: 1, rows:, cut: 0)
+  changes_view.File(
+    path:,
+    origin: changes_view.Edited,
+    added: 1,
+    removed: 1,
+    rows:,
+    cut: 0,
+  )
+}
+
+// A file the session only wrote whole says so where an edit's counts go, and
+// draws its lines as added rows.
+pub fn a_written_file_says_written_where_the_counts_go_test() {
+  let written =
+    changes_view.File(
+      path: "calc.py",
+      origin: changes_view.Written,
+      added: 23,
+      removed: 0,
+      rows: [row(changes_view.Added, "+a = 1")],
+      cut: 22,
+    )
+  let html = drawn(board([written, file("b.gleam", [])]))
+
+  assert string.contains(html, "calc.py")
+  assert string.contains(html, "written · 23 lines")
+  assert !string.contains(html, "+23 -0")
+  assert string.contains(html, "diff-row diff-added")
+  assert string.contains(html, " +1 -1")
 }
 
 fn board(files: List(changes_view.File)) -> changes_view.Board {

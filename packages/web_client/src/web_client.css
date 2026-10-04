@@ -342,6 +342,11 @@
   .chip-text{display:grid;row-gap:1px;min-width:0;}
   .chip-name{font:500 14px/1.4 var(--font-sans);color:var(--hue-text,var(--color-fg));min-width:0; overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .chip-status{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  /* The state's glyph leads the status line: it pulses while the strand
+     works, and the line's words carry the state without it. */
+  .chip-status .st{display:inline-block;min-width:1em;margin-right:.35em;font-size:11px;text-align:center;}
+  .chip-status.running .st{color:var(--color-current);animation:loom-pulse 1.4s ease-in-out infinite;}
+  @keyframes loom-pulse{50%{opacity:.35;}}
   .chip-status.needs-input{color:var(--color-signal-text);}
   .chip-status.failed{color:var(--color-danger-text);}
   .chip-status.done{color:var(--color-added-text);}
@@ -371,6 +376,7 @@
   .detail-term{color:var(--color-fg-quiet);}
   .detail-value{margin:0;min-width:0;overflow-wrap:anywhere;text-align:right;}
   .detail-recent .panel-title{margin:0 0 6px 0;}
+  .detail-answer{margin:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);overflow-wrap:anywhere;}
   ul.detail-tools{list-style:none;margin:0;padding:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-mono);overflow-wrap:anywhere;}
   /* The session sidebar, the left column: the principal's sessions by
      workspace, read-only. It is a column of the frame and scrolls on its own.
@@ -439,8 +445,8 @@
   .ring.ring-idle{border-color:var(--color-fg-faint);}
   .ring.ring-elapsed{border:2px dashed var(--color-fg-faint);}
   .ring.ring-none{border-color:var(--color-divider);}
-  .ring.ring-card{width:16px;height:16px;}
-  .ring.ring-detail{width:26px;height:26px;border-width:3px;}
+  .ring.ring-card{box-sizing:border-box;width:34px;height:34px;border-width:4px;}
+  .ring.ring-detail{box-sizing:border-box;width:44px;height:44px;border-width:5px;}
   /* The transcript's scroll container: the client component draws the lane
      inside it and scrolls it (web_client/follow). Its height is what the
      frame leaves, so it never grows with the rows. Scroll anchoring is off
@@ -621,6 +627,11 @@
      while the advisor itself is on screen, and like the nudges card hidden
      below 980px where the pane is a short row of cards. */
   section.commentary{margin:12px 0 0;padding:0;}
+  /* The section is one native details element, closed: its summary is one
+     line (`Advisor · 3 reviews · last: …`), and the review bodies are
+     inside, as quiet blocks under a who line. */
+  .commentary-summary{cursor:pointer;padding:4px 2px;color:var(--color-advisor-text);font:12px/1.4 var(--font-sans);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .commentary-items{margin-top:8px;}
   .commentary-item{background:var(--color-bg-raised);border:1px solid var(--color-divider);border-radius:10px;min-width:0;padding:9px 12px;margin:0 0 8px;}
   .commentary-item:last-child{margin-bottom:0;}
   .commentary-label{color:var(--color-advisor-text);font:12px/1.4 var(--font-sans);margin:0 0 4px;}

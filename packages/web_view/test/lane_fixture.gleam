@@ -865,6 +865,7 @@ fn capture_leaves(
       let #(strand, op) = pair
       [run_state(op), started(strand, op), ..glanced(strand, op)]
     })
+    |> list.append(finished_cells(operations))
     |> list.append(extra)
   let view =
     snapshot_view.View(
@@ -938,6 +939,30 @@ fn run_state(op: String) -> snapshot_view.Cell {
       #("latestAssistantEntryId", json.Null),
     ]),
   )
+}
+
+// The sub-agents that are not running have run: the daemon records how each
+// ended, and a strand with no operation and no result is one that has never
+// run (a fresh fork), which the strip lists as a card and not as settled.
+fn finished_cells(
+  operations: List(#(String, String)),
+) -> List(snapshot_view.Cell) {
+  [#(child, review_op()), #(tester, tests_op())]
+  |> list.filter(fn(pair) { list.key_find(operations, pair.0) == Error(Nil) })
+  |> list.map(fn(pair) {
+    snapshot_view.Cell(
+      register.StrandLastResult,
+      pair.0,
+      1,
+      json.Object([
+        #("kind", json.String("run")),
+        #("operationId", json.String(pair.1)),
+        #("leafId", json.Null),
+        #("outcome", json.String("completed")),
+        #("runCompletion", json.String("assistant")),
+      ]),
+    )
+  })
 }
 
 // The operation's metadata cell in the wire form `machine/codec` writes,
@@ -1393,4 +1418,35 @@ pub fn marked(
       snapshot.Operator,
     ),
   ])
+}
+
+/// `update`, when it is a capture, as a capture in which `strand` has never
+/// run: it has neither an operation nor a recorded result, as a fresh fork has
+/// not. Any other update is returned as it is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.unrun(lane_fixture.captured_with(10, None, []), lane_fixture.tester)
+/// ```
+pub fn unrun(
+  update: session_channel.Update,
+  strand: String,
+) -> session_channel.Update {
+  case update {
+    session_channel.Captured(cut, view, refresh) ->
+      session_channel.Captured(
+        cut,
+        snapshot_view.View(
+          ..view,
+          cells: list.filter(view.cells, fn(cell) {
+            !{
+              cell.namespace == register.StrandLastResult && cell.key == strand
+            }
+          }),
+        ),
+        refresh,
+      )
+    other -> other
+  }
 }
