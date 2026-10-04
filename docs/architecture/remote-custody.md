@@ -124,6 +124,10 @@ version-1 evidence is refused and must be preserved rather than replaced.
 
 ## Physical service and command custody
 
+The [remote compilation guide](remote-compilation.md) follows the executor's
+preparation claim, native association and retained Compile completion through
+their separate storage boundaries.
+
 A compiler or satellite service owns more than a native command. Its original
 ServiceKey retains the parent ToolKey, full workspace scope, physical step,
 service UUID and input, registration and contract digests. The physical
