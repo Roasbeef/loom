@@ -245,7 +245,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:1517`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:1757`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -772,7 +772,8 @@ each other, in one tab, each page a new UI session.
   (`view/home_table`, beneath `home.table_path`) and its row in the sidebar
   (`sidebar.home(groups, open)`, beneath `home.sidebar_path`) are buttons whose
   message is `home.Opening(id)`, with the catalogue's identity. A saved
-  session's row stays text; opening one is a later change. The component asks
+  session's row is text on a page minted to read, and a button on a page minted
+  to operate (next section). The component asks
   `Start.open`, in its own process, and the answer returns as `Linked`: a
   ticket becomes the `to` attribute of the hidden `<loom-switch>` (the centre's
   last child), a refusal is the page's `home-notice` in `sessions.reason_words`.
@@ -806,6 +807,28 @@ each other, in one tab, each page a new UI session.
   still draws no sidebar and no Home control. `ui_route_test` reads the chain,
   both reaches and the refusals; `page_events_test` pins the Home button's path
   and that no other path moved.
+
+### Opening a saved session
+
+The third pull request of 065 lets a page minted to operate open a saved
+session, through the control command's own checks. `view/resume` holds the rule
+for a saved row: a button on an operator-ceiling page, "opening" while its
+resume is out, text for every other saved row meanwhile and text always on a
+read-only page or for a session the catalogue reports `Reserved` or
+`RecoveryBlocked` (`sessions.Blocked`). The press is `home.Resuming(id)` or
+`operator_page.Resuming(id)`, beneath the regions the sockets already admit.
+
+The component calls `Start.resume` or `Transport.resume`, which starts the
+daemon's task and returns, so the Lustre runtime is free while a session
+starts; the task's answer arrives as `Linked`. `ui_socket.resume_task` runs
+`resume_for` in a weft run (one task, a deadline past the wait, linked to the
+runtime): the page is open, its ceiling is Operator, `session_authority` finds
+Owner or Operator in the target (an observer member is `NotOperator`),
+`manager.open`, a `weft/poll` over `manager.get` for at most
+`ui_socket.resume_wait_ms` (30 s), and then `ticket_for`'s own checks and mint.
+Any refusal of the open or a wait that runs out is `NotOpened`, in fixed words,
+and mints nothing. `ui_route_test` runs each step against a real registry and
+`home_test` and `session_switch_test` read the rows and the messages.
 
 ## Expanding a row
 
@@ -1031,7 +1054,8 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/page.gleam` | The shell, the exchange page, the two scripts, the stylesheet, the keyed paths and the content security policy. |
 | `packages/client/src/client/daemon/server.gleam` | `/ui` routing and its check order, `ui.link`, and the `hello` `ui` field. |
 | `packages/client/src/client/daemon/ui_http.gleam` | Pure request checks and response headers: route, host, `Sec-Fetch-Site`, origin, cookies. |
-| `packages/web_view/src/web_view/home.gleam`, `view/home_bar.gleam`, `view/home_table.gleam` | The home page's component, top bar and per-workspace tables, whose running rows open a session (protocol-change/065). |
+| `packages/web_view/src/web_view/home.gleam`, `view/home_bar.gleam`, `view/home_table.gleam` | The home page's component, top bar and per-workspace tables, whose running rows open a session and, on an operator-ceiling page, whose saved rows resume one (protocol-change/065). |
+| `packages/web_view/src/web_view/view/resume.gleam` | The one rule for a saved row on the sidebar and the home's table: text, a resume button, or "opening" while a resume is out. |
 | `packages/client/src/client/daemon/ui_sessions.gleam` | The ticket and UI-session actor: mint, single-use redeem, lookup, key and nonce comparison, sweep, and the page-minted invitations' allowance (three an hour per credential). |
 | `packages/client/src/client/daemon/ui_socket.gleam` | The page's WebSocket: permit custody, the component chosen by role (observer, member operator, owner), frame filtering by role, the session and home tickets (`Standing`, `ticket_for`, `home_ticket_for`) and the invitation the daemon makes for a page, the home's socket and its row clicks, shutdown. |
 | `packages/client/src/client/daemon/ui_relay.gleam` | The relay into the gateway, the role cap, and the four ways a page ends. |

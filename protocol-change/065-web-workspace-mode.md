@@ -720,3 +720,74 @@ through a click on a row. A stolen `Workspace` session page can mint a home
 ticket for its own principal at its own ceiling and deadline, which opens no
 session its principal could not already open. A chain of tickets never outlives
 the first page's deadline (`mint_before`).
+
+## Addendum: opening a saved session, the third pull request (2026-10-04)
+
+**Status**: IMPLEMENTED in the change that adds it. It builds the design note's
+PR 3 and adds no route, no frozen interface and no kind of wire frame. It
+amends a ruling and says so here.
+
+**The ruling it amends.** `docs/next.md` held "operator surfaces do not open
+saved sessions". The owner lifted that on 2026-10-03 for operator-ceiling pages
+through the control command's own checks (section 9 of the design note). This
+change is that lift, and `docs/next.md` now says so under the ruling's new
+heading: a listing is still never permission, and the principal's role in the
+target is. The observer-sidebar ruling is untouched.
+
+**The press.** A saved session's row is a button on a home or a session page
+minted to operate, beneath the same two regions as before
+(`home.table_path`, `home.sidebar_path` on the home; `component.sidebar_path` on
+a session page), so no socket admits a new path. Its message is
+`home.Resuming(id)` or `operator_page.Resuming(id)` with the catalogue's
+identity. A session the catalogue reports as `Reserved` or `RecoveryBlocked` is
+`sessions.Blocked` and its row stays text at every ceiling. `view/resume` holds
+the one rule for which row is a button, drawn "opening" while its resume is out
+and text for every other saved row, so a second press has no handler; the
+components ignore one too (`resuming` is set until the answer arrives).
+
+**The daemon.** `ui_socket.resume_for(standing, tickets, open, target, within:)`
+runs, afresh and from the grant the daemon holds: the page is still open; its
+ceiling is Operator; `target` is a canonical identity; `session_authority`
+finds Owner or `Participant(Operator)` (an observer member is `NotOperator`, the
+control command's own refusal, and a principal with no membership is `NotHeld`);
+`manager.open`, the registry turn `sessions.open` runs (capacity, a reserved
+creation, an archived session, the domain slot), whose refusals are all
+`NotOpened`; a `weft/poll` over `manager.get` until the session is `Resident`,
+for at most `resume_wait_ms` (30,000), where `Opening` retries and any other
+status or an unreadable registry ends the wait; and then `ticket_for`, which
+checks the page, the membership and the residency a second time and mints with
+the page's own ceiling, reach and deadline. A session that is not resident in
+time mints nothing. The registry may still finish the open, and the session
+then shows as running on the next read.
+
+The control command also compares the daemon epoch the client holds. A page
+holds none to compare: its UI session lives in this daemon's memory, so a page
+for which `open()` still answers was admitted by this daemon, and `open()` is
+the epoch check.
+
+**The task.** The wait is long, so `ui_socket.resume_task` runs `resume_for` in
+a weft run of its own (one task, `weft.deadline` a little past the wait,
+`start_witnessed`, linked to the calling Lustre runtime so a page that goes
+away cancels it) and returns at once. The task's last act is the answer, which
+the component dispatches as `Linked`, the same message a switch's answer is.
+`Transport.resume` and `home.Start.resume` have the shape `fn(String,
+fn(Answer) -> Nil) -> Nil` for this. A task killed by its deadline answers
+nothing and the page keeps saying "opening" until it is reloaded; the poll ends
+the wait first by design, and the deadline is a backstop for a stuck registry
+call.
+
+**The refusals.** Two reasons join `sessions.Reason`. `NotOperator` is "Ask an
+operator to resume it." and `NotOpened` is "That session did not open. Resume it
+from a terminal." No text from the open reaches the page. An observer-ceiling
+page's forged press, and an observer-role session page's, is `NotHeld`, the
+words for a session the principal does not hold: the home's observer variant
+drops the message (`ObserverCeiling`), the observer page's component has no
+resume, `resumed_for(Observing, ..)` refuses before any task starts, and
+`resume_for` refuses a non-Operator ceiling. Each layer is enough alone.
+
+**What a stolen page is worth.** A stolen operator-ceiling page can already
+list the principal's sessions and mint a ticket for any running one. It can now
+also ask the daemon to open a saved session its principal operates or owns, which
+the principal's own `loom` could already do through `sessions.open`. It consumes
+registry capacity at a browser's request, within the bounds a terminal's open
+has, and cannot open a session the principal only observes or does not hold.
