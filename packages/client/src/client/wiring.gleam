@@ -439,6 +439,7 @@ fn effects_over(
       timeout_ms: config.provider_timeout_ms,
     ),
     tools: effects.ToolSurface(
+      recover: fn(_run, _complete) { effects.UnmanagedLocal },
       clear: fn(query) { clear(declared, query) },
       run:,
       replay_still_safe: fn(name) { replay_still_safe(declared, name) },

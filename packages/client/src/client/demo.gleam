@@ -1288,6 +1288,7 @@ fn demo_usage(tokens: Int) -> message.Usage {
 
 fn scripted_tools() -> effects.ToolSurface {
   effects.ToolSurface(
+    recover: fn(_run, _complete) { effects.UnmanagedLocal },
     clear: fn(query: effects.ClearanceQuery) {
       effects.Cleared(
         effective_arguments: query.call.arguments,

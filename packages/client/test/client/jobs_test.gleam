@@ -602,6 +602,7 @@ fn open_runtime(clock: Clock) -> Runtime {
         // Nothing here dispatches a tool: a job's execution goes through
         // the broker seam above, never through the driver's tool surface.
         tools: effects.ToolSurface(
+          recover: fn(_run, _complete) { effects.UnmanagedLocal },
           clear: fn(_query) {
             effects.ClearanceRefused(reason: "no tool plane in this harness")
           },

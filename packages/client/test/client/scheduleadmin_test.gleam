@@ -108,6 +108,7 @@ fn hanging_provider() -> effects.ProviderSurface {
 
 fn refusing_tools() -> effects.ToolSurface {
   effects.ToolSurface(
+    recover: fn(_run, _complete) { effects.UnmanagedLocal },
     clear: fn(_query) { effects.ClearanceRefused(reason: "no tools here") },
     run: fn(_run) { effects.ToolFailed(reason: "no tools here") },
     replay_still_safe: fn(_name) { False },
