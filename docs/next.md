@@ -1685,3 +1685,12 @@ compiling mutation controls pass. The review's row-masked byte test is corrected
 [the journal review](review/distributed-preparation-journal.md) records that change
 and the SQL generator's false-success fix. Final outcome capacity and physical
 resource ownership still need production assembly.
+
+The compiler's fixed source preparation, offline seed preparation and finalization
+are now shared internal steps. The existing local path uses them around unchanged
+clearance/collection. Finalization rejects cancelled zero exits before producing
+an artifact; a genuine BEAM fixture and compiling mutation pin this behavior.
+Independent seeded verification passes 381 tests, and review found no actionable
+issue. See [the physical compile review](review/distributed-physical-compile.md).
+The executor service still needs to join these steps to live preparation custody
+and exact admitted native evidence.
