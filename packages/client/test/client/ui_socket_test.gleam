@@ -44,6 +44,7 @@ fn start() -> component.Start(ui_relay.Relay) {
       resume: fn(_, _) { Nil },
       invite: None,
       home: None,
+      rename: None,
     ),
   )
 }
@@ -455,6 +456,7 @@ pub fn a_listed_entry_names_the_session_and_nothing_private_test() {
       workspace: "/src/loom",
       created_at: 1_790_000_000_000,
       residency: sessions.Saved,
+      subtitle: option.None,
     )
   assert !string.contains(string.inspect(entry), "secret.sqlite")
   assert !string.contains(string.inspect(entry), "request-key")
@@ -495,6 +497,7 @@ pub fn only_an_operators_page_is_listed_sessions_test() {
       workspace: "/src/loom",
       created_at: 1,
       residency: sessions.Live,
+      subtitle: option.None,
     )
   let asked = process.new_subject()
   let read = fn() {
@@ -739,4 +742,176 @@ pub fn a_workspace_page_goes_home_and_a_one_session_page_cannot_test() {
     assert process.receive(asked, 300) == Error(Nil)
     page.shutdown()
   })
+}
+
+// A submit at `path` on the page.
+fn submit_on(path: String) -> String {
+  "{\"kind\":1,\"path\":"
+  <> json.to_string(json.string(path))
+  <> ",\"name\":\"submit\",\"event\":{}}"
+}
+
+// Protocol-change/066: only an owner's socket admits an event at or beneath the
+// rename control's path, whether a submit or a click. A member operator's socket
+// drops it, alone or inside a batch, and an observer's drops it as it drops
+// every submit; the same events anywhere else are unaffected for a member.
+pub fn only_an_owners_socket_admits_the_rename_submit_test() {
+  let at = component.rename_path
+  let beneath = at <> "\trename-0\t0"
+  list.each([at, beneath, at <> "\t1"], fn(path) {
+    assert ui_socket.owner_accepts(submit_on(path))
+    assert ui_socket.owner_accepts(click_on(path))
+    assert !ui_socket.operator_accepts(submit_on(path))
+    assert !ui_socket.operator_accepts(click_on(path))
+    assert !ui_socket.observer_accepts(submit_on(path))
+    assert !ui_socket.observer_accepts(click_on(path))
+    let batch =
+      "{\"kind\":3,\"messages\":["
+      <> click_on(component.sidebar_path <> "\t0")
+      <> ","
+      <> submit_on(path)
+      <> "]}"
+    assert !ui_socket.operator_accepts(batch)
+    assert ui_socket.owner_accepts(batch)
+  })
+
+  // Neighbours of the path are not the control: the invitation's, the session
+  // controls', the pane's sibling and a path that only begins with the same
+  // digits. A member's socket admits a submit at each, as it did before.
+  list.each(
+    [
+      component.session_controls_path,
+      component.session_controls_path <> "\t1\t0\t0",
+      "0\t3\t2\t3",
+      "0\t3\t2\t40",
+      "0\t3\t1\t4",
+      "0\t2\t4",
+    ],
+    fn(path) {
+      assert ui_socket.operator_accepts(submit_on(path))
+    },
+  )
+}
+
+// The paths the socket pins are exactly these: no admitted path moved when the
+// rename control was added after the others.
+pub fn the_pinned_event_paths_have_not_moved_test() {
+  assert component.strip_path == "0\t3\t0\t1\t0"
+  assert component.invite_path == "0\t3\t2\t2"
+  assert component.session_controls_path == "0\t3\t2\t3"
+  assert component.older_path == "0\t2\t1\t0\t0"
+  assert component.sidebar_path == "0\t1"
+  assert component.home_path == "0\t0\t1"
+  assert home.table_path == "0\t2\t1"
+  assert home.sidebar_path == "0\t1"
+  assert component.rename_path == "0\t3\t2\t4"
+
+  // The new path is the pane's next child, after the invitation's and the
+  // controls', and begins with neither.
+  assert !string.starts_with(component.rename_path, component.invite_path)
+  assert !string.starts_with(
+    component.rename_path,
+    component.session_controls_path,
+  )
+}
+
+// A forged submit at the control's path on a member operator's page is dropped
+// before the component sees it, so nothing is redrawn and nothing is asked.
+pub fn a_member_operators_page_drops_the_rename_submit_test() {
+  let assert Ok(page) = ui_socket.start_page(ui_socket.Operating, start())
+    as "the member operator's page starts"
+  let _ = mounted(page)
+  page.forward(
+    "{\"kind\":1,\"path\":"
+    <> json.to_string(json.string(component.rename_path <> "\trename-0\t0"))
+    <> ",\"name\":\"submit\",\"event\":{\"detail\":{\"formData\":[[\"text\",\"x\"]]}}}",
+  )
+  assert process.selector_receive(page.frames, 200) == Error(Nil)
+  page.shutdown()
+}
+
+// Only an owner's page is handed the capability to rename, so any other page
+// draws no control and has nothing to call.
+pub fn only_an_owners_page_is_handed_the_capability_to_rename_test() {
+  let ask = fn(_name, _deliver) { Nil }
+  assert ui_socket.rename_capability(ui_socket.Observing, ask) == None
+  assert ui_socket.rename_capability(ui_socket.Operating, ask) == None
+  let assert Some(_) = ui_socket.rename_capability(ui_socket.Owning, ask)
+}
+
+fn home_principal(kind: access.PrincipalKind) -> access.Principal {
+  access.Principal(id: "p", display_name: "P", kind:)
+}
+
+// The home's capability to rename is the owner's on a page minted to operate:
+// a member's home, an observer-ceiling owner's home and every other combination
+// have none, and the socket for each admits the submit only where the
+// capability is.
+pub fn only_an_owners_operating_home_may_rename_test() {
+  let ask = fn(_session, _name, _deliver) { Nil }
+  let owner = home_principal(access.OwnerPrincipal)
+  let member = home_principal(access.MemberPrincipal)
+  let assert Some(_) =
+    ui_socket.home_rename_capability(owner, access.Operator, ask)
+  assert ui_socket.home_rename_capability(owner, access.Observer, ask) == None
+  assert ui_socket.home_rename_capability(member, access.Operator, ask) == None
+  assert ui_socket.home_rename_capability(member, access.Observer, ask) == None
+}
+
+// The home's socket admits a submit only beneath the sessions list's section,
+// where a row's rename form is, and only for an owner's home. A member's home
+// still admits clicks on a row and drops every submit; the owner's admits a
+// submit beneath the list and nowhere else, not the sidebar, not the regions'
+// own paths and not a sibling that shares their digits, and it takes no other
+// event.
+pub fn the_home_socket_admits_a_rename_submit_only_for_an_owner_test() {
+  let row = home.table_path <> "\t1\t2\t0\t0\t0"
+  let form = home.table_path <> "\t1\t2\t0\t0"
+  let sidebar_row = home.sidebar_path <> "\t1\t1\t0\t0"
+  assert ui_socket.home_owner_accepts(submit_on(form))
+  assert ui_socket.home_owner_accepts(submit_on(row))
+  assert ui_socket.home_owner_accepts(click_on(row))
+  assert ui_socket.home_owner_accepts(click_on(sidebar_row))
+  assert ui_socket.home_owner_accepts(
+    "{\"kind\":3,\"messages\":["
+    <> click_on(row)
+    <> ","
+    <> submit_on(form)
+    <> "]}",
+  )
+
+  // Not a member's home, whatever path it names.
+  assert !ui_socket.home_accepts(submit_on(form))
+  assert !ui_socket.home_accepts(submit_on(row))
+  assert ui_socket.home_accepts(click_on(row))
+  assert !ui_socket.home_accepts(
+    "{\"kind\":3,\"messages\":["
+    <> click_on(row)
+    <> ","
+    <> submit_on(form)
+    <> "]}",
+  )
+
+  // And not an owner's home outside the list.
+  list.each(
+    [
+      submit_on(home.table_path),
+      submit_on(home.sidebar_path),
+      submit_on(sidebar_row),
+      submit_on(home.table_path <> "0\t1"),
+      submit_on("0\t0\t1"),
+      submit_on("0\t2\t0"),
+      submit_on("0\t2\t2"),
+      submit_on("0"),
+      "{\"kind\":1,\"name\":\"submit\"}",
+      "{\"kind\":1,\"path\":\"0\\t2\\t1\\t1\",\"name\":\"keydown\"}",
+      "{\"kind\":1,\"path\":\"0\\t2\\t1\\t1\",\"name\":\"input\"}",
+      "{\"kind\":3,\"messages\":[]}",
+      "{\"kind\":2,\"name\":\"value\"}",
+      "not json",
+    ],
+    fn(frame) {
+      assert !ui_socket.home_owner_accepts(frame)
+    },
+  )
 }
