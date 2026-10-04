@@ -26,6 +26,8 @@
 //// actual reserved session storage before `collect` freezes permanent fences.
 //// `service_request` → `admit_service_child` → `admit_offer` →
 //// `admit_command_child` retains exact service/offer/native associations.
+//// `command_offer_for_origin` reads the indexed historical mapping;
+//// `check_offer_header` guards value loading and `check_offer_ref` checks linkage.
 //// `cancel_service` fences them in one transaction. `collection_ready` defers
 //// deletion even with no offer, until physical recovery custody is transferred.
 //// `migrate_commands` validates format-2 headers and limits before additive DDL.
@@ -1065,6 +1067,99 @@ pub fn offer(
   })
 }
 
+/// Resolves a lifetime-unique native origin to its complete historical offer.
+/// Cancelled evidence remains readable for cancellation and recovery; this read
+/// grants no clearance, reservation or fresh native execution. Frozen evidence
+/// and collected parents refuse. The caller's full parent survives address lookup.
+///
+/// ## Examples
+///
+/// `command_offer_for_origin(store, command.native_origin(ref))` returns exact
+/// retained bytes even after `cancel_service`; `admit_command_child` still refuses.
+pub fn command_offer_for_origin(
+  store: Store,
+  origin: ChildOrigin,
+) -> Result(CommandOfferPayload, Error) {
+  use Nil <- result.try(same_session(store, remote_tool.child_session(origin)))
+  use role <- result.try(
+    remote_tool.child_role(origin)
+    |> result.replace_error(Invalid("command origin requires managed parent")),
+  )
+  use <- bool.guard(
+    when: role != remote_tool.CompileCommand
+      && role != remote_tool.SatelliteCommand,
+    return: Error(Invalid("origin is not a physical command")),
+  )
+  transaction(store, fn() {
+    use Nil <- result.try(reserve(store, 0, 0, 0))
+    use Nil <- result.try(parent_retained(store, origin))
+    use Nil <- result.try(check_offer_count(
+      store,
+      remote_tool.child_parent(origin),
+    ))
+    use headers <- result.try(query(
+      store,
+      sql.owner_command_offer_header_by_native_origin(remote_tool.child_address(
+        origin,
+      )),
+    ))
+    case headers {
+      [] -> Error(Missing)
+      [indexed] -> {
+        // The index returns only guarded scalars. Full allowance is checked
+        // before the separate named value query transfers any offer bytes.
+        let header =
+          sql.OwnerCommandOfferHeader(
+            parent: indexed.parent,
+            service_origin: indexed.service_origin,
+            service_id: indexed.service_id,
+            native_origin: indexed.native_origin,
+            offer_digest: indexed.offer_digest,
+            identity_bytes: indexed.identity_bytes,
+            offer_bytes: indexed.offer_bytes,
+            state: indexed.state,
+            reserved_bytes: indexed.reserved_bytes,
+          )
+        use <- bool.guard(
+          when: indexed.address == "",
+          return: Error(Invalid("invalid command offer address")),
+        )
+        use Nil <- result.try(header_size(
+          string.byte_size(indexed.address),
+          8192,
+        ))
+        use Nil <- result.try(check_offer_header(store, indexed.address, header))
+        use <- bool.guard(when: header.state == "frozen", return: Error(Frozen))
+        use Nil <- result.try(equal_string(
+          header.parent,
+          remote_tool.child_parent(origin),
+        ))
+        use Nil <- result.try(equal_string(
+          header.native_origin,
+          remote_tool.child_address(origin),
+        ))
+        use value <- result.try(offer_value(store, indexed.address))
+        use ref <- result.try(decode_offer_ref(value.identity))
+
+        // Logical addresses omit immutable parent content. Exact origin and
+        // retained service checks prevent that omission from becoming authority.
+        use <- bool.guard(
+          when: command.native_origin(ref) != origin,
+          return: Error(Conflict),
+        )
+        use Nil <- result.try(equal_string(
+          indexed.address,
+          command.command_address(ref),
+        ))
+        use Nil <- result.try(check_offer_ref(header, ref))
+        use _ <- result.try(service_inside(store, command.service(ref)))
+        offer_payload(store, ref, header, value)
+      }
+      [_, _, ..] -> Error(Invalid("duplicate command native origin"))
+    }
+  })
+}
+
 /// Atomically joins exact service/offer custody with a complete native request.
 /// UUID allocation belongs to the caller's post-clearance Prepared reservation.
 /// A duplicate ignores a new candidate ID and returns the ORIGINAL UUID.
@@ -1357,15 +1452,10 @@ fn offer_row(
   ref: command.CommandRef,
 ) -> Result(Option(#(String, CommandOfferPayload)), Error) {
   use Nil <- result.try(reserve(store, 0, 0, 0))
-  let key = command.service(ref)
-  let parent = remote_tool.address(command.parent(key))
-  use count <- result.try(
-    one(query(store, sql.owner_command_offer_count(parent))),
-  )
-  use <- bool.guard(
-    when: count.offers < 0 || count.offers > 2,
-    return: Error(Invalid("command offer count exceeds fixed service purposes")),
-  )
+  use Nil <- result.try(check_offer_count(
+    store,
+    remote_tool.address(command.parent(command.service(ref))),
+  ))
   use headers <- result.try(query(
     store,
     sql.owner_command_offer_header(command.command_address(ref)),
@@ -1373,78 +1463,133 @@ fn offer_row(
   case headers {
     [] -> Ok(None)
     [header] -> {
-      use Nil <- result.try(header_size(header.identity_bytes, 8192))
-      use Nil <- result.try(header_size(
-        header.offer_bytes,
-        offer_allowance(store),
+      use Nil <- result.try(check_offer_header(
+        store,
+        command.command_address(ref),
+        header,
       ))
-      use Nil <- result.try(check_state(header.state))
-      use Nil <- result.try(equal_string(header.parent, parent))
-      use Nil <- result.try(equal_string(
-        header.service_origin,
-        remote_tool.child_address(command.service_origin(key)),
-      ))
-      use Nil <- result.try(equal_string(
-        header.service_id,
-        ids.entry_id_to_string(command.request_id(key)),
-      ))
-      use Nil <- result.try(equal_string(
-        header.native_origin,
-        remote_tool.child_address(command.native_origin(ref)),
-      ))
-      use Nil <- result.try(
-        command.digest(header.offer_digest) |> result.map_error(Invalid),
-      )
-      let allowance = case header.state {
-        "frozen" -> 0
-        _ -> offer_allowance(store)
-      }
-      let actual =
-        offer_reservation(
-          ref,
-          header.offer_digest,
-          header.identity_bytes,
-          allowance,
-        )
-      use <- bool.guard(
-        when: header.reserved_bytes < actual,
-        return: Error(Invalid(
-          "command offer reservation is smaller than retained bytes",
-        )),
-      )
-      use value <- result.try(
-        one(query(
-          store,
-          sql.owner_command_offer_value(
-            command.command_address(ref),
-            offer_allowance(store),
-          ),
-        )),
-      )
-      use Nil <- result.try(equal(value.identity, ref_bytes(ref)))
-      case header.state {
-        "frozen" -> {
-          use Nil <- result.try(equal(value.offer, <<>>))
-          Ok(
-            Some(#(
-              "frozen",
-              CommandOfferPayload(ref, header.offer_digest, <<>>),
-            )),
-          )
-        }
-        "retained" | "cancelled" -> {
-          use offer <- result.try(command_offer_payload(
-            store.limits,
-            ref,
-            header.offer_digest,
-            value.offer,
-          ))
-          Ok(Some(#(header.state, offer)))
-        }
-        _ -> Error(Invalid("invalid command offer state"))
-      }
+      use Nil <- result.try(check_offer_ref(header, ref))
+      use value <- result.try(offer_value(store, command.command_address(ref)))
+      use offer <- result.try(offer_payload(store, ref, header, value))
+      Ok(Some(#(header.state, offer)))
     }
     [_, _, ..] -> Error(Invalid("duplicate command offer identity"))
+  }
+}
+
+fn check_offer_count(store: Store, parent: String) -> Result(Nil, Error) {
+  use count <- result.try(
+    one(query(store, sql.owner_command_offer_count(parent))),
+  )
+  use <- bool.guard(
+    when: count.offers < 0 || count.offers > 2,
+    return: Error(Invalid("command offer count exceeds fixed service purposes")),
+  )
+  Ok(Nil)
+}
+
+fn check_offer_header(
+  store: Store,
+  address: String,
+  header: sql.OwnerCommandOfferHeader,
+) -> Result(Nil, Error) {
+  use Nil <- result.try(header_size(header.identity_bytes, 8192))
+  use Nil <- result.try(header_size(header.offer_bytes, offer_allowance(store)))
+  use Nil <- result.try(check_state(header.state))
+  use Nil <- result.try(
+    command.digest(header.offer_digest) |> result.map_error(Invalid),
+  )
+  let allowance = case header.state {
+    "frozen" -> 0
+    _ -> offer_allowance(store)
+  }
+
+  // All lengths describe guarded scalar headers, plus the entire unused
+  // configured allowance. A short reservation refuses before the value query.
+  let actual =
+    header.identity_bytes
+    + string.byte_size(address)
+    + string.byte_size(header.parent)
+    + string.byte_size(header.service_origin)
+    + string.byte_size(header.service_id)
+    + string.byte_size(header.native_origin)
+    + string.byte_size(header.offer_digest)
+    + 128
+    + allowance
+  use <- bool.guard(
+    when: header.reserved_bytes < actual,
+    return: Error(Invalid(
+      "command offer reservation is smaller than retained bytes",
+    )),
+  )
+  Ok(Nil)
+}
+
+fn check_offer_ref(
+  header: sql.OwnerCommandOfferHeader,
+  ref: command.CommandRef,
+) -> Result(Nil, Error) {
+  let key = command.service(ref)
+  use Nil <- result.try(equal_string(
+    header.parent,
+    remote_tool.address(command.parent(key)),
+  ))
+  use Nil <- result.try(equal_string(
+    header.service_origin,
+    remote_tool.child_address(command.service_origin(key)),
+  ))
+  use Nil <- result.try(equal_string(
+    header.service_id,
+    ids.entry_id_to_string(command.request_id(key)),
+  ))
+  equal_string(
+    header.native_origin,
+    remote_tool.child_address(command.native_origin(ref)),
+  )
+}
+
+fn offer_value(
+  store: Store,
+  address: String,
+) -> Result(sql.OwnerCommandOfferValue, Error) {
+  one(query(
+    store,
+    sql.owner_command_offer_value(address, offer_allowance(store)),
+  ))
+}
+
+fn decode_offer_ref(bytes: BitArray) -> Result(command.CommandRef, Error) {
+  use text <- result.try(
+    bit_array.to_string(bytes)
+    |> result.replace_error(Invalid("invalid command reference UTF-8")),
+  )
+  use value <- result.try(
+    json.parse(text)
+    |> result.replace_error(Invalid("invalid command reference JSON")),
+  )
+  use ref <- result.try(
+    command.decode_ref(value)
+    |> result.replace_error(Invalid("invalid command reference")),
+  )
+  use Nil <- result.try(equal(bytes, ref_bytes(ref)))
+  Ok(ref)
+}
+
+fn offer_payload(
+  store: Store,
+  ref: command.CommandRef,
+  header: sql.OwnerCommandOfferHeader,
+  value: sql.OwnerCommandOfferValue,
+) -> Result(CommandOfferPayload, Error) {
+  use Nil <- result.try(equal(value.identity, ref_bytes(ref)))
+  case header.state {
+    "frozen" -> {
+      use Nil <- result.try(equal(value.offer, <<>>))
+      Ok(CommandOfferPayload(ref, header.offer_digest, <<>>))
+    }
+    "retained" | "cancelled" ->
+      command_offer_payload(store.limits, ref, header.offer_digest, value.offer)
+    _ -> Error(Invalid("invalid command offer state"))
   }
 }
 

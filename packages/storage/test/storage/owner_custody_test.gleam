@@ -633,6 +633,9 @@ pub fn generated_owner_queries_match_named_sql_source_test() {
     sql.owner_legacy_custody_budget().0,
     named(sql.owner_legacy_invalid_headers(0).0, ["payload_limit"]),
     named(sql.owner_command_offer_header("").0, ["address"]),
+    named(sql.owner_command_offer_header_by_native_origin("").0, [
+      "native_origin",
+    ]),
     named(sql.owner_command_offer_value("", 0).0, ["address", "offer_limit"]),
     named(sql.owner_command_offer_count("").0, ["parent"]),
     named(
