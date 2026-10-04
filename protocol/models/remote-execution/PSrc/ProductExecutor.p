@@ -8,14 +8,18 @@ machine ProductExecutor {
   var completed: map[int, tProductResult];
   var phases: map[int, tPreparation];
   var claims: set[int];
+  var liveClaims: map[int, tLiveClaim];
+  var incarnation: int;
   var created: set[int];
   var leases: map[int, tLease];
   var resourceOwnerAlive: bool;
   var associated: map[int, tPreparedProduct];
   var outerReceipts: set[int];
+  var deferredLiveAssociation: tAssociationRequest;
+  var deferredLivePermit: tAssociationRequest;
   start state Init {
     entry (p: (driver: machine, mode: tProductMode)) {
-      driver = p.driver; mode = p.mode; resourceOwnerAlive = true; goto Ready;
+      driver = p.driver; mode = p.mode; resourceOwnerAlive = true; incarnation = 1; goto Ready;
     }
   }
   state Ready {
@@ -44,6 +48,9 @@ machine ProductExecutor {
       // The irreversible intent commits before the first creation message.
       phases[s.id] = Preparing; claims += (s.id);
       announce mProductResourceIntent, s;
+      liveClaims[s.id] = (issuer = this, service = s, incarnation = incarnation);
+      announce mOriginalClaim, liveClaims[s.id];
+      send owner, eOriginalClaim, liveClaims[s.id];
       send this, eProductCreate, s.id;
     }
     on eProductCreate do (id: int) {
@@ -98,21 +105,22 @@ machine ProductExecutor {
       }
     }
     on eProductNativeAdmission do (read: tProductAdmission) {
-      var p: tPreparedProduct;
-      p = read.prepared;
-      if (read.evidence.answer != Prior || read.evidence.request != p.native || read.evidence.row.request != p.native) {
-        if (compileControl(mode)) {
-          announce mCompileAssociationRefused, p; send driver, eCompileAssociationRefused, p;
-        }
+      announce mCompileAssociationRefused, read.prepared;
+      if (compileControl(mode)) { send driver, eCompileAssociationRefused, read.prepared; }
+    }
+    on eAssociateCommand do (a: tAssociationRequest) {
+      if (mode == CompileSubmitUnassociated || mode == ProductLiveAssociation) {
+        deferredLiveAssociation = a;
+        if (mode == ProductLiveAssociation) { send driver, eLiveAssociationView, a; }
         return;
       }
-      if (p.offer.service.id in rows && p.offer.service == rows[p.offer.service.id] &&
-          p.offer.service.id in leases && !(p.offer.service.id in completed)) {
-        if (!(p.offer.commandRef in associated)) {
-          associated[p.offer.commandRef] = p;
-          announce mProductNativeAssociated, p;
-        }
-      }
+      associateLive(a);
+    }
+    on eAssociateForeignClaim do (a: tAssociationRequest) { associateLive(a); }
+    on eLiveReleaseAssociation do { associateLive(deferredLiveAssociation); }
+    on eLiveReleasePermit do { if (deferredLivePermit.boot > 0) { send deferredLivePermit.executor, eCommandPermit, deferredLivePermit; } }
+    on eCommandControl do (c: tCommandControl) {
+      control(c);
     }
     on eProductNativeTerminal do (read: tProductTerminal) {
       var n: tRequest;
@@ -165,6 +173,7 @@ machine ProductExecutor {
       }
       // One durable transaction retains failure and fences every queued late Ready.
       completed[id] = p; phases[id] = ResourceUncertain; claims -= (id);
+      revokeLive(id);
       announce mCompileBeforeCommitted, p;
       announce mProductClaimRevoked, rows[id];
       send owner, eProductCompleted, p;
@@ -174,7 +183,7 @@ machine ProductExecutor {
       announce mCompileReadback, compileView(id); send driver, eCompileView, compileView(id);
     }
     on eCompileCleanup do (id: int) {
-      if (id in rows) { phases[id] = ResourceReleased; claims -= (id); announce mCompileReleased, rows[id]; }
+      if (id in rows) { phases[id] = ResourceReleased; claims -= (id); revokeLive(id); announce mCompileReleased, rows[id]; }
       send driver, eCompileView, compileView(id);
     }
     on eProductResourceQuery do {
@@ -184,6 +193,10 @@ machine ProductExecutor {
     on eProductResourceQueryFor do (id: int) { queryResource(id); }
     on eProductExecutorCrash do {
       var id: int;
+      incarnation = 2;
+      deferredLiveAssociation = default(tAssociationRequest);
+      deferredLivePermit = default(tAssociationRequest);
+      revokeLive(1); revokeLive(2);
       id = 1;
       while (id <= 2) {
         if (id in phases && phases[id] == Preparing) {
@@ -194,14 +207,57 @@ machine ProductExecutor {
         }
         id = id + 1;
       }
-      if (compileControl(mode)) { announce mCompileRecovered, compileView(1); send driver, eCompileRecovered; }
+      if (compileControl(mode) || mode == ProductLiveAssociation) { announce mCompileRecovered, compileView(1); send driver, eCompileRecovered; }
     }
     on eProductResourceOwnerDeath do {
       resourceOwnerAlive = false;
+      revokeLive(1); revokeLive(2);
       if (2 in rows) {
         if (phases[2] == PreparedResource) { phases[2] = ResourceReleased; }
         announce mProductResourceOwnerDead, rows[2];
       }
+    }
+  }
+  fun associateLive(a: tAssociationRequest) {
+    var id: int;
+    id = a.command.prepared.offer.service.id;
+
+    // Only the original live claim can commit a fresh native association.
+    // A matching retained row or duplicate is historical data, never a permit.
+    if (!(id in rows) || rows[id] != a.command.prepared.offer.service ||
+        phases[id] != PreparedResource || !(id in leases) || id in completed ||
+        !(id in liveClaims) || liveClaims[id] != a.command.claim ||
+        a.command.resource != this || id in associated ||
+        a.evidence.answer != Prior || a.evidence.request != a.command.prepared.native ||
+        a.evidence.row.request != a.command.prepared.native || a.evidence.row.phase != Admitted) {
+      announce mCommandAssociationRefused, a;
+      if (mode == ProductLiveAssociation) { send driver, eLiveAssociationRefused, a; }
+      if (!(id in associated)) { send a.executor, eCommandAssociationRefused, a; }
+      return;
+    }
+
+    // The immutable association commits before its original permit is issued.
+    associated[id] = a.command.prepared;
+    announce mProductNativeAssociated, a.command.prepared;
+    liveClaims -= (id);
+    announce mCommandPermitIssued, a;
+    if (mode == ProductLiveAssociation) {
+      deferredLivePermit = a;
+      send driver, eLivePermitView, a;
+    } else { send a.executor, eCommandPermit, a; }
+  }
+  fun control(c: tCommandControl) {
+    var id: int;
+    id = c.command.prepared.offer.service.id;
+    if (id in associated && associated[id] == c.command.prepared &&
+        c.command.resource == this && c.wire.request == c.command.prepared.native) {
+      announce mCommandControlForwarded, c;
+      if (mode == ProductLiveAssociation) { send driver, eLiveControlAnswer, (control = c, forwarded = true); }
+      send c.wire.owner, eAssociatedControl, c;
+    } else {
+      announce mCommandControlRefused, c;
+      if (mode == ProductLiveAssociation) { send driver, eLiveControlAnswer, (control = c, forwarded = false); }
+      send c.wire.owner, eCommandControlRefused, c;
     }
   }
   fun compileView(id: int): tCompileView {
@@ -222,7 +278,11 @@ machine ProductExecutor {
       announce mProductResourceCreated, s;
     }
   }
+  fun revokeLive(id: int) {
+    if (id in liveClaims) { announce mLiveClaimRevoked, liveClaims[id]; liveClaims -= (id); }
+  }
   fun revoke(id: int) {
+    revokeLive(id);
     claims -= (id); phases[id] = ResourceUncertain;
     announce mProductClaimRevoked, rows[id];
   }

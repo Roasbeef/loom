@@ -17,6 +17,8 @@ machine ProductOwner {
   var resourceObservation: map[int, tResourceView];
   var deferredAssociation: tProductAdmission;
   var deferredSubmit: tRequest;
+  var originalClaims: map[int, tLiveClaim];
+  var deferredCommand: tCommand;
   start state Init {
     entry (p: (driver: machine, service: machine, nativeOwner: machine, mode: tProductMode)) {
       driver = p.driver; service = p.service; nativeOwner = p.nativeOwner; mode = p.mode;
@@ -24,6 +26,7 @@ machine ProductOwner {
     }
   }
   state Ready {
+    on eOriginalClaim do (c: tLiveClaim) { originalClaims[c.service.id] = c; }
     on eProductBegin do (s: tService) {
       if (!(s.id in retained)) {
         retained[s.id] = s;
@@ -116,11 +119,12 @@ machine ProductOwner {
         announce mProductTime, elapsed;
         announce mProductControlComplete, (offer = candidate, native = n);
       }
+      deferredCommand = (prepared = (offer = candidate, native = n), claim = originalClaims[accepted.commandRef], resource = service);
       if (mode == CompileSubmitUnassociated) {
         deferredSubmit = n;
         // A canonical Request/Prepared without a native row is not admission.
         send service, eProductNativeAdmission, (prepared = (offer = candidate, native = n), evidence = default(tReply));
-      } else { send nativeOwner, ePrepare, n; }
+      } else { send nativeOwner, ePrepareCommand, deferredCommand; }
     }
     on eProductView do (v: tReply) {
       var foreign: tRequest;
@@ -131,7 +135,7 @@ machine ProductOwner {
         if (!(v.request.key.execution in notified)) {
           notified += (v.request.key.execution);
           deferredAssociation = (prepared = (offer = offers[v.request.key.execution], native = v.request), evidence = v);
-          if (mode != CompileSubmitUnassociated) { send service, eProductNativeAdmission, deferredAssociation; }
+          // Native Executor owns association before launch; views carry history only.
         }
         // This directed boundary input uses the existing changed-digest class.
         // FIFO from this sender places it after association and before the
@@ -156,8 +160,8 @@ machine ProductOwner {
         send driver, eProductOuterDone, p;
       }
     }
-    on eCompileContinueSubmit do { send nativeOwner, ePrepare, deferredSubmit; }
-    on eCompileReleaseAssociation do { send service, eProductNativeAdmission, deferredAssociation; }
+    on eCompileContinueSubmit do { send nativeOwner, ePrepareCommand, deferredCommand; }
+    on eCompileReleaseAssociation do { send service, eLiveReleaseAssociation; }
     on eCompileAcknowledge do (id: int) {
       if (id in completions) { send service, eProductReceipt, completions[id]; }
     }

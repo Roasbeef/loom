@@ -9,6 +9,14 @@ import re
 from runner import ROOT, check_case, compile_model, record, snapshot_model
 
 PROBES = {
+    "tcProbeLiveOrder": "witness: original live association permit preceded actual native Intent and start",
+    "tcProbeLiveFenceBefore": "witness: resource fence before live association refused permit and duplicate controls",
+    "tcProbeLiveFenceAfter": "witness: association before fence retained exact native cancellation route",
+    "tcProbeLiveLostReply": "witness: lost association reply retained history without recreating original permit",
+    "tcProbeLiveStaleReply": "witness: stale boot permit refused and recovered association remained data only",
+    "tcProbeLiveClaim": "witness: changed original Claim and duplicate association refused before genuine launch",
+    "tcProbeLiveControls": "witness: four foreign controls refused while exact second native row remained unchanged",
+
     "tcProbeCompileFailPreparationLateReady": "witness: original Preparing failure fenced late Ready and recovered exact acknowledged error",
     "tcProbeCompileReadySubmitUnassociated": "witness: Request-only and Ready in-flight Submit refused Before then exact native association settled",
     "tcProbeCompileTerminalPayloadPending": "witness: recovered terminal payload refused before reducer commit then exact native terminal settled",

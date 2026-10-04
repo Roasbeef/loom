@@ -8,6 +8,7 @@ machine Owner {
   var connection: int;
   var custody: map[tKey, int];
   var outcomes: map[tKey, int];
+  var commands: map[tKey, tCommand];
 
   start state Init {
     entry (p: (driver: machine, executor: machine, mode: tMode)) {
@@ -20,6 +21,23 @@ machine Owner {
   }
 
   state Ready {
+    on ePrepareCommand do (c: tCommand) {
+      var n: tRequest;
+      n = c.prepared.native;
+      if (n.key in commands && commands[n.key] != c) { return; }
+      commands[n.key] = c;
+      if (!(n.key in custody)) { custody[n.key] = n.digest; announce mCustody, n; }
+      transmit(eAdmit, n);
+    }
+    on eAssociatedControl do (c: tCommandControl) {
+      if (c.wire.request.key in commands && commands[c.wire.request.key] == c.command &&
+          c.wire.request == c.command.prepared.native) {
+        if (c.operation == CommandQuery) { send executor, eReconcile, c.wire; }
+        else if (c.operation == CommandCancel) { send executor, eCancel, c.wire; }
+        else if (c.operation == CommandReceipt) { send executor, eReceipt, c.wire; }
+        else { send executor, eStdin, c.wire; } }
+    }
+    on eCommandControlRefused do (c: tCommandControl) { }
     on ePrepare do (r: tRequest) {
       if (!(r.key in custody)) {
         custody[r.key] = r.digest;
@@ -29,6 +47,7 @@ machine Owner {
     }
     on eOwnerReconcile do (r: tRequest) { transmit(eReconcile, r); }
     on eRetry do (r: tRequest) { transmit(eAdmit, r); }
+    on eOwnerStdin do (r: tRequest) { transmit(eStdin, r); }
     on eOwnerCancel do (r: tRequest) { transmit(eCancel, r); }
     on eOwnerReceipt do (r: tRequest) {
       if (r.key in outcomes && outcomes[r.key] == r.digest) {
@@ -57,6 +76,7 @@ machine Owner {
   }
 
   fun transmit(ev: event, r: tRequest) {
+    var operation: tCommandOperation;
     assert r.key in custody, "owner transmitted without durable custody";
     if (mode == Lossy && choose()) {
       announce mWitness, LostTransport;
@@ -65,6 +85,16 @@ machine Owner {
       if (ev == eCancel) { announce mWitness, CancelLost; }
       return;
     }
-    send executor, ev, (owner = this, request = r, connection = connection);
+    if (r.key in commands) {
+      if (commands[r.key].prepared.native != r) { return; }
+      if (ev == eAdmit) { send executor, eAdmitCommand, (command = commands[r.key], wire = (owner = this, request = r, connection = connection)); }
+      else {
+        operation = CommandQuery;
+        if (ev == eCancel) { operation = CommandCancel; }
+        else if (ev == eReceipt) { operation = CommandReceipt; }
+        else if (ev == eStdin) { operation = CommandStdin; }
+        send commands[r.key].resource, eCommandControl, (command = commands[r.key], wire = (owner = this, request = r, connection = connection), operation = operation);
+      }
+    } else { send executor, ev, (owner = this, request = r, connection = connection); }
   }
 }

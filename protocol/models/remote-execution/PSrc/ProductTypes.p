@@ -5,7 +5,7 @@ enum tProductMode { ProductLifecycle, ProductOfferConflict, ProductResourceUnkno
   ProductCompileLeaseRecovery, ProductDeadResource, ProductForeignAssociation, ProductForeignArtifact, ProductForeignNativeTerminal,
   ProductBadFingerprint, ProductBudgetZero, ProductBudgetBelowOne, ProductBudgetOne,
   ProductBudgetBelowCap, ProductBudgetCap, ProductBudgetCold, ProductBudgetReduced, ProductExpiredOffer,
-  ProductPostSendDelay, ProductColdRun, CompileFailLateReady, CompileSubmitUnassociated, CompilePayloadPending, CompileIndependentReceipts }
+  ProductPostSendDelay, ProductColdRun, CompileFailLateReady, CompileSubmitUnassociated, CompilePayloadPending, CompileIndependentReceipts, ProductLiveAssociation }
 enum tProductWitness { ProductComplete, ProductClearedPending, ProductConflict,
   ProductUnknownResource, ProductRecoveredLease, ProductUnknownLaunch,
   ProductDistinctChildren, ProductUnknownFinal }
@@ -162,3 +162,47 @@ fun compileControl(mode: tProductMode): bool {
 }
 
 event mCompileRecovered: tCompileView;
+
+// The original continuation is volatile identity, not a recovered bearer grant.
+// Two incarnation classes suffice to distinguish original from reconstructed work.
+type tLiveClaim = (issuer: machine, service: tService, incarnation: int);
+type tCommand = (prepared: tPreparedProduct, claim: tLiveClaim, resource: machine);
+type tCommandWire = (command: tCommand, wire: tWire);
+type tAssociationRequest = (command: tCommand, executor: machine, wire: tWire, boot: int, evidence: tReply);
+enum tCommandOperation { CommandQuery, CommandCancel, CommandReceipt, CommandStdin }
+type tCommandControl = (command: tCommand, wire: tWire, operation: tCommandOperation);
+event eOriginalClaim: tLiveClaim;
+event ePrepareCommand: tCommand;
+event eAdmitCommand: tCommandWire;
+event eAssociateCommand: tAssociationRequest;
+event eCommandPermit: tAssociationRequest;
+event eCommandAssociationRefused: tAssociationRequest;
+event eCommandControl: tCommandControl;
+event eAssociatedControl: tCommandControl;
+event eCommandControlRefused: tCommandControl;
+event mOriginalClaim: tLiveClaim;
+event mLiveClaimRevoked: tLiveClaim;
+event mCommandPending: tAssociationRequest;
+event mCommandPermitIssued: tAssociationRequest;
+event mCommandPermitConsumed: tAssociationRequest;
+event mCommandPermitRefused: tAssociationRequest;
+event mCommandAssociationRefused: tAssociationRequest;
+event mCommandControlForwarded: tCommandControl;
+event mCommandControlRefused: tCommandControl;
+event mCommandNativeRecovered: int;
+event eLiveReleaseAssociation;
+
+// Directed barriers delay actual answers, without supplying admission facts.
+event eLiveAssociationView: tAssociationRequest;
+event eLivePermitView: tAssociationRequest;
+event eLiveReleasePermit;
+event eLiveAssociationRefused: tAssociationRequest;
+event eLivePermitRefused: tAssociationRequest;
+event eLiveControlAnswer: (control: tCommandControl, forwarded: bool);
+event eStdin: tWire;
+event eOwnerStdin: tRequest;
+
+event eAssociateForeignClaim: tAssociationRequest;
+
+event eLoseCommandReply: tAssociationRequest;
+event mCommandReplyLost: tAssociationRequest;

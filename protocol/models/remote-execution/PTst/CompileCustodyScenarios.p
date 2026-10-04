@@ -63,8 +63,10 @@ machine CompileCustodyScenario {
     on eView do (v: tReply) {
       latest = v; send productOwner, eProductView, v;
       if (v.answer != Prior) { return; }
-      if (mode == CompileSubmitUnassociated && v.row.phase == Running && stage == 1) {
+      if (mode == CompileSubmitUnassociated && v.row.phase == Admitted && stage == 1) {
         stage = 2; send service, eCompileFailPreparation, compileBefore(productService(1));
+      } else if (mode == CompileSubmitUnassociated && v.row.phase == Running && stage == 3) {
+        send helper, eFinishNative;
       } else if (mode == CompilePayloadPending && v.row.phase == Running) {
         if (stage == 0) { stage = 1; send helper, eFinishNative; }
         else if (stage == 2) {
@@ -94,7 +96,7 @@ machine CompileCustodyScenario {
       } else if (mode == CompileSubmitUnassociated) {
         if (stage == 2) {
           assert !v.retained && !v.associated, "Ready plus in-flight Submit accepted Before failure";
-          stage = 3; send productOwner, eCompileReleaseAssociation; send helper, eFinishNative;
+          stage = 3; send productOwner, eCompileReleaseAssociation;
         } else if (stage == 3 && v.retained) { assert v.result.provenance == NativeCompletion, "normal native settlement did not resume"; finish(); }
       } else if (mode == CompilePayloadPending) {
         if (stage == 3) {
@@ -172,8 +174,10 @@ spec ProbeCompileFailPreparationLateReady observes mProductResourceCreated, mCom
   }
 }
 spec ProbeCompileReadySubmitUnassociated observes mProductReady, mProductNativeReserved, mAdmit,
-  mCompileAssociationRefused, mCompileFailureRefused, mProductNativeAssociated, mProductCompleted {
+  mCompileAssociationRefused, mCompileFailureRefused, mProductNativeAssociated, mProductCompleted,
+  mCommandPermitConsumed, mIntent, mStart {
   var ready: bool; var reserved: bool; var refusedRequest: bool; var admitted: bool; var pending: bool; var associated: bool;
+  var permitted: bool; var intended: bool; var started: bool;
   start state Watching {
     on mProductReady do (p: tLease) { ready = p.service.id == 1; }
     on mProductNativeReserved do (p: tPreparedProduct) { reserved = p.offer.service.id == 1; }
@@ -181,8 +185,11 @@ spec ProbeCompileReadySubmitUnassociated observes mProductReady, mProductNativeR
     on mAdmit do (p: tRequest) { if (p.key.execution == 1) { admitted = true; } }
     on mCompileFailureRefused do (v: tCompileView) { pending = ready && admitted && !v.associated && !v.retained; }
     on mProductNativeAssociated do (p: tPreparedProduct) { associated = pending; }
+    on mCommandPermitConsumed do (a: tAssociationRequest) { if (a.command.prepared.native.key.execution == 1) { permitted = associated; } }
+    on mIntent do (n: tNative) { if (n.key.execution == 1) { intended = permitted; } }
+    on mStart do (n: tNative) { if (n.key.execution == 1) { started = intended; } }
     on mProductCompleted do (p: tProductResult) {
-      assert !(refusedRequest && pending && associated && p.service.id == 1),
+      assert !(refusedRequest && pending && associated && started && p.service.id == 1),
         "witness: Request-only and Ready in-flight Submit refused Before then exact native association settled";
     }
   }
