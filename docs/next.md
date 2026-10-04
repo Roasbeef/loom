@@ -1751,3 +1751,12 @@ and focused client gates passed 176 and six tests with unchanged source hashes.
 See the [lookup review](review/distributed-command-lookup.md) and the indexed
 lookup section of the [custody guide](architecture/remote-custody.md). Production
 command routing and live Compile service assembly remain in progress.
+
+Live resource association now requires the original preparation Claim, actual
+native Request/Authority/Admit evidence and a final Open/Ready/Unassociated
+transaction. Only its first successful commit returns a native launch permit.
+Astra found one example-format issue, corrected without changing production
+syntax. Root independently passed all 218 executor tests; three compiling guard
+mutations fail their intended assertions. The
+[live-admission review](review/distributed-live-compile-admission.md) records the
+limits. Native service wiring must still place this permit before launch intent.

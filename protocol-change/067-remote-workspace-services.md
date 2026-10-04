@@ -759,3 +759,34 @@ collected parents. It grants no live clearance, reservation, UUID allocation or
 execution authority. The existing atomic native reservation retains its original
 cancellation checks. Independent review and corrected verification are recorded
 in [the lookup review](../docs/review/distributed-command-lookup.md).
+
+## Addendum: Original-claim native admission
+
+Fresh Compile command admission MUST retain the original live preparation Claim.
+Historical Input lookup MUST validate the complete canonical service key and body,
+but MUST NOT reconstruct that Claim, renew its deadline or grant launch authority.
+
+The native service MUST commit actual Request, Authority and Admit evidence before
+calling live resource association, and MUST receive the exact committed permit
+before AuthorizeLaunch or helper startup. Native readback occurs outside the
+resource writer transaction. The final transaction MUST revalidate the original
+input, open scope, Ready state and absence of association, then commit before
+returning the permit bound to the resource endpoint, full ref, native key and
+digest. Duplicate, recovered and lost-reply paths MUST NOT issue another permit.
+
+This transaction orders admission against the resource cancellation fence. If the
+fence wins, live association refuses. If association wins, cancellation MUST read
+and follow the retained exact native key after fencing the resource. It MUST NOT
+claim that cancellation necessarily preceded process startup. The native reducer
+still owns at-most-once launch intent; the original native continuation still
+checks its original elapsed deadline after association.
+
+Finite native Authority is canonical generation, deadline and budget data.
+Generation is positive and bounded; budget is at least one second and strictly
+below the retained finite ceiling. The absolute monotonic deadline MUST be
+nonzero, but may be negative. These syntax checks do not establish freshness.
+Copyable Gleam permit values remain local to the trusted first-Submit continuation.
+
+The [live-admission review](../docs/review/distributed-live-compile-admission.md)
+records the independent gate and corrected prose finding. Production native
+routing and physical service assembly remain required before product acceptance.
