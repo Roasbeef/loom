@@ -31,6 +31,11 @@ pub type Part {
   /// The runtime's transitive drain barrier, before any supporting service.
   Runtime
 
+  /// The process holding the configuration tool runs fetch. Tools run until
+  /// the runtime has drained, so it retires directly after that barrier and
+  /// before anything which could outlive it.
+  ToolConfig
+
   /// Restartable composition services which can still read session storage.
   Services
 
@@ -363,7 +368,7 @@ fn block(
 fn clean(
   cleanups: Dict(Part, fn() -> Result(Nil, String)),
 ) -> Result(Nil, Failure) {
-  [Runtime, Services, Broker, Helpers, Mcp, Storage, Namespace]
+  [Runtime, ToolConfig, Services, Broker, Helpers, Mcp, Storage, Namespace]
   |> list.try_each(fn(part) {
     case dict.get(cleanups, part) {
       Error(Nil) -> Ok(Nil)
