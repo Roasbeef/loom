@@ -381,10 +381,7 @@ fn belongs_to(piece: turns.Piece, marks: Marks) -> #(turns.Hue, Option(Int)) {
     | turns.Prompt(..)
     | turns.Work(..)
     | turns.Missed(..)
-    | turns.Decided(..) -> #(
-      marks.hue,
-      None,
-    )
+    | turns.Decided(..) -> #(marks.hue, None)
     turns.Spawned(child:, hue:, ..) -> #(
       hue,
       option.then(child, position(marks, _)),

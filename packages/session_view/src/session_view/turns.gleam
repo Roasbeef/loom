@@ -480,9 +480,11 @@ fn lines(decided: List(decisions.Decision)) -> List(Piece) {
 // The sequence a piece starts at, from the key of the first record it draws.
 fn start_seq(piece: Piece) -> Result(Int, Nil) {
   case piece {
-    Plain(block:, ..) | Commentary(block:) -> key_seq(block.key)
+    Plain(block:, ..) | Prompt(block:, ..) | Commentary(block:, ..) ->
+      key_seq(block.key)
     Work(items: [Narrated(block:, ..), ..], ..) -> key_seq(block.key)
-    Work(items: [Step(key:, ..), ..], ..) -> key_seq(key)
+    Work(items: [Step(key:, ..), ..], ..)
+    | Work(items: [Memory(key:, ..), ..], ..) -> key_seq(key)
     Work(items: [], ..) | Decided(..) -> Error(Nil)
     Spawned(key:, ..)
     | Returned(key:, ..)

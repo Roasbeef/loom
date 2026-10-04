@@ -23,9 +23,10 @@
 //// before it. Everything a diff carries is session text: the path and every
 //// row. Each is drawn as a text node, never as an attribute or a class; the
 //// path is also the file's key, as a single line with no separator
-//// character, and no handler sits beneath it. Each diff is drawn by `view/diff`, in colour, which chooses a
-//// line's class from a closed kind and never from its text. The view carries no handler, so an observer's
-//// page draws it as an operator's does. The board is bounded by the fold
+//// character, and no handler sits beneath it. Each diff is drawn by
+//// `view/diff`, in colour, which chooses a line's class from a closed kind and
+//// never from its text. The view carries no handler, so an observer's page
+//// draws it as an operator's does. The board is bounded by the fold
 //// (`changes_view.max_files`, `max_file_rows`, `max_rows`), and a cut is
 //// drawn as a line saying how much is not shown, so the pane's size in
 //// every viewer's document has a fixed ceiling.
@@ -123,11 +124,22 @@ fn file(
         html.text(" " <> changes_view.counts_words(file)),
       ]),
     ]),
-    diff.view(
-      diff_view.of_lines(list.map(file.rows, fn(row) { row.text })),
-      file.cut,
-    ),
+    diff.view(diff_view.of_lines(diff_lines(file)), file.cut),
   ])
+}
+
+// The lines the shared diff reader is given. An edit's rows are headerless
+// hunks, which the reader takes as they are. A file the session only wrote has
+// no hunk header at all, and the reader reads lines before the first hunk as
+// plain context, so its added lines would be drawn uncoloured; a header that
+// opens the new file at line one puts them inside a hunk, in green and with
+// their line numbers.
+fn diff_lines(file: File) -> List(String) {
+  let rows = list.map(file.rows, fn(row) { row.text })
+  case file.origin {
+    changes_view.Written -> ["@@ -0,0 +1 @@", ..rows]
+    changes_view.Edited -> rows
+  }
 }
 
 // The line that says files were left out of the board, or nothing.

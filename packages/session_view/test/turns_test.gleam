@@ -1032,6 +1032,8 @@ pub fn reviews_that_follow_each_other_are_one_piece_test() {
     turns.Commentary(reviews: 1, ..),
   ] = laid
   assert first.key == "3.0"
+}
+
 // A recorded approval decision is placed by the sequence that committed it:
 // before the first piece that starts after it, so it follows the step it
 // decided. One older than the window's first record is dropped, and one
@@ -1055,7 +1057,7 @@ pub fn a_decision_line_is_placed_by_its_sequence_test() {
     ])
   assert list.map(laid, shape)
     == [
-      "plain:Alice:\nreview the patch",
+      "prompt:Alice:review the patch",
       "work:folded",
       "spawn:" <> child,
       "decided",
@@ -1073,6 +1075,29 @@ pub fn a_decision_line_is_placed_by_its_sequence_test() {
       }
     })
   assert decisions.words(decision) == "Owner denied bash"
+}
+
+// A turn's work folds behind one divider, and a decision raised inside that
+// turn must not fold with it: it is a piece of its own, outside the Work, so
+// the fold's items are the same with or without the decision.
+pub fn a_decision_inside_a_folded_turn_stays_a_visible_row_test() {
+  let bare = pieces([])
+  let laid =
+    turns.with_decisions(bare, [
+      decisions.Decision(
+        seq: 5,
+        strand: "main",
+        who: "Owner",
+        verdict: decisions.Denied,
+        tool: "bash",
+      ),
+    ])
+  let assert [_, turns.Work(folding: turns.Folded, items: held, ..), after, ..] =
+    laid
+  let assert [_, turns.Work(items: bare_items, ..), ..] = bare
+  assert held == bare_items
+  assert shape(after) == "spawn:" <> child
+  assert list.count(laid, fn(piece) { shape(piece) == "decided" }) == 1
 }
 
 pub fn no_decisions_leave_the_pieces_untouched_test() {
