@@ -24,10 +24,17 @@
 //// runs on a separate supervised exchange while the reader may block; finite
 //// executor watchdog is independent. Upstream producer/final-consumer credits
 //// remain root's #703 responsibility; this queue alone proves no E2E bound.
+////
+//// CommandReserved adds the complete service route without changing the native
+//// Reserved constructor. validate_route checks the original ChildOrigin and
+//// physical correspondence before Reserve transfers custody to the guarantor.
+//// exchange_route selects the closed codec for both worker and detached Cancel;
+//// no transport closure can replace that selection.
 
 import broker/dispatch
 import broker/exec
 import core/clock
+import core/command
 import core/remote_tool
 import executor/remote/connection
 import executor/remote/identity
@@ -45,6 +52,19 @@ import weft/actor
 import weft/poll
 
 /// A reservation whose key/link and exact request have already durably committed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let command = dispatcher.CommandReserved(key: key, prepared: prepared, ref: ref)
+/// assert command.key == key
+/// assert command.prepared == prepared
+/// ```
+///
+/// ```gleam
+/// let native = dispatcher.Reserved(key: key, prepared: prepared)
+/// assert native.key == key
+/// ```
 pub type Reserved {
   /// Root allocates request UUID outside the connection and binds administrative scope.
   Reserved(
@@ -52,6 +72,16 @@ pub type Reserved {
     key: identity.RequestKey,
     /// The exact command materialized beside the registered executor.
     prepared: wire.Prepared,
+  )
+
+  /// A physical service child retains its complete durable route beside the native key.
+  CommandReserved(
+    /// The original durably reserved native request identity.
+    key: identity.RequestKey,
+    /// The unchanged broker-cleared native materialization.
+    prepared: wire.Prepared,
+    /// The exact parent service and physical command association.
+    ref: command.CommandRef,
   )
 }
 
@@ -84,6 +114,11 @@ pub type Config {
   )
 }
 
+type CommandRoute {
+  NativeRoute
+  ServiceCommand(command.CommandRef)
+}
+
 type State {
   State(
     config: Config,
@@ -91,7 +126,7 @@ type State {
     subject: process.Subject(Message),
     origin: Int,
     remaining: Int,
-    reserved: Option(#(identity.RequestKey, identity.Digest)),
+    reserved: Option(#(identity.RequestKey, identity.Digest, CommandRoute)),
     inputs: List(#(Int, BitArray, dispatch.Eof)),
     input_count: Int,
     input_bytes: Int,
@@ -116,6 +151,7 @@ type Message {
   Reserve(
     key: identity.RequestKey,
     digest: identity.Digest,
+    route: CommandRoute,
     reply: process.Subject(Result(Nil, Nil)),
   )
   Input(bytes: BitArray, eof: dispatch.Eof, reply: process.Subject(Nil))
@@ -237,12 +273,12 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       let _ = weft.start_relayed(run, to: sink(target))
       actor.continue(state)
     }
-    Reserve(key, digest, reply) -> {
+    Reserve(key, digest, route, reply) -> {
       process.send(reply, case state.settled {
         Pending -> Ok(Nil)
         Settled -> Error(Nil)
       })
-      actor.continue(State(..state, reserved: Some(#(key, digest))))
+      actor.continue(State(..state, reserved: Some(#(key, digest, route))))
     }
     Input(bytes, eof, reply) -> {
       let size = bit_array.byte_size(bytes)
@@ -358,13 +394,13 @@ fn settle(state: State, terminal: dispatch.Terminal) -> State {
 
 fn cancel_remote(state: State) -> Nil {
   case state.reserved {
-    Some(#(key, digest)) -> {
+    Some(#(key, digest, route)) -> {
       let config = state.config
       config.uncertain(key, digest)
       let _ =
         weft.new([
           fn() {
-            connection.exchange(config.connection, wire.Cancel(key, digest))
+            exchange_route(config.connection, route, wire.Cancel(key, digest))
           },
         ])
         |> weft.deadline(config.connection.within_ms)
@@ -392,12 +428,17 @@ fn run_remote(state: State) -> Result(dispatch.Terminal, Nil) {
       False -> Error(Nil)
     },
   )
+  let route = case reserved {
+    Reserved(_, _) -> NativeRoute
+    CommandReserved(_, _, ref) -> ServiceCommand(ref)
+  }
+  use Nil <- result.try(validate_route(state, reserved, digest, route))
   let reply = process.new_subject()
-  process.send(state.subject, Reserve(reserved.key, digest, reply))
+  process.send(state.subject, Reserve(reserved.key, digest, route, reply))
   use Nil <- result.try(
     process.receive(reply, 1000) |> result.unwrap(Error(Nil)),
   )
-  let outcome = submit_and_wait(state, reserved, digest)
+  let outcome = submit_and_wait(state, reserved, digest, route)
   case outcome {
     Ok(terminal) -> Ok(terminal)
     Error(Nil) -> {
@@ -414,6 +455,7 @@ fn submit_and_wait(
   state: State,
   reserved: Reserved,
   digest: identity.Digest,
+  route: CommandRoute,
 ) -> Result(dispatch.Terminal, Nil) {
   let config = state.config
   use authorization <- result.try(case reserved.prepared.lifetime {
@@ -424,8 +466,9 @@ fn submit_and_wait(
       }
     wire.Finite(_) -> {
       use challenge <- result.try(
-        connection.exchange(
+        exchange_route(
           config.connection,
+          route,
           wire.ChallengeRequest(reserved.key, digest),
         )
         |> failed,
@@ -448,8 +491,9 @@ fn submit_and_wait(
 
   // Any reply loss after this call is reconciled by Query under the original key.
   let _ =
-    connection.exchange(
+    exchange_route(
       config.connection,
+      route,
       wire.Submit(
         reserved.key,
         digest,
@@ -472,7 +516,7 @@ fn submit_and_wait(
       every: poll.Fixed(20),
       clock: poll.monotonic(),
       from: #(0, []),
-      attempt: fn(acc) { poll_remote(state, reserved.key, digest, acc) },
+      attempt: fn(acc) { poll_remote(state, route, reserved.key, digest, acc) },
     )
   case result {
     poll.Answer(terminal) -> Ok(terminal)
@@ -482,6 +526,7 @@ fn submit_and_wait(
 
 fn poll_remote(
   state: State,
+  route: CommandRoute,
   key: identity.RequestKey,
   digest: identity.Digest,
   acc: #(Int, List(BitArray)),
@@ -492,8 +537,9 @@ fn poll_remote(
   let input_outcome = case process.receive(input, 1000) {
     Ok(Some(#(ordinal, bytes, eof))) -> {
       case
-        connection.exchange(
+        exchange_route(
           config.connection,
+          route,
           wire.Stdin(key, digest, ordinal, bytes, eof),
         )
       {
@@ -508,19 +554,22 @@ fn poll_remote(
   }
   case input_outcome {
     Error(Nil) -> poll.Broken(Nil)
-    Ok(Nil) -> poll_query(state, key, digest, acc)
+    Ok(Nil) -> poll_query(state, route, key, digest, acc)
   }
 }
 
 fn poll_query(
   state: State,
+  route: CommandRoute,
   key: identity.RequestKey,
   digest: identity.Digest,
   acc: #(Int, List(BitArray)),
 ) -> poll.Pass(dispatch.Terminal, Nil, #(Int, List(BitArray))) {
   let #(cursor, outputs) = acc
   let config = state.config
-  case connection.exchange(config.connection, wire.Query(key, digest, cursor)) {
+  case
+    exchange_route(config.connection, route, wire.Query(key, digest, cursor))
+  {
     Ok(wire.Output(original, content, ordinal, bytes))
       if original == key && content == digest && ordinal == cursor
     -> {
@@ -550,8 +599,9 @@ fn poll_query(
         ))
         use result_digest <- result.try(wire.digest(bytes) |> failed)
         let _ =
-          connection.exchange(
+          exchange_route(
             config.connection,
+            route,
             wire.DurableReceipt(key, digest, result_digest),
           )
         Ok(terminal)
@@ -564,6 +614,57 @@ fn poll_query(
     Ok(wire.Rejected(1)) | Ok(wire.Rejected(2)) | Ok(wire.Rejected(3)) ->
       poll.Broken(Nil)
     _ -> poll.Pending(acc)
+  }
+}
+
+// The guarantor and worker retain the same closed route, including detached Cancel.
+fn exchange_route(
+  config: connection.Config,
+  route: CommandRoute,
+  body: wire.Body,
+) -> Result(wire.Body, connection.Error) {
+  case route {
+    NativeRoute -> connection.exchange(config, body)
+    ServiceCommand(ref) -> connection.exchange_command(config, ref, body)
+  }
+}
+
+fn validate_route(
+  state: State,
+  reserved: Reserved,
+  digest: identity.Digest,
+  route: CommandRoute,
+) -> Result(Nil, Nil) {
+  case route {
+    NativeRoute -> Ok(Nil)
+    ServiceCommand(ref) -> {
+      use Nil <- result.try(
+        case state.request.context.origin == Some(command.native_origin(ref)) {
+          True -> Ok(Nil)
+          False -> Error(Nil)
+        },
+      )
+      let config = state.config.connection
+      wire.command_envelope(
+        ref,
+        wire.Envelope(
+          wire.Owner,
+          config.owner,
+          config.executor,
+          config.generation,
+          config.scope,
+          wire.Submit(
+            reserved.key,
+            digest,
+            reserved.prepared,
+            <<0:size(256)>>,
+            0,
+          ),
+        ),
+      )
+      |> result.map(fn(_) { Nil })
+      |> failed
+    }
   }
 }
 

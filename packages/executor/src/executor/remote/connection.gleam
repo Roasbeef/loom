@@ -16,7 +16,13 @@
 //// Serial waits permit only one unresolved handoff. The compatibility serve_one
 //// helper shares this parser through a direct route; its return proves only
 //// socket closure and must never recycle a production service-ingress credit.
+////
+//// exchange_command uses the same owner_exchange engine with a closed outbound
+//// route. encode_route changes only post-Hello framing; read_route requires the
+//// exact ref before exposing the native reply. Server read remains native-only;
+//// enabling service commands requires authenticated association before launch.
 
+import core/command
 import executor/remote/service
 import executor/remote/tls
 import executor/remote/wire
@@ -65,6 +71,11 @@ pub opaque type Request {
   )
 }
 
+type OutboundRoute {
+  NativeRoute
+  CommandRoute(command.CommandRef)
+}
+
 type Route {
   Direct(service.Service)
   Relayed(process.Subject(Request))
@@ -78,7 +89,29 @@ type Route {
 /// connection.exchange(config, wire.Query(key, digest, 0))
 /// ```
 pub fn exchange(config: Config, body: wire.Body) -> Result(wire.Body, Error) {
-  bounded(config.within_ms, fn() { client_exchange(config, body) })
+  bounded(config.within_ms, fn() { client_exchange(config, NativeRoute, body) })
+}
+
+/// Exchanges one physical command under its original complete retained route.
+/// Hello stays on the native lane. A plain reply, changed ref or generation is
+/// uncertain; no retry changes authority. The current native server intentionally
+/// refuses this wrapper until authenticated command admission is assembled.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let expired = connection.Config(..config, within_ms: 0)
+/// assert connection.exchange_command(expired, ref, wire.Query(key, digest, 0))
+///   == Error(connection.Uncertain)
+/// ```
+pub fn exchange_command(
+  config: Config,
+  ref: command.CommandRef,
+  body: wire.Body,
+) -> Result(wire.Body, Error) {
+  bounded(config.within_ms, fn() {
+    client_exchange(config, CommandRoute(ref), body)
+  })
 }
 
 /// Compatibility helper for standalone exchanges with caller-owned admission.
@@ -177,12 +210,13 @@ fn bounded(within: Int, work: fn() -> Result(a, Error)) -> Result(a, Error) {
 
 fn client_exchange(
   config: Config,
+  route: OutboundRoute,
   body: wire.Body,
 ) -> Result(wire.Body, Error) {
   use socket <- result.try(
     tls.connect(config.tls, config.hostname, config.port) |> transport,
   )
-  let outcome = owner_exchange(socket, config, body)
+  let outcome = owner_exchange(socket, config, route, body)
   tls.close(socket)
   outcome
 }
@@ -190,6 +224,7 @@ fn client_exchange(
 fn owner_exchange(
   socket: tls.Connection,
   config: Config,
+  route: OutboundRoute,
   body: wire.Body,
 ) -> Result(wire.Body, Error) {
   let hello =
@@ -217,19 +252,55 @@ fn owner_exchange(
     },
   )
   use bytes <- result.try(
-    wire.encode(wire.Envelope(..hello, body:)) |> transport,
+    encode_route(route, wire.Envelope(..hello, body:)) |> transport,
   )
   use Nil <- result.try(tls.send(socket, bytes) |> transport)
-  use reply <- result.try(read(
-    socket,
-    wire.Executor,
-    config.owner,
-    config.executor,
-    config.scope,
-  ))
+  use reply <- result.try(read_route(socket, config, route))
   case reply.generation == config.generation {
     True -> Ok(reply.body)
     False -> Error(Uncertain)
+  }
+}
+
+// The owner engine changes only the closed frame codec after ordinary Hello.
+fn encode_route(
+  route: OutboundRoute,
+  envelope: wire.Envelope,
+) -> Result(BitArray, wire.Error) {
+  case route {
+    NativeRoute -> wire.encode(envelope)
+    CommandRoute(ref) -> {
+      use command <- result.try(wire.command_envelope(ref, envelope))
+      wire.encode_command(command)
+    }
+  }
+}
+
+fn read_route(
+  socket: tls.Connection,
+  config: Config,
+  route: OutboundRoute,
+) -> Result(wire.Envelope, Error) {
+  case route {
+    NativeRoute ->
+      read(socket, wire.Executor, config.owner, config.executor, config.scope)
+    CommandRoute(ref) -> {
+      use bytes <- result.try(tls.receive(socket) |> transport)
+      use command <- result.try(
+        wire.decode_command(
+          bytes,
+          wire.Executor,
+          config.owner,
+          config.executor,
+          config.scope,
+        )
+        |> transport,
+      )
+      case wire.command_ref(command) == ref {
+        True -> Ok(wire.native_envelope(command))
+        False -> Error(Uncertain)
+      }
+    }
   }
 }
 
