@@ -45,8 +45,8 @@
 ////
 //// The panel's panes are the server's children of the `right` slot: one
 //// section for each tab, all of them drawn. The element shows one by
-//// setting a custom state on itself, `tab-strands`, `tab-changes` or
-//// `tab-session` (Lustre's `component.set_pseudo_state`), which the
+//// setting a custom state on itself, `tab-strands`, `tab-changes`,
+//// `tab-session` or `tab-trace` (Lustre's `component.set_pseudo_state`), which the
 //// stylesheet reads to hide the other panes (`loom-shell:state(tab-changes)`).
 //// A hidden pane is `display: none`, so its controls leave the tab order. A
 //// browser without custom states shows every pane, stacked, which is
