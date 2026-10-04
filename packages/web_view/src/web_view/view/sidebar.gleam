@@ -272,7 +272,7 @@ fn group(
 // otherwise, including for a session the daemon will not resume from a page.
 // Only the session on screen draws strand bars, between its name and its
 // residency. A session with a subtitle draws it in a quiet line under its name
-// (protocol-change/066), as a text node: the subtitle is a person's own prompt,
+// (protocol-change/067), as a text node: the subtitle is a person's own prompt,
 // so it is never an attribute, a class or a title, and a row without one is
 // the two words it always was.
 fn entry(

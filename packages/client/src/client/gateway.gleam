@@ -378,7 +378,7 @@ pub type Options {
     /// sent to be summarized on demand (protocol 050). `None` asks nothing.
     summary_demand: Option(fn(List(#(String, Int))) -> Nil),
     /// Told the text of the first human prompt this hub accepts on the main
-    /// strand, once (`protocol-change/066`). The daemon fills it with the
+    /// strand, once (`protocol-change/067`). The daemon fills it with the
     /// catalogue's subtitle write; a host with no catalogue passes `None`.
     first_prompt: Option(fn(String) -> Nil),
   )
@@ -560,7 +560,7 @@ pub fn with_summary_demand(
 }
 
 /// Supplies the report of the session's first accepted human prompt, which the
-/// daemon turns into the catalogue's subtitle (`protocol-change/066`).
+/// daemon turns into the catalogue's subtitle (`protocol-change/067`).
 ///
 /// The hub calls it at most once, in its own process and without waiting, with
 /// the prompt's first text block exactly as the person wrote it. What becomes
@@ -946,7 +946,7 @@ type Held {
     /// strand goes idle, which is the wrong human.
     prompt: AgentMessage,
     /// The same message as the person typed it, before a skill expansion
-    /// rewrote it. The subtitle is derived from this (protocol-change/066),
+    /// rewrote it. The subtitle is derived from this (protocol-change/067),
     /// so a `/skill` first prompt is not subtitled with the skill's body.
     typed: AgentMessage,
     /// Where a drain *failure* is reported. Not where the entry goes: a

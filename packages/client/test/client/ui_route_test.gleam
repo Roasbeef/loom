@@ -3070,7 +3070,7 @@ pub fn an_ended_home_resumes_nothing_test() {
   })
 }
 
-// --- renaming from a page (protocol-change/066) ------------------------------
+// --- renaming from a page (protocol-change/067) ------------------------------
 
 // The owner's page standing: the daemon's owner and the digest of the plaintext
 // credential the fixture's daemon minted for it.

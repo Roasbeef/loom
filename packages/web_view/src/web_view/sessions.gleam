@@ -73,7 +73,7 @@ pub type Entry {
     residency: Residency,
     /// The first line of the first prompt a person sent the session, at most
     /// 60 characters, which the daemon derived once and never changes
-    /// (protocol-change/066). It is a person's own words, so a page draws it as
+    /// (protocol-change/067). It is a person's own words, so a page draws it as
     /// a text node and nowhere else: never an attribute, a class, a key or a
     /// title. A session with no prompt, or one older than the field, has none.
     subtitle: Option(String),

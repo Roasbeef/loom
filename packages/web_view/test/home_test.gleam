@@ -743,7 +743,7 @@ pub fn every_ending_has_home_words_test() {
 }
 
 // The first prompt's first line leads a session's quiet line in place of its
-// age (protocol-change/066): the subtitle, then the standing's words. A session
+// age (protocol-change/067): the subtitle, then the standing's words. A session
 // with none keeps the age it always had, and the subtitle is only ever a text
 // node.
 pub fn a_subtitle_leads_the_quiet_line_in_place_of_the_age_test() {

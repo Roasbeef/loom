@@ -398,7 +398,7 @@ pub fn no_strands_draw_no_bars_test() {
 }
 
 // A session with a subtitle draws it in a quiet line under its name
-// (protocol-change/066), in a wrapper that holds the two; a session without one
+// (protocol-change/067), in a wrapper that holds the two; a session without one
 // is the two words it always was, with no wrapper and no empty line.
 pub fn a_subtitle_is_a_quiet_line_under_the_name_test() {
   let rows = [

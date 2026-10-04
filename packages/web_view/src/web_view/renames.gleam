@@ -1,5 +1,5 @@
 //// Renaming a session from its page: what the page asks, what the daemon
-//// answers, and the fixed words for each refusal (protocol-change/066).
+//// answers, and the fixed words for each refusal (protocol-change/067).
 ////
 //// A display name is catalogue metadata the owner already changes with the
 //// control command `sessions.rename` (protocol-change/019). The page makes the

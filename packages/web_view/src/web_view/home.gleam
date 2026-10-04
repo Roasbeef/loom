@@ -181,7 +181,7 @@ pub type Start {
     /// answer, and its row says nothing about what it is doing.
     activity: fn(List(String), fn(List(#(String, Activity))) -> Nil) -> Nil,
     /// Asks the daemon to rename the named session, for the owner's page that
-    /// submitted a row's rename form (protocol-change/066): the daemon checks
+    /// submitted a row's rename form (protocol-change/067): the daemon checks
     /// that the page is open and was minted to operate, that its credential
     /// still authenticates as the daemon's owner, that the identity is a
     /// session its catalogue holds and that the name is one a display name may

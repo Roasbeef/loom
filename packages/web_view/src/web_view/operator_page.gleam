@@ -121,7 +121,7 @@ pub type Msg(socket) {
   /// The rename control's submit: the owner asks the daemon to give this
   /// page's session the name the field held. The name is the browser's text and
   /// nothing else is: the session, the principal and the right to rename are
-  /// the daemon's, read again when the request runs (protocol-change/066). The
+  /// the daemon's, read again when the request runs (protocol-change/067). The
   /// control is drawn only on an owner's page.
   Renaming(name: String)
 }

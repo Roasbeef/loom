@@ -1,5 +1,5 @@
 //// The Session tab's rename control, drawn on an owner's page only
-//// (protocol-change/066).
+//// (protocol-change/067).
 ////
 //// The control is one small form under the Session pane's other controls: a
 //// disclosure whose summary says "Rename", holding one text field and a submit

@@ -696,7 +696,7 @@ sessions). Only an operator page does it.
   (`session_isolation_test`); the sidebar is the one region that lists the
   others. The observer's socket drops a click beneath `component.sidebar_path`.
 
-## Renaming and the subtitle (protocol-change/066)
+## Renaming and the subtitle (protocol-change/067)
 
 A session's first prompt names it for the page. The daemon reduces the first
 accepted prompt's first line to at most 60 characters, once, and the page draws

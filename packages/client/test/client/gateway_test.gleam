@@ -6237,7 +6237,7 @@ fn start_reporting_harness(reported: Subject(String)) -> Harness {
 
 /// The first human prompt the main strand accepts is reported once, as the
 /// person typed it, and no later prompt is reported again
-/// (`protocol-change/066`). The subtitle is derived from the report by the
+/// (`protocol-change/067`). The subtitle is derived from the report by the
 /// catalogue, so the hub neither trims nor shortens it.
 pub fn the_first_accepted_main_prompt_is_reported_once_test() {
   let reported = process.new_subject()

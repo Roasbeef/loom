@@ -301,7 +301,7 @@ pub const invite_path = "0\t3\t2\t2"
 /// title, its list, the invitation control (`invite_path`) and the session
 /// controls (`session_controls_path`), so that placing it there moved no path
 /// the socket admits. The one handler beneath it is the form's submit
-/// (protocol-change/066). The page socket admits a `submit` at or beneath this
+/// (protocol-change/067). The page socket admits a `submit` at or beneath this
 /// path only on a page whose principal is the daemon's owner
 /// (`client/daemon/ui_socket.operator_accepts`), as it does for the invitation
 /// control, so a member operator's browser and an observer's cannot send one
@@ -463,7 +463,7 @@ pub type Transport(socket) {
     /// long: the page's runtime waits for it.
     home: Option(fn() -> sessions.Answer),
     /// Asks the daemon to rename this page's own session, for an owner's page
-    /// that submitted the rename control (protocol-change/066): the daemon
+    /// that submitted the rename control (protocol-change/067): the daemon
     /// checks that the page is open, that its credential still authenticates as
     /// the daemon's owner and that the name is one a display name may be, and
     /// then makes the registry's owner-checked rename. It must return at once:

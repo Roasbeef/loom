@@ -437,7 +437,7 @@ fn subtitles_of(frame: String) {
 
 pub fn a_session_row_reads_its_optional_subtitle_test() {
   // A frame from an older daemon has no member, and a newer one's has a
-  // string; both decode, which is the compatibility `protocol-change/066`
+  // string; both decode, which is the compatibility `protocol-change/067`
   // promises in each direction.
   assert subtitles_of(session_frame("")) == [None]
   assert subtitles_of(session_frame(",\"subtitle\":\"Fix the retry test\""))

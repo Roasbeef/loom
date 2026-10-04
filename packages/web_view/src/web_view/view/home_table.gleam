@@ -55,7 +55,7 @@ import web_view/sessions.{
 import web_view/view/heading
 import web_view/view/resume.{type Resume}
 
-/// What the table offers for renaming a session (protocol-change/066).
+/// What the table offers for renaming a session (protocol-change/067).
 pub type Rename(message) {
   /// No control is drawn: the page's principal is not the daemon's owner, or
   /// the page was not minted to operate.
@@ -342,7 +342,7 @@ fn status(control: Control) -> Element(message) {
 
 // The quiet line under the name. A session with a subtitle leads with it, then
 // the standing's words, and says no age: the subtitle is what tells sessions of
-// one workspace apart (protocol-change/066), and the creation time stays in the
+// one workspace apart (protocol-change/067), and the creation time stays in the
 // session's own page. Any other session reads as it always did: the standing's
 // words joined by a middle dot, then the age, where a running session's says it
 // was created and a saved one's is the bare age, since "saved" already says

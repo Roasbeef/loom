@@ -2224,7 +2224,7 @@ pub fn view_json(view: manager.View) -> JsonValue {
   ])
 }
 
-// The optional `subtitle` of `protocol-change/066`. A session with none omits
+// The optional `subtitle` of `protocol-change/067`. A session with none omits
 // the field, so a frame for it is byte-for-byte what an older daemon sent, and
 // a client that does not know the field reads the rest as before.
 fn subtitle_field(subtitle: Option(String)) -> List(#(String, JsonValue)) {

@@ -36,7 +36,7 @@ with these forks: they define the same modules.
   [Protocol 035](../../protocol-change/035-session-archive.md) defines the boundary.
 
 - `catalogue.seed_subtitle` writes a session's subtitle once
-  ([protocol 066](../../protocol-change/066-session-subtitle.md)). Version 5
+  ([protocol 067](../../protocol-change/067-session-subtitle.md)). Version 5
   adds `catalogue_session_subtitles`, a side table keyed by session ID like the
   name override, so the creation row that `reserve` compares never changes: a
   `Registration` carries `subtitle: Option(String)` from `get` and the pages,

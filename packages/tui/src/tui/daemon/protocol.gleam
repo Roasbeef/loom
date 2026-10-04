@@ -427,7 +427,7 @@ pub type Session {
     /// Current registry observation, not persisted execution state.
     status: Lifecycle,
     /// The first line of the owner's first prompt, at most 60 characters
-    /// (`protocol-change/066`). Absent from an older daemon's frames and from a
+    /// (`protocol-change/067`). Absent from an older daemon's frames and from a
     /// session no prompt has reached; a present value that is not a bounded
     /// string reads as absent, since a display aid must not fail a listing.
     subtitle: Option(String),

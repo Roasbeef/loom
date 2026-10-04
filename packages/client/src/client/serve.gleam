@@ -354,7 +354,7 @@ pub type Settings {
     peer_directory: Option(peers.Directory),
     /// Told the first human prompt the session accepts on its main strand,
     /// once, so the daemon can seed the catalogue's subtitle
-    /// (`protocol-change/066`). `None` for a host with no catalogue.
+    /// (`protocol-change/067`). `None` for a host with no catalogue.
     first_prompt: Option(fn(String) -> Nil),
     /// Where code-mode cap sockets are bound: `<state root>/run` for a
     /// daemon-managed session, `None` to bind them under the workspace's

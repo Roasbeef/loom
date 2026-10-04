@@ -1037,7 +1037,7 @@ boundaries and the split's measurements under Invariants.
   request order, and a requested id missing from it is not resident. The row
   decoder requires only `session_id`: an unrecognized `state` reads as
   `Unknown`, and a missing or malformed optional field as `None`, `0`, or `[]`.
-  `Session.subtitle` (`protocol-change/066`) is the first line of the session's
+  `Session.subtitle` (`protocol-change/067`) is the first line of the session's
   first prompt, at most 60 characters: a missing member, `null`, a non-string,
   an empty string, and one over the bound all read as `None`, so an older
   daemon's frame decodes and a malformed value never fails a page. The

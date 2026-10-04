@@ -339,7 +339,7 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   `component.rename_path`, `owner_accepts` admits them, and the observer's
   socket admits neither. `start_page` takes the `Role`.
   `rename_for(standing, open, epoch, target, name)` is the owner page's rename
-  (protocol-change/066): the page open, the ceiling operating, the credential
+  (protocol-change/067): the page open, the ceiling operating, the credential
   authenticating as the page's principal and that principal the owner, `target`
   a canonical identity, the trimmed name through `catalogue.display_name`, and
   then `manager.rename` (owner and epoch again, and the catalogue refuses an
@@ -358,7 +358,7 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   prompt or steer, once, as typed before skill expansion, and never for a
   message with no text. The callee is `manager.seed_subtitle`, a cast to the
   registry that calls `catalogue.seed_subtitle` in its own turn. `server.view_json`
-  adds `subtitle` only when present (protocol-change/066).
+  adds `subtitle` only when present (protocol-change/067).
 - `daemon/ui_relay`: the page's stand-in for a session socket. `start`
   returns before the attach, which runs as the relay's first message and
   answers on the component's `opened` subject, so a slow gateway cannot

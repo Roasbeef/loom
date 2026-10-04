@@ -69,7 +69,7 @@ page keys and nonces, and the relay into the session's gateway.
   control's region in the Session pane, and only an owner's socket admits a
   click at or beneath it. `component.rename_path` (`0\t3\t2\t4`) is the
   rename control's, the pane's fifth child, admitted the same way and for a
-  submit as well (protocol-change/066).
+  submit as well (protocol-change/067).
 - **Subtitle and rename.** `sessions.Entry.subtitle` is the first line of the
   session's first prompt, which the daemon derived once. It is a person's own
   prompt, so the sidebar (`session-text` wrapping `session-name` and

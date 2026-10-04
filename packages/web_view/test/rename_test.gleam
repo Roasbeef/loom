@@ -1,4 +1,4 @@
-//// Renaming from an owner's page (protocol-change/066).
+//// Renaming from an owner's page (protocol-change/067).
 ////
 //// What these tests read is what the page draws and asks. An owner's page has
 //// the control in the Session pane, one form at a path beneath

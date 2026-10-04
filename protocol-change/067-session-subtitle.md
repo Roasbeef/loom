@@ -1,4 +1,4 @@
-# protocol-change/066: a session subtitle, and renaming from the page
+# protocol-change/067: a session subtitle, and renaming from the page
 
 **Status**: ACCEPTED 2026-10-04 · **Affects**: control v2 session metadata
 (`sessions.list`, `sessions.get` and every reply that carries a session),

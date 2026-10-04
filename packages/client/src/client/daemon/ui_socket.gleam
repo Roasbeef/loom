@@ -40,7 +40,7 @@
 //// by forging the path.
 ////
 //// An owner's page also draws a rename control for the page's own session
-//// (protocol-change/066). It is admitted the way the invitation control is: the
+//// (protocol-change/067). It is admitted the way the invitation control is: the
 //// socket takes a submit beneath `component.rename_path` only for an owner's
 //// page, and `rename_for` is the daemon's own check, made afresh in a task of
 //// its own (`rename_task`) so the page's runtime never waits on the registry.
@@ -283,7 +283,7 @@ fn observer_path(path: String) -> Bool {
 /// `component.rename_path` and anything beneath either, the invitation control
 /// and the rename control, which are an owner's and which this page does not
 /// draw (`owner_accepts`; the addendum on inviting from the session page, and
-/// protocol-change/066). A message in a batch that reaches one of them drops the
+/// protocol-change/067). A message in a batch that reaches one of them drops the
 /// whole batch.
 ///
 /// ## Examples
@@ -599,7 +599,7 @@ pub fn upgrade_home(
   let standing = home_standing(attachment, ceiling, reach)
 
   // An owner's operating page may rename the sessions it lists
-  // (protocol-change/066). It alone is handed the capability and has the
+  // (protocol-change/067). It alone is handed the capability and has the
   // submit admitted; every other home draws no control and drops the event.
   let rename =
     home_rename_capability(
@@ -633,7 +633,7 @@ pub fn upgrade_home(
 
 /// The capability to rename a listed session that a home page minted for
 /// `principal` with `ceiling` is handed: `ask` for the daemon's owner on a page
-/// minted to operate, and none for any other (protocol-change/066). The daemon
+/// minted to operate, and none for any other (protocol-change/067). The daemon
 /// checks both facts again when the request runs (`rename_for`).
 ///
 /// ## Examples
@@ -684,7 +684,7 @@ pub fn home_accepts(frame: String) -> Bool {
 
 /// The browser messages an owner's home page takes: what `home_accepts` takes,
 /// and a `submit` beneath `home.table_path`, where the rename form of a row is
-/// (protocol-change/066). It is started only for a home whose principal is the
+/// (protocol-change/067). It is started only for a home whose principal is the
 /// daemon's owner on a page minted to operate, so a member's home and an
 /// observer-ceiling home drop the submit even if a frame names the path. A
 /// submit anywhere else, including the sidebar, is still dropped, and so is a
@@ -1787,7 +1787,7 @@ fn reason_of(refusal: Refusal) -> invites.Reason {
 
 /// The capability to rename the page's session that a page of `role` is
 /// handed: `ask` for an owner's page and none for any other, which is the whole
-/// of who may draw and use the rename control (protocol-change/066).
+/// of who may draw and use the rename control (protocol-change/067).
 ///
 /// ## Examples
 ///
@@ -1806,7 +1806,7 @@ pub fn rename_capability(
 }
 
 /// Renames `target` to `name` for the asking page's principal, or gives the
-/// reason it did not (protocol-change/066). A page's own session is the one it
+/// reason it did not (protocol-change/067). A page's own session is the one it
 /// names, and the daemon reads it from the attachment and never from a frame.
 ///
 /// Every step is the daemon's and is made afresh, with the digest of the
