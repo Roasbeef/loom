@@ -1667,3 +1667,12 @@ case proves forbidden re-entry, not successful second clearance. See
 [the model review](review/distributed-preparation-model.md) for bounded claims,
 exact gates and the unchanged native/PlusCal/Lean scope. Production assembly and
 two-host acceptance remain outstanding.
+
+The concrete service-input codec now joins the resource receipts. It retains
+complete policy and ordered source bodies, re-vets against the actual trusted
+policy, and requires full retained Compile/parent equality for Launch. Independent
+integration validation passes 387 code-mode tests without skips. The review's two
+missing parent-substitution cases are covered. See
+[the input review](review/distributed-service-input.md). Hash authentication,
+physical command construction, durable outcome custody and two-host acceptance
+remain outstanding; serialized input alone grants no authority.
