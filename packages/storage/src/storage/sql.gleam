@@ -1261,6 +1261,314 @@ pub fn history_source_entry_decoder() -> decode.Decoder(HistorySourceEntry) {
   decode.success(HistorySourceEntry(seq:, payload_bytes:))
 }
 
+pub type OwnerCustodyMetadata {
+  OwnerCustodyMetadata(
+    session_id: String,
+    tool_limit: Int,
+    child_limit: Int,
+    byte_limit: Int,
+    payload_limit: Int,
+  )
+}
+
+pub fn owner_custody_metadata() {
+  let sql =
+    "SELECT CASE WHEN length(CAST(session_id AS BLOB)) = 36 THEN session_id ELSE '' END AS session_id,
+  tool_limit, child_limit, byte_limit, payload_limit FROM owner_custody_meta LIMIT 2"
+  #(sql, [], owner_custody_metadata_decoder())
+}
+
+pub fn owner_custody_metadata_decoder() -> decode.Decoder(OwnerCustodyMetadata) {
+  use session_id <- decode.field(0, decode.string)
+  use tool_limit <- decode.field(1, decode.int)
+  use child_limit <- decode.field(2, decode.int)
+  use byte_limit <- decode.field(3, decode.int)
+  use payload_limit <- decode.field(4, decode.int)
+  decode.success(OwnerCustodyMetadata(
+    session_id:,
+    tool_limit:,
+    child_limit:,
+    byte_limit:,
+    payload_limit:,
+  ))
+}
+
+pub fn initialize_owner_custody(
+  session_id session_id: String,
+  tool_limit tool_limit: Int,
+  child_limit child_limit: Int,
+  byte_limit byte_limit: Int,
+  payload_limit payload_limit: Int,
+) {
+  let sql =
+    "INSERT INTO owner_custody_meta(singleton, session_id, tool_limit, child_limit, byte_limit, payload_limit)
+VALUES (1, ?1, ?2, ?3, ?4, ?5)"
+  #(sql, [
+    dev.ParamString(session_id),
+    dev.ParamInt(tool_limit),
+    dev.ParamInt(child_limit),
+    dev.ParamInt(byte_limit),
+    dev.ParamInt(payload_limit),
+  ])
+}
+
+pub type OwnerCustodyBudget {
+  OwnerCustodyBudget(tools: Int, children: Int, bytes: Int)
+}
+
+pub fn owner_custody_budget() {
+  let sql =
+    "SELECT CAST((SELECT COUNT(*) FROM owner_custody_tools) AS INTEGER) AS tools,
+  CAST((SELECT COUNT(*) FROM owner_custody_children) AS INTEGER) AS children,
+  CAST(COALESCE((SELECT SUM(reserved_bytes) FROM owner_custody_tools), 0)
+    + COALESCE((SELECT SUM(reserved_bytes) FROM owner_custody_children), 0) AS INTEGER) AS bytes"
+  #(sql, [], owner_custody_budget_decoder())
+}
+
+pub fn owner_custody_budget_decoder() -> decode.Decoder(OwnerCustodyBudget) {
+  use tools <- decode.field(0, decode.int)
+  use children <- decode.field(1, decode.int)
+  use bytes <- decode.field(2, decode.int)
+  decode.success(OwnerCustodyBudget(tools:, children:, bytes:))
+}
+
+pub type OwnerToolHeader {
+  OwnerToolHeader(
+    identity_bytes: Int,
+    argument_bytes: Int,
+    request_bytes: Int,
+    outcome_bytes: Int,
+    state: String,
+    reserved_bytes: Int,
+  )
+}
+
+pub fn owner_tool_header(address address: String) {
+  let sql =
+    "SELECT CAST(CASE WHEN typeof(identity) = 'blob' THEN length(identity) ELSE -1 END AS INTEGER) AS identity_bytes, CAST(CASE WHEN typeof(arguments) = 'blob' THEN length(arguments) ELSE -1 END AS INTEGER) AS argument_bytes,
+  CAST(CASE WHEN typeof(request) = 'blob' THEN length(request) ELSE -1 END AS INTEGER) AS request_bytes, CAST(CASE WHEN outcome IS NULL THEN 0 WHEN typeof(outcome) = 'blob' THEN length(outcome) ELSE -1 END AS INTEGER) AS outcome_bytes,
+  CASE WHEN state IN ('retained', 'frozen') THEN state ELSE '' END AS state,
+  reserved_bytes FROM owner_custody_tools WHERE address = ?1 LIMIT 2"
+  #(sql, [dev.ParamString(address)], owner_tool_header_decoder())
+}
+
+pub fn owner_tool_header_decoder() -> decode.Decoder(OwnerToolHeader) {
+  use identity_bytes <- decode.field(0, decode.int)
+  use argument_bytes <- decode.field(1, decode.int)
+  use request_bytes <- decode.field(2, decode.int)
+  use outcome_bytes <- decode.field(3, decode.int)
+  use state <- decode.field(4, decode.string)
+  use reserved_bytes <- decode.field(5, decode.int)
+  decode.success(OwnerToolHeader(
+    identity_bytes:,
+    argument_bytes:,
+    request_bytes:,
+    outcome_bytes:,
+    state:,
+    reserved_bytes:,
+  ))
+}
+
+pub type OwnerToolValue {
+  OwnerToolValue(
+    identity: BitArray,
+    arguments: BitArray,
+    request: BitArray,
+    outcome: Option(BitArray),
+  )
+}
+
+pub fn owner_tool_value(
+  address address: String,
+  payload_limit payload_limit: Int,
+) {
+  let sql =
+    "SELECT identity, arguments, request, outcome FROM owner_custody_tools
+WHERE address = ?1 AND typeof(identity) = 'blob' AND length(identity) <= 8192
+  AND typeof(arguments) = 'blob' AND typeof(request) = 'blob' AND length(arguments) <= CAST(?2 AS INTEGER) AND length(request) <= CAST(?2 AS INTEGER)
+  AND (outcome IS NULL OR (typeof(outcome) = 'blob' AND length(outcome) <= CAST(?2 AS INTEGER))) LIMIT 2"
+  #(
+    sql,
+    [dev.ParamString(address), dev.ParamInt(payload_limit)],
+    owner_tool_value_decoder(),
+  )
+}
+
+pub fn owner_tool_value_decoder() -> decode.Decoder(OwnerToolValue) {
+  use identity <- decode.field(0, decode.bit_array)
+  use arguments <- decode.field(1, decode.bit_array)
+  use request <- decode.field(2, decode.bit_array)
+  use outcome <- decode.field(3, decode.optional(decode.bit_array))
+  decode.success(OwnerToolValue(identity:, arguments:, request:, outcome:))
+}
+
+pub fn insert_owner_tool(
+  address address: String,
+  identity identity: BitArray,
+  result_entry result_entry: String,
+  arguments arguments: BitArray,
+  request request: BitArray,
+  reserved_bytes reserved_bytes: Int,
+) {
+  let sql =
+    "INSERT INTO owner_custody_tools(address, identity, result_entry, arguments, request, state, reserved_bytes)
+VALUES (?1, ?2, ?3, ?4, ?5, 'retained', ?6)"
+  #(sql, [
+    dev.ParamString(address),
+    dev.ParamBitArray(identity),
+    dev.ParamString(result_entry),
+    dev.ParamBitArray(arguments),
+    dev.ParamBitArray(request),
+    dev.ParamInt(reserved_bytes),
+  ])
+}
+
+pub fn finish_owner_tool(
+  outcome outcome: Option(BitArray),
+  address address: String,
+) {
+  let sql =
+    "UPDATE owner_custody_tools SET outcome = ?1 WHERE address = ?2 AND state = 'retained' AND outcome IS NULL"
+  #(sql, [
+    dev.ParamNullable(option.map(outcome, fn(v) { dev.ParamBitArray(v) })),
+    dev.ParamString(address),
+  ])
+}
+
+pub fn freeze_owner_tool(address address: String) {
+  let sql =
+    "UPDATE owner_custody_tools SET arguments = X'', request = X'', outcome = NULL, state = 'frozen',
+  reserved_bytes = length(identity) + length(CAST(address AS BLOB)) + 128 WHERE address = ?1"
+  #(sql, [dev.ParamString(address)])
+}
+
+pub type OwnerChildHeader {
+  OwnerChildHeader(
+    request_id: String,
+    request_bytes: Int,
+    terminal_bytes: Int,
+    state: String,
+    reserved_bytes: Int,
+  )
+}
+
+pub fn owner_child_header(origin origin: String) {
+  let sql =
+    "SELECT CASE WHEN length(CAST(request_id AS BLOB)) = 36 THEN request_id ELSE '' END AS request_id,
+  CAST(CASE WHEN typeof(request) = 'blob' THEN length(request) ELSE -1 END AS INTEGER) AS request_bytes, CAST(CASE WHEN terminal IS NULL THEN 0 WHEN typeof(terminal) = 'blob' THEN length(terminal) ELSE -1 END AS INTEGER) AS terminal_bytes,
+  CASE WHEN state IN ('retained', 'frozen', 'cancelled') THEN state ELSE '' END AS state,
+  reserved_bytes FROM owner_custody_children WHERE origin = ?1 LIMIT 2"
+  #(sql, [dev.ParamString(origin)], owner_child_header_decoder())
+}
+
+pub fn owner_child_header_decoder() -> decode.Decoder(OwnerChildHeader) {
+  use request_id <- decode.field(0, decode.string)
+  use request_bytes <- decode.field(1, decode.int)
+  use terminal_bytes <- decode.field(2, decode.int)
+  use state <- decode.field(3, decode.string)
+  use reserved_bytes <- decode.field(4, decode.int)
+  decode.success(OwnerChildHeader(
+    request_id:,
+    request_bytes:,
+    terminal_bytes:,
+    state:,
+    reserved_bytes:,
+  ))
+}
+
+pub type OwnerChildValue {
+  OwnerChildValue(request: BitArray, terminal: Option(BitArray))
+}
+
+pub fn owner_child_value(
+  origin origin: String,
+  payload_limit payload_limit: Int,
+) {
+  let sql =
+    "SELECT request, terminal FROM owner_custody_children WHERE origin = ?1
+  AND typeof(request) = 'blob' AND length(request) <= CAST(?2 AS INTEGER) AND (terminal IS NULL OR (typeof(terminal) = 'blob' AND length(terminal) <= CAST(?2 AS INTEGER))) LIMIT 2"
+  #(
+    sql,
+    [dev.ParamString(origin), dev.ParamInt(payload_limit)],
+    owner_child_value_decoder(),
+  )
+}
+
+pub fn owner_child_value_decoder() -> decode.Decoder(OwnerChildValue) {
+  use request <- decode.field(0, decode.bit_array)
+  use terminal <- decode.field(1, decode.optional(decode.bit_array))
+  decode.success(OwnerChildValue(request:, terminal:))
+}
+
+pub type OwnerChildCount {
+  OwnerChildCount(children: Int)
+}
+
+pub fn owner_child_count(parent parent: String) {
+  let sql =
+    "SELECT CAST(COUNT(*) AS INTEGER) AS children FROM owner_custody_children WHERE parent = ?1"
+  #(sql, [dev.ParamString(parent)], owner_child_count_decoder())
+}
+
+pub fn owner_child_count_decoder() -> decode.Decoder(OwnerChildCount) {
+  use children <- decode.field(0, decode.int)
+  decode.success(OwnerChildCount(children:))
+}
+
+pub fn insert_owner_child(
+  origin origin: String,
+  parent parent: String,
+  request_id request_id: Option(String),
+  request request: BitArray,
+  reserved_bytes reserved_bytes: Int,
+) {
+  let sql =
+    "INSERT INTO owner_custody_children(origin, parent, request_id, request, state, reserved_bytes)
+VALUES (?1, ?2, ?3, ?4, 'retained', ?5)"
+  #(sql, [
+    dev.ParamString(origin),
+    dev.ParamString(parent),
+    dev.ParamNullable(option.map(request_id, fn(v) { dev.ParamString(v) })),
+    dev.ParamBitArray(request),
+    dev.ParamInt(reserved_bytes),
+  ])
+}
+
+pub fn finish_owner_child(
+  terminal terminal: Option(BitArray),
+  origin origin: String,
+) {
+  let sql =
+    "UPDATE owner_custody_children SET terminal = ?1 WHERE origin = ?2 AND terminal IS NULL AND state IN ('retained', 'cancelled')"
+  #(sql, [
+    dev.ParamNullable(option.map(terminal, fn(v) { dev.ParamBitArray(v) })),
+    dev.ParamString(origin),
+  ])
+}
+
+pub fn freeze_owner_children(parent parent: String) {
+  let sql =
+    "UPDATE owner_custody_children SET request = X'', terminal = NULL, state = 'frozen',
+  reserved_bytes = length(CAST(origin AS BLOB)) + length(CAST(parent AS BLOB)) + 164 WHERE parent = ?1"
+  #(sql, [dev.ParamString(parent)])
+}
+
+pub fn cancel_owner_child(
+  origin origin: String,
+  parent parent: String,
+  reserved_bytes reserved_bytes: Int,
+) {
+  let sql =
+    "INSERT INTO owner_custody_children(origin, parent, request_id, request, state, reserved_bytes)
+VALUES (?1, ?2, NULL, X'', 'cancelled', ?3)
+ON CONFLICT(origin) DO UPDATE SET state = CASE WHEN state = 'frozen' THEN 'frozen' ELSE 'cancelled' END"
+  #(sql, [
+    dev.ParamString(origin),
+    dev.ParamString(parent),
+    dev.ParamInt(reserved_bytes),
+  ])
+}
+
 pub type SnapshotSession {
   SnapshotSession(
     next_seq: Option(Int),
