@@ -92,11 +92,110 @@ pub fn the_panel_holds_the_review_bodies_test() {
     "pane pane-strands",
     "class=\"agent-strip\"",
     "class=\"commentary\"",
-    "Advisor commentary",
+    "Advisor · 1 review",
     "commentary",
     "watch the &lt;sweep&gt;",
   ])
   assert !string.contains(drawn, "watch the <sweep>")
+}
+
+// The section is one native `details`, closed: its summary is the line a
+// reader sees, and the bodies are inside it. No `open` attribute is drawn, and
+// no handler, so the server never learns whether it is opened.
+pub fn the_section_is_one_closed_summary_line_test() {
+  let board =
+    advisor_history.Board(
+      [
+        advisor_history.Item(
+          "a",
+          1,
+          0,
+          "Nothing to correct.\nSecond line.",
+          advisor_history.AdvisorUpdate,
+        ),
+        advisor_history.Item(
+          "b",
+          2,
+          0,
+          "Check `writable_roots` first.\nMore.",
+          advisor_history.RequestedNudge,
+        ),
+      ],
+      None,
+    )
+  let drawn = element.to_string(commentary.view(board))
+
+  assert string.contains(drawn, "<details>")
+  assert !string.contains(drawn, "open")
+  assert in_order(drawn, [
+    "<summary",
+    "Advisor · 2 reviews · last: ",
+    "</summary>",
+  ])
+
+  // The summary quotes the newest review's first line, without Markdown marks.
+  assert commentary.summary(board)
+    == "Advisor · 2 reviews · last: Check writable_roots first."
+  let one =
+    advisor_history.Item(
+      "a",
+      1,
+      0,
+      "Nothing to correct.\nSecond line.",
+      advisor_history.AdvisorUpdate,
+    )
+  assert commentary.summary(advisor_history.Board([one], None))
+    == "Advisor · 1 review · last: Nothing to correct."
+}
+
+// A long first line is cut with an ellipsis at the limit.
+pub fn a_long_first_line_is_cut_in_the_summary_test() {
+  let board =
+    advisor_history.Board(
+      [
+        advisor_history.Item(
+          "a",
+          1,
+          0,
+          string.repeat("word ", 40),
+          advisor_history.AdvisorUpdate,
+        ),
+      ],
+      None,
+    )
+
+  assert string.ends_with(commentary.summary(board), "…")
+  assert string.length(commentary.summary(board))
+    == string.length("Advisor · 1 review · last: ") + commentary.summary_limit
+}
+
+// The body goes through the lane's Markdown drawer, as the nudge in the lane
+// does: a backticked name is code and not a pair of backticks, and markup
+// stays text.
+pub fn the_bodies_are_markdown_and_markup_stays_text_test() {
+  let board =
+    advisor_history.Board(
+      [
+        advisor_history.Item(
+          "a",
+          1,
+          0,
+          "Use `writable_roots` here <script>x</script>",
+          advisor_history.AdvisorUpdate,
+        ),
+      ],
+      None,
+    )
+  let drawn = element.to_string(commentary.view(board))
+
+  assert string.contains(drawn, "commentary-body markdown")
+  assert string.contains(
+    drawn,
+    "<code class=\"md-code-span\">writable_roots</code>",
+  )
+  assert !string.contains(drawn, "`writable_roots`")
+  assert string.contains(drawn, "&lt;script&gt;x&lt;/script&gt;")
+  assert !string.contains(drawn, "<script")
 }
 
 pub fn the_section_hides_when_the_advisor_is_on_screen_test() {

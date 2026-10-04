@@ -21,6 +21,19 @@
 //// ancestry the board says so, and the section repeats it, so a reader is
 //// never told this is the whole history when it is not.
 ////
+//// The section is one native `details`, closed, so a short session's panel is
+//// not pushed to the fold by bodies nobody asked for. Its summary is one line:
+//// `Advisor · 3 reviews · last: Nothing to correct.`, which names the count
+//// and the first line of the newest review. Opening it is the browser's and
+//// the server never learns which it is, so it draws no handler and keeps no
+//// state, as the settled group does (`view/strip`). Inside, each review is a
+//// label line and its body, drawn through the lane's Markdown drawer so
+//// backticked names read as code (`web_view/markdown_view`, which keeps 051's
+//// rules: text nodes only, no link followed). The closed `details` is
+//// recorded in protocol-change/051's addendum of 2026-10-03 on the right
+//// panel, which amends the sentence of 2026-10-02 that says the section is
+//// drawn open.
+////
 //// The section is drawn while `main` is on screen, and `element.none()`
 //// otherwise or when there is nothing to say, so the panel's child list
 //// keeps one length and no handler's path moves.
@@ -28,11 +41,15 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
+import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 import session_view/advisor_history
+import session_view/markdown
 import session_view/text_hygiene
+import web_view/markdown_view
 
 /// How many of the board's items the section draws before counting the
 /// rest. The panel scrolls on its own, but a long review history should
@@ -66,17 +83,73 @@ fn section(board: advisor_history.Board) -> Element(message) {
       attribute.class("commentary"),
       attribute.aria_label("Advisor commentary, captured and not sent"),
     ],
-    list.flatten([
-      [
-        html.h3([attribute.class("panel-title")], [
-          html.text("Advisor commentary"),
+    [
+      html.details([], [
+        html.summary([attribute.class("commentary-summary")], [
+          html.text(summary(board)),
         ]),
-      ],
-      list.map(shown, item),
-      more(omitted),
-      unloaded(board.unloaded),
-    ]),
+        html.div(
+          [attribute.class("commentary-items")],
+          list.flatten([
+            list.map(shown, item),
+            more(omitted),
+            unloaded(board.unloaded),
+          ]),
+        ),
+      ]),
+    ],
   )
+}
+
+/// The section's one summary line: the count of reviews and the first line of
+/// the newest, cut to `summary_limit` characters. The words are fixed and the
+/// quoted line is the advisor's, so a host draws it as a text node.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // commentary.summary(board) == "Advisor · 2 reviews · last: Nothing to correct."
+/// ```
+pub fn summary(board: advisor_history.Board) -> String {
+  let count = list.length(board.items)
+  let head =
+    "Advisor · "
+    <> int.to_string(count)
+    <> case count {
+      1 -> " review"
+      _ -> " reviews"
+    }
+
+  case list.last(board.items) {
+    Ok(newest) ->
+      case first_line(newest.text) {
+        "" -> head
+        line -> head <> " · last: " <> line
+      }
+    Error(Nil) -> head
+  }
+}
+
+/// The most characters of the newest review the summary quotes.
+pub const summary_limit = 72
+
+// The first line of a review that has any words, without the backticks and
+// emphasis marks the body's Markdown carries, since a summary is plain text,
+// and cut to `summary_limit` with an ellipsis.
+fn first_line(text: String) -> String {
+  let line =
+    text_hygiene.multiline(text)
+    |> string.split("\n")
+    |> list.map(string.trim)
+    |> list.find(fn(line) { line != "" })
+    |> result.unwrap("")
+    |> string.replace("`", "")
+    |> string.replace("**", "")
+
+  case string.length(line) > summary_limit {
+    True -> string.slice(line, 0, summary_limit - 1) <> "…"
+    False -> line
+  }
 }
 
 // One captured review: the request's label as its head, the advisor's
@@ -87,9 +160,10 @@ fn item(entry: advisor_history.Item) -> Element(message) {
     html.p([attribute.class("commentary-label")], [
       html.text(label(entry.annotation)),
     ]),
-    html.p([attribute.class("commentary-body")], [
-      html.text(text_hygiene.multiline(entry.text)),
-    ]),
+    html.div(
+      [attribute.class("commentary-body"), attribute.class("markdown")],
+      markdown_view.blocks(markdown.parse(text_hygiene.multiline(entry.text))),
+    ),
   ])
 }
 
