@@ -744,3 +744,18 @@ retirement and resource cleanup. None can substitute for another or renew a
 claim, deadline, wall selection, UUID or clearance. Launch rows reserve the same
 fixed outcome allowance, but Compile-only settlement APIs refuse Launch until a
 closed Launch completion and its admission checks exist.
+
+## Addendum: Indexed historical command offers
+
+The owner MAY recover a complete retained command offer by its managed native
+origin through the existing lifetime-unique index. It MUST validate the original
+session, full parent, canonical command reference and retained service before
+returning the offer. Bounded scalar headers and reserved capacity MUST be checked
+before transferring retained bodies. Invalid SQLite reservation types MUST be
+projected as a scalar refusal value rather than materialized for the decoder.
+
+This read preserves exact cancelled evidence but refuses frozen evidence and
+collected parents. It grants no live clearance, reservation, UUID allocation or
+execution authority. The existing atomic native reservation retains its original
+cancellation checks. Independent review and corrected verification are recorded
+in [the lookup review](../docs/review/distributed-command-lookup.md).

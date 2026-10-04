@@ -1742,3 +1742,12 @@ Linux signoff passed all six lanes, release verification and the skip census at
 `0b6ea760a61316c31cc5af9e74fa0244db537492` in 1,362 seconds. That head precedes
 the Compile custody model and outcome journal; it is not signoff for those later
 changes. The run used dry-run mode and posted no commit status.
+
+The owner now resolves complete historical command offers through the existing
+native-origin index. Cancelled history remains readable without granting live
+reservation. Astra found a reservation-type projection gap; both header queries
+now reject malformed types before body transfer. Root's corrected full storage
+and focused client gates passed 176 and six tests with unchanged source hashes.
+See the [lookup review](review/distributed-command-lookup.md) and the indexed
+lookup section of the [custody guide](architecture/remote-custody.md). Production
+command routing and live Compile service assembly remain in progress.
