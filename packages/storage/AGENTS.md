@@ -19,9 +19,10 @@ with these forks: they define the same modules.
 
 ## Key Types
 
-- The catalogue is at `user_version` 4. Each later version has its own embedded
+- The catalogue is at `user_version` 5. Each later version has its own embedded
   migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
-  `catalogue_claims_schema`), and `initialize_schema` applies every schema an
+  `catalogue_claims_schema`, `catalogue_subtitles_schema`), and
+  `initialize_schema` applies every schema an
   older catalogue lacks, then moves the version, in one transaction; a fresh
   catalogue runs the same list after `sql_schema`. A version it does not know
   is refused, so a downgrade needs the pre-upgrade catalogue restored.
@@ -34,6 +35,22 @@ with these forks: they define the same modules.
   before their limit. `archived_page` uses the same revision and bounded shape.
   [Protocol 035](../../protocol-change/035-session-archive.md) defines the boundary.
 
+- `catalogue.seed_subtitle` writes a session's subtitle once
+  ([protocol 066](../../protocol-change/066-session-subtitle.md)). Version 5
+  adds `catalogue_session_subtitles`, a side table keyed by session ID like the
+  name override, so the creation row that `reserve` compares never changes: a
+  `Registration` carries `subtitle: Option(String)` from `get` and the pages,
+  and `find` and `by_request_key` always leave it `None`. The text is reduced by
+  `subtitle_from_prompt` (first nonblank line, whitespace collapsed, controls
+  and the zero-width and direction-changing code points removed,
+  `subtitle_limit` = 60 characters cut on a word with an ellipsis that counts),
+  and the existence check and the insert share one transaction, so the first
+  subtitle stands and a later call writes nothing and leaves the revision
+  alone. A stored value that breaks the rule reads as `None` rather than
+  failing a listing. `delete` removes the row. `catalogue.display_name` is the
+  rule for a name about to be written, and `rename` now applies it: blank,
+  over 256 bytes, a control, or an invisible code point (`invisible`, which
+  `access.new_name` shares) is `Invalid`.
 - `catalogue.rename` writes a session display-name override and increments the
   catalogue revision in one immediate transaction. The version-2 migration adds
   `catalogue_session_names`; the embedded `catalogue_names_schema` migrates

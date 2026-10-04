@@ -67,7 +67,23 @@ page keys and nonces, and the relay into the session's gateway.
   operator page's session buttons are, and the observer's socket admits no
   click beneath it. `component.invite_path` (`0\t3\t2\t2`) is the invitation
   control's region in the Session pane, and only an owner's socket admits a
-  click at or beneath it.
+  click at or beneath it. `component.rename_path` (`0\t3\t2\t4`) is the
+  rename control's, the pane's fifth child, admitted the same way and for a
+  submit as well (protocol-change/066).
+- **Subtitle and rename.** `sessions.Entry.subtitle` is the first line of the
+  session's first prompt, which the daemon derived once. It is a person's own
+  prompt, so the sidebar (`session-text` wrapping `session-name` and
+  `session-subtitle`) and the home row (`home-subtitle`, leading the quiet
+  line in place of the age) draw it as a text node and nothing else.
+  `web_view/renames` holds the rename vocabulary (`Answer`, `Reason` with fixed
+  words, the page's `Control`). The session page's control is
+  `view/rename`, driven by `component.renaming` and `Transport.rename`, which
+  returns at once and answers as `Renamed`; the daemon names the session and the
+  principal and the page sends only the typed text. The home draws a Rename
+  button after each row's own button when `Start.rename` is `Some`, and one open
+  form in place of a row (`home_table.Rename`, `home.Edit`); a submit asks only
+  for the row whose form is open. Neither control puts the current name in an
+  attribute.
 - **Strand focus.** `component.focus(model, strand)` (`FocusRequested`) is
   `step.focus`, the shared step's change of strand, plus what only this host
   holds: the history read owed for the strand being left is dropped
@@ -387,7 +403,8 @@ page keys and nonces, and the relay into the session's gateway.
   and its 2026-10-04 amendment the hairline's removal.
 - `controls.session(bar)` draws the operator's controls in the Session pane,
   as its fourth child after the invitation control (so `invite_path` does not
-  move; its own path is `component.session_controls_path`): the goal row in
+  move; its own path is `component.session_controls_path`; the rename control
+  is the fifth child, `component.rename_path`): the goal row in
   the terminal's words (`goal_view.row`) with the buttons its status offers
   (Pause while active, Resume while held or limited, Clear always, nothing to
   steer once complete) in a `control-actions arming` row keyed by the status,
