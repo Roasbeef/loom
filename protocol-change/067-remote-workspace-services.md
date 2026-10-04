@@ -856,3 +856,18 @@ returning history. Failed or ambiguous COMMIT MUST return uncertainty and fence
 the endpoint, never a fresh Claim or positive fence acknowledgement. A committed
 resource fence does not establish native retirement: association may have won
 the race, and cancellation must then follow that exact retained native command.
+
+## Addendum: Preserve the original Compile elapsed deadline
+
+The live Compile owner MUST capture one deadline at original admission in the
+native service's monotonic clock era. Every live command context MUST retain that
+same value. Native authorization MUST clamp its challenge-derived deadline to
+the original Compile deadline before retaining Request or Authority, then use
+the clamped value through association, launch checks and the native watchdog.
+Preparation and custody waits consume that same lifetime.
+
+Zero is invalid; negative values are allowed in a negative monotonic clock era.
+A later remaining-budget value, owner wall-clock adjustment, duplicate exchange
+or recovered record MUST NOT renew this cap. Selected native wall and cleared
+Prepared bytes remain unchanged. Ordinary native requests retain their existing
+deadline rules; historical contexts grant no fresh authority.
