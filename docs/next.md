@@ -1694,3 +1694,12 @@ Independent seeded verification passes 381 tests, and review found no actionable
 issue. See [the physical compile review](review/distributed-physical-compile.md).
 The executor service still needs to join these steps to live preparation custody
 and exact admitted native evidence.
+
+The closed Compile completion codec now preserves the original service identity,
+exact native evidence, enforcement report and executor-owned artifact. Its
+independent 175-test executor gate and review passed. Integrated verification
+passes 395 code-mode tests and 191 executor tests without reported skips; see
+[the completion review](review/distributed-compile-completion.md). The next slice
+extends the existing resource journal to reserve and retain complete outcomes,
+then connects actual native admission and physical execution. A missing native
+record after Ready remains uncertain and cannot authorize a retry.
