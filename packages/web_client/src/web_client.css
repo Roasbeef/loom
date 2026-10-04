@@ -62,7 +62,7 @@
   --color-strand-6-text: #e07a5f;
   --color-pill-ok-bg: color-mix(in srgb, var(--color-added) 12%, transparent);
   --color-primary-button: var(--color-fg);
-  --shadow-card: 0 1px 2px rgba(0,0,0,.4);
+  --shadow-float: 0 1px 2px rgba(0,0,0,.4);
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
@@ -127,7 +127,7 @@
     --color-strand-5-text: #a73e97;
     --color-strand-6: #c2502e;
     --color-strand-6-text: #b04829;
-    --shadow-card: 0 1px 2px rgba(0,0,0,.05), 0 4px 14px rgba(0,0,0,.05);
+    --shadow-float: 0 1px 2px rgba(0,0,0,.05), 0 4px 14px rgba(0,0,0,.05);
   }
 }
 :root[data-theme="light"] {
@@ -164,7 +164,7 @@
   --color-strand-5-text: #a73e97;
   --color-strand-6: #c2502e;
   --color-strand-6-text: #b04829;
-  --shadow-card: 0 1px 2px rgba(0,0,0,.05), 0 4px 14px rgba(0,0,0,.05);
+  --shadow-float: 0 1px 2px rgba(0,0,0,.05), 0 4px 14px rgba(0,0,0,.05);
 }
 :host {
   --color-bg: inherit;
@@ -202,7 +202,7 @@
   --color-strand-6-text: inherit;
   --color-pill-ok-bg: inherit;
   --color-primary-button: inherit;
-  --shadow-card: inherit;
+  --shadow-float: inherit;
 }
 
 :root { color-scheme: dark; }
@@ -337,7 +337,7 @@
   .chip-status.needs-input{color:var(--color-signal-text);}
   .chip-status.failed{color:var(--color-danger-text);}
   .chip-status.done{color:var(--color-added-text);}
-  li.chip.following{box-shadow:inset 3px 0 0 var(--hue,var(--color-divider));}
+  li.chip.following{background:color-mix(in srgb,var(--hue,var(--color-current)) 7%,var(--color-bg-raised));border-color:color-mix(in srgb,var(--hue,var(--color-current)) 40%,var(--color-divider));}
   /* The settled group is a native details element below the live cards,
      closed until the reader opens it. Its cards are ordinary cards, and the
      names of strands that ended are drawn in the quiet text colour. */
@@ -381,7 +381,7 @@
   .group-count{flex:0 0 auto;font-weight:400;letter-spacing:0;font-variant-numeric:tabular-nums;}
   ul.sessions{list-style:none;margin:0;padding:0;}
   li.session{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:4px 8px;border-radius:6px;font-size:13px;}
-  li.session.current{background:var(--color-bg-raised);box-shadow:var(--shadow-card);}
+  li.session.current{background:var(--color-bg-raised);}
   .session-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .residency{flex:0 0 auto;color:var(--color-fg-quiet);font:11px/1.4 var(--font-sans);}
   .residency .glyph{margin-right:4px;}
@@ -417,7 +417,7 @@
      sticks to the bottom edge of the scroller, so the button floats over
      the last rows and the content's size does not change when it appears. */
   .jump-anchor{position:sticky;bottom:0;z-index:1;flex:0 0 0;height:0;align-self:stretch;display:flex;justify-content:center;}
-  .jump-latest{position:absolute;bottom:12px;padding:5px 14px;border:1px solid var(--color-divider);border-radius:999px;background:var(--color-bg-raised);color:var(--color-fg);font:12px/1.4 var(--font-sans);cursor:pointer;box-shadow:var(--shadow-card);}
+  .jump-latest{position:absolute;bottom:12px;padding:5px 14px;border:1px solid var(--color-divider);border-radius:999px;background:var(--color-bg-raised);color:var(--color-fg);font:12px/1.4 var(--font-sans);cursor:pointer;box-shadow:var(--shadow-float);}
   /* The line above the lane's oldest row: the "Load older" button, or
      words saying why there is none. Each fits the same minimum height, so
      the change from one to the other does not move the rows below. */
@@ -453,7 +453,7 @@
   kbd.crumb-hint{margin:0;padding:0 4px;border:1px solid var(--color-divider);border-radius:4px;color:var(--color-fg-quiet);font:11px/1.5 var(--font-sans);}
   .block{min-width:0;}
   .line{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.5 var(--font-sans);}
-  .line.user{background:var(--color-bg-user);border:1px solid var(--color-divider);padding:8px 12px;border-radius:10px;box-shadow:var(--shadow-card);}
+  .line.user{background:var(--color-bg-user);border:1px solid var(--color-divider);padding:8px 12px;border-radius:10px;}
   /* Tool output is code, so it keeps the monospace face. The selector names
      the kind and not `.line`: scripts/web_client_css_check.sh keeps the face
      off the page's own rows. */
@@ -489,7 +489,7 @@
   .markdown .md-h3{font-size:1.06em;}
   .markdown .md-h4,.markdown .md-h5,.markdown .md-h6{font-size:1em;}
   .markdown .md-code-span{font:.92em/1 var(--font-mono);padding:.05em .3em;border-radius:4px;background:var(--color-code);color:var(--color-fg);}
-  .markdown .md-code{margin:0 0 .6em 0;border-left:3px solid var(--color-divider);border-radius:4px; background:var(--color-code);min-width:0;}
+  .markdown .md-code{margin:0 0 .6em 0;border:1px solid var(--color-divider);border-radius:6px; background:var(--color-code);min-width:0;}
   .markdown .md-code-lang{display:block;padding:4px 10px 0;color:var(--color-fg-quiet);font:11px/1.4 var(--font-mono);}
   .markdown .md-code pre{margin:0;padding:6px 10px;overflow-x:auto;white-space:pre;font:13px/1.4 var(--font-mono);color:var(--color-fg);}
   .markdown .md-quote{margin:0 0 .6em 0;padding-left:10px;border-left:2px solid var(--color-current);color:var(--color-fg-quiet);}
@@ -522,7 +522,7 @@
   .fold-body{display:block;}
   .work-divider{min-width:0;overflow-wrap:anywhere;}
   .work-items{display:flex;flex-direction:column;gap:6px;padding:4px 0 8px 1.2em;}
-  .work.open{display:flex;flex-direction:column;gap:6px;padding-left:10px;border-left:2px solid var(--color-current);}
+  .work.open{display:flex;flex-direction:column;gap:6px;padding-left:10px;}
   .step{min-width:0;}
   .step-head{display:flex;gap:8px;align-items:baseline;margin:0;font:13px/1.4 var(--font-sans);min-width:0;}
   .step-head .glyph{flex:0 0 auto;width:1em;}
@@ -539,8 +539,7 @@
   article.result-card{border:1px solid var(--color-divider);}
   article.nudge{border:1px solid var(--color-advisor);}
   article.sibling-card{border:1px solid var(--color-divider);}
-  article.peer-card{position:relative;border:1px dashed var(--color-peer);padding-left:18px;}
-  article.peer-card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:8px; border-radius:10px 0 0 10px;background:repeating-linear-gradient(135deg,var(--color-peer) 0 2px,transparent 2px 5px);opacity:.6;}
+  article.peer-card{border:1px solid color-mix(in srgb,var(--color-peer) 40%,var(--color-divider));}
   .card-head{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;margin:0 0 4px 0; font:12px/1.4 var(--font-sans);color:var(--color-fg-quiet);}
   article.result-card .card-head{color:var(--hue-text,var(--color-fg-quiet));}
   article.peer-card .card-head{color:var(--color-peer-text);}
@@ -688,7 +687,7 @@
      takes what is left above it, so a card appearing or the editor growing
      shrinks the transcript and never covers its last row. */
   footer.dock{flex:0 0 auto;margin-top:8px;padding:8px 0 max(12px,env(safe-area-inset-bottom)); background:var(--color-bg);}
-  form.composer{margin:0;background:var(--color-bg-raised);border:1px solid var(--color-divider); border-radius:12px;padding:12px;box-shadow:var(--shadow-card);}
+  form.composer{margin:0;background:var(--color-bg-raised);border:1px solid var(--color-divider); border-radius:12px;padding:12px;}
   .identity{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;font-size:12px;margin-bottom:8px;}
   .identity-name{color:var(--color-fg);}
   .role-badge{border:1px solid var(--color-signal);color:var(--color-signal-text);border-radius:999px;padding:0 8px;}
@@ -708,7 +707,7 @@
   loom-composer{display:block;}
   ul.completions{position:relative;list-style:none;margin:0 0 6px 0;padding:4px;max-height:min(16em,30vh); overflow-y:auto;background:var(--color-bg);border:1px solid var(--color-divider);border-radius:6px;}
   li.completion{display:flex;flex-wrap:wrap;gap:0 12px;align-items:baseline;padding:4px 8px;border-radius:4px;cursor:pointer;}
-  li.completion.current{background:var(--color-bg-raised);box-shadow:inset 2px 0 0 var(--color-current);}
+  li.completion.current{background:color-mix(in srgb,var(--color-current) 12%,var(--color-bg-raised));}
   .completion-command{font:13px/1.4 var(--font-mono);color:var(--color-current);}
   .completion-hint{color:var(--color-fg-quiet);font-size:12px;}
   /* The composer's image attachments (web_client/attach): a button that opens
