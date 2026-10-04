@@ -55,6 +55,7 @@ gen_package() {
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_names.sql
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_archives.sql
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_claims.sql
+    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_workspace_bindings.sql
     sqlite3 "$tmpdb" < packages/storage/sql/session.sql
     sqlite3 "$tmpdb" < packages/storage/sql/owner_custody.sql
   fi
@@ -102,4 +103,7 @@ gleam format packages/storage/src/storage/catalogue_claims_schema.gleam
 python3 scripts/embed-sql-schema.py packages/storage/sql/owner_custody.sql \
   packages/storage/src/storage/owner_custody_schema.gleam
 gleam format packages/storage/src/storage/owner_custody_schema.gleam
+python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_workspace_bindings.sql \
+  packages/storage/src/storage/catalogue_workspace_bindings_schema.gleam
+gleam format packages/storage/src/storage/catalogue_workspace_bindings_schema.gleam
 echo "generated SQL modules are up to date; review and commit the diff"
