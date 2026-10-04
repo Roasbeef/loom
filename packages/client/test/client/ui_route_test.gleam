@@ -1169,7 +1169,11 @@ pub fn a_refused_page_never_repeats_an_address_it_cannot_parse_test() {
       ])
     assert refused.status == 401
     assert !string.contains(refused.body, "evil")
-    assert string.contains(refused.body, "loom ui --session &lt;id&gt;")
+
+    // The placeholder is no command `<loom-copy>` would copy, so the document
+    // draws no box rather than one the element would blank.
+    assert !string.contains(refused.body, "loom-copy")
+    assert !string.contains(refused.body, "--session")
   })
 }
 
@@ -2057,7 +2061,7 @@ pub fn a_revoked_credential_ends_the_home_test() {
       reloaded.body,
       ending.home_headline(ending.AccessRevoked),
     )
-    assert string.contains(reloaded.body, "Run `loom ui`")
+    assert string.contains(reloaded.body, "subject=\"link\" text=\"loom ui\"")
     assert !string.contains(reloaded.body, "--session")
     assert home_socket(port, page, []).status == 401
   })
@@ -2917,6 +2921,32 @@ pub fn the_wait_runs_off_the_callers_process_test() {
     assert string.starts_with(path, "/ui/sessions/" <> session <> "?ticket=")
     assert task != process.self()
   })
+}
+
+// The home's activity read asks the sessions in a task of its own: the call
+// that starts it returns before the slowest session has answered, so the page's
+// runtime is never held for the deadline, and the answer then arrives from the
+// task, naming the sessions the page asked about.
+pub fn the_activity_read_runs_off_the_callers_process_test() {
+  let answers = process.new_subject()
+  let asked = process.new_subject()
+  let ask = fn(ids) {
+    process.send(asked, ids)
+    process.sleep(300)
+    [#("A", sessions.Working)]
+  }
+  ui_socket.activity_task(ask, ["A", "B"], fn(rows) {
+    process.send(answers, #(rows, process.self()))
+  })
+
+  // Nothing has answered when the call returns, and the task is another
+  // process.
+  assert process.receive(answers, 0) == Error(Nil)
+  assert process.receive(asked, 5000) == Ok(["A", "B"])
+  let assert Ok(#(rows, task)) = process.receive(answers, 5000)
+    as "the task answers once the sessions have"
+  assert rows == [#("A", sessions.Working)]
+  assert task != process.self()
 }
 
 // An observer page's socket gate refuses before any task starts, so nothing is

@@ -5,8 +5,12 @@
 //// facts in place of a session's: there is no workspace, no session name and
 //// no figure to show, because the home is bound to none. The classes are the
 //// bar's own, so the stylesheet lays it out as it does a session's, and the
-//// notice a page that ended draws is its last child, so the regions after it
-//// keep their place whether or not the page ended.
+//// status is the same pill, coloured by the same `Tone`, so the two pages
+//// read as one product. The principal is written in the bar's sans face, with
+//// the ceiling as a quiet pill beside it; nothing on this bar is monospaced,
+//// since it holds no figure. The notice a page that ended draws is its last
+//// child, so the regions after it keep their place whether or not the page
+//// ended.
 ////
 //// Every value is the daemon's or the component's own words: the principal's
 //// display name is a catalogue field the owner chose, drawn as a text node,
@@ -19,21 +23,23 @@
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
+import web_view/view/heading.{type Tone}
 
 /// The bar for a home page. `name` is the principal's display name, `ceiling`
 /// the fixed word for what the page may do (`operator` or `read-only`),
-/// `status` the connection's word, and `notice` the ended page's notice or
-/// `element.none()`.
+/// `status` the connection's word with the `tone` that colours it, and
+/// `notice` the ended page's notice or `element.none()`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // home_bar.view("Alice", "operator", "connected", element.none())
+/// // home_bar.view("Alice", "operator", "connected", heading.Live, element.none())
 /// ```
 pub fn view(
   name name: String,
   ceiling ceiling: String,
   status status: String,
+  tone tone: Tone,
   notice notice: Element(message),
 ) -> Element(message) {
   html.header(
@@ -51,9 +57,15 @@ pub fn view(
           [html.text(ceiling)],
         ),
       ]),
-      html.p([attribute.class("status"), attribute.role("status")], [
-        html.text(status),
-      ]),
+      html.p(
+        [
+          attribute.class("status"),
+          attribute.class("pill"),
+          attribute.class(heading.tone_class(tone)),
+          attribute.role("status"),
+        ],
+        [html.text(status)],
+      ),
       notice,
     ],
   )

@@ -1,4 +1,4 @@
-//// What `<loom-copy>` decides: which two texts it may put on the clipboard,
+//// What `<loom-copy>` decides: which texts it may put on the clipboard,
 //// what it says on its button, and what it says when the browser refuses.
 ////
 //// The owner's page shows an invitation once, and the owner copies two texts
@@ -15,20 +15,29 @@
 //// A newline is the case that matters most: pasted into a terminal, it runs
 //// what came before it.
 ////
+//// The document an ended page gets offers a third text, the command that mints
+//// a fresh link: `loom ui`, alone or with `--session` and a session identity,
+//// which is hexadecimal digits and hyphens. It has the same rule: nothing else
+//// is copied.
+////
 //// The module imports neither Lustre nor the DOM binding, so the tests load
 //// it under Node.
 
 import gleam/list
 import gleam/string
 
-/// Which of the invitation's two texts the element holds, chosen by the fixed
-/// word the server writes in its `subject` attribute.
+/// Which text the element holds, chosen by the fixed word the server writes in its `subject` attribute.
 pub type Subject {
   /// The command the invitee runs, `loom claim --addr ...`.
   Command
 
   /// The claim token the invitee pastes at the command's prompt.
   Token
+
+  /// The command that mints a fresh page link, `loom ui` or
+  /// `loom ui --session <id>`, which the document an ended page gets offers
+  /// (protocol-change/065, the addendum on the home list).
+  Link
 }
 
 /// What the button has done so far.
@@ -48,6 +57,11 @@ pub type Copying {
 const command_prefix = "loom claim --addr "
 
 const token_prefix = "loomclaim_"
+
+const link_prefix = "loom ui --session "
+
+// The longest session identity a link command may carry, in characters.
+const identity_limit = 64
 
 const token_digits = 64
 
@@ -72,6 +86,7 @@ pub fn subject(value: String) -> Result(Subject, Nil) {
   case value {
     "command" -> Ok(Command)
     "token" -> Ok(Token)
+    "link" -> Ok(Link)
     _ -> Error(Nil)
   }
 }
@@ -89,6 +104,7 @@ pub fn text(subject: Subject, value: String) -> Result(String, Nil) {
   let shaped = case subject {
     Command -> command(value)
     Token -> token(value)
+    Link -> link(value)
   }
   case shaped {
     True -> Ok(value)
@@ -102,6 +118,24 @@ fn command(value: String) -> Bool {
     Ok(#("", address)) ->
       address != "" && !longer_than(address, address_limit) && made_of(address)
     Ok(#(_, _)) | Error(Nil) -> False
+  }
+}
+
+// `loom ui`, alone or with `--session` and a canonical identity: hexadecimal
+// digits and hyphens, no longer than a session identity can be.
+fn link(value: String) -> Bool {
+  case value {
+    "loom ui" -> True
+    _ ->
+      case string.split_once(value, link_prefix) {
+        Ok(#("", identity)) ->
+          identity != ""
+          && !longer_than(identity, identity_limit)
+          && list.all(string.to_graphemes(identity), fn(character) {
+            string.contains("0123456789abcdefABCDEF-", character)
+          })
+        Ok(#(_, _)) | Error(Nil) -> False
+      }
   }
 }
 
@@ -158,11 +192,11 @@ pub fn after(outcome: Result(Nil, Nil)) -> Copying {
 /// ```
 pub fn words(subject: Subject, copying: Copying) -> String {
   case copying, subject {
-    Idle, Command -> "Copy command"
+    Idle, Command | Idle, Link -> "Copy command"
     Idle, Token -> "Copy token"
-    Copied, Command -> "Command copied"
+    Copied, Command | Copied, Link -> "Command copied"
     Copied, Token -> "Token copied"
-    Failed, Command | Failed, Token ->
+    Failed, Command | Failed, Token | Failed, Link ->
       "Copy failed. Select the text and copy it."
   }
 }

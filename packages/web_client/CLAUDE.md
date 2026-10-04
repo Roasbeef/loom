@@ -57,8 +57,10 @@ renders again just for it:
   history entry for Back to reopen without a nonce. It renders nothing, takes no
   focus and listens for no event (protocol-change/051, the addendum on
   switching sessions).
-- `<loom-copy subject="command|token" text="...">` draws one of an
-  invitation's two texts in a `code` element in its shadow root, with a button
+- `<loom-copy subject="command|token|link" text="...">` draws one of an
+  invitation's two texts, or the ended page's `loom ui` command for a fresh
+  link (`link`, protocol-change/065, the addendum on the home list), in a
+  `code` element in its shadow root, with a button
   that copies it to the clipboard (protocol-change/051, the addendum on
   inviting from the session page). `copy_rule.subject` decodes the fixed word
   and `copy_rule.text` accepts a value only if it is exactly what the daemon

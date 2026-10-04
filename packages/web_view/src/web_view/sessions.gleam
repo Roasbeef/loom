@@ -21,8 +21,10 @@
 //// state them without a page: `grouped` puts the workspace of the session
 //// on screen first, then the workspaces by their newest session, and orders
 //// the sessions of a workspace newest first. Recency is the catalogue's
-//// creation time, which is all the catalogue records; the daemon's activity
-//// read is an owner's control command that a page does not make.
+//// creation time, which is all the catalogue records. The home page also shows
+//// what each running session is doing (`Activity`), which the catalogue does
+//// not record: the daemon asks the sessions themselves, off the page's runtime,
+//// and hands over one state word for each.
 
 import gleam/dict
 import gleam/int
@@ -86,6 +88,77 @@ pub fn label(entry: Entry) -> String {
   case entry.name {
     "" -> "Session " <> string.slice(entry.id, 0, 8)
     named -> named
+  }
+}
+
+/// What a running session is doing now, as the daemon's activity read
+/// (protocol-change/050) says it. The read says more, and only this word
+/// reaches the home page; a state the page does not know is no activity, and
+/// the row says nothing about it.
+pub type Activity {
+  /// An escalation is pending, or the main strand's last run failed and it
+  /// has nothing running: the session waits for its operator.
+  NeedsYou
+
+  /// A strand has a current operation.
+  Working
+
+  /// Nothing is pending and nothing is running.
+  Idle
+}
+
+/// The activity a state word of the daemon's `sessions.activity` reply names,
+/// or nothing for a word this page does not know, including `unknown`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert sessions.activity_of("needs_you") == Ok(sessions.NeedsYou)
+/// assert sessions.activity_of("unknown") == Error(Nil)
+/// ```
+pub fn activity_of(state: String) -> Result(Activity, Nil) {
+  case state {
+    "needs_you" -> Ok(NeedsYou)
+    "working" -> Ok(Working)
+    "idle" -> Ok(Idle)
+    _ -> Error(Nil)
+  }
+}
+
+/// The words a row shows for an activity.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert sessions.activity_words(sessions.NeedsYou) == "needs you"
+/// ```
+pub fn activity_words(activity: Activity) -> String {
+  case activity {
+    NeedsYou -> "needs you"
+    Working -> "working"
+    Idle -> "idle"
+  }
+}
+
+/// How long ago `then` was, as `now` sees it, both in Unix milliseconds: "just
+/// now" under a minute, then whole minutes, hours and days, and "over a month
+/// ago" from thirty days, where the row's `title` has the exact UTC time. A `then` after `now`, as a clock that stepped back gives,
+/// is "just now" too. The creation time the catalogue records is the only
+/// instant a row has, so this is what "recent" means on the home page.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert sessions.ago(7_300_000, 100_000) == "2h ago"
+/// ```
+pub fn ago(now: Int, then: Int) -> String {
+  let seconds = int.max(now - then, 0) / 1000
+  case seconds {
+    _ if seconds < 60 -> "just now"
+    _ if seconds < 3600 -> int.to_string(seconds / 60) <> "m ago"
+    _ if seconds < 86_400 -> int.to_string(seconds / 3600) <> "h ago"
+    _ if seconds < 2_592_000 -> int.to_string(seconds / 86_400) <> "d ago"
+    _ -> "over a month ago"
   }
 }
 
