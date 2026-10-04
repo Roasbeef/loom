@@ -424,6 +424,7 @@ fn started(now: fn() -> Int) -> component.Start(Wire) {
       now:,
       sessions: fn() { [] },
       open: fn(_) { sessions.Declined(sessions.NotHeld) },
+      resume: fn(_, _) { Nil },
       invite: None,
       home: None,
     ),

@@ -41,8 +41,16 @@ pub type Residency {
   /// The daemon holds the session open, or is opening or closing it.
   Live
 
-  /// The session is on disk and nothing runs it.
+  /// The session is on disk, nothing runs it, and the daemon would open it on
+  /// an operator's request.
   Saved
+
+  /// The session is on disk, nothing runs it, and the daemon will not open it
+  /// from a page: its creation was never reconciled, or recovery stopped it
+  /// and needs the owner. A row for it is text at every ceiling, and the
+  /// words say "saved", as they do for `Saved`, because the page cannot tell
+  /// the person more than the catalogue does.
+  Blocked
 }
 
 /// One session in the sidebar.
@@ -82,8 +90,9 @@ pub fn label(entry: Entry) -> String {
 }
 
 /// What the daemon answers when a page asks to open another session
-/// (protocol-change/051, the addendum on switching sessions) or to go home
-/// (protocol-change/065, the second pull request).
+/// (protocol-change/051, the addendum on switching sessions), to resume a saved
+/// one or to go home (protocol-change/065, the second and third pull
+/// requests).
 pub type Answer {
   /// The daemon minted a ticket. `path` is the ticket's exchange,
   /// `/ui/sessions/<id>?ticket=<ticket>` or `/ui/home?ticket=<ticket>`, which
@@ -110,6 +119,18 @@ pub type Reason {
   /// The daemon could not answer: it was starting, stopping or slow.
   Unavailable
 
+  /// The principal holds the session, but only as an observer, so the daemon
+  /// will not run it for them. The control command makes the same refusal
+  /// (`OpenSession` needs Operator or Owner on the target), and the page's
+  /// words are its, not a claim about the session.
+  NotOperator
+
+  /// The daemon tried to open a saved session and it did not become resident
+  /// in time, or the registry refused the open (capacity, an archived or
+  /// blocked session). The page says one thing for each, and no text from the
+  /// open reaches it; the daemon logs the class.
+  NotOpened
+
   /// The daemon could not mint a ticket for the home page: the page's own
   /// standing had ended or its credential no longer authenticates. It is the
   /// one reason a request to go home has, so it has its own words rather than
@@ -132,6 +153,8 @@ pub fn reason_words(reason: Reason) -> String {
     NotRunning ->
       "That session is not running. Resume it from a terminal, then open it here."
     Unavailable -> "The daemon could not open that session. Try again."
+    NotOperator -> "Ask an operator to resume it."
+    NotOpened -> "That session did not open. Resume it from a terminal."
     NoHome -> "The daemon could not open the home page. Try again."
   }
 }

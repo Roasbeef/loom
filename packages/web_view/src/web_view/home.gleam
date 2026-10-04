@@ -13,21 +13,26 @@
 ////
 //// Like the sidebar's read, the home's runs in the component's own process
 //// and the runtime waits for it. A catalogue page is a query that returns at
-//// once, and the registry's own call bounds a slow one. A read that is
-//// allowed to take longer, opening a saved session, will run in its own
-//// process when that arrives, since the page cannot be frozen behind it.
+//// once, and the registry's own call bounds a slow one. Opening a saved
+//// session is allowed to take longer, so it does not run there: `Start.resume`
+//// starts the daemon's own task and returns at once, and the task delivers its
+//// answer as a message when it finishes, so the page keeps drawing while a
+//// session starts.
 ////
-//// The component draws a list and takes one input (protocol-change/065, the
-//// second pull request): the press of a running session's row, in the table or
-//// in the sidebar. Its message is `Opening`, whose session is the catalogue's
-//// identity drawn into the tree by the server, so the browser's event names
-//// only the path it fired at and never a session. The daemon's socket admits a
-//// click beneath `table_path` or `sidebar_path` and drops every other frame
-//// (`client/daemon/ui_socket.home_accepts`), and `Start.open` makes the
-//// daemon check the principal's membership and the session's residency again
-//// before it mints a ticket. The answer is a ticket's address, which the
-//// hidden `<loom-switch>` element navigates to, or a refusal worded in the
-//// page's notice. Every name and path is a catalogue field, drawn as a text
+//// The component draws a list and takes two inputs (protocol-change/065, the
+//// second and third pull requests): the press of a running session's row, in
+//// the table or in the sidebar, and, on a page minted to operate, the press of
+//// a saved session's row. Their messages are `Opening` and `Resuming`, whose
+//// session is the catalogue's identity drawn into the tree by the server, so
+//// the browser's event names only the path it fired at and never a session.
+//// The daemon's socket admits a click beneath `table_path` or `sidebar_path`
+//// and drops every other frame (`client/daemon/ui_socket.home_accepts`), and
+//// `Start.open` and `Start.resume` make the daemon check the principal's
+//// membership, and for a resume its role, again before it mints a ticket. The
+//// answer is a ticket's address, which the hidden `<loom-switch>` element
+//// navigates to, or a refusal worded in the page's notice. While one resume is
+//// out the page holds its session and asks for no other, so a second press
+//// asks nothing. Every name and path is a catalogue field, drawn as a text
 //// node (`view/home_table`, `view/sidebar`). The page names the principal and
 //// the most the page may do in its top bar, so a person who holds two homes
 //// can tell them apart.
@@ -41,6 +46,13 @@
 //// | `Connecting` | `Connected` with the list | stays `Connecting`, nothing drawn | `Ended` | asks again |
 //// | `Connected` | stays `Connected` with the new list | stays `Connected` with the last list | `Ended` | asks again |
 //// | `Ended` | stays `Ended` | stays `Ended` | stays `Ended` | asks nothing |
+////
+//// A resume is a second, smaller machine inside `Connected`:
+////
+//// | resume | a saved row is pressed | the daemon answers | the page ends |
+//// | --- | --- | --- | --- |
+//// | none out | starts one, if the page may operate | nothing to answer | stays none |
+//// | one out | asks nothing | clears it, then departs or says why | clears it |
 
 import gleam/erlang/process.{type Subject}
 import gleam/list
@@ -56,6 +68,7 @@ import web_view/sessions.{type Entry, type Group}
 import web_view/view/ended
 import web_view/view/home_bar
 import web_view/view/home_table
+import web_view/view/resume.{type Resume}
 import web_view/view/shell
 import web_view/view/sidebar
 import web_view/view/switch
@@ -126,6 +139,13 @@ pub type Start {
     /// and deadline. It runs in the component's process when a row is
     /// pressed, and it must not run long: the page's runtime waits for it.
     open: fn(String) -> sessions.Answer,
+    /// Asks the daemon to resume the named saved session and mint a ticket for
+    /// it: the daemon checks the page, its ceiling and the principal's role in
+    /// the session, opens it, waits for it to become resident and mints. It
+    /// must return at once, and the answer goes to the function it is given,
+    /// from the daemon's own task, as `Linked`'s message. A page whose ceiling
+    /// is the observer's never calls it, and the daemon refuses if one did.
+    resume: fn(String, fn(sessions.Answer) -> Nil) -> Nil,
   )
 }
 
@@ -160,6 +180,10 @@ pub opaque type Model {
     /// What the page last said about a press, in the daemon's fixed words: that
     /// it is opening a session, or why it could not.
     notice: Option(String),
+    /// The saved session whose resume is out, if one is. It is set when a press
+    /// asks the daemon and cleared by the answer, so a second press while it is
+    /// set asks nothing.
+    resuming: Option(String),
   )
 }
 
@@ -181,9 +205,15 @@ pub type Msg {
   /// the daemon decides whether the page's principal may have it.
   Opening(session: String)
 
-  /// The daemon answered a request to open a session. It is the effect's own
-  /// message, dispatched from the component's process, and no handler carries
-  /// it, so a browser cannot send one.
+  /// A saved session's row was pressed: ask the daemon to resume it. Only a
+  /// page minted to operate draws the row as a button, and the daemon checks
+  /// the page's ceiling and the principal's role again. The identity is the
+  /// catalogue's, fixed when the tree was drawn.
+  Resuming(session: String)
+
+  /// The daemon answered a request to open or resume a session. It is the
+  /// effect's own message, dispatched from the component's process or from the
+  /// daemon's task, and no handler carries it, so a browser cannot send one.
   Linked(answer: sessions.Answer)
 }
 
@@ -214,6 +244,7 @@ pub fn new(start: Start) -> Model {
     timer: None,
     departure: None,
     notice: None,
+    resuming: None,
   )
 }
 
@@ -277,8 +308,30 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         )
       }
 
+    // A saved row's press asks the daemon to resume it, from the daemon's own
+    // task so the runtime stays free. A page that may not operate, one that
+    // ended, and one whose resume is already out ask nothing; the row of such
+    // a page has no handler, so these arms are the second layer.
+    Resuming(session:) ->
+      case model.start.ceiling, model.status, model.resuming {
+        OperatorCeiling, Connected, None -> #(
+          Model(
+            ..model,
+            notice: Some("Opening that session. It may take a moment."),
+            resuming: Some(session),
+          ),
+          resuming(model.start.resume, session),
+        )
+        OperatorCeiling, Connected, Some(_)
+        | OperatorCeiling, Connecting, _
+        | OperatorCeiling, Ended(_), _
+        | ObserverCeiling, _, _
+        -> #(model, effect.none())
+      }
+
     // The answer: a ticket becomes the address `<loom-switch>` navigates to,
-    // and a refusal is the page's notice in the reason's fixed words.
+    // and a refusal is the page's notice in the reason's fixed words. Either
+    // way no resume is out any longer.
     Linked(answer:) ->
       case answer {
         sessions.Ticketed(path:) -> #(
@@ -286,15 +339,31 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
             ..model,
             departure: Some(path),
             notice: Some("Opening that session."),
+            resuming: None,
           ),
           effect.none(),
         )
         sessions.Declined(reason:) -> #(
-          Model(..model, notice: Some(sessions.reason_words(reason))),
+          Model(
+            ..model,
+            notice: Some(sessions.reason_words(reason)),
+            resuming: None,
+          ),
           effect.none(),
         )
       }
   }
+}
+
+// Starts the daemon's task and returns at once; the task's answer arrives
+// later as `Linked`, dispatched from the task's own process. Lustre's dispatch
+// sends to the runtime's mailbox, so it is safe to call from there.
+fn resuming(
+  resume: fn(String, fn(sessions.Answer) -> Nil) -> Nil,
+  session: String,
+) -> Effect(Msg) {
+  use dispatch <- effect.from
+  resume(session, fn(answer) { dispatch(Linked(answer)) })
 }
 
 // The daemon's answer, in the component's process, as a message.
@@ -384,10 +453,10 @@ pub fn view(model: Model) -> Element(Msg) {
       status: status_words(model.status),
       notice: ended.home(ended_ending(model.status)),
     ),
-    shell_sidebar(model.groups),
+    shell_sidebar(model),
     [
       press_notice(model.notice),
-      home_table.view(model.groups, Opening),
+      home_table.view(model.groups, Opening, resume_offer(model)),
       switch.view(model.departure),
     ],
     element.none(),
@@ -396,11 +465,21 @@ pub fn view(model: Model) -> Element(Msg) {
   )
 }
 
+// What the page offers for a saved row: a button on a page minted to operate,
+// with the session whose resume is out, and text otherwise.
+fn resume_offer(model: Model) -> Resume(Msg) {
+  case model.start.ceiling {
+    OperatorCeiling -> resume.Offered(Resuming, model.resuming)
+    ObserverCeiling -> resume.Never
+  }
+}
+
 // The sidebar's column, or the frame's word that there is none.
-fn shell_sidebar(groups: List(Group)) -> shell.Sidebar(Msg) {
-  case groups {
+fn shell_sidebar(model: Model) -> shell.Sidebar(Msg) {
+  case model.groups {
     [] -> shell.Unlisted
-    [_, ..] -> shell.Listed(sidebar.home(groups, Opening))
+    [_, ..] as groups ->
+      shell.Listed(sidebar.home(groups, Opening, resume_offer(model)))
   }
 }
 

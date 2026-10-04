@@ -11,8 +11,9 @@
 //// A running session's name is a button (protocol-change/065, the second pull
 //// request) whose one handler sends the caller's message naming that row's
 //// session; the stylesheet stretches it over the whole row, so the row reads
-//// as one target. A saved session's name is text, since the daemon would
-//// refuse a ticket for it and opening one is a later change. The message
+//// as one target. A saved session's name is a button only on a page that may
+//// resume it (`view/resume`, protocol-change/065, the third pull request), and
+//// text otherwise; while a resume is out its row says "opening". The message
 //// names the catalogue's identity, drawn when the tree was, and never a value
 //// the browser sends: the home's socket admits a click only beneath this
 //// table's own path (`home.table_path`), and the daemon checks the principal's
@@ -35,25 +36,32 @@ import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
-import web_view/sessions.{type Entry, type Group, Live, Saved}
+import web_view/sessions.{type Entry, type Group, Blocked, Live, Saved}
+import web_view/view/resume.{type Resume}
 
 /// The centre column's content: a heading, and one table for each group, or
 /// a line that says there is nothing to list. `open` is the message a press of
-/// a running session's name sends, given that session's identity. The result is
-/// memoized on the groups, so a refresh that brings back the list already drawn
-/// diffs nothing; `open` is not part of the key, so a caller passes the same
-/// function every time, as a constructor is.
+/// a running session's name sends, given that session's identity, and `resume`
+/// is what the page offers for a saved session's row. The result is memoized
+/// on the groups and the session whose resume is out, so a refresh that brings
+/// back the list already drawn diffs nothing; `open` and the resume's `press`
+/// are not part of the key, so a caller passes the same functions every time,
+/// as a constructor is.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // home_table.view(home.groups(model), Opening)
+/// // home_table.view(home.groups(model), Opening, resume.Never)
 /// ```
 pub fn view(
   groups: List(Group),
   open: fn(String) -> message,
+  resume: Resume(message),
 ) -> Element(message) {
-  use <- element.memo([element.ref(groups)])
+  use <- element.memo([
+    element.ref(groups),
+    element.ref(resume.pending(resume)),
+  ])
   html.section([attribute.class("home-sessions")], [
     html.h2([attribute.class("home-heading")], [html.text("Sessions")]),
     ..case groups {
@@ -64,12 +72,16 @@ pub fn view(
           ),
         ]),
       ]
-      [_, ..] -> list.map(groups, group(_, open))
+      [_, ..] -> list.map(groups, group(_, open, resume))
     }
   ])
 }
 
-fn group(group: Group, open: fn(String) -> message) -> Element(message) {
+fn group(
+  group: Group,
+  open: fn(String) -> message,
+  resume: Resume(message),
+) -> Element(message) {
   html.table([attribute.class("home-table")], [
     html.caption([attribute.class("home-workspace")], [
       html.text(group.workspace),
@@ -81,30 +93,29 @@ fn group(group: Group, open: fn(String) -> message) -> Element(message) {
         html.th([attribute.scope("col")], [html.text("Created")]),
       ]),
     ]),
-    html.tbody([], list.map(group.entries, row(_, open))),
+    html.tbody([], list.map(group.entries, row(_, open, resume))),
   ])
 }
 
-fn row(entry: Entry, open: fn(String) -> message) -> Element(message) {
-  let residency = case entry.residency {
-    Live -> #("live", "●", "resident")
-    Saved -> #("saved", "○", "saved")
+fn row(
+  entry: Entry,
+  open: fn(String) -> message,
+  resume: Resume(message),
+) -> Element(message) {
+  let kind = resume.kind(resume, entry)
+  let residency = case entry.residency, kind {
+    Live, _ -> #("live", "●", "resident")
+    Saved, resume.Opening -> #("opening", "…", "opening")
+    Saved, _ | Blocked, _ -> #("saved", "○", "saved")
   }
   let name = html.text(sessions.label(entry))
   html.tr([attribute.class("home-row")], [
     html.td([attribute.class("home-name")], [
-      case entry.residency {
-        Live ->
-          html.button(
-            [
-              attribute.type_("button"),
-              attribute.class("home-open"),
-              attribute.title("Open this session"),
-              event.on_click(open(entry.id)),
-            ],
-            [name],
-          )
-        Saved -> name
+      case entry.residency, kind {
+        Live, _ -> pressable("Open this session", open(entry.id), name)
+        Saved, resume.Button(press:) ->
+          pressable("Resume this session", press, name)
+        Saved, _ | Blocked, _ -> name
       },
     ]),
     html.td([], [
@@ -117,6 +128,24 @@ fn row(entry: Entry, open: fn(String) -> message) -> Element(message) {
     ]),
     html.td([attribute.class("home-created")], [created(entry.created_at)]),
   ])
+}
+
+// The name as the row's one button, which the stylesheet stretches over the
+// whole row.
+fn pressable(
+  title: String,
+  press: message,
+  name: Element(message),
+) -> Element(message) {
+  html.button(
+    [
+      attribute.type_("button"),
+      attribute.class("home-open"),
+      attribute.title(title),
+      event.on_click(press),
+    ],
+    [name],
+  )
 }
 
 // The creation time as a `<time>` whose text and `datetime` are the same

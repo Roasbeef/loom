@@ -394,6 +394,7 @@
   .residency{flex:0 0 auto;color:var(--color-fg-quiet);font:11px/1.4 var(--font-sans);}
   .residency .glyph{margin-right:4px;}
   .residency.live .glyph{color:var(--color-current);}
+  .residency.opening{color:var(--color-current);}
   /* The app's navigation slot above the first workspace group. It is empty
      until the app has pages to link to. */
   .sidebar .nav{display:flex;flex-direction:column;gap:2px;margin:0 0 12px 0;}

@@ -403,6 +403,16 @@ pub type Transport(socket) {
     /// when the operator presses a row, and it must not run long: the page's
     /// runtime waits for it.
     open: fn(String) -> sessions.Answer,
+    /// Asks the daemon to resume the named saved session and mint a ticket for
+    /// it, for an operator's page that pressed a saved row
+    /// (protocol-change/065, the third pull request). The daemon checks the
+    /// page's ceiling and the principal's role in that session, opens it, waits
+    /// for it to become resident and mints a ticket with the page's own ceiling
+    /// and deadline. It must return at once: the wait runs in the daemon's own
+    /// task, which calls the function it is given with the answer, and that
+    /// call is dispatched as `Linked`. It answers `Declined` for an observer's
+    /// page without asking.
+    resume: fn(String, fn(sessions.Answer) -> Nil) -> Nil,
     /// Asks the daemon to invite a person to this page's session, in a role
     /// the owner chose, for an owner's page that pressed one of the control's
     /// buttons: the daemon mints the same claim `loomd access invite` mints
@@ -627,6 +637,10 @@ type View(socket) {
     /// switch replaces it: the ticket is single use and lives 60 seconds, so
     /// a value left behind is spent.
     departure: Option(String),
+    /// The saved session whose resume is out, if one is. It is set when a press
+    /// asks the daemon and cleared by the answer, so a second press while it is
+    /// set asks nothing and the sidebar draws that row as opening.
+    resuming: Option(String),
     /// What the invitation control is doing. It is the one place the page
     /// holds a claim token, only while the invitation is on screen, and the
     /// state is replaced when the owner dismisses it.
@@ -806,6 +820,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       groups: [],
       listed_at: None,
       departure: None,
+      resuming: None,
       share: case start.transport.invite {
         Some(_) -> invites.Ready
         None -> invites.Withheld
@@ -1031,6 +1046,7 @@ fn linked(
         view: View(
           ..model.view,
           departure: Some(path),
+          resuming: None,
           refusal: None,
           outcome: saying,
         ),
@@ -1040,6 +1056,7 @@ fn linked(
         ..model,
         view: View(
           ..model.view,
+          resuming: None,
           refusal: Some(sessions.reason_words(reason)),
           outcome: "",
         ),
@@ -2231,6 +2248,78 @@ pub fn switch_to(
 fn asking(transport: Transport(socket), target: String) -> Effect(Msg(socket)) {
   use dispatch <- effect.from
   dispatch(Linked(transport.open(target)))
+}
+
+/// Asks the daemon to resume a saved session for this page's operator, when a
+/// saved sidebar row was pressed (protocol-change/065, the third pull request).
+///
+/// The daemon starts a task that opens the session and waits for it, so this
+/// returns at once and the page keeps drawing; the answer arrives as `Linked`,
+/// which departs for the session's page or words why it could not. The row
+/// reads "opening" until then, and a second press while one is out asks
+/// nothing, so one press opens at most one session. The session named is the
+/// message's, drawn from the catalogue's list, and the daemon checks the
+/// principal's role in it again, so a stale row, or a row of a session the
+/// principal observes, resumes nothing. A press for the session on screen, or
+/// for a session the page's list does not show as saved, asks nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.resume(model, "0198a2f4-7c3b-7e10-8d5a-3f9b2c4e6a71")
+/// ```
+pub fn resume(
+  model: Model(socket),
+  target: String,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case model.view.resuming, resumable(model, target) {
+    None, True -> #(
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          resuming: Some(target),
+          refusal: None,
+          outcome: "Opening that session. It may take a moment.",
+        ),
+      ),
+      resuming(model.view.transport, target),
+    )
+    Some(_), _ | None, False -> #(model, effect.none())
+  }
+}
+
+// Whether the page's list shows `target` as a saved session that may be
+// resumed. The daemon decides again; this keeps a frame that named a row the
+// page never drew from reaching it.
+fn resumable(model: Model(socket), target: String) -> Bool {
+  list.any(model.view.groups, fn(group) {
+    list.any(group.entries, fn(entry) {
+      entry.id == target && entry.residency == sessions.Saved
+    })
+  })
+}
+
+// Starts the daemon's task and returns at once. The task's answer arrives
+// later as `Linked`, dispatched from the task's own process.
+fn resuming(
+  transport: Transport(socket),
+  target: String,
+) -> Effect(Msg(socket)) {
+  use dispatch <- effect.from
+  transport.resume(target, fn(answer) { dispatch(Linked(answer)) })
+}
+
+/// The saved session whose resume is out, if one is, which the sidebar draws
+/// as opening.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert component.resuming_session(model) == None
+/// ```
+pub fn resuming_session(model: Model(socket)) -> Option(String) {
+  model.view.resuming
 }
 
 /// Asks the daemon for a ticket to the principal's home page, when the "Home"

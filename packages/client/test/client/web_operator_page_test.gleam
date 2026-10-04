@@ -95,6 +95,7 @@ fn start_page(
         now: bootstrap.monotonic_time_ms,
         sessions: fn() { [] },
         open: fn(_) { sessions.Declined(sessions.NotHeld) },
+        resume: fn(_, _) { Nil },
         invite: None,
         home: None,
       ),
