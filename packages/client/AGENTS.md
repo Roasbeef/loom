@@ -5997,3 +5997,25 @@ owner receipt custody before ACK. One weft deadline bounds storage and network
 observation together; expiry and observer loss retain ChildOrigin for recovery.
 Assembly must cap concurrent callers at four. This component is not yet wired
 into shipped daemon workspace selection or filesystem tools.
+
+
+## Physical service offer custody
+
+`remote/custodian` exposes closed bounded ReserveService/ReadService,
+AdmitOffer/ReadOffer, ReserveCommand/ReadCommand and CancelService messages.
+`reserve_service_child` frames exact managed service identity and input before
+mailbox delivery; `admit_offer` rechecks the owner's configured bounds and exact
+original service. `reserve_command_child` accepts complete post-clearance content,
+reserving its original UUID only after storage atomically verifies the service
+and immutable offer. Readback/reopen never runs a tool or re-clears a command.
+
+Cancellation serializes with native reservation in the same owner actor and one
+SQLite transaction. Matching late native receipts remain recoverable. Failure to
+commit cancellation still requires the assembly's fatal fence. Collection refuses
+physical service parents even when no offer arrived, retaining all recovery bytes
+until a concrete whole-service custody transfer exists. These APIs add no broker
+acceptance, native wire change, new process ledger or shipped remote compile/launch.
+Caller-owned aggregate admission still bounds mailbox ingress independently of DB
+reservations. The outer service completion adapter must validate its full original
+ServiceKey/result association before using existing workspace receipt custody;
+opaque storage bytes alone prove neither artifact correctness nor service completion.
