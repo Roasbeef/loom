@@ -1,12 +1,24 @@
 #!/usr/bin/env python3
 """Prove guard mutations fail their intended monitors in isolated model copies."""
 import argparse
+import hashlib
+import json
 from datetime import datetime, timezone
 
 from runner import ROOT, check_case, compile_model, record, snapshot_model
 
 # These alter actual state/effect decisions, leaving monitor code unchanged.
 MUTATIONS = {
+    'product-change-cleared-offer': ('PSrc/ProductOwner.p', 'candidate.commandDigest = accepted.commandDigest;', 'candidate.commandDigest = 2;', 'tcProductLifecycle', 'native command differed from owner-cleared offer'),
+    'product-remint-uncertain': ('PSrc/ProductOwner.p', 'original.key.execution = nativeRows[2].key.execution;', 'original.key.execution = 3;', 'tcProductLaunchLoss', 'uncertain command allocated replacement identity'),
+    'product-cap-name-alias': ('PSrc/ProductOwner.p', 'address.name = p.logical.name;', 'address.name = 0;', 'tcProductChildAddresses', 'distinct product children shared an address'),
+    'product-recreate-resource': ('PSrc/ProductExecutor.p', 'liveClaim = false;\n        if (liveClaim) { createResource(rows[2]); }', 'liveClaim = true;\n        if (liveClaim) { createResource(rows[2]); }', 'tcProductResourceUnknown', 'resource created without original live claim'),
+    'product-foreign-lease': ('PSrc/ProductExecutor.p', 'if (candidate.artifact == rows[2].artifact && candidate.scope == rows[2].scope &&\n        candidate.compileRequest == rows[1].requestDigest && candidate.resources == rows[2].resources)', 'if (created)', 'tcProductOfferConflict', 'issued resource did not match admitted artifact'),
+    'product-loss-as-refusal': ('PSrc/ProductOwner.p', 'neverLaunched = false', 'neverLaunched = true', 'tcProductLaunchLoss', 'possible native launch reported never launched'),
+    'product-early-outer-receipt': ('PSrc/ProductExecutor.p', 'announce mProductCompleted, p;', 'announce mProductReceipt, p;\n        announce mProductCompleted, p;', 'tcProductLifecycle', 'outer receipt preceded exact owner completion'),
+    'product-final-from-children': ('PSrc/ProductOwner.p', 'if (finalResult != 0) {', 'if (sizeof(completions) == 2) {', 'tcProductChildOnlyRecovery', 'child evidence fabricated final tool outcome'),
+    'product-cleanup-as-retirement': ('PSrc/ProductOwner.p', 'retired = false', 'retired = true', 'tcProductLaunchLoss', 'resource cleanup fabricated native retirement'),
+
     "relaunch-uncertain": (
         "PSrc/Executor.p",
         "        route[k] = p;\n        reply(p, Prior);",
@@ -49,6 +61,7 @@ def main() -> None:
         parser.error("schedule count must be positive and seed nonnegative")
     out = ROOT / "PCheckerOutput" / datetime.now(timezone.utc).strftime("mutations-%Y%m%dT%H%M%S%f")
     baseline = snapshot_model(out / "control-project")
+    (out / "source-hashes.json").write_text(json.dumps({str(p.relative_to(baseline)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(baseline.rglob("*")) if p.is_file()}, indent=2) + "\n")
     results = [compile_model(baseline, out)]
     for name in args.mutations or MUTATIONS:
         path, old, new, case, marker = MUTATIONS[name]
