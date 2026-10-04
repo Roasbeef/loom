@@ -77,6 +77,10 @@ WHERE id=? AND phase=1 RETURNING phase;
 -- name: MarkResourceUnknown :many
 UPDATE resource_call SET phase=3 WHERE id=? AND phase IN (1,2) RETURNING phase;
 
+-- Original cancellation also fences an unclaimed reservation without fabricating a claim.
+-- name: FenceResourcePreparation :many
+UPDATE resource_call SET phase=3 WHERE id=? AND phase IN (0,1,2) RETURNING phase;
+
 -- name: ReleaseResource :many
 UPDATE resource_call SET phase=4 WHERE id=? AND phase IN (1,2,3) RETURNING phase;
 
