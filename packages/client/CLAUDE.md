@@ -310,6 +310,16 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   is `deliver(answer)`, which the component dispatches as `Linked`. `resumed_for`
   is the socket's gate: an observer role is refused `NotHeld` before any task.
   `listed_entry` maps `Reserved` and `RecoveryBlocked` to `sessions.Blocked`.
+  The home's activity words (protocol-change/065, the home-list addendum) come
+  from `HomeAttachment.activity`, which `server.home_activity` builds: the
+  control command's `sessions.activity` read over the ids the page's credential
+  holds, re-derived in the registry (`held`, `manager.session_authority`) at
+  each read, reduced to one state word per session that answered
+  (`activity_states`). The control command answers a member the same way, only
+  for sessions it holds (protocol-change/050, the addendum on members).
+  `activity_task(ask, ids, deliver)` runs it in a weft run
+  linked to the Lustre runtime and returns at once, as `resume_task` does;
+  `Start.now` is `bootstrap.system_time_ms`.
   `ui.link` and a switch build the exchange path with `page.exchange_path`.
   An owner's operator page can also invite (protocol-change/051, the addendum
   on inviting from the session page). `ui_socket.Role` has a third value,
@@ -4929,8 +4939,10 @@ grants confer no lineage or custody.
 `peer_mail.Link` enforces 64 outgoing links per source strand before writing the
 source index. Replacing an exact link at the limit remains idempotent.
 
-Owner-only, epoch-checked `sessions.activity` (`protocol.SessionActivity`)
+Epoch-checked `sessions.activity` (`protocol.SessionActivity`)
 takes 1 to 24 distinct canonical ids and reports what each resident is doing.
+The owner is answered for any id; a member only for ids its credential holds a
+membership in (`held`), the rest dropped as unknown ids are.
 `server.activity` resolves each id through `manager.resolve`, which answers only
 for `Running` slots, so saved or unknown ids are omitted and no saved store is
 opened. It then calls the read-only `peer_mail.Overview` command on every
