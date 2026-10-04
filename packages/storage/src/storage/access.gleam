@@ -12,6 +12,13 @@
 //// Authorization here is internal data access, not a gateway policy or an
 //// invitation endpoint. Callers must authenticate before using these mutations.
 ////
+//// Every credential row has a kind, `Bearer` or `Browser` (protocol-change/065).
+//// A lookup names the kind it wants, so a digest that belongs to one kind is
+//// absent to the other. The queries behind 053's rule 3, "a member holds at
+//// most one active credential", count `Bearer` rows only: that rule is what
+//// lets a listing show one credential per principal, and a login is counted
+//// beside it, never in its place.
+////
 //// A member invited or rotated with a claim (protocol-change/053) has no
 //// credential at all until the claim is redeemed. The claim's digest lives in
 //// `access_claims` and never in `access_credentials`, so `authenticate` cannot
@@ -62,6 +69,23 @@ pub opaque type Digest {
 /// credential digest ever authorizes a connection.
 pub opaque type ClaimDigest {
   ClaimDigest(value: String)
+}
+
+/// Which presenter a credential row belongs to.
+///
+/// A credential's digest is the key of its row, and the digest of a `Browser`
+/// row is derived from a value that is not secret (protocol-change/065). So
+/// the kind is part of every lookup: a digest authenticates only as the kind
+/// its caller names, and a string a connection presents as a bearer can never
+/// reach a `Browser` row, whatever its digest.
+pub type CredentialKind {
+  /// A token the holder presents as `Authorization: Bearer`, and the only kind
+  /// 053's one-credential-per-principal rules count.
+  Bearer
+
+  /// A browser login's row, which only a page grant minted from that login
+  /// may name.
+  Browser
 }
 
 /// How an invited or rotated member comes to hold a credential.
@@ -333,7 +357,7 @@ fn verify_owner_credential(
   existing: Principal,
   digest: Digest,
 ) {
-  case authenticate(store, digest) {
+  case authenticate(store, digest, Bearer) {
     Ok(found) if found.id == existing.id -> Ok(existing)
     Ok(_) | Error(Missing) -> Error(Conflict)
     Error(error) -> Error(error)
@@ -361,7 +385,7 @@ pub fn create_member(
 
 fn insert_principal(store: Catalogue, proposed: Principal, digest: Digest) {
   use Nil <- result.try(absent(get(store, proposed.id)))
-  use Nil <- result.try(absent(credential(store, digest)))
+  use Nil <- result.try(unused(store, digest))
   use Nil <- result.try(catalogue.statement(
     store,
     sql.insert_access_principal(
@@ -372,7 +396,7 @@ fn insert_principal(store: Catalogue, proposed: Principal, digest: Digest) {
   ))
   use Nil <- result.try(catalogue.statement(
     store,
-    sql.insert_access_credential(digest.value, proposed.id),
+    sql.insert_access_credential(digest.value, proposed.id, kind_name(Bearer)),
   ))
   Ok(proposed)
 }
@@ -491,8 +515,11 @@ fn enroll(
       )
     }
     DigestEnrollment(credential: digest) -> {
-      use Nil <- result.try(absent(credential(store, digest)))
-      catalogue.statement(store, sql.insert_access_credential(digest.value, id))
+      use Nil <- result.try(unused(store, digest))
+      catalogue.statement(
+        store,
+        sql.insert_access_credential(digest.value, id, kind_name(Bearer)),
+      )
     }
   }
 }
@@ -537,19 +564,24 @@ pub fn claim_known(store: Catalogue, claim: ClaimDigest) -> Result(Nil, Error) {
 /// answers the principal as it stands and never renames, whatever name it
 /// carries. Events already admitted keep the name they were admitted under.
 ///
+/// The row is written with `kind`, and an exact replay is recognised only for
+/// that kind: a claim bound as one kind answers a replay of the other as a
+/// conflict. The `/v2/claim` route is a bearer path and passes `Bearer`.
+///
 /// `equal` compares two digests. The daemon passes a constant-time
 /// comparison; this package has no cryptographic dependency of its own.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // access.claim(store, claim, credential, Some("Alex"), now_ms, constant_time_equal)
+/// // access.claim(store, claim, credential, access.Bearer, Some("Alex"), now_ms, constant_time_equal)
 /// ```
 @internal
 pub fn claim(
   store: Catalogue,
   claim: ClaimDigest,
   presented: Digest,
+  kind: CredentialKind,
   name: Option(String),
   now_ms: Int,
   equal: fn(String, String) -> Bool,
@@ -558,7 +590,7 @@ pub fn claim(
     catalogue.atomic(store, fn() {
       // A refusal commits an empty transaction, since every refusal precedes
       // every write. A store failure rolls back whatever had been written.
-      case redeem(store, claim, presented, name, now_ms, equal) {
+      case redeem(store, claim, presented, kind, name, now_ms, equal) {
         Ok(claimed) -> Ok(Ok(claimed))
         Error(ClaimStore(error)) -> Error(error)
         Error(InvalidClaimName) -> Ok(Error(InvalidClaimName))
@@ -577,6 +609,7 @@ fn redeem(
   store: Catalogue,
   claim: ClaimDigest,
   presented: Digest,
+  kind: CredentialKind,
   name: Option(String),
   now_ms: Int,
   equal: fn(String, String) -> Bool,
@@ -593,7 +626,12 @@ fn redeem(
     // again. The credential bound before is the only one that repeats the
     // success, and only while it still authenticates.
     ClaimedBy(bound) -> {
-      use found <- result.try(stored(credential(store, bound)))
+      use found <- result.try(case credential(store, bound, kind) {
+        // The row exists, since the claim references it, so only a bound
+        // credential of the other kind is absent from this lookup.
+        Error(Missing) -> Error(ConflictingClaim)
+        other -> stored(other)
+      })
       case found.state, equal(bound.value, presented.value) {
         Revoked, _ -> Error(UnknownClaim)
         Active, True -> claimed(store, row.principal_id)
@@ -601,7 +639,7 @@ fn redeem(
       }
     }
 
-    OpenClaim -> bind(store, row, presented, name, now_ms, equal)
+    OpenClaim -> bind(store, row, presented, kind, name, now_ms, equal)
   }
 }
 
@@ -609,6 +647,7 @@ fn bind(
   store: Catalogue,
   row: ClaimRow,
   presented: Digest,
+  kind: CredentialKind,
   name: Option(String),
   now_ms: Int,
   equal: fn(String, String) -> Bool,
@@ -621,9 +660,7 @@ fn bind(
     when: equal(presented.value, row.claim.value),
     return: Error(ConflictingClaim),
   )
-  use Nil <- result.try(
-    absent(credential(store, presented)) |> result.map_error(refusal),
-  )
+  use Nil <- result.try(unused(store, presented) |> result.map_error(refusal))
   use Nil <- result.try(
     no_active_credential(store, row.principal_id) |> result.map_error(refusal),
   )
@@ -644,7 +681,11 @@ fn bind(
   use Nil <- result.try(
     stored(catalogue.statement(
       store,
-      sql.insert_access_credential(presented.value, row.principal_id),
+      sql.insert_access_credential(
+        presented.value,
+        row.principal_id,
+        kind_name(kind),
+      ),
     )),
   )
   use Nil <- result.try(
@@ -852,20 +893,25 @@ fn split_page(rows: List(a)) -> #(List(a), Remainder) {
   }
 }
 
-/// Resolves an active credential to the principal's current durable identity.
-/// Invalid persisted values fail closed instead of receiving a default role.
+/// Resolves an active credential of `kind` to the principal's current durable
+/// identity. Invalid persisted values fail closed instead of receiving a
+/// default role.
+///
+/// The kind is a parameter so that no caller can omit it: a digest that names
+/// a row of the other kind is `Missing`, exactly as an unknown digest is.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // access.authenticate(store, digest)
+/// // access.authenticate(store, digest, access.Bearer)
 /// ```
 @internal
 pub fn authenticate(
   store: Catalogue,
   digest: Digest,
+  kind: CredentialKind,
 ) -> Result(Principal, Error) {
-  use found <- result.try(credential(store, digest))
+  use found <- result.try(credential(store, digest, kind))
   case found.state {
     Active -> get(store, found.principal_id)
     Revoked -> Error(Missing)
@@ -926,7 +972,7 @@ pub fn revoke_credential(
   digest: Digest,
 ) -> Result(Nil, Error) {
   catalogue.atomic(store, fn() {
-    use _found <- result.try(credential(store, digest))
+    use _found <- result.try(held(store, digest))
     catalogue.statement(store, sql.revoke_access_credential(digest.value))
   })
 }
@@ -946,15 +992,19 @@ pub fn rotate_credential(
   replacement: Digest,
 ) -> Result(Principal, Error) {
   catalogue.atomic(store, fn() {
-    use found <- result.try(authenticate(store, old))
-    use Nil <- result.try(absent(credential(store, replacement)))
+    use found <- result.try(authenticate(store, old, Bearer))
+    use Nil <- result.try(unused(store, replacement))
     use Nil <- result.try(catalogue.statement(
       store,
       sql.revoke_access_credential(old.value),
     ))
     use Nil <- result.try(catalogue.statement(
       store,
-      sql.insert_access_credential(replacement.value, found.id),
+      sql.insert_access_credential(
+        replacement.value,
+        found.id,
+        kind_name(Bearer),
+      ),
     ))
     Ok(found)
   })
@@ -1084,10 +1134,10 @@ fn role_from(text: String) -> Result(Role, Error) {
   }
 }
 
-fn credential(store: Catalogue, digest: Digest) {
+fn credential(store: Catalogue, digest: Digest, kind: CredentialKind) {
   use rows <- result.try(catalogue.query(
     store,
-    sql.access_credential(digest.value),
+    sql.access_credential(digest.value, kind_name(kind)),
   ))
   use row <- result.try(one(rows))
   use _digest <- result.try(credential_digest(row.digest))
@@ -1097,6 +1147,26 @@ fn credential(store: Catalogue, digest: Digest) {
     "revoked" -> Ok(Credential(row.principal_id, Revoked))
     _ -> Error(Invalid("unknown persisted credential state"))
   }
+}
+
+fn kind_name(kind: CredentialKind) -> String {
+  case kind {
+    Bearer -> "bearer"
+    Browser -> "browser"
+  }
+}
+
+// A digest is one primary key across both kinds, so "is this digest free" and
+// "does this digest exist" ask both kinds. Only an authentication names one.
+fn held(store: Catalogue, digest: Digest) {
+  case credential(store, digest, Bearer) {
+    Error(Missing) -> credential(store, digest, Browser)
+    found -> found
+  }
+}
+
+fn unused(store: Catalogue, digest: Digest) -> Result(Nil, Error) {
+  absent(held(store, digest))
 }
 
 // A principal about to be written: the name must meet the stricter rule for

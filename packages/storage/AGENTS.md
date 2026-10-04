@@ -19,9 +19,9 @@ with these forks: they define the same modules.
 
 ## Key Types
 
-- The catalogue is at `user_version` 4. Each later version has its own embedded
+- The catalogue is at `user_version` 5. Each later version has its own embedded
   migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
-  `catalogue_claims_schema`), and `initialize_schema` applies every schema an
+  `catalogue_claims_schema`, `catalogue_credential_kinds_schema`), and `initialize_schema` applies every schema an
   older catalogue lacks, then moves the version, in one transaction; a fresh
   catalogue runs the same list after `sql_schema`. A version it does not know
   is refused, so a downgrade needs the pre-upgrade catalogue restored.
@@ -271,6 +271,17 @@ with these forks: they define the same modules.
   conflict, including after revocation. Explicit member rotation recovers a
   lost successful reply without reusing any tombstoned digest. Invitation and
   rotation roll back all preceding writes if a later insertion fails.
+- **A credential has a kind, and every lookup names it.** Catalogue version 5
+  adds `kind` (`bearer` or `browser`, default `bearer`, so every existing row
+  keeps its meaning) and the nullable `issued_at_ms` and `last_resumed_ms` to
+  `access_credentials` (protocol-change/065). `access.authenticate` and
+  `access.claim` take a `CredentialKind`, and `AccessCredential` is
+  `WHERE digest = ? AND kind = ?`, so a browser login's row, keyed by the digest
+  of a public identifier, is absent to every bearer lookup. Digest reuse checks
+  ask both kinds (`held`, `unused`), because the digest is one primary key.
+  `ActiveMemberCredentials` and `PrincipalActiveCredential` count `bearer` rows
+  only, which is what keeps 053's rule 3 true of bearers; a login is counted
+  beside them.
 - **A claim authenticates nothing and binds once.** Catalogue version 4 adds
   `access_claims`: the SHA-256 of each claim token, its member, a wall-clock
   expiry, and `open`, `claimed` or `void`. The digest never enters

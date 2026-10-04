@@ -21,6 +21,7 @@ import parrot/dev
 import sqlight
 import storage/catalogue_archives_schema
 import storage/catalogue_claims_schema
+import storage/catalogue_credential_kinds_schema
 import storage/catalogue_names_schema
 import storage/sql
 import storage/sql_schema
@@ -149,15 +150,15 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
   use found <- result.try(number(connection, "PRAGMA application_id"))
   use version <- result.try(number(connection, "PRAGMA user_version"))
   case found, version {
-    1_281_253_197, 4 -> {
+    1_281_253_197, 5 -> {
       use _revision <- result.try(revision(Catalogue(connection)))
       Ok(Nil)
     }
-    1_281_253_197, 1 | 1_281_253_197, 2 | 1_281_253_197, 3 -> {
+    1_281_253_197, 1 | 1_281_253_197, 2 | 1_281_253_197, 3 | 1_281_253_197, 4 -> {
       use _revision <- result.try(revision(Catalogue(connection)))
       transaction(connection, fn() {
         use Nil <- result.try(migrations_after(connection, version))
-        execute(connection, "PRAGMA user_version=4")
+        execute(connection, "PRAGMA user_version=5")
       })
     }
     0, 0 -> {
@@ -173,7 +174,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
             ))
             execute(
               connection,
-              "PRAGMA application_id=1281253197; PRAGMA user_version=4",
+              "PRAGMA application_id=1281253197; PRAGMA user_version=5",
             )
           })
         _ -> Error(Unsupported)
@@ -194,6 +195,7 @@ fn migrations_after(
     #(2, catalogue_names_schema.schema),
     #(3, catalogue_archives_schema.schema),
     #(4, catalogue_claims_schema.schema),
+    #(5, catalogue_credential_kinds_schema.schema),
   ]
   |> list.filter(fn(migration) { migration.0 > version })
   |> list.try_each(fn(migration) { execute(connection, migration.1) })
