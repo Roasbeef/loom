@@ -291,6 +291,8 @@ pub fn a_refused_name_binds_nothing_and_the_claim_stays_open_test() {
     refused("two\nlines")
     refused("bell\u{7}")
     refused(string.repeat("a", 257))
+    refused("Alex\u{202E}")
+    refused("\u{200B}")
     assert credential_count(ready.state_root, "alice") == 0
     assert listed_name(port, owner, "alice") == json.String("alice")
     assert string.contains(

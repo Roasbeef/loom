@@ -900,6 +900,7 @@ pub fn rename(
   id: String,
   display_name: String,
 ) -> Result(Principal, Error) {
+  let display_name = string.trim(display_name)
   use Nil <- result.try(valid_name(display_name))
   catalogue.atomic(store, fn() {
     use found <- result.try(get(store, id))
@@ -1128,15 +1129,33 @@ fn valid_name(name: String) {
     && string.byte_size(name) <= 256
     && list.all(string.to_utf_codepoints(name), fn(point) {
       let value = string.utf_codepoint_to_int(point)
-      value >= 32 && value != 127 && !{ value >= 128 && value <= 159 }
+      value >= 32
+      && value != 127
+      && !{ value >= 128 && value <= 159 }
+      && !invisible(value)
     })
   {
     True -> Ok(Nil)
     False ->
       Error(Invalid(
-        "display name must be nonblank, at most 256 bytes, and contain no controls",
+        "display name must be nonblank, at most 256 bytes, and contain no controls or invisible characters",
       ))
   }
+}
+
+// The code points `session_view/text_hygiene` replaces when it draws text:
+// zero-width and direction-changing marks that would reorder the words around
+// a name or leave a name that draws as nothing. A name holding any of them is
+// refused, so a name made only of them is refused too.
+fn invisible(value: Int) -> Bool {
+  { value >= 0x200B && value <= 0x200F }
+  || { value >= 0x202A && value <= 0x202E }
+  || { value >= 0x2060 && value <= 0x2069 }
+  || value == 0xFEFF
+  || value == 0xAD
+  || value == 0x61C
+  || value == 0x2028
+  || value == 0x2029
 }
 
 fn ascii_in(value: String, allowed: String) {

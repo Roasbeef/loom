@@ -685,6 +685,15 @@ pub fn a_refused_name_binds_nothing_and_leaves_the_claim_open_test() {
   assert refused("nul\u{0}") == Error(access.InvalidClaimName)
   assert refused("c1\u{85}x") == Error(access.InvalidClaimName)
   assert refused(string.repeat("a", 257)) == Error(access.InvalidClaimName)
+  assert refused("Alex\u{202E}") == Error(access.InvalidClaimName)
+  assert refused("\u{200B}") == Error(access.InvalidClaimName)
+  assert refused(" \u{FEFF}\u{2060} ") == Error(access.InvalidClaimName)
+  assert refused("a\u{AD}b") == Error(access.InvalidClaimName)
+  assert refused("a\u{2028}b") == Error(access.InvalidClaimName)
+  assert refused("a\u{61C}b") == Error(access.InvalidClaimName)
+
+  // The limit is in bytes, not characters: 129 two-byte letters are 258.
+  assert refused(string.repeat("é", 129)) == Error(access.InvalidClaimName)
 
   // No credential, no claim state change, and the name is the inviter's.
   assert credential_rows(file, member.id) == []
@@ -692,7 +701,7 @@ pub fn a_refused_name_binds_nothing_and_leaves_the_claim_open_test() {
   assert access.get(store, member.id) == Ok(member)
 
   // The same claim still redeems, with a name at the byte limit.
-  let limit = string.repeat("a", 256)
+  let limit = string.repeat("é", 128)
   let assert Ok(access.Claimed(answered, _)) =
     access.claim(store, claim_of("1"), digest("b"), Some(limit), 10, same)
   assert answered.display_name == limit
