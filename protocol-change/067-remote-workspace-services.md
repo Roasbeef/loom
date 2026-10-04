@@ -811,3 +811,26 @@ controls and duplicate Submit readback. The owner codec and dispatcher implement
 this route; the current server reader remains native-only until that admission
 assembly is installed. The [routing review](../docs/review/distributed-physical-command-routing.md)
 records the real TLS controls and their integration limits.
+
+## Native command admission retains live preparation custody
+
+The native admission engine accepts physical Compile commands through an internal
+context bound to the complete command reference and concrete resource/native
+journal endpoints. A live context MUST derive its original input from the actual
+preparation claim. A historical context MUST NOT create a challenge or submit
+fresh native work. Compile commands MUST retain finite original authority.
+
+First submission retains the native request and authority and commits native
+admission before asking for the resource association. The engine MUST obtain the
+original claim's committed live permit and compare its exact endpoint, reference,
+key and digest before native launch intent. Waiting for that permit MUST NOT
+renew the original deadline. Cancellation committed before association prevents
+the permit; cancellation afterward can race native startup.
+
+Every historical Query, Cancel, Stdin and DurableReceipt, and both duplicate
+Submit paths, MUST validate the exact retained resource association before
+returning native evidence or applying an effect. Matching physical coordinates
+alone are insufficient when two services have different parents. Challenge
+tickets MUST retain the closed native/command route and complete command
+reference. Server-side forwarding and whole Compile ownership remain separate
+assembly obligations.
