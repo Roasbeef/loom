@@ -1,12 +1,24 @@
 #!/usr/bin/env python3
 """Compile and check safety plus nonvacuity, with explicit bounded schedules."""
 import argparse
+import hashlib
+import json
 from datetime import datetime, timezone
 import re
 
 from runner import ROOT, check_case, compile_model, record, snapshot_model
 
 PROBES = {
+    "tcProbeProductMixedFaults": "witness: mixed faults reached live launch resource cleanup",
+    "tcProbeProductComplete": "witness: product completion retained before outer receipt",
+    "tcProbeProductClearedPending": "witness: command cleared before native admission",
+    "tcProbeProductOfferConflict": "witness: changed command offer refused without replacement",
+    "tcProbeProductResourceUnknown": "witness: resource creation remained unknown after reply loss",
+    "tcProbeProductLeaseRecovered": "witness: issued lease recovered under original service identity",
+    "tcProbeProductLaunchUnknown": "witness: lost launch reply preserved possible native work",
+    "tcProbeProductDistinctChildren": "witness: equal ordinals from distinct capabilities reserved distinct children",
+    "tcProbeProductFinalUnknown": "witness: retained children did not reconstruct final tool outcome",
+
     "tcProbeAdmissionAckLoss": "witness: admission acknowledgement lost after durable commit",
     "tcProbeLiveRestart": "witness: reboot preserved custody of actually running native execution",
     "tcProbeAdmissionLoss": "witness: admission request lost in transport",
@@ -43,6 +55,7 @@ def main() -> None:
         parser.error("empty or duplicate test selection")
     out = ROOT / "PCheckerOutput" / datetime.now(timezone.utc).strftime("gate-%Y%m%dT%H%M%S%f")
     project = snapshot_model(out / "project")
+    (out / "source-hashes.json").write_text(json.dumps({str(p.relative_to(project)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(project.rglob("*")) if p.is_file()}, indent=2) + "\n")
     results = [compile_model(project, out)]
     print("compile: exit=0", flush=True)
     for case in tests:
