@@ -11,6 +11,7 @@ machine Executor {
   var closed: bool;
   var rows: map[tKey, tRow];
   var route: map[tKey, tWire];
+  var terminalPayloads: map[tKey, tTerminalPayload];
 
   start state Init {
     entry (p: tSetup) {
@@ -55,11 +56,28 @@ machine Executor {
       }
     }
     on eTerminalNative do (result: (native: tNative, outcome: tOutcome)) {
+      var payload: tTerminalPayload;
       if (matches(result.native) && rows[result.native.key].phase != Terminal) {
-        rows[result.native.key].phase = Terminal;
-        rows[result.native.key].outcome = result.outcome;
-        announce mTerminal, result.native.key;
-        notify(result.native.key);
+        payload = (request = rows[result.native.key].request, native = result.native,
+          digest = 3, outcome = result.outcome);
+        if (!(result.native.key in terminalPayloads)) {
+          terminalPayloads[result.native.key] = payload;
+          announce mNativePayloadRetained, payload;
+        }
+        // A duplicate cannot replace the durable payload, including after reboot.
+        if (terminalPayloads[result.native.key] != payload) { return; }
+        if (mode == TerminalCommitPaused) { send driver, eNativePayloadView, payload; }
+        else { send this, eCommitNativeTerminal, result.native; }
+      }
+    }
+    on eCommitNativeTerminal do (n: tNative) {
+      if (matches(n) && n.key in terminalPayloads && rows[n.key].phase != Terminal) {
+        rows[n.key].phase = Terminal;
+        rows[n.key].outcome = terminalPayloads[n.key].outcome;
+        rows[n.key].terminalDigest = terminalPayloads[n.key].digest;
+        announce mTerminal, n.key;
+        announce mNativeTerminalCommitted, terminalPayloads[n.key];
+        notify(n.key);
       }
     }
     on eRetiredNative do (p: tNative) {
@@ -156,7 +174,7 @@ machine Executor {
       return;
     }
     rows[k] = (request = p.request, phase = Admitted, launchBoot = 0,
-               retired = false, receipt = false, outcome = NoOutcome);
+               retired = false, receipt = false, outcome = NoOutcome, terminalDigest = 0);
     route[k] = p;
     announce mAdmit, p.request;
     reply(p, Prior);
@@ -217,5 +235,6 @@ machine Executor {
     announce mGC, k;
     rows -= (k);
     route -= (k);
+    terminalPayloads -= (k);
   }
 }

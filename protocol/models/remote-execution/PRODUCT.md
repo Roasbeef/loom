@@ -3,7 +3,12 @@
 This page preserves the initial product composition and its verification
 snapshot. The preparation extension in [README.md](README.md#preparation-exact-wall-and-native-association)
 supersedes its resource scheduling and communication bounds. The original
-measurements below remain historical evidence for that earlier source.
+measurements below remain historical evidence for that earlier source. The
+[Compile custody addendum](README.md#compile-custody-settlement-extension) records
+the current terminal payload/commit split, Before-error fence and independent
+retained ACK controls; its 35 normal/44 probe/30 mutant totals supersede this
+snapshot's counts. Native Owner, Helper and safety monitors remain unchanged;
+Executor's explicit payload/commit split is the sole native actor extension.
 
 ProductSystem is an additive composition over the unchanged native Owner,
 Executor and Helper. ProductOwner persists outer service requests before send,
