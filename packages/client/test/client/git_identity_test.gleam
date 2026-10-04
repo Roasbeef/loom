@@ -5,6 +5,7 @@
 import broker/broker
 import broker/budget
 import broker/exec
+import broker/executor
 import broker/policy
 import client/catalog
 import client/git_identity
@@ -389,7 +390,7 @@ fn with_fixture_under(
     |> serve.allowing_tool_tmpdir
     |> serve.merging_mounts
   let wall = clock.from_function(bootstrap.system_time_ms)
-  let assert Ok(#(pool, owner)) =
+  let assert Ok(#(_pool, owner, service)) =
     serve.start_effect_plane(
       helper: here <> "/../sandbox/loom-exec",
       base_policy: base,
@@ -415,7 +416,12 @@ fn with_fixture_under(
     home,
   )
   broker.stop(owner)
-  assert exec.close_pool(pool, waiting: 5000) == Ok(Nil)
+  assert executor.close(
+      service,
+      draining: executor.drain_ms,
+      helpers: executor.helpers_ms,
+    )
+    == Ok(Nil)
   let assert Ok(Nil) = simplifile.delete_all([root])
     as "the retired fixture is removable"
   Nil

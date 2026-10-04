@@ -144,6 +144,20 @@ margin covers, a broker slower than the caller's whole budget or one
 stopped underneath a waiting caller, come back as `BrokerUnavailable`
 instead of crashing the strand.
 
+**The executor service is the session's one execution model.** The broker hands
+each cleared call to a `Dispatcher` (`broker/dispatch`), and two
+implementations stand behind that seam. The service,
+`broker/executor`, is what every session uses: it adds one service per session
+that owns a row for each running execution and starts a relay beneath it. The
+direct dispatcher, `broker/direct`, is the relay described below. It is no
+longer a production path: it remains as the dispatcher behind
+`broker.start(BrokerConfig)`, which about forty test callers and the M3 demo
+use. The one-shot build and check planes run the service too. [The executor service](executor.md) describes
+both, the state model, and the phases that remain (decided in
+[ADR-017](../adr/017-executor-service-seam.md)). The pool semantics on this
+page stay as written: custody, retirement evidence and the caller-side wait are
+inherited by the service and not redefined.
+
 ### Relay, settlement, and abort
 
 Each dispatched call gets a **relay** process that owns the execution's

@@ -380,6 +380,7 @@ pub fn handshake_timeout_reported_test() {
       transport:,
       handshake_timeout_ms: 150,
       cancel_grace_ms: 400,
+      kill_witness_ms: 5000,
       heartbeat_interval_ms: 0,
     )
   let assert Ok(helper) = exec.start(config)
@@ -395,6 +396,7 @@ pub fn wrong_proto_kills_handshake_test() {
       transport:,
       handshake_timeout_ms: 1000,
       cancel_grace_ms: 400,
+      kill_witness_ms: 5000,
       heartbeat_interval_ms: 0,
     )
   let assert Ok(helper) = exec.start(config)
@@ -449,6 +451,103 @@ pub fn pool_checkout_checkin_cycle_test() {
   let assert Ok(_third) = exec.checkout(pool, waiting: 2000)
   exec.checkin(pool, second)
   exec.stop_pool(pool)
+}
+
+/// The census is the pool's own count of its inventory by custody. A
+/// borrowed helper is `borrowed`, a returned idle one is `available`, and
+/// the five counters partition the entries.
+pub fn pool_census_counts_the_inventory_by_custody_test() {
+  let assert Ok(pool) =
+    exec.start_pool(size: 3, spawn: fn() {
+      Ok(fake_helper.start_helper(fake_helper.EchoArgv))
+    })
+  let empty =
+    exec.PoolCensus(
+      size: 3,
+      available: 0,
+      borrowed: 0,
+      draining: 0,
+      retiring: 0,
+      unconfirmed: 0,
+      spawned: 0,
+      retired: 0,
+    )
+  assert exec.pool_census(pool, waiting: 1000) == Ok(empty)
+
+  let assert Ok(first) = exec.checkout(pool, waiting: 2000)
+  let assert Ok(second) = exec.checkout(pool, waiting: 2000)
+  assert exec.pool_census(pool, waiting: 1000)
+    == Ok(exec.PoolCensus(..empty, borrowed: 2, spawned: 2))
+
+  exec.checkin(pool, first)
+  assert exec.pool_census(pool, waiting: 1000)
+    == Ok(exec.PoolCensus(..empty, available: 1, borrowed: 1, spawned: 2))
+  exec.checkin(pool, second)
+  exec.stop_pool(pool)
+}
+
+/// The custody view is the census taken entry by entry: one view per
+/// helper, oldest spawn first, each carrying the spawn ordinal and the
+/// lending and custody the pool's books give it. A helper that has been lent
+/// and returned keeps its ordinal, and a second spawn gets the next one.
+pub fn pool_custody_names_each_helper_test() {
+  let assert Ok(pool) =
+    exec.start_pool(size: 3, spawn: fn() {
+      Ok(fake_helper.start_helper(fake_helper.EchoArgv))
+    })
+  let assert Ok(empty) = exec.pool_custody(pool, waiting: 1000)
+  assert empty.helpers == []
+  assert empty.census.spawned == 0
+
+  let assert Ok(first) = exec.checkout(pool, waiting: 2000)
+  let assert Ok(second) = exec.checkout(pool, waiting: 2000)
+  exec.checkin(pool, first)
+
+  let assert Ok(custody) = exec.pool_custody(pool, waiting: 1000)
+  assert custody.helpers
+    == [
+      exec.HelperView(
+        pid: exec.pid(first),
+        ordinal: 1,
+        lending: exec.Lendable,
+        custody: exec.Held,
+        features: ["rlimits", "pgroup", "bwrap", "landlock", "seccomp"],
+      ),
+      exec.HelperView(
+        pid: exec.pid(second),
+        ordinal: 2,
+        lending: exec.Lent,
+        custody: exec.Held,
+        features: ["rlimits", "pgroup", "bwrap", "landlock", "seccomp"],
+      ),
+    ]
+  assert custody.census.spawned == 2
+  assert custody.census.retired == 0
+  exec.checkin(pool, second)
+  exec.stop_pool(pool)
+}
+
+/// A stopped pool answers the custody query as it answers the census.
+pub fn pool_custody_of_a_stopped_pool_is_unavailable_test() {
+  let assert Ok(pool) =
+    exec.start_pool(size: 1, spawn: fn() {
+      Ok(fake_helper.start_helper(fake_helper.EchoArgv))
+    })
+  exec.stop_pool(pool)
+  process.sleep(100)
+  assert exec.pool_custody(pool, waiting: 1000) == Error(exec.PoolUnavailable)
+}
+
+/// A pool that has gone answers the census as it answers a checkout, with
+/// `PoolUnavailable`, never a fault in the asker.
+pub fn pool_census_of_a_stopped_pool_is_unavailable_test() {
+  let assert Ok(pool) =
+    exec.start_pool(size: 1, spawn: fn() {
+      Ok(fake_helper.start_helper(fake_helper.EchoArgv))
+    })
+  exec.stop_pool(pool)
+  process.sleep(100)
+  assert exec.pool_census(pool, waiting: 1000) == Error(exec.PoolUnavailable)
 }
 
 /// A relay that crashes mid-run checks its helper in while the execution
@@ -1007,5 +1106,219 @@ pub fn platform_enforcement_keeps_linux_silence_refusal_test() {
   let assert Ok(exec.Failed(exec.DegradedExecution(result))) =
     process.receive(events, 1000)
   assert result.enforcement == ["bwrap"]
+  exec.shutdown(helper)
+}
+
+// --- late `Run` fence and stdin ids, over a transport the test controls ----
+
+// A channel the test can wedge. Writes pass straight through until the test
+// says `Hold`; from then on each write blocks inside the helper actor until
+// `Release`, which is what a wedged helper looks like from outside: alive,
+// mailbox growing, answering nothing. The gate is a process of its own
+// because the write runs inside the helper actor, and an actor cannot
+// receive on a subject the test owns.
+type Gate {
+  Hold
+  Release
+  Pass(reply: process.Subject(Nil))
+}
+
+type GateState {
+  GateOpen
+  GateHeld(waiting: List(process.Subject(Nil)))
+}
+
+fn start_gate() -> process.Subject(Gate) {
+  let handoff = process.new_subject()
+  process.spawn_unlinked(fn() {
+    let inbox = process.new_subject()
+    process.send(handoff, inbox)
+    gate_loop(inbox, GateOpen)
+  })
+  let assert Ok(inbox) = process.receive(handoff, 1000) as "the gate starts"
+  inbox
+}
+
+fn gate_loop(inbox: process.Subject(Gate), state: GateState) -> Nil {
+  case process.receive_forever(inbox), state {
+    Hold, GateOpen -> gate_loop(inbox, GateHeld(waiting: []))
+    Hold, GateHeld(..) -> gate_loop(inbox, state)
+    Release, GateOpen -> gate_loop(inbox, GateOpen)
+    Release, GateHeld(waiting:) -> {
+      list.each(waiting, fn(reply) { process.send(reply, Nil) })
+      gate_loop(inbox, GateOpen)
+    }
+    Pass(reply), GateOpen -> {
+      process.send(reply, Nil)
+      gate_loop(inbox, GateOpen)
+    }
+    Pass(reply), GateHeld(waiting:) ->
+      gate_loop(inbox, GateHeld(waiting: [reply, ..waiting]))
+  }
+}
+
+// A ready helper over a gated channel, plus the frames the broker writes.
+fn gated_helper(
+  gate: process.Subject(Gate),
+) -> #(exec.Helper, process.Subject(BitArray)) {
+  let sent = process.new_subject()
+  let config =
+    exec.default_config(
+      exec.ChannelTransport(
+        send: fn(bytes) {
+          process.send(sent, bytes)
+          process.call(gate, waiting: 5000, sending: Pass)
+        },
+        close: fn() { Nil },
+      ),
+    )
+  let assert Ok(helper) =
+    exec.start(exec.HelperConfig(..config, heartbeat_interval_ms: 0))
+    as "helper starts"
+  let assert Ok(hello) =
+    framing.encode(framing.Frame(
+      id: 1,
+      body: framing.Hello(
+        proto: framing.exec_protocol_version,
+        peer: "exec-helper",
+        features: ["bwrap"],
+      ),
+    ))
+    as "hello encodes"
+  process.send(exec.wire(helper), exec.WireBytes(hello))
+  assert exec.await_ready(helper, waiting: 1000) == Ok(["bwrap"])
+  let assert Ok(_) = process.receive(sent, 1000) as "the broker's hello"
+  #(helper, sent)
+}
+
+// The frame the next write carried. Every write is exactly one frame.
+fn next_frame(sent: process.Subject(BitArray), waiting: Int) -> framing.Frame {
+  let assert Ok(bytes) = process.receive(sent, waiting)
+    as "the broker wrote a frame"
+  let assert framing.Pushed(inbound: [framing.Known(frame:)], fault: None, ..) =
+    framing.push(framing.deframer(), bytes)
+    as "one whole frame"
+  frame
+}
+
+// How many `exec_start` frames were written within `waiting` of the last one.
+fn exec_starts_within(sent: process.Subject(BitArray), waiting: Int) -> Int {
+  case process.receive(sent, waiting) {
+    Error(Nil) -> 0
+    Ok(bytes) -> {
+      let framing.Pushed(inbound:, ..) = framing.push(framing.deframer(), bytes)
+      let starts =
+        list.count(inbound, fn(item) {
+          case item {
+            framing.Known(framing.Frame(body: framing.ExecStart(..), ..)) ->
+              True
+            framing.Known(_) | framing.UnknownInbound(..) -> False
+          }
+        })
+      starts + exec_starts_within(sent, waiting)
+    }
+  }
+}
+
+// `run` uses `try_call`, so a caller whose call times out leaves its `Run`
+// queued. An actor that recovers would dispatch an execution whose events
+// have no one to go to, after the caller was told `HelperUnresponsive`. The
+// fence refuses a `Run` whose events owner is dead. The helper stays usable
+// for a caller that is alive, which is what keeps the test from passing on a
+// helper that has simply stopped dispatching.
+pub fn late_run_is_not_dispatched_after_its_caller_is_gone_test() {
+  let gate = start_gate()
+  let #(helper, sent) = gated_helper(gate)
+
+  // Wedge the actor inside a write, so the next calls cannot be answered.
+  process.send(gate, Hold)
+  assert exec.heartbeat(helper, waiting: 20) == Error(exec.HelperUnresponsive)
+  let handoff = process.new_subject()
+  let doomed =
+    process.spawn_unlinked(fn() {
+      process.send(handoff, process.new_subject())
+      process.sleep_forever()
+    })
+  let assert Ok(doomed_events) = process.receive(handoff, 1000)
+    as "the doomed caller's events subject"
+  assert exec.run(helper, request(exec.BestEffort), doomed_events, waiting: 50)
+    == Error(exec.HelperUnresponsive)
+
+  // The caller dies with its `Run` still queued; then the actor recovers.
+  process.kill(doomed)
+  let assert poll.Answered(Nil) =
+    poll.until(within: 1000, every: 5, attempt: fn() {
+      case process.is_alive(doomed) {
+        True -> poll.Retry
+        False -> poll.Done(Nil)
+      }
+    })
+    as "the caller is gone"
+  process.send(gate, Release)
+  assert exec_starts_within(sent, 300) == 0
+
+  // A caller that is alive is dispatched as ever.
+  let events = process.new_subject()
+  assert exec.run(helper, request(exec.BestEffort), events:, waiting: 1000)
+    == Ok(Nil)
+  let assert framing.Frame(body: framing.ExecStart(..), ..) =
+    next_frame(sent, 1000)
+  exec.shutdown(helper)
+}
+
+// A refused stdin write comes back from the helper as an error carrying the
+// stdin frame's id. If that id were the execution's, `settle` would take it
+// for the execution's own refusal and report a running payload as failed,
+// while the helper went on running it. Each stdin frame therefore gets an id
+// of its own, and the error answering it correlates to nothing.
+pub fn stdin_frames_carry_their_own_id_and_their_errors_settle_nothing_test() {
+  let gate = start_gate()
+  let #(helper, sent) = gated_helper(gate)
+  let events = process.new_subject()
+  assert exec.run(helper, request(exec.BestEffort), events:, waiting: 1000)
+    == Ok(Nil)
+  let assert framing.Frame(id: exec_id, body: framing.ExecStart(..)) =
+    next_frame(sent, 1000)
+  exec.stdin(helper, data: <<"late">>, eof: False)
+  let assert framing.Frame(id: stdin_id, body: framing.ExecStdin(..)) =
+    next_frame(sent, 1000)
+  assert stdin_id != exec_id
+
+  // The helper refuses the write and names the stdin frame in its error.
+  let assert Ok(refusal) =
+    framing.encode(framing.Frame(
+      id: stdin_id,
+      body: framing.ErrorBody(
+        code: "no_exec",
+        message: "jail: stdin already closed",
+      ),
+    ))
+    as "refusal encodes"
+  process.send(exec.wire(helper), exec.WireBytes(refusal))
+  assert process.receive(events, 100) == Error(Nil)
+  let assert exec.StatusBusy(_) = exec.status(helper, waiting: 1000)
+
+  // The execution's own exit is still owed, and still settles it.
+  let assert Ok(exit) =
+    framing.encode(framing.Frame(
+      id: exec_id,
+      body: framing.ExecExit(
+        code: 0,
+        signal: 0,
+        stdout_bytes: 0,
+        stderr_bytes: 0,
+        stdout_truncated: False,
+        stderr_truncated: False,
+        enforcement: [],
+        degraded: False,
+        wall_ms: 1,
+        timed_out: False,
+        cancelled: False,
+      ),
+    ))
+    as "exit encodes"
+  process.send(exec.wire(helper), exec.WireBytes(exit))
+  let assert Ok(exec.Exited(result)) = process.receive(events, 1000)
+  assert result.code == 0
   exec.shutdown(helper)
 }

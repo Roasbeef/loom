@@ -4,7 +4,7 @@
 # what CI runs and what you run locally are the same commands.
 
 PACKAGES := host core storage session machine prompt session_view web_view telemetry runtime provider \
-	broker mcp lsp tools cap ext codemode events client conformance tui lint
+	broker executor mcp lsp tools cap ext codemode events client conformance tui lint
 # Packages that target JavaScript. They are formatted, built and documented
 # with the rest but have no test run (scripts/check.sh says why).
 JS_PACKAGES := web_client
@@ -351,6 +351,17 @@ bench-server: ## Benchmark the server's per-step hot paths (DB=<copy of a sessio
 	@test -n "$(DB)" || { echo "usage: make bench-server DB=<copy of a session .db>"; exit 2; }
 	@cd packages/client && gleam dev -- "$(DB)"
 
+# The exec helper pool against the real `loom-exec` under the real jail: spawn
+# to ready, warm round trip, the first wide batch, cancel to settle, a flood,
+# a leak census and resident memory, one JSON line per probe in
+# packages/broker/build/bench-exec.jsonl (LOOM_BENCH_OUT=path to move it).
+# It takes about half a minute and spawns real jails, so the module does nothing
+# unless LOOM_BENCH_EXEC=1, which this target sets.
+.PHONY: bench-exec
+bench-exec: sandbox ## Benchmark the exec helper pool against the real helper (LOOM_BENCH_OUT=path)
+	@LOOM_BENCH_EXEC=1 LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-600}" \
+		bash scripts/test.sh broker --match broker@bench_exec_test:
+
 .PHONY: dev
 dev: ## Build a scratch daemon and open its session picker (interactive)
 	@scripts/dev.sh
@@ -372,6 +383,20 @@ selftest: sandbox ## Probe this kernel's enforcement layers (ENFORCED/SKIPPED pe
 	@./$(HELPER) --self-test
 
 # ---------------------------------------------------------------- end to end
+
+# The standalone executor boots with no harness: packages/executor depends on
+# broker and core and not on client, and its entrypoint prints the version
+# census as one JSON line, runs `true` jailed through the service, drains and
+# exits 0. The target asserts the exit status and the one census line.
+.PHONY: executor-smoke
+executor-smoke: sandbox ## Boot the standalone executor against the real helper: one census line, a jailed run, a clean drain
+	@out=$$(mktemp) && \
+		( cd packages/executor && LOOM_EXEC_HELPER="$(abspath $(HELPER))" gleam run ) > $$out; \
+		status=$$?; cat $$out; \
+		lines=$$(grep -c '^{"service":' $$out); rm -f $$out; \
+		if [ $$status -ne 0 ]; then echo "executor-smoke: exit $$status" >&2; exit 1; fi; \
+		if [ $$lines -ne 1 ]; then echo "executor-smoke: expected one census line, saw $$lines" >&2; exit 1; fi; \
+		echo "executor-smoke: ok"
 
 .PHONY: e2e
 e2e: sandbox ## Run the jailed end-to-end acceptance against the real helper

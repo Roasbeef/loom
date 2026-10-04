@@ -1866,7 +1866,8 @@ fn missing_layers(failure: exec.ExecFailure) -> String {
     | exec.SendFailed
     | exec.CancelEscalated
     | exec.HeartbeatMissed
-    | exec.HelperUnresponsive -> ""
+    | exec.HelperUnresponsive
+    | exec.ExecutionLost(..) -> ""
   }
 }
 

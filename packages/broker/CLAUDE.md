@@ -4,9 +4,9 @@
 
 The ToolBroker: the single door between the harness and the outside world.
 It composes sandbox policy, refuses or narrows what it cannot enforce,
-reserves pooled budget, mints a capability token, borrows a `loom-exec`
-helper from the pool, dispatches the jailed execution, streams its output,
-and settles. It also owns the broker side of the frozen effect-plane wire
+reserves pooled budget, mints a capability token, hands the cleared call
+to a dispatcher that borrows a `loom-exec` helper from the pool and runs
+the jailed execution, streams its output, and settles. It also owns the broker side of the frozen effect-plane wire
 protocol (spec Part 1.4). WP-G.
 
 ## Key Types
@@ -17,6 +17,121 @@ protocol (spec Part 1.4). WP-G.
 - `broker/broker.{CallSpec, CallHandle, CallEvent, CallOutcome, Refusal}` —
   the request, its handle, the streamed `CallOutput` / `CallSettled`
   events, and `CallExited(result)` versus `CallFailed(failure)`.
+- `broker/dispatch.{Dispatcher, Dispatch, Execution, ExecutionId,
+  StartRefusal, Terminal, Chunk, Eof}` — the seam between the broker and
+  whatever owns a helper while a call runs. The broker decides whether a
+  call may run (policy, budget, token, abort epochs); a `Dispatcher` is a
+  record holding one function, `start`, that carries the cleared call out.
+  `Dispatch` is what the broker hands over: the request, the wall
+  deadline and clock, the caller's pid, a `seq` for the identity, and two
+  closures the broker built — `deliver` for each output chunk and `settle`
+  for the one terminal verdict, called exactly once per started execution.
+  `start` answers with an `Execution` or a `StartRefusal` (`NoHelper(error)`
+  maps to exactly what a failed checkout always did; `NotStarted` is
+  `BrokerUnavailable`). An `Execution` is `{id, guarantor, cancel, stdin,
+  release, abandon}`: closures are the broker's only way to reach the
+  helper, and the broker holds no `Helper`. `guarantor` is the process
+  whose unsettled death means `settle` never runs; the broker monitors it.
+  On `Settle` it demonitors and calls `release` (return what was lent); on
+  an unsettled guarantor death it calls `abandon` (stop the execution and
+  return what was lent). Exactly one of the two runs, because only the
+  `Settle` path demonitors. `ExecutionId` is
+  opaque, `{incarnation, seq}`. `broker.start_dispatching(entropy:, clock:,
+  dispatcher:)` takes any dispatcher; `broker.start(config)` is it over
+  `direct.dispatcher`, so `BrokerConfig` and every caller of `start` are
+  unchanged.
+- `broker/direct.dispatcher(checkout:, checkin:)` — **not a production
+  path**: production has one execution model, the executor service (the
+  session, the extension build plane and `loom ext check` all run it). It
+  stays only as the dispatcher behind `broker.start(BrokerConfig)`, which
+  about forty-three test call sites and the M3 demo use;
+  `lane_equivalence_test` and `real_lane_test` remain the parity evidence.
+  It is the implementation the broker used to carry inline: borrow a helper, spawn a per-call relay that
+  owns the exec-event subject (ready handshake, caller monitor, `Streaming`
+  and `Draining` modes, `relay_grace_ms`, wall deadline on the injected
+  clock), run synchronously inside `start`, return an `Execution` whose
+  closures capture the helper. The relay only settles; the helper goes
+  back through `release` (`checkin`), which the broker calls while handling
+  `Settle`, exactly where it used to check in. `abandon` is `exec.cancel`
+  then `checkin`.
+- `broker/execution.{Core, step, Event, Effect, Mode, Output, Truncation}` —
+  the pure core of one execution's relay, and the only place its decisions
+  live. `step(core, event) -> #(core, effects)` takes one of eight events
+  (`ExecOutput`, `ExecExited`, `ExecFailed`, `CancelRequested`, `CallerDown`,
+  `HelperDown`, `DeadlineReached`, `GraceExpired`) and answers effects
+  (`Deliver`, `SendCancel`, `EnterDraining`, `Settle`). It imports no
+  process library, so `execution_test` runs 600 seeded random sequences
+  against it. `Core.settled` is absorbing: after `Settle` every event
+  answers `[]`, which is what makes at-most-one settlement a property of
+  the function. `CancelRequested` is the broker's cancel, which the service
+  has already forwarded to the helper, so the core records it, sends
+  nothing and does not enter `Draining`. `HelperDown` settles
+  `Failed(ExecutionLost(HelperActorDown))` in either mode. The module doc
+  carries the checked `Mode` transition table.
+- `broker/relay.{start, Config, Link, Permission, Relay}` — the per-execution
+  `weft/state_machine` shell around `execution.step`. State is
+  `execution.Mode` and carries nothing (rule 1 of `docs/weft.md`);
+  `Streaming`'s state timeout is the wall deadline that remains when the
+  relay starts (none for `deadline_ms: 0`) and `Draining`'s is
+  `dispatch.relay_grace_ms`. Its message type is `execution.Event`: the
+  `exec_events` subject (owned by the relay, created in its initialiser, so
+  `start` returns the subject only once the relay listens), the caller's
+  monitor, the helper actor's monitor and the service's control subject all
+  select into it. Effects: `Deliver` calls the dispatch's closure,
+  `SendCancel` calls `Link.cancel` (a bounded ask, `relay.cancel_wait_ms`, that
+  returns once the service has sent the cancel), `EnterDraining` transitions, and
+  `Settle` asks `Link.may_settle(Verdict)` first, the verdict carrying the final
+  `Progress` (mode, output counters, cancel state). A third closure,
+  `Link.progress`, is a cast sent on a change of mode or cancel state, on the
+  first chunk and on every `relay.progress_chunks` (16) chunks after, never per
+  chunk. The relay never imports the service and never casts to a helper: all
+  three ways back are closures the service builds. Unlinked from its starter.
+- `broker/census.{Census, Skew, service_version, local, skew}` — the pure
+  version census: `service` (the `Dispatcher` contract's own version, a
+  constant here), `exec_proto` (`framing.exec_protocol_version`), `policy_v`
+  (`policy.version`) and the hello `features`. `skew(ours, theirs)` names
+  every mismatched version and ignores features, which are capability and
+  are reported, never refused. No process, no FFI.
+- `broker/executor.{start, dispatcher, pid, inventory, snapshot, census, close,
+  ExecutorConfig, Inventory}` — the service lane's one process per session, a
+  `weft/state_machine` with phases `Serving | Closing(closer) |
+  Closed(outcome)` (the pool's shape, with a state timeout in `Closing` for
+  the drain budget). `ExecutorConfig` is closures over the pool
+  (`checkout`, `checkin`, `custody`, `close_helpers`) plus an `incarnation`
+  and a `log` (`telemetry/log.Logger`; `log.discard()` for a service nobody
+  observes).
+  `dispatcher(service)` is the `Dispatcher` `broker.start_dispatching`
+  takes. State is a `Dict(seq, Row)` with a row only while the service holds
+  a helper for it, so it is bounded by the pool. A `Row` is `Live` or
+  `Granted(closure)` and keeps the helper, the relay (pid, events, control
+  subject), the service's monitor on the relay, the broker's `settle` closure,
+  and only what an observer reads of the request (enforcement demand, deadline,
+  session clock, start times, the relay's last `Progress`). Argv, environment,
+  working directory, policy and token are never kept after dispatch.
+  `inventory` answers the rows and the pool census from one instant.
+  `snapshot` answers an `executor_view.Snapshot` (below).
+- `broker/executor_view.{Snapshot, LiveView, Settled, Failure, Metrics,
+  LatencySummary, Outcome, Books, ring_size}` — the operator surface, pure.
+  `Snapshot` is the incarnation and phase, the live rows (at most the pool
+  size), the pool's `PoolCustody`, `Metrics`, `recent` (the last
+  `ring_size` = 64 settlements, newest first) and `last_failure`. `Outcome`
+  is `Completed(code)`, `Failed(kind)` (the constructor name only) or
+  `Lost(cause)`. `Metrics` is counters (starts, settlements by class,
+  refusals split `all_busy | pool_unavailable | spawn_failed | not_started`,
+  output bytes, truncated) and p50/p95/max over the last 64 samples of launch
+  latency (time inside `start`), execution latency (start to settlement) and
+  cancel-to-settle. No type here can hold argv, environment, working
+  directory, policy, token or output bytes; `executor_snapshot_test` plants a
+  marker in a request and searches the rendered snapshot and the log lines.
+  "Queue age" has no referent: nothing queues, so `all_busy` counts the
+  congested refusals instead.
+  `census(service, waiting:)` answers a `broker/census.Census`: when the
+  pool has heard a hello, the features are the newest helper's, read from
+  `pool_custody` (`HelperView.features`); it borrows and spawns nothing.
+  Empty features mean unknown: no helper has said hello yet, the pool did
+  not answer, or the service is closing.
+- `broker/dispatch.relay_grace_ms` — the drain grace both dispatchers use,
+  moved here from `direct` so the lanes cannot disagree on it.
 - `broker/policy.SandboxPolicy` — `SandboxPolicyV1` as a typed value:
   writable/readable/protected roots, `NetworkPolicy`, `Limits`,
   `env_allow`, `Scratch`, and `mounts`. `compose` implements session base ⊕
@@ -63,12 +178,37 @@ protocol (spec Part 1.4). WP-G.
   `ExecResult.cancelled` says the helper truncated the run;
   `ExecResult.enforcement` is the ground truth `required_layers` and
   `unapplied_layers` check the policy's demands against.
+- `broker/exec.ExecFailure.ExecutionLost(cause: LossCause)` with
+  `LossCause = HelperActorDown | RelayDown | ExecutorClosing` — the one
+  failure that says the execution **may have started** and its outcome is
+  unknown. It must never be read as "nothing ran" and must never be
+  replayed automatically; `broker.denial_for_failure` answers `None` for it
+  (an approval would invite the replay) and `tools/tool.exec_failure_text`
+  says plainly that the command may have run.
+- `broker/exec.{pool_census, PoolCensus}` — the pool actor's own count of
+  its inventory by custody (`available`, `borrowed`, `draining`, `retiring`,
+  `unconfirmed`, beside the configured `size`, and the lifetime churn
+  counters `spawned` and `retired`), answered in every `PoolPhase` and never
+  postponed. A gone pool is `PoolUnavailable`.
+- `broker/exec.{pool_custody, PoolCustody, HelperView, Lending, Custody}` —
+  the census and one view per inventoried helper from the same instant: pid,
+  spawn `ordinal` (introspection, not a fence), the hello `features` the
+  pool received at the handshake (empty = unknown), `Lendable | Lent |
+  Withdrawn`, and custody `Held | Retiring | Retired | CleanupUnconfirmed(
+  reason) | ProofLost`, derived from the pool's books without asking a
+  helper. `NoNativeResource` is not a pool-level state (the pool begins a
+  helper as it inventories it) and the native exit status behind `Retired`
+  is not kept; both are named in the type's doc.
 - `broker/exec.{close, close_pool, RetirementFailure}` separates shutdown
-  requests from retirement proof. `Ok(Nil)` requires selected native exit
-  status 0 followed by the original normal BEAM monitor event. A timeout,
-  lost port, nonzero native status, or dead owner remains unconfirmed. A
-  parked owner can also confirm that it never acquired a native transport;
-  that result still requires normal BEAM retirement.
+  requests from retirement proof. `Ok(Nil)` requires a selected native exit
+  status followed by the original normal BEAM monitor event: status 0 after
+  a shutdown, or any status after a kill or an unasked death that left no
+  live jail (`Exposure`), or one that did on a helper whose hello advertised
+  `bwrap` (see "A kill keeps its witness" below). A timeout, lost port,
+  nonzero status after a shutdown, live-jail death without bwrap, or dead
+  owner remains unconfirmed. A parked owner can also confirm that
+  it never acquired a native transport; that result still requires normal
+  BEAM retirement.
 - `broker/exec.{prepare, prepare_helper, begin}` stages acquisition. The
   prepared helper owns no transport or policy file. A pool records its
   handle and original monitor before `begin`, then waits the configured
@@ -112,7 +252,9 @@ protocol (spec Part 1.4). WP-G.
 - **Depends on**: `core` (msgpack for the wire, ids for `OpId`,
   corruption), `gleam_erlang` + `gleam_otp` (the broker and pool are
   actors; ports carry the helper channel), `weft` (the helper is a
-  `weft/state_machine`, for the two state timeouts below).
+  `weft/state_machine`, for the two state timeouts below), `telemetry` (a
+  leaf over `core`: the executor service writes its settlement and close
+  lines through an injected `Logger`, and nothing else in the package logs).
 - **Depended on by**: `tools` (every jailed tool clears through
   `clear_call`), `conformance` (wiring and the jailed e2e).
 - **FFI**: `broker/internal/ffi_crypto` — `crypto:strong_rand_bytes` and
@@ -134,11 +276,32 @@ protocol (spec Part 1.4). WP-G.
 
 - **Actor messages**
   - `broker.Msg` — `ClearCall(spec, events, reply)`,
-    `SendStdin(handle, data, eof)`, `CancelCall(handle)`, `AbortOp(op_id)`,
-    `AbortStep(op_id, step_id)`, `Settle(call_id)`, `RelayDown(down)`,
-    `QueryRelay(handle, reply)`,
+    `SendStdin(handle, data, eof: dispatch.Eof)`, `CancelCall(handle)`,
+    `AbortOp(op_id)`, `AbortStep(op_id, step_id)`, `Settle(call_id)`,
+    `GuarantorDown(down)`, `QueryRelay(handle, reply)` (answers the
+    execution's guarantor, which for `direct` is the relay),
     `QueryEpochs(reply)`, `StopBroker`. The last two are `@internal`
     observability, reached only by `relay_pid` and `abort_epoch_count`.
+    `Settle` is sent by a call's `settle` closure, from the dispatcher's
+    settling process, immediately before the caller's `CallSettled`; the
+    broker handles it by calling the execution's `release`.
+  - `executor.Msg` — `Start(request, reply)` (a synchronous call from the
+    dispatcher's `start`, budget 22 000 ms = checkout's 15 000, the relay's
+    1 000 to start, run's 5 000 and 1 000 of slack, as `start_budget_ms`
+    sums them), `Cancel(id)`, `CancelAsk(id, reply)` (the relay's own cancel,
+    answered after `exec.cancel` was sent), `Stdin(id, data, eof)`,
+    `MaySettle(id, verdict, reply)`, `Progress(id, progress)` (a relay's cast;
+    never answered), `Release(id)`, `Abandon(id)`, `RelayDown(down)`,
+    `Report(reply)`, `Observe(reply)`, `QueryCensus(reply)`, `Close(draining, helpers, reply)`,
+    `DrainDeadline`. The `Execution` closures the
+    broker holds are casts of `Cancel`, `Stdin`, `Release` and `Abandon`
+    naming the execution by `ExecutionId`. `MaySettle` is the relay's
+    bounded call (`relay.settle_wait_ms`). Every phase and message pair is
+    written; the messages that mean the same in every phase bind the phase
+    to a name, so a new message is still a compile error.
+  - `relay` messages are `execution.Event`: the helper's `exec.ExecEvent`
+    mapped by `from_exec`, `CallerDown`, `HelperDown`, `CancelRequested`
+    (from the service) and the two state timeouts.
   - `exec.Msg` (per helper) — `AwaitReady(reply)`, `QueryStatus(reply)`,
     `Run(request, events, reply)`, `Stdin(data, eof)`, `CancelExec`,
     `CancelDeadline`, `HandshakeDeadline`, `HeartbeatTick`,
@@ -306,8 +469,9 @@ protocol (spec Part 1.4). WP-G.
   clearance within the caller's own `waiting` budget instead of handing
   it back, so a tool batch wider than the pool queues rather than
   failing. The wait cannot move inside the broker: the broker calls its
-  `checkout` seam synchronously inside its own message handler and only
-  reaches `checkin` from `Settle` / `RelayDown`, so a broker (or a
+  `checkout` seam synchronously inside its own message handler (through the
+  dispatcher's `start`) and a helper only returns to the pool when the
+  broker releases a settled execution or abandons an unsettled one, so a broker (or a
   queueing pool it blocks on) would be waiting for a resource that only
   its own message loop can release. Nothing is held across the wait —
   the checkout-failure path releases the budget slot and revokes the
@@ -317,6 +481,165 @@ protocol (spec Part 1.4). WP-G.
   can still return to lending, so zero means a pool that lends nothing or
   one whose every slot is held by an unconfirmed retirement, and neither
   has anything to check back in.
+- **Service lane: the service is the helper's only sender.** Every `Run`,
+  `Stdin` and `CancelExec` an execution causes is sent by `broker/executor`.
+  The relay asks for a cancel (`Link.cancel` is a bounded call of
+  `CancelAsk(id)`, answered after the service sent the helper its cancel); it
+  never casts to the helper. Erlang orders one sender's messages to one
+  receiver, so a cancel sent for an execution reaches the helper before any
+  `Run` the service sends for the next execution on it, and `exec.run` is
+  sent before `start` replies so stdin (sent after the reply) follows its
+  `Run`. The other half of the fence is the row: a message for an execution
+  whose row is gone or `Granted` is dropped. There is no generation counter
+  and none is needed while those two hold. Honest limit: no test fails if
+  the relay casts to the helper directly, because the absorbing core never
+  cancels after settling, so the ordering argument is defence in depth that
+  is argued, not independently exercised.
+- **Service lane: settled exactly once through `MaySettle`.** The relay may
+  report only after the service answers `Granted`, which it does once, for a
+  `Live` row, and which turns the row `Granted`; any other ask is
+  `AlreadySettled` and the relay stays silent. The service settles a row
+  itself when it is `Live` and the relay died (its own monitor) or the
+  service is closing (`ExecutorClosing`), and on the broker's `Abandon`
+  whatever the row's status (`RelayDown`; whichever of monitor and
+  `Abandon` arrives first wins, the other finds no row). The status does
+  not decide the `Abandon` case because of send order: `broker.settle_to`
+  sends the broker `Settle` before anything else and a process's messages
+  reach the broker before its own death notice, so a relay that ran
+  `settle` at all is seen as settled and never abandoned; `Abandon` proves
+  the relay sent nothing and the caller has heard nothing. The service's own
+  monitor firing on a `Granted` row has no such proof (the relay may have
+  reported), so it neither settles nor cancels and waits for the broker's
+  `Release` (it saw the settlement) or `Abandon` (it did not).
+  A service that is gone or silent cannot forbid a report, so the relay
+  reports anyway (`ServiceSilent`); a dead service settles nothing, and a
+  live one answers late into a row it has by then either granted or
+  removed. The caller therefore always hears a settlement in this lane,
+  including when the relay dies, which the direct lane never delivered.
+  The helper is checked in exactly where the direct lane checked it in: by
+  `Release`, which the broker casts while processing the relay's `Settle`.
+- **Service lane: the relay's cancel starts its grace when the cancel was
+  sent (issue #696, F4).** A relay cancels for its own reasons (caller gone,
+  wall deadline) and its `Draining` grace is `dispatch.relay_grace_ms`. A
+  cast would start that clock while the cancel sat unread behind a service
+  blocked in a `start` (a checkout waiting on the pool), so the relay could
+  report `CancelEscalated` for a helper never told. `Link.cancel` is
+  therefore `call.try_call(CancelAsk, relay.cancel_wait_ms)`: the service
+  replies after `exec.cancel`, and the relay enters `Draining` only after
+  the reply. On no reply (service wedged or dead) it drains anyway, because
+  the grace is then the only bound on the relay, and a service that wakes
+  later still forwards the cancel in its mailbox. No call cycle: the service
+  never waits on a relay. Pinned by `executor_test`'s
+  `a_relays_own_cancel_starts_its_grace_when_the_cancel_is_sent`; reverting
+  the closure to a cast makes it settle `CancelEscalated`.
+- **Service lane: closing is a transition.** `executor.close(draining:,
+  helpers:)` refuses new starts with `NoHelper(PoolUnavailable)`
+  (deliberately not `AllBusy`, so callers stop polling), cancels every live
+  row, waits `draining` (`executor.drain_ms`, 2 000) for live rows to be
+  granted, settles the rest `ExecutionLost(ExecutorClosing)` (relay killed,
+  helper checked in busy so the pool retires it), then returns
+  `close_helpers(helpers)`. The pool keeps its whole budget
+  (`executor.helpers_ms`, 5 000, what the direct lane gave `close_pool`)
+  however long the drain took (F5); an earlier single `waiting` split in
+  half left the pool 2.5-5 s and made `RetirementPending` likelier at
+  shutdown than in the direct lane. The call blocks at most
+  `draining + helpers + 1 000` (8 s with the constants), the figure a
+  teardown step that funds it should assume. `instance_owner`'s cleanup
+  steps have no overall deadline (its `close(within_ms)` bounds only the
+  waiting caller and answers `StillClosing`), so 8 s fits; serve's custody
+  hook and `close_instance` both pass the constants. `Ok` ends
+  the service; an `Error` keeps it alive in `Closed(outcome)` answering the
+  same verdict, because custody that could not be shown retired is not
+  dropped by exiting. A helper's `Release` never comes once the broker has
+  stopped, which custody does first, so `Granted` rows do not delay a close.
+  Close is not a double-close hazard in the session wiring (F6): the owned
+  path closes only through the custody `Helpers` step, the ownerless path
+  only through `close_instance`, never both. A second `close` answers the
+  stored verdict while the service is alive (`Closed(Error)`, or postponed
+  during `Closing`). The stored verdict is frozen: `close` never re-asks the
+  pool, so a retirement that finished after an `Error` cannot improve it, and
+  a caller retrying custody goes to `exec.close_pool` directly. After a clean close the service is gone
+  and it answers `RetirementOwnerGone`, as `close_pool` does after a clean `close_pool`.
+  Worst-case blocking of `close_instance`: service lane 8 s (`close` above);
+  direct lane none (`stop_pool` is a cast). Both pinned in `executor_test`.
+- **Service lane: the failure matrix is pinned, case by case.**
+  `test/broker/failure_matrix_test.gleam` runs each fault through a real
+  broker over fake helpers and asserts one settlement (or one refusal), the
+  right outcome, a balanced pool census and an empty inventory; lanes that
+  agree run both. Where they differ the difference is the test: a helper
+  actor killed mid-run settles `ExecutionLost(HelperActorDown)` at once in
+  the service lane (pool slot left `unconfirmed`, since a killed actor cannot
+  attest to its jail) and never in the direct lane without a deadline, and
+  with one only after the relay's grace as `CancelEscalated`. A dead caller
+  hears nothing, so those cases assert the books balance and the next call
+  runs. `close` during output delivers the real exit when the helper honours
+  cancel and `ExecutionLost(ExecutorClosing)` when it does not, never both,
+  and a row already `Granted` is never turned into a loss by a later close.
+  **A service killed mid-run** (unlinked first, as custody does): a broker
+  cancel is a cast to a dead process and is lost; the wall deadline's
+  relay cancel cannot reach the helper, so the relay reports
+  `CancelEscalated` after its grace and nobody reports `Completed`; the
+  helper stays borrowed in the pool and is never lent again; new calls are
+  `BrokerUnavailable`; `executor.close` answers `RetirementOwnerGone` and
+  `exec.close_pool` answers for itself. `test/broker/leak_census_test.gleam`
+  runs a hundred mixed endings (success, cancel, caller death, helper crash,
+  escalation) and checks pool census, inventory, relay liveness, the VM
+  process count and one settlement per hearing caller.
+- **Service lane: the snapshot is bounded, true and carries no request.**
+  (Issue #696, S3.) Live rows are at most the pool size; the `recent` ring
+  and each latency series are trimmed to `executor_view.ring_size` (64) on
+  every push, so nothing grows with the session. A row's mode, cancel state
+  and output counters are the relay's last cast `Progress`, thinned to the
+  first chunk and every 16th, with exact totals arriving in the verdict the
+  relay asks to report; the service never waits on a relay to answer a
+  snapshot (a relay can be blocked asking the service). A settlement is
+  recorded once, where a row's life ends: at `Release` for a granted row, at
+  `lose_row` for a loss (including an abandoned granted row, which the caller
+  hears as lost), and at close for a granted row that will never be released.
+  A `Live` row released (the silent-service case) is not recorded: the
+  service never learned its verdict. Each recording writes one
+  `executor.settled` line (Info for a completion, Warning otherwise, fields:
+  `execution` and `incarnation` as `Ident`, outcome class and detail, cancel
+  cause, counts of duration, bytes and chunks) and the close writes
+  `executor.closed`. Latencies are measured on weft's monotonic clock, never
+  the session clock, which tests fix. **Not built:** cancellation to
+  *native exit* of a helper. The pool records only the retirement verdict,
+  and carrying a duration through `AwaitRetirement`, `HelperRetired` and the
+  pool entry is more than a small change; cancel-to-settle covers the
+  execution's cancel and `PoolCensus.retired` and `unconfirmed` cover helper
+  churn. There is no operator verb: every daemon command rides the
+  authenticated control protocol, so `executor.snapshot` plus the log lines
+  are the surface, and `docs/architecture/executor.md` says what
+  protocol-change/062 would have to carry. Pinned in `executor_snapshot_test`
+  (rows, thinning, the 64 bound, last failure, refusal counts, and a marker
+  planted in argv, environment, working directory and token that must not
+  appear in any snapshot or line).
+- **Service lane: a slow consumer is bounded by the helper, not the BEAM.**
+  The relay's delivery is a send; nothing waits on the caller's mailbox and
+  there is no BEAM-side buffer or backpressure (a ruled cut). What bounds
+  the backlog is the helper's per-stream `output_bytes` cap. The real-helper
+  test `a_caller_that_stops_reading_cannot_slow_a_cancel` runs `yes` at a
+  1 MiB cap with a caller that reads nothing for 2 s: the mailbox received
+  exactly 1 MiB in 34 events and the cancel settled in 3 ms. Production
+  caps: `policy.workspace_default` sets 4 MiB (`policy.gleam`), hooks and
+  goal checks 1 MiB, the LSP manager 4 MiB; **a session lease whose output
+  is a wire (`policy.session_lease(.., OutputIsWire)`, used by the language
+  server jail) sets `output_bytes: 0`, which the helper reads as no cap**, so
+  for those long-lived streams the mailbox is bounded only by the consumer.
+  `twenty_sequential_runs_on_one_real_helper_see_no_busy_window` pins that
+  back-to-back runs on a pool of one never meet `HelperBusy` in this lane.
+- **Service lane: an orphaned `start` costs a slot and cannot wedge.** The
+  broker spends a call id on every start attempt, answered `Ok` or refused
+  (`Dispatch.seq` promises a number is never offered twice), so a service
+  that overruns its start budget (`checkout 15 s + relay init 1 s + run 5 s
+  + 1 s slack`, summed from named constants in `start_budget_ms`) and
+  goes on to hold a row the broker never received leaves one orphan and
+  nothing else: the next call has a new number, the orphan's late
+  settlement names a call the broker no longer has and is ignored, and its
+  helper stays held until the service closes or S2's late-`Run` fence stops
+  such a run being dispatched. The service still refuses a `start` whose
+  sequence number is in its table. Through the broker that is unreachable;
+  it guards other callers of the dispatcher against overwriting a live row.
 - **Every waiter leaves within its own budget *and with a verdict*.**
   The second half is not free. The loop reserves `min_retry_window_ms`
   of the caller's budget for its last attempt rather than issuing
@@ -332,8 +655,68 @@ protocol (spec Part 1.4). WP-G.
 - **An unresponsive helper retains capacity until retirement is proved.**
   The readiness probe returns `StatusUnresponsive` without faulting the
   pool. The pool stops lending that helper and requests shutdown once.
-  It releases the slot only after native status 0 and normal BEAM exit;
-  an unconfirmed helper stays in the inventory and is never probed again.
+  It releases the slot only after a native exit that counts (status 0
+  after a shutdown, or the exit of a killed or dead helper that left no
+  live jail, or whose live jail was bwrap's) and normal BEAM exit; an unconfirmed helper stays in the inventory and is never probed
+  again.
+- **A kill keeps its witness.** Every failure that finds a helper's port
+  open (cancel escalation, handshake deadline, heartbeat miss, framing
+  fault, protocol violation or version mismatch, an unencodable frame)
+  sends SIGKILL to the port's OS pid and **retains the port**, leaving the
+  machine `Dead(failure, PendingExit(AfterKill(exposure)))`. Erlang delivers
+  `{exit_status, 137}` to the owner of a port whose child was signalled,
+  and only while the port is open, so closing the port first (which this
+  once did) threw the proof away and cost the pool a slot for good. The
+  port's pid is the helper itself because the fd-3 shell `exec`s it. The
+  exit then becomes `NativeExit(status, awaited)`, and `native_verdict`
+  alone decides what it proves. After a shutdown only status 0 does. After
+  a kill, or an exit nobody asked for (`Unprompted`), it depends on the
+  `Exposure` of the phase the helper died in: `NoJail` (`AwaitingHello`:
+  the helper writes hello before reading, and no `exec_start` precedes
+  `Idle`) and `SettledJail` (`Idle`: `Settle` killed the last jail before
+  the `exec_exit` that made the helper idle) retire on **every platform**;
+  `LiveJail` (`Running`, `Cancelling`) retires only when the accepted
+  hello advertised `bwrap`, because `--die-with-parent` and `--unshare-pid`
+  make the helper's death the jail's. A live jail without bwrap (degraded
+  Linux, where a payload can `setsid` away; Darwin, whose descendant
+  tracker lives inside the killed helper) stays
+  `Unconfirmed(RetirementExit(status))`. That last rule is weaker than the
+  status-0 witness (the payload may run a couple of wakeups past the
+  verdict; the per-exec cgroup directory is not removed); see the addendum
+  to protocol-change/014. A write that fails is the one case where the port
+  is already closed, so `mark_gone` records `LostExit`; a fake
+  `ChannelTransport` cannot fail a write, so
+  `real_helper_failed_write_loses_the_proof_test` closes a real helper's
+  port from outside. The pool's existing path frees the slot with no
+  change: `retire_entry` parks the dead helper's `AwaitRetirement`, the
+  status replays it, `record_retirement` marks `RetiringActor`, and
+  `ForgetRetired` stops the actor on the same `Ok` verdict. Nothing waits
+  for ever: callers' own deadlines bound `close` and `close_pool`, which
+  answer `RetirementPending` with custody intact. The settlement of the
+  execution itself is unchanged (`CancelEscalated` and so on) and the dead
+  helper keeps the failure it died with after its exit arrives.
+  `hello_features` lives in `Data` for the verdict's sake; the phases that
+  carry features are gone by then.
+- **A `Run` the caller gave up on is fenced, not withdrawn.** `run` uses
+  `try_call`, so a timed-out caller leaves its `Run` queued, and
+  `HelperUnresponsive` therefore does **not** mean "nothing was
+  dispatched". `handle_run` refuses with `NotReady` any `Run` whose
+  `events` subject has no living owner (`subject_owner` and `is_alive`, no
+  clock), which is the case that matters: the broker's relay dies with its
+  call. A caller that is alive but gave up is not caught and must treat the
+  outcome as unknown.
+- **`exec_stdin` frames carry ids of their own, never the execution's.**
+  The helper answers a refused stdin write (`stdin already closed`, or the
+  payload's end of the pipe gone) with `error{no_exec}` under the *stdin
+  frame's* id, and uses a stdin id for nothing else. `settle` treats an
+  error under the execution's own id as that execution's refusal, so a
+  stdin frame sent with `exec.id` made a refused write settle a running
+  payload `Failed(RefusedByHelper)` and send the machine `Idle` while the
+  helper still ran it: the real `exec_exit` was dropped and the next `Run`
+  got a Go `busy`. A fresh id from `fresh_id` makes the error correlate to
+  nothing. `cancel` cannot hit the same trap: the helper never answers a
+  `cancel` with an error. This changes an id value, not the frame's shape,
+  kind, keys or version.
 - **Pool close includes borrowed helpers.** `close_pool` stops admissions
   before requesting each helper's shutdown. Native proof is recorded
   before `ForgetRetired` asks the helper actor to stop. The original
@@ -344,8 +727,9 @@ protocol (spec Part 1.4). WP-G.
   This proof covers the helper's existing jail cleanup, not arbitrary
   detached descendants on Darwin or remote effects.
 - **No exchange on the clearance path may fault where a refusal is
-  owed.** The broker calls its checkout seam and dispatches to the
-  borrowed helper synchronously inside its own message handler, so a
+  owed.** The broker calls the dispatcher's `start`, which borrows a
+  helper and dispatches to it synchronously inside the broker's own
+  message handler, so a
   pool that stopped, or a helper that died in the microseconds between
   the borrow and the dispatch, was the broker's death rather than one
   call's refusal — and a broker's death is every in-flight strand's
@@ -370,8 +754,8 @@ protocol (spec Part 1.4). WP-G.
   below is the anti-amplification cap. They answer different questions
   and neither substitutes for the other.
 - **Reservations cannot leak.** They are released on settlement, freed
-  wholesale on `abort`, and reclaimed when a call's relay process dies
-  unsettled (every relay is monitored). Releases are generation-checked, so
+  wholesale on `abort`, and reclaimed when a call's guarantor process
+  dies unsettled (every guarantor is monitored; for `direct` it is the relay). Releases are generation-checked, so
   a stale settlement from before an abort never frees a later ledger's
   budget.
 - **Tokens are single-use and unforgeable.** 32 bytes of injected entropy,
@@ -596,6 +980,18 @@ protocol (spec Part 1.4). WP-G.
   exists to act on, and passing the flag there would replace a decision
   with a silence. A build with no jail at all is a different thing, and
   `unenforced_helper_args` is the only place that difference is decided.
+
+**The enforcement tag vocabulary is pinned by a test, not generated.**
+`test/broker/enforcement_tags_test` reads the non-test Go in
+`../sandbox/internal/jail` and asserts that every tag `broker/exec` names
+occurs there as a quoted literal. The set is collected by calling
+`required_layers_for` over both platforms with a maximal policy, plus a
+short hand-listed remainder (`degraded`, `darwin-process-lifecycle`), so a
+tag the matrix starts requiring is pinned without being added anywhere.
+It also pins `exec.skip_prefix` (`"skip:"`, the one constant every `skip:`
+check in `exec` uses) and the `landlock:abi=` form. It proves a spelling
+exists in Go, not per-platform emission; the fixture and real-helper tests
+prove that. ADR-018 records why this beat a shared generated file.
 
 ## Deep Docs
 

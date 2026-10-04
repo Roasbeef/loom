@@ -13,6 +13,35 @@
 //// braces). The two rungs are addressed differently under a jail, and
 //// what the exit reports differs with them: see `cancel` below.
 ////
+//// ## A kill keeps its witness
+////
+//// Every failure that finds the port open ends in a SIGKILL of the helper
+//// with the port *retained*, and the machine waits in `Dead` for the exit
+//// status the kill produces (`PendingExit(AfterKill(..))`). Closing the
+//// port first would discard that status, leave the proof lost, and cost the
+//// pool a slot for good, although the jail died with its helper all the
+//// same. Whether a status after a kill is proof is `native_verdict`'s
+//// decision, and it depends on how much jail the helper had when it died
+//// (`Exposure`): none, because it was still in its handshake; none left,
+//// because it was idle and its last jail was already killed; or a live one.
+//// Only a live jail needs bwrap's `--die-with-parent` and PID namespace to
+//// make the helper's death the jail's, so only there do degraded Linux and
+//// Darwin stay unconfirmed. A helper that dies unasked is judged the same
+//// way, so the two cases cannot disagree.
+////
+//// A failed *write* is the one case that finds the port already closed, so
+//// there is nothing to wait for and the proof is lost (`mark_gone`).
+////
+//// ## A `Run` outlives the caller that timed out
+////
+//// `run` is a `try_call`, so a caller that gives up leaves its `Run` queued
+//// in the actor's mailbox, and a recovered actor reads it. `handle_run`
+//// refuses it, with `NotReady`, when `events_owner_alive` says nobody is
+//// left to receive the events. That fences the broker's relay, which dies
+//// with its call; it is a liveness check and not a deadline, so a caller
+//// that is alive but stopped waiting must treat `HelperUnresponsive` as
+//// "outcome unknown", never as "nothing started".
+////
 //// ## The helper's lifecycle is a `weft/state_machine`
 ////
 //// `Prepared → AwaitingHello → Idle → Running → Cancelling → Idle`, with
@@ -91,7 +120,10 @@
 ////    writes the exec_start frame.
 //// 6. `handle_exec_exit` checks the enforcement report, and `settle` returns
 ////    the machine to `Idle`; `mark_dead` and `die` are where every failure
-////    lands, notifying waiters through `notify_death`.
+////    lands, notifying waiters through `notify_death` and killing the helper
+////    with `kill_transport`.
+//// 7. `native_exit` receives the status the port reports, and `native_verdict`
+////    decides whether it retires the helper.
 ////
 //// ## Transitions
 ////
@@ -101,10 +133,10 @@
 //// | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 //// | `Prepared` | `AwaitingHello`, or `Dead` if the transport will not open | ignored | refused, `NotReady` | ignored | ignored | ignored | `Dead`, no native resource | ignored |
 //// | `AwaitingHello` | ignored | `Idle`; `Dead` on a protocol version mismatch | refused, `NotReady` | ignored | ignored | `HandshakeDeadline` gives `Dead` | postponed until the handshake settles | `Dead` |
-//// | `Idle` | ignored | `Dead`, protocol violation | `Running`; refused if the helper is degraded | ignored | ignored | stale, ignored | `Dead` | `Dead`; a missed heartbeat also gives `Dead` |
+//// | `Idle` | ignored | `Dead`, protocol violation | `Running`; refused if the helper is degraded or the caller's events owner is gone | ignored | ignored | stale, ignored | `Dead` | `Dead`; a missed heartbeat also gives `Dead` |
 //// | `Running` | ignored | `Dead`, protocol violation | refused, `HelperBusy` | `Cancelling` after the TERM write, `Dead` if the write fails | the execution's own id gives `Idle`; other ids dropped | stale, ignored | `Dead`, in-flight caller told | `Dead`, in-flight caller told |
-//// | `Cancelling` | ignored | `Dead`, protocol violation | refused, `HelperBusy` | ignored, the first deadline keeps running | the execution's own id gives `Idle` and disarms the deadline | `CancelDeadline` kills the transport, `Dead` | `Dead`, in-flight caller told | `Dead`, in-flight caller told |
-//// | `Dead` | ignored | dropped | refused with the stored failure | ignored | dropped | stale, ignored | ignored | ignored; the retirement proof is kept |
+//// | `Cancelling` | ignored | `Dead`, protocol violation | refused, `HelperBusy` | ignored, the first deadline keeps running | the execution's own id gives `Idle` and disarms the deadline | `CancelDeadline` kills the helper and keeps its port, `Dead` | `Dead`, in-flight caller told | `Dead`, in-flight caller told |
+//// | `Dead` | ignored | dropped | refused with the stored failure | ignored | dropped | stale, ignored; `KillWitnessDeadline` on a killed helper whose status never came closes the port and gives `LostExit` | ignored | the exit status of a retained port is the retirement proof; after a closed port it is ignored |
 
 import broker/framing.{type Fault, type Frame, type OutputStream}
 import broker/internal/call
@@ -292,9 +324,49 @@ pub type ExecFailure {
   /// The helper *actor* did not answer within the caller's window, or
   /// was not alive to be asked. Distinct from every failure above,
   /// which are things the actor told us: this is the actor itself out
-  /// of reach, so nothing is known about the helper process behind it
-  /// and no execution was dispatched.
+  /// of reach, so nothing is known about the helper process behind it.
+  ///
+  /// It does **not** say that no execution was dispatched. A `run` that
+  /// timed out leaves its request queued in the actor's mailbox, and an
+  /// actor that recovers will read it. What stops that late dispatch is
+  /// the fence in `handle_run`: a request whose events subject has no
+  /// living owner is refused. So the honest reading is that the execution
+  /// *may* start after the caller was told it failed, if the caller is
+  /// still alive to be sent its events, and the caller must treat the
+  /// outcome as unknown rather than as "never ran".
   HelperUnresponsive
+
+  /// The execution may have started and its outcome is unknown: the
+  /// machinery that would have reported it was lost, so no exit status,
+  /// no output total and no enforcement report exist to settle with.
+  ///
+  /// This is the one failure that says "something may have run". It must
+  /// never be read as "nothing ran" and it must never be replayed
+  /// automatically, because a replay of an effect that did happen twice
+  /// is worse than an error the caller can see. `cause` names which piece
+  /// of machinery was lost, for the human reading the verdict.
+  ExecutionLost(cause: LossCause)
+}
+
+/// Which piece of machinery an `ExecutionLost` execution lost. The three
+/// are different facts about the world and a reader debugging a stuck
+/// session needs to tell them apart, although none of them changes what
+/// the caller may do next.
+pub type LossCause {
+  /// The helper's BEAM actor died while the execution was in flight. The
+  /// jail itself does not outlive it: the port closes with the dead owner,
+  /// the helper reads end of file, and it cancels and joins its jail. What
+  /// is lost is the report, not the cleanup.
+  HelperActorDown
+
+  /// The process that relayed the execution's events to the caller died
+  /// before it could report a terminal event, so the executor service
+  /// settled the caller on its behalf and cancelled the helper.
+  RelayDown
+
+  /// The executor service closed with the execution still live and settled
+  /// it rather than leave its caller waiting for ever.
+  ExecutorClosing
 }
 
 /// A helper's observable lifecycle position.
@@ -368,6 +440,11 @@ pub type HelperConfig {
     /// payload with `SIG_IGN` on TERM outlives it and is ended by the
     /// KILL rung. See `cancel` for who each rung is addressed to.
     cancel_grace_ms: Int,
+    /// How long a deliberately killed helper may take to report the exit
+    /// status its kill produced before the broker stops waiting and
+    /// records the proof as lost. See `kill_witness_ms` for why the
+    /// default is generous and why expiry can only lose a proof.
+    kill_witness_ms: Int,
     /// Idle liveness probe interval; `0` disables.
     heartbeat_interval_ms: Int,
   )
@@ -420,6 +497,12 @@ pub opaque type Msg {
   /// so reaching `Idle` or `Dead` cancels it.
   HandshakeDeadline
 
+  /// The killed helper's exit status did not arrive within
+  /// `kill_witness_ms`. A state timeout on `Dead(PendingExit(AfterKill(..)))`,
+  /// so the status arriving, which moves the machine to `NativeExit`,
+  /// cancels it.
+  KillWitnessDeadline
+
   /// The idle liveness probe came round. Carries no execution id and no
   /// generation stamp: it is a periodic timeout armed under one name, so
   /// weft's timer book drops a tick that raced its own cancellation and
@@ -459,22 +542,71 @@ type Retirement {
   /// `begin` ends here.
   NoNativeResource
 
-  /// A shutdown was requested and the port is deliberately still open.
-  /// This is the state a caller's timeout answers `RetirementPending`
-  /// from, and the only one a later exit event can still improve.
-  PendingExit
+  /// The helper has been told to go, by a shutdown frame or by SIGKILL, and
+  /// the port is deliberately still open. This is the state a caller's
+  /// timeout answers `RetirementPending` from, and the only one a later
+  /// exit event can still improve. `awaiting` is why the exit is awaited,
+  /// which is what decides what the status will prove.
+  PendingExit(awaiting: Awaiting)
 
   /// The port reported the child's exit status while it was retained.
-  /// Status 0 is the joined-cancellation witness the shutdown frame asks
-  /// for; any other status proves the process is gone but attests
-  /// nothing about the jail's descendants.
-  NativeExit(status: Int)
+  /// `awaited` is carried over from the `PendingExit` it answers, so the
+  /// verdict can tell a helper that retired itself from one that was
+  /// killed; an exit nobody asked for is recorded as `Unprompted`.
+  /// `native_verdict` is where the status becomes a verdict, and why.
+  NativeExit(status: Int, awaited: Awaiting)
 
-  /// The channel was discarded — killed, faulted, or the transport
-  /// closed — before any exit status could be selected. The OS process
-  /// may still be running, and no later event can repair this: proof
-  /// lost is permanent, which is why it is a state and not an absence.
+  /// The channel was discarded before any exit status could be selected:
+  /// the port was closed, or its pid could not be signalled, or a write
+  /// failed on a port that had already gone. The OS process may still be
+  /// running, and no later event can repair this: proof lost is
+  /// permanent, which is why it is a state and not an absence.
   LostExit
+}
+
+// Why a helper's native exit is awaited, or arrived. The same status means
+// different things after each, which is why the reason is kept next to the
+// wait and not rediscovered when the status arrives.
+type Awaiting {
+  /// The helper was asked to retire (a `shutdown` frame) and is expected to
+  /// cancel and join its jail on the way out. Its exit status 0 is the
+  /// witness of that join; any other status proves only that the process is
+  /// gone.
+  AfterShutdown
+
+  /// The broker sent SIGKILL because the helper could not be trusted to
+  /// answer: a missed cancel ladder, a handshake that never completed, a
+  /// silent heartbeat, a corrupt or illegal frame. The helper never ran its
+  /// join, so no status can attest one; what the status proves is that the
+  /// helper process is gone, and whether that is enough depends on how
+  /// much jail it had (`exposure`). See `native_verdict`.
+  AfterKill(exposure: Exposure)
+
+  /// The port reported an exit nobody asked for: the helper died on its own
+  /// in a live phase. It never ran its join either, so the verdict is the
+  /// same as for a kill from the same phase, and the two are recorded
+  /// separately only so that a reader can tell them apart.
+  Unprompted(exposure: Exposure)
+}
+
+// How much jail a helper had when it stopped answering, decided by the
+// phase it was in. This, and not the hello features alone, is what says
+// whether its death leaves anything running.
+type Exposure {
+  /// The helper had not accepted a hello. The Go helper writes its hello
+  /// before it reads any frame, and the broker sends no `exec_start` before
+  /// `Idle`, so no jail was ever dispatched.
+  NoJail
+
+  /// The helper was `Idle`. That phase is entered on an `exec_exit`, which
+  /// the helper writes only after `Settle` returned, and `Settle` has
+  /// already SIGKILLed the execution's process group (and, on Darwin, its
+  /// tracked descendants). The last jail was killed before the helper was.
+  SettledJail
+
+  /// The helper was `Running` or `Cancelling`: a jail may be alive and the
+  /// helper's death is the only thing that ends it.
+  LiveJail
 }
 
 /// Where the helper is in its lifecycle: the machine's *state* in
@@ -559,6 +691,12 @@ type Data {
     pending_heartbeats: List(#(Int, Subject(Result(Nil, ExecFailure)))),
     tick_outstanding: Bool,
     cleaned: Bool,
+    /// The features the helper's hello announced, empty until it does.
+    /// They are fixed at the hello and so would belong in the phases that
+    /// carry them, but those are gone once the machine is `Dead`, and a
+    /// retirement verdict is asked for there: it needs to know whether the
+    /// helper built its jails under bwrap. See `native_verdict`.
+    hello_features: List(String),
     commands: Subject(Msg),
     wire: Subject(WireEvent),
   )
@@ -582,9 +720,19 @@ pub fn default_config(transport: Transport) -> HelperConfig {
     transport:,
     handshake_timeout_ms: 5000,
     cancel_grace_ms: 3000,
+    kill_witness_ms:,
     heartbeat_interval_ms: 30_000,
   )
 }
+
+// How long the broker waits, after SIGKILL, for the exit status the kill
+// produces. SIGKILL cannot be caught, blocked or ignored, and the kernel
+// delivers it to a live process at once, so a status that has not arrived
+// five seconds later is one the kill did not produce: the pid was already
+// reaped, `kill` could not run, or the helper sits in uninterruptible sleep.
+// Waiting longer would only hold a pool slot `Draining` for ever, and the
+// timeout cannot grant a proof, only give up one that was never coming.
+const kill_witness_ms = 5000
 
 // --- helper lifecycle ---------------------------------------------------
 
@@ -631,6 +779,7 @@ pub fn prepare(config: HelperConfig) -> Result(Helper, actor.StartError) {
         pending_heartbeats: [],
         tick_outstanding: False,
         cleaned: False,
+        hello_features: [],
         commands:,
         wire:,
       )
@@ -732,7 +881,8 @@ pub fn await_ready(
 
 /// The helper's current lifecycle position, or `StatusUnresponsive`
 /// when the actor does not answer within `timeout` or is not alive to
-/// be asked.
+/// be asked. The unresponsive answer is about the actor, not the
+/// helper behind it: nothing is known of what the helper is doing.
 ///
 /// This used to be an ordinary `process.call`, which panics on both.
 /// The contract was defensible for a caller whose next step needs the
@@ -751,7 +901,8 @@ pub fn status(helper: Helper, waiting timeout: Int) -> HelperStatus {
 
 /// Dispatches an execution. On `Ok`, events stream to `events` and end
 /// with exactly one `Exited` or `Failed`; an `Error` is a dispatch-time
-/// refusal and nothing was sent to the helper.
+/// refusal, and nothing was sent to the helper unless it is
+/// `HelperUnresponsive`.
 ///
 /// An actor that does not answer the dispatch is `HelperUnresponsive`,
 /// not a fault: the broker calls this from inside its own message
@@ -759,6 +910,14 @@ pub fn status(helper: Helper, waiting timeout: Int) -> HelperStatus {
 /// which is free to have died in between, and a dispatch that killed
 /// the broker would take every other strand's verdict with it. The
 /// refusal settles in band like any other dispatch-stage failure.
+///
+/// That answer says the caller stopped waiting, not that the request was
+/// withdrawn: the `Run` stays queued and a recovered actor will read it.
+/// It is dispatched only if the owner of `events` is still alive when it
+/// does, and refused with `NotReady` otherwise, so a caller that gives up
+/// and exits cannot have an execution started on its behalf. A caller
+/// that gives up and carries on can, and must treat the outcome as
+/// unknown.
 pub fn run(
   helper: Helper,
   request: ExecRequest,
@@ -961,6 +1120,7 @@ fn handle(
     | Prepared, CancelExec
     | Prepared, CancelDeadline
     | Prepared, HandshakeDeadline
+    | Prepared, KillWitnessDeadline
     | Prepared, HeartbeatTick
     | Prepared, ForgetRetired
     -> state_machine.keep(data)
@@ -984,8 +1144,9 @@ fn handle(
     phase, FromWire(WireClosed(status:)) ->
       native_exit(Machine(phase:, data:), status)
 
-    Dead(retirement: NativeExit(status), ..), AwaitRetirement(reply) -> {
-      reply(retirement_result(status))
+    Dead(retirement: NativeExit(status:, awaited:), ..), AwaitRetirement(reply)
+    -> {
+      reply(native_verdict(status, awaited, data.hello_features))
       state_machine.keep(data)
     }
     Dead(retirement: NoNativeResource, ..), AwaitRetirement(reply) -> {
@@ -996,16 +1157,24 @@ fn handle(
       reply(Error(RetirementProofLost))
       state_machine.keep(data)
     }
-    Dead(retirement: PendingExit, ..), AwaitRetirement(..)
+    Dead(retirement: PendingExit(..), ..), AwaitRetirement(..)
     | AwaitingHello, AwaitRetirement(..)
     | Idle(..), AwaitRetirement(..)
     | Running(..), AwaitRetirement(..)
     | Cancelling(..), AwaitRetirement(..)
     -> state_machine.keep(data) |> state_machine.postpone
 
-    Dead(retirement: NativeExit(0), ..), ForgetRetired
-    | Dead(retirement: NoNativeResource, ..), ForgetRetired
-    -> state_machine.stop()
+    // The actor retires only on a verdict that is `Ok`, which is the same
+    // test `AwaitRetirement` answers with: the pool sends this after an
+    // `Ok` outcome, and `close` does the same, so a status that cannot
+    // retire the helper must not be able to retire its owner either.
+    Dead(retirement: NativeExit(status:, awaited:), ..), ForgetRetired ->
+      case native_verdict(status, awaited, data.hello_features) {
+        Ok(Nil) -> state_machine.stop()
+        Error(_) -> state_machine.keep(data)
+      }
+    Dead(retirement: NoNativeResource, ..), ForgetRetired ->
+      state_machine.stop()
     Dead(..), ForgetRetired
     | AwaitingHello, ForgetRetired
     | Idle(..), ForgetRetired
@@ -1075,13 +1244,26 @@ fn handle(
 
     // Stdin follows the execution rather than the phase: a payload that
     // has been TERMed but has not exited may still be reading.
-    Running(exec:, ..) as phase, Stdin(data: bytes, eof:)
-    | Cancelling(exec:, ..) as phase, Stdin(data: bytes, eof:)
-    ->
+    //
+    // The frame gets an id of its own and not the execution's. The helper
+    // answers a refused write (the payload closed its stdin, or stdin was
+    // already at end of file) with `error{no_exec}` carrying the *stdin
+    // frame's* id, and `settle` treats an error under the execution's own
+    // id as that execution's refusal: the running payload would be settled
+    // `Failed` and the machine sent `Idle` while the helper still runs it.
+    // The helper uses a stdin frame's id for nothing but addressing that
+    // reply, so a fresh id makes the reply correlate to nothing and `settle`
+    // drops it. Cancel needs no such care: the helper never answers a
+    // `cancel` with an error, and an unknown cancel is a no-op.
+    Running(..) as phase, Stdin(data: bytes, eof:)
+    | Cancelling(..) as phase, Stdin(data: bytes, eof:)
+    -> {
+      let #(data, id) = fresh_id(data)
       send_or_die(
         Machine(phase:, data:),
-        framing.Frame(id: exec.id, body: framing.ExecStdin(data: bytes, eof:)),
+        framing.Frame(id:, body: framing.ExecStdin(data: bytes, eof:)),
       )
+    }
 
     AwaitingHello, Stdin(..) | Idle(..), Stdin(..) | Dead(..), Stdin(..) ->
       state_machine.keep(data)
@@ -1105,11 +1287,12 @@ fn handle(
       state_machine.keep(data)
 
     // The helper missed its own 2s TERM-to-KILL ladder. Belt and braces:
-    // demolish the channel and settle the execution in band.
-    Cancelling(..) as phase, CancelDeadline -> {
-      kill_transport(data.wire_out)
+    // kill it and settle the execution in band. `die` does the killing,
+    // with the port still open (the helper is alive, if unresponsive, or
+    // the deadline would not have fired), so the exit status the kill
+    // produces can still be selected: this is the witnessed kill.
+    Cancelling(..) as phase, CancelDeadline ->
       die(Machine(phase:, data:), CancelEscalated)
-    }
 
     // Unreachable by construction. The escalation deadline is a state
     // timeout on `Cancelling`, so any move out of that state cancels it
@@ -1120,6 +1303,32 @@ fn handle(
     | Idle(..), CancelDeadline
     | Running(..), CancelDeadline
     | Dead(..), CancelDeadline
+    -> state_machine.keep(data)
+
+    // The killed helper never reported the status its SIGKILL should have
+    // produced. Closing the port abandons the wait, and the move to
+    // `LostExit` is an unequal state, so weft replays every postponed
+    // `AwaitRetirement` against it and the pool reads the proof as lost.
+    // This can only lose a proof: no arm here grants one.
+    Dead(failure:, retirement: PendingExit(AfterKill(..))), KillWitnessDeadline
+    ->
+      state_machine.transition(
+        Dead(failure, close_transport(data.wire_out)),
+        data,
+      )
+
+    // Unreachable: the status arriving or the port closing leaves
+    // `PendingExit`, which cancels the witness timeout, and no other state
+    // arms it. The arms exist because the matrix is exhaustive.
+    AwaitingHello, KillWitnessDeadline
+    | Idle(..), KillWitnessDeadline
+    | Running(..), KillWitnessDeadline
+    | Cancelling(..), KillWitnessDeadline
+    | Dead(retirement: NoNativeResource, ..), KillWitnessDeadline
+    | Dead(retirement: PendingExit(AfterShutdown), ..), KillWitnessDeadline
+    | Dead(retirement: PendingExit(Unprompted(..)), ..), KillWitnessDeadline
+    | Dead(retirement: NativeExit(..), ..), KillWitnessDeadline
+    | Dead(retirement: LostExit, ..), KillWitnessDeadline
     -> state_machine.keep(data)
 
     AwaitingHello, HandshakeDeadline ->
@@ -1218,6 +1427,14 @@ fn entered(
     // arm in `handle` unreachable: a tick already in flight when the
     // machine dies carries a stale generation stamp and dies in weft's
     // timer book instead of reaching the handler.
+    Dead(retirement: PendingExit(AfterKill(..)), ..) ->
+      state_machine.keep(data)
+      |> state_machine.cancel_timeout(name: heartbeat_timer)
+      |> state_machine.with_state_timeout(
+        after: data.config.kill_witness_ms,
+        sending: KillWitnessDeadline,
+      )
+
     Dead(..) ->
       state_machine.keep(data)
       |> state_machine.cancel_timeout(name: heartbeat_timer)
@@ -1311,7 +1528,7 @@ fn handle_shutdown(machine: Machine) -> state_machine.Next(Phase, Data, Msg) {
     transport_send(data.wire_out, bytes)
   }
   let retirement = case sent {
-    Ok(Nil) -> PendingExit
+    Ok(Nil) -> PendingExit(AfterShutdown)
     Error(Nil) -> LostExit
   }
   state_machine.transition(
@@ -1322,6 +1539,13 @@ fn handle_shutdown(machine: Machine) -> state_machine.Next(Phase, Data, Msg) {
 
 // Only an exit event selected while the port was retained may establish
 // native retirement. A late event after port_close cannot repair lost proof.
+//
+// A helper already `Dead` because it was shut down or killed keeps the
+// failure it died with: a caller who asks it to `Run` is told
+// `CancelEscalated`, not a bare exit status that hides why the helper went.
+// A helper that dies in a live phase has no earlier failure, so the status
+// is the failure, and the exit nobody asked for is judged by the jail it
+// leaves behind, exactly as a kill from the same phase would be.
 fn native_exit(
   machine: Machine,
   status: Int,
@@ -1330,25 +1554,77 @@ fn native_exit(
     Prepared
     | Dead(retirement: NoNativeResource, ..)
     | Dead(retirement: LostExit, ..)
-    | Dead(retirement: NativeExit(_), ..) -> state_machine.keep(machine.data)
-    Dead(retirement: PendingExit, ..)
-    | AwaitingHello
-    | Idle(..)
-    | Running(..)
-    | Cancelling(..) -> {
+    | Dead(retirement: NativeExit(..), ..) -> state_machine.keep(machine.data)
+    Dead(failure:, retirement: PendingExit(awaiting:)) ->
+      state_machine.transition(
+        Dead(failure, NativeExit(status:, awaited: awaiting)),
+        machine.data,
+      )
+    AwaitingHello | Idle(..) | Running(..) | Cancelling(..) -> {
+      let awaited = Unprompted(exposure_of(machine.phase))
       let data = notify_death(machine, ChannelClosed(status)) |> run_cleanup
       state_machine.transition(
-        Dead(ChannelClosed(status), NativeExit(status)),
+        Dead(ChannelClosed(status), NativeExit(status:, awaited:)),
         data,
       )
     }
   }
 }
 
-fn retirement_result(status: Int) -> Result(Nil, RetirementFailure) {
-  case status {
-    0 -> Ok(Nil)
-    status -> Error(RetirementExit(status))
+// What jail a live phase leaves behind when its helper stops. `Prepared` and
+// `Dead` have no live port to speak of; they answer `NoJail` so the match is
+// total, and no caller reaches them.
+fn exposure_of(phase: Phase) -> Exposure {
+  case phase {
+    Prepared | AwaitingHello | Dead(..) -> NoJail
+    Idle(..) -> SettledJail
+    Running(..) | Cancelling(..) -> LiveJail
+  }
+}
+
+// Turns a native exit status into the retirement verdict, and is the one
+// place that decides what a status is evidence of.
+//
+// After a shutdown, status 0 is the helper's own account that it cancelled
+// and joined its jail, so it is `Ok`; any other status proves the process
+// is gone and nothing about the jail's descendants.
+//
+// After a kill, or an exit nobody asked for, the helper never joined
+// anything, and the status (137, when the signal is what ended it) says only
+// that the helper process is gone. Whether that retires it depends on how
+// much jail it left (`Exposure`):
+//
+// - `NoJail` and `SettledJail` left none. A helper that never accepted a
+//   hello had no jail to leave, and an idle one had already had its last
+//   jail killed by `Settle` before it wrote the `exec_exit` that made it
+//   idle. Its exit is a complete witness on every platform, Darwin and
+//   degraded Linux included, at the grade of the status-0 witness.
+// - `LiveJail` is the case that needs the jail's life bounded by the
+//   helper's. Under bwrap it is: bwrap is spawned `--die-with-parent`, so
+//   the kernel SIGKILLs it when the helper dies, and `--unshare-pid` makes
+//   bwrap's child the init of a fresh PID namespace, so the death of that
+//   init takes every process in the namespace with it. The `bwrap` feature
+//   in the accepted hello is the helper's statement that it built jails
+//   that way. This is weaker than the status-0 witness: the payload may
+//   keep running for a couple of scheduler wakeups after the status is
+//   selected and the namespace tears down over tens of milliseconds, and
+//   the per-exec cgroup directory is not removed. Without bwrap nothing
+//   promises even that: a degraded Linux payload shares the helper's
+//   namespaces and can `setsid` away, and on Darwin the descendant tracker
+//   died with the helper. Those stay unconfirmed.
+fn native_verdict(
+  status: Int,
+  awaited: Awaiting,
+  features: List(String),
+) -> Result(Nil, RetirementFailure) {
+  case awaited, status {
+    AfterShutdown, 0 -> Ok(Nil)
+    AfterShutdown, status -> Error(RetirementExit(status))
+    AfterKill(exposure:), status | Unprompted(exposure:), status ->
+      case exposure, list.contains(features, "bwrap") {
+        NoJail, _ | SettledJail, _ | LiveJail, True -> Ok(Nil)
+        LiveJail, False -> Error(RetirementExit(status))
+      }
   }
 }
 
@@ -1401,7 +1677,22 @@ fn send_heartbeat(
 
 // The one dispatch path: `Idle`, with a helper whose hello features the
 // request's demand can live with. Every other phase was refused in
-// `handle`, so this only has to weigh degradation.
+// `handle`, so this only has to weigh the caller's liveness and degradation.
+//
+// The liveness check is the late-`Run` fence. `run` uses `try_call`, and a
+// caller whose call times out has already been told `HelperUnresponsive`
+// while its `Run` is still queued in a wedged actor's mailbox. When the
+// actor recovers it would dispatch an execution that nobody is listening to,
+// after the caller was told it had failed. The events subject's owner is
+// the process that would receive the outcome, so an owner that is gone
+// means the caller gave up, and the `Run` is refused instead. The refusal
+// is `NotReady`, the same answer as any other helper that cannot take work,
+// and it goes to a reply subject nobody reads.
+//
+// This is a liveness fence and not a deadline. A caller that is still alive
+// but gave up, because it timed out and went on to wait for something else,
+// is not caught, and nor is one that dies in the instant after the check.
+// The broker's relay dies with its call, which is the case this is for.
 fn handle_run(
   data: Data,
   features: List(String),
@@ -1409,11 +1700,23 @@ fn handle_run(
   events: Subject(ExecEvent),
   reply: Subject(Result(Nil, ExecFailure)),
 ) -> state_machine.Next(Phase, Data, Msg) {
-  case request.demand, degraded_features(features) {
-    FullEnforcement, True -> refuse_run(data, reply, DegradedHelper(features:))
-    PlatformEnforcement, True ->
+  case events_owner_alive(events), request.demand, degraded_features(features) {
+    False, _, _ -> refuse_run(data, reply, NotReady)
+    True, FullEnforcement, True ->
       refuse_run(data, reply, DegradedHelper(features:))
-    _, _ -> dispatch_exec(data, features, request, events, reply)
+    True, PlatformEnforcement, True ->
+      refuse_run(data, reply, DegradedHelper(features:))
+    True, _, _ -> dispatch_exec(data, features, request, events, reply)
+  }
+}
+
+// Whether the process that would receive an execution's events is alive.
+// A subject with no owner, a named subject nobody has registered, has no one
+// to receive them either.
+fn events_owner_alive(events: Subject(ExecEvent)) -> Bool {
+  case process.subject_owner(events) {
+    Ok(owner) -> process.is_alive(owner)
+    Error(Nil) -> False
   }
 }
 
@@ -1485,6 +1788,19 @@ fn dispatch_exec(
 fn degraded_features(features: List(String)) -> Bool {
   list.contains(features, "degraded")
 }
+
+/// The prefix the Go helper puts on an enforcement entry for a layer it
+/// could not apply (`skip:landlock: unavailable ...`). Every place in this
+/// module that recognises or strips a skip uses this one constant, and
+/// `enforcement_tags_test` pins it against the helper's sources.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.starts_with("skip:stage2: no report", skip_prefix)
+/// ```
+///
+pub const skip_prefix = "skip:"
 
 /// The layer tags an execution under `policy` must be able to show as
 /// applied. Exported for the enforcement report the caller renders.
@@ -1644,7 +1960,7 @@ pub fn unapplied_layers(
 ) -> List(String) {
   let applied =
     enforcement
-    |> list.filter(fn(entry) { !string.starts_with(entry, "skip:") })
+    |> list.filter(fn(entry) { !string.starts_with(entry, skip_prefix) })
     |> list.map(layer_tag)
   list.filter(required, fn(layer) { !list.contains(applied, layer) })
 }
@@ -1675,7 +1991,7 @@ fn degraded_report(
   required: List(String),
 ) -> Bool {
   degraded
-  || list.any(enforcement, fn(entry) { string.starts_with(entry, "skip:") })
+  || list.any(enforcement, fn(entry) { string.starts_with(entry, skip_prefix) })
   || unapplied_layers(enforcement, required) != []
 }
 
@@ -1691,7 +2007,7 @@ fn platform_degraded_report(
 ) -> Bool {
   degraded
   || list.any(enforcement, fn(entry) {
-    string.starts_with(entry, "skip:")
+    string.starts_with(entry, skip_prefix)
     && !list.contains(tolerated, report_layer_tag(entry))
   })
   || unapplied_layers(enforcement, required) != []
@@ -1711,8 +2027,8 @@ fn unreported_layers(
 // also needs the name *inside* a skip so it can compare that name with its
 // narrow tolerated set.
 fn report_layer_tag(entry: String) -> String {
-  case string.starts_with(entry, "skip:") {
-    True -> layer_tag(string.drop_start(entry, 5))
+  case string.starts_with(entry, skip_prefix) {
+    True -> layer_tag(string.drop_start(entry, string.length(skip_prefix)))
     False -> layer_tag(entry)
   }
 }
@@ -1891,7 +2207,10 @@ fn complete_handshake(machine: Machine, features: List(String)) -> Machine {
   case machine.phase {
     Prepared | Dead(..) -> machine
     AwaitingHello | Idle(..) | Running(..) | Cancelling(..) -> {
-      let data = run_cleanup(machine.data)
+      // The features are kept in the data as well as in the phase because a
+      // retirement verdict is asked for in `Dead`, where the phase no
+      // longer has them and the verdict needs to know about bwrap.
+      let data = Data(..run_cleanup(machine.data), hello_features: features)
       Machine(phase: Idle(features:), data:)
     }
   }
@@ -2032,7 +2351,9 @@ fn send_frame(machine: Machine, frame: Frame) -> Machine {
     Ok(bytes) ->
       case transport_send(machine.data.wire_out, bytes) {
         Ok(Nil) -> machine
-        Error(Nil) -> mark_dead(machine, SendFailed)
+
+        // A failed write is the port reporting that it has closed.
+        Error(Nil) -> mark_gone(machine, SendFailed)
       }
   }
 }
@@ -2061,26 +2382,55 @@ fn transport_send(wire_out: Wire, bytes: BitArray) -> Result(Nil, Nil) {
   }
 }
 
-fn close_transport(wire_out: Wire) -> Nil {
+// Discards a channel that has already failed, and says what is left of its
+// exit witness, which is nothing: the port is closed, so no status can be
+// selected from it any more.
+fn close_transport(wire_out: Wire) -> Retirement {
   case wire_out {
     WireUnopened -> Nil
     WirePort(port:, os_pid: _, cleanup: _) -> ffi_port.close_port(port)
     WireChannel(send: _, close:) -> close()
   }
+  LostExit
 }
 
-// Last-resort kill: close the channel and SIGKILL the OS process.
-fn kill_transport(wire_out: Wire) -> Nil {
+// The witnessed kill: SIGKILL the OS process and keep the port.
+//
+// Closing the port first, as this once did, discards the very event the
+// kill produces. Erlang delivers `{exit_status, N}` to the owner of a port
+// whose child was killed by a signal, and only while the port is open, so
+// the kill leaves the machine `PendingExit(AfterKill(..))` and waits for that
+// status instead of throwing it away. The port's OS pid is the helper itself
+// and not the shell that opened fd 3 for it, because that shell `exec`s the
+// helper.
+//
+// A channel transport has no signal to send, and its `close` is the whole
+// of its kill. A fake can still report an exit afterwards on its wire, which
+// is what tests use to drive the verdict.
+//
+// A port whose pid is unknown cannot be killed from here, and leaving it
+// open would leave a live helper that nothing is waiting on. That case
+// falls back to closing the port: the helper reads end of file and retires
+// its own jail, as it did before, and the proof is lost.
+//
+// The `kill -KILL` goes to a pid that `erl_child_setup` may already have
+// reaped, so a pid reused in that window would be signalled instead. The
+// retained port neither widens nor narrows that window.
+fn kill_transport(wire_out: Wire, exposure: Exposure) -> Retirement {
   case wire_out {
-    WireUnopened -> Nil
-    WirePort(port:, os_pid:, cleanup: _) -> {
-      ffi_port.close_port(port)
-      case os_pid {
-        Some(pid) -> ffi_port.kill_os_process(pid)
-        None -> Nil
-      }
+    WireUnopened -> LostExit
+    WirePort(port: _, os_pid: Some(pid), cleanup: _) if pid > 1 -> {
+      ffi_port.kill_os_process(pid)
+      PendingExit(AfterKill(exposure:))
     }
-    WireChannel(send: _, close:) -> close()
+    WirePort(port:, os_pid: _, cleanup: _) -> {
+      ffi_port.close_port(port)
+      LostExit
+    }
+    WireChannel(send: _, close:) -> {
+      close()
+      PendingExit(AfterKill(exposure:))
+    }
   }
 }
 
@@ -2105,19 +2455,54 @@ fn run_cleanup(data: Data) -> Data {
 // `Dead` is absorbing, and the first arm is what makes it so: a second
 // failure arriving behind the first — a channel close chasing a framing
 // fault — must not re-notify callers who have already been told.
+//
+// This is the entry for every failure that finds the port still open: a
+// missed cancel deadline, a handshake that never completed, a silent
+// heartbeat, a framing fault, a frame the helper had no business sending,
+// and a frame the broker could not encode (nothing was written, so the
+// port is as open as it was). Each kills the helper and keeps the port,
+// which leaves it `PendingExit(AfterKill(..))`, tagged with the jail the
+// phase it died in had, so the kill's exit status can still be selected. A write that failed is the other case, and
+// `mark_gone` takes it.
 fn mark_dead(machine: Machine, failure: ExecFailure) -> Machine {
   case machine.phase {
     Prepared -> Machine(Dead(failure, NoNativeResource), machine.data)
     Dead(..) -> machine
     AwaitingHello | Idle(..) | Running(..) | Cancelling(..) -> {
-      let data = notify_death(machine, failure)
-      close_transport(data.wire_out)
-      Machine(
-        phase: Dead(failure:, retirement: LostExit),
-        data: run_cleanup(data),
-      )
+      let exposure = exposure_of(machine.phase)
+      bury(machine, failure, kill_transport(_, exposure))
     }
   }
+}
+
+// `mark_dead` for a channel that is already gone: a write to the port
+// failed, which the port reports only once it has closed. There is no
+// exit status left to wait for, because a port delivers one only while
+// open, so waiting would leave the retirement pending for ever. The proof
+// is lost, as it always was for a write that found the port closed.
+//
+// A `ChannelTransport` cannot fail a write, so only a real port reaches
+// this; `real_helper_failed_write_loses_the_proof_test` closes a real
+// helper's port from outside to drive it.
+fn mark_gone(machine: Machine, failure: ExecFailure) -> Machine {
+  case machine.phase {
+    Prepared -> Machine(Dead(failure, NoNativeResource), machine.data)
+    Dead(..) -> machine
+    AwaitingHello | Idle(..) | Running(..) | Cancelling(..) ->
+      bury(machine, failure, close_transport)
+  }
+}
+
+// Settles everyone waiting, discards the channel in the way `discard`
+// says, and records what that left of the exit witness.
+fn bury(
+  machine: Machine,
+  failure: ExecFailure,
+  discard: fn(Wire) -> Retirement,
+) -> Machine {
+  let data = notify_death(machine, failure)
+  let retirement = discard(data.wire_out)
+  Machine(phase: Dead(failure:, retirement:), data: run_cleanup(data))
 }
 
 // `mark_dead` as a step. The move to `Dead` is a real state change, so
@@ -2318,6 +2703,7 @@ pub fn prepare_helper(config: SpawnConfig) -> Result(Helper, SpawnError) {
     transport:,
     handshake_timeout_ms: config.handshake_timeout_ms,
     cancel_grace_ms: config.cancel_grace_ms,
+    kill_witness_ms:,
     heartbeat_interval_ms: config.heartbeat_interval_ms,
   ))
   |> result.map_error(ActorFailed)
@@ -2397,6 +2783,129 @@ pub opaque type PoolMsg {
   HelperOwnerGone(pid: Pid, reason: process.ExitReason)
   PoolLinkedExit(pid: Pid)
   ForgetPool
+  QueryCensus(reply: Subject(PoolCensus))
+  QueryCustody(reply: Subject(PoolCustody))
+}
+
+/// A count of the pool's inventory by custody, taken at one instant by the
+/// pool actor itself. It is the pool's own answer rather than anything
+/// reconstructed from outside, so the six numbers always describe one
+/// consistent inventory.
+///
+/// `available + borrowed + draining + retiring + unconfirmed` is the
+/// number of entries the pool holds, and it is never more than `size`: an
+/// entry occupies its slot until it leaves the inventory, and only the
+/// proof of retirement removes it.
+///
+/// `spawned` and `retired` are the pool's lifetime churn, two monotone
+/// counters beside the six gauges: every helper the pool has ever put in
+/// its inventory, and every one that has left it through both retirement
+/// boundaries. `spawned - retired` is the entries held now, so the pair
+/// shows a pool that is replacing helpers faster than it should without
+/// any history being kept.
+pub type PoolCensus {
+  PoolCensus(
+    /// The pool's configured ceiling on entries.
+    size: Int,
+    /// Idle and lendable, subject to the readiness probe at checkout.
+    available: Int,
+    /// Lent to a borrower. A checkout reply lost to its borrower's deadline
+    /// still counts here, because custody never left the pool.
+    borrowed: Int,
+    /// Shutdown requested; native exit not yet reported.
+    draining: Int,
+    /// Native exit confirmed; the helper actor is still to exit normally.
+    retiring: Int,
+    /// Retirement could not be established, so the slot is held for the
+    /// life of the pool.
+    unconfirmed: Int,
+    /// Helpers ever added to the inventory, including one whose handshake
+    /// then failed. A spawn the transport refused adds nothing.
+    spawned: Int,
+    /// Helpers that left the inventory with both retirement boundaries
+    /// proved. An unconfirmed helper never counts here.
+    retired: Int,
+  )
+}
+
+/// How the pool stands to lend one helper. The pool's private
+/// `Availability` says the same thing with the retirement detail folded in;
+/// this is the lending half alone, so an observer can read lending and
+/// custody as two separate questions.
+pub type Lending {
+  /// Idle and lendable, subject to the readiness probe at checkout.
+  Lendable
+
+  /// Lent to a borrower, who will check it in.
+  Lent
+
+  /// Being retired, or held unconfirmed. It will not be lent again.
+  Withdrawn
+}
+
+/// What the pool can show of one helper's native resource, in the
+/// vocabulary protocol-014 gives the retirement evidence. It is derived from
+/// the pool's own books and never asks the helper, so a wedged helper cannot
+/// block the answer.
+///
+/// The helper machine has a fourth state, no native resource ever acquired,
+/// and it is not here on purpose: the pool begins a helper the moment it
+/// inventories it, so an entry always holds, or held, an OS process. The
+/// native exit status behind `Retired` is not kept either: the pool records
+/// the verdict (`Ok`) and not the status that produced it.
+pub type Custody {
+  /// The helper's OS process is live and the pool is responsible for it.
+  Held
+
+  /// Shutdown was requested and the native exit has not been reported.
+  Retiring
+
+  /// Native exit was witnessed as clean; only the BEAM owner's normal exit
+  /// is still awaited before the slot is freed.
+  Retired
+
+  /// Retirement could not be established, so the helper's jail may still be
+  /// running and the slot is held for the life of the pool. `reason` is the
+  /// failure the pool recorded.
+  CleanupUnconfirmed(reason: RetirementFailure)
+
+  /// The channel was discarded before the native exit could be observed,
+  /// permanently. A subset of unconfirmed cleanup, named separately because
+  /// no later event can repair it.
+  ProofLost
+}
+
+/// One inventoried helper as an observer sees it.
+pub type HelperView {
+  HelperView(
+    /// The helper actor's pid.
+    pid: Pid,
+    /// Which spawn this helper was, counting from one. With the pid it is
+    /// the helper's generation for a reader; it is introspection and not a
+    /// fence, because nothing compares it to anything.
+    ordinal: Int,
+    /// Whether the helper can be lent.
+    lending: Lending,
+    /// What is known of its native resource.
+    custody: Custody,
+    /// The features the helper said in its hello, as the pool received them
+    /// when the handshake completed. Empty means unknown: a helper whose
+    /// handshake has not finished has not said, and a helper that said
+    /// nothing is indistinguishable from it.
+    features: List(String),
+  )
+}
+
+/// The pool's census and a view of each entry it counts, taken by the pool
+/// actor in one step so the two describe one instant. `helpers` is in spawn
+/// order, newest last, and is never longer than `census.size`.
+pub type PoolCustody {
+  PoolCustody(
+    /// The six gauges and two counters over the same inventory.
+    census: PoolCensus,
+    /// One view per inventoried helper.
+    helpers: List(HelperView),
+  )
 }
 
 /// Why a checkout was refused.
@@ -2433,6 +2942,10 @@ type PoolState {
     entries: List(PoolEntry),
     commands: Subject(PoolMsg),
     parent: Pid,
+    // Lifetime counters. `spawned` doubles as the ordinal of the next
+    // helper; both only grow, so they need no cap.
+    spawned: Int,
+    retired: Int,
   )
 }
 
@@ -2443,6 +2956,10 @@ type PoolEntry {
     helper: Helper,
     monitor: process.Monitor,
     availability: Availability,
+    // Which spawn this was, from one. Introspection only.
+    ordinal: Int,
+    // The hello features `await_ready` answered at spawn; empty until then.
+    features: List(String),
   )
 }
 
@@ -2554,7 +3071,16 @@ pub fn start_pool(
 ) -> Result(Pool, actor.StartError) {
   let parent = process.self()
   state_machine.new_with_initialiser(5000, fn(commands) {
-    let state = PoolState(size:, spawn:, entries: [], commands:, parent:)
+    let state =
+      PoolState(
+        size:,
+        spawn:,
+        entries: [],
+        commands:,
+        parent:,
+        spawned: 0,
+        retired: 0,
+      )
     state_machine.initialised(PoolLive, state)
     |> state_machine.selecting(pool_selector(state))
     |> state_machine.returning(commands)
@@ -2590,6 +3116,57 @@ pub fn checkout(
 ) -> Result(Helper, CheckoutError) {
   case call.try_call(pool.subject, waiting: timeout, sending: Checkout) {
     Ok(outcome) -> outcome
+    Error(call.NoReply) | Error(call.CalleeGone) -> Error(PoolUnavailable)
+  }
+}
+
+/// Counts the pool's inventory by custody, answered by the pool actor in
+/// whatever phase it is in: a closing or finished pool still has an
+/// inventory worth reporting, and an observer asking during shutdown is
+/// the observer most in need of one.
+///
+/// `waiting` is the caller's window in milliseconds. A pool that does not
+/// answer in it, or is not alive to be asked, is `PoolUnavailable` rather
+/// than a fault, for the reason `checkout` gives: the asker may be an actor
+/// whose death would lose a verdict it owes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(census) = exec.pool_census(pool, waiting: 1000)
+/// assert census.borrowed == 0
+/// ```
+///
+pub fn pool_census(
+  pool: Pool,
+  waiting timeout: Int,
+) -> Result(PoolCensus, CheckoutError) {
+  case call.try_call(pool.subject, waiting: timeout, sending: QueryCensus) {
+    Ok(census) -> Ok(census)
+    Error(call.NoReply) | Error(call.CalleeGone) -> Error(PoolUnavailable)
+  }
+}
+
+/// The pool's census and one view per inventoried helper, answered by the
+/// pool actor in whatever phase it is in. The views are derived from the
+/// pool's own books and no helper is asked anything, so a wedged helper
+/// cannot delay the answer and nothing is held once it is sent.
+///
+/// `waiting` and the refusal are those of `pool_census`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(custody) = exec.pool_custody(pool, waiting: 1000)
+/// assert list.length(custody.helpers) <= custody.census.size
+/// ```
+///
+pub fn pool_custody(
+  pool: Pool,
+  waiting timeout: Int,
+) -> Result(PoolCustody, CheckoutError) {
+  case call.try_call(pool.subject, waiting: timeout, sending: QueryCustody) {
+    Ok(custody) -> Ok(custody)
     Error(call.NoReply) | Error(call.CalleeGone) -> Error(PoolUnavailable)
   }
 }
@@ -2686,6 +3263,27 @@ fn handle_pool(
     PoolFinished(Error(_)), ForgetPool -> state_machine.keep(state)
     PoolLive, ForgetPool | PoolClosing, ForgetPool ->
       state_machine.keep(state) |> state_machine.postpone
+
+    // A census is a read of the inventory and changes nothing, so every
+    // phase answers it at once: it is never postponed behind a retirement
+    // the way `AwaitPoolRetirement` is.
+    PoolLive, QueryCensus(reply)
+    | PoolClosing, QueryCensus(reply)
+    | PoolFinished(..), QueryCensus(reply)
+    -> {
+      process.send(reply, census_of(state))
+      state_machine.keep(state)
+    }
+
+    // Custody is a read in the same way, answered in every phase for the same
+    // reason: an observer asking during a close is the one who needs it.
+    PoolLive, QueryCustody(reply)
+    | PoolClosing, QueryCustody(reply)
+    | PoolFinished(..), QueryCustody(reply)
+    -> {
+      process.send(reply, custody_of(state))
+      state_machine.keep(state)
+    }
     phase, HelperRetired(pid, outcome) ->
       pool_step(phase, record_retirement(state, pid, outcome))
     phase, HelperOwnerGone(pid, reason) ->
@@ -2695,6 +3293,61 @@ fn handle_pool(
         True -> state_machine.stop()
         False -> pool_step(phase, state)
       }
+  }
+}
+
+// Pure counting over the one canonical inventory. Each entry is in exactly
+// one availability, so the five counters partition the entries.
+fn census_of(state: PoolState) -> PoolCensus {
+  let entries = state.entries
+  let counted = fn(wanted: fn(Availability) -> Bool) {
+    list.count(entries, fn(entry) { wanted(entry.availability) })
+  }
+  PoolCensus(
+    size: state.size,
+    available: counted(fn(availability) { availability == Available }),
+    borrowed: counted(fn(availability) { availability == Borrowed }),
+    draining: counted(fn(availability) { availability == Draining }),
+    retiring: counted(fn(availability) { availability == RetiringActor }),
+    unconfirmed: counted(fn(availability) {
+      case availability {
+        Unconfirmed(_) -> True
+        Available | Borrowed | Draining | RetiringActor -> False
+      }
+    }),
+    spawned: state.spawned,
+    retired: state.retired,
+  )
+}
+
+// One view per entry, oldest spawn first, beside the census over the same
+// entries. The entries list is newest first, so it is reversed once.
+fn custody_of(state: PoolState) -> PoolCustody {
+  let helpers =
+    list.reverse(state.entries)
+    |> list.map(fn(entry) {
+      let #(lending, custody) = custody_view(entry.availability)
+      HelperView(
+        pid: entry.helper.pid,
+        ordinal: entry.ordinal,
+        lending:,
+        custody:,
+        features: entry.features,
+      )
+    })
+  PoolCustody(census: census_of(state), helpers:)
+}
+
+// The pool's five availabilities, split into the two questions an observer
+// asks. `Unconfirmed` is the only one that reads the failure it holds.
+fn custody_view(availability: Availability) -> #(Lending, Custody) {
+  case availability {
+    Available -> #(Lendable, Held)
+    Borrowed -> #(Lent, Held)
+    Draining -> #(Withdrawn, Retiring)
+    RetiringActor -> #(Withdrawn, Retired)
+    Unconfirmed(RetirementProofLost) -> #(Withdrawn, ProofLost)
+    Unconfirmed(failure) -> #(Withdrawn, CleanupUnconfirmed(reason: failure))
   }
 }
 
@@ -2794,7 +3447,11 @@ fn record_owner_exit(
           Ok(PoolEntry(..entry, availability: Unconfirmed(RetirementOwnerGone)))
       }
     })
-  PoolState(..state, entries:)
+
+  // An entry left only through the clean arm, so the difference in length is
+  // the number of entries that completed both retirement boundaries.
+  let left = list.length(state.entries) - list.length(entries)
+  PoolState(..state, entries:, retired: state.retired + left)
 }
 
 // Returns a borrowed helper. Only one `helper_ready` accepts rejoins the
@@ -2885,15 +3542,30 @@ fn spawn_new(state: PoolState) -> #(PoolState, Result(Helper, CheckoutError)) {
           helper:,
           monitor: process.monitor(helper.pid),
           availability: Borrowed,
+          ordinal: state.spawned + 1,
+          features: [],
         )
-      let state = PoolState(..state, entries: [entry, ..state.entries])
+      let state =
+        PoolState(
+          ..state,
+          entries: [entry, ..state.entries],
+          spawned: state.spawned + 1,
+        )
 
       // Inventory and the original monitor precede Begin. A checkout
       // caller's deadline can expire during the handshake without losing
       // the owner or converting partial acquisition into an empty slot.
       begin(helper)
       case await_ready(helper, waiting: helper.handshake_wait) {
-        Ok(_) -> #(state, Ok(helper))
+        Ok(features) -> {
+          // The entry is still the head: the pool is one actor and nothing
+          // else ran between the insertion and the handshake's answer.
+          let known = PoolEntry(..entry, features:)
+          #(
+            PoolState(..state, entries: [known, ..list.drop(state.entries, 1)]),
+            Ok(helper),
+          )
+        }
         Error(failure) -> {
           let retired = retire_entry(entry, state.commands)
           #(

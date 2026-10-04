@@ -2657,6 +2657,32 @@ catalogue without opening runtimes. Explicit admission invokes
   inside `broker.clear_call` rather than coming back as a resource
   error. Distinct from the broker's pooled `max_outstanding`, which
   refuses amplification rather than describing what the host affords.
+- `client/serve.start_effect_plane_in` — a session has one execution model,
+  the executor service (issue #696). There is no lane setting: S3 deleted
+  `ExecutorLane`, `Settings.executor_lane` and `LOOM_EXECUTOR_LANE`, so a
+  session cannot be opted back into the broker's per-call relay. It builds
+  the pool, then starts
+  `executor.start` over closures on that pool (`custody`, `checkout`,
+  `checkin`, `close_helpers`) and the session's `Logger`, which is where the
+  service's `executor.settled` and `executor.closed` lines go, makes
+  `executor.close(service, waiting: 5000)` the `Helpers` custody step (it
+  drains executions and returns the pool's own verdict), unlinks pool and
+  service together, and gives the broker `executor.dispatcher(service)` via
+  `broker.start_dispatching`. `Instance.executor` carries the service and
+  `instance_children` lists it as "the executor service", a fatal root: a
+  replacement could not be reached by the closures already holding the old
+  one. The boot-time `degraded` probe still borrows from the pool directly,
+  before the broker serves anything. `start_effect_plane`, which the build
+  plane, the check plane and the extension installer use, has no custody
+  instance to publish into but runs the same model: it starts the pool, the
+  executor service over it (`start_service_lane`, with a discarded logger)
+  and a `broker.start_dispatching` broker, and returns all three. The
+  `BuildPlane` and `CheckPlane` hold the executor, and `stop_build_plane` and
+  `stop_check_plane` close it with `executor.drain_ms` and
+  `executor.helpers_ms`; a close that errs falls back to `exec.stop_pool`
+  and reports nothing, so no native-exit verdict is invented. Production
+  therefore has one execution model. `broker/direct` remains only behind
+  `broker.start`, for tests and `client/demo`.
 - `client/serve.Settings.base_policy` — the base every tool call is
   composed against, and the thing an escalation widens. A field rather
   than a `base_policy(workspace)` call inside `boot`, so a host may serve

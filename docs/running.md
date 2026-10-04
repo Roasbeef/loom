@@ -268,6 +268,9 @@ demands the cross-platform contract; `--best-effort` accepts broader
 degradation for development machines. `LOOM_HELPER_POOL` bounds how many
 `loom-exec` helpers run at once (the scheduler count clamped to `[4, 16]`),
 which is the real ceiling on how wide a parallel tool batch runs.
+Sessions run through the executor service (issue #696); there is no setting
+to choose another path. The service writes one `executor.settled` log line per
+execution and an `executor.closed` line when the session shuts down.
 
 ### Daemon settings
 

@@ -49,6 +49,7 @@
 import broker/broker.{type Broker}
 import broker/egress
 import broker/exec.{type EnforcementDemand, type Pool}
+import broker/executor
 import broker/policy
 import broker/token
 import client/advisor
@@ -526,6 +527,10 @@ pub type Instance {
     storage_owner: Pid,
     broker: Broker,
     pool: Pool,
+    /// The executor service. It sits between the broker and the pool, so
+    /// teardown closes it and it closes the pool, and its death is as fatal
+    /// as the pool's.
+    executor: executor.Executor,
     /// The hub's stable address. Everything that talks to the hub — the
     /// listener, the commit forwarder, the provider tap — holds this
     /// name rather than a pid, which is what lets the hub be restarted
@@ -624,13 +629,19 @@ pub fn main() -> Nil {
 // between the two would mean an extension built under a policy no session
 // would have granted.
 
-/// A pool of jailed helpers and the one broker over them.
+/// A pool of jailed helpers, the executor service over it and the one broker
+/// in front, for the one-shot planes: the extension installer's build and
+/// `loom ext check`.
 ///
-/// Factored out of `assemble` because the extension installer wants this
-/// and nothing else. The boot's own call is the only reason this is a
-/// function rather than eight lines inline, and it is enough of one: the
-/// two paths must compose the same policy from the same helper, or a
-/// build that passes at install could fail at run.
+/// This is the same execution model a session has, and the only one
+/// production has: the broker is started with `broker.start_dispatching`
+/// over the executor service's dispatcher, so a build or a check gets the
+/// relay, the settlement guarantees and the custody proof a session gets. What
+/// differs is the owner. A one-shot plane has no custody instance to publish
+/// into, so its caller closes the returned executor itself, with
+/// `executor.close` and the same drain and helpers budgets
+/// (`stop_build_plane` and `stop_check_plane` do exactly that). `broker/direct`
+/// remains only behind `broker.start`, for tests and the demo.
 ///
 /// ## Examples
 ///
@@ -644,19 +655,54 @@ pub fn start_effect_plane(
   tmp_dir tmp_dir: String,
   size size: Int,
   clock clock: Clock,
-) -> Result(#(Pool, Broker), String) {
-  start_effect_plane_in(helper, base_policy, tmp_dir, size, clock, None)
+) -> Result(#(Pool, Broker, executor.Executor), String) {
+  use pool <- result.try(start_helper_pool(helper, base_policy, tmp_dir, size))
+  use #(service, broker_actor) <- result.map(start_service_lane(
+    pool,
+    clock,
+    log.discard(),
+    None,
+  ))
+  #(pool, broker_actor, service)
 }
 
-// The owned path publishes parked helper custody before the first checkout.
-fn start_effect_plane_in(
+// Tears a one-shot plane down: no new calls, then the executor's close, which
+// drains what is running and returns the pool's own native-exit verdict. That
+// verdict is the only proof of cleanup, so a close that errs is not reported
+// as one: the pool is asked to retire what it still holds, as the cast alone
+// did before, and the caller sees the same `Nil` it always did.
+fn stop_one_shot(
+  broker_actor: Broker,
+  service: executor.Executor,
+  pool: Pool,
+) -> Nil {
+  broker.stop(broker_actor)
+  case
+    executor.close(
+      service,
+      draining: executor.drain_ms,
+      helpers: executor.helpers_ms,
+    )
+  {
+    Ok(Nil) -> Nil
+    Error(_unconfirmed) -> exec.stop_pool(pool)
+  }
+}
+
+// What a session's effect plane is made of: the executor service sits between
+// the broker and the pool and owns the helpers' checkout, checkin and close.
+type EffectPlane {
+  EffectPlane(pool: Pool, broker: Broker, executor: executor.Executor)
+}
+
+// A pool of helpers spawned lazily over the resolved spawn configuration.
+// Both planes build their pool here, exactly as it always was.
+fn start_helper_pool(
   helper: String,
   base_policy: policy.SandboxPolicy,
   tmp_dir: String,
   size: Int,
-  clock: Clock,
-  owner: Option(custody.Owner),
-) -> Result(#(Pool, Broker), String) {
+) -> Result(Pool, String) {
   let spawn_config =
     exec.SpawnConfig(
       helper_path: helper,
@@ -671,35 +717,33 @@ fn start_effect_plane_in(
       cancel_grace_ms: 3000,
       heartbeat_interval_ms: 0,
     )
-  use pool <- result.try(
-    exec.start_pool(size:, spawn: fn() { exec.prepare_helper(spawn_config) })
-    |> result.map_error(fn(error) {
-      "the helper pool did not start: " <> string.inspect(error)
-    }),
-  )
-  use Nil <- result.try(
-    retain(
-      owner,
-      custody.Helpers,
-      fn() {
-        exec.close_pool(pool, waiting: 5000) |> result.map_error(string.inspect)
-      },
-      fn() { process.unlink(exec.pool_pid(pool)) },
-    ),
-  )
-  use broker_actor <- result.try(
-    broker.start(
-      broker.BrokerConfig(
-        entropy: token.production_entropy(),
-        clock:,
-        checkout: fn() { exec.checkout(pool, waiting: 15_000) },
-        checkin: fn(helper) { exec.checkin(pool, helper) },
-      ),
-    )
-    |> result.map_error(fn(error) {
-      "the broker did not start: " <> string.inspect(error)
-    }),
-  )
+  exec.start_pool(size:, spawn: fn() { exec.prepare_helper(spawn_config) })
+  |> result.map_error(fn(error) {
+    "the helper pool did not start: " <> string.inspect(error)
+  })
+}
+
+// A session's effect plane. The owned path publishes parked helper custody
+// before the first checkout. The pool is built first and the executor service
+// is started over its seams before anything can borrow; the broker is then
+// given the service's dispatcher, and is the one door every clearance site
+// goes through.
+fn start_effect_plane_in(
+  helper: String,
+  base_policy: policy.SandboxPolicy,
+  tmp_dir: String,
+  size: Int,
+  clock: Clock,
+  logger: Logger,
+  owner: Option(custody.Owner),
+) -> Result(EffectPlane, String) {
+  use pool <- result.try(start_helper_pool(helper, base_policy, tmp_dir, size))
+  use #(service, broker_actor) <- result.try(start_service_lane(
+    pool,
+    clock,
+    logger,
+    owner,
+  ))
   use broker_pid <- result.try(
     broker.pid(broker_actor)
     |> result.replace_error("the broker died during startup"),
@@ -712,7 +756,65 @@ fn start_effect_plane_in(
       fn() { process.unlink(broker_pid) },
     ),
   )
-  Ok(#(pool, broker_actor))
+  Ok(EffectPlane(pool:, broker: broker_actor, executor: service))
+}
+
+// The service lane: the executor service is started over the pool's seams
+// before anything can borrow, its `close` becomes the `Helpers` custody
+// step (it drains executions for `executor.drain_ms` and then closes the
+// pool with its own `executor.helpers_ms`, whose verdict it returns unchanged;
+// custody's cleanup steps have no overall deadline, so the 8 s this can take
+// fits), and the broker is given its dispatcher. Custody
+// unlinks the service with the pool, since both are fatal children the
+// instance monitors instead.
+fn start_service_lane(
+  pool: Pool,
+  session_clock: Clock,
+  logger: Logger,
+  owner: Option(custody.Owner),
+) -> Result(#(executor.Executor, Broker), String) {
+  use service <- result.try(
+    executor.start(executor.ExecutorConfig(
+      checkout: fn() { exec.checkout(pool, waiting: 15_000) },
+      checkin: fn(helper) { exec.checkin(pool, helper) },
+      custody: fn() { exec.pool_custody(pool, waiting: 1000) },
+      close_helpers: fn(waiting) { exec.close_pool(pool, waiting:) },
+      incarnation: clock.read(session_clock).0,
+      log: logger,
+    ))
+    |> result.map_error(fn(error) {
+      "the executor service did not start: " <> string.inspect(error)
+    }),
+  )
+  use Nil <- result.try(
+    retain(
+      owner,
+      custody.Helpers,
+      fn() {
+        executor.close(
+          service,
+          draining: executor.drain_ms,
+          helpers: executor.helpers_ms,
+        )
+        |> result.map_error(string.inspect)
+      },
+      fn() {
+        process.unlink(exec.pool_pid(pool))
+        process.unlink(executor.pid(service))
+      },
+    ),
+  )
+  use broker_actor <- result.map(
+    broker.start_dispatching(
+      entropy: token.production_entropy(),
+      clock: session_clock,
+      dispatcher: executor.dispatcher(service),
+    )
+    |> result.map_error(fn(error) {
+      "the broker did not start: " <> string.inspect(error)
+    }),
+  )
+  #(service, broker_actor)
 }
 
 /// Everything a jailed offline build needs, and nothing a session does.
@@ -722,6 +824,8 @@ pub type BuildPlane {
     broker: Broker,
     /// The pool behind it, held so the plane can be stopped.
     pool: Pool,
+    /// The executor service between the two, closed to stop the plane.
+    executor: executor.Executor,
     /// The verified `gleam`, `erl` and build seed.
     toolchain: codemode_wiring.Toolchain,
     /// The policy a build's requirements are met against.
@@ -793,14 +897,20 @@ pub fn start_build_plane(
   // base policy the sandbox cannot enforce is a failure now, not a
   // surprise inside the build.
   use Nil <- result.try(base_policy_fault(base))
-  use #(pool, broker_actor) <- result.try(start_effect_plane(
+  use #(pool, broker_actor, service) <- result.try(start_effect_plane(
     helper: helper_path,
     base_policy: base,
     tmp_dir:,
     size: exec.min_pool_size,
     clock:,
   ))
-  Ok(BuildPlane(broker: broker_actor, pool:, toolchain:, base_policy: base))
+  Ok(BuildPlane(
+    broker: broker_actor,
+    pool:,
+    executor: service,
+    toolchain:,
+    base_policy: base,
+  ))
 }
 
 /// A helper pool and broker for proving one language profile, and the
@@ -812,6 +922,8 @@ pub type CheckPlane {
     broker: Broker,
     /// The pool behind it, held so the plane can be stopped.
     pool: Pool,
+    /// The executor service between the two, closed to stop the plane.
+    executor: executor.Executor,
     /// The base a server's lease is composed from, as a session's is.
     base_policy: policy.SandboxPolicy,
     /// How many helpers the pool holds, which the lease counter's cap is
@@ -858,7 +970,7 @@ pub fn start_check_plane(
   // sandbox cannot enforce is a failure of the check's setup, not a
   // server that later fails to start for reasons nobody can read.
   use Nil <- result.try(base_policy_fault(base))
-  use #(pool, broker_actor) <- result.try(start_effect_plane(
+  use #(pool, broker_actor, service) <- result.try(start_effect_plane(
     helper: helper_path,
     base_policy: base,
     tmp_dir:,
@@ -868,6 +980,7 @@ pub fn start_check_plane(
   Ok(CheckPlane(
     broker: broker_actor,
     pool:,
+    executor: service,
     base_policy: base,
     size: exec.min_pool_size,
   ))
@@ -882,8 +995,7 @@ pub fn start_check_plane(
 /// ```
 ///
 pub fn stop_check_plane(plane: CheckPlane) -> Nil {
-  broker.stop(plane.broker)
-  exec.stop_pool(plane.pool)
+  stop_one_shot(plane.broker, plane.executor, plane.pool)
 }
 
 /// The `PATH` a build plane's jailed compiler runs with: exactly the two
@@ -913,8 +1025,7 @@ pub fn toolchain_path_of(plane: BuildPlane) -> String {
 /// ```
 ///
 pub fn stop_build_plane(plane: BuildPlane) -> Nil {
-  broker.stop(plane.broker)
-  exec.stop_pool(plane.pool)
+  stop_one_shot(plane.broker, plane.executor, plane.pool)
 }
 
 // --- the command line ------------------------------------------------------
@@ -2006,10 +2117,13 @@ pub fn instance_children(instance: Instance) -> List(#(String, Pid)) {
     #("the service supervisor", instance.services),
     #("the session storage", instance.storage_owner),
     #("the helper pool", exec.pool_pid(instance.pool)),
-    ..case broker.pid(instance.broker) {
-      Ok(pid) -> [#("the capability broker", pid)]
-      Error(Nil) -> []
-    }
+    ..list.append(
+      [#("the executor service", executor.pid(instance.executor))],
+      case broker.pid(instance.broker) {
+        Ok(pid) -> [#("the capability broker", pid)]
+        Error(Nil) -> []
+      },
+    )
   ]
 }
 
@@ -3372,14 +3486,17 @@ fn assemble_in(
   use Nil <- result.try(base_policy_fault(base_policy))
 
   // The effect plane: a pool of jailed helpers behind the one broker.
-  use #(pool, broker_actor) <- result.try(start_effect_plane_in(
+  use plane <- result.try(start_effect_plane_in(
     settings.helper_path,
     base_policy,
     tmp_dir,
     settings.helper_pool_size,
     clock,
+    logger,
     owner,
   ))
+  let pool = plane.pool
+  let broker_actor = plane.broker
 
   // Durable *records* stay credit-driven: a client asks for a cut and the
   // bounded reader answers it. What the hub now also does is push a notice
@@ -4394,6 +4511,7 @@ fn assemble_in(
     storage_owner:,
     broker: broker_actor,
     pool:,
+    executor: plane.executor,
     gateway: hub.Gateway(name:),
     goal: option.map(advisor_wiring, goalcommand.seam),
     goal_abort: option.map(advisor_wiring, advisor.abort_notice),
@@ -4612,7 +4730,7 @@ pub fn close_instance(instance: Instance) -> Nil {
   stop_services(instance.services)
   let _stopped = address.stop(instance.namespace)
   broker.stop(instance.broker)
-  exec.stop_pool(instance.pool)
+  stop_helpers(instance)
 
   // Last, and after the runtime: an MCP client owns a child OS process,
   // and stopping one closes that child's stdin and kills it. Nothing can
@@ -4620,6 +4738,21 @@ pub fn close_instance(instance: Instance) -> Nil {
   // and the stop is a cast, so a client that has already died costs
   // nothing.
   mcp_wiring.stop(instance.mcp)
+}
+
+// Retires the session's helpers once the broker has stopped, by asking the
+// service to close: it settles anything still live, closes the pool with its
+// verdict and ends the service. A verdict that is not `Ok` leaves the pool
+// and the service alive holding the custody that could not be shown retired,
+// which is what the pool's own `stop_pool` does on the same failure.
+fn stop_helpers(instance: Instance) -> Nil {
+  let _verdict =
+    executor.close(
+      instance.executor,
+      draining: executor.drain_ms,
+      helpers: executor.helpers_ms,
+    )
+  Nil
 }
 
 // The triggered-rule scanner, and the decision not to start one.

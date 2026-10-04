@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-packages=(host core storage session machine prompt session_view web_view web_client telemetry runtime provider broker mcp lsp tools cap ext codemode events client tui conformance lint sandbox)
+packages=(host core storage session machine prompt session_view web_view web_client telemetry runtime provider broker executor mcp lsp tools cap ext codemode events client tui conformance lint sandbox)
 targets=("${@:-${packages[@]}}")
 
 if [ $# -eq 0 ]; then

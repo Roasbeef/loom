@@ -15,16 +15,19 @@ import broker/exec
 import broker/framing
 import broker/internal/ffi_os
 import broker/policy
+import broker/support/bench_host as host
 import broker/token
 import core/clock
 import core/ids
 import gleam/bit_array
 import gleam/erlang/process
+import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import simplifile
+import weft/poll
 
 // Locates the prebuilt helper and returns a ready SpawnConfig, or the
 // reason to skip.
@@ -32,6 +35,19 @@ fn helper_config() -> Result(exec.SpawnConfig, String) {
   case exec.unjailed_skip_reason(exec.host_platform()) {
     Some(reason) -> Error(reason)
     None -> helper_config_here()
+  }
+}
+
+// The kill-custody tests below find the helper's OS pid, and the processes
+// under it, by reading `/proc` through `support/bench_host`, and only Linux
+// has one. Elsewhere they skip with that reason rather than fail on the
+// missing directory, which would read as a broken ruling instead of an
+// unreadable host.
+fn proc_helper_config() -> Result(exec.SpawnConfig, String) {
+  case ffi_os.os_name() {
+    "linux" -> helper_config()
+    other ->
+      Error("the kill evidence is read from /proc, which " <> other <> " lacks")
   }
 }
 
@@ -586,4 +602,295 @@ pub fn real_broker_session_lifetime_remains_jailed_and_cancellable_test() {
   let assert Ok(_helper) = process.receive(returned, 2000)
     as "settlement returns the helper"
   broker.stop(owner)
+}
+
+// Accumulates stdout until the terminal event, keeping the event itself so
+// a test can tell an exit from an in-band failure.
+fn collect_terminal(
+  events: process.Subject(exec.ExecEvent),
+  stdout: BitArray,
+  timeout: Int,
+) -> #(BitArray, Result(exec.ExecEvent, Nil)) {
+  case process.receive(events, timeout) {
+    Ok(exec.Output(stream: framing.Stdout, data:, ..)) ->
+      collect_terminal(events, bit_array.append(stdout, data), timeout)
+    Ok(exec.Output(stream: framing.Stderr, ..)) ->
+      collect_terminal(events, stdout, timeout)
+    Ok(terminal) -> #(stdout, Ok(terminal))
+    Error(Nil) -> #(stdout, Error(Nil))
+  }
+}
+
+// A refused stdin write is answered by the helper with `error{no_exec}`
+// carrying the stdin frame's id. That error is about the *write*, not about
+// the execution, so it must not settle the execution: the payload is still
+// running and its real `exec_exit` is still owed. Before stdin frames had
+// ids of their own the error carried the execution's id, `settle` took it
+// for the execution's own refusal, and the machine went `Idle` with the
+// payload alive in the helper, so the next `Run` got a Go `busy`.
+//
+// The refusal is provoked by writing after end of file. The payload also
+// closes its own stdin, which is the shape the report described, but under
+// bwrap the jail's supervisor keeps the pipe's read end open, so that alone
+// does not fail the helper's write; the second send after `eof` does, on
+// every platform.
+pub fn real_helper_stdin_error_does_not_settle_execution_test() {
+  use helper <- with_real_helper("real_helper_stdin_error")
+  let events = process.new_subject()
+  let req =
+    request(
+      ["/bin/sh", "-c", "exec 0<&-; echo closed; sleep 2; echo done"],
+      1024,
+    )
+  assert exec.run(helper, req, events:, waiting: 3000) == Ok(Nil)
+  let assert Ok(exec.Output(data: <<"closed\n":utf8>>, ..)) =
+    process.receive(events, 5000)
+    as "the payload has closed its stdin before any is sent"
+
+  // The first send closes the helper's side of the pipe; the second is
+  // refused. Spaced, so the refusal is read while the payload still runs.
+  exec.stdin(helper, data: <<"first">>, eof: True)
+  process.sleep(100)
+  exec.stdin(helper, data: <<"second">>, eof: False)
+  let #(stdout, terminal) = collect_terminal(events, <<>>, 10_000)
+  let assert Ok(exec.Exited(exit)) = terminal
+    as "the execution settles by its own exit, not by the stdin refusal"
+  assert exit.code == 0
+  assert stdout == <<"done\n":utf8>>
+}
+
+// The marker in the payload's argv, which is how a leftover is recognised in
+// `/proc`. Nothing else on this host sleeps for this long.
+const kill_marker = "300.75"
+
+// A helper that cannot act on a cancel is killed by the broker, and that kill
+// must keep its proof. The helper is stopped with SIGSTOP, so the cancel goes
+// unanswered, the grace expires, and the machine settles `CancelEscalated`.
+// Before the kill was witnessed, the port was closed ahead of the SIGKILL, no
+// exit status could be selected, and the slot became `Unconfirmed` for good,
+// although the jail had died with its helper all the same.
+//
+// This is the disproof of the ruling as much as its test. The claim is that a
+// SIGKILLed helper under bwrap takes its jail with it, so the retained port's
+// `exit_status` is enough evidence. If the marked payload survived the kill,
+// the ruling would be wrong and the slot would have to stay unconfirmed.
+pub fn real_helper_witnessed_kill_retires_a_stopped_helper_test() {
+  case proc_helper_config() {
+    Error(reason) ->
+      io.println_error("SKIP real_helper_witnessed_kill: " <> reason)
+    Ok(shared) -> {
+      // The helper is stopped, so the grace only has to pass, not to be a
+      // useful interval for it.
+      let config = exec.SpawnConfig(..shared, cancel_grace_ms: 500)
+      let baseline = host.helper_os_pids()
+      let assert Ok(pool) =
+        exec.start_pool(size: 1, spawn: fn() { exec.prepare_helper(config) })
+        as "native pool starts"
+      let assert Ok(helper) = exec.checkout(pool, waiting: 5000)
+        as "native helper lent"
+      let assert exec.StatusReady(features) = exec.status(helper, waiting: 1000)
+      let jailed = list.contains(features, "bwrap")
+
+      let events = process.new_subject()
+      let req =
+        request(
+          [
+            "/bin/sh",
+            "-c",
+            "trap \"\" TERM; echo ready; sleep " <> kill_marker,
+          ],
+          1024,
+        )
+      assert exec.run(helper, req, events:, waiting: 3000) == Ok(Nil)
+      let assert Ok(exec.Output(data: <<"ready\n":utf8>>, ..)) =
+        process.receive(events, 5000)
+        as "the payload ignores TERM and is running"
+
+      // The port's OS pid must be the helper and not the shell that opened
+      // fd 3 for it, or the SIGKILL below would not be addressed to it.
+      let assert Ok(victim) = host.busy_helper_os_pid(exclude: baseline)
+        as "exactly one new helper is running an execution"
+      let assert [#(_, "loom-exec", _), ..] = host.proc_tree(victim)
+        as "the port's pid is the exec'd helper itself"
+      host.signal(victim, "STOP")
+      exec.cancel(helper)
+      assert process.receive(events, 5000)
+        == Ok(exec.Failed(exec.CancelEscalated))
+
+      // Under bwrap the jail dies with its helper. Without it nothing
+      // promises that, so the leftover is ours to reap and not to assert on.
+      case jailed {
+        True -> {
+          let assert poll.Answered(Nil) =
+            poll.until(within: 1000, every: 20, attempt: fn() {
+              case host.census([kill_marker]) {
+                [] -> poll.Done(Nil)
+                _survivors -> poll.Retry
+              }
+            })
+            as "no process carrying the payload's marker survives the kill"
+          Nil
+        }
+        False ->
+          list.each(host.census([kill_marker]), fn(entry) {
+            host.signal(entry.0, "KILL")
+          })
+      }
+
+      // The pool takes the dead helper back, retires it on the exit status
+      // the kill produced, and lends a replacement before it is closed.
+      exec.checkin(pool, helper)
+      case jailed {
+        True -> {
+          let assert poll.Answered(replacement) =
+            poll.until(within: 5000, every: 20, attempt: fn() {
+              case exec.checkout(pool, waiting: 5000) {
+                Ok(next) -> poll.Done(next)
+                Error(exec.AllBusy(..)) -> poll.Retry
+                Error(other) -> poll.Fail(other)
+              }
+            })
+            as "the killed helper's slot is lent again"
+          assert exec.pid(replacement) != exec.pid(helper)
+          exec.checkin(pool, replacement)
+          assert exec.close_pool(pool, waiting: 5000) == Ok(Nil)
+        }
+
+        // Nothing promises the jail died with the helper, so the slot stays
+        // unconfirmed, and the exit status is what says so.
+        False -> {
+          assert exec.close_pool(pool, waiting: 5000)
+            == Error(exec.RetirementExit(137))
+        }
+      }
+    }
+  }
+}
+
+// How long after the broker knows a killed helper is retired its payload may
+// still be writing. The claim the witnessed kill makes is that the kernel has
+// already begun killing the jail when the exit status is selected, so the
+// payload gets a couple of scheduler wakeups and a namespace teardown at most.
+// A tenth of a second is far above both and far below anything a replacement
+// session could do with the freed slot.
+const ordering_slack_ns = 100_000_000
+
+// The ordering half of the disproof. The payload appends the wall clock to a
+// file in a writable root as fast as `date` forks; the helper is stopped, the
+// cancel goes unanswered, and the broker kills it. The instant `close` answers
+// `Ok` is the instant the broker would release custody, so no timestamp the
+// payload wrote after that instant, plus the slack, may exist. A line later
+// than that would mean the jail outlived the verdict and the slot must stay
+// unconfirmed. The measured lag is printed so a reader can see the margin.
+pub fn real_helper_kill_verdict_precedes_no_late_payload_write_test() {
+  case proc_helper_config() {
+    Error(reason) ->
+      io.println_error("SKIP real_helper_kill_ordering: " <> reason)
+    Ok(shared) -> {
+      let config = exec.SpawnConfig(..shared, cancel_grace_ms: 500)
+      let baseline = host.helper_os_pids()
+      let assert Ok(helper) = exec.spawn_helper(config)
+        as "native helper spawns"
+      let assert exec.StatusReady(features) = exec.status(helper, waiting: 1000)
+      let assert Ok(here) = simplifile.current_directory()
+      let log = here <> "/build/integration/work/ordering-" <> unique_name()
+      let _ = simplifile.delete(log)
+
+      let events = process.new_subject()
+      let req =
+        request(
+          [
+            "/bin/sh",
+            "-c",
+            "trap '' TERM; while :; do date +%s%N >> " <> log <> "; done",
+          ],
+          1024,
+        )
+      assert exec.run(helper, req, events:, waiting: 3000) == Ok(Nil)
+      let assert poll.Answered(Nil) =
+        poll.until(within: 3000, every: 20, attempt: fn() {
+          case simplifile.read(log) {
+            Ok(text) ->
+              case list.length(string.split(text, "\n")) > 5 {
+                True -> poll.Done(Nil)
+                False -> poll.Retry
+              }
+            Error(_) -> poll.Retry
+          }
+        })
+        as "the payload is writing its clock inside the jail"
+
+      let assert Ok(victim) = host.busy_helper_os_pid(exclude: baseline)
+        as "exactly one new helper is running an execution"
+      host.signal(victim, "STOP")
+      exec.cancel(helper)
+      assert process.receive(events, 5000)
+        == Ok(exec.Failed(exec.CancelEscalated))
+
+      let verdict = exec.close(helper, waiting: 5000)
+      let witnessed = host.system_time_ns()
+      process.sleep(500)
+      let assert Ok(text) = simplifile.read(log) as "the payload's clock log"
+      let latest =
+        string.split(text, "\n")
+        |> list.filter_map(int.parse)
+        |> list.fold(0, int.max)
+      let lag = latest - witnessed
+      io.println_error(
+        "kill_ordering: latest payload write "
+        <> int.to_string(lag / 1000)
+        <> " us after the verdict (negative is before)",
+      )
+      case list.contains(features, "bwrap") {
+        True -> {
+          assert verdict == Ok(Nil)
+          assert latest > 0
+          assert lag <= ordering_slack_ns
+        }
+        False -> {
+          assert verdict == Error(exec.RetirementExit(137))
+          list.each(host.census([log]), fn(entry) {
+            host.signal(entry.0, "KILL")
+          })
+        }
+      }
+    }
+  }
+}
+
+fn unique_name() -> String {
+  int.to_string(host.unique()) <> ".log"
+}
+
+// A failed write finds the port already closed, so no exit status can ever
+// arrive and the proof is lost for good. Only a real port can fail a write, so
+// the port of an idle helper is closed from outside, which is what a port
+// that failed under its owner looks like: the next write is refused, and the
+// helper is declared dead without being killed, since there is no port left to
+// wait on. A late exit event injected afterwards cannot repair it. Had the
+// failed write been treated as a kill, that late status would have retired
+// the helper.
+pub fn real_helper_failed_write_loses_the_proof_test() {
+  case proc_helper_config() {
+    Error(reason) ->
+      io.println_error("SKIP real_helper_failed_write: " <> reason)
+    Ok(config) -> {
+      let baseline = host.helper_os_pids()
+      let assert Ok(helper) = exec.spawn_helper(config)
+        as "native helper spawns"
+      let assert [victim] =
+        list.filter(host.helper_os_pids(), fn(pid) {
+          !list.contains(baseline, pid)
+        })
+        as "one new helper port"
+      let assert Ok(Nil) = host.close_port_of(victim)
+        as "the helper's port is closed under its owner"
+      assert exec.heartbeat(helper, waiting: 2000) == Error(exec.SendFailed)
+      assert exec.status(helper, waiting: 1000)
+        == exec.StatusDead(exec.SendFailed)
+      process.send(exec.wire(helper), exec.WireClosed(0))
+      assert exec.close(helper, waiting: 1000)
+        == Error(exec.RetirementProofLost)
+    }
+  }
 }

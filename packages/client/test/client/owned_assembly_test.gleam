@@ -4,6 +4,7 @@
 
 import broker/broker
 import broker/exec
+import broker/executor
 import client/catalog
 import client/codemode
 import client/distillpass
@@ -183,6 +184,27 @@ pub fn two_owned_instances_keep_reserved_ids_and_close_independently_test() {
   assert simplifile.is_file(first_settings.token_path) == Ok(False)
   process.demonitor_process(first_watch)
   process.demonitor_process(second_watch)
+}
+
+/// A session assembles under custody with the executor service as a fatal
+/// root beside the pool and the broker: the `Helpers` step closes it
+/// (draining executions and then the pool), and the session's lease is
+/// released only after that step.
+pub fn the_executor_service_is_a_fatal_root_and_closes_under_custody_test() {
+  let settings = settings()
+  let #(prepared, instance, watch) = opened(settings, identity(22))
+  let roots = serve.instance_children(instance)
+  assert list.contains(
+    list.map(roots, fn(root) { root.0 }),
+    "the executor service",
+  )
+  assert process.is_alive(executor.pid(instance.executor))
+  lease_is_held(settings)
+
+  assert host.close(prepared, within_ms: 5000) == custody.Closed
+  assert !process.is_alive(executor.pid(instance.executor))
+  lease_is_released(settings)
+  process.demonitor_process(watch)
 }
 
 pub fn builder_kill_mid_assembly_keeps_lease_until_published_effect_drains_test() {

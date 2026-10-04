@@ -84,3 +84,13 @@ host|host@build_identity_test|sets and clears LOOM_BUILD_VERSION and LOOM_BUILD_
 # and freeze another module's actors — and a sibling actor that dies between
 # the census and the suspension answers `noproc`.
 client|client@assembly_heap_census_test|differences erlang:processes/0 and suspends what it finds; node-wide
+
+# --- the node's own helper ports and process count -------------------------
+# The kill-custody tests find "the new helper" by differencing the OS pids
+# behind `erlang:ports()` before and after a spawn, and expect exactly one.
+# Any sibling module spawning a `loom-exec` helper in the window adds a port
+# to that difference. The leak census differences `erlang:system_info(
+# process_count)` across a hundred executions, which a sibling's actors
+# move. Both read state every module on the emulator shares.
+broker|broker@integration_test|differences the node's helper ports from erlang:ports() and expects exactly one new loom-exec; a sibling spawning a helper adds another
+broker|broker@leak_census_test|differences erlang:system_info(process_count) across a hundred executions; the count is node-wide

@@ -63,7 +63,8 @@
 #   enforcement              `loom-exec --self-test`, held to
 #                            .github/enforcement-expectations — the same
 #                            file, so this box must enforce every layer
-#                            the hosted jail job enforces.
+#                            the hosted jail job enforces; then `make
+#                            executor-smoke`, which refuses a degraded helper.
 #
 # `make e2e` and `make e2e-codemode` are not lanes because they are the
 # conformance and codemode package suites by another name; with a
@@ -191,7 +192,7 @@ lane_conformance() {
 }
 lane_fast() {
 	$retry bash scripts/check.sh host core machine prompt session_view web_view web_client \
-		telemetry provider broker mcp lsp tools cap ext codemode lint sandbox
+		telemetry provider broker executor mcp lsp tools cap ext codemode lint sandbox
 }
 lane_static() {
 	python3 scripts/with_timeout.py 20 -- \
@@ -201,7 +202,8 @@ lane_static() {
 lane_enforcement() {
 	./packages/sandbox/loom-exec --self-test 2>&1 | tee "$logs/selftest.log"
 	.github/scripts/enforcement_report.sh "$logs/selftest.log" \
-		.github/enforcement-expectations "$context (self-test)"
+		.github/enforcement-expectations "$context (self-test)" &&
+		make executor-smoke
 }
 
 lanes=(client mid conformance fast static enforcement)

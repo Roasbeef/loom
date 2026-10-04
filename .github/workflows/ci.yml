@@ -396,7 +396,7 @@ jobs:
           # and both are cheap.
           - bucket: fast
             packages: >-
-              host core machine prompt session_view web_view web_client telemetry provider broker
+              host core machine prompt session_view web_view web_client telemetry provider broker executor
               mcp lsp tools cap ext codemode tui lint sandbox
     steps:
       # actions/checkout v7.0.1
@@ -1356,6 +1356,13 @@ jobs:
 
       - name: Skip census (end to end)
         run: .github/scripts/skip_census.sh "jail (linux, e2e)" e2e.log e2e-codemode.log
+
+      # The standalone executor against this job's bwrap-bearing helper: its
+      # smoke refuses a degraded result, so only a jail with bwrap can pass.
+      - name: make executor-smoke
+        run: |
+          . .github/scripts/join_delegated_cgroup.sh
+          .github/scripts/hex_retry.sh make executor-smoke
 
       # The ordinary gate can observe a missing enforcement prerequisite, but
       # this job has already supplied and verified the delegated kernel setup.

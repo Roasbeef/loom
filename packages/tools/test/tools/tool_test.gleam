@@ -263,6 +263,18 @@ pub fn a_helper_ahead_of_this_build_blames_the_harness_test() {
   assert string.contains(text, "rebuild the harness")
 }
 
+// A lost execution must not read as a refusal. The model decides whether
+// to retry, and it can only decide well if the text says the command may
+// already have run.
+pub fn a_lost_execution_says_it_may_have_run_test() {
+  let causes = [exec.HelperActorDown, exec.RelayDown, exec.ExecutorClosing]
+  list.each(causes, fn(cause) {
+    let text = tool.exec_failure_text(exec.ExecutionLost(cause:))
+    assert string.contains(text, "may have run")
+    assert string.contains(text, "unknown")
+  })
+}
+
 // --- seams the snippet census needs ----------------------------------------
 //
 // Every plane-gated tool is built from a seam record, and the census

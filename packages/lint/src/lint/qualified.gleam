@@ -49,6 +49,7 @@ pub fn loom_roots() -> List(String) {
     "conformance",
     "core",
     "events",
+    "executor",
     "ext",
     "host",
     "lint",
