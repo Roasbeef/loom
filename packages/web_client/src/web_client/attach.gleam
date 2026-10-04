@@ -168,11 +168,29 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 // The state after a change to what is held, and the form's value for it: the
 // images as one field, or no field at all when none is held.
 fn changed(model: Model, state: State) -> #(Model, Effect(Msg)) {
-  let value = case attach_rule.value(state) {
-    Ok(text) -> component.set_form_value(text)
-    Error(Nil) -> component.clear_form_value()
+  let #(value, holding) = case attach_rule.value(state) {
+    Ok(text) -> #(component.set_form_value(text), "yes")
+    Error(Nil) -> #(component.clear_form_value(), "no")
   }
-  #(Model(..model, state:), value)
+  #(Model(..model, state:), effect.batch([value, telling(holding)]))
+}
+
+// Tells the composer's editor whether images are held, in its `attached`
+// attribute, because an image alone is a message the daemon accepts and the
+// editor decides whether the send buttons can be pressed. The attribute is
+// the editor's own input (`web_client/composer`), set from outside it as the
+// server sets `returned`, so neither element imports the other.
+fn telling(holding: String) -> Effect(Msg) {
+  use _, root <- effect.after_paint
+  let told = {
+    use form <- result.try(ffi_dom.closest(
+      ffi_dom.host(ffi_dom.as_element(root)),
+      "form",
+    ))
+    use editor <- result.map(ffi_dom.query_selector(form, "loom-composer"))
+    ffi_dom.set_attribute(editor, "attached", holding)
+  }
+  result.unwrap(told, or: Nil)
 }
 
 fn candidates(files: List(ffi_dom.File)) -> List(Candidate(ffi_dom.File)) {

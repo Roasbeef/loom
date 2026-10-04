@@ -29,6 +29,7 @@
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -66,9 +67,7 @@ pub fn view(trace: Trace) -> Element(message) {
         title(),
         latest_program(latest),
         earlier_programs(earlier, trace.omitted),
-        html.p([attribute.class("trace-note")], [
-          html.text(trace_view.capability_calls_recorded()),
-        ]),
+        no_calls(latest),
       ]
     },
   )
@@ -86,22 +85,66 @@ fn latest_program(program: Program) -> Element(message) {
       html.span([attribute.class("trace-label")], [html.text(program.label)]),
       state_chip(program.state),
     ]),
-    case program.excerpt {
-      Some(excerpt) ->
-        html.p([attribute.class("trace-result")], [html.text(excerpt)])
-      None -> element.none()
-    },
-    case program.sandbox {
-      Some(line) ->
-        html.p([attribute.class("trace-sandbox")], [html.text(line)])
-      None -> element.none()
-    },
+    result(program),
     calls(program.calls),
-    html.details([attribute.class("trace-budget")], [
-      html.summary([], [html.text("Budget")]),
-      html.p([], [html.text(trace_view.budget_line(program))]),
+    html.p([attribute.class("trace-budget")], [
+      html.text("Budget · " <> trace_view.budget_words(program)),
     ]),
   ])
+}
+
+// What the program came to. A program that did not compile or run shows its
+// own diagnostics (`Program.detail`), never the result's text, which is
+// written to tell the model what to fix; one with no diagnostics shows
+// nothing rather than that text. Every other state shows its excerpt.
+fn result(program: Program) -> Element(message) {
+  case program.state, program.detail {
+    CompileFailed, Some(detail)
+    | RunFailed, Some(detail)
+    | Rejected, Some(detail)
+    -> diagnostic(detail)
+    CompileFailed, None | RunFailed, None | Rejected, None -> element.none()
+    Running, _ | Completed, _ | Errored, _ | Failed, _ ->
+      case program.excerpt {
+        Some(excerpt) ->
+          html.p([attribute.class("trace-result")], [html.text(excerpt)])
+        None -> element.none()
+      }
+  }
+}
+
+// A failure's diagnostics in the code face: their first two lines, and the
+// rest behind a chevron when there is more. The text is the compiler's or the
+// runtime's, drawn as text nodes.
+fn diagnostic(detail: String) -> Element(message) {
+  case string.split(detail, "\n") {
+    [first, second, third, ..more] ->
+      html.details([attribute.class("trace-diagnostic")], [
+        html.summary([attribute.class("trace-result")], [
+          html.text(first <> "\n" <> second),
+        ]),
+        html.pre([attribute.class("trace-result")], [
+          html.text(string.join([third, ..more], "\n")),
+        ]),
+      ])
+    [_] | [_, _] | [] ->
+      html.pre(
+        [attribute.class("trace-result"), attribute.class("trace-diagnostic")],
+        [html.text(detail)],
+      )
+  }
+}
+
+// A line saying so when the newest program has no call record, so a program
+// that shows no calls is not read as one that made none.
+fn no_calls(program: Program) -> Element(message) {
+  case program.calls {
+    [] ->
+      html.p([attribute.class("trace-note")], [
+        html.text("No calls recorded."),
+      ])
+    [_, ..] -> element.none()
+  }
 }
 
 // The rows of the call record the result carried: a heading and one row per

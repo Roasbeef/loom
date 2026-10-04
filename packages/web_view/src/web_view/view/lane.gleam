@@ -55,6 +55,7 @@ import lustre/element/html
 import lustre/element/keyed
 import lustre/event
 import session_view/agent_roster
+import session_view/composer
 import session_view/decisions
 import session_view/markdown
 import session_view/step_words
@@ -815,37 +816,11 @@ fn block_element(
 // alone for one short line, and otherwise the report's first line as the row
 // a reader scans, with the whole report in Markdown behind it.
 fn result_report(report: String) -> List(Element(message)) {
-  let first = first_line(report)
+  let first = step_words.result_line(report)
   case first, string.trim(report) == first {
     "", _ -> []
     _, True -> [html.p([attribute.class("result-line")], [html.text(first)])]
     _, False -> [fold_row.reading(first, [card_body(report)])]
-  }
-}
-
-// The first line of a report that says something, without the Markdown
-// marker it opens with or the backticks of a code span, and cut to a line's
-// width.
-fn first_line(report: String) -> String {
-  let line =
-    report
-    |> string.split("\n")
-    |> list.map(string.trim)
-    |> list.find(fn(line) { line != "" })
-    |> result.unwrap("")
-    |> string.replace("`", "")
-  let bare = case line {
-    "# " <> rest
-    | "## " <> rest
-    | "### " <> rest
-    | "> " <> rest
-    | "- " <> rest
-    | "* " <> rest -> string.trim(rest)
-    _ -> line
-  }
-  case string.length(bare) > 120 {
-    True -> string.slice(bare, 0, 119) <> "…"
-    False -> bare
   }
 }
 
@@ -894,7 +869,17 @@ fn thumbnail(session: String, ref: String, position: Int) -> Element(message) {
   ])
 }
 
-fn line_element(line: Line) -> Element(message) {
+// A line is the shared projection's, which words a collapsed row with the
+// terminal's `Ctrl+G` hint. The page has no such key, so the hint is taken off
+// the row here, at the one place the page draws a line, and the rows the
+// reader opens are the chevron's.
+fn line_element(shown: Line) -> Element(message) {
+  let line =
+    transcript_line.Line(
+      ..shown,
+      text: composer.without_expand_hint(shown.text),
+    )
+
   case body_of(line.speaker) {
     // A patch is a diff, drawn in colour a line at a time by `view/diff`.
     Literal if line.speaker == transcript_line.ToolPatch ->

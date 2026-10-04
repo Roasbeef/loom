@@ -397,6 +397,32 @@ pub fn memory_summary(lines: Int) -> String {
 /// the same words, so one spelling serves both and neither can drift.
 pub const expand_hint = "  [Ctrl+G to expand]"
 
+/// A collapsed row's text without the terminal's key hint.
+///
+/// A projected row names the terminal's `Ctrl+G` because the terminal is the
+/// host that has the key, and its words are the shared contract of both
+/// hosts' tests. A host with no such key draws the same row through this, so
+/// the page never tells a reader to press a key it does not have. It removes
+/// the plain hint and the byte-estimate form (`[~500 tokens · Ctrl+G to
+/// expand]`, which keeps its count), wherever in the text they stand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert composer.without_expand_hint("[loom] rule \"r\"  [Ctrl+G to expand]")
+///   == "[loom] rule \"r\""
+/// ```
+///
+/// ```gleam
+/// assert composer.without_expand_hint("start  [~500 tokens · Ctrl+G to expand]")
+///   == "start  [~500 tokens]"
+/// ```
+pub fn without_expand_hint(text: String) -> String {
+  text
+  |> string.replace(expand_hint, "")
+  |> string.replace(" · Ctrl+G to expand]", "]")
+}
+
 /// The single line a harness injection collapses to, or `None` when this
 /// is not one.
 ///

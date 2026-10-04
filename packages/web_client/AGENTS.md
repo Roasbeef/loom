@@ -29,7 +29,11 @@ renders again just for it:
   It lists the slash commands as the draft grows, sends the draft on
   Command or Control with Enter, and puts a prompt the daemon handed back
   into the editor. These react to text that only the browser has until the
-  form is submitted, which is why they are here.
+  form is submitted, which is why they are here. It also disables the form's
+  submit buttons while the editor is empty and holds no image
+  (`composer_rule.gate`, `Open | Shut`); `<loom-attach>` reports images in the
+  composer's `attached` attribute (`yes | no`), because an image alone is a
+  message the daemon accepts.
 - `<loom-attach name="images" limits="<json>">` is the operator composer's
   image attachments (protocol-change/051, the addendum on images): an Attach
   image button for the file picker, a paste into the composer's form, a chip

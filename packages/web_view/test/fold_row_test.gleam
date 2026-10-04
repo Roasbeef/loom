@@ -264,6 +264,53 @@ pub fn a_long_result_is_its_first_line_opened_to_the_report_test() {
   assert string.contains(html, "Found two files and fixed one.")
 }
 
+// A collapsed result cut at a word boundary ends with the ellipsis inside its
+// line, which the stylesheet keeps to one row; the ellipsis is never a row of
+// its own, and the cut leaves no half word before it.
+pub fn a_cut_result_line_ends_with_an_inline_ellipsis_test() {
+  let report = string.repeat("alpha ", 40) <> "\n\nthe rest of the report"
+  let html =
+    drawn([
+      turns.Returned(
+        "6.0/0/0",
+        "sub:main/scan-1a2b3c",
+        "completed",
+        report,
+        turns.Sub(0),
+      ),
+    ])
+  let assert Ok(#(_, after)) = string.split_once(html, "class=\"subject\">")
+  let assert Ok(#(line, _)) = string.split_once(after, "</span>")
+
+  assert string.ends_with(line, "alpha…")
+  assert string.length(line) <= 141
+  assert !string.contains(line, "alph…")
+}
+
+// The terminal words a collapsed row with its `Ctrl+G` hint; the page has no
+// such key, so no row it draws carries the hint.
+pub fn no_row_names_the_terminals_key_test() {
+  let feed =
+    Block("4.0", FromSpacer, [
+      #(
+        "4.0:0",
+        Line(transcript_line.System, "advisor feed: user:  [Ctrl+G to expand]"),
+      ),
+      #(
+        "4.0:1",
+        Line(
+          transcript_line.User,
+          "start of a paste  [~500 tokens · Ctrl+G to expand]",
+        ),
+      ),
+    ])
+  let html = drawn([turns.Plain(feed, dict.new(), None)])
+
+  assert !string.contains(string.lowercase(html), "ctrl+g")
+  assert string.contains(html, "advisor feed: user:")
+  assert string.contains(html, "[~500 tokens]")
+}
+
 fn review(key: String) -> Block {
   Block(key, FromAdvisor, [
     #(key <> ":0", Line(transcript_line.System, "Advisor · reviewed the plan")),

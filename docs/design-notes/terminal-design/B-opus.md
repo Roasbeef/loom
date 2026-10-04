@@ -199,7 +199,7 @@ fewer columns.
 - Elapsed time and tokens: `Line` at `session_view/agent_roster.gleam:84`,
   which the strip already draws.
 - The status words: `status_line` at `session_view/strand_card.gleam:45`; the
-  Needs you count: `needing` at `session_view/strand_card.gleam:205`.
+  Needs you count: `needing` at `session_view/strand_card.gleam:240`.
 - Messages: `for_strand` at `session_view/agent_messages.gleam:167`, the
   verified sends the captures have seen. The heading says "seen in captures"
   because a message sent by a strand whose branch the client has not
@@ -397,15 +397,15 @@ record would need a new control command.
 | Region | Data | Source today |
 |---|---|---|
 | Gutter hues | strand hue | `hue` at `session_view/turns.gleam:248` |
-| Worked divider with failure count | the turn's steps | `divider` at `session_view/turns.gleam:1099`, plus a failure count from the steps' results |
+| Worked divider with failure count | the turn's steps | `divider` at `session_view/turns.gleam:1109`, plus a failure count from the steps' results |
 | Collapsed repeats (`agent_wait ×15`) | consecutive identical calls | a new rule in `project` at `session_view/tool_activity.gleam:55`; no wire change |
 | Collapsed repeated errors (`429 ×20`) | consecutive identical local lines | a fold in `session_view` over `Shared.transcript`; no wire change |
-| Harness notices as system lines | the `[loom] ` prefix | recognised today only to bound the turn, `harness_injection_summary` at `session_view/composer.gleam:425`; the line builder still draws a User turn |
+| Harness notices as system lines | the `[loom] ` prefix | recognised today only to bound the turn, `harness_injection_summary` at `session_view/composer.gleam:444`; the line builder still draws a User turn |
 | Spawn tree, roster, Strands tab | status, words, time, tokens | `Line` at `session_view/agent_roster.gleam:84`, `chips` at `session_view/agent_roster.gleam:393` |
 | Activity line | the active operation | `tui/layout` labels today (`active_status_label`) |
 | Status rule: ctx | context estimate | `footer` at `session_view/context_view.gleam:358` |
 | Status rule: cost | session total | `usage` at `session_view/model.gleam:353` |
-| Status rule: needs you | approvals per strand | `needing` at `session_view/strand_card.gleam:205` |
+| Status rule: needs you | approvals per strand | `needing` at `session_view/strand_card.gleam:240` |
 | Strands tab: cache | outlook per strand | `outlook` at `session_view/cache_watch.gleam:120` |
 | Changes tab | session edits | `fold` at `session_view/changes_view.gleam:210` |
 | Session tab: jobs, viewers | jobs board, presence | `jobs` at `session_view/session_summary.gleam:99`, `viewers` at `session_view/session_summary.gleam:122` |

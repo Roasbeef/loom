@@ -28,6 +28,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import session_view/agent_roster
 import session_view/agent_view
+import session_view/text_hygiene
 
 /// The card's one status line for `line`.
 ///
@@ -150,17 +151,28 @@ pub fn glyph(status: agent_view.Status) -> String {
   }
 }
 
-/// The task a strand's own view shows, or `None` when the roster holds only a
-/// placeholder. `agent_view` words a task it cannot read as `Task unavailable`
+/// The task a strand's own view shows, or `None` when the roster holds no task
+/// worth a row. `agent_view` words a task it cannot read as `Task unavailable`
 /// or `Task brief outside loaded history`, which tell a reader nothing about
-/// the strand, so a view leaves the row out as it leaves out any figure it does
-/// not know.
+/// the strand. The advisor's roster title is the prompt of its feed
+/// (`[advisor feed: ...]` and the primary's recent turn), which is a
+/// placeholder and not a task: the advisor's task is fixed, and its card's
+/// status already says so. A view leaves each of those rows out as it leaves
+/// out any figure it does not know.
+///
+/// A sub-agent's brief is the model's whole first message, so it is cut to
+/// its first sentence and `task_limit` characters, ending in an ellipsis when
+/// it was cut, which keeps a row to the length a figure should have.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// assert strand_card.task_words("Fix the parser") == Some("Fix the parser")
 /// assert strand_card.task_words("Task unavailable") == None
+/// assert strand_card.task_words("[advisor feed: what changed] user: Add it")
+///   == None
+/// assert strand_card.task_words("Fix the parser. Then add tests.")
+///   == Some("Fix the parser.")
 /// ```
 pub fn task_words(title: String) -> Option(String) {
   let placeholder = fn(known: String) {
@@ -171,9 +183,32 @@ pub fn task_words(title: String) -> Option(String) {
     title == ""
     || placeholder(agent_view.task_unavailable)
     || placeholder(agent_view.task_outside_history)
+    || string.starts_with(title, advisor_feed_prefix)
   {
     True -> None
-    False -> Some(title)
+    False -> Some(first_sentence(title))
+  }
+}
+
+/// The most characters `task_words` keeps of a brief.
+pub const task_limit = 120
+
+// How the advisor's roster title opens: the feed's own header, which the
+// engine writes for the model and is no task.
+const advisor_feed_prefix = "[advisor feed"
+
+// The brief's first sentence, cut at `task_limit` characters. A sentence ends
+// at a full stop followed by a space, so `calc.py` and `v1.2` do not end one.
+fn first_sentence(text: String) -> String {
+  let one_line = text_hygiene.single_line(text)
+  let sentence = case string.split_once(one_line, ". ") {
+    Ok(#(first, _rest)) -> first <> "."
+    Error(Nil) -> one_line
+  }
+
+  case string.length(sentence) > task_limit {
+    True -> string.slice(sentence, 0, task_limit - 1) <> "…"
+    False -> sentence
   }
 }
 

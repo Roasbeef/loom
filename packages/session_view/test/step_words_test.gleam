@@ -119,8 +119,71 @@ pub fn the_other_shipped_tools_have_their_own_verbs_test() {
     == Words("Noted", Mono("plan"), None)
   assert words("context_remaining", [])
     == Words("Checked context", Unnamed, None)
-  assert words("todo", [#("op", text("view"))])
-    == Words("Todo", Prose("view"), None)
+}
+
+// The `todo` tool's ops are the model's vocabulary; a step says what a
+// person would: a count for a new list, a past participle and the task for
+// the rest.
+pub fn a_todo_step_reads_in_a_readers_words_test() {
+  let phase = fn(items) {
+    json.Object([#("name", text("Work")), #("items", json.Array(items))])
+  }
+  let task = fn(op, name) {
+    words("todo", [#("op", text(op)), #("task", text(name))])
+  }
+
+  assert step_words.text(words("todo", [#("op", text("view"))]))
+    == "Todo · viewed"
+  assert step_words.text(
+      words("todo", [
+        #("op", text("init")),
+        #(
+          "phases",
+          json.Array([
+            phase([text("a"), text("b")]),
+            phase([text("c"), text("d")]),
+          ]),
+        ),
+      ]),
+    )
+    == "Todo · 4 tasks"
+  assert step_words.text(
+      words("todo", [
+        #("op", text("init")),
+        #("items", json.Array([text("a")])),
+      ]),
+    )
+    == "Todo · 1 task"
+  assert step_words.text(task("done", "Add modulo to calc.py"))
+    == "Todo · done: Add modulo to calc.py"
+  assert step_words.text(task("drop", "Run the program"))
+    == "Todo · dropped: Run the program"
+  assert step_words.text(words("todo", [#("op", text("done"))]))
+    == "Todo · done"
+
+  let odd =
+    step_words.text(words("todo", [#("op", text(string.repeat("y", 90)))]))
+  assert string.length(odd) == string.length("Todo · ") + 60
+
+  let long = string.repeat("x", 80)
+  assert string.length(step_words.text(task("start", long)))
+    == string.length("Todo · started: ") + 60
+}
+
+// A result's first line is what a reader scans: a Markdown marker is bare, a
+// long line is cut at a word with the ellipsis inside it, and a cut that
+// lands on a word's end keeps the whole word.
+pub fn a_result_line_is_cut_at_a_word_with_an_inline_ellipsis_test() {
+  assert step_words.result_line("# Summary\n\nFound two files.") == "Summary"
+  assert step_words.result_line("") == ""
+
+  let cut = step_words.result_line(string.repeat("alpha ", 40))
+  assert string.ends_with(cut, "alpha…")
+  assert string.length(cut) <= step_words.result_limit + 1
+
+  let whole = string.repeat("a", step_words.result_limit - 1) <> " tail"
+  assert step_words.result_line(whole)
+    == string.repeat("a", step_words.result_limit - 1) <> "…"
 }
 
 pub fn a_tool_the_table_does_not_know_keeps_its_own_name_test() {

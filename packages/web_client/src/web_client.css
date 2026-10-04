@@ -376,7 +376,7 @@
   .detail-name{color:var(--hue-text,var(--color-fg));font:600 15px/1.3 var(--font-sans);overflow-wrap:anywhere;}
   .detail-figures{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 14px;margin:0;font:12px/1.5 var(--font-sans);font-variant-numeric:tabular-nums;}
   .detail-term{color:var(--color-fg-quiet);}
-  .detail-value{margin:0;min-width:0;overflow-wrap:anywhere;text-align:right;}
+  .detail-value{margin:0;min-width:0;overflow-wrap:anywhere;text-align:left;}
   .detail-recent .panel-title{margin:0 0 6px 0;}
   .detail-answer{margin:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);overflow-wrap:anywhere;}
   ul.detail-tools{list-style:none;margin:0;padding:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-mono);overflow-wrap:anywhere;}
@@ -627,7 +627,8 @@
   .spawn-purpose{color:var(--color-fg);overflow-wrap:anywhere;}
   .result{min-width:0;}
   .result-line{margin:0;color:var(--color-fg);font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;}
-  .step.reading .subject{color:var(--color-fg);white-space:normal;}
+  .step.reading .subject{color:var(--color-fg);}
+  .result-line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   article.nudge,article.peer-card,article.sibling-card{background:var(--color-bg-raised);border-radius:10px;padding:9px 12px;min-width:0;}
   article.nudge{border:1px solid var(--color-advisor);}
   article.sibling-card{border:1px solid var(--color-divider);}
@@ -720,10 +721,10 @@
   .trace-failed{color:var(--color-danger-text);}
   .trace-running{color:var(--color-current);}
   .trace-result{margin:4px 0 0 0;overflow-wrap:anywhere;font:12px/1.5 var(--font-mono);color:var(--color-fg-quiet);}
-  .trace-sandbox{margin:4px 0 0 0;overflow-wrap:anywhere;font:12px/1.5 var(--font-mono);color:var(--color-fg-quiet);}
-  details.trace-budget{margin:6px 0 0 0;}
-  details.trace-budget summary{cursor:pointer;color:var(--color-fg-quiet);}
-  details.trace-budget p{margin:2px 0 0 0;font:12px/1.5 var(--font-mono);}
+  pre.trace-result,details.trace-diagnostic summary.trace-result{white-space:pre-wrap;}
+  details.trace-diagnostic summary{cursor:pointer;}
+  details.trace-diagnostic pre.trace-result{margin:0;}
+  .trace-budget{margin:6px 0 0 0;font:12px/1.5 var(--font-sans);color:var(--color-fg-quiet);}
   .trace-earlier{margin-top:14px;}
   .trace-subtitle{margin:0 0 6px 0;font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);}
   ul.trace-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;}
@@ -889,7 +890,8 @@
   button{font:13px/1.4 var(--font-sans);border-radius:6px;padding:4px 10px;cursor:pointer; border:1px solid var(--color-divider);background:var(--color-bg);color:var(--color-fg);}
   /* One filled primary per region, the rest quiet outlines. */
   button.send,button.queue{background:var(--color-primary-button);border-color:var(--color-primary-button);color:var(--color-bg);}
-  button.send:hover,button.queue:hover{background:color-mix(in srgb,var(--color-primary-button) 88%,var(--color-bg));}
+  button.send:hover:not(:disabled),button.queue:hover:not(:disabled){background:color-mix(in srgb,var(--color-primary-button) 88%,var(--color-bg));}
+  form.composer button[type="submit"]:disabled{opacity:.45;cursor:default;}
   button.steer{border-color:var(--color-signal);color:var(--color-signal-text);}
   button.steer:hover{background:color-mix(in srgb,var(--color-signal) 10%,transparent);}
   /* A status pill (the connected state in the bar). */
