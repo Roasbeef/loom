@@ -567,3 +567,31 @@ This component supplies the admission/cancellation ordering for the next physica
 adapter. It does not wire transport, perform compilation, forward cancellation or
 prove whole-service retirement. See [remote custody](../../docs/architecture/remote-custody.md)
 for custody layers and the remaining routing/physical assembly obligations.
+
+
+## Atomic original preparation admission and cancellation
+
+`@internal resource_journal.admit_preparation` returns `FirstAdmission` under the
+same BEGIN IMMEDIATE lock as bounded original reservation. `FreshClaim` is issued
+only by this transaction's absent-row insertion, phase 1 transition and successful
+COMMIT. `Retained(Status)` grants no new authority, including Reserved after
+reopen. Existing explicit `reserve` and `claim_preparation` remain unchanged for
+trusted component callers. Original finite authority, re-vetting and one use of
+the copyable Claim remain the physical adapter's responsibility.
+
+`@internal resource_journal.fence_preparation` returns `PreparationFence` only
+after COMMIT. A missing open original reserves full lifetime capacity and commits
+Unknown atomically. The named `FenceResourcePreparation` query additionally
+covers Reserved; existing phases 0/1/2 advance to Unknown without discarding Ready,
+native association or completion, and phases 3/4 remain idempotent history. An
+absent row under sealed scope returns `ScopeFenced`, without inventing row evidence.
+Full identity/body/address comparison precedes existing-row dispositions even
+when sealed; absent address collisions still conflict. Uncertain commits never
+issue a Claim or assert a successful fence.
+
+The cancellation writer lock is the same lock used by live native association.
+Fence-first blocks late Ready and eligibility. Association-first remains in flight
+through its exact retained native tuple. Neither result proves cleanup, native
+retirement or cancellation before OS startup. Real independent-open tests join
+managed peers and inspect committed phases; they establish component ordering,
+not whole Compile or listener assembly.
