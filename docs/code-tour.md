@@ -766,7 +766,7 @@ through this door and no other.
 
 ### Through the door
 
-`broker.clear_call` (`broker/broker.gleam:489`) is a call into the broker
+`broker.clear_call` (`broker/broker.gleam:495`) is a call into the broker
 actor, and from the moment it succeeds the caller is guaranteed exactly
 one settlement event, whatever happens downstream. Five steps, in order
 (`broker/broker.gleam:499` and `:519`):
