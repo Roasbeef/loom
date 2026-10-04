@@ -160,8 +160,8 @@
 
 import broker/policy.{type MountAccess, MountReadOnly, MountReadWrite}
 import client/daemon/limits as daemon_limits
-import client/lsp/profile.{type LspServer}
 import client/peer_defaults
+import codemode/lsp_host/profile.{type LspServer}
 import codemode/vet/policy as vet_policy
 import core/clock.{type Clock}
 import gleam/dict.{type Dict}

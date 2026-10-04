@@ -19,10 +19,10 @@ import client/extension/manifest
 import client/extension/record
 import client/extension/source
 import client/internal/ffi_os
-import client/lsp/profile
 import client/lsp/profile_check
 import codemode/compile
 import codemode/enforcement
+import codemode/lsp_host/profile
 import core/clock
 import gleam/int
 import gleam/io

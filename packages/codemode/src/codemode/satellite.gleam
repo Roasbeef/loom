@@ -32,7 +32,7 @@
 ////   ```
 ////   erl -noshell -boot no_dot_erlang -pa <artifact.beam_dir> \
 ////       -proto_dist none -start_epmd false \
-////       -run <artifact.entry_module> main -s init stop
+////       -run <compile.artifact_entry(artifact)> main -s init stop
 ////   ```
 ////   No `-name`/`-sname` is ever passed, so the node cannot cluster; the
 ////   framed cap socket is its only link to anything (two-channel doctrine).

@@ -13,10 +13,10 @@ import broker/framing
 import broker/policy
 import client/codemode
 import client/contributions
-import client/lsp/codemode_rename
 import codemode/codemode as pipeline
 import codemode/identity
 import codemode/lsp as codemode_lsp
+import codemode/lsp_host/codemode_rename
 import codemode/satellite
 import codemode/vet
 import codemode/vet/policy as vet_policy

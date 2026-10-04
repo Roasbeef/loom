@@ -96,10 +96,6 @@ import client/internal/instance_owner as custody
 import client/jobs
 import client/jobseam
 import client/jobtools
-import client/lsp/jail as lsp_jail
-import client/lsp/leases as lsp_leases
-import client/lsp/manager as lsp_manager
-import client/lsp/profile
 import client/lsp/profiles as lsp_profiles
 import client/mcp as mcp_wiring
 import client/memory
@@ -123,6 +119,10 @@ import client/tool_holder
 import client/wiring
 import client/working_directory
 import client/worktree_diff
+import codemode/lsp_host/jail as lsp_jail
+import codemode/lsp_host/leases as lsp_leases
+import codemode/lsp_host/manager as lsp_manager
+import codemode/lsp_host/profile
 import core/clock.{type Clock}
 import core/glance as diagnostic
 import core/ids.{type OpId}
@@ -2572,7 +2572,12 @@ fn lsp_plane_wiring(
       workspace: settings.workspace,
       session_base: base_policy,
       demand: settings.demand,
-      toolchain: option.from_result(toolchain),
+      executables: lsp_jail.Executables(
+        gleam_path: option.map(option.from_result(toolchain), fn(found) {
+          found.gleam_path
+        }),
+        find: ffi_os.find_executable,
+      ),
       places:,
       // The session's store, the same reader the jailed tool environment
       // is built from, so `PATH` and a server's `env` names mean what

@@ -16,7 +16,7 @@
 //// 2. **Cap socket first.** An AF_UNIX *stream* listener is created at
 ////    `cap_socket_path` before the node is launched, so the satellite's
 ////    `gen_tcp:connect` cannot lose a race with it.
-//// 3. **Then the node**, dispatched through `broker.clear_call` under the
+//// 3. **Then the node**, dispatched through the physical runner under the
 ////    *same* `{op_id, step_id}` the host uses. That is what makes
 ////    `broker.abort_step` on the host's deadline actually kill it.
 ////
@@ -104,14 +104,14 @@
 //// 4. `start_reader` also starts the reporter and the janitor, and calls
 ////    `spawn_node`, which builds the broker call with `node_call` from
 ////    `node_requirements`, `node_argv` and `node_env`.
-//// 5. `run_node` clears the call through `broker.clear_call`;
+//// 5. `run_node` clears the call through the injected physical runner;
 ////    `report_refused` or `collect_node_result` tells the reporter how the node
 ////    ended, and the exit text only enriches a close the reader already saw.
 //// 6. `destroy` is the connection's teardown: it aborts the step, and
 ////    `await_report` waits for the settlement so the helper is back in the pool
 ////    before the host moves on.
 
-import broker/broker.{type Broker, type CallSpec}
+import broker/broker.{type CallSpec}
 import broker/budget.{type Budget}
 import broker/exec.{type EnforcementDemand}
 import broker/policy.{type Grant, type Mount, type Narrowing, type SandboxPolicy}
@@ -119,6 +119,7 @@ import codemode/compile.{type Artifact}
 import codemode/enforcement.{type Report}
 import codemode/identity
 import codemode/internal/ffi_unix.{type Listener, type Socket}
+import codemode/physical
 import codemode/satellite.{type CapConnection, type LaunchSpec}
 import core/clock.{type Clock}
 import filepath
@@ -155,9 +156,6 @@ const handoff_timeout_ms = 2000
 // One accept poll. The accept is sliced so the reader can notice, between
 // slices, that the node died before it ever reached the socket.
 const accept_poll_ms = 200
-
-// How long the synchronous `clear_call` for the node itself may take.
-const clear_timeout_ms = 5000
 
 // Slack over the wall deadline before the node's collector gives up.
 const settle_margin_ms = 10_000
@@ -197,9 +195,8 @@ const max_socket_path_bytes = 100
 /// Everything the production launcher needs beyond the `LaunchSpec`.
 pub type LaunchConfig {
   LaunchConfig(
-    /// The running broker. The node is dispatched through it, and
-    /// `destroy` aborts through it.
-    broker: Broker,
+    /// The physical clearance and step teardown adapter.
+    runner: physical.Runner,
     /// Reads the wall clock to size the node's own deadline.
     clock: Clock,
     /// Absolute path to the `erl` executable.
@@ -221,6 +218,14 @@ pub type LaunchConfig {
 /// The returned function is what `satellite.run` calls: it creates the
 /// cap socket, dispatches the jailed node, and hands back the
 /// `CapConnection` the host writes frames to and destroys the node with.
+/// Executor artifacts are refused before local resource creation.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let launch_node = launch.launcher(local_config)
+/// // launch_node(spec) returns the channel or a structured refusal.
+/// ```
 pub fn launcher(config: LaunchConfig) -> satellite.Launcher {
   fn(spec) { launch(config, spec) }
 }
@@ -231,8 +236,11 @@ fn launch(
 ) -> Result(CapConnection, String) {
   use _ <- result.try(check_budget(identity.pooled_budget(spec.identity)))
   let #(now, _clock) = clock.read(config.clock)
-  let requirements =
-    node_requirements(spec, host_mounts: config.host_mounts, now_ms: now)
+  use requirements <- result.try(node_requirements(
+    spec,
+    host_mounts: config.host_mounts,
+    now_ms: now,
+  ))
   use effective <- result.try(composed_policy(
     spec.base_policy,
     requirements,
@@ -325,7 +333,7 @@ fn start_reader(
       Error("the cap-socket reader did not start")
     }
     Ok(exits) -> {
-      let settlement = start_reporter(config.broker)
+      let settlement = start_reporter()
       spawn_node(config, spec, requirements, exits, settlement, now)
       start_janitor(config, spec, outbox, settlement)
       Ok(
@@ -373,10 +381,9 @@ fn destroy(
   outbox: Subject(Out),
   settlement: Subject(Settlement),
 ) -> Report {
-  broker.abort_step(
-    config.broker,
+  config.runner.abort_step(
     identity.op_id(spec.identity),
-    step_id: identity.step_id(spec.identity),
+    identity.step_id(spec.identity),
   )
   let report = await_report(settlement)
   process.send(outbox, Shutdown)
@@ -407,7 +414,7 @@ fn destroy(
 //   the node settles either way.
 type Settlement {
   /// The node's clearance succeeded; this is the handle to cancel it by.
-  Cleared(handle: broker.CallHandle)
+  Cleared(handle: physical.RunningCall)
 
   /// The node settled, and this is what its helper reported.
   Settled(report: Report)
@@ -420,14 +427,14 @@ type Settlement {
 //
 // This is the machine's *state*, and only this: what cancels the holder's
 // lingering deadline is a change of state, and what replays a postponed
-// `Ask` is a change of state, so anything that must not do either — the
-// broker to cancel through, the teardown fact — lives in `Holder` instead.
+// `Ask` is a change of state. The teardown fact stays in `Holder` because
+// changing it must neither cancel the lingering deadline nor replay asks.
 type NodeState {
   /// The clearance has not come back yet.
   Pending
 
   /// Cleared and running under this handle.
-  Running(handle: broker.CallHandle)
+  Running(handle: physical.RunningCall)
 
   /// Settled, with the report to hand out.
   Done(report: Report)
@@ -451,8 +458,6 @@ type Teardown {
 // What the holder carries across its states, unchanged by any of them.
 type Holder {
   Holder(
-    /// The broker to cancel the node's clearance through.
-    broker_actor: Broker,
     /// Whether a `destroy` has already asked for the report.
     teardown: Teardown,
   )
@@ -482,14 +487,14 @@ type Held {
 // default weft would have given it: the default carries the machine's own
 // `Held`, and what every sender in this module holds is a
 // `Subject(Settlement)`.
-fn start_reporter(broker_actor: Broker) -> Subject(Settlement) {
+fn start_reporter() -> Subject(Settlement) {
   let started =
     sm.new_with_initialiser(handoff_timeout_ms, fn(_default) {
       let inbox = process.new_subject()
       let selector =
         process.new_selector()
         |> process.select_map(inbox, Incoming)
-      sm.initialised(Pending, Holder(broker_actor:, teardown: Intact))
+      sm.initialised(Pending, Holder(teardown: Intact))
       |> sm.selecting(selector)
       |> sm.returning(inbox)
       |> Ok
@@ -529,7 +534,7 @@ fn reporter_step(
     // for ever arrive: the helper answers a cancel with an `exec_exit`
     // carrying the same enforcement report.
     Running(handle:), Incoming(Ask(..)) -> {
-      broker.cancel(holder.broker_actor, handle)
+      handle.cancel()
       mark_torn_down(holder) |> sm.postpone
     }
 
@@ -547,7 +552,7 @@ fn reporter_step(
     Pending, Incoming(Cleared(handle:)) -> {
       case holder.teardown {
         Intact -> Nil
-        TornDown -> broker.cancel(holder.broker_actor, handle)
+        TornDown -> handle.cancel()
       }
       sm.transition(to: Running(handle:), data: holder)
     }
@@ -593,8 +598,8 @@ fn reporter_step(
 
 // Record that a `destroy` has been through, without moving the node on: an
 // ask says the execution is over whatever state the node itself reached.
-fn mark_torn_down(holder: Holder) -> sm.Next(NodeState, Holder, Held) {
-  sm.keep(Holder(..holder, teardown: TornDown))
+fn mark_torn_down(_holder: Holder) -> sm.Next(NodeState, Holder, Held) {
+  sm.keep(Holder(teardown: TornDown))
 }
 
 // Arm the holder's last deadline.
@@ -840,11 +845,16 @@ fn spawn_node(
   settlement: Subject(Settlement),
   now: Int,
 ) -> Nil {
-  let call = node_call(config, spec, requirements)
   let deadline_ms = identity.pooled_budget(spec.identity).deadline_ms
   let waiting = int.max(deadline_ms - now, 0) + settle_margin_ms
   process.spawn_unlinked(fn() {
-    run_node(config, call, exits, settlement, waiting)
+    case node_call(config, spec, requirements) {
+      Ok(call) -> run_node(config, call, exits, settlement, waiting)
+      Error(reason) -> {
+        process.send(settlement, Settled(enforcement.Unreported(reason)))
+        process.send(exits, reason)
+      }
+    }
   })
   Nil
 }
@@ -857,9 +867,7 @@ fn run_node(
   waiting: Int,
 ) -> Nil {
   let events = process.new_subject()
-  case
-    broker.clear_call(config.broker, call, events:, waiting: clear_timeout_ms)
-  {
+  case config.runner.clear(call, events) {
     Error(refusal) -> report_refused(exits, settlement, refusal)
     Ok(handle) -> {
       process.send(settlement, Cleared(handle:))
@@ -920,12 +928,20 @@ fn collect_node_result(
 /// running in a jail nobody checked, and one cleared without grants the
 /// pre-check did apply would be refused by the broker for a shortfall the
 /// launch had already satisfied.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let call = launch.node_call(local_config, local_spec, requirements)
+/// // Executor artifacts return Error before a local command exists.
+/// ```
 pub fn node_call(
   config: LaunchConfig,
   spec: LaunchSpec,
   requirements: SandboxPolicy,
-) -> CallSpec {
-  broker.CallSpec(
+) -> Result(CallSpec, String) {
+  use argv <- result.try(node_argv(config.erl_path, spec.artifact))
+  Ok(broker.CallSpec(
     op_id: identity.op_id(spec.identity),
     step_id: identity.step_id(spec.identity),
     base_policy: spec.base_policy,
@@ -936,11 +952,11 @@ pub fn node_call(
     // weaker jail than the one that was checked must not run.
     response: broker.RefuseNarrowed,
     demand: config.demand,
-    argv: node_argv(config.erl_path, spec.artifact),
+    argv:,
     env: node_env(spec),
     cwd: spec.cwd,
     budget: identity.pooled_budget(spec.identity),
-  )
+  ))
 }
 
 /// The node's argv: distribution off, no epmd, no node name, booting the
@@ -948,26 +964,39 @@ pub fn node_call(
 ///
 /// `-s init stop` closes the node once the entry returns — `-run` alone
 /// leaves a `-noshell` node idling until its deadline, and the whole point
-/// is that the node dies with the program.
-pub fn node_argv(erl_path: String, artifact: Artifact) -> List(String) {
-  [
+/// is that the node dies with the program. An executor artifact is refused
+/// rather than encoded as a local `-pa` argument.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let local = compile.Artifact("/b", "/b/ebin", "entry", "hash")
+/// let assert Ok(argv) = launch.node_argv("/usr/bin/erl", local)
+/// assert list.contains(argv, "/b/ebin")
+/// ```
+pub fn node_argv(
+  erl_path: String,
+  artifact: Artifact,
+) -> Result(List(String), String) {
+  use beam_dir <- result.try(local_beam_dir(artifact))
+  Ok([
     erl_path,
     "-noshell",
     "-boot",
     "no_dot_erlang",
     "-pa",
-    artifact.beam_dir,
+    beam_dir,
     "-proto_dist",
     "none",
     "-start_epmd",
     "false",
     "-run",
-    artifact.entry_module,
+    compile.artifact_entry(artifact),
     "main",
     "-s",
     "init",
     "stop",
-  ]
+  ])
 }
 
 /// The node's environment: the two cap-channel handles the boot runtime
@@ -1010,28 +1039,49 @@ pub fn node_env(spec: LaunchSpec) -> List(#(String, String)) {
 /// mounts would narrow every launch. Under `protocol-change/020` they are
 /// covered by the workspace mount the base derives from the admission
 /// record, which is a statement the base makes and this function does not.
+/// No local requirements can be derived from an executor artifact reference.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let requirements = launch.node_requirements(local_spec, [], now)
+/// // A remote artifact produces Error before any physical effect.
+/// ```
 pub fn node_requirements(
   spec: LaunchSpec,
   host_mounts host_mounts: List(Mount),
   now_ms now_ms: Int,
-) -> SandboxPolicy {
+) -> Result(SandboxPolicy, String) {
+  use beam_dir <- result.try(local_beam_dir(spec.artifact))
   let wanted = [
     directory_of(spec.cap_socket_path),
     directory_of(spec.token_path),
-    spec.artifact.beam_dir,
+    beam_dir,
   ]
   let base = spec.base_policy
-  policy.SandboxPolicy(
-    ..base,
-    readable_roots: list.unique(list.append(base.readable_roots, wanted)),
-    mounts: host_mounts,
-    network: policy.NetworkOff,
-    limits: policy.Limits(
-      ..base.limits,
-      wall_s: bound_wall(base.limits.wall_s, remaining_seconds(spec, now_ms)),
+  Ok(
+    policy.SandboxPolicy(
+      ..base,
+      readable_roots: list.unique(list.append(base.readable_roots, wanted)),
+      mounts: host_mounts,
+      network: policy.NetworkOff,
+      limits: policy.Limits(
+        ..base.limits,
+        wall_s: bound_wall(base.limits.wall_s, remaining_seconds(spec, now_ms)),
+      ),
+      env_allow: list.map(node_env(spec), fn(pair) { pair.0 }),
     ),
-    env_allow: list.map(node_env(spec), fn(pair) { pair.0 }),
   )
+}
+
+// A remote artifact has an issued identity, never a local filesystem path.
+// Reject it before policy construction, socket creation or physical clearance.
+fn local_beam_dir(artifact: Artifact) -> Result(String, String) {
+  case artifact {
+    compile.Artifact(beam_dir:, ..) -> Ok(beam_dir)
+    compile.ExecutorArtifact(..) ->
+      Error("the local launcher cannot resolve an executor artifact")
+  }
 }
 
 // Seconds left of the pooled wall deadline, rounded up and never zero —

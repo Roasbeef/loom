@@ -164,12 +164,12 @@ fn observe_execution(id: ExecIdentity) -> List(#(OpId, String)) {
   let config =
     codemode.ExecConfig(
       vet_policy: vet_policy.default(),
-      compile: compile.CompileConfig(
+      compile: compile.local_service(compile.CompileConfig(
         build_root: dir <> "/build",
         dependencies: compile.default_dependencies(),
         generated: [],
         build: recording_builder(seen),
-      ),
+      )),
       broker: started,
       identity: id,
       satellite: satellite.SatelliteConfig(

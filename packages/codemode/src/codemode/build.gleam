@@ -73,7 +73,7 @@
 //// and this builder pins `TMPDIR` to it rather than inheriting a host path
 //// the build cannot reach or write.
 
-import broker/broker.{type Broker, type CallSpec}
+import broker/broker.{type CallSpec}
 import broker/exec.{type EnforcementDemand, type ExecResult}
 import broker/policy.{type SandboxPolicy}
 import codemode/compile.{
@@ -81,6 +81,7 @@ import codemode/compile.{
 }
 import codemode/enforcement
 import codemode/identity.{type PhaseIdentity}
+import codemode/physical
 import codemode/seed
 import filepath
 import gleam/bit_array
@@ -95,9 +96,6 @@ import tools/tool.{type Collected}
 /// The directory, inside a build root, the flattened `.beam` set is
 /// gathered into. One directory means one `-pa` on the satellite's argv.
 pub const beam_directory = "ebin"
-
-// How long the synchronous clearance for the build may take.
-const clear_timeout_ms = 5000
 
 // Slack over the build timeout before the collector gives up on a helper
 // that never settles.
@@ -120,8 +118,8 @@ const tmp_env = "TMPDIR"
 /// display, nothing more.
 pub type BuildConfig {
   BuildConfig(
-    /// The running broker the build is dispatched through.
-    broker: Broker,
+    /// The physical clearance adapter; owner authority stays behind it.
+    runner: physical.Runner,
     /// The prepared seed (`codemode/seed`) the build root is cloned from.
     seed_root: String,
     /// Absolute path to the `gleam` executable.
@@ -156,7 +154,17 @@ pub type BuildConfig {
 
 /// Builds the production `compile.Builder`. The identity and the
 /// generated modules arrive per build, from the pipeline; the
-/// configuration holds neither.
+/// configuration holds neither. Physical clearance comes from its Runner,
+/// and the local adapter delegates to the existing owner broker.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let compile_locally = compile.local_service(compile.CompileConfig(
+///   build_root: "/b", dependencies: compile.default_dependencies(),
+///   generated: [], build: build.builder(local_build_config),
+/// ))
+/// ```
 pub fn builder(config: BuildConfig) -> compile.Builder {
   fn(phase, build_root, generated) {
     build(config, phase, build_root, generated)
@@ -337,14 +345,7 @@ fn clone_child(
 
 fn run_build(config: BuildConfig, phase: PhaseIdentity, root: String) -> Built {
   let events = process.new_subject()
-  case
-    broker.clear_call(
-      config.broker,
-      build_call(config, phase, root),
-      events:,
-      waiting: clear_timeout_ms,
-    )
-  {
+  case config.runner.clear(build_call(config, phase, root), events) {
     Error(refusal) -> build_refused(refusal)
     Ok(_handle) -> collect_build(config, root, events)
   }
@@ -633,7 +634,7 @@ fn gather(
 /// ## Examples
 ///
 /// ```gleam
-/// // build.fingerprint_directory(artifact.beam_dir) == artifact.manifest_hash
+/// // build.fingerprint_directory(artifact.beam_dir) == compile.artifact_hash(artifact)
 /// ```
 ///
 pub fn fingerprint_directory(beam_dir: String) -> Result(String, CompileError) {

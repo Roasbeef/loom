@@ -7,8 +7,8 @@
 //// first-wins resolution in place of refusing both sides, and an installed
 //// profile allowed to replace a `loom.toml` table.
 
-import client/lsp/profile.{type LspServer}
 import client/lsp/profiles
+import codemode/lsp_host/profile.{type LspServer}
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}

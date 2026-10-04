@@ -77,6 +77,31 @@ Phase 1 installs and compiles an extension; phase 2 dispatched one per
 node; phase 3 (`satellite.Host`, below) holds the node open for the
 session and sends it many invocations.
 
+## Physical host boundaries
+
+`compile.CompileService` receives vetted source, narrowed generated imports,
+dependencies and phase identity before any preparation touches disk.
+`compile.local_service` closes over the local build root and Builder and
+performs the existing preparation/build/hash sequence. `Artifact` separates
+local directories from executor references; local launcher helpers refuse an
+executor reference before creating their physical resources.
+
+`physical.Runner` injects exact-call clearance and step cancellation. Local
+construction delegates to the existing broker; it creates no second ledger.
+The owner satellite host still checks tokens, routes capabilities and owns
+settlement. A remote assembly must replace the token/socket resource callbacks
+as well as the compiler and launcher; mixing a remote compiler with local
+resources is not a supported remote execution path.
+
+`lsp_host` contains the complete workspace-local language-server implementation:
+manager, root/symbol resolution, document synchronization, dependency state and
+preparation, approved profiles, jailed transport, lease counting and rename
+landing. Client profile selection and extension administration remain outside
+this package. `Jailed.executables` supplies administrative executable facts;
+run and abort callbacks preserve owner clearance while physical work stays on
+this host. Protected-path admission precedes document reads, including outline.
+The shared host adds the existing `gleam_json` dependency for profile encoding.
+
 ## Key Types
 
 - `codemode/codemode.{Execution, ExecOutcome, ExecConfig}` — `execute`

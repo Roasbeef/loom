@@ -9,7 +9,7 @@ import broker/broker
 import broker/budget
 import broker/exec
 import broker/policy
-import client/lsp/jail
+import codemode/lsp_host/jail
 import core/ids.{type OpId}
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
