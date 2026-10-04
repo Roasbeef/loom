@@ -23,7 +23,6 @@ import client/directories
 import client/escalate
 import client/gateway as client_gateway
 import client/grants
-import client/internal/ffi_os
 import client/permissions
 import client/wiring
 import core/clock
@@ -33,7 +32,6 @@ import core/message
 import core/register
 import core/tx
 import events/bus
-import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -694,11 +692,20 @@ pub fn dispatch_reads_session_directory_authority_before_native_io_test() {
 pub fn remembered_watch_authority_survives_sqlite_reopen_test() {
   let assert Ok(here) = simplifile.current_directory()
     as "the test directory exists"
-  let path =
-    here
-    <> "/build/remembered-watch-"
-    <> int.to_string(ffi_os.unique_positive_integer())
-    <> ".db"
+
+  // The database lives in a directory this test alone owns, and the directory
+  // is cleared first. The previous name carried only
+  // `erlang:unique_integer`, which restarts from 1 in every emulator, so a
+  // run whose counter landed on a value an earlier run had used reopened that
+  // run's file. Its `watch` escalation was already approved, the claim was
+  // inherited rather than raised, and the approval below failed with
+  // `escalation_wrong_status`. Which counter value this test saw depended on
+  // how many other tests had drawn one first, hence the flake under load.
+  let root = here <> "/build/remembered-watch-reopen"
+  let _cleared = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+    as "the fixture directory must exist"
+  let path = root <> "/session.db"
   let time = clock.fixed(1000)
   let assert Ok(opened) = session.open_sqlite(path, "first", 30_000, time)
     as "the durable session opens"
