@@ -47,6 +47,8 @@ import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
+import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -56,7 +58,7 @@ import session_view/agent_roster
 import session_view/markdown
 import session_view/transcript_image.{type Image}
 import session_view/transcript_line.{type Line}
-import session_view/transcript_lines
+import session_view/transcript_lines.{type Block}
 import session_view/turns
 import web_view/image
 import web_view/markdown_view
@@ -525,14 +527,46 @@ fn piece_element(
       html.p([attribute.class("cache-miss")], [html.text(text)])
 
     // The advisor's own commentary, captured on its strand and not sent to
-    // the primary: drawn as the transcript draws it, in the advisor's
-    // colour, so it cannot pass for the primary's words.
-    turns.Commentary(block:) ->
-      html.div(
-        [attribute.class("block"), attribute.class("commentary")],
-        list.map(block.rows, fn(row) { line_row(row.1, draw) }),
-      )
+    // the primary. The primary never saw it, so the lane keeps only its
+    // hairline: the request the advisor made, in the advisor's colour,
+    // one line. The dot beside it focuses the advisor's own transcript
+    // through the marker relay, which is where the full bodies live, and
+    // the panel's commentary section holds the same board for a reader
+    // who wants it beside the strands (`view/commentary`). The words are
+    // the projection's own label row, so the marker claims a request
+    // only, never a delivery: the tool result may still downgrade it.
+    turns.Commentary(block:) -> {
+      let label = commentary_label(block)
+      html.p([attribute.class("commentary-mark")], [
+        tag("advisor", position(marks, agent_roster.advisor)),
+        html.text(" · " <> label),
+      ])
+    }
   }
+}
+
+// The label the projection wrote for the advisor's request: the block's
+// last `System` row. Every commentary block carries exactly one, the
+// heading and the not-loaded notice aside, and the full text follows it as
+// `ToolDetail`; taking the last `System` row keeps the marker honest even
+// if the heading rows change. The projection's label opens with
+// `Advisor · `, which the advisor's tag beside it already says, so the
+// marker keeps only the words after it.
+fn commentary_label(block: Block) -> String {
+  block.rows
+  |> list.filter_map(fn(row) {
+    case row.1 {
+      transcript_line.Line(transcript_line.System, text) -> Ok(text)
+      _ -> Error(Nil)
+    }
+  })
+  |> list.last
+  |> result.map(fn(text) {
+    string.split_once(text, " · ")
+    |> result.map(fn(parts) { parts.1 })
+    |> result.unwrap(text)
+  })
+  |> result.unwrap("commentary")
 }
 
 // The buttons of a peer card, or nothing on a lane that offers none. Reply is

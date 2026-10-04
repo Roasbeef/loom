@@ -216,18 +216,23 @@ fn queued() -> Boards {
 
 // A nudge is pending until the primary's next run takes it, and the terminal
 // says so beside its composer. The card says the same, with every body, in
-// the dock above the composer.
-pub fn a_pending_nudge_is_a_card_in_the_operators_dock_test() {
+// the strand panel under the panes, so the dock holds nothing the operator
+// does not type into or answer.
+pub fn a_pending_nudge_is_a_card_in_the_strand_panel_test() {
   let #(model, _) = page("operator", queued())
   let html = drawn(model)
-  let dock = dock(html)
-  assert in_order(dock, [
+  let assert Ok(#(_, from_panel)) =
+    string.split_once(html, "aria-label=\"Strand panel\"")
+    as "the page draws the strand panel"
+  assert in_order(from_panel, [
+    "pane pane-strands",
+    "pane pane-session",
     "class=\"nudges\"",
     "advisor · 2 pending, not delivered · held for your next prompt to main",
     "rebase &lt;b&gt;first&lt;/b&gt;",
     "run the linter",
-    "class=\"composer\"",
   ])
+  assert !string.contains(dock(html), "class=\"nudges\"")
   assert !string.contains(html, "<b>first</b>")
 }
 
@@ -255,16 +260,19 @@ pub fn the_nudge_card_has_no_control_test() {
   assert list.all(names, fn(name) { name == "click" || name == "submit" })
 }
 
-// An observer reads the same card, and its page still carries no handler
-// but the strip's focus clicks.
+// An observer reads the same card in the same place, and its page still
+// carries no handler but the strip's focus clicks.
 pub fn an_observer_sees_the_nudge_card_read_only_test() {
   let #(model, _) = page("observer", queued())
   let html = element.to_string(component.view(model))
-  assert in_order(html, [
+  let assert Ok(#(_, from_panel)) =
+    string.split_once(html, "aria-label=\"Strand panel\"")
+    as "the page draws the strand panel"
+  assert in_order(from_panel, [
+    "pane pane-session",
     "class=\"nudges\"",
     "held for your next prompt to main",
     "rebase &lt;b&gt;first&lt;/b&gt;",
-    "class=\"observer-bar\"",
   ])
   assert list.all(handlers(component.view(model)), is_chip_click)
 }
@@ -464,48 +472,15 @@ pub fn pressing_pause_in_the_page_sends_the_command_test() {
     == component.Said("goal_pause sent")
 }
 
-// Stop is always drawn, so it never moves its neighbours, and is disabled
-// while nothing runs. It names what it does and what it leaves alone.
-pub fn stop_is_disabled_while_the_strand_is_idle_test() {
+// The page draws no Stop button, whether the strand is idle or running: the
+// dock holds what the operator types into or answers, and stopping a strand
+// is the terminal's Escape. A draft naming /abort is still parsed as a
+// command, but nothing on the page presses it.
+pub fn the_page_draws_no_stop_button_test() {
   let #(idle, _) = page("operator", nothing())
-  let html = drawn(idle)
-  assert in_order(html, ["class=\"control-stop\"", "disabled", "Stop main"])
-  assert string.contains(html, "The session stays open.")
-
+  assert !string.contains(drawn(idle), "control-stop")
   let #(busy, _) = running("operator", nothing())
-  let assert Ok(#(_, from_stop)) =
-    string.split_once(drawn(busy), "class=\"control-stop\"")
-    as "the button is drawn"
-  let assert Ok(#(stop, _)) = string.split_once(from_stop, "Stop main")
-    as "the button is labelled"
-  assert !string.contains(stop, "disabled")
-}
-
-// Stop is Escape: it aborts the strand's running operation and holds the
-// input queued behind it, and it is the one control the strand's phase
-// decides.
-pub fn stop_aborts_the_running_operation_test() {
-  let #(model, wire) = running("operator", nothing())
-  let drafts = component.drafts(model)
-  let model = send(model, [operator_page.Controlled(component.Stop)])
-  let assert [abort] = commands(wire) as "one press is one command"
-  assert string.contains(abort, "\"cmd\":\"abort\"")
-  assert string.contains(abort, "\"strand\":\"main\"")
-  assert component.drafts(model) == drafts
-  assert component.notice(model) == component.Said("abort sent")
-
-  // A second press while the stop is pending sends nothing.
-  let model = send(model, [operator_page.Controlled(component.Stop)])
-  assert commands(wire) == []
-  assert component.notice(model)
-    == component.Said("interrupt already requested")
-}
-
-pub fn stop_on_an_idle_strand_sends_nothing_test() {
-  let #(model, wire) = page("operator", nothing())
-  let model = send(model, [operator_page.Controlled(component.Stop)])
-  assert commands(wire) == []
-  assert component.notice(model) == component.Said("nothing is running")
+  assert !string.contains(drawn(busy), "control-stop")
 }
 
 // The fork form's name is the command's argument, as `/fork <name>` typed in
@@ -594,19 +569,18 @@ fn forks(frames: List(String)) -> Int {
   )
 }
 
-// A stop the lane refuses records no interrupt, so the next press says why
-// again and does not claim a stop is already pending.
-pub fn a_refused_stop_leaves_no_interrupt_behind_test() {
+// A command the lane refuses says why each time, and never claims a second
+// press of what the first never ran. The fork stands in for any control.
+pub fn a_refused_command_says_why_each_time_test() {
   let #(model, wire) = running("observer", nothing())
-  let model = send(model, [operator_page.Controlled(component.Stop)])
+  let model = send(model, [operator_page.Controlled(component.Fork("x"))])
   let assert component.Said(first) = component.notice(model)
     as "the step words the refusal"
   assert string.contains(first, "read-only")
-  let model = send(model, [operator_page.Controlled(component.Stop)])
+  let model = send(model, [operator_page.Controlled(component.Fork("x"))])
   let assert component.Said(second) = component.notice(model)
     as "the step words the refusal again"
   assert string.contains(second, "read-only")
-  assert !string.contains(second, "already requested")
   assert commands(wire) == []
 }
 
@@ -632,49 +606,15 @@ pub fn a_fork_the_attachment_refuses_keeps_the_form_test() {
   assert string.contains(text, "read-only")
 }
 
-pub fn the_goal_form_pins_a_goal_test() {
-  let #(model, wire) = page("operator", nothing())
-  let drafts = component.drafts(model)
-  let model =
-    send(model, [
-      operator_page.Controlled(component.PinGoal(
-        "--budget 100000 get the branch green",
-      )),
-    ])
-  let assert [set] = commands(wire) as "one form is one command"
-  assert string.contains(set, "\"cmd\":\"goal_set\"")
-  assert string.contains(set, "\"objective\":\"get the branch green\"")
-  assert string.contains(set, "\"token_budget\":100000")
-  assert component.drafts(model) == drafts
-  assert component.sent_forms(model) == 1
-}
-
-// A box for an objective never runs another goal command. Words that name
-// one are refused with a notice, and the command's own complaints about a
-// budget pass through.
-pub fn the_goal_form_never_runs_another_goal_command_test() {
-  let #(model, wire) = page("operator", pinned("active", json.Null))
-  let model =
-    send(
-      model,
-      list.map(["clear", "pause", "resume", "check make check", ""], fn(text) {
-        operator_page.Controlled(component.PinGoal(text))
-      }),
-    )
-  assert commands(wire) == []
-  let assert component.Warned(text) = component.notice(model)
-    as "the page refuses"
-  assert string.contains(text, "objective")
-  assert component.sent_forms(model) == 0
-
-  let model =
-    send(model, [
-      operator_page.Controlled(component.PinGoal("--budget abc fix it")),
-    ])
-  assert commands(wire) == []
-  let assert component.Said(complaint) = component.notice(model)
-    as "the command's own complaint"
-  assert string.contains(complaint, "abc")
+// The page draws no Set goal form: a goal is pinned by typing `/goal ...` in
+// the composer, which the page parses as the terminal does. The controls bar
+// offers only the goal's buttons and the fork form.
+pub fn the_page_draws_no_set_goal_form_test() {
+  let #(model, _) = page("operator", nothing())
+  let html = drawn(model)
+  assert !string.contains(html, "control-pin")
+  assert !string.contains(html, "Set goal")
+  assert string.contains(html, "class=\"control-forms\"")
 }
 
 pub fn a_form_over_the_limit_is_refused_test() {
@@ -712,12 +652,10 @@ pub fn an_observer_attachment_sends_no_control_test() {
   let #(model, wire) = running("observer", pinned("active", json.Null))
   let _ =
     send(model, [
-      operator_page.Controlled(component.Stop),
       operator_page.Controlled(component.PauseGoal),
       operator_page.Controlled(component.ResumeGoal),
       operator_page.Controlled(component.ClearGoal),
       operator_page.Controlled(component.Fork("x")),
-      operator_page.Controlled(component.PinGoal("do it")),
     ])
   assert commands(wire) == []
 }

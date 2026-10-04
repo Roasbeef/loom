@@ -342,7 +342,7 @@
      place of the title and the list while a strand other than main is in
      focus. The list stays in the page beneath it, hidden, because the
      shell's relay presses a card. */
-  .pane-strands.detailed > .panel-title,.pane-strands.detailed > nav.agent-strip{display:none;}
+  .pane-strands.detailed > .panel-title,.pane-strands.detailed > nav.agent-strip,.pane-strands.detailed > section.commentary{display:none;}
   .strand-detail{display:flex;flex-direction:column;gap:14px;min-width:0;}
   button.detail-back,button.crumb-all{align-self:flex-start;margin:0;padding:0;border:0;border-radius:0;background:transparent;color:var(--color-current);font:12px/1.4 var(--font-sans);cursor:pointer;}
   button.detail-back:hover,button.crumb-all:hover{text-decoration:underline;}
@@ -535,8 +535,20 @@
   .peer-from{min-width:0;overflow-wrap:anywhere;}
   .receipt{margin-left:auto;border:1px solid var(--color-divider);border-radius:999px;padding:0 8px;font-size:11px;}
   pre.card-body{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.5 var(--font-sans);}
-  .block.commentary{padding-left:10px;border-left:2px solid var(--color-advisor);}
-  .block.commentary .line{color:var(--color-advisor-text);font-size:12px;}
+  /* The advisor's commentary hairline in the lane: one quiet line per
+     review, in the advisor's colour, never the full body. The dot beside
+     it focuses the advisor's own transcript, where the bodies live. */
+  p.commentary-mark{margin:0;color:var(--color-advisor-text);font:12px/1.4 var(--font-sans);}
+  /* The commentary section in the Strands pane: the review bodies, under
+     the strand cards. Read-only, no handler, hidden with the detail view
+     while the advisor itself is on screen, and like the nudges card hidden
+     below 980px where the pane is a short row of cards. */
+  section.commentary{margin:12px 0 0;padding:0;}
+  .commentary-item{background:var(--color-bg-raised);border:1px solid var(--color-advisor);border-left-width:3px;border-radius:8px;min-width:0;padding:8px 12px;margin:0 0 8px;}
+  .commentary-item:last-child{margin-bottom:0;}
+  .commentary-label{color:var(--color-advisor-text);font:12px/1.4 var(--font-mono);margin:0 0 4px;}
+  .commentary-body{color:var(--color-fg);font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;margin:0;}
+  .commentary-more,.commentary-unloaded{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);margin:4px 0 0;}
   p.cache-miss{margin:0;padding:6px 10px;border:1px dashed var(--color-signal);border-radius:6px; color:var(--color-signal-text);font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
   .observer-bar{flex:0 0 auto;margin:16px 0 0 0;padding:12px 16px;border-top:1px solid var(--color-divider); color:var(--color-fg-quiet);font-size:13px;}
   .page-note{margin:16px;color:var(--color-fg-quiet);}
@@ -633,22 +645,19 @@
   .approval-actions.arming button,.control-actions.arming button{animation:loom-arm-look 600ms steps(1,end);}
   @keyframes loom-arm{from{pointer-events:none;}to{pointer-events:none;}}
   @keyframes loom-arm-look{from{opacity:.45;}to{opacity:.45;}}
-  /* The advisor's pending nudges, in the operator's dock above the controls
-     and above the observer's bar. Read-only: the card has no button. Its
-     height is capped and it scrolls on its own, so a long queue cannot cover
-     the transcript. */
-  section.nudges{flex:0 0 auto;min-height:0;max-height:22vh;overflow-y:auto;overscroll-behavior:contain;box-sizing:border-box; margin:8px 0 0 0;padding:8px 12px;background:var(--color-bg-raised);border:1px solid var(--color-advisor); border-left-width:3px;border-radius:8px;font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;}
-  footer.dock > section.nudges{margin:0 0 8px 0;}
+  /* The advisor's pending nudges, in the strand panel under the three panes
+     on every tab. Read-only: the card has no button. The panel itself
+     scrolls, so the card needs no cap of its own. */
+  aside.panel > section.nudges{margin:10px 0 0 0;padding:8px 12px;background:var(--color-bg-raised);border:1px solid var(--color-advisor);border-left-width:3px;border-radius:8px;font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;}
   .nudge-head{margin:0 0 4px 0;color:var(--color-advisor-text);font:12px/1.4 var(--font-mono);}
   ul.nudge-list{margin:0;padding-left:20px;}
   li.nudge-item{white-space:pre-wrap;}
   .nudge-more{margin:4px 0 0 0;color:var(--color-fg-quiet);font-size:12px;}
-  /* The operator's session controls, in the dock above the approvals. Stop is
-     always drawn so nothing moves when it is enabled. */
+  /* The operator's session controls, in the dock above the approvals: the
+     goal's buttons and the fork form. Stop and Set goal left the page. */
   section.controls{flex:0 0 auto;margin:0 0 8px 0;font-size:13px;}
   .control-row{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;}
-  button.control-stop,button.control-clear{border-color:var(--color-danger);color:var(--color-danger-text);}
-  button.control-stop:disabled{opacity:.45;cursor:default;}
+  button.control-clear{border-color:var(--color-danger);color:var(--color-danger-text);}
   button.control-pause,button.control-resume{border-color:var(--color-signal);color:var(--color-signal-text);}
   .control-goal{flex:1 1 auto;min-width:0;}
   .control-actions{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;}
@@ -724,7 +733,8 @@
     .region-panel{order:-1;width:auto;border-left:0;border-bottom:1px solid var(--color-divider);}
     .region-panel.closed{width:auto;height:0;transition:none;}
     aside.panel{width:auto;height:auto;max-height:132px;padding:8px 16px;}
-    .pane-strands .panel-title{display:none;}
+    aside.panel > section.nudges{display:none;}
+    .pane-strands .panel-title,.pane-strands > section.commentary{display:none;}
     nav.agent-strip{overflow-x:auto;scrollbar-width:thin;}
     ul.chips{flex-direction:row;padding-bottom:4px;}
     li.chip{flex:0 0 auto;width:232px;}

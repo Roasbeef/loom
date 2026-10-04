@@ -3364,3 +3364,208 @@ a member, and would get `Unavailable` if the check were removed.
 No browser was in the loop. The clipboard write, the control's layout in the
 Session pane, and the copy box's look in both themes run only in one and were
 not run.
+
+## Addendum: the dock sheds the nudge card, Stop and the Set goal form (2026-10-02)
+
+**Status**: PROPOSED, IMPLEMENTED with the fix-web-ui-advisor branch ·
+**Raised by**: the owner ("the web ui is very cluttered on the bottom")
+
+The owner found the dock cluttered: Stop, a Set goal form and the advisor's
+pending-nudge card sat above the composer on every page. This addendum records
+what left and where the one thing that moved went. It removes no operation
+from what a page may do, adds no event to the socket's accepted list, and
+touches no frozen interface.
+
+### What changed
+
+- **The nudge card moved to the strand panel.** The advisor's pending nudges
+  are now drawn under the panel's three panes, as the aside's last child,
+  on the operator's page and the observer's. The card is not a pane: the tab
+  rules hide a tab's sibling panes and nothing else, so the card shows
+  whichever tab is chosen, which is the point — the queue is the advisor's,
+  not one pane's view. Being the aside's last child keeps every path the
+  addenda pin: `component.strip_path` (`0\t3\t0\t1\t0`) and
+  `component.invite_path` (`0\t3\t2\t2`) are unchanged, since the card is
+  after the panes they walk into. The card still has no handler, and
+  `view/nudges` is unchanged; only its caller moved. The card is drawn on
+  both pages, as before.
+- **Stop left the page.** The dock no longer draws a Stop button. Stopping a
+  strand's running operation is the terminal's Escape, and a draft naming
+  `/abort` is still parsed as a command by the composer, since S5 parses
+  every draft as the terminal does. The `Control.Stop` variant and its arm
+  (`msg.Interrupt`) are gone from `web_view/component`, since the page drew
+  the one caller. What a stolen page is worth is unchanged: it could already
+  send `/abort` in a draft, and the button was the same command.
+- **The Set goal form left the page.** A goal is pinned by typing `/goal ...`
+  in the composer, which the page parses as a command. The `PinGoal` variant
+  and its `pinning` arm are gone with the form. The goal row with Pause,
+  Resume and Clear stays: those buttons act on a goal that already exists,
+  which is when the operator wants them at hand. The Fork form stays for the
+  same reason.
+- **The observer's centre lost the card and nothing else.** Its children are
+  now the breadcrumb, the lane, the todo panel and the read-only bar. The
+  todo panel is the card's neighbour in the old order, and removing the card
+  moves only the read-only bar, which carries no handler. `older_path` names
+  a button inside the lane, which is the centre's second child either way.
+- **The dock is now the todo panel, the goal's buttons with the fork form,
+  the approval region and the composer.** The approvals still sit directly
+  above the composer, and the composer is still the dock's last child, so
+  their paths are as the earlier addenda state them. The composer's form
+  path moved (the nudges card was the dock's second child), and
+  `operator_accepts` admits a submit at any path but the invitation
+  control's, so no admission changed.
+
+### What was considered
+
+- **A fourth tab for the nudges.** The queue is the advisor's, and a tab
+  would hide it behind the reader's last tab choice. The card under the
+  panes is visible on every tab and hides only with the column.
+- **The card inside the Session pane.** The pane is the session's own
+  figures, and the card would come and go with the tab. Same reasoning.
+- **Keep Stop, disabled while idle.** The button was always drawn so it
+  never moved its neighbours, but an always-drawn button that is disabled
+  most of the time is clutter with a title to read. The owner asked for it
+  gone; a draft can still run the command.
+- **Keep the Set goal form for parity with the goal row.** The row acts on
+  an existing goal; the form creates one, which is rare and belongs in the
+  composer where the draft is parsed anyway.
+
+### Cost
+
+- The advisor's nudges are one column away from the composer: an operator
+  who wants to know what the advisor queued before typing looks right
+  instead of down. The card's heading still names the primary the queue
+  drains into.
+- A reader who closes the panel sees no pending nudge at all. The column is
+  the reader's own browser preference and the server never learns it is
+  closed, and nothing else on the page signals a queued nudge: the Strands
+  badge counts strands waiting on a decision, not nudges, and the card has
+  no badge of its own. On the dock the card was on screen wherever the
+  reader had scrolled. Nothing hides the nudges' *existence* — the advisor's
+  delivered rows still cross into the transcript when a run drains the
+  queue — but a pending one is visible only while the column is open.
+  Widening that signal (a badge the shell draws from a count the server
+  sends) would be its own change and is not made here.
+- Below 980px the panel is one short row of strand cards under the bar
+  (132px, scrolling sideways), and the card is hidden there so it does not
+  crowd the cards. A narrow reader still sees a nudge when it is delivered,
+  as a row in the transcript.
+- Stopping a strand from a page now takes a typed draft. The terminal's
+  Escape is unchanged.
+- Pinning a goal from a page now takes a typed draft, exactly as the
+  terminal's `/goal` always did.
+
+### Verification
+
+`page_actions_test` shows the card drawn under the panel's panes with every
+body as escaped text and none of it in the dock, the same card on an
+observer's page, no card when nothing is waiting, and the count the server
+left out; the page drawing no Stop button on an idle or a running strand, no
+Set goal form, and the goal's buttons and the fork form still sending their
+commands; a refused command wording its refusal each time; an observer's
+attachment still sending no control. `page_events_test` and `ui_socket_test`
+pin the handler tables and the admissions, which are unchanged.
+`operator_page_test` and `component_test` pin the frames, whose dock is now
+one child shorter. No browser was in the loop; the card's look in the panel
+and its hiding below 980px run only in one.
+
+## Addendum: the advisor's commentary leaves the lane (2026-10-02)
+
+**Status**: PROPOSED, IMPLEMENTED on `web_view/advisor-commentary-rail` ·
+**Raised by**: the owner, on the web page's look ("this takes away from the
+transcript")
+
+The advisor's commentary — what it said on its own strand while watching the
+primary, captured and never sent — was drawn in the primary's transcript lane
+as full amber blocks between the primary's own work. This addendum records it
+moving out: the lane keeps one quiet line per review, and the bodies live in
+the strand panel beside the strands they observe. It adds no event to the
+socket's accepted list, no handler anywhere, and no operation: a click on the
+hairline is the click the dot beside it already was, and no click reaches the
+commentary section at all.
+
+### What changed
+
+- **The lane keeps a hairline, not the body.** Each `Commentary` piece now
+  draws one line — the advisor's tag, then the projection's own request label
+  without its `Advisor · ` prefix, which the tag already says (`advisor ·
+  quiet requested` and its siblings), in the advisor's colour.
+  The label names the request only, never a delivery, exactly as the block it
+  replaced did; the tool result still owns the verdict's fate. The dot beside
+  the hairline carries `data-loom-focus` with the advisor card's position, as
+  it already did: the marker relay presses the advisor's card, whose focused
+  transcript is where the full bodies have always lived as the advisor's
+  ordinary entries.
+- **The bodies moved to the Strands pane.** A read-only section under the
+  strand cards draws the board's newest items whole — the request label as a
+  head, the advisor's text as a body, a `+n earlier reviews` count line when
+  the window holds more, and the board's own not-loaded line when the
+  captured ancestry is missing an older parent. It is fed by
+  `advisor_history.visible`, the same shared rule the lane asks: a board for
+  `main` only. The advisor's own focused transcript already holds the same
+  words as its ordinary entries, so the section draws nothing while the
+  advisor is on screen, and the stylesheet hides it with the pane's `detailed`
+  class for the same reason.
+- **Nothing new is admitted, and nothing new holds a handler.** The section
+  carries no control, exactly as the pending-nudges card does not: the
+  commentary changes nothing, and the run that delivers a nudge is the
+  primary's next run start, which no click on captured words can cause. The
+  observer's page draws the same hairline and the same section, text nodes
+  only, and its handler table is unchanged: an observer's page still holds
+  only the "Load older" click and the strand cards' clicks.
+- **The paths did not move.** The section is the Strands pane's fourth child,
+  after the title, the strip's list and the detail view, so
+  `component.strip_path` (`0\t3\t0\t1\t0`) and `component.invite_path`
+  (`0\t3\t2\t2`) are exactly where the earlier addenda pin them, and the
+  section is `element.none()` when the board is empty, so the pane's child
+  count never moves and neither does the detail's place.
+- **The TUI is unchanged.** It does not draw through `turns`; it consumes the
+  row projection directly, and inline full commentary is its only shelf. The
+  shared rule the two hosts cannot disagree on is *which strands see the
+  commentary* (`advisor_history.visible`), not where each host draws it —
+  the same host-appropriate placement the pending-nudges change made: a card
+  in the panel here, a band beside the composer there.
+
+### What was considered
+
+- **Drawing the commentary only on the advisor's own transcript.** That view
+  already exists and costs nothing, but it answers "what did the advisor say"
+  by swapping the centre away from the primary, and the temporal correlation
+  — which stretch of the primary's work a review was about — is the one thing
+  a focused advisor transcript cannot show. The hairline keeps that
+  correlation at one line per review.
+- **Expandable commentary rows in the lane.** A handler per row is the exact
+  surface the marker relay exists to avoid, and an inline expansion keeps the
+  full text in the lane, which is the complaint.
+- **A fifth panel tab for commentary.** Commentary belongs with the strands
+  it observes, not beside Changes and Session; and a tab hides it behind the
+  reader's last tab choice, the same reason the nudges card sits under the
+  panes.
+
+### Cost
+
+- The full review bodies are one column away from the timeline they discuss:
+  a reader following the primary's work who wants the advisor's reasoning
+  looks at the panel, or focuses the advisor for the whole history. The
+  hairline keeps the "when" and the panel keeps the "what".
+- Below 980px the section is hidden with the panel's short row of cards; a
+  narrow reader still sees each review's hairline and can focus the advisor.
+- The lane no longer discloses its bounds inline: the heading
+  (`Advisor transcript · captured, not sent to primary`) and the not-loaded
+  line moved to the panel's section, which carries both facts.
+
+### Verification
+
+`commentary_test` (`packages/web_view`) shows: the lane holding the hairline
+with the advisor's tag and the request label, and neither the full body nor
+the heading anywhere before the panel; the hairline's dot carrying the marker
+the relay presses the advisor's card with, and an observer's handler table
+still exactly the four strand cards' clicks; the section in the Strands pane
+under the strip with the advisor's whole text as an escaped text node; the
+section drawing nothing while the advisor is on screen, while the advisor's
+own transcript holds the same words as its ordinary entries; a page without
+commentary drawing no section and no hairline; the count and not-loaded lines
+worded; the section holding no button and no form; and the operator's page
+drawing the same hairline and section. The web client's gates pass unchanged.
+No browser was in the loop; the hairline's look beside a lane and the
+section's under the cards run only in one.

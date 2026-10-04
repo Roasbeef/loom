@@ -135,6 +135,7 @@ import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/server_component
+import session_view/advisor_history
 import session_view/advisor_pending
 import session_view/agent_roster
 import session_view/agent_view
@@ -179,6 +180,7 @@ import web_view/image as web_image
 import web_view/invites
 import web_view/sessions
 import web_view/view/changes
+import web_view/view/commentary
 import web_view/view/crumb
 import web_view/view/ended
 import web_view/view/expansion
@@ -474,12 +476,10 @@ pub type Answer {
 /// The controls act on the page's strand. Each is the same command a draft
 /// names, run through the same shared step, so what the page may do here is
 /// what a draft may do (`page_command`), and no control adds an operation.
+/// Stop and pinning a goal were once here too, and left with their buttons:
+/// the operator stops a strand from the terminal, and pins a goal by typing
+/// `/goal ...` in the composer, which the page parses as a command.
 pub type Control {
-  /// Abort the strand's running operation, as Escape does in the terminal.
-  /// The session stays open, and the strand's queued input is held until the
-  /// operation settles. Ending the session is daemon control, which stays in
-  /// the terminal.
-  Stop
 
   /// `/goal pause`.
   PauseGoal
@@ -492,10 +492,6 @@ pub type Control {
 
   /// `/fork <name>`, with the name as the operator typed it.
   Fork(name: String)
-
-  /// `/goal <objective>`, with the text as the operator typed it, which may
-  /// begin with `--budget <tokens>` as the command allows.
-  PinGoal(objective: String)
 }
 
 /// How much of the strand's history the page holds. It only moves forward:
@@ -1890,18 +1886,13 @@ pub fn decide(
 
 /// Runs one of the page's controls through the shared step's command arm.
 ///
-/// Stop is the terminal's Escape (`msg.Interrupt`), and the goal's three
-/// buttons are `/goal pause`, `/goal resume` and `/goal clear`. The two forms
-/// hold text the operator typed, and that text becomes the command exactly as
-/// it would in the composer: it is put after `/fork ` or `/goal ` and parsed
-/// with `command.parse`, so the name, the objective, `--budget` and every
+/// The goal's three buttons are `/goal pause`, `/goal resume` and
+/// `/goal clear`. The fork form holds text the operator typed, and that
+/// text becomes the command exactly as it would in the composer: it is put
+/// after `/fork ` and parsed with `command.parse`, so the name and every
 /// limit are the command's own and the page holds no second list of them.
 /// What the parse returns is checked against what the form is for. A fork
 /// form yields a fork or the command's own complaint that a name is missing.
-/// A goal form yields a goal, or the complaint about its budget, its length
-/// or a missing objective, and any other command it names (`clear`, `pause`,
-/// `check ...`, or nothing) is refused with a notice, because a box labelled
-/// for a goal's objective must never unpin the goal.
 ///
 /// A control's command has no draft (`msg.Control`), so it leaves whatever
 /// the operator is typing in the composer where it is. The forms are a
@@ -1921,12 +1912,10 @@ pub fn control(
   control: Control,
 ) -> #(Model(socket), Effect(Msg(socket))) {
   case control {
-    Stop -> commanded(model, msg.Interrupt)
     PauseGoal -> commanded(model, msg.Control(command: command.GoalPause))
     ResumeGoal -> commanded(model, msg.Control(command: command.GoalResume))
     ClearGoal -> commanded(model, msg.Control(command: command.GoalClear))
     Fork(name:) -> written(model, "/fork ", name, forking)
-    PinGoal(objective:) -> written(model, "/goal ", objective, pinning)
   }
 }
 
@@ -1998,21 +1987,6 @@ fn forking(parsed: command.Command) -> Result(command.Session, String) {
     command.Session(command.MissingArgument(_) as missing) -> Ok(missing)
     command.Session(_) | command.Surface(_) ->
       Error("Type a name for the fork.")
-  }
-}
-
-// The goal form's words: a goal, or one of the command's own complaints
-// about it. A word that names another goal command is not an objective.
-fn pinning(parsed: command.Command) -> Result(command.Session, String) {
-  case parsed {
-    command.Session(command.GoalSet(..) as goal) -> Ok(goal)
-    command.Session(command.GoalBudgetInvalid(_) as budget) -> Ok(budget)
-    command.Session(command.GoalObjectiveTooLong(_) as long) -> Ok(long)
-    command.Session(command.MissingArgument(_) as missing) -> Ok(missing)
-    command.Session(_) | command.Surface(_) ->
-      Error(
-        "Type the goal's objective. To pause, resume or clear the goal, use its buttons.",
-      )
   }
 }
 
@@ -2735,6 +2709,24 @@ pub fn sent_forms(model: Model(socket)) -> Int {
   model.view.sent_forms
 }
 
+/// The advisor's settled commentary on the strand on screen, as the last
+/// capture projected it (`session_view/advisor_history`), already narrowed
+/// by the shared visibility rule: a board for `main` only. The advisor's own
+/// transcript holds the same text as its ordinary entries, so the focused
+/// advisor draws no section and the lane marks nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // commentary.view(component.advisor_commentary(model))
+/// ```
+pub fn advisor_commentary(model: Model(socket)) -> advisor_history.Board {
+  advisor_history.visible(
+    model.shared.advisor_history,
+    model.shared.active_strand,
+  )
+}
+
 /// What the page last told the operator: its own refusal of an input if
 /// there is one, otherwise the daemon's reply to the last command, otherwise
 /// what the session said when that command ran.
@@ -2857,9 +2849,9 @@ pub fn session_id(model: Model(socket)) -> String {
 
 /// The observer's page: the top bar, no sidebar, a centre column holding the
 /// breadcrumb while another strand is in focus, the lane, the todo panel when
-/// the strand has a board or a reviewer is running, the advisor's pending
-/// nudges when any are queued and a fixed line saying the page is read-only,
-/// and the strand panel. Its event handlers are
+/// the strand has a board or a reviewer is running, a fixed line saying the
+/// page is read-only, and the strand panel, which carries the advisor's
+/// pending nudges when any are queued. Its event handlers are
 /// the lane's "Load older" button, whose message asks for a read and nothing
 /// else, and one focus click per card of the strand panel; the page socket
 /// admits those from an observer and drops every other frame
@@ -2891,7 +2883,6 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
         session_id(model),
       ),
       plan(model),
-      nudges.view(pending_nudges(model)),
       html.p([attribute.class("observer-bar")], [
         html.text(
           "Observer · read-only · you can follow this session; ask the owner for operator access",
@@ -2906,7 +2897,8 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
 
 /// The strand panel both pages draw: the Strands pane with a card for each
 /// strand the page lists, each a button whose click is `focus` applied to the
-/// strand's name, then the Changes and Session panes. A page's message type
+/// strand's name, then the Changes and Session panes, and under them the
+/// advisor's pending nudges, on every tab. A page's message type
 /// decides what a press means, so the operator's page passes its own wrapper.
 ///
 /// `viewers` is the attached viewers the Session pane draws, or `None` on a
@@ -2939,6 +2931,8 @@ pub fn panel(
       viewers,
       share,
     ),
+    nudges.view(pending_nudges(model)),
+    commentary.view(advisor_commentary(model)),
   )
 }
 
