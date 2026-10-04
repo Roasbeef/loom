@@ -29,17 +29,17 @@
    input 66f129b5d21f94c1f61d312c78720223300f13e9b3bdbe370b1aa340e12623d2  packages/web_view/src/web_view/image.gleam
    input 6df4c7bd6011d6b590a93d76a63dae70a65f4edbf8fe52c22ff45fa446ab5796  packages/web_view/src/web_view/invites.gleam
    input f7391d768a77a2874c01c597db8dfcebeaf2f70c0c39605e325997f799f9cd93  packages/web_view/src/web_view/markdown_view.gleam
-   input 28b5025d6e668a9161c9582ee9b45c90bd143c5806ea77fc7274c24be34b9544  packages/web_view/src/web_view/operator_page.gleam
+   input 27c9792f8d0501d6c496ea4daf504cba3ada24acf5860b29a728a6cda2810cde  packages/web_view/src/web_view/operator_page.gleam
    input b830541b6e32c30f71a9a8d76a9dcd19582684d089e097b0c41ad2be61ad7e4e  packages/web_view/src/web_view/page.gleam
    input 7b2cc69b3015d4b8c2126c42e454aced0365ad60e22d5e651f299e372624f02e  packages/web_view/src/web_view/sessions.gleam
    input 01a3c76737633aa79b57ebb2e03cc20cc97e23065fb6120c26a3344ace1179da  packages/web_view/src/web_view/view/changes.gleam
-   input d645f438f4bded5b9a6c7d4a3d1075f7a2a8a14086bebfe90189b26bdde17599  packages/web_view/src/web_view/view/commentary.gleam
+   input b27dc1cb5425e7cc12c6417d6b3022765de35beebf05abe4fadb6a44438ec524  packages/web_view/src/web_view/view/commentary.gleam
    input bb21b5477c209e561be6f01129f595ba329981d91a07ac36a360ba1bd1ce0d80  packages/web_view/src/web_view/view/controls.gleam
    input acc1ec316e6219705cb135e1038cf2ea8684229ea9e1a470c555943e1881b77a  packages/web_view/src/web_view/view/crumb.gleam
    input 6320423cadd73c37401b2e3b4607b75720eb9a5621fc7da274d576b465876387  packages/web_view/src/web_view/view/ended.gleam
    input 8b98ce4c70ecf1380327ecd4a1126eb8e7e7d9571132623a52649dc86047d746  packages/web_view/src/web_view/view/expansion.gleam
    input b3402aeb26397561184496129198e4da11e37a8a95077592cf3f6fbb0f67fb05  packages/web_view/src/web_view/view/heading.gleam
-   input 7f75c4a9895670396ce0d1f559fd7d8449908244289e0e68ab6fc92fdc19c130  packages/web_view/src/web_view/view/lane.gleam
+   input 2cc4a192b7fa74cbd52b7e741b2e74171ab9c7d4ba672ea57a7e181fbd45dc7d  packages/web_view/src/web_view/view/lane.gleam
    input 20a829d3576219a89508ea55a72ae1a420960af5c9ac7b0a126a3dc6ace8d5a5  packages/web_view/src/web_view/view/live.gleam
    input b73fc47db8d46314a208fafdaa47629322aab80946ca9fd60fd1e1d1448742cb  packages/web_view/src/web_view/view/nudges.gleam
    input e4317b9861d27317ba504d504c2e84d3c2f786fbbb00f34b5b4bce5b275056e0  packages/web_view/src/web_view/view/panel.gleam
