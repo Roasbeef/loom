@@ -6,9 +6,12 @@
 //// draws each chip as a card.
 ////
 //// A card is a ring, the strand's name and one status line
-//// (`session_view/strand_card`), and nothing else: the model, the context, the
-//// cache's expiry and the elapsed time are figures of one strand's own view
-//// (`view/strand_detail`), not of a row in a list. A strand that waits on a
+//// (`session_view/strand_card`) that begins with the state's glyph, and
+//// nothing else: the model, the context, the cache's expiry and the elapsed
+//// time are figures of one strand's own view (`view/strand_detail`), not of a
+//// row in a list. The ring is the cache ring at 34 px. The line names a tool
+//// and not its command; the card's `title` holds the whole text for a reader
+//// who hovers. A strand that waits on a
 //// decision reads `Needs approval`, in the attention colour. The approval
 //// card that answers it is drawn in the dock and only for the strand on
 //// screen, so the strand's card is a button that focuses the strand, which
@@ -30,8 +33,11 @@
 //// session.
 ////
 //// A strand's name and its status line are session content or derived from
-//// it, so each is drawn as a text node and never as an attribute, a class or
-//// a key. The chips are listed by position rather
+//// it, so each is drawn as a text node and never as a class or a key. The one
+//// attribute they reach is a card's `title`, the tooltip that holds the
+//// command a tool's status line left out: an inert, escaped string that
+//// names no handler, link or style (protocol-change/051, the addendum of
+//// 2026-10-03 on the right panel). The chips are listed by position rather
 //// than keyed by name, and a chip's hue comes from its position among the
 //// captured strands, never from its name. Every class is a complete
 //// literal, so Tailwind finds it.
@@ -108,6 +114,9 @@ pub type Chip {
     /// The tools the strand's current operation ran most recently, oldest
     /// first, as `agent_view` bounds them.
     recent: List(String),
+    /// The first line of the strand's latest answer, when it has given one:
+    /// what a strand's own view shows under `Recent` when no tool ran.
+    answer: Option(String),
   )
 }
 
@@ -343,24 +352,51 @@ fn chip_element(
   let line = chip.line
   html.li(chip_attributes(chip, followed), [
     html.button(
-      [
-        attribute.type_("button"),
-        attribute.class("chip-hit"),
-        attribute.data(card_marker, int.to_string(position)),
-        ..press_attributes(chip.line.id, followed, focus)
-      ],
+      list.append(
+        [
+          attribute.type_("button"),
+          attribute.class("chip-hit"),
+          attribute.data(card_marker, int.to_string(position)),
+          ..press_attributes(chip.line.id, followed, focus)
+        ],
+        title(line),
+      ),
       [
         ring(chip.cache, Card),
         html.span([attribute.class("chip-text")], [
           html.span([attribute.class("chip-name")], [html.text(line.name)]),
-          html.span(
-            [attribute.class("chip-status"), status_class(line.status)],
-            [html.text(strand_card.status_line(line))],
-          ),
+          status(line),
         ]),
       ],
     ),
   ])
+}
+
+/// A strand's status as a card and its own view draw it: the state's glyph,
+/// then the status line, in the state's colour.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // strip.status(chip.line)
+/// ```
+pub fn status(line: agent_roster.Line) -> Element(message) {
+  html.span([attribute.class("chip-status"), status_class(line.status)], [
+    html.span([attribute.class("st"), attribute.aria_hidden(True)], [
+      html.text(strand_card.glyph(line.status)),
+    ]),
+    html.text(strand_card.status_line(line)),
+  ])
+}
+
+// The card's tooltip, only when it says more than the line does.
+fn title(line: agent_roster.Line) -> List(attribute.Attribute(message)) {
+  let whole = strand_card.status_title(line)
+
+  case whole == strand_card.status_line(line) {
+    True -> []
+    False -> [attribute.title(whole)]
+  }
 }
 
 // The chip of the strand the page shows is marked as the current one by its

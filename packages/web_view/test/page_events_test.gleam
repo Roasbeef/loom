@@ -126,3 +126,21 @@ pub fn the_operators_page_registers_only_clicks_and_submits_test() {
     |> list.unique
   assert list.sort(names, string.compare) == ["click", "submit"]
 }
+
+// The session controls are the Session pane's fourth child, after the
+// invitation control's place, so neither moves the other. The Fork form is
+// there on every operator page, and an observer's page has no handler there.
+pub fn the_session_controls_are_beneath_their_own_path_test() {
+  let keys = handlers(operator_page.view(crowded()))
+  let controls =
+    list.filter(keys, fn(key) {
+      string.starts_with(key, component.session_controls_path <> "\t")
+    })
+  assert list.length(controls) == 1
+  assert list.all(controls, fn(key) { string.ends_with(key, "\nsubmit") })
+
+  assert !list.any(handlers(component.view(crowded())), fn(key) {
+    string.starts_with(key, component.session_controls_path)
+  })
+  assert component.session_controls_path != component.invite_path
+}

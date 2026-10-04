@@ -47,6 +47,25 @@ pub fn rows() -> List(command.Suggestion) {
   let arguments =
     list.flat_map(words, fn(word) { command.suggestions(word.command <> " ") })
     |> list.filter(fn(row) { string.contains(row.command, " ") })
+
+  // A word that has argument rows is a head the operator can continue from,
+  // whether or not the terminal runs it alone. The terminal's `/goal` is a
+  // whole command that shows the goal's status, which the page does not run,
+  // so without this the word would be filtered out and no row would lead to
+  // `/goal check`. The head keeps the terminal's name and hint and is marked
+  // as taking an argument, so choosing it leaves `/goal ` in the editor with
+  // the argument rows listed.
+  let heads =
+    list.filter_map(arguments, fn(row) {
+      string.split_once(row.command, " ") |> result.map(fn(split) { split.0 })
+    })
+  let words =
+    list.map(words, fn(word) {
+      case list.contains(heads, word.command) {
+        True -> command.Suggestion(..word, takes_argument: True)
+        False -> word
+      }
+    })
   list.filter(list.append(words, arguments), runs)
 }
 

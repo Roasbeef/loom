@@ -11,7 +11,7 @@
 //// question at a glance, what the agent is doing now and how much is left:
 //// the phase that holds the active task is drawn with every task in it, and
 //// every other phase is folded into one summary row. A board whose tasks
-//// are all closed is one row.
+//// are all closed is one line, `Todo · 5 of 5 done`.
 ////
 //// The board is drawn as one line until the reader opens it: `Todo · 3 of 5
 //// done · check it`, the count of closed tasks and the text of the active
@@ -95,7 +95,7 @@ fn board_elements(board: Option(Board)) -> List(Element(message)) {
 
       case todo_list.focus(board), closed == total {
         None, _ -> []
-        Some(_), True -> [finished(board, total)]
+        Some(_), True -> [finished(total)]
         Some(phase), False -> [open(board, phase, closed, total)]
       }
     }
@@ -246,23 +246,19 @@ fn others(board: Board, focus: Phase) -> Element(message) {
 
 // --- a finished board ----------------------------------------------------------
 
-fn finished(board: Board, total: Int) -> Element(message) {
-  let phases = list.length(board.phases)
-  let detail =
-    "all "
-    <> int.to_string(total)
-    <> plural(total, " task", " tasks")
-    <> " closed"
-    <> case phases > 1 {
-      True -> " across " <> int.to_string(phases) <> " phases"
-      False -> ""
-    }
-
+fn finished(total: Int) -> Element(message) {
   html.div([attribute.class("todo-board")], [
-    html.p([attribute.class("todo-head")], [
-      html.span([attribute.class("todo-label")], [html.text("TODO")]),
-      html.span([attribute.class("todo-done")], [html.text("✓")]),
-      html.span([attribute.class("todo-quiet")], [html.text(detail)]),
+    html.p([attribute.class("todo-line")], [
+      html.span([attribute.class("todo-label")], [html.text("Todo")]),
+      html.span([attribute.class("todo-quiet")], [
+        html.text(
+          " · "
+          <> int.to_string(total)
+          <> " of "
+          <> int.to_string(total)
+          <> " done",
+        ),
+      ]),
     ]),
   ])
 }
@@ -291,13 +287,6 @@ fn band(lines: List(String)) -> List(Element(message)) {
 
 fn count(closed: Int, total: Int) -> String {
   int.to_string(closed) <> "/" <> int.to_string(total)
-}
-
-fn plural(count: Int, one: String, many: String) -> String {
-  case count {
-    1 -> one
-    _ -> many
-  }
 }
 
 fn clean(text: String) -> String {

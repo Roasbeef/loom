@@ -4,7 +4,7 @@
 //// The terminal draws a strand's durable records as rows. A host with more
 //// room (the web view) draws the same records as a reading lane: what a
 //// person asked, the answer, and between them one divider for everything the
-//// strand did to get there (`▸ worked 48s · 4 steps · 2 files`). What counts
+//// strand did to get there (`▸ Worked 48s · 4 steps · 2 files`). What counts
 //// as an input, what counts as work, and which rows must never be folded
 //// away are decisions about what a record means, so they are made here and
 //// not in the host. The host only lays the pieces out.
@@ -20,6 +20,13 @@
 //// miss, since each is something another party did or something the reader
 //// may need to act on.
 ////
+//// The memory context the daemon attaches to a run is not an input: nobody
+//// asked it. It is recorded ahead of the prompt it was attached for, and it
+//// becomes the first step of that prompt's fold (`Memory`), so a turn is one
+//// collapsed line. A person's message is a `Prompt`, which carries its sender
+//// as a field and not as a line of its text, and reviews of the advisor that
+//// follow each other are one `Commentary` piece that counts them.
+////
 //// A turn still running is never folded, and neither is one whose strand
 //// waits on an approval: the reader must be able to see the step that is
 //// asking. The duration and counts a divider shows come from the records
@@ -27,7 +34,7 @@
 ////
 //// ## Flow
 ////
-//// `pieces` → `joined` → `classify` → `split` → `lay_out` → `worked` → `divider`
+//// `pieces` → `joined` → `classify` → `timed` → `split` → `lay_out` → `worked` → `divider` → `merge_commentary`
 ////
 //// 1. `pieces` takes the strand's blocks and the host's `Latest` and `Expansion`
 ////    and returns the lane's `Piece` values in order.
@@ -37,14 +44,19 @@
 ////    turn (`Classified`): an input, a candidate answer, a step, or a row that
 ////    stays outside the fold. `entry_kind` reads the entry and `step` builds a
 ////    call's step; `spawned` and `returned` make the agent rows.
-//// 4. `split` cuts the classified rows at each input into turns. `grouped` is the
-////    same cut over bare blocks, for a host that pages older turns in.
-//// 5. `lay_out` keeps the last message with the strand's own prose as the answer
+//// 4. `timed` gives each response the time it took, from the latest record
+////    before it, which is what a reasoning row reads.
+//// 5. `split` cuts the classified rows at each input into turns, holding a
+////    memory context for the input that follows it. `grouped` is the same cut
+////    over bare blocks, for a host that pages older turns in.
+//// 6. `lay_out` keeps the last message with the strand's own prose as the answer
 ////    and puts every other message and step under one divider, placed where the
 ////    first of them stood. The last turn stays `Open` while the strand runs.
-//// 6. `worked` takes the divider's figures from the records alone, and `divider`
+//// 7. `worked` takes the divider's figures from the records alone, and `divider`
 ////    words them, leaving out a figure the records did not give.
-//// 7. `pictured` and `picture` are the separate readers over the finished pieces
+//// 8. `merge_commentary` joins reviews that stand next to each other, and
+////    `attributed` sets the reader's own role on the reader's messages.
+//// 9. `pictured` and `picture` are the separate readers over the finished pieces
 ////    that find a row's images by name, so a host serves only an image the lane draws.
 
 import core/entry
@@ -59,9 +71,12 @@ import gleam/set
 import gleam/string
 import session_view/agent_view
 import session_view/composer
+import session_view/decisions
 import session_view/protocol
 import session_view/snapshot_view
+import session_view/step_words
 import session_view/strand_framing
+import session_view/text_hygiene
 import session_view/tool_activity
 import session_view/transcript_image.{type Image}
 import session_view/transcript_line.{type Line}
@@ -149,6 +164,23 @@ pub type Item {
     /// key, cut by the host's `Expansion`. Empty when the host asked for
     /// none or no row has more to show.
     thoughts: Dict(String, List(Line)),
+    /// How long the response that wrote the block took, in milliseconds, from
+    /// the record before it to its own, when both carry a time. It is the
+    /// time a reasoning row reads, since the records do not stamp reasoning
+    /// apart from the rest of the response.
+    took: Option(Int),
+  )
+
+  /// The memory context the daemon attached to the run, as the first thing a
+  /// turn's fold holds. It is not an input: nobody asked it, so it opens no
+  /// turn, and a reader who wants it opens the step.
+  Memory(
+    /// The row's key: the message block's key and the row's index.
+    key: String,
+    /// How many lines the memory digest holds (`composer.memory_context_lines`).
+    lines: Int,
+    /// The message in full, cut by the host's `Expansion`.
+    full: List(Line),
   )
 
   /// One tool call.
@@ -157,8 +189,9 @@ pub type Item {
     key: String,
     /// How the call stands.
     standing: Standing,
-    /// The call's one-line summary (`transcript_lines.call_summary`).
-    summary: String,
+    /// What the call reads as: its verb, what it acted on and, for an edit,
+    /// the lines it changed (`step_words.of_call`).
+    words: step_words.Words,
     /// The rows under the summary: its result, patch or program.
     detail: List(Line),
     /// What the terminal's `Ctrl+g` shows for the call under its summary,
@@ -182,6 +215,24 @@ pub type Piece {
     /// The full form of each of the block's reasoning rows, as in
     /// `Narrated`. Empty for a block with none.
     thoughts: Dict(String, List(Line)),
+    /// How long the response took, as in `Narrated`.
+    took: Option(Int),
+  )
+
+  /// A message a person sent: the words they typed, with who sent them
+  /// drawn as a line of its own and not as a prefix of the text. The block's
+  /// own rows are the message without the `name:` line the transcript puts
+  /// before an attributed message.
+  Prompt(
+    block: Block,
+    /// The sender's stable identity, which is never drawn and is what a host
+    /// compares with its own to learn whether the sender is the reader.
+    principal: String,
+    /// The sender's display name at admission, on one line. Session text.
+    name: String,
+    /// The reader's own role when the sender is the reader (`attributed`),
+    /// words the host draws beside the name; `None` for anyone else.
+    role: Option(String),
   )
 
   /// The work of one turn, behind one divider. `key` names the turn by its
@@ -214,7 +265,13 @@ pub type Piece {
 
   /// The advisor's commentary board on the primary's lane: what the
   /// advisor said on its own strand, captured and not sent to the primary.
-  Commentary(block: Block)
+  /// Reviews that follow each other with nothing between them are one piece,
+  /// which keeps the first one's block and counts them.
+  Commentary(
+    block: Block,
+    /// How many reviews the piece stands for.
+    reviews: Int,
+  )
 
   /// A message another session's strand sent to this one. The daemon only
   /// knows it was stored, never that it was read.
@@ -228,6 +285,12 @@ pub type Piece {
 
   /// A cache miss this client noticed after the turn that paid for it.
   Missed(key: String, text: String)
+
+  /// An approval decision the session recorded, placed among the records by
+  /// the sequence that committed it (`with_decisions`). The line is the
+  /// register's, not the transcript's: it says who answered a request, which
+  /// no transcript entry does.
+  Decided(key: String, decision: decisions.Decision)
 }
 
 /// Whether the pieces carry the rows a reader can expand a row to, and how
@@ -311,6 +374,7 @@ pub fn pieces(
   let joined = joined(blocks)
   let classified =
     list.flat_map(blocks, classify(_, strands, joined, expansion))
+    |> timed
   let turns = split(classified)
   let count = list.length(turns)
   turns
@@ -322,6 +386,118 @@ pub fn pieces(
     lay_out(turn, folding)
   })
   |> list.flatten
+  |> merge_commentary
+}
+
+/// The same pieces with the reader's own role set on the messages the reader
+/// sent: a `Prompt` whose sender's identity is `principal` takes `role`.
+///
+/// The records say who sent a message and not in what capacity, so the role
+/// is the one thing a host holds that the lane does not: its own attachment.
+/// A message from anyone else keeps no role, because the page cannot know it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert turns.attributed([], "owner", "operator") == []
+/// ```
+pub fn attributed(
+  pieces: List(Piece),
+  principal: String,
+  role: String,
+) -> List(Piece) {
+  list.map(pieces, fn(piece) {
+    case piece {
+      Prompt(principal: sender, ..) if sender == principal ->
+        Prompt(..piece, role: Some(role))
+      _ -> piece
+    }
+  })
+}
+
+// Reviews that stand next to each other are one hairline: the first one's
+// block names the piece, so its key holds as more arrive, and the count says
+// how many there were.
+fn merge_commentary(pieces: List(Piece)) -> List(Piece) {
+  list.fold(pieces, [], fn(out, piece) {
+    case piece, out {
+      Commentary(reviews: more, ..), [Commentary(block:, reviews:), ..rest] -> [
+        Commentary(block:, reviews: reviews + more),
+        ..rest
+      ]
+      _, _ -> [piece, ..out]
+    }
+  })
+  |> list.reverse
+}
+
+/// The pieces with each recorded decision's line placed among them.
+///
+/// A decision goes before the first piece that starts after the sequence that
+/// committed it, which is after the step it decided: the step's own call is
+/// older than the decision, and its result and the strand's next words are
+/// newer. A decision is committed inside the turn that raised it, so a turn's
+/// work, which is one piece, ends before its decision's line, and the line
+/// reads as the turn's last word on the request. A decision older than the
+/// first piece the window holds is dropped, as the records it follows are
+/// not drawn, and one newer than every piece goes last.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert turns.with_decisions([], []) == []
+/// ```
+pub fn with_decisions(
+  pieces: List(Piece),
+  decided: List(decisions.Decision),
+) -> List(Piece) {
+  let first =
+    list.find_map(pieces, start_seq)
+    |> result.unwrap(0)
+  let waiting = list.filter(decided, fn(decision) { decision.seq > first })
+  let #(placed, left) =
+    list.fold(pieces, #([], waiting), fn(acc, piece) {
+      let #(placed, waiting) = acc
+      let #(older, newer) = case start_seq(piece) {
+        Ok(start) ->
+          list.split_while(waiting, fn(decision) { decision.seq < start })
+        Error(Nil) -> #([], waiting)
+      }
+      #([piece, ..list.append(list.reverse(lines(older)), placed)], newer)
+    })
+  list.reverse(list.append(list.reverse(lines(left)), placed))
+}
+
+// The decisions as the pieces that draw them, keyed by the sequence that
+// committed each: a sequence is the daemon's number, never session text, and
+// no block's key can equal it because a block's key has a dot in it.
+fn lines(decided: List(decisions.Decision)) -> List(Piece) {
+  list.map(decided, fn(decision) {
+    Decided(key: "decided-" <> int.to_string(decision.seq), decision:)
+  })
+}
+
+// The sequence a piece starts at, from the key of the first record it draws.
+fn start_seq(piece: Piece) -> Result(Int, Nil) {
+  case piece {
+    Plain(block:, ..) | Prompt(block:, ..) | Commentary(block:, ..) ->
+      key_seq(block.key)
+    Work(items: [Narrated(block:, ..), ..], ..) -> key_seq(block.key)
+    Work(items: [Step(key:, ..), ..], ..)
+    | Work(items: [Memory(key:, ..), ..], ..) -> key_seq(key)
+    Work(items: [], ..) | Decided(..) -> Error(Nil)
+    Spawned(key:, ..)
+    | Returned(key:, ..)
+    | Nudged(key:, ..)
+    | Peer(key:, ..)
+    | Sibling(key:, ..)
+    | Missed(key:, ..) -> key_seq(key)
+  }
+}
+
+fn key_seq(key: String) -> Result(Int, Nil) {
+  use #(seq, _) <- result.try(string.split_once(key, "."))
+  int.parse(seq)
 }
 
 /// The rows of a lane that carry images, each with the name a host gives it
@@ -337,12 +513,13 @@ pub fn pictured(pieces: List(Piece)) -> List(#(String, List(Image))) {
   pieces
   |> list.flat_map(fn(piece) {
     case piece {
-      Plain(block:, ..) -> [picture_row(block)]
+      Plain(block:, ..) | Prompt(block:, ..) -> [picture_row(block)]
       Work(items:, ..) ->
         list.map(items, fn(item) {
           case item {
             Narrated(block:, ..) -> picture_row(block)
             Step(key:, images:, ..) -> #(transcript_image.ref(key), images)
+            Memory(key:, ..) -> #(transcript_image.ref(key), [])
           }
         })
       Spawned(..)
@@ -351,7 +528,8 @@ pub fn pictured(pieces: List(Piece)) -> List(#(String, List(Image))) {
       | Commentary(..)
       | Peer(..)
       | Sibling(..)
-      | Missed(..) -> []
+      | Missed(..)
+      | Decided(..) -> []
     }
   })
   |> list.filter(fn(row) { row.1 != [] })
@@ -409,31 +587,40 @@ pub fn grouped(
   // Whether a block is an input does not depend on the calls the lane
   // joins to their results, so no join is built for the test.
   let unjoined = Joined(dict.new(), dict.new())
-  let #(lead, done, current) =
-    list.fold(blocks, #([], [], None), fn(acc, block) {
-      let #(lead, done, current) = acc
+  let #(lead, done, current, held) =
+    list.fold(blocks, #([], [], None, []), fn(acc, block) {
+      let #(lead, done, current, held) = acc
       case classify(block, strands, unjoined, Skip), current {
-        [Input(..), ..], None -> #(lead, done, Some([block]))
+        [Input(..), ..], None -> #(lead, done, Some([block, ..held]), [])
         [Input(..), ..], Some(turn) -> #(
           lead,
           [list.reverse(turn), ..done],
-          Some([block]),
+          Some([block, ..held]),
+          [],
         )
+
+        // The memory context is recorded ahead of the prompt it was
+        // attached for, so its block waits for the next input and joins that
+        // turn, as `split` places it.
+        [Doing(item: Memory(..), ..), ..], _ -> #(lead, done, current, [
+          block,
+          ..held
+        ])
         [Answer(..), ..], Some(turn)
         | [Doing(..), ..], Some(turn)
         | [Outside(..), ..], Some(turn)
         | [], Some(turn)
-        -> #(lead, done, Some([block, ..turn]))
+        -> #(lead, done, Some([block, ..turn]), held)
         [Answer(..), ..], None
         | [Doing(..), ..], None
         | [Outside(..), ..], None
         | [], None
-        -> #([block, ..lead], done, None)
+        -> #([block, ..lead], done, None, held)
       }
     })
-  let done = case current {
-    None -> done
-    Some(turn) -> [list.reverse(turn), ..done]
+  let #(lead, done) = case current {
+    None -> #(list.append(held, lead), done)
+    Some(turn) -> #(lead, [list.reverse(list.append(held, turn)), ..done])
   }
   #(list.reverse(lead), list.reverse(done))
 }
@@ -445,8 +632,15 @@ type Classified {
   // run the strand then answers, so each is where a turn begins.
   Input(piece: Piece, at: Option(Int))
 
-  // A message with the strand's own prose, a candidate for the answer.
-  Answer(block: Block, at: Option(Int), thoughts: Dict(String, List(Line)))
+  // A message with the strand's own prose, a candidate for the answer. `took`
+  // is how long the response took, which `timed` fills from the records
+  // around it.
+  Answer(
+    block: Block,
+    at: Option(Int),
+    thoughts: Dict(String, List(Line)),
+    took: Option(Int),
+  )
 
   // Something folded under the divider, with the tool calls it made and
   // the paths those calls wrote.
@@ -501,37 +695,105 @@ fn joined(blocks: List(Block)) -> Joined {
   })
 }
 
-// An owner's turn, or the memory context the daemon attached to the run
-// as a user message of its own (`composer.memory_context_lines`). The
-// memory context is drawn as one line, `memory context (n lines)`, with the
-// whole message as that row's expansion under the row's key, which is how
-// a reasoning block's full form is kept (`prose`). The host's cap cuts the
-// expansion, so a digest longer than the page draws is cut with a notice
-// and stays whole in the terminal. A host that draws no expansion keeps the
-// block as the transcript projected it, so the text is never dropped.
-fn folded_memory(block: Block, body: String, expansion: Expansion) -> Piece {
-  case expansion, composer.memory_context_lines(body) {
-    Expand(cap:), Some(lines) -> {
-      // The message's row is the block's first, which `transcript_lines`
-      // keys `<block key>:0`, and `classify` has already dropped a block
-      // that draws no rows.
-      let key = block.key <> ":0"
-      Plain(
-        transcript_lines.Block(..block, rows: [
-          #(
-            key,
-            transcript_line.Line(
-              transcript_line.System,
-              composer.memory_summary(lines),
-            ),
-          ),
-        ]),
-        dict.from_list([
-          #(key, cap([transcript_line.Line(transcript_line.ToolDetail, body)])),
-        ]),
+// The memory context the daemon attached to the run as a user message of its
+// own (`composer.memory_context_lines`), drawn as the first step of the turn's
+// fold: `Memory · 4 lines`, with the whole message as the step's expansion.
+// The host's cap cuts the expansion, so a digest longer than the page draws is
+// cut with a notice and stays whole in the terminal. A host that draws no
+// expansion gets the count alone.
+//
+// It is something the harness did for the strand, not something anyone asked,
+// so it starts no turn and carries no time of its own.
+fn remembered(
+  block: Block,
+  body: String,
+  lines: Int,
+  expansion: Expansion,
+) -> Classified {
+  case expansion {
+    // The message's row is the block's first, which `transcript_lines` keys
+    // `<block key>:0`, and `classify` has already dropped a block that
+    // draws no rows.
+    Expand(cap:) ->
+      Doing(
+        Memory(
+          block.key <> ":0",
+          lines,
+          cap([transcript_line.Line(transcript_line.ToolDetail, body)]),
+        ),
+        None,
+        0,
+        [],
       )
+    Skip -> Doing(Memory(block.key <> ":0", lines, []), None, 0, [])
+  }
+}
+
+// A person's message with its sender drawn apart. The transcript opens an
+// attributed message with `name:` and a newline, which is right in a
+// terminal and is the one line the lane draws as its own, so exactly the
+// prefix `transcript_lines` wrote is taken off the first row.
+fn prompted(block: Block, principal: String, name: String) -> Piece {
+  let name = text_hygiene.single_line(name)
+  let prefix = name <> ":\n"
+  let rows =
+    list.map(block.rows, fn(row) {
+      case row.1 {
+        transcript_line.Line(transcript_line.User, text) ->
+          case string.starts_with(text, prefix) {
+            True -> #(
+              row.0,
+              transcript_line.Line(
+                transcript_line.User,
+                string.drop_start(text, string.length(prefix)),
+              ),
+            )
+            False -> row
+          }
+        _ -> row
+      }
+    })
+  Prompt(transcript_lines.Block(..block, rows:), principal, name, None)
+}
+
+// Fills each response's `took` from the records around it: the time from the
+// latest record before it to its own. A response with no time of its own, or
+// one the records place before what came earlier, has none.
+fn timed(classified: List(Classified)) -> List(Classified) {
+  list.fold(classified, #([], None), fn(acc, item) {
+    let #(out, before) = acc
+    let now = at_of(item)
+    let took = case before, now {
+      Some(before), Some(now) if now >= before -> Some(now - before)
+      _, _ -> None
     }
-    _, _ -> Plain(block, dict.new())
+    let item = case item {
+      Answer(..) -> Answer(..item, took:)
+      Doing(item: Narrated(..) as narrated, ..) ->
+        Doing(..item, item: Narrated(..narrated, took:))
+      Input(..) | Doing(..) | Outside(..) -> item
+    }
+    let latest = case before, now {
+      Some(before), Some(now) -> Some(int.max(before, now))
+      None, now -> now
+      before, None -> before
+    }
+    #([item, ..out], latest)
+  })
+  |> fn(acc) { list.reverse(acc.0) }
+}
+
+// The body of a memory-context message and how many lines its digest holds,
+// or nothing for any other message.
+fn memory_of(content: List(message.UserBlock)) -> Option(#(String, Int)) {
+  let body = transcript_lines.user_body(content)
+  option.map(composer.memory_context_lines(body), fn(lines) { #(body, lines) })
+}
+
+fn at_of(item: Classified) -> Option(Int) {
+  case item {
+    Input(at:, ..) | Answer(at:, ..) | Doing(at:, ..) -> at
+    Outside(..) -> None
   }
 }
 
@@ -546,7 +808,7 @@ fn classify(
     transcript_lines.FromNotice -> [
       Outside(Missed(block.key, first_text(block))),
     ]
-    transcript_lines.FromAdvisor -> [Outside(Commentary(block))]
+    transcript_lines.FromAdvisor -> [Outside(Commentary(block, 1))]
     transcript_lines.FromTools(calls) ->
       calls
       |> list.index_map(fn(call, index) {
@@ -591,9 +853,9 @@ fn entry_kind(
         ]
         Some(transcript_lines.Feed(..)), _
         | Some(transcript_lines.GoalFeed(..)), _
-        -> [Outside(Plain(block, dict.new()))]
+        -> [Outside(Plain(block, dict.new(), None))]
         Some(transcript_lines.Continuation(..)), _ -> [
-          Input(Plain(block, dict.new()), at),
+          Input(Plain(block, dict.new(), None), at),
         ]
         None, Some(message.PeerOrigin(session:, strand:)) -> [
           Input(
@@ -628,12 +890,16 @@ fn entry_kind(
             ),
           ]
         }
-        None, Some(message.Origin(..)) | None, None -> [
-          Input(
-            folded_memory(block, transcript_lines.user_body(content), expansion),
-            at,
-          ),
-        ]
+        None, Some(message.Origin(principal:, name:)) ->
+          case memory_of(content) {
+            Some(#(body, lines)) -> [remembered(block, body, lines, expansion)]
+            None -> [Input(prompted(block, principal, name), at)]
+          }
+        None, None ->
+          case memory_of(content) {
+            Some(#(body, lines)) -> [remembered(block, body, lines, expansion)]
+            None -> [Input(Plain(block, dict.new(), None), at)]
+          }
       }
 
     // A response is drawn as its prose, and each of its calls as a step
@@ -674,9 +940,12 @@ fn entry_kind(
         })
         |> list.flatten
       case list.any(content, speaks), prose.rows {
-        True, _ -> [Answer(prose, at, thoughts), ..own]
+        True, _ -> [Answer(prose, at, thoughts, None), ..own]
         False, [] -> own
-        False, [_, ..] -> [Doing(Narrated(prose, thoughts), at, 0, []), ..own]
+        False, [_, ..] -> [
+          Doing(Narrated(prose, thoughts, None), at, 0, []),
+          ..own
+        ]
       }
     }
 
@@ -711,10 +980,10 @@ fn entry_kind(
           Outside(spawned(block.key, None, details, outcome, strands)),
         ]
         False, "agent_wait" -> [
-          Doing(Narrated(block, dict.new()), at, 0, []),
+          Doing(Narrated(block, dict.new(), None), at, 0, []),
           ..returned(block.key, details, strands)
         ]
-        False, _ -> [Doing(Narrated(block, dict.new()), at, 0, [])]
+        False, _ -> [Doing(Narrated(block, dict.new(), None), at, 0, [])]
       }
     }
 
@@ -722,7 +991,7 @@ fn entry_kind(
     | _, entry.CompactionEntry(..)
     | _, entry.BranchSummaryEntry(..)
     | _, entry.CustomEntry(..)
-    -> [Outside(Plain(block, dict.new()))]
+    -> [Outside(Plain(block, dict.new(), None))]
   }
 }
 
@@ -923,7 +1192,7 @@ fn step(
   Step(
     key:,
     standing:,
-    summary: transcript_lines.call_summary(call),
+    words: step_words.of_call(call),
     detail:,
     full:,
     images: transcript_image.of_outcome(call.outcome),
@@ -1005,19 +1274,25 @@ type Turn {
 
 // Splits the lane at every input. What precedes the first input (a window
 // that starts mid-turn) is a turn with no input of its own.
+//
+// The memory context is recorded ahead of the prompt it was attached for, so
+// it is held until the next input and opens that turn's work. A memory with
+// no input after it stays in the turn it was found in.
 fn split(classified: List(Classified)) -> List(Turn) {
-  let #(done, current) =
-    list.fold(classified, #([], Turn(None, [])), fn(acc, item) {
-      let #(done, current) = acc
+  let #(done, current, held) =
+    list.fold(classified, #([], Turn(None, []), []), fn(acc, item) {
+      let #(done, current, held) = acc
       case item {
-        Input(..) -> #([current, ..done], Turn(Some(item), []))
+        Input(..) -> #([current, ..done], Turn(Some(item), held), [])
+        Doing(item: Memory(..), ..) -> #(done, current, [item, ..held])
         Answer(..) | Doing(..) | Outside(..) -> #(
           done,
           Turn(..current, rest: [item, ..current.rest]),
+          held,
         )
       }
     })
-  [current, ..done]
+  [Turn(..current, rest: list.append(held, current.rest)), ..done]
   |> list.reverse
   |> list.filter_map(fn(turn) {
     case turn {
@@ -1049,8 +1324,8 @@ fn lay_out(turn: Turn, folding: Folding) -> List(Piece) {
       let #(item, index) = pair
       case item {
         Doing(item:, ..) -> Ok(item)
-        Answer(block:, thoughts:, ..) if Some(index) != answer ->
-          Ok(Narrated(block, thoughts))
+        Answer(block:, thoughts:, took:, ..) if Some(index) != answer ->
+          Ok(Narrated(block, thoughts, took))
         Answer(..) | Input(..) | Outside(..) -> Error(Nil)
       }
     })
@@ -1102,7 +1377,7 @@ fn folded(item: Classified, index: Int, answer: Option(Int)) -> Place {
 
 fn placed(item: Classified) -> Result(Piece, Nil) {
   case item {
-    Answer(block:, thoughts:, ..) -> Ok(Plain(block, thoughts))
+    Answer(block:, thoughts:, took:, ..) -> Ok(Plain(block, thoughts, took))
     Outside(piece:) -> Ok(piece)
     Input(piece:, ..) -> Ok(piece)
     Doing(..) -> Error(Nil)
@@ -1126,14 +1401,15 @@ fn work_key(turn: Turn) -> String {
 
 fn piece_key(piece: Piece) -> String {
   case piece {
-    Plain(block:, ..) | Commentary(block:) -> block.key
+    Plain(block:, ..) | Prompt(block:, ..) | Commentary(block:, ..) -> block.key
     Work(key:, ..)
     | Spawned(key:, ..)
     | Returned(key:, ..)
     | Nudged(key:, ..)
     | Peer(key:, ..)
     | Sibling(key:, ..)
-    | Missed(key:, ..) -> key
+    | Missed(key:, ..)
+    | Decided(key:, ..) -> key
   }
 }
 
@@ -1178,49 +1454,15 @@ fn worked(turn: Turn) -> Worked {
   Worked(duration_ms:, steps:, files:)
 }
 
-/// The divider's words: `worked 48s · 4 steps · 2 files`, leaving out a
+/// The divider's words: `Worked 48s · 4 steps · 2 files`, leaving out a
 /// figure the records did not give.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// assert turns.divider(turns.Worked(Some(48_000), 4, 2))
-///   == "worked 48s · 4 steps · 2 files"
+///   == "Worked 48s · 4 steps · 2 files"
 /// ```
 pub fn divider(worked: Worked) -> String {
-  let time = case worked.duration_ms {
-    Some(ms) -> "worked " <> span(ms)
-    None -> "worked"
-  }
-  [
-    time,
-    counted(worked.steps, "step", "steps"),
-    counted(worked.files, "file", "files"),
-  ]
-  |> list.filter(fn(part) { part != "" })
-  |> string.join(" · ")
-}
-
-fn counted(count: Int, one: String, many: String) -> String {
-  case count {
-    0 -> ""
-    1 -> "1 " <> one
-    _ -> int.to_string(count) <> " " <> many
-  }
-}
-
-// A duration as the divider reads it: seconds under a minute, minutes and
-// seconds under an hour, then hours and minutes.
-fn span(ms: Int) -> String {
-  let seconds = int.max(0, ms) / 1000
-  case seconds >= 3600, seconds >= 60 {
-    True, _ ->
-      int.to_string(seconds / 3600)
-      <> "h "
-      <> int.to_string(seconds % 3600 / 60)
-      <> "m"
-    False, True ->
-      int.to_string(seconds / 60) <> "m " <> int.to_string(seconds % 60) <> "s"
-    False, False -> int.to_string(seconds) <> "s"
-  }
+  step_words.worked(worked.duration_ms, worked.steps, worked.files)
 }

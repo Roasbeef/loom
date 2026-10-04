@@ -43,6 +43,7 @@ import session_view/model.{
   type Shared, Attached, ComposerSubmission, ConfirmGoal, Disconnected,
   HoldGoalReport, OverlaySubmission, Preview, Replaying, ReportGoal, Shared,
 } as session_model
+import session_view/notice_words
 import session_view/queue_request
 import session_view/session_channel
 import session_view/worktree_view
@@ -247,9 +248,9 @@ fn record_sent(
       "goal_get" ->
         case shared.goal_report {
           HoldGoalReport -> shared.notice
-          ReportGoal | ConfirmGoal(..) -> command <> " sent"
+          ReportGoal | ConfirmGoal(..) -> notice_words.sent(command)
         }
-      _ -> command <> " sent"
+      _ -> notice_words.sent(command)
     },
   )
   |> session_model.invalidate_frame

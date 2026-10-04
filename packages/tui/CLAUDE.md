@@ -832,10 +832,11 @@ boundaries and the split's measurements under Invariants.
   already holds `remote.json`; `prepare` then writes `credential` and `claim`
   (the token's digest) at `0600` before any connection, reusing a stored
   credential only when `claim` names this same token. The exchange sends only
-  the credential's digest on `/v2/claim`, checks the reply's fingerprint
-  against that digest, and writes `remote.json`. A `not_found`, `expired` or
-  `conflict` deletes `credential` and `claim`; anything else is `Unknown` and
-  keeps them for a rerun. `enroll` stores a credential, removes a stale
+  the credential's digest, and the optional `--name` (`Options.name`, empty for
+  none), on `/v2/claim`, checks the reply's fingerprint against that digest,
+  and writes `remote.json`. A `not_found`, `expired` or `conflict` deletes
+  `credential` and `claim`; `invalid_name` is `Invalid` and keeps them, since
+  nothing was bound; anything else is `Unknown` and keeps them for a rerun. `enroll` stores a credential, removes a stale
   `claim`, and prints only its digest and fingerprint. The token arrives on
   standard input through `ffi_terminal.read_standard_line`, which prompts
   only on a terminal.

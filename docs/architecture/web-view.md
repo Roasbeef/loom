@@ -307,7 +307,10 @@ flowchart LR
   `Replying(key)`, which are clicks and submits like the rest (the
   addendum "the page's session controls, the pending nudges and the peer
   reply", and the addendum of 2026-10-02): the goal's Pause, Resume and
-  Clear, a Fork form, and a Reply button on a peer's message. A control's
+  Clear, a Fork form, and a Reply button on a peer's message. The goal's
+  buttons and the Fork form are in the Session pane, after the invitation
+  control, and the dock keeps one goal line while a goal is active or paused
+  (the addendum of 2026-10-03). A control's
   command is `msg.Control`, which has no draft, so it never empties the
   composer. Stop and the Set goal form are gone: stopping a strand is the
   terminal's Escape, and a goal is pinned by typing `/goal ...` in the
@@ -773,19 +776,22 @@ The full text is already in the model. When `component.relaned` projects a
 capture it asks `turns.pieces` for the terminal's own expanded rows, cut by
 the page's budget, and stores them on the pieces: `Step.full` for a call,
 `thoughts` for a reasoning row. They are built once per projection, not per
-render, and no piece holds the uncapped text. The lane draws a row that has
-more to show as `<loom-expand>` holding both forms as children, and for a
-response only the reasoning row is an expander, so an answer beside it is
-drawn once. A
-button in the element's shadow root chooses which child is slotted. That
-choice is the browser's alone, as a fold's is: no read, no page event and no
-new entry in the socket's accepted list, so it works on an observer's page,
-and the server never renders which form is open, so a later patch leaves the
-reader's choice alone. The alternative, sending the expanded row on request,
-would need a new event and a round trip for text the page already holds.
+render, and no piece holds the uncapped text. A step reads as one line
+(`session_view/step_words`: `Edit calc.py +3 −1`, `Memory · 4 lines`,
+`Reasoning · 4s`), and `view/fold_row` draws a row that has a body as
+`<loom-expand>` holding the line in a child marked `slot="head"` and the body
+in one marked `slot="body"`. The element draws the row's one chevron, so a
+turn of ten steps has ten chevrons and no "Expand" buttons, and a row with
+nothing behind it has none. The body is the full form when the page holds one.
+A button in the element's shadow root shows or hides the body. That choice is
+the browser's alone, as a fold's is: no read, no page event and no new entry
+in the socket's accepted list, so it works on an observer's page, and the
+server never renders which rows are open, so a later patch leaves the reader's
+choice alone. The alternative, sending the expanded row on request, would need
+a new event and a round trip for text the page already holds.
 
-The cost is that both forms are in every viewer's document whether or not
-anyone opens them, so each expanded row is cut to 300 lines or 8,000
+The cost is that every body is in every viewer's document whether or not
+anyone opens it, so each expanded row is cut to 300 lines or 8,000
 characters (`view/expansion`), with one line after a cut row saying so. The
 terminal shows all of it. The element emits the fold's toggle event, so
 `<loom-follow>` treats an expansion as the reader's doing: the reader at the
@@ -971,13 +977,13 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/sessions.gleam` | The sidebar's `Entry`, `Residency` and `Group`, `grouped`, the ordering (current workspace first, newest first), `label`, and `Answer` and `Reason` with their fixed words, which a switch request and its refusal are made of. |
 | `packages/web_view/src/web_view/view/todo_panel.gleam` | The todo panel: the followed strand's board as one line (`Todo · n of m done · <active task>`, a `<loom-fold>` summary) which opens to the phase that holds the active task expanded and the others folded into one row, the terminal's status glyphs, `n/m done`, and the reviewer band beneath it, drawn from plain values (`component.plan` reads the shared record's `todo_boards` and `reviewer_status.lines`). It is the operator's dock's first child and sits above the observer's bar; its height is capped and it scrolls on its own. |
 | `packages/web_view/src/web_view/view/trace.gleam` | The Trace pane: the session's `code_mode` programs (`session_view/trace_view`), the newest with its state, result excerpt and a collapsed budget line, the earlier ones as rows, the panel's fourth pane after Session. It lists programs and says capability calls are not recorded yet; every string is a text node and it holds no handler. |
-| `packages/web_view/src/web_view/view/changes.gleam` | The Changes pane: the files the session's own `fs_edit` results named and their diffs (`session_view/changes_view`), the panel's second pane on both pages, bounded and drawn as text nodes with a class from a closed row kind. It reads no worktree. |
+| `packages/web_view/src/web_view/view/changes.gleam` | The Changes pane: the files the session's own `fs_edit` results and `fs_write` calls named (a write is one hunk of added lines, `written · N lines`) and their diffs (`session_view/changes_view`), the panel's second pane on both pages, bounded and drawn as text nodes with a class from a closed row kind. It reads no worktree. |
 | `packages/web_view/src/web_view/view/session_tab.gleam` | The Session pane: the goal, the followed strand's live jobs (the read-only `live_jobs` read the component makes on a tick, first ten seconds after opening and then at most every 10 s), on an operator's page only the attached viewers, and the estimated cost, as text nodes in the panel's third pane. |
 | `packages/web_view/src/web_view/invites.gleam` | The invitation an owner's page may mint: `Role` (observer or operator, never an owner), `Invitation`, `Reason` with its fixed words, `Answer`, the control's `Share` state and `claim_ttl_ms` (one hour). |
 | `packages/web_view/src/web_view/view/share.gleam` | The invitation control in the Session pane: two buttons, or the invitation with a `<loom-copy>` box for the command and for the token. Drawn on an owner's page only; the messages its buttons send are values handed in. |
 | `packages/web_view/src/web_view/view/nudges.gleam` | The advisor's pending nudges, read-only, every body received as a text node and the count the server left out. It is drawn under the strand panel's panes on both pages and has no handler. |
-| `packages/web_view/src/web_view/view/commentary.gleam` | The advisor's settled commentary, read-only: the request labels and full bodies the lane's hairlines stand for, drawn in the Strands pane under the strand cards, newest three then a count, with the board's not-loaded line. No handler, and nothing while the advisor itself is on screen. |
-| `packages/web_view/src/web_view/view/controls.gleam` | The operator's session controls: the goal row with its buttons, and the Fork form. It takes the messages its buttons send and the form's submit handler as values. |
+| `packages/web_view/src/web_view/view/commentary.gleam` | The advisor's settled commentary, read-only: the request labels and full bodies the lane's hairlines stand for, drawn in the Strands pane under the strand cards as one closed `details` whose summary is `Advisor · N reviews · last: …`, the bodies as Markdown, newest three then a count, with the board's not-loaded line. No handler, and nothing while the advisor itself is on screen. |
+| `packages/web_view/src/web_view/view/controls.gleam` | The operator's session controls: the goal row with its buttons and the Fork form (`session`, in the Session pane), and the dock's one goal line while a goal runs or is held (`dock`). It takes the messages its buttons send and the form's submit handler as values. |
 | `packages/web_view/src/web_view/view/expansion.gleam` | The budget an expanded row is cut to (300 lines, 8,000 characters) and the line that says a row was cut. |
 | `packages/web_view/src/web_view/view/lane.gleam` | The transcript lane: the line above its oldest row (`Top`, the "Load older" button), the keyed pieces as timeline rows with a dot in the strand's hue, the tags and dots that carry a marker for a listed strand (`Marks`), folded work, the cards, the advisor's one-line commentary hairline, and each transcript line and card body in its own leaf memo. |
 | `packages/web_view/src/web_view/markdown_view.gleam` | The elements for an answer's Markdown, drawn from `session_view/markdown`'s tree: fixed tags, classes from closed types, every string a text node. |

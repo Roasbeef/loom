@@ -70,6 +70,15 @@ once. Until then the member has no credential at all, and the claim
 itself authenticates nothing. A claim lives 24 hours by default
 (`--ttl`, five minutes to seven days).
 
+The invitee may add `--name "Alex Doe"` to choose the display name they are
+shown under; without it the name the owner gave stays. The daemon trims the
+name, refuses a blank or over-long one or one with control characters
+(`invalid_name`, binding nothing, so the same claim can be redeemed again),
+and writes it in the transaction that binds the credential. Names are not
+unique: the principal ID is the identity, and a name only labels it. A
+replay of a lost reply never renames, and events already admitted keep the
+name they were admitted under.
+
 Three properties follow. A claim read by someone else before the invitee
 uses it is a race the loser sees: the rightful invitee's claim is refused
 with `conflict`, and `loom claim` says to contact the owner. A claim read

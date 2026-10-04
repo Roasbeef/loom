@@ -1192,12 +1192,13 @@ fn claim_reply(
 ) {
   case protocol.decode_claim(frame) {
     Error(fault) -> refusal(fault)
-    Ok(protocol.ClaimRequest(id:, credential:)) ->
+    Ok(protocol.ClaimRequest(id:, credential:, name:)) ->
       case
         manager.claim(
           state.registry,
           presented,
           credential,
+          name,
           now_ms: bootstrap.system_time_ms(),
         )
       {
@@ -1248,6 +1249,7 @@ fn claim_error_code(error: manager.ClaimError) -> String {
     manager.ClaimRefused(access.UnknownClaim) -> "not_found"
     manager.ClaimRefused(access.ExpiredClaim) -> "expired"
     manager.ClaimRefused(access.ConflictingClaim) -> "conflict"
+    manager.ClaimRefused(access.InvalidClaimName) -> "invalid_name"
     manager.ClaimRefused(access.ClaimStore(_)) | manager.ClaimUnavailable ->
       "unavailable"
   }

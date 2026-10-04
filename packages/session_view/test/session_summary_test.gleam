@@ -133,7 +133,7 @@ pub fn no_capture_has_no_viewers_test() {
   assert session_summary.viewers(None) == session_summary.Viewers([], 0)
 }
 
-pub fn each_attachment_is_a_viewer_with_a_role_and_whose_it_is_test() {
+pub fn each_principal_is_a_viewer_with_its_roles_and_whose_it_is_test() {
   let viewers =
     session_summary.viewers(
       captured([
@@ -146,23 +146,43 @@ pub fn each_attachment_is_a_viewer_with_a_role_and_whose_it_is_test() {
   assert viewers.total == 3
   assert viewers.rows
     == [
-      Viewer("Alice", "operator", You),
-      Viewer("Bob", "observer", Another),
-      Viewer("Carol", "owner", Another),
+      Viewer("Alice", ["operator"], 1, You),
+      Viewer("Bob", ["observer"], 1, Another),
+      Viewer("Carol", ["owner"], 1, Another),
     ]
 }
 
-pub fn a_principal_attached_twice_is_two_viewers_test() {
+// One person's pages are one viewer: the list names who is watching, the
+// total still counts attachments, and the roles are each named once.
+pub fn a_principal_attached_three_times_is_one_viewer_test() {
   let viewers =
     session_summary.viewers(
       captured([
-        peer("mine", "Alice", snapshot.Operator),
-        peer("other-tab", "Alice", snapshot.Operator),
+        peer("a", "Owner", snapshot.Owner),
+        peer("b", "Owner", snapshot.Operator),
+        peer("mine", "Owner", snapshot.Operator),
+        peer("c", "Bob", snapshot.Observer),
       ]),
     )
 
-  assert viewers.total == 2
-  assert list.map(viewers.rows, fn(viewer) { viewer.whose }) == [You, Another]
+  assert viewers.total == 4
+  assert viewers.rows
+    == [
+      Viewer("Owner", ["owner", "operator"], 3, You),
+      Viewer("Bob", ["observer"], 1, Another),
+    ]
+}
+
+pub fn another_principals_pages_are_not_yours_test() {
+  let viewers =
+    session_summary.viewers(
+      captured([
+        peer("x", "Alice", snapshot.Operator),
+        peer("y", "Alice", snapshot.Operator),
+      ]),
+    )
+
+  assert list.map(viewers.rows, fn(viewer) { viewer.whose }) == [Another]
 }
 
 pub fn a_name_is_one_line_free_of_controls_test() {

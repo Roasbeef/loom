@@ -27,6 +27,7 @@ import gleam/dict
 import gleam/option.{None, Some}
 import session_view/attempt_replay
 import session_view/model as session_model
+import session_view/notice_words
 import session_view/protocol
 import session_view/session_channel
 import session_view/snapshot
@@ -301,7 +302,8 @@ pub fn an_acknowledged_queue_save_closes_the_editor_test() {
       session_channel.Acknowledged("edit_queued_input", "queued"),
     )
   assert saved.view.queue_editor == queue_editor.new()
-  assert saved.shared.notice == "queued input updated"
+  assert saved.shared.notice
+    == notice_words.outcome("edit_queued_input", "queued")
 }
 
 // A notes read the operator did not ask for is the todo panel's seed, and

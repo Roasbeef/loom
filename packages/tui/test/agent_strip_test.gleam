@@ -192,6 +192,22 @@ pub fn main_leads_and_only_live_or_viewed_agents_follow_test() {
     == ["main", "sub:main/a-0001", "sub:main/b-0002", "sub:main/c-0003"]
 }
 
+// A fork that has not run is idle with no operation: the strip lists it, and
+// the geometry counts it, since both read one membership rule.
+pub fn a_sub_agent_that_never_ran_is_listed_and_counted_test() {
+  let rows = [
+    row("main", agent_view.Idle, None),
+    row("sub:main/docs-0001", agent_view.Idle, None),
+    row("sub:main/old-0002", agent_view.Idle, Some(op_id(1))),
+  ]
+  let lines = agent_strip.lines(agent_strip.new(), rows, "main")
+
+  assert list.map(lines, fn(line) { line.id }) == ["main", "sub:main/docs-0001"]
+  assert agent_strip.height(lines, 40)
+    == agent_strip.height_for_count(list.length(lines), 40)
+  assert agent_strip.height_for_count(2, 40) > 0
+}
+
 pub fn a_lone_primary_draws_no_strip_test() {
   let lines =
     agent_strip.lines(

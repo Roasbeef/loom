@@ -386,12 +386,20 @@ c→s: {v:2, id:1, cmd:"credentials.claim",
 s→c: unchanged
 ```
 
-`name`, when present, must pass the catalogue's display-name rule
-(nonblank, at most 256 bytes, no control characters,
-`storage/access.gleam:1088`), else `bad_request` and the claim binds
-nothing and stays open. When it passes, `storage/access.claim` sets the
-principal's `display_name` in the transaction that binds the credential.
-`loom claim --name NAME` sends it. The browser claim (`POST /ui/claim`)
+`name`, when present, is trimmed and must then pass the catalogue's
+display-name rule (nonblank, at most 256 bytes, no control characters,
+`valid_name` in `storage/access.gleam`), else `invalid_name` and the claim
+binds nothing and stays open; a `name` that is not text is `bad_request`.
+`invalid_name` is a new refusal code on `/v2/claim` only; the first draft
+of this section reused `bad_request`, which cannot tell a client that its
+message was malformed from one that must ask the invitee for another name.
+When the name passes, `storage/access.claim` sets the principal's
+`display_name` in the transaction that binds the credential, after every
+other check and before the first write. Only the redemption that binds
+applies it: the replay of a lost reply, with the same digest, answers the
+principal as it stands and never renames, whatever `name` it carries.
+`loom claim --name NAME` sends it, and the stored credential survives an
+`invalid_name` so that a rerun with another name redeems the same claim. The browser claim (`POST /ui/claim`)
 binds a `browser` credential through the same function with the form's
 `name`, or none when it is empty, and never passes through `/v2/claim`.
 

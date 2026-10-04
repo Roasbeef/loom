@@ -46,14 +46,20 @@ for a host with no surfaces.
 
 ## Key Types
 
-- `strand_card.status_line(line)`, `strand_card.needing(lines)` and
-  `strand_card.context_words(tokens)`: the one status line under a strand's
-  name on its card (`Needs approval` for a strand that waits on a decision,
-  whatever the request was; the state word and the activity after ` · ` for a
-  working one; `Finished` and how long it ran), how many strands wait on a
-  decision, the count on the web view's Strands tab, and the words for a
-  strand's context size in its own view. Both hosts can read them so the
-  terminal can word a card the same way.
+- `strand_card.status_line(line)`, `status_title(line)`, `glyph(status)`,
+  `model_name(model)`, `task_words(title)` (a task, or nothing for the
+  roster's placeholders), `needing(lines)` and `context_words(tokens)`: the one
+  status line under a strand's name on its card (`Needs approval` for a
+  strand that waits on a decision, whatever the request was; the state word
+  and what the strand is doing after ` · ` for a working one, where the
+  engine's phase `assistant` reads `thinking`, a tool is named without its
+  command and a state word the activity already says is not said twice;
+  `Finished` and how long it ran), the whole activity text for a tooltip
+  (`status_title`, cut to `title_limit`), the state's one-character glyph,
+  a model's last path segment, how many strands wait on a decision (the count
+  on the web view's Strands tab), and the words for a strand's context size
+  in its own view. Both hosts can read them so the terminal can word a card
+  the same way.
 - `command.Command`: a parsed draft, `Surface(command.Surface)` for a
   command the host carries out with its own machinery (a panel, the model
   selector, daemon control, a change of strand, the host's exit) or
@@ -167,14 +173,22 @@ for a host with no surfaces.
   is parsed.
 
 - `turns.pieces(blocks, strands, latest)`: one strand's lane as turns for a
-  host that draws more than rows (the web view): `Plain` blocks, one `Work`
-  divider per turn (`Folded`, or `Open` while the strand runs or waits on an
-  approval; its `Worked` figures come from the records), `Spawned` and
+  host that draws more than rows (the web view): `Plain` blocks, `Prompt` for a
+  person's message (the sender is a field, not a `name:` line of the text;
+  `turns.attributed` sets the reader's own role on the reader's messages), one
+  `Work` divider per turn (`Folded`, or `Open` while the strand runs or waits
+  on an approval; its `Worked` figures come from the records). The fold's
+  items are `Narrated` blocks (each with `took`, the response's time, which a
+  reasoning row reads), `Step`s (`words` from `step_words.of_call`) and
+  `Memory`, the memory context the daemon recorded ahead of a prompt: it is no
+  input, `split` and `grouped` hold it for the next input, and it is the first
+  item of that turn's fold. `Spawned` and
   `Returned` rows for sub-agents, `Nudged` for a delivered advisor frame,
   `Peer` for another session's message, `Sibling` for a message a strand of
   the same session sent (stored origin `StrandOrigin`, framing removed by
   `strand_framing.strip`, a brief's result-contract trailer kept apart),
-  `Missed` for a cache notice and `Commentary` for the advisor's board. It reads
+  `Missed` for a cache notice and `Commentary` for the advisor's board (reviews that
+  stand next to each other are one piece with a `reviews` count). It reads
   `transcript_lines.keyed_record_blocks` (`transcript.blocks`), which tags
   each block with its `Source`. `turns.grouped(blocks, strands)` splits
   the same blocks at their inputs, the lead before the first input and
@@ -188,6 +202,26 @@ for a host with no surfaces.
   `thoughts` by row key; both are empty when the expansion equals the compact
   rows, so no piece holds uncapped text. `grouped` skips them. The terminal
   does not call `turns`.
+- `step_words`: how one step of a turn reads, shared by every host that
+  draws a step. `of_call(call)` turns a tool's name, arguments and (for an
+  edit) its diff into `Words(verb, subject, change)`: `Read calc.py`,
+  `Edit calc.py +3 −1`, `Ran python3 -m unittest`, `Spawned scan`. A subject
+  is tagged `Mono` (a path or command), `Prose` (a name or purpose), `Figure`
+  (a count or a time) or `Unnamed`, which only says which face a host uses;
+  every subject is session text and is drawn as a text node. A tool the table
+  does not list keeps its own name. `memory`, `reasoning`, `worked`,
+  `returned` and `duration` word the rows that are not tool calls, `text`
+  flattens any `Words` to one line, and `first_call(program)` names the first
+  capability a `code_mode` program calls (`fs.read calc.py`) by reading its
+  text. That reader stands in for the trace view's fold of a program's calls.
+- `diff_view`: a unified diff read into lines a host can colour. `parse(diff)`
+  splits on newlines (a CRLF's `\r` is dropped), keeps at most `max_lines`
+  (400) and returns `Diff(lines, cut)`; `of_lines` reads lines a host already
+  bounded. Each `Line(kind, old, new, text)` has a closed `Kind` (`FileHeader`
+  before the first hunk only, `Hunk`, `Added`, `Removed`, `Context`,
+  `NoNewline`) and, inside a hunk, the line numbers the header's counters give.
+  An added, removed or context line's text has its marker removed. The text is
+  session text; the web view draws it as a text node.
 - `transcript_image`: the images a lane row carries, which the rows draw as
   `[image <type>]` text. `Image(mime_type, data)` holds the entry's own base64
   text (nothing is copied). `of_entry`, `of_message`, `of_outcome` and
@@ -204,10 +238,25 @@ for a host with no surfaces.
   terminal's agent rail and strip and the web view's chips.
   `agent_roster.{Roster, Line, Chips}` is which strands a strip lists, in
   what order, with elapsed time and context size (`lines`, `chips`,
-  `running_ms`, `context`).
+  `running_ms`, `context`). A strand that is idle and has no operation has
+  never run (a fresh fork waiting for its first prompt), and it is listed
+  among the live cards rather than settled; one that ran and is idle again
+  has an operation and is settled.
   Its internal `listed_count` uses the same membership predicate without
   constructing display lines, for hosts measuring geometry. The roster test
   compares that count with `lines` across every status and active-strand choice.
+- `notice_words` (`sent`, `outcome`, `done`): the closed table that words a
+  command's outcome for the footer, `Goal pinned`, `Denied`, `Queued for the
+  next turn`, so no wire name is a notice. `reviewer_status.lines` words the
+  advisor row `watching <strand>` and cuts a sub-agent's brief to its first
+  sentence; `without_idle_advisor` is the page's filter.
+- `decisions` (`from_ledger`, `strands`, `words`): the approval decisions the
+  approval ledger holds, with the author, the verdict and the strand the
+  request was raised on (from the pending cell the capture held). `turns.with_decisions` places each as a
+  `turns.Decided` piece by the register sequence that committed it, which
+  storage numbers from the same counter as transcript entries.
+- `approval.wants(tool)`: the fixed words for what a request asks to do
+  (`run a command`), shared by the cards.
 - `cache_miss` (a miss reconstructed from two usage rows, and the TTL
   outlook the rows prove) and `cache_watch.Ledger` (which rows may be
   compared: `admit`, `settle`, `capture`, `observe`, `forget`, and `shown`,
@@ -387,7 +436,11 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   them newest first, into the board of the session's own edits: the files
   the successful `fs_edit` results named, each with the diff the result
   reported as rows of a closed `Kind` (`Hunk`, `Added`, `Removed`,
-  `Context`) and the `+` and `-` totals. It reads no worktree, so it is what
+  `Context`) and the `+` and `-` totals, and the successful `fs_write` calls:
+  a write reports no diff, so its file is one hunk whose every line is added,
+  from the call's `content` argument, with `origin: Written` and the words
+  `written · 23 lines` (`counts_words`) in place of counts. A file that was
+  also edited is `Edited` and counts both. It reads no worktree, so it is what
   the agent wrote in the window and not the state of the tree, and it says so
   (`label`). It is bounded (`max_files` 24, `max_file_rows` 200, `max_rows`
   600, `max_row_characters` 240) and every cut is counted. The web page's
@@ -398,8 +451,9 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   supplies. Jobs are the `live_jobs` board for the strand asked about, its
   lines cut to `max_job_rows` with the rest counted, or `Unread` when there is
   no board or it names another strand (never a count of zero). Viewers are the
-  cut's presence rows, one per attachment, at most `max_viewer_rows`, each
-  with a role word and whether it is the host's own. Whether a host shows the
+  cut's presence rows grouped by principal, at most `max_viewer_rows`, each
+  with its role words, how many pages (attachments) it holds and whether one is
+  the host's own; `total` still counts attachments. Whether a host shows the
   viewers is the host's choice: the web page shows them on an operator's page
   only.
 

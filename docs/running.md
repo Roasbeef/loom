@@ -117,6 +117,11 @@ loom claim --addr wss://loom.example.com/v2/control
 claim token: loomclaim_…
 ```
 
+Add `--name "Alex Doe"` to choose the display name other participants see;
+without it the name the owner gave stays. The daemon refuses a blank name,
+one over 256 bytes, or one with control characters, binds nothing, and the
+same claim can be run again.
+
 `loom claim` draws a new credential, stores it in
 `~/.loom/remotes/loom.example.com/credential` (mode `0600`, in a `0700`
 directory) before connecting, and sends the daemon only its digest. It
