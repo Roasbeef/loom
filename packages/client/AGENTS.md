@@ -5803,12 +5803,21 @@ into shipped daemon workspace selection or filesystem tools.
 ## Physical service offer custody
 
 `remote/custodian` exposes closed bounded ReserveService/ReadService,
-AdmitOffer/ReadOffer, ReserveCommand/ReadCommand and CancelService messages.
+AdmitOffer/ReadOffer/ReadOfferForOrigin, ReserveCommand/ReadCommand and
+CancelService messages.
 `reserve_service_child` frames exact managed service identity and input before
 mailbox delivery; `admit_offer` rechecks the owner's configured bounds and exact
 original service. `reserve_command_child` accepts complete post-clearance content,
 reserving its original UUID only after storage atomically verifies the service
 and immutable offer. Readback/reopen never runs a tool or re-clears a command.
+
+`command_offer_for_origin(owner, ChildOrigin)` sends ReadOfferForOrigin through
+the same serialized actor and existing five-second ask. Storage returns the exact
+full offer selected by its lifetime-unique native origin, with bounded scalar,
+reservation, parent/service/ref and content checks. Cancelled evidence remains
+historical readback; frozen or collected evidence refuses. An unavailable actor
+returns Unavailable rather than Missing. This data lookup never clears, reserves,
+mints an ID or runs the configured tool body.
 
 Cancellation serializes with native reservation in the same owner actor and one
 SQLite transaction. Matching late native receipts remain recoverable. Failure to
