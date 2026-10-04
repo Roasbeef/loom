@@ -2760,8 +2760,13 @@ only: kitty and Ghostty carry a PNG as it is and cannot carry a JPEG or GIF
 (`this terminal draws PNG images only`), and an image over
 `image_box.max_bytes`, 4 MiB decoded, is never sent (`too large to draw in
 the terminal (limit 4.0 MB)`). The box is `graphics.fit` of the header's
-size into the cell size, at most 60 by 12 cells and at most the pane's
-width less the indent and frame. `projection.line_rows_for` builds the rows
+size into the cell size, at most 60 columns and at most the pane's width less
+the indent and frame, and at most `image_box.picture_rows(height)` rows: about
+half the transcript's height, between 3 and 12, so a short pane keeps the text
+around the image. The record cache is keyed on the viewport height on a
+terminal that draws (`projection.same_image_height`). The frame is as wide as
+the picture or the label needs, and the picture is centred in it. Two images
+in a row get one blank row between them (`projection.noted_images`). `projection.line_rows_for` builds the rows
 (`image_box.rows`: a top border that carries the image's words, one row per
 box row, a foot that carries `o opens externally`), and the anchors and the
 row cache use the same function, so rows and anchors agree. On kitty and
@@ -2815,6 +2820,14 @@ frames in the order decided.
   Only a whole box is drawn: one clipped by the window's edge, or whose cells
   are not intact on the cached frame (`image_plan.showing`, which is how a
   surface drawn over the transcript is noticed), is not.
+- A marked span is a box only if the whole span is made of the placeholder
+  character or of no-break spaces. Text that merely starts with one, such as
+  a pasted line indented with no-break spaces, is not a box. An image that
+  cannot be found when it is fitted is dropped without a notice: a row the
+  projection built carries an image it read from the transcript, so a miss
+  means the cells were never a box.
+- The step that sets `quit` deletes every uploaded kitty image
+  (`image_shown.release`), while the alternate screen is still open.
 - An image whose data is missing, is not valid base64, or is not a PNG
   where kitty needs one is put in `Shown.failed` and never tried again. The
   step sets the notice `could not draw an image: ...` once, and the box
@@ -2823,6 +2836,10 @@ frames in the order decided.
 The terminal's own memory is bounded by the viewport, because an image is
 held only while its box is in view and each is at most `max_bytes`. When the
 alternate screen is left the terminal drops the screen's images with it.
+
+`tui/demo_image` seeds the `--demo` launch with a prompt, an `fs_read` call
+and a result carrying a real 480 by 280 PNG, so `bin/loom --demo` in a
+terminal that draws shows the box end to end.
 
 `image_draw_test` covers the probed-yes and probed-no frames, the recolour
 exemption, the effect order, and the error paths. `LOOM_IMAGE_ANSI=<path>`
