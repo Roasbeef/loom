@@ -802,7 +802,6 @@ pub fn open_trace_tab(model: Model) -> Model {
   select_rail_tab(model, rail.Trace)
 }
 
-
 /// Opens held-input inspection without touching composer text or attachments.
 ///
 /// ## Examples
