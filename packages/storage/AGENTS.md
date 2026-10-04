@@ -668,3 +668,15 @@ prove later receipt/resource recovery survives deletion. Ordinary collection's
 existing actual-session readback proof remains necessary. Terminal receipt, resource
 cleanup and executor native retirement are separate duties; this slice adds no
 owner retirement authority or remote physical execution assembly.
+
+## Historical service body projection
+
+`owner_custody.service_input(ServiceRequest)` is an internal data-only projection
+for the closed owner command binding. It reuses the existing bounded frame decoder,
+compares the complete canonical ServiceKey header with the opaque request key and
+re-encodes the exact frame before returning original body bytes. Binary input is
+preserved unchanged. It introduces no row operation, SQL, schema or actor ask and
+cannot certify vetted source, Ready resources or native authority. Exact historical
+identity lookup remains `service_child`; changed full keys continue to conflict.
+See [remote custody](../../docs/architecture/remote-custody.md) for the separation
+between storage bytes, command admission and physical service completion.
