@@ -11,7 +11,8 @@
 //// question at a glance, what the agent is doing now and how much is left:
 //// the phase that holds the active task is drawn with every task in it, and
 //// every other phase is folded into one summary row. A board whose tasks
-//// are all closed is one line, `Todo · 5 of 5 done`.
+//// are all closed is not drawn: the dock keeps a plan while there is work
+//// left on it, and the closed steps are already in the turn's fold.
 ////
 //// The board is drawn as one line until the reader opens it: `Todo · 3 of 5
 //// done · check it`, the count of closed tasks and the text of the active
@@ -21,8 +22,7 @@
 //// needs no handler and works on an observer's page, and the server never
 //// renders its state, so a patch that changes the board leaves the reader's
 //// choice alone. The line follows the strand the page shows, because the
-//// caller hands in that strand's board. A board whose tasks are all closed is
-//// already one row, and a reviewer band is drawn open under the line, since a
+//// caller hands in that strand's board. A reviewer band is drawn open under the line, since a
 //// running reviewer is the thing a reader glancing at the dock wants to see.
 ////
 //// Each status has its own glyph as well as its own colour, so the panel
@@ -61,7 +61,7 @@ import session_view/text_hygiene
 ///
 /// The board and the lines are memoized together, so a render that changed
 /// neither, such as one for a streaming answer, leaves the panel's subtree
-/// alone. A board with no phases is no board, as in the terminal.
+/// alone. A board with no phases, or no open task, is no board.
 ///
 /// ## Examples
 ///
@@ -85,8 +85,9 @@ pub fn view(board: Option(Board), reviewers: List(String)) -> Element(message) {
   }
 }
 
-// The board's element, or nothing when there is no board or it has no phase
-// to look at. A board whose tasks are all closed is one row.
+// The board's element, or nothing when there is no board, it has no phase to
+// look at, or every task on it is closed. A closed board has no work left to
+// show, and the steps that closed it are in the turn's fold.
 fn board_elements(board: Option(Board)) -> List(Element(message)) {
   case board {
     None -> []
@@ -95,7 +96,7 @@ fn board_elements(board: Option(Board)) -> List(Element(message)) {
 
       case todo_list.focus(board), closed == total {
         None, _ -> []
-        Some(_), True -> [finished(total)]
+        Some(_), True -> []
         Some(phase), False -> [open(board, phase, closed, total)]
       }
     }
@@ -242,25 +243,6 @@ fn others(board: Board, focus: Phase) -> Element(message) {
         html.text(string.join(parts, " · ")),
       ])
   }
-}
-
-// --- a finished board ----------------------------------------------------------
-
-fn finished(total: Int) -> Element(message) {
-  html.div([attribute.class("todo-board")], [
-    html.p([attribute.class("todo-line")], [
-      html.span([attribute.class("todo-label")], [html.text("Todo")]),
-      html.span([attribute.class("todo-quiet")], [
-        html.text(
-          " · "
-          <> int.to_string(total)
-          <> " of "
-          <> int.to_string(total)
-          <> " done",
-        ),
-      ]),
-    ]),
-  ])
 }
 
 // --- the reviewer band ---------------------------------------------------------
