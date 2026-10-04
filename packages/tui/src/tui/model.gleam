@@ -564,6 +564,10 @@ pub type View {
     record_gutters: List(Int),
     /// The width the cached record rows were wrapped at.
     record_cache_width: Int,
+    /// The viewport height the cached record rows were built for. Only an
+    /// image's box depends on it, so it is compared only on a terminal that
+    /// draws images.
+    record_cache_height: Int,
     /// The strand the cached record rows were built for.
     record_cache_strand: String,
     /// The details setting the cached record rows were built with.

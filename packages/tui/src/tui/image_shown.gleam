@@ -93,16 +93,18 @@ pub type Shown {
     owed: List(Spot),
     /// Images that could not be loaded or decoded, never retried.
     failed: List(ImageId),
-    /// What each image fits to at the width it was last fitted for, so a
-    /// tick does not look an image up again.
+    /// What each image fits to at the pane size it was last fitted for, so
+    /// a tick does not look an image up again.
     fits: Dict(ImageId, Fit),
   )
 }
 
-/// An image's box at one pane width, or the fact that it has none.
+/// An image's box at one pane size, or the fact that it has none. The box
+/// depends on the pane's height as well as its width, because a short pane
+/// gives a picture fewer rows.
 pub type Fit {
-  Fitted(width: Int, box: Box)
-  Unfitted(width: Int)
+  Fitted(width: Int, height: Int, box: Box)
+  Unfitted(width: Int, height: Int)
 }
 
 /// A shown state before the alternate screen: nothing sent, nothing owed.
@@ -189,6 +191,8 @@ pub type Facts {
     support: Support,
     /// The pane's width in cells, which the box is fitted to.
     width: Int,
+    /// The transcript's height in rows, which bounds the box's rows.
+    height: Int,
     wants: List(Want),
     /// The image's header facts, from the transcript.
     picture: fn(ImageId) -> Result(Picture, Failure),
@@ -219,6 +223,27 @@ pub type Outcome {
   )
 }
 
+/// Deletes every image the terminal holds, for a client that is quitting.
+///
+/// kitty keeps an image until it is deleted or the screen it was sent to is
+/// left, and a terminal that keeps its alternate screen's store after the
+/// client exits would carry the pictures into the next program. The caller
+/// writes the commands while the alternate screen is still open.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert image_shown.release(image_shown.new()).commands == []
+/// ```
+pub fn release(shown: Shown) -> Outcome {
+  Outcome(
+    shown: Shown(..shown, uploaded: []),
+    commands: list.map(shown.uploaded, fn(held) { Remove(held.id) }),
+    failures: [],
+    wake: NoWake,
+  )
+}
+
 /// Brings the terminal in line with the next frame.
 ///
 /// ## Examples
@@ -246,14 +271,9 @@ pub type Placed {
 }
 
 // What `fitted` carries along the wants: the shown state with its cache
-// brought up to date, the boxes that have a fit, and the images that could
-// not be looked up.
+// brought up to date, and the boxes that have a fit.
 type Fitting {
-  Fitting(
-    shown: Shown,
-    placed: List(Placed),
-    failures: List(#(ImageId, Failure)),
-  )
+  Fitting(shown: Shown, placed: List(Placed))
 }
 
 // The wants that have a fit at this width, in the order they were met. An
@@ -261,54 +281,52 @@ type Fitting {
 // again.
 fn fitted(shown: Shown, facts: Facts) -> Fitting {
   let done =
-    list.fold(
-      facts.wants,
-      Fitting(shown:, placed: [], failures: []),
-      fn(fitting, want) { fit(fitting, want, facts) },
-    )
-  Fitting(
-    ..done,
-    placed: list.reverse(done.placed),
-    failures: list.reverse(done.failures),
-  )
+    list.fold(facts.wants, Fitting(shown:, placed: []), fn(fitting, want) {
+      fit(fitting, want, facts)
+    })
+  Fitting(..done, placed: list.reverse(done.placed))
 }
 
 fn fit(fitting: Fitting, want: Want, facts: Facts) -> Fitting {
   case dict.get(fitting.shown.fits, want.id) {
-    Ok(Fitted(width:, box:)) if width == facts.width ->
-      Fitting(..fitting, placed: [Placed(want:, box:), ..fitting.placed])
-    Ok(Unfitted(width:)) if width == facts.width -> fitting
+    Ok(Fitted(width:, height:, box:))
+      if width == facts.width && height == facts.height
+    -> Fitting(..fitting, placed: [Placed(want:, box:), ..fitting.placed])
+    Ok(Unfitted(width:, height:))
+      if width == facts.width && height == facts.height
+    -> fitting
     Ok(_) | Error(Nil) -> look_up(fitting, want, facts)
   }
 }
 
-// The first time an image is wanted at a width: its picture is read from the
-// transcript and its box fitted, and the answer is remembered either way.
+// The first time an image is wanted at a pane size: its picture is read from
+// the transcript and its box fitted, and the answer is remembered either way.
+//
+// A picture that cannot be found is not reported. A box the projection built
+// carries the fingerprint of an image it read from the transcript, so a miss
+// means the marked cells are not a box at all, such as a pasted line that
+// happens to look like one, and a notice about an image would be about
+// nothing.
 fn look_up(fitting: Fitting, want: Want, facts: Facts) -> Fitting {
+  let unfitted = Unfitted(facts.width, facts.height)
   case facts.picture(want.id) {
-    Error(failure) ->
-      Fitting(
-        ..fitting,
-        shown: remember(fitting.shown, want.id, Unfitted(facts.width)),
-        failures: [#(want.id, failure), ..fitting.failures],
-      )
+    Error(_) ->
+      Fitting(..fitting, shown: remember(fitting.shown, want.id, unfitted))
     Ok(picture) ->
-      case image_box.verdict(facts.support, picture, facts.width) {
+      case
+        image_box.verdict(facts.support, picture, facts.width, facts.height)
+      {
         image_box.Draw(drawing) ->
           Fitting(
-            ..fitting,
             shown: remember(
               fitting.shown,
               want.id,
-              Fitted(facts.width, drawing.box),
+              Fitted(facts.width, facts.height, drawing.box),
             ),
             placed: [Placed(want:, box: drawing.box), ..fitting.placed],
           )
         image_box.Keep | image_box.Refuse(..) ->
-          Fitting(
-            ..fitting,
-            shown: remember(fitting.shown, want.id, Unfitted(facts.width)),
-          )
+          Fitting(..fitting, shown: remember(fitting.shown, want.id, unfitted))
       }
   }
 }
@@ -333,7 +351,7 @@ fn kitty(shown: Shown, facts: Facts) -> Outcome {
     Outcome(
       shown: Shown(..fitting.shown, uploaded: kept),
       commands: list.map(removed, fn(held) { Remove(held.id) }),
-      failures: fitting.failures,
+      failures: [],
       wake: NoWake,
     )
   list.fold(placed, start, fn(outcome, entry) {
@@ -438,7 +456,7 @@ fn iterm2(shown: Shown, facts: Facts) -> Outcome {
     Outcome(
       shown: Shown(..shown, drawn: kept, owed:),
       commands: list.map(erasures, fn(spot) { Erase(spot.at, spot.box) }),
-      failures: fitting.failures,
+      failures: [],
       wake: case owed {
         [] -> NoWake
         [_, ..] -> WakeSoon

@@ -45,6 +45,7 @@ import gleam/result
 import gleam/string
 import session_view/advisor_history
 import session_view/composer
+import session_view/image_header
 import session_view/model.{Shared} as session_model
 import session_view/notes_view
 import session_view/tool_activity
@@ -270,6 +271,7 @@ fn refresh_diff_cache(before: Model, after: Model) -> Model {
               previous_diff_layout(before, after),
               after.shared.active_strand,
               after.view.image_support,
+              layout.transcript_viewport_height(after),
             )
           let count = list.length(rows)
           Model(
@@ -340,8 +342,20 @@ pub fn viewport_height_changed(before: Int, after: Int) -> Bool {
 fn record_cache_matches(model: Model, width: Int) -> Bool {
   model.shared.record_cache_valid
   && model.view.record_cache_width == width
+  && same_image_height(model)
   && model.view.record_cache_strand == model.shared.active_strand
   && model.view.record_cache_details == model.shared.details_expanded
+}
+
+// A short pane gives a picture fewer rows, so rows built for another height
+// are not the rows of this one. On a terminal that draws nothing the height
+// shapes no row, and a resize that only changes it keeps its cache.
+fn same_image_height(model: Model) -> Bool {
+  case model.view.image_support {
+    image_support.TextOnly(..) -> True
+    image_support.KittyPlaceholders(..) | image_support.Iterm2Inline(..) ->
+      model.view.record_cache_height == layout.transcript_viewport_height(model)
+  }
 }
 
 fn refresh_record_cache(model: Model, width: Int) -> Model {
@@ -373,6 +387,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
     False, _ -> {
       let previous = case
         model.view.record_cache_width == width
+        && same_image_height(model)
         && model.view.record_cache_strand == model.shared.active_strand
         && model.view.caches.record_cache_epoch
         == model.shared.record_cache_epoch
@@ -391,6 +406,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
           previous,
           model.shared.active_strand,
           model.view.image_support,
+          layout.transcript_viewport_height(model),
         )
       Model(
         shared: Shared(
@@ -410,6 +426,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
           ),
           record_gutters:,
           record_cache_width: width,
+          record_cache_height: layout.transcript_viewport_height(model),
           record_cache_strand: model.shared.active_strand,
           record_cache_details: model.shared.details_expanded,
         ),
@@ -433,6 +450,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
           model.view.caches.record_line_cache,
           model.shared.active_strand,
           model.view.image_support,
+          layout.transcript_viewport_height(model),
         )
 
       // Every cache here describes the current projection, and the appended
@@ -500,21 +518,73 @@ fn separated_from_screen(lines: List(Line), model: Model) -> List(Line) {
 // so the rows and the anchors built from the same lines agree on the row it
 // adds.
 fn noted_images(lines: List(Line), model: Model) -> List(Line) {
-  list.map(lines, fn(line) {
-    case line.speaker, image_note(model, line.speaker) {
-      ImageRow(..), Some(note) -> Line(line.speaker, line.text <> "\n" <> note)
-      _, _ -> line
+  lines
+  |> list.fold(#([], False), fn(acc, line) {
+    let #(done, after_image) = acc
+    case image_of(line.speaker) {
+      None -> #([line, ..done], False)
+      Some(picture) -> {
+        let noted = case image_note(model, picture) {
+          Some(note) -> Line(line.speaker, line.text <> "\n" <> note)
+          None -> line
+        }
+        #([noted, ..stacked(done, after_image, model)], True)
+      }
     }
   })
+  |> fn(folded) { list.reverse(folded.0) }
+}
+
+// One blank row between two images in a row, so two boxes (or two
+// placeholder rows with their notes) do not run together. It is added only
+// on a terminal that draws images, where the images are boxes.
+fn stacked(done: List(Line), after_image: Bool, model: Model) -> List(Line) {
+  case after_image, model.view.image_support {
+    True, image_support.KittyPlaceholders(..)
+    | True, image_support.Iterm2Inline(..)
+    -> [Line(Spacer, ""), ..done]
+    True, image_support.TextOnly(..) | False, _ -> done
+  }
+}
+
+// The picture an image row carries, and nothing for any other speaker. Every
+// speaker is named, so a new one is a compile error here rather than
+// quietly not an image.
+fn image_of(speaker: Speaker) -> Option(Option(image_header.Picture)) {
+  case speaker {
+    ImageRow(picture) -> Some(picture)
+    System
+    | User
+    | Assistant
+    | Reasoning
+    | ReasoningDigest
+    | SummarizedReasoning
+    | SummarizedAdvice
+    | ToolGroup
+    | ToolCall
+    | ToolResult
+    | ToolDetail
+    | ToolPatch
+    | ToolFailure
+    | Failure
+    | SentMessage
+    | StrandMessage
+    | PeerMessage
+    | ProgramRunning
+    | ProgramFailure
+    | Spacer -> None
+  }
 }
 
 // The reason a picture is not drawn, when the terminal can name it.
-fn image_note(model: Model, speaker: Speaker) -> Option(String) {
-  case model.view.herdr_reporter, speaker {
+fn image_note(
+  model: Model,
+  picture: Option(image_header.Picture),
+) -> Option(String) {
+  case model.view.herdr_reporter, picture {
     Some(_), _ -> Some("inside Herdr: pane graphics are not passed through")
-    None, ImageRow(Some(picture)) ->
-      image_box.refusal(model.view.image_support, picture)
-    None, _ -> None
+    None, Some(picture) -> image_box.refusal(model.view.image_support, picture)
+    None, None -> None
   }
 }
 
@@ -526,10 +596,11 @@ fn line_rows_for(
   width: Int,
   strand: String,
   support: image_support.Support,
+  height: Int,
 ) -> List(span.Line) {
-  case line.speaker {
-    ImageRow(Some(picture)) ->
-      case image_box.verdict(support, picture, width) {
+  case image_of(line.speaker) {
+    Some(Some(picture)) ->
+      case image_box.verdict(support, picture, width, height) {
         image_box.Draw(drawing) ->
           image_box.rows(
             support,
@@ -540,7 +611,7 @@ fn line_rows_for(
         image_box.Keep | image_box.Refuse(..) ->
           render.render_line(line, width, strand)
       }
-    _ -> render.render_line(line, width, strand)
+    Some(None) | None -> render.render_line(line, width, strand)
   }
 }
 
@@ -555,12 +626,15 @@ fn cached_record_lines(
   previous: Dict(Line, List(span.Line)),
   strand: String,
   support: image_support.Support,
+  height: Int,
 ) -> #(List(span.Line), Dict(Line, List(span.Line)), List(Int)) {
   list.fold(lines, #([], dict.new(), []), fn(acc, line) {
     let #(rows, cached, gutters) = acc
     let rendered =
       dict.get(previous, line)
-      |> result.lazy_unwrap(fn() { line_rows_for(line, width, strand, support) })
+      |> result.lazy_unwrap(fn() {
+        line_rows_for(line, width, strand, support, height)
+      })
     let rendered_count = list.length(rendered)
     let line_gutters =
       list.index_map(rendered, fn(_, index) {
@@ -750,6 +824,7 @@ fn record_anchors_for(
             width,
             model.shared.active_strand,
             model.view.image_support,
+            layout.transcript_viewport_height(model),
           )
         })
       list.index_map(rendered, fn(_, wrapped) {

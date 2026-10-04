@@ -22,6 +22,7 @@ import frame_scene
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import host/bootstrap as host_bootstrap
 import image_fixture
@@ -29,12 +30,15 @@ import session_view/image_header
 import session_view/model.{Shared} as _
 import simplifile
 import tui/appearance
+import tui/demo_image
 import tui/effect.{type Effect}
 import tui/frame
 import tui/image_box
 import tui/image_shown
 import tui/image_support
-import tui/model.{type Model, Model, View}
+import tui/layout
+import tui/model.{type Model, Model, View} as tui_model
+import tui/queue_editor
 import tui/render
 import tui_test/stepping
 
@@ -149,6 +153,9 @@ pub fn a_kitty_terminal_draws_a_labelled_box_of_placeholders_test() {
   })
 }
 
+// A 40-column pane has a 38-column transcript. The indent and the frame take
+// 7, leaving 31 columns, and a 1200 by 700 image fitted there is 31 columns
+// by 10 rows.
 pub fn the_box_narrows_to_the_pane_test() {
   let #(model, _) =
     stepping.step(
@@ -156,12 +163,9 @@ pub fn the_box_narrows_to_the_pane_test() {
       scene(kitty_support(), [#("image/png", image_fixture.png(1200, 700))]),
     )
   let cells = lines_of(model) |> list.filter(shows_placeholders)
-
-  // A 40-column pane leaves a 38-column transcript, less the indent and the
-  // frame.
-  assert cells != []
+  assert list.length(cells) == 10
   list.each(cells, fn(row) {
-    assert placeholders(row) <= 31 as "no row of cells is wider than the room"
+    assert placeholders(row) == 31
   })
 }
 
@@ -576,6 +580,7 @@ pub fn bytes_that_are_not_a_png_are_refused_before_they_are_sent_test() {
       image_shown.Facts(
         support: kitty_support(),
         width: 120,
+        height: 40,
         wants: [
           image_shown.Want(
             id: id_of(wrong),
@@ -751,4 +756,172 @@ fn inline_frame_ansi(
   <> image_shown.sequence(commands)
   <> string.join(rows, "\r\n")
   <> "\u{001B}[0m\r\n"
+}
+
+// ------------------------------------------------- review findings
+
+// A pasted line indented with no-break spaces is text, not a box. With no
+// image anywhere in the transcript, nothing is drawn, owed or reported, at
+// any pane width.
+pub fn indented_text_is_not_mistaken_for_a_box_test() {
+  let model =
+    frame_scene.attach(
+      with_support(frame_scene.model(), iterm_support()),
+      "fix readme badge",
+      [
+        frame_scene.user(
+          1,
+          "\u{00A0}\u{00A0}\u{00A0}\u{00A0}indented by no-break spaces\n\u{00A0}\u{00A0}\u{00A0}\u{00A0}and again",
+        ),
+        frame_scene.assistant(2, "Noted.", []),
+      ],
+    )
+  list.each([120, 100, 80, 60], fn(width) {
+    let #(laid, effects) = stepping.step(backend.Resize(width, 40), model)
+    assert image_commands(effects) == []
+    assert !woke(effects)
+    assert laid.view.images.owed == []
+    assert !string.contains(laid.shared.notice, "could not draw")
+      as "there is no image to fail to draw"
+    let #(next, effects) = stepping.step(backend.Tick, laid)
+    assert image_commands(effects) == []
+    assert !string.contains(next.shared.notice, "could not draw")
+  })
+}
+
+// On a short pane the picture takes about half the transcript, so the text
+// around it is still on screen: 80 by 24 leaves 19 transcript rows, and the
+// picture gets 9 of them.
+pub fn a_short_pane_gives_the_picture_half_its_rows_test() {
+  let #(model, _) =
+    stepping.step(
+      backend.Resize(80, 24),
+      scene(kitty_support(), [#("image/png", image_fixture.png(1200, 700))]),
+    )
+  assert layout.transcript_viewport_height(model) == 19
+  assert image_box.picture_rows(19) == 9
+  let cells = lines_of(model) |> list.filter(shows_placeholders)
+  assert list.length(cells) == 9
+
+  // A taller pane gets the full twelve, and the cache follows the height.
+  let #(tall, _) = stepping.step(backend.Resize(80, 50), model)
+  assert list.length(lines_of(tall) |> list.filter(shows_placeholders)) == 12
+  let #(short, _) = stepping.step(backend.Resize(80, 24), tall)
+  assert list.length(lines_of(short) |> list.filter(shows_placeholders)) == 9
+}
+
+// A small or tall picture is centred in its frame rather than seated at the
+// left: a 64 by 64 image is 8 columns wide in a frame as wide as its label.
+pub fn a_small_picture_is_centred_in_its_frame_test() {
+  let #(model, _) =
+    stepping.step(
+      backend.Resize(120, 40),
+      scene(kitty_support(), [#("image/png", image_fixture.png(64, 64))]),
+    )
+  let screen = geometry.rect_new(0, 0, 120, 40)
+  let window =
+    render.transcript_window(model, render.transcript_area(model, screen))
+  let assert [found] = image_box.found(window)
+  let frame_left = 3
+
+  // The frame is as wide as its label, 38 columns here, and the picture is 8
+  // of the 34 inside it: 13 columns of padding on each side.
+  let lines = lines_of(model)
+  let assert Ok(top) = list.find(lines, string.contains(_, "╭─ image 1"))
+  let frame_width = string.length(string.trim_start(top))
+  assert found.column - { frame_left + 2 } == { frame_width - 4 - 8 } / 2
+}
+
+// Two images in one result are two boxes with their own ids, both sent, and
+// one blank row between them.
+pub fn two_images_in_one_result_are_two_boxes_test() {
+  let first = image_fixture.png_seeded(480, 280, "first")
+  let second = image_fixture.png_seeded(480, 280, "second")
+  let #(model, effects) =
+    stepping.step(
+      backend.Resize(120, 60),
+      scene(kitty_support(), [#("image/png", first), #("image/png", second)]),
+    )
+  let assert [image_shown.Upload(a, ..), image_shown.Upload(b, ..)] =
+    image_commands(effects)
+  assert a != b
+  assert [a, b] == [id_of(first), id_of(second)]
+    || [a, b] == [id_of(second), id_of(first)]
+  let lines = lines_of(model)
+  let assert Ok(foot) =
+    list.index_map(lines, fn(row, at) { #(at, row) })
+    |> list.find(fn(entry) { string.contains(entry.1, "╰─ o opens externally") })
+  let below = list.drop(lines, foot.0 + 1)
+  assert list.first(below) == Ok("") as "a blank row follows the first box"
+  assert string.contains(
+    list.drop(below, 1) |> list.first |> result.unwrap(""),
+    "╭─ image 2",
+  )
+    as "and the second box follows it"
+}
+
+// A surface drawn over the transcript keeps an iTerm2 picture off it: a
+// picture that is owed is dropped, and one that was drawn is erased.
+pub fn a_surface_over_the_box_keeps_the_picture_off_it_test() {
+  let model = scene(iterm_support(), [#("image/png", image_fixture.chart())])
+  let #(laid, _) = stepping.step(backend.Resize(120, 50), model)
+  let covered = fn(shown: Model) {
+    tui_model.invalidate_frame(
+      Model(
+        ..shown,
+        view: View(..shown.view, summary_surface: queue_editor.Inspector),
+      ),
+    )
+  }
+
+  // Owed, then covered: the late draw never happens.
+  let #(after, effects) = stepping.step(backend.Tick, covered(laid))
+  assert image_commands(effects) == []
+  assert after.view.images.owed == []
+  assert after.view.images.drawn == []
+
+  // Drawn, then covered: the picture is erased where it was.
+  let #(drawn, effects) = stepping.step(backend.Tick, laid)
+  let assert [image_shown.Draw(at, _, box)] = image_commands(effects)
+  let #(_, effects) = stepping.step(backend.Tick, covered(drawn))
+  assert image_commands(effects) == [image_shown.Erase(at, box)]
+}
+
+// Switching strands replaces the rows, and the images of the strand left
+// are deleted from the terminal.
+pub fn a_strand_switch_removes_the_uploads_test() {
+  let model = scene(kitty_support(), [#("image/png", image_fixture.chart())])
+  let #(shown, effects) = stepping.step(backend.Resize(120, 50), model)
+  let assert [image_shown.Upload(id, ..)] = image_commands(effects)
+  let elsewhere =
+    tui_model.invalidate_frame(
+      Model(..shown, shared: Shared(..shown.shared, active_strand: "sub:docs")),
+    )
+  let #(_, effects) = stepping.step(backend.Tick, elsewhere)
+  assert image_commands(effects) == [image_shown.Remove(id)]
+}
+
+// The step that sets quit deletes every image the terminal holds, while the
+// alternate screen is still open.
+pub fn quitting_deletes_the_uploaded_images_test() {
+  let model = scene(kitty_support(), [#("image/png", image_fixture.chart())])
+  let #(shown, effects) = stepping.step(backend.Resize(120, 50), model)
+  let assert [image_shown.Upload(id, ..)] = image_commands(effects)
+  let leaving = Model(..shown, shared: Shared(..shown.shared, quit: True))
+  let #(left, effects) = stepping.step(backend.Tick, leaving)
+  assert image_commands(effects) == [image_shown.Remove(id)]
+  assert left.view.images.uploaded == []
+  let #(_, effects) = stepping.step(backend.Tick, left)
+  assert image_commands(effects) == []
+}
+
+// The `--demo` scene carries one image, so the box can be seen end to end.
+pub fn the_demo_scene_shows_a_box_test() {
+  let model =
+    demo_image.seed(with_support(frame_scene.model(), kitty_support()))
+  let #(model, effects) = stepping.step(backend.Resize(120, 40), model)
+  let lines = lines_of(model)
+  assert list.any(lines, string.contains(_, "╭─ image 1 · image/png · 480×280"))
+  assert list.any(lines, string.contains(_, "fs_read"))
+  let assert [image_shown.Upload(..)] = image_commands(effects)
 }

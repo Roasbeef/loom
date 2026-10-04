@@ -110,6 +110,7 @@ import tui/connection
 import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
+import tui/demo_image
 import tui/effect
 import tui/frame
 import tui/image_plan
@@ -722,6 +723,7 @@ pub fn new_model_with_clock(
       rendered_gutters: [],
       record_gutters: [],
       record_cache_width: 0,
+      record_cache_height: 0,
       record_cache_strand: "",
       record_cache_details: False,
       frame_debt: pacing.FrameSettled,
@@ -764,8 +766,11 @@ fn interactive(launch: Launch, record: String) -> Nil {
     | ClaimAccess(..)
     | Enroll(..)
     | Access(..)
-    | View(..)
-    | Demo -> base
+    | View(..) -> base
+
+    // The demo has no session, so the one image it shows is seeded into its
+    // entries (`demo_image`), where a box finds the data to draw.
+    Demo -> demo_image.seed(base)
     Local(options, selected) -> {
       // The footer names the workspace the session was launched for, which
       // is only the current directory when no `--workspace` was given; a

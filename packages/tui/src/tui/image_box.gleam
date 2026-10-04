@@ -61,8 +61,26 @@ import tui/theme
 /// The widest an image's box is drawn, in cells.
 pub const max_columns = 60
 
-/// The tallest an image's box is drawn, in cells.
+/// The tallest an image's picture is drawn, in cells, on a tall pane.
 pub const max_rows = 12
+
+/// The fewest rows a picture is given, however short the pane.
+pub const min_rows = 3
+
+/// How many rows a picture may take on a pane whose transcript is `height`
+/// rows tall: about half of it, so a short pane still shows the text around
+/// the image, and never outside `min_rows` to `max_rows`. The box adds two
+/// rows of border to this.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert image_box.picture_rows(19) == 9
+/// assert image_box.picture_rows(60) == 12
+/// ```
+pub fn picture_rows(height: Int) -> Int {
+  int.clamp(height / 2, min_rows, max_rows)
+}
 
 /// The largest image drawn, in decoded bytes. The terminal is sent the whole
 /// image, base64 encoded, each time it enters view, and the viewport holds at
@@ -111,21 +129,29 @@ pub type Verdict {
 ///
 /// The terminal's support comes first: nothing is drawn on a terminal that
 /// did not say it could. Then the image itself (`refusal`), and last the
-/// room the pane leaves for a box.
+/// room the pane leaves for a box: its width, and `height` rows of
+/// transcript, of which the picture takes about half (`picture_rows`).
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// assert image_box.verdict(image_support.TextOnly(image_support.NotProbed),
-///     picture, 80) == image_box.Keep
+///     picture, 80, 24) == image_box.Keep
 /// ```
-pub fn verdict(support: Support, picture: Picture, width: Int) -> Verdict {
-  case support, refusal(support, picture) {
-    image_support.TextOnly(..), _ -> Keep
-    _, Some(note) -> Refuse(note)
-    image_support.KittyPlaceholders(cell:), None
-    | image_support.Iterm2Inline(cell:), None
-    -> sized(cell, picture, width)
+pub fn verdict(
+  support: Support,
+  picture: Picture,
+  width: Int,
+  height: Int,
+) -> Verdict {
+  case support {
+    image_support.TextOnly(..) -> Keep
+    image_support.KittyPlaceholders(cell:)
+    | image_support.Iterm2Inline(cell:) ->
+      case refusal(support, picture) {
+        Some(note) -> Refuse(note)
+        None -> sized(cell, picture, width, height)
+      }
   }
 }
 
@@ -145,9 +171,9 @@ pub fn refusal(support: Support, picture: Picture) -> Option(String) {
   case support {
     image_support.TextOnly(..) -> None
     image_support.KittyPlaceholders(..) ->
-      case picture.mime_type == "image/png" {
-        True -> over_budget(picture)
-        False -> Some("this terminal draws PNG images only")
+      case picture.mime_type {
+        "image/png" -> over_budget(picture)
+        _ -> Some("this terminal draws PNG images only")
       }
     image_support.Iterm2Inline(..) -> over_budget(picture)
   }
@@ -167,14 +193,22 @@ fn over_budget(picture: Picture) -> Option(String) {
 
 // The room the pane leaves for a box, once the terminal and the image are
 // settled.
-fn sized(cell: graphics.CellSize, picture: Picture, width: Int) -> Verdict {
+fn sized(
+  cell: graphics.CellSize,
+  picture: Picture,
+  width: Int,
+  height: Int,
+) -> Verdict {
   let room = width - string.length(indent) - 4
   let box =
     graphics.fit(
       picture.width,
       picture.height,
       cell,
-      graphics.Box(columns: int.min(max_columns, room), rows: max_rows),
+      graphics.Box(
+        columns: int.min(max_columns, room),
+        rows: picture_rows(height),
+      ),
     )
   case box.columns < 1 || box.rows < 1 {
     True -> Keep
@@ -283,8 +317,8 @@ fn border(
   ])
 }
 
-// One interior row: the side, the cells the picture is drawn through, the
-// padding out to the frame, and the far side. Placeholder cells are text
+// One interior row: the side, the cells the picture is drawn through,
+// centred between padding, and the far side. Placeholder cells are text
 // the terminal fills; blank cells are the marked blanks the picture is
 // drawn over.
 fn cell_row(
@@ -295,6 +329,7 @@ fn cell_row(
   edge: style.Style,
 ) -> span.Line {
   let columns = int.min(drawing.box.columns, inside)
+  let left = { inside - columns } / 2
   let cells = case support {
     image_support.KittyPlaceholders(..) ->
       int.range(from: 0, to: columns, with: [], run: fn(acc, column) {
@@ -308,8 +343,9 @@ fn cell_row(
   span.line_new([
     span.span_plain(indent),
     span.span_styled("│ ", edge),
+    span.span_plain(string.repeat(" ", left)),
     span.span_styled(cells, kitty.id_style(drawing.id)),
-    span.span_plain(string.repeat(" ", inside - columns)),
+    span.span_plain(string.repeat(" ", inside - columns - left)),
     span.span_styled(" │", edge),
   ])
 }
@@ -469,9 +505,9 @@ fn read(line: span.Line) -> Reading {
 }
 
 // The first marked span of a row and the column it starts at. A span is
-// marked when its colour is a true-colour id and it begins with a
-// placeholder or a no-break space, which no other span of the transcript
-// does.
+// marked when its colour is a true-colour id and it is made wholly of
+// placeholders or wholly of no-break spaces. A span that merely starts with
+// one is text, such as a pasted line indented with no-break spaces.
 fn marker_of(spans: List(span.Span), column: Int) -> Option(Marker) {
   case spans {
     [] -> None
@@ -486,9 +522,10 @@ fn marker_of(spans: List(span.Span), column: Int) -> Option(Marker) {
 fn cells_of(sp: span.Span) -> Option(#(kitty.ImageId, Cells)) {
   case sp.style.fg {
     style.Rgb(red, green, blue) -> {
+      let marks = string.to_graphemes(sp.content)
       let cells = case
-        string.starts_with(sp.content, kitty.placeholder),
-        string.starts_with(sp.content, blank)
+        marks != [] && list.all(marks, string.starts_with(_, kitty.placeholder)),
+        marks != [] && list.all(marks, fn(mark) { mark == blank })
       {
         True, _ -> Some(Placeholders)
         False, True -> Some(Blanks)

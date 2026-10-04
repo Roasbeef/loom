@@ -61,10 +61,14 @@ import tui/render
 /// let model = image_plan.settle(model)
 /// ```
 pub fn settle(model: Model) -> Model {
-  case model.view.image_support {
-    image_support.TextOnly(..) -> model
-    image_support.KittyPlaceholders(..) as support
-    | image_support.Iterm2Inline(..) as support -> reconciled(model, support)
+  case model.view.image_support, model.shared.quit {
+    image_support.TextOnly(..), _ -> model
+    image_support.KittyPlaceholders(..), True
+    | image_support.Iterm2Inline(..), True
+    -> queue(model, image_shown.release(model.view.images))
+    image_support.KittyPlaceholders(..) as support, False
+    | image_support.Iterm2Inline(..) as support, False
+    -> reconciled(model, support)
   }
 }
 
@@ -81,6 +85,7 @@ fn reconciled(model: Model, support: image_support.Support) -> Model {
     image_shown.Facts(
       support:,
       width: layout.transcript_width(model),
+      height: layout.transcript_viewport_height(model),
       wants: wants(support, model, area),
       picture: fn(id) { picture(records, strand, id) },
       bytes: fn(id) { bytes(records, strand, id) },
