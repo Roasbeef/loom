@@ -16,6 +16,7 @@ envoy = ">= 1.0.0 and < 2.0.0"
 simplifile = ">= 2.0.0 and < 3.0.0"
 core = { path = "../core" }
 broker = { path = "../broker" }
+tools = { path = "../tools" }
 telemetry = { path = "../telemetry" }
 weft = "== 0.4.5"
 

@@ -10,7 +10,9 @@ for one reason: its dependency list is the compile-time proof that the
 service needs no session runtime, provider, web view or daemon. It depends on
 `broker`, `core` and `telemetry` (for `log.discard()`), plus `weft`, `argv`,
 `envoy`, `gleam_json`, `gleam_time`, `gleam_erlang`, `simplifile` and
-`sqlight_loom` and `parrot`, and never on `host` or `client`.
+`sqlight_loom`, `parrot` and `tools`, and never on `host` or `client`.
+`tools` supplies the closed semantic workspace host and codec; it imports
+`broker` but does not depend on this package, so this edge has no cycle.
 
 The remote components now join pinned TLS, registration, native execution
 and durable custody in component fixtures. The shipped daemon still needs
@@ -269,7 +271,7 @@ and separate-host end-to-end assembly remain unfinished.
 - [Root guidance](../../CLAUDE.md) records package boundaries and style.
 
 
-## Registered host lifetime
+## Registered host lifetime and workspace custody
 
 `remote/host.configure` validates service, registration and journal scope before
 listening, and replaces the supplied verifier with `registration.verify`.
@@ -283,3 +285,23 @@ acceptors. It releases the journal only after durable epoch closure, witnessed
 native retirement and owned service exit. Uncertain cleanup retains evidence.
 Actor or socket death alone never establishes native retirement; an untrappable
 host kill still requires reconciliation by the enclosing owner.
+
+`remote/workspace_journal` owns a separate SQLite connection through weft.
+The source schema is `sql/workspace.sql`, queries are named under
+`src/executor/sql/workspace.sql`, and `scripts/gen-sql.sh executor` regenerates
+the Parrot/sqlc binding and embedded schema. There is no production SQL string
+construction in the journal. BEGIN IMMEDIATE serializes independently opened
+connections. Header/type/length checks precede reading retained bodies.
+
+Admission binds exact canonical bytes to the entire workspace scope and
+reserves the full 32-MiB completion allowance. A first claim commits Started;
+recovery and duplicate claims return Unknown. Exact completions survive a lost
+reply. Owner acknowledgement of their digest collects only payloads, retaining
+permanent identity/digest/size fences. Quotas count lifetime rows and logical
+reserved bytes; they do not bound physical WAL growth.
+
+`remote/workspace_transfer` preserves the existing TLS frame ceiling by
+transferring fixed chunks. Its opaque sender/receiver cursors enforce direction,
+length, offset and final digest. The caller owes authenticated application
+scope, a whole-exchange deadline and bounded connection credits. Content
+transfer grants no permission to execute or acknowledge durable receipt.
