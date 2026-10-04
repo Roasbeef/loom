@@ -161,9 +161,10 @@ Database failures close the endpoint. Uncertain may include a committed
 transition; reply timeout abandons only the wait. Recovery inspects the
 original key and never authorizes an execution again from retained intent.
 A live returned Launch remains a duplicable value, so the trusted native
-adapter must apply it at most once. The journal stores request/result digests,
-not command bodies, terminal payloads or output streams. Those storage and
-native-reconciliation obligations remain with the adapter.
+adapter must apply it at most once. The admission history stores request/result digests. The remote service also
+uses the journal's typed payload API for exact requests, authorization, output,
+terminal bytes and cancellation intent. Native retirement still requires a
+witnessed scoped pool drain; a recovered old incarnation remains uncertain.
 
 The real SQLite regressions cover independent concurrent opens, restart at
 each admission/custody phase, refusal provenance, corruption, bounds and
@@ -187,6 +188,50 @@ claim a hard wall bound over the native resolver. Twenty-one real-network
 regressions cover authentication, framing, slow peers and cumulative deadlines.
 They do not establish the remote service or its end-to-end delivery guarantees.
 
+## Remote native service
+
+`remote/wire` defines closed versioned msgpack envelopes and total bounded
+codecs. `connection` applies one supervised budget to pinned TLS establishment,
+framing and exchange. `listener` uses a fixed pool of one to four acceptors;
+idle peers consume those slots until their finite deadline, without owning
+native cancellation or journal custody.
+
+`remote/registration` freezes full scope, canonical working roots, sandbox
+ceiling and required enforcement into a digest. Its verifier checks the full
+policy meet, canonical path spellings, environment allowlist and explicit wall
+lifetime, without modifying already-cleared requests. The injected path resolver
+runs on the executor. Missing optional mounts are conservatively refused.
+The owner still owns approval and the pooled broker budget.
+
+`remote/service` serializes challenges, admission and native controls over an
+already scoped journal and native executor. Exact payloads precede admission;
+LaunchIntent precedes the single live launch. Cancellation can fence an ID
+before Submit, without inventing a prepared command. Lost replies preserve the
+original identity. A journal failure cannot prevent local cancellation or an
+attempted witnessed drain, but never produces a durable retirement claim.
+
+`remote/native` dispatches through the existing executor with strict native
+start-window checks. Its Publisher factory starts the persistence sink inside
+the native control actor. Linked parent lifetime handles startup failure and
+crash; the final serialized End acknowledgement stops the sink normally. The
+sink retains only the journal handle and bounded per-request counters/evidence.
+No TLS writer owns native cleanup.
+
+`remote/dispatcher` parks a guarantor before publishing Begin. Its owner
+callbacks retain the original ChildOrigin and stable request UUID before a
+possible send, then commit exact ordered output/terminal bytes before remote
+receipt. Release ends only transient broker custody. A lost or refused stdin
+acknowledgement becomes uncertainty, and an uncertain local input ordinal
+never forwards again on retry.
+
+Requests are bounded to 128 KiB, terminal bytes to 32 KiB, and encoded output
+to 64 items/1 MiB per request. Stdin admits 128 items/1 MiB, at most 8 KiB per
+item. Thirty-two active controls are distinct from retained retirement evidence:
+completed calls free live slots, but never delete replay fences. Protocol-stream
+truncation fails; these finite lifetime caps are not yet a general long-lived
+LSP transport. Product registration/configuration, all workspace consumers,
+and separate-host end-to-end assembly remain unfinished.
+
 ## Invariants
 
 - No `client` dependency. A change that adds one defeats the package.
@@ -198,7 +243,9 @@ They do not establish the remote service or its end-to-end delivery guarantees.
   two boots in one VM never share one (the guarantee is per VM) and an `ExecutionId` of one boot
   never equals one of the other. The local entrypoint starts a fresh service
   on restart; it restores no executions. The remote reducer describes
-  retained intent recovery, and the journal persists it; native reconciliation is still unwired.
+  retained intent recovery, and the journal persists it. The remote service
+  reconciles evidence without replaying launch intent; daemon assembly remains
+  pending.
 - Versions are compared with `broker/census.skew`; features are never
   refused.
 - The scratch is removed only after a drain that returned `Ok`, and after a

@@ -11,3 +11,14 @@ CREATE TABLE custody_event (
   seq INTEGER PRIMARY KEY,
   payload BLOB NOT NULL
 );
+
+
+-- Immutable native request/output/terminal custody. Slots never evict keys.
+CREATE TABLE custody_payload (
+  request BLOB NOT NULL CHECK(length(request) <= 138),
+  digest BLOB NOT NULL CHECK(length(digest) = 32),
+  kind INTEGER NOT NULL CHECK(kind BETWEEN 0 AND 4),
+  ordinal INTEGER NOT NULL CHECK(ordinal BETWEEN 0 AND 63),
+  body BLOB NOT NULL CHECK(length(body) <= 131072),
+  PRIMARY KEY (request, kind, ordinal)
+);
