@@ -340,6 +340,153 @@ pub fn memberships_list_the_sessions_of_one_principal_test() {
   })
 }
 
+pub fn members_list_the_principals_of_one_session_test() {
+  wire.fixture(fn(_, ready, port, owner) {
+    let first = shared_session(ready, 24, "First")
+    let second = shared_session(ready, 25, "Second")
+    let assert Ok(invite_alice) =
+      admin.parse(["invite", first, "alice", "observer", "Alice"])
+    let assert Ok(_) =
+      admin.exchange(address(port), owner, ready.epoch, invite_alice)
+    let assert Ok(invite_bob) =
+      admin.parse(["invite", first, "bob", "operator", "Bob"])
+    let assert Ok(_) =
+      admin.exchange(address(port), owner, ready.epoch, invite_bob)
+    let assert Ok(invite_carol) =
+      admin.parse(["invite", second, "carol", "observer", "Carol"])
+    let assert Ok(_) =
+      admin.exchange(address(port), owner, ready.epoch, invite_carol)
+
+    // The session's own members, in principal order, and no one else's.
+    let expected = fn(id, name, role) {
+      json.Object([
+        #("principal_id", json.String(id)),
+        #("name", json.String(name)),
+        #("role", json.String(role)),
+      ])
+    }
+    assert owner_lines(port, owner, ready, ["members", first])
+      == [
+        expected("alice", "Alice", "observer"),
+        expected("bob", "Bob", "operator"),
+      ]
+    assert owner_lines(port, owner, ready, ["members", second])
+      == [expected("carol", "Carol", "observer")]
+
+    // A cursor resumes after a principal, and a role change shows at once.
+    assert owner_lines(port, owner, ready, [
+        "members",
+        first,
+        "--after",
+        "alice",
+      ])
+      == [expected("bob", "Bob", "operator")]
+    administer(
+      ready,
+      owner,
+      manager.SetRole("alice", first, store_access.Operator),
+    )
+    assert owner_lines(port, owner, ready, ["members", first, "--after", "a"])
+      == [
+        expected("alice", "Alice", "operator"),
+        expected("bob", "Bob", "operator"),
+      ]
+
+    // The raw reply names the session and carries no credential, claim or
+    // fingerprint, only identities, names and roles.
+    let frame =
+      control(
+        port,
+        owner,
+        1,
+        "sessions.members",
+        json.Object([#("session_id", json.String(first))]),
+      )
+    assert field(frame, "event") == json.String("sessions.members")
+    assert field(field(frame, "body"), "session_id") == json.String(first)
+    let text = json.to_string(frame)
+    assert !string.contains(text, "loomclaim_")
+    assert !string.contains(text, "fingerprint")
+    assert !has_hex_run(string.replace(text, first, ""), 64) as text
+    assert !has_field(field(frame, "body"), "next")
+    Nil
+  })
+}
+
+pub fn a_member_cannot_list_a_sessions_members_test() {
+  wire.fixture(fn(_, ready, port, owner) {
+    let session = shared_session(ready, 26, "Closed")
+    let assert Ok(invite) =
+      admin.parse(["invite", session, "alice", "operator", "Alice"])
+    let assert Ok(invited) =
+      admin.exchange(address(port), owner, ready.epoch, invite)
+    let assert json.String(token) = field(invited, "claim")
+    let credential = claim.random_credential()
+    assert field(claims.redeem(port, token, claim.digest(credential)), "event")
+      == json.String("credentials.claim")
+
+    // A member is refused even for the session it holds, and even for a session
+    // that does not exist, so it learns nothing about either.
+    let absent =
+      ids.session_id_to_string(
+        ids.mint_session(ids.generator(clock.fixed(0), 27)).0,
+      )
+    assert refusal_code(control(
+        port,
+        credential,
+        1,
+        "sessions.members",
+        json.Object([#("session_id", json.String(session))]),
+      ))
+      == json.String("forbidden")
+    assert refusal_code(control(
+        port,
+        credential,
+        2,
+        "sessions.members",
+        json.Object([#("session_id", json.String(absent))]),
+      ))
+      == json.String("forbidden")
+    Nil
+  })
+}
+
+pub fn unknown_sessions_and_bad_members_requests_are_refused_to_the_owner_test() {
+  wire.fixture(fn(_, _ready, port, owner) {
+    let absent =
+      ids.session_id_to_string(
+        ids.mint_session(ids.generator(clock.fixed(0), 28)).0,
+      )
+    assert refusal_code(control(
+        port,
+        owner,
+        1,
+        "sessions.members",
+        json.Object([#("session_id", json.String(absent))]),
+      ))
+      == json.String("not_found")
+    assert refusal_code(control(
+        port,
+        owner,
+        2,
+        "sessions.members",
+        json.Object([#("session_id", json.String("not-a-session"))]),
+      ))
+      == json.String("bad_request")
+    assert refusal_code(control(
+        port,
+        owner,
+        3,
+        "sessions.members",
+        json.Object([
+          #("session_id", json.String(absent)),
+          #("after", json.String("bad id")),
+        ]),
+      ))
+      == json.String("bad_request")
+  })
+}
+
 pub fn unknown_principals_and_bad_cursors_are_refused_to_the_owner_test() {
   wire.fixture(fn(_, _ready, port, owner) {
     assert refusal_code(control(
@@ -636,6 +783,10 @@ fn token_file(owner: String) -> String {
 pub fn both_programs_print_the_same_lines_for_the_same_command_test() {
   wire.fixture(fn(_, ready, port, owner) {
     let session = shared_session(ready, 30, "Same")
+    let absent =
+      ids.session_id_to_string(
+        ids.mint_session(ids.generator(clock.fixed(0), 32)).0,
+      )
     let state = published_state(port, ready.epoch, owner)
     let remote = [
       "--addr",
@@ -663,6 +814,9 @@ pub fn both_programs_print_the_same_lines_for_the_same_command_test() {
       ["list"],
       ["list", "--after", "alice"],
       ["show", "alice"],
+      ["members", session],
+      ["members", session, "--after", "alice"],
+      ["members", absent],
       ["set-role", session, "alice", "operator"],
       ["revoke-credentials", "alice"],
       ["show", "nobody"],

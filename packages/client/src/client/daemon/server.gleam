@@ -1385,6 +1385,7 @@ fn control(
             | protocol.Status
             | protocol.ListPrincipals(_)
             | protocol.PrincipalMemberships(..)
+            | protocol.SessionMembers(..)
             | protocol.UiLink(..)
             | protocol.ListSessions(..)
             | protocol.SessionActivity(..)
@@ -1425,6 +1426,7 @@ fn control_use(command: protocol.Command) {
     protocol.Status
     | protocol.ListPrincipals(_)
     | protocol.PrincipalMemberships(..)
+    | protocol.SessionMembers(..)
     | protocol.UiLink(..)
     | protocol.InspectPeers(..)
     | protocol.ListSessions(..)
@@ -1779,6 +1781,26 @@ fn dispatch_class(
           [
             #("principal_id", json.String(id)),
             #("memberships", json.Array(list.map(bounded, pair.second))),
+          ],
+          next_field(bounded, more),
+        )),
+      ))
+    }
+    protocol.SessionMembers(id, after) -> {
+      use Nil <- result.try(owner(principal))
+      use page <- result.try(
+        manager.session_member_page(state.registry, digest, id, after:)
+        |> result.map_error(admin_error_code),
+      )
+      let rows =
+        list.map(page.entries, fn(row) { #(row.principal_id, member_json(row)) })
+      use #(bounded, more) <- result.try(bounded_rows(rows, page.remainder))
+      Ok(#(
+        "sessions.members",
+        json.Object(list.append(
+          [
+            #("session_id", json.String(id)),
+            #("members", json.Array(list.map(bounded, pair.second))),
           ],
           next_field(bounded, more),
         )),
@@ -2274,6 +2296,14 @@ fn membership_json(row: access.MembershipEntry) -> JsonValue {
     #("session_id", json.String(row.session_id)),
     #("name", json.String(row.name)),
     #("role", json.String(role)),
+  ])
+}
+
+fn member_json(row: access.SessionMember) -> JsonValue {
+  json.Object([
+    #("principal_id", json.String(row.principal_id)),
+    #("name", json.String(row.name)),
+    #("role", json.String(role_text(row.role))),
   ])
 }
 

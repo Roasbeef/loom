@@ -119,6 +119,11 @@ pub type Command {
   /// Owner-only. An empty cursor starts the listing.
   PrincipalMemberships(principal_id: String, after: String)
 
+  /// Lists one session's members after one principal ID, each with its display
+  /// name and role in that session (protocol-change/065). Owner-only. An empty
+  /// cursor starts the listing.
+  SessionMembers(session_id: String, after: String)
+
   /// Reads daemon readiness and aggregate capacity counts.
   Status
 
@@ -429,6 +434,14 @@ fn decode_fields(
         Ok(_) -> Error("expected a session cursor")
       })
       PrincipalMemberships(principal, after)
+    }
+    "sessions.members" -> {
+      use session <- result.try(session_id(fields))
+      use after <- result.map(case list.key_find(fields, "after") {
+        Error(Nil) -> Ok("")
+        Ok(_) -> text_field(fields, "after", 128)
+      })
+      SessionMembers(session, after)
     }
     "status" -> Ok(Status)
     "ui.link" -> {

@@ -489,6 +489,12 @@ type Message(instance) {
     String,
     Subject(Result(access.MembershipPage, AdminError)),
   )
+  SessionMemberPage(
+    access.Digest,
+    String,
+    String,
+    Subject(Result(access.SessionMemberPage, AdminError)),
+  )
   Delete(
     access.Digest,
     String,
@@ -865,6 +871,32 @@ pub fn membership_page(
   call.try_call(manager.commands, waiting: 5000, sending: MembershipPage(
     caller,
     principal_id,
+    after,
+    _,
+  ))
+  |> result.unwrap(Error(AdminUnavailable))
+}
+
+/// Lists one session's members, owner-only (protocol-change/065, `sessions.members`).
+///
+/// The caller is reauthenticated in the registry's own dispatch, as every
+/// administration is. An unknown session is `AdminMetadata(Missing)`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.session_member_page(registry, owner, session_id, after: "")
+/// ```
+@internal
+pub fn session_member_page(
+  manager: Manager(instance),
+  caller: access.Digest,
+  session_id: String,
+  after after: String,
+) -> Result(access.SessionMemberPage, AdminError) {
+  call.try_call(manager.commands, waiting: 5000, sending: SessionMemberPage(
+    caller,
+    session_id,
     after,
     _,
   ))
@@ -1573,6 +1605,15 @@ fn handle(
       let outcome = {
         use Nil <- result.try(authenticated_owner(book, caller))
         access.memberships_page(book.catalogue, id, after)
+        |> result.map_error(AdminMetadata)
+      }
+      process.send(reply, outcome)
+      sm.keep(book)
+    }
+    SessionMemberPage(caller, id, after, reply) -> {
+      let outcome = {
+        use Nil <- result.try(authenticated_owner(book, caller))
+        access.session_members_page(book.catalogue, id, after)
         |> result.map_error(AdminMetadata)
       }
       process.send(reply, outcome)
