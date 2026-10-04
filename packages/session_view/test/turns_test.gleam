@@ -994,13 +994,67 @@ pub fn a_prompt_draws_its_sender_apart_from_its_words_test() {
     block.rows
   assert text == "run it"
 
-  // The reader's role is set on the reader's own messages and no one else's.
-  let assert [turns.Prompt(role: mine, ..), _] =
-    turns.attributed(laid, "principal-1", "operator")
+  // A sender's role is set on their own messages and no one else's, from
+  // the roles their attachments hold. An observer's attachment is not one a
+  // message was sent in, so the observer who is also the sender's page
+  // gives no role, and an operator attachment gives `operator`.
+  let roles =
+    turns.authors([
+      snapshot_view.Peer(
+        "c1",
+        message.Origin("principal-1", "Alice"),
+        snapshot.Observer,
+      ),
+      snapshot_view.Peer(
+        "c2",
+        message.Origin("principal-1", "Alice"),
+        snapshot.Operator,
+      ),
+      snapshot_view.Peer(
+        "c3",
+        message.Origin("principal-2", "Bob"),
+        snapshot.Observer,
+      ),
+    ])
+  let assert [turns.Prompt(role: mine, ..), _] = turns.attributed(laid, roles)
   assert mine == Some("operator")
   let assert [turns.Prompt(role: theirs, ..), _] =
-    turns.attributed(laid, "principal-2", "operator")
+    turns.attributed(
+      laid,
+      turns.authors([
+        snapshot_view.Peer(
+          "c3",
+          message.Origin("principal-2", "Bob"),
+          snapshot.Operator,
+        ),
+      ]),
+    )
   assert theirs == None
+}
+
+// The author's role is the operator capacity when they hold it, else owner, and the
+// viewer's own role never enters: a principal seen only as an observer
+// authored nothing in that capacity.
+pub fn an_authors_role_prefers_operator_to_owner_test() {
+  let who = message.Origin("principal-1", "Alice")
+  assert turns.authors([
+      snapshot_view.Peer("c1", who, snapshot.Operator),
+      snapshot_view.Peer("c2", who, snapshot.Owner),
+      snapshot_view.Peer("c3", who, snapshot.Owner),
+    ])
+    == dict.from_list([#("principal-1", "operator")])
+  assert turns.authors([snapshot_view.Peer("c1", who, snapshot.Owner)])
+    == dict.from_list([#("principal-1", "owner")])
+  assert turns.authors([snapshot_view.Peer("c1", who, snapshot.Observer)])
+    == dict.new()
+  assert turns.authors([
+      snapshot_view.Peer(
+        "c1",
+        message.PeerOrigin("host", "p"),
+        snapshot.Operator,
+      ),
+    ])
+    == dict.new()
 }
 
 fn review(key: String) -> transcript_lines.Block {
