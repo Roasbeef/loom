@@ -1726,3 +1726,19 @@ fence. Independent review is clean. Root's strict gates pass 35 normal cases,
 [the custody model review](review/distributed-compile-custody-model.md). These
 bounded results do not establish SQLite atomicity or production refinement.
 Physical Compile/Launch assembly and separate-host acceptance remain open.
+
+The resource journal now retains exact native association and outer Compile
+completion evidence, with capacity reserved before preparation. Independent review
+found two test coverage gaps; both are corrected and the stronger guard test
+detects its compiling mutation. Root's full component gate passed 202 executor
+tests before that test-only correction, and all 28 focused journal tests passed
+afterward. The combined integration gate then passed 206 executor tests and 409
+code-mode tests without reported skips. The [review record](review/distributed-compile-outcome-custody.md) and
+[architecture guide](architecture/remote-compilation.md) distinguish historical
+evidence from live execution permission. Live command routing and atomic ordering
+against cancellation remain the next assembly step.
+
+Linux signoff passed all six lanes, release verification and the skip census at
+`0b6ea760a61316c31cc5af9e74fa0244db537492` in 1,362 seconds. That head precedes
+the Compile custody model and outcome journal; it is not signoff for those later
+changes. The run used dry-run mode and posted no commit status.
