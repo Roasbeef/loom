@@ -531,7 +531,7 @@
   .step.pending .glyph{color:var(--color-current);}
   .step-summary{font:12px/1.4 var(--font-mono);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .step-state{margin-left:auto;flex:0 0 auto;color:var(--color-fg-quiet);}
-  .step .line{padding-left:1.6em;font-size:13px;}
+  .step .line{padding-left:1.6em;}
   .spawn{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;font:12px/1.4 var(--font-sans);color:var(--color-fg-quiet);min-width:0;}
   .spawn-head{color:var(--hue-text,var(--color-fg));flex:0 0 auto;}
   .spawn-purpose{color:var(--color-fg);font-size:13px;min-width:0;overflow-wrap:anywhere;}
@@ -732,9 +732,10 @@
   .notice.warned{color:var(--color-danger-text);}
   button{font:13px/1.4 var(--font-sans);border-radius:6px;padding:4px 10px;cursor:pointer; border:1px solid var(--color-divider);background:var(--color-bg);color:var(--color-fg);}
   /* One filled primary per region, the rest quiet outlines. */
-  button.send,button.steer{background:var(--color-primary-button);border-color:var(--color-primary-button);color:var(--color-bg);}
-  button.send:hover,button.steer:hover{background:color-mix(in srgb,var(--color-primary-button) 88%,var(--color-bg));}
-  button.queue{border-color:var(--color-current);color:var(--color-current);}
+  button.send,button.queue{background:var(--color-primary-button);border-color:var(--color-primary-button);color:var(--color-bg);}
+  button.send:hover,button.queue:hover{background:color-mix(in srgb,var(--color-primary-button) 88%,var(--color-bg));}
+  button.steer{border-color:var(--color-signal);color:var(--color-signal-text);}
+  button.steer:hover{background:color-mix(in srgb,var(--color-signal) 10%,transparent);}
   /* A status pill (the connected state in the bar). */
   .pill{display:inline-flex;align-items:center;gap:6px;padding:0 8px;border-radius:999px;font:12px/1.6 var(--font-sans);}
   .pill.live{background:var(--color-pill-ok-bg);color:var(--color-added-text);}

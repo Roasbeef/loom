@@ -39,7 +39,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 default_css="$root/packages/web_client/src/web_client.css"
 
 # The class names no monospace rule may name.
-classes='line step chip panel-title'
+classes='line step chip panel-title fold-toggle expand-toggle card-head todo-panel identity approval-head'
 
 # check <css>: print each violating rule, and return non-zero if there was one.
 check() {
@@ -113,6 +113,12 @@ self_test() {
 		'.step{font:12px monospace;}' \
 		'li.chip .x{font:12px var(--font-mono);}' \
 		'.panel-title{font:600 11px/1.4 var(--font-mono);}' \
+		'.fold-toggle{font:12px var(--font-mono);}' \
+		'button.expand-toggle{font-family:var(--font-mono);}' \
+		'.card-head{font:600 13px var(--font-mono);}' \
+		'.todo-panel{font:12px monospace;}' \
+		'.identity{font:13px var(--font-mono);}' \
+		'.approval-head{font:600 13px var(--font-mono);}' \
 		'@media (max-width:640px){main.x{padding:0;}.step .line{font:12px var(--font-mono);}}'; do
 		name=$(printf '%s' "$body" | tr -c 'A-Za-z0-9' '_')
 		printf '%s\n' "$body" >"$tmp/$name.css"
