@@ -8,7 +8,7 @@ service, pool and `Dispatcher` live in `packages/broker`
 entrypoint that boots them without the harness. It exists as a package
 for one reason: its dependency list is the compile-time proof that the
 service needs no session runtime, provider, web view or daemon. It depends on
-`broker`, `core` and `telemetry` (for `log.discard()`), plus `weft`, `argv`,
+`broker`, `core`, `codemode` and `telemetry` (for `log.discard()`), plus `weft`, `argv`,
 `envoy`, `gleam_json`, `gleam_time`, `gleam_erlang`, `simplifile` and
 `sqlight_loom`, `parrot` and `tools`, and never on `host` or `client`.
 `tools` supplies the closed semantic workspace host and codec; it imports
@@ -340,3 +340,43 @@ Submit, Query or Acknowledge. A single weft deadline covers the whole exchange.
 Connection loss ends transport ownership, not the separately owned effect task.
 The embedding host must close listener admission before sealing the service and
 release the journal only after its own retirement obligations are satisfied.
+
+
+## Physical preparation journal
+
+`remote/resource_journal` uses the already permitted codemode dependency for
+canonical Compile/Launch syntax and historical Ready locations. This introduces
+no client/daemon edge. Source inputs are decoded data, never wire `Vetted` or
+proofs of successful Compile. Trusted physical services must re-vet Compile or
+admit exact retained successful Compile evidence for Launch before requesting a
+preparation claim. They must also reserve final outer outcome capacity first:
+this journal reserves preparation input and Ready metadata only.
+
+`fresh` and `recover` pin the entire exact SessionEnrollment and immutable Limits.
+Named queries live in `src/executor/sql/resources.sql`; `sql/resources.sql` and
+`resource_schema.gleam` hold the separately embedded schema. Parrot/sqlc generates
+all data queries. Only transaction and PRAGMA control remains handwritten.
+`reserve` retains full canonical key/body and reserves its input/header/address
+bytes, UUID and both digest slots plus 256 KiB Ready allowance permanently.
+Limits count logical encoded reservations, excluding snapshot metadata and SQLite
+page/WAL/RSS overhead. No release, uncertainty or seal returns that capacity.
+
+The logical address is existing `remote_tool.child_address(service_origin(key))`.
+Physical step, input digest, UUID and original parent argument/result evidence
+are compared through the complete canonical header and exact body; they cannot
+select a different slot beneath that same logical child. UUID reuse at another
+address also conflicts. Every transaction rereads metadata and bounded scalar
+headers under BEGIN IMMEDIATE; recovery checks one body at a time and retains
+only bounded addresses while checking their uniqueness.
+
+Only committed Reserved->Preparing returns an opaque Claim. A duplicate or
+recovered Preparing row is Unknown and cannot claim again. Gleam claims are
+copyable, so the trusted adapter still owes at-most-once use. `commit_ready`
+requires the original full key and Launch producer; explicit uncertainty or
+witnessed resource cleanup permanently blocks late commits. Historical Ready
+survives Unknown and Released, and grants no listener/recreation authority.
+`mark_released(..., ResourceOwnerCleaned)` trusts the actual resource owner's
+cleanup witness; it asserts neither Compile success nor native retirement.
+`seal` fences independent opens; `release_endpoint` closes only this connection.
+SQL errors poison the endpoint and lost replies remain uncertain. Tests establish
+real SQLite transitions/recovery, not power-loss durability or physical assembly.

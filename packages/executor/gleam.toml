@@ -15,6 +15,7 @@ argv = ">= 1.1.0 and < 2.0.0"
 envoy = ">= 1.0.0 and < 2.0.0"
 simplifile = ">= 2.0.0 and < 3.0.0"
 core = { path = "../core" }
+codemode = { path = "../codemode" }
 broker = { path = "../broker" }
 tools = { path = "../tools" }
 telemetry = { path = "../telemetry" }
