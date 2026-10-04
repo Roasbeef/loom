@@ -456,9 +456,9 @@
   .tl-body{min-width:0;}
   .dot{position:absolute;left:3px;top:6px;width:9px;height:9px;margin:-2px;box-sizing:content-box;border:2px solid var(--color-bg);border-radius:50%;background:var(--hue,var(--color-current));transition:box-shadow 120ms;}
   .dot[data-loom-focus]{cursor:pointer;}
+  .dot.pulse{animation:pulse 1.4s infinite;}
   .dot[data-loom-focus]::after{content:"";position:absolute;inset:-6px;}
   .dot[data-loom-focus]:hover{box-shadow:0 0 0 3px color-mix(in srgb,var(--hue,var(--color-current)) 28%,transparent);}
-  .transcript.lane > .block.live{padding-left:22px;}
   button.tag{margin:0;padding:0 5px;border:1px solid var(--hue,var(--color-fg-quiet));border-radius:4px;background:transparent;color:var(--hue-text,var(--color-fg));font:11px/1.5 var(--font-mono);cursor:pointer;transition:background-color 120ms,box-shadow 120ms;}
   button.tag:hover{background:color-mix(in srgb,var(--hue,var(--color-fg-quiet)) 10%,transparent);}
   /* The breadcrumb above the transcript while a strand other than main is in
@@ -470,7 +470,11 @@
   kbd.crumb-hint{margin:0;padding:0 4px;border:1px solid var(--color-divider);border-radius:4px;color:var(--color-fg-quiet);font:11px/1.5 var(--font-sans);}
   .block{min-width:0;}
   .line{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.5 var(--font-sans);}
-  .line.user{background:var(--color-bg-user);border:1px solid var(--color-divider);padding:8px 12px;border-radius:10px;}
+  /* A person's message (web_view/view/lane): who sent it on a line of its
+     own, and the words in a bubble no wider than nine tenths of the lane. */
+  .who{margin:0 0 2px 0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  .who-name{color:var(--color-fg);font-weight:600;}
+  .line.user{display:inline-block;box-sizing:border-box;max-width:90%;background:var(--color-bg-user);border:1px solid var(--color-divider);padding:8px 12px;border-radius:10px;}
   /* Tool output is code, so it keeps the monospace face. The selector names
      the kind and not `.line`: scripts/web_client_css_check.sh keeps the face
      off the page's own rows. */
@@ -480,6 +484,12 @@
   .line.failure,.line.tool-failure{color:var(--color-danger-text);}
   .line.tool-patch{color:var(--color-fg-quiet);}
   .line.spacer{min-height:.5em;}
+  /* The response the model is still writing (web_view/view/live): the row
+     that says it is reasoning and for how long, its dot pulsing on the
+     timeline, and the summarizer's headline beneath it. */
+  .thinking{min-width:0;}
+  .thinking-head{margin:0;}
+  .thinking-headline{margin:2px 0 0 0;color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;}
   /* A row drawn from Markdown (web_view/markdown_view). Its text wraps as
      prose; only code keeps its whitespace. Every class is one the view
      spells from a closed type, never from the session's text. */
@@ -490,7 +500,6 @@
      bounded thumbnail, and open it takes the lane's width, capped in height so
      a tall image does not push the reader off the row. */
   .pictures{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;min-width:0;}
-  .step .pictures{padding-left:1.6em;}
   details.picture{min-width:0;max-width:100%;}
   summary.picture-summary{display:block;list-style:none;cursor:zoom-in;}
   summary.picture-summary::-webkit-details-marker{display:none;}
@@ -524,41 +533,55 @@
   .markdown .md-table .md-right{text-align:right;}
   .markdown .md-link{color:var(--color-current);text-decoration:underline;}
   .markdown .md-link-target,.markdown .md-image{color:var(--color-fg-quiet);overflow-wrap:anywhere;}
-  loom-fold.work{display:block;border-top:1px solid var(--color-divider);border-bottom:1px solid var(--color-divider);}
-  .fold-toggle{display:flex;align-items:baseline;width:100%;margin:0;padding:4px 0;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);text-align:left;cursor:pointer;}
+  /* A turn's work (web_view/view/lane, view/fold_row): one collapsed line,
+     `Worked 22s · 10 steps · 2 files`, with no rule above or below it, and
+     opened, a column of steps. Each step is one line, a glyph, the verb, what
+     it acted on and for an edit the lines it changed, with one chevron before
+     it from <loom-expand>; what lies behind the line is the body, indented
+     under it. A step with nothing behind it has no chevron and keeps its
+     line in the same column. The verb and the figures are quiet, since a
+     reader scans the subject; the face of a path or a command is the code
+     face and no row's own. */
+  loom-fold.work{display:block;}
+  .fold-toggle{display:flex;align-items:baseline;width:100%;margin:0;padding:2px 0;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);text-align:left;cursor:pointer;}
   .fold-toggle:hover{color:var(--color-fg);}
-  /* An expandable row (web_view/view/lane, web_client/expand): one button,
-     then whichever of its two slots the reader chose. The button sits under
-     a step's head, indented as the step's rows are. */
   loom-expand.expand{display:block;min-width:0;}
-  .expand-toggle{display:flex;align-items:baseline;margin:0;padding:2px 0;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);text-align:left;cursor:pointer;}
+  .expand-toggle{display:flex;align-items:baseline;width:100%;margin:0;padding:2px 0;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);text-align:left;cursor:pointer;}
   .expand-toggle:hover{color:var(--color-fg);}
-  .step loom-expand.expand{padding-left:1.6em;}
-  .step loom-expand.expand .line{padding-left:0;}
-  .fold-glyph{display:inline-block;width:1.2em;flex:0 0 auto;}
+  .fold-glyph{display:inline-block;width:1.2em;flex:0 0 auto;font-size:11px;}
   .fold-body{display:block;}
   .work-divider{min-width:0;overflow-wrap:anywhere;}
-  .work-items{display:flex;flex-direction:column;gap:6px;padding:4px 0 8px 1.2em;}
-  .work.open{display:flex;flex-direction:column;gap:6px;padding-left:10px;}
+  .work-items{display:flex;flex-direction:column;gap:1px;padding:2px 0 6px 1.2em;}
+  .work.open{display:flex;flex-direction:column;gap:1px;}
   .step{min-width:0;}
-  .step-head{display:flex;gap:8px;align-items:baseline;margin:0;font:13px/1.4 var(--font-sans);min-width:0;}
-  .step-head .glyph{flex:0 0 auto;width:1em;}
+  .step.flat{padding:2px 0 2px 1.2em;color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);}
+  .row-head{display:flex;align-items:baseline;gap:6px;min-width:0;}
+  .row-head .glyph{flex:0 0 auto;width:1em;text-align:center;font-size:12px;}
   .step.done .glyph{color:var(--color-added-text);}
   .step.failed .glyph{color:var(--color-danger-text);}
-  .step.pending .glyph{color:var(--color-current);}
-  .step-summary{font:12px/1.4 var(--font-mono);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  .step-state{margin-left:auto;flex:0 0 auto;color:var(--color-fg-quiet);}
-  .step .line{padding-left:1.6em;}
-  .spawn{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;font:12px/1.4 var(--font-sans);color:var(--color-fg-quiet);min-width:0;}
-  .spawn-head{color:var(--hue-text,var(--color-fg));flex:0 0 auto;}
-  .spawn-purpose{color:var(--color-fg);font-size:13px;min-width:0;overflow-wrap:anywhere;}
-  article.result-card,article.nudge,article.peer-card,article.sibling-card{background:var(--color-bg-raised);border-radius:10px;padding:9px 12px;min-width:0;}
-  article.result-card{border:1px solid var(--color-divider);}
+  .step.pending .glyph{color:var(--color-current);animation:pulse 1.4s infinite;}
+  .row-head .verb{flex:0 0 auto;}
+  .row-head .subject{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .row-head .mono{font:12px/1.5 var(--font-mono);}
+  .row-head .figure{flex:0 0 auto;}
+  .row-head .change{display:inline-flex;flex:0 0 auto;gap:6px;font:12px/1.5 var(--font-mono);}
+  .change .added{color:var(--color-added-text);}
+  .change .removed{color:var(--color-danger-text);}
+  .sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;}
+  .row-body{margin:2px 0 6px 1.2em;min-width:0;color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);}
+  .row-body .line{padding-left:0;}
+  /* A spawn and a result are lines of the timeline, not cards: who did what,
+     and for a result the first line of the report, opened to the rest. */
+  .who.spawn{display:block;margin:0;}
+  .spawn-purpose{color:var(--color-fg);overflow-wrap:anywhere;}
+  .result{min-width:0;}
+  .result-line{margin:0;color:var(--color-fg);font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;}
+  .step.reading .subject{color:var(--color-fg);white-space:normal;}
+  article.nudge,article.peer-card,article.sibling-card{background:var(--color-bg-raised);border-radius:10px;padding:9px 12px;min-width:0;}
   article.nudge{border:1px solid var(--color-advisor);}
   article.sibling-card{border:1px solid var(--color-divider);}
   article.peer-card{border:1px solid color-mix(in srgb,var(--color-peer) 40%,var(--color-divider));}
   .card-head{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;margin:0 0 4px 0; font:12px/1.4 var(--font-sans);color:var(--color-fg-quiet);}
-  article.result-card .card-head{color:var(--hue-text,var(--color-fg-quiet));}
   article.peer-card .card-head{color:var(--color-peer-text);}
   article.nudge .card-head{color:var(--color-advisor-text);}
   .peer-from{min-width:0;overflow-wrap:anywhere;}
