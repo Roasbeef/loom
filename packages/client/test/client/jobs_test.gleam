@@ -2315,7 +2315,17 @@ fn bash_ctx(harness: Harness) -> tool.Ctx {
   let workspace = "/workspace"
   tool.Ctx(
     directory_access: directory_access.none(),
-    workspace:,
+    workspace: tool.LocalWorkspace(
+      workspace,
+      tool.FileSystem(
+        read: fn(path) { Error(tool.FsNotFound(path:)) },
+        write: fn(path, _bytes) { Error(tool.FsNotFound(path:)) },
+        create_directory_all: fn(_path) { Ok(Nil) },
+        is_file: fn(_path) { Ok(False) },
+        read_link: fn(_path) { Ok(tool.LinkMissing) },
+        rename: fn(from, _to) { Error(tool.FsNotFound(path: from)) },
+      ),
+    ),
     strand: "main",
     op_id: harness.operation,
     step_id: "step-1",
@@ -2325,15 +2335,17 @@ fn bash_ctx(harness: Harness) -> tool.Ctx {
     demand: exec.BestEffort,
     env: [],
     clock: wall_clock(),
-    filesystem: tool.FileSystem(
-      read: fn(path) { Error(tool.FsNotFound(path:)) },
-      write: fn(path, _bytes) { Error(tool.FsNotFound(path:)) },
-      create_directory_all: fn(_path) { Ok(Nil) },
-      is_file: fn(_path) { Ok(False) },
-      read_link: fn(_path) { Ok(tool.LinkMissing) },
-      rename: fn(from, _to) { Error(tool.FsNotFound(path: from)) },
+    owner_blobs: tool.OwnerBlobs(
+      "/blobs",
+      tool.FileSystem(
+        read: fn(path) { Error(tool.FsNotFound(path:)) },
+        write: fn(path, _bytes) { Error(tool.FsNotFound(path:)) },
+        create_directory_all: fn(_path) { Ok(Nil) },
+        is_file: fn(_path) { Ok(False) },
+        read_link: fn(_path) { Ok(tool.LinkMissing) },
+        rename: fn(from, _to) { Error(tool.FsNotFound(path: from)) },
+      ),
     ),
-    blob_root: "/blobs",
     clear_call: fn(_spec, _events) { Error(broker.BrokerUnavailable) },
     raise_refusal: tool.no_raise(),
     observe_output: tool.ignore_output(),

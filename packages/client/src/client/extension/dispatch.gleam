@@ -350,6 +350,7 @@ pub fn requirements(workspace_root: String) -> SandboxPolicy {
 fn call(dispatching: Dispatching) -> ToolOutcome {
   let Dispatching(config:, written:, declared:, ctx:, arguments:, ..) =
     dispatching
+  use at <- tool.or_outcome(coordinates(ctx), fn(outcome) { outcome })
   hosts.invoke(
     config.hosts,
     extension: written.name,
@@ -366,7 +367,7 @@ fn call(dispatching: Dispatching) -> ToolOutcome {
       ),
       #(msgpack.StringValue("strand"), msgpack.StringValue(ctx.strand)),
     ]),
-    at: coordinates(ctx),
+    at:,
     within: within(config, declared),
   )
   |> settle(ctx, written, declared, _)
@@ -385,11 +386,14 @@ fn call(dispatching: Dispatching) -> ToolOutcome {
 /// ## Examples
 ///
 /// ```gleam
-/// // dispatch.coordinates(ctx).strand == ctx.strand
+/// // let assert Ok(at) = dispatch.coordinates(ctx)
+/// // at.strand == ctx.strand
 /// ```
 ///
-pub fn coordinates(ctx: Ctx) -> hosts.Coordinates {
-  hosts.Coordinates(
+pub fn coordinates(ctx: Ctx) -> Result(hosts.Coordinates, ToolOutcome) {
+  use local <- result.try(tool.require_local_workspace(ctx))
+
+  Ok(hosts.Coordinates(
     // A `tool.Ctx` exists only because the model called a tool, so this
     // is the one origin this function can honestly report. The hook bus
     // builds its own record and says `HookEvent` there.
@@ -397,11 +401,11 @@ pub fn coordinates(ctx: Ctx) -> hosts.Coordinates {
     op_id: ctx.op_id,
     step_id: ctx.step_id,
     strand: ctx.strand,
-    workspace: ctx.workspace,
+    workspace: local.root,
     base_policy: ctx.base_policy,
     demand: ctx.demand,
     env: ctx.env,
-  )
+  ))
 }
 
 /// The recipe the session's host registry launches this extension's

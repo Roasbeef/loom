@@ -523,7 +523,7 @@ pub fn tool_context_construction_test() {
       grants: [grants.encode(policy.GrantEnv(name: "LANG"))],
     )
   let ctx = wiring.tool_context(config, run)
-  assert ctx.workspace == config.workspace
+  assert local_workspace(ctx).root == config.workspace
   assert ctx.op_id == operation
   assert ctx.step_id == "turn-3:tools"
   // The driver's own coordinates reach the tool untouched: the agent
@@ -536,7 +536,7 @@ pub fn tool_context_construction_test() {
   assert ctx.grants == [policy.GrantEnv(name: "LANG")]
   assert ctx.demand == exec.BestEffort
   assert ctx.env == [#("PATH", "/usr/bin:/bin")]
-  assert ctx.blob_root == config.workspace <> "/.blobs"
+  assert ctx.owner_blobs.root == config.workspace <> "/.blobs"
 }
 
 // --- outcome mapping ------------------------------------------------------
@@ -661,4 +661,11 @@ fn json_field(value: JsonValue, key: String) -> Result(JsonValue, Nil) {
       })
     _ -> Error(Nil)
   }
+}
+
+// Existing local fixtures expose physical authority explicitly after migration.
+fn local_workspace(ctx: tool.Ctx) -> tool.LocalWorkspaceAccess {
+  let assert Ok(local) = tool.require_local_workspace(ctx)
+    as "fixture requires a local workspace"
+  local
 }

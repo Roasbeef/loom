@@ -11,6 +11,7 @@ import client/internal/ffi_os
 import client/internal/instance_owner as custody
 import core/clock
 import core/ids
+import core/workspace
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/erlang/atom
@@ -40,7 +41,12 @@ fn directory() {
 }
 
 fn request(key: String) {
-  manager.Creation(key, "/workspace/creation-recovery", "saved draft", "")
+  manager.Creation(
+    key,
+    workspace.LocalBinding("/workspace/creation-recovery"),
+    "saved draft",
+    "",
+  )
 }
 
 fn create(registry, directory, request, seed) {

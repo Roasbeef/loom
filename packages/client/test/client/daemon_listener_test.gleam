@@ -12,6 +12,7 @@ import client/internal/instance_owner as custody
 import client/serve
 import core/clock
 import core/ids
+import core/workspace
 import gleam/bit_array
 import gleam/bytes_tree
 import gleam/erlang/process
@@ -113,7 +114,12 @@ fn created(serving: entrypoint.Serving(String), key: String, seed: Int) {
   let assert Ok(view) =
     manager.create(
       serving.ready.registry,
-      manager.Creation(key, serving.ready.state_root, key, ""),
+      manager.Creation(
+        key,
+        workspace.LocalBinding(serving.ready.state_root),
+        key,
+        "",
+      ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(clock.fixed(1000), seed),
     )
@@ -385,7 +391,12 @@ pub fn daemon_listener_production_opens_two_owned_sessions_test() {
       let assert Ok(view) =
         manager.create(
           serving.ready.registry,
-          manager.Creation(pair.0, workspace, pair.0, file),
+          manager.Creation(
+            pair.0,
+            workspace.LocalBinding(workspace),
+            pair.0,
+            file,
+          ),
           directory: serving.ready.sessions_directory,
           generator: ids.generator(clock.fixed(1000), pair.1),
         )

@@ -458,7 +458,7 @@ fn fixture_with(after_write: fn(process.Pid) -> Nil) -> Fixture {
     as "Executor SQLite opens."
   let observed = process.new_subject()
   let local =
-    local.new(scope(), context(root <> "/executor"), fn(_) {
+    local_host(scope(), context(root <> "/executor"), fn(_) {
       let continue = process.new_subject()
       process.send(observed, continue)
       after_write(owner_started.pid)
@@ -513,7 +513,7 @@ fn fixture_with(after_write: fn(process.Pid) -> Nil) -> Fixture {
 
 fn context(root: String) -> tool.Ctx {
   tool.Ctx(
-    workspace: root,
+    workspace: tool.LocalWorkspace(root, fs.real_filesystem()),
     strand: "main",
     op_id: operation(),
     step_id: "workspace",
@@ -524,8 +524,7 @@ fn context(root: String) -> tool.Ctx {
     demand: exec.FullEnforcement,
     env: [],
     clock: clock.fixed(1000),
-    filesystem: fs.real_filesystem(),
-    blob_root: root <> "/.blobs",
+    owner_blobs: tool.OwnerBlobs(root <> "/.blobs", fs.real_filesystem()),
     clear_call: fn(_, _) {
       panic as "File-only fixture must not launch a process."
     },
@@ -650,4 +649,15 @@ fn finish(f: Fixture) {
   assert journal.mode(f.book) == Ok(journal.SealedScope)
   assert journal.release(f.book) == Ok(Nil)
   stop_owner(f)
+}
+
+// A registered context cannot construct the executor-local host.
+fn local_host(
+  scope: cw.Scope,
+  ctx: tool.Ctx,
+  observer: fn(String) -> option.Option(String),
+) -> local.Host {
+  let assert Ok(host) = local.new(scope, ctx, observer)
+    as "fixture must have local authority"
+  host
 }

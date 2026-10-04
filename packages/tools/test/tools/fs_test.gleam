@@ -49,9 +49,9 @@ fn real_ctx(name: String) -> #(tool.Ctx, tool.FileSystem) {
 }
 
 fn write_file(ctx: tool.Ctx, relative: String, content: String) -> Nil {
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   let assert Ok(resolved) =
-    fs.resolve_path(workspace: ctx.workspace, path: relative)
+    fs.resolve_path(workspace: local_workspace(ctx).root, path: relative)
   let assert Ok(Nil) = filesystem.write(resolved, <<content:utf8>>)
   Nil
 }
@@ -332,7 +332,7 @@ pub fn read_escape_rejected_test() {
 
 pub fn read_binary_rejected_test() {
   let #(ctx, _filesystem) = memory_ctx()
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   let assert Ok(Nil) = filesystem.write("/work/bin.dat", <<0xFF, 0xFE, 0x00>>)
   let outcome =
     fs.read_tool().run(ctx, args([#("path", json.String("bin.dat"))]))
@@ -342,7 +342,7 @@ pub fn read_binary_rejected_test() {
 
 pub fn read_large_file_guard_test() {
   let #(ctx, _filesystem) = memory_ctx()
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   let size = fs.max_read_bytes + 1
   let assert Ok(Nil) =
     filesystem.write("/work/big.txt", <<0:size(size)-unit(8)>>)
@@ -461,7 +461,7 @@ pub fn edit_replace_roundtrip_test() {
   let assert Some(json.Object(fields)) = outcome.details
   assert list.key_find(fields, "digest")
     == Ok(json.String(hashline.digest("one\nTWO\nthree\n")))
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   let assert Ok(bytes) = filesystem.read("/work/e.txt")
   assert bytes == <<"one\nTWO\nthree\n":utf8>>
 }
@@ -494,7 +494,7 @@ pub fn edit_multi_hunk_test() {
       ]),
     )
   assert outcome.is_error == False
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   let assert Ok(bytes) = filesystem.read("/work/m.txt")
   assert bytes == <<"a\na2\nb\nc\n":utf8>>
 }
@@ -546,7 +546,7 @@ pub fn edit_stale_anchor_structured_rejection_test() {
     })
   assert list.contains(fresh_texts, "two CHANGED")
   // And the file was not modified.
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   let assert Ok(bytes) = filesystem.read("/work/s.txt")
   assert bytes == <<"one\ntwo CHANGED\nthree\n":utf8>>
 }
@@ -660,7 +660,7 @@ pub fn edit_replay_of_duplicate_line_delete_rejected_test() {
   assert list.key_find(fields, "digest")
     == Ok(json.String(hashline.digest("x\n")))
   // The file was edited exactly once.
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   let assert Ok(bytes) = filesystem.read("/work/r.txt")
   assert bytes == <<"x\n":utf8>>
 }
@@ -707,7 +707,7 @@ pub fn real_disk_write_read_edit_roundtrip_test() {
     )
   assert edited.is_error == False
   let assert Ok(final) =
-    simplifile.read(ctx.workspace <> "/nested/dir/file.txt")
+    simplifile.read(local_workspace(ctx).root <> "/nested/dir/file.txt")
   assert final == "FIRST\nsecond\n"
 }
 
@@ -770,10 +770,13 @@ fn outside_dir(root: String) -> String {
 
 pub fn symlink_directory_escape_refused_test() {
   let #(ctx, _filesystem) = real_ctx("h2_dir")
-  let outside = outside_dir(ctx.workspace)
+  let outside = outside_dir(local_workspace(ctx).root)
   let assert Ok(Nil) = simplifile.write(outside <> "/secret.txt", "secret\n")
   let assert Ok(Nil) =
-    simplifile.create_symlink(to: outside, from: ctx.workspace <> "/link")
+    simplifile.create_symlink(
+      to: outside,
+      from: local_workspace(ctx).root <> "/link",
+    )
   // Reading through the link is refused.
   let read =
     fs.read_tool().run(ctx, args([#("path", json.String("link/secret.txt"))]))
@@ -795,12 +798,12 @@ pub fn symlink_directory_escape_refused_test() {
 
 pub fn symlink_file_escape_refused_test() {
   let #(ctx, _filesystem) = real_ctx("h2_file")
-  let outside = outside_dir(ctx.workspace)
+  let outside = outside_dir(local_workspace(ctx).root)
   let assert Ok(Nil) = simplifile.write(outside <> "/secret.txt", "secret\n")
   let assert Ok(Nil) =
     simplifile.create_symlink(
       to: outside <> "/secret.txt",
-      from: ctx.workspace <> "/alias.txt",
+      from: local_workspace(ctx).root <> "/alias.txt",
     )
   let read =
     fs.read_tool().run(ctx, args([#("path", json.String("alias.txt"))]))
@@ -824,11 +827,11 @@ pub fn dangling_symlink_write_refused_test() {
   // so a resolver that treats "missing" as "safe suffix" would let the
   // write create the target outside the workspace.
   let #(ctx, _filesystem) = real_ctx("h2_dangling")
-  let outside = outside_dir(ctx.workspace)
+  let outside = outside_dir(local_workspace(ctx).root)
   let assert Ok(Nil) =
     simplifile.create_symlink(
       to: outside <> "/absent.txt",
-      from: ctx.workspace <> "/dangle",
+      from: local_workspace(ctx).root <> "/dangle",
     )
   let write =
     fs.write_tool().run(
@@ -847,15 +850,20 @@ pub fn symlink_inside_workspace_allowed_test() {
   // Symlinks that stay under the root are legitimate and keep working,
   // absolute and relative targets alike.
   let #(ctx, _filesystem) = real_ctx("h2_inside")
-  let assert Ok(Nil) = simplifile.create_directory_all(ctx.workspace <> "/sub")
-  let assert Ok(Nil) = simplifile.write(ctx.workspace <> "/sub/f.txt", "hi\n")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(local_workspace(ctx).root <> "/sub")
+  let assert Ok(Nil) =
+    simplifile.write(local_workspace(ctx).root <> "/sub/f.txt", "hi\n")
   let assert Ok(Nil) =
     simplifile.create_symlink(
-      to: ctx.workspace <> "/sub",
-      from: ctx.workspace <> "/alias_abs",
+      to: local_workspace(ctx).root <> "/sub",
+      from: local_workspace(ctx).root <> "/alias_abs",
     )
   let assert Ok(Nil) =
-    simplifile.create_symlink(to: "sub", from: ctx.workspace <> "/alias_rel")
+    simplifile.create_symlink(
+      to: "sub",
+      from: local_workspace(ctx).root <> "/alias_rel",
+    )
   let via_abs =
     fs.read_tool().run(ctx, args([#("path", json.String("alias_abs/f.txt"))]))
   assert via_abs.is_error == False
@@ -910,8 +918,8 @@ pub fn symlink_loop_is_unresolvable_test() {
   let #(ctx, _filesystem) = real_ctx("h2_loop")
   let assert Ok(Nil) =
     simplifile.create_symlink(
-      to: ctx.workspace <> "/loop",
-      from: ctx.workspace <> "/loop",
+      to: local_workspace(ctx).root <> "/loop",
+      from: local_workspace(ctx).root <> "/loop",
     )
   let outcome =
     fs.read_tool().run(ctx, args([#("path", json.String("loop/x.txt"))]))
@@ -972,7 +980,7 @@ pub fn write_to_protected_git_internals_refused_test() {
   let assert Some(json.Object(fields)) = outcome.details
   assert list.key_find(fields, "error") == Ok(json.String("protected_path"))
   assert list.key_find(fields, "protected") == Ok(json.String("/work/.git"))
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   let assert Error(_) = filesystem.read("/work/.git/hooks/post-checkout")
 }
 
@@ -984,7 +992,7 @@ pub fn edit_of_protected_path_refused_test() {
   assert outcome.is_error
   assert string.contains(first_text(outcome), "permission denied")
   assert string.contains(first_text(outcome), "/work/.git")
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   let assert Ok(bytes) = filesystem.read("/work/.git/config")
   assert bytes == <<"[core]\n":utf8>>
 }
@@ -1005,7 +1013,7 @@ pub fn write_outside_protected_paths_still_succeeds_test() {
   let outcome =
     fs.write_tool().run(ctx, write_call("src/main.gleam", "pub fn main() {}\n"))
   assert outcome.is_error == False
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   let assert Ok(bytes) = filesystem.read("/work/src/main.gleam")
   assert bytes == <<"pub fn main() {}\n":utf8>>
 }
@@ -1029,20 +1037,22 @@ pub fn symlink_onto_protected_path_refused_test() {
   // whose target is protected. Only the resolved path says so, which is
   // why the check runs after `resolve_real` and not before it.
   let #(ctx, _filesystem) = real_ctx("protected_symlink")
-  let assert Ok(Nil) = simplifile.create_directory_all(ctx.workspace <> "/.git")
   let assert Ok(Nil) =
-    simplifile.write(ctx.workspace <> "/.git/config", "[core]\n")
+    simplifile.create_directory_all(local_workspace(ctx).root <> "/.git")
+  let assert Ok(Nil) =
+    simplifile.write(local_workspace(ctx).root <> "/.git/config", "[core]\n")
   let assert Ok(Nil) =
     simplifile.create_symlink(
-      to: ctx.workspace <> "/.git/config",
-      from: ctx.workspace <> "/innocent.txt",
+      to: local_workspace(ctx).root <> "/.git/config",
+      from: local_workspace(ctx).root <> "/innocent.txt",
     )
-  let ctx = with_protected(ctx, [ctx.workspace <> "/.git"])
+  let ctx = with_protected(ctx, [local_workspace(ctx).root <> "/.git"])
   let outcome =
     fs.write_tool().run(ctx, write_call("innocent.txt", "clobbered\n"))
   assert outcome.is_error
   assert string.contains(first_text(outcome), "permission denied")
-  let assert Ok(untouched) = simplifile.read(ctx.workspace <> "/.git/config")
+  let assert Ok(untouched) =
+    simplifile.read(local_workspace(ctx).root <> "/.git/config")
   assert untouched == "[core]\n"
 }
 
@@ -1082,7 +1092,7 @@ pub fn a_relative_protected_entry_refuses_every_write_test() {
   assert list.key_find(fields, "error")
     == Ok(json.String("protection_misconfigured"))
   assert list.key_find(fields, "protected") == Ok(json.String(".git"))
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   let assert Error(_) = filesystem.read("/work/src/main.gleam")
 }
 
@@ -1095,7 +1105,7 @@ pub fn a_relative_protected_entry_refuses_an_edit_too_test() {
   let outcome = fs.edit_tool().run(ctx, insert_call("notes.txt", "keep\n"))
   assert outcome.is_error
   assert string.contains(first_text(outcome), "relative/entry")
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   let assert Ok(bytes) = filesystem.read("/work/notes.txt")
   assert bytes == <<"keep\n":utf8>>
 }
@@ -1118,13 +1128,13 @@ pub fn write_whole_creates_missing_parents_test() {
   let #(ctx, _filesystem) = real_ctx("write_whole_parents")
   let assert Ok(Nil) =
     fs.write_whole(
-      filesystem: ctx.filesystem,
-      resolved: ctx.workspace <> "/new_dir/deeper/file.txt",
+      filesystem: local_workspace(ctx).filesystem,
+      resolved: local_workspace(ctx).root <> "/new_dir/deeper/file.txt",
       bytes: <<"landed\n":utf8>>,
     )
     as "a whole-file write creates its parents"
   let assert Ok(text) =
-    simplifile.read(ctx.workspace <> "/new_dir/deeper/file.txt")
+    simplifile.read(local_workspace(ctx).root <> "/new_dir/deeper/file.txt")
   assert text == "landed\n"
 }
 
@@ -1209,7 +1219,7 @@ pub fn image_bytes_do_not_change_the_text_capability_test() {
   let assert Ok(Nil) =
     filesystem.write("/work/picture.png", <<0x89, "PNG", 13, 10, 26, 10>>)
     as "the fixture must be writable"
-  assert fs.read_text_file(ctx.filesystem, "/work/picture.png")
+  assert fs.read_text_file(local_workspace(ctx).filesystem, "/work/picture.png")
     == Error(fs.NotText)
 }
 
@@ -1519,7 +1529,7 @@ pub fn edit_success_handles_no_trailing_newline_test() {
   let edited = "l1\nl2\nL3"
   assert fresh_block(outcome)
     == hashline.render(hashline.window(edited, offset: 1, limit: 3))
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   assert filesystem.read("/work/e.txt") == Ok(<<"l1\nl2\nL3":utf8>>)
 }
 
@@ -1544,7 +1554,7 @@ pub fn edit_success_reports_an_emptied_file_test() {
   assert outcome.is_error == False
   assert string.ends_with(first_text(outcome), "\n(the file is now empty)")
   assert fresh_block(outcome) == ""
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   assert filesystem.read("/work/e.txt") == Ok(<<"":utf8>>)
 }
 
@@ -1560,7 +1570,7 @@ pub fn edit_success_anchors_a_surviving_blank_line_test() {
   assert outcome.is_error == False
   assert fresh_block(outcome)
     == hashline.render(hashline.window("\n", offset: 1, limit: 1))
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   assert filesystem.read("/work/e.txt") == Ok(<<"\n":utf8>>)
 }
 
@@ -1705,7 +1715,7 @@ pub fn edit_chains_onto_a_line_whose_number_moved_test() {
   let second =
     edit(ctx, "e.txt", visible_digest(first), replace_at(line, anchor, ["L16"]))
   assert second.is_error == False
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   let assert Ok(bytes) = filesystem.read("/work/e.txt")
   assert bytes
     == <<
@@ -1733,7 +1743,7 @@ pub fn edit_chains_onto_a_just_written_line_test() {
       replace_at(line, anchor, ["H15b"]),
     )
   assert second.is_error == False
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   let assert Ok(bytes) = filesystem.read("/work/e.txt")
   assert string.contains(
     case bit_array.to_string(bytes) {
@@ -1784,7 +1794,7 @@ pub fn write_without_a_trailing_newline_anchors_its_last_line_test() {
   assert outcome.is_error == False
   assert fresh_block(outcome)
     == hashline.render(hashline.window(content, offset: 1, limit: 3))
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   assert filesystem.read("/work/w.txt")
     == Ok(<<"l1\nl2\nno newline here":utf8>>)
 }
@@ -1853,7 +1863,7 @@ pub fn write_chains_into_an_edit_of_its_last_line_test() {
       ]),
     )
   assert edited.is_error == False
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   assert filesystem.read("/work/c.txt") == Ok(<<"one\ntwo\nTHREE\n":utf8>>)
 }
 
@@ -1873,7 +1883,7 @@ pub fn write_chains_into_an_edit_without_a_trailing_newline_test() {
       replace_at(line, anchor, ["TWO"]),
     )
   assert edited.is_error == False
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   assert filesystem.read("/work/c.txt") == Ok(<<"one\nTWO":utf8>>)
 }
 
@@ -2113,4 +2123,11 @@ pub fn write_observer_is_not_called_on_a_refused_write_test() {
     )
   assert outcome.is_error
   assert process.receive(seen, 0) == Error(Nil)
+}
+
+// Existing local fixtures expose physical authority explicitly after migration.
+fn local_workspace(ctx: tool.Ctx) -> tool.LocalWorkspaceAccess {
+  let assert Ok(local) = tool.require_local_workspace(ctx)
+    as "fixture requires a local workspace"
+  local
 }

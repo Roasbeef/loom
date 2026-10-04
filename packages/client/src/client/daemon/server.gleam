@@ -52,6 +52,7 @@ import client/peer_mail
 import client/peers
 import core/ids
 import core/json.{type JsonValue}
+import core/workspace
 import gleam/bit_array
 import gleam/bytes_tree
 import gleam/erlang/process
@@ -84,6 +85,8 @@ pub type Config(instance) {
     peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
     /// Captured owner domain config reference; empty explicitly selects no file.
     domain_configuration: String,
+    /// Owner-only resolution and exact retained authority validation.
+    workspace_authority: WorkspaceAuthority,
     /// Fresh entropy-seeded generator for explicit creation.
     generator: fn() -> ids.Generator,
     /// A v2-only conversation adapter, responsible for transferring its permit.
@@ -91,6 +94,48 @@ pub type Config(instance) {
       Response(mist.ResponseData),
     /// The web view, present only when the daemon was started with `--ui`.
     ui: Option(Ui(instance)),
+  )
+}
+
+type WorkspaceSupport {
+  LegacySupport
+  RegisteredSupported
+}
+
+/// Trusted administration, separate from client workspace selectors.
+pub type WorkspaceAuthority {
+  WorkspaceAuthority(
+    /// Resolves a fresh selection without admitting any workspace consumer.
+    resolve: fn(workspace.Selection) -> Result(workspace.Binding, String),
+    /// Checks retained exact authority without replacing either epoch.
+    revalidate: fn(workspace.Binding) -> Result(Nil, String),
+  )
+}
+
+/// Preserves local host resolution and explicitly refuses unenrolled selectors.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.local_workspace_authority()
+/// ```
+pub fn local_workspace_authority() -> WorkspaceAuthority {
+  WorkspaceAuthority(
+    resolve: fn(selection) {
+      case selection {
+        workspace.LocalDirectory(path) ->
+          bootstrap.canonical_directory(path)
+          |> result.map(workspace.LocalBinding)
+          |> result.replace_error("invalid_workspace")
+        workspace.RegisteredWorkspace(_) -> Error("workspace_unavailable")
+      }
+    },
+    revalidate: fn(binding) {
+      case binding {
+        workspace.LocalBinding(_) -> Ok(Nil)
+        workspace.Registered(_) -> Error("workspace_unavailable")
+      }
+    },
   )
 }
 
@@ -777,6 +822,18 @@ fn resident_upgrade(
     use view <- result.try(
       asked(route, "get", fn() { manager.get(state.registry, id) }),
     )
+    use Nil <- result.try(case view.registration.workspace {
+      workspace.LocalBinding(_) -> Ok(Nil)
+      workspace.Registered(_) -> {
+        case
+          request.get_header(request, "x-loom-accepts")
+          == Ok("registered_workspace_v1")
+        {
+          True -> Ok(Nil)
+          False -> Error(manager.StartFailed("unsupported_workspace"))
+        }
+      }
+    })
     use incarnation <- result.try(resident(route, view.status))
     use instance <- result.try(
       asked(route, "resolve_incarnation", fn() {
@@ -1316,7 +1373,19 @@ fn control(
           manager.authenticate(current.registry, digest)
           |> result.replace_error(#("unauthorized", "request refused")),
         )
-        dispatch(config, state, digest, principal, request.id, request.command)
+        use Nil <- result.try(
+          registered_support(config, state, digest, principal, request)
+          |> result.map_error(control_refusal),
+        )
+        dispatch(
+          config,
+          state,
+          digest,
+          principal,
+          request.id,
+          request.command,
+          workspace_support(request.accepts),
+        )
       }
       case outcome {
         Ok(#(event, body)) -> {
@@ -1462,6 +1531,7 @@ fn dispatch(
   principal: access.Principal,
   reply_to: Int,
   command: protocol.Command,
+  support: WorkspaceSupport,
 ) -> Result(#(String, JsonValue), #(String, String)) {
   case command {
     protocol.GetOperation(id, operation, supplied) -> {
@@ -1478,10 +1548,23 @@ fn dispatch(
           other -> control_refusal(error_code(other))
         }
       })
-      |> result.map(fn(view) { #("operations.get", view_json(view)) })
+      |> result.try(fn(view) {
+        use Nil <- result.try(
+          supported_page([view], support) |> result.map_error(control_refusal),
+        )
+        Ok(#("operations.get", view_json(view)))
+      })
     }
     _ ->
-      dispatch_class(config, state, digest, principal, reply_to, command)
+      dispatch_class(
+        config,
+        state,
+        digest,
+        principal,
+        reply_to,
+        command,
+        support,
+      )
       |> result.map_error(control_refusal)
   }
 }
@@ -1497,6 +1580,7 @@ fn dispatch_class(
   principal,
   reply_to: Int,
   command,
+  support: WorkspaceSupport,
 ) {
   // Owner-only filesystem choices are canonicalized on the host. Participant
   // authority is narrower: an operator may open a granted identity, but cannot
@@ -1620,6 +1704,7 @@ fn dispatch_class(
       )
       use Nil <- result.try(check_revision(revision, current))
       use bounded <- result.try(page_prefix(views, 60_000, []))
+      use Nil <- result.try(supported_page(bounded, support))
       Ok(#("sessions.archived", page_body(bounded, current)))
     }
     protocol.IsolateSession(id, supplied) -> {
@@ -1801,6 +1886,7 @@ fn dispatch_class(
       )
       use Nil <- result.try(check_revision(revision, current))
       use bounded <- result.try(page_prefix(views, 60_000, []))
+      use Nil <- result.try(supported_page(bounded, support))
       Ok(#("sessions.list", page_body(bounded, current)))
     }
     protocol.SessionActivity(sessions, supplied) -> {
@@ -1825,6 +1911,7 @@ fn dispatch_class(
       manager.get(state.registry, id)
       |> result.map_error(error_code)
       |> result.try(fn(view) {
+        use Nil <- result.try(supported_page([view], support))
         use body <- result.map(owner_view(state, principal, view))
         #("sessions.get", body)
       })
@@ -1843,10 +1930,6 @@ fn dispatch_class(
     }
     protocol.CreateSession(key, workspace, name, configuration, scope) -> {
       use Nil <- result.try(owner(principal))
-      use workspace <- result.try(
-        bootstrap.canonical_directory(workspace)
-        |> result.replace_error("invalid_workspace"),
-      )
       use configuration <- result.try(
         case configuration {
           // Absence is a registration choice, not the daemon's current path.
@@ -1856,9 +1939,18 @@ fn dispatch_class(
         }
         |> result.replace_error("invalid_configuration"),
       )
+      use binding <- result.try(creation_binding(
+        config.workspace_authority,
+        state.registry,
+        key,
+        workspace,
+        name,
+        configuration,
+        scope,
+      ))
       manager.create_scoped(
         state.registry,
-        manager.Creation(key, workspace, name, configuration),
+        manager.Creation(key, binding, name, configuration),
         directory: state.sessions_directory,
         generator: config.generator(),
         scope:,
@@ -1900,8 +1992,9 @@ fn dispatch_class(
         "sessions.delete",
         json.Object([
           #("session_id", json.String(registration.id)),
-          #("workspace", json.String(registration.workspace)),
-          #("name", json.String(registration.name)),
+          ..list.append(binding_fields(registration.workspace), [
+            #("name", json.String(registration.name)),
+          ])
         ]),
       ))
     }
@@ -1910,7 +2003,10 @@ fn dispatch_class(
       use _ <- result.try(authorized(state, digest, id))
       manager.operation(state.registry, id, operation)
       |> result.map_error(error_code)
-      |> result.map(fn(view) { #("operations.get", view_json(view)) })
+      |> result.try(fn(view) {
+        use Nil <- result.try(supported_page([view], support))
+        Ok(#("operations.get", view_json(view)))
+      })
     }
     protocol.Shutdown(supplied) -> {
       use Nil <- result.try(owner(principal))
@@ -2037,11 +2133,12 @@ fn owner_view(
       Ok(
         json.Object([
           #("session_id", json.String(view.registration.id)),
-          #("workspace", json.String(view.registration.workspace)),
-          #("name", json.String(view.registration.name)),
-          #("created_at", json.Int(view.registration.created_at)),
-          #("status", status_json(view.status)),
-          #("domain_scope", json.String(scope_text(selected.scope))),
+          ..list.append(binding_fields(view.registration.workspace), [
+            #("name", json.String(view.registration.name)),
+            #("created_at", json.Int(view.registration.created_at)),
+            #("status", status_json(view.status)),
+            #("domain_scope", json.String(scope_text(selected.scope))),
+          ])
         ]),
       )
     }
@@ -2190,10 +2287,11 @@ fn membership_json(row: access.MembershipEntry) -> JsonValue {
 pub fn view_json(view: manager.View) -> JsonValue {
   json.Object([
     #("session_id", json.String(view.registration.id)),
-    #("workspace", json.String(view.registration.workspace)),
-    #("name", json.String(view.registration.name)),
-    #("created_at", json.Int(view.registration.created_at)),
-    #("status", status_json(view.status)),
+    ..list.append(binding_fields(view.registration.workspace), [
+      #("name", json.String(view.registration.name)),
+      #("created_at", json.Int(view.registration.created_at)),
+      #("status", status_json(view.status)),
+    ])
   ])
 }
 
@@ -2329,4 +2427,170 @@ fn peer_endpoint(
     manager.resolve(registry, id) |> result.map_error(error_code),
   )
   config.peer_endpoint(resident) |> option.to_result("peer_service_unavailable")
+}
+
+// Every metadata route emits the same closed identity representation. A
+// registered key never appears in the legacy pathname field.
+fn binding_fields(binding: workspace.Binding) -> List(#(String, JsonValue)) {
+  case binding {
+    workspace.LocalBinding(path) -> [#("workspace", json.String(path))]
+    workspace.Registered(_) -> [
+      #("workspace_binding", workspace.encode_binding(binding)),
+    ]
+  }
+}
+
+// The existing manager serializes catalogue reads. A retained key must be read
+// before current epochs are resolved, otherwise partial creation can change its
+// authority simply because administrative configuration advanced.
+fn creation_binding(
+  authority: WorkspaceAuthority,
+  registry: manager.Manager(instance),
+  key: String,
+  selection: workspace.Selection,
+  name: String,
+  configuration: String,
+  scope: domain.Scope,
+) -> Result(workspace.Binding, String) {
+  case manager.creation_registration(registry, key) {
+    Ok(record) -> {
+      use requested <- result.try(case selection {
+        workspace.LocalDirectory(path) ->
+          bootstrap.canonical_directory(path)
+          |> result.map(workspace.LocalKey)
+          |> result.replace_error("invalid_workspace")
+        workspace.RegisteredWorkspace(selected) ->
+          Ok(workspace.RegisteredKey(selected))
+      })
+      use Nil <- result.try(
+        case
+          workspace.binding_key(record.workspace) == requested
+          && record.name == name
+          && record.configuration == configuration
+        {
+          True -> Ok(Nil)
+          False -> Error("conflict")
+        },
+      )
+      use selected <- result.try(
+        manager.session_domain(registry, record.id)
+        |> result.map_error(error_code),
+      )
+      use Nil <- result.try(case selected.scope == scope {
+        True -> Ok(Nil)
+        False -> Error("conflict")
+      })
+      use Nil <- result.try(authority.revalidate(record.workspace))
+      Ok(record.workspace)
+    }
+    Error(manager.Catalogue(catalogue.Missing)) -> {
+      use binding <- result.try(authority.resolve(selection))
+      use Nil <- result.try(
+        case
+          workspace.binding_key(binding) == workspace.selection_key(selection)
+        {
+          True -> Ok(Nil)
+          False ->
+            case selection, binding {
+              // Local canonicalization legitimately changes the selected spelling.
+              workspace.LocalDirectory(_), workspace.LocalBinding(_) -> Ok(Nil)
+              workspace.RegisteredWorkspace(_), workspace.Registered(_)
+              | workspace.LocalDirectory(_), workspace.Registered(_)
+              | workspace.RegisteredWorkspace(_), workspace.LocalBinding(_)
+              -> Error("invalid_workspace")
+            }
+        },
+      )
+      use Nil <- result.try(authority.revalidate(binding))
+      Ok(binding)
+    }
+    Error(error) -> Error(error_code(error))
+  }
+}
+
+// Support is checked after authentication and command-specific authorization,
+// but before authority resolution, admission or default mutation. Unknown
+// feature names never imply support for the one registered workspace contract.
+fn registered_support(
+  config: Config(instance),
+  state: root.Ready(instance),
+  digest: access.Digest,
+  principal: access.Principal,
+  request: protocol.Request,
+) -> Result(Nil, String) {
+  let supports = workspace_support(request.accepts)
+  case request.command {
+    protocol.CreateSession(_, selected, _, _, _) -> {
+      use Nil <- result.try(owner(principal))
+      require_supported(workspace.selection_key(selected), supports)
+    }
+    protocol.WorkspaceDefault(key) | protocol.SetDefault(key, _) -> {
+      use Nil <- result.try(owner(principal))
+      require_supported(key, supports)
+    }
+    protocol.RenameSession(id, _, supplied)
+    | protocol.ArchiveSession(id, supplied)
+    | protocol.RestoreSession(id, supplied) -> {
+      use Nil <- result.try(owner(principal))
+      use Nil <- result.try(epoch(state, supplied))
+      use view <- result.try(
+        manager.get(state.registry, id) |> result.map_error(error_code),
+      )
+      require_supported(
+        workspace.binding_key(view.registration.workspace),
+        supports,
+      )
+    }
+    protocol.OpenSession(id, supplied) -> {
+      use Nil <- result.try(epoch(state, supplied))
+      use #(_, authority) <- result.try(authorized(state, digest, id))
+      use Nil <- result.try(operator(authority))
+      use view <- result.try(
+        manager.get(state.registry, id) |> result.map_error(error_code),
+      )
+      use Nil <- result.try(require_supported(
+        workspace.binding_key(view.registration.workspace),
+        supports,
+      ))
+      config.workspace_authority.revalidate(view.registration.workspace)
+    }
+    _ -> Ok(Nil)
+  }
+}
+
+fn require_supported(
+  key: workspace.WorkspaceKey,
+  supports: WorkspaceSupport,
+) -> Result(Nil, String) {
+  case key, supports {
+    workspace.RegisteredKey(_), LegacySupport -> Error("unsupported_workspace")
+    workspace.RegisteredKey(_), RegisteredSupported
+    | workspace.LocalKey(_), LegacySupport
+    | workspace.LocalKey(_), RegisteredSupported
+    -> Ok(Nil)
+  }
+}
+
+// A decoded feature assertion is shared by mutations and already-authorized
+// reads. Unknown features never imply registered workspace support.
+fn workspace_support(accepts: List(String)) -> WorkspaceSupport {
+  case list.contains(accepts, "registered_workspace_v1") {
+    True -> RegisteredSupported
+    False -> LegacySupport
+  }
+}
+
+// Only the bounded emitted page is inspected after its authorization and byte
+// budget checks. Refuse the whole reply rather than inventing a local pathname
+// or silently dropping a registered row an older client cannot decode.
+fn supported_page(
+  views: List(manager.View),
+  support: WorkspaceSupport,
+) -> Result(Nil, String) {
+  list.try_each(views, fn(view) {
+    require_supported(
+      workspace.binding_key(view.registration.workspace),
+      support,
+    )
+  })
 }

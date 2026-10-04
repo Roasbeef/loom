@@ -63,6 +63,14 @@
 //// **unclamped** and the door answers with the wall it granted — clamping
 //// here as well would silently cap a job at the foreground ceiling and
 //// no reader of either number could tell which had applied.
+////
+//// ## Flow
+////
+//// `run` projects a local workspace before admitting a job or asking for
+//// clearance. `attended` follows auto-mode output until completion or release;
+//// `background` returns a job handle, and `foreground` clears a bounded call.
+//// `whole` reads retained job output through the independent owner blob store.
+//// `settle` and `exited` preserve the shared foreground and job result shape.
 
 import broker/broker
 import broker/budget
@@ -264,6 +272,10 @@ pub fn requirements(workspace: String) -> policy.SandboxPolicy {
 }
 
 fn run(jobs: Jobs, ctx: Ctx, args: JsonValue) -> ToolOutcome {
+  use _local <- tool.or_outcome(tool.require_local_workspace(ctx), fn(outcome) {
+    outcome
+  })
+
   use command <- tool.with_arg(tool.required_string(args, "command"))
   use requested <- tool.with_arg(tool.optional_int(args, "timeout_ms"))
   use mode <- tool.with_arg(requested_mode(args))
@@ -673,7 +685,7 @@ fn whole(
   case gaps, spill {
     SawEverything, _spill | MissedSome, None -> seen
     MissedSome, Some(ref) ->
-      ctx.filesystem.read(blob.ref_path(ctx.blob_root, ref))
+      ctx.owner_blobs.filesystem.read(blob.ref_path(ctx.owner_blobs.root, ref))
       |> result.unwrap(seen)
   }
 }
@@ -723,10 +735,14 @@ fn foreground(
   command: String,
   requested: Option(Int),
 ) -> ToolOutcome {
+  use local <- tool.or_outcome(tool.require_local_workspace(ctx), fn(outcome) {
+    outcome
+  })
+
   let timeout = option.unwrap(requested, default_timeout_ms)
   let timeout = int.min(timeout, max_timeout_ms)
   let #(now, _clock) = clock.read(ctx.clock)
-  let spec = call_spec(ctx, command, now, timeout)
+  let spec = call_spec(ctx, local.root, command, now, timeout)
   let events = process.new_subject()
   use call <- tool.or_outcome(
     ctx.clear_call(spec, events),
@@ -755,6 +771,7 @@ fn foreground(
 // allowlist; the wall limit mirrors the timeout.
 fn call_spec(
   ctx: Ctx,
+  workspace_root: String,
   command: String,
   now: Int,
   timeout: Int,
@@ -764,7 +781,7 @@ fn call_spec(
   // asking for the base's own network is what lets an operator who
   // opened it reach a shell, and the meet keeps it closed otherwise.
   let base_requirements =
-    tool.asking_base_network(requirements(ctx.workspace), ctx.base_policy)
+    tool.asking_base_network(requirements(workspace_root), ctx.base_policy)
 
   let wall_s = { timeout + 999 } / 1000
 
@@ -812,7 +829,7 @@ fn call_spec(
     // `go test | tail` from reporting the successful tail as a passing test.
     argv: ["bash", "-o", "pipefail", "-c", command],
     env: ctx.env,
-    cwd: ctx.workspace,
+    cwd: workspace_root,
     budget: budget.Budget(max_outstanding: 1, deadline_ms: now + timeout),
   )
 }

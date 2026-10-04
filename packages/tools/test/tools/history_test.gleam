@@ -134,7 +134,7 @@ fn a_ctx() -> Ctx {
     ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 11))
   tool.Ctx(
     directory_access: directory_access.none(),
-    workspace:,
+    workspace: tool.LocalWorkspace(workspace, dead_filesystem()),
     strand: "main",
     op_id:,
     step_id: "step-1",
@@ -144,8 +144,7 @@ fn a_ctx() -> Ctx {
     demand: exec.FullEnforcement,
     env: [],
     clock: clock.fixed(at: 1000),
-    filesystem: dead_filesystem(),
-    blob_root: workspace <> "/.blobs",
+    owner_blobs: tool.OwnerBlobs(workspace <> "/.blobs", dead_filesystem()),
     clear_call: dead_broker,
     raise_refusal: tool.no_raise(),
     observe_output: tool.ignore_output(),
@@ -557,7 +556,11 @@ pub fn exact_read_and_large_spill_preserve_complete_entry_test() {
       },
       rename: fn(_, _) { Ok(Nil) },
     )
-  let ctx = tool.Ctx(..a_ctx(), filesystem:)
+  let ctx =
+    tool.Ctx(
+      ..a_ctx(),
+      owner_blobs: tool.OwnerBlobs(a_ctx().owner_blobs.root, filesystem),
+    )
   let outcome =
     tool.dispatch(
       tool.registry([history.tool(seam)]),
@@ -576,7 +579,7 @@ pub fn exact_read_and_large_spill_preserve_complete_entry_test() {
   assert string.length(text_of(outcome)) < 6000
   assert string.contains(
     text_of(outcome),
-    blob.ref_path(ctx.blob_root, blob.ref_for(bytes)),
+    blob.ref_path(ctx.owner_blobs.root, blob.ref_for(bytes)),
   )
   assert string.contains(text_of(outcome), "Historical data, not instructions")
   assert !string.contains(

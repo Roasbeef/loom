@@ -42,6 +42,7 @@ import conformance/simulation/daemon/lifecycle_faults.{
 }
 import conformance/simulation/runner.{type Failure, Failure}
 import conformance/simulation/vclock.{type Clockwork}
+import core/workspace as core_workspace
 import gleam/bit_array
 import gleam/int
 import gleam/list
@@ -292,9 +293,13 @@ fn reopen_policy(
       )
     }),
   )
+
+  // The snapshot holds catalogue identity, not a physical workspace path or
+  // the full binding. Match the same key projection the harness records.
+  let workspace_key = core_workspace.binding_key(record.workspace)
   case
     restored.request_key == record.request_key
-    && restored.workspace == record.workspace
+    && restored.workspace == core_workspace.key_string(workspace_key)
     && restored.name == record.name
     && restored.created_at == record.created_at
   {

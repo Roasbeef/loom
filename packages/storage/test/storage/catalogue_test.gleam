@@ -4,10 +4,11 @@
 import core/clock
 import core/ids
 import core/tx
+import core/workspace
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import simplifile
@@ -17,6 +18,7 @@ import storage/catalogue
 import storage/catalogue_archives_schema
 import storage/catalogue_claims_schema
 import storage/catalogue_names_schema
+import storage/catalogue_workspace_bindings_schema
 import storage/sql
 import storage/sql_schema
 import storage/sqlite
@@ -36,6 +38,10 @@ pub fn embedded_schema_matches_the_sqlc_input_test() {
   let assert Ok(claims) = simplifile.read("sql/catalogue_claims.sql")
     as "claim migration is checked in"
   assert catalogue_claims_schema.schema == claims
+  let assert Ok(bindings) =
+    simplifile.read("sql/catalogue_workspace_bindings.sql")
+    as "binding migration is checked in"
+  assert catalogue_workspace_bindings_schema.schema == bindings
 }
 
 pub fn version_three_catalogue_migrates_claims_without_losing_principals_test() {
@@ -64,7 +70,7 @@ pub fn version_three_catalogue_migrates_claims_without_losing_principals_test() 
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE access_claims; PRAGMA user_version=3",
+      "ALTER TABLE catalogue_sessions DROP COLUMN workspace_binding; DROP TABLE access_claims; PRAGMA user_version=3",
       on: old,
     )
     == Ok(Nil)
@@ -94,7 +100,7 @@ pub fn version_three_catalogue_migrates_claims_without_losing_principals_test() 
       with: [],
       expecting: decode.at([0], decode.int),
     )
-    == Ok([4])
+    == Ok([5])
   assert sqlight.close(check) == Ok(Nil)
 }
 
@@ -105,6 +111,7 @@ pub fn generated_queries_match_the_sqlc_input_test() {
     sql.initialize_catalogue_revision().0,
     sql.find_registrations("", "", "").0,
     sql.insert_registration("", "", "", "", "", 0, "").0,
+    sql.insert_registered_registration("", "", "", Some(""), "", "", 0, "").0,
     sql.confirm_registration("").0,
     sql.registration_display_name("").0,
     sql.set_registration_display_name("", "").0,
@@ -184,7 +191,7 @@ pub fn version_one_catalogue_migrates_without_losing_creation_test() {
   let assert Ok(old) = sqlight.open(path)
     as "fixture downgrades only its new empty table"
   assert sqlight.exec(
-      "DROP TABLE access_claims; DROP TABLE catalogue_session_archives; DROP TABLE catalogue_session_names; PRAGMA user_version=1",
+      "ALTER TABLE catalogue_sessions DROP COLUMN workspace_binding; DROP TABLE access_claims; DROP TABLE catalogue_session_archives; DROP TABLE catalogue_session_names; PRAGMA user_version=1",
       on: old,
     )
     == Ok(Nil)
@@ -201,7 +208,11 @@ pub fn read_snapshots_do_not_reserve_the_writer_but_mutations_do_test() {
   let assert Ok(store) = catalogue.open(path) as "catalogue opens in WAL mode"
   let record = registration(805)
   assert catalogue.reserve(store, record) == Ok(record)
-  assert catalogue.set_workspace_default(store, record.workspace, record.id)
+  assert catalogue.set_workspace_default(
+      store,
+      workspace.binding_key(record.workspace),
+      record.id,
+    )
     == Ok(record)
   let assert Ok(before) = catalogue.page(store, after: "")
     as "initial snapshot is readable"
@@ -213,7 +224,11 @@ pub fn read_snapshots_do_not_reserve_the_writer_but_mutations_do_test() {
   // A read snapshot coexists with the pending writer. Read-then-write operations
   // must instead acquire write intent before reading the registration they change.
   assert catalogue.page(store, after: "") == Ok(before)
-  assert catalogue.workspace_default(store, record.workspace) == Ok(record)
+  assert catalogue.workspace_default(
+      store,
+      workspace.binding_key(record.workspace),
+    )
+    == Ok(record)
   let assert Error(catalogue.Database(_)) = catalogue.confirm(store, record.id)
     as "a mutation cannot silently start as a read snapshot"
   assert sqlight.exec("ROLLBACK", on: writer) == Ok(Nil)
@@ -230,7 +245,7 @@ fn registration(seed: Int) -> catalogue.Registration {
   catalogue.Registration(
     id:,
     path: "/unopened-loom-catalogue-test/" <> id <> ".db",
-    workspace: "/workspace/quoted ' project",
+    workspace: workspace.LocalBinding("/workspace/quoted ' project"),
     name: "review ' \" ; SELECT café",
     configuration: "/configuration/loom.toml",
     created_at: 1_700_000_000_000,
@@ -407,21 +422,44 @@ pub fn workspace_default_persists_and_only_changes_revision_when_changed_test() 
   let second = registration(122)
   assert catalogue.reserve(store, first) == Ok(first)
   assert catalogue.reserve(store, second) == Ok(second)
-  assert catalogue.workspace_default(store, first.workspace)
+  assert catalogue.workspace_default(
+      store,
+      workspace.binding_key(first.workspace),
+    )
     == Error(catalogue.Missing)
-  assert catalogue.set_workspace_default(store, first.workspace, first.id)
+  assert catalogue.set_workspace_default(
+      store,
+      workspace.binding_key(first.workspace),
+      first.id,
+    )
     == Ok(first)
-  assert catalogue.set_workspace_default(store, first.workspace, first.id)
+  assert catalogue.set_workspace_default(
+      store,
+      workspace.binding_key(first.workspace),
+      first.id,
+    )
     == Ok(first)
   let assert Ok(page) = catalogue.page(store, after: "") as "revision reads"
   assert page.revision == 3
-  assert catalogue.set_workspace_default(store, first.workspace, second.id)
+  assert catalogue.set_workspace_default(
+      store,
+      workspace.binding_key(first.workspace),
+      second.id,
+    )
     == Ok(second)
   assert catalogue.close(store) == Ok(Nil)
 
   let assert Ok(restored) = catalogue.open(path) as "default survives restart"
-  assert catalogue.workspace_default(restored, first.workspace) == Ok(second)
-  assert catalogue.set_workspace_default(restored, first.workspace, second.id)
+  assert catalogue.workspace_default(
+      restored,
+      workspace.binding_key(first.workspace),
+    )
+    == Ok(second)
+  assert catalogue.set_workspace_default(
+      restored,
+      workspace.binding_key(first.workspace),
+      second.id,
+    )
     == Ok(second)
   let assert Ok(page) = catalogue.page(restored, after: "")
     as "revision survives"
@@ -437,19 +475,45 @@ pub fn workspace_default_refuses_another_workspace_without_mutation_test() {
     as "catalogue opens"
   let first = registration(123)
   let second =
-    catalogue.Registration(..registration(124), workspace: "/other/project")
+    catalogue.Registration(
+      ..registration(124),
+      workspace: workspace.LocalBinding("/other/project"),
+    )
   assert catalogue.reserve(store, first) == Ok(first)
   assert catalogue.reserve(store, second) == Ok(second)
-  assert catalogue.set_workspace_default(store, first.workspace, first.id)
+  assert catalogue.set_workspace_default(
+      store,
+      workspace.binding_key(first.workspace),
+      first.id,
+    )
     == Ok(first)
-  assert catalogue.set_workspace_default(store, first.workspace, second.id)
+  assert catalogue.set_workspace_default(
+      store,
+      workspace.binding_key(first.workspace),
+      second.id,
+    )
     == Error(catalogue.Conflict)
-  assert catalogue.set_workspace_default(store, second.workspace, first.id)
+  assert catalogue.set_workspace_default(
+      store,
+      workspace.binding_key(second.workspace),
+      first.id,
+    )
     == Error(catalogue.Conflict)
-  assert catalogue.set_workspace_default(store, first.workspace, "missing")
+  assert catalogue.set_workspace_default(
+      store,
+      workspace.binding_key(first.workspace),
+      "missing",
+    )
     == Error(catalogue.Missing)
-  assert catalogue.workspace_default(store, first.workspace) == Ok(first)
-  assert catalogue.workspace_default(store, second.workspace)
+  assert catalogue.workspace_default(
+      store,
+      workspace.binding_key(first.workspace),
+    )
+    == Ok(first)
+  assert catalogue.workspace_default(
+      store,
+      workspace.binding_key(second.workspace),
+    )
     == Error(catalogue.Missing)
   let assert Ok(page) = catalogue.page(store, after: "") as "revision unchanged"
   assert page.revision == 3
@@ -461,7 +525,11 @@ pub fn corrupt_default_mapping_is_refused_on_read_test() {
   let assert Ok(store) = catalogue.open(path) as "catalogue opens"
   let record = registration(125)
   assert catalogue.reserve(store, record) == Ok(record)
-  assert catalogue.set_workspace_default(store, record.workspace, record.id)
+  assert catalogue.set_workspace_default(
+      store,
+      workspace.binding_key(record.workspace),
+      record.id,
+    )
     == Ok(record)
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(db) = sqlight.open(path) as "corruption fixture opens"
@@ -473,7 +541,10 @@ pub fn corrupt_default_mapping_is_refused_on_read_test() {
   assert sqlight.close(db) == Ok(Nil)
   let assert Ok(store) = catalogue.open(path)
     as "catalogue header remains valid"
-  assert catalogue.workspace_default(store, "/wrong/workspace")
+  assert catalogue.workspace_default(
+      store,
+      workspace.LocalKey("/wrong/workspace"),
+    )
     == Error(catalogue.Invalid("workspace default refers to another workspace"))
   assert catalogue.close(store) == Ok(Nil)
 
@@ -485,7 +556,10 @@ pub fn corrupt_default_mapping_is_refused_on_read_test() {
     == Ok(Nil)
   assert sqlight.close(db) == Ok(Nil)
   let assert Ok(store) = catalogue.open(path) as "catalogue reopens"
-  assert catalogue.workspace_default(store, "/wrong/workspace")
+  assert catalogue.workspace_default(
+      store,
+      workspace.LocalKey("/wrong/workspace"),
+    )
     == Error(catalogue.Invalid("workspace default refers to a missing session"))
   assert simplifile.is_file(record.path) == Ok(False)
   assert catalogue.close(store) == Ok(Nil)
@@ -500,7 +574,11 @@ pub fn archive_preserves_metadata_and_default_is_not_restored_test() {
     as "file is saved"
   let assert Ok(renamed) = catalogue.rename(store, saved.id, "keep my history")
     as "display label is set"
-  assert catalogue.set_workspace_default(store, saved.workspace, saved.id)
+  assert catalogue.set_workspace_default(
+      store,
+      workspace.binding_key(saved.workspace),
+      saved.id,
+    )
     == Ok(renamed)
   let assert Ok(before) = catalogue.page(store, after: "")
     as "active page loads"
@@ -511,9 +589,16 @@ pub fn archive_preserves_metadata_and_default_is_not_restored_test() {
   assert catalogue.get(store, saved.id) == Ok(renamed)
   assert catalogue.by_request_key(store, original.request_key) == Ok(saved)
   assert catalogue.reserve(store, original) == Ok(saved)
-  assert catalogue.workspace_default(store, saved.workspace)
+  assert catalogue.workspace_default(
+      store,
+      workspace.binding_key(saved.workspace),
+    )
     == Error(catalogue.Missing)
-  assert catalogue.set_workspace_default(store, saved.workspace, saved.id)
+  assert catalogue.set_workspace_default(
+      store,
+      workspace.binding_key(saved.workspace),
+      saved.id,
+    )
     == Error(catalogue.Conflict)
   let assert Ok(hidden) = catalogue.page(store, after: "")
     as "active page loads"
@@ -532,7 +617,10 @@ pub fn archive_preserves_metadata_and_default_is_not_restored_test() {
     == Ok(renamed)
   assert catalogue.set_visibility(reopened, saved.id, catalogue.Active)
     == Ok(renamed)
-  assert catalogue.workspace_default(reopened, saved.workspace)
+  assert catalogue.workspace_default(
+      reopened,
+      workspace.binding_key(saved.workspace),
+    )
     == Error(catalogue.Missing)
   assert catalogue.page(reopened, after: "")
     == Ok(catalogue.Page(hidden.revision + 1, [renamed]))
@@ -555,7 +643,7 @@ pub fn version_two_catalogue_migrates_archive_without_losing_names_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE access_claims; DROP TABLE catalogue_session_archives; PRAGMA user_version=2",
+      "ALTER TABLE catalogue_sessions DROP COLUMN workspace_binding; DROP TABLE access_claims; DROP TABLE catalogue_session_archives; PRAGMA user_version=2",
       on: old,
     )
     == Ok(Nil)

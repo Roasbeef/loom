@@ -1768,13 +1768,13 @@ pub fn terminates(terminate: tool.Terminate) -> Bool {
 /// ## Examples
 ///
 /// ```gleam
-/// // wiring.tool_context(config, run).workspace == config.workspace
+/// // wiring.tool_context(config, run).workspace == tool.LocalWorkspace(config.workspace, fs.real_filesystem())
 /// ```
 ///
 pub fn tool_context(config: Config, run: effects.ToolRun) -> tool.Ctx {
   tool.Ctx(
     directory_access: directory_access.none(),
-    workspace: config.workspace,
+    workspace: tool.LocalWorkspace(config.workspace, fs.real_filesystem()),
     strand: run.strand,
     op_id: run.operation,
     step_id: run.step_id,
@@ -1784,8 +1784,7 @@ pub fn tool_context(config: Config, run: effects.ToolRun) -> tool.Ctx {
     demand: config.demand,
     env: config.env,
     clock: config.clock,
-    filesystem: fs.real_filesystem(),
-    blob_root: config.blob_root,
+    owner_blobs: tool.OwnerBlobs(config.blob_root, fs.real_filesystem()),
     clear_call: escalating_runner(config, run),
     raise_refusal: raising_seam(config, run),
     observe_output: config.observe_output(run),

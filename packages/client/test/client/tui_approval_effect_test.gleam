@@ -26,6 +26,7 @@ import core/ids
 import core/json
 import core/message
 import core/origin
+import core/workspace
 import etui/backend
 import filepath
 import gleam/bit_array
@@ -182,13 +183,15 @@ fn start() {
           serve.build_domain(selected, sources, log.discard(), owner)
         },
         fn(record, selected, services, owner, _directory) {
+          let assert workspace.LocalBinding(local) = record.workspace
+            as "native fixture owns a local binding"
           let assert Ok(id) = ids.parse_session_id(record.id)
             as "the catalogue reserves a canonical session identity"
           assert bootstrap.ensure_private_directory(filepath.directory_name(
               selected.memory_path,
             ))
             == Ok(Nil)
-          let base = serve.base_policy(record.workspace)
+          let base = serve.base_policy(local)
           serve.assemble_in_domain(
             serve.Settings(
               ..settings,
@@ -196,7 +199,7 @@ fn start() {
               helper_path: here <> "/../../bin/loom-exec",
               session_path: record.path,
               session_id: record.id,
-              workspace: record.workspace,
+              workspace: local,
               base_policy: policy.SandboxPolicy(
                 ..base,
                 limits: policy.Limits(..base.limits, wall_s: 1),
@@ -242,7 +245,12 @@ fn create(serving: daemon_main.Serving(serve.Instance), directory) {
   let assert Ok(created) =
     manager.create_scoped(
       serving.ready.registry,
-      manager.Creation("approval-effect", workspace, "Approval effect", ""),
+      manager.Creation(
+        "approval-effect",
+        workspace.LocalBinding(workspace),
+        "Approval effect",
+        "",
+      ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(clock.fixed(1), 51),
       scope: domain.SessionOnly,
@@ -390,7 +398,9 @@ fn exercise(
   assert cell.record.tool == Some("bash")
   assert cell.seq == pending.seq
   assert cell.record.status == escalation.Pending
-  let marker_path = registration.workspace <> "/approval-count.txt"
+  let assert workspace.LocalBinding(local_path) = registration.workspace
+    as "the approval fixture has a local native workspace"
+  let marker_path = local_path <> "/approval-count.txt"
   assert simplifile.is_file(marker_path) == Ok(False)
     as "the native side effect must not precede consent"
   assert tool_results(instance) == []

@@ -105,6 +105,7 @@ import client/daemon/ui_sessions
 import client/daemon/upgrade_log
 import client/gateway
 import core/ids
+import core/workspace
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -766,10 +767,14 @@ fn admit(
       // so the heading's name and workspace cost no second lookup.
       label: Some(component.Label(
         name: attachment.registration.name,
-        workspace: attachment.registration.workspace,
+        workspace: workspace_label(attachment.registration.workspace),
       )),
       // The digest, not the path, is what the page's storage is keyed by.
-      workspace_digest: digest(attachment.registration.workspace),
+      workspace_digest: digest(
+        workspace.key_string(workspace.binding_key(
+          attachment.registration.workspace,
+        )),
+      ),
       expected:,
       transport:,
     )
@@ -1247,7 +1252,7 @@ pub fn listed_entry(view: manager.View) -> sessions.Entry {
   sessions.Entry(
     id: record.id,
     name: record.name,
-    workspace: record.workspace,
+    workspace: workspace_label(record.workspace),
     created_at: record.created_at,
     residency: case view.status {
       manager.Opening(..) | manager.Resident(..) | manager.Stopping(..) ->
@@ -1400,4 +1405,17 @@ fn authorize(attachment: server.Attachment(instance)) {
     digest: attachment.digest,
   )
   |> result.replace_error(ending.reason(ending.AccessRevoked))
+}
+
+// Display identity is never consumed as a host directory. Local headings keep
+// their historical spelling while registered headings name administration.
+fn workspace_label(binding: workspace.Binding) -> String {
+  case binding {
+    workspace.LocalBinding(path) -> path
+    workspace.Registered(bound) -> {
+      let #(selected, _, _) = workspace.binding_fields(bound)
+      let #(executor, name) = workspace.selector_fields(selected)
+      executor <> "/" <> name
+    }
+  }
 }

@@ -191,7 +191,7 @@ fn ctx_in(workspace: String) -> tool.Ctx {
     ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 3))
   tool.Ctx(
     directory_access: directory_access.none(),
-    workspace:,
+    workspace: tool.LocalWorkspace(workspace, fs.real_filesystem()),
     strand: "main",
     op_id:,
     step_id: "step-1",
@@ -201,8 +201,7 @@ fn ctx_in(workspace: String) -> tool.Ctx {
     demand: exec.BestEffort,
     env: [],
     clock: clock.fixed(at: 0),
-    filesystem: fs.real_filesystem(),
-    blob_root: workspace <> "/.blobs",
+    owner_blobs: tool.OwnerBlobs(workspace <> "/.blobs", fs.real_filesystem()),
     clear_call: fn(_spec, _events) { Error(broker.BrokerUnavailable) },
     raise_refusal: tool.no_raise(),
     observe_output: tool.ignore_output(),

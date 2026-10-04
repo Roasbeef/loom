@@ -118,7 +118,7 @@ fn base_ctx(
     ids.mint_op(ids.generator(clock.fixed(at: now), seed: 7))
   tool.Ctx(
     directory_access: directory_access.none(),
-    workspace:,
+    workspace: tool.LocalWorkspace(workspace, filesystem),
     op_id:,
     step_id: "step-1",
     source_index: 0,
@@ -128,8 +128,7 @@ fn base_ctx(
     demand: exec.FullEnforcement,
     env: [#("PATH", "/usr/bin:/bin")],
     clock: clock.fixed(at: now),
-    filesystem:,
-    blob_root: workspace <> "/.blobs",
+    owner_blobs: tool.OwnerBlobs(workspace <> "/.blobs", filesystem),
     clear_call:,
     raise_refusal: tool.no_raise(),
     observe_output: tool.ignore_output(),

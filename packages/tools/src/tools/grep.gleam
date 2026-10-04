@@ -103,6 +103,11 @@ pub fn tool() -> tool.Tool {
 }
 
 fn run(ctx: Ctx, args: JsonValue) -> ToolOutcome {
+  use local <- tool.or_outcome(
+    tool.require_local_workspace(ctx),
+    identity_outcome,
+  )
+
   use pattern <- tool.with_arg(tool.required_string(args, "pattern"))
   use path <- tool.with_arg(tool.optional_string(args, "path"))
   use globs <- tool.with_arg(tool.optional_string_list(args, "globs"))
@@ -119,7 +124,7 @@ fn run(ctx: Ctx, args: JsonValue) -> ToolOutcome {
   )
   use root <- tool.or_outcome(search_root(ctx, path), identity_outcome)
   let #(now, _clock) = clock.read(ctx.clock)
-  let spec = call_spec(ctx, pattern, root, globs, context, now)
+  let spec = call_spec(ctx, local.root, pattern, root, globs, context, now)
   let events = process.new_subject()
   use call <- tool.or_outcome(
     ctx.clear_call(spec, events),
@@ -151,12 +156,14 @@ fn identity_outcome(outcome: ToolOutcome) -> ToolOutcome {
 // Resolve before launch so an escaping symlink cannot change which authority
 // the argument names; the jail independently enforces the captured policy.
 fn search_root(ctx: Ctx, path: Option(String)) -> Result(String, ToolOutcome) {
+  use local <- result.try(tool.require_local_workspace(ctx))
+
   case path {
-    None -> Ok(ctx.workspace)
+    None -> Ok(local.root)
     Some(path) ->
       fs.resolve_readable(
-        ctx.filesystem,
-        ctx.workspace,
+        local.filesystem,
+        local.root,
         directory_access.approved(ctx.directory_access, ctx.grants).readable,
         path,
       )
@@ -166,6 +173,7 @@ fn search_root(ctx: Ctx, path: Option(String)) -> Result(String, ToolOutcome) {
 
 fn call_spec(
   ctx: Ctx,
+  workspace_root: String,
   pattern: String,
   root: String,
   globs: List(String),
@@ -190,7 +198,7 @@ fn call_spec(
   let environment = list.filter(ctx.env, fn(pair) { pair.0 == "PATH" })
   let requirements =
     policy.SandboxPolicy(
-      ..tool.read_requirements(ctx.workspace),
+      ..tool.read_requirements(workspace_root),
       readable_roots: ctx.base_policy.readable_roots,
       env_allow: list.map(environment, fn(pair) { pair.0 }),
       mounts: list.map(ctx.base_policy.mounts, fn(mount) {
@@ -213,7 +221,7 @@ fn call_spec(
     demand: ctx.demand,
     argv:,
     env: environment,
-    cwd: ctx.workspace,
+    cwd: workspace_root,
     budget: budget.Budget(
       max_outstanding: max_concurrent_searches,
       deadline_ms: now + timeout_ms,

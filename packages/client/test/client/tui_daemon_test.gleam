@@ -8,6 +8,7 @@ import client/daemon_server_test
 import core/clock
 import core/ids
 import core/json
+import core/workspace
 import etui/backend
 import gleam/erlang/process
 import gleam/int
@@ -33,7 +34,7 @@ import tui/job
 import tui/model as tui_model
 import tui/runtime
 import tui/session_selector
-import tui/workspace
+import tui/workspace as tui_workspace
 import weft
 import weft/poll
 
@@ -48,7 +49,10 @@ fn retired_control_model(control, port) {
     as "retired control retains the replacement route"
   {
     let base =
-      tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
+      tui.new_model(
+        connection.new_inbox(),
+        tui_workspace.Context("/work", None),
+      )
     tui_model.Model(
       ..base,
       view: tui_model.View(
@@ -351,14 +355,17 @@ pub fn tui_daemon_encoders_agree_with_server_decoder_test() {
     #(protocol.GetSession(id), server_protocol.GetSession(id)),
     #(
       protocol.WorkspaceDefault("/work"),
-      server_protocol.WorkspaceDefault("/work"),
+      server_protocol.WorkspaceDefault(workspace.LocalKey("/work")),
     ),
-    #(protocol.SetDefault("/work", id), server_protocol.SetDefault("/work", id)),
+    #(
+      protocol.SetDefault("/work", id),
+      server_protocol.SetDefault(workspace.LocalKey("/work"), id),
+    ),
     #(
       protocol.CreateSession("key", "/work", "é \\\"", "/config"),
       server_protocol.CreateSession(
         "key",
-        "/work",
+        workspace.LocalDirectory("/work"),
         "é \\\"",
         "/config",
         domain.WorkspacePrivate,
@@ -379,7 +386,7 @@ pub fn tui_daemon_encoders_agree_with_server_decoder_test() {
       let assert Ok(text) = protocol.encode(id, command, epoch)
         as "valid request is serializable"
       assert server_protocol.decode(text)
-        == Ok(server_protocol.Request(id, expected))
+        == Ok(server_protocol.Request(id, expected, []))
     },
   )
 }

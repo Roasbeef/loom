@@ -46,8 +46,9 @@ pub fn overflow_writes_full_content_test() {
   let context = ctx()
   let text = string.repeat("line of output\n", 10_000)
   let assert Ok(blob.Overflowed(ref:, size:, ..)) = blob.bound(context, text)
-  let filesystem = context.filesystem
-  let assert Ok(bytes) = filesystem.read(blob.ref_path(context.blob_root, ref))
+  let filesystem = context.owner_blobs.filesystem
+  let assert Ok(bytes) =
+    filesystem.read(blob.ref_path(context.owner_blobs.root, ref))
   assert bytes == <<text:utf8>>
   assert size == bit_array.byte_size(<<text:utf8>>)
 }
@@ -174,7 +175,8 @@ pub fn an_overflow_is_staged_and_renamed_never_written_in_place_test() {
   // Nothing at the content address: the write went to the staging name.
   let readable = memory_fs.filesystem(store)
   let ref = blob.ref_for(<<text:utf8>>)
-  let assert Error(_) = readable.read(blob.ref_path(context.blob_root, ref))
+  let assert Error(_) =
+    readable.read(blob.ref_path(context.owner_blobs.root, ref))
     as "no bytes were written to the content address"
 }
 

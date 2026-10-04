@@ -8,6 +8,7 @@
 //// calling isolate; the DAL supplies atomicity, not process-lifetime proof.
 
 import core/ids
+import core/workspace
 import gleam/list
 import gleam/result
 import gleam/string
@@ -31,7 +32,7 @@ pub type Domain {
     /// The source and reader policy.
     scope: Scope,
     /// Canonical workspace preserved for imported and new mappings.
-    workspace: String,
+    workspace: workspace.WorkspaceKey,
     /// Captured owner configuration reference; empty explicitly means no file.
     configuration: String,
     /// Canonical memory destination, never a collaborator-supplied wire path.
@@ -48,9 +49,13 @@ pub type Domain {
 /// ```gleam
 /// assert domain.key(domain.WorkspacePrivate, "/work", "unused") == "workspace:/work"
 /// ```
-pub fn key(scope: Scope, workspace: String, session_id: String) -> String {
+pub fn key(
+  scope: Scope,
+  workspace: workspace.WorkspaceKey,
+  session_id: String,
+) -> String {
   case scope {
-    WorkspacePrivate -> "workspace:" <> workspace
+    WorkspacePrivate -> "workspace:" <> workspace.key_string(workspace)
     SessionOnly -> "session:" <> session_id
   }
 }
@@ -313,7 +318,7 @@ fn insert_absent(store: Catalogue, domain: Domain) -> Result(Domain, Error) {
       domain.id,
       scope,
       scope_key,
-      domain.workspace,
+      workspace.key_string(domain.workspace),
       domain.configuration,
       domain.memory_path,
       domain.index_path,
@@ -332,8 +337,9 @@ fn matches(
 ) -> Result(Nil, Error) {
   use Nil <- result.try(validate(domain))
   case
-    record.workspace == domain.workspace
-    && domain.id == key(domain.scope, record.workspace, record.id)
+    workspace.binding_key(record.workspace) == domain.workspace
+    && domain.id
+    == key(domain.scope, workspace.binding_key(record.workspace), record.id)
   {
     True -> Ok(Nil)
     False -> Error(Invalid("domain scope does not match registration"))
@@ -344,7 +350,10 @@ fn matches(
 // canonical absolute destinations, three distinct files once the digest sidecar
 // is derived, and an identity that matches its own scope.
 fn validate(domain: Domain) -> Result(Nil, Error) {
-  use Nil <- result.try(absolute(domain.workspace))
+  use _ <- result.try(
+    workspace.decode_key(workspace.key_string(domain.workspace))
+    |> result.replace_error(Invalid("invalid domain workspace identity")),
+  )
   use Nil <- result.try(absolute(domain.memory_path))
   use Nil <- result.try(absolute(domain.index_path))
   use Nil <- result.try(case domain.configuration {
@@ -419,7 +428,10 @@ pub fn digest_beside(memory_path: String) -> String {
 // by construction, which is exactly why decode re-derives and compares it.
 fn scope_fields(domain: Domain) -> #(String, String) {
   case domain.scope {
-    WorkspacePrivate -> #("workspace_private", domain.workspace)
+    WorkspacePrivate -> #(
+      "workspace_private",
+      workspace.key_string(domain.workspace),
+    )
     SessionOnly -> #("session_only", string.drop_start(domain.id, 8))
   }
 }
@@ -461,6 +473,10 @@ fn decode(row: Row) -> Result(Domain, Error) {
     "session_only" -> Ok(SessionOnly)
     _other -> Error(Invalid("unknown persisted domain scope"))
   })
+  use workspace <- result.try(
+    workspace.decode_key(workspace)
+    |> result.replace_error(Invalid("invalid domain workspace key")),
+  )
   let domain =
     Domain(id, scope, workspace, configuration, memory_path, index_path)
   use Nil <- result.try(validate(domain))

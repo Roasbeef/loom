@@ -259,7 +259,7 @@ fn integration_context(
     ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 1))
   tool.Ctx(
     directory_access: directory_access.none(),
-    workspace:,
+    workspace: tool.LocalWorkspace(workspace, fs.real_filesystem()),
     op_id:,
     step_id: "integration-1",
     source_index: 0,
@@ -271,8 +271,7 @@ fn integration_context(
     demand: exec.BestEffort,
     env: [#("PATH", "/usr/local/bin:/usr/bin:/bin")],
     clock: clock.fixed(at: 0),
-    filesystem: fs.real_filesystem(),
-    blob_root: workspace <> "/.blobs",
+    owner_blobs: tool.OwnerBlobs(workspace <> "/.blobs", fs.real_filesystem()),
     clear_call: tool.broker_runner(broker: broker_actor, waiting: 10_000),
     raise_refusal: tool.no_raise(),
     observe_output: tool.ignore_output(),
