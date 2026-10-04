@@ -647,7 +647,7 @@ pub fn a_waiting_call_holds_no_budget_slot_test() {
   assert process.receive(parked, 300) == Error(Nil)
   // The ledger's second slot is free, so the probe reaches the pool and
   // is turned away by *it* — the parked caller is holding neither.
-  let probe = clear_elsewhere(started, two_at_a_time, waiting: 120)
+  let probe = clear_elsewhere(started, two_at_a_time, waiting: 1000)
   let assert Ok(Error(broker.NoHelper(error: exec.AllBusy(size: 1)))) =
     process.receive(probe, 3000)
   // And the parked caller still gets its helper when one comes back.

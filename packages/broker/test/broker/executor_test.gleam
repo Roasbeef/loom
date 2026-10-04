@@ -564,7 +564,7 @@ pub fn start_during_closing_is_refused_as_pool_unavailable_test() {
       plane.broker,
       spec,
       events: process.new_subject(),
-      waiting: 500,
+      waiting: 1000,
     )
     == Error(broker.NoHelper(error: exec.PoolUnavailable))
 

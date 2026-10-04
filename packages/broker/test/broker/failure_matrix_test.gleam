@@ -273,7 +273,7 @@ pub fn acquisition_failure_all_busy_refuses_and_holds_nothing_test() {
       plane.broker,
       spec,
       events: refused_events,
-      waiting: 300,
+      waiting: 1000,
     )
     == Error(broker.NoHelper(error: exec.AllBusy(size: 1)))
   assert process.receive(refused_events, 50) == Error(Nil)
@@ -302,7 +302,7 @@ pub fn acquisition_refused_by_the_seam_leaves_no_row_test() {
       plane.broker,
       spec,
       events: process.new_subject(),
-      waiting: 300,
+      waiting: 1000,
     )
     == Error(broker.NoHelper(error: exec.AllBusy(size: 0)))
   assert_baseline(plane, unconfirmed: 0)

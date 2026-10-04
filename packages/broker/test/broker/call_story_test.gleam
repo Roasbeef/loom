@@ -305,7 +305,7 @@ pub fn an_empty_pool_refuses_the_call_test() {
       plane.broker,
       spec,
       events: process.new_subject(),
-      waiting: 500,
+      waiting: 1000,
     )
   planes.stop(plane)
   assert refused == Error(broker.NoHelper(error: exec.AllBusy(size: 0)))

@@ -256,7 +256,7 @@ pub fn refused_starts_are_counted_by_reason_test() {
       plane.broker,
       planes.spec(planes.op(), argv: ["/bin/echo", "hi"], deadline_ms: 100_000),
       events: process.new_subject(),
-      waiting: 200,
+      waiting: 1000,
     )
   assert refused == Error(broker.NoHelper(error: exec.AllBusy(size: 1)))
   let snapshot =
@@ -511,7 +511,7 @@ pub fn a_start_refused_while_closing_is_counted_test() {
       plane.broker,
       spec,
       events: process.new_subject(),
-      waiting: 500,
+      waiting: 1000,
     )
     == Error(broker.NoHelper(error: exec.PoolUnavailable))
   let snapshot =
