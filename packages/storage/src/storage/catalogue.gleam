@@ -10,6 +10,21 @@
 //// path canonicalization, authorization, capacity and runtime liveness. A saved
 //// record is not evidence of a resident runtime. Reserved records survive a crash
 //// so reconciliation can check the original file instead of creating another.
+////
+//// ## Flow
+////
+//// `open` → `reserve` → `confirm` → `get` → `rename` → `seed_subtitle` → `page`
+////
+//// 1. `open` configures one connection and `initialize_schema` creates the
+////    tables or applies the migrations a version lacks, in one transaction.
+//// 2. `reserve` records a creation's identity and path before its file exists,
+////    and `confirm` marks the file verified.
+//// 3. `get` and `page` read the creation record with its display layers (the
+////    name override and the subtitle), and neither opens a conversation file.
+//// 4. `rename` writes the display-name override after `display_name` accepts it.
+//// 5. `seed_subtitle` reduces a first prompt with `subtitle_from_prompt` and
+////    writes the result once.
+//// 6. `delete` removes a registration and every row that refers to it.
 
 import core/ids
 import gleam/dynamic/decode
