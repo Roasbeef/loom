@@ -42,18 +42,28 @@ page keys and nonces, and the relay into the session's gateway.
   observer's page is always declined), and `invite`, an `Option` of a request
   to invite a person to the page's session in an `invites.Role` that answers
   an `invites.Answer`. `invite` is `Some` only on an owner's operator page
-  (`ui_socket.Owning`). All run in the component's process.
+  (`ui_socket.Owning`). `home` is an `Option` of a request for a ticket to the
+  principal's home (a `sessions.Answer` again, declined as `NoHome`); it is
+  `Some` only on a page whose grant has `Workspace` reach, an observer's
+  included, and the page draws the "Home" button only then. All run in the
+  component's process.
 - `component.Msg(socket)`: `Opened`, `Refused`, `TimerArmed`, `Arrived`
   (a batch of up to `arrival_batch` frames, reduced at once), `Ticked`
   (the deadline timer fired), `OlderRequested` (the "Load older" button, a
   read), `FocusRequested(strand)` (a strip chip, a change of what the page
-  shows), `SessionsListed(entries)` (the sidebar read's own answer) and
-  `Linked(answer)` (the daemon's answer to a request to open a session) and
-  `Invited(answer)` (its answer to a request to invite), all three
-  dispatched by an effect and carried by no handler. It holds no command.
-  `component.older_path` and `component.strip_path` are the Lustre event
-  paths the socket admits an observer's click at: the button, and anything
-  beneath the strip's chip list. `component.sidebar_path` is where an
+  shows), `GoingHome` (the "Home" button, which carries nothing; the answer
+  is `Homed(answer)`), `SessionsListed(entries)` (the sidebar read's own
+  answer) and `Linked(answer)` (the daemon's answer to a request to open a
+  session), `Homed(answer)` (to go home) and `Invited(answer)` (to invite),
+  all four dispatched by an effect and carried by no handler. It holds no
+  command. `component.older_path`, `component.home_path` (`0\t0\t1`, the
+  Home button, the top bar's second child) and `component.strip_path` are the
+  Lustre event paths the socket admits an observer's click at: the button,
+  the Home button, and anything beneath the strip's chip list. The top bar
+  always has that second child (`element.none()` without the capability), so
+  the children after it keep their places; `component.switch(model)` is the
+  hidden `<loom-switch>` both pages draw as the centre's last child (the
+  observer's only with the capability). `component.sidebar_path` is where an
   operator page's session buttons are, and the observer's socket admits no
   click beneath it. `component.invite_path` (`0\t3\t2\t2`) is the invitation
   control's region in the Session pane, and only an owner's socket admits a
@@ -72,16 +82,23 @@ page keys and nonces, and the relay into the session's gateway.
   back for any strand of the session is kept, and the notice names the
   strand it was held for when that is not the one on screen.
 - **The home page** (protocol-change/065). `web_view/home` is a server
-  component bound to no session: `Start(name, ceiling, refresh_ms, sessions)`
-  with `sessions: fn() -> Listing` (`Listed(entries) | Unread | Closed(ending)`),
-  read when the timer is wired and every `refresh_ms` (`home.refresh_ms`,
-  30 s), in the component's process. `Closed` ends the page (`Status`:
-  `Connecting | Connected | Ended`) and stops the reads; `Unread` keeps the
-  last list. The view is `shell.view(shell.Home, ...)`: `view/home_bar`,
-  `sidebar.home(groups)` (a "Home" entry, text rows), `view/home_table` (a
-  table per workspace: name, resident or saved in words, created in UTC) and
-  no panel; the stylesheet hides the panel column for the frame class
-  `loom-home`. It attaches no handler. `ending.home_headline` and
+  component bound to no session: `Start(name, ceiling, refresh_ms, sessions,
+  open)` with `sessions: fn() -> Listing` (`Listed(entries) | Unread |
+  Closed(ending)`), read when the timer is wired and every `refresh_ms`
+  (`home.refresh_ms`, 30 s), in the component's process. `Closed` ends the page
+  (`Status`: `Connecting | Connected | Ended`) and stops the reads; `Unread`
+  keeps the last list. The view is `shell.view(shell.Home, ...)`:
+  `view/home_bar`, `sidebar.home(groups, open)` (a "Home" entry, then the rows),
+  `view/home_table` (a table per workspace: name, resident or saved in words,
+  created in UTC) and no panel; the stylesheet hides the panel column for the
+  frame class `loom-home`. The one input is a running session's row, in the
+  table and in the sidebar: `home.Opening(id)` asks `Start.open` (in the
+  component's process) for a ticket, and `Linked(answer)` becomes the `to`
+  attribute of the centre's last child, a hidden `<loom-switch>`, or the
+  `home-notice` before the table (an empty node when none, so the table keeps
+  its path). `home.table_path` and `home.sidebar_path` are the two regions the
+  daemon's socket admits a click beneath; saved rows are text.
+  `ending.home_headline` and
   `home_advice`, `ended.home`, `page.home_shell`, `home_path`,
   `home_exchange_path`, `home_refusal` word and address it. `home_test` reads
   all of it.
@@ -170,12 +187,14 @@ page keys and nonces, and the relay into the session's gateway.
 - The view, one module per screen region under `web_view/view/`, laid out
   by `component.view` and `operator_page.view`. None of them imports
   `component`, which imports them, so each takes what it draws as its own
-  types or plain values. `heading.view(session_id, name, workspace,
-  status, context, cost, notice)` draws the top bar (the brand, the
+  types or plain values. `heading.view(session_id, home, name, workspace,
+  status, context, cost, notice)` draws the top bar (the brand, `home`, the
   workspace and name, the status, the `ctx ~41%` estimate and the session's
   `est $` cost, worded as the terminal's footer words them), with the ended
-  page's notice as its last child; `component.heading(model)` reads those
-  values from the model and stays the entry point both pages call.
+  page's notice as its last child; `component.heading(model, going_home)` reads
+  those values from the model, draws `heading.home_link(going_home)` as `home`
+  when the transport has the capability, and stays the entry point both pages
+  call.
   `shell.view(audience, bar, sidebar, centre, panel, needing, workspace)`
   draws the frame, the client element `<loom-shell sidebar="listed|none"
   needing="n" workspace="digest">` (`workspace` only when the host has a
