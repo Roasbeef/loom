@@ -208,6 +208,14 @@ for a host with no surfaces.
   flattens any `Words` to one line, and `first_call(program)` names the first
   capability a `code_mode` program calls (`fs.read calc.py`) by reading its
   text. That reader stands in for the trace view's fold of a program's calls.
+- `diff_view`: a unified diff read into lines a host can colour. `parse(diff)`
+  splits on newlines (a CRLF's `\r` is dropped), keeps at most `max_lines`
+  (400) and returns `Diff(lines, cut)`; `of_lines` reads lines a host already
+  bounded. Each `Line(kind, old, new, text)` has a closed `Kind` (`FileHeader`
+  before the first hunk only, `Hunk`, `Added`, `Removed`, `Context`,
+  `NoNewline`) and, inside a hunk, the line numbers the header's counters give.
+  An added, removed or context line's text has its marker removed. The text is
+  session text; the web view draws it as a text node.
 - `transcript_image`: the images a lane row carries, which the rows draw as
   `[image <type>]` text. `Image(mime_type, data)` holds the entry's own base64
   text (nothing is copied). `of_entry`, `of_message`, `of_outcome` and
