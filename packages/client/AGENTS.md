@@ -4945,10 +4945,16 @@ custody, readiness, delivery and exclusive invocation boundaries.
 
 The Agency's `frame_message`, `frame_brief` and `result_contract` build their
 head, foot and contract lines from `session_view/strand_framing`, the one
-definition the hosts also strip. Protocol-change 059 release N reads and draws
-`StrandOrigin`; the Agency still admits `agent_send` messages and spawn briefs
-with `origin: None` until release N+1 sets it from the authenticated
-`caller.strand`.
+definition the hosts also strip. Protocol-change 059's reader draws `StrandOrigin` and the writer sets it
+in the same release: `agency.brief_message` and the
+`agent_send` payload carry `Some(StrandOrigin(caller.strand))`, set from the
+authenticated caller and from nothing a model emitted, with the framed text
+unchanged. The origin is attribution only. `vision.collect_turn` ends the
+current turn at such a message as it does at a peer message, and
+`wiring.admitted_image_bearing` still protects an image admitted earlier in
+the same run; `vision_test` pins that image-then-sibling order, and
+`agency_test` pins the origin for briefs (with and without a result schema),
+downward sends and upward reports.
 
 MCP layer retirement fixes one monotonic proof deadline before issuing stops.
 Each parallel collector passes only the remaining budget to client shutdown;
