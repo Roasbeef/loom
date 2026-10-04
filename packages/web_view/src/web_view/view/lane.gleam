@@ -60,7 +60,7 @@ import session_view/markdown
 import session_view/step_words
 import session_view/transcript_image.{type Image}
 import session_view/transcript_line.{type Line}
-import session_view/transcript_lines.{type Block}
+import session_view/transcript_lines
 import session_view/turns
 import web_view/image
 import web_view/markdown_view
@@ -249,11 +249,16 @@ pub fn rows(
     keyed.div(
       [attribute.class("transcript lane"), attribute.role("log")],
       list.append(
-        list.map(pieces, fn(piece) {
-          #(
-            piece_key(piece),
-            timeline_row(piece, draw, replies, marks, session),
-          )
+        list.filter_map(pieces, fn(piece) {
+          case piece {
+            // The advisor's reviews are the panel's, never a row of the lane.
+            turns.Commentary(..) -> Error(Nil)
+            _ ->
+              Ok(#(
+                piece_key(piece),
+                timeline_row(piece, draw, replies, marks, session),
+              ))
+          }
         }),
         live_entry(live, draw, marks),
       ),
@@ -486,7 +491,9 @@ fn piece_element(
       )
 
     // A spawn is a line of the strand that made it: the verb the step words
-    // use, the child's tag, and the purpose it was given. The purpose is the
+    // use, the child's tag, and the purpose it was given. The tag is the
+    // name the child's card carries (`agent_roster.short_name`), so one
+    // strand has one name on the page. The purpose is the
     // model's text, a text node.
     turns.Spawned(child:, purpose:, hue:, standing:, ..) ->
       html.p(
@@ -497,10 +504,7 @@ fn piece_element(
             case child {
               Some(child) -> [
                 html.text(" "),
-                tag(
-                  "sub:" <> agent_roster.short_name(child),
-                  position(marks, child),
-                ),
+                tag(agent_roster.short_name(child), position(marks, child)),
               ]
               None -> [html.text(" · " <> standing_text(standing))]
             },
@@ -522,7 +526,7 @@ fn piece_element(
     turns.Returned(child:, outcome:, report:, hue:, ..) ->
       html.div([attribute.class("result"), strip.hue_class(hue)], [
         html.p([attribute.class("who")], [
-          tag("sub:" <> agent_roster.short_name(child), position(marks, child)),
+          tag(agent_roster.short_name(child), position(marks, child)),
           html.text(" " <> step_words.returned(outcome)),
         ]),
         ..result_report(report)
@@ -601,54 +605,14 @@ fn piece_element(
         ],
       )
 
-    // The advisor's own commentary, captured on its strand and not sent to
-    // the primary. The primary never saw it, so the lane keeps only its
-    // hairline: the request the advisor made, in the advisor's colour,
-    // one line. The dot beside it focuses the advisor's own transcript
-    // through the marker relay, which is where the full bodies live, and
-    // the panel's commentary section holds the same board for a reader
-    // who wants it beside the strands (`view/commentary`). The words are
-    // the projection's own label row, so the marker claims a request
-    // only, never a delivery: the tool result may still downgrade it.
-    //
-    // Reviews with nothing between them are one line that counts them: the
-    // projection's label says what one review requested, and two of them
-    // would say the same words twice.
-    turns.Commentary(block:, reviews:) -> {
-      let label = case reviews {
-        1 -> commentary_label(block)
-        _ -> int.to_string(reviews) <> " reviews"
-      }
-      html.p([attribute.class("commentary-mark")], [
-        tag("advisor", position(marks, agent_roster.advisor)),
-        html.text(" · " <> label),
-      ])
-    }
+    // The advisor's own commentary draws no row. The panel's commentary
+    // section is the record of every review (`view/commentary`), and the
+    // advisor's dot on a nudge card is the way into its transcript, so a row
+    // here would cost a timeline slot and say nothing the reader lacks.
+    // `rows` filters these pieces out before a timeline row exists, so this
+    // arm is the closed case's other half and is never drawn.
+    turns.Commentary(..) -> element.none()
   }
-}
-
-// The label the projection wrote for the advisor's request: the block's
-// last `System` row. Every commentary block carries exactly one, the
-// heading and the not-loaded notice aside, and the full text follows it as
-// `ToolDetail`; taking the last `System` row keeps the marker honest even
-// if the heading rows change. The projection's label opens with
-// `Advisor · `, which the advisor's tag beside it already says, so the
-// marker keeps only the words after it.
-fn commentary_label(block: Block) -> String {
-  block.rows
-  |> list.filter_map(fn(row) {
-    case row.1 {
-      transcript_line.Line(transcript_line.System, text) -> Ok(text)
-      _ -> Error(Nil)
-    }
-  })
-  |> list.last
-  |> result.map(fn(text) {
-    string.split_once(text, " · ")
-    |> result.map(fn(parts) { parts.1 })
-    |> result.unwrap(text)
-  })
-  |> result.unwrap("commentary")
 }
 
 // The buttons of a peer card, or nothing on a lane that offers none. Reply is
