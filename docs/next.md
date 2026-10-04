@@ -196,6 +196,25 @@ review found no actionable defect. See the
 [command-codec review](review/distributed-command-codec.md). Enrollment and
 owner-side closed command templates still precede physical assembly.
 
+Enrollment and shared native command construction now preserve the executor
+facts the owner needs before clearance. The enrollment codec bounds and
+compares the complete snapshot, isolates workspace/build/channel regions,
+and derives paths from the original service identity. Local compiler and
+satellite wrappers use the same pure command builders that remote validation
+will use. Independent review found no actionable defect. Root's component
+gates and the combined integration run passed. The combined run has 435 broker,
+160 executor and 360 code-mode tests. Two existing Darwin `/proc` witness
+skips remain in broker; the final seeded code-mode run
+has no prerequisite skips. See the [command-facts review](review/distributed-command-facts.md).
+
+Protocol 067 now records preparation before final wall selection. Durable
+resource issuance and live listener ownership are separate obligations;
+remaining original time determines the native allowance after preparation.
+The next implementation work is the concrete Compile/Launch input codec,
+the executor resource journal using named Parrot/sqlc queries, live resource
+ownership, and exact expected-command validation. Production assembly and
+separate-host acceptance remain open.
+
 The product P and Channel PlusCal models now cover exact command offers,
 resource/launch uncertainty, separate native/outer receipts and final-consumer
 credit in both directions. Independent review found and repaired two vacuous
