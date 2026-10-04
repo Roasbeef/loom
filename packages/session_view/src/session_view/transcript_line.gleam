@@ -89,8 +89,9 @@ pub type Speaker {
   /// The placeholder row of one image a tool returned or a person attached:
   /// its place among its row's images, its media type, its pixel size when
   /// the header says, and its byte size (`image 1 · image/png · 1200×700 ·
-  /// 84 KB`). The row is always drawn, even where a host can also draw the
-  /// picture, so scrollback, a replay and `loom replay` stay text.
+  /// 84 KB`). A host that cannot draw the picture shows this row, and so do
+  /// scrollback, a replay and `loom replay`. A host that can draw it replaces
+  /// the row with a box that carries the same words.
   ///
   /// `picture` identifies the image for a host that can draw it, and is
   /// `None` when the header could not be read, which leaves nothing to
