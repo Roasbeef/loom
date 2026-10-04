@@ -449,7 +449,7 @@ fn piece_element(
 
     // A person's message: who sent it on a line of its own, and the words in
     // a bubble beneath. The sender's name is session text, a text node, and
-    // the role is the reader's own and a fixed word from the host.
+    // the role is the author's and a fixed word from the host.
     turns.Prompt(block:, name:, role:, ..) ->
       html.div([attribute.class("prompt")], [
         html.p([attribute.class("who")], [

@@ -223,7 +223,8 @@ for a host with no surfaces.
 - `turns.pieces(blocks, strands, latest)`: one strand's lane as turns for a
   host that draws more than rows (the web view): `Plain` blocks, `Prompt` for a
   person's message (the sender is a field, not a `name:` line of the text;
-  `turns.attributed` sets the reader's own role on the reader's messages), one
+  `turns.authors` reads each principal's role from the presence rows and
+  `turns.attributed` sets it on that principal's messages, never the reader's), one
   `Work` divider per turn (`Folded`, or `Open` while the strand runs or waits
   on an approval; its `Worked` figures come from the records, failed calls included, which
   `turns.divider` prints as `· 1 failed`). The fold's

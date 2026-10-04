@@ -1450,3 +1450,30 @@ pub fn unrun(
     other -> other
   }
 }
+
+/// `update`, when it is a capture, as the page of a reader attached in `role`:
+/// the cut's own attachment carries it, and the presence rows are left as
+/// they were. Any other update is returned as it is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.viewed_as(lane_fixture.own_prompt(), snapshot.Observer)
+/// ```
+pub fn viewed_as(
+  update: session_channel.Update,
+  role: snapshot.Role,
+) -> session_channel.Update {
+  case update {
+    session_channel.Captured(cut, view, refresh) ->
+      session_channel.Captured(
+        snapshot.Captured(
+          ..cut,
+          attachment: snapshot.Attachment(..cut.attachment, role:),
+        ),
+        view,
+        refresh,
+      )
+    other -> other
+  }
+}
