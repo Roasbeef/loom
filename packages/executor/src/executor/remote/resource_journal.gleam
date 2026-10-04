@@ -28,6 +28,14 @@
 //// the physical caller must independently hold live original service authority.
 //// Launch capacity is reserved but its outcome API remains unsupported.
 ////
+//// Historical Input lookup reconstructs data, never the original live Claim.
+//// Only that Claim can request fresh native launch eligibility. Its association
+//// commit serializes with cancellation on this same resource row: a fence that
+//// wins denies eligibility; cancellation after admission follows the exact native
+//// tuple and remains in flight. Neither the permit nor this ordering promises
+//// cancellation before OS start. Lost replies and historical duplicates grant no
+//// new permit; the native reducer still owns its separate at-most-once launch.
+////
 //// ## Flow
 ////
 //// `fresh` and `recover` enter `start` and `initialise`. `reserve`, `inspect`
@@ -44,6 +52,11 @@
 //// checked retention handles; `native_readback` requires actual admission and
 //// `option_terminal` projects its bounded terminal slot. `native_template` checks
 //// exact hermetic facts without repeating clearance or filesystem canonicalization.
+//// `retained_input` enters `input_transaction` for complete-key historical data.
+//// `associate_live_native` enters `live_association` through the original Claim;
+//// `native_launch_binding` exposes only its committed exact binding.
+//// `live_authority` checks the original native actor's canonical finite authority.
+//// `native_endpoint` and `claim_journal` expose exact local handles for trusted routing.
 
 import broker/command as offer
 import broker/enrollment
@@ -54,6 +67,7 @@ import codemode/service_resources as resources
 import core/command
 import core/ids
 import core/json
+import core/msgpack as mp
 import core/remote_tool
 import core/workspace
 import executor/remote/admission
@@ -96,6 +110,8 @@ pub opaque type Journal {
     subject: process.Subject(Message),
     /// Original full administrative snapshot.
     enrolled: enrollment.SessionEnrollment,
+    /// Exact configured native endpoint; scope equality cannot substitute another actor.
+    native: native_journal.Journal,
   )
 }
 
@@ -116,6 +132,23 @@ pub opaque type Claim {
     journal: Journal,
     /// Exact immutable original invocation validated before reservation.
     original: Validated,
+  )
+}
+
+/// Original live association eligibility, never recoverable from historical data.
+/// The native adapter must use this value only in its original first-Submit
+/// continuation; Gleam values are copyable, and native AuthorizeLaunch separately
+/// enforces at-most-once effect permission. No new lifetime or stored token exists.
+pub opaque type NativeLaunchPermit {
+  NativeLaunchPermit(
+    /// Exact original resource actor endpoint, including its enrollment.
+    journal: Journal,
+    /// Original complete command reference.
+    ref: command.CommandRef,
+    /// Actual retained native key, including full scope and independent UUID.
+    key: identity.RequestKey,
+    /// Digest of the exact admitted canonical Prepared.
+    digest: identity.Digest,
   )
 }
 
@@ -264,6 +297,12 @@ type CustodyCommand {
     identity.RequestKey,
     identity.Digest,
   )
+  AssociateLiveNative(
+    Validated,
+    command.CommandRef,
+    identity.RequestKey,
+    identity.Digest,
+  )
   ObserveCompile(Validated)
   SettleCompile(Validated, completion.CompileCompletion, BitArray)
   FailPreparation(Validated, completion.CompileCompletion, BitArray)
@@ -272,6 +311,7 @@ type CustodyCommand {
 
 type CustodyAnswer {
   NativeAnswer(NativeStatus)
+  LaunchAnswer(command.CommandRef, identity.RequestKey, identity.Digest)
   CompileAnswer(CompileStatus)
   RetainedAnswer(RetainedCompile)
   NeedReadback
@@ -282,6 +322,7 @@ type NativeReadback {
     prepared: wire.Prepared,
     bytes: BitArray,
     evidence: admission.Evidence,
+    authority: Option(BitArray),
     terminal: Option(BitArray),
   )
 }
@@ -351,6 +392,7 @@ type Answer {
 type Message {
   Initialise(Mode, process.Subject(Result(Nil, Error)))
   Run(Command, process.Subject(Result(Answer, Error)))
+  ReadInput(command.ServiceKey, process.Subject(Result(Input, Error)))
   Metadata(MetadataCommand, process.Subject(Result(ScopeMode, Error)))
   Custody(CustodyCommand, process.Subject(Result(CustodyAnswer, Error)))
   CloseEndpoint(process.Subject(Result(Nil, Error)))
@@ -412,6 +454,68 @@ pub fn reserve(journal: Journal, original: Input) -> Result(Status, Error) {
 /// `inspect(journal, original)` returns Missing before reservation.
 pub fn inspect(journal: Journal, original: Input) -> Result(Status, Error) {
   request(journal, original, Inspect)
+}
+
+/// Returns the exact fixed native endpoint for trusted local admission binding.
+/// Comparing scope alone is insufficient: another same-scope journal may contain
+/// different actual request history. This accessor performs no ask or admission.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert resource_journal.native_endpoint(book) == configured_native
+/// ```
+@internal
+pub fn native_endpoint(book: Journal) -> native_journal.Journal {
+  book.native
+}
+
+/// Returns the original live Claim endpoint for trusted local route binding.
+/// Historical Input, recovery and a same-scope endpoint cannot mint this value.
+/// This accessor performs no ask and reconstructs neither Claim nor permit.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert resource_journal.claim_journal(claim) == configured_resources
+/// ```
+@internal
+pub fn claim_journal(claim: Claim) -> Journal {
+  claim.journal
+}
+
+/// Reads original retained input using the complete key, without live authority.
+/// The bounded scalar inventory precedes one body read. Exact key, canonical
+/// body/digest and enrollment equality remain mandatory after cancellation,
+/// sealing or native endpoint death. This API reserves nothing and returns no
+/// Claim, renewed deadline, clearance or permission to reconstruct resources.
+///
+/// ## Examples
+///
+/// ```gleam
+/// resource_journal.retained_input(book, original.key)
+/// // -> Ok(original)
+/// ```
+pub fn retained_input(
+  book: Journal,
+  key: command.ServiceKey,
+) -> Result(Input, Error) {
+  let header =
+    bit_array.from_string(json.to_string(command.encode_service(key)))
+  let address =
+    bit_array.from_string(
+      remote_tool.child_address(command.service_origin(key)),
+    )
+  use Nil <- result.try(
+    case
+      bit_array.byte_size(header) <= 8192
+      && bit_array.byte_size(address) <= 8192
+    {
+      True -> Ok(Nil)
+      False -> Error(InvalidInput)
+    },
+  )
+  exchange(book, ReadInput(key, _))
 }
 
 /// Commits Preparing before returning the one live preparation claim.
@@ -538,7 +642,10 @@ pub fn inspect_native(
   use answer <- result.try(exchange(book, Custody(ObserveNative(original), _)))
   case answer {
     NativeAnswer(value) -> Ok(value)
-    CompileAnswer(_) | RetainedAnswer(_) | NeedReadback -> Error(Corrupt)
+    CompileAnswer(_)
+    | RetainedAnswer(_)
+    | LaunchAnswer(_, _, _)
+    | NeedReadback -> Error(Corrupt)
   }
 }
 
@@ -561,8 +668,58 @@ pub fn associate_native(
   )
   case answer {
     NativeAnswer(value) -> Ok(value)
-    CompileAnswer(_) | RetainedAnswer(_) | NeedReadback -> Error(Corrupt)
+    CompileAnswer(_)
+    | RetainedAnswer(_)
+    | LaunchAnswer(_, _, _)
+    | NeedReadback -> Error(Corrupt)
   }
+}
+
+/// Commits fresh live association only for the original preparation Claim.
+/// Native readback happens outside the resource writer transaction. The final
+/// transaction rechecks open scope, Prepared state, exact original input and
+/// absence of association before COMMIT. Cancellation before that commit refuses;
+/// cancellation afterward follows the retained tuple as in-flight work. An exact
+/// duplicate, lost reply or historical association never yields another permit.
+///
+/// ## Examples
+///
+/// ```gleam
+/// resource_journal.associate_live_native(claim, ref, key, digest)
+/// // -> Ok(permit)
+/// ```
+pub fn associate_live_native(
+  claim: Claim,
+  ref: command.CommandRef,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+) -> Result(NativeLaunchPermit, Error) {
+  let book = claim.journal
+  use original <- result.try(compile_original(book, claim.original.original))
+  use answer <- result.try(
+    exchange(book, Custody(AssociateLiveNative(original, ref, key, digest), _)),
+  )
+  case answer {
+    LaunchAnswer(ref, key, digest) ->
+      Ok(NativeLaunchPermit(book, ref, key, digest))
+    NativeAnswer(_) | CompileAnswer(_) | RetainedAnswer(_) | NeedReadback ->
+      Error(Corrupt)
+  }
+}
+
+/// Exposes exact committed binding for the native first-Submit continuation.
+/// Comparing these values adds no authority to another journal, ref or request.
+/// The original Claim endpoint is retained, not a recovered endpoint or bearer ID.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert resource_journal.native_launch_binding(permit) == #(book, ref, key, digest)
+/// ```
+pub fn native_launch_binding(
+  permit: NativeLaunchPermit,
+) -> #(Journal, command.CommandRef, identity.RequestKey, identity.Digest) {
+  #(permit.journal, permit.ref, permit.key, permit.digest)
 }
 
 /// Recovers a checked retention handle, including a Before-native lost reply.
@@ -578,7 +735,10 @@ pub fn inspect_compile(
   use answer <- result.try(exchange(book, Custody(ObserveCompile(original), _)))
   case answer {
     CompileAnswer(value) -> Ok(value)
-    NativeAnswer(_) | RetainedAnswer(_) | NeedReadback -> Error(Corrupt)
+    NativeAnswer(_)
+    | RetainedAnswer(_)
+    | LaunchAnswer(_, _, _)
+    | NeedReadback -> Error(Corrupt)
   }
 }
 
@@ -666,7 +826,10 @@ pub fn acknowledge_compile(
   )
   case answer {
     CompileAnswer(value) -> Ok(value)
-    NativeAnswer(_) | RetainedAnswer(_) | NeedReadback -> Error(Corrupt)
+    NativeAnswer(_)
+    | RetainedAnswer(_)
+    | LaunchAnswer(_, _, _)
+    | NeedReadback -> Error(Corrupt)
   }
 }
 
@@ -709,7 +872,8 @@ fn retained_answer(
   use answer <- result.try(exchange(book, Custody(command, _)))
   case answer {
     RetainedAnswer(value) -> Ok(value)
-    NativeAnswer(_) | CompileAnswer(_) | NeedReadback -> Error(Corrupt)
+    NativeAnswer(_) | CompileAnswer(_) | LaunchAnswer(_, _, _) | NeedReadback ->
+      Error(Corrupt)
   }
 }
 
@@ -866,7 +1030,7 @@ fn start(config: Config, mode: Mode) -> Result(Journal, Error) {
     |> actor.start
     |> result.replace_error(StartFailed),
   )
-  let journal = Journal(started.data, config.enrolled)
+  let journal = Journal(started.data, config.enrolled, config.native)
   case exchange(journal, Initialise(mode, _)) {
     Ok(Nil) -> Ok(journal)
     Error(error) -> {
@@ -924,6 +1088,19 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           actor.stop()
         Ok(_) | Error(_) -> actor.continue(state)
       }
+    }
+    Ready(config, connection), ReadInput(key, reply) -> {
+      let outcome = input_transaction(connection, config, key)
+      process.send(reply, outcome)
+      case outcome {
+        Error(Uncertain) | Error(Corrupt) | Error(BindingMismatch) ->
+          actor.stop()
+        Ok(_) | Error(_) -> actor.continue(state)
+      }
+    }
+    Waiting(_), ReadInput(_, reply) -> {
+      process.send(reply, Error(Closed))
+      actor.continue(state)
     }
     Ready(config, connection), Custody(command, reply) -> {
       let outcome = custody_request(connection, config, command)
@@ -1041,9 +1218,9 @@ fn setup(
     // Retain only bounded addresses while validating each large body separately.
     list.try_fold(inventory.rows, set.new(), fn(seen, row) {
       use checked <- result.try(checked_row(connection, config, row))
-      case set.contains(seen, checked.1) {
+      case set.contains(seen, checked.1.address) {
         True -> Error(Corrupt)
-        False -> Ok(set.insert(seen, checked.1))
+        False -> Ok(set.insert(seen, checked.1.address))
       }
     })
     |> result.replace(Nil)
@@ -1158,7 +1335,7 @@ fn checked_row(
   connection: sqlight.Connection,
   config: Config,
   row: sql.ResourceHeaders,
-) -> Result(#(Status, BitArray), Error) {
+) -> Result(#(Status, Validated), Error) {
   use bodies <- result.try(
     query(connection, sql.resource_bodies(row.id))
     |> result.replace_error(Corrupt),
@@ -1215,7 +1392,7 @@ fn checked_row(
     body,
     status,
   ))
-  Ok(#(status, validated.address))
+  Ok(#(status, validated))
 }
 
 fn decode_header(bytes: BitArray) -> Result(command.ServiceKey, Error) {
@@ -1237,6 +1414,45 @@ fn transact(
   let outcome = {
     use inventory <- result.try(inventory(connection, config))
     execute(connection, config, inventory, command)
+  }
+  complete_transaction(connection, outcome)
+}
+
+fn input_transaction(
+  connection: sqlight.Connection,
+  config: Config,
+  key: command.ServiceKey,
+) -> Result(Input, Error) {
+  use Nil <- result.try(
+    sqlight.exec("BEGIN IMMEDIATE", connection) |> sql_error,
+  )
+  let outcome = {
+    use inventory <- result.try(inventory(connection, config))
+    let address =
+      bit_array.from_string(
+        remote_tool.child_address(command.service_origin(key)),
+      )
+    use addresses <- result.try(
+      query(connection, sql.resource_address(address))
+      |> result.replace_error(Corrupt),
+    )
+    use id <- result.try(case addresses {
+      [] -> Error(Missing)
+      [sql.ResourceAddress(id)] -> Ok(id)
+      _ -> Error(Corrupt)
+    })
+    use row <- result.try(
+      list.find(inventory.rows, fn(row) { row.id == id })
+      |> result.replace_error(Corrupt),
+    )
+    use checked <- result.try(checked_row(connection, config, row))
+    let original = checked.1.original
+
+    // A changed key reaches this same logical slot and must not borrow its body.
+    case original.key == key && checked.1.address == address {
+      True -> Ok(original)
+      False -> Error(Conflict)
+    }
   }
   complete_transaction(connection, outcome)
 }
@@ -1474,7 +1690,10 @@ fn custody_request(
       use readback <- result.try(read_for_command(config, command))
       custody_transaction(connection, config, command, Some(readback))
     }
-    NativeAnswer(_) | CompileAnswer(_) | RetainedAnswer(_) -> Ok(first)
+    NativeAnswer(_)
+    | CompileAnswer(_)
+    | RetainedAnswer(_)
+    | LaunchAnswer(_, _, _) -> Ok(first)
   }
 }
 
@@ -1518,6 +1737,7 @@ fn custody_transaction(
     custody_transition(
       connection,
       config,
+      inventory.mode,
       row,
       status,
       custody,
@@ -1532,6 +1752,7 @@ fn custody_original(command: CustodyCommand) -> Validated {
   case command {
     ObserveNative(original)
     | AssociateNative(original, _, _, _)
+    | AssociateLiveNative(original, _, _, _)
     | ObserveCompile(original)
     | SettleCompile(original, _, _)
     | FailPreparation(original, _, _)
@@ -1542,6 +1763,7 @@ fn custody_original(command: CustodyCommand) -> Validated {
 fn custody_transition(
   connection: sqlight.Connection,
   config: Config,
+  mode: ScopeMode,
   row: sql.ResourceHeaders,
   status: Status,
   custody: CustodyRow,
@@ -1572,6 +1794,21 @@ fn custody_transition(
             readback,
           )
       }
+    }
+    AssociateLiveNative(original, ref, key, digest) -> {
+      use Nil <- result.try(require_open(mode))
+      live_association(
+        connection,
+        config,
+        row,
+        status,
+        custody.native,
+        original,
+        ref,
+        key,
+        digest,
+        readback,
+      )
     }
     SettleCompile(original, value, bytes) -> {
       case custody.compiled {
@@ -1643,6 +1880,79 @@ fn custody_transition(
         }
       }
     }
+  }
+}
+
+fn live_association(
+  connection: sqlight.Connection,
+  config: Config,
+  row: sql.ResourceHeaders,
+  status: Status,
+  native: NativeStatus,
+  original: Validated,
+  ref: command.CommandRef,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+  readback: Option(NativeReadback),
+) -> Result(CustodyAnswer, Error) {
+  // The immutable association is the durable one-shot admission fence. Historical
+  // duplicates cannot reconstruct a launch continuation after a lost commit reply.
+  use Nil <- result.try(case row.phase == 2 && native == Unassociated {
+    True -> Ok(Nil)
+    False -> Error(Conflict)
+  })
+  use Nil <- result.try(case readback {
+    None -> Ok(Nil)
+    Some(material) -> live_authority(material)
+  })
+  use answer <- result.try(associate_new(
+    connection,
+    config,
+    row,
+    status,
+    original,
+    ref,
+    key,
+    digest,
+    readback,
+  ))
+  case answer {
+    NeedReadback -> Ok(NeedReadback)
+    NativeAnswer(Associated(ref, key, digest, _)) ->
+      Ok(LaunchAnswer(ref, key, digest))
+    NativeAnswer(Unassociated)
+    | CompileAnswer(_)
+    | RetainedAnswer(_)
+    | LaunchAnswer(_, _, _) -> Error(Corrupt)
+  }
+}
+
+fn live_authority(material: NativeReadback) -> Result(Nil, Error) {
+  use bytes <- result.try(option.to_result(material.authority, Conflict))
+  use value <- result.try(
+    wire.decode_value(bytes) |> result.replace_error(Conflict),
+  )
+  use canonical <- result.try(
+    wire.encode_value(value) |> result.replace_error(Conflict),
+  )
+
+  // The native actor supplied the absolute deadline in its own clock era. It may
+  // be negative; only the original native continuation can judge its expiration.
+  case material.prepared.lifetime, value {
+    wire.Finite(ceiling),
+      mp.ArrayValue([
+        mp.IntValue(generation),
+        mp.IntValue(deadline),
+        mp.IntValue(budget),
+      ])
+      if canonical == bytes
+      && generation > 0
+      && generation <= 2_147_483_647
+      && deadline != 0
+      && budget >= 1000
+      && budget < ceiling
+    -> Ok(Nil)
+    _, _ -> Error(Conflict)
   }
 }
 
@@ -1797,7 +2107,8 @@ fn read_for_command(
   command: CustodyCommand,
 ) -> Result(NativeReadback, Error) {
   case command {
-    AssociateNative(_, _, key, digest) ->
+    AssociateNative(_, _, key, digest)
+    | AssociateLiveNative(_, _, key, digest) ->
       native_readback(config.native, key, digest)
     SettleCompile(_, value, _) -> {
       use association <- result.try(case completion.native_association(value) {
@@ -1877,7 +2188,18 @@ fn native_readback(
     })
     |> option.from_result
     |> option_terminal
-  Ok(NativeReadback(prepared, bytes, evidence, terminal))
+  let authority =
+    list.find_map(items, fn(item) {
+      case item {
+        payload.Authority(bytes) -> Ok(bytes)
+        payload.Request(_)
+        | payload.Output(_, _)
+        | payload.Terminal(_)
+        | payload.Cancellation(_) -> Error(Nil)
+      }
+    })
+    |> option.from_result
+  Ok(NativeReadback(prepared, bytes, evidence, authority, terminal))
 }
 
 fn option_terminal(value: Option(payload.Item)) -> Option(BitArray) {
