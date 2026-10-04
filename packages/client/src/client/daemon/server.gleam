@@ -9,7 +9,9 @@
 ////
 //// With `loomd --ui` the router also serves the web view under `/ui`
 //// (protocol-change/051): a page per session, the ticket exchange, the
-//// page's socket and a fixed list of assets. Without it every `/ui` path is
+//// page's socket and a fixed list of assets, and a home page that is bound
+//// to no session (protocol-change/065) with the same three routes under its
+//// own scope (`home_grant`, `home_socket`). Without it every `/ui` path is
 //// a 404 and the control `hello` does not name the view, so the two v2
 //// endpoints are the whole surface, as spec Part 1.6 says.
 ////
@@ -34,7 +36,8 @@
 ////    to `dispatch_class`, one arm per command; replies leave through `send`.
 //// 6. A `/ui` request takes `web_socket` for the page's socket or
 ////    `web_document` for the page, the ticket exchange and images, each
-////    re-checking cookie, grant and credential through `page_grant`.
+////    re-checking cookie, grant and credential through `page_grant`. The
+////    home's socket and page take `home_socket` and `home_grant` instead.
 
 import broker/token
 import client/daemon/manager
@@ -114,6 +117,35 @@ pub type Ui(instance) {
       fn(ui_sessions.Images) -> Nil,
       access.Role,
     ) -> Response(mist.ResponseData),
+    /// Upgrades a checked home request to the home component's socket
+    /// (protocol-change/065). It takes the same custody of the attachment's
+    /// permit, and its third and fourth arguments are the page's deadline
+    /// check and ceiling, as for `upgrade`.
+    home: fn(
+      Request(mist.Connection),
+      HomeAttachment(instance),
+      fn() -> Result(Int, Nil),
+      access.Role,
+    ) -> Response(mist.ResponseData),
+  )
+}
+
+/// One authorized home page, which is bound to no session. It holds what the
+/// home's socket needs to answer the page's questions about its principal
+/// and nothing about any session, because there is none to resolve.
+pub type HomeAttachment(instance) {
+  HomeAttachment(
+    /// Current daemon lifetime identity.
+    epoch: String,
+    /// The authenticated principal the page was opened for.
+    principal: access.Principal,
+    /// Digest for repeated authorization; never the plaintext credential.
+    digest: access.Digest,
+    /// Transferred to the actual WebSocket PID in that process's first
+    /// handler turn, before it serves a frame.
+    permit: root.Permit,
+    /// The registry the page's reads go to.
+    registry: manager.Manager(instance),
   )
 }
 
@@ -208,6 +240,8 @@ fn web_view(config: Config(instance), ui: Ui(instance), request) {
       case ui_http.route(request) {
         ui_http.Socket(key, id, nonce) ->
           web_socket(config, ui, request, host, key, id, nonce)
+        ui_http.HomeSocket(key, nonce) ->
+          home_socket(config, ui, request, host, key, nonce)
         route -> ui_http.secured(web_document(config, ui, request, route), host)
       }
   }
@@ -276,6 +310,96 @@ fn web_socket(
   }
 }
 
+// The home's socket (protocol-change/065): the same checks as a session's
+// socket, in the same order, against a grant of the `Home` scope. There is no
+// session to resolve, so the checks end with the credential, and the upgrade
+// is handed the principal it authenticated, under an observer-class permit,
+// since the home takes only clicks and never a prompt.
+fn home_socket(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  host: String,
+  key: String,
+  nonce: Option(String),
+) {
+  let checked = {
+    use Nil <- result.try(case ui_http.origin_matches(request, host) {
+      True -> Ok(Nil)
+      False -> Error(plain(403, "forbidden origin"))
+    })
+    use nonce <- result.try(
+      option.to_result(nonce, Nil)
+      |> result.map_error(fn(_) { plain(403, "forbidden page") }),
+    )
+    use #(state, page, cookie, principal) <- result.try(home_grant(
+      config,
+      ui,
+      request,
+      key,
+    ))
+    use Nil <- result.try(case ui_sessions.admits(page, nonce) {
+      True -> Ok(Nil)
+      False -> Error(plain(403, "forbidden page"))
+    })
+    Ok(#(state, ui_sessions.grant(page), cookie, principal))
+  }
+  case checked {
+    Error(response) -> ui_http.secured(response, host)
+    Ok(#(state, grant, cookie, principal)) ->
+      home_upgrade(
+        config,
+        ui,
+        request,
+        state,
+        principal,
+        grant,
+        ui_sessions.open_until(ui.sessions, cookie, grant),
+      )
+  }
+}
+
+// Reserves the permit and hands the home's attachment to the upgrade, which
+// takes custody of it in the socket's process. The release here follows the
+// upgrade's own barrier exactly as `resident_upgrade`'s does.
+fn home_upgrade(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  state: root.Ready(instance),
+  principal: access.Principal,
+  grant: ui_sessions.Grant,
+  open: fn() -> Result(Int, Nil),
+) {
+  case
+    upgrade_log.timed(upgrade_log.Page, "acquire", fn() {
+      root.acquire(config.daemon, root.Observer, within: 1000)
+    })
+  {
+    Error(reason) -> {
+      upgrade_log.refused(upgrade_log.Page, "acquire", reason)
+      plain(503, reason)
+    }
+    Ok(permit) -> {
+      let response =
+        ui.home(
+          request,
+          HomeAttachment(
+            epoch: state.epoch,
+            principal:,
+            digest: grant.credential,
+            permit:,
+            registry: state.registry,
+          ),
+          open,
+          grant.ceiling,
+        )
+      root.release(config.daemon, permit)
+      response
+    }
+  }
+}
+
 fn web_document(
   config: Config(instance),
   ui: Ui(instance),
@@ -283,7 +407,8 @@ fn web_document(
   route: ui_http.Route,
 ) {
   case route {
-    ui_http.Unknown | ui_http.Socket(..) -> plain(404, "unknown endpoint")
+    ui_http.Unknown | ui_http.Socket(..) | ui_http.HomeSocket(..) ->
+      plain(404, "unknown endpoint")
     ui_http.Asset(asset) -> {
       let #(content_type, body) = ui_assets.body(ui.assets, asset)
       document(200, content_type, body)
@@ -313,33 +438,66 @@ fn web_document(
         True -> image_of(config, ui, request, key, id, ref, position)
       }
 
-    // A ticket presented against another session's path is spent without a
-    // UI session. A redeemed one adds a page and leaves the principal's
-    // others open (the oldest ends only at `ui_sessions.max_pages`), and
-    // hands this tab the new page's key, in the cookie's path, and its
-    // nonce, in the body, never in a redirect.
+    // A ticket presented against another session's path, or a home's ticket
+    // presented here, is spent without a UI session. A redeemed one adds a
+    // page and leaves the principal's others open (the oldest ends only at
+    // `ui_sessions.max_pages`), and hands this tab the new page's key, in the
+    // cookie's path, and its nonce, in the body, never in a redirect.
     ui_http.Exchange(id, ticket) ->
       case ui_http.exchange_allowed(request) {
         False -> plain(403, "forbidden exchange")
         True ->
-          case ui_sessions.redeem(ui.sessions, ticket, id) {
+          case
+            ui_sessions.redeem(ui.sessions, ticket, ui_sessions.Session(id))
+          {
             Error(ui_sessions.UnknownTicket) ->
               refused_page(401, ending.LinkExpired, id)
-            Error(ui_sessions.OtherSession) ->
+            Error(ui_sessions.OtherScope) ->
               plain(403, "ticket names another session")
             Ok(redeemed) ->
-              document(
-                200,
-                "text/html; charset=utf-8",
-                page.enter(page.session_path(redeemed.key, id), redeemed.nonce),
-              )
-              |> response.set_header(
-                "set-cookie",
-                ui_http.set_cookie(redeemed.cookie, redeemed.key),
-              )
+              entered(redeemed, page.session_path(redeemed.key, id))
+          }
+      }
+
+    // The home page, kept to the same two rules as a session's: a navigation
+    // from this origin or from outside any page, and a cookie under the key
+    // that names a live page of the `Home` scope.
+    ui_http.HomePage(key) ->
+      case ui_http.navigation_allowed(request) {
+        False -> plain(403, "forbidden navigation")
+        True ->
+          case home_grant(config, ui, request, key) {
+            Error(response) -> response
+            Ok(_) ->
+              document(200, "text/html; charset=utf-8", page.home_shell())
+          }
+      }
+
+    // The home's exchange is the session exchange's twin: a session's ticket
+    // presented here is spent and refused, and no page is added.
+    ui_http.HomeExchange(ticket) ->
+      case ui_http.exchange_allowed(request) {
+        False -> plain(403, "forbidden exchange")
+        True ->
+          case ui_sessions.redeem(ui.sessions, ticket, ui_sessions.Home) {
+            Error(ui_sessions.UnknownTicket) ->
+              refused_home(401, ending.LinkExpired)
+            Error(ui_sessions.OtherScope) ->
+              plain(403, "ticket names another page")
+            Ok(redeemed) -> entered(redeemed, page.home_path(redeemed.key))
           }
       }
   }
+}
+
+// The exchange page for a redeemed ticket: the keyed address to move to and
+// the page's nonce in the body, and the cookie scoped to the page's key.
+fn entered(redeemed: ui_sessions.Redeemed, next: String) {
+  document(200, "text/html; charset=utf-8", page.enter(next, redeemed.nonce))
+  |> response.set_header(
+    "set-cookie",
+    ui_http.set_cookie(redeemed.cookie, redeemed.key),
+  )
 }
 
 // The cookie's UI session, re-authorized from scratch: it must be live, be
@@ -361,18 +519,11 @@ fn page_grant(
   id: String,
 ) {
   use #(cookie, page) <- result.try(
-    ui_http.session_cookies(request)
-    |> list.find_map(fn(cookie) {
-      use page <- result.try(ui_sessions.lookup(ui.sessions, cookie))
-      case ui_sessions.keyed(page, key) {
-        True -> Ok(#(cookie, page))
-        False -> Error(Nil)
-      }
-    })
+    keyed_page(ui, request, key)
     |> result.map_error(fn(_) { refused_page(401, ending.PageEnded, id) }),
   )
   let grant = ui_sessions.grant(page)
-  use Nil <- result.try(case grant.session_id == id {
+  use Nil <- result.try(case grant.scope == ui_sessions.Session(id) {
     True -> Ok(Nil)
     False -> Error(refused_page(403, ending.PageEnded, id))
   })
@@ -393,6 +544,54 @@ fn page_grant(
     |> result.map_error(fn(_) { refused_page(403, ending.AccessRevoked, id) }),
   )
   Ok(#(state, page, cookie))
+}
+
+// The cookie value whose UI session is live under `key`, with that session,
+// which is what both kinds of page start from. A planted value that names no
+// UI session under the key is passed over.
+fn keyed_page(ui: Ui(instance), request, key: String) {
+  ui_http.session_cookies(request)
+  |> list.find_map(fn(cookie) {
+    use page <- result.try(ui_sessions.lookup(ui.sessions, cookie))
+    case ui_sessions.keyed(page, key) {
+      True -> Ok(#(cookie, page))
+      False -> Error(Nil)
+    }
+  })
+}
+
+// A home page's `page_grant` (protocol-change/065): the cookie names a live
+// UI session under this key, whose scope is `Home`, and its credential still
+// authenticates. There is no session to hold a membership in, so that check
+// does not exist; what the home then shows is read with the same credential
+// digest on every refresh. The answer carries the readiness the socket's
+// upgrade reuses, the UI session, the cookie and the principal.
+fn home_grant(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  key: String,
+) {
+  use #(cookie, page) <- result.try(
+    keyed_page(ui, request, key)
+    |> result.map_error(fn(_) { refused_home(401, ending.PageEnded) }),
+  )
+  let grant = ui_sessions.grant(page)
+  use Nil <- result.try(case grant.scope {
+    ui_sessions.Home -> Ok(Nil)
+    ui_sessions.Session(_) -> Error(refused_home(403, ending.PageEnded))
+  })
+  use state <- result.try(
+    ready(config, upgrade_log.Page)
+    |> result.map_error(fn(_) { refused_home(503, ending.DaemonNotReady) }),
+  )
+  use principal <- result.map(
+    asked(upgrade_log.Page, "authenticate", fn() {
+      manager.authenticate(state.registry, grant.credential)
+    })
+    |> result.map_error(fn(_) { refused_home(401, ending.AccessRevoked) }),
+  )
+  #(state, page, cookie, principal)
 }
 
 // The page's image at a row's name and position, for a request that already
@@ -464,6 +663,12 @@ fn refused_page(status: Int, reason: Ending, id: String) {
     Error(_) -> "<id>"
   }
   document(status, "text/html; charset=utf-8", page.refusal(reason, session))
+}
+
+// `refused_page` for the home: the same fixed documents, with the home's
+// words, which name no session.
+fn refused_home(status: Int, reason: Ending) {
+  document(status, "text/html; charset=utf-8", page.home_refusal(reason))
 }
 
 fn document(status: Int, content_type: String, body: String) {
@@ -1227,6 +1432,27 @@ fn authorized(state: root.Ready(instance), digest, id) {
   |> result.map_error(error_code)
 }
 
+// A ticket for `grant`, or the control refusal for a table that did not
+// answer.
+fn mint_link(ui: Ui(instance), grant: ui_sessions.Grant) {
+  ui_sessions.mint(ui.sessions, grant) |> result.replace_error("unavailable")
+}
+
+// The `ui.link` reply: the exchange address the browser is sent to, and how
+// long its ticket lasts.
+fn link_reply(
+  path: String,
+  issued: ui_sessions.Issued,
+) -> #(String, JsonValue) {
+  #(
+    "ui.link",
+    json.Object([
+      #("path", json.String(path)),
+      #("expires_in_ms", json.Int(issued.expires_in_ms)),
+    ]),
+  )
+}
+
 // Startup diagnostics follow the same epoch and membership checks as every
 // operation read. Other control refusals retain their fixed public wording.
 fn dispatch(
@@ -1531,28 +1757,42 @@ fn dispatch_class(
     // A ticket for this principal's browser to open one session's page. It
     // is minted only for a member of that session, and records the digest of
     // the credential asking, so every later check of the page re-checks it.
-    protocol.UiLink(id, page: ceiling) -> {
+    // Its reach is `OneSession`: the page it opens draws nothing that names
+    // another session unless the page's own role already did.
+    protocol.UiLink(Some(id), page: ceiling) -> {
       use ui <- result.try(option.to_result(config.ui, "unavailable"))
       use _ <- result.try(authorized(state, digest, id))
-      use issued <- result.try(
-        ui_sessions.mint(
-          ui.sessions,
-          ui_sessions.Grant(
-            session_id: id,
-            credential: digest,
-            principal: principal.id,
-            ceiling:,
-          ),
-        )
-        |> result.replace_error("unavailable"),
-      )
-      Ok(#(
-        "ui.link",
-        json.Object([
-          #("path", json.String(page.exchange_path(id, issued.ticket))),
-          #("expires_in_ms", json.Int(issued.expires_in_ms)),
-        ]),
+      use issued <- result.map(mint_link(
+        ui,
+        ui_sessions.Grant(
+          scope: ui_sessions.Session(id),
+          credential: digest,
+          principal: principal.id,
+          ceiling:,
+          reach: ui_sessions.OneSession,
+        ),
       ))
+      link_reply(page.exchange_path(id, issued.ticket), issued)
+    }
+
+    // A ticket for the principal's home page (protocol-change/065). No
+    // membership is checked, since the home is bound to no session: the
+    // credential that authenticated this control connection is the whole of
+    // what the ticket records, and what the home lists is read with that
+    // digest on every refresh, so it is what the principal may see then.
+    protocol.UiLink(None, page: ceiling) -> {
+      use ui <- result.try(option.to_result(config.ui, "unavailable"))
+      use issued <- result.map(mint_link(
+        ui,
+        ui_sessions.Grant(
+          scope: ui_sessions.Home,
+          credential: digest,
+          principal: principal.id,
+          ceiling:,
+          reach: ui_sessions.Workspace,
+        ),
+      ))
+      link_reply(page.home_exchange_path(issued.ticket), issued)
     }
     protocol.ListSessions(after, revision) -> {
       use #(current, views) <- result.try(

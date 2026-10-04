@@ -176,10 +176,15 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
 
 - `daemon/ui_sessions`: one `weft/actor` owning the ticket table (60 s,
   single use) and the UI-session table (8 h), both keyed by the SHA-256 of
-  the secret. A `Grant` carries the session, the minting credential's
-  digest, the principal and the page's `ceiling` (`Observer` unless
-  `ui.link` named `page:"operator"`). Redemption is one message: it spends
-  the ticket, answers `UnknownTicket` or `OtherSession`, and mints three
+  the secret. A `Grant` carries a `Scope` (`Session(id)` or `Home`,
+  protocol-change/065), the minting credential's digest, the principal, the
+  page's `ceiling` (`Observer` unless `ui.link` named `page:"operator"`) and a
+  `Reach` (`OneSession | Workspace`, not yet read). `ui.link` without
+  `session_id` mints a `Home` grant; the home routes (`ui_http.HomeExchange`,
+  `HomePage`, `HomeSocket`, `server.home_grant`/`home_socket`) and
+  `ui_socket.upgrade_home` serve it, a home living `ui_sessions.home_ms`.
+  Redemption is one message: it spends
+  the ticket, answers `UnknownTicket` or `OtherScope`, and mints three
   secrets, ending no other page except the principal's oldest when it
   already holds `max_pages` (four, `ending.max_pages`) live pages for the
   session (each `Page` carries a serial for the order, since the clock can

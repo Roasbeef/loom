@@ -82,7 +82,22 @@ fn grant(session: String) -> ui_sessions.Grant {
 fn grant_for(principal: String, session: String) -> ui_sessions.Grant {
   let assert Ok(digest) = access.credential_digest(string.repeat("b", 64))
     as "the fixture digest is valid"
-  ui_sessions.Grant(session, digest, principal, access.Observer)
+  ui_sessions.Grant(
+    ui_sessions.Session(session),
+    digest,
+    principal,
+    access.Observer,
+    ui_sessions.OneSession,
+  )
+}
+
+// A home grant for `principal`, opened from `loom ui` with no session.
+fn home_for(principal: String) -> ui_sessions.Grant {
+  ui_sessions.Grant(
+    ..grant_for(principal, ""),
+    scope: ui_sessions.Home,
+    reach: ui_sessions.Workspace,
+  )
 }
 
 fn looked_up(sessions, cookie) -> Result(ui_sessions.Grant, Nil) {
@@ -100,11 +115,12 @@ fn mint(sessions, session) -> String {
 pub fn a_ticket_is_redeemed_once_test() {
   let sessions = table(clock())
   let ticket = mint(sessions, "s1")
-  let assert Ok(redeemed) = ui_sessions.redeem(sessions, ticket, "s1")
+  let assert Ok(redeemed) =
+    ui_sessions.redeem(sessions, ticket, ui_sessions.Session("s1"))
     as "the first redemption succeeds"
   assert redeemed.grant == grant("s1")
   assert looked_up(sessions, redeemed.cookie) == Ok(grant("s1"))
-  assert ui_sessions.redeem(sessions, ticket, "s1")
+  assert ui_sessions.redeem(sessions, ticket, ui_sessions.Session("s1"))
     == Error(ui_sessions.UnknownTicket)
 }
 
@@ -118,7 +134,10 @@ pub fn two_redemptions_at_once_succeed_once_test() {
   list.repeat(Nil, 20)
   |> list.each(fn(_) {
     process.spawn(fn() {
-      process.send(results, ui_sessions.redeem(sessions, ticket, "s1"))
+      process.send(
+        results,
+        ui_sessions.redeem(sessions, ticket, ui_sessions.Session("s1")),
+      )
     })
   })
   let outcomes =
@@ -139,7 +158,7 @@ pub fn a_ticket_expires_after_a_minute_test() {
   let sessions = table(time)
   let ticket = mint(sessions, "s1")
   process.send(time, Advance(60_000))
-  assert ui_sessions.redeem(sessions, ticket, "s1")
+  assert ui_sessions.redeem(sessions, ticket, ui_sessions.Session("s1"))
     == Error(ui_sessions.UnknownTicket)
 }
 
@@ -147,7 +166,11 @@ pub fn a_ui_session_expires_after_eight_hours_test() {
   let time = clock()
   let sessions = table(time)
   let assert Ok(redeemed) =
-    ui_sessions.redeem(sessions, mint(sessions, "s1"), "s1")
+    ui_sessions.redeem(
+      sessions,
+      mint(sessions, "s1"),
+      ui_sessions.Session("s1"),
+    )
     as "the ticket is redeemed"
   process.send(time, Advance(28_800_000 - 1))
   assert looked_up(sessions, redeemed.cookie) == Ok(grant("s1"))
@@ -164,7 +187,8 @@ pub fn a_switched_page_ends_no_later_than_the_page_it_left_test() {
   process.send(time, Advance(1000))
   let assert Ok(issued) = ui_sessions.mint_before(sessions, grant("s2"), 5000)
     as "a switch ticket is minted"
-  let assert Ok(redeemed) = ui_sessions.redeem(sessions, issued.ticket, "s2")
+  let assert Ok(redeemed) =
+    ui_sessions.redeem(sessions, issued.ticket, ui_sessions.Session("s2"))
     as "the ticket is redeemed"
   process.send(time, Advance(3999))
   assert looked_up(sessions, redeemed.cookie) == Ok(grant("s2"))
@@ -175,7 +199,8 @@ pub fn a_switched_page_ends_no_later_than_the_page_it_left_test() {
   let assert Ok(far) =
     ui_sessions.mint_before(sessions, grant("s3"), 9_000_000_000)
     as "a switch ticket is minted"
-  let assert Ok(page) = ui_sessions.redeem(sessions, far.ticket, "s3")
+  let assert Ok(page) =
+    ui_sessions.redeem(sessions, far.ticket, ui_sessions.Session("s3"))
     as "the ticket is redeemed"
   process.send(time, Advance(28_800_000 - 1))
   assert looked_up(sessions, page.cookie) == Ok(grant("s3"))
@@ -192,14 +217,18 @@ pub fn a_switch_ticket_outliving_its_source_opens_no_page_test() {
   let held =
     list.map(list.repeat(Nil, ui_sessions.max_pages), fn(_) {
       let assert Ok(redeemed) =
-        ui_sessions.redeem(sessions, mint(sessions, "s4"), "s4")
+        ui_sessions.redeem(
+          sessions,
+          mint(sessions, "s4"),
+          ui_sessions.Session("s4"),
+        )
         as "the ticket is redeemed"
       redeemed
     })
   let assert Ok(issued) = ui_sessions.mint_before(sessions, grant("s4"), 30_000)
     as "a switch ticket is minted"
   process.send(time, Advance(30_000))
-  assert ui_sessions.redeem(sessions, issued.ticket, "s4")
+  assert ui_sessions.redeem(sessions, issued.ticket, ui_sessions.Session("s4"))
     == Error(ui_sessions.UnknownTicket)
   list.each(held, fn(page) {
     assert looked_up(sessions, page.cookie) == Ok(grant("s4"))
@@ -210,7 +239,7 @@ fn redeem(sessions, principal: String, session: String) {
   let assert Ok(issued) =
     ui_sessions.mint(sessions, grant_for(principal, session))
     as "a ticket is minted"
-  ui_sessions.redeem(sessions, issued.ticket, session)
+  ui_sessions.redeem(sessions, issued.ticket, ui_sessions.Session(session))
 }
 
 // Protocol-change/051, the addendum on several pages: a redemption adds a
@@ -318,9 +347,19 @@ pub fn an_expired_page_ends_alone_and_frees_its_place_test() {
 // session admits; another page's are refused.
 pub fn a_page_admits_only_its_own_key_and_nonce_test() {
   let sessions = table(clock())
-  let assert Ok(one) = ui_sessions.redeem(sessions, mint(sessions, "s1"), "s1")
+  let assert Ok(one) =
+    ui_sessions.redeem(
+      sessions,
+      mint(sessions, "s1"),
+      ui_sessions.Session("s1"),
+    )
     as "the first ticket is redeemed"
-  let assert Ok(two) = ui_sessions.redeem(sessions, mint(sessions, "s2"), "s2")
+  let assert Ok(two) =
+    ui_sessions.redeem(
+      sessions,
+      mint(sessions, "s2"),
+      ui_sessions.Session("s2"),
+    )
     as "the second ticket is redeemed"
   let assert Ok(page) = ui_sessions.lookup(sessions, one.cookie)
     as "the first page is live"
@@ -338,7 +377,11 @@ pub fn the_sweep_reclaims_what_expired_test() {
   let sessions = table(time)
   let _unredeemed = mint(sessions, "s1")
   let assert Ok(_redeemed) =
-    ui_sessions.redeem(sessions, mint(sessions, "s2"), "s2")
+    ui_sessions.redeem(
+      sessions,
+      mint(sessions, "s2"),
+      ui_sessions.Session("s2"),
+    )
     as "a ticket is redeemed"
   assert ui_sessions.sizes(sessions) == Ok(#(1, 1))
 
@@ -353,30 +396,141 @@ pub fn the_sweep_reclaims_what_expired_test() {
 
 pub fn a_refused_redemption_keeps_the_browsers_ui_session_test() {
   let sessions = table(clock())
-  let assert Ok(held) = ui_sessions.redeem(sessions, mint(sessions, "s1"), "s1")
+  let assert Ok(held) =
+    ui_sessions.redeem(
+      sessions,
+      mint(sessions, "s1"),
+      ui_sessions.Session("s1"),
+    )
     as "the browser holds a UI session"
 
   // A spent ticket presented with the cookie signs nothing out.
-  assert ui_sessions.redeem(sessions, "not-a-ticket", "s1")
+  assert ui_sessions.redeem(sessions, "not-a-ticket", ui_sessions.Session("s1"))
     == Error(ui_sessions.UnknownTicket)
   assert looked_up(sessions, held.cookie) == Ok(grant("s1"))
 }
 
 pub fn a_ticket_for_another_session_is_spent_and_inserts_nothing_test() {
   let sessions = table(clock())
-  let assert Ok(held) = ui_sessions.redeem(sessions, mint(sessions, "s1"), "s1")
+  let assert Ok(held) =
+    ui_sessions.redeem(
+      sessions,
+      mint(sessions, "s1"),
+      ui_sessions.Session("s1"),
+    )
     as "the browser holds a UI session"
   let other = mint(sessions, "s2")
   assert ui_sessions.sizes(sessions) == Ok(#(1, 1))
 
   // Presented on the first session's path, the second session's ticket is
   // refused and spent; no UI session is added and the held one is kept.
-  assert ui_sessions.redeem(sessions, other, "s1")
-    == Error(ui_sessions.OtherSession)
+  assert ui_sessions.redeem(sessions, other, ui_sessions.Session("s1"))
+    == Error(ui_sessions.OtherScope)
   assert ui_sessions.sizes(sessions) == Ok(#(0, 1))
   assert looked_up(sessions, held.cookie) == Ok(grant("s1"))
-  assert ui_sessions.redeem(sessions, other, "s2")
+  assert ui_sessions.redeem(sessions, other, ui_sessions.Session("s2"))
     == Error(ui_sessions.UnknownTicket)
+}
+
+// --- the home's scope (protocol-change/065) ---------------------------------
+
+fn home_ticket(sessions, principal: String) -> String {
+  let assert Ok(issued) = ui_sessions.mint(sessions, home_for(principal))
+    as "a home ticket is minted"
+  issued.ticket
+}
+
+// The scope is part of the redemption. A home ticket redeems at the home and
+// keeps what it was minted with, a reach of `Workspace` among it.
+pub fn a_home_ticket_redeems_at_the_home_test() {
+  let sessions = table(clock())
+  let assert Ok(redeemed) =
+    ui_sessions.redeem(
+      sessions,
+      home_ticket(sessions, "alice"),
+      ui_sessions.Home,
+    )
+    as "the home ticket is redeemed"
+  assert redeemed.grant == home_for("alice")
+  assert redeemed.grant.reach == ui_sessions.Workspace
+  assert looked_up(sessions, redeemed.cookie) == Ok(home_for("alice"))
+}
+
+// A session's ticket presented at the home exchange, and a home ticket
+// presented at a session's, are each refused and each spent, and neither
+// adds a page or ends one.
+pub fn a_ticket_of_the_other_scope_is_spent_and_inserts_nothing_test() {
+  let sessions = table(clock())
+  let assert Ok(held) =
+    ui_sessions.redeem(
+      sessions,
+      home_ticket(sessions, "alice"),
+      ui_sessions.Home,
+    )
+    as "the browser holds a home page"
+  let session_ticket = mint(sessions, "s1")
+  let home = home_ticket(sessions, "alice")
+  assert ui_sessions.sizes(sessions) == Ok(#(2, 1))
+
+  assert ui_sessions.redeem(sessions, session_ticket, ui_sessions.Home)
+    == Error(ui_sessions.OtherScope)
+  assert ui_sessions.redeem(sessions, home, ui_sessions.Session("s1"))
+    == Error(ui_sessions.OtherScope)
+  assert ui_sessions.sizes(sessions) == Ok(#(0, 1))
+  assert looked_up(sessions, held.cookie) == Ok(home_for("alice"))
+
+  // Both tickets are spent, so a second try at the right exchange fails too.
+  assert ui_sessions.redeem(sessions, session_ticket, ui_sessions.Session("s1"))
+    == Error(ui_sessions.UnknownTicket)
+  assert ui_sessions.redeem(sessions, home, ui_sessions.Home)
+    == Error(ui_sessions.UnknownTicket)
+}
+
+// The bound is on a principal's homes, counted apart from its session pages:
+// a fifth home ends the oldest home and no session page, and a fifth session
+// page ends no home. Another principal's homes are not counted.
+pub fn the_page_cap_is_counted_per_scope_test() {
+  let sessions = table(clock())
+  let assert Ok(session_page) = redeem(sessions, "alice", "s1")
+    as "a session page"
+  let assert Ok(other_principal) =
+    ui_sessions.redeem(sessions, home_ticket(sessions, "bob"), ui_sessions.Home)
+    as "another principal's home"
+  let homes =
+    list.repeat(Nil, ui_sessions.max_pages)
+    |> list.map(fn(_) {
+      let assert Ok(redeemed) =
+        ui_sessions.redeem(
+          sessions,
+          home_ticket(sessions, "alice"),
+          ui_sessions.Home,
+        )
+        as "a home under the cap"
+      redeemed.cookie
+    })
+  let assert Ok(newest) =
+    ui_sessions.redeem(
+      sessions,
+      home_ticket(sessions, "alice"),
+      ui_sessions.Home,
+    )
+    as "the fifth home"
+  let assert [oldest, ..rest] = homes
+  assert looked_up(sessions, oldest) == Error(Nil)
+  list.each([newest.cookie, ..rest], fn(cookie) {
+    assert looked_up(sessions, cookie) == Ok(home_for("alice"))
+  })
+  assert looked_up(sessions, session_page.cookie) == Ok(grant("s1"))
+  assert looked_up(sessions, other_principal.cookie) == Ok(home_for("bob"))
+
+  // Session pages up to their own cap leave every home standing.
+  list.each(list.repeat(Nil, ui_sessions.max_pages), fn(_) {
+    let assert Ok(_) = redeem(sessions, "alice", "s1") as "a session page"
+    Nil
+  })
+  list.each([newest.cookie, ..rest], fn(cookie) {
+    assert looked_up(sessions, cookie) == Ok(home_for("alice"))
+  })
 }
 
 // --- the readers of a page's images ----------------------------------------
@@ -397,7 +551,11 @@ fn read(sessions, cookie) -> Result(String, Nil) {
 
 fn live_page(sessions, session) -> ui_sessions.Redeemed {
   let assert Ok(redeemed) =
-    ui_sessions.redeem(sessions, mint(sessions, session), session)
+    ui_sessions.redeem(
+      sessions,
+      mint(sessions, session),
+      ui_sessions.Session(session),
+    )
     as "a page is live"
   redeemed
 }
