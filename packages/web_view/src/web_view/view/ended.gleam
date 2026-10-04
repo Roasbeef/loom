@@ -25,16 +25,35 @@ import web_view/ending.{type Ending}
 /// // ended.view(Some(ending.PageEnded), "0192ab34cd")
 /// ```
 pub fn view(reason: Option(Ending), session_id: String) -> Element(message) {
+  notice(reason, ending.headline, ending.advice(_, session_id))
+}
+
+/// The notice for a home page that has ended, in the home's words, which name
+/// no session (protocol-change/065). It is `view`'s notice and its classes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ended.home(Some(ending.AccessRevoked))
+/// ```
+pub fn home(reason: Option(Ending)) -> Element(message) {
+  notice(reason, ending.home_headline, ending.home_advice)
+}
+
+// The notice for `reason`, worded by `headline` and `advice`, or nothing.
+fn notice(
+  reason: Option(Ending),
+  headline: fn(Ending) -> String,
+  advice: fn(Ending) -> String,
+) -> Element(message) {
   case reason {
     None -> element.none()
     Some(reason) ->
       html.section([attribute.class("ended-notice"), attribute.role("alert")], [
         html.p([attribute.class("ended-headline")], [
-          html.text(ending.headline(reason)),
+          html.text(headline(reason)),
         ]),
-        html.p([attribute.class("ended-advice")], [
-          html.text(ending.advice(reason, session_id)),
-        ]),
+        html.p([attribute.class("ended-advice")], [html.text(advice(reason))]),
       ])
   }
 }

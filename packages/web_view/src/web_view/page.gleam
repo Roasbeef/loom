@@ -92,6 +92,31 @@ pub fn exchange_path(session_id: String, ticket: String) -> String {
   prefix <> "/sessions/" <> session_id <> "?ticket=" <> ticket
 }
 
+/// The keyed address of the principal's home page
+/// (protocol-change/065). Its socket is this address and `/ws`, which is what
+/// the page's script derives from `location.pathname`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert page.home_path("abc") == "/ui/p/abc/home"
+/// ```
+pub fn home_path(key: String) -> String {
+  keyed_prefix(key) <> "/home"
+}
+
+/// The address that exchanges a ticket for a home page. `loom ui` with no
+/// session opens it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert page.home_exchange_path("t") == "/ui/home?ticket=t"
+/// ```
+pub fn home_exchange_path(ticket: String) -> String {
+  prefix <> "/home?ticket=" <> ticket
+}
+
 /// The page for one session: a shell holding one server component, and the
 /// script that connects it with the tab's nonce. The component carries no
 /// `route` of its own; the script sets its `csrf-token` and then its
@@ -114,11 +139,30 @@ pub fn exchange_path(session_id: String, ticket: String) -> String {
 /// // page.shell("0198c0de-...")
 /// ```
 pub fn shell(session_id: String) -> String {
-  let id = houdini.escape(session_id)
+  component_document(session_id, waiting_notice(session_id))
+}
+
+/// The page for the home: the same shell and scripts as a session's, with
+/// the home's own title and waiting paragraph. The page's script derives the
+/// socket's route from the address it was served at, so nothing in the
+/// document names the home.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(page.home_shell(), "Loom · Home")
+/// ```
+pub fn home_shell() -> String {
+  component_document("Home", home_waiting_notice())
+}
+
+// A shell holding one server component, titled `title` (escaped here) and
+// with `waiting` as the paragraph shown while the component has no socket.
+fn component_document(title: String, waiting: String) -> String {
   "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
   <> "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
   <> "<title>Loom · "
-  <> id
+  <> houdini.escape(title)
   <> "</title>"
   <> "<link rel=\"stylesheet\" href=\""
   <> asset_path(stylesheet_asset)
@@ -131,7 +175,7 @@ pub fn shell(session_id: String) -> String {
   <> "\"></script>"
   <> "</head><body>"
   <> "<lustre-server-component><p class=\"page-note\">"
-  <> houdini.escape(waiting_notice(session_id))
+  <> houdini.escape(waiting)
   <> "</p></lustre-server-component>"
   <> "<script src=\""
   <> asset_path(page_asset)
@@ -176,6 +220,39 @@ pub fn waiting_notice(session_id: String) -> String {
 /// // page.refusal(ending.PageEnded, "0198c0de-...")
 /// ```
 pub fn refusal(reason: Ending, session_id: String) -> String {
+  ended_document(ending.headline(reason), ending.advice(reason, session_id))
+}
+
+/// What a home page says while it has no socket: the daemon may still be
+/// starting, the page may have ended, or the tab may have lost its key.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(page.home_waiting_notice(), "run `loom ui`")
+/// ```
+pub fn home_waiting_notice() -> String {
+  "This page is not connected to the daemon. The daemon may still be "
+  <> "starting, this page may have ended, or this tab may have lost its key "
+  <> "for the page. Reload it. If it stays like this, run `loom ui` for a "
+  <> "fresh link."
+}
+
+/// `refusal` for a home page: the same document with the home's advice, which
+/// names `loom ui` and no session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // page.home_refusal(ending.PageEnded)
+/// ```
+pub fn home_refusal(reason: Ending) -> String {
+  ended_document(ending.home_headline(reason), ending.home_advice(reason))
+}
+
+// The document a refused request is answered with: a headline and its advice
+// in the ended notice's own classes, the stylesheet, and no script.
+fn ended_document(headline: String, advice: String) -> String {
   "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
   <> "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
   <> "<title>Loom</title>"
@@ -184,9 +261,9 @@ pub fn refusal(reason: Ending, session_id: String) -> String {
   <> "\"></head><body>"
   <> "<section class=\"ended-notice ended-document\" role=\"alert\">"
   <> "<p class=\"ended-headline\">"
-  <> houdini.escape(ending.headline(reason))
+  <> houdini.escape(headline)
   <> "</p><p class=\"ended-advice\">"
-  <> houdini.escape(ending.advice(reason, session_id))
+  <> houdini.escape(advice)
   <> "</p></section></body></html>\n"
 }
 

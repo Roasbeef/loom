@@ -32,6 +32,12 @@
 //// identity's first eight characters, as the heading names it. The classes
 //// are complete literals, so Tailwind finds them.
 ////
+//// The home page draws the same column through `home` (protocol-change/065):
+//// a "Home" entry above the groups, marked as the page on screen, and every
+//// row text. `Rows` is how the two differ: a row is a button that sends the
+//// caller's message, or text, and the column, the groups and the row's words
+//// are written once.
+////
 //// The module takes `sessions.Group`s and the current identity, and imports
 //// nothing from `web_view/component`, which imports it.
 
@@ -66,6 +72,55 @@ pub fn view(
   open: fn(String) -> message,
 ) -> Element(message) {
   use <- element.memo([element.ref(groups), element.ref(current)])
+  column(groups, [], current, Pressable(open))
+}
+
+/// The sidebar the home page draws (protocol-change/065): the same groups, with
+/// a "Home" entry above them marked as the page on screen, and every row
+/// text. No row names a session as current and none carries a handler, so
+/// the sidebar adds no path a browser frame could name; the home's rows open
+/// nothing until a later change gives them a press.
+///
+/// With no group it is `element.none()`, as `view` is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // sidebar.home(home.groups(model))
+/// ```
+pub fn home(groups: List(Group)) -> Element(message) {
+  use <- element.memo([element.ref(groups)])
+  column(
+    groups,
+    [
+      html.p(
+        [
+          attribute.class("sidebar-home"),
+          attribute.attribute("aria-current", "page"),
+        ],
+        [html.text("Home")],
+      ),
+    ],
+    "",
+    Plain,
+  )
+}
+
+// What a row may be: a button that sends a message naming its session, or
+// text.
+type Rows(message) {
+  Pressable(open: fn(String) -> message)
+  Plain
+}
+
+// The column itself: its title, `lead` (what sits above the groups), and one
+// section per group, or nothing when there is no group.
+fn column(
+  groups: List(Group),
+  lead: List(Element(message)),
+  current: String,
+  rows: Rows(message),
+) -> Element(message) {
   case groups {
     [] -> element.none()
     [_, ..] ->
@@ -77,7 +132,7 @@ pub fn view(
         ],
         [
           html.h2([attribute.class("sidebar-title")], [html.text("Sessions")]),
-          ..list.map(groups, group(_, current, open))
+          ..list.append(lead, list.map(groups, group(_, current, rows)))
         ],
       )
   }
@@ -86,7 +141,7 @@ pub fn view(
 fn group(
   group: Group,
   current: String,
-  open: fn(String) -> message,
+  rows: Rows(message),
 ) -> Element(message) {
   html.section([attribute.class("workspace-group")], [
     html.h3([attribute.class("workspace"), attribute.title(group.workspace)], [
@@ -97,7 +152,7 @@ fn group(
     ]),
     html.ul(
       [attribute.class("sessions")],
-      list.map(group.entries, entry(_, current, open)),
+      list.map(group.entries, entry(_, current, rows)),
     ),
   ])
 }
@@ -109,7 +164,7 @@ fn group(
 fn entry(
   entry: Entry,
   current: String,
-  open: fn(String) -> message,
+  rows: Rows(message),
 ) -> Element(message) {
   let residency = case entry.residency {
     Live -> #("live", "●", "resident")
@@ -126,8 +181,8 @@ fn entry(
       html.text(residency.2),
     ]),
   ]
-  case entry.id == current, entry.residency {
-    True, _ ->
+  case entry.id == current, entry.residency, rows {
+    True, _, _ ->
       html.li(
         [
           attribute.class("session"),
@@ -136,7 +191,7 @@ fn entry(
         ],
         words,
       )
-    False, Live ->
+    False, Live, Pressable(open) ->
       html.li([attribute.class("session")], [
         html.button(
           [
@@ -148,7 +203,8 @@ fn entry(
           words,
         ),
       ])
-    False, Saved -> html.li([attribute.class("session")], words)
+    False, Live, Plain | False, Saved, _ ->
+      html.li([attribute.class("session")], words)
   }
 }
 
