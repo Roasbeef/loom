@@ -697,14 +697,27 @@ fn button(model: Model, region: Region) -> Element(Msg) {
           attribute.aria_expanded(state == shell_rule.Open),
           event.on_click(Toggled(region)),
         ],
-        [
-          html.span(
-            [attribute.class("toggle-icon"), attribute.aria_hidden(True)],
-            [],
-          ),
-        ],
+        toggle_face(region),
       )
     }
+  }
+}
+
+// What a toggle draws: its icon and the visible key hint beside it. The
+// hint sits on the side facing the centre, so the icon stays at the edge of
+// the bar. Both are decoration, since the button's label and its
+// `aria-keyshortcuts` are what assistive technology reads.
+fn toggle_face(region: Region) -> List(Element(Msg)) {
+  let icon =
+    html.span([attribute.class("toggle-icon"), attribute.aria_hidden(True)], [])
+  let hint =
+    html.kbd([attribute.class("toggle-hint"), attribute.aria_hidden(True)], [
+      html.text(shell_rule.hint(region)),
+    ])
+
+  case region {
+    shell_rule.Sidebar -> [icon, hint]
+    shell_rule.Panel -> [hint, icon]
   }
 }
 

@@ -457,6 +457,8 @@ pub fn the_toggles_name_their_shortcuts_test() {
     == "Show strands (Command or Control Alt B)"
   assert shell_rule.shortcuts(Sidebar) == "Meta+B Control+B"
   assert shell_rule.shortcuts(Panel) == "Meta+Alt+B Control+Alt+B"
+  assert shell_rule.hint(Sidebar) == "⌘B"
+  assert shell_rule.hint(Panel) == "⌘⌥B"
 }
 
 // `Escape` clicks the link a pointer clicks, which the server draws only

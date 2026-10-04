@@ -3114,6 +3114,7 @@ pub fn heading(model: Model(socket)) -> Element(message) {
     name: option.map(model.view.label, fn(label) { label.name }),
     workspace: option.map(model.view.label, fn(label) { label.workspace }),
     status: status_text(model.view.status),
+    tone: status_tone(model.view.status),
     context: context_view.footer(model.shared.context),
     cost: cost_text(model),
     notice: ended.view(ended_ending(model.view.status), model.shared.session),
@@ -3123,7 +3124,7 @@ pub fn heading(model: Model(socket)) -> Element(message) {
 // The session's running cost as the top bar and the Session tab word it,
 // which is the terminal's footer's own words.
 fn cost_text(model: Model(socket)) -> String {
-  "est $" <> transcript_lines.money(model.shared.usage.cost.total)
+  transcript_lines.cost_words(model.shared.usage)
 }
 
 // The ending a page that has ended draws a notice for.
@@ -3131,6 +3132,15 @@ fn ended_ending(status: Status) -> Option(Ending) {
   case status {
     Connecting | Connected -> None
     Ended(ending:) -> Some(ending)
+  }
+}
+
+// The tone the heading's status pill takes.
+fn status_tone(status: Status) -> heading.Tone {
+  case status {
+    Connecting -> heading.Pending
+    Connected -> heading.Live
+    Ended(_) -> heading.Closed
   }
 }
 

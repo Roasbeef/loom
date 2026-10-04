@@ -15,9 +15,11 @@ import lane_fixture
 import lustre/effect
 import lustre/element.{type Element}
 import page_fixture
+import session_view/turns
 import web_view/component
 import web_view/operator_page
 import web_view/sessions.{type Entry, Entry, Live, Saved}
+import web_view/view/sidebar
 
 @external(erlang, "page_events_ffi", "handlers")
 fn handlers(view: Element(message)) -> List(String)
@@ -331,4 +333,59 @@ pub fn an_observers_page_draws_no_sidebar_test() {
   assert !string.contains(drawn, "<aside aria-label=\"Sessions\"")
   assert !string.contains(drawn, "vetting lint")
   assert !string.contains(drawn, "/src/loom")
+}
+
+// A sidebar over `listing()` with the given bars, as the page's frame would
+// draw it, for the tests of the strand bars.
+fn sidebar_with(bars: List(sidebar.Bar)) -> Element(Nil) {
+  sidebar.view(sessions.grouped(listing(), "A"), "A", bars, fn(_) { Nil })
+}
+
+// The current row draws one bar per live strand in the strand's hue, with
+// the pulse only on a working one, and no other row draws any. The span is
+// hidden from assistive technology.
+pub fn only_the_current_row_draws_strand_bars_test() {
+  let drawn =
+    element.to_string(
+      sidebar_with([
+        sidebar.Bar(hue: turns.Primary, pulse: sidebar.Pulsing),
+        sidebar.Bar(hue: turns.Sub(index: 0), pulse: sidebar.Still),
+      ]),
+    )
+  assert list.length(string.split(drawn, "class=\"dots\"")) == 2
+  assert list.length(string.split(drawn, "class=\"bar hue-main w\"")) == 2
+  assert list.length(string.split(drawn, "class=\"bar hue-2\"")) == 2
+  assert string.contains(drawn, "aria-hidden=\"true\" class=\"dots\"")
+
+  // The bars sit inside the current row, between its name and its words.
+  let assert Ok(#(_, from_current)) =
+    string.split_once(drawn, "class=\"session current\"")
+  let assert Ok(#(row, _)) = string.split_once(from_current, "</li>")
+  let assert Ok(#(before, after)) = string.split_once(row, "class=\"dots\"")
+  assert string.contains(before, "web ui")
+  assert string.contains(after, "resident")
+}
+
+// The bars add no handler and no focusable element: the markup holds the
+// same handlers with and without them, and nothing in them is a control.
+pub fn strand_bars_carry_no_handler_test() {
+  let bare = sidebar_with([])
+  let barred =
+    sidebar_with([
+      sidebar.Bar(hue: turns.Primary, pulse: sidebar.Pulsing),
+      sidebar.Bar(hue: turns.Advisor, pulse: sidebar.Still),
+    ])
+  assert handlers(barred) == handlers(bare)
+
+  let drawn = element.to_string(barred)
+  let assert Ok(#(_, from_dots)) = string.split_once(drawn, "class=\"dots\"")
+  let assert Ok(#(dots, _)) = string.split_once(from_dots, "</span></span>")
+  assert !string.contains(dots, "<button")
+  assert !string.contains(dots, "tabindex")
+  assert !string.contains(dots, "onclick")
+}
+
+// With no strand listed the row has no bars span at all.
+pub fn no_strands_draw_no_bars_test() {
+  assert !string.contains(element.to_string(sidebar_with([])), "dots")
 }
