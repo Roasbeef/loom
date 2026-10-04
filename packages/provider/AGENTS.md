@@ -1,5 +1,19 @@
 # provider
 
+## Exact-model evolution profiles
+
+`provider/profile.Profile` is an immutable provider/model/API-specific overlay
+of system prose, task prefix and tool descriptions. `gateway.attempt_one`
+composes it only after fallback, vision and child routing resolve the actual
+attempt. Every retry starts from the unchanged base request; a profile cannot
+accumulate across attempts or alter a tool's name, input schema or execution
+policy. Native attempt observation fingerprints the resulting composition even
+when the attempt fails. A request guard runs before credentials and transport,
+so an independent rollout can enforce exact targeting and conservative
+aggregate budgets on every actual dispatch. See
+[the evolution architecture](../../docs/architecture/evolution.md).
+
+
 ## Purpose
 
 The provider SDK: a typed registry of provider configurations and role
