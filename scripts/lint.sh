@@ -56,7 +56,8 @@ fi
 # is every full run and `make lint-web_client`. It gates as R0 does: a
 # violation fails the run. See scripts/web_client_js_check.sh. The same
 # runs hold the stylesheet's text colours to a 4.5:1 contrast ratio
-# (scripts/web_client_contrast_check.sh).
+# (scripts/web_client_contrast_check.sh) and keep the monospace face off its
+# rows (scripts/web_client_css_check.sh).
 for path in "${paths[@]}"; do
 	case $path in
 	"$root"/packages/web_client/src*)
@@ -64,6 +65,8 @@ for path in "${paths[@]}"; do
 		scripts/web_client_js_check.sh --self-test
 		scripts/web_client_contrast_check.sh
 		scripts/web_client_contrast_check.sh --self-test
+		scripts/web_client_css_check.sh
+		scripts/web_client_css_check.sh --self-test
 		break
 		;;
 	esac

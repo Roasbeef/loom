@@ -530,10 +530,16 @@ Tokens the mockup does not define:
   sub-strands and defines two hues, and a session can list five. The token
   pull request picks values for the remaining three from the same family and
   checks them against the rule below.
-- `shadow-card`, from the mockup's shadow (light: `0 1px 2px rgba(0,0,0,.05),
-  0 4px 14px rgba(0,0,0,.05)`; dark: `0 1px 2px rgba(0,0,0,.4)`), is new.
-  `web-ui.md` says elevation is drawn with a border and not a shadow; the
-  mockup uses both, and this note follows the mockup.
+- `shadow-float`, from the mockup's shadow (light: `0 1px 2px rgba(0,0,0,.05),
+  0 4px 14px rgba(0,0,0,.05)`; dark: `0 1px 2px rgba(0,0,0,.4)`), is new and
+  is used only by things that float over the page, such as the jump pill.
+  Cards, bubbles, the composer and list rows carry no shadow, and nothing on
+  the page draws a coloured bar down a card's left edge: a selected or
+  emphasised card is drawn with a tinted background and a tinted hairline
+  border instead (owner, 2026-10-03, after the first visual-system build:
+  the bar and shadow read as a generic generated interface). This replaces
+  the mockup's card shadow and its left bars, and agrees with `web-ui.md`'s
+  rule that elevation is drawn with a border.
 
 Four things about these palettes need a decision or a check in the token pull
 request.
