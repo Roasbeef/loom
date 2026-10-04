@@ -68,3 +68,32 @@ It does not prove source preparation ownership, whole-service admission, listene
 reply custody, allocation cleanup, owner approval/budgets or a separate-host
 workflow. Gleam claim and permit values are copyable; trusted service assembly
 must retain the original continuation and never recreate it during recovery.
+
+## Follow-up: original whole-Compile deadline
+
+The assembly design review identified a later-budget hazard: preparation consumes
+the original Compile lifetime, but a subsequent native challenge receives a new
+remaining-budget value from the owner. An owner wall-clock rollback could inflate
+that value. The live command context now carries the original executor-local
+Compile deadline, and native authorization clamps its derived deadline before
+retaining Request or Authority.
+
+An independent Astra high pass found no actionable defect in the frozen change.
+Manifest `5cebba1c46c8d5de15daf6b66fdd18413c3d454fd12c1240e2e301fec38d3437`
+matched all four owned files before and after review. The reviewer traced the
+clamped Authority through resource association, helper checkout and the existing
+relay watchdog. Historical contexts and ordinary native requests retain their
+previous behavior.
+
+The component gate passed 245 executor tests in 101.886 seconds with no skips.
+The root independently reran the 20 focused native-command tests in 1.690 seconds;
+the exit was zero and source hashes remained unchanged. Replacing `min` with `max`
+compiled, then failed the main test assertion after the helper checkout witness
+fired. The mutation therefore reaches the effect boundary rather than relying
+only on a detached callback assertion.
+
+The new controls simulate an inflated budget; they do not run a joined owner
+wall-clock rollback test. They also do not independently wait for a running
+compiler to reach the shortened watchdog deadline. Original cap capture and
+consistent clock use remain Compile-owner obligations. Full assembled-system
+validation remains pending.

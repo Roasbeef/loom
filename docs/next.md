@@ -8,6 +8,13 @@ maps the components, the remaining assembly and the acceptance criteria.
 Earlier component PR references below preserve review history; new worker
 commits enter the integration branch after focused checks and independent review.
 
+The live-association P model and native original-deadline cap are now integrated.
+The [model review](review/distributed-live-association-model.md) records the exact
+bounded runs and implementation limits. The [deadline review](review/distributed-native-command-admission.md#follow-up-original-whole-compile-deadline)
+records the retained Authority checks and compiling mutation. The whole Compile
+owner must capture that original cap once; registered separate-host acceptance
+is still pending.
+
 The latest component implements native Compile admission under the original
 preparation claim. Its independent review found no actionable defect, and the
 integrated executor gate passed 241 tests with no skips. The

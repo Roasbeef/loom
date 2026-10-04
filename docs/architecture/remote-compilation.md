@@ -115,6 +115,21 @@ authorization. After the resource association commits, the service compares the
 permit's exact endpoint, reference, native key and digest before continuing to
 launch. The existing deadline check still applies after that wait.
 
+The live context also retains the original Compile deadline in the native
+service's monotonic clock era. The Compile owner captures that deadline once at
+admission and copies it into subsequent contexts. Native authorization takes the
+earlier of this cap and the deadline derived from its own challenge. It retains
+the resulting Authority before admission and uses that same deadline for launch
+checks and the native watchdog.
+
+This cap includes time spent preparing files. A larger remaining budget sent
+later, including one inflated by an owner wall-clock adjustment, cannot extend
+it. The selected native wall and cleared request remain unchanged. Zero is
+invalid; a negative deadline can be valid when the monotonic clock's current
+value is also negative. The constructor cannot prove that a trusted caller
+supplied its original deadline, so the whole Compile owner must preserve that
+value and clock era.
+
 Historical contexts can query, cancel, send stdin or acknowledge an already
 associated command. Each operation checks the retained reference, key and digest
 before applying an effect or returning native evidence. Both duplicate Submit
