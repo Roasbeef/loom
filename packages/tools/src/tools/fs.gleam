@@ -82,6 +82,7 @@
 import broker/policy
 import core/json.{type JsonValue}
 import core/message.{ToolResultImage}
+import core/workspace as core_workspace
 import gleam/bit_array
 import gleam/bool
 import gleam/int
@@ -961,7 +962,15 @@ fn scheme_read_outcome(
 
 // File contents determine the media type; a misleading extension must not
 // turn a text file into an image or hide a supported image from the model.
-fn image_media_type(bytes: BitArray) -> Option(String) {
+/// Detects the native reader's supported image formats from their signatures.
+/// File names supply no authority over the interpretation of their bytes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert fs.image_media_type(<<"GIF89a">>) == Some("image/gif")
+/// ```
+pub fn image_media_type(bytes: BitArray) -> Option(String) {
   case bytes {
     <<0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, _:bits>> ->
       Some("image/png")
@@ -1001,6 +1010,60 @@ fn read_outcome(
   offset: Int,
   limit: Int,
 ) -> ToolOutcome {
+  use projection <- tool.or_outcome(
+    read_window(content, offset, limit),
+    fn(_nil) {
+      tool.failure(
+        "the requested window renders larger than "
+        <> int.to_string(blob.overflow_threshold_bytes)
+        <> " bytes; read a smaller window (lower `limit`)",
+      )
+    },
+  )
+  let window = projection.window
+  tool.success(projection.text)
+  |> tool.with_details(
+    json.Object([
+      #("path", json.String(path)),
+      #("offset", json.Int(window.offset)),
+      #("limit", json.Int(limit)),
+      #("total_lines", json.Int(window.total_lines)),
+      #("has_more", json.Bool(window.has_more)),
+      #("trailing_newline", json.Bool(window.trailing_newline)),
+      #("digest", json.String(projection.digest)),
+      #("anchor_version", json.Int(hashline.anchor_version)),
+    ]),
+  )
+}
+
+/// A native text projection whose full inline rendering fits the read cap.
+pub type ReadWindow {
+  /// The same digest, anchors and model-visible rendering as `fs_read`.
+  ReadWindow(
+    /// The whole-file preimage digest, including unreturned lines.
+    digest: String,
+    /// Selected anchors and explicit continuation metadata.
+    window: hashline.Window,
+    /// Bounded native rendering, including digest and continuation text.
+    text: String,
+  )
+}
+
+/// Projects native text through the existing inline rendering byte ceiling.
+/// Callers validate positive offset/limit before reading; oversize projections
+/// refuse rather than returning partial anchors with complete-looking metadata.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(read) = fs.read_window("a\nb\n", 2, 1)
+/// assert read.window.offset == 2
+/// ```
+pub fn read_window(
+  content: String,
+  offset: Int,
+  limit: Int,
+) -> Result(ReadWindow, Nil) {
   let window = hashline.window(content, offset:, limit:)
   let digest = hashline.digest(content)
   let lines = case window.lines {
@@ -1019,25 +1082,9 @@ fn read_outcome(
   // windowing is fs_read's bounding mechanism).
   use <- bool.guard(
     when: bit_array.byte_size(<<text:utf8>>) > blob.overflow_threshold_bytes,
-    return: tool.failure(
-      "the requested window renders larger than "
-      <> int.to_string(blob.overflow_threshold_bytes)
-      <> " bytes; read a smaller window (lower `limit`)",
-    ),
+    return: Error(Nil),
   )
-  tool.success(text)
-  |> tool.with_details(
-    json.Object([
-      #("path", json.String(path)),
-      #("offset", json.Int(window.offset)),
-      #("limit", json.Int(limit)),
-      #("total_lines", json.Int(window.total_lines)),
-      #("has_more", json.Bool(window.has_more)),
-      #("trailing_newline", json.Bool(window.trailing_newline)),
-      #("digest", json.String(digest)),
-      #("anchor_version", json.Int(hashline.anchor_version)),
-    ]),
-  )
+  Ok(ReadWindow(digest:, window:, text:))
 }
 
 // What the model is told when the window it received is not the whole
@@ -1153,7 +1200,16 @@ pub fn read_text_file(
 
 // Text capability reads and multimodal tool reads share the same byte bound.
 // Only fs_read interprets image bytes; cap/fs.read remains a text operation.
-fn read_bytes(
+/// Reads already resolved bytes through the native reader's whole-file bound.
+/// The caller must resolve and authorize the path first, as `read_text_file`
+/// requires. Image and text interpretation happen only after this shared check.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.read_bytes(filesystem, resolved) == Ok(<<"hello">>)
+/// ```
+pub fn read_bytes(
   filesystem: FileSystem,
   resolved: String,
 ) -> Result(BitArray, ReadError) {
@@ -1369,7 +1425,7 @@ fn write_outcome(
     <> path
     <> "\ndigest: "
     <> hashline.digest(content)
-    <> written_anchor_text(content, size)
+    <> written_anchor_text(content)
   tool.success(observed_text(text, observed))
   |> tool.with_details(
     json.Object(observed_fields(
@@ -1389,21 +1445,78 @@ fn write_outcome(
 // annotate it to find that out. Under the cap, the ordinary path runs and
 // the early-stop fold still has the final say — a file of very many very
 // short lines pays more in anchors than in content.
-fn written_anchor_text(content: String, size: Int) -> String {
-  use <- bool.lazy_guard(when: size >= max_fresh_anchor_bytes, return: fn() {
-    oversized_text(write_too_large(hashline.Region(start: 1, end: 1)))
-  })
-  let annotated = hashline.annotate(content)
-  let total_lines = list.length(annotated)
+fn written_anchor_text(content: String) -> String {
+  case written_lines(content) {
+    Error(Nil) ->
+      oversized_text(write_too_large(hashline.Region(start: 1, end: 1)))
+    Ok([]) -> "\n(the file is now empty)"
+    Ok(lines) ->
+      "\n" <> fresh_anchors_heading <> "\n" <> hashline.render_lines(lines)
+  }
+}
 
-  // An empty file yields `Region(1, 0)`, which `fresh_anchor_text` never
-  // renders: it answers the empty-file notice from `total_lines` first.
-  fresh_anchor_text(
-    [hashline.Region(start: 1, end: total_lines)],
-    annotated,
-    total_lines,
-    oversized: write_too_large,
+/// Returns all fresh write anchors only when the existing inline block fits.
+/// The native tool and semantic host share this whole-file shortcut and
+/// rendered-region budget; an omitted block needs a windowed read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert fs.written_lines("") == Ok([])
+/// ```
+pub fn written_lines(
+  content: String,
+) -> Result(List(hashline.AnchoredLine), Nil) {
+  use <- bool.guard(
+    string.byte_size(content) >= max_fresh_anchor_bytes,
+    Error(Nil),
   )
+  let annotated = hashline.annotate(content)
+  let total = list.length(annotated)
+
+  // Empty content has no block; the notice the native tool renders is not
+  // an anchor. Nonempty content pays the same heading and separator bytes.
+  use <- bool.guard(total == 0, Ok([]))
+  use _ <- result.try(
+    rendered_regions(
+      [hashline.Region(start: 1, end: total)],
+      annotated,
+      string.byte_size("\n" <> fresh_anchors_heading <> "\n"),
+      [],
+    ),
+  )
+  Ok(annotated)
+}
+
+/// Resolves a validated relative entry's parent while preserving its leaf.
+/// `search.stat` uses lstat, so following the final symlink would change the
+/// observation. The existing real resolver still contains every parent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.resolve_relative_leaf(filesystem, "/work", relative_path)
+/// // -> Ok("/work/link") even when link itself names an outside target.
+/// ```
+pub fn resolve_relative_leaf(
+  filesystem: FileSystem,
+  workspace: String,
+  path: core_workspace.RelativePath,
+) -> Result(String, PathError) {
+  let relative = core_workspace.path_string(path)
+  use <- bool.lazy_guard(relative == ".", fn() {
+    resolve_real(filesystem, workspace, ".")
+  })
+  use joined <- result.try(resolve_path(workspace, relative))
+  use parent <- result.try(resolve_real(
+    filesystem,
+    workspace,
+    parent_directory(joined),
+  ))
+  use leaf <- result.try(
+    list.last(string.split(relative, "/")) |> result.replace_error(EmptyPath),
+  )
+  Ok(parent <> "/" <> leaf)
 }
 
 // The directory part of an absolute path ("/" for top-level entries).
