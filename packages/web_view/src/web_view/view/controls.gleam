@@ -129,7 +129,8 @@ fn dock_line(
   ])
 }
 
-// The goal, in the terminal's row words, and the buttons its status offers:
+// The goal's buttons, beside the Session tab's Goal row, which words the goal;
+// they are the ones its status offers:
 // a goal that is running can be held, one that is held or stopped short can
 // continue, and any goal can be cleared. The row is keyed by the status, so
 // a change of status is a new row and arms again.
@@ -140,17 +141,13 @@ fn goal(bar: Bar(message)) -> Element(message) {
       html.span([attribute.class("control-goal")], [
         html.text("No goal is pinned. Type /goal and an objective to pin one."),
       ])
-    Some(goal_view.Pinned(status:, ..) as pinned) ->
+    Some(goal_view.Pinned(status:, ..)) ->
       keyed.div([attribute.class("control-goal")], [
         #(
           goal_view.status_word(status),
           html.div(
             [attribute.class("control-actions"), attribute.class("arming")],
             [
-              html.span(
-                [attribute.class("control-goal-text")],
-                list.map(list.take(goal_view.row(pinned), 1), html.text),
-              ),
               steering(status, bar),
               button("control-clear", "Clear goal", bar.clear),
             ],
