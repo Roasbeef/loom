@@ -474,3 +474,40 @@ cleanup witness; it asserts neither Compile success nor native retirement.
 `seal` fences independent opens; `release_endpoint` closes only this connection.
 SQL errors poison the endpoint and lost replies remain uncertain. Tests establish
 real SQLite transitions/recovery, not power-loss durability or physical assembly.
+
+
+## Live Compile association and historical input
+
+`remote/resource_journal.retained_input(book, full_service_key)` reads the existing
+logical-child slot through guarded `ResourceAddress`, `ResourceHeaders` and
+`ResourceBodies` queries. It compares the complete canonical key, body digest and
+pinned enrollment before returning `Input`. This is historical data only, usable
+when the native endpoint is dead or after reopen/sealing; it constructs no Claim,
+clearance, deadline or physical resources. A changed parent/result, physical step,
+UUID, scope or input/registration/contract digest conflicts at the same slot.
+
+`associate_native` remains historical Request/Admit reconciliation. The distinct
+`associate_live_native(original_claim, ref, native_key, prepared_digest)` shares
+its actual pinned-journal readback and fixed-template checks, but additionally
+requires the canonical finite Authority tuple. It checks open scope, Prepared
+state, full original equality and Unassociated inside the final resource writer
+transaction. Only the first association COMMIT returns opaque `NativeLaunchPermit`.
+Duplicate calls, historical association, lost replies and recovery never regenerate
+that permit. Readback occurs outside the writer transaction, followed by full live
+revalidation; no cross-journal transaction or permission column is introduced.
+
+Cancellation which fences the row first blocks live eligibility. Cancellation
+after association follows the exact retained native tuple as in-flight work and
+cannot promise no effect or cancellation before OS start. `native_launch_binding`
+exposes only the original journal/ref/key/digest to the live native continuation;
+`@internal native_endpoint` and `claim_journal` expose fixed local handles so trusted
+routing rejects mismatched endpoints before persisting native input. They make no
+actor ask and reconstruct no authority. Gleam values remain copyable: the adapter
+uses its original continuation at most once, while native AuthorizeLaunch separately
+limits the effect. Expiration stays with the original native clock/deadline; the
+Authority deadline can be negative in that clock era and is never renewed here.
+
+This component supplies the admission/cancellation ordering for the next physical
+adapter. It does not wire transport, perform compilation, forward cancellation or
+prove whole-service retirement. See [remote custody](../../docs/architecture/remote-custody.md)
+for custody layers and the remaining routing/physical assembly obligations.
