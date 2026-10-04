@@ -103,6 +103,7 @@ import broker/policy.{type Grant, type SandboxPolicy}
 import broker/token
 import core/clock.{type Clock}
 import core/ids.{type OpId}
+import core/remote_tool
 import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Subject}
@@ -258,6 +259,7 @@ pub opaque type Broker {
 /// The broker actor's message type. Opaque.
 pub opaque type Msg {
   ClearCall(
+    origin: Option(remote_tool.ChildOrigin),
     spec: CallSpec,
     events: Subject(CallEvent),
     /// The sweep count this caller last observed for the spec's own
@@ -496,7 +498,36 @@ pub fn clear_call(
   events events: Subject(CallEvent),
   waiting timeout: Int,
 ) -> Result(CallHandle, Refusal) {
-  clear_awaiting_helper(broker, spec, events, broker.clock, timeout, None)
+  clear_awaiting_helper(broker, None, spec, events, broker.clock, timeout, None)
+}
+
+/// Clears a call while preserving its durable recovery provenance.
+///
+/// The origin does not grant authority or change pooled budget coordinates.
+/// It reaches the dispatcher unchanged so a remote adapter can bind the cleared
+/// physical request to its durable parent before sending any bytes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// broker.clear_call_from(broker, child, spec, events: events, waiting: 2000)
+/// ```
+pub fn clear_call_from(
+  broker: Broker,
+  origin: remote_tool.ChildOrigin,
+  spec: CallSpec,
+  events events: Subject(CallEvent),
+  waiting timeout: Int,
+) -> Result(CallHandle, Refusal) {
+  clear_awaiting_helper(
+    broker,
+    Some(origin),
+    spec,
+    events,
+    broker.clock,
+    timeout,
+    None,
+  )
 }
 
 // Clears, and on a full pool waits for a slot instead of refusing.
@@ -537,6 +568,7 @@ pub fn clear_call(
 // an exchange it does not expect to win.
 fn clear_awaiting_helper(
   broker: Broker,
+  origin: Option(remote_tool.ChildOrigin),
   spec: CallSpec,
   events: Subject(CallEvent),
   clock: Clock,
@@ -552,7 +584,7 @@ fn clear_awaiting_helper(
     call.try_call(
       broker.subject,
       waiting: int.max(1, remaining),
-      sending: fn(reply) { ClearCall(spec:, events:, since:, reply:) },
+      sending: fn(reply) { ClearCall(origin:, spec:, events:, since:, reply:) },
     ),
   )
   use <- bool.guard(when: !congested(outcome), return: outcome)
@@ -571,7 +603,15 @@ fn clear_awaiting_helper(
   let after_nap = remaining - helper_wait_interval_ms
   use <- bool.guard(when: after_nap < min_retry_window_ms, return: outcome)
   process.sleep(helper_wait_interval_ms)
-  clear_awaiting_helper(broker, spec, events, clock, after_nap, Some(epoch))
+  clear_awaiting_helper(
+    broker,
+    origin,
+    spec,
+    events,
+    clock,
+    after_nap,
+    Some(epoch),
+  )
 }
 
 // use #(outcome, epoch) <- or_unavailable(call.try_call(..))
@@ -863,7 +903,7 @@ fn sweeps_over(state: State, op_id: OpId, step_id: String) -> Int {
 
 fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
   case message {
-    ClearCall(spec:, events:, since:, reply:) -> {
+    ClearCall(origin:, spec:, events:, since:, reply:) -> {
       let epoch = sweeps_over(state, spec.op_id, spec.step_id)
 
       // A clearance that began before a sweep of this operation — or of
@@ -879,7 +919,7 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
       }
       let #(state, outcome) = case resumed_across_abort {
         True -> #(state, Error(OperationAborted))
-        False -> do_clear_call(state, spec, events)
+        False -> do_clear_call(state, origin, spec, events)
       }
       process.send(reply, #(outcome, epoch))
       actor.continue(state)
@@ -1049,6 +1089,7 @@ fn call_of_guarantor(
 
 fn do_clear_call(
   state: State,
+  origin: Option(remote_tool.ChildOrigin),
   spec: CallSpec,
   events: Subject(CallEvent),
 ) -> #(State, Result(CallHandle, Refusal)) {
@@ -1082,13 +1123,14 @@ fn do_clear_call(
     [], _ | [_, ..], ProceedNarrowed ->
       case policy.validate(final_policy) {
         Error(error) -> #(state, Error(InvalidPolicy(error:)))
-        Ok(Nil) -> authorize(state, spec, final_policy, events)
+        Ok(Nil) -> authorize(state, origin, spec, final_policy, events)
       }
   }
 }
 
 fn authorize(
   state: State,
+  origin: Option(remote_tool.ChildOrigin),
   spec: CallSpec,
   final_policy: SandboxPolicy,
   events: Subject(CallEvent),
@@ -1100,13 +1142,14 @@ fn authorize(
   case reserve_budget(state, spec, now) {
     Error(refusal) -> #(state, Error(BudgetRefused(refusal:)))
     Ok(#(state, generation)) ->
-      mint_token(state, spec, final_policy, events, generation)
+      mint_token(state, origin, spec, final_policy, events, generation)
   }
 }
 
 // 3. Token: mint bound to {op_id, step_id, policy, deadline}.
 fn mint_token(
   state: State,
+  origin: Option(remote_tool.ChildOrigin),
   spec: CallSpec,
   final_policy: SandboxPolicy,
   events: Subject(CallEvent),
@@ -1128,6 +1171,7 @@ fn mint_token(
     Ok(#(vault, minted)) ->
       start_execution(
         State(..state, vault:),
+        origin,
         spec,
         final_policy,
         events,
@@ -1141,6 +1185,7 @@ fn mint_token(
 // helper and starts the execution.
 fn start_execution(
   state: State,
+  origin: Option(remote_tool.ChildOrigin),
   spec: CallSpec,
   final_policy: SandboxPolicy,
   events: Subject(CallEvent),
@@ -1165,7 +1210,11 @@ fn start_execution(
     )
   let dispatch_request =
     dispatch.Dispatch(
-      context: dispatch.CallContext(operation: spec.op_id, step: spec.step_id),
+      context: dispatch.CallContext(
+        operation: spec.op_id,
+        step: spec.step_id,
+        origin:,
+      ),
       request:,
       seq: call_id,
       deadline_ms: spec.budget.deadline_ms,

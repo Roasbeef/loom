@@ -149,6 +149,7 @@ import broker/internal/ffi_crypto
 import broker/internal/ffi_os
 import broker/internal/ffi_port
 import broker/policy.{type SandboxPolicy}
+import core/clock
 import core/msgpack
 import envoy
 import gleam/bit_array
@@ -354,7 +355,7 @@ pub type ExecFailure {
   ExecutionLost(cause: LossCause)
 }
 
-/// Which piece of machinery an `ExecutionLost` execution lost. The three
+/// Which piece of machinery an `ExecutionLost` execution lost. These causes
 /// are different facts about the world and a reader debugging a stuck
 /// session needs to tell them apart, although none of them changes what
 /// the caller may do next.
@@ -373,6 +374,11 @@ pub type LossCause {
   /// The executor service closed with the execution still live and settled
   /// it rather than leave its caller waiting for ever.
   ExecutorClosing
+
+  /// The authenticated remote exchange lost definitive outcome evidence.
+  /// The original durable request remains under reconciliation; neither native
+  /// retirement nor permission to submit a replacement follows from this event.
+  RemoteOutcomeUncertain
 }
 
 /// A helper's observable lifecycle position.
@@ -478,6 +484,13 @@ pub opaque type Helper {
   )
 }
 
+// Existing local callers use the relay's aggregate cancellation deadline. A
+// remote admission additionally fences the queued Run at its final BEAM reader.
+type RunWindow {
+  RelayOwned
+  NativeBefore(clock: clock.Clock, deadline_ms: Int)
+}
+
 /// The helper machine's message type: every event it dispatches on,
 /// whether it came from a caller, from the wire, or from one of the two
 /// state timeouts. Opaque; constructed only through this module's API.
@@ -487,6 +500,7 @@ pub opaque type Msg {
   QueryStatus(reply: Subject(HelperStatus))
   Run(
     request: ExecRequest,
+    window: RunWindow,
     events: Subject(ExecEvent),
     reply: Subject(Result(Nil, ExecFailure)),
   )
@@ -935,9 +949,64 @@ pub fn run(
 ) -> Result(Nil, ExecFailure) {
   or_unresponsive(
     call.try_call(helper.commands, waiting: timeout, sending: fn(reply) {
-      Run(request:, events:, reply:)
+      Run(request:, window: RelayOwned, events:, reply:)
     }),
   )
+}
+
+/// Dispatches only while the unchanged native wall policy fits its admission.
+/// The helper actor checks when it consumes Run, after any mailbox delay. An
+/// expired request is NotReady and emits no native exec_start frame. Zero is
+/// reserved for a session lifetime with an explicit zero-wall policy.
+///
+/// This is a monotonic admission check, not a hard real-time guarantee across
+/// scheduler suspension or native port delivery after the check.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // exec.run_before(helper, request, clock, deadline, events: events, waiting: 1000)
+/// ```
+pub fn run_before(
+  helper: Helper,
+  request: ExecRequest,
+  clock: clock.Clock,
+  deadline_ms: Int,
+  events events: Subject(ExecEvent),
+  waiting timeout: Int,
+) -> Result(Nil, ExecFailure) {
+  or_unresponsive(
+    call.try_call(helper.commands, waiting: timeout, sending: fn(reply) {
+      Run(request:, window: NativeBefore(clock, deadline_ms), events:, reply:)
+    }),
+  )
+}
+
+/// Tests the immutable policy against the remaining absolute admission budget.
+/// Missing policy cannot establish either finite or session lifetime authority.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // exec.native_wall_fits(request, clock, deadline_ms)
+/// ```
+pub fn native_wall_fits(
+  request: ExecRequest,
+  clock: clock.Clock,
+  deadline_ms: Int,
+) -> Bool {
+  case request.policy {
+    None -> False
+    Some(policy) ->
+      case deadline_ms == 0 {
+        True -> policy.limits.wall_s == 0
+        False -> {
+          let #(now, _) = clock.read(clock)
+          let remaining = deadline_ms - now
+          policy.limits.wall_s > 0 && remaining >= policy.limits.wall_s * 1000
+        }
+      }
+  }
 }
 
 /// Sends a chunk of stdin to the running execution; `eof: True` closes
@@ -1236,20 +1305,17 @@ fn handle(
     // A dispatch is answered now or never: nothing is postponed here,
     // because a caller that cannot run holds a budget reservation and a
     // deadline, and would rather be refused than parked.
-    Dead(failure:, ..), Run(request: _, events: _, reply:) ->
-      refuse_run(data, reply, failure)
+    Dead(failure:, ..), Run(reply:, ..) -> refuse_run(data, reply, failure)
 
-    AwaitingHello, Run(request: _, events: _, reply:) ->
-      refuse_run(data, reply, NotReady)
+    AwaitingHello, Run(reply:, ..) -> refuse_run(data, reply, NotReady)
 
     // One helper runs one execution at a time, and a cancel in flight is
     // still an execution in flight.
-    Running(..), Run(request: _, events: _, reply:)
-    | Cancelling(..), Run(request: _, events: _, reply:)
-    -> refuse_run(data, reply, HelperBusy)
+    Running(..), Run(reply:, ..) | Cancelling(..), Run(reply:, ..) ->
+      refuse_run(data, reply, HelperBusy)
 
-    Idle(features:), Run(request:, events:, reply:) ->
-      handle_run(data, features, request, events, reply)
+    Idle(features:), Run(request:, window:, events:, reply:) ->
+      handle_run(data, features, request, window, events, reply)
 
     // Stdin follows the execution rather than the phase: a payload that
     // has been TERMed but has not exited may still be reading.
@@ -1725,10 +1791,19 @@ fn handle_run(
   data: Data,
   features: List(String),
   request: ExecRequest,
+  window: RunWindow,
   events: Subject(ExecEvent),
   reply: Subject(Result(Nil, ExecFailure)),
 ) -> state_machine.Next(Phase, Data, Msg) {
-  case events_owner_alive(events), request.demand, degraded_features(features) {
+  let timely = case window {
+    RelayOwned -> True
+    NativeBefore(clock, deadline) -> native_wall_fits(request, clock, deadline)
+  }
+  case
+    timely && events_owner_alive(events),
+    request.demand,
+    degraded_features(features)
+  {
     False, _, _ -> refuse_run(data, reply, NotReady)
     True, FullEnforcement, True ->
       refuse_run(data, reply, DegradedHelper(features:))
