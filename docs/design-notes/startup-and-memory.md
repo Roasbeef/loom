@@ -124,14 +124,18 @@ place in its cleanup ordering, the part of session teardown that guards the
 lease. That is the owner's call. The code-mode duplicate needs `CodeMode` to
 carry one closure where it carries two.
 
-**A reopen decodes every entry once.** The gateway primes itself at open by
-pulling above a high-water of zero, which builds the entry-to-strand
-attribution cache from every entry in the session: 2,438 entries and 9.5 MB
-for the bench session, most of the 650 ms between the open request and
-resident. The cache needs each entry's id, seq and parent, never its payload,
-but the storage interface has no read that answers those without decoding;
-adding one changes the frozen interface in spec Part 1.2, so it is a
-`protocol-change/` proposal rather than an edit.
+**A reopen decodes every entry once: repaired.** The gateway primes itself at
+open by pulling above a high-water of zero, which built the entry-to-strand
+attribution cache from every entry in the session: 2,438 entries and 9.5 MB for
+the bench session, most of the 650 ms between the open request and resident.
+The cache needs each entry's id, seq and parent, never its payload.
+[protocol-change/066](../../protocol-change/066-entry-heads-scan.md) adds
+`scan_entry_heads` to the storage interface, and the prime now reads heads and
+shares one attribution function with the decoding pull. Scenario f, ten
+alternating runs against the same window's baseline: the transcript is drawn at
+734 ms against 1040 ms (-29%), and the daemon's peak RSS is 129.8 MiB against
+172.4 MiB (-25%), since the decoded entries are no longer allocated. Time to the
+first frame is unchanged, as it was never waiting on the prime.
 
 Two costs the bench sees are its own. The bench model is unreachable, so the
 on-boot distillation pass never advances its cursor and re-reads the first

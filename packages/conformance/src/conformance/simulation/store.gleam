@@ -99,6 +99,10 @@ pub fn instrument(
         use <- guarded(ctl, schedule, read_faults)
         storage.scan_entries(inner, query)
       },
+      scan_entry_heads: fn(_handle, query) {
+        use <- guarded(ctl, schedule, read_faults)
+        storage.scan_entry_heads(inner, query)
+      },
       scan_usage: fn(_handle, query) {
         use <- guarded(ctl, schedule, read_faults)
         storage.scan_usage(inner, query)

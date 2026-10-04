@@ -238,7 +238,7 @@ import runtime/writer
 import session/session
 import storage/access
 import storage/snapshot
-import storage/storage
+import storage/storage.{type EntryHead}
 import telemetry/owner
 import tools/history
 import tools/tool.{type Registry}
@@ -1074,8 +1074,9 @@ fn start_with_delivery(
     // the live operations so the next pull sees changes, not history.
     // Both deliveries need it now that a network hub pushes on a hint —
     // an unprimed one would answer its first commit with a notice for
-    // every sequence the store already held.
-    let state = pull(state).0
+    // every sequence the store already held. The prime emits nothing, so
+    // it reads the entries' heads rather than decoding their payloads.
+    let state = prime(state)
     actor.initialised(state)
     |> actor.selecting(process.select_monitors(selector, SocketDown))
     |> actor.returning(Gateway(name:))
@@ -2948,7 +2949,7 @@ fn pull(state: State) -> #(State, List(Emit)) {
   //    completeness pass for entries no leaf covers (e.g. a branch
   //    summary left behind by a navigation).
   let #(entry_strand, entry_emits) =
-    new_entries(state, strands, hw, state.entry_strand)
+    new_entries(state.runtime.session, strands, hw, state.entry_strand)
 
   // 2. New usage-ledger rows.
   let usage_emits = new_usage(state, entry_strand, hw)
@@ -2973,9 +2974,99 @@ fn pull(state: State) -> #(State, List(Emit)) {
   // so nothing re-emits and nothing is skipped. Advancing further
   // (e.g. to a register tail read *after* the scans) would race a
   // commit landing between the reads and silently drop its events.
-  let high_water =
-    list.fold(emits, hw, fn(highest, emit) { int.max(highest, emit.seq) })
+  let high_water = greatest_seq(emits, hw)
   #(State(..state, high_water:, live:, entry_strand:), emits)
+}
+
+// Opens a session's gateway at the end of its history: the same `high_water`,
+// `live` and `entry_strand` that `pull` at a high-water of zero would leave,
+// without building any emit.
+//
+// A pull has to decode every entry because it hands each one to a peer. The
+// prime hands them to nobody, and what it keeps of an entry is its strand
+// and its seq, so the entries come from `learn_entries`, which reads only
+// their heads. On a long session the payloads are most of the bytes, and
+// decoding them was the larger part of reopening it. The usage, register and
+// escalation sources are the ones `pull` runs; the high-water is the
+// greatest seq any of them, or the entries, reached, exactly as in `pull`.
+fn prime(state: State) -> State {
+  let hw = state.high_water
+  let strands = strand_names(state)
+  let #(entry_strand, entry_top) =
+    learn_entries(state.runtime.session, strands, hw, state.entry_strand)
+  let usage_emits = new_usage(state, entry_strand, hw)
+  let #(live, register_emits) = register_events(state, strands, hw)
+  let escalation_emits = escalation_events(state, hw)
+  let high_water =
+    [usage_emits, register_emits, escalation_emits]
+    |> list.flatten
+    |> greatest_seq(entry_top)
+  State(..state, high_water:, live:, entry_strand:)
+}
+
+// The greatest seq among the emits, or `floor` when none exceeds it. An emit
+// at or below the floor has been reported already and never lowers it.
+fn greatest_seq(emits: List(Emit), floor: Int) -> Int {
+  list.fold(emits, floor, fn(highest, emit) { int.max(highest, emit.seq) })
+}
+
+/// What the entry source of a gateway's first pull leaves behind: the
+/// greatest seq it reached, and each entry's attribution as an
+/// `#(entry id, "kind:strand")` pair sorted by id.
+///
+/// Only the equivalence tests read it. The prime and the decoding pull
+/// are meant to leave the same entry cache and the same entry high-water,
+/// and the cache and `State` are private, so this is the narrowest view
+/// that lets a test compare them.
+@internal
+pub type EntryHistory {
+  EntryHistory(high_water: Int, attribution: List(#(String, String)))
+}
+
+/// The entry history the prime builds, from heads alone.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.entry_history_by_heads(runtime.session)
+/// ```
+@internal
+pub fn entry_history_by_heads(store: session.Session) -> EntryHistory {
+  let #(cache, high_water) =
+    learn_entries(store, strand_names_in(store), 0, dict.new())
+  render_entry_history(cache, high_water)
+}
+
+/// The entry history a decoding pull at a high-water of zero builds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.entry_history_by_decoding(runtime.session)
+/// ```
+@internal
+pub fn entry_history_by_decoding(store: session.Session) -> EntryHistory {
+  let #(cache, emits) =
+    new_entries(store, strand_names_in(store), 0, dict.new())
+  render_entry_history(cache, greatest_seq(emits, 0))
+}
+
+fn render_entry_history(
+  cache: Dict(String, EntryAttribution),
+  high_water: Int,
+) -> EntryHistory {
+  let attribution =
+    dict.to_list(cache)
+    |> list.map(fn(pair) {
+      let label = case pair.1 {
+        BranchOwned(strand:) -> "owned:" <> strand
+        Unverified(strand:) -> "unverified:" <> strand
+        Shared(strand:) -> "shared:" <> strand
+      }
+      #(pair.0, label)
+    })
+    |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+  EntryHistory(high_water:, attribution:)
 }
 
 fn dedupe_by_seq(emits: List(Emit)) -> List(Emit) {
@@ -2991,13 +3082,11 @@ fn dedupe_by_seq(emits: List(Emit)) -> List(Emit) {
 }
 
 fn strand_names(state: State) -> List(String) {
-  case
-    storage.list_registers(
-      state.runtime.session.store,
-      register.StrandConfig,
-      None,
-    )
-  {
+  strand_names_in(state.runtime.session)
+}
+
+fn strand_names_in(store: session.Session) -> List(String) {
+  case storage.list_registers(store.store, register.StrandConfig, None) {
     Ok(cells) ->
       cells
       |> list.map(fn(cell) { cell.0 })
@@ -3019,15 +3108,19 @@ fn strand_names(state: State) -> List(String) {
 // history, so on a long session that second decode was a third of opening
 // it.
 //
+// Who owns which entry is decided by `attribute` over the rows' heads, the
+// same function the prime applies to heads read without their payloads, so
+// the two cannot disagree about a claim. This function adds only what a
+// pull needs and the prime does not: each claim becomes an entry emit.
+//
 // When the read fails nothing is claimed, and the high-water stays where
 // it was for the next pull to try again.
 fn new_entries(
-  state: State,
+  store: session.Session,
   strands: List(String),
   hw: Int,
   cache: Dict(String, EntryAttribution),
 ) -> #(Dict(String, EntryAttribution), List(Emit)) {
-  let store = state.runtime.session
   case
     storage.scan_entries(
       store.store,
@@ -3037,116 +3130,186 @@ fn new_entries(
   {
     Error(_) -> #(cache, [])
     Ok(rows) -> {
+      let #(cache, attributed) =
+        attribute(store, strands, list.map(rows, storage.entry_head_of), cache)
+
+      // Every claim names a head derived from these rows a moment ago, so
+      // the lookup cannot miss; `filter_map` states that by having no arm
+      // that does anything with a miss.
       let by_id =
         list.fold(rows, dict.new(), fn(by_id, row) {
           dict.insert(by_id, ids.entry_id_to_string(entry_id_of(row)), row)
         })
-
-      // Per-strand branches above the high-water attribute entries to
-      // the strand whose branch they extend.
-      let #(cache, claimed) =
-        list.fold(strands, #(cache, []), fn(accumulator, strand) {
-          claim_branch(store, by_id, strand, accumulator)
-        })
-
-      // Completeness pass: whatever the leaves missed, attributed through
-      // the parent chain (fallback: the first strand).
-      let fallback = case strands {
-        [first, ..] -> first
-        [] -> "main"
-      }
-      list.fold(rows, #(cache, claimed), fn(accumulator, row) {
-        claim_by_parent(accumulator, row, fallback)
-      })
+      #(
+        cache,
+        list.filter_map(attributed, fn(claim) {
+          dict.get(by_id, ids.entry_id_to_string(claim.head.id))
+          |> result.map(entry_emit(claim.strand, _))
+        }),
+      )
     }
   }
 }
 
+// What a prime keeps of the entries above the high-water: the attribution
+// cache and the greatest seq they reach, built from heads alone.
+//
+// Every entry read is claimed by one of `attribute`'s two passes, so each
+// one a pull would have emitted is counted here, and the greatest of their
+// seqs is the entry source's contribution to the high-water. A failed read
+// claims nothing and leaves the cache and the high-water as they were.
+fn learn_entries(
+  store: session.Session,
+  strands: List(String),
+  hw: Int,
+  cache: Dict(String, EntryAttribution),
+) -> #(Dict(String, EntryAttribution), Int) {
+  case
+    storage.scan_entry_heads(
+      store.store,
+      storage.entry_scan()
+        |> storage.entry_seq_range(Some(hw + 1), None),
+    )
+  {
+    Error(_) -> #(cache, hw)
+    Ok(heads) -> {
+      let #(cache, _attributed) = attribute(store, strands, heads, cache)
+      #(
+        cache,
+        list.fold(heads, hw, fn(highest, head) { int.max(highest, head.seq) }),
+      )
+    }
+  }
+}
+
+// An entry a pull would emit, with the strand it would emit it under.
+type Attributed {
+  Attributed(strand: String, head: EntryHead)
+}
+
+// The claim rules, over heads: which strand each entry above the
+// high-water belongs to, and in what order the claims were made. Both a
+// pull and a prime run exactly this, so the rules exist once; the claims
+// come back newest first, as a fold leaves them.
+//
+// Each strand's branch is claimed first, in strand order, and an entry
+// two branches reach becomes `Shared`. A completeness pass then claims
+// whatever no leaf covered, through its parent's attribution, falling
+// back to the first strand.
+fn attribute(
+  store: session.Session,
+  strands: List(String),
+  heads: List(EntryHead),
+  cache: Dict(String, EntryAttribution),
+) -> #(Dict(String, EntryAttribution), List(Attributed)) {
+  let by_id =
+    list.fold(heads, dict.new(), fn(by_id, head) {
+      dict.insert(by_id, ids.entry_id_to_string(head.id), head)
+    })
+
+  // Per-strand branches above the high-water attribute entries to
+  // the strand whose branch they extend.
+  let #(cache, claimed) =
+    list.fold(strands, #(cache, []), fn(accumulator, strand) {
+      claim_branch(store, by_id, strand, accumulator)
+    })
+
+  // Completeness pass: whatever the leaves missed, attributed through
+  // the parent chain (fallback: the first strand).
+  let fallback = case strands {
+    [first, ..] -> first
+    [] -> "main"
+  }
+  list.fold(heads, #(cache, claimed), fn(accumulator, head) {
+    claim_by_parent(accumulator, head, fallback)
+  })
+}
+
 // One strand's branch above the high-water, oldest first, folded into the
-// running cache/emits pair. A strand with no leaf, or whose leaf is at or
+// running cache/claims pair. A strand with no leaf, or whose leaf is at or
 // below the high-water, contributes nothing.
 fn claim_branch(
   store: session.Session,
-  by_id: Dict(String, Entry),
+  by_id: Dict(String, EntryHead),
   strand: String,
-  accumulator: #(Dict(String, EntryAttribution), List(Emit)),
-) -> #(Dict(String, EntryAttribution), List(Emit)) {
+  accumulator: #(Dict(String, EntryAttribution), List(Attributed)),
+) -> #(Dict(String, EntryAttribution), List(Attributed)) {
   case session.strand_leaf(store, strand) {
     Ok(Some(session.Cell(value: Some(leaf), ..))) ->
       root_path(by_id, ids.entry_id_to_string(leaf), [], dict.size(by_id))
-      |> list.fold(accumulator, fn(accumulator, row) {
-        claim_row(accumulator, strand, row)
+      |> list.fold(accumulator, fn(accumulator, head) {
+        claim_row(accumulator, strand, head)
       })
     _ -> accumulator
   }
 }
 
 // Follows parent links from `id` through `by_id`, answering the path root
-// first. It stops at the first entry the rows do not hold, and after at
-// most as many steps as there are rows, so a parent cycle in a corrupt
+// first. It stops at the first entry the heads do not hold, and after at
+// most as many steps as there are heads, so a parent cycle in a corrupt
 // store ends the walk instead of looping.
 fn root_path(
-  by_id: Dict(String, Entry),
+  by_id: Dict(String, EntryHead),
   id: String,
-  path: List(Entry),
+  path: List(EntryHead),
   steps: Int,
-) -> List(Entry) {
+) -> List(EntryHead) {
   case steps > 0, dict.get(by_id, id) {
-    True, Ok(row) ->
-      case entry_parent_of(row) {
+    True, Ok(head) ->
+      case head.parent {
         Some(parent) ->
           root_path(
             by_id,
             ids.entry_id_to_string(parent),
-            [row, ..path],
+            [head, ..path],
             steps - 1,
           )
-        None -> [row, ..path]
+        None -> [head, ..path]
       }
     False, _ | _, Error(Nil) -> path
   }
 }
 
-// Claims one row for `strand` unless the cache already has it (a row
+// Claims one entry for `strand` unless the cache already has it (an entry
 // another strand's branch already attributed).
 fn claim_row(
-  accumulator: #(Dict(String, EntryAttribution), List(Emit)),
+  accumulator: #(Dict(String, EntryAttribution), List(Attributed)),
   strand: String,
-  row: Entry,
-) -> #(Dict(String, EntryAttribution), List(Emit)) {
-  let #(cache, emits) = accumulator
-  let id = ids.entry_id_to_string(entry_id_of(row))
+  head: EntryHead,
+) -> #(Dict(String, EntryAttribution), List(Attributed)) {
+  let #(cache, claims) = accumulator
+  let id = ids.entry_id_to_string(head.id)
   case dict.get(cache, id) {
     Error(Nil) -> #(dict.insert(cache, id, BranchOwned(strand)), [
-      entry_emit(strand, row),
-      ..emits
+      Attributed(strand:, head:),
+      ..claims
     ])
-    Ok(BranchOwned(existing)) if existing == strand -> #(cache, emits)
+    Ok(BranchOwned(existing)) if existing == strand -> #(cache, claims)
     Ok(Unverified(existing)) if existing == strand -> #(
       dict.insert(cache, id, BranchOwned(strand)),
-      emits,
+      claims,
     )
     Ok(existing) -> #(
       dict.insert(cache, id, Shared(entry_attribution_strand(existing))),
-      emits,
+      claims,
     )
   }
 }
 
-// Claims one row the branch scans missed, by walking its parent's
+// Claims one entry the branch scans missed, by walking its parent's
 // attribution (or the fallback strand when the parent is unattributed
 // too).
 fn claim_by_parent(
-  accumulator: #(Dict(String, EntryAttribution), List(Emit)),
-  row: Entry,
+  accumulator: #(Dict(String, EntryAttribution), List(Attributed)),
+  head: EntryHead,
   fallback: String,
-) -> #(Dict(String, EntryAttribution), List(Emit)) {
-  let #(cache, emits) = accumulator
-  let id = ids.entry_id_to_string(entry_id_of(row))
+) -> #(Dict(String, EntryAttribution), List(Attributed)) {
+  let #(cache, claims) = accumulator
+  let id = ids.entry_id_to_string(head.id)
   case dict.has_key(cache, id) {
-    True -> #(cache, emits)
+    True -> #(cache, claims)
     False -> {
-      let strand = case entry_parent_of(row) {
+      let strand = case head.parent {
         Some(parent) ->
           case dict.get(cache, ids.entry_id_to_string(parent)) {
             Ok(attribution) -> entry_attribution_strand(attribution)
@@ -3155,8 +3318,8 @@ fn claim_by_parent(
         None -> fallback
       }
       #(dict.insert(cache, id, Unverified(strand)), [
-        entry_emit(strand, row),
-        ..emits
+        Attributed(strand:, head:),
+        ..claims
       ])
     }
   }
@@ -3478,15 +3641,6 @@ fn entry_seq_of(row: Entry) -> Int {
     entry.CompactionEntry(seq:, ..) -> seq
     entry.BranchSummaryEntry(seq:, ..) -> seq
     entry.CustomEntry(seq:, ..) -> seq
-  }
-}
-
-fn entry_parent_of(row: Entry) -> Option(EntryId) {
-  case row {
-    entry.MessageEntry(parent:, ..) -> parent
-    entry.CompactionEntry(parent:, ..) -> parent
-    entry.BranchSummaryEntry(parent:, ..) -> parent
-    entry.CustomEntry(parent:, ..) -> parent
   }
 }
 
