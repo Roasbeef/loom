@@ -1006,3 +1006,30 @@ also ask the daemon to open a saved session its principal operates or owns, whic
 the principal's own `loom` could already do through `sessions.open`. It consumes
 registry capacity at a browser's request, within the bounds a terminal's open
 has, and cannot open a session the principal only observes or does not hold.
+
+## Addendum: credential kinds, the seventh pull request (2026-10-04)
+
+**Status**: IMPLEMENTED in the change that adds it. It builds the design note's
+PR 7 and changes no frozen interface; the catalogue schema is not a Part 1
+contract.
+
+**What it builds.** The `kind`, `issued_at_ms` and `last_resumed_ms` columns of
+the "Storage" section, as the migration `sql/catalogue_credential_kinds.sql`.
+`access.authenticate` and `access.claim` take a `CredentialKind`;
+`access_credential` carries `AND kind = ?`; `principal_active_credential` and
+`active_member_credentials` carry `kind = 'bearer'`; and `credential` in
+`client/daemon/server.gleam` refuses a presented bearer that is not 64
+lowercase hex before hashing it.
+
+**The smallest reading, and where it stops.** No browser login exists yet, so
+every grant is `ui.link`'s and every wire path is a bearer: the manager fixes
+`Bearer` in one function, `bearer_principal`, and a grant will carry its kind
+when PR 8 mints the first `Browser` grant. A digest is one primary key across
+both kinds, so the checks that a digest is free (`create_member`, enrollment,
+`claim`, `rotate_credential`) and `revoke_credential` ask both kinds; only an
+authentication names one. The shape check reuses `access.credential_digest`,
+since a credential and a digest are the same 64-character shape.
+
+**The version number.** This is catalogue version 5 because `main` is at 4. The
+session-subtitle change (#806) also adds a migration and will take whichever
+number lands second; the later of the two renumbers at merge.

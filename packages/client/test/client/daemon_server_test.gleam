@@ -380,7 +380,7 @@ pub fn rejected_credentials_and_v1_paths_do_not_upgrade_test() {
 
 pub fn member_authority_is_checked_again_on_each_control_request_test() {
   fixture(fn(_, ready, port, _) {
-    let credential = "member-wire-token"
+    let credential = string.repeat("1", 64)
     let assert Ok(digest) =
       credential
       |> bit_array.from_string
@@ -778,7 +778,7 @@ pub fn owner_deletes_only_a_stopped_session_and_unlinks_its_files_test() {
 
 pub fn a_member_cannot_delete_a_session_it_can_read_test() {
   fixture(fn(_, ready, port, _) {
-    let credential = "member-delete-token"
+    let credential = string.repeat("2", 64)
     let assert Ok(digest) =
       credential
       |> bit_array.from_string
@@ -1211,7 +1211,7 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
     assert peer_cli.exchange(address, owner, "stale", link)
       == Error("control handshake failed; request not sent")
       as "a stale published epoch prevents the CLI from sending a mutation"
-    let member_token = "peer-cli-member-token"
+    let member_token = string.repeat("3", 64)
     let assert Ok(digest) =
       member_token
       |> bit_array.from_string
@@ -1510,7 +1510,7 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
 
     // A member may read the catalogue but may not ask sessions what they
     // are doing, even one it operates.
-    let member = "activity-member-token"
+    let member = string.repeat("4", 64)
     let assert Ok(digest) =
       member
       |> bit_array.from_string
@@ -1539,5 +1539,125 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
     assert field(field(denied, "body"), "code") == json.String("forbidden")
     let _ = ffi_ws.tcp_close(socket)
     assert catalogue.close(store) == Ok(Nil)
+  })
+}
+
+fn sha256_hex(text: String) -> String {
+  text
+  |> bit_array.from_string
+  |> bootstrap.sha256
+  |> bit_array.base16_encode
+  |> string.lowercase
+}
+
+fn digest_of(text: String) -> access.Digest {
+  let assert Ok(digest) = access.credential_digest(sha256_hex(text))
+    as "fixture digest is valid"
+  digest
+}
+
+// A bearer is refused on its shape before it is hashed. Each malformed string
+// below is registered as a member's credential first, so a daemon that skipped
+// the shape check and hashed it would find the row and admit it: the 401 is
+// the check, not a missing credential.
+pub fn a_bearer_that_is_not_64_lowercase_hex_is_refused_before_any_lookup_test() {
+  fixture(fn(_, ready, port, _) {
+    let valid = string.repeat("a", 64)
+    let malformed = [
+      string.repeat("a", 63),
+      string.repeat("a", 65),
+      string.repeat("A", 64),
+      string.repeat("g", 64),
+      "loomb1:" <> string.repeat("a", 57),
+    ]
+    let assert Ok(store) = catalogue.open(ready.state_root <> "/catalogue.db")
+      as "fixture administration opens the same durable catalogue"
+    let assert Ok(_) =
+      access.create_member(store, "shaped", "Shaped", digest_of(valid))
+      as "the well-formed member exists"
+    list.index_map(malformed, fn(token, index) {
+      let assert Ok(_) =
+        access.create_member(
+          store,
+          "malformed-" <> int.to_string(index),
+          "Malformed",
+          digest_of(token),
+        )
+        as "a member holds a credential whose plaintext is malformed"
+      Nil
+    })
+    assert catalogue.close(store) == Ok(Nil)
+
+    let #(socket, response) = connect(port, valid, "/v2/control")
+    assert string.contains(response, "101")
+    let _ = ffi_ws.tcp_close(socket)
+    list.each(malformed, fn(token) {
+      let #(socket, response) = connect(port, token, "/v2/control")
+      assert string.contains(response, "401")
+        as "a malformed bearer never authenticates, whatever row its hash names"
+      let _ = ffi_ws.tcp_close(socket)
+      Nil
+    })
+  })
+}
+
+// 065's attack. A browser login's row is keyed by the digest of the token's
+// public identifier, so every holder of the cookie can compute the key. The
+// identifier, the whole token and that digest, each presented as a bearer on
+// /v2/control, must stay 401 while the row exists.
+pub fn a_browser_row_authenticates_on_no_v2_route_test() {
+  fixture(fn(_, ready, port, owner_credential) {
+    let identifier = string.repeat("5", 64)
+    let token = "loomb1:" <> identifier <> "." <> string.repeat("6", 64)
+    let assert Ok(claim) = access.claim_digest(string.repeat("7", 64))
+      as "claim digest is valid"
+    let assert Ok(store) = catalogue.open(ready.state_root <> "/catalogue.db")
+      as "fixture administration opens the same durable catalogue"
+    let assert Ok(visible) =
+      manager.create(
+        ready.registry,
+        manager.Creation("visible", ready.state_root, "Visible", ""),
+        directory: ready.sessions_directory,
+        generator: ids.generator(clock.fixed(0), 100),
+      )
+      as "a session for the membership"
+    let assert Ok(member) =
+      access.invite_member(
+        store,
+        "login-holder",
+        "Login holder",
+        access.ClaimEnrollment(claim, 4_000_000_000_000),
+        visible.registration.id,
+        access.Operator,
+      )
+      as "the member awaits its claim"
+    let assert Ok(_) =
+      access.claim(
+        store,
+        claim,
+        digest_of(identifier),
+        access.Browser,
+        None,
+        1,
+        fn(a, b) { a == b },
+      )
+      as "the browser row is bound"
+    assert access.authenticate(store, digest_of(identifier), access.Browser)
+      == Ok(member)
+    assert catalogue.close(store) == Ok(Nil)
+
+    list.each([identifier, token, sha256_hex(identifier)], fn(presented) {
+      let #(socket, response) = connect(port, presented, "/v2/control")
+      assert string.contains(response, "401")
+        as "nothing derived from a browser login authenticates as a bearer"
+      let _ = ffi_ws.tcp_close(socket)
+      Nil
+    })
+
+    // The owner's bearer is unaffected by the row's existence.
+    let #(socket, response) = connect(port, owner_credential, "/v2/control")
+    assert string.contains(response, "101")
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
   })
 }

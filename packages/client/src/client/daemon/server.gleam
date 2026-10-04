@@ -726,6 +726,13 @@ fn authenticated(config: Config(instance), request, target) {
   }
 }
 
+// The bearer reader for `/v2/control` and the session attach. A credential
+// the daemon or `loom claim` draws is exactly 64 lowercase hex characters, so
+// any other presented string is refused here, before it is hashed and before
+// the catalogue is read. `access.credential_digest` is the shape check, since
+// a credential and its digest have the same 64-character shape. This narrows
+// what reaches the catalogue; the `Bearer` kind in the lookup is what decides
+// which row can match (protocol-change/065).
 fn credential(request) {
   use header <- result.try(
     request.get_header(request, "authorization")
@@ -736,7 +743,11 @@ fn credential(request) {
     string.starts_with(header, "Bearer ") && string.byte_size(header) <= 4096
   {
     False -> Error("unauthorized")
-    True ->
+    True -> {
+      use _shape <- result.try(
+        access.credential_digest(token)
+        |> result.replace_error("unauthorized"),
+      )
       token
       |> bit_array.from_string
       |> bootstrap.sha256
@@ -744,6 +755,7 @@ fn credential(request) {
       |> string.lowercase
       |> access.credential_digest
       |> result.replace_error("unauthorized")
+    }
   }
 }
 
