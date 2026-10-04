@@ -346,11 +346,12 @@ fn entry_seq(value: entry.Entry) -> Int {
 }
 
 // The `code_mode` calls among entries given oldest first, each with the
-// result that answers it when one has arrived.
+// result that answers it when one has arrived. `tool_activity.calls` keeps a
+// call made beside visible reasoning or text, which the transcript's
+// projection folds into a prose row.
 fn code_mode_calls(entries: List(entry.Entry)) -> List(tool_activity.Call) {
   entries
-  |> tool_activity.project
-  |> list.flat_map(calls)
+  |> tool_activity.calls
   |> list.filter(fn(call) { call.invocation.name == "code_mode" })
 }
 
@@ -397,15 +398,6 @@ pub fn source_rows(program: String) -> List(String) {
         <> " more lines · the transcript has the rest",
       ])
     _ -> shown
-  }
-}
-
-// The calls of a tool group. Prose, and a result whose call is outside the
-// window, hold none.
-fn calls(item: tool_activity.Item) -> List(tool_activity.Call) {
-  case item {
-    tool_activity.Tools(calls:) -> calls
-    tool_activity.Narrative(_) -> []
   }
 }
 

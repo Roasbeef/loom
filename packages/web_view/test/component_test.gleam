@@ -290,7 +290,11 @@ pub fn the_heading_names_the_session_and_its_workspace_test() {
         workspace: "/home/me/src/loom/",
       )),
     )
-  let html = element.to_string(component.heading(component.new(start)))
+  let html =
+    element.to_string(component.heading(
+      component.new(start),
+      component.GoingHome,
+    ))
   assert string.contains(
     html,
     "<h1 title=\"0f8e2a41-5d3c-4b7a-9e61-2c4d8b9f1a30\">review &lt;auth&gt;</h1>",
@@ -314,7 +318,11 @@ pub fn a_session_without_a_name_is_named_by_its_short_identity_test() {
     )
   let unknown = component.Start(..page_fixture.start(), session_id: id)
   list.each([unnamed, unknown], fn(start) {
-    let html = element.to_string(component.heading(component.new(start)))
+    let html =
+      element.to_string(component.heading(
+        component.new(start),
+        component.GoingHome,
+      ))
     assert string.contains(html, ">Session 0f8e2a41</h1>")
     assert string.contains(html, "title=\"" <> id <> "\"")
     assert !string.contains(html, "class=\"workspace\"")

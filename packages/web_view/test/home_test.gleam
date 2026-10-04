@@ -4,9 +4,10 @@
 ////
 //// These tests pin what the page lists and in what order, that resident and
 //// saved are told apart in words, that every catalogue field is drawn as
-//// escaped text, that the view attaches no handler (so the socket has nothing
-//// to admit), when the page reads its list, and how a page that can no longer
-//// be served ends.
+//// escaped text, that the only handlers are a running session's row beneath the
+//// two regions the socket admits and that a press asks the daemon for a ticket,
+//// when the page reads its list, and how a page that can no longer be served
+//// ends.
 
 import gleam/erlang/process.{type Subject}
 import gleam/list
@@ -43,7 +44,13 @@ fn listing() -> List(Entry) {
 }
 
 fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
-  home.Start(name: "Alice", ceiling:, refresh_ms: 5, sessions: read)
+  home.Start(
+    name: "Alice",
+    ceiling:,
+    refresh_ms: 5,
+    sessions: read,
+    open: fn(_) { sessions.Declined(sessions.NotHeld) },
+  )
 }
 
 fn start() -> home.Start {
@@ -162,20 +169,98 @@ pub fn the_page_escapes_what_the_catalogue_holds_test() {
   assert string.contains(html, "/src/&lt;x&gt;")
 }
 
-// The page attaches no handler anywhere, at either ceiling, so the daemon's
-// socket has no event to admit and admits none; and no row is a link, a form
-// or a button.
-pub fn the_page_draws_text_only_and_no_handler_test() {
+// Two running sessions, `A` and `B`, are the only rows with a press: each is a
+// button in the table and another in the sidebar, so four handlers in all, each
+// a click beneath one of the two regions the daemon's socket admits, at either
+// ceiling. A saved session's row is text, and nothing is a link or a form.
+pub fn only_running_rows_carry_a_press_beneath_the_two_regions_test() {
   let #(operator, _) = opened(start())
   let #(observer, _) =
     opened(start_with(home.ObserverCeiling, fn() { home.Listed(listing()) }))
-  assert handlers(home.view(operator)) == []
-  assert handlers(home.view(observer)) == []
-  let html = drawn(operator)
-  assert !string.contains(html, "<button")
-  assert !string.contains(html, "<a ")
-  assert !string.contains(html, "<form")
-  assert !string.contains(html, "href")
+  list.each([operator, observer], fn(model) {
+    let keys = handlers(home.view(model))
+    assert list.length(keys) == 4
+    assert list.all(keys, fn(key) {
+      string.ends_with(key, "\nclick")
+      && {
+        string.starts_with(key, home.table_path <> "\t")
+        || string.starts_with(key, home.sidebar_path <> "\t")
+      }
+    })
+    assert list.length(
+        list.filter(keys, string.starts_with(_, home.table_path <> "\t")),
+      )
+      == 2
+    let html = element.to_string(home.view(model))
+    assert list.length(string.split(html, "<button")) == 5
+    assert !string.contains(html, "<a ")
+    assert !string.contains(html, "<form")
+    assert !string.contains(html, "href")
+  })
+}
+
+// A press asks the daemon to open the row's session in the component's own
+// process, and a ticket becomes the address the hidden element navigates to.
+pub fn a_press_asks_for_a_ticket_and_the_answer_is_the_address_test() {
+  let asked = process.new_subject()
+  let ticket = "/ui/sessions/A?ticket=t"
+  let #(model, _) =
+    opened(
+      home.Start(..start(), open: fn(id) {
+        process.send(asked, id)
+        sessions.Ticketed(ticket)
+      }),
+    )
+  let model = run(model, home.Opening("A"))
+  assert process.receive(asked, 0) == Ok("A")
+  let html = drawn(model)
+  assert string.contains(html, "to=\"" <> ticket <> "\"")
+  assert string.contains(html, "<loom-switch hidden")
+  assert string.contains(html, "Opening that session.")
+}
+
+// A refusal is worded in the reason's fixed words, draws no address, and
+// leaves the page connected.
+pub fn a_refusal_is_fixed_words_and_no_address_test() {
+  let #(model, _) =
+    opened(
+      home.Start(..start(), open: fn(_) {
+        sessions.Declined(sessions.NotRunning)
+      }),
+    )
+  let model = run(model, home.Opening("A"))
+  let html = drawn(model)
+  assert string.contains(html, sessions.reason_words(sessions.NotRunning))
+  assert !string.contains(html, " to=")
+  assert home.status(model) == home.Connected
+}
+
+// A page that ended asks for nothing.
+pub fn an_ended_page_asks_for_no_ticket_test() {
+  let asked = process.new_subject()
+  let #(model, _) =
+    opened(
+      home.Start(..start(), open: fn(id) {
+        process.send(asked, id)
+        sessions.Ticketed("/ui/sessions/A?ticket=t")
+      }),
+    )
+  let model = run(model, home.Answered(home.Closed(ending.AccessRevoked)))
+  let model = run(model, home.Opening("A"))
+  assert process.receive(asked, 0) == Error(Nil)
+  assert !string.contains(drawn(model), " to=")
+}
+
+// The notice's place is always drawn, so the table keeps its path whether or
+// not a press has been answered.
+pub fn the_table_keeps_its_path_with_and_without_a_notice_test() {
+  let #(model, _) =
+    opened(
+      home.Start(..start(), open: fn(_) { sessions.Declined(sessions.NotHeld) }),
+    )
+  let before = handlers(home.view(model))
+  let after = handlers(home.view(run(model, home.Opening("A"))))
+  assert before == after
 }
 
 // The frame is the session page's, and the home's: a "Home" entry leads the

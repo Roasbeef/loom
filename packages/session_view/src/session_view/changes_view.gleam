@@ -214,8 +214,7 @@ pub fn fold(records: List(protocol.EntryRecord)) -> Board {
     records
     |> list.reverse
     |> list.map(fn(record) { record.entry })
-    |> tool_activity.project
-    |> list.flat_map(calls)
+    |> tool_activity.calls
     |> list.filter_map(change)
   let #(order, diffs) = group(changes)
   let files =
@@ -229,15 +228,6 @@ pub fn fold(records: List(protocol.EntryRecord)) -> Board {
     added: list.fold(files, 0, fn(total, file) { total + file.added }),
     removed: list.fold(files, 0, fn(total, file) { total + file.removed }),
   )
-}
-
-// The calls of a tool group. Prose, and a result whose call is outside the
-// window, hold none.
-fn calls(item: tool_activity.Item) -> List(tool_activity.Call) {
-  case item {
-    tool_activity.Tools(calls:) -> calls
-    tool_activity.Narrative(_) -> []
-  }
 }
 
 // One change a call made: its path, the diff lines it stands for and how it

@@ -9,6 +9,7 @@
 import client/daemon/manager
 import client/daemon/root
 import client/daemon/ui_relay
+import client/daemon/ui_sessions
 import client/daemon/ui_socket
 import gleam/erlang/process
 import gleam/json
@@ -20,6 +21,7 @@ import session_view/snapshot
 import storage/access
 import storage/catalogue
 import web_view/component
+import web_view/home
 import web_view/image
 import web_view/invites
 import web_view/sessions
@@ -40,6 +42,7 @@ fn start() -> component.Start(ui_relay.Relay) {
       sessions: fn() { [] },
       open: fn(_) { sessions.Declined(sessions.NotHeld) },
       invite: None,
+      home: None,
     ),
   )
 }
@@ -156,6 +159,107 @@ pub fn an_observer_socket_accepts_a_chip_click_test() {
     ],
     fn(frame) {
       assert !ui_socket.observer_accepts(frame)
+    },
+  )
+}
+
+// Protocol-change/065, the second pull request: an observer's socket admits one
+// more click, at the "Home" button's exact path, and not its neighbours in the
+// top bar, anything beneath it, another event at it, or the path inside a
+// batch.
+pub fn an_observer_socket_accepts_the_home_click_at_its_exact_path_test() {
+  let click_at = fn(path, name) {
+    "{\"kind\":1,\"path\":"
+    <> json.to_string(json.string(path))
+    <> ",\"name\":\""
+    <> name
+    <> "\",\"event\":{}}"
+  }
+  assert ui_socket.observer_accepts(click_at(component.home_path, "click"))
+  list.each(
+    [
+      click_at(component.home_path, "submit"),
+      click_at(component.home_path, "keydown"),
+      click_at(component.home_path <> "\t0", "click"),
+      click_at("0\t0", "click"),
+      click_at("0\t0\t0", "click"),
+      click_at("0\t0\t2", "click"),
+      click_at("0\t0\t11", "click"),
+      "{\"kind\":3,\"messages\":["
+        <> click_at(component.home_path, "click")
+        <> "]}",
+    ],
+    fn(frame) {
+      assert !ui_socket.observer_accepts(frame)
+    },
+  )
+}
+
+// Only a page opened from a home is handed the capability to go home: a page
+// a link for one session opened is not, so it draws no button and cannot call.
+pub fn only_a_workspace_page_is_handed_the_way_home_test() {
+  let ask = fn() { sessions.Declined(sessions.NoHome) }
+  assert ui_socket.home_capability(ui_sessions.OneSession, ask) == None
+  let assert Some(_) = ui_socket.home_capability(ui_sessions.Workspace, ask)
+}
+
+// Protocol-change/065, the second pull request: the home's socket admits a
+// click beneath the sessions table's section or the sidebar's column, where a
+// running session's row is, and nothing else.
+pub fn the_home_socket_admits_only_a_click_on_a_row_test() {
+  let click_at = fn(path, name) {
+    "{\"kind\":1,\"path\":"
+    <> json.to_string(json.string(path))
+    <> ",\"name\":\""
+    <> name
+    <> "\",\"event\":{}}"
+  }
+  let table_row = home.table_path <> "\t1\t2\t0\t0\t0"
+  let sidebar_row = home.sidebar_path <> "\t1\t1\t0\t0"
+  assert ui_socket.home_accepts(click_at(table_row, "click"))
+  assert ui_socket.home_accepts(click_at(sidebar_row, "click"))
+  assert ui_socket.home_accepts(
+    "{\"kind\":3,\"messages\":["
+    <> click_at(table_row, "click")
+    <> ","
+    <> click_at(sidebar_row, "click")
+    <> "]}",
+  )
+  list.each(
+    [
+      // The regions themselves and a sibling that shares their digits.
+      click_at(home.table_path, "click"),
+      click_at(home.sidebar_path, "click"),
+      click_at(home.table_path <> "0\t1", "click"),
+      click_at(home.sidebar_path <> "0\t1", "click"),
+
+      // The frame's other children, the top bar's and the centre's others.
+      click_at("0\t0\t1", "click"),
+      click_at("0\t2\t0", "click"),
+      click_at("0\t2\t2", "click"),
+      click_at("0\t3", "click"),
+      click_at("0", "click"),
+
+      // Another event at a row, or none at all.
+      click_at(table_row, "submit"),
+      click_at(table_row, "keydown"),
+      click_at(sidebar_row, "input"),
+      "{\"kind\":1,\"name\":\"click\"}",
+
+      // A batch with one message outside a row, an empty one and other kinds.
+      "{\"kind\":3,\"messages\":["
+        <> click_at(table_row, "click")
+        <> ","
+        <> click_at("0\t0\t1", "click")
+        <> "]}",
+      "{\"kind\":3,\"messages\":[]}",
+      "{\"kind\":0,\"name\":\"route\",\"value\":\"/elsewhere\"}",
+      "{\"kind\":2,\"name\":\"value\"}",
+      "not json",
+      "",
+    ],
+    fn(frame) {
+      assert !ui_socket.home_accepts(frame)
     },
   )
 }
@@ -565,4 +669,74 @@ pub fn only_an_owning_page_is_handed_the_capability_test() {
   assert ui_socket.invite_capability(ui_socket.Observing, ask) == None
   assert ui_socket.invite_capability(ui_socket.Operating, ask) == None
   let assert Some(_) = ui_socket.invite_capability(ui_socket.Owning, ask)
+}
+
+// A page whose transport hands it the capability to go home that
+// `home_capability` gives a page of `reach`, and whose `ask` reports each
+// press on `asked` before it answers with a ticket. What is under test is the
+// daemon's glue, not the component: the reach decides whether the page draws a
+// Home button, and the button's press arrives at the asker.
+fn going_home(
+  reach: ui_sessions.Reach,
+  asked: process.Subject(Nil),
+) -> component.Start(ui_relay.Relay) {
+  let ask = fn() {
+    process.send(asked, Nil)
+    sessions.Ticketed("/ui/exchange?ticket=home-ticket")
+  }
+  let start = start()
+  component.Start(
+    ..start,
+    transport: component.Transport(
+      ..start.transport,
+      home: ui_socket.home_capability(reach, ask),
+    ),
+  )
+}
+
+// The frame a browser sends for a click at `path`.
+fn click_at(path: String) -> String {
+  "{\"kind\":1,\"path\":"
+  <> json.to_string(json.string(path))
+  <> ",\"name\":\"click\",\"event\":{}}"
+}
+
+// Reads frames until one contains `text`, or the page goes quiet.
+fn frames_contain(page: ui_socket.Page, text: String) -> Bool {
+  case process.selector_receive(page.frames, 1000) {
+    Error(Nil) -> False
+    Ok(frame) ->
+      case string.contains(json.to_string(frame), text) {
+        True -> True
+        False -> frames_contain(page, text)
+      }
+  }
+}
+
+// A page opened from a home (`Workspace` reach) draws the Home button, and a
+// click at its path reaches the daemon's asker and navigates to its ticket,
+// for an observer's and an operator's page alike. A page a link for one
+// session opened (`OneSession`) draws no button, and the same frame asks
+// nothing.
+pub fn a_workspace_page_goes_home_and_a_one_session_page_cannot_test() {
+  list.each([ui_socket.Observing, ui_socket.Operating], fn(role) {
+    let asked = process.new_subject()
+    let assert Ok(page) =
+      ui_socket.start_page(role, going_home(ui_sessions.Workspace, asked))
+      as "the workspace page starts"
+    assert string.contains(mounted(page), "home-link")
+    page.forward(click_at(component.home_path))
+    assert process.receive(asked, 1000) == Ok(Nil)
+    assert frames_contain(page, "home-ticket")
+    page.shutdown()
+
+    let asked = process.new_subject()
+    let assert Ok(page) =
+      ui_socket.start_page(role, going_home(ui_sessions.OneSession, asked))
+      as "the one-session page starts"
+    assert !string.contains(mounted(page), "home-link")
+    page.forward(click_at(component.home_path))
+    assert process.receive(asked, 300) == Error(Nil)
+    page.shutdown()
+  })
 }

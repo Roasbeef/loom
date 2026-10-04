@@ -81,12 +81,13 @@ pub fn label(entry: Entry) -> String {
   }
 }
 
-/// What the daemon answers when an operator's page asks to open another
-/// session (protocol-change/051, the addendum on switching sessions).
+/// What the daemon answers when a page asks to open another session
+/// (protocol-change/051, the addendum on switching sessions) or to go home
+/// (protocol-change/065, the second pull request).
 pub type Answer {
   /// The daemon minted a ticket. `path` is the ticket's exchange,
-  /// `/ui/sessions/<id>?ticket=<ticket>`, which the browser navigates to. The
-  /// ticket is single use and lives 60 seconds.
+  /// `/ui/sessions/<id>?ticket=<ticket>` or `/ui/home?ticket=<ticket>`, which
+  /// the browser navigates to. The ticket is single use and lives 60 seconds.
   Ticketed(path: String)
 
   /// The daemon minted nothing. Every page shows the fixed words for the
@@ -108,6 +109,12 @@ pub type Reason {
 
   /// The daemon could not answer: it was starting, stopping or slow.
   Unavailable
+
+  /// The daemon could not mint a ticket for the home page: the page's own
+  /// standing had ended or its credential no longer authenticates. It is the
+  /// one reason a request to go home has, so it has its own words rather than
+  /// the switch's, which speak of a session.
+  NoHome
 }
 
 /// The words a page shows for a declined switch. They are fixed here, one per
@@ -125,6 +132,7 @@ pub fn reason_words(reason: Reason) -> String {
     NotRunning ->
       "That session is not running. Resume it from a terminal, then open it here."
     Unavailable -> "The daemon could not open that session. Try again."
+    NoHome -> "The daemon could not open the home page. Try again."
   }
 }
 

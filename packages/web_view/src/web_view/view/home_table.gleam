@@ -8,10 +8,15 @@
 //// "resident" and a session on disk "saved", in words as well as a glyph, so
 //// the difference does not rest on a colour.
 ////
-//// A row is text. Nothing here has a handler, so a press means nothing and
-//// the page's socket takes no browser frame at all; opening a session from the
-//// home is a later change (protocol-change/065, the second pull request),
-//// which will add a button to the row and nothing else.
+//// A running session's name is a button (protocol-change/065, the second pull
+//// request) whose one handler sends the caller's message naming that row's
+//// session; the stylesheet stretches it over the whole row, so the row reads
+//// as one target. A saved session's name is text, since the daemon would
+//// refuse a ticket for it and opening one is a later change. The message
+//// names the catalogue's identity, drawn when the tree was, and never a value
+//// the browser sends: the home's socket admits a click only beneath this
+//// table's own path (`home.table_path`), and the daemon checks the principal's
+//// membership again before it mints a ticket.
 ////
 //// Every name and path is the catalogue's, written by the owner and the host
 //// and never by a session's agent, and is drawn as a text node. A workspace's
@@ -29,19 +34,25 @@ import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/event
 import web_view/sessions.{type Entry, type Group, Live, Saved}
 
 /// The centre column's content: a heading, and one table for each group, or
-/// a line that says there is nothing to list. The result is memoized on the
-/// groups, so a refresh that brings back the list already drawn diffs
-/// nothing.
+/// a line that says there is nothing to list. `open` is the message a press of
+/// a running session's name sends, given that session's identity. The result is
+/// memoized on the groups, so a refresh that brings back the list already drawn
+/// diffs nothing; `open` is not part of the key, so a caller passes the same
+/// function every time, as a constructor is.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // home_table.view(home.groups(model))
+/// // home_table.view(home.groups(model), Opening)
 /// ```
-pub fn view(groups: List(Group)) -> Element(message) {
+pub fn view(
+  groups: List(Group),
+  open: fn(String) -> message,
+) -> Element(message) {
   use <- element.memo([element.ref(groups)])
   html.section([attribute.class("home-sessions")], [
     html.h2([attribute.class("home-heading")], [html.text("Sessions")]),
@@ -53,12 +64,12 @@ pub fn view(groups: List(Group)) -> Element(message) {
           ),
         ]),
       ]
-      [_, ..] -> list.map(groups, group)
+      [_, ..] -> list.map(groups, group(_, open))
     }
   ])
 }
 
-fn group(group: Group) -> Element(message) {
+fn group(group: Group, open: fn(String) -> message) -> Element(message) {
   html.table([attribute.class("home-table")], [
     html.caption([attribute.class("home-workspace")], [
       html.text(group.workspace),
@@ -70,17 +81,32 @@ fn group(group: Group) -> Element(message) {
         html.th([attribute.scope("col")], [html.text("Created")]),
       ]),
     ]),
-    html.tbody([], list.map(group.entries, row)),
+    html.tbody([], list.map(group.entries, row(_, open))),
   ])
 }
 
-fn row(entry: Entry) -> Element(message) {
+fn row(entry: Entry, open: fn(String) -> message) -> Element(message) {
   let residency = case entry.residency {
     Live -> #("live", "●", "resident")
     Saved -> #("saved", "○", "saved")
   }
-  html.tr([], [
-    html.td([attribute.class("home-name")], [html.text(sessions.label(entry))]),
+  let name = html.text(sessions.label(entry))
+  html.tr([attribute.class("home-row")], [
+    html.td([attribute.class("home-name")], [
+      case entry.residency {
+        Live ->
+          html.button(
+            [
+              attribute.type_("button"),
+              attribute.class("home-open"),
+              attribute.title("Open this session"),
+              event.on_click(open(entry.id)),
+            ],
+            [name],
+          )
+        Saved -> name
+      },
+    ]),
     html.td([], [
       html.span([attribute.class("residency"), attribute.class(residency.0)], [
         html.span([attribute.class("glyph"), attribute.aria_hidden(True)], [

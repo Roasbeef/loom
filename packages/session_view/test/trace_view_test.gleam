@@ -379,6 +379,45 @@ pub fn a_program_that_opens_with_code_is_numbered_test() {
     == ["Program 1", "Program 2", "later"]
 }
 
+// An assistant message with reasoning ahead of a `code_mode` call, the shape
+// real models write.
+fn reasoned_call(call_id: String) -> message.AgentMessage {
+  message.AssistantMessage(
+    [
+      message.AssistantThinking("plan the program", None, False),
+      message.AssistantToolCall(message.ToolCall(
+        call_id,
+        "code_mode",
+        program("pub fn main() {}", None),
+        None,
+        None,
+      )),
+    ],
+    "test",
+    "test",
+    "test",
+    None,
+    None,
+    None,
+    usage(),
+    message.Stop,
+    None,
+    None,
+    None,
+    None,
+    0,
+  )
+}
+
+pub fn a_program_called_after_reasoning_is_listed_test() {
+  let records = [
+    record(2, result("c1", "code_mode", "done", status("completed", []), False)),
+    record(1, reasoned_call("c1")),
+  ]
+
+  assert list.length(trace_view.fold(records).programs) == 1
+}
+
 // --- the newest program of one strand, and the call record --------------
 
 fn on(strand: String, records: List(protocol.EntryRecord)) {

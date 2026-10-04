@@ -96,6 +96,7 @@ fn start_page(
         sessions: fn() { [] },
         open: fn(_) { sessions.Declined(sessions.NotHeld) },
         invite: None,
+        home: None,
       ),
     )
   let assert Ok(runtime) =
