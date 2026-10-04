@@ -22,7 +22,6 @@ import session_view/commands
 import session_view/composer
 import session_view/connection_event
 import session_view/model as session_model
-import session_view/notice_words
 import session_view/pasted_image
 import session_view/protocol.{ModelInfo, Strand}
 import session_view/session_channel
@@ -803,7 +802,7 @@ pub fn enter_queues_a_prompt_while_tab_steers_the_live_turn_test() {
   let live = live_model("look at this too")
 
   let queued = tui.update(backend.KeyPress("enter"), live)
-  assert string.contains(queued.shared.notice, notice_words.sent("prompt"))
+  assert string.contains(queued.shared.notice, "prompt sent")
     as "enter sends a prompt, which the daemon holds until the run settles"
   assert queued.shared.queued
     == [transcript_line.HeldPrompt("look at this too")]
