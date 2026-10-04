@@ -3008,6 +3008,21 @@ fn strand_names(state: State) -> List(String) {
   }
 }
 
+// Every entry above the high-water is read once, and each strand's branch
+// is found among those rows rather than read again.
+//
+// A branch scan answers the root path of its start (spec Part 1.2), and a
+// parent is always committed before its child, so the part of a strand's
+// path above the high-water is exactly its leaf followed back through
+// parent links for as long as the link stays above the high-water — and
+// every one of those entries is among the rows read here. The gateway used
+// to read each strand's path from storage as well, which decoded every
+// branch entry twice; the prime that opens a session reads the whole
+// history, so on a long session that second decode was a third of opening
+// it.
+//
+// When the read fails nothing is claimed, and the high-water stays where
+// it was for the next pull to try again.
 fn new_entries(
   state: State,
   strands: List(String),
@@ -3015,20 +3030,6 @@ fn new_entries(
   cache: Dict(String, EntryAttribution),
 ) -> #(Dict(String, EntryAttribution), List(Emit)) {
   let store = state.runtime.session
-
-  // Per-strand branch scans above the high-water attribute entries to
-  // the strand whose branch they extend.
-  let #(cache, claimed) =
-    list.fold(strands, #(cache, []), fn(accumulator, strand) {
-      claim_branch(store, strand, hw, accumulator)
-    })
-
-  // Completeness pass: whatever the leaves missed, attributed through
-  // the parent chain (fallback: the first strand).
-  let fallback = case strands {
-    [first, ..] -> first
-    [] -> "main"
-  }
   case
     storage.scan_entries(
       store.store,
@@ -3036,40 +3037,75 @@ fn new_entries(
         |> storage.entry_seq_range(Some(hw + 1), None),
     )
   {
-    Error(_) -> #(cache, claimed)
-    Ok(rows) ->
+    Error(_) -> #(cache, [])
+    Ok(rows) -> {
+      let by_id =
+        list.fold(rows, dict.new(), fn(by_id, row) {
+          dict.insert(by_id, ids.entry_id_to_string(entry_id_of(row)), row)
+        })
+
+      // Per-strand branches above the high-water attribute entries to
+      // the strand whose branch they extend.
+      let #(cache, claimed) =
+        list.fold(strands, #(cache, []), fn(accumulator, strand) {
+          claim_branch(store, by_id, strand, accumulator)
+        })
+
+      // Completeness pass: whatever the leaves missed, attributed through
+      // the parent chain (fallback: the first strand).
+      let fallback = case strands {
+        [first, ..] -> first
+        [] -> "main"
+      }
       list.fold(rows, #(cache, claimed), fn(accumulator, row) {
         claim_by_parent(accumulator, row, fallback)
       })
+    }
   }
 }
 
-// One strand's branch scan above the high-water, folded into the
-// running cache/emits pair. A strand with no leaf, or a leaf whose scan
-// fails, contributes nothing.
+// One strand's branch above the high-water, oldest first, folded into the
+// running cache/emits pair. A strand with no leaf, or whose leaf is at or
+// below the high-water, contributes nothing.
 fn claim_branch(
   store: session.Session,
+  by_id: Dict(String, Entry),
   strand: String,
-  hw: Int,
   accumulator: #(Dict(String, EntryAttribution), List(Emit)),
 ) -> #(Dict(String, EntryAttribution), List(Emit)) {
   case session.strand_leaf(store, strand) {
     Ok(Some(session.Cell(value: Some(leaf), ..))) ->
-      case
-        storage.scan_branch(
-          store.store,
-          storage.branch_scan(from: leaf)
-            |> storage.branch_order(storage.OldestFirst)
-            |> storage.branch_cursor(hw),
-        )
-      {
-        Ok(rows) ->
-          list.fold(rows, accumulator, fn(accumulator, row) {
-            claim_row(accumulator, strand, row)
-          })
-        Error(_) -> accumulator
-      }
+      root_path(by_id, ids.entry_id_to_string(leaf), [], dict.size(by_id))
+      |> list.fold(accumulator, fn(accumulator, row) {
+        claim_row(accumulator, strand, row)
+      })
     _ -> accumulator
+  }
+}
+
+// Follows parent links from `id` through `by_id`, answering the path root
+// first. It stops at the first entry the rows do not hold, and after at
+// most as many steps as there are rows, so a parent cycle in a corrupt
+// store ends the walk instead of looping.
+fn root_path(
+  by_id: Dict(String, Entry),
+  id: String,
+  path: List(Entry),
+  steps: Int,
+) -> List(Entry) {
+  case steps > 0, dict.get(by_id, id) {
+    True, Ok(row) ->
+      case entry_parent_of(row) {
+        Some(parent) ->
+          root_path(
+            by_id,
+            ids.entry_id_to_string(parent),
+            [row, ..path],
+            steps - 1,
+          )
+        None -> [row, ..path]
+      }
+    False, _ | _, Error(Nil) -> path
   }
 }
 
