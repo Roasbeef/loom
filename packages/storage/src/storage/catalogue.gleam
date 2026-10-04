@@ -21,12 +21,15 @@
 ////    and `confirm` marks the file verified.
 //// 3. `get` and `page` read the creation record with its display layers (the
 ////    name override and the subtitle), and neither opens a conversation file.
+////    `decode_workspace` requires canonical binding JSON and SQL key agreement.
 //// 4. `rename` writes the display-name override after `display_name` accepts it.
 //// 5. `seed_subtitle` reduces a first prompt with `subtitle_from_prompt` and
 ////    writes the result once.
 //// 6. `delete` removes a registration and every row that refers to it.
 
 import core/ids
+import core/json
+import core/workspace
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
@@ -41,6 +44,7 @@ import storage/catalogue_credential_kinds_schema
 import storage/catalogue_logins_schema
 import storage/catalogue_names_schema
 import storage/catalogue_subtitles_schema
+import storage/catalogue_workspace_bindings_schema
 import storage/sql
 import storage/sql_schema
 import storage/sqlite_policy
@@ -70,8 +74,8 @@ pub type Registration {
     id: String,
     /// The host-validated canonical database path.
     path: String,
-    /// The host-validated canonical working directory.
-    workspace: String,
+    /// Resolved workspace identity and retained authority, never an endpoint.
+    workspace: workspace.Binding,
     /// A display label, never a routing or authorization identity.
     name: String,
     /// The host configuration reference, not its secret values.
@@ -217,7 +221,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
 /// raise this fails `migrations_end_at_the_current_version_test` rather than
 /// leaving a catalogue that claims a version whose migration never ran.
 @internal
-pub const current_version = 7
+pub const current_version = 8
 
 /// The migration schemas in version order, each applied to a catalogue that
 /// lacks its version.
@@ -230,6 +234,7 @@ pub fn migrations() -> List(#(Int, String)) {
     #(5, catalogue_subtitles_schema.schema),
     #(6, catalogue_credential_kinds_schema.schema),
     #(7, catalogue_logins_schema.schema),
+    #(8, catalogue_workspace_bindings_schema.schema),
   ]
 }
 
@@ -318,18 +323,32 @@ fn insert(
   catalogue: Catalogue,
   record: Registration,
 ) -> Result(Registration, Error) {
-  use Nil <- result.try(statement(
-    catalogue,
-    sql.insert_registration(
-      session_id: record.id,
-      path: record.path,
-      workspace: record.workspace,
-      name: record.name,
-      configuration: record.configuration,
-      created_at: record.created_at,
-      request_key: record.request_key,
-    ),
-  ))
+  // Separate named inserts keep local NULL outside the general parameter
+  // adapter, while registered creation retains exact canonical authority.
+  let generated = case record.workspace {
+    workspace.LocalBinding(path) ->
+      sql.insert_registration(
+        record.id,
+        record.path,
+        path,
+        record.name,
+        record.configuration,
+        record.created_at,
+        record.request_key,
+      )
+    workspace.Registered(_) ->
+      sql.insert_registered_registration(
+        record.id,
+        record.path,
+        workspace.key_string(workspace.binding_key(record.workspace)),
+        Some(json.to_string(workspace.encode_binding(record.workspace))),
+        record.name,
+        record.configuration,
+        record.created_at,
+        record.request_key,
+      )
+  }
+  use Nil <- result.try(statement(catalogue, generated))
   use Nil <- result.try(statement(catalogue, sql.increment_catalogue_revision()))
   Ok(record)
 }
@@ -696,7 +715,7 @@ pub fn by_request_key(
 /// ```
 pub fn workspace_default(
   catalogue: Catalogue,
-  workspace: String,
+  workspace: workspace.WorkspaceKey,
 ) -> Result(Registration, Error) {
   snapshot(catalogue.connection, fn() {
     use id <- result.try(default_identity(catalogue, workspace))
@@ -709,7 +728,7 @@ pub fn workspace_default(
         }
       }),
     )
-    case record.workspace == workspace {
+    case workspace.binding_key(record.workspace) == workspace {
       True -> Ok(record)
       False -> Error(Invalid("workspace default refers to another workspace"))
     }
@@ -729,7 +748,7 @@ pub fn workspace_default(
 /// ```
 pub fn set_workspace_default(
   catalogue: Catalogue,
-  workspace: String,
+  workspace: workspace.WorkspaceKey,
   id: String,
 ) -> Result(Registration, Error) {
   transaction(catalogue.connection, fn() {
@@ -739,16 +758,18 @@ pub fn set_workspace_default(
       Active -> Ok(Nil)
       Archived -> Error(Conflict)
     })
-    use Nil <- result.try(case record.workspace == workspace {
-      True -> Ok(Nil)
-      False -> Error(Conflict)
-    })
+    use Nil <- result.try(
+      case workspace.binding_key(record.workspace) == workspace {
+        True -> Ok(Nil)
+        False -> Error(Conflict)
+      },
+    )
     case default_identity(catalogue, workspace) {
       Ok(current) if current == id -> Ok(record)
       Ok(_) | Error(Missing) -> {
         use Nil <- result.try(statement(
           catalogue,
-          sql.set_workspace_default(workspace, id),
+          sql.set_workspace_default(workspace.key_string(workspace), id),
         ))
         use Nil <- result.try(statement(
           catalogue,
@@ -886,9 +907,12 @@ pub fn delete(catalogue: Catalogue, id: String) -> Result(Registration, Error) {
 
 fn default_identity(
   catalogue: Catalogue,
-  workspace: String,
+  workspace: workspace.WorkspaceKey,
 ) -> Result(String, Error) {
-  use rows <- result.try(query(catalogue, sql.workspace_default(workspace)))
+  use rows <- result.try(query(
+    catalogue,
+    sql.workspace_default(workspace.key_string(workspace)),
+  ))
   case rows {
     [sql.WorkspaceDefault(id)] -> Ok(id)
     [] -> Error(Missing)
@@ -942,11 +966,15 @@ fn page_for(
     ))
     use records <- result.try(
       list.try_map(rows, fn(row) {
+        use binding <- result.try(decode_workspace(
+          row.workspace,
+          row.workspace_binding,
+        ))
         decoded(
           Registration(
             id: row.session_id,
             path: row.path,
-            workspace: row.workspace,
+            workspace: binding,
             name: row.name,
             configuration: row.configuration,
             created_at: row.created_at,
@@ -996,11 +1024,15 @@ pub fn member_page(
     ))
     use records <- result.try(
       list.try_map(rows, fn(row) {
+        use binding <- result.try(decode_workspace(
+          row.workspace,
+          row.workspace_binding,
+        ))
         decoded(
           Registration(
             id: row.session_id,
             path: row.path,
-            workspace: row.workspace,
+            workspace: binding,
             name: row.name,
             configuration: row.configuration,
             created_at: row.created_at,
@@ -1035,11 +1067,15 @@ fn find(catalogue: Catalogue, id: String, request_key: String, path: String) {
     sql.find_registrations(id, request_key, path),
   ))
   list.try_map(rows, fn(row) {
+    use binding <- result.try(decode_workspace(
+      row.workspace,
+      row.workspace_binding,
+    ))
     decoded(
       Registration(
         id: row.session_id,
         path: row.path,
-        workspace: row.workspace,
+        workspace: binding,
         name: row.name,
         configuration: row.configuration,
         created_at: row.created_at,
@@ -1050,6 +1086,54 @@ fn find(catalogue: Catalogue, id: String, request_key: String, path: String) {
       row.state,
     )
   })
+}
+
+// A stored selector key and its authority payload are redundant deliberately:
+// agreement prevents corrupt metadata from selecting another enrolled workspace.
+fn decode_workspace(
+  key: String,
+  payload: Option(String),
+) -> Result(workspace.Binding, Error) {
+  use identity <- result.try(
+    workspace.decode_key(key)
+    |> result.replace_error(Invalid("invalid workspace key")),
+  )
+  case identity, payload {
+    workspace.LocalKey(path), None -> Ok(workspace.LocalBinding(path))
+    workspace.RegisteredKey(selected), Some(text) -> {
+      use Nil <- result.try(case string.byte_size(text) <= 1024 {
+        True -> Ok(Nil)
+        False -> Error(Invalid("workspace binding exceeds its bound"))
+      })
+      use value <- result.try(
+        json.parse(text)
+        |> result.replace_error(Invalid("invalid workspace binding JSON")),
+      )
+      use binding <- result.try(
+        workspace.decode_binding(value)
+        |> result.replace_error(Invalid("invalid workspace binding")),
+      )
+      case binding {
+        workspace.Registered(bound) -> {
+          let #(retained, _, _) = workspace.binding_fields(bound)
+          case
+            selected == retained
+            && text == json.to_string(workspace.encode_binding(binding))
+          {
+            True -> Ok(binding)
+            False ->
+              Error(Invalid(
+                "workspace key or canonical text disagrees with binding",
+              ))
+          }
+        }
+        workspace.LocalBinding(_) ->
+          Error(Invalid("registered key needs registered binding"))
+      }
+    }
+    workspace.LocalKey(_), Some(_) | workspace.RegisteredKey(_), None ->
+      Error(Invalid("workspace key disagrees with binding payload"))
+  }
 }
 
 fn decoded(record: Registration, state: String) -> Result(Registration, Error) {
@@ -1121,20 +1205,41 @@ fn parameter(param: dev.Param) -> Result(sqlight.Value, Error) {
 }
 
 fn validate(record: Registration) -> Result(Nil, Error) {
+  use key <- result.try(
+    workspace.decode_key(
+      workspace.key_string(workspace.binding_key(record.workspace)),
+    )
+    |> result.replace_error(Invalid("invalid workspace identity")),
+  )
+  use Nil <- result.try(case key, record.workspace {
+    workspace.LocalKey(path), workspace.LocalBinding(found) if path == found ->
+      Ok(Nil)
+    workspace.RegisteredKey(selected), workspace.Registered(bound) -> {
+      let #(retained, _, _) = workspace.binding_fields(bound)
+      case selected == retained {
+        True -> Ok(Nil)
+        False -> Error(Invalid("workspace identity disagrees with binding"))
+      }
+    }
+    workspace.LocalKey(_), workspace.Registered(_)
+    | workspace.RegisteredKey(_), workspace.LocalBinding(_)
+    -> Error(Invalid("workspace identity disagrees with binding"))
+    workspace.LocalKey(_), workspace.LocalBinding(_) ->
+      Error(Invalid("workspace identity disagrees with binding"))
+  })
   use _id <- result.try(
     ids.parse_session_id(record.id)
     |> result.replace_error(Invalid("invalid canonical session ID")),
   )
   case
     string.starts_with(record.path, "/")
-    && string.starts_with(record.workspace, "/")
     && record.request_key != ""
     && record.created_at >= 0
   {
     True -> Ok(Nil)
     False ->
       Error(Invalid(
-        "registration needs absolute paths, a request key and a nonnegative creation time",
+        "registration needs an absolute conversation path, a request key and a nonnegative creation time",
       ))
   }
 }

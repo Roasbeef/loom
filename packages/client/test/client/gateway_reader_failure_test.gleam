@@ -19,6 +19,7 @@ import client/serve
 import core/clock
 import core/ids
 import core/json
+import core/workspace
 import filepath
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -86,7 +87,12 @@ fn resident(epoch: String) -> Resident {
   let assert Ok(view) =
     manager.create(
       registry,
-      manager.Creation(epoch, settings.workspace, "reader", ""),
+      manager.Creation(
+        epoch,
+        workspace.LocalBinding(settings.workspace),
+        "reader",
+        "",
+      ),
       directory: directory <> "/sessions",
       generator: ids.generator(clock.fixed(1), 414),
     )

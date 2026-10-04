@@ -22,6 +22,7 @@ import core/json
 import core/message
 import core/register
 import core/tx
+import core/workspace
 import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -103,7 +104,12 @@ fn fixture_with(
   let assert Ok(view) =
     manager.create_scoped(
       ready.registry,
-      manager.Creation("socket-fixture", ready.state_root, "socket", ""),
+      manager.Creation(
+        "socket-fixture",
+        workspace.LocalBinding(ready.state_root),
+        "socket",
+        "",
+      ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(1_700_000_000_000), 981),
       scope: domain.SessionOnly,
@@ -123,6 +129,7 @@ fn fixture_with(
       daemon,
       fn(_) { None },
       "",
+      server.local_workspace_authority(),
       fn() {
         ids.generator(
           clock.from_function(ffi_os.system_time_ms),

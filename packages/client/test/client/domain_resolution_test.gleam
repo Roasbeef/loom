@@ -5,6 +5,7 @@ import client/owned_assembly_test
 import client/serve
 import core/clock
 import core/ids
+import core/workspace
 import filepath
 import gleam/option.{Some}
 import simplifile
@@ -48,7 +49,7 @@ main = [\"session_b\"]
     catalogue.Registration(
       id,
       fixture.session_path,
-      fixture.workspace,
+      workspace.LocalBinding(fixture.workspace),
       "Resolution",
       runtime_config,
       1,
@@ -58,9 +59,13 @@ main = [\"session_b\"]
     )
   let selected =
     domain.Domain(
-      domain.key(domain.SessionOnly, record.workspace, id),
+      domain.key(
+        domain.SessionOnly,
+        workspace.binding_key(record.workspace),
+        id,
+      ),
       domain.SessionOnly,
-      record.workspace,
+      workspace.binding_key(record.workspace),
       "/missing/domain-maintenance-config-a",
       state <> "/isolated/custom-memory.sqlite",
       state <> "/separate/custom-index.sqlite",
@@ -81,7 +86,11 @@ main = [\"session_b\"]
   assert settings.domain_paths
     == Some(serve.DomainPaths(selected.memory_path, selected.index_path))
   assert selected.memory_path
-    != serve.workspace_data_root(state, record.workspace) <> "/loom-memory.db"
+    != serve.workspace_data_root(
+      state,
+      workspace.key_string(workspace.binding_key(record.workspace)),
+    )
+    <> "/loom-memory.db"
   assert simplifile.is_file(selected.memory_path) == Ok(False)
   assert simplifile.is_file(selected.index_path) == Ok(False)
   assert simplifile.is_file(record.path) == Ok(False)

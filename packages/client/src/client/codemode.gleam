@@ -335,7 +335,7 @@ pub type Config {
     /// Where the session keeps its content-addressed blobs, and
     /// therefore where a `report.emit` artifact lands.
     ///
-    /// The *same* directory `tool.Ctx.blob_root` names, deliberately: an
+    /// The *same* directory `tool.Ctx.owner_blobs.root` names, deliberately: an
     /// artifact a program emitted and an oversized `bash` output that
     /// overflowed are the same kind of thing under the same addressing
     /// scheme, and two stores would mean an id that means one thing here
@@ -908,7 +908,7 @@ pub const runtime_directory = "run"
 /// workspace.
 ///
 /// Stated once, here, and read by both the place that fills
-/// `tool.Ctx.blob_root` (`client/serve`) and the place that fills
+/// `tool.Ctx.owner_blobs.root` (`client/serve`) and the place that fills
 /// `Config.blob_root`. Two literals would be two stores the day one of
 /// them moved, and an artifact id that resolves in one and not the other
 /// is the worst shape that failure could take — it would look like a

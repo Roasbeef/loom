@@ -36,12 +36,14 @@ import tools/workspace
 
 /// A local registration whose scope cannot be changed by a request.
 pub opaque type Host {
-  /// Construction performs no I/O; exact scope comparison precedes effects.
+  /// Construction validates local access without I/O; exact scope comparison precedes effects.
   Host(
     /// Administrative session, executor, workspace and authority epochs.
     scope: core_workspace.Scope,
     /// Existing executor-local authority and local filesystem implementation.
     local: tool.Ctx,
+    /// Validated physical authority retained by the opaque host.
+    access: tool.LocalWorkspaceAccess,
     /// Existing post-write diagnostics hook, called only after landing.
     observer: fs.WriteObserver,
     /// Optional existing cleared Git host, never arbitrary argv or JSON.
@@ -101,15 +103,28 @@ pub const max_git_log_entries = 1000
 /// ## Examples
 ///
 /// ```gleam
-/// // let host = workspace_local.new(scope, local_ctx, after_write)
+/// // let assert Ok(host) = workspace_local.new(scope, local_ctx, after_write)
 /// // An unbound workspace.Git request returns Error(workspace.Unavailable).
 /// ```
 pub fn new(
   scope: core_workspace.Scope,
   local: tool.Ctx,
   observer: fs.WriteObserver,
-) -> Host {
-  Host(scope:, local:, observer:, git: None, guidance: None, initialize: None)
+) -> Result(Host, workspace.ServiceError) {
+  use access <- result.try(
+    tool.require_local_workspace(local)
+    |> result.map_error(fn(_) { workspace.PermissionRefused }),
+  )
+
+  Ok(Host(
+    scope:,
+    local:,
+    access:,
+    observer:,
+    git: None,
+    guidance: None,
+    initialize: None,
+  ))
 }
 
 /// Reads the immutable administrative scope without exposing local authority.
@@ -236,11 +251,7 @@ fn execute(
     }
     workspace.Stat(path) -> {
       use resolved <- result.try(
-        fs.resolve_relative_leaf(
-          host.local.filesystem,
-          host.local.workspace,
-          path,
-        )
+        fs.resolve_relative_leaf(host.access.filesystem, host.access.root, path)
         |> result.map_error(workspace.PathRefused),
       )
       Ok(
@@ -299,6 +310,11 @@ fn read(
   path: core_workspace.RelativePath,
   view: workspace.ReadView,
 ) -> Result(Completed, workspace.ServiceError) {
+  use access <- result.try(
+    tool.require_local_workspace(local)
+    |> result.map_error(fn(_) { workspace.PermissionRefused }),
+  )
+
   // Invalid native windows are refused before even resolving the pathname.
   use <- bool.lazy_guard(invalid_window(view), fn() {
     Ok(completed(workspace.ReadCompleted(Error(workspace.InvalidWindow))))
@@ -308,7 +324,7 @@ fn read(
     workspace.Text ->
       Ok(
         completed(workspace.ReadCompleted(
-          fs.read_text_file(local.filesystem, resolved)
+          fs.read_text_file(access.filesystem, resolved)
           |> result.map(workspace.TextRead)
           |> result.map_error(workspace.FileReadFailed),
         )),
@@ -339,9 +355,14 @@ fn native_read(
   offset: Int,
   limit: Int,
 ) -> Result(Completed, workspace.ServiceError) {
+  use access <- result.try(
+    tool.require_local_workspace(local)
+    |> result.map_error(fn(_) { workspace.PermissionRefused }),
+  )
+
   // File errors remain in-band read failures. Inline projection exhaustion
   // is a service capacity refusal, never a success with omitted anchors.
-  use bytes <- or_read_failure(fs.read_bytes(local.filesystem, resolved))
+  use bytes <- or_read_failure(fs.read_bytes(access.filesystem, resolved))
   case fs.image_media_type(bytes) {
     Some(media) -> {
       use media <- result.try(image_media(media))
@@ -409,7 +430,7 @@ fn write(
   use target <- result.try(write_target(host.local, path))
   let resolved = fs.target_path(target)
   let bytes = <<content:utf8>>
-  let landed = fs.write_whole(host.local.filesystem, resolved, bytes)
+  let landed = fs.write_whole(host.access.filesystem, resolved, bytes)
 
   // The existing hook observes landed bytes before the final result is built.
   // A backend refusal never notifies a language server of nonexistent text.
@@ -446,7 +467,7 @@ fn edit(
     Error(workspace.CapacityRefused),
   )
   use target <- result.try(write_target(host.local, path))
-  let landed = fs.land_plan(host.local.filesystem, target, plan)
+  let landed = fs.land_plan(host.access.filesystem, target, plan)
 
   // No split read/verify/write crosses the host boundary. A stale digest or
   // anchor returns fs's original typed refusal without a write or observer.
@@ -496,9 +517,14 @@ fn resolve_read(
   local: tool.Ctx,
   path: core_workspace.RelativePath,
 ) -> Result(String, workspace.ServiceError) {
+  use access <- result.try(
+    tool.require_local_workspace(local)
+    |> result.map_error(fn(_) { workspace.PermissionRefused }),
+  )
+
   fs.resolve_real(
-    local.filesystem,
-    local.workspace,
+    access.filesystem,
+    access.root,
     core_workspace.path_string(path),
   )
   |> result.map_error(workspace.PathRefused)
@@ -508,11 +534,16 @@ fn write_target(
   local: tool.Ctx,
   path: core_workspace.RelativePath,
 ) -> Result(fs.WriteTarget, workspace.ServiceError) {
+  use access <- result.try(
+    tool.require_local_workspace(local)
+    |> result.map_error(fn(_) { workspace.PermissionRefused }),
+  )
+
   // This remote contract names only the bound workspace. Explicit sibling
   // roots in a local Ctx cannot turn a workspace symlink into remote authority.
   fs.write_target(
-    local.filesystem,
-    local.workspace,
+    access.filesystem,
+    access.root,
     [],
     local.base_policy.protected,
     core_workspace.path_string(path),
@@ -524,8 +555,13 @@ fn search_root(
   local: tool.Ctx,
   root: core_workspace.RelativePath,
 ) -> Result(#(String, String), workspace.ServiceError) {
+  use access <- result.try(
+    tool.require_local_workspace(local)
+    |> result.map_error(fn(_) { workspace.PermissionRefused }),
+  )
+
   use workspace_root <- result.try(
-    fs.resolve_real(local.filesystem, local.workspace, ".")
+    fs.resolve_real(access.filesystem, access.root, ".")
     |> result.map_error(workspace.PathRefused),
   )
   use resolved <- result.try(resolve_read(local, root))

@@ -79,8 +79,10 @@ pub fn authorize_native(
   ctx: tool.Ctx,
   args: json.JsonValue,
 ) -> Result(tool.Ctx, tool.ToolOutcome) {
+  use local <- result.try(tool.require_local_workspace(ctx))
+
   use workspace <- result.try(
-    fs.resolve_real(ctx.filesystem, ctx.workspace, ".")
+    fs.resolve_real(local.filesystem, local.root, ".")
     |> result.map_error(fn(_) {
       tool.failure("workspace could not be resolved")
     }),
@@ -100,11 +102,41 @@ fn authorize_against(
   args: json.JsonValue,
   base: policy.SandboxPolicy,
 ) -> Result(tool.Ctx, tool.ToolOutcome) {
+  use Nil <- result.try(local_path_authority(ctx, args))
+
   use requested <- result.try(
     decode(tool.Ctx(..ctx, base_policy: base), args)
     |> result.map_error(tool.failure),
   )
   tool.authorize_policy(ctx, base, requested)
+}
+
+// Only physical path declarations need workspace access. Owner network/wall
+// policy and calls without path declarations remain independent of placement.
+fn local_path_authority(
+  ctx: tool.Ctx,
+  args: json.JsonValue,
+) -> Result(Nil, tool.ToolOutcome) {
+  use value <- result.try(
+    tool.optional_value(args, "permissions") |> result.map_error(tool.failure),
+  )
+  case value {
+    None -> Ok(Nil)
+    Some(value) -> {
+      use read <- result.try(
+        tool.optional_string_list(value, "readable_roots")
+        |> result.map_error(tool.failure),
+      )
+      use write <- result.try(
+        tool.optional_string_list(value, "writable_roots")
+        |> result.map_error(tool.failure),
+      )
+      case option.unwrap(read, []) == [] && option.unwrap(write, []) == [] {
+        True -> Ok(Nil)
+        False -> tool.require_local_workspace(ctx) |> result.map(fn(_) { Nil })
+      }
+    }
+  }
 }
 
 fn decode(
@@ -136,12 +168,16 @@ fn decode(
       )
       use writable <- result.try(
         list.try_map(write, fn(path) {
+          use local <- result.try(
+            tool.require_local_workspace(ctx)
+            |> result.map_error(fn(_) { "local workspace required" }),
+          )
           fs.resolve_writable_roots(
-            ctx.filesystem,
+            local.filesystem,
             "/",
             [],
             ctx.base_policy.protected,
-            absolute(ctx, path),
+            absolute(local.root, path),
           )
           |> result.map_error(fn(_) {
             "requested writable path cannot be resolved or is protected"
@@ -174,15 +210,20 @@ fn decode(
   }
 }
 
-fn absolute(ctx: tool.Ctx, path: String) -> String {
+fn absolute(workspace_root: String, path: String) -> String {
   case path {
     "/" <> _ -> path
     "" -> ""
-    _ -> ctx.workspace <> "/" <> path
+    _ -> workspace_root <> "/" <> path
   }
 }
 
 fn canonical(ctx: tool.Ctx, path: String) -> Result(String, String) {
-  fs.resolve_real(ctx.filesystem, "/", absolute(ctx, path))
+  use local <- result.try(
+    tool.require_local_workspace(ctx)
+    |> result.map_error(fn(_) { "local workspace required" }),
+  )
+
+  fs.resolve_real(local.filesystem, "/", absolute(local.root, path))
   |> result.map_error(fn(_) { "requested readable path cannot be resolved" })
 }
