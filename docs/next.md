@@ -1711,3 +1711,10 @@ Independent review is clean and the integrated code-mode gate passes 408 tests
 without reported skips against the refreshed private seed. See
 [the command expectation review](review/distributed-expected-commands.md).
 Live wall selection and actual native association remain assembly obligations.
+
+Compile completions now have a closed 256-KiB content kind in the existing
+64-KiB chunk transport. Original workspace tags and bounds remain unchanged.
+Independent validation passes all 194 executor tests, and the review's scanner
+fixture correction passes all nine focused tests. See
+[the transfer review](review/distributed-compile-transfer.md). Semantic validation,
+physical service routing and durable receipt remain separate assembly duties.

@@ -672,3 +672,21 @@ evidence. It resolves the artifact only in the producing allocation and checks
 the physical fingerprint before launch. Input limits bound retained bytes;
 they do not establish an equal BEAM memory bound or a parser CPU bound.
 Managed preparation remains subject to the original service deadline.
+
+## Addendum: bounded Compile completion transfer
+
+Compile completion transport uses closed content tag 2 in the existing version-1
+workspace chunk framing. Tags 0 and 1 retain their current meanings and bounds.
+A Compile body is at most 262,144 bytes in at most four 65,536-byte data chunks,
+plus its fixed header. This aggregate is independent of the TLS frame ceiling;
+placing the maximum body inside a single native envelope would exceed that
+ceiling once envelope overhead is included.
+
+The receiver checks aggregate length before retaining chunks, then exact
+direction, offsets, lengths and final digest. Authentication of application scope,
+canonical semantic decode against original identity, a finite whole-exchange
+deadline, bounded connection credits and commit-before-ACK remain required.
+Independent review found no production framing defect. Its scanner test-specificity
+finding was corrected and the focused real-TLS gate rerun; the
+[review record](../docs/review/distributed-compile-transfer.md) separates byte
+transport evidence from production service acceptance.
