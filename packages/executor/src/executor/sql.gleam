@@ -182,7 +182,7 @@ pub fn initialize_workspace(
   byte_limit byte_limit: Int,
 ) {
   let sql =
-    "INSERT INTO workspace_meta(id, format, binding, row_limit, byte_limit) VALUES(1, 1, ?, ?, ?)"
+    "INSERT INTO workspace_meta(id, format, mode, binding, row_limit, byte_limit) VALUES(1, 2, 0, ?, ?, ?)"
   #(sql, [
     dev.ParamBitArray(binding),
     dev.ParamInt(row_limit),
@@ -191,12 +191,18 @@ pub fn initialize_workspace(
 }
 
 pub type WorkspaceMetadata {
-  WorkspaceMetadata(binding: BitArray, row_limit: Int, byte_limit: Int)
+  WorkspaceMetadata(
+    binding: BitArray,
+    mode: Int,
+    row_limit: Int,
+    byte_limit: Int,
+  )
 }
 
 pub fn workspace_metadata() {
   let sql =
-    "SELECT CAST(CASE WHEN typeof(id)='integer' AND id=1 AND typeof(format)='integer' AND format=1 AND typeof(binding)='blob' AND length(binding)<=303 THEN binding ELSE NULL END AS BLOB) AS binding,
+    "SELECT CAST(CASE WHEN typeof(id)='integer' AND id=1 AND typeof(format)='integer' AND format=2 AND typeof(binding)='blob' AND length(binding)<=303 THEN binding ELSE NULL END AS BLOB) AS binding,
+       CAST(CASE WHEN typeof(mode)='integer' AND mode IN (0,1) THEN mode ELSE NULL END AS INTEGER) AS mode,
        CAST(CASE WHEN typeof(row_limit)='integer' THEN row_limit ELSE NULL END AS INTEGER) AS row_limit,
        CAST(CASE WHEN typeof(byte_limit)='integer' THEN byte_limit ELSE NULL END AS INTEGER) AS byte_limit
 FROM workspace_meta LIMIT 2"
@@ -205,9 +211,10 @@ FROM workspace_meta LIMIT 2"
 
 pub fn workspace_metadata_decoder() -> decode.Decoder(WorkspaceMetadata) {
   use binding <- decode.field(0, decode.bit_array)
-  use row_limit <- decode.field(1, decode.int)
-  use byte_limit <- decode.field(2, decode.int)
-  decode.success(WorkspaceMetadata(binding:, row_limit:, byte_limit:))
+  use mode <- decode.field(1, decode.int)
+  use row_limit <- decode.field(2, decode.int)
+  use byte_limit <- decode.field(3, decode.int)
+  decode.success(WorkspaceMetadata(binding:, mode:, row_limit:, byte_limit:))
 }
 
 pub type WorkspaceHeaders {
@@ -365,4 +372,18 @@ pub fn cancel_workspace(id id: BitArray) {
 pub fn cancel_workspace_decoder() -> decode.Decoder(CancelWorkspace) {
   use phase <- decode.field(0, decode.int)
   decode.success(CancelWorkspace(phase:))
+}
+
+pub type SealWorkspace {
+  SealWorkspace(mode: Int)
+}
+
+pub fn seal_workspace() {
+  let sql = "UPDATE workspace_meta SET mode=1 WHERE id=1 RETURNING mode"
+  #(sql, [], seal_workspace_decoder())
+}
+
+pub fn seal_workspace_decoder() -> decode.Decoder(SealWorkspace) {
+  use mode <- decode.field(0, decode.int)
+  decode.success(SealWorkspace(mode:))
 }
