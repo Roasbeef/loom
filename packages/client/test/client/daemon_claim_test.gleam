@@ -18,6 +18,7 @@ import gleam/dynamic/decode
 import gleam/erlang/atom
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import host/bootstrap
 import host/claim
@@ -77,6 +78,16 @@ fn invite(port, owner, epoch, session, principal, role) {
 // `credentials.claim`, and answers the reply frame.
 @internal
 pub fn redeem(port: Int, token: String, digest: String) -> JsonValue {
+  redeem_named(port, token, digest, None)
+}
+
+// The same exchange with the optional `name` the invitee chose in the body.
+fn redeem_named(
+  port: Int,
+  token: String,
+  digest: String,
+  name: Option(String),
+) -> JsonValue {
   let socket = claim_socket(port, token)
   let hello = wire.frame(socket, within_ms: 2000)
   assert field(hello, "event") == json.String("hello")
@@ -86,7 +97,13 @@ pub fn redeem(port: Int, token: String, digest: String) -> JsonValue {
       socket,
       1,
       "credentials.claim",
-      json.Object([#("credential_digest", json.String(digest))]),
+      json.Object(case name {
+        Some(chosen) -> [
+          #("credential_digest", json.String(digest)),
+          #("name", json.String(chosen)),
+        ]
+        None -> [#("credential_digest", json.String(digest))]
+      }),
       within_ms: 5000,
     )
   let _ = ffi_ws.tcp_close(socket)
@@ -206,6 +223,122 @@ pub fn claim_binds_once_and_a_replay_is_refused_test() {
       "401 Unauthorized",
     )
     assert credential_count(ready.state_root, "alice") == 1
+    Nil
+  })
+}
+
+// The name `principals.list` reports for one principal, read as the owner.
+fn listed_name(port: Int, owner: String, id: String) -> JsonValue {
+  let #(socket, response) = wire.connect(port, owner, "/v2/control")
+  assert string.contains(response, "101 Switching Protocols")
+  let _hello = wire.frame(socket, within_ms: 1000)
+  let reply =
+    wire.send(socket, 1, "principals.list", json.Object([]), within_ms: 2000)
+  let _ = ffi_ws.tcp_close(socket)
+  let assert json.Array(rows) = field(field(reply, "body"), "principals")
+    as "the owner's listing carries the principals"
+  let assert Ok(found) =
+    list.find(rows, fn(row) { field(row, "principal_id") == json.String(id) })
+    as "the principal is listed"
+  field(found, "name")
+}
+
+pub fn a_claim_with_a_name_sets_it_and_one_without_keeps_the_inviters_test() {
+  wire.fixture(fn(_, ready, port, owner) {
+    let session = shared_session(ready, 30)
+    let #(_, named) =
+      invite(port, owner, ready.epoch, session, "alice", "operator")
+    let #(_, plain) =
+      invite(port, owner, ready.epoch, session, "bob", "observer")
+
+    // The reply, the owner's listing and the member's own attachment all
+    // carry the chosen name, trimmed.
+    let #(credential, digest) = bearer()
+    let reply = redeem_named(port, named, digest, Some("  Alex Doe "))
+    assert field(reply, "event") == json.String("credentials.claim")
+    assert field(field(reply, "body"), "name") == json.String("Alex Doe")
+    assert listed_name(port, owner, "alice") == json.String("Alex Doe")
+    assert string.contains(
+      upgrade_status(port, credential, "/v2/control"),
+      "101 Switching Protocols",
+    )
+
+    // No name keeps the one the invitation gave.
+    let #(_, other) = bearer()
+    let kept = redeem(port, plain, other)
+    assert field(field(kept, "body"), "name") == json.String("bob")
+    assert listed_name(port, owner, "bob") == json.String("bob")
+    Nil
+  })
+}
+
+pub fn a_refused_name_binds_nothing_and_the_claim_stays_open_test() {
+  wire.fixture(fn(_, ready, port, owner) {
+    let session = shared_session(ready, 31)
+    let #(_, token) =
+      invite(port, owner, ready.epoch, session, "alice", "observer")
+    let #(credential, digest) = bearer()
+
+    // Each refusal has one code and names no digest and no name.
+    let refused = fn(name) {
+      let reply = redeem_named(port, token, digest, Some(name))
+      assert refusal_code(reply) == json.String("invalid_name")
+      assert !string.contains(json.to_string(reply), digest)
+      Nil
+    }
+    refused("")
+    refused("   ")
+    refused("two\nlines")
+    refused("bell\u{7}")
+    refused(string.repeat("a", 257))
+    assert credential_count(ready.state_root, "alice") == 0
+    assert listed_name(port, owner, "alice") == json.String("alice")
+    assert string.contains(
+      upgrade_status(port, credential, "/v2/control"),
+      "401 Unauthorized",
+    )
+
+    // A name that is not text is a malformed message, also before any write.
+    let socket = claim_socket(port, token)
+    let _hello = wire.frame(socket, within_ms: 2000)
+    let malformed =
+      wire.send(
+        socket,
+        1,
+        "credentials.claim",
+        json.Object([
+          #("credential_digest", json.String(digest)),
+          #("name", json.Int(7)),
+        ]),
+        within_ms: 5000,
+      )
+    let _ = ffi_ws.tcp_close(socket)
+    assert refusal_code(malformed) == json.String("bad_request")
+    assert credential_count(ready.state_root, "alice") == 0
+
+    // The claim is still redeemable, by the same digest and a good name.
+    let reply = redeem_named(port, token, digest, Some("Alex"))
+    assert field(field(reply, "body"), "name") == json.String("Alex")
+    assert credential_count(ready.state_root, "alice") == 1
+    Nil
+  })
+}
+
+pub fn a_replay_with_the_same_digest_answers_the_same_body_and_never_renames_test() {
+  wire.fixture(fn(_, ready, port, owner) {
+    let session = shared_session(ready, 32)
+    let #(_, token) =
+      invite(port, owner, ready.epoch, session, "alice", "observer")
+    let #(_, digest) = bearer()
+    let first = redeem_named(port, token, digest, Some("Alex"))
+    assert field(field(first, "body"), "name") == json.String("Alex")
+
+    // A lost reply is retried with the same name, another, or none: the body
+    // is the first one, and the principal keeps the name it was bound with.
+    assert redeem_named(port, token, digest, Some("Alex")) == first
+    assert redeem_named(port, token, digest, Some("Someone Else")) == first
+    assert redeem_named(port, token, digest, None) == first
+    assert listed_name(port, owner, "alice") == json.String("Alex")
     Nil
   })
 }
@@ -568,9 +701,9 @@ pub fn claimed_member_attaches_with_its_role_and_revocation_closes_it_test() {
       "build/test_db/claim-invitee-"
       <> bit_array.base16_encode(vault.production_entropy()(6))
     let assert Ok(remote) =
-      loom_claim.remote(loom_claim.Options(address(port), "", directory))
+      loom_claim.remote(loom_claim.Options(address(port), "", directory, ""))
       as "the invitee's private remote directory is prepared"
-    let assert Ok(claimed) = loom_claim.redeem(remote, token)
+    let assert Ok(claimed) = loom_claim.redeem(remote, token, "")
       as "loom claim binds a credential it drew itself"
     assert claimed.sessions == [loom_claim.Membership(session, "observer")]
     let assert Ok(bytes) =
@@ -620,6 +753,36 @@ pub fn claimed_member_attaches_with_its_role_and_revocation_closes_it_test() {
     let assert Ok(<<0x88, _>>) = ffi_ws.tcp_receive(socket, 2, 2000)
       as "the revoked attachment is closed"
     let _ = ffi_ws.tcp_close(socket)
+    let _ = simplifile.delete(directory)
+    Nil
+  })
+}
+
+pub fn loom_claim_sends_the_name_and_keeps_the_claim_after_a_refused_one_test() {
+  session_socket_test.fixture(fn(port, owner, session, epoch, _) {
+    let #(_, token) = invite(port, owner, epoch, session, "reader", "observer")
+    let directory =
+      "build/test_db/claim-named-"
+      <> bit_array.base16_encode(vault.production_entropy()(6))
+    let assert Ok(remote) =
+      loom_claim.remote(loom_claim.Options(address(port), "", directory, ""))
+      as "the invitee's private remote directory is prepared"
+
+    // A refused name is not a final refusal: the credential file stays, so
+    // the rerun below redeems the same open claim with the same credential.
+    let assert Error(loom_claim.Invalid(_)) =
+      loom_claim.redeem(remote, token, "   ")
+      as "a blank name is refused by the daemon and reported as invalid"
+    let assert Ok(kept) =
+      bootstrap.read_private_bounded(loom_claim.credential_path(remote), 64)
+      as "the credential survives the refused name"
+    let assert Ok(claimed) = loom_claim.redeem(remote, token, "Alex Doe")
+      as "the rerun binds with a good name"
+    assert claimed.name == "Alex Doe"
+    let assert Ok(bound) =
+      bootstrap.read_private_bounded(loom_claim.credential_path(remote), 64)
+      as "the credential file is still there"
+    assert bound == kept
     let _ = simplifile.delete(directory)
     Nil
   })

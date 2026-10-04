@@ -111,6 +111,11 @@ pub type ClaimRefusal {
   /// the presented digest is the claim's own.
   ConflictingClaim
 
+  /// The invitee's chosen display name is blank after trimming, longer than
+  /// 256 bytes, or holds a control character. The claim binds nothing and
+  /// stays open, so the invitee can try again with another name.
+  InvalidClaimName
+
   /// The catalogue could not answer or refused the write.
   ClaimStore(error: Error)
 }
@@ -524,19 +529,28 @@ pub fn claim_known(store: Catalogue, claim: ClaimDigest) -> Result(Nil, Error) {
 /// hold no active credential. Then the credential is inserted and the claim
 /// marked claimed at `now_ms`, a wall-clock instant in Unix milliseconds.
 ///
+/// `name` is the display name the invitee chose, or `None` to keep the one
+/// the inviter gave. A chosen name is trimmed, checked by the rule every
+/// display name meets, and written in the same transaction as the credential,
+/// so a refused name (`InvalidClaimName`) binds nothing and leaves the claim
+/// open. Only the redemption that binds applies it: the replay of a lost reply
+/// answers the principal as it stands and never renames, whatever name it
+/// carries. Events already admitted keep the name they were admitted under.
+///
 /// `equal` compares two digests. The daemon passes a constant-time
 /// comparison; this package has no cryptographic dependency of its own.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // access.claim(store, claim, credential, now_ms, constant_time_equal)
+/// // access.claim(store, claim, credential, Some("Alex"), now_ms, constant_time_equal)
 /// ```
 @internal
 pub fn claim(
   store: Catalogue,
   claim: ClaimDigest,
   presented: Digest,
+  name: Option(String),
   now_ms: Int,
   equal: fn(String, String) -> Bool,
 ) -> Result(Claimed, ClaimRefusal) {
@@ -544,9 +558,10 @@ pub fn claim(
     catalogue.atomic(store, fn() {
       // A refusal commits an empty transaction, since every refusal precedes
       // every write. A store failure rolls back whatever had been written.
-      case redeem(store, claim, presented, now_ms, equal) {
+      case redeem(store, claim, presented, name, now_ms, equal) {
         Ok(claimed) -> Ok(Ok(claimed))
         Error(ClaimStore(error)) -> Error(error)
+        Error(InvalidClaimName) -> Ok(Error(InvalidClaimName))
         Error(UnknownClaim) -> Ok(Error(UnknownClaim))
         Error(ExpiredClaim) -> Ok(Error(ExpiredClaim))
         Error(ConflictingClaim) -> Ok(Error(ConflictingClaim))
@@ -562,6 +577,7 @@ fn redeem(
   store: Catalogue,
   claim: ClaimDigest,
   presented: Digest,
+  name: Option(String),
   now_ms: Int,
   equal: fn(String, String) -> Bool,
 ) -> Result(Claimed, ClaimRefusal) {
@@ -585,7 +601,7 @@ fn redeem(
       }
     }
 
-    OpenClaim -> bind(store, row, presented, now_ms, equal)
+    OpenClaim -> bind(store, row, presented, name, now_ms, equal)
   }
 }
 
@@ -593,6 +609,7 @@ fn bind(
   store: Catalogue,
   row: ClaimRow,
   presented: Digest,
+  name: Option(String),
   now_ms: Int,
   equal: fn(String, String) -> Bool,
 ) -> Result(Claimed, ClaimRefusal) {
@@ -611,6 +628,18 @@ fn bind(
     no_active_credential(store, row.principal_id) |> result.map_error(refusal),
   )
 
+  // The name is judged before the first write, so a refused one leaves the
+  // claim open and the principal as the inviter named it.
+  use chosen <- result.try(case name {
+    None -> Ok(None)
+    Some(given) -> {
+      let trimmed = string.trim(given)
+      valid_name(trimmed)
+      |> result.replace_error(InvalidClaimName)
+      |> result.replace(Some(trimmed))
+    }
+  })
+
   // The credential row first: the claim's `credential_digest` references it.
   use Nil <- result.try(
     stored(catalogue.statement(
@@ -628,6 +657,14 @@ fn bind(
       ),
     )),
   )
+  use Nil <- result.try(case chosen {
+    None -> Ok(Nil)
+    Some(display_name) ->
+      stored(catalogue.statement(
+        store,
+        sql.rename_access_principal(display_name, row.principal_id),
+      ))
+  })
   claimed(store, row.principal_id)
 }
 

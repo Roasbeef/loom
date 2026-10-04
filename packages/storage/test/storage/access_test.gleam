@@ -636,7 +636,7 @@ pub fn invited_member_has_no_credential_until_its_claim_binds_test() {
 
   let expected =
     access.Claimed(member, [access.Membership(session.id, access.Observer)])
-  assert access.claim(store, claim_of("1"), digest("b"), 999, same)
+  assert access.claim(store, claim_of("1"), digest("b"), None, 999, same)
     == Ok(expected)
   assert access.authenticate(store, digest("b")) == Ok(member)
   assert credential_rows(file, member.id) == ["active"]
@@ -644,29 +644,109 @@ pub fn invited_member_has_no_credential_until_its_claim_binds_test() {
   assert catalogue.close(store) == Ok(Nil)
 }
 
+pub fn a_claim_with_a_name_sets_it_and_one_without_keeps_the_inviters_test() {
+  let #(_, store, session, member) = claim_fixture("claim-name", 940)
+
+  // The name is trimmed, then written with the credential, so the principal
+  // the claim answers already carries it and so does a later lookup.
+  let renamed = access.Principal(..member, display_name: "Alex Doe")
+  assert access.claim(
+      store,
+      claim_of("1"),
+      digest("b"),
+      Some("  Alex Doe \t"),
+      10,
+      same,
+    )
+    == Ok(
+      access.Claimed(renamed, [access.Membership(session.id, access.Observer)]),
+    )
+  assert access.authenticate(store, digest("b")) == Ok(renamed)
+  assert access.get(store, member.id) == Ok(renamed)
+  assert catalogue.close(store) == Ok(Nil)
+
+  // Without a name the inviter's stays.
+  let #(_, other, _, kept) = claim_fixture("claim-no-name", 941)
+  let assert Ok(access.Claimed(answered, _)) =
+    access.claim(other, claim_of("1"), digest("b"), None, 10, same)
+  assert answered == kept
+  assert catalogue.close(other) == Ok(Nil)
+}
+
+pub fn a_refused_name_binds_nothing_and_leaves_the_claim_open_test() {
+  let #(file, store, _, member) = claim_fixture("claim-bad-name", 942)
+  let refused = fn(name) {
+    access.claim(store, claim_of("1"), digest("b"), Some(name), 10, same)
+  }
+  assert refused("") == Error(access.InvalidClaimName)
+  assert refused("   ") == Error(access.InvalidClaimName)
+  assert refused("tab\there") == Error(access.InvalidClaimName)
+  assert refused("line\nbreak") == Error(access.InvalidClaimName)
+  assert refused("nul\u{0}") == Error(access.InvalidClaimName)
+  assert refused("c1\u{85}x") == Error(access.InvalidClaimName)
+  assert refused(string.repeat("a", 257)) == Error(access.InvalidClaimName)
+
+  // No credential, no claim state change, and the name is the inviter's.
+  assert credential_rows(file, member.id) == []
+  assert claim_state(file, "1") == [#("open", None)]
+  assert access.get(store, member.id) == Ok(member)
+
+  // The same claim still redeems, with a name at the byte limit.
+  let limit = string.repeat("a", 256)
+  let assert Ok(access.Claimed(answered, _)) =
+    access.claim(store, claim_of("1"), digest("b"), Some(limit), 10, same)
+  assert answered.display_name == limit
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_replay_never_renames_the_bound_principal_test() {
+  let #(_, store, _, _) = claim_fixture("claim-replay-name", 943)
+  let assert Ok(first) =
+    access.claim(store, claim_of("1"), digest("b"), Some("Alex"), 10, same)
+
+  // The lost-reply replay, with the same name or another or none, answers the
+  // principal as it stands.
+  assert access.claim(store, claim_of("1"), digest("b"), Some("Alex"), 20, same)
+    == Ok(first)
+  assert access.claim(
+      store,
+      claim_of("1"),
+      digest("b"),
+      Some("Other"),
+      20,
+      same,
+    )
+    == Ok(first)
+  assert access.claim(store, claim_of("1"), digest("b"), None, 20, same)
+    == Ok(first)
+  assert access.get(store, first.principal.id) == Ok(first.principal)
+  assert first.principal.display_name == "Alex"
+  assert catalogue.close(store) == Ok(Nil)
+}
+
 pub fn claim_binds_once_and_repeats_only_for_its_own_credential_test() {
   let #(file, store, session, member) = claim_fixture("claim-once", 932)
   let expected =
     access.Claimed(member, [access.Membership(session.id, access.Observer)])
-  assert access.claim(store, claim_of("1"), digest("b"), 10, same)
+  assert access.claim(store, claim_of("1"), digest("b"), None, 10, same)
     == Ok(expected)
 
   // A lost reply is recovered with the same digest, even after the claim's
   // expiry instant: expiry bounds an open claim, not a bound one.
-  assert access.claim(store, claim_of("1"), digest("b"), 5000, same)
+  assert access.claim(store, claim_of("1"), digest("b"), None, 5000, same)
     == Ok(expected)
 
   // A replay with any other digest is refused and binds nothing.
-  assert access.claim(store, claim_of("1"), digest("c"), 20, same)
+  assert access.claim(store, claim_of("1"), digest("c"), None, 20, same)
     == Error(access.ConflictingClaim)
   assert access.authenticate(store, digest("c")) == Error(catalogue.Missing)
   assert credential_rows(file, member.id) == ["active"]
 
   // Once the bound credential is revoked the claim answers nothing at all.
   assert access.revoke_member(store, member.id) == Ok(member)
-  assert access.claim(store, claim_of("1"), digest("b"), 30, same)
+  assert access.claim(store, claim_of("1"), digest("b"), None, 30, same)
     == Error(access.UnknownClaim)
-  assert access.claim(store, claim_of("1"), digest("c"), 30, same)
+  assert access.claim(store, claim_of("1"), digest("c"), None, 30, same)
     == Error(access.UnknownClaim)
   assert catalogue.close(store) == Ok(Nil)
 }
@@ -676,25 +756,27 @@ pub fn claim_refuses_its_own_digest_test() {
 
   // Binding the SHA-256 of the claim string would make the claim string, which
   // sits in a chat log, a durable bearer.
-  assert access.claim(store, claim_of("1"), digest("1"), 10, same)
+  assert access.claim(store, claim_of("1"), digest("1"), None, 10, same)
     == Error(access.ConflictingClaim)
   assert credential_rows(file, member.id) == []
   assert access.authenticate(store, digest("1")) == Error(catalogue.Missing)
   assert claim_state(file, "1") == [#("open", None)]
-  let assert Ok(_) = access.claim(store, claim_of("1"), digest("b"), 10, same)
+  let assert Ok(_) =
+    access.claim(store, claim_of("1"), digest("b"), None, 10, same)
     as "the refused attempt left the claim open for the invitee"
   assert catalogue.close(store) == Ok(Nil)
 }
 
 pub fn expired_claim_is_refused_and_stays_unbound_test() {
   let #(file, store, _session, member) = claim_fixture("claim-expired", 934)
-  assert access.claim(store, claim_of("1"), digest("b"), 1000, same)
+  assert access.claim(store, claim_of("1"), digest("b"), None, 1000, same)
     == Error(access.ExpiredClaim)
-  assert access.claim(store, claim_of("1"), digest("b"), 99_999, same)
+  assert access.claim(store, claim_of("1"), digest("b"), None, 99_999, same)
     == Error(access.ExpiredClaim)
   assert credential_rows(file, member.id) == []
   assert claim_state(file, "1") == [#("open", None)]
-  let assert Ok(_) = access.claim(store, claim_of("1"), digest("b"), 999, same)
+  let assert Ok(_) =
+    access.claim(store, claim_of("1"), digest("b"), None, 999, same)
     as "the last instant before expiry still binds"
   assert catalogue.close(store) == Ok(Nil)
 }
@@ -705,22 +787,23 @@ pub fn rotation_and_revocation_void_the_open_claim_test() {
   // Rotation voids the delivered claim before it issues the next one.
   assert access.rotate_member(store, member.id, claimed_by("2")) == Ok(member)
   assert access.claim_known(store, claim_of("1")) == Error(catalogue.Missing)
-  assert access.claim(store, claim_of("1"), digest("b"), 10, same)
+  assert access.claim(store, claim_of("1"), digest("b"), None, 10, same)
     == Error(access.UnknownClaim)
   assert claim_state(file, "1") == [#("void", None)]
-  let assert Ok(_) = access.claim(store, claim_of("2"), digest("b"), 10, same)
+  let assert Ok(_) =
+    access.claim(store, claim_of("2"), digest("b"), None, 10, same)
     as "the rotated claim binds"
 
   // Rotating a claimed member revokes the bound credential; its old claim
   // then answers nothing, and the new one stays open.
   assert access.rotate_member(store, member.id, claimed_by("3")) == Ok(member)
   assert access.authenticate(store, digest("b")) == Error(catalogue.Missing)
-  assert access.claim(store, claim_of("2"), digest("b"), 10, same)
+  assert access.claim(store, claim_of("2"), digest("b"), None, 10, same)
     == Error(access.UnknownClaim)
 
   // Revocation voids an open claim as well.
   assert access.revoke_member(store, member.id) == Ok(member)
-  assert access.claim(store, claim_of("3"), digest("c"), 10, same)
+  assert access.claim(store, claim_of("3"), digest("c"), None, 10, same)
     == Error(access.UnknownClaim)
   assert claim_state(file, "3") == [#("void", None)]
   assert access.authorization(store, member.id, session.id)
@@ -733,14 +816,14 @@ pub fn claim_refuses_a_digest_that_is_already_a_credential_test() {
   let assert Ok(other) =
     access.create_member(store, "other", "Other", digest("0"))
     as "another member holds a credential"
-  assert access.claim(store, claim_of("1"), digest("0"), 10, same)
+  assert access.claim(store, claim_of("1"), digest("0"), None, 10, same)
     == Error(access.ConflictingClaim)
   assert access.authenticate(store, digest("0")) == Ok(other)
 
   // A tombstone is refused too: rows are never deleted, so a revoked digest
   // cannot come back through a claim.
   assert access.revoke_member(store, other.id) == Ok(other)
-  assert access.claim(store, claim_of("1"), digest("0"), 10, same)
+  assert access.claim(store, claim_of("1"), digest("0"), None, 10, same)
     == Error(access.ConflictingClaim)
   assert credential_rows(file, member.id) == []
   assert catalogue.close(store) == Ok(Nil)
@@ -762,7 +845,7 @@ pub fn claim_refuses_a_member_that_already_holds_a_credential_test() {
     == Ok(Nil)
   assert sqlight.close(db) == Ok(Nil)
   let assert Ok(store) = catalogue.open(file) as "catalogue reopens"
-  assert access.claim(store, claim_of("1"), digest("b"), 10, same)
+  assert access.claim(store, claim_of("1"), digest("b"), None, 10, same)
     == Error(access.ConflictingClaim)
   assert access.authenticate(store, digest("b")) == Error(catalogue.Missing)
   assert access.authenticate(store, digest("e")) == Ok(member)
@@ -809,7 +892,7 @@ pub fn open_claim_redeems_after_the_catalogue_reopens_test() {
   let #(file, store, session, member) = claim_fixture("claim-restart", 939)
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(store) = catalogue.open(file) as "catalogue reopens"
-  assert access.claim(store, claim_of("1"), digest("b"), 10, same)
+  assert access.claim(store, claim_of("1"), digest("b"), None, 10, same)
     == Ok(
       access.Claimed(member, [access.Membership(session.id, access.Observer)]),
     )
@@ -827,7 +910,7 @@ pub fn claim_reply_lists_sixteen_memberships_in_session_order_test() {
     assert access.grant(store, member.id, record.id, access.Operator) == Ok(Nil)
   })
   let assert Ok(claimed) =
-    access.claim(store, claim_of("1"), digest("b"), 10, same)
+    access.claim(store, claim_of("1"), digest("b"), None, 10, same)
     as "the claim binds"
   let expected =
     [first.id, ..list.map(records, fn(record) { record.id })]
@@ -879,7 +962,7 @@ pub fn corrupt_claim_rows_are_refused_totally_test() {
   corrupt(file, "UPDATE access_claims SET state = 'pending'")
   let assert Ok(store) = catalogue.open(file) as "corrupt claim is decoded"
   let assert Error(access.ClaimStore(catalogue.Invalid(_))) =
-    access.claim(store, claim_of("1"), digest("b"), 10, same)
+    access.claim(store, claim_of("1"), digest("b"), None, 10, same)
     as "an unknown claim state never binds"
   let assert Error(catalogue.Invalid(_)) =
     access.claim_known(store, claim_of("1"))
@@ -921,7 +1004,8 @@ pub fn listing_reports_each_principals_credential_state_test() {
       access.Observer,
     )
     as "second invitation"
-  let assert Ok(_) = access.claim(store, claim_of("2"), digest("c"), 500, same)
+  let assert Ok(_) =
+    access.claim(store, claim_of("2"), digest("c"), None, 500, same)
     as "the second claim binds"
   let assert Ok(_) =
     access.invite_member(

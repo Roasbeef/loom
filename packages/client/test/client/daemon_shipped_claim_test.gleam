@@ -189,9 +189,9 @@ fn exercise(server: String, directory: String, paths: endpoint.Paths) -> Nil {
   // The invitee claims with its own state directory; the credential it
   // stores attaches to the session as an operator.
   let assert Ok(remote) =
-    claim.remote(claim.Options(address, "", directory <> "/invitee"))
+    claim.remote(claim.Options(address, "", directory <> "/invitee", ""))
     as "the invitee prepares its private remote directory"
-  let assert Ok(claimed) = claim.redeem(remote, issued)
+  let assert Ok(claimed) = claim.redeem(remote, issued, "")
     as "the invitee binds a credential it drew"
   assert claimed.sessions == [claim.Membership(session, "operator")]
   let assert Ok(bytes) =
@@ -219,9 +219,9 @@ fn exercise(server: String, directory: String, paths: endpoint.Paths) -> Nil {
   // The spent claim buys nothing: another credential is refused, and the
   // claim string is not a bearer.
   let assert Ok(replay) =
-    claim.remote(claim.Options(address, "replay", directory <> "/invitee"))
+    claim.remote(claim.Options(address, "replay", directory <> "/invitee", ""))
     as "a second remote directory for the replay"
-  assert claim.redeem(replay, issued) == Error(claim.Refused("conflict"))
+  assert claim.redeem(replay, issued, "") == Error(claim.Refused("conflict"))
   let #(bearer_socket, bearer_response) =
     wire.connect(port, issued, "/v2/control")
   assert string.contains(bearer_response, "401 Unauthorized")

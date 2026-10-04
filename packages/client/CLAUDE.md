@@ -413,7 +413,9 @@ catalogue without opening runtimes. Explicit admission invokes
   `root.acquire_claim` (409 while another upgrade for the same claim is open).
   The socket accepts one message of `protocol.max_claim_bytes`, sends a
   `hello` with only `protocol`, closes after `claim_idle_ms` (2 s) without a
-  command, and closes after answering its one `credentials.claim`
+  command, and closes after answering its one `credentials.claim`, whose
+  optional `name` rides `ClaimRequest` and `manager.claim` to the catalogue,
+  and a refused one is `invalid_name`
   (`protocol.decode_claim`, which refuses every control command, as
   `protocol.decode` refuses `credentials.claim`). Invitation and rotation mint
   the claim with `host/claim.mint_token(token.production_entropy())`, store
