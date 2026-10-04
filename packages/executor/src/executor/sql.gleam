@@ -92,3 +92,86 @@ pub fn advance_custody_head_decoder() -> decode.Decoder(AdvanceCustodyHead) {
   use version <- decode.field(0, decode.int)
   decode.success(AdvanceCustodyHead(version:))
 }
+
+pub type PayloadInventory {
+  PayloadInventory(items: Int, bytes: Int)
+}
+
+pub fn payload_inventory(request request: BitArray, kind kind: Int) {
+  let sql =
+    "SELECT COUNT(*) AS items,
+       CAST(COALESCE(SUM(length(body)), 0) AS INTEGER) AS bytes
+FROM custody_payload WHERE request = ? AND kind = ?"
+  #(
+    sql,
+    [dev.ParamBitArray(request), dev.ParamInt(kind)],
+    payload_inventory_decoder(),
+  )
+}
+
+pub fn payload_inventory_decoder() -> decode.Decoder(PayloadInventory) {
+  use items <- decode.field(0, decode.int)
+  use bytes <- decode.field(1, decode.int)
+  decode.success(PayloadInventory(items:, bytes:))
+}
+
+pub type PayloadReservations {
+  PayloadReservations(items: Int)
+}
+
+pub fn payload_reservations() {
+  let sql =
+    "SELECT COUNT(DISTINCT request) AS items FROM custody_payload WHERE kind IN (0, 4)"
+  #(sql, [], payload_reservations_decoder())
+}
+
+pub fn payload_reservations_decoder() -> decode.Decoder(PayloadReservations) {
+  use items <- decode.field(0, decode.int)
+  decode.success(PayloadReservations(items:))
+}
+
+pub type ReadCustodyPayload {
+  ReadCustodyPayload(digest: BitArray, kind: Int, ordinal: Int, body: BitArray)
+}
+
+pub fn read_custody_payload(request request: BitArray) {
+  let sql =
+    "SELECT CAST(CASE WHEN typeof(digest) = 'blob' AND length(digest) = 32
+                 THEN digest ELSE NULL END AS BLOB) AS digest,
+       CAST(CASE WHEN typeof(kind) = 'integer' AND kind BETWEEN 0 AND 4
+                 THEN kind ELSE NULL END AS INTEGER) AS kind,
+       CAST(CASE WHEN typeof(ordinal) = 'integer' AND ordinal BETWEEN 0 AND 63
+                 THEN ordinal ELSE NULL END AS INTEGER) AS ordinal,
+       CAST(CASE WHEN typeof(body) = 'blob'
+                 AND length(body) <= CASE kind WHEN 0 THEN 131072 WHEN 1 THEN 1024
+                   WHEN 2 THEN 16384 WHEN 3 THEN 32768 WHEN 4 THEN 32768 ELSE 0 END
+                 THEN body ELSE NULL END AS BLOB) AS body
+FROM custody_payload WHERE request = ? ORDER BY kind, ordinal LIMIT 69"
+  #(sql, [dev.ParamBitArray(request)], read_custody_payload_decoder())
+}
+
+pub fn read_custody_payload_decoder() -> decode.Decoder(ReadCustodyPayload) {
+  use digest <- decode.field(0, decode.bit_array)
+  use kind <- decode.field(1, decode.int)
+  use ordinal <- decode.field(2, decode.int)
+  use body <- decode.field(3, decode.bit_array)
+  decode.success(ReadCustodyPayload(digest:, kind:, ordinal:, body:))
+}
+
+pub fn insert_custody_payload(
+  request request: BitArray,
+  digest digest: BitArray,
+  kind kind: Int,
+  ordinal ordinal: Int,
+  body body: BitArray,
+) {
+  let sql =
+    "INSERT INTO custody_payload (request, digest, kind, ordinal, body) VALUES (?, ?, ?, ?, ?)"
+  #(sql, [
+    dev.ParamBitArray(request),
+    dev.ParamBitArray(digest),
+    dev.ParamInt(kind),
+    dev.ParamInt(ordinal),
+    dev.ParamBitArray(body),
+  ])
+}
