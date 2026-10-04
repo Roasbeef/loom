@@ -281,7 +281,7 @@ and the roster returns under the input.
 | Strand cards with a ring and one status line | a ring is not drawable in cells | a glyph, the name, the status line, and the cache outlook as `3m` |
 | Strand focus from dots, tags and cards | dots are cells, not buttons; no hover | `Ctrl+T` timeline cursor, `Enter` on a row; clicks are additive |
 | Breadcrumb with `All strands` and `Esc` | `Esc` already interrupts the active strand | breadcrumb with `↓ ⏎ main` |
-| `⌘B`, `⌘⌥B` | terminals do not deliver `⌘`; `Ctrl+B` is tmux's prefix; `Ctrl+Alt+B` parses as `Unknown`; any `Alt` letter is read as Escape then the letter (`interrupt_and_insert` at `tui/submit.gleam:411`) | `Shift+Tab`, which already toggles the rail |
+| `⌘B`, `⌘⌥B` | terminals do not deliver `⌘`; `Ctrl+B` is tmux's prefix; `Ctrl+Alt+B` parses as `Unknown`; any `Alt` letter is read as Escape then the letter (`interrupt_and_insert` at `tui/submit.gleam:417`) | `Shift+Tab`, which already toggles the rail |
 | Left session sidebar | costs 26 or more cells and duplicates the multiplexer | not drawn; the `←` picker |
 | 180 ms width animation, shadows, rounded cards | no | none |
 | Approval card in the dock | fits | today's bottom-anchored approval panel, unchanged in rules |
@@ -351,9 +351,9 @@ call list in both needs a new wire record (section 10).
 | Key | Today | Concept B |
 |---|---|---|
 | `←` on an empty composer | session picker (`tui/interaction.gleam:1376`) | unchanged |
-| `↓` on an empty composer | into the strip (`down_from_composer` at `tui/interaction.gleam:1295`) | unchanged; lands on `main` when another strand is focused |
-| `Shift+Tab` | toggle the rail (`tui/interaction.gleam:1406`) | toggle the drawer, which replaces the rail |
-| `Ctrl+O`, `F2` | open `/agents` (`open_agents` at `tui/interaction.gleam:1184`) | open Strands: full body, or focus the docked drawer |
+| `↓` on an empty composer | into the strip (`down_from_composer` at `tui/interaction.gleam:1429`) | unchanged; lands on `main` when another strand is focused |
+| `Shift+Tab` | toggle the rail (`tui/interaction.gleam:1378`) | toggle the drawer, which replaces the rail |
+| `Ctrl+O`, `F2` | open `/agents` (`open_agents` at `tui/interaction.gleam:1318`) | open Strands: full body, or focus the docked drawer |
 | `Ctrl+T` | unbound | timeline cursor (new) |
 | `Ctrl+G` | details everywhere | unchanged |
 | `Ctrl+D` | changes navigator focus | focus the drawer on Changes |
@@ -409,8 +409,8 @@ record would need a new control command.
 | Strands tab: cache | outlook per strand | `outlook` at `session_view/cache_watch.gleam:120` |
 | Changes tab | session edits | `fold` at `session_view/changes_view.gleam:210` |
 | Session tab: jobs, viewers | jobs board, presence | `jobs` at `session_view/session_summary.gleam:99`, `viewers` at `session_view/session_summary.gleam:122` |
-| Code mode block, Trace tab | program, status, result | `code_mode_program` at `session_view/transcript_lines.gleam:3378`, `code_mode_result_lines` at `session_view/transcript_lines.gleam:3621`; the call list has no data and needs a new wire record |
-| Peer messages | authenticated origin | `PeerOrigin` at `core/message.gleam:43`, `peer_message_lines` at `session_view/transcript_lines.gleam:2492` |
+| Code mode block, Trace tab | program, status, result | `code_mode_program` at `session_view/transcript_lines.gleam:3395`, `code_mode_result_lines` at `session_view/transcript_lines.gleam:3638`; the call list has no data and needs a new wire record |
+| Peer messages | authenticated origin | `PeerOrigin` at `core/message.gleam:43`, `peer_message_lines` at `session_view/transcript_lines.gleam:2509` |
 | Strand messages | harness text frame | `frame_message` at `client/agency.gleam:1665`; not recognised by `session_view` today |
 | Images | mime type and bytes | `Image` at `session_view/transcript_image.gleam:29` |
 
@@ -451,10 +451,10 @@ receives.
   "needs protocol-change: call record".
 
 What the client receives: the program, from the call's `program` argument
-only (`code_mode_program` at `session_view/transcript_lines.gleam:3378`),
+only (`code_mode_program` at `session_view/transcript_lines.gleam:3395`),
 and the result's details, which carry the value or the error message and
 details, `status`, `manifest_hash` and `sandbox`
-(`code_mode_result_lines` at `session_view/transcript_lines.gleam:3621`
+(`code_mode_result_lines` at `session_view/transcript_lines.gleam:3638`
 draws them). There is no call data at all: no call list, no capability
 names, no per-call status. Capability calls are serviced inside the
 satellite and the broker, and no transcript entry is written per call. A

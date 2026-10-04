@@ -93,6 +93,8 @@ import tui/peer_links
 import tui/projection
 import tui/queue_editor
 import tui/queue_panel
+import tui/rail
+import tui/rail_tabs
 import tui/render
 import tui/selection
 import tui/session_control
@@ -1119,6 +1121,108 @@ fn inspect_agent_approval(model: Model, strand: String) -> Model {
 }
 
 fn update_main_key(key: keys.Key, model: Model) -> Model {
+  case tab_has_keyboard(model), model.view.rail_focus {
+    True, _ -> update_tab_key(key, model)
+
+    // The tab left the screen while it held the keyboard, because the rail
+    // was hidden or the terminal narrowed, so the keyboard goes back to the
+    // composer with this key. Escape is consumed by that reset: forwarded, it
+    // would interrupt the strand, which a key pressed at a tab that had gone
+    // away cannot have meant.
+    False, tui_model.FocusTab -> {
+      let returned =
+        Model(
+          ..model,
+          view: View(..model.view, rail_focus: tui_model.FocusComposer),
+        )
+      case key {
+        keys.Escape -> returned
+        _ -> update_main_key_strip(key, returned)
+      }
+    }
+    False, tui_model.FocusComposer -> update_main_key_strip(key, model)
+  }
+}
+
+// Whether the Trace or Session tab is on screen and has the keyboard.
+fn tab_has_keyboard(model: Model) -> Bool {
+  model.view.rail_focus == tui_model.FocusTab
+  && layout.rail_columns(model) > 0
+  && case layout.rail_tab(model) {
+    rail.Trace | rail.Session -> True
+    rail.Strands | rail.Changes -> False
+  }
+}
+
+// The Trace and Session tabs have no cursor, so while one has the keyboard
+// the digits choose a tab, the arrows and pages scroll it, and Escape hands
+// the keyboard back. Any other key is the composer's, and takes the keyboard
+// with it, as a key the strip does not want does.
+fn update_tab_key(key: keys.Key, model: Model) -> Model {
+  case tab_of_key(key), key {
+    Ok(tab), _ ->
+      submit.select_rail_tab(model, tab)
+      |> keep_tab_keyboard(tab)
+    Error(Nil), keys.Up -> scrolled_tab(model, -1)
+    Error(Nil), keys.Down -> scrolled_tab(model, 1)
+    Error(Nil), keys.PageUp -> scrolled_tab(model, -10)
+    Error(Nil), keys.PageDown -> scrolled_tab(model, 10)
+    Error(Nil), keys.Escape ->
+      Model(
+        ..model,
+        view: View(..model.view, rail_focus: tui_model.FocusComposer),
+      )
+    Error(Nil), _ ->
+      update_main_key_strip(
+        key,
+        Model(
+          ..model,
+          view: View(..model.view, rail_focus: tui_model.FocusComposer),
+        ),
+      )
+  }
+}
+
+// The tab a digit key names.
+fn tab_of_key(key: keys.Key) -> Result(rail.Tab, Nil) {
+  case key {
+    keys.Char(digit) ->
+      case int.parse(digit) {
+        Ok(number) -> rail.of_number(number)
+        Error(Nil) -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+}
+
+// After a digit chose a tab with the keyboard on the tab, the keyboard stays
+// on the tab when the new one is another with no cursor of its own, so the
+// digits keep working; Strands has the list's cursor to be entered with
+// Down, and Changes has its own focus.
+fn keep_tab_keyboard(model: Model, tab: rail.Tab) -> Model {
+  case tab {
+    rail.Trace | rail.Session ->
+      Model(..model, view: View(..model.view, rail_focus: tui_model.FocusTab))
+    rail.Strands | rail.Changes -> model
+  }
+}
+
+fn scrolled_tab(model: Model, by: Int) -> Model {
+  Model(
+    ..model,
+    view: View(
+      ..model.view,
+      rail_scroll: int.clamp(
+        model.view.rail_scroll + by,
+        min: 0,
+        max: rail_tabs.scroll_limit(model),
+      ),
+    ),
+  )
+  |> tui_model.invalidate_frame
+}
+
+fn update_main_key_strip(key: keys.Key, model: Model) -> Model {
   case model.view.strip_focus, layout.strands_listed(model) {
     agent_strip.Browsing(_), True -> update_strip_key(key, model)
 
@@ -1146,6 +1250,13 @@ fn update_main_key(key: keys.Key, model: Model) -> Model {
 // workspace's Enter uses, so the draft is parked with its strand and the
 // transcript, the composer's recipient and its badge change together.
 fn update_strip_key(key: keys.Key, model: Model) -> Model {
+  case layout.rail_lists_strands(model), tab_of_key(key) {
+    True, Ok(tab) -> submit.select_rail_tab(model, tab)
+    True, Error(Nil) | False, _ -> update_strip_key_in_list(key, model)
+  }
+}
+
+fn update_strip_key_in_list(key: keys.Key, model: Model) -> Model {
   let pressed = case key {
     keys.Up -> agent_strip.Up
     keys.Down -> agent_strip.Down
@@ -1294,8 +1405,12 @@ fn strip_covered(model: Model) -> Bool {
 // steps down into the agent strip, the next thing below the composer.
 fn down_from_composer(model: Model) -> Model {
   let lines = layout.strip_lines(model)
-  case model.view.history_index, layout.strands_listed(model) {
-    0, True ->
+  case
+    model.view.history_index,
+    layout.strands_listed(model),
+    rail_has_tab(model)
+  {
+    0, True, _ ->
       tui_model.store_strip(
         model,
         agent_strip.enter(
@@ -1304,7 +1419,21 @@ fn down_from_composer(model: Model) -> Model {
           model.shared.active_strand,
         ),
       )
-    _, _ -> submit.navigate_history(model, False)
+
+    // The rail shows Trace or Session, which have no list to enter, so Down
+    // gives the keyboard to the tab, where the digits choose a tab.
+    0, False, True ->
+      Model(..model, view: View(..model.view, rail_focus: tui_model.FocusTab))
+    _, _, _ -> submit.navigate_history(model, False)
+  }
+}
+
+// Whether the rail is docked on Trace or Session.
+fn rail_has_tab(model: Model) -> Bool {
+  layout.rail_columns(model) > 0
+  && case layout.rail_tab(model) {
+    rail.Trace | rail.Session -> True
+    rail.Strands | rail.Changes -> False
   }
 }
 

@@ -217,10 +217,24 @@ lists every agent through `agent_row.rows` (`StripRow`) in the workspace's
 attention order, the advisor and settled agents included, and the strip is
 hidden while it does. Not built here: the `PEERS` section (the terminal holds no
 fact about what another session asked), the cache-outlook column the frames
-draw beside each strand, the second key-hint row, the Trace and Session tabs
-(slice 14), and the tab bar's `1-4` keys, since only two tabs exist. The stored
-layout gains no word: the tab follows the changes setting, which is not a
-preference.
+draw beside each strand, and the second key-hint row.
+
+*As built (slice 14).* The tab bar names all four tabs in the web view's order.
+Trace is the strand's newest code-mode program (`session_view/trace_view`):
+running until its result arrives, then its status, value and calls, with the
+program's opening twelve lines numbered and no per-call timing, which is #656.
+Session is the goal, jobs, viewers and cost, the web view's Session rows. The
+digits `1` to `4` choose a tab while the rail has the keyboard (the Strands
+cursor, or `Down` from the composer on a tab with no cursor; with two or more
+agents the strip is visible off Strands and a digit pressed in it chooses the
+tab), `/diff` and `/trace` open Changes and Trace wherever the rail can dock,
+and below 120 columns `/trace` says why nothing opened. `/summary` is the
+full-screen summary at every width; Session is reached by its digit, and no
+`/session` command exists. The strip stays visible under Trace and Session. The tab is now a preference and the layout memory
+gains one optional word for it, except Changes, which opens an observation a
+launch has not made and is never remembered. The Changes tab is still the
+changes panel and not `changes_view.fold`, since the panel already shows the
+session's captured edits beside the worktree observation.
 
 ## 4. The header and the input frame
 
@@ -469,7 +483,7 @@ Grid: [txt](terminal-design/terminal-design-fixes-120.txt) ·
 |---|---|
 | About fifteen identical `✓ agent_wait · 2 subagents` rows | One counted row, `×15`, updated in place. A new rule in `tool_activity.project` (`packages/session_view/src/session_view/tool_activity.gleam:55`) (`project`). No wire change. |
 | Twenty identical `http 429` errors | One counted row: `! provider returned http 429 ×20`. A fold over the local lines in `session_view`. |
-| A `[loom] background job ... was lost` notice drawn as a `› User` turn | A dim `◇ loom` line with a second line saying it is a notice from Loom, not a message from you. **Data check first:** the line builders already route some harness-authored user messages (`harness_message_lines`, `packages/session_view/src/session_view/transcript_lines.gleam:2487`) (`harness_message_lines`), and `composer.harness_injection_summary` (`packages/session_view/src/session_view/composer.gleam:425`) (`harness_injection_summary`) recognises the `[loom] ` prefix to bound a turn. If the daemon sends this notice as a user entry with no marker, recognising the prefix is the same text-to-attribution step that 059 exists to avoid, and the notice needs a marker through its own protocol-change. |
+| A `[loom] background job ... was lost` notice drawn as a `› User` turn | A dim `◇ loom` line with a second line saying it is a notice from Loom, not a message from you. **Data check first:** the line builders already route some harness-authored user messages (`harness_message_lines`, `packages/session_view/src/session_view/transcript_lines.gleam:2504`) (`harness_message_lines`), and `composer.harness_injection_summary` (`packages/session_view/src/session_view/composer.gleam:425`) (`harness_injection_summary`) recognises the `[loom] ` prefix to bound a turn. If the daemon sends this notice as a user entry with no marker, recognising the prefix is the same text-to-attribution step that 059 exists to avoid, and the notice needs a marker through its own protocol-change. |
 | Approvals as a small dialog | A full-width block with numbered choices (below). |
 
 The fixes frame draws more on the folded rows than a fold has: `· 7m 30s ·
@@ -523,10 +537,10 @@ main ▸ sub:tests`) and the identity line names it. Focus from the timeline wit
 |---|---|---|
 | `←`, empty composer, no attachment | Open the session picker | Unchanged (`packages/tui/src/tui/interaction.gleam:1376`) (`open_session_selector`) |
 | `↓`, idle composer | Enter the agent strip. While the rail shows Strands, focus the rail's list | Unchanged (`packages/tui/src/tui/interaction.gleam:1236`) (`down_from_composer`) |
-| `Shift+Tab` | Dock or hide the rail; a sheet below 120 columns | Replaces "toggle the rail" (`packages/tui/src/tui/interaction.gleam:1406`) (`toggle_agent_rail`) |
+| `Shift+Tab` | Dock or hide the rail; a sheet below 120 columns | Replaces "toggle the rail" (`packages/tui/src/tui/interaction.gleam:1378`) (`toggle_agent_rail`) |
 | Escape | Interrupt; closes the surface on top first | Unchanged (`packages/tui/src/tui/interaction.gleam:1337`) (`interrupt_active`) |
 | `Ctrl+O`, `F2`, `/agents` | Open the agent workspace | Unchanged |
-| `/diff`, `/trace`, `/summary` | Open the rail on Changes, Trace, Session | `/diff` exists; the others are new |
+| `/diff`, `/trace` | Open the rail on Changes, Trace | `/diff` exists; `/trace` is new; `/summary` stays the full-screen summary and Session is the digit `4` |
 | `Tab` on the composer | Steer for one draft | Unchanged |
 | `Alt+q` | Queue inspector | Unchanged |
 | `Ctrl+g` | Details and expand | Unchanged |

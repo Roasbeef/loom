@@ -155,6 +155,17 @@ pub type DiffVisibility {
   DiffVisible
 }
 
+/// Who has the keyboard while the rail shows a tab with no cursor of its own.
+@internal
+pub type RailFocus {
+  /// The composer does; the tab only displays.
+  FocusComposer
+
+  /// The tab does: the digits choose a tab, the arrows scroll it, and Escape
+  /// hands the keyboard back.
+  FocusTab
+}
+
 /// Scroll direction names the operation without carrying a Boolean polarity
 /// through the two independently scrollable reading surfaces.
 @internal
@@ -541,6 +552,15 @@ pub type View {
     /// hidden, or none, which leaves it to the terminal's width
     /// (`tui/rail`). It is the one layout choice the layout memory keeps.
     rail: Option(layout_memory.Rail),
+    /// The tab the operator left the rail on, or none, which is Strands. The
+    /// Changes tab is not kept here: it is the changes setting's
+    /// (`diff_view`), and closing the changes shows this tab again.
+    rail_tab: Option(layout_memory.Tab),
+    /// Who has the keyboard while the rail shows Trace or Session, tabs with
+    /// no cursor of their own. Strands uses the strip's focus.
+    rail_focus: RailFocus,
+    /// How many rows of the Trace or Session tab are scrolled off the top.
+    rail_scroll: Int,
     /// Toggled by an action that replaces most of the viewport, so the
     /// next paint writes every vacated cell (`render.repaint_canvas`).
     repaint_phase: Bool,

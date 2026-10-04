@@ -11,16 +11,19 @@
 ////
 //// ## Flow
 ////
-//// `render` → `tab_bar` → `strands` → `hint`
+//// `render` → `tab_bar` → `strands` → `scrolled` → `hint`
 ////
 //// 1. `render` draws the separator down the rail's first column and asks for
 ////    each part in turn.
-//// 2. `tab_bar` names the tabs, marks the open one, and shows how many agents
-////    need the operator on Strands, then the rule that closes it.
+//// 2. `tab_bar` names the four tabs in the web view's order, marks the open
+////    one, and shows how many agents need the operator beside Strands, then
+////    the rule that closes it.
 //// 3. `strands` lists the agents: a heading with their count, then one row
 ////    each, windowed so the cursor stays on screen when there are more than
 ////    fit.
-//// 4. `hint` says which keys act on the rail right now.
+//// 4. `scrolled` draws the Trace and Session tabs, whose rows
+////    (`tui/rail_tabs`) are text, from the row the reader has scrolled to.
+//// 5. `hint` says which keys act on the rail right now.
 ////
 //// Nothing here stores state. The cursor is the strip's own focus
 //// (`View.strip_focus`): while the rail lists the agents the strip is hidden,
@@ -41,8 +44,9 @@ import session_view/agent_view
 import tui/agent_row
 import tui/agent_strip
 import tui/layout
-import tui/model.{type Model}
+import tui/model.{type Model} as tui_model
 import tui/rail
+import tui/rail_tabs
 import tui/theme
 
 /// Paints the docked rail into a frame, or nothing when it is not docked.
@@ -60,7 +64,7 @@ pub fn render(buf: buffer.Buffer, screen: Rect, model: Model) -> buffer.Buffer {
       let content = layout.rail_content_area(screen, model)
       let width = area.size.width - 1
       let lines = layout.strip_lines(model)
-      let tab = rail.tab(model.view.diff_view)
+      let tab = layout.rail_tab(model)
       buf
       |> separator(area)
       |> paragraph.render_styled(
@@ -68,6 +72,7 @@ pub fn render(buf: buffer.Buffer, screen: Rect, model: Model) -> buffer.Buffer {
         tab_bar(tab, lines, width),
       )
       |> strands(content, model, lines, tab)
+      |> scrolled(content, model, tab)
       |> hint(area, model, tab)
     }
   }
@@ -108,19 +113,19 @@ fn tab_bar(
   }
   let open = theme.current_bold()
   let shut = theme.quiet_text()
+  let tabs =
+    list.map([rail.Strands, rail.Changes, rail.Trace, rail.Session], fn(named) {
+      let label = case named {
+        rail.Strands -> rail.name(named) <> count
+        rail.Changes | rail.Trace | rail.Session -> rail.name(named)
+      }
+      span.span_styled(label <> "  ", case named == tab {
+        True -> open
+        False -> shut
+      })
+    })
   [
-    span.line_new([
-      span.span_plain(" "),
-      span.span_styled("Strands" <> count, case tab {
-        rail.Strands -> open
-        rail.Changes -> shut
-      }),
-      span.span_plain("  "),
-      span.span_styled("Changes", case tab {
-        rail.Changes -> open
-        rail.Strands -> shut
-      }),
-    ]),
+    span.line_new([span.span_plain(" "), ..tabs]),
     span.line_new([
       span.span_styled(
         string.repeat("─", width),
@@ -139,7 +144,7 @@ fn strands(
   tab: rail.Tab,
 ) -> buffer.Buffer {
   case tab {
-    rail.Changes -> buf
+    rail.Changes | rail.Trace | rail.Session -> buf
     rail.Strands -> {
       let heading =
         span.line_new([
@@ -190,6 +195,29 @@ fn strands(
   }
 }
 
+// The Trace and Session tabs: their rows from the row the reader scrolled
+// to. The scroll is held in the model and may be stale after a resize, so it
+// is cut to what there is to show.
+fn scrolled(
+  buf: buffer.Buffer,
+  content: Rect,
+  model: Model,
+  tab: rail.Tab,
+) -> buffer.Buffer {
+  let rows = rail_tabs.rows(model, tab, content.size.width)
+  case rows {
+    [] -> buf
+    _ -> {
+      let offset =
+        int.min(
+          model.view.rail_scroll,
+          int.max(0, list.length(rows) - content.size.height),
+        )
+      paragraph.render_styled(buf, content, list.drop(rows, offset))
+    }
+  }
+}
+
 // The keys that act on the rail now: with the cursor in it, the list's keys;
 // otherwise how to reach it and how to dock or hide it.
 fn hint(
@@ -198,18 +226,23 @@ fn hint(
   model: Model,
   tab: rail.Tab,
 ) -> buffer.Buffer {
-  let words = case tab, model.view.strip_focus {
-    rail.Changes, _ -> "Esc or Shift+Tab closes the changes"
-    rail.Strands, agent_strip.Browsing(_) ->
+  let words = case tab, model.view.strip_focus, model.view.rail_focus {
+    rail.Changes, _, _ -> "Esc or Shift+Tab closes the changes"
+    rail.Strands, agent_strip.Browsing(_), _ ->
       case layout.cursor_stoppable(model) {
         True -> "↑↓ select · Enter focus · x stop · Esc to composer"
         False -> "↑↓ select · Enter focus · Esc to composer"
       }
-    rail.Strands, agent_strip.Composing ->
+    rail.Strands, agent_strip.Composing, _ ->
       case layout.strands_listed(model) {
         True -> "↓ select an agent · Shift+Tab hides"
         False -> "Shift+Tab hides"
       }
+    rail.Trace, _, tui_model.FocusTab | rail.Session, _, tui_model.FocusTab ->
+      "1-4 tab · ↑↓ scroll · Esc to composer"
+    rail.Trace, _, tui_model.FocusComposer
+    | rail.Session, _, tui_model.FocusComposer
+    -> "↓ then 1-4 tab · Shift+Tab hides"
   }
   let width = int.max(0, area.size.width - 2)
   paragraph.render_styled(

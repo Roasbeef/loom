@@ -21,6 +21,10 @@
 //// - **Opening the changes forces it.** `/diff` opens the rail on its
 ////   Changes tab wherever it fits, whatever was chosen, and closing the
 ////   changes puts the rail back as it was chosen.
+//// - **The tab is a preference, except Changes.** A person leaves the rail on
+////   Strands, Trace or Session and finds it there next time. Changes is the
+////   changes setting's: it is open or it is not, and what the rail shows
+////   when they close it is the tab they had.
 
 import gleam/option.{type Option, None, Some}
 import tui/layout_memory
@@ -49,27 +53,105 @@ pub fn cells(terminal: Int) -> Int {
   }
 }
 
-/// What the rail is showing.
+/// What the rail is showing. The four tabs and their order are the web
+/// view's: Strands, Changes, Trace, Session.
 pub type Tab {
   /// The agents, drawn by the row renderer the strip and the workspace use.
   Strands
 
   /// The session's own edits: the changes panel, hosted in the rail.
   Changes
+
+  /// The strand's latest code-mode program, its result and its calls.
+  Trace
+
+  /// The session's goal, jobs, viewers and cost.
+  Session
 }
 
-/// The tab the changes setting selects. While the changes are open the rail
-/// is on Changes; otherwise it is on Strands.
+/// The tab the rail shows. While the changes are open it is Changes, which is
+/// the changes setting's and not a choice of tab; otherwise it is the tab the
+/// person left it on, Strands when they never chose one.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert rail.tab(model.DiffHidden) == rail.Strands
+/// assert rail.tab(model.DiffHidden, option.None) == rail.Strands
+/// assert rail.tab(model.DiffVisible, option.None) == rail.Changes
 /// ```
-pub fn tab(diff: DiffVisibility) -> Tab {
-  case diff {
-    DiffVisible -> Changes
-    DiffHidden -> Strands
+pub fn tab(diff: DiffVisibility, chosen: Option(layout_memory.Tab)) -> Tab {
+  case diff, chosen {
+    DiffVisible, _ -> Changes
+    DiffHidden, Some(layout_memory.TabTrace) -> Trace
+    DiffHidden, Some(layout_memory.TabSession) -> Session
+    DiffHidden, Some(layout_memory.TabStrands) | DiffHidden, None -> Strands
+  }
+}
+
+/// The tab's number, which is the key that selects it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert rail.number(rail.Trace) == 3
+/// ```
+pub fn number(tab: Tab) -> Int {
+  case tab {
+    Strands -> 1
+    Changes -> 2
+    Trace -> 3
+    Session -> 4
+  }
+}
+
+/// The tab a number selects, or nothing for a number that selects none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert rail.of_number(4) == Ok(rail.Session)
+/// assert rail.of_number(5) == Error(Nil)
+/// ```
+pub fn of_number(number: Int) -> Result(Tab, Nil) {
+  case number {
+    1 -> Ok(Strands)
+    2 -> Ok(Changes)
+    3 -> Ok(Trace)
+    4 -> Ok(Session)
+    _ -> Error(Nil)
+  }
+}
+
+/// The tab's name as the tab bar draws it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert rail.name(rail.Changes) == "Changes"
+/// ```
+pub fn name(tab: Tab) -> String {
+  case tab {
+    Strands -> "Strands"
+    Changes -> "Changes"
+    Trace -> "Trace"
+    Session -> "Session"
+  }
+}
+
+/// The tab as the layout memory keeps it, or nothing for Changes, which is
+/// never remembered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert rail.remembered(rail.Changes) == option.None
+/// ```
+pub fn remembered(tab: Tab) -> Option(layout_memory.Tab) {
+  case tab {
+    Strands -> Some(layout_memory.TabStrands)
+    Trace -> Some(layout_memory.TabTrace)
+    Session -> Some(layout_memory.TabSession)
+    Changes -> None
   }
 }
 
@@ -91,12 +173,15 @@ pub fn columns(
   case tab, choice, room {
     _, _, False -> 0
     Changes, _, True -> cells(terminal) + 1
-    Strands, Some(layout_memory.RailShown), True -> cells(terminal) + 1
-    Strands, Some(layout_memory.RailHidden), True -> 0
-    Strands, None, True ->
-      case terminal >= docks_by_default {
-        True -> cells(terminal) + 1
-        False -> 0
+    Strands, chosen, True | Trace, chosen, True | Session, chosen, True ->
+      case chosen {
+        Some(layout_memory.RailShown) -> cells(terminal) + 1
+        Some(layout_memory.RailHidden) -> 0
+        None ->
+          case terminal >= docks_by_default {
+            True -> cells(terminal) + 1
+            False -> 0
+          }
       }
   }
 }

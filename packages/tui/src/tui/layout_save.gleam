@@ -79,6 +79,7 @@ pub fn apply(model: Model, target: layout_memory.Target) -> Model {
     view: View(
       ..model.view,
       rail: target.saved.rail,
+      rail_tab: target.saved.tab,
       layout_target: Some(target),
     ),
   )
@@ -116,9 +117,9 @@ pub fn settle(model: Model) -> Model {
   }
 }
 
-// The layout the model has now: the operator's choice about the rail, which
-// is none until it is made, so a workspace nobody touched stays out of the
-// file.
+// The layout the model has now: the operator's choices about the rail and
+// its tab, each none until it is made, so a workspace nobody touched stays
+// out of the file.
 fn current(model: Model) -> Layout {
-  Layout(rail: model.view.rail)
+  Layout(rail: model.view.rail, tab: model.view.rail_tab)
 }

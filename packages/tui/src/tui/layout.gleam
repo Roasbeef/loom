@@ -145,15 +145,17 @@ pub fn layout(screen: Rect, model: Model) -> #(Rect, Rect, Rect, Rect) {
   }
 }
 
+/// The tab the rail shows (`rail.tab`).
+@internal
+pub fn rail_tab(model: Model) -> rail.Tab {
+  rail.tab(model.view.diff_view, model.view.rail_tab)
+}
+
 /// The columns the rail takes, its separator included, or zero when it is
 /// not docked (`rail.columns`).
 @internal
 pub fn rail_columns(model: Model) -> Int {
-  rail.columns(
-    model.view.width,
-    model.view.rail,
-    rail.tab(model.view.diff_view),
-  )
+  rail.columns(model.view.width, model.view.rail, rail_tab(model))
 }
 
 /// The width of the transcript's column: the terminal less the rail. The
@@ -299,9 +301,9 @@ pub fn todo_area(body: Rect, model: Model) -> Rect {
 // The width the changes panel has in the rail, or zero when the changes are
 // not open in a rail that is docked.
 fn diff_pane_width(model: Model) -> Int {
-  case rail.tab(model.view.diff_view), rail_columns(model) {
+  case rail_tab(model), rail_columns(model) {
     rail.Changes, columns if columns > 0 -> columns - 1
-    rail.Changes, _ | rail.Strands, _ -> 0
+    rail.Changes, _ | rail.Strands, _ | rail.Trace, _ | rail.Session, _ -> 0
   }
 }
 
@@ -331,7 +333,7 @@ pub fn changes_panel_area(screen: Rect, model: Model) -> Rect {
 /// the strip would list.
 @internal
 pub fn rail_lists_strands(model: Model) -> Bool {
-  rail.tab(model.view.diff_view) == rail.Strands && rail_columns(model) > 0
+  rail_tab(model) == rail.Strands && rail_columns(model) > 0
 }
 
 /// Whether the agents are listed anywhere the keyboard can enter: the strip

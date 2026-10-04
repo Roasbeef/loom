@@ -1,5 +1,5 @@
  ◆ demo · strand main                                                                                                                                                                                         baseten-kimi-k3
-                                                                                                                                                                     │ Strands  Changes
+                                                                                                                                                                     │ Strands  Changes  Trace  Session
                                                                                                                                                                      │────────────────────────────────────────────────────────
                                                                                                                                                                      │ STRANDS · 0
                                                                                                                                                                      │

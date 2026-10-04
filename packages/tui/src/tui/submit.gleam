@@ -31,7 +31,9 @@ import session_view/model.{ComposerSubmission, OverlaySubmission, Shared} as ses
 import session_view/msg
 import session_view/operator
 import session_view/protocol
+import session_view/surfaces
 import session_view/worktree_view
+import tui/agent_strip
 import tui/agents
 import tui/attachment
 import tui/effect
@@ -118,6 +120,7 @@ fn submit_surface(model: Model, surface: command.Surface) -> Model {
     False, _
     | True, command.QueueInspect
     | True, command.Diff
+    | True, command.Trace
     | True, command.Summary
     | True, command.Context
     | True, command.ContextAll
@@ -237,7 +240,8 @@ fn surface_command(model: Model, surface: command.Surface) -> Model {
         ),
       ))
     command.QueueInspect -> open_queue(cleared)
-    command.Summary -> side_surfaces.open_summary(cleared)
+    command.Summary -> open_session_tab(cleared)
+    command.Trace -> open_trace_tab(cleared)
     command.Context ->
       side_surfaces.open_context(cleared, context_view.Overview)
     command.ContextAll -> side_surfaces.open_context(cleared, context_view.All)
@@ -599,6 +603,123 @@ pub fn switch_active_strand(model: Model, strand: String) -> Model {
     )
   let around = inbound.surroundings(selected)
   inbound.run_settled(selected, commands.load_strand(_, strand, around))
+}
+
+/// Shows `tab` on the rail, docking the rail if it can be and is not.
+///
+/// This is what the digit keys and the `/diff`, `/trace` and `/summary`
+/// commands do. Changes opens the changes, which is the changes setting's.
+/// Any other tab closes them if they were open, is remembered as the
+/// operator's tab, and starts at its top. Strands gives the keyboard back to
+/// the composer, and Session asks for a fresh read of the live jobs, which
+/// its jobs row reports.
+///
+/// A terminal too narrow to dock the rail has nowhere to show a tab, so it is
+/// left as it is. The caller says so in a notice.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = submit.select_rail_tab(model, rail.Trace)
+/// ```
+@internal
+pub fn select_rail_tab(model: Model, tab: rail.Tab) -> Model {
+  case tab {
+    rail.Changes ->
+      case layout.diff_shown(model) {
+        True -> model
+        False -> open_diff(model)
+      }
+    rail.Strands | rail.Trace | rail.Session -> {
+      let closed = case layout.diff_shown(model) {
+        True -> open_diff(model)
+        False -> model
+      }
+      let chosen =
+        Model(
+          ..closed,
+          view: View(
+            ..closed.view,
+            rail_tab: rail.remembered(tab),
+            rail_scroll: 0,
+            rail_focus: tui_model.FocusComposer,
+            rail: docked_choice(closed),
+          ),
+        )
+      let left =
+        tui_model.store_strip(
+          chosen,
+          agent_strip.leave(tui_model.strip(chosen)),
+        )
+      let read = case tab {
+        rail.Session ->
+          Model(
+            ..left,
+            shared: Shared(..left.shared, jobs_refresh: worktree_view.Requested),
+          )
+          |> tui_model.run_shared(surfaces.service_jobs_read)
+        rail.Strands | rail.Changes | rail.Trace -> left
+      }
+      read
+      |> tui_model.invalidate_transcript
+      |> tui_model.invalidate_frame
+    }
+  }
+}
+
+// The rail's choice after something asks for it to be shown: shown, when the
+// terminal is wide enough to dock it, and what it was otherwise.
+fn docked_choice(model: Model) -> Option(layout_memory.Rail) {
+  case model.view.width >= rail.narrowest {
+    True -> Some(layout_memory.RailShown)
+    False -> model.view.rail
+  }
+}
+
+/// `/trace`: the Trace tab, or a notice that there is no rail to show it on.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = submit.open_trace_tab(model)
+/// ```
+@internal
+pub fn open_trace_tab(model: Model) -> Model {
+  case model.view.width >= rail.narrowest {
+    True -> select_rail_tab(model, rail.Trace)
+    False -> needs_rail(model, "Trace")
+  }
+}
+
+/// `/summary`: the Session tab where the rail can dock, and the full-screen
+/// summary where it cannot, which also has the completion evidence the tab
+/// does not carry.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = submit.open_session_tab(model)
+/// ```
+@internal
+pub fn open_session_tab(model: Model) -> Model {
+  case model.view.width >= rail.narrowest {
+    True -> select_rail_tab(model, rail.Session)
+    False -> side_surfaces.open_summary(model)
+  }
+}
+
+fn needs_rail(model: Model, tab: String) -> Model {
+  Model(
+    ..model,
+    shared: Shared(
+      ..model.shared,
+      notice: "the "
+        <> tab
+        <> " tab needs the rail, which docks from "
+        <> int.to_string(rail.narrowest)
+        <> " columns",
+    ),
+  )
 }
 
 /// Opens held-input inspection without touching composer text or attachments.

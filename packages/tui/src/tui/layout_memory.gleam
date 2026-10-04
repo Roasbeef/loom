@@ -40,13 +40,14 @@
 //// ## What is stored
 ////
 //// ```json
-//// {"version":1,"workspaces":[{"key":"<64 hex digits>","rail":"shown"}]}
+//// {"version":1,"workspaces":[{"key":"<64 hex digits>","rail":"shown","tab":"trace"}]}
 //// ```
 ////
 //// `rail` is `shown` or `hidden`, and is absent for a workspace whose rail
 //// the person never toggled, so a remembered choice can be told from the
-//// default. Later slices add the rail's tab and the todo line as further
-//// optional words, which an older terminal ignores and a newer one defaults,
+//// default. `tab` is `strands`, `trace` or `session`, the rail's tab, and is
+//// absent the same way. Further words, such as a todo line's, are added as
+//// optional fields, which an older terminal ignores and a newer one defaults,
 //// so adding one is not a new version. An unknown word is that field's
 //// default, and an entry whose key is not a digest is dropped, so a hand
 //// edit or a newer release's word never discards the rest of the file.
@@ -78,9 +79,18 @@ pub type Rail {
   RailHidden
 }
 
+/// The rail's tab a person left it on. The changes tab is not here: it
+/// opens an observation of the worktree, which a launch has not made, so a
+/// remembered tab is one of the three that need nothing read first.
+pub type Tab {
+  TabStrands
+  TabTrace
+  TabSession
+}
+
 /// One workspace's remembered layout.
 pub type Layout {
-  Layout(rail: Option(Rail))
+  Layout(rail: Option(Rail), tab: Option(Tab))
 }
 
 /// A workspace's layout under its key.
@@ -115,7 +125,7 @@ pub type Memory {
 /// assert layout_memory.default().rail == option.None
 /// ```
 pub fn default() -> Layout {
-  Layout(rail: None)
+  Layout(rail: None, tab: None)
 }
 
 /// A memory that holds nothing.
@@ -196,7 +206,19 @@ fn entry_json(entry: Entry) -> JsonValue {
     Some(rail) -> [#("rail", json.String(rail_word(rail)))]
     None -> []
   }
-  json.Object([#("key", json.String(entry.key)), ..rail])
+  let tab = case entry.layout.tab {
+    Some(tab) -> [#("tab", json.String(tab_word(tab)))]
+    None -> []
+  }
+  json.Object([#("key", json.String(entry.key)), ..list.append(rail, tab)])
+}
+
+fn tab_word(tab: Tab) -> String {
+  case tab {
+    TabStrands -> "strands"
+    TabTrace -> "trace"
+    TabSession -> "session"
+  }
 }
 
 fn rail_word(rail: Rail) -> String {
@@ -254,7 +276,10 @@ fn entry_of(value: JsonValue) -> Result(Entry, Nil) {
             True ->
               Ok(Entry(
                 key:,
-                layout: Layout(rail: rail_of(field(fields, "rail"))),
+                layout: Layout(
+                  rail: rail_of(field(fields, "rail")),
+                  tab: tab_of(field(fields, "tab")),
+                ),
               ))
             False -> Error(Nil)
           }
@@ -266,6 +291,17 @@ fn entry_of(value: JsonValue) -> Result(Entry, Nil) {
     | json.Float(_)
     | json.Bool(_)
     | json.Null -> Error(Nil)
+  }
+}
+
+// A tab word this release knows. `changes`, and any word a later release
+// adds, is no choice.
+fn tab_of(value: Option(JsonValue)) -> Option(Tab) {
+  case value {
+    Some(json.String("strands")) -> Some(TabStrands)
+    Some(json.String("trace")) -> Some(TabTrace)
+    Some(json.String("session")) -> Some(TabSession)
+    Some(_) | None -> None
   }
 }
 

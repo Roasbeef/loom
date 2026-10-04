@@ -42,11 +42,11 @@ fn scratch(name: String) -> String {
 }
 
 fn shown() -> layout_memory.Layout {
-  Layout(rail: Some(layout_memory.RailShown))
+  Layout(rail: Some(layout_memory.RailShown), tab: None)
 }
 
 fn hidden() -> layout_memory.Layout {
-  Layout(rail: Some(layout_memory.RailHidden))
+  Layout(rail: Some(layout_memory.RailHidden), tab: None)
 }
 
 fn key(seed: String) -> String {
@@ -126,7 +126,64 @@ pub fn an_unknown_field_and_a_future_word_do_not_discard_the_file_test() {
     "{\"version\":1,\"extra\":true,\"workspaces\":[{\"key\":\""
     <> a
     <> "\",\"rail\":\"hidden\",\"tab\":\"trace\",\"todo\":\"open\"}]}"
-  assert layout_memory.lookup(layout_memory.decode(text), a) == hidden()
+  assert layout_memory.lookup(layout_memory.decode(text), a)
+    == Layout(
+      rail: Some(layout_memory.RailHidden),
+      tab: Some(layout_memory.TabTrace),
+    )
+    as "the todo word is unknown here and is left out; the rest is kept"
+}
+
+// A tab word is read where it names a tab this release remembers. `changes`
+// is never remembered, and a word a later release adds is no choice, so
+// neither discards the rail choice beside it.
+pub fn a_tab_word_is_read_where_it_names_a_remembered_tab_test() {
+  let a = key("a")
+  let layout = fn(word: String) {
+    layout_memory.lookup(
+      layout_memory.decode(
+        "{\"version\":1,\"workspaces\":[{\"key\":\""
+        <> a
+        <> "\",\"rail\":\"shown\",\"tab\":"
+        <> word
+        <> "}]}",
+      ),
+      a,
+    )
+  }
+  assert layout("\"strands\"").tab == Some(layout_memory.TabStrands)
+  assert layout("\"trace\"").tab == Some(layout_memory.TabTrace)
+  assert layout("\"session\"").tab == Some(layout_memory.TabSession)
+  assert layout("\"changes\"").tab == None
+  assert layout("\"sparkline\"").tab == None
+  assert layout("7").tab == None
+  assert layout("null").tab == None
+  assert layout("\"changes\"").rail == Some(layout_memory.RailShown)
+}
+
+// A file written before the tab existed still decodes, with no tab choice,
+// and a layout that holds both words writes both.
+pub fn an_older_file_decodes_and_both_words_round_trip_test() {
+  let a = key("a")
+  let older =
+    "{\"version\":1,\"workspaces\":[{\"key\":\""
+    <> a
+    <> "\",\"rail\":\"shown\"}]}"
+  assert layout_memory.lookup(layout_memory.decode(older), a) == shown()
+  let both =
+    layout_memory.remember(
+      layout_memory.empty(),
+      a,
+      Layout(
+        rail: Some(layout_memory.RailShown),
+        tab: Some(layout_memory.TabSession),
+      ),
+    )
+  assert layout_memory.encode(both)
+    == "{\"version\":1,\"workspaces\":[{\"key\":\""
+    <> a
+    <> "\",\"rail\":\"shown\",\"tab\":\"session\"}]}"
+  assert layout_memory.decode(layout_memory.encode(both)) == both
 }
 
 pub fn a_file_with_too_many_entries_is_cut_test() {
