@@ -3,6 +3,7 @@
 import core/clock
 import core/ids
 import core/remote_tool
+import gleam/result
 import gleam/string
 
 fn make_key(step: String, index: Int, digest: String) {
@@ -62,4 +63,31 @@ pub fn explicit_child_origins_cannot_alias_test() {
   let assert Error(_) =
     remote_tool.system_child(remote_tool.session(key), "lsp", 4096)
     as "system ordinals are bounded too"
+}
+
+pub fn workspace_child_is_disjoint_and_ordinals_are_bounded_test() {
+  let assert Ok(key) = make_key("step", 3, string.repeat("a", 64))
+    as "Complete tool provenance validates."
+  let assert Ok(workspace) =
+    remote_tool.tool_child(key, remote_tool.Workspace(0))
+    as "Semantic workspace has its own durable namespace."
+  let assert Ok(compile) = remote_tool.tool_child(key, remote_tool.Compile)
+    as "Physical compile retains its namespace."
+  let assert Ok(launch) = remote_tool.tool_child(key, remote_tool.Launch)
+    as "Physical launch retains its namespace."
+  let assert Ok(capability) =
+    remote_tool.tool_child(key, remote_tool.Capability(0))
+    as "Capability ordinal does not alias workspace ordinal."
+  assert remote_tool.child_address(workspace)
+    != remote_tool.child_address(compile)
+  assert remote_tool.child_address(workspace)
+    != remote_tool.child_address(launch)
+  assert remote_tool.child_address(workspace)
+    != remote_tool.child_address(capability)
+  assert remote_tool.child_role(workspace) == Ok(remote_tool.Workspace(0))
+  assert remote_tool.provenance(key) == #(3, string.repeat("a", 64))
+  assert remote_tool.tool_child(key, remote_tool.Workspace(-1))
+    |> result.is_error
+  assert remote_tool.tool_child(key, remote_tool.Workspace(4096))
+    |> result.is_error
 }

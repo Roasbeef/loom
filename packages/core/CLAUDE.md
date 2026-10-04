@@ -225,3 +225,8 @@ Parent tool steps validate with `core/workspace.step` and its 1024-byte UTF-8
 bound; explicit system service names retain their independent 128-byte bound.
 `remote_tool.operation` and `remote_tool.step` expose original parent coordinates
 for broker clearance without deriving them from physical child operation names.
+
+The Workspace ordinal is a separate ChildRole beside Compile, Launch and
+Capability. Its encoded address cannot alias those roles. `provenance` and
+`child_role` expose validated identity to the owner binding without granting
+effect authority or deriving fresh operation coordinates.
