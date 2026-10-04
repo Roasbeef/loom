@@ -7,7 +7,7 @@
 -module(client_test_ffi).
 
 -export([ws_roundtrip/4, which/1, run/3, gzip/1,
-         origin_start/0, origin_stop/1, origin_seen/1, monitored_by/1]).
+         origin_start/0, origin_stop/1, origin_seen/1, monitored_by/1, workspace_credentials/0]).
 
 -include_lib("public_key/include/public_key.hrl").
 
@@ -339,3 +339,23 @@ origin_send(Socket, Status, Body) ->
             <<"content-length: ">>, integer_to_binary(byte_size(Body)),
             <<"\r\n">>, <<"connection: close\r\n\r\n">>],
     ssl:send(Socket, [Head, Body]).
+
+
+%% Fresh mutually authenticated peer credentials for workspace consumer tests.
+%% This package cannot depend on another package's private test modules.
+workspace_credentials() ->
+    {ok, _} = application:ensure_all_started(ssl),
+    Root = public_key:pkix_test_root_cert("client workspace test", origin_key_opts()),
+    {workspace_credentials, workspace_peer(Root), workspace_peer(Root)}.
+
+workspace_peer(Root) ->
+    San = #'Extension'{extnID = ?'id-ce-subjectAltName',
+        extnValue = [{dNSName, "localhost"}], critical = false},
+    #{server_config := Conf} = public_key:pkix_test_data(
+        #{server_chain => #{root => Root, intermediates => [],
+            peer => origin_key_opts() ++ [{extensions, [San]}]},
+          client_chain => #{root => [], intermediates => [], peer => []}}),
+    Cert = proplists:get_value(cert, Conf),
+    {Type, Der} = proplists:get_value(key, Conf),
+    Pem = public_key:pem_encode([{Type, Der, not_encrypted}]),
+    {credentials, maps:get(cert, Root), Cert, Pem, crypto:hash(sha256, Cert)}.
