@@ -32,6 +32,7 @@
 //// reported as `Unavailable`; the caller turns that into an in-band tool
 //// failure and never crashes.
 
+import broker/internal/call
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/result
 import gleam/string
@@ -108,9 +109,10 @@ pub fn pid(holder: Holder(config)) -> Pid {
 ///
 /// A holder that has exited answers `Gone` at once through its monitor. This
 /// is the failure the caller must survive without crashing, which is why it
-/// does not use `process.call`: that exits its caller on a timeout or a dead
-/// callee, and the caller here is a tool effect that owes the runtime an
-/// answer.
+/// goes through `broker/internal/call.try_call`, the in-tree monitored call
+/// `docs/weft.md` names, rather than `process.call`: that exits its caller on
+/// a timeout or a dead callee, and the caller here is a tool effect that owes
+/// the runtime an answer.
 ///
 /// A reply which arrives after the deadline stays in the caller's mailbox.
 /// The caller is a short-lived effect process, so the stray message is
@@ -128,19 +130,13 @@ pub fn fetch(
   holder: Holder(config),
   within_ms within_ms: Int,
 ) -> Result(config, Unavailable) {
-  let reply = process.new_subject()
-  let watch = process.monitor(holder.pid)
-
-  // The monitor is created before the send so that a holder dying between
-  // the two is still reported as a death, not as a deadline.
-  process.send(holder.requests, Fetch(reply))
-  let outcome =
-    process.new_selector()
-    |> process.select_map(reply, Ok)
-    |> process.select_specific_monitor(watch, fn(_down) { Error(Gone) })
-    |> process.selector_receive(within_ms)
-  process.demonitor_process(watch)
-  result.unwrap(outcome, Error(TimedOut))
+  call.try_call(holder.requests, waiting: within_ms, sending: Fetch)
+  |> result.map_error(fn(fault) {
+    case fault {
+      call.CalleeGone -> Gone
+      call.NoReply -> TimedOut
+    }
+  })
 }
 
 /// Stops the holder and returns once it has exited.
