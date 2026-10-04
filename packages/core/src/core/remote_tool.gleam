@@ -153,6 +153,18 @@ pub fn step(key: ToolKey) -> String {
   key.step
 }
 
+/// Returns the original tool position within its source assistant message.
+/// This coordinate belongs to provenance, never the broker's pooled ledger key.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_tool.source_index(key) == 2
+/// ```
+pub fn source_index(key: ToolKey) -> Int {
+  key.source_index
+}
+
 /// Returns the reserved session result-entry identity for verified collection.
 ///
 /// ## Examples
