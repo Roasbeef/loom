@@ -14,7 +14,9 @@
 
 import broker/broker
 import core/ids.{type OpId}
+import core/remote_tool
 import gleam/erlang/process.{type Subject}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 
 /// One cleared physical call. Settlement and helper/native custody remain
@@ -41,15 +43,18 @@ pub type RunningCall {
 ///
 /// ```gleam
 /// let runner = physical.local(owner_broker)
-/// let running = runner.clear(prepared_call, events)
+/// let running = runner.clear(None, prepared_call, events)
 /// ```
 pub type Runner {
   /// No identity or budget is configured here; each CallSpec supplies them.
   Runner(
     /// Clears the exact prepared command and streams output/settlement to
     /// the supplied subject, or returns the owner's original refusal.
-    clear: fn(broker.CallSpec, Subject(broker.CallEvent)) ->
-      Result(RunningCall, broker.Refusal),
+    clear: fn(
+      Option(remote_tool.ChildOrigin),
+      broker.CallSpec,
+      Subject(broker.CallEvent),
+    ) -> Result(RunningCall, broker.Refusal),
     /// Revokes the step's tokens and cancels its outstanding calls. Sibling
     /// job steps remain governed by their existing operation-wide abort.
     abort_step: fn(OpId, String) -> Nil,
@@ -66,8 +71,13 @@ pub type Runner {
 /// ```
 pub fn local(owner: broker.Broker) -> Runner {
   Runner(
-    clear: fn(call, events) {
-      broker.clear_call(owner, call, events:, waiting: 5000)
+    clear: fn(origin, call, events) {
+      let cleared = case origin {
+        None -> broker.clear_call(owner, call, events:, waiting: 5000)
+        Some(origin) ->
+          broker.clear_call_from(owner, origin, call, events:, waiting: 5000)
+      }
+      cleared
       |> result.map(fn(handle) {
         RunningCall(cancel: fn() { broker.cancel(owner, handle) })
       })

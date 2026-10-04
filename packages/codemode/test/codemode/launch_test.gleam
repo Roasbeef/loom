@@ -655,7 +655,7 @@ pub fn teardown_cancels_a_late_clearance_through_the_injected_runner_test() {
   let launched = spec(dir, wire)
   let runner =
     physical.Runner(
-      clear: fn(call, events) {
+      clear: fn(_origin, call, events) {
         let release = process.new_subject()
         process.send(pending, #(call, release))
         let assert Ok(Nil) = process.receive(release, 3000)

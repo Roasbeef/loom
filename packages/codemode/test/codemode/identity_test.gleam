@@ -12,7 +12,7 @@
 //// verify each clause by opening the named type:
 ////
 //// - `identity.ExecIdentity` and `identity.PhaseIdentity` are both
-////   `pub opaque`. `for_execution` is the only constructor of the first,
+////   `pub opaque`. `for_execution` and `for_managed_execution` construct the first,
 ////   and `build_phase` / `run_phase` — each of which *takes* an
 ////   `ExecIdentity` — are the only constructors of the second. There is no
 ////   expression that produces a phase identity without a parent.
