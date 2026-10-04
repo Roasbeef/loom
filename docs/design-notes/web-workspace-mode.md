@@ -77,7 +77,7 @@ only by `UiLink` (`client/daemon/server.gleam:1376`) over the principal's own
 control connection, after `session_authority`
 (`client/daemon/manager.gleam:936`) finds a membership, and by a page
 switching to another session (`ticket_for` (`ui_socket.gleam:760`)). The
-exchange redeems it once (`redeem` (`ui_sessions.gleam:403`)), the page and
+exchange redeems it once (`redeem` (`ui_sessions.gleam:412`)), the page and
 its socket are re-authorized on every request (`page_grant`
 (`client/daemon/server.gleam:356`)), and every route is checked in 051's
 order: `loopback_host` (`ui_http.gleam:156`), then `navigation_allowed`
@@ -86,7 +86,7 @@ the socket, then the cookie under the key. The cookie's `Path` is the key's
 (`set_cookie` (`ui_http.gleam:283`)), so it reaches no other page and no other
 loopback port. A UI session lives eight hours (`session_ms`
 (`ui_sessions.gleam:79`)); a chain of switches ends with the page it began
-from (`mint_before` (`ui_sessions.gleam:342`)).
+from (`mint_before` (`ui_sessions.gleam:351`)).
 
 The operator page already lists the principal's sessions in a sidebar,
 read with the page's credential digest (`listed_for`
@@ -548,7 +548,7 @@ the registry's capacity and `max_pages`, and prompt them at operator role.
 That is a new agent in a workspace the owner already runs agents in, at
 the sandbox policy that workspace's registrations carry. It can fill the
 catalogue with sessions; a count per credential per hour, as
-`reserve_invite` (`ui_sessions.gleam:368`) keeps for invitations, bounds it
+`reserve_invite` (`ui_sessions.gleam:377`) keeps for invitations, bounds it
 (065 proposes ten an hour). The daemon logs no line for a creation today;
 065 adds one, `daemon.session_created` with the principal's ID, so a run of
 creations from a stolen page is visible in `daemon.log`.
