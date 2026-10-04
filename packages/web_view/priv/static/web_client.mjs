@@ -6,7 +6,7 @@
    input e2cefd513d5a8fabc285cbecf2416efd9777d29f9b80ef673d9a70556fb3139b  packages/web_client/src/web_client.gleam
    input 1a2b5a4fe24432745cc8c7e6be25a6873fd2b9709aef47ea2cc0c900ffd0222c  packages/web_client/src/web_client/attach.gleam
    input e837660f49bd0de719b5853366d6967299822514394e0c9616c48fd082429cb0  packages/web_client/src/web_client/attach_rule.gleam
-   input d19d819ed7200f67bcf826221693744e84f48d69721afa0c301a207b2364f089  packages/web_client/src/web_client/composer.gleam
+   input 358043f586f3f9aeb483f4afef2383a40c08bda8e3817688f8a49918f3a9995b  packages/web_client/src/web_client/composer.gleam
    input 56bf3a2c18e9740298d98d8bf1df388a98315bc9655946f912942865c8ffdf88  packages/web_client/src/web_client/composer_rule.gleam
    input 329433ad841746b30c5ca2508d930881a1ef1abca405b9ca2049b29d9a2810fb  packages/web_client/src/web_client/copy.gleam
    input 09a0e281cf9658ff3058fed9273cacdab3053610c7331c96cb5a5b39dd75d60a  packages/web_client/src/web_client/copy_rule.gleam
