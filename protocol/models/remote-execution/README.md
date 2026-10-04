@@ -29,7 +29,7 @@ bash protocol/models/remote-execution/check.sh
 
 The gate compiles a source snapshot, checks every declared normal case,
 requires every `tcProbe*` to produce its exact intended assertion, and checks
-all twenty-seven mutations. It exits zero only if every check succeeds. Compiler
+all thirty mutations. It exits zero only if every check succeeds. Compiler
 errors, timeout, memory exhaustion, max-step exhaustion, unrelated assertions,
 missing test cases and probes without witnesses fail the gate. Safety cases
 must explore the entire requested schedule count. Each invocation has separate
@@ -285,10 +285,11 @@ compaction path is tested code, not a property checked by this P model.
 
 [PRODUCT.md](PRODUCT.md) records the additive ProductSystem actors, finite
 classes, safety histories, eight normal cases, nine positive controls and
-nine product mutations. Existing System actors, native monitors and test
-sources are preserved byte for byte. The original product snapshot had 36 cases and fourteen mutations. The
+nine product mutations. That snapshot preserved existing System actors, native monitors and test
+sources byte for byte; the later Compile custody extension below splits only
+the native Executor terminal payload/commit decision. The original product snapshot had 36 cases and fourteen mutations. The
 preparation extension below adds directed cases and controls; the current
-runner discovers 71 cases and checks twenty-seven mutations in total.
+runner now discovers 79 cases and checks thirty mutations in total.
 Source manifests beside the immutable snapshots record SHA-256 hashes.
 
 ProductSystem joins the existing Owner, Executor and Helper with ProductOwner
@@ -359,8 +360,9 @@ each of twelve actions, totaling 640 messages. Exact duplicate responses cannot
 create repeated receipt producers. This is finite workload accounting, not a
 production mailbox, disk or resident-memory ceiling.
 
-The strict runner now discovers **71 cases**: 31 normal cases and 40 exact
-positive probes. The mutation runner preserves all fourteen previous mutations
+The preparation snapshot had **71 cases**: 31 normal cases and 40 exact
+positive probes. The Compile custody addendum below retains them and adds eight
+cases, bringing the current total to 35 normal cases and 44 exact positive probes. The mutation runner preserves all fourteen previous mutations
 and adds thirteen decision mutations: Compile construction before Ready, Compile
 recreation, dead issued lease reuse, foreign producer association, foreign issued artifact, bad
 fingerprint acceptance, initial-budget reuse, rounded-up wall, clearance as
@@ -393,3 +395,64 @@ Lean admission proof/684-case bridge are unchanged. This P extension introduces
 no new proof project, and proves no production refinement. The selected control
 allowance must be rechecked against concrete serial calls before physical
 assembly can rely on its successful-path schedule.
+
+
+## Compile custody settlement extension
+
+`CompileCustodyScenario` adds four directed controls to this same project.
+`CompileCustodySafety` records independently owned resource, native terminal,
+completion and receipt histories. Existing Owner/Helper/native monitors and all
+31 normal cases, 40 probes and 27 mutants remain. Native Executor's only semantic
+extension is the actual terminal payload/commit split; the three new decision
+mutants bring the current total to 30. The full gate has 79 cases.
+
+Compile completion now has explicit BeforeNativeFailure or NativeCompletion
+provenance. An original live Preparing claim can atomically retain a Before error
+and become ResourceUncertain, revoking that claim and fencing queued late Ready.
+Once Ready exists, absent resource/native association is not a negative Submit
+fact. Recovery grants no claim; exact retained error retries/readback do not
+consult native liveness. Native-associated completion still requires the exact
+associated child and actual native terminal evidence. The model uses equality
+classes, not encoded bytes or physical artifacts.
+
+Native Executor first retains its actual terminal payload and then commits its
+row's Terminal outcome/result digest in a separate turn. The paused mode permits
+a crash and real row query between those decisions. Product settlement compares
+the exact association, payload and row terminal digest. The native actor alone
+announces payload/terminal commit facts. Prepared digest 1, native terminal digest
+3 and outer result digest 2 remain distinct symbolic classes. Terminal payload
+retention alone cannot settle an outer Compile. Existing native refusal/compaction
+production variants and real SQLite commit failures are outside this extension.
+
+| Directed case | Actual transition witness |
+| --- | --- |
+| `tcCompileFailPreparationLateReady` | Live create, atomic Before error, real late Ready refusal, recovery and exact historical error readback/ACK. A second branch crashes before error and refuses a recovered claim's failure attempt. |
+| `tcCompileReadySubmitUnassociated` | Canonical Request/Prepared with missing native readback refuses association; actual native admission/Running Submit remains locally unassociated and cannot accept Before; releasing the exact association permits normal native completion. |
+| `tcCompileTerminalPayloadPending` | Native-owned payload survives reboot with Running row; real settlement refuses it before reducer commit, then accepts the same exact payload after native terminal commit. |
+| `tcCompileIndependentReceipts` | Original Compile outer ACK and resource Released leave actual native receipt/retirement false; the existing Launch row supplies the converse native receipt/retirement with outer ACK pending, then exact ACK survives recovery. |
+
+Each case has an exact positive probe requiring these owned histories and actual
+readbacks. The receipt control reuses the existing two-service Compile/Launch
+product rather than adding another service identity or resetting a receipt.
+Before-error ACK is exercised separately by the first control. Outer receipt
+changes only a retained outer ACK set; cleanup changes only preparation/cleanup
+state, preserving completion and Ready history. Neither changes native rows.
+
+The three new compiling mutants weaken real decisions: accept late Ready after
+Before, accept Before after Ready when native association is absent, or settle
+matching terminal payload without committed reducer evidence. Each original
+control must pass; each mutant must compile and fail its exact assertion, with
+monitors unchanged. No optional replacement mutant is needed because the existing
+native completion map guard is unchanged; historical Before retry adds no result
+replacement path. The old clearance-as-admission mutation now supplies the changed
+typed readback shape, but still reaches the real handler and independent admission
+history without emitting a fabricated native monitor fact.
+
+Run these through existing run.py/mutate.py and then check.sh at unchanged strict
+defaults. New source adds at most two retained native payloads, two outer ACK bits
+and finite directed control chains, with no ticker or retry loop. The earlier
+640-message preparation snapshot bound above is historical; the current runner's
+1000-step bound and measured scheduling-point statistics apply to this extension.
+Passing this bounded model is not production journal, transport, cryptographic,
+filesystem, crash-atomicity or full refinement proof. Actual process exits,
+schedule counts, probe points and source hashes belong in the frozen handoff.

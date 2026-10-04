@@ -5,7 +5,7 @@ enum tProductMode { ProductLifecycle, ProductOfferConflict, ProductResourceUnkno
   ProductCompileLeaseRecovery, ProductDeadResource, ProductForeignAssociation, ProductForeignArtifact, ProductForeignNativeTerminal,
   ProductBadFingerprint, ProductBudgetZero, ProductBudgetBelowOne, ProductBudgetOne,
   ProductBudgetBelowCap, ProductBudgetCap, ProductBudgetCold, ProductBudgetReduced, ProductExpiredOffer,
-  ProductPostSendDelay, ProductColdRun }
+  ProductPostSendDelay, ProductColdRun, CompileFailLateReady, CompileSubmitUnassociated, CompilePayloadPending, CompileIndependentReceipts }
 enum tProductWitness { ProductComplete, ProductClearedPending, ProductConflict,
   ProductUnknownResource, ProductRecoveredLease, ProductUnknownLaunch,
   ProductDistinctChildren, ProductUnknownFinal }
@@ -14,7 +14,8 @@ type tService = (id: int, requestDigest: int, scope: int, artifact: int,
 type tOffer = (service: tService, commandRef: int, commandDigest: int,
   registration: int, purpose: int, wall: int, deadline: int);
 type tPreparedProduct = (offer: tOffer, native: tRequest);
-type tProductResult = (service: tService, resultDigest: int, kind: int, artifact: int);
+enum tCompletionProvenance { NativeCompletion, BeforeNativeFailure }
+type tProductResult = (service: tService, resultDigest: int, kind: int, artifact: int, provenance: tCompletionProvenance);
 type tLease = (service: tService, artifact: int, compileRequest: int, scope: int, resources: int);
 type tAddress = (tag: int, name: int, ordinal: int, purpose: int, role: int, namespace: int);
 type tChildCandidate = (logical: tAddress, address: tAddress);
@@ -23,7 +24,8 @@ event eProductReserve: (owner: machine, service: tService);
 event eProductOffer: tOffer;
 event eProductSubmit: tOffer;
 event eProductView: tReply;
-event eProductNativeTerminal: tRequest;
+type tProductTerminal = (native: tRequest, evidence: tRow, payload: tTerminalPayload);
+event eProductNativeTerminal: tProductTerminal;
 event eProductCompleted: tProductResult;
 event eProductReceipt: tProductResult;
 event eProductOuterDone: tProductResult;
@@ -82,7 +84,8 @@ event eProductClearOffer: int;
 event eProductAdvanceTime: int;
 event eProductRecoverCommand: int;
 event eProductBudgetDone;
-event eProductNativeAdmission: tPreparedProduct;
+type tProductAdmission = (prepared: tPreparedProduct, evidence: tReply);
+event eProductNativeAdmission: tProductAdmission;
 event mProductReady: tLease;
 event mProductAssociationChecked: (service: tService, producer: tProductResult);
 event mProductAssociationRefused: tService;
@@ -126,3 +129,36 @@ fun preparationElapsed(mode: tProductMode, id: int): int {
 }
 event eProductCompileElapsed;
 event eProductRunTimeDone;
+
+// Compile custody controls use actual transition replies, never scenario facts.
+type tCompileView = (service: tService, retained: bool, result: tProductResult,
+  acknowledged: bool, associated: bool, preparation: tPreparation);
+event eCompileFailPreparation: tProductResult;
+event eCompileQuery: int;
+event eCompileView: tCompileView;
+event eCompileCleanup: int;
+event eCompileCreated: int;
+event eCompileReadyRefused: int;
+event eCompileAssociationRefused: tPreparedProduct;
+event eCompileContinueSubmit;
+event eCompileReleaseAssociation;
+event eCompileAcknowledge: int;
+event eCompileRecovered;
+event mCompileBeforeCommitted: tProductResult;
+event mCompileFailureRefused: tCompileView;
+event mCompileReadyRefused: int;
+event mCompileReadback: tCompileView;
+event mCompileAssociationRefused: tPreparedProduct;
+event mCompileTerminalPending: tProductTerminal;
+event mCompileNativeSettled: tProductTerminal;
+event mCompileReleased: tService;
+
+fun compileBefore(s: tService): tProductResult {
+  return (service = s, resultDigest = 2, kind = s.id, artifact = 0, provenance = BeforeNativeFailure);
+}
+fun compileControl(mode: tProductMode): bool {
+  return mode == CompileFailLateReady || mode == CompileSubmitUnassociated ||
+    mode == CompilePayloadPending || mode == CompileIndependentReceipts;
+}
+
+event mCompileRecovered: tCompileView;
