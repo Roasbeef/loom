@@ -337,13 +337,20 @@ than 1024 bytes is refused, and the server closes a socket that has sent
 no command 2 seconds after the upgrade.
 
 ```json
-{"v":2,"id":1,"cmd":"credentials.claim","body":{"credential_digest":"<64 lowercase hex>"}}
+{"v":2,"id":1,"cmd":"credentials.claim","body":{"credential_digest":"<64 lowercase hex>","name":"Alex Doe"}}
 ```
 
 `credential_digest` is the SHA-256 digest, in lowercase hexadecimal, of
 the bearer the client drew. The client stores the bearer before it sends
-the digest. The server binds the digest to the claim in one serialized
-transaction, answers, and closes the socket:
+the digest. `name` is optional text: the display name the invitee chooses
+to be shown under. The daemon trims it and requires it to be nonblank,
+at most 256 bytes, and free of control characters; it is not required to
+be unique, since the principal id is the identity. When present and valid
+it is written in the same transaction that binds the digest, so the first
+attachment already carries it; when absent the name the inviter gave
+stays. Events already admitted keep the name they were admitted under.
+The server binds the digest to the claim in one serialized transaction,
+answers, and closes the socket:
 
 ```json
 {"v":2,"reply_to":1,"event":"credentials.claim","body":{"principal_id":"reviewer-1","name":"Reviewer","fingerprint":"9c1e0f2ab3d4e5f6","sessions":[{"session_id":"0198c0de-0000-7000-8000-000000000001","role":"operator"}]}}
@@ -358,14 +365,17 @@ transaction, answers, and closes the socket:
 
 A claim binds once. Presenting it again with the same digest, while that
 credential is still active, returns the same body; this is how a client
-recovers a lost reply. Refusals, as `error` events:
+recovers a lost reply. Only the binding presentation applies `name`: a
+replay answers the principal as it stands and never renames it, whatever
+`name` it carries. Refusals, as `error` events:
 
 | Code | Cause |
 |---|---|
 | `not_found` | No such claim, a voided one, or a claimed one whose credential is no longer active. |
 | `expired` | The claim was still open when its expiry passed. |
 | `conflict` | The claim is bound to another digest; the digest is already a credential in any state; or the digest is the SHA-256 of the claim token itself. |
-| `bad_request` | Any message that is not one well-formed `credentials.claim`. |
+| `invalid_name` | `name` is blank after trimming, over 256 bytes, or holds a control character. Nothing is bound and the claim stays open, so the client may present it again with another name. |
+| `bad_request` | Any message that is not one well-formed `credentials.claim`, including a `name` that is not text. |
 | `unavailable` | The daemon could not answer. The claim may or may not be bound; presenting the same claim and digest again answers which. |
 
 A claim token authenticates nothing on `/v2/control` or a session route;
@@ -1072,7 +1082,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:671`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:682`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -3046,6 +3056,7 @@ Sources: (`client/protocol.gleam:512-540`),
 | `isolation_required` | `sessions.invite` or a membership-creating `sessions.set_role` on a workspace-private session. | Offer `sessions.isolate` first. |
 | `not_found` | No such session, principal or operation; on `/v2/claim`, no redeemable claim. | Refresh the listing. |
 | `expired` | `credentials.claim` on `/v2/claim` presented a claim whose lifetime passed before it was bound. | Ask the owner to rotate. |
+| `invalid_name` | `credentials.claim` on `/v2/claim` carried a `name` the display-name rule refuses. Nothing was bound. | Ask the invitee for another name and present the same claim again. |
 | `conflict` | A reused `request_key` with different metadata; a repeated invitation; an isolation with a retained slot. | Inspect, then decide. |
 | `capacity` | No free session slot. | Retry later, or stop a session. |
 | `not_initialized` | The named registration is still `reserved`: its creation never reconciled and no database stands behind it. | Retry `sessions.create` under its original request key. A listing renders such a row as `reserved`, so a client should not offer it for opening. |
