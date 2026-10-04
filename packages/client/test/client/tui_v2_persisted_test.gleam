@@ -16,6 +16,7 @@ import core/clock
 import core/entry
 import core/ids
 import core/message
+import core/workspace
 import etui/backend
 import filepath
 import gleam/bit_array
@@ -90,6 +91,8 @@ fn start(settings: serve.Settings, arrivals: process.Subject(Arrival)) {
           serve.build_domain(selected_domain, sources, log.discard(), owner)
         },
         fn(record, selected_domain, services, owner, _directory) {
+          let assert workspace.LocalBinding(local) = record.workspace
+            as "native fixture owns a local binding"
           let release = process.new_subject()
           process.send(arrivals, #(record.id, release))
           let assert Ok(Nil) = process.receive(release, 10_000)
@@ -102,13 +105,13 @@ fn start(settings: serve.Settings, arrivals: process.Subject(Arrival)) {
             )
             == Ok(Nil)
           assert bootstrap.ensure_private_directory(domain) == Ok(Nil)
-          let base = serve.base_policy(record.workspace)
+          let base = serve.base_policy(local)
           serve.assemble_in_domain(
             serve.Settings(
               ..settings,
               session_path: record.path,
               session_id: record.id,
-              workspace: record.workspace,
+              workspace: local,
               base_policy: policy.SandboxPolicy(..base, protected: [
                 config.state_root,
                 ..base.protected
@@ -159,7 +162,7 @@ fn create(serving: daemon_main.Serving(serve.Instance), workspace, seed) {
       serving.ready.registry,
       manager.Creation(
         "key-" <> int.to_string(seed),
-        workspace,
+        workspace.LocalBinding(workspace),
         "session " <> int.to_string(seed),
         "",
         None,
@@ -382,7 +385,8 @@ pub fn tui_v2_persisted_restart_lists_without_open_then_switches_two_workspaces_
   assert pending.model.shared.records == opened.model.shared.records
   process.send(permit, Nil)
   let replaced = await(terminal, fn(sample) { attached(sample, other.id) })
-  assert replaced.model.view.workspace.path == other.workspace
+  assert replaced.model.view.workspace.path
+    == workspace.key_string(workspace.binding_key(other.workspace))
   case other.id == b.id {
     True -> {
       assert user_turns(replaced) == []

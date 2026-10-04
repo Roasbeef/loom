@@ -19,6 +19,7 @@ import client/daemon_server_test as wire
 import core/clock
 import core/ids
 import core/json.{type JsonValue}
+import core/workspace
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -65,7 +66,7 @@ fn shared_session(
       ready.registry,
       manager.Creation(
         "access-" <> int.to_string(seed),
-        "/workspace",
+        workspace.LocalBinding("/workspace"),
         name,
         "",
         None,
@@ -680,7 +681,7 @@ pub fn membership_pages_stay_within_the_budget_and_resume_after_the_cursor_test(
             catalogue.Registration(
               id:,
               path: "/never-opened-access-test/" <> id <> ".db",
-              workspace: "/workspace",
+              workspace: workspace.LocalBinding("/workspace"),
               name: wide_name(),
               configuration: "",
               created_at: 0,

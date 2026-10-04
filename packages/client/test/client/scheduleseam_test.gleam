@@ -104,7 +104,10 @@ fn stop(rig: Rig) -> Nil {
 fn ctx(strand: String) -> tool.Ctx {
   tool.Ctx(
     directory_access: directory_access.none(),
-    workspace: "/tmp/loom-scheduleseam-test",
+    workspace: tool.LocalWorkspace(
+      "/tmp/loom-scheduleseam-test",
+      dead_filesystem(),
+    ),
     strand:,
     op_id: an_op(),
     step_id: "turn-1:tools",
@@ -114,8 +117,10 @@ fn ctx(strand: String) -> tool.Ctx {
     demand: exec.FullEnforcement,
     env: [],
     clock: clock.fixed(at: 0),
-    filesystem: dead_filesystem(),
-    blob_root: "/tmp/loom-scheduleseam-test/.blobs",
+    owner_blobs: tool.OwnerBlobs(
+      "/tmp/loom-scheduleseam-test/.blobs",
+      dead_filesystem(),
+    ),
     clear_call: fn(_spec, _events) { Error(broker.BrokerUnavailable) },
     raise_refusal: tool.no_raise(),
     observe_output: tool.ignore_output(),

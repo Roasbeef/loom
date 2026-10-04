@@ -933,7 +933,7 @@ fn rendered(outcome: tool.ToolOutcome) -> String {
 fn ctx_for(workspace: String) -> tool.Ctx {
   tool.Ctx(
     directory_access: directory_access.none(),
-    workspace:,
+    workspace: tool.LocalWorkspace(workspace, dead_filesystem()),
     strand: "main",
     op_id: an_op(3),
     step_id: "turn-1:tools",
@@ -943,8 +943,7 @@ fn ctx_for(workspace: String) -> tool.Ctx {
     demand: exec.FullEnforcement,
     env: [#("PATH", "/usr/bin")],
     clock: clock.fixed(at: 1000),
-    filesystem: dead_filesystem(),
-    blob_root: workspace <> "/.blobs",
+    owner_blobs: tool.OwnerBlobs(workspace <> "/.blobs", dead_filesystem()),
     clear_call: fn(_spec, _events) { Error(broker.BrokerUnavailable) },
     raise_refusal: tool.no_raise(),
     observe_output: tool.ignore_output(),

@@ -1716,7 +1716,7 @@ fn run_bridge(ready: Ready) -> Nil {
   assert string.starts_with(id, "sha256-")
   // The artifact is a real file, at the address the program was told, in
   // the blob root this host derives from the workspace — the same one
-  // `tool.Ctx.blob_root` names.
+  // `tool.Ctx.owner_blobs.root` names.
   let path = blob.ref_path(rig.workspace <> "/" <> codemode.blob_directory, id)
   assert simplifile.read_bits(path) == Ok(<<bridged_artifact:utf8>>)
   // And the id really is the content address of those bytes rather than
@@ -2552,7 +2552,7 @@ fn live_ctx(
   let #(op, _generator) = ids.mint_op(ids.generator(wall, seed: 20_260_825))
   tool.Ctx(
     directory_access: directory_access.none(),
-    workspace:,
+    workspace: tool.LocalWorkspace(workspace, no_filesystem()),
     strand: "main",
     op_id: op,
     step_id: "turn-1:tools",
@@ -2564,8 +2564,7 @@ fn live_ctx(
     demand: exec.BestEffort,
     env: [#("PATH", "/usr/local/bin:/usr/bin:/bin")],
     clock: wall,
-    filesystem: no_filesystem(),
-    blob_root: workspace <> "/.blobs",
+    owner_blobs: tool.OwnerBlobs(workspace <> "/.blobs", no_filesystem()),
     clear_call: fn(_spec, _events) { Error(broker.BrokerUnavailable) },
     raise_refusal: tool.no_raise(),
     observe_output: tool.ignore_output(),

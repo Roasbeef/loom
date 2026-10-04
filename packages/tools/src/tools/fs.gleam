@@ -570,16 +570,29 @@ fn normalize(path: String) -> String {
 /// over the workspace — a capability bridge servicing `fs.write` for a
 /// code-mode program, say — resolves through this function instead of
 /// reimplementing half of it. A second implementation is how two
-/// enforcement points drift.
-pub fn resolve_for_write(ctx: Ctx, path: String) -> Result(String, PathError) {
+/// enforcement points drift. A registered context returns the fixed local
+/// operation refusal before resolution; path refusals retain their native output.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.resolve_for_write(ctx, "src/main.gleam")
+/// ```
+pub fn resolve_for_write(
+  ctx: Ctx,
+  path: String,
+) -> Result(String, ToolOutcome) {
+  use local <- result.try(tool.require_local_workspace(ctx))
+
   let access = directory_access.approved(ctx.directory_access, ctx.grants)
   resolve_writable_roots(
-    ctx.filesystem,
-    ctx.workspace,
+    local.filesystem,
+    local.root,
     access.writable,
     ctx.base_policy.protected,
     path,
   )
+  |> result.map_error(path_outcome)
 }
 
 // Native operations know their exact target before reading or writing it.
@@ -594,17 +607,19 @@ fn resolve_invocation(
   path: String,
   intent: Intent,
 ) -> Result(String, ToolOutcome) {
+  use local <- result.try(tool.require_local_workspace(ctx))
+
   let absolute = case path {
     "" -> ""
     "/" <> _ -> path
-    _ -> ctx.workspace <> "/" <> path
+    _ -> local.root <> "/" <> path
   }
   use target <- result.try(
     case intent {
-      Reading -> resolve_real(ctx.filesystem, "/", absolute)
+      Reading -> resolve_real(local.filesystem, "/", absolute)
       Writing ->
         resolve_writable_roots(
-          ctx.filesystem,
+          local.filesystem,
           "/",
           [],
           ctx.base_policy.protected,
@@ -614,7 +629,7 @@ fn resolve_invocation(
     |> result.map_error(path_outcome),
   )
   use workspace <- result.try(
-    resolve_real(ctx.filesystem, ctx.workspace, ".")
+    resolve_real(local.filesystem, local.root, ".")
     |> result.map_error(path_outcome),
   )
   let access = directory_access.approved(ctx.directory_access, ctx.grants)
@@ -878,12 +893,16 @@ fn file_outcome(
   offset: Int,
   limit: Int,
 ) -> ToolOutcome {
+  use local <- tool.or_outcome(tool.require_local_workspace(ctx), fn(outcome) {
+    outcome
+  })
+
   use resolved <- tool.or_outcome(
     resolve_invocation(ctx, path, Reading),
     fn(outcome) { outcome },
   )
   use bytes <- tool.or_outcome(
-    read_bytes(ctx.filesystem, resolved),
+    read_bytes(local.filesystem, resolved),
     read_error_outcome,
   )
   case image_media_type(bytes) {
@@ -1231,8 +1250,10 @@ pub type ReadError {
 /// ```
 ///
 pub fn read_text(ctx: Ctx, path: String) -> Result(String, ToolOutcome) {
+  use local <- result.try(tool.require_local_workspace(ctx))
+
   use resolved <- result.try(resolve_invocation(ctx, path, Reading))
-  read_text_file(ctx.filesystem, resolved)
+  read_text_file(local.filesystem, resolved)
   |> result.map_error(read_error_outcome)
 }
 
@@ -1451,13 +1472,17 @@ fn file_write(
   path: String,
   content: String,
 ) -> ToolOutcome {
+  use local <- tool.or_outcome(tool.require_local_workspace(ctx), fn(outcome) {
+    outcome
+  })
+
   use resolved <- tool.or_outcome(
     resolve_invocation(ctx, path, Writing),
     fn(outcome) { outcome },
   )
   let bytes = <<content:utf8>>
   use Nil <- tool.or_outcome(
-    write_whole(filesystem: ctx.filesystem, resolved:, bytes:),
+    write_whole(filesystem: local.filesystem, resolved:, bytes:),
     fs_error_outcome,
   )
 
@@ -1837,9 +1862,13 @@ fn file_edit(
   path: String,
   plan: hashline.Plan,
 ) -> ToolOutcome {
+  use local <- tool.or_outcome(tool.require_local_workspace(ctx), fn(outcome) {
+    outcome
+  })
+
   use target <- tool.or_outcome(edit_target(ctx, path), fn(outcome) { outcome })
   use landed <- tool.or_outcome(
-    land_plan(filesystem: ctx.filesystem, target:, plan:),
+    land_plan(filesystem: local.filesystem, target:, plan:),
     land_error_outcome,
   )
 

@@ -11,6 +11,7 @@ import client/daemon/root
 import client/daemon/ui_relay
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
+import core/workspace
 import gleam/erlang/process
 import gleam/json
 import gleam/list
@@ -518,7 +519,7 @@ fn view(status: manager.Status) -> manager.View {
     registration: catalogue.Registration(
       id: "0192-abcd",
       path: "/private/db/secret.sqlite",
-      workspace: "/src/loom",
+      workspace: workspace.LocalBinding("/src/loom"),
       name: "web ui",
       configuration: "config-ref",
       created_at: 1_790_000_000_000,

@@ -12,6 +12,7 @@ import client/internal/instance_owner as custody
 import core/clock
 import core/ids
 import core/json
+import core/workspace
 import gleam/erlang/process.{type Monitor}
 import gleam/int
 import gleam/list
@@ -33,7 +34,7 @@ fn registration(seed: Int) -> catalogue.Registration {
   catalogue.Registration(
     id:,
     path: "/unopened-daemon-manager-test/" <> id <> ".db",
-    workspace: "/workspace/project",
+    workspace: workspace.LocalBinding("/workspace/project"),
     name: "session " <> int.to_string(seed),
     configuration: "",
     created_at: 1_700_000_000_000,
@@ -260,9 +261,13 @@ fn saved(store: catalogue.Catalogue, seed: Int) -> catalogue.Registration {
   let record = raw_saved(store, seed)
   let selected =
     domain.Domain(
-      domain.key(domain.SessionOnly, record.workspace, record.id),
+      domain.key(
+        domain.SessionOnly,
+        workspace.binding_key(record.workspace),
+        record.id,
+      ),
       domain.SessionOnly,
-      record.workspace,
+      workspace.binding_key(record.workspace),
       "",
       "/fixture-domains/" <> record.id <> "/memory.db",
       "/fixture-domains/" <> record.id <> "/search.db",
@@ -362,7 +367,7 @@ pub fn domain_configuration_is_selected_at_creation_not_open_test() {
           registry,
           manager.Creation(
             int.to_string(example.0),
-            example.1,
+            workspace.LocalBinding(example.1),
             "Session",
             example.2,
             option.None,
@@ -394,9 +399,13 @@ pub fn private_domain_requires_explicit_stopped_isolation_test() {
   let record = raw_saved(store, 897)
   let private =
     domain.Domain(
-      domain.key(domain.WorkspacePrivate, record.workspace, record.id),
+      domain.key(
+        domain.WorkspacePrivate,
+        workspace.binding_key(record.workspace),
+        record.id,
+      ),
       domain.WorkspacePrivate,
-      record.workspace,
+      workspace.binding_key(record.workspace),
       "/owner/config.toml",
       "/owner/aggregate/memory.db",
       "/owner/aggregate/search.db",
@@ -474,9 +483,13 @@ pub fn owner_admin_rechecks_epoch_and_authority_before_mutation_test() {
       store,
       session.id,
       domain.Domain(
-        domain.key(domain.SessionOnly, session.workspace, session.id),
+        domain.key(
+          domain.SessionOnly,
+          workspace.binding_key(session.workspace),
+          session.id,
+        ),
         domain.SessionOnly,
-        session.workspace,
+        workspace.binding_key(session.workspace),
         "",
         "/admin-domain/memory.db",
         "/admin-domain/search.db",
@@ -671,7 +684,7 @@ pub fn creation_retry_preserves_reservation_before_and_after_assembly_test() {
   let request =
     manager.Creation(
       "create-once",
-      "/workspace/project",
+      workspace.LocalBinding("/workspace/project"),
       "first",
       "",
       option.None,
@@ -717,7 +730,11 @@ pub fn creation_retry_preserves_reservation_before_and_after_assembly_test() {
       generator: later,
     )
     == Ok(manager.View(saved, manager.Resident(operation)))
-  assert manager.set_default(registry, record.workspace, record.id)
+  assert manager.set_default(
+      registry,
+      workspace.binding_key(record.workspace),
+      record.id,
+    )
     == Ok(manager.View(saved, manager.Resident(operation)))
   stop(registry)
 
@@ -727,7 +744,10 @@ pub fn creation_retry_preserves_reservation_before_and_after_assembly_test() {
       process.send(builds, record.id)
       Ok(record.id)
     })
-  assert manager.workspace_default(restarted, record.workspace)
+  assert manager.workspace_default(
+      restarted,
+      workspace.binding_key(record.workspace),
+    )
     == Ok(manager.View(saved, manager.Saved))
   assert process.receive(builds, 0) == Error(Nil)
   stop(restarted)
@@ -751,7 +771,7 @@ pub fn reserved_creation_requires_explicit_retry_after_capacity_refusal_test() {
   let request =
     manager.Creation(
       "capacity-retry",
-      "/workspace/project",
+      workspace.LocalBinding("/workspace/project"),
       "second",
       "",
       option.None,
@@ -1552,9 +1572,13 @@ fn shared_domain_sessions(
   let anchor = raw_saved(store, 6000)
   let shared =
     domain.Domain(
-      domain.key(domain.WorkspacePrivate, anchor.workspace, anchor.id),
+      domain.key(
+        domain.WorkspacePrivate,
+        workspace.binding_key(anchor.workspace),
+        anchor.id,
+      ),
       domain.WorkspacePrivate,
-      anchor.workspace,
+      workspace.binding_key(anchor.workspace),
       "",
       "/fixture-domains/shared/memory.db",
       "/fixture-domains/shared/search.db",

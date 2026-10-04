@@ -297,7 +297,7 @@ fn drive(ready: Ready) -> Nil {
           extension: "fetcher",
           event: "session_start",
           args: msgpack.StringValue("{}"),
-          at: dispatch.coordinates(live_ctx(
+          at: local_coordinates(live_ctx(
             installed_at.workspace,
             installed_at.base_policy,
           )),
@@ -391,7 +391,7 @@ fn hooks_fire(installed_at: Installed) -> Nil {
         as "the gatekeeper's registry must start"
 
       let at =
-        dispatch.coordinates(live_ctx(
+        local_coordinates(live_ctx(
           installed_at.workspace,
           installed_at.base_policy,
         ))
@@ -934,7 +934,7 @@ fn oversleeps(
       let seam =
         hosts.seam(sleeper_hosts_name, clock: wall_clock(), margin_ms: 20_000)
       let at =
-        dispatch.coordinates(live_ctx(
+        local_coordinates(live_ctx(
           installed_at.workspace,
           installed_at.base_policy,
         ))
@@ -1294,7 +1294,7 @@ fn live_ctx(workspace: String, base: policy.SandboxPolicy) -> tool.Ctx {
   let #(op, _generator) = ids.mint_op(ids.generator(wall, seed: 20_260_902))
   tool.Ctx(
     directory_access: directory_access.none(),
-    workspace:,
+    workspace: tool.LocalWorkspace(workspace, no_filesystem()),
     strand: "main",
     op_id: op,
     step_id: caller_step_id,
@@ -1306,8 +1306,7 @@ fn live_ctx(workspace: String, base: policy.SandboxPolicy) -> tool.Ctx {
     demand: exec.BestEffort,
     env: [#("PATH", "/usr/local/bin:/usr/bin:/bin")],
     clock: wall,
-    filesystem: no_filesystem(),
-    blob_root: workspace <> "/.blobs",
+    owner_blobs: tool.OwnerBlobs(workspace <> "/.blobs", no_filesystem()),
     clear_call: fn(_spec, _events) { Error(broker.BrokerUnavailable) },
     raise_refusal: tool.no_raise(),
     observe_output: tool.ignore_output(),
@@ -1389,4 +1388,10 @@ fn repository_root() -> String {
 
 fn wall_clock() -> clock.Clock {
   clock.from_function(ffi_os.system_time_ms)
+}
+
+fn local_coordinates(ctx: tool.Ctx) -> hosts.Coordinates {
+  let assert Ok(at) = dispatch.coordinates(ctx)
+    as "fixture has local extension coordinates"
+  at
 }

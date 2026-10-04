@@ -51,6 +51,7 @@ import conformance/simulation/daemon/daemon_fault.{
 import conformance/simulation/vclock.{type Clockwork}
 import core/clock
 import core/ids
+import core/workspace
 import gleam/bit_array
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
@@ -409,7 +410,8 @@ pub fn reserve(
   name name: String,
   seed seed: Int,
 ) -> Result(catalogue.Registration, String) {
-  let request = manager.Creation(key, workspace, name, "", None)
+  let request =
+    manager.Creation(key, workspace.LocalBinding(workspace), name, "", None)
   let generator = ids.generator(vclock.clock(harness.clock), seed:)
   manager.create(
     harness.ready.registry,
@@ -558,7 +560,7 @@ fn render(
       [
         selected.id,
         string.inspect(selected.scope),
-        selected.workspace,
+        workspace.key_string(selected.workspace),
         selected.configuration,
         relative(selected.memory_path),
         relative(selected.index_path),
@@ -569,7 +571,7 @@ fn render(
     id: record.id,
     request_key: record.request_key,
     path: relative(record.path),
-    workspace: record.workspace,
+    workspace: workspace.key_string(workspace.binding_key(record.workspace)),
     name: record.name,
     state: string.inspect(record.state),
     created_at: record.created_at,
@@ -597,8 +599,12 @@ fn assembly(
 ) -> manager.Assembly(Instance) {
   manager.Assembly(
     domain_build: fn(selected: domain.Domain, _, owner) {
-      use Nil <- result.try(domain_custody(arrest, selected.workspace, owner))
-      park(arrest, AfterReservation, selected.workspace)
+      use Nil <- result.try(domain_custody(
+        arrest,
+        workspace.key_string(selected.workspace),
+        owner,
+      ))
+      park(arrest, AfterReservation, workspace.key_string(selected.workspace))
       Ok(domain_service.inert())
     },
     build: fn(record: catalogue.Registration, _, _, owner, _) {
@@ -779,7 +785,8 @@ pub fn create_isolated(
   name name: String,
   seed seed: Int,
 ) -> Result(catalogue.Registration, String) {
-  let request = manager.Creation(key, workspace, name, "", None)
+  let request =
+    manager.Creation(key, workspace.LocalBinding(workspace), name, "", None)
   let generator = ids.generator(vclock.clock(harness.clock), seed:)
   let outcome =
     manager.create_scoped(

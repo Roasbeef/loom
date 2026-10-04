@@ -26,6 +26,7 @@ import core/ids
 import core/message
 import core/register
 import core/tx
+import core/workspace
 import filepath
 import gleam/bit_array
 import gleam/erlang/process
@@ -94,6 +95,8 @@ fn start(settings: serve.Settings) {
           serve.build_domain(selected, sources, log.discard(), owner)
         },
         fn(record, selected, services, owner, _directory) {
+          let assert workspace.LocalBinding(local) = record.workspace
+            as "native fixture owns a local binding"
           let assert Ok(id) = ids.parse_session_id(record.id)
             as "the catalogue supplies a canonical identity"
           assert bootstrap.ensure_private_directory(filepath.directory_name(
@@ -105,8 +108,8 @@ fn start(settings: serve.Settings) {
               ..settings,
               session_path: record.path,
               session_id: record.id,
-              workspace: record.workspace,
-              base_policy: serve.base_policy(record.workspace),
+              workspace: local,
+              base_policy: serve.base_policy(local),
               domain_paths: Some(serve.DomainPaths(
                 selected.memory_path,
                 selected.index_path,
@@ -246,7 +249,7 @@ fn first_phase(
       serving.ready.registry,
       manager.Creation(
         "schedule-residency",
-        settings.workspace,
+        workspace.LocalBinding(settings.workspace),
         "Schedules",
         "",
         None,

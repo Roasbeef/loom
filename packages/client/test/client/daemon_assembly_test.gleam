@@ -17,6 +17,7 @@ import core/clock
 import core/ids
 import core/json
 import core/message
+import core/workspace
 import filepath
 import gleam/bit_array
 import gleam/erlang/process
@@ -74,6 +75,8 @@ fn start(
           Ok(services)
         },
         build: fn(record, selected, services, owner, directory) {
+          let assert workspace.LocalBinding(local) = record.workspace
+            as "native fixture owns a local binding"
           let permit = process.new_subject()
           process.send(arrivals, #(record.id, permit))
           let assert Ok(Nil) = process.receive(permit, 5000)
@@ -90,12 +93,12 @@ fn start(
               ),
               session_path: record.path,
               session_id: record.id,
-              workspace: record.workspace,
+              workspace: local,
               domain_paths: Some(serve.DomainPaths(
                 selected.memory_path,
                 selected.index_path,
               )),
-              base_policy: serve.base_policy(record.workspace),
+              base_policy: serve.base_policy(local),
             ),
             id,
             log.discard(),
@@ -121,7 +124,7 @@ fn create(
   let request =
     manager.Creation(
       request_key: "request-" <> string.inspect(seed),
-      workspace: settings.workspace,
+      workspace: workspace.LocalBinding(settings.workspace),
       name: "session " <> string.inspect(seed),
       configuration: "",
       profile: None,
@@ -314,7 +317,12 @@ pub fn real_registry_restores_catalogue_then_lazily_opens_one_session_test() {
   assert process.receive(requests, 1000) == Ok(Nil)
   assert process.receive(requests, 1000) == Ok(Nil)
     as "the peer message creates exactly one additional provider turn"
-  let assert Ok(_) = manager.set_default(registry, first.workspace, first.id)
+  let assert Ok(_) =
+    manager.set_default(
+      registry,
+      workspace.binding_key(first.workspace),
+      first.id,
+    )
     as "the workspace default is persisted separately from liveness"
   let assert Ok(_) = manager.stop_session(registry, first.id)
     as "one instance can retire while its peer retains the domain"
@@ -360,7 +368,10 @@ pub fn real_registry_restores_catalogue_then_lazily_opens_one_session_test() {
     == Ok(manager.View(saved_first, manager.Saved))
   assert manager.get(registry, second.id)
     == Ok(manager.View(saved_second, manager.Saved))
-  assert manager.workspace_default(registry, first.workspace)
+  assert manager.workspace_default(
+      registry,
+      workspace.binding_key(first.workspace),
+    )
     == Ok(manager.View(saved_first, manager.Saved))
   let assert Ok(#(_revision, views)) = manager.page(registry, after: "")
     as "listing restores both saved metadata records"

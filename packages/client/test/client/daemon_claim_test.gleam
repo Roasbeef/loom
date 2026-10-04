@@ -13,6 +13,7 @@ import client/session_socket_test
 import core/clock
 import core/ids
 import core/json.{type JsonValue}
+import core/workspace
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/erlang/atom
@@ -53,7 +54,7 @@ fn shared_session(ready: root.Ready(String), seed: Int) -> String {
       ready.registry,
       manager.Creation(
         "claim-" <> int.to_string(seed),
-        "/workspace",
+        workspace.LocalBinding("/workspace"),
         "S",
         "",
         None,

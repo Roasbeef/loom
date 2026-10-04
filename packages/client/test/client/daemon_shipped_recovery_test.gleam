@@ -7,6 +7,7 @@
 
 import broker/token
 import client/tui_e2e_test.{type EunitTest, Timeout}
+import core/workspace
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/int
@@ -117,7 +118,14 @@ fn exercise(server, directory, paths: endpoint.Paths) {
   let assert Ok(protocol.SessionReply(blocker)) =
     daemon.request(
       first.control,
-      protocol.CreateSession("occupy", workspace, "blocker", configuration, ""),
+      protocol.CreateSession(
+        "occupy",
+        workspace,
+        "blocker",
+        configuration,
+        None,
+        "",
+      ),
       5000,
     )
     as "explicit creation occupies the sole runtime slot"
@@ -131,6 +139,7 @@ fn exercise(server, directory, paths: endpoint.Paths) {
       workspace,
       "target",
       configuration,
+      None,
       "",
     )
   let assert Error(daemon.Refused("capacity", _)) =
@@ -140,7 +149,7 @@ fn exercise(server, directory, paths: endpoint.Paths) {
   assert reserved.state == catalogue.Reserved
   assert reserved.request_key == "reserved-at-crash"
   assert reserved.name == "target"
-  assert reserved.workspace == workspace
+  assert reserved.workspace == workspace.LocalBinding(workspace)
   assert reserved.configuration == configuration
   assert simplifile.is_file(reserved.path) == Ok(False)
   let original = first.record

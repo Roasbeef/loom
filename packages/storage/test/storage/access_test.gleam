@@ -4,6 +4,7 @@
 
 import core/clock
 import core/ids
+import core/workspace
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
@@ -61,7 +62,7 @@ fn registration(seed: Int) {
   catalogue.Registration(
     id:,
     path: "/never-opened-access-test/" <> id <> ".db",
-    workspace: "/workspace",
+    workspace: workspace.LocalBinding("/workspace"),
     name: "session",
     configuration: "",
     created_at: 0,

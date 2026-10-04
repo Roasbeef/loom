@@ -9,6 +9,7 @@ import argv
 import client/install
 import client/serve
 import core/json
+import core/workspace
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/io
@@ -100,7 +101,7 @@ fn verify_helper(directory, workspace, configuration, id) {
     catalogue.Registration(
       id,
       directory <> "/sessions/" <> id <> ".db",
-      workspace,
+      workspace.LocalBinding(workspace),
       "release probe",
       configuration,
       1,
@@ -111,9 +112,9 @@ fn verify_helper(directory, workspace, configuration, id) {
     )
   let selected =
     domain.Domain(
-      domain.key(domain.WorkspacePrivate, workspace, id),
+      domain.key(domain.WorkspacePrivate, workspace.LocalKey(workspace), id),
       domain.WorkspacePrivate,
-      workspace,
+      workspace.LocalKey(workspace),
       configuration,
       directory <> "/probe-resolution/memory.db",
       directory <> "/probe-resolution/search.db",

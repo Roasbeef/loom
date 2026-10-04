@@ -295,7 +295,7 @@ fn read_outcome(ctx: tool.Ctx, bounded: blob.Bounded) -> ToolOutcome {
     blob.Inline(_) -> "Complete stored entry (JSON). "
     blob.Overflowed(ref:, ..) ->
       "Complete stored entry (JSON) saved to "
-      <> blob.ref_path(ctx.blob_root, ref)
+      <> blob.ref_path(ctx.owner_blobs.root, ref)
       <> ". Read bounded byte ranges with bash; fs_read can read ordinary "
       <> "lines but refuses a line over 64 KiB or a file over 8 MiB. Excerpts follow. "
   }

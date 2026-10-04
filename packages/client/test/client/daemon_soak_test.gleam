@@ -29,6 +29,7 @@ import core/ids
 import core/json
 import core/message
 import core/tx
+import core/workspace
 import filepath
 import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
@@ -240,7 +241,7 @@ fn create(serving: daemon_main.Serving(serve.Instance), workspace, seed) {
       serving.ready.registry,
       manager.Creation(
         "soak-" <> int.to_string(seed),
-        workspace,
+        workspace.LocalBinding(workspace),
         "Soak",
         "",
         None,

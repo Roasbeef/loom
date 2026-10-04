@@ -14,6 +14,7 @@ import core/clock
 import core/glance
 import core/ids
 import core/json
+import core/workspace
 import filepath
 import gleam/bytes_tree
 import gleam/erlang/process
@@ -72,7 +73,7 @@ pub fn daemon_start_diagnostic_classifies_missing_helper_without_raw_error_test(
       ready.registry,
       manager.Creation(
         "missing-helper",
-        workspace,
+        workspace.LocalBinding(workspace),
         "Fixture",
         configuration,
         option.None,
@@ -208,7 +209,7 @@ fn rejected_configuration(defect: ConfigDefect) {
       ready.registry,
       manager.Creation(
         "invalid-domain-config",
-        workspace,
+        workspace.LocalBinding(workspace),
         "Fixture",
         configuration,
         option.None,

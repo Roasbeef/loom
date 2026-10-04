@@ -127,6 +127,7 @@ import core/clock.{type Clock}
 import core/glance as diagnostic
 import core/ids.{type OpId}
 import core/json
+import core/workspace
 import events/bus
 import filepath
 import gleam/bit_array
@@ -1122,6 +1123,13 @@ pub fn resolve_managed(
   selected: domain.Domain,
   state_root: String,
 ) -> Result(Settings, String) {
+  // Registered identity must never become a path in the local resolver. The
+  // registered assembly installs physical services before this boundary opens.
+  use local_root <- result.try(case registration.workspace {
+    workspace.LocalBinding(path) -> Ok(path)
+    workspace.Registered(_) ->
+      Error("registered workspace assembly is not available")
+  })
   use flags <- result.try(parse(defaults))
   let configuration = case registration.configuration {
     "" -> flags.config
@@ -1131,7 +1139,7 @@ pub fn resolve_managed(
     Flags(
       ..flags,
       session: Some(registration.path),
-      workspace: Some(registration.workspace),
+      workspace: Some(local_root),
       config: configuration,
       profile: registration.profile,
     ),

@@ -182,6 +182,7 @@ import client/gateway
 import client/peers
 import core/ids
 import core/json as wire
+import core/workspace
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -1528,10 +1529,14 @@ fn admit(
       // so the heading's name and workspace cost no second lookup.
       label: Some(component.Label(
         name: attachment.registration.name,
-        workspace: attachment.registration.workspace,
+        workspace: workspace_label(attachment.registration.workspace),
       )),
       // The digest, not the path, is what the page's storage is keyed by.
-      workspace_digest: digest(attachment.registration.workspace),
+      workspace_digest: digest(
+        workspace.key_string(workspace.binding_key(
+          attachment.registration.workspace,
+        )),
+      ),
       expected:,
       standing:,
       transport:,
@@ -2593,7 +2598,7 @@ pub fn create_for(
       |> result.replace_error(creations.TooMany),
     )
     let key = "web-" <> hex_entropy(16)
-    manager.Creation(key, workspace, name, "", profile)
+    manager.Creation(key, workspace.LocalBinding(workspace), name, "", profile)
     |> create(principal, _, scope_of(sharing))
     |> result.map(fn(view) { #(principal, view) })
     |> result.map_error(creation_refusal)
@@ -2771,7 +2776,9 @@ fn known_workspace(
     Error(_) -> Error(creations.Unavailable)
     Ok(#(_, views)) ->
       case
-        list.any(views, fn(view) { view.registration.workspace == workspace })
+        list.any(views, fn(view) {
+          view.registration.workspace == workspace.LocalBinding(workspace)
+        })
       {
         True -> Ok(Nil)
         False -> Error(creations.NotKnown)
@@ -5418,7 +5425,7 @@ pub fn listed_entry(view: manager.View) -> sessions.Entry {
   sessions.Entry(
     id: record.id,
     name: record.name,
-    workspace: record.workspace,
+    workspace: workspace_label(record.workspace),
     created_at: record.created_at,
     residency: case view.status {
       manager.Opening(..) | manager.Resident(..) | manager.Stopping(..) ->
@@ -5624,4 +5631,17 @@ fn authorize(attachment: server.Attachment(instance)) {
     digest: attachment.digest,
   )
   |> result.replace_error(ending.reason(ending.AccessRevoked))
+}
+
+// Display identity is never consumed as a host directory. Local headings keep
+// their historical spelling while registered headings name administration.
+fn workspace_label(binding: workspace.Binding) -> String {
+  case binding {
+    workspace.LocalBinding(path) -> path
+    workspace.Registered(bound) -> {
+      let #(selected, _, _) = workspace.binding_fields(bound)
+      let #(executor, name) = workspace.selector_fields(selected)
+      executor <> "/" <> name
+    }
+  }
 }

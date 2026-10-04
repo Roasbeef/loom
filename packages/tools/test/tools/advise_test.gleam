@@ -34,7 +34,7 @@ fn ctx_for(strand: String) -> Ctx {
   let workspace = "/nonexistent/loom-advise-test"
   tool.Ctx(
     directory_access: directory_access.none(),
-    workspace:,
+    workspace: tool.LocalWorkspace(workspace, dead_filesystem()),
     strand:,
     op_id: an_op(),
     step_id: "step-1",
@@ -44,8 +44,7 @@ fn ctx_for(strand: String) -> Ctx {
     demand: exec.FullEnforcement,
     env: [],
     clock: clock.fixed(at: 1000),
-    filesystem: dead_filesystem(),
-    blob_root: workspace <> "/.blobs",
+    owner_blobs: tool.OwnerBlobs(workspace <> "/.blobs", dead_filesystem()),
     clear_call: dead_broker,
     raise_refusal: tool.no_raise(),
     observe_output: tool.ignore_output(),

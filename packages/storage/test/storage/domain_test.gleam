@@ -3,6 +3,7 @@
 
 import core/clock
 import core/ids
+import core/workspace
 import gleam/list
 import gleam/option
 import gleam/string
@@ -50,7 +51,7 @@ fn registration(seed) {
   catalogue.Registration(
     id:,
     path: "/never-opened-domain/" <> id <> ".db",
-    workspace: "/workspace",
+    workspace: workspace.LocalBinding("/workspace"),
     name: "Session",
     configuration: "/session-config",
     created_at: 1,
@@ -63,9 +64,9 @@ fn registration(seed) {
 
 fn aggregate() {
   domain.Domain(
-    domain.key(domain.WorkspacePrivate, "/workspace", ""),
+    domain.key(domain.WorkspacePrivate, workspace.LocalKey("/workspace"), ""),
     domain.WorkspacePrivate,
-    "/workspace",
+    workspace.LocalKey("/workspace"),
     "/owner-domain-config",
     "/never-opened-domain/aggregate-memory.db",
     "/never-opened-domain/aggregate-search.db",
@@ -106,9 +107,13 @@ pub fn derived_sidecar_is_an_exclusive_domain_destination_test() {
 
 fn isolated(record: catalogue.Registration) {
   domain.Domain(
-    domain.key(domain.SessionOnly, record.workspace, record.id),
+    domain.key(
+      domain.SessionOnly,
+      workspace.binding_key(record.workspace),
+      record.id,
+    ),
     domain.SessionOnly,
-    record.workspace,
+    workspace.binding_key(record.workspace),
     "/owner-domain-config",
     "/never-opened-domain/" <> record.id <> "/memory.db",
     "/never-opened-domain/" <> record.id <> "/search.db",

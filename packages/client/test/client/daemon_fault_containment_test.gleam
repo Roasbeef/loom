@@ -18,6 +18,7 @@ import client/serve
 import core/clock
 import core/ids
 import core/message
+import core/workspace
 import filepath
 import gleam/bit_array
 import gleam/erlang/process
@@ -118,6 +119,8 @@ fn assembly(
       )
     },
     build: fn(record, selected, services, owner, _directory) {
+      let assert workspace.LocalBinding(local) = record.workspace
+        as "native fixture owns a local binding"
       process.send(owners, #(record.id, owner))
       let transport = case record.name {
         "A" -> held
@@ -137,12 +140,12 @@ fn assembly(
           ..settings,
           session_path: record.path,
           session_id: record.id,
-          workspace: record.workspace,
+          workspace: local,
           domain_paths: Some(serve.DomainPaths(
             selected.memory_path,
             selected.index_path,
           )),
-          base_policy: serve.base_policy(record.workspace),
+          base_policy: serve.base_policy(local),
           gateway:,
         ),
         identity,
@@ -165,7 +168,7 @@ fn create(
   let assert Ok(manager.View(record, manager.Opening(_))) =
     manager.create_scoped(
       ready.registry,
-      manager.Creation(name, workspace, name, "", None),
+      manager.Creation(name, workspace.LocalBinding(workspace), name, "", None),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(at: 1_700_000_000_000), seed:),
       scope: domain.SessionOnly,

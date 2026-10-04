@@ -10,6 +10,7 @@ import client/daemon/root
 import client/internal/instance_owner as custody
 import core/clock
 import core/ids
+import core/workspace
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
@@ -83,7 +84,7 @@ fn saved(path: String) {
     catalogue.Registration(
       id:,
       path: path <> "/sessions/" <> id <> ".db",
-      workspace: path,
+      workspace: workspace.LocalBinding(path),
       name: "restored",
       configuration: "",
       created_at: 0,
@@ -96,9 +97,13 @@ fn saved(path: String) {
   // creation, even though this fixture's domain owns no native resources.
   let selected =
     domain.Domain(
-      domain.key(domain.WorkspacePrivate, record.workspace, record.id),
+      domain.key(
+        domain.WorkspacePrivate,
+        workspace.binding_key(record.workspace),
+        record.id,
+      ),
       domain.WorkspacePrivate,
-      record.workspace,
+      workspace.binding_key(record.workspace),
       "",
       path <> "/domain/memory.db",
       path <> "/domain/search.db",

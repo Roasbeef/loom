@@ -33,6 +33,7 @@ import core/clock
 import core/ids
 import core/json
 import core/message
+import core/workspace
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/http/request
@@ -57,6 +58,8 @@ import session_view/connection_event
 import session_view/snapshot
 import session_view/snapshot_view
 import simplifile
+import storage/catalogue
+import storage/domain
 import storage/sqlite
 import support/addresses
 import support/internal/ffi_ws
@@ -67,7 +70,7 @@ import telemetry/record
 import tui
 import tui/connection
 import tui/inbound
-import tui/workspace
+import tui/workspace as tui_workspace
 import weft
 import weft/poll
 import weft/registry as address
@@ -428,7 +431,7 @@ fn with_daemon_instance(run) {
             serving.ready.registry,
             manager.Creation(
               "serve-wire",
-              settings.workspace,
+              workspace.LocalBinding(settings.workspace),
               "Fixture",
               "",
               None,
@@ -539,7 +542,10 @@ fn subscribed_cut(
     as "the shared total decoder adopts the bounded refusal"
   let terminal =
     inbound.apply_cut(
-      tui.new_model(connection.new_inbox(), workspace.Context("fixture", None)),
+      tui.new_model(
+        connection.new_inbox(),
+        tui_workspace.Context("fixture", None),
+      ),
       captured,
       view,
     )
@@ -2743,4 +2749,45 @@ pub fn boot_creates_the_private_go_cache_directories_outside_the_workspace_test(
   })
   let _cleanup = simplifile.delete(location)
   let _cleanup = simplifile.delete(location <> "-caches")
+}
+
+/// A remote binding must be refused before local configuration or path probes.
+pub fn registered_managed_boot_never_enters_the_local_resolver_test() {
+  let assert Ok(selector) = workspace.selector("linux", "project")
+    as "The enrolled selector is well-formed."
+  let assert Ok(binding) = workspace.registered_binding(selector, 2, 3)
+    as "The retained epochs are valid."
+  let registration =
+    catalogue.Registration(
+      id: "unopened-session",
+      path: "/must-not-create/session.sqlite",
+      workspace: workspace.Registered(binding),
+      name: "Remote",
+      configuration: "/must-not-read/loom.toml",
+      created_at: 1,
+      request_key: "remote-creation",
+      state: catalogue.Reserved,
+      profile: None,
+    )
+  let selected =
+    domain.Domain(
+      id: "workspace:registered:linux:project",
+      scope: domain.WorkspacePrivate,
+      workspace: workspace.RegisteredKey(selector),
+      configuration: "",
+      memory_path: "/must-not-create/memory",
+      index_path: "/must-not-create/index",
+    )
+
+  // Even invalid local flags cannot take precedence over the registered arm.
+  let result =
+    serve.resolve_managed(
+      ["--not-a-valid-local-flag"],
+      registration,
+      selected,
+      "/must-not-create/state",
+    )
+  let assert Error(reason) = result
+    as "No local Settings are constructed for a registered binding."
+  assert reason == "registered workspace assembly is not available"
 }

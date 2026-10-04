@@ -105,7 +105,7 @@ pub fn default_developer_tools_run_without_environment_repairs_test() {
   let ctx =
     tool.Ctx(
       directory_access: directory_access.none(),
-      workspace:,
+      workspace: tool.LocalWorkspace(workspace, fs.real_filesystem()),
       strand: "main",
       op_id:,
       step_id: "developer-tools",
@@ -115,8 +115,7 @@ pub fn default_developer_tools_run_without_environment_repairs_test() {
       demand: exec.BestEffort,
       env: environment,
       clock: wall,
-      filesystem: fs.real_filesystem(),
-      blob_root: workspace <> "/.blobs",
+      owner_blobs: tool.OwnerBlobs(workspace <> "/.blobs", fs.real_filesystem()),
       clear_call: tool.broker_runner(broker: owner, waiting: 10_000),
       raise_refusal: tool.no_raise(),
       observe_output: tool.ignore_output(),
