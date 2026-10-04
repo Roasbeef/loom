@@ -95,6 +95,47 @@ reissue an artifact. The codemode dependency supplies these existing concrete
 product/report/Ready types and fixed layout; codemode has no executor dependency.
 No resource effects, journal transitions or production service wiring occur here.
 
+## Physical Compile observation
+
+`remote/compile_observation.observe(resources, original)` derives full native
+association, pinned enrollment and retained CompileReady from one resource
+journal. Its opaque Observation captures the original ServiceKey, exact Ready
+allocation, independent native key/Prepared digest, unchanged terminal bytes and
+ordered `tools/tool.Collected`. Callers cannot substitute another root or key at
+`finalize(observation)`. Missing association is pending. Missing original input
+and journal errors remain typed failures; Uncertain must end continuation polling.
+Associated without Ready and committed terminal evidence without its exact payload
+refuse. Terminal payload retained before the reducer COMMIT remains pending.
+
+The adapter folds the native sink's zero-based contiguous Output ordinals per
+stream, preserving arbitrary bytes and sticky truncation, including terminal
+truncation flags. Existing native decoders plus canonical re-encoding check the
+frames. A matching committed Terminal/Refused/Retired/RetiredRefusal digest is
+read before its immutable payloads and required before exposing Observation. This
+order avoids a terminal COMMIT racing an earlier empty payload read. No native
+output or terminal receipt bytes
+are rewritten. The existing journal inventory bounds decoded aggregate material;
+this module introduces no queue, database, transport or admission authority.
+
+`finalize` calls the shared physical `codemode/build.finalize` and constructs
+`compile_completion.successful` or `failed_native` from the captured evidence.
+Only the original live continuation may consume it once and commit completion
+before publishing success. Gleam values are copyable: this is a caller obligation,
+not linear permission supplied by Observation. Queries and recovery must never
+perform finalization. Source/filesystem custody after cancellation stays with the
+original continuation. The internal `bounded_error` preserves all CompileError
+variants while bounding completed human-readable text to 8000 UTF-8 bytes,
+including a visible truncation marker. Native receipt material stays exact.
+
+`compile_observation_test` uses real SQLite journals and a compiler-produced fixed
+`loom_satellite` test module, then the actual product flattening and independent
+fingerprint path. It covers the terminal-payload/COMMIT gap, missing or changed
+committed payload, ordinal gaps, binary stream/truncation preservation, cancelled
+zero and other failed verdicts despite valid products, partial products, and
+Unicode/prefixed seed errors. These are component fixtures with synthetic native
+verdicts; they do not establish jailed compiler execution or whole remote Compile
+assembly. The original whole Compile actor owns that integration boundary.
+
 ## Resource preparation and Compile custody
 
 `remote/resource_journal` owns one SQLite actor/database for original preparation,
