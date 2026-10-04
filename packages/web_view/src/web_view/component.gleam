@@ -181,6 +181,7 @@ import session_view/worktree_view
 import web_view/ending.{type Ending}
 import web_view/image as web_image
 import web_view/invites
+import web_view/renames
 import web_view/sessions
 import web_view/view/changes
 import web_view/view/commentary
@@ -192,6 +193,7 @@ import web_view/view/lane
 import web_view/view/live
 import web_view/view/nudges
 import web_view/view/panel
+import web_view/view/rename as rename_view
 import web_view/view/session_tab
 import web_view/view/shell
 import web_view/view/strand_detail
@@ -292,6 +294,20 @@ pub const sidebar_path = "0\t1"
 /// (`client/daemon/ui_socket.invite_for`). `invite_test` fails if the view
 /// moves the control or a handler leaves the region.
 pub const invite_path = "0\t3\t2\t2"
+
+/// The Lustre event path of the rename control, on an owner's page: it is the
+/// fifth child of the Session pane (`view/session_tab`), after the pane's
+/// title, its list, the invitation control (`invite_path`) and the session
+/// controls (`session_controls_path`), so that placing it there moved no path
+/// the socket admits. The one handler beneath it is the form's submit
+/// (protocol-change/067). The page socket admits a `submit` at or beneath this
+/// path only on a page whose principal is the daemon's owner
+/// (`client/daemon/ui_socket.operator_accepts`), as it does for the invitation
+/// control, so a member operator's browser and an observer's cannot send one
+/// even by forging the path, and the daemon refuses the request a third time
+/// (`client/daemon/ui_socket.rename_for`). `rename_test` fails if the view
+/// moves the control or a handler leaves the region.
+pub const rename_path = "0\t3\t2\t4"
 
 /// The Lustre event path of the "Home" button, on both pages: it is the
 /// second child of the top bar (`view/heading`), after the brand, and the top
@@ -445,6 +461,18 @@ pub type Transport(socket) {
     /// is called. It runs in the component's process, and it must not run
     /// long: the page's runtime waits for it.
     home: Option(fn() -> sessions.Answer),
+    /// Asks the daemon to rename this page's own session, for an owner's page
+    /// that submitted the rename control (protocol-change/067): the daemon
+    /// checks that the page is open, that its credential still authenticates as
+    /// the daemon's owner and that the name is one a display name may be, and
+    /// then makes the registry's owner-checked rename. It must return at once:
+    /// the daemon runs the request in a task of its own, which calls the
+    /// function it is given with the answer, and that call is dispatched as
+    /// `Renamed`. It is `None` unless the page's principal is the daemon's
+    /// owner, and the daemon checks that again when it runs, so a page with no
+    /// capability draws no control and a page that has one cannot use it once
+    /// its principal or its own standing has changed.
+    rename: Option(fn(String, fn(renames.Answer) -> Nil) -> Nil),
   )
 }
 
@@ -657,6 +685,11 @@ type View(socket) {
     /// holds a claim token, only while the invitation is on screen, and the
     /// state is replaced when the owner dismisses it.
     share: invites.Share,
+    /// What the rename control is doing, and how many renames have succeeded,
+    /// which keys the control's form so a successful one is replaced by an empty
+    /// form.
+    renaming: renames.Control,
+    renamed: Int,
     /// When the page opened or last asked for the strand's live jobs, on the
     /// transport's clock, so the next ask waits `jobs_refresh_ms` whether or
     /// not the daemon answered. A refused read is therefore not repeated on
@@ -786,6 +819,12 @@ pub type Msg(socket) {
   /// carries it, so a browser cannot send one and cannot put a token in the
   /// page.
   Invited(answer: invites.Answer)
+
+  /// The daemon answered a request to rename the page's session. It is the
+  /// effect's own message, dispatched from the daemon's task, and no handler
+  /// carries it, so a browser cannot send one and cannot put a name in the page
+  /// that the daemon did not store.
+  Renamed(answer: renames.Answer)
 }
 
 /// The Lustre application for one session's observer page.
@@ -848,6 +887,11 @@ pub fn new(start: Start(socket)) -> Model(socket) {
         Some(_) -> invites.Ready
         None -> invites.Withheld
       },
+      renaming: case start.transport.rename {
+        Some(_) -> renames.Ready
+        None -> renames.Withheld
+      },
+      renamed: 0,
       jobs_asked_at: None,
       refusal: None,
       outcome: "",
@@ -1041,6 +1085,8 @@ pub fn update(
     )
 
     Invited(answer:) -> #(invited(model, answer), effect.none())
+
+    Renamed(answer:) -> #(renamed(model, answer), effect.none())
   }
 }
 
@@ -2514,6 +2560,129 @@ pub fn share(model: Model(socket)) -> invites.Share {
   model.view.share
 }
 
+/// Asks the daemon to rename this page's session, when an owner submitted the
+/// rename control.
+///
+/// The page sends the text of the field and nothing else. The daemon names the
+/// session, the principal and the right to ask itself, and its answer arrives as
+/// `Renamed`. The control is `Asking` until then, so a second submit while a
+/// request is with the daemon is ignored and one submit renames at most once. A
+/// page that has no capability to rename (`Transport.rename` is `None`) ignores
+/// the message, so a member's page is unchanged if one arrives, and the
+/// observer's page, which draws no control, has no message that reaches here at
+/// all. The request goes to a task of the daemon's own and this returns at
+/// once, so the page keeps drawing while the registry answers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.renaming(model, "review auth")
+/// ```
+pub fn renaming(
+  model: Model(socket),
+  name: String,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case model.view.transport.rename, model.view.renaming {
+    Some(ask), renames.Ready
+    | Some(ask), renames.Done
+    | Some(ask), renames.Refused(..)
+    -> #(
+      Model(..model, view: View(..model.view, renaming: renames.Asking)),
+      asking_rename(ask, name),
+    )
+    Some(_), renames.Asking | Some(_), renames.Withheld | None, _ -> #(
+      model,
+      effect.none(),
+    )
+  }
+}
+
+// Starts the daemon's task and returns at once. The task's answer arrives later
+// as `Renamed`, dispatched from the task's own process.
+fn asking_rename(
+  ask: fn(String, fn(renames.Answer) -> Nil) -> Nil,
+  name: String,
+) -> Effect(Msg(socket)) {
+  use dispatch <- effect.from
+  ask(name, fn(answer) { dispatch(Renamed(answer)) })
+}
+
+// The daemon's answer to a request to rename. A stored name becomes the
+// heading's and the sidebar's at once, in the page's own state, rather than
+// waiting for the next read of the catalogue; the name is the one the daemon
+// reports, never the one the browser sent. A refusal is worded in the
+// control's own status line. An answer that arrives when no request is out was
+// not asked for and is dropped.
+fn renamed(model: Model(socket), answer: renames.Answer) -> Model(socket) {
+  case model.view.renaming, answer {
+    renames.Asking, renames.Renamed(name:) ->
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          renaming: renames.Done,
+          renamed: model.view.renamed + 1,
+          label: option.map(model.view.label, fn(label) {
+            Label(..label, name:)
+          }),
+          groups: list.map(model.view.groups, fn(group) {
+            sessions.Group(
+              ..group,
+              entries: list.map(group.entries, fn(entry) {
+                case entry.id == model.shared.session {
+                  True -> sessions.Entry(..entry, name:)
+                  False -> entry
+                }
+              }),
+            )
+          }),
+        ),
+      )
+    renames.Asking, renames.Declined(reason:) ->
+      Model(
+        ..model,
+        view: View(..model.view, renaming: renames.Refused(reason)),
+      )
+    renames.Withheld, _
+    | renames.Ready, _
+    | renames.Done, _
+    | renames.Refused(..), _
+    -> model
+  }
+}
+
+/// What the rename control is doing, for the operator's view to draw.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.rename_control(model) == renames.Withheld
+/// ```
+pub fn rename_control(model: Model(socket)) -> renames.Control {
+  model.view.renaming
+}
+
+/// The rename control, drawn for the model's state: nothing for a page that
+/// cannot rename, and otherwise the form, with the session's current name as
+/// text in its lead. `submit` is the form's submit handler, which the operator's
+/// page builds because it owns the message type.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.rename_form(model, submit)
+/// ```
+pub fn rename_form(
+  model: Model(socket),
+  submit: attribute.Attribute(message),
+) -> Element(message) {
+  let current = case option.map(model.view.label, fn(label) { label.name }) {
+    Some("") | None -> None
+    named -> named
+  }
+  rename_view.view(model.view.renaming, current, model.view.renamed, submit)
+}
+
 /// The listed session `id` names, when the page may offer to open it: another
 /// session than this one, that a process runs. A peer's message names its
 /// source session, which is the peer's text and never becomes an
@@ -3202,7 +3371,14 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
         None -> element.none()
       },
     ],
-    panel(model, FocusRequested, None, element.none(), element.none()),
+    panel(
+      model,
+      FocusRequested,
+      None,
+      element.none(),
+      element.none(),
+      element.none(),
+    ),
     needing(model),
     workspace_digest(model),
   )
@@ -3247,12 +3423,14 @@ pub fn switch(model: Model(socket)) -> Element(message) {
 /// handed to someone who may only watch does not tell them who else is
 /// watching. `share` is the invitation control the Session pane ends with:
 /// the operator page passes an owner's control (`view/share`), and every other
-/// page passes `element.none()`.
+/// page passes `element.none()`. `controls` is the operator's goal buttons and
+/// fork form, and `rename` the owner's rename control (`rename_form`), which
+/// every other page passes as `element.none()`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // component.panel(model, FocusRequested, None, element.none(), element.none())
+/// // component.panel(model, FocusRequested, None, element.none(), element.none(), element.none())
 /// ```
 pub fn panel(
   model: Model(socket),
@@ -3260,6 +3438,7 @@ pub fn panel(
   viewers: Option(session_summary.Viewers),
   share: Element(message),
   controls: Element(message),
+  rename: Element(message),
 ) -> Element(message) {
   panel.view(
     strip.count(model.view.strip),
@@ -3273,6 +3452,7 @@ pub fn panel(
       viewers,
       share,
       controls,
+      rename,
     ),
     trace.view(trace(model)),
     nudges.view(pending_nudges(model)),

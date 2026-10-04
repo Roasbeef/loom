@@ -68,6 +68,18 @@ and omission of unknown names, so prompt cache prefixes and authorization
 remain unchanged. Public request and target helpers retain their signatures and
 use the same projected implementations as the production surface.
 
+`Effects` is copied into every process and supervisor child specification
+that holds a session's runtime, and a closure over `wiring.Config` puts a full
+copy of the tool registry into each one. `client/serve` therefore builds its
+effects with `wiring.build_effects_held`: the `run` slot captures only the
+address of a `client/tool_holder` process, which keeps the one `Config` and
+hands it back to each tool run (`run_tool_held`). A holder that is gone or does
+not answer inside five seconds yields an in-band `ToolCompleted` failure, never
+a crash. The holder is published to custody as `instance_owner.ToolConfig`
+before `api.open_published` and retires directly after `Runtime`, because
+tools run until the runtime drains. `build_effects(config)` keeps the capturing
+closure for tests, the scripted demo and extension hooks.
+
 ## Code-mode alternatives on direct tools
 
 `contributions.built_in` appends a concrete capability call and result shape to
@@ -312,9 +324,10 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   `listed_entry` maps `Reserved` and `RecoveryBlocked` to `sessions.Blocked`.
   The owner's home creates a session (protocol-change/065, the fourth addendum).
   `home_create_capability(principal, ceiling, ask)` is `Some` for the owner at
-  Operator ceiling only, `upgrade_home` passes it as `Start.create` and picks
-  `home_creator_accepts` (a `submit` beneath `home.table_path`, plus the clicks
-  `home_accepts` takes) for that socket and `home_accepts` for every other.
+  Operator ceiling only, `upgrade_home` passes it as `Start.create` beside
+  `Start.rename`, and a home that holds either gets `home_owner_accepts` (a
+  `submit` beneath `home.table_path`, plus the clicks `home_accepts` takes), one
+  rule for both forms; every other home gets `home_accepts`.
   `create_for(standing, tickets, open, create, workspace, name, sharing,
   within:)` re-derives the page from the grant: open (the epoch check), Operator
   ceiling, the credential authenticates as the page's principal and that is the
@@ -350,9 +363,30 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   page's own session with a claim from `server.claim_enrollment` that lives
   `invites.claim_ttl_ms`. A refusal that made nothing gives the reservation
   back and an unknown outcome keeps it. The socket's admission is split:
-  `operator_accepts` drops a click at or beneath `component.invite_path`,
-  `owner_accepts` admits it, and the observer's socket admits neither.
-  `start_page` takes the `Role`.
+  `operator_accepts` drops an event at or beneath `component.invite_path` or
+  `component.rename_path`, `owner_accepts` admits them, and the observer's
+  socket admits neither. `start_page` takes the `Role`.
+  `rename_for(standing, open, epoch, target, name)` is the owner page's rename
+  (protocol-change/067): the page open, the ceiling operating, the credential
+  authenticating as the page's principal and that principal the owner, `target`
+  a canonical identity, the trimmed name through `catalogue.display_name`, and
+  then `manager.rename` (owner and epoch again, and the catalogue refuses an
+  identity it does not hold). Every non-owner standing, forged identity and
+  unknown session is `renames.NotOwner`; a bad name is `InvalidName`.
+  `rename_task` runs it in a weft run linked to the page's runtime, as
+  `resume_task` does, and `deliver` is its last act. The session page passes the
+  attachment's own session id; the home passes the row's, and is handed the
+  capability only for the owner on an operating page
+  (`home_rename_capability`), with `home_owner_accepts` admitting a submit
+  beneath `home.table_path` for that page alone.
+- **A session's subtitle.** The hub reports the first accepted human prompt on
+  the main strand through `Options.first_prompt` (`gateway.with_first_prompt`,
+  filled from `serve.Settings.first_prompt`, which `daemon/main` sets):
+  from the direct admission in `prompt_message` and from `admit_held` for a held
+  prompt or steer, once, as typed before skill expansion, and never for a
+  message with no text. The callee is `manager.seed_subtitle`, a cast to the
+  registry that calls `catalogue.seed_subtitle` in its own turn. `server.view_json`
+  adds `subtitle` only when present (protocol-change/067).
 - `daemon/ui_relay`: the page's stand-in for a session socket. `start`
   returns before the attach, which runs as the relay's first message and
   answers on the component's `opened` subject, so a slow gateway cannot
@@ -647,7 +681,9 @@ catalogue without opening runtimes. Explicit admission invokes
 - `client/internal/instance_owner.{Owner, Part, CloseOutcome}` retains
   published cleanup independently of a builder. Weft orders builder exit
   before the holder's cleanup run; `StillClosing` and `RecoveryBlocked`
-  retain reservations rather than authorizing replacement. The publication
+  retain reservations rather than authorizing replacement. Cleanup order is
+  `Runtime`, `ToolConfig`, `Services`, `Broker`, `Helpers`, `Mcp`, `Storage`,
+  `Namespace`. The publication
   handoff in `instance_owner.start` and the registry handoff in
   `lifetime.start` are both bounded at five seconds, and `distill_owner`'s
   cleanup run carries a wall deadline, so a wedged start or close settles

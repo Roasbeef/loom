@@ -979,6 +979,15 @@ the reads and silently drop its events. Register writes that produce no event
 because every source gates on its own row or cell seq exceeding the
 high-water.
 
+The prime that opens a hub runs the same four sources once at a high-water of
+zero and discards the emits. It reads the entry source with
+`scan_entry_heads` rather than `scan_entries`
+([protocol-change/066](../../protocol-change/066-entry-heads-scan.md)), since
+the attribution cache and the high-water need each entry's id, parent and seq
+and never its payload. A pull and the prime share one attribution function over
+heads, so the claim rules exist once, and a test holds the two to the same cache
+and high-water over generated stores.
+
 Reading registers rather than a log has two consequences. Both are documented
 protocol behavior, not bugs to fix later:
 

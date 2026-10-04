@@ -88,6 +88,7 @@
 //// | `Waiting(w)` | asks nothing | asks nothing | departs and `Idle`, or says why and `Composing(w)`, or `Idle` for a session made and not opened | stays `Waiting(w)` |
 
 import gleam/dict.{type Dict}
+import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -96,9 +97,11 @@ import lustre/attribute
 import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/event
 import lustre/server_component
 import web_view/creations.{type Sharing}
 import web_view/ending.{type Ending}
+import web_view/renames
 import web_view/sessions.{type Activity, type Entry, type Group, Live}
 import web_view/view/create.{type Create}
 import web_view/view/ended
@@ -215,7 +218,31 @@ pub type Start {
     create: Option(
       fn(String, String, Sharing, fn(creations.Answer) -> Nil) -> Nil,
     ),
+    /// Asks the daemon to rename the named session, for the owner's page that
+    /// submitted a row's rename form (protocol-change/067): the daemon checks
+    /// that the page is open and was minted to operate, that its credential
+    /// still authenticates as the daemon's owner, that the identity is a
+    /// session its catalogue holds and that the name is one a display name may
+    /// be, and then makes the registry's owner-checked rename. It must return
+    /// at once, as `resume` must: the answer goes to the function it is given,
+    /// from the daemon's own task, as `RenameAnswered`'s message. It is `None`
+    /// unless the page's principal is the daemon's owner on a page minted to
+    /// operate, and the daemon checks that again when it runs.
+    rename: Option(fn(String, String, fn(renames.Answer) -> Nil) -> Nil),
   )
+}
+
+/// What the rename control is doing on the page. It is the page's own state and
+/// nothing the daemon records.
+pub type Edit {
+  /// No row's rename form is open.
+  NotEditing
+
+  /// The form of one row is open, and the control says where it stands:
+  /// `Ready` waits for a name, `Asking` has a request with the daemon, and
+  /// `Refused` words why the last one stored nothing. Only one row is open at a
+  /// time, so opening another closes this one.
+  Editing(session: String, control: renames.Control)
 }
 
 /// What the page says about its own standing.
@@ -264,6 +291,8 @@ pub opaque type Model {
     /// workspace, or that workspace's creation out. Only a page with
     /// `Start.create` leaves `Idle`.
     creating: create.State,
+    /// Which row's rename form is open, and where it stands.
+    edit: Edit,
   )
 }
 
@@ -319,6 +348,25 @@ pub type Msg {
   /// message, dispatched from the daemon's task, and no handler carries it, so
   /// a browser cannot send one.
   Created(answer: creations.Answer)
+
+  /// A row's Rename button was pressed: open that row's form. Only an owner's
+  /// page draws the button, and the daemon checks again when a name is sent. The
+  /// identity is the catalogue's, fixed when the tree was drawn.
+  EditRequested(session: String)
+
+  /// The open form's Cancel button was pressed: close it.
+  EditCancelled
+
+  /// A row's rename form was submitted with this text. The identity is the
+  /// catalogue's, fixed when the tree was drawn, and the text is the browser's
+  /// and nothing else is: the daemon decides whether the page's principal may
+  /// rename and whether the name is one a display name may be.
+  Renaming(session: String, name: String)
+
+  /// The daemon answered a request to rename. It is the effect's own message,
+  /// dispatched from the daemon's task, and no handler carries it, so a browser
+  /// cannot put a name in the page that the daemon did not store.
+  RenameAnswered(answer: renames.Answer)
 }
 
 /// The application the daemon's socket starts, one per home page.
@@ -352,6 +400,7 @@ pub fn new(start: Start) -> Model {
     notice: None,
     resuming: None,
     creating: create.Idle,
+    edit: NotEditing,
   )
 }
 
@@ -469,6 +518,27 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         -> #(model, effect.none())
       }
 
+    // The rename form of one row opens, on a page that may rename. Opening a
+    // form while a request is out would hide that request's answer, so it is
+    // ignored until the request ends.
+    EditRequested(session:) ->
+      case model.start.rename, model.status, model.edit {
+        Some(_), Connected, NotEditing
+        | Some(_), Connected, Editing(_, renames.Ready)
+        | Some(_), Connected, Editing(_, renames.Refused(..))
+        | Some(_), Connected, Editing(_, renames.Done)
+        | Some(_), Connected, Editing(_, renames.Withheld)
+        -> #(
+          Model(..model, edit: Editing(session, renames.Ready)),
+          effect.none(),
+        )
+        Some(_), Connected, Editing(_, renames.Asking)
+        | Some(_), Connecting, _
+        | Some(_), Ended(_), _
+        | None, _, _
+        -> #(model, effect.none())
+      }
+
     Cancelled ->
       case model.creating {
         create.Composing(_) -> #(
@@ -520,6 +590,60 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         )
       }
 
+    EditCancelled ->
+      case model.edit {
+        Editing(_, renames.Asking) | NotEditing -> #(model, effect.none())
+        Editing(_, renames.Ready)
+        | Editing(_, renames.Refused(..))
+        | Editing(_, renames.Done)
+        | Editing(_, renames.Withheld) -> #(
+          Model(..model, edit: NotEditing),
+          effect.none(),
+        )
+      }
+
+    // A submit asks the daemon from the daemon's own task, so the runtime stays
+    // free while the registry answers. It asks only for the row whose form is
+    // open, and only once: a second submit while the request is out asks
+    // nothing, and a page with no capability asks nothing at all.
+    Renaming(session:, name:) ->
+      case model.start.rename, model.edit {
+        Some(ask), Editing(open, renames.Ready) if open == session -> #(
+          Model(..model, edit: Editing(session, renames.Asking)),
+          renaming(ask, session, name),
+        )
+        Some(ask), Editing(open, renames.Refused(..)) if open == session -> #(
+          Model(..model, edit: Editing(session, renames.Asking)),
+          renaming(ask, session, name),
+        )
+        Some(_), Editing(..) | Some(_), NotEditing | None, _ -> #(
+          model,
+          effect.none(),
+        )
+      }
+
+    // The answer: a stored name replaces the row's in the page's own state at
+    // once, the daemon's own word for it, and the next read confirms it; a
+    // refusal is worded in the open form, in the reason's fixed words. An answer
+    // that arrives when no request is out was not asked for and is dropped.
+    RenameAnswered(answer:) ->
+      case model.edit, answer {
+        Editing(session, renames.Asking), renames.Renamed(name:) -> #(
+          Model(
+            ..model,
+            edit: NotEditing,
+            notice: Some("Renamed."),
+            groups: renamed(model.groups, session, name),
+          ),
+          effect.none(),
+        )
+        Editing(session, renames.Asking), renames.Declined(reason:) -> #(
+          Model(..model, edit: Editing(session, renames.Refused(reason))),
+          effect.none(),
+        )
+        Editing(..), _ | NotEditing, _ -> #(model, effect.none())
+      }
+
     // The answer: a ticket becomes the address `<loom-switch>` navigates to,
     // and a refusal is the page's notice in the reason's fixed words. Either
     // way no resume is out any longer.
@@ -544,6 +668,32 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         )
       }
   }
+}
+
+// Starts the daemon's rename task and returns at once; the task's answer
+// arrives later as `RenameAnswered`, dispatched from the task's own process.
+fn renaming(
+  rename: fn(String, String, fn(renames.Answer) -> Nil) -> Nil,
+  session: String,
+  name: String,
+) -> Effect(Msg) {
+  use dispatch <- effect.from
+  rename(session, name, fn(answer) { dispatch(RenameAnswered(answer)) })
+}
+
+// The groups with one session's name replaced.
+fn renamed(groups: List(Group), session: String, name: String) -> List(Group) {
+  list.map(groups, fn(group) {
+    sessions.Group(
+      ..group,
+      entries: list.map(group.entries, fn(entry) {
+        case entry.id == session {
+          True -> sessions.Entry(..entry, name:)
+          False -> entry
+        }
+      }),
+    )
+  })
 }
 
 // Starts the daemon's task and returns at once; the task's answer arrives
@@ -698,6 +848,7 @@ pub fn view(model: Model) -> Element(Msg) {
         model.now,
         Opening,
         resume_offer(model),
+        rename_offer(model),
         create_offer(model),
       ),
       switch.view(model.departure),
@@ -715,6 +866,49 @@ fn resume_offer(model: Model) -> Resume(Msg) {
     OperatorCeiling -> resume.Offered(Resuming, model.resuming)
     ObserverCeiling -> resume.Never
   }
+}
+
+// What the table offers for renaming a row: a button on a page whose daemon
+// handed it the capability, and nothing otherwise.
+fn rename_offer(model: Model) -> home_table.Rename(Msg) {
+  case model.start.rename {
+    None -> home_table.Never
+    Some(_) ->
+      home_table.Offered(
+        edit: EditRequested,
+        cancel: EditCancelled,
+        submit: submitting,
+        open: case model.edit {
+          NotEditing -> None
+          Editing(session:, control:) ->
+            Some(home_table.Open(session:, control:))
+        },
+      )
+  }
+}
+
+// A row's form submit as the message that names the session the server drew
+// into the tree and carries the one text field the form has. Any other field, a
+// repeated one or a missing one refuses the event, as the control forms do.
+fn submitting(session: String) -> attribute.Attribute(Msg) {
+  event.on("submit", written(session)) |> event.prevent_default
+}
+
+fn written(session: String) -> decode.Decoder(Msg) {
+  use fields <- decode.subfield(
+    ["detail", "formData"],
+    decode.list(form_field()),
+  )
+  case fields {
+    [#("text", name)] -> decode.success(Renaming(session, name))
+    _ -> decode.failure(Renaming(session, ""), "rename form")
+  }
+}
+
+fn form_field() -> decode.Decoder(#(String, String)) {
+  use name <- decode.field(0, decode.string)
+  use value <- decode.field(1, decode.string)
+  decode.success(#(name, value))
 }
 
 // What the page offers for making a session: the owner's operating page has

@@ -23,6 +23,7 @@ pub fn session_link_keeps_target_across_catalogue_refresh_test() {
       "Review session",
       0,
       protocol.Resident("live"),
+      option.None,
     )
   let selector =
     session_selector.State(
@@ -141,6 +142,7 @@ pub fn create_link_reviews_exact_pair_and_defaults_to_busy_only_test() {
       "Review",
       0,
       protocol.Resident("incarnation"),
+      option.None,
     )
   let state = peer_links.new("local-id", "main")
   let state =
@@ -188,6 +190,7 @@ pub fn same_session_link_keeps_source_and_target_strands_distinct_test() {
       "Current session",
       0,
       protocol.Resident("incarnation"),
+      option.None,
     )
   let state =
     peer_links.loaded(
@@ -220,6 +223,7 @@ pub fn wake_permission_requires_an_explicit_confirmation_choice_test() {
       "Review",
       0,
       protocol.Resident("incarnation"),
+      option.None,
     )
   let state =
     peer_links.loaded(
@@ -255,7 +259,14 @@ pub fn wake_permission_requires_an_explicit_confirmation_choice_test() {
 
 pub fn saved_target_is_not_admitted_or_opened_test() {
   let saved =
-    protocol.Session("saved-id", "/workspace/saved", "Saved", 0, protocol.Saved)
+    protocol.Session(
+      "saved-id",
+      "/workspace/saved",
+      "Saved",
+      0,
+      protocol.Saved,
+      option.None,
+    )
   let state =
     peer_links.loaded(
       peer_links.new("local-id", "main"),
@@ -336,6 +347,7 @@ pub fn linked_row_shows_names_and_exact_session_ids_test() {
       "Coordinator",
       0,
       protocol.Resident("a"),
+      option.None,
     )
   let target =
     protocol.Session(
@@ -344,6 +356,7 @@ pub fn linked_row_shows_names_and_exact_session_ids_test() {
       "Review target",
       0,
       protocol.Resident("b"),
+      option.None,
     )
   let grant =
     peer_links.Grant(
@@ -421,6 +434,7 @@ pub fn chooser_pages_past_the_first_hundred_authorized_sessions_test() {
         "Session",
         0,
         protocol.Resident("incarnation"),
+        option.None,
       )
     })
   let state =
@@ -444,6 +458,7 @@ pub fn chooser_pages_past_the_first_hundred_authorized_sessions_test() {
             "Last target",
             0,
             protocol.Resident("incarnation"),
+            option.None,
           ),
         ],
         None,

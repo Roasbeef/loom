@@ -75,6 +75,7 @@ fn started() -> Page {
       resume: fn(_, _) { Nil },
       invite: None,
       home: None,
+      rename: None,
     )
   let start =
     component.Start(

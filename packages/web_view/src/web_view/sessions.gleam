@@ -29,6 +29,7 @@
 import gleam/dict
 import gleam/int
 import gleam/list
+import gleam/option.{type Option}
 import gleam/order
 import gleam/string
 
@@ -70,6 +71,12 @@ pub type Entry {
     created_at: Int,
     /// Whether a process runs the session.
     residency: Residency,
+    /// The first line of the first prompt a person sent the session, at most
+    /// 60 characters, which the daemon derived once and never changes
+    /// (protocol-change/067). It is a person's own words, so a page draws it as
+    /// a text node and nowhere else: never an attribute, a class, a key or a
+    /// title. A session with no prompt, or one older than the field, has none.
+    subtitle: Option(String),
   )
 }
 
@@ -81,7 +88,7 @@ pub type Entry {
 /// ## Examples
 ///
 /// ```gleam
-/// assert sessions.label(Entry("0198a2f4-7c3b", "", "/w", 0, Saved))
+/// assert sessions.label(Entry("0198a2f4-7c3b", "", "/w", 0, Saved, None))
 ///   == "Session 0198a2f4"
 /// ```
 pub fn label(entry: Entry) -> String {

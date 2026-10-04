@@ -245,7 +245,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:2121`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:2365`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -696,6 +696,21 @@ sessions). Only an operator page does it.
   (`session_isolation_test`); the sidebar is the one region that lists the
   others. The observer's socket drops a click beneath `component.sidebar_path`.
 
+## Renaming and the subtitle (protocol-change/067)
+
+A session's first prompt names it for the page. The daemon reduces the first
+accepted prompt's first line to at most 60 characters, once, and the page draws
+it as a text node under the name in the sidebar and as the lead of a home row's
+quiet line. It is never an attribute, a class, a key or a title.
+
+An owner's page may rename. The session page's control is the Session pane's
+fifth child (`component.rename_path`); the home draws a Rename button after each
+row and one open form in place of a row. Both send the typed text and nothing
+else. `ui_socket.rename_for` re-derives the page's standing at the click and
+makes the registry's owner-checked rename, from a task linked to the page's
+runtime, so the runtime never waits on the registry. A member's page and an
+observer's page are handed no capability and their sockets drop the event.
+
 ## Inviting from the session page
 
 An owner's operator page has one control that a member's page and every
@@ -873,9 +888,15 @@ invitations). Then `create` makes the session under a key drawn for the call,
 `daemon.session_created` is logged with the principal and the session, and the
 session is opened and ticketed as a resume's is (`opened_ticket`). A session made
 and not opened is `NotOpened`, in words that say it exists. The socket takes the
-form's `submit` beneath `home.table_path` for that page only
-(`home_creator_accepts`); every other home keeps `home_accepts`, which admits
-clicks alone. `ui_route_test`, `ui_socket_test`, `ui_sessions_test` and
+form's `submit` beneath `home.table_path` for that page only. That admission is
+the one rename already has (`home_owner_accepts`, protocol-change/067): the owner's
+socket admits a submit beneath the table when its home holds either the rename or
+the creation capability, which are separate and are given on the same condition,
+and every other home keeps `home_accepts`, which admits clicks alone. The socket
+admits by path and does not say which form a submit is. The two forms sit at
+different paths, each handler has its own decoder, and the decoders refuse each
+other's fields (`text` for a rename, `name` and `shareable` for a creation), so a
+submit reaches one handler and one message. `ui_route_test`, `ui_socket_test`, `ui_sessions_test` and
 `home_test` read each refusal and the admission.
 
 ## Expanding a row

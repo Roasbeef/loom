@@ -442,6 +442,13 @@ pub fn prepare_startup(
               }),
             ),
           )
+        let settings =
+          serve.Settings(
+            ..settings,
+            first_prompt: Some(fn(text) {
+              manager.seed_subtitle(directory, registration.id, text)
+            }),
+          )
         serve.assemble_in_domain(settings, identity, logger, owner, services)
         |> diagnose_start(logger, identity, RuntimeAssembly)
         |> result.map(serve.resident)

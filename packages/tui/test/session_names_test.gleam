@@ -23,7 +23,7 @@ import tui/workspace
 import weft
 
 fn row(id: String, name: String) -> protocol.Session {
-  protocol.Session(id, "/work", name, 0, protocol.Saved)
+  protocol.Session(id, "/work", name, 0, protocol.Saved, option.None)
 }
 
 fn picker() -> session_selector.State {

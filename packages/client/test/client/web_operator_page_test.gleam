@@ -98,6 +98,7 @@ fn start_page(
         resume: fn(_, _) { Nil },
         invite: None,
         home: None,
+        rename: None,
       ),
     )
   let assert Ok(runtime) =

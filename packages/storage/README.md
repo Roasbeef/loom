@@ -16,7 +16,8 @@ pub type Storage(handle) {
     handle: handle,
     commit: fn(handle, Tx) -> Result(CommitResult, CommitError),
     get_entries: ..., get_register: ..., list_registers: ...,
-    scan_branch: ..., scan_entries: ..., scan_usage: ...,
+    scan_branch: ..., scan_entries: ..., scan_entry_heads: ...,
+    scan_usage: ...,
     stats: ..., close: ...,
   )
 }

@@ -1115,8 +1115,14 @@ The design note already ruled the box (section 2.2, "shareable"), so this makes
 no new decision. The box words what it allows, not the scope's name.
 
 **The admission.** The home's socket admitted clicks alone. The owner's home also
-admits a `submit` beneath `home.table_path`, where the form is
-(`ui_socket.home_creator_accepts`); every other home keeps `home_accepts`. The
+admits a `submit` beneath `home.table_path`, where the form is. That is the
+admission protocol-change/067 added for the rename form
+(`ui_socket.home_owner_accepts`), and the two share it: the socket admits a
+submit for the owner's operating home, which holds both capabilities on one
+condition, and every other home keeps `home_accepts`. The socket cannot tell the
+forms apart and does not try. They sit at different paths, each has its own
+decoder, and each decoder refuses the other's fields (`text` against `name` and
+`shareable`), so a submit reaches only the handler drawn at its path. The
 two regions are unchanged and no pinned path moved: `strip_path`, `invite_path`,
 `session_controls_path`, `older_path`, `sidebar_path`, `home_path` and
 `home.table_path` are as they were, and `ui_socket_test` pins the owner's

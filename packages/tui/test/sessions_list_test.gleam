@@ -7,6 +7,7 @@
 //// so every case here runs with no daemon and no real terminal.
 
 import gleam/list
+import gleam/option
 import gleam/string
 import tui
 import tui/daemon/protocol as control_protocol
@@ -21,6 +22,7 @@ fn session(
     name: "n",
     created_at: 0,
     status:,
+    subtitle: option.None,
   )
 }
 
