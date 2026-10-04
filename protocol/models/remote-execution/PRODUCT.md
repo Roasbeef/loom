@@ -159,3 +159,30 @@ native key 2, then a cleanup observation for that same key without prior native
 retirement evidence. It reached this history on schedule 1. Driver stage alone
 cannot establish the witness. The earlier 35-case run remains valid for its
 source but did not establish Launch/resource mixed-fault reachability.
+
+## Original Claim association addendum
+
+The original composition and recorded runs above remain historical evidence for
+those source snapshots. The current command lane requires actual native Admitted,
+then committed exact resource association through the original live Claim, then
+consumption of its original pending permit before native Intent/start. The old gap
+case now pauses at Admitted/unassociated. The prior statement that native Owner,
+Executor and monitors were unchanged no longer describes the current additive
+closed command route; their ordinary native branch and baseline cases remain.
+
+Ready terminates creation permission while the original association continuation
+remains live. Recovery, retained Ready or association, duplicate Submit and owner
+readback cannot reconstruct that continuation. Model issuance is an atomic
+new-row reserve-to-Preparing abstraction; production's separate first-service
+admission and cancellation fence still need their own bridge. The extension adds
+no claim about those missing implementation boundaries.
+
+Fence-first refuses association; association-first keeps exact cancellation
+routing and may race helper start. Controls check the full retained prepared
+association. Stdin is an abstract forwarding fact only, with no payload/credit
+proof. Native ticket binding, codec/TLS/SQLite mechanics, OS authority and complete
+Compile production assembly remain separate. The historical model allowance is
+48000; current production S is 44000+W+2E (59000 at5s). This is a bounded scheduling
+model, not a production refinement or timing proof. The current README addendum
+and new immutable verification report record the source-specific case/mutation
+census; prior counts are not silently reused for the changed source.

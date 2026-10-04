@@ -456,3 +456,76 @@ and finite directed control chains, with no ticker or retry loop. The earlier
 Passing this bounded model is not production journal, transport, cryptographic,
 filesystem, crash-atomicity or full refinement proof. Actual process exits,
 schedule counts, probe points and source hashes belong in the frozen handoff.
+
+## Original live association before command launch
+
+The command lane extends the shared native Owner and Executor rather than copying
+an execution engine. Ordinary native Submit follows its prior path. A command
+Submit retains the complete original prepared product, commits native Admitted,
+and asks the resource actor to associate through the original live Claim. Resource
+association commits before its one original permit answer. Native Executor consumes
+that exact answer once, under its original pending continuation and boot, before
+committing native Intent or sending helper start.
+
+Creation custody and live association have distinct lifetimes. The creation claim
+ends at Ready; the original association continuation survives Ready and ends at
+association, fence, resource-owner death or resource actor restart. Retained Input,
+Ready and association readback never issue another live Claim or permit. The native
+route retains full prepared identity but no live Claim; pending original callbacks
+and launch permits are volatile. Abandoned replies remove the original callback.
+Reboot clears pending callbacks and queued eligibility. A delayed old-boot answer
+can be refused while its exact resource association remains historical data.
+
+The initial reserve-to-Preparing handler issues a Claim only for a newly inserted
+outer row. This is an atomic abstract transition, not a proof that production's
+separate reserve/claim APIs already enforce original first-service authority. Whole
+Compile initial admission/recovery and cancel-before-first-Submit belong to a
+separate implementation bridge. This extension does not broaden their model scope.
+
+Every closed Query, Cancel, Receipt and abstract Stdin control, plus duplicate
+Submit's historical readback, checks full prepared identity against the retained
+resource association. The model has no stdin bytes, ordinals or credit algorithm;
+its claim is guarded forwarding only. A native UUID cannot be reinterpreted as a
+different command after recovery. No retry selects a new command, wall or deadline.
+
+Fence-before-association refuses eligibility. Association-before-fence preserves
+its exact native cancellation route and may still reach helper start. This model
+continues to omit production Refused-before-launch: it makes no stronger promise
+that a post-association cancellation prevents all OS effect. Original native
+retirement and receipt histories remain distinct from resource cleanup.
+
+The existing `tcCompileReadySubmitUnassociated` now pauses actual Admitted before
+association, rather than allowing Running first. Its Request-only refusal,
+Ready-plus-in-flight Before refusal and exact resumed native settlement remain.
+Four additional normal cases cover cancellation order, lost/stale reply recovery,
+changed Claim/duplicate association, and four hostile controls delivered against
+two genuine associations. Seven positive probes require actual claim/association,
+permit consumption, helper start, fence/refusal and native readback histories.
+They do not accept scenario stage alone as evidence.
+
+The independent PreparationSafety histories check original Claim identity and
+revocation, actual Admit, exact association, unique permit issuance, one-shot
+consumption, original boot, abandoned reply, Intent and closed control forwarding.
+The old native/product/custody monitors and all earlier cases remain active. All
+thirty prior mutation names remain; `preparation-clearance-as-admission` now skips
+the actual native Admit commit in the closed path, rather than sending an obsolete
+legacy fake-admission event. Seven additional mutations change actual launch,
+association, Claim, duplicate, boot, abandoned-answer and control decisions. Each
+must compile and fail its intended independent assertion; mutation compiler errors
+remain gate failures. The local run.py additions register exact probe markers only;
+runner.py, outer scripts, PlusCal and Lean mechanics are unchanged.
+
+The added traffic is finite: at most two retained native/resource rows, one helper,
+two resource Claim incarnation classes and one original pending continuation per
+native key. The control case bootstraps both genuine associations, sends four
+hostile controls serially, then reads the genuine second native row before allowing
+completion. No feedback loop or ticking actor is added. The existing 1000-step,
+60-second, 1-GiB checker bounds stay unchanged; verification reports the observed
+scheduling-point census separately from this workload description.
+
+The model retains its historical illustrative 48000 allowance profile to preserve
+its exact wall tests and prior evidence. Production startup authority is now
+S=44000+W+2E (59000 at W=E=5000), after the owner service_child ask was included.
+Neither the old profile nor these schedule-based checks prove production timing,
+codec correctness, TLS authentication, native tickets, database transactions,
+physical OS enforcement or whole Compile refinement.
