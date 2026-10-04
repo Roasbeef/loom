@@ -1447,6 +1447,33 @@ probes 5 and 10.
 Two things are not measurable here and are not mocked: the cgroup pids and
 memory ceiling, and anything on Darwin.
 
+## Durable remote admission
+
+The #697 groundwork lives in `executor/remote/identity`, `admission`,
+`journal_codec` and `journal`. It does not replace the local dispatcher or
+expose a listener. Protocol-change/066 defines the ordering required of the
+future adapter.
+
+A request identity binds session, operation, executor, workspace and both
+authority epochs. The pure reducer reserves bounded request evidence and distinguishes
+admission, launch intent, definite pre-launch refusal, terminal outcome,
+native retirement and owner receipt. Exact retries do not authorize another
+launch. Compaction retains a tombstone and does not release its lifetime slot.
+
+The SQLite journal serializes changed transitions with an immediate writer
+transaction and acknowledges only after COMMIT. Required WAL/FULL durability
+and a checked metadata head also serialize independent opens. Recovery
+validates the bounded command history through the production reducer and
+discards historical effects. Database uncertainty closes the handle; recovery
+inspects the original identity instead of assuming the write failed.
+
+This layer retains digests, not exact command/result payloads or native
+process handles. The remote adapter still owes payload storage, authenticated
+transport, owner-side durable receipts, workspace authority and actual native
+reconciliation. Its launch callback must apply a committed live decision once;
+a duplicated Gleam value is not a new authorization. Journal restart tests
+cannot establish that native descendants were retired.
+
 ## Verification
 
 The issue's fourteen scenarios map onto tests as follows. Names in code format
