@@ -10,8 +10,8 @@
 //// never launched. A failure after any possible durable submission is uncertain.
 ////
 //// Challenge W=1000 ms, margin=100 ms, at most 32 unused nonces. Nonce binds peer,
-//// generation, scope/key/digest and monotonic issue time. B=R-W-margin is positive
-//// and at least 1000 ms. First admission freezes receive+B; queue/preparation
+//// generation, complete Native/Command route, scope/key/digest and issue time.
+//// B=R-W-margin is positive and at least 1000 ms. First admission freezes receive+B; queue/preparation
 //// consume it. The exact cleared helper wall_s must conservatively fit remaining
 //// whole seconds, or launch is refused. No policy rewriting occurs after digest.
 //// Session authority is explicit, with nonzero original resource/output ceilings.
@@ -27,10 +27,24 @@
 //// Exit alone stays NativeUnconfirmed; close permanently fences the epoch and
 //// only a witnessed scoped pool drain confirms native retirement.
 ////
+//// The command door retains either the original Claim or historical Input data.
+//// Full wrapper/context and concrete endpoint equality precede native writes.
+//// After Request, Authority and Admit, the separate resource actor commits live
+//// association before any AuthorizeLaunch. Cancellation which wins that writer
+//// transaction prevents a permit; cancellation afterward may race OS startup.
+//// Command controls and duplicate Submit readback require the exact retained
+//// ref/key/digest. Recovery never recreates a Claim, ticket or native launch.
+////
 //// ## Flow
 ////
 //// `exchange` -> `handle` -> `apply_envelope` -> `submit` -> `first_submit`
 //// -> `launch`; `query` reads retained custody without launching.
+////
+//// `live_command_context` checks Claim identity; `command_context` reads history.
+//// `send_command_exchange` enters `handle_command_exchange`, then the same engine.
+//// `command_body` fences historical work and `command_association` checks controls.
+//// `associate_command` orders its permit; `ticket_route` binds both nonce lanes.
+//// `validate_command` checks the complete local endpoint and original identity.
 ////
 //// 1. `exchange` admits one bounded service ask outside the network writer.
 //// 2. `apply_envelope` fences peer, role, scope and generation before mutation.
@@ -45,13 +59,16 @@ import broker/exec
 import broker/executor as local
 import broker/internal/call
 import broker/policy
+import core/command
 import core/ids
 import core/msgpack as mp
+import core/workspace
 import executor/remote/admission
 import executor/remote/identity
 import executor/remote/journal
 import executor/remote/native
 import executor/remote/payload
+import executor/remote/resource_journal
 import executor/remote/wire
 import gleam/bit_array
 import gleam/crypto
@@ -108,8 +125,53 @@ pub type Error {
   Uncertain
 }
 
+/// Exact local command custody, with historical data separated from live permission.
+/// Construction pins the complete original Input and the concrete native endpoint.
+/// A recovered row never reconstructs its original preparation Claim.
+@internal
+pub opaque type CommandContext {
+  /// Only checked local constructors retain this association.
+  CommandContext(
+    /// Separate resource actor whose writer transaction fences cancellation.
+    resources: resource_journal.Journal,
+    /// Original bounded key/body; no decoded source tree is retained here.
+    original: resource_journal.Input,
+    /// Complete service and closed Compile command identity.
+    ref: command.CommandRef,
+    /// Historical readback cannot become first-Submit permission.
+    permission: CommandPermission,
+  )
+}
+
+type CommandPermission {
+  /// Retained data grants observation only, never a challenge or Submit.
+  Historical
+
+  /// Original live preparation custody is consumed through resource association.
+  Live(claim: resource_journal.Claim)
+}
+
+// Routing stays local and closed; the ticket retains identity without the Claim.
+type Route {
+  /// Ordinary native service behavior retains its original admission semantics.
+  Native
+
+  /// Full original command identity accompanies every admission and control.
+  Command(context: CommandContext)
+}
+
+type TicketRoute {
+  /// A native ticket cannot authorize a command Submit.
+  NativeTicket
+
+  /// Command nonce reuse compares the complete original reference.
+  CommandTicket(ref: command.CommandRef)
+}
+
 type Ticket {
   Ticket(
+    /// Complete closed route, without retaining source input or a Claim.
+    route: TicketRoute,
     key: identity.RequestKey,
     digest: identity.Digest,
     generation: Int,
@@ -159,6 +221,11 @@ type Message {
   ControlDone(key: identity.RequestKey, digest: identity.Digest)
   Exchange(
     envelope: wire.Envelope,
+    reply: process.Subject(Result(wire.Body, Error)),
+  )
+  CommandExchange(
+    context: CommandContext,
+    envelope: wire.CommandEnvelope,
     reply: process.Subject(Result(wire.Body, Error)),
   )
 }
@@ -343,6 +410,127 @@ pub fn send_exchange(
   process.send(service.subject, Exchange(envelope, reply))
 }
 
+/// Retains first-Submit custody from the original live preparation Claim.
+/// Full original identity and concrete native endpoint are checked before any ask.
+/// The physical service still owns source admission and at-most-once Claim use.
+///
+/// ## Examples
+///
+/// ```gleam
+/// service.live_command_context(remote, claim, ref) // -> Ok(context).
+/// ```
+@internal
+pub fn live_command_context(
+  service: Service,
+  claim: resource_journal.Claim,
+  ref: command.CommandRef,
+) -> Result(CommandContext, Error) {
+  let original = resource_journal.original(claim)
+  let resources = resource_journal.claim_journal(claim)
+  use Nil <- result.try(validate_command(
+    service.config,
+    resources,
+    original,
+    ref,
+  ))
+  Ok(CommandContext(resources, original, ref, Live(claim)))
+}
+
+/// Reads exact bounded original data without reconstructing preparation custody.
+/// Historical contexts can control an exact retained native association only.
+/// They cannot create a challenge or submit, even when a native key is unseen.
+///
+/// ## Examples
+///
+/// ```gleam
+/// service.command_context(remote, resources, ref) // -> Ok(history).
+/// ```
+@internal
+pub fn command_context(
+  service: Service,
+  resources: resource_journal.Journal,
+  ref: command.CommandRef,
+) -> Result(CommandContext, Error) {
+  use original <- result.try(
+    resource_journal.retained_input(resources, command.service(ref))
+    |> result.replace_error(Uncertain),
+  )
+  use Nil <- result.try(validate_command(
+    service.config,
+    resources,
+    original,
+    ref,
+  ))
+  Ok(CommandContext(resources, original, ref, Historical))
+}
+
+fn validate_command(
+  config: Config,
+  resources: resource_journal.Journal,
+  original: resource_journal.Input,
+  ref: command.CommandRef,
+) -> Result(Nil, Error) {
+  let #(session, name, executor, session_epoch, workspace_epoch) =
+    identity.scope_fields(config.scope)
+  use scope <- result.try(
+    workspace.scope_from_fields(
+      session,
+      name,
+      executor,
+      session_epoch,
+      workspace_epoch,
+    )
+    |> result.replace_error(Invalid),
+  )
+  case
+    original.key == command.service(ref)
+    && command.command_ref(original.key, command.CompileCommand) == Ok(ref)
+    && command.coordinates(original.key).0 == scope
+    && resource_journal.native_endpoint(resources) == config.journal
+  {
+    True -> Ok(Nil)
+    False -> Error(Invalid)
+  }
+}
+
+/// Transfers one typed command ask to the same serialized native admission engine.
+/// The enclosing listener owns reply custody until actual consumption or death.
+/// Native bodies are returned; transport later wraps the original complete ref.
+///
+/// ## Examples
+///
+/// ```gleam
+/// service.send_command_exchange(remote, context, envelope, reply) // -> Nil.
+/// ```
+@internal
+pub fn send_command_exchange(
+  service: Service,
+  context: CommandContext,
+  envelope: wire.CommandEnvelope,
+  reply: process.Subject(Result(wire.Body, Error)),
+) -> Nil {
+  process.send(service.subject, CommandExchange(context, envelope, reply))
+}
+
+/// Waits boundedly for one component command exchange without renewing authority.
+/// Timeout does not withdraw the queued ask or prove absence of a committed effect.
+///
+/// ## Examples
+///
+/// ```gleam
+/// service.exchange_command(remote, context, envelope) // -> Ok(native_body).
+/// ```
+@internal
+pub fn exchange_command(
+  service: Service,
+  context: CommandContext,
+  envelope: wire.CommandEnvelope,
+) -> Result(wire.Body, Error) {
+  let reply = process.new_subject()
+  send_command_exchange(service, context, envelope, reply)
+  process.receive(reply, 30_000) |> result.unwrap(Error(Uncertain))
+}
+
 /// Exposes only the immutable configured identity for transport validation.
 ///
 /// ## Examples
@@ -396,16 +584,53 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       }
       actor.continue(State(..state, rows:))
     }
-    Exchange(envelope, reply) -> handle_exchange(state, envelope, reply)
+    Exchange(envelope, reply) -> handle_exchange(state, Native, envelope, reply)
+    CommandExchange(context, envelope, reply) ->
+      handle_command_exchange(state, context, envelope, reply)
+  }
+}
+
+fn handle_command_exchange(
+  state: State,
+  context: CommandContext,
+  envelope: wire.CommandEnvelope,
+  reply: process.Subject(Result(wire.Body, Error)),
+) -> actor.Next(State, Message) {
+  // An opaque context from another service cannot write into this native journal.
+  let checked = {
+    use Nil <- result.try(validate_command(
+      state.config,
+      context.resources,
+      context.original,
+      context.ref,
+    ))
+    case wire.command_ref(envelope) == context.ref {
+      True -> Ok(Nil)
+      False -> Error(Invalid)
+    }
+  }
+  case checked {
+    Ok(Nil) ->
+      handle_exchange(
+        state,
+        Command(context),
+        wire.native_envelope(envelope),
+        reply,
+      )
+    Error(error) -> {
+      process.send(reply, Error(error))
+      actor.continue(state)
+    }
   }
 }
 
 fn handle_exchange(
   state: State,
+  route: Route,
   envelope: wire.Envelope,
   reply: process.Subject(Result(wire.Body, Error)),
 ) -> actor.Next(State, Message) {
-  case apply_envelope(state, envelope) {
+  case apply_envelope(state, route, envelope) {
     Ok(#(next, body)) -> {
       process.send(reply, Ok(body))
       actor.continue(next)
@@ -419,6 +644,7 @@ fn handle_exchange(
 
 fn apply_envelope(
   state: State,
+  route: Route,
   envelope: wire.Envelope,
 ) -> Result(#(State, wire.Body), Error) {
   let config = state.config
@@ -435,6 +661,7 @@ fn apply_envelope(
       False -> Error(Invalid)
     },
   )
+  use Nil <- result.try(command_body(route, envelope.body))
   case envelope.body {
     wire.ChallengeRequest(_, _)
       | wire.Submit(_, _, _, _, _)
@@ -453,9 +680,9 @@ fn apply_envelope(
         wire.Hello,
       ))
     _ if envelope.generation != state.generation -> Error(Invalid)
-    wire.ChallengeRequest(key, digest) -> challenge(state, key, digest)
+    wire.ChallengeRequest(key, digest) -> challenge(state, route, key, digest)
     wire.Submit(key, digest, prepared, nonce, budget) ->
-      submit(state, key, digest, prepared, nonce, budget)
+      submit(state, route, key, digest, prepared, nonce, budget)
     wire.Query(key, digest, cursor) -> {
       use body <- result.try(query(state, key, digest, cursor))
       Ok(#(state, body))
@@ -481,6 +708,59 @@ fn apply_envelope(
   }
 }
 
+fn command_body(route: Route, body: wire.Body) -> Result(Nil, Error) {
+  case route, body {
+    Native, _ -> Ok(Nil)
+
+    // Historical identity is useful for recovery but cannot produce fresh authority.
+    Command(context), wire.ChallengeRequest(_, _)
+    | Command(context), wire.Submit(_, _, _, _, _)
+    -> {
+      use Nil <- result.try(case context.permission {
+        Live(_) -> Ok(Nil)
+        Historical -> Error(Uncertain)
+      })
+      case body {
+        wire.Submit(_, _, prepared, _, _) if prepared.lifetime == wire.Session ->
+          Error(Invalid)
+        _ -> Ok(Nil)
+      }
+    }
+    Command(_), wire.Query(key, digest, _)
+    | Command(_), wire.Cancel(key, digest)
+    | Command(_), wire.Stdin(key, digest, _, _, _)
+    | Command(_), wire.DurableReceipt(key, digest, _)
+    -> command_association(route, key, digest)
+    Command(_), _ -> Error(Invalid)
+  }
+}
+
+fn command_association(
+  route: Route,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+) -> Result(Nil, Error) {
+  case route {
+    Native -> Ok(Nil)
+    Command(context) -> {
+      use retained <- result.try(
+        resource_journal.inspect_native(context.resources, context.original)
+        |> result.replace_error(Uncertain),
+      )
+      case retained {
+        resource_journal.Unassociated -> Error(Uncertain)
+        resource_journal.Associated(ref, saved_key, saved_digest, _) ->
+          case
+            ref == context.ref && saved_key == key && saved_digest == digest
+          {
+            True -> Ok(Nil)
+            False -> Error(Invalid)
+          }
+      }
+    }
+  }
+}
+
 fn live_row(
   state: State,
   key: identity.RequestKey,
@@ -497,6 +777,7 @@ fn live_row(
 
 fn challenge(
   state: State,
+  route: Route,
   key: identity.RequestKey,
   digest: identity.Digest,
 ) -> Result(#(State, wire.Body), Error) {
@@ -512,7 +793,8 @@ fn challenge(
     False -> Error(Capacity)
   })
   let nonce = crypto.strong_random_bytes(32)
-  let ticket = Ticket(key, digest, state.generation, now, nonce)
+  let ticket =
+    Ticket(ticket_route(route), key, digest, state.generation, now, nonce)
   Ok(#(
     State(..state, tickets: [ticket, ..tickets]),
     wire.Challenge(key, digest, nonce, 1000),
@@ -521,6 +803,7 @@ fn challenge(
 
 fn submit(
   state: State,
+  route: Route,
   key: identity.RequestKey,
   digest: identity.Digest,
   prepared: wire.Prepared,
@@ -535,14 +818,18 @@ fn submit(
     [] ->
       case journal.inspect(state.config.journal, key, digest) {
         Error(journal.Rejected(admission.UnknownRequest)) ->
-          first_submit(state, key, digest, prepared, nonce, budget)
+          first_submit(state, route, key, digest, prepared, nonce, budget)
         Ok(_) -> {
+          use Nil <- result.try(command_association(route, key, digest))
           use body <- result.try(query(state, key, digest, 0))
           Ok(#(state, body))
         }
         Error(_) -> Error(Uncertain)
       }
-    _ -> existing_submission(state, key, digest, previous)
+    _ -> {
+      use Nil <- result.try(command_association(route, key, digest))
+      existing_submission(state, key, digest, previous)
+    }
   }
 }
 
@@ -638,6 +925,7 @@ fn verify(
 
 fn first_submit(
   state: State,
+  route: Route,
   key: identity.RequestKey,
   digest: identity.Digest,
   prepared: wire.Prepared,
@@ -650,6 +938,7 @@ fn first_submit(
   })
   use deadline <- result.try(authorize(
     state,
+    route,
     key,
     digest,
     prepared.lifetime,
@@ -692,6 +981,10 @@ fn first_submit(
   )
   let tickets = list.filter(state.tickets, fn(ticket) { ticket.nonce != nonce })
   let next = State(..state, tickets:, sequence: state.sequence + 1)
+
+  // Actual native admission precedes the separate resource COMMIT. A lost permit
+  // reply leaves retained admission, never launch intent or replay eligibility.
+  use Nil <- result.try(associate_command(route, key, digest))
   case launch(next, key, digest, prepared, deadline) {
     Ok(answer) -> Ok(answer)
     Error(Expired) | Error(Invalid) -> refuse_admitted(next, key, digest)
@@ -699,14 +992,50 @@ fn first_submit(
   }
 }
 
+fn associate_command(
+  route: Route,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+) -> Result(Nil, Error) {
+  case route {
+    Native -> Ok(Nil)
+    Command(context) -> {
+      use claim <- result.try(case context.permission {
+        Live(claim) -> Ok(claim)
+        Historical -> Error(Uncertain)
+      })
+      use permit <- result.try(
+        resource_journal.associate_live_native(claim, context.ref, key, digest)
+        |> result.replace_error(Uncertain),
+      )
+      case
+        resource_journal.native_launch_binding(permit)
+        == #(context.resources, context.ref, key, digest)
+      {
+        True -> Ok(Nil)
+        False -> Error(Invalid)
+      }
+    }
+  }
+}
+
+fn ticket_route(route: Route) -> TicketRoute {
+  case route {
+    Native -> NativeTicket
+    Command(context) -> CommandTicket(context.ref)
+  }
+}
+
 fn authorize(
   state: State,
+  route: Route,
   key: identity.RequestKey,
   digest: identity.Digest,
   lifetime: wire.Lifetime,
   nonce: BitArray,
   budget: Int,
 ) -> Result(Int, Error) {
+  let binding = ticket_route(route)
   case lifetime {
     wire.Session -> {
       case budget == 0 && nonce == <<0:size(256)>> {
@@ -717,7 +1046,8 @@ fn authorize(
     wire.Finite(ceiling) -> {
       use ticket <- result.try(
         list.find(state.tickets, fn(ticket) {
-          ticket.key == key
+          ticket.route == binding
+          && ticket.key == key
           && ticket.digest == digest
           && ticket.generation == state.generation
           && ticket.nonce == nonce
