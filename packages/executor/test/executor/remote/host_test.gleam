@@ -322,8 +322,13 @@ pub fn journal_failure_never_turns_native_drain_into_durable_host_success_test()
     admission.phase(evidence)
     as "The stored native fact stays unconfirmed without its journal commit."
   let monitor = process.monitor(host.pid(running))
+  let service_monitor = process.monitor(view.service)
   process.send_abnormal_exit(host.pid(running), Shutdown)
   down(monitor, 12_000)
+
+  // A parent exit does not order the linked service's exit at this observer.
+  // Keep the durability assertion after the service's own termination witness.
+  down(service_monitor, 12_000)
   assert !process.is_alive(view.service)
   assert journal.payloads(recovered, key(1), digest) == Ok(original)
   assert journal.release(recovered) == Ok(Nil)
