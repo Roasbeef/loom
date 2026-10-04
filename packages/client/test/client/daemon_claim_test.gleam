@@ -77,8 +77,7 @@ fn invite(port, owner, epoch, session, principal, role) {
 // `credentials.claim`, and answers the reply frame.
 @internal
 pub fn redeem(port: Int, token: String, digest: String) -> JsonValue {
-  let #(socket, response) = wire.connect(port, token, "/v2/claim")
-  assert string.contains(response, "101 Switching Protocols")
+  let socket = claim_socket(port, token)
   let hello = wire.frame(socket, within_ms: 2000)
   assert field(hello, "event") == json.String("hello")
   assert field(field(hello, "body"), "protocol") == json.Int(2)
@@ -92,6 +91,33 @@ pub fn redeem(port: Int, token: String, digest: String) -> JsonValue {
     )
   let _ = ffi_ws.tcp_close(socket)
   reply
+}
+
+// Upgrades `token` on the claim route, waiting out an earlier redemption.
+// Closing a claim socket here does not end the daemon's process for it at
+// once, and until that process is gone the claim is still in flight, so an
+// upgrade straight after an earlier `redeem` of the same claim is answered
+// 409 by design (`second_in_flight_upgrade_for_one_claim_is_refused_test`
+// pins that refusal). Only a 409 is waited out; any other answer is the
+// test's to judge, so a refusal the flow means to give still fails here.
+fn claim_socket(port: Int, token: String) {
+  let assert poll.Answered(socket) =
+    poll.until(within: 3000, every: 20, attempt: fn() {
+      let #(socket, response) = wire.connect(port, token, "/v2/claim")
+      case string.contains(response, "409 ") {
+        True -> {
+          let _ = ffi_ws.tcp_close(socket)
+          poll.Retry
+        }
+
+        False -> {
+          assert string.contains(response, "101 Switching Protocols")
+          poll.Done(socket)
+        }
+      }
+    })
+    as "the claim's earlier socket ends within three seconds"
+  socket
 }
 
 fn refusal_code(reply: JsonValue) -> JsonValue {
