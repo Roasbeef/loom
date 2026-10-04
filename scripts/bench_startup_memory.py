@@ -45,9 +45,15 @@ port: nothing here can make a provider request.
 Usage:
   scripts/bench_startup_memory.py [--runs N] [--only abcdef] [--db PATH]
                                   [--label NAME] [--compare RESULTS.json]
+                                  [--against SNAPSHOT] [--snapshot NAME]
 
 Results are also written as JSON to build/bench-startup-memory/<label>.json,
-and --compare prints the change against an earlier file.
+and --compare prints the change against an earlier file. A comparison across
+minutes is only as good as the machine was quiet, so for a before-and-after
+--snapshot NAME keeps this build's releases under
+build/bench-startup-memory/releases/NAME, and a later --against NAME times
+that snapshot and the new build alternately, run by run, and prints the
+change between them.
 """
 
 import argparse
@@ -68,10 +74,6 @@ import fcntl
 import termios
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SERVER_REL = os.path.join(REPO, "build", "release", "loom")
-CLIENT_REL = os.path.join(REPO, "build", "release", "loom-client")
-LOOMD = os.path.join(SERVER_REL, "bin", "loomd")
-LOOM = os.path.join(CLIENT_REL, "bin", "loom")
 CONFIG = os.path.join(REPO, "scripts", "release-smoke.toml")
 OUT_DIR = os.path.join(REPO, "build", "bench-startup-memory")
 
@@ -94,6 +96,29 @@ LIVE = set()
 
 class BenchError(Exception):
     pass
+
+
+class Build:
+    """One pair of self-contained releases: the server and the client.
+
+    The bench measures this tree's build/release by default. With --against
+    it also measures a snapshot of an earlier build and alternates the two
+    run by run, so both are timed on the same machine in the same minutes;
+    another process loading the machine then moves both, not one.
+    """
+
+    def __init__(self, name, root):
+        self.name = name
+        self.loomd = os.path.join(root, "loom", "bin", "loomd")
+        self.loom = os.path.join(root, "loom-client", "bin", "loom")
+
+    def check(self):
+        for path in (self.loomd, self.loom):
+            if not os.access(path, os.X_OK):
+                sys.exit("bench: no release at %s; run make release release-client" % path)
+
+
+CURRENT = Build("current", os.path.join(REPO, "build", "release"))
 
 
 def now_ms():
@@ -143,10 +168,10 @@ class Daemon:
     continuously and nothing would drain a pipe once it was ready.
     """
 
-    def __init__(self, profile, profiled=False, extra=()):
+    def __init__(self, profile, build, profiled=False, extra=()):
         self.profile = profile
         self.log = os.path.join(profile.root, "loomd.log")
-        args = [LOOMD, "--state-dir", profile.state, "--config", CONFIG] + list(extra)
+        args = [build.loomd, "--state-dir", profile.state, "--config", CONFIG] + list(extra)
         if profiled:
             args.append("--profile")
         self.started = now_ms()
@@ -248,16 +273,16 @@ class Client:
     is stopped so it never blocks on a full terminal buffer.
     """
 
-    def __init__(self, profile, args, extra_env=None):
+    def __init__(self, profile, build, args, extra_env=None):
         env = dict(profile.env)
         env.update(extra_env or {})
-        argv = [LOOM] + args
+        argv = [build.loom] + args
         self.started = now_ms()
         pid, fd = pty.fork()
         if pid == 0:
             try:
                 os.chdir(profile.work)
-                os.execve(LOOM, argv, env)
+                os.execve(build.loom, argv, env)
             finally:
                 os._exit(127)
         LIVE.add(pid)
@@ -366,10 +391,10 @@ class Client:
         return usage.ru_maxrss / 1024.0
 
 
-def one_shot(profile, args):
+def one_shot(profile, build, args):
     """Runs a non-interactive client command, answering (ms, peak RSS KiB)."""
     started = now_ms()
-    proc = subprocess.Popen([LOOM] + args, cwd=profile.work, env=profile.env,
+    proc = subprocess.Popen([build.loom] + args, cwd=profile.work, env=profile.env,
                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT)
     LIVE.add(proc.pid)
@@ -382,8 +407,8 @@ def one_shot(profile, args):
     return elapsed, usage.ru_maxrss / 1024.0
 
 
-def client_args(profile, *extra):
-    return ["--state-dir", profile.state, "--server", LOOMD, "--config", CONFIG,
+def client_args(profile, build, *extra):
+    return ["--state-dir", profile.state, "--server", build.loomd, "--config", CONFIG,
             "--workspace", profile.work] + list(extra)
 
 
@@ -547,27 +572,11 @@ def client_attach(client):
 
 
 # --------------------------------------------------------------- scenarios
-
-
-def series():
-    return {"time_ms": [], "rss_kib": []}
-
-
-def scenario_a(runs):
-    """Daemon cold boot to its listening line."""
-    daemon = series()
-    for i in range(runs):
-        profile = Profile("a-%d" % i)
-        d = Daemon(profile)
-        daemon["time_ms"].append(d.ready_ms)
-        daemon["rss_kib"].append(d.stop())
-        profile.remove()
-    profile = Profile("a-census")
-    d = Daemon(profile, profiled=True)
-    memory = {"daemon": census(d.attach_line(), "a daemon ready")}
-    d.stop()
-    profile.remove()
-    return {"daemon": daemon}, memory
+#
+# A scenario is two functions. `once_<key>` takes one run against one build
+# and answers, per process, the times and peak RSS figures that run produced.
+# `census_<key>` takes the extra --profile run and answers erlang:memory/0
+# per process. `measure` below calls them, alternating the builds.
 
 
 def endpoint_pid(profile):
@@ -576,21 +585,42 @@ def endpoint_pid(profile):
         return int(json.load(handle)["pid"])
 
 
-def scenario_b(runs):
+def once_a(build, tag, _db):
+    """Daemon cold boot to its listening line."""
+    profile = Profile("a-" + tag)
+    d = Daemon(profile, build)
+    ready = d.ready_ms
+    rss = d.stop()
+    profile.remove()
+    return {"daemon": ([ready], [rss])}
+
+
+def census_a(build, _db):
+    profile = Profile("a-census-" + build.name)
+    d = Daemon(profile, build, profiled=True)
+    memory = {"daemon": census(d.attach_line(), "a daemon ready")}
+    d.stop()
+    profile.remove()
+    return memory
+
+
+def once_b(build, tag, _db):
     """Client cold start with no daemon, to its first frame."""
-    client, daemon = series(), series()
-    for i in range(runs):
-        profile = Profile("b-%d" % i)
-        c = Client(profile, client_args(profile))
-        client["time_ms"].append(c.await_first_frame())
-        pid = endpoint_pid(profile)
-        daemon["rss_kib"].append(ps_rss_kib(pid))
-        c.await_settled()
-        client["rss_kib"].append(c.stop())
-        stop_foreign(pid)
-        profile.remove()
-    profile = Profile("b-census")
-    c = Client(profile, client_args(profile, "--profile"))
+    profile = Profile("b-" + tag)
+    c = Client(profile, build, client_args(profile, build))
+    first = c.await_first_frame()
+    pid = endpoint_pid(profile)
+    daemon_rss = ps_rss_kib(pid)
+    c.await_settled()
+    client_rss = c.stop()
+    stop_foreign(pid)
+    profile.remove()
+    return {"client": ([first], [client_rss]), "daemon": ([], [daemon_rss])}
+
+
+def census_b(build, _db):
+    profile = Profile("b-census-" + build.name)
+    c = Client(profile, build, client_args(profile, build, "--profile"))
     c.await_first_frame()
     c.drain(0.5)
     memory = {"client": census(client_attach(c), "b client first frame")}
@@ -599,25 +629,26 @@ def scenario_b(runs):
     c.stop()
     stop_foreign(pid)
     profile.remove()
-    daemon["sampled"] = True
-    return {"client": client, "daemon": daemon}, memory
+    return memory
 
 
-def scenario_c(runs):
+def once_c(build, tag, _db):
     """Client attach to a running daemon, to its first frame."""
-    client, daemon = series(), series()
-    for i in range(runs):
-        profile = Profile("c-%d" % i)
-        d = Daemon(profile)
-        c = Client(profile, client_args(profile))
-        client["time_ms"].append(c.await_first_frame())
-        c.await_settled()
-        client["rss_kib"].append(c.stop())
-        daemon["rss_kib"].append(d.stop())
-        profile.remove()
-    profile = Profile("c-census")
-    d = Daemon(profile, profiled=True)
-    c = Client(profile, client_args(profile, "--profile"))
+    profile = Profile("c-" + tag)
+    d = Daemon(profile, build)
+    c = Client(profile, build, client_args(profile, build))
+    first = c.await_first_frame()
+    c.await_settled()
+    client_rss = c.stop()
+    daemon_rss = d.stop()
+    profile.remove()
+    return {"client": ([first], [client_rss]), "daemon": ([], [daemon_rss])}
+
+
+def census_c(build, _db):
+    profile = Profile("c-census-" + build.name)
+    d = Daemon(profile, build, profiled=True)
+    c = Client(profile, build, client_args(profile, build, "--profile"))
     c.await_first_frame()
     c.drain(0.5)
     memory = {"client": census(client_attach(c), "c client first frame"),
@@ -625,60 +656,72 @@ def scenario_c(runs):
     c.stop()
     d.stop()
     profile.remove()
-    return {"client": client, "daemon": daemon}, memory
+    return memory
 
 
-def scenario_d(runs):
+def sessions_list(profile, build):
+    return ["sessions", "list"] + client_args(profile, build)
+
+
+def once_d(build, tag, _db):
     """A one-shot client command against a running daemon."""
-    client = series()
-    profile = Profile("d")
-    d = Daemon(profile, profiled=True)
-    for _ in range(runs):
-        elapsed, rss = one_shot(profile, ["sessions", "list"] + client_args(profile)[:-2])
-        client["time_ms"].append(elapsed)
-        client["rss_kib"].append(rss)
-    memory = {"daemon": census(d.attach_line(), "d daemon after one-shots")}
+    profile = Profile("d-" + tag)
+    d = Daemon(profile, build)
+    elapsed, rss = one_shot(profile, build, sessions_list(profile, build))
     d.stop()
     profile.remove()
-    return {"client": client}, memory
+    return {"client": ([elapsed], [rss])}
+
+
+def census_d(build, _db):
+    profile = Profile("d-census-" + build.name)
+    d = Daemon(profile, build, profiled=True)
+    one_shot(profile, build, sessions_list(profile, build))
+    memory = {"daemon": census(d.attach_line(), "d daemon after a one-shot")}
+    d.stop()
+    profile.remove()
+    return memory
 
 
 # The daemon admits eight sessions by default; the growth measurement needs ten.
 GROWTH_CAPACITY = ("--capacity", "16")
+GROWTH_SESSIONS = 10
 
 
-def scenario_e(runs, sessions=10):
+def once_e(build, tag, _db):
     """Daemon growth per admitted session, between the first and the tenth."""
-    admit, growth = series(), series()
-    for i in range(runs):
-        profile = Profile("e-%d" % i)
-        d = Daemon(profile, extra=GROWTH_CAPACITY)
-        control = Control(profile, d.port)
-        rss = []
-        for k in range(sessions):
-            started = now_ms()
-            control.create_session(profile, "bench-%d" % k)
-            admit["time_ms"].append(now_ms() - started)
-            if k in (0, sessions - 1):
-                time.sleep(0.2)
-                rss.append(d.rss_kib())
-        control.close()
-        growth["rss_kib"].append((rss[1] - rss[0]) / (sessions - 1))
-        admit["rss_kib"].append(d.stop())
-        profile.remove()
-    profile = Profile("e-census")
-    d = Daemon(profile, profiled=True, extra=GROWTH_CAPACITY)
+    profile = Profile("e-" + tag)
+    d = Daemon(profile, build, extra=GROWTH_CAPACITY)
+    control = Control(profile, d.port)
+    admissions, rss = [], []
+    for k in range(GROWTH_SESSIONS):
+        started = now_ms()
+        control.create_session(profile, "bench-%d" % k)
+        admissions.append(now_ms() - started)
+        if k in (0, GROWTH_SESSIONS - 1):
+            time.sleep(0.2)
+            rss.append(d.rss_kib())
+    control.close()
+    peak = d.stop()
+    profile.remove()
+    growth = (rss[1] - rss[0]) / (GROWTH_SESSIONS - 1)
+    return {"daemon": (admissions, [peak]), "per_session": ([], [growth])}
+
+
+def census_e(build, _db):
+    profile = Profile("e-census-" + build.name)
+    d = Daemon(profile, build, profiled=True, extra=GROWTH_CAPACITY)
     control = Control(profile, d.port)
     control.create_session(profile, "bench-0")
     one = census(d.attach_line(), "e one session")
-    for k in range(1, sessions):
+    for k in range(1, GROWTH_SESSIONS):
         control.create_session(profile, "bench-%d" % k)
     ten = census(d.attach_line(), "e ten sessions")
     control.close()
     d.stop()
     profile.remove()
-    per = {key: (ten[key] - one[key]) / (sessions - 1) for key in MEMORY_KEYS}
-    return {"daemon": admit, "per_session": growth}, {"daemon@1": one, "daemon@10": ten, "per_session": per}
+    per = {key: (ten[key] - one[key]) / (GROWTH_SESSIONS - 1) for key in MEMORY_KEYS}
+    return {"daemon@1": one, "daemon@10": ten, "per_session": per}
 
 
 def session_id_of(db):
@@ -711,9 +754,9 @@ def install_session(profile, db, ident):
     subprocess.run(["sqlite3", os.path.join(profile.state, "catalogue.db"), sql], check=True)
 
 
-def long_profile(name, db, ident):
+def long_profile(name, build, db, ident):
     profile = Profile(name)
-    d = Daemon(profile)
+    d = Daemon(profile, build)
     control = Control(profile, d.port)
     control.create_session(profile, "bench-domain")
     control.close()
@@ -749,7 +792,7 @@ def await_idle(pid, within_s=120):
     raise BenchError("daemon never went idle")
 
 
-def first_open(profile, ident):
+def first_open(profile, build, ident):
     """Opens the long session once and lets the daemon finish with it.
 
     The first time a session's history enters its workspace domain, the
@@ -757,7 +800,7 @@ def first_open(profile, ident):
     person reopening a long session paid for that once, long ago, so the
     timed runs reopen a session whose index is already built.
     """
-    d = Daemon(profile)
+    d = Daemon(profile, build)
     control = Control(profile, d.port)
     with open(os.path.join(profile.state, "daemon.endpoint")) as handle:
         epoch = json.load(handle)["epoch"]
@@ -773,26 +816,39 @@ def first_open(profile, ident):
     d.stop()
 
 
-def scenario_f(runs, db):
-    """A client reopening a long real session, and the daemon serving it.
+# One prepared state root per build, reused by every run of scenario f, as a
+# person reopens the same session in the same state.
+PREPARED = {}
 
-    Every run reopens the same session in the same state root, as a person
-    returning to it does.
-    """
-    ident = session_id_of(db)
-    client, drawn, daemon = series(), series(), series()
-    profile = long_profile("f", db, ident)
-    first_open(profile, ident)
-    for _ in range(runs):
-        d = Daemon(profile)
-        c = Client(profile, client_args(profile, "--session", ident))
-        client["time_ms"].append(c.await_first_frame())
-        drawn["time_ms"].append(c.await_text(ATTACHED))
-        c.await_settled()
-        client["rss_kib"].append(c.stop())
-        daemon["rss_kib"].append(d.stop())
-    d = Daemon(profile, profiled=True)
-    c = Client(profile, client_args(profile, "--session", ident, "--profile"))
+
+def long_session(build, db):
+    if build.name not in PREPARED:
+        ident = session_id_of(db)
+        profile = long_profile("f-" + build.name, build, db, ident)
+        first_open(profile, build, ident)
+        PREPARED[build.name] = (profile, ident)
+    return PREPARED[build.name]
+
+
+def once_f(build, _tag, db):
+    """A client reopening a long real session, and the daemon serving it."""
+    profile, ident = long_session(build, db)
+    d = Daemon(profile, build)
+    c = Client(profile, build, client_args(profile, build, "--session", ident))
+    first = c.await_first_frame()
+    drawn = c.await_text(ATTACHED)
+    c.await_settled()
+    client_rss = c.stop()
+    daemon_rss = d.stop()
+    return {"client": ([first], [client_rss]), "client drawn": ([drawn], []),
+            "daemon": ([], [daemon_rss])}
+
+
+def census_f(build, db):
+    profile, ident = long_session(build, db)
+    d = Daemon(profile, build, profiled=True)
+    c = Client(profile, build,
+               client_args(profile, build, "--session", ident, "--profile"))
     c.await_first_frame()
     c.await_text(ATTACHED)
     c.await_settled()
@@ -801,7 +857,44 @@ def scenario_f(runs, db):
     c.stop()
     d.stop()
     profile.remove()
-    return {"client": client, "client drawn": drawn, "daemon": daemon}, memory
+    del PREPARED[build.name]
+    return memory
+
+
+SCENARIOS = {
+    "a": ("daemon cold boot", once_a, census_a),
+    "b": ("client cold start", once_b, census_b),
+    "c": ("client attach", once_c, census_c),
+    "d": ("one-shot command", once_d, census_d),
+    "e": ("session growth", once_e, census_e),
+    "f": ("long session", once_f, census_f),
+}
+
+# Rows whose RSS is a ps sample rather than a wait4 peak.
+SAMPLED = {"b daemon"}
+
+
+def series():
+    return {"time_ms": [], "rss_kib": []}
+
+
+def measure(key, builds, runs, db):
+    """Runs one scenario `runs` times per build, alternating the builds.
+
+    The order flips every run (A B, B A, ...), so a drift in the machine's
+    load over the series lands on both builds equally.
+    """
+    _, once, census_of = SCENARIOS[key]
+    measured = {build.name: {} for build in builds}
+    for i in range(runs):
+        order = builds if i % 2 == 0 else list(reversed(builds))
+        for build in order:
+            for process, (times, rss) in once(build, "%s-%d" % (build.name, i), db).items():
+                row = measured[build.name].setdefault(process, series())
+                row["time_ms"].extend(times)
+                row["rss_kib"].extend(rss)
+    memory = {build.name: census_of(build, db) for build in builds}
+    return measured, memory
 
 
 # ----------------------------------------------------------------- report
@@ -824,26 +917,17 @@ def p95(values):
     return ordered[rank - 1]
 
 
-TITLES = {
-    "a": "daemon cold boot",
-    "b": "client cold start",
-    "c": "client attach",
-    "d": "one-shot command",
-    "e": "session growth",
-    "f": "long session",
-}
-
-
-def summarise(results):
+def summarise(results, name):
     rows = {}
     for scenario, (measured, _) in results.items():
-        for process, data in measured.items():
-            rows["%s %s" % (scenario, process)] = {
+        for process, data in measured[name].items():
+            key = "%s %s" % (scenario, process)
+            rows[key] = {
                 "time_median_ms": median(data["time_ms"]),
                 "time_p95_ms": p95(data["time_ms"]),
                 "rss_median_mib": median(data["rss_kib"]) / 1024.0,
                 "rss_max_mib": max(data["rss_kib"], default=0.0) / 1024.0,
-                "sampled": data.get("sampled", False),
+                "sampled": key in SAMPLED,
                 "has_time": bool(data["time_ms"]),
                 "has_rss": bool(data["rss_kib"]),
                 "n": max(len(data["time_ms"]), len(data["rss_kib"])),
@@ -864,7 +948,7 @@ def fmt_delta(new, old):
     return " (%+.0f%%)" % (100.0 * (new - old) / old)
 
 
-def print_report(rows, results, baseline):
+def print_rows(rows, baseline):
     head = "%-24s %4s %18s %18s %18s %18s" % (
         "scenario / process", "n", "time median ms", "time p95 ms",
         "rss median MiB", "rss max MiB")
@@ -880,36 +964,66 @@ def print_report(rows, results, baseline):
             cell(row, "rss_median_mib", "%.1f", old),
             cell(row, "rss_max_mib", "%.1f", old),
             note))
+
+
+def print_memory(results, name):
+    head = "%-24s" % "scenario / process" + "".join("%11s" % k for k in MEMORY_KEYS)
+    print(head)
+    print("-" * len(head))
+    for scenario, (_, memory) in results.items():
+        for process, values in memory[name].items():
+            print("%-24s" % ("%s %s" % (scenario, process))
+                  + "".join("%11.2f" % values[k] for k in MEMORY_KEYS))
+
+
+def print_report(results, rows, against_rows, baseline):
+    if against_rows is not None:
+        print("against (the snapshot, timed in the same window):")
+        print_rows(against_rows, None)
+        print()
+        print("current, with its change against the snapshot:")
+        print_rows(rows, against_rows)
+    else:
+        print_rows(rows, baseline)
     print()
     print("Client time is to the first frame; 'f client drawn' is until the long")
     print("transcript is drawn. 'e daemon' time is one admission and its RSS the peak")
     print("with ten sessions; 'e per_session' is growth per session from 1 to 10.")
     print("* = RSS sampled by ps at the first frame, not a peak.")
-    print()
-    print("erlang:memory/0 at the census point, MiB")
-    head = "%-24s" % "scenario / process" + "".join("%11s" % k for k in MEMORY_KEYS)
-    print(head)
-    print("-" * len(head))
-    for scenario, (_, memory) in results.items():
-        for process, values in memory.items():
-            print("%-24s" % ("%s %s" % (scenario, process))
-                  + "".join("%11.2f" % values[k] for k in MEMORY_KEYS))
+    for name in ([AGAINST_NAME, CURRENT.name] if against_rows is not None else [CURRENT.name]):
+        print()
+        print("erlang:memory/0 at the census point, MiB (%s)" % name)
+        print_memory(results, name)
 
 
-def warm_up():
+AGAINST_NAME = "against"
+
+
+def warm_up(build):
     """One untimed daemon boot and client attach before any series.
 
     A release just rebuilt is not yet in the page cache, so the first run
     after a build reads it from disk. Left in, that run is the p95 of the
     first scenario and measures the disk rather than Loom.
     """
-    profile = Profile("warm-up")
-    d = Daemon(profile)
-    c = Client(profile, client_args(profile))
+    profile = Profile("warm-up-" + build.name)
+    d = Daemon(profile, build)
+    c = Client(profile, build, client_args(profile, build))
     c.await_first_frame()
     c.stop()
     d.stop()
     profile.remove()
+
+
+def snapshot(name):
+    """Keeps a copy of this tree's releases for a later --against."""
+    target = os.path.join(OUT_DIR, "releases", name)
+    shutil.rmtree(target, ignore_errors=True)
+    os.makedirs(target)
+    for part in ("loom", "loom-client"):
+        shutil.copytree(os.path.join(REPO, "build", "release", part),
+                        os.path.join(target, part), symlinks=True)
+    return target
 
 
 def main():
@@ -919,51 +1033,57 @@ def main():
     parser.add_argument("--db", default=os.environ.get("DB", ""))
     parser.add_argument("--label", default="latest")
     parser.add_argument("--compare", default="")
+    parser.add_argument("--against", default="")
+    parser.add_argument("--snapshot", default="")
     options = parser.parse_args()
 
-    for path in (LOOMD, LOOM):
-        if not os.access(path, os.X_OK):
-            sys.exit("bench: no release at %s; run make release release-client" % path)
+    builds = [CURRENT]
+    if options.against:
+        root = options.against
+        if not os.path.isabs(root):
+            root = os.path.join(OUT_DIR, "releases", root)
+        builds = [Build(AGAINST_NAME, root), CURRENT]
+    for build in builds:
+        build.check()
     if "f" in options.only and not options.db:
         sys.exit("bench: scenario f needs DB=<a session .db>; pass --only without f to skip it")
 
     commit = subprocess.run(["git", "-C", REPO, "rev-parse", "--short", "HEAD"],
                             capture_output=True, text=True).stdout.strip()
-    print("bench-startup-memory at %s, %d runs per scenario" % (commit, options.runs))
+    print("bench-startup-memory at %s, %d runs per scenario%s" % (
+        commit, options.runs,
+        ", alternating with " + builds[0].loomd.rsplit("/loom/bin", 1)[0] if options.against else ""))
 
-    warm_up()
-    runners = {
-        "a": lambda: scenario_a(options.runs),
-        "b": lambda: scenario_b(options.runs),
-        "c": lambda: scenario_c(options.runs),
-        "d": lambda: scenario_d(options.runs),
-        "e": lambda: scenario_e(options.runs),
-        "f": lambda: scenario_f(options.runs, options.db),
-    }
+    for build in builds:
+        warm_up(build)
     results = {}
     for key in "abcdef":
         if key in options.only:
             started = time.monotonic()
-            results[key] = runners[key]()
-            print("  %s %-18s %5.1f s" % (key, TITLES[key], time.monotonic() - started),
+            results[key] = measure(key, builds, options.runs, options.db)
+            print("  %s %-18s %5.1f s" % (key, SCENARIOS[key][0], time.monotonic() - started),
                   file=sys.stderr)
 
-    rows = summarise(results)
+    rows = summarise(results, CURRENT.name)
+    against_rows = summarise(results, AGAINST_NAME) if options.against else None
     baseline = None
     if options.compare:
         with open(options.compare) as handle:
             baseline = json.load(handle)["rows"]
     print()
-    print_report(rows, results, baseline)
+    print_report(results, rows, against_rows, baseline)
 
     os.makedirs(OUT_DIR, exist_ok=True)
     out = os.path.join(OUT_DIR, options.label + ".json")
     with open(out, "w") as handle:
-        json.dump({"commit": commit, "runs": options.runs, "rows": rows,
+        json.dump({"commit": commit, "runs": options.runs, "against": options.against,
+                   "rows": rows, "rows_against": against_rows,
                    "memory": {k: m for k, (_, m) in results.items()},
                    "raw": {k: r for k, (r, _) in results.items()}}, handle, indent=1)
     print()
     print("wrote " + os.path.relpath(out, REPO))
+    if options.snapshot:
+        print("kept releases in " + os.path.relpath(snapshot(options.snapshot), REPO))
 
 
 def cleanup(*_):
