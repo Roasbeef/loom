@@ -245,7 +245,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:1301`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:1517`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -679,8 +679,8 @@ sessions). Only an operator page does it.
   as `Linked`.
 - **The daemon.** `ui_socket.ticket_for` runs the checks afresh with the page's
   credential digest: a canonical identity, `manager.session_authority`
-  (membership), `manager.get` (resident), then `ui_sessions.mint` with the
-  page's principal and its own ceiling. `ui_socket.opened_for` refuses an
+  (membership), `manager.get` (resident), then `ui_sessions.mint_before` with the
+  page's principal, its own ceiling and its own reach. `ui_socket.opened_for` refuses an
   observer page without asking. The answer is `sessions.Ticketed(path)` or
   `sessions.Declined(reason)` with the fixed words of `sessions.reason_words`.
 - **The browser.** A ticket becomes `component.departure`, which the operator
@@ -739,7 +739,7 @@ credential may see, grouped by workspace, with resident and saved marked.
 observer default) and prints `/ui/home?ticket=<t>`.
 
 A `ui_sessions.Grant` now names a `Scope` (`Session(id)` or `Home`) and a
-`Reach` (`OneSession` or `Workspace`; only a later change reads it). The
+`Reach` (`OneSession` or `Workspace`; the Home button and the tickets a page mints read it). The
 scope is part of redemption: a session's ticket at the home exchange and a
 home's at a session's are each spent and refused (`OtherScope`). The page cap
 (`max_pages`) is counted per principal and per scope, and a home lives
@@ -751,7 +751,7 @@ for both kinds of ticket.
 
 The socket (`ui_socket.upgrade_home`) shares `websocket` with the session
 page and starts `web_view/home` with no relay. The component draws the A2
-frame with the sidebar (`sidebar.home`, a "Home" entry above text rows), a
+frame with the sidebar (`sidebar.home`, a "Home" entry above the rows), a
 table per workspace (`view/home_table`), and no strand panel (the frame class
 `loom-home` hides the panel column in the stylesheet). It reads the sessions
 with the page's credential digest when it opens and every 30 s
@@ -759,8 +759,53 @@ with the page's credential digest when it opens and every 30 s
 that ended or a credential that no longer authenticates answers `Closed`, the
 page draws the home's words (`ending.home_headline`, `home_advice`) and
 the socket closes. The read runs in the component's process, as the
-sidebar's does. The view attaches no handler and the socket admits no browser
-frame (`ui_socket.home_accepts`).
+sidebar's does. The only handlers are a running session's rows, and the socket
+admits a click beneath them and no other frame (`ui_socket.home_accepts`, next
+section).
+
+### Navigation: home to session and back
+
+The second pull request of 065 makes the home and the session pages lead to
+each other, in one tab, each page a new UI session.
+
+- **A row opens a session.** A running session's name in the home's table
+  (`view/home_table`, beneath `home.table_path`) and its row in the sidebar
+  (`sidebar.home(groups, open)`, beneath `home.sidebar_path`) are buttons whose
+  message is `home.Opening(id)`, with the catalogue's identity. A saved
+  session's row stays text; opening one is a later change. The component asks
+  `Start.open`, in its own process, and the answer returns as `Linked`: a
+  ticket becomes the `to` attribute of the hidden `<loom-switch>` (the centre's
+  last child), a refusal is the page's `home-notice` in `sessions.reason_words`.
+  The notice's place before the table is an empty node when there is none, so
+  the table keeps its path.
+- **The socket admits exactly that.** `ui_socket.home_accepts` takes a `click`,
+  alone or batched, at a path beneath `home.table_path` or `home.sidebar_path`
+  and nothing else, where it admitted no frame before. A frame can choose among
+  the rows that were drawn and cannot name a session.
+- **The daemon.** `ui_socket.ticket_for` now takes a `Standing`: the registry,
+  the credential digest, the principal, the ceiling and the reach of the page
+  that asked, from `page_standing` for a session page and `home_standing` for a
+  home. It checks as before (the page is open, a canonical identity, a
+  membership, resident) and mints with the page's own ceiling and its own
+  `Reach`, so a page opened from a home is a `Workspace` page and one a link
+  for one session opened stays `OneSession`. A forged press for a session the
+  principal does not hold is `NotHeld`.
+- **The way back.** A session page whose grant has `Reach.Workspace` is handed
+  `Transport.home` (`ui_socket.home_capability`) and draws a "Home" button as
+  the top bar's second child (`heading.home_link`, at `component.home_path`),
+  on the observer's page as well as the operator's. It sends
+  `component.GoingHome`, which carries nothing. `ui_socket.home_ticket_for`
+  checks that the page is open and that the credential still authenticates as
+  the page's principal, and mints a `Home` ticket with the page's credential,
+  principal, ceiling and deadline, `Workspace` reach and no login. The observer
+  socket admits a click at `component.home_path` and nowhere new. The ticket's
+  exchange is `/ui/home?ticket=<64 hex digits>`, which `switch_rule.target`
+  accepts as its second shape.
+- **What holds.** A chain home, session, home ends with the first home's
+  deadline (`mint_before`). An observer page opened from a link for one session
+  still draws no sidebar and no Home control. `ui_route_test` reads the chain,
+  both reaches and the refusals; `page_events_test` pins the Home button's path
+  and that no other path moved.
 
 ## Expanding a row
 
@@ -985,9 +1030,9 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/page.gleam` | The shell, the exchange page, the two scripts, the stylesheet, the keyed paths and the content security policy. |
 | `packages/client/src/client/daemon/server.gleam` | `/ui` routing and its check order, `ui.link`, and the `hello` `ui` field. |
 | `packages/client/src/client/daemon/ui_http.gleam` | Pure request checks and response headers: route, host, `Sec-Fetch-Site`, origin, cookies. |
-| `packages/web_view/src/web_view/home.gleam`, `view/home_bar.gleam`, `view/home_table.gleam` | The home page's component, top bar and per-workspace tables (protocol-change/065). |
+| `packages/web_view/src/web_view/home.gleam`, `view/home_bar.gleam`, `view/home_table.gleam` | The home page's component, top bar and per-workspace tables, whose running rows open a session (protocol-change/065). |
 | `packages/client/src/client/daemon/ui_sessions.gleam` | The ticket and UI-session actor: mint, single-use redeem, lookup, key and nonce comparison, sweep, and the page-minted invitations' allowance (three an hour per credential). |
-| `packages/client/src/client/daemon/ui_socket.gleam` | The page's WebSocket: permit custody, the component chosen by role (observer, member operator, owner), frame filtering by role, the session ticket and the invitation the daemon makes for a page, shutdown. |
+| `packages/client/src/client/daemon/ui_socket.gleam` | The page's WebSocket: permit custody, the component chosen by role (observer, member operator, owner), frame filtering by role, the session and home tickets (`Standing`, `ticket_for`, `home_ticket_for`) and the invitation the daemon makes for a page, the home's socket and its row clicks, shutdown. |
 | `packages/client/src/client/daemon/ui_relay.gleam` | The relay into the gateway, the role cap, and the four ways a page ends. |
 | `packages/tui/src/tui.gleam` (`run_view`), `packages/tui/src/tui/view_link.gleam` | `loom ui`: daemon resolution, `ui.link`, printing and opening the link. |
 | `packages/session_view/src/session_view/step.gleam`, `commands.gleam`, `operator.gleam` | The whole-event entry `step.update` the component calls, the commands it runs, and what an operator's input becomes on the wire, shared with the terminal. |
