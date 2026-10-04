@@ -1115,3 +1115,32 @@ remain bounded, other resource limits remain active, and session shutdown,
 owner kill or originating-operation abort cancels the execution. Quiet waiting
 has no completion or heartbeat wake unless the caller explicitly asks for the
 existing idle heartbeat. A VM restart loses the job and never replays it.
+
+## Exact command enrollment
+
+`broker/enrollment` is pure configuration and metadata. Plain `NativeFacts`
+uses the existing `core/workspace.Scope`; `CodeModeFacts` names the workspace,
+build/channel areas, executables, seed, toolchain roots, host mounts and PATH.
+The opaque `SessionEnrollment` constructor bounds every list and string before
+building an encoded tree, validates the full sandbox policy and refuses
+allocation regions overlapping ordinary workspace writable authority. Broad
+native working roots can still cover those regions. Seed, toolchain and PATH
+regions have no overlapping writable root, scratch or read-write mount; code-mode
+host mounts must be exact read-only entries of the native ceiling.
+
+`matches` compares every original field, even when Scope and supplied digest
+claims agree. Registration and contract claims use `core/command.digest` and
+require trusted authentication and pinning; this module computes no digest.
+Concrete source/prelude/seed association remains a physical-assembly obligation.
+`encode` nests the complete `policy.to_msgpack` value. `decode` uses the fixed
+`core/bounded_msgpack` raw preflight, reconstructs through the smart constructor,
+and refuses noncanonical bytes. Bounds are 16 working/toolchain roots and
+mounts, 32 policy path entries per list, 64 environment names, 4-KiB paths,
+8-KiB PATH and 192-KiB aggregate text within the existing metadata frame.
+
+`compile_path` and `launch_paths` require the original ServiceKey's exact Scope,
+registration/contract claims and closed role. The original canonical UUID is
+the sole dynamic component; launch uses fixed `s` and `cap-token` basenames and
+checks the 100-byte socket budget. These are lexical locations, not leases or
+permission to create them. Trusted executor assembly still owes filesystem
+canonicalization, durable allocation custody and exact owner-call narrowing.
