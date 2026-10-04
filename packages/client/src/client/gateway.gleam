@@ -238,7 +238,7 @@ import runtime/writer
 import session/session
 import storage/access
 import storage/snapshot
-import storage/storage
+import storage/storage.{type EntryHead}
 import telemetry/owner
 import tools/history
 import tools/tool.{type Registry}
@@ -378,6 +378,10 @@ pub type Options {
     /// Where the blocks a `block_summaries` read found no summary for are
     /// sent to be summarized on demand (protocol 050). `None` asks nothing.
     summary_demand: Option(fn(List(#(String, Int))) -> Nil),
+    /// Told the text of the first human prompt this hub accepts on the main
+    /// strand, once (`protocol-change/067`). The daemon fills it with the
+    /// catalogue's subtitle write; a host with no catalogue passes `None`.
+    first_prompt: Option(fn(String) -> Nil),
   )
 }
 
@@ -434,6 +438,10 @@ type State {
     context: Option(fn(String) -> Result(JsonValue, String)),
     /// On-demand summarization of blocks a read found unsummarized.
     summary_demand: Option(fn(List(#(String, Int))) -> Nil),
+    // The report of the first accepted main-strand prompt, until it is made.
+    // `None` is both a host with no catalogue and a report already sent, so
+    // the check on the hot path is one pattern match.
+    first_prompt: Option(fn(String) -> Nil),
     delivery: Delivery,
     health: Health,
     admission: Admission,
@@ -513,6 +521,7 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     live_jobs: None,
     context: None,
     summary_demand: None,
+    first_prompt: None,
   )
 }
 
@@ -549,6 +558,25 @@ pub fn with_summary_demand(
   demand: fn(List(#(String, Int))) -> Nil,
 ) -> Options {
   Options(..options, summary_demand: Some(demand))
+}
+
+/// Supplies the report of the session's first accepted human prompt, which the
+/// daemon turns into the catalogue's subtitle (`protocol-change/067`).
+///
+/// The hub calls it at most once, in its own process and without waiting, with
+/// the prompt's first text block exactly as the person wrote it. What becomes
+/// of the text is the callee's: the hub neither trims nor judges it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_first_prompt(options, fn(text) { manager.seed_subtitle(registry, id, text) })
+/// ```
+pub fn with_first_prompt(
+  options: Options,
+  report: fn(String) -> Nil,
+) -> Options {
+  Options(..options, first_prompt: Some(report))
 }
 
 /// Supplies the authenticated session directory administration door.
@@ -918,6 +946,10 @@ type Held {
     /// drain time would credit whoever happens to be attached when the
     /// strand goes idle, which is the wrong human.
     prompt: AgentMessage,
+    /// The same message as the person typed it, before a skill expansion
+    /// rewrote it. The subtitle is derived from this (protocol-change/067),
+    /// so a `/skill` first prompt is not subtitled with the skill's body.
+    typed: AgentMessage,
     /// Where a drain *failure* is reported. Not where the entry goes: a
     /// successful drain reaches every terminal, submitter included, as
     /// an ordinary notice. A submitter that has detached by then is an
@@ -1040,6 +1072,7 @@ fn start_with_delivery(
         live_jobs: options.live_jobs,
         context: options.context,
         summary_demand: options.summary_demand,
+        first_prompt: options.first_prompt,
         delivery:,
         health: Reading,
         admission: Accepting,
@@ -1074,8 +1107,9 @@ fn start_with_delivery(
     // the live operations so the next pull sees changes, not history.
     // Both deliveries need it now that a network hub pushes on a hint —
     // an unprimed one would answer its first commit with a notice for
-    // every sequence the store already held.
-    let state = pull(state).0
+    // every sequence the store already held. The prime emits nothing, so
+    // it reads the entries' heads rather than decoding their payloads.
+    let state = prime(state)
     actor.initialised(state)
     |> actor.selecting(process.select_monitors(selector, SocketDown))
     |> actor.returning(Gateway(name:))
@@ -2948,7 +2982,7 @@ fn pull(state: State) -> #(State, List(Emit)) {
   //    completeness pass for entries no leaf covers (e.g. a branch
   //    summary left behind by a navigation).
   let #(entry_strand, entry_emits) =
-    new_entries(state, strands, hw, state.entry_strand)
+    new_entries(state.runtime.session, strands, hw, state.entry_strand)
 
   // 2. New usage-ledger rows.
   let usage_emits = new_usage(state, entry_strand, hw)
@@ -2973,9 +3007,99 @@ fn pull(state: State) -> #(State, List(Emit)) {
   // so nothing re-emits and nothing is skipped. Advancing further
   // (e.g. to a register tail read *after* the scans) would race a
   // commit landing between the reads and silently drop its events.
-  let high_water =
-    list.fold(emits, hw, fn(highest, emit) { int.max(highest, emit.seq) })
+  let high_water = greatest_seq(emits, hw)
   #(State(..state, high_water:, live:, entry_strand:), emits)
+}
+
+// Opens a session's gateway at the end of its history: the same `high_water`,
+// `live` and `entry_strand` that `pull` at a high-water of zero would leave,
+// without building any emit.
+//
+// A pull has to decode every entry because it hands each one to a peer. The
+// prime hands them to nobody, and what it keeps of an entry is its strand
+// and its seq, so the entries come from `learn_entries`, which reads only
+// their heads. On a long session the payloads are most of the bytes, and
+// decoding them was the larger part of reopening it. The usage, register and
+// escalation sources are the ones `pull` runs; the high-water is the
+// greatest seq any of them, or the entries, reached, exactly as in `pull`.
+fn prime(state: State) -> State {
+  let hw = state.high_water
+  let strands = strand_names(state)
+  let #(entry_strand, entry_top) =
+    learn_entries(state.runtime.session, strands, hw, state.entry_strand)
+  let usage_emits = new_usage(state, entry_strand, hw)
+  let #(live, register_emits) = register_events(state, strands, hw)
+  let escalation_emits = escalation_events(state, hw)
+  let high_water =
+    [usage_emits, register_emits, escalation_emits]
+    |> list.flatten
+    |> greatest_seq(entry_top)
+  State(..state, high_water:, live:, entry_strand:)
+}
+
+// The greatest seq among the emits, or `floor` when none exceeds it. An emit
+// at or below the floor has been reported already and never lowers it.
+fn greatest_seq(emits: List(Emit), floor: Int) -> Int {
+  list.fold(emits, floor, fn(highest, emit) { int.max(highest, emit.seq) })
+}
+
+/// What the entry source of a gateway's first pull leaves behind: the
+/// greatest seq it reached, and each entry's attribution as an
+/// `#(entry id, "kind:strand")` pair sorted by id.
+///
+/// Only the equivalence tests read it. The prime and the decoding pull
+/// are meant to leave the same entry cache and the same entry high-water,
+/// and the cache and `State` are private, so this is the narrowest view
+/// that lets a test compare them.
+@internal
+pub type EntryHistory {
+  EntryHistory(high_water: Int, attribution: List(#(String, String)))
+}
+
+/// The entry history the prime builds, from heads alone.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.entry_history_by_heads(runtime.session)
+/// ```
+@internal
+pub fn entry_history_by_heads(store: session.Session) -> EntryHistory {
+  let #(cache, high_water) =
+    learn_entries(store, strand_names_in(store), 0, dict.new())
+  render_entry_history(cache, high_water)
+}
+
+/// The entry history a decoding pull at a high-water of zero builds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.entry_history_by_decoding(runtime.session)
+/// ```
+@internal
+pub fn entry_history_by_decoding(store: session.Session) -> EntryHistory {
+  let #(cache, emits) =
+    new_entries(store, strand_names_in(store), 0, dict.new())
+  render_entry_history(cache, greatest_seq(emits, 0))
+}
+
+fn render_entry_history(
+  cache: Dict(String, EntryAttribution),
+  high_water: Int,
+) -> EntryHistory {
+  let attribution =
+    dict.to_list(cache)
+    |> list.map(fn(pair) {
+      let label = case pair.1 {
+        BranchOwned(strand:) -> "owned:" <> strand
+        Unverified(strand:) -> "unverified:" <> strand
+        Shared(strand:) -> "shared:" <> strand
+      }
+      #(pair.0, label)
+    })
+    |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+  EntryHistory(high_water:, attribution:)
 }
 
 fn dedupe_by_seq(emits: List(Emit)) -> List(Emit) {
@@ -2991,13 +3115,11 @@ fn dedupe_by_seq(emits: List(Emit)) -> List(Emit) {
 }
 
 fn strand_names(state: State) -> List(String) {
-  case
-    storage.list_registers(
-      state.runtime.session.store,
-      register.StrandConfig,
-      None,
-    )
-  {
+  strand_names_in(state.runtime.session)
+}
+
+fn strand_names_in(store: session.Session) -> List(String) {
+  case storage.list_registers(store.store, register.StrandConfig, None) {
     Ok(cells) ->
       cells
       |> list.map(fn(cell) { cell.0 })
@@ -3006,19 +3128,123 @@ fn strand_names(state: State) -> List(String) {
   }
 }
 
+// Every entry above the high-water is read once, and each strand's branch
+// is found among those rows rather than read again.
+//
+// A branch scan answers the root path of its start (spec Part 1.2), and a
+// parent is always committed before its child, so the part of a strand's
+// path above the high-water is exactly its leaf followed back through
+// parent links for as long as the link stays above the high-water — and
+// every one of those entries is among the rows read here. The gateway used
+// to read each strand's path from storage as well, which decoded every
+// branch entry twice; the prime that opens a session reads the whole
+// history, so on a long session that second decode was a third of opening
+// it.
+//
+// Who owns which entry is decided by `attribute` over the rows' heads, the
+// same function the prime applies to heads read without their payloads, so
+// the two cannot disagree about a claim. This function adds only what a
+// pull needs and the prime does not: each claim becomes an entry emit.
+//
+// When the read fails nothing is claimed, and the high-water stays where
+// it was for the next pull to try again.
 fn new_entries(
-  state: State,
+  store: session.Session,
   strands: List(String),
   hw: Int,
   cache: Dict(String, EntryAttribution),
 ) -> #(Dict(String, EntryAttribution), List(Emit)) {
-  let store = state.runtime.session
+  case
+    storage.scan_entries(
+      store.store,
+      storage.entry_scan()
+        |> storage.entry_seq_range(Some(hw + 1), None),
+    )
+  {
+    Error(_) -> #(cache, [])
+    Ok(rows) -> {
+      let #(cache, attributed) =
+        attribute(store, strands, list.map(rows, storage.entry_head_of), cache)
 
-  // Per-strand branch scans above the high-water attribute entries to
+      // Every claim names a head derived from these rows a moment ago, so
+      // the lookup cannot miss; `filter_map` states that by having no arm
+      // that does anything with a miss.
+      let by_id =
+        list.fold(rows, dict.new(), fn(by_id, row) {
+          dict.insert(by_id, ids.entry_id_to_string(entry_id_of(row)), row)
+        })
+      #(
+        cache,
+        list.filter_map(attributed, fn(claim) {
+          dict.get(by_id, ids.entry_id_to_string(claim.head.id))
+          |> result.map(entry_emit(claim.strand, _))
+        }),
+      )
+    }
+  }
+}
+
+// What a prime keeps of the entries above the high-water: the attribution
+// cache and the greatest seq they reach, built from heads alone.
+//
+// Every entry read is claimed by one of `attribute`'s two passes, so each
+// one a pull would have emitted is counted here, and the greatest of their
+// seqs is the entry source's contribution to the high-water. A failed read
+// claims nothing and leaves the cache and the high-water as they were.
+fn learn_entries(
+  store: session.Session,
+  strands: List(String),
+  hw: Int,
+  cache: Dict(String, EntryAttribution),
+) -> #(Dict(String, EntryAttribution), Int) {
+  case
+    storage.scan_entry_heads(
+      store.store,
+      storage.entry_scan()
+        |> storage.entry_seq_range(Some(hw + 1), None),
+    )
+  {
+    Error(_) -> #(cache, hw)
+    Ok(heads) -> {
+      let #(cache, _attributed) = attribute(store, strands, heads, cache)
+      #(
+        cache,
+        list.fold(heads, hw, fn(highest, head) { int.max(highest, head.seq) }),
+      )
+    }
+  }
+}
+
+// An entry a pull would emit, with the strand it would emit it under.
+type Attributed {
+  Attributed(strand: String, head: EntryHead)
+}
+
+// The claim rules, over heads: which strand each entry above the
+// high-water belongs to, and in what order the claims were made. Both a
+// pull and a prime run exactly this, so the rules exist once; the claims
+// come back newest first, as a fold leaves them.
+//
+// Each strand's branch is claimed first, in strand order, and an entry
+// two branches reach becomes `Shared`. A completeness pass then claims
+// whatever no leaf covered, through its parent's attribution, falling
+// back to the first strand.
+fn attribute(
+  store: session.Session,
+  strands: List(String),
+  heads: List(EntryHead),
+  cache: Dict(String, EntryAttribution),
+) -> #(Dict(String, EntryAttribution), List(Attributed)) {
+  let by_id =
+    list.fold(heads, dict.new(), fn(by_id, head) {
+      dict.insert(by_id, ids.entry_id_to_string(head.id), head)
+    })
+
+  // Per-strand branches above the high-water attribute entries to
   // the strand whose branch they extend.
   let #(cache, claimed) =
     list.fold(strands, #(cache, []), fn(accumulator, strand) {
-      claim_branch(store, strand, hw, accumulator)
+      claim_branch(store, by_id, strand, accumulator)
     })
 
   // Completeness pass: whatever the leaves missed, attributed through
@@ -3027,90 +3253,96 @@ fn new_entries(
     [first, ..] -> first
     [] -> "main"
   }
-  case
-    storage.scan_entries(
-      store.store,
-      storage.entry_scan()
-        |> storage.entry_seq_range(Some(hw + 1), None),
-    )
-  {
-    Error(_) -> #(cache, claimed)
-    Ok(rows) ->
-      list.fold(rows, #(cache, claimed), fn(accumulator, row) {
-        claim_by_parent(accumulator, row, fallback)
-      })
-  }
+  list.fold(heads, #(cache, claimed), fn(accumulator, head) {
+    claim_by_parent(accumulator, head, fallback)
+  })
 }
 
-// One strand's branch scan above the high-water, folded into the
-// running cache/emits pair. A strand with no leaf, or a leaf whose scan
-// fails, contributes nothing.
+// One strand's branch above the high-water, oldest first, folded into the
+// running cache/claims pair. A strand with no leaf, or whose leaf is at or
+// below the high-water, contributes nothing.
 fn claim_branch(
   store: session.Session,
+  by_id: Dict(String, EntryHead),
   strand: String,
-  hw: Int,
-  accumulator: #(Dict(String, EntryAttribution), List(Emit)),
-) -> #(Dict(String, EntryAttribution), List(Emit)) {
+  accumulator: #(Dict(String, EntryAttribution), List(Attributed)),
+) -> #(Dict(String, EntryAttribution), List(Attributed)) {
   case session.strand_leaf(store, strand) {
     Ok(Some(session.Cell(value: Some(leaf), ..))) ->
-      case
-        storage.scan_branch(
-          store.store,
-          storage.branch_scan(from: leaf)
-            |> storage.branch_order(storage.OldestFirst)
-            |> storage.branch_cursor(hw),
-        )
-      {
-        Ok(rows) ->
-          list.fold(rows, accumulator, fn(accumulator, row) {
-            claim_row(accumulator, strand, row)
-          })
-        Error(_) -> accumulator
-      }
+      root_path(by_id, ids.entry_id_to_string(leaf), [], dict.size(by_id))
+      |> list.fold(accumulator, fn(accumulator, head) {
+        claim_row(accumulator, strand, head)
+      })
     _ -> accumulator
   }
 }
 
-// Claims one row for `strand` unless the cache already has it (a row
+// Follows parent links from `id` through `by_id`, answering the path root
+// first. It stops at the first entry the heads do not hold, and after at
+// most as many steps as there are heads, so a parent cycle in a corrupt
+// store ends the walk instead of looping.
+fn root_path(
+  by_id: Dict(String, EntryHead),
+  id: String,
+  path: List(EntryHead),
+  steps: Int,
+) -> List(EntryHead) {
+  case steps > 0, dict.get(by_id, id) {
+    True, Ok(head) ->
+      case head.parent {
+        Some(parent) ->
+          root_path(
+            by_id,
+            ids.entry_id_to_string(parent),
+            [head, ..path],
+            steps - 1,
+          )
+        None -> [head, ..path]
+      }
+    False, _ | _, Error(Nil) -> path
+  }
+}
+
+// Claims one entry for `strand` unless the cache already has it (an entry
 // another strand's branch already attributed).
 fn claim_row(
-  accumulator: #(Dict(String, EntryAttribution), List(Emit)),
+  accumulator: #(Dict(String, EntryAttribution), List(Attributed)),
   strand: String,
-  row: Entry,
-) -> #(Dict(String, EntryAttribution), List(Emit)) {
-  let #(cache, emits) = accumulator
-  let id = ids.entry_id_to_string(entry_id_of(row))
+  head: EntryHead,
+) -> #(Dict(String, EntryAttribution), List(Attributed)) {
+  let #(cache, claims) = accumulator
+  let id = ids.entry_id_to_string(head.id)
   case dict.get(cache, id) {
     Error(Nil) -> #(dict.insert(cache, id, BranchOwned(strand)), [
-      entry_emit(strand, row),
-      ..emits
+      Attributed(strand:, head:),
+      ..claims
     ])
-    Ok(BranchOwned(existing)) if existing == strand -> #(cache, emits)
+    Ok(BranchOwned(existing)) if existing == strand -> #(cache, claims)
     Ok(Unverified(existing)) if existing == strand -> #(
       dict.insert(cache, id, BranchOwned(strand)),
-      emits,
+      claims,
     )
     Ok(existing) -> #(
       dict.insert(cache, id, Shared(entry_attribution_strand(existing))),
-      emits,
+      claims,
     )
   }
 }
 
-// Claims one row the branch scans missed, by walking its parent's
+// Claims one entry the branch scans missed, by walking its parent's
 // attribution (or the fallback strand when the parent is unattributed
 // too).
 fn claim_by_parent(
-  accumulator: #(Dict(String, EntryAttribution), List(Emit)),
-  row: Entry,
+  accumulator: #(Dict(String, EntryAttribution), List(Attributed)),
+  head: EntryHead,
   fallback: String,
-) -> #(Dict(String, EntryAttribution), List(Emit)) {
-  let #(cache, emits) = accumulator
-  let id = ids.entry_id_to_string(entry_id_of(row))
+) -> #(Dict(String, EntryAttribution), List(Attributed)) {
+  let #(cache, claims) = accumulator
+  let id = ids.entry_id_to_string(head.id)
   case dict.has_key(cache, id) {
-    True -> #(cache, emits)
+    True -> #(cache, claims)
     False -> {
-      let strand = case entry_parent_of(row) {
+      let strand = case head.parent {
         Some(parent) ->
           case dict.get(cache, ids.entry_id_to_string(parent)) {
             Ok(attribution) -> entry_attribution_strand(attribution)
@@ -3119,8 +3351,8 @@ fn claim_by_parent(
         None -> fallback
       }
       #(dict.insert(cache, id, Unverified(strand)), [
-        entry_emit(strand, row),
-        ..emits
+        Attributed(strand:, head:),
+        ..claims
       ])
     }
   }
@@ -3442,15 +3674,6 @@ fn entry_seq_of(row: Entry) -> Int {
     entry.CompactionEntry(seq:, ..) -> seq
     entry.BranchSummaryEntry(seq:, ..) -> seq
     entry.CustomEntry(seq:, ..) -> seq
-  }
-}
-
-fn entry_parent_of(row: Entry) -> Option(EntryId) {
-  case row {
-    entry.MessageEntry(parent:, ..) -> parent
-    entry.CompactionEntry(parent:, ..) -> parent
-    entry.BranchSummaryEntry(parent:, ..) -> parent
-    entry.CustomEntry(parent:, ..) -> parent
   }
 }
 
@@ -4995,7 +5218,7 @@ fn prompt_message(
   prompt: AgentMessage,
 ) -> State {
   use <- known_strand(state, connection, id, strand)
-  use prompt <- or_reply(
+  use expanded <- or_reply(
     skills.expand_message(state.skills, prompt)
       |> result.map_error(fn(reason) { #(protocol.code_bad_request, reason) }),
     state,
@@ -5007,11 +5230,11 @@ fn prompt_message(
   // normal prompt must join existing custody even when the runtime is already
   // idle, or it would bypass a held steer and the ordinary FIFO behind it.
   use <- bool.lazy_guard(dict.has_key(state.held, strand), fn() {
-    hold_prompt(state, connection, id, strand, prompt, AfterTurn)
+    hold_prompt(state, connection, id, strand, expanded, prompt, AfterTurn)
     |> pull_and_broadcast
   })
   let target = api.on_strand(state.runtime, strand)
-  let admitted = api.prompt(target, [prompt])
+  let admitted = api.prompt(target, [expanded])
   case admitted {
     // A busy strand is a scheduling question, not a conflict. Ordinary
     // prompts and follow-ups mean "next turn", and holding them lets two
@@ -5020,7 +5243,7 @@ fn prompt_message(
     // commits under the origin recorded now rather than one resolved at
     // drain time.
     Error(api.AcceptRejected(reason: acceptance.StrandBusy)) ->
-      hold_prompt(state, connection, id, strand, prompt, AfterTurn)
+      hold_prompt(state, connection, id, strand, expanded, prompt, AfterTurn)
 
     Ok(_) | Error(_) -> {
       use _op <- or_reply(
@@ -5029,6 +5252,10 @@ fn prompt_message(
         connection,
         id,
       )
+
+      // The subtitle comes from what the person typed, before a skill
+      // expansion rewrote it, and only once the runtime has accepted it.
+      let state = report_first_prompt(state, strand, prompt)
       reply_with_matched(state, connection, id, fn(emit) {
         case emit.event {
           protocol.EntryEvent(record: EntryRecord(strand: on, entry:)) ->
@@ -5052,6 +5279,7 @@ fn hold_prompt(
   id: Int,
   strand: String,
   prompt: AgentMessage,
+  typed: AgentMessage,
   order: InputOrder,
 ) -> State {
   use author <- or_reply(input_author(state, connection), state, connection, id)
@@ -5088,6 +5316,7 @@ fn hold_prompt(
         Held(
           id: int.to_string(connection) <> ":" <> int.to_string(state.next_held),
           prompt:,
+          typed:,
           submitter: connection,
           request: id,
           order:,
@@ -5447,7 +5676,8 @@ fn edit_queued_input(
       ])
     other -> other
   }
-  let updated = Held(..item, prompt:, revision: item.revision + 1)
+  let updated =
+    Held(..item, prompt:, typed: prompt, revision: item.revision + 1)
   use _board <- or_reply(queued_board(strand, updated), state, connection, id)
   let queue =
     held_items(state, strand)
@@ -5529,7 +5759,13 @@ fn admit_held(
   case api.prompt(target, list.map(batch, fn(item) { item.prompt })) {
     // Original queue acknowledgements already transferred custody. Each
     // admitted message now reaches the peers through ordinary notices.
-    Ok(_op) -> put_held(state, strand, rest)
+    Ok(_op) ->
+      case batch {
+        [first, ..] ->
+          report_first_prompt(state, strand, first.typed)
+          |> put_held(strand, rest)
+        [] -> put_held(state, strand, rest)
+      }
 
     // Another admission can win between the register read and this call.
     // Keep both the messages and their drain policy for the next retirement.
@@ -5552,6 +5788,42 @@ fn admit_held(
       })
       drain_strand(put_held(state, strand, rest), strand)
     }
+  }
+}
+
+// The strand a session's own conversation runs on, which is the one whose first
+// prompt names the session.
+const main_strand = "main"
+
+// Tells the host, once, what the first accepted human prompt on the main
+// strand said. The report is cleared before it is made, so a prompt accepted
+// while the callee is slow cannot be reported twice, and a message with no
+// text block (an image alone) leaves the report waiting for one that has text.
+// The callee returns at once: the catalogue write runs on the daemon's
+// registry, never on this hub's turn.
+fn report_first_prompt(
+  state: State,
+  strand: String,
+  prompt: AgentMessage,
+) -> State {
+  case state.first_prompt, strand == main_strand, prompt {
+    Some(report), True, message.UserMessage(content:, ..) ->
+      case list.find_map(content, first_text) {
+        Ok(text) -> {
+          report(text)
+          State(..state, first_prompt: None)
+        }
+        Error(Nil) -> state
+      }
+    Some(_), False, _ | None, _, _ -> state
+    Some(_), True, _ -> state
+  }
+}
+
+fn first_text(block: UserBlock) -> Result(String, Nil) {
+  case block {
+    message.UserText(text:, ..) -> Ok(text)
+    message.UserImage(..) -> Error(Nil)
   }
 }
 
@@ -5672,14 +5944,15 @@ fn steer(
   text: String,
 ) -> State {
   use <- known_strand(state, connection, id, strand)
+  let typed = user_message(state, connection, text)
   use message <- or_reply(
-    skills.expand_message(state.skills, user_message(state, connection, text))
+    skills.expand_message(state.skills, typed)
       |> result.map_error(fn(reason) { #(protocol.code_bad_request, reason) }),
     state,
     connection,
     id,
   )
-  hold_prompt(state, connection, id, strand, message, SteerNext)
+  hold_prompt(state, connection, id, strand, message, typed, SteerNext)
 }
 
 // Follow-up is a queued turn. It belongs outside the current operation so

@@ -1031,12 +1031,17 @@ boundaries and the split's measurements under Invariants.
   `tui/daemon/protocol` is the independent, total control codec:
   `Page` is bounded to 100 authorized records, lifecycle requests use the hello
   epoch, and `GetOperation` refuses an operation from another epoch locally.
-  `SessionActivity(sessions)` encodes owner-only `sessions.activity`
+  `SessionActivity(sessions)` encodes `sessions.activity` (a member is answered only for its own sessions)
   (`protocol-change/050`), refusing locally an empty, duplicated, or
   over-24 list; its `ActivityReply` holds one `Activity` row per resident, in
   request order, and a requested id missing from it is not resident. The row
   decoder requires only `session_id`: an unrecognized `state` reads as
   `Unknown`, and a missing or malformed optional field as `None`, `0`, or `[]`.
+  `Session.subtitle` (`protocol-change/067`) is the first line of the session's
+  first prompt, at most 60 characters: a missing member, `null`, a non-string,
+  an empty string, and one over the bound all read as `None`, so an older
+  daemon's frame decodes and a malformed value never fails a page. The
+  terminal's picker does not draw it yet.
   Metadata/default reads never imply an open. Cleartext credentials are allowed
   only for literal loopback endpoints — `127.0.0.1` and `[::1]`, bracketed
   because that is the form `uri.parse` leaves in a parsed URI's host; remote

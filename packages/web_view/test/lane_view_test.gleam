@@ -10,6 +10,7 @@
 //// markup, and the escaping test checks each arrives only as text
 //// (protocol-change/051, "Nothing from the session becomes markup").
 
+import core/message
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -18,6 +19,8 @@ import lustre/dev/query
 import lustre/element
 import page_fixture
 import session_view/agent_roster
+import session_view/snapshot
+import session_view/snapshot_view
 import session_view/transcript_lines
 import session_view/turns
 import web_view/component
@@ -296,14 +299,52 @@ pub fn settled_work_folds_under_one_closed_divider_test() {
   ])
 }
 
-// The records name who sent a prompt and not in what capacity, so the lane
-// draws the page's own role only beside the page's own person.
-pub fn a_prompt_carries_the_readers_role_only_for_the_reader_test() {
-  let mine = html(page([lane_fixture.own_prompt()]))
+// The records name who sent a prompt and not in what capacity, so the role
+// beside the name is the author's, from the attachments the page can see, and
+// never the reader's own. Alice sends from an operator page; an observer's
+// page, held by the same principal, must not call her an observer.
+pub fn a_prompt_carries_its_authors_role_never_the_readers_test() {
+  let alice = message.Origin("alice", "Alice")
+  let operating = snapshot_view.Peer("c1", alice, snapshot.Operator)
+  let watching = snapshot_view.Peer("c2", alice, snapshot.Observer)
+
+  // The operator's own page: her operator attachment is one of the peers.
+  let mine =
+    html(
+      page([
+        lane_fixture.attended(lane_fixture.own_prompt(), [operating, watching]),
+      ]),
+    )
   assert string.contains(
     mine,
     "<span class=\"who-name\">Alice</span> · operator</p>",
   )
+
+  // The observer's page on the same session: the reader's role is observer,
+  // and the words are still the author's.
+  let observed =
+    html(
+      page([
+        lane_fixture.attended(lane_fixture.own_prompt(), [operating, watching])
+        |> lane_fixture.viewed_as(snapshot.Observer),
+      ]),
+    )
+  assert string.contains(
+    observed,
+    "<span class=\"who-name\">Alice</span> · operator</p>",
+  )
+  assert !string.contains(observed, "observer</p>")
+
+  // The page cannot know a role no attachment holds, and draws the name.
+  let unknown =
+    html(
+      page([
+        lane_fixture.attended(lane_fixture.own_prompt(), [watching])
+        |> lane_fixture.viewed_as(snapshot.Observer),
+      ]),
+    )
+  assert string.contains(unknown, "<span class=\"who-name\">Alice</span></p>")
+  assert !string.contains(unknown, "· observer")
 
   let theirs = html(settled())
   assert string.contains(theirs, "<span class=\"who-name\">Alice</span></p>")

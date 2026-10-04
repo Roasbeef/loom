@@ -1241,7 +1241,7 @@ fn new_name(name: String) {
   case
     stored_name(name),
     list.any(string.to_utf_codepoints(name), fn(point) {
-      invisible(string.utf_codepoint_to_int(point))
+      catalogue.invisible(string.utf_codepoint_to_int(point))
     })
   {
     Ok(Nil), False -> Ok(Nil)
@@ -1251,21 +1251,6 @@ fn new_name(name: String) {
       ))
     Error(error), _ -> Error(error)
   }
-}
-
-// The code points `session_view/text_hygiene` replaces when it draws text:
-// zero-width and direction-changing marks that would reorder the words around
-// a name or leave a name that draws as nothing. A name holding any of them is
-// refused, so a name made only of them is refused too.
-fn invisible(value: Int) -> Bool {
-  { value >= 0x200B && value <= 0x200F }
-  || { value >= 0x202A && value <= 0x202E }
-  || { value >= 0x2060 && value <= 0x2069 }
-  || value == 0xFEFF
-  || value == 0xAD
-  || value == 0x61C
-  || value == 0x2028
-  || value == 0x2029
 }
 
 fn ascii_in(value: String, allowed: String) {

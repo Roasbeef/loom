@@ -54,6 +54,7 @@ import web_view/ending
 import web_view/home
 import web_view/invites
 import web_view/page
+import web_view/renames
 import web_view/sessions
 import weft
 import weft/poll
@@ -1176,7 +1177,11 @@ pub fn a_refused_page_never_repeats_an_address_it_cannot_parse_test() {
       ])
     assert refused.status == 401
     assert !string.contains(refused.body, "evil")
-    assert string.contains(refused.body, "loom ui --session &lt;id&gt;")
+
+    // The placeholder is no command `<loom-copy>` would copy, so the document
+    // draws no box rather than one the element would blank.
+    assert !string.contains(refused.body, "loom-copy")
+    assert !string.contains(refused.body, "--session")
   })
 }
 
@@ -2064,7 +2069,7 @@ pub fn a_revoked_credential_ends_the_home_test() {
       reloaded.body,
       ending.home_headline(ending.AccessRevoked),
     )
-    assert string.contains(reloaded.body, "Run `loom ui`")
+    assert string.contains(reloaded.body, "subject=\"link\" text=\"loom ui\"")
     assert !string.contains(reloaded.body, "--session")
     assert home_socket(port, page, []).status == 401
   })
@@ -2930,6 +2935,32 @@ pub fn the_wait_runs_off_the_callers_process_test() {
   })
 }
 
+// The home's activity read asks the sessions in a task of its own: the call
+// that starts it returns before the slowest session has answered, so the page's
+// runtime is never held for the deadline, and the answer then arrives from the
+// task, naming the sessions the page asked about.
+pub fn the_activity_read_runs_off_the_callers_process_test() {
+  let answers = process.new_subject()
+  let asked = process.new_subject()
+  let ask = fn(ids) {
+    process.send(asked, ids)
+    process.sleep(300)
+    [#("A", sessions.Working)]
+  }
+  ui_socket.activity_task(ask, ["A", "B"], fn(rows) {
+    process.send(answers, #(rows, process.self()))
+  })
+
+  // Nothing has answered when the call returns, and the task is another
+  // process.
+  assert process.receive(answers, 0) == Error(Nil)
+  assert process.receive(asked, 5000) == Ok(["A", "B"])
+  let assert Ok(#(rows, task)) = process.receive(answers, 5000)
+    as "the task answers once the sessions have"
+  assert rows == [#("A", sessions.Working)]
+  assert task != process.self()
+}
+
 // An observer page's socket gate refuses before any task starts, so nothing is
 // opened for it, and an operator's page starts the work.
 pub fn only_an_operators_page_starts_the_task_test() {
@@ -3051,5 +3082,184 @@ pub fn an_ended_home_resumes_nothing_test() {
     assert refused.status == 291
     assert refused.body == "NotHeld"
     assert is_saved(ready, session)
+  })
+}
+
+// --- renaming from a page (protocol-change/067) ------------------------------
+
+// The owner's page standing: the daemon's owner and the digest of the plaintext
+// credential the fixture's daemon minted for it.
+fn owner_standing(
+  ready: root.Ready(String),
+  credential: String,
+  ceiling: access.Role,
+) -> ui_socket.Standing(String) {
+  let assert Ok(digest) =
+    credential
+    |> bit_array.from_string
+    |> bootstrap.sha256
+    |> bit_array.base16_encode
+    |> string.lowercase
+    |> access.credential_digest
+    as "the owner's digest is valid"
+  ui_socket.Standing(
+    registry: ready.registry,
+    digest:,
+    principal: ready.owner.id,
+    ceiling:,
+    reach: ui_sessions.Workspace,
+  )
+}
+
+// The name the registry holds for `session`.
+fn name_of(ready: root.Ready(String), session: String) -> String {
+  let assert Ok(view) = manager.get(ready.registry, session)
+    as "the session is listed"
+  view.registration.name
+}
+
+// The owner's page renames its session through the registry's owner-checked
+// rename. The name is trimmed first, and the answer carries the name the
+// catalogue now holds, which the registry's own listing agrees with.
+pub fn an_owners_page_renames_its_session_through_the_registry_test() {
+  fixture(fn(ready, _, credential) {
+    let session = create_session(ready, "rename-owner", 1101)
+    let standing = owner_standing(ready, credential, access.Operator)
+    assert ui_socket.rename_for(
+        standing,
+        page_open,
+        ready.epoch,
+        session,
+        "  review auth  ",
+      )
+      == renames.Renamed("review auth")
+    assert name_of(ready, session) == "review auth"
+
+    // Naming it again to what it already is stores the same name.
+    assert ui_socket.rename_for(
+        standing,
+        page_open,
+        ready.epoch,
+        session,
+        "review auth",
+      )
+      == renames.Renamed("review auth")
+  })
+}
+
+// Each refusal stores nothing: a member, a forged or unknown session identity, a
+// page that has ended, a page minted to read, a stale epoch and a principal the
+// page was not admitted for are the owner-only words, and a name that breaks the
+// display-name rule is the name's own. The session keeps its name throughout, and
+// so does another session.
+pub fn a_page_rename_refuses_and_stores_nothing_test() {
+  fixture(fn(ready, _, credential) {
+    let session = create_session(ready, "rename-held", 1102)
+    let other = create_session(ready, "rename-other", 1103)
+    let _ = member(ready, "ui-renamer", session, access.Operator)
+    let owner = owner_standing(ready, credential, access.Operator)
+    let #(member_standing, _) =
+      standing_of(ready, "ui-renamer", access.Operator)
+    let rename = fn(standing, open, epoch, target, name) {
+      ui_socket.rename_for(standing, open, epoch, target, name)
+    }
+    let refused = renames.Declined(renames.NotOwner)
+
+    // A member operator of the very session is not the owner, even holding a
+    // credential that authenticates.
+    assert rename(member_standing, page_open, ready.epoch, session, "mine")
+      == refused
+
+    // A forged identity: not a session's, empty, or canonical but unknown. The
+    // owner is refused the same way, so a page learns nothing about which.
+    list.each(
+      ["not a session", "", "01900000-0000-7000-8000-000000000000"],
+      fn(target) {
+        assert rename(owner, page_open, ready.epoch, target, "forged")
+          == refused
+      },
+    )
+
+    // The page has ended, was minted to read, or holds a daemon lifetime that is
+    // no longer the daemon's.
+    assert rename(owner, fn() { Error(Nil) }, ready.epoch, session, "late")
+      == refused
+    assert rename(
+        ui_socket.Standing(..owner, ceiling: access.Observer),
+        page_open,
+        ready.epoch,
+        session,
+        "watching",
+      )
+      == refused
+    assert rename(owner, page_open, "an-earlier-epoch", session, "stale")
+      == refused
+
+    // The owner's credential for a principal the page was not admitted as.
+    assert rename(
+        ui_socket.Standing(..owner, principal: "someone-else"),
+        page_open,
+        ready.epoch,
+        session,
+        "swapped",
+      )
+      == refused
+
+    // Names the catalogue refuses: blank, control, zero-width and
+    // direction-changing characters, and past 256 bytes.
+    list.each(
+      [
+        "",
+        "   ",
+        "line\nbreak",
+        "bell\u{7}",
+        "reversed \u{202E}name",
+        "zero\u{200B}width",
+        string.repeat("x", 257),
+      ],
+      fn(name) {
+        assert rename(owner, page_open, ready.epoch, session, name)
+          == renames.Declined(renames.InvalidName)
+      },
+    )
+    assert name_of(ready, session) == "rename-held"
+    assert name_of(ready, other) == "rename-other"
+  })
+}
+
+// The page's request runs in a task of its own and the answer is handed to the
+// function the page's runtime gave, from that task: the call returns to its
+// caller, and the answer arrives from another process.
+pub fn the_rename_runs_in_a_task_and_delivers_its_answer_test() {
+  fixture(fn(ready, _, credential) {
+    let session = create_session(ready, "rename-task", 1104)
+    let owner = owner_standing(ready, credential, access.Operator)
+    let answered = process.new_subject()
+    ui_socket.rename_task(
+      owner,
+      page_open,
+      ready.epoch,
+      session,
+      "from a task",
+      fn(answer) { process.send(answered, #(process.self(), answer)) },
+    )
+    let assert Ok(#(pid, answer)) = process.receive(answered, 5000)
+      as "the task answers"
+    assert answer == renames.Renamed("from a task")
+    assert pid != process.self()
+    assert name_of(ready, session) == "from a task"
+
+    // A refusal is delivered too, so a page that stays open is always answered.
+    ui_socket.rename_task(
+      owner,
+      page_open,
+      ready.epoch,
+      "not a session",
+      "x",
+      fn(answer) { process.send(answered, #(process.self(), answer)) },
+    )
+    let assert Ok(#(_, refusal)) = process.receive(answered, 5000)
+      as "the task answers a refusal"
+    assert refusal == renames.Declined(renames.NotOwner)
   })
 }

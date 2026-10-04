@@ -13,6 +13,7 @@ import core/ids
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
+import gleam/option
 import gleam/string
 import host/bootstrap
 import simplifile
@@ -88,6 +89,7 @@ fn saved(path: String) {
       created_at: 0,
       request_key: "saved",
       state: catalogue.Reserved,
+      subtitle: option.None,
     )
   // Explicit opens require the same durable domain mapping as production
   // creation, even though this fixture's domain owns no native resources.

@@ -4,6 +4,7 @@
 import core/clock
 import core/ids
 import gleam/list
+import gleam/option
 import gleam/string
 import simplifile
 import storage/catalogue
@@ -55,6 +56,7 @@ fn registration(seed) {
     created_at: 1,
     request_key: id,
     state: catalogue.Reserved,
+    subtitle: option.None,
   )
 }
 

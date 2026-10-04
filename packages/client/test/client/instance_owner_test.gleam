@@ -114,6 +114,7 @@ pub fn cleanup_uses_dependency_order_not_publication_order_test() {
   let steps = process.new_subject()
   let order = [
     custody.Runtime,
+    custody.ToolConfig,
     custody.Services,
     custody.Broker,
     custody.Helpers,
@@ -226,6 +227,57 @@ pub fn pending_drain_retains_storage_and_refuses_publication_test() {
   let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
     down(watch, 1000)
     as "successful drain released the storage step"
+}
+
+pub fn tool_config_outlives_the_runtime_drain_test() {
+  let #(owner, _builder, _failures) = new_owner()
+  let watch = process.monitor(custody.owner(owner))
+  let draining = process.new_subject()
+  let retired = process.new_subject()
+  let assert Ok(Nil) =
+    custody.publish(owner, custody.ToolConfig, fn() {
+      process.send(retired, Nil)
+      Ok(Nil)
+    })
+    as "tool configuration cleanup published"
+  let assert Ok(Nil) =
+    custody.publish(owner, custody.Runtime, fn() {
+      let release = process.new_subject()
+      process.send(draining, release)
+      process.receive_forever(release)
+      Ok(Nil)
+    })
+    as "runtime cleanup published"
+
+  // Tools run until the runtime has drained, so the holder they fetch from
+  // must still be alive for as long as the drain takes.
+  custody.cancel(owner)
+  let assert Ok(release) = process.receive(draining, 1000) as "drain began"
+  assert process.receive(retired, 100) == Error(Nil)
+  process.send(release, Nil)
+  assert process.receive(retired, 1000) == Ok(Nil)
+  let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
+    down(watch, 1000)
+    as "custody retires after the holder"
+}
+
+pub fn failed_runtime_drain_leaves_the_tool_config_alive_test() {
+  let #(owner, _builder, _failures) = new_owner()
+  let retired = process.new_subject()
+  let assert Ok(Nil) =
+    custody.publish(owner, custody.ToolConfig, fn() {
+      process.send(retired, Nil)
+      Ok(Nil)
+    })
+    as "tool configuration cleanup published"
+  let assert Ok(Nil) =
+    custody.publish(owner, custody.Runtime, fn() { Error("drain unconfirmed") })
+    as "runtime cleanup published"
+
+  let assert custody.RecoveryBlocked(custody.Failed(custody.Runtime, _)) =
+    custody.close(owner, within_ms: 1000)
+    as "an unconfirmed drain blocks recovery"
+  assert process.receive(retired, 100) == Error(Nil)
 }
 
 pub fn duplicate_publication_does_not_replace_cleanup_test() {

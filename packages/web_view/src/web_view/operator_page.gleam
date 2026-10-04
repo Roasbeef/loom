@@ -117,6 +117,13 @@ pub type Msg(socket) {
   /// The invitation control's "Hide the token" button: the owner has copied
   /// the invitation and the page drops it.
   Dismissing
+
+  /// The rename control's submit: the owner asks the daemon to give this
+  /// page's session the name the field held. The name is the browser's text and
+  /// nothing else is: the session, the principal and the right to rename are
+  /// the daemon's, read again when the request runs (protocol-change/067). The
+  /// control is drawn only on an owner's page.
+  Renaming(name: String)
 }
 
 /// The Lustre application for one session's operator page.
@@ -164,6 +171,7 @@ pub fn update(
     Resuming(session:) -> component.resume(model, session)
     Inviting(role:) -> component.invite(model, role)
     Dismissing -> #(component.dismiss_invitation(model), effect.none())
+    Renaming(name:) -> component.renaming(model, name)
   }
 
   // A notice that changed is a new element, which fades from the start. One
@@ -262,6 +270,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
         ),
       ),
       controls.session(bar(model)),
+      component.rename_form(model, form_submit_text(Renaming)),
     ),
     component.needing(model),
     component.workspace_digest(model),
@@ -319,6 +328,25 @@ fn form_submit(
   control: fn(String) -> component.Control,
 ) -> attribute.Attribute(Msg(socket)) {
   event.on("submit", written(control)) |> event.prevent_default
+}
+
+// A form's submit as the message `to_message` makes of its one text field, with
+// the same total decoding the control forms have: exactly one field, named
+// `text`.
+fn form_submit_text(
+  to_message: fn(String) -> Msg(socket),
+) -> attribute.Attribute(Msg(socket)) {
+  event.on("submit", written_text(to_message)) |> event.prevent_default
+}
+
+fn written_text(
+  to_message: fn(String) -> Msg(socket),
+) -> decode.Decoder(Msg(socket)) {
+  use fields <- decode.subfield(["detail", "formData"], decode.list(field()))
+  case control_text(fields) {
+    Ok(text) -> decode.success(to_message(text))
+    Error(Nil) -> decode.failure(to_message(""), "text form")
+  }
 }
 
 fn written(

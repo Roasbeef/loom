@@ -30,12 +30,25 @@ loom_profile_value_option() {
 # A profile node has to be named before the daemon emulator starts. The release
 # supplies its existing TOML parser as this reader: reimplementing TOML in the
 # shell would silently disagree about equivalent key spellings.
+#
+# The reader is a second emulator, and booting one cost about 150 ms on every
+# daemon start: a third of the daemon's whole startup, paid by everyone with a
+# loom.toml to answer a question almost every file answers no to. A file can
+# only enable profiling by naming the key, and TOML spells a key either
+# literally or as a quoted key whose escapes are \u or \U, so a file holding
+# none of `profile`, `\u` or `\U` cannot set it and the reader is not asked.
+# Every other file still goes to the reader, which stays the only judge of
+# what the file says. Bash reads the file itself, so no outside tool on PATH
+# can change the answer.
 loom_profile_config_enabled() {
   local config="$1"
 
   [[ -r "$config" ]] || return 1
 
   [[ -n "${LOOM_PROFILE_CONFIG_READER:-}" ]] || return 1
+  local text
+  text="$(<"$config")" || return 1
+  [[ "$text" == *profile* || "$text" == *'\u'* || "$text" == *'\U'* ]] || return 1
   "$LOOM_PROFILE_CONFIG_READER" "$config"
 }
 

@@ -33,6 +33,7 @@ fn drawn(jobs, viewers) -> String {
     viewers,
     element.none(),
     element.none(),
+    element.none(),
   ))
 }
 
@@ -60,6 +61,7 @@ pub fn a_pinned_goal_is_the_terminals_row_and_no_goal_says_none_test() {
       None,
       element.none(),
       element.none(),
+      element.none(),
     ))
   assert string.contains(with_goal, "Goal")
   assert string.contains(
@@ -80,6 +82,7 @@ pub fn the_goal_is_only_ever_a_text_node_test() {
       "$0.00",
       Unread,
       None,
+      element.none(),
       element.none(),
       element.none(),
     ))

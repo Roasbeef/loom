@@ -118,6 +118,7 @@ import client/server
 import client/session_git
 import client/skill_tool
 import client/system_prompt
+import client/tool_holder
 import client/wiring
 import client/worktree_diff
 import core/clock.{type Clock}
@@ -353,6 +354,10 @@ pub type Settings {
     domain_paths: Option(DomainPaths),
     /// Resident-only peer lookups supplied by the owning daemon.
     peer_directory: Option(peers.Directory),
+    /// Told the first human prompt the session accepts on its main strand,
+    /// once, so the daemon can seed the catalogue's subtitle
+    /// (`protocol-change/067`). `None` for a host with no catalogue.
+    first_prompt: Option(fn(String) -> Nil),
     /// Where code-mode cap sockets are bound: `<state root>/run` for a
     /// daemon-managed session, `None` to bind them under the workspace's
     /// `.codemode`. A field because only the daemon knows its state root,
@@ -527,6 +532,10 @@ pub type Instance {
     /// The original storage actor, monitored before another writer call.
     storage_owner: Pid,
     broker: Broker,
+    /// The holder of the configuration tool runs fetch. Kept so the legacy
+    /// teardown can stop it after the runtime drains; an owned session
+    /// retires it through custody instead, and stopping it twice is a no-op.
+    tools: tool_holder.Holder(wiring.Config),
     pool: Pool,
     /// The executor service. It sits between the broker and the pool, so
     /// teardown closes it and it closes the pool, and its death is as fatal
@@ -1460,6 +1469,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     workspace:,
     domain_paths: None,
     peer_directory: None,
+    first_prompt: None,
     codemode_sockets: None,
     base_policy: admitting_config_mounts(
       base_policy_for(
@@ -4063,7 +4073,28 @@ fn assemble_in(
       clock:,
       entropy:,
     )
-  let built = wiring.build_effects(wiring_config)
+
+  // Tool runs fetch their configuration from this holder instead of every
+  // copy of the effects record carrying it. The `run` closure is copied into
+  // each supervisor child specification and actor that holds the runtime, and
+  // a closure over `wiring_config` put the whole tool registry into each one:
+  // 29 copies in a one-session daemon, 27 of them through this slot.
+  //
+  // The holder must be published before `api.open_published`, because the
+  // runtime may run a tool as soon as it opens, and it must retire after the
+  // runtime's drain, because a tool runs until that drain finishes. Custody
+  // sorts it directly behind `Runtime` (see `instance_owner.ToolConfig`), so
+  // publishing it here, ahead of the runtime's own publication, changes
+  // nothing about when the lease is released or when any other part retires.
+  // The holder starts linked to this builder and is unlinked once custody
+  // has acknowledged it, the same hand-off the broker and executor use.
+  use holder <- result.try(tool_holder.start(wiring_config))
+  use Nil <- result.try(
+    retain(owner, custody.ToolConfig, fn() { tool_holder.stop(holder) }, fn() {
+      process.unlink(tool_holder.pid(holder))
+    }),
+  )
+  let built = wiring.build_effects_held(wiring_config, holder)
   let effects_record =
     effects.Effects(
       ..built,
@@ -4447,6 +4478,7 @@ fn assemble_in(
               |> result.map_error(string.inspect)
             })
             |> hub.with_catalog(hub_catalog)
+            |> with_first_prompt(settings.first_prompt)
             |> hub.with_registry(tool_registry)
             |> hub.with_extension_refusals(extension_refusals)
             |> hub.with_skills(skills)
@@ -4517,6 +4549,7 @@ fn assemble_in(
     runtime:,
     storage_owner:,
     broker: broker_actor,
+    tools: holder,
     pool:,
     executor: plane.executor,
     gateway: hub.Gateway(name:),
@@ -4729,6 +4762,11 @@ fn tear_down(booted: Booted) -> Nil {
 pub fn close_instance(instance: Instance) -> Nil {
   hub.drain_held(instance.gateway)
   let _closed = api.close(instance.runtime)
+
+  // Tools run until the runtime has drained, so the holder they fetch from
+  // retires only after that. An owned session reaches the same ordering
+  // through custody; this is the path which has no custodian.
+  let _retired = tool_holder.stop(instance.tools)
 
   // The language server stops after the runtime, so no query is still
   // asking it, and before the services, so its manager is stopped
@@ -7144,6 +7182,17 @@ fn summary_tap(
         blocksummary.live_admission(catalogue, route.provider),
       )
     None -> fn(_spec, _generation) { fn(_event) { Nil } }
+  }
+}
+
+// The report of the session's first prompt, when the host listens for one.
+fn with_first_prompt(
+  options: hub.Options,
+  report: Option(fn(String) -> Nil),
+) -> hub.Options {
+  case report {
+    Some(report) -> hub.with_first_prompt(options, report)
+    None -> options
   }
 }
 

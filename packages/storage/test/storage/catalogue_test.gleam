@@ -18,6 +18,7 @@ import storage/catalogue_archives_schema
 import storage/catalogue_claims_schema
 import storage/catalogue_credential_kinds_schema
 import storage/catalogue_names_schema
+import storage/catalogue_subtitles_schema
 import storage/sql
 import storage/sql_schema
 import storage/sqlite
@@ -40,6 +41,9 @@ pub fn embedded_schema_matches_the_sqlc_input_test() {
   let assert Ok(kinds) = simplifile.read("sql/catalogue_credential_kinds.sql")
     as "credential-kind migration is checked in"
   assert catalogue_credential_kinds_schema.schema == kinds
+  let assert Ok(subtitles) = simplifile.read("sql/catalogue_subtitles.sql")
+    as "subtitle migration is checked in"
+  assert catalogue_subtitles_schema.schema == subtitles
 }
 
 pub fn version_three_catalogue_migrates_claims_without_losing_principals_test() {
@@ -68,7 +72,7 @@ pub fn version_three_catalogue_migrates_claims_without_losing_principals_test() 
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE access_claims; PRAGMA user_version=3",
+      "ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; PRAGMA user_version=3",
       on: old,
     )
     == Ok(Nil)
@@ -99,7 +103,7 @@ pub fn version_three_catalogue_migrates_claims_without_losing_principals_test() 
       with: [],
       expecting: decode.at([0], decode.int),
     )
-    == Ok([5])
+    == Ok([6])
   assert sqlight.close(check) == Ok(Nil)
 }
 
@@ -112,6 +116,9 @@ pub fn generated_queries_match_the_sqlc_input_test() {
     sql.insert_registration("", "", "", "", "", 0, "").0,
     sql.confirm_registration("").0,
     sql.registration_display_name("").0,
+    sql.registration_subtitle("").0,
+    sql.insert_registration_subtitle("", "").0,
+    sql.delete_session_subtitle("").0,
     sql.set_registration_display_name("", "").0,
     sql.registration_page("", 0).0,
     sql.catalogue_revision().0,
@@ -189,7 +196,7 @@ pub fn version_one_catalogue_migrates_without_losing_creation_test() {
   let assert Ok(old) = sqlight.open(path)
     as "fixture downgrades only its new empty table"
   assert sqlight.exec(
-      "ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE access_claims; DROP TABLE catalogue_session_archives; DROP TABLE catalogue_session_names; PRAGMA user_version=1",
+      "ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; DROP TABLE catalogue_session_archives; DROP TABLE catalogue_session_names; PRAGMA user_version=1",
       on: old,
     )
     == Ok(Nil)
@@ -241,6 +248,7 @@ fn registration(seed: Int) -> catalogue.Registration {
     created_at: 1_700_000_000_000,
     request_key: "request-" <> int.to_string(seed),
     state: catalogue.Reserved,
+    subtitle: option.None,
   )
 }
 
@@ -560,7 +568,7 @@ pub fn version_two_catalogue_migrates_archive_without_losing_names_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE access_claims; DROP TABLE catalogue_session_archives; PRAGMA user_version=2",
+      "ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; DROP TABLE catalogue_session_archives; PRAGMA user_version=2",
       on: old,
     )
     == Ok(Nil)
@@ -613,7 +621,228 @@ pub fn archive_and_restore_preserve_committed_conversation_bytes_test() {
   assert catalogue.close(reopened) == Ok(Nil)
 }
 
-pub fn version_four_catalogue_migrates_every_credential_to_bearer_test() {
+pub fn version_four_catalogue_migrates_subtitles_without_losing_names_test() {
+  let path = fresh_path("subtitle-migration")
+  let assert Ok(store) = catalogue.open(path) as "fixture catalogue opens"
+  let record = registration(880)
+  assert catalogue.reserve(store, record) == Ok(record)
+  let assert Ok(renamed) = catalogue.rename(store, record.id, "kept label")
+    as "version four display metadata exists"
+  assert catalogue.close(store) == Ok(Nil)
+  let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
+  assert sqlight.exec(
+      "ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; PRAGMA user_version=4",
+      on: old,
+    )
+    == Ok(Nil)
+  assert sqlight.close(old) == Ok(Nil)
+
+  // The migration adds the table and moves the version together, leaves the
+  // existing row with no subtitle, and the table then takes its first write.
+  let assert Ok(migrated) = catalogue.open(path) as "version four migrates"
+  assert catalogue.get(migrated, record.id) == Ok(renamed)
+  let assert Ok(seeded) =
+    catalogue.seed_subtitle(migrated, record.id, "Port the parser")
+    as "the new table works"
+  assert seeded.subtitle == option.Some("Port the parser")
+  assert catalogue.close(migrated) == Ok(Nil)
+  let assert Ok(check) = sqlight.open(path) as "version is readable"
+  assert sqlight.query(
+      "PRAGMA user_version",
+      on: check,
+      with: [],
+      expecting: decode.at([0], decode.int),
+    )
+    == Ok([6])
+  assert sqlight.close(check) == Ok(Nil)
+}
+
+pub fn the_first_prompt_seeds_the_subtitle_once_test() {
+  let path = fresh_path("subtitle-once")
+  let assert Ok(store) = catalogue.open(path) as "catalogue opens"
+  let record = registration(881)
+  assert catalogue.reserve(store, record) == Ok(record)
+  let assert Ok(before) = catalogue.page(store, after: "")
+    as "original page loads"
+  let assert Ok(seeded) =
+    catalogue.seed_subtitle(
+      store,
+      record.id,
+      "  Fix  the flaky\tretry test\nthen ship it",
+    )
+    as "the first prompt seeds"
+  let expected =
+    catalogue.Registration(
+      ..record,
+      subtitle: option.Some("Fix the flaky retry test"),
+    )
+  assert seeded == expected
+  assert catalogue.get(store, record.id) == Ok(expected)
+  let assert Ok(after) = catalogue.page(store, after: "")
+    as "the seeded page loads"
+  assert after.records == [expected]
+  assert after.revision == before.revision + 1
+
+  // A later prompt, and the same prompt again, change nothing: not the
+  // subtitle and not the revision a list cursor is held against.
+  assert catalogue.seed_subtitle(store, record.id, "A different prompt")
+    == Ok(expected)
+  assert catalogue.seed_subtitle(store, record.id, "Fix the flaky retry test")
+    == Ok(expected)
+  assert catalogue.page(store, after: "") == Ok(after)
+
+  // The subtitle is display metadata over the creation record: a creation
+  // retry still finds the record it reserved.
+  assert catalogue.by_request_key(store, record.request_key) == Ok(record)
+  assert catalogue.reserve(store, record) == Ok(record)
+  assert catalogue.close(store) == Ok(Nil)
+  let assert Ok(reopened) = catalogue.open(path) as "catalogue reopens"
+  assert catalogue.get(reopened, record.id) == Ok(expected)
+  assert catalogue.seed_subtitle(reopened, record.id, "After a restart")
+    == Ok(expected)
+  assert catalogue.close(reopened) == Ok(Nil)
+}
+
+pub fn a_prompt_with_no_text_leaves_the_subtitle_to_the_next_one_test() {
+  let assert Ok(store) = catalogue.open(fresh_path("subtitle-blank"))
+    as "catalogue opens"
+  let record = registration(882)
+  assert catalogue.reserve(store, record) == Ok(record)
+  let assert Ok(before) = catalogue.page(store, after: "")
+    as "original page loads"
+  assert catalogue.seed_subtitle(store, record.id, " \n\t \u{200B}\u{202E} ")
+    == Ok(record)
+  assert catalogue.page(store, after: "") == Ok(before)
+  let assert Ok(seeded) = catalogue.seed_subtitle(store, record.id, "\n\nreal")
+    as "the next prompt seeds"
+  assert seeded.subtitle == option.Some("real")
+  assert catalogue.seed_subtitle(store, "no-such-session", "hello")
+    == Error(catalogue.Missing)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_subtitle_is_cut_on_a_word_and_never_past_sixty_characters_test() {
+  // Exactly sixty characters is kept whole.
+  let exact = string.repeat("abcdefghi ", 6) <> "x"
+  assert string.length(exact) == 61
+  let sixty = string.drop_end(exact, 1) |> string.trim_end
+  assert string.length(sixty) == 59
+  let whole = sixty <> "x"
+  assert string.length(whole) == 60
+  assert catalogue.subtitle_from_prompt(whole) == option.Some(whole)
+
+  // Past the limit the last whole word that fits stays, and an ellipsis marks
+  // the cut inside the limit.
+  let long =
+    "Refactor the session catalogue so that every listing reads one snapshot"
+  let assert option.Some(cut) = catalogue.subtitle_from_prompt(long)
+  assert cut == "Refactor the session catalogue so that every listing reads…"
+  assert string.length(cut) <= catalogue.subtitle_limit
+
+  // A limit that falls on the gap between two words keeps both sides whole.
+  let gap = string.repeat("a", 59) <> " bbbb"
+  assert catalogue.subtitle_from_prompt(gap)
+    == option.Some(string.repeat("a", 59) <> "…")
+
+  // One word longer than the limit is cut where it reaches it.
+  let assert option.Some(word) =
+    catalogue.subtitle_from_prompt(string.repeat("z", 200))
+  assert word == string.repeat("z", 59) <> "…"
+
+  // A cut never splits a character drawn as one, and counts code points, so
+  // the stored text always satisfies the table's own length check. Twenty-nine
+  // letters with an accent are 58 code points; a thirtieth would make 60 with
+  // the ellipsis still to come.
+  let accented = "e\u{301}"
+  let assert option.Some(marks) =
+    catalogue.subtitle_from_prompt(string.repeat(accented, 40))
+  assert marks == string.repeat(accented, 29) <> "…"
+  assert list.length(string.to_utf_codepoints(marks)) == 59
+}
+
+pub fn a_subtitle_drops_controls_and_direction_marks_test() {
+  assert catalogue.subtitle_from_prompt("") == option.None
+  assert catalogue.subtitle_from_prompt("\u{202E}\u{200B}\u{7}") == option.None
+  assert catalogue.subtitle_from_prompt("run \u{202E}gnp.exe\u{7} now")
+    == option.Some("run gnp.exe now")
+  assert catalogue.subtitle_from_prompt("\r\n  \r\nsecond line\r\nthird")
+    == option.Some("second line")
+}
+
+pub fn a_stored_subtitle_that_breaks_the_rule_reads_as_absent_test() {
+  let path = fresh_path("subtitle-corrupt")
+  let assert Ok(store) = catalogue.open(path) as "catalogue opens"
+  let record = registration(883)
+  assert catalogue.reserve(store, record) == Ok(record)
+  assert catalogue.close(store) == Ok(Nil)
+  let assert Ok(raw) = sqlight.open(path) as "raw connection opens"
+  assert sqlight.exec(
+      "INSERT INTO catalogue_session_subtitles VALUES ('"
+        <> record.id
+        <> "', 'bell' || char(7))",
+      on: raw,
+    )
+    == Ok(Nil)
+  assert sqlight.close(raw) == Ok(Nil)
+  let assert Ok(reopened) = catalogue.open(path) as "catalogue reopens"
+  assert catalogue.get(reopened, record.id) == Ok(record)
+  let assert Ok(page) = catalogue.page(reopened, after: "")
+    as "a listing survives the bad row"
+  assert page.records == [record]
+  assert catalogue.close(reopened) == Ok(Nil)
+}
+
+pub fn deleting_a_session_removes_its_subtitle_test() {
+  let path = fresh_path("subtitle-delete")
+  let assert Ok(store) = catalogue.open(path) as "catalogue opens"
+  let record = registration(884)
+  assert catalogue.reserve(store, record) == Ok(record)
+  let assert Ok(_) = catalogue.seed_subtitle(store, record.id, "gone soon")
+    as "the subtitle is written"
+  let assert Ok(_) = catalogue.delete(store, record.id)
+    as "the session is deleted"
+  assert catalogue.close(store) == Ok(Nil)
+  let assert Ok(raw) = sqlight.open(path) as "raw connection opens"
+  assert sqlight.query(
+      "SELECT count(*) FROM catalogue_session_subtitles",
+      on: raw,
+      with: [],
+      expecting: decode.at([0], decode.int),
+    )
+    == Ok([0])
+  assert sqlight.close(raw) == Ok(Nil)
+}
+
+pub fn a_display_name_refuses_controls_and_direction_marks_test() {
+  let assert Ok(store) = catalogue.open(fresh_path("name-rule"))
+    as "catalogue opens"
+  let record = registration(885)
+  assert catalogue.reserve(store, record) == Ok(record)
+  let assert Ok(_) = catalogue.rename(store, record.id, "review auth 日本語")
+    as "an ordinary name is accepted"
+  let refused = [
+    "",
+    "   ",
+    "line\nbreak",
+    "bell\u{7}",
+    "tab\there",
+    "reversed \u{202E}name",
+    "zero\u{200B}width",
+    "joiner\u{2060}word",
+    string.repeat("x", 257),
+  ]
+  list.each(refused, fn(name) {
+    let assert Error(catalogue.Invalid(_)) =
+      catalogue.rename(store, record.id, name)
+      as "an unwritable name is refused before any write"
+    Nil
+  })
+  assert catalogue.rename(store, "no-such-session", "fine")
+    == Error(catalogue.Missing)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn version_five_catalogue_migrates_every_credential_to_bearer_test() {
   let path = fresh_path("kind-migration")
   let assert Ok(store) = catalogue.open(path) as "fixture catalogue opens"
   let assert Ok(owner_digest) = access.credential_digest(string.repeat("a", 64))
@@ -624,7 +853,7 @@ pub fn version_four_catalogue_migrates_every_credential_to_bearer_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; PRAGMA user_version=4",
+      "ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; PRAGMA user_version=5",
       on: old,
     )
     == Ok(Nil)
@@ -633,14 +862,14 @@ pub fn version_four_catalogue_migrates_every_credential_to_bearer_test() {
   // The migration adds the columns with the bearer default and moves the
   // version in one step, so the owner's credential keeps authenticating as
   // the only kind that existed, and as no other.
-  let assert Ok(migrated) = catalogue.open(path) as "version four migrates"
+  let assert Ok(migrated) = catalogue.open(path) as "version five migrates"
   assert access.authenticate(migrated, owner_digest, access.Bearer) == Ok(owner)
   assert access.authenticate(migrated, owner_digest, access.Browser)
     == Error(catalogue.Missing)
   assert catalogue.close(migrated) == Ok(Nil)
 
   // Opening the migrated catalogue again changes nothing.
-  let assert Ok(again) = catalogue.open(path) as "version five reopens"
+  let assert Ok(again) = catalogue.open(path) as "version six reopens"
   assert access.authenticate(again, owner_digest, access.Bearer) == Ok(owner)
   assert catalogue.close(again) == Ok(Nil)
   let assert Ok(check) = sqlight.open(path) as "kinds are readable"
@@ -673,4 +902,36 @@ pub fn migrations_end_at_the_current_version_test() {
     )
     |> list.reverse
   assert versions == expected
+}
+
+pub fn version_four_catalogue_migrates_through_subtitles_and_kinds_test() {
+  let path = fresh_path("both-migrations")
+  let assert Ok(store) = catalogue.open(path) as "fixture catalogue opens"
+  let assert Ok(owner_digest) = access.credential_digest(string.repeat("a", 64))
+    as "owner digest is valid"
+  let assert Ok(owner) =
+    access.bootstrap_owner(store, "owner", "Owner", owner_digest)
+    as "the owner predates the migrations"
+  assert catalogue.close(store) == Ok(Nil)
+  let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
+  assert sqlight.exec(
+      "ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; PRAGMA user_version=4",
+      on: old,
+    )
+    == Ok(Nil)
+  assert sqlight.close(old) == Ok(Nil)
+
+  // One open applies both migrations in order and stamps the final version.
+  let assert Ok(migrated) = catalogue.open(path) as "version four migrates"
+  assert access.authenticate(migrated, owner_digest, access.Bearer) == Ok(owner)
+  assert catalogue.close(migrated) == Ok(Nil)
+  let assert Ok(check) = sqlight.open(path) as "version is readable"
+  assert sqlight.query(
+      "PRAGMA user_version",
+      on: check,
+      with: [],
+      expecting: decode.at([0], decode.int),
+    )
+    == Ok([6])
+  assert sqlight.close(check) == Ok(Nil)
 }

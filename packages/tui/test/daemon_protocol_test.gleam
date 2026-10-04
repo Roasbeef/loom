@@ -419,3 +419,42 @@ pub fn a_home_link_names_no_session_test() {
       "{\"v\":2,\"id\":1,\"cmd\":\"ui.link\",\"body\":{\"page\":\"operator\"}}",
     )
 }
+
+// A session row as the daemon writes it, with the given extra members after
+// the fields every daemon has always sent.
+fn session_frame(extra: String) -> String {
+  "{\"v\":2,\"reply_to\":7,\"event\":\"sessions.list\",\"body\":{\"revision\":9,\"sessions\":[{\"session_id\":\"00000000-0000-7000-8000-000000000001\",\"workspace\":\"/work\",\"name\":\"review auth\",\"created_at\":5,\"status\":{\"state\":\"saved\"}"
+  <> extra
+  <> "}],\"after\":null}}"
+}
+
+fn subtitles_of(frame: String) {
+  let assert Ok(protocol.Answer(_, _, protocol.SessionsReply(page))) =
+    protocol.decode(frame)
+    as "the frame decodes whatever its subtitle holds"
+  list.map(page.sessions, fn(session) { session.subtitle })
+}
+
+pub fn a_session_row_reads_its_optional_subtitle_test() {
+  // A frame from an older daemon has no member, and a newer one's has a
+  // string; both decode, which is the compatibility `protocol-change/067`
+  // promises in each direction.
+  assert subtitles_of(session_frame("")) == [None]
+  assert subtitles_of(session_frame(",\"subtitle\":\"Fix the retry test\""))
+    == [Some("Fix the retry test")]
+  assert subtitles_of(session_frame(",\"subtitle\":null")) == [None]
+}
+
+pub fn a_malformed_subtitle_reads_as_absent_and_never_fails_the_page_test() {
+  list.each(
+    [
+      ",\"subtitle\":7",
+      ",\"subtitle\":\"\"",
+      ",\"subtitle\":[\"a\"]",
+      ",\"subtitle\":\"" <> string.repeat("x", 61) <> "\"",
+    ],
+    fn(extra) {
+      assert subtitles_of(session_frame(extra)) == [None]
+    },
+  )
+}

@@ -4,11 +4,19 @@
 
 import gleam/erlang/process
 import gleam/list
+import gleam/option
 import tui/daemon/protocol
 import tui/daemon/selection
 
 fn row(status) {
-  protocol.Session("selected", "/workspace", "Selected", 1000, status)
+  protocol.Session(
+    "selected",
+    "/workspace",
+    "Selected",
+    1000,
+    status,
+    option.None,
+  )
 }
 
 fn observed(commands) {

@@ -173,7 +173,7 @@ pub fn a_board_of_blocked_work_focuses_the_phase_that_needs_attention_test() {
   assert has(html, ["<span class=\"todo-phase\">Waiting</span>", "todo-blocked"])
 }
 
-pub fn a_finished_board_is_one_row_test() {
+pub fn a_finished_board_leaves_the_dock_test() {
   let html =
     drawn(
       Some(
@@ -184,8 +184,9 @@ pub fn a_finished_board_is_one_row_test() {
       ),
       [],
     )
-  assert has(html, ["todo-line", "Todo", " · 3 of 3 done"])
-  assert !string.contains(html, "todo-tasks")
+  assert !string.contains(html, "todo-line")
+  assert !string.contains(html, "todo-panel")
+  assert !string.contains(html, "done")
 }
 
 pub fn session_text_is_only_ever_a_text_node_test() {
@@ -341,13 +342,14 @@ fn in_order(haystack: String, needles: List(String)) -> Bool {
   }
 }
 
-// A board whose tasks are all closed is one sans line, with no heading row
-// and no tick, worded as an open board's is.
-pub fn a_finished_board_is_one_line_test() {
+// A board whose tasks are all closed draws nothing, but a reviewer running
+// beside it is still the dock's to show.
+pub fn a_finished_board_leaves_a_reviewer_band_alone_test() {
   let html =
-    drawn(Some(Board([Phase("One", [Task("a", Done), Task("b", Done)])])), [])
-  assert string.contains(html, "Todo")
-  assert string.contains(html, " · 2 of 2 done")
-  assert !string.contains(html, "all 2 tasks closed")
-  assert !string.contains(html, "TODO")
+    drawn(Some(Board([Phase("One", [Task("a", Done), Task("b", Done)])])), [
+      "reviewer-1 · running",
+    ])
+  assert string.contains(html, "todo-reviewers")
+  assert !string.contains(html, "todo-line")
+  assert !string.contains(html, "2 of 2")
 }

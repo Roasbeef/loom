@@ -386,6 +386,9 @@ type DomainSlot {
 }
 
 type Message(instance) {
+  /// A session's first accepted prompt, to be reduced to its subtitle. There
+  /// is no reply: the sender is a hub that must not wait on the registry.
+  SeedSubtitle(String, String)
   Rename(
     access.Digest,
     String,
@@ -741,6 +744,30 @@ pub fn rename(
     _,
   ))
   |> result.unwrap(Error(AdminUnavailable))
+}
+
+/// Seeds a session's subtitle from its first accepted prompt, without waiting.
+///
+/// The session's own hub calls this once (`gateway.with_first_prompt`), so it
+/// carries no credential: no wire message reaches it, and the identity is the
+/// one the hub was built for. The write runs in the registry's turn, which
+/// serializes it with every other catalogue change, and the catalogue keeps the
+/// first subtitle it is given (`catalogue.seed_subtitle`). A failed write leaves
+/// the session without a subtitle, which every page already draws as the
+/// creation age, so the failure is not reported to the hub.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.seed_subtitle(registry, session_id, "Fix the flaky retry test")
+/// ```
+@internal
+pub fn seed_subtitle(
+  manager: Manager(instance),
+  id: String,
+  prompt: String,
+) -> Nil {
+  process.send(manager.commands, SeedSubtitle(id, prompt))
 }
 
 /// Archives or restores a stopped session under owner and epoch authority.
@@ -1470,6 +1497,10 @@ fn handle(
       )
       sm.keep(book)
     }
+    SeedSubtitle(id, prompt) -> {
+      let _written = catalogue.seed_subtitle(book.catalogue, id, prompt)
+      sm.keep(book)
+    }
     Rename(caller, epoch, id, name, reply) -> {
       let outcome = {
         use Nil <- result.try(authorize_admin(phase, book, caller, epoch))
@@ -2145,6 +2176,7 @@ fn reserve_creation(
           created_at: ids.session_id_timestamp_ms(id),
           request_key: request.request_key,
           state: catalogue.Reserved,
+          subtitle: option.None,
         )
       use selected <- result.try(select_creation_domain(
         store,

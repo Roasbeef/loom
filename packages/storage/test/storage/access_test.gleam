@@ -61,6 +61,7 @@ fn registration(seed: Int) {
     created_at: 0,
     request_key: id,
     state: catalogue.Reserved,
+    subtitle: option.None,
   )
 }
 

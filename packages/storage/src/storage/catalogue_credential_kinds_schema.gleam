@@ -3,4 +3,4 @@
 
 /// The schema used both at runtime and by sqlc during generation.
 pub const schema =
-  "-- Catalogue v5: a credential's kind, so a login's row can never stand in for a bearer.\nALTER TABLE access_credentials ADD COLUMN kind TEXT NOT NULL DEFAULT 'bearer'\n  CHECK(kind IN ('bearer', 'browser'));\nALTER TABLE access_credentials ADD COLUMN issued_at_ms INTEGER;\nALTER TABLE access_credentials ADD COLUMN last_resumed_ms INTEGER;\n"
+  "-- Catalogue v6: a credential's kind, so a login's row can never stand in for a bearer.\nALTER TABLE access_credentials ADD COLUMN kind TEXT NOT NULL DEFAULT 'bearer'\n  CHECK(kind IN ('bearer', 'browser'));\nALTER TABLE access_credentials ADD COLUMN issued_at_ms INTEGER;\nALTER TABLE access_credentials ADD COLUMN last_resumed_ms INTEGER;\n"

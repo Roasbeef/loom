@@ -55,7 +55,7 @@
 //// 7. `worked` takes the divider's figures from the records alone, and `divider`
 ////    words them, leaving out a figure the records did not give.
 //// 8. `merge_commentary` joins reviews that stand next to each other, and
-////    `attributed` sets the reader's own role on the reader's messages.
+////    `attributed` sets each sender's role, from `authors`, on their messages.
 //// 9. `pictured` and `picture` are the separate readers over the finished pieces
 ////    that find a row's images by name, so a host serves only an image the lane draws.
 
@@ -73,6 +73,7 @@ import session_view/agent_view
 import session_view/composer
 import session_view/decisions
 import session_view/protocol
+import session_view/snapshot
 import session_view/snapshot_view
 import session_view/step_words
 import session_view/strand_framing
@@ -232,8 +233,9 @@ pub type Piece {
     principal: String,
     /// The sender's display name at admission, on one line. Session text.
     name: String,
-    /// The reader's own role when the sender is the reader (`attributed`),
-    /// words the host draws beside the name; `None` for anyone else.
+    /// The sender's own role, from the attachments the host can see
+    /// (`attributed`), words the host draws beside the name; `None` when the
+    /// host holds none for the sender.
     role: Option(String),
   )
 
@@ -391,28 +393,63 @@ pub fn pieces(
   |> merge_commentary
 }
 
-/// The same pieces with the reader's own role set on the messages the reader
-/// sent: a `Prompt` whose sender's identity is `principal` takes `role`.
+/// The same pieces with each sender's role set on the messages they sent: a
+/// `Prompt` whose sender's identity is a key of `roles` takes that role.
 ///
 /// The records say who sent a message and not in what capacity, so the role
-/// is the one thing a host holds that the lane does not: its own attachment.
-/// A message from anyone else keeps no role, because the page cannot know it.
+/// is what a host holds that the lane does not: the roles of the attachments
+/// it can see, from `authors`. The role belongs to the author and never to the
+/// reader, so an observer's page and an operator's page draw the same words
+/// for the same message. A sender the host holds no role for keeps none, and
+/// the lane draws the name alone.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert turns.attributed([], "owner", "operator") == []
+/// assert turns.attributed([], dict.from_list([#("owner", "operator")])) == []
 /// ```
 pub fn attributed(
   pieces: List(Piece),
-  principal: String,
-  role: String,
+  roles: Dict(String, String),
 ) -> List(Piece) {
   list.map(pieces, fn(piece) {
     case piece {
-      Prompt(principal: sender, ..) if sender == principal ->
-        Prompt(..piece, role: Some(role))
+      Prompt(principal:, ..) ->
+        case dict.get(roles, principal) {
+          Ok(role) -> Prompt(..piece, role: Some(role))
+          Error(Nil) -> piece
+        }
       _ -> piece
+    }
+  })
+}
+
+/// The capacity each person is attached in, by principal, for `attributed`.
+///
+/// Only an owner or an operator can send a message, so only those attachments
+/// say what capacity a message was sent in. An observer's attachment is not
+/// a role anything was authored in and is left out, and so is a peer that is
+/// not a person. A principal attached in both capacities takes `operator`: a
+/// terminal attaches as the owner and a web page as an operator, so a person
+/// with both open sends from the page, and the lane's words match the
+/// operator's own composer. The words are fixed here, never the session's.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert turns.authors([]) == dict.new()
+/// ```
+pub fn authors(peers: List(snapshot_view.Peer)) -> Dict(String, String) {
+  list.fold(peers, dict.new(), fn(roles, peer) {
+    case peer.origin, peer.role {
+      message.Origin(principal:, ..), snapshot.Operator ->
+        dict.insert(roles, principal, "operator")
+      message.Origin(principal:, ..), snapshot.Owner ->
+        case dict.has_key(roles, principal) {
+          True -> roles
+          False -> dict.insert(roles, principal, "owner")
+        }
+      _, _ -> roles
     }
   })
 }

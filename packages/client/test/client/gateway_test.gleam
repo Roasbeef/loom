@@ -39,6 +39,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/system
 import gleam/result
 import gleam/string
+import host/skill
 import machine/codec
 import machine/operation
 import machine/planner
@@ -396,6 +397,14 @@ fn start_harness_adjusted(
               case query.from_seq {
                 Some(_) -> backend.scan_entries(handle, query)
                 None -> panic as "network path must not scan whole entries"
+              }
+            },
+            // The prime reads entry heads rather than entries, so the
+            // same bound is enforced on that read too.
+            scan_entry_heads: fn(handle, query: storage.EntryScan) {
+              case query.from_seq {
+                Some(_) -> backend.scan_entry_heads(handle, query)
+                None -> panic as "network path must not scan whole entry heads"
               }
             },
             scan_branch: fn(handle, query: storage.BranchScan) {
@@ -6218,4 +6227,105 @@ pub fn an_observer_may_read_the_goal_but_not_mutate_it_test() {
   send(harness, 407, protocol.GoalGet)
   let _ = next(harness)
   Nil
+}
+
+// A harness that tells `reported` the text of the first main-strand prompt.
+fn start_reporting_harness(reported: Subject(String)) -> Harness {
+  start_harness_adjusted(
+    None,
+    None,
+    None,
+    None,
+    SettlingProvider,
+    None,
+    None,
+    gateway.with_first_prompt(_, fn(text) { process.send(reported, text) }),
+  )
+}
+
+/// The first human prompt the main strand accepts is reported once, as the
+/// person typed it, and no later prompt is reported again
+/// (`protocol-change/067`). The subtitle is derived from the report by the
+/// catalogue, so the hub neither trims nor shortens it.
+pub fn the_first_accepted_main_prompt_is_reported_once_test() {
+  let reported = process.new_subject()
+  let harness = start_reporting_harness(reported)
+  subscribe(harness)
+  send(harness, 900, protocol.Prompt("main", "  first line\nsecond line"))
+  let assert protocol.EntryEvent(_) = next_reply(harness, 900, 8).event
+    as "the prompt is admitted"
+  assert process.receive(reported, within: 2000)
+    == Ok("  first line\nsecond line")
+  send(harness, 901, protocol.Prompt("main", "a later prompt"))
+
+  // The second prompt is admitted or queued behind the first run, and either
+  // way it is nobody's subtitle.
+  let _ = next_reply(harness, 901, 8)
+  assert process.receive(reported, within: 300) == Error(Nil)
+}
+
+/// A message with no text block reports nothing and leaves the report waiting
+/// for one that has text, so the subtitle is always words a person sent.
+pub fn an_image_alone_is_not_reported_and_the_next_text_prompt_is_test() {
+  let reported = process.new_subject()
+  let harness = start_reporting_harness(reported)
+  subscribe(harness)
+  send(
+    harness,
+    910,
+    protocol.PromptContent(strand: "main", content: [
+      message.UserImage("iVBORw0KGgo=", "image/png"),
+    ]),
+  )
+  let assert protocol.EntryEvent(_) = next_reply(harness, 910, 8).event
+    as "the image is admitted"
+  assert process.receive(reported, within: 200) == Error(Nil)
+  // The image's run may still be going, in which case the text waits in the
+  // hub's queue and is reported when it is submitted.
+  send(harness, 912, protocol.Prompt("main", "the words"))
+  assert process.receive(reported, within: 5000) == Ok("the words")
+}
+
+/// A steer is held by the hub and submitted when its strand is idle, which is
+/// the other place a first prompt is accepted. It is reported from there.
+pub fn a_first_prompt_that_arrives_as_a_steer_is_reported_when_admitted_test() {
+  let reported = process.new_subject()
+  let harness = start_reporting_harness(reported)
+  subscribe(harness)
+  send(harness, 920, protocol.Steer("main", "steer first"))
+  assert process.receive(reported, within: 5000) == Ok("steer first")
+}
+
+/// A held first prompt that is a skill invocation seeds the subtitle with what
+/// the person typed, not with the skill body the hub expanded it into. A steer
+/// is always held and submitted from the drain, so it exercises the held path.
+pub fn a_held_skill_invocation_is_reported_as_typed_test() {
+  let root = "build/gateway-skill-" <> int.to_string(int.random(1_000_000_000))
+  let assert Ok(Nil) = simplifile.create_directory_all(root <> "/sample")
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/sample/SKILL.md",
+      "---\nname: sample\ndescription: d\n---\nSKILL BODY for $ARGUMENTS.\n",
+    )
+  let catalogue = skill.discover([root])
+  let reported = process.new_subject()
+  let harness =
+    start_harness_adjusted(
+      None,
+      None,
+      None,
+      None,
+      SettlingProvider,
+      None,
+      None,
+      fn(options) {
+        options
+        |> gateway.with_skills(catalogue)
+        |> gateway.with_first_prompt(fn(text) { process.send(reported, text) })
+      },
+    )
+  subscribe(harness)
+  send(harness, 930, protocol.Steer("main", "/sample the queue"))
+  assert process.receive(reported, within: 5000) == Ok("/sample the queue")
+  let assert Ok(Nil) = simplifile.delete(root)
 }

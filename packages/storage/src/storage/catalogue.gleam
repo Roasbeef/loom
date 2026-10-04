@@ -10,12 +10,27 @@
 //// path canonicalization, authorization, capacity and runtime liveness. A saved
 //// record is not evidence of a resident runtime. Reserved records survive a crash
 //// so reconciliation can check the original file instead of creating another.
+////
+//// ## Flow
+////
+//// `open` → `reserve` → `confirm` → `get` → `rename` → `seed_subtitle` → `page`
+////
+//// 1. `open` configures one connection and `initialize_schema` creates the
+////    tables or applies the migrations a version lacks, in one transaction.
+//// 2. `reserve` records a creation's identity and path before its file exists,
+////    and `confirm` marks the file verified.
+//// 3. `get` and `page` read the creation record with its display layers (the
+////    name override and the subtitle), and neither opens a conversation file.
+//// 4. `rename` writes the display-name override after `display_name` accepts it.
+//// 5. `seed_subtitle` reduces a first prompt with `subtitle_from_prompt` and
+////    writes the result once.
+//// 6. `delete` removes a registration and every row that refers to it.
 
 import core/ids
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import parrot/dev
@@ -24,6 +39,7 @@ import storage/catalogue_archives_schema
 import storage/catalogue_claims_schema
 import storage/catalogue_credential_kinds_schema
 import storage/catalogue_names_schema
+import storage/catalogue_subtitles_schema
 import storage/sql
 import storage/sql_schema
 import storage/sqlite_policy
@@ -65,6 +81,11 @@ pub type Registration {
     request_key: String,
     /// Whether database initialization has been confirmed.
     state: State,
+    /// The first line of the owner's first prompt, cut to `subtitle_limit`
+    /// characters and written once (`seed_subtitle`). A display aid layered
+    /// over the creation record like the name override, so a reservation
+    /// retry never compares it: only `get` and the pages carry it.
+    subtitle: Option(String),
   )
 }
 
@@ -103,6 +124,9 @@ pub type Page {
 
 /// The largest list response; callers continue after the last returned ID.
 pub const page_limit = 100
+
+/// The most characters a subtitle holds.
+pub const subtitle_limit = 60
 
 /// Opens only the metadata database, initializing an empty file or refusing it.
 ///
@@ -192,7 +216,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
 /// raise this fails `migrations_end_at_the_current_version_test` rather than
 /// leaving a catalogue that claims a version whose migration never ran.
 @internal
-pub const current_version = 5
+pub const current_version = 6
 
 /// The migration schemas in version order, each applied to a catalogue that
 /// lacks its version.
@@ -202,7 +226,8 @@ pub fn migrations() -> List(#(Int, String)) {
     #(2, catalogue_names_schema.schema),
     #(3, catalogue_archives_schema.schema),
     #(4, catalogue_claims_schema.schema),
-    #(5, catalogue_credential_kinds_schema.schema),
+    #(5, catalogue_subtitles_schema.schema),
+    #(6, catalogue_credential_kinds_schema.schema),
   ]
 }
 
@@ -356,6 +381,9 @@ pub fn get(catalogue: Catalogue, id: String) -> Result(Registration, Error) {
 ///
 /// The label and revision commit atomically. An unchanged label writes nothing.
 /// The daemon manager supplies owner authorization before entering this DAL.
+/// The name must pass `display_name`, which is stricter than the first version
+/// of this command was: a name is drawn beside other text on a page, so it may
+/// not hold a zero-width or direction-changing character.
 ///
 /// ## Examples
 ///
@@ -367,10 +395,7 @@ pub fn rename(
   id: String,
   name: String,
 ) -> Result(Registration, Error) {
-  use Nil <- result.try(case name != "" && string.byte_size(name) <= 256 {
-    True -> Ok(Nil)
-    False -> Error(Invalid("display name needs 1 to 256 bytes"))
-  })
+  use Nil <- result.try(display_name(name))
   transaction(catalogue.connection, fn() {
     use record <- result.try(get(catalogue, id))
     case record.name == name {
@@ -390,6 +415,224 @@ pub fn rename(
   })
 }
 
+/// Judges a display name about to be written.
+///
+/// A name is nonblank after trimming, at most 256 UTF-8 bytes, and holds no
+/// control character and no zero-width or direction-changing one (`invisible`).
+/// Those would reorder the words around the name on a page or leave a name
+/// that draws as nothing. Reads are looser, so a name written before this rule
+/// still decodes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalogue.display_name("review auth") == Ok(Nil)
+/// ```
+pub fn display_name(name: String) -> Result(Nil, Error) {
+  let points =
+    list.map(string.to_utf_codepoints(name), string.utf_codepoint_to_int)
+  case
+    string.trim(name) != ""
+    && string.byte_size(name) <= 256
+    && list.all(points, fn(value) { !control(value) && !invisible(value) })
+  {
+    True -> Ok(Nil)
+    False ->
+      Error(Invalid(
+        "display name must be nonblank, at most 256 bytes, and contain no controls or invisible characters",
+      ))
+  }
+}
+
+// The C0 and C1 control ranges and DEL.
+fn control(value: Int) -> Bool {
+  value < 32 || value == 127 || { value >= 128 && value <= 159 }
+}
+
+/// Whether a code point is zero-width or changes text direction: the ones
+/// `session_view/text_hygiene` replaces when it draws text. A name or subtitle
+/// holding one is refused or has it removed, so neither can reorder the words
+/// beside it or draw as nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalogue.invisible(0x202E)
+/// ```
+pub fn invisible(value: Int) -> Bool {
+  { value >= 0x200B && value <= 0x200F }
+  || { value >= 0x202A && value <= 0x202E }
+  || { value >= 0x2060 && value <= 0x2069 }
+  || value == 0xFEFF
+  || value == 0xAD
+  || value == 0x61C
+  || value == 0x2028
+  || value == 0x2029
+}
+
+/// Writes the session's subtitle from its first prompt, once.
+///
+/// The text is reduced by `subtitle_from_prompt`. A prompt that leaves nothing
+/// (blank, or only invisible characters) writes nothing, so the next prompt may
+/// still seed the subtitle. Once a subtitle exists the call writes nothing and
+/// returns the record as it stands, so neither a later prompt nor a retry after
+/// a restart can replace it; the check and the write share one transaction. The
+/// subtitle and the catalogue revision commit together. The daemon calls this
+/// from the session's gateway, which is the only place a human prompt is
+/// accepted, so a subtitle is always the owner's or a member's own words and
+/// never a session agent's.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.seed_subtitle(store, session_id, "Fix the flaky retry test")
+/// ```
+pub fn seed_subtitle(
+  catalogue: Catalogue,
+  id: String,
+  prompt: String,
+) -> Result(Registration, Error) {
+  case subtitle_from_prompt(prompt) {
+    None -> get(catalogue, id)
+    Some(subtitle) ->
+      transaction(catalogue.connection, fn() {
+        use record <- result.try(get(catalogue, id))
+        case record.subtitle {
+          Some(_) -> Ok(record)
+          None -> {
+            use Nil <- result.try(statement(
+              catalogue,
+              sql.insert_registration_subtitle(id, subtitle),
+            ))
+            use Nil <- result.try(statement(
+              catalogue,
+              sql.increment_catalogue_revision(),
+            ))
+            Ok(Registration(..record, subtitle: Some(subtitle)))
+          }
+        }
+      })
+  }
+}
+
+/// The subtitle a prompt's text stands for, or `None` when it has none.
+///
+/// It is the first nonblank line, with each run of whitespace collapsed to one
+/// space and every control, zero-width and direction-changing character
+/// removed, cut to `subtitle_limit` characters. A line that is too long is cut
+/// at the last word boundary that fits and marked with an ellipsis, which
+/// counts toward the limit; a single word longer than the limit is cut where it
+/// reaches it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalogue.subtitle_from_prompt("  fix   the\ttest\nthen ship")
+///   == Some("fix the test")
+/// ```
+pub fn subtitle_from_prompt(prompt: String) -> Option(String) {
+  let lines =
+    prompt
+    |> string.replace("\r\n", "\n")
+    |> string.replace("\r", "\n")
+    |> string.split("\n")
+    |> list.map(collapse)
+  case list.find(lines, fn(line) { line != "" }) {
+    Ok(line) -> Some(fit_subtitle(line))
+    Error(Nil) -> None
+  }
+}
+
+// One line with whitespace runs reduced to a single space and unprintable code
+// points dropped, trimmed at both ends.
+fn collapse(line: String) -> String {
+  line
+  |> string.to_utf_codepoints
+  |> list.filter_map(fn(point) {
+    let value = string.utf_codepoint_to_int(point)
+    case value {
+      9 | 32 | 0xA0 | 0x3000 -> Ok(" ")
+      _ ->
+        case control(value) || invisible(value) {
+          True -> Error(Nil)
+          False -> Ok(string.from_utf_codepoints([point]))
+        }
+    }
+  })
+  |> string.concat
+  |> string.split(" ")
+  |> list.filter(fn(word) { word != "" })
+  |> string.join(" ")
+}
+
+fn fit_subtitle(line: String) -> String {
+  case code_points(line) <= subtitle_limit {
+    True -> line
+    False -> {
+      let kept = take_points(string.to_graphemes(line), subtitle_limit - 1, [])
+      let rest = string.drop_start(line, string.length(kept))
+
+      // The limit may fall exactly between two words, in which case nothing
+      // is backed out. Inside a word the last, partial word is dropped, unless
+      // it is the only one, which is cut where it reaches the limit.
+      let cut = case string.starts_with(rest, " "), string.contains(kept, " ") {
+        True, _ | False, False -> kept
+        False, True -> without_last_word(kept)
+      }
+      string.trim_end(cut) <> "…"
+    }
+  }
+}
+
+fn without_last_word(text: String) -> String {
+  text
+  |> string.split(" ")
+  |> list.reverse
+  |> list.drop(1)
+  |> list.reverse
+  |> string.join(" ")
+}
+
+// The longest run of whole graphemes holding at most `room` code points, so a
+// cut never splits a character a reader sees as one.
+fn take_points(
+  graphemes: List(String),
+  room: Int,
+  kept: List(String),
+) -> String {
+  case graphemes {
+    [] -> string.concat(list.reverse(kept))
+    [next, ..rest] -> {
+      let used = code_points(next)
+      case used <= room {
+        True -> take_points(rest, room - used, [next, ..kept])
+        False -> string.concat(list.reverse(kept))
+      }
+    }
+  }
+}
+
+fn code_points(text: String) -> Int {
+  list.length(string.to_utf_codepoints(text))
+}
+
+// A stored subtitle decodes only when it still satisfies what `seed_subtitle`
+// writes. One that does not (written by a later version, or damaged) reads as
+// absent rather than failing the listing it appears in.
+fn stored_subtitle(subtitle: String) -> Option(String) {
+  case
+    subtitle != ""
+    && code_points(subtitle) <= subtitle_limit
+    && list.all(string.to_utf_codepoints(subtitle), fn(point) {
+      let value = string.utf_codepoint_to_int(point)
+      !control(value) && !invisible(value)
+    })
+  {
+    True -> Some(subtitle)
+    False -> None
+  }
+}
+
 // Display reads layer mutable labels over immutable creation metadata. This
 // helper must not enter find/by_request_key, which prove retry equality.
 fn display_record(catalogue: Catalogue, record: Registration) {
@@ -397,10 +640,20 @@ fn display_record(catalogue: Catalogue, record: Registration) {
     catalogue,
     sql.registration_display_name(record.id),
   ))
-  case names {
+  use subtitles <- result.try(query(
+    catalogue,
+    sql.registration_subtitle(record.id),
+  ))
+  use named <- result.try(case names {
     [] -> Ok(record)
     [name] -> Ok(Registration(..record, name: name.name))
     [_, _, ..] -> Error(Invalid("duplicate session display name"))
+  })
+  case subtitles {
+    [] -> Ok(named)
+    [found] ->
+      Ok(Registration(..named, subtitle: stored_subtitle(found.subtitle)))
+    [_, _, ..] -> Error(Invalid("duplicate session subtitle"))
   }
 }
 
@@ -579,7 +832,7 @@ pub fn set_visibility(
 
 /// Removes one registration and every catalogue row that refers to it.
 ///
-/// The registration, its memberships, its display name, a workspace default
+/// The registration, its memberships, its display name and subtitle, a workspace default
 /// naming it and its domain mapping are removed in one immediate transaction, so no reader can
 /// observe a catalogue whose foreign keys point at a session that is half
 /// gone. The domain record itself survives: a domain owns distilled memory
@@ -609,13 +862,14 @@ pub fn delete(catalogue: Catalogue, id: String) -> Result(Registration, Error) {
     use Nil <- result.try(statement(catalogue, sql.delete_session_domain(id)))
     use Nil <- result.try(statement(catalogue, sql.restore_session(id)))
 
-    // The display name is keyed by session id and nothing else, so it would
-    // otherwise outlive the registration and be inherited by a later session
+    // The display name and the subtitle are keyed by session id and nothing
+    // else, so each would otherwise outlive the registration and be inherited by a later session
     // that happened to reuse the identity.
     use Nil <- result.try(statement(
       catalogue,
       sql.delete_session_display_name(id),
     ))
+    use Nil <- result.try(statement(catalogue, sql.delete_session_subtitle(id)))
     use Nil <- result.try(statement(catalogue, sql.delete_registration(id)))
 
     // The revision moves so an open listing page is refused rather than
@@ -696,6 +950,7 @@ fn page_for(
             created_at: row.created_at,
             request_key: row.request_key,
             state: Reserved,
+            subtitle: option.then(row.subtitle, stored_subtitle),
           ),
           row.state,
         )
@@ -749,6 +1004,7 @@ pub fn member_page(
             created_at: row.created_at,
             request_key: row.request_key,
             state: Reserved,
+            subtitle: option.then(row.subtitle, stored_subtitle),
           ),
           row.state,
         )
@@ -787,6 +1043,7 @@ fn find(catalogue: Catalogue, id: String, request_key: String, path: String) {
         created_at: row.created_at,
         request_key: row.request_key,
         state: Reserved,
+        subtitle: None,
       ),
       row.state,
     )

@@ -23,7 +23,7 @@ import tui/workspace
 import weft
 
 fn session(id: String, workspace: String, status) -> protocol.Session {
-  protocol.Session(id, workspace, id, 1, status)
+  protocol.Session(id, workspace, id, 1, status, option.None)
 }
 
 fn activity(id: String, state) -> protocol.Activity {

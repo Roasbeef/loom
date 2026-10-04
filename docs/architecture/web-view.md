@@ -240,12 +240,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:242`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:254`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:1753`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:2059`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -696,6 +696,21 @@ sessions). Only an operator page does it.
   (`session_isolation_test`); the sidebar is the one region that lists the
   others. The observer's socket drops a click beneath `component.sidebar_path`.
 
+## Renaming and the subtitle (protocol-change/067)
+
+A session's first prompt names it for the page. The daemon reduces the first
+accepted prompt's first line to at most 60 characters, once, and the page draws
+it as a text node under the name in the sidebar and as the lead of a home row's
+quiet line. It is never an attribute, a class, a key or a title.
+
+An owner's page may rename. The session page's control is the Session pane's
+fifth child (`component.rename_path`); the home draws a Rename button after each
+row and one open form in place of a row. Both send the typed text and nothing
+else. `ui_socket.rename_for` re-derives the page's standing at the click and
+makes the registry's owner-checked rename, from a task linked to the page's
+runtime, so the runtime never waits on the registry. A member's page and an
+observer's page are handed no capability and their sockets drop the event.
+
 ## Inviting from the session page
 
 An owner's operator page has one control that a member's page and every
@@ -755,7 +770,8 @@ for both kinds of ticket.
 The socket (`ui_socket.upgrade_home`) shares `websocket` with the session
 page and starts `web_view/home` with no relay. The component draws the A2
 frame with the sidebar (`sidebar.home`, a "Home" entry above the rows), a
-table per workspace (`view/home_table`), and no strand panel (the frame class
+list per workspace (`view/home_table`: name, a quiet line with the residency,
+the activity word and the age), and no strand panel (the frame class
 `loom-home` hides the panel column in the stylesheet). It reads the sessions
 with the page's credential digest when it opens and every 30 s
 (`ui_socket.home_listing`); that read is also the page's check: a UI session
@@ -765,6 +781,15 @@ the socket closes. The read runs in the component's process, as the
 sidebar's does. The only handlers are a running session's rows, and the socket
 admits a click beneath them and no other frame (`ui_socket.home_accepts`, next
 section).
+
+What each running session is doing is a second read, started by every list that
+answers: `Start.activity` hands the ids (at most 24) to
+`ui_socket.activity_task`, a weft run linked to the runtime that calls
+`server.home_activity`, which is the control command's `sessions.activity`
+(protocol-change/050) reduced to one state word per session. The runtime never
+waits for it, the answer comes back as `Observed`, and the read covers only
+the ids the page's credential holds, re-derived in the registry at each read
+(050's addendum on members).
 
 ### Navigation: home to session and back
 
@@ -886,7 +911,9 @@ Three places draw it:
   it, and no region after the heading changes its path.
 - **A reload of an ended page**, and a ticket that was used or expired, get a
   small document for the ending (`page.refusal`) under the status they always
-  had, in place of the bare status text.
+  had, in place of the bare status text: the brand, the headline, the advice's
+  lead (`ending.Advice`) and the command that mints a fresh link in a
+  `<loom-copy subject="link">` box, so the document loads the client bundle.
 - **A page that never connects** shows a fixed paragraph the shell puts inside
   the `<lustre-server-component>` element. It is the element's light-DOM
   content, which Lustre's runtime hides when it attaches the shadow root on
@@ -1044,7 +1071,7 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/view/crumb.gleam` | The breadcrumb above the transcript while a strand other than `main` is in focus: the session and strand names and an `All strands` link that is a marker, with no handler, and an `Esc` hint for the shell's key. |
 | `packages/web_view/src/web_view/view/sidebar.gleam` | The session sidebar: the principal's sessions by workspace, memoized, the frame's second child. A row for a running session other than the one on screen is a button that asks to open it. |
 | `packages/web_view/src/web_view/sessions.gleam` | The sidebar's `Entry`, `Residency` and `Group`, `grouped`, the ordering (current workspace first, newest first), `label`, and `Answer` and `Reason` with their fixed words, which a switch request and its refusal are made of. |
-| `packages/web_view/src/web_view/view/todo_panel.gleam` | The todo panel: the followed strand's board as one line (`Todo · n of m done · <active task>`, a `<loom-fold>` summary) which opens to the phase that holds the active task expanded and the others folded into one row, the terminal's status glyphs, `n/m done`, and the reviewer band beneath it, drawn from plain values (`component.plan` reads the shared record's `todo_boards` and `reviewer_status.lines`). It is the operator's dock's first child and sits above the observer's bar; its height is capped and it scrolls on its own. |
+| `packages/web_view/src/web_view/view/todo_panel.gleam` | The todo panel: the followed strand's board as one line (`Todo · n of m done · <active task>`, a `<loom-fold>` summary; a board with every task closed is not drawn) which opens to the phase that holds the active task expanded and the others folded into one row, the terminal's status glyphs, `n/m done`, and the reviewer band beneath it, drawn from plain values (`component.plan` reads the shared record's `todo_boards` and `reviewer_status.lines`). It is the operator's dock's first child and sits above the observer's bar; its height is capped and it scrolls on its own. |
 | `packages/web_view/src/web_view/view/trace.gleam` | The Trace pane: the session's `code_mode` programs (`session_view/trace_view`), the newest with its state, result excerpt and a collapsed budget line, the earlier ones as rows, the panel's fourth pane after Session. It lists programs, the newest with the rows of its call record, and says a program with no record lists none; every string is a text node and it holds no handler. |
 | `packages/web_view/src/web_view/view/changes.gleam` | The Changes pane: the files the session's own `fs_edit` results and `fs_write` calls named (a write is one hunk of added lines, `written · N lines`) and their diffs (`session_view/changes_view`), the panel's second pane on both pages, bounded and drawn as text nodes with a class from a closed row kind. It reads no worktree. |
 | `packages/web_view/src/web_view/view/session_tab.gleam` | The Session pane: the goal, the followed strand's live jobs (the read-only `live_jobs` read the component makes on a tick, first ten seconds after opening and then at most every 10 s), on an operator's page only the attached viewers, and the estimated cost, as text nodes in the panel's third pane. |
@@ -1060,7 +1087,7 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/page.gleam` | The shell, the exchange page, the two scripts, the stylesheet, the keyed paths and the content security policy. |
 | `packages/client/src/client/daemon/server.gleam` | `/ui` routing and its check order, `ui.link`, and the `hello` `ui` field. |
 | `packages/client/src/client/daemon/ui_http.gleam` | Pure request checks and response headers: route, host, `Sec-Fetch-Site`, origin, cookies. |
-| `packages/web_view/src/web_view/home.gleam`, `view/home_bar.gleam`, `view/home_table.gleam` | The home page's component, top bar and per-workspace tables, whose running rows open a session and, on an operator-ceiling page, whose saved rows resume one (protocol-change/065). |
+| `packages/web_view/src/web_view/home.gleam`, `view/home_bar.gleam`, `view/home_table.gleam` | The home page's component, top bar and per-workspace lists, whose running rows open a session and, on an operator-ceiling page, whose saved rows resume one (protocol-change/065). |
 | `packages/web_view/src/web_view/view/resume.gleam` | The one rule for a saved row on the sidebar and the home's table: text, a resume button, or "opening" while a resume is out. |
 | `packages/client/src/client/daemon/ui_sessions.gleam` | The ticket and UI-session actor: mint, single-use redeem, lookup, key and nonce comparison, sweep, and the page-minted invitations' allowance (three an hour per credential). |
 | `packages/client/src/client/daemon/ui_socket.gleam` | The page's WebSocket: permit custody, the component chosen by role (observer, member operator, owner), frame filtering by role, the session and home tickets (`Standing`, `ticket_for`, `home_ticket_for`) and the invitation the daemon makes for a page, the home's socket and its row clicks, shutdown. |

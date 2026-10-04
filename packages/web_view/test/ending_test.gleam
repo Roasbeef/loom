@@ -6,6 +6,7 @@
 //// handed back to the caller's fallback instead of being drawn.
 
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/string
 import web_view/ending
 
@@ -112,4 +113,30 @@ pub fn an_ended_page_names_what_ends_a_page_test() {
   assert string.contains(advice, "4 pages")
   assert string.contains(advice, "oldest")
   assert ending.max_pages == 4
+}
+
+// The live notice's sentence is the advice's lead and then the command in
+// backticks, and an ending with no command says its lead and nothing more, for
+// a session's page and for a home's.
+pub fn the_sentence_is_the_lead_then_the_command_test() {
+  list.each(ending.all(), fn(reason) {
+    let session = ending.advised(reason, "S")
+    let said = ending.advice(reason, "S")
+    assert string.starts_with(said, session.lead)
+    case session.command {
+      Some(command) -> {
+        assert command == "loom ui --session S"
+        assert string.ends_with(
+          said,
+          "Run `" <> command <> "` for a fresh link.",
+        )
+      }
+      None -> {
+        assert said == session.lead
+      }
+    }
+    let home = ending.home_advised(reason)
+    assert home.command == Some("loom ui")
+    assert string.starts_with(ending.home_advice(reason), home.lead)
+  })
 }

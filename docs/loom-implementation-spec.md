@@ -157,6 +157,7 @@ pub fn get_register(h, ns: RegisterNs, key: String) -> Result(Option(Register), 
 pub fn list_registers(h, ns: RegisterNs, key_prefix: Option(String)) -> ...
 pub fn scan_branch(h, q: BranchScan) -> Result(List(Entry), StorageError)
 pub fn scan_entries(h, q: EntryScan) -> ...
+pub fn scan_entry_heads(h, q: EntryScan) -> Result(List(EntryHead), StorageError)  // (protocol-change/066) scan_entries projected to id, parent, seq; same rows, same order
 pub fn scan_usage(h, q: UsageScan) -> ...
 pub fn stats(h) -> Result(SessionStats, StorageError)
 pub fn close(h) -> Result(Nil, StorageError)
@@ -297,7 +298,7 @@ c→s: {v:2, id, cmd, body}
 s→c: {v:2, reply_to?, event, seq?, body}
 ```
 
-Control commands are `status`, `sessions.list`, `sessions.get`, `sessions.default`, `sessions.set_default`, `sessions.create`, `sessions.rename`, `sessions.open`, `sessions.stop`, `operations.get` and `daemon.shutdown`. The server's opening `hello` event carries no `reply_to`, and names the protocol version, the daemon epoch, the authenticated principal and the advertised limits; every later reply repeats its command's name as the `event`. Metadata reads never open a conversation database. Owner-only `sessions.rename` checks the daemon epoch and changes only display metadata; [protocol-change/019](../protocol-change/019-session-display-names.md) preserves the original name for creation-key equality.
+Control commands are `status`, `sessions.list`, `sessions.get`, `sessions.default`, `sessions.set_default`, `sessions.create`, `sessions.rename`, `sessions.open`, `sessions.stop`, `operations.get` and `daemon.shutdown`. The server's opening `hello` event carries no `reply_to`, and names the protocol version, the daemon epoch, the authenticated principal and the advertised limits; every later reply repeats its command's name as the `event`. Metadata reads never open a conversation database. Owner-only `sessions.rename` checks the daemon epoch and changes only display metadata; [protocol-change/019](../protocol-change/019-session-display-names.md) preserves the original name for creation-key equality. A session record may carry an optional `subtitle`, the first line of the session's first accepted prompt, which a client that does not know the member ignores ([protocol-change/067](../protocol-change/067-session-subtitle.md)).
 
 [`docs/client-protocol.md`](client-protocol.md) is the client-facing reference for all of this: every command and event body, the transfer procedure, the error codes and the limits, written so a new frontend can be built from it alone.
 

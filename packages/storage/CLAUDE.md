@@ -19,9 +19,11 @@ with these forks: they define the same modules.
 
 ## Key Types
 
-- The catalogue is at `user_version` 5. Each later version has its own embedded
+- The catalogue is at `user_version` 6. Each later version has its own embedded
   migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
-  `catalogue_claims_schema`, `catalogue_credential_kinds_schema`), and `initialize_schema` applies every schema an
+  `catalogue_claims_schema`, `catalogue_subtitles_schema`,
+  `catalogue_credential_kinds_schema`), and `initialize_schema` applies every
+  schema an
   older catalogue lacks, then moves the version, in one transaction; a fresh
   catalogue runs the same list after `sql_schema`. A version it does not know
   is refused, so a downgrade needs the pre-upgrade catalogue restored.
@@ -34,6 +36,22 @@ with these forks: they define the same modules.
   before their limit. `archived_page` uses the same revision and bounded shape.
   [Protocol 035](../../protocol-change/035-session-archive.md) defines the boundary.
 
+- `catalogue.seed_subtitle` writes a session's subtitle once
+  ([protocol 067](../../protocol-change/067-session-subtitle.md)). Version 5
+  adds `catalogue_session_subtitles`, a side table keyed by session ID like the
+  name override, so the creation row that `reserve` compares never changes: a
+  `Registration` carries `subtitle: Option(String)` from `get` and the pages,
+  and `find` and `by_request_key` always leave it `None`. The text is reduced by
+  `subtitle_from_prompt` (first nonblank line, whitespace collapsed, controls
+  and the zero-width and direction-changing code points removed,
+  `subtitle_limit` = 60 characters cut on a word with an ellipsis that counts),
+  and the existence check and the insert share one transaction, so the first
+  subtitle stands and a later call writes nothing and leaves the revision
+  alone. A stored value that breaks the rule reads as `None` rather than
+  failing a listing. `delete` removes the row. `catalogue.display_name` is the
+  rule for a name about to be written, and `rename` now applies it: blank,
+  over 256 bytes, a control, or an invisible code point (`invisible`, which
+  `access.new_name` shares) is `Invalid`.
 - `catalogue.rename` writes a session display-name override and increments the
   catalogue revision in one immediate transaction. The version-2 migration adds
   `catalogue_session_names`; the embedded `catalogue_names_schema` migrates
@@ -148,8 +166,12 @@ with these forks: they define the same modules.
   discard the outer transaction's writes.
 - `storage/storage.Storage(handle)` — a record of functions closed over a
   backend handle: `commit`, `get_entries`, `get_register`,
-  `list_registers`, `scan_branch`, `scan_entries`, `scan_usage`, `stats`,
-  `close`. `session` erases the handle type to `Storage(Nil)`.
+  `list_registers`, `scan_branch`, `scan_entries`, `scan_entry_heads`,
+  `scan_usage`, `stats`, `close`. `scan_entry_heads` is `scan_entries`
+  projected to `EntryHead` (id, parent, seq) with no payload read; the
+  conformance suite pins it to the full scan
+  ([protocol-change/066](../../protocol-change/066-entry-heads-scan.md)).
+  `session` erases the handle type to `Storage(Nil)`.
 - `storage/storage.{BranchScan, EntryScan, UsageScan}` — the three query
   shapes, built with the pipeline builders (`branch_scan`,
   `branch_stop_at_kind`, `branch_cursor`, `entry_seq_range`, ...).
@@ -271,7 +293,7 @@ with these forks: they define the same modules.
   conflict, including after revocation. Explicit member rotation recovers a
   lost successful reply without reusing any tombstoned digest. Invitation and
   rotation roll back all preceding writes if a later insertion fails.
-- **A credential has a kind, and every lookup names it.** Catalogue version 5
+- **A credential has a kind, and every lookup names it.** Catalogue version 6
   adds `kind` (`bearer` or `browser`, default `bearer`, so every existing row
   keeps its meaning) and the nullable `issued_at_ms` and `last_resumed_ms` to
   `access_credentials` (protocol-change/065). `access.authenticate` and

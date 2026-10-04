@@ -296,6 +296,7 @@ fn erase(store: Storage(handle)) -> Storage(Nil) {
     },
     scan_branch: fn(_, q) { storage.scan_branch(store, q) },
     scan_entries: fn(_, q) { storage.scan_entries(store, q) },
+    scan_entry_heads: fn(_, q) { storage.scan_entry_heads(store, q) },
     scan_usage: fn(_, q) { storage.scan_usage(store, q) },
     stats: fn(_) { storage.stats(store) },
     close: fn(_) { storage.close(store) },

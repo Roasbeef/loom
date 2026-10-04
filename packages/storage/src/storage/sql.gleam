@@ -465,6 +465,36 @@ pub fn registration_display_name_decoder() -> decode.Decoder(
   decode.success(RegistrationDisplayName(name:))
 }
 
+pub type RegistrationSubtitle {
+  RegistrationSubtitle(subtitle: String)
+}
+
+pub fn registration_subtitle(session_id session_id: String) {
+  let sql =
+    "SELECT subtitle FROM catalogue_session_subtitles WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)], registration_subtitle_decoder())
+}
+
+pub fn registration_subtitle_decoder() -> decode.Decoder(RegistrationSubtitle) {
+  use subtitle <- decode.field(0, decode.string)
+  decode.success(RegistrationSubtitle(subtitle:))
+}
+
+pub fn insert_registration_subtitle(
+  session_id session_id: String,
+  subtitle subtitle: String,
+) {
+  let sql =
+    "INSERT INTO catalogue_session_subtitles (session_id, subtitle) VALUES (?, ?)
+ON CONFLICT(session_id) DO NOTHING"
+  #(sql, [dev.ParamString(session_id), dev.ParamString(subtitle)])
+}
+
+pub fn delete_session_subtitle(session_id session_id: String) {
+  let sql = "DELETE FROM catalogue_session_subtitles WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)])
+}
+
 pub fn set_registration_display_name(
   session_id session_id: String,
   name name: String,
@@ -485,15 +515,17 @@ pub type RegistrationPage {
     created_at: Int,
     request_key: String,
     state: String,
+    subtitle: Option(String),
   )
 }
 
 pub fn registration_page(after after: String, archived archived: Int) {
   let sql =
     "SELECT s.session_id, s.path, s.workspace, CAST(COALESCE(n.name, s.name) AS TEXT) AS name,
-       s.configuration, s.created_at, s.request_key, s.state
+       s.configuration, s.created_at, s.request_key, s.state, t.subtitle
 FROM catalogue_sessions AS s
 LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
+LEFT JOIN catalogue_session_subtitles AS t ON t.session_id = s.session_id
 WHERE s.session_id > ?1
   AND EXISTS (SELECT 1 FROM catalogue_session_archives AS a
               WHERE a.session_id = s.session_id) = CAST(?2 AS INTEGER)
@@ -515,6 +547,7 @@ pub fn registration_page_decoder() -> decode.Decoder(RegistrationPage) {
   use created_at <- decode.field(5, decode.int)
   use request_key <- decode.field(6, decode.string)
   use state <- decode.field(7, decode.string)
+  use subtitle <- decode.field(8, decode.optional(decode.string))
   decode.success(RegistrationPage(
     session_id:,
     path:,
@@ -524,6 +557,7 @@ pub fn registration_page_decoder() -> decode.Decoder(RegistrationPage) {
     created_at:,
     request_key:,
     state:,
+    subtitle:,
   ))
 }
 
@@ -551,6 +585,7 @@ pub type MemberRegistrationPage {
     created_at: Int,
     request_key: String,
     state: String,
+    subtitle: Option(String),
   )
 }
 
@@ -560,10 +595,11 @@ pub fn member_registration_page(
 ) {
   let sql =
     "SELECT s.session_id, s.path, s.workspace, CAST(COALESCE(n.name, s.name) AS TEXT) AS name, s.configuration,
-       s.created_at, s.request_key, s.state
+       s.created_at, s.request_key, s.state, t.subtitle
 FROM access_memberships AS m
 JOIN catalogue_sessions AS s ON s.session_id = m.session_id
 LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
+LEFT JOIN catalogue_session_subtitles AS t ON t.session_id = s.session_id
 WHERE m.principal_id = ? AND s.session_id > ?
   AND m.role IN ('operator', 'observer')
   AND NOT EXISTS (SELECT 1 FROM catalogue_session_archives AS a
@@ -588,6 +624,7 @@ pub fn member_registration_page_decoder() -> decode.Decoder(
   use created_at <- decode.field(5, decode.int)
   use request_key <- decode.field(6, decode.string)
   use state <- decode.field(7, decode.string)
+  use subtitle <- decode.field(8, decode.optional(decode.string))
   decode.success(MemberRegistrationPage(
     session_id:,
     path:,
@@ -597,6 +634,7 @@ pub fn member_registration_page_decoder() -> decode.Decoder(
     created_at:,
     request_key:,
     state:,
+    subtitle:,
   ))
 }
 

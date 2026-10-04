@@ -73,6 +73,7 @@ import storage/domain
 import web_view/ending.{type Ending}
 import web_view/image
 import web_view/page
+import web_view/sessions as listed_sessions
 import weft
 
 /// Capabilities owned by the daemon, not supplied over the wire.
@@ -149,6 +150,13 @@ pub type HomeAttachment(instance) {
     permit: root.Permit,
     /// The registry the page's reads go to.
     registry: manager.Manager(instance),
+    /// Asks the named sessions what they are doing: the `sessions.activity`
+    /// read (protocol-change/050) the control socket serves the owner, made on
+    /// a page for the sessions its credential holds, and reduced to one
+    /// state for each session that answered (`home_activity`). It blocks for up to the read's own
+    /// deadline, so the page never calls it from its runtime
+    /// (`ui_socket.activity_task`).
+    activity: fn(List(String)) -> List(#(String, listed_sessions.Activity)),
   )
 }
 
@@ -400,6 +408,7 @@ fn home_upgrade(
             digest: grant.credential,
             permit:,
             registry: state.registry,
+            activity: home_activity(config, state.registry, grant.credential),
           ),
           open,
           grant.ceiling,
@@ -1829,9 +1838,13 @@ fn dispatch_class(
       Ok(#("sessions.list", page_body(bounded, current)))
     }
     protocol.SessionActivity(sessions, supplied) -> {
-      use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))
-      let rows = activity(config, state.registry, sessions)
+
+      // A member is asked about only the sessions its credential holds; the
+      // rest are dropped as unknown identities are (protocol-change/050, the
+      // addendum on members).
+      let rows =
+        activity(config, state.registry, held(state.registry, digest, sessions))
       let body = json.Object([#("activity", json.Array(rows))])
 
       // Each row is bounded, so the reply fits by construction; the check
@@ -2219,7 +2232,18 @@ pub fn view_json(view: manager.View) -> JsonValue {
     #("name", json.String(view.registration.name)),
     #("created_at", json.Int(view.registration.created_at)),
     #("status", status_json(view.status)),
+    ..subtitle_field(view.registration.subtitle)
   ])
+}
+
+// The optional `subtitle` of `protocol-change/067`. A session with none omits
+// the field, so a frame for it is byte-for-byte what an older daemon sent, and
+// a client that does not know the field reads the rest as before.
+fn subtitle_field(subtitle: Option(String)) -> List(#(String, JsonValue)) {
+  case subtitle {
+    Some(text) -> [#("subtitle", json.String(text))]
+    None -> []
+  }
 }
 
 fn status_json(status) {
@@ -2329,6 +2353,105 @@ fn activity(
       | weft.CancellationUnconfirmed(..) -> unknown_row(id)
     }
   })
+}
+
+/// The activity read a home page is handed: `activity_states` over the
+/// sessions the page's credential holds. Membership is derived here, in the
+/// registry, at the moment of each read, from the credential's digest and never
+/// from the page's list, so a revoked credential or a removed membership reads
+/// nothing from the next read on.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.home_activity(config, registry, digest)(["0198..."])
+/// ```
+@internal
+pub fn home_activity(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+) -> fn(List(String)) -> List(#(String, listed_sessions.Activity)) {
+  // The control command refuses a list past `activity_limit`; this read has no
+  // request to refuse, so it keeps the first ones and the bound holds here too.
+  fn(ids) {
+    let asked = list.take(ids, protocol.activity_limit)
+    activity_states(config, registry, held(registry, digest, asked))
+  }
+}
+
+// The identities among `ids` the credential holds a membership in, at any role,
+// in their order. The owner holds every session in the catalogue. An identity
+// the credential does not hold is dropped exactly as one the registry has never
+// heard of is, so `activity` leaves both out the same way and a reply never
+// tells a session that is not the caller's from one that is not running.
+fn held(
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+  ids: List(String),
+) -> List(String) {
+  list.filter(ids, fn(id) {
+    manager.session_authority(registry, digest, id) |> result.is_ok
+  })
+}
+
+/// What the named sessions are doing, for a home page's list: the same read
+/// the control command `sessions.activity` makes (`activity`, with its
+/// deadline and its bound on a row), reduced to the one state word the page
+/// draws for each session that answered. A session that was not running, did
+/// not answer in time, or answered with a state the page does not know has no
+/// entry. Only the state leaves the daemon here: the row's last message, model
+/// and glances, which the control command hands the owner, are dropped, so the
+/// page learns no more about a session than whether it works.
+///
+/// The caller names sessions from the page's own authorized list, at most 24
+/// of them, and runs this off the page's runtime. It blocks for up to the
+/// deadline.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.activity_states(config, registry, ["0198..."]) == [#("0198...", Working)]
+/// ```
+@internal
+pub fn activity_states(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  sessions: List(String),
+) -> List(#(String, listed_sessions.Activity)) {
+  activity(config, registry, sessions)
+  |> list.filter_map(state_of)
+}
+
+// The session and the state a reply row names, when it names a state the page
+// knows.
+fn state_of(
+  row: JsonValue,
+) -> Result(#(String, listed_sessions.Activity), Nil) {
+  case row {
+    json.Object(fields) -> {
+      use id <- result.try(text_field(fields, "session_id"))
+      use state <- result.try(text_field(fields, "state"))
+      use doing <- result.map(listed_sessions.activity_of(state))
+      #(id, doing)
+    }
+    json.Array(_)
+    | json.String(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Bool(_)
+    | json.Null -> Error(Nil)
+  }
+}
+
+fn text_field(
+  fields: List(#(String, JsonValue)),
+  name: String,
+) -> Result(String, Nil) {
+  case list.key_find(fields, name) {
+    Ok(json.String(value)) -> Ok(value)
+    Ok(_) | Error(Nil) -> Error(Nil)
+  }
 }
 
 fn bounded_row(row: JsonValue) -> Result(JsonValue, Nil) {

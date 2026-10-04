@@ -19,6 +19,15 @@
 //// answer as a message when it finishes, so the page keeps drawing while a
 //// session starts.
 ////
+//// What each running session is doing is not in the catalogue. Every list that
+//// answers starts a second read, `Start.activity`, for the running sessions it
+//// lists (at most `activity_limit`): the daemon asks each session from a task
+//// of its own, under the deadline `sessions.activity` has (protocol-change/050),
+//// and hands back one state word for each as `Observed`. The page draws the
+//// list first and the words when they arrive, and a session the daemon could
+//// not ask keeps a row that says only that it is resident. The runtime never
+//// waits for it: `activity` returns at once, as `resume` does.
+////
 //// The component draws a list and takes two inputs (protocol-change/065, the
 //// second and third pull requests): the press of a running session's row, in
 //// the table or in the sidebar, and, on a page minted to operate, the press of
@@ -54,6 +63,8 @@
 //// | none out | starts one, if the page may operate | nothing to answer | stays none |
 //// | one out | asks nothing | clears it, then departs or says why | clears it |
 
+import gleam/dict.{type Dict}
+import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -62,10 +73,13 @@ import lustre/attribute
 import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/event
 import lustre/server_component
 import web_view/ending.{type Ending}
-import web_view/sessions.{type Entry, type Group}
+import web_view/renames
+import web_view/sessions.{type Activity, type Entry, type Group, Live}
 import web_view/view/ended
+import web_view/view/heading
 import web_view/view/home_bar
 import web_view/view/home_table
 import web_view/view/resume.{type Resume}
@@ -81,7 +95,7 @@ import web_view/view/switch
 /// no other event; `home_test` fails if the view moves either region.
 pub const sidebar_path = "0\t1"
 
-/// The Lustre event path of the sessions table on the home page: the centre
+/// The Lustre event path of the sessions lists on the home page: the centre
 /// column is the third child of the frame, and the table's section is the
 /// centre's second child, after the notice's place. Every handler beneath it is
 /// one running session's name, which asks the daemon for a ticket to open that
@@ -93,6 +107,14 @@ pub const table_path = "0\t2\t1"
 /// which is rare, and a read is a catalogue query. It is the same interval the
 /// session page's sidebar keeps (`component.sessions_refresh_ms`).
 pub const refresh_ms = 30_000
+
+/// The most running sessions one activity read names. It is the daemon's own
+/// bound on `sessions.activity` (protocol-change/050): each answer is one
+/// row of at most 2,400 bytes under one 2,000 ms deadline, and the reply holds
+/// 24. A principal with more running sessions than this sees the activity of
+/// the first ones in the order the page draws them, and the rest show only
+/// that they are resident.
+pub const activity_limit = 24
 
 /// The most the page was minted to do. The daemon's link carries it and the
 /// top bar says it in fixed words; it decides nothing on this page, which only
@@ -146,7 +168,43 @@ pub type Start {
     /// from the daemon's own task, as `Linked`'s message. A page whose ceiling
     /// is the observer's never calls it, and the daemon refuses if one did.
     resume: fn(String, fn(sessions.Answer) -> Nil) -> Nil,
+    /// The wall-clock time in Unix milliseconds, which the rows' ages are
+    /// counted from. It is read once for each list, in the component's
+    /// process, and must return at once.
+    now: fn() -> Int,
+    /// Asks the daemon what the named running sessions are doing, at most
+    /// `activity_limit` of them, all of which the page's own list holds. It
+    /// must return at once, as `resume` must: the daemon asks each session from
+    /// a task of its own, under its own deadline, and the answer goes to the
+    /// function it is given, from that task, as `Observed`'s message. A session
+    /// the daemon could not ask, or that was slow to answer, is left out of the
+    /// answer, and its row says nothing about what it is doing.
+    activity: fn(List(String), fn(List(#(String, Activity))) -> Nil) -> Nil,
+    /// Asks the daemon to rename the named session, for the owner's page that
+    /// submitted a row's rename form (protocol-change/067): the daemon checks
+    /// that the page is open and was minted to operate, that its credential
+    /// still authenticates as the daemon's owner, that the identity is a
+    /// session its catalogue holds and that the name is one a display name may
+    /// be, and then makes the registry's owner-checked rename. It must return
+    /// at once, as `resume` must: the answer goes to the function it is given,
+    /// from the daemon's own task, as `RenameAnswered`'s message. It is `None`
+    /// unless the page's principal is the daemon's owner on a page minted to
+    /// operate, and the daemon checks that again when it runs.
+    rename: Option(fn(String, String, fn(renames.Answer) -> Nil) -> Nil),
   )
+}
+
+/// What the rename control is doing on the page. It is the page's own state and
+/// nothing the daemon records.
+pub type Edit {
+  /// No row's rename form is open.
+  NotEditing
+
+  /// The form of one row is open, and the control says where it stands:
+  /// `Ready` waits for a name, `Asking` has a request with the daemon, and
+  /// `Refused` words why the last one stored nothing. Only one row is open at a
+  /// time, so opening another closes this one.
+  Editing(session: String, control: renames.Control)
 }
 
 /// What the page says about its own standing.
@@ -170,6 +228,13 @@ pub opaque type Model {
     /// The entries of the last list, grouped for the sidebar and the table.
     /// It is built when a read lists, so a render regroups nothing.
     groups: List(Group),
+    /// What the daemon last said each running session is doing, by identity.
+    /// An answer replaces it whole, so a session that stopped running leaves it
+    /// at the next one.
+    activity: Dict(String, Activity),
+    /// The time the last list was read, in Unix milliseconds, which the rows'
+    /// ages are counted from.
+    now: Int,
     status: Status,
     /// The refresh timer's subject, known once the runtime has made it.
     timer: Option(Subject(Nil)),
@@ -184,6 +249,8 @@ pub opaque type Model {
     /// asks the daemon and cleared by the answer, so a second press while it is
     /// set asks nothing.
     resuming: Option(String),
+    /// Which row's rename form is open, and where it stands.
+    edit: Edit,
   )
 }
 
@@ -200,6 +267,11 @@ pub type Msg {
   /// The answer to a read.
   Answered(listing: Listing)
 
+  /// The daemon's answer to the activity read a list started: one state for
+  /// each session it could ask. It is the effect's own message, dispatched from
+  /// the daemon's task, and no handler carries it.
+  Observed(rows: List(#(String, Activity)))
+
   /// A running session's row was pressed: ask the daemon for a ticket to open
   /// it. The identity is the catalogue's, fixed when the tree was drawn, and
   /// the daemon decides whether the page's principal may have it.
@@ -215,6 +287,25 @@ pub type Msg {
   /// effect's own message, dispatched from the component's process or from the
   /// daemon's task, and no handler carries it, so a browser cannot send one.
   Linked(answer: sessions.Answer)
+
+  /// A row's Rename button was pressed: open that row's form. Only an owner's
+  /// page draws the button, and the daemon checks again when a name is sent. The
+  /// identity is the catalogue's, fixed when the tree was drawn.
+  EditRequested(session: String)
+
+  /// The open form's Cancel button was pressed: close it.
+  EditCancelled
+
+  /// A row's rename form was submitted with this text. The identity is the
+  /// catalogue's, fixed when the tree was drawn, and the text is the browser's
+  /// and nothing else is: the daemon decides whether the page's principal may
+  /// rename and whether the name is one a display name may be.
+  Renaming(session: String, name: String)
+
+  /// The daemon answered a request to rename. It is the effect's own message,
+  /// dispatched from the daemon's task, and no handler carries it, so a browser
+  /// cannot put a name in the page that the daemon did not store.
+  RenameAnswered(answer: renames.Answer)
 }
 
 /// The application the daemon's socket starts, one per home page.
@@ -240,11 +331,14 @@ pub fn new(start: Start) -> Model {
   Model(
     start:,
     groups: [],
+    activity: dict.new(),
+    now: 0,
     status: Connecting,
     timer: None,
     departure: None,
     notice: None,
     resuming: None,
+    edit: NotEditing,
   )
 }
 
@@ -294,7 +388,23 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         Connecting | Connected -> #(model, refreshing(model))
       }
 
-    Answered(listing:) -> #(answered(model, listing), effect.none())
+    // A list that answered starts the read of what its running sessions are
+    // doing. The read is the daemon's own task and returns at once, so the
+    // list is drawn now and the activity words arrive with `Observed`.
+    Answered(listing:) -> {
+      let model = answered(model, listing)
+      #(model, observing(model))
+    }
+
+    // An ended page keeps the activity it last drew, as it keeps its list.
+    Observed(rows:) ->
+      case model.status {
+        Ended(_) -> #(model, effect.none())
+        Connecting | Connected -> #(
+          Model(..model, activity: dict.from_list(rows)),
+          effect.none(),
+        )
+      }
 
     // A press asks the daemon in the component's own process. An ended page
     // asks nothing: its principal's access is gone, and the daemon would
@@ -329,6 +439,81 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         -> #(model, effect.none())
       }
 
+    // The rename form of one row opens, on a page that may rename. Opening a
+    // form while a request is out would hide that request's answer, so it is
+    // ignored until the request ends.
+    EditRequested(session:) ->
+      case model.start.rename, model.status, model.edit {
+        Some(_), Connected, NotEditing
+        | Some(_), Connected, Editing(_, renames.Ready)
+        | Some(_), Connected, Editing(_, renames.Refused(..))
+        | Some(_), Connected, Editing(_, renames.Done)
+        | Some(_), Connected, Editing(_, renames.Withheld)
+        -> #(
+          Model(..model, edit: Editing(session, renames.Ready)),
+          effect.none(),
+        )
+        Some(_), Connected, Editing(_, renames.Asking)
+        | Some(_), Connecting, _
+        | Some(_), Ended(_), _
+        | None, _, _
+        -> #(model, effect.none())
+      }
+
+    EditCancelled ->
+      case model.edit {
+        Editing(_, renames.Asking) | NotEditing -> #(model, effect.none())
+        Editing(_, renames.Ready)
+        | Editing(_, renames.Refused(..))
+        | Editing(_, renames.Done)
+        | Editing(_, renames.Withheld) -> #(
+          Model(..model, edit: NotEditing),
+          effect.none(),
+        )
+      }
+
+    // A submit asks the daemon from the daemon's own task, so the runtime stays
+    // free while the registry answers. It asks only for the row whose form is
+    // open, and only once: a second submit while the request is out asks
+    // nothing, and a page with no capability asks nothing at all.
+    Renaming(session:, name:) ->
+      case model.start.rename, model.edit {
+        Some(ask), Editing(open, renames.Ready) if open == session -> #(
+          Model(..model, edit: Editing(session, renames.Asking)),
+          renaming(ask, session, name),
+        )
+        Some(ask), Editing(open, renames.Refused(..)) if open == session -> #(
+          Model(..model, edit: Editing(session, renames.Asking)),
+          renaming(ask, session, name),
+        )
+        Some(_), Editing(..) | Some(_), NotEditing | None, _ -> #(
+          model,
+          effect.none(),
+        )
+      }
+
+    // The answer: a stored name replaces the row's in the page's own state at
+    // once, the daemon's own word for it, and the next read confirms it; a
+    // refusal is worded in the open form, in the reason's fixed words. An answer
+    // that arrives when no request is out was not asked for and is dropped.
+    RenameAnswered(answer:) ->
+      case model.edit, answer {
+        Editing(session, renames.Asking), renames.Renamed(name:) -> #(
+          Model(
+            ..model,
+            edit: NotEditing,
+            notice: Some("Renamed."),
+            groups: renamed(model.groups, session, name),
+          ),
+          effect.none(),
+        )
+        Editing(session, renames.Asking), renames.Declined(reason:) -> #(
+          Model(..model, edit: Editing(session, renames.Refused(reason))),
+          effect.none(),
+        )
+        Editing(..), _ | NotEditing, _ -> #(model, effect.none())
+      }
+
     // The answer: a ticket becomes the address `<loom-switch>` navigates to,
     // and a refusal is the page's notice in the reason's fixed words. Either
     // way no resume is out any longer.
@@ -355,6 +540,32 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   }
 }
 
+// Starts the daemon's rename task and returns at once; the task's answer
+// arrives later as `RenameAnswered`, dispatched from the task's own process.
+fn renaming(
+  rename: fn(String, String, fn(renames.Answer) -> Nil) -> Nil,
+  session: String,
+  name: String,
+) -> Effect(Msg) {
+  use dispatch <- effect.from
+  rename(session, name, fn(answer) { dispatch(RenameAnswered(answer)) })
+}
+
+// The groups with one session's name replaced.
+fn renamed(groups: List(Group), session: String, name: String) -> List(Group) {
+  list.map(groups, fn(group) {
+    sessions.Group(
+      ..group,
+      entries: list.map(group.entries, fn(entry) {
+        case entry.id == session {
+          True -> sessions.Entry(..entry, name:)
+          False -> entry
+        }
+      }),
+    )
+  })
+}
+
 // Starts the daemon's task and returns at once; the task's answer arrives
 // later as `Linked`, dispatched from the task's own process. Lustre's dispatch
 // sends to the runtime's mailbox, so it is safe to call from there.
@@ -364,6 +575,26 @@ fn resuming(
 ) -> Effect(Msg) {
   use dispatch <- effect.from
   resume(session, fn(answer) { dispatch(Linked(answer)) })
+}
+
+// Starts the activity read for the running sessions the page lists, in the
+// order it draws them and no more than `activity_limit`, and returns at once;
+// the answer arrives later as `Observed`, dispatched from the daemon's task as
+// `Linked` is. A page with no running session asks nothing, and a page that
+// ended asks nothing more.
+fn observing(model: Model) -> Effect(Msg) {
+  let running =
+    list.flat_map(model.groups, fn(group) { group.entries })
+    |> list.filter(fn(entry) { entry.residency == Live })
+    |> list.take(activity_limit)
+    |> list.map(fn(entry) { entry.id })
+  case running, model.status {
+    [], _ | _, Ended(_) | _, Connecting -> effect.none()
+    [_, ..], Connected -> {
+      use dispatch <- effect.from
+      model.start.activity(running, fn(rows) { dispatch(Observed(rows)) })
+    }
+  }
 }
 
 // The daemon's answer, in the component's process, as a message.
@@ -399,6 +630,7 @@ fn answered(model: Model, listing: Listing) -> Model {
       Model(
         ..model,
         groups: sessions.grouped(list.take(entries, sessions.listed_limit), ""),
+        now: model.start.now(),
         status: Connected,
       )
     Unread -> model
@@ -430,12 +662,12 @@ pub fn status(model: Model) -> Status {
 }
 
 /// The page: the frame a session's page draws, with the principal's sessions
-/// in the sidebar and as tables in the centre, and no strand panel. Its top
+/// in the sidebar and as lists in the centre, and no strand panel. Its top
 /// bar names the page, the principal and the most the page may do, and carries
 /// the notice of a page that ended.
 ///
 /// The centre's children are, in order, the notice of the last press (an
-/// empty node when there is none, so the table keeps its path), the tables
+/// empty node when there is none, so the list keeps its path), the lists
 /// (`table_path`), and the hidden `<loom-switch>` element, last so that no
 /// admitted path moves with it.
 ///
@@ -451,12 +683,20 @@ pub fn view(model: Model) -> Element(Msg) {
       name: model.start.name,
       ceiling: ceiling_words(model.start.ceiling),
       status: status_words(model.status),
+      tone: status_tone(model.status),
       notice: ended.home(ended_ending(model.status)),
     ),
     shell_sidebar(model),
     [
       press_notice(model.notice),
-      home_table.view(model.groups, Opening, resume_offer(model)),
+      home_table.view(
+        model.groups,
+        model.activity,
+        model.now,
+        Opening,
+        resume_offer(model),
+        rename_offer(model),
+      ),
       switch.view(model.departure),
     ],
     element.none(),
@@ -472,6 +712,49 @@ fn resume_offer(model: Model) -> Resume(Msg) {
     OperatorCeiling -> resume.Offered(Resuming, model.resuming)
     ObserverCeiling -> resume.Never
   }
+}
+
+// What the table offers for renaming a row: a button on a page whose daemon
+// handed it the capability, and nothing otherwise.
+fn rename_offer(model: Model) -> home_table.Rename(Msg) {
+  case model.start.rename {
+    None -> home_table.Never
+    Some(_) ->
+      home_table.Offered(
+        edit: EditRequested,
+        cancel: EditCancelled,
+        submit: submitting,
+        open: case model.edit {
+          NotEditing -> None
+          Editing(session:, control:) ->
+            Some(home_table.Open(session:, control:))
+        },
+      )
+  }
+}
+
+// A row's form submit as the message that names the session the server drew
+// into the tree and carries the one text field the form has. Any other field, a
+// repeated one or a missing one refuses the event, as the control forms do.
+fn submitting(session: String) -> attribute.Attribute(Msg) {
+  event.on("submit", written(session)) |> event.prevent_default
+}
+
+fn written(session: String) -> decode.Decoder(Msg) {
+  use fields <- decode.subfield(
+    ["detail", "formData"],
+    decode.list(form_field()),
+  )
+  case fields {
+    [#("text", name)] -> decode.success(Renaming(session, name))
+    _ -> decode.failure(Renaming(session, ""), "rename form")
+  }
+}
+
+fn form_field() -> decode.Decoder(#(String, String)) {
+  use name <- decode.field(0, decode.string)
+  use value <- decode.field(1, decode.string)
+  decode.success(#(name, value))
 }
 
 // The sidebar's column, or the frame's word that there is none.
@@ -498,6 +781,15 @@ fn ceiling_words(ceiling: Ceiling) -> String {
   case ceiling {
     OperatorCeiling -> "operator"
     ObserverCeiling -> "read-only"
+  }
+}
+
+// The pill's colour follows the standing, as a session page's does.
+fn status_tone(status: Status) -> heading.Tone {
+  case status {
+    Connecting -> heading.Pending
+    Connected -> heading.Live
+    Ended(_) -> heading.Closed
   }
 }
 

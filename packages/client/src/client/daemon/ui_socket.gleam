@@ -39,6 +39,14 @@
 //// only for it, so a member operator's browser cannot press the control even
 //// by forging the path.
 ////
+//// An owner's page also draws a rename control for the page's own session
+//// (protocol-change/067). It is admitted the way the invitation control is: the
+//// socket takes a submit beneath `component.rename_path` only for an owner's
+//// page, and `rename_for` is the daemon's own check, made afresh in a task of
+//// its own (`rename_task`) so the page's runtime never waits on the registry.
+//// The page sends the typed name and nothing else, and no frame can name a
+//// session, because the session is the attachment's.
+////
 //// One component per connection. It is started from this socket's process
 //// and linked to it, and the socket shuts it down when the browser goes
 //// away, which is what ends its relay (the relay monitors the component).
@@ -151,6 +159,7 @@ import web_view/home
 import web_view/invites
 import web_view/operator_page
 import web_view/page
+import web_view/renames
 import web_view/sessions
 import weft
 import weft/poll
@@ -270,10 +279,12 @@ fn observer_path(path: String) -> Bool {
 /// `component.sidebar_path` and a peer message's Open button need no entry of
 /// their own; Lustre dispatches the event only to a handler the page drew at
 /// that path, and the daemon checks the session again before it mints a ticket
-/// (`ticket_for`). The one path it drops is `component.invite_path` and
-/// anything beneath it, the invitation control, which is an owner's and which
-/// this page does not draw (`owner_accepts`; the addendum on inviting from the
-/// session page). A message in a batch that reaches it drops the whole batch.
+/// (`ticket_for`). The two places it drops are `component.invite_path` and
+/// `component.rename_path` and anything beneath either, the invitation control
+/// and the rename control, which are an owner's and which this page does not
+/// draw (`owner_accepts`; the addendum on inviting from the session page, and
+/// protocol-change/067). A message in a batch that reaches one of them drops the
+/// whole batch.
 ///
 /// ## Examples
 ///
@@ -281,12 +292,13 @@ fn observer_path(path: String) -> Bool {
 /// assert ui_socket.operator_accepts("{\"kind\":1,\"name\":\"click\"}")
 /// ```
 pub fn operator_accepts(frame: String) -> Bool {
-  accepts(frame, ExceptInvite)
+  accepts(frame, ExceptOwner)
 }
 
 /// The browser messages an owner's page takes: what `operator_accepts` takes,
-/// and a click at or beneath `component.invite_path` as well. It is the one
-/// socket that admits the invitation control's buttons, and it is started
+/// and an event at or beneath `component.invite_path` and
+/// `component.rename_path` as well. It is the one socket that admits the
+/// invitation control's buttons and the rename form's submit, and it is started
 /// only for a page whose principal is the daemon's owner.
 ///
 /// ## Examples
@@ -298,13 +310,13 @@ pub fn owner_accepts(frame: String) -> Bool {
   accepts(frame, Everywhere)
 }
 
-// Where an operator-class socket admits a click.
+// Where an operator-class socket admits an event.
 type Reach {
   // At any path: an owner's page.
   Everywhere
 
-  // At any path but the invitation control's: a member operator's page.
-  ExceptInvite
+  // At any path but the two owner controls': a member operator's page.
+  ExceptOwner
 }
 
 fn accepts(frame: String, reach: Reach) -> Bool {
@@ -338,16 +350,22 @@ fn accepted(reach: Reach) -> decode.Decoder(Bool) {
   }
 }
 
-// Whether a socket of this reach admits an event at `path`. The invitation
-// control's own path is included, and so is anything beneath it, with the
-// separator so that a path that merely begins with the same digits is not.
+// Whether a socket of this reach admits an event at `path`. Each owner
+// control's own path is excluded for a member, and so is anything beneath it,
+// with the separator so that a path that merely begins with the same digits is
+// not.
 fn reaches(reach: Reach, path: String) -> Bool {
   case reach {
     Everywhere -> True
-    ExceptInvite ->
-      path != component.invite_path
-      && !string.starts_with(path, component.invite_path <> "\t")
+    ExceptOwner ->
+      !beneath(path, component.invite_path)
+      && !beneath(path, component.rename_path)
   }
+}
+
+// Whether `path` is `region` or inside it.
+fn beneath(path: String, region: String) -> Bool {
+  path == region || string.starts_with(path, region <> "\t")
 }
 
 /// Upgrades one checked page request to the component's socket.
@@ -419,6 +437,22 @@ pub fn upgrade(
     invite_capability(role, fn(chosen) {
       invite_for(attachment, tickets, open, address, chosen)
     })
+
+  // The capability to rename is an owner's too, and is made from the same
+  // attachment: the session it renames is the attachment's, and the daemon's
+  // epoch is the one the router read when it admitted the page.
+  let standing = page_standing(attachment, ceiling, reach)
+  let rename =
+    rename_capability(role, fn(name, deliver) {
+      rename_task(
+        standing,
+        open,
+        attachment.epoch,
+        attachment.session_id,
+        name,
+        deliver,
+      )
+    })
   websocket(request, limit, settled, fn(signals) {
     admit(
       daemon,
@@ -428,6 +462,7 @@ pub fn upgrade(
       open,
       register,
       invite,
+      rename,
       reach,
       expected,
       signals,
@@ -562,6 +597,22 @@ pub fn upgrade_home(
   let settled = process.new_subject()
   let limit = root.message_limit(root.Observer)
   let standing = home_standing(attachment, ceiling, reach)
+
+  // An owner's operating page may rename the sessions it lists
+  // (protocol-change/067). It alone is handed the capability and has the
+  // submit admitted; every other home draws no control and drops the event.
+  let rename =
+    home_rename_capability(
+      attachment.principal,
+      ceiling,
+      fn(target, name, deliver) {
+        rename_task(standing, open, attachment.epoch, target, name, deliver)
+      },
+    )
+  let admits = case rename {
+    Some(_) -> home_owner_accepts
+    None -> home_accepts
+  }
   websocket(request, limit, settled, fn(signals) {
     admit_home(
       daemon,
@@ -570,12 +621,39 @@ pub fn upgrade_home(
       fn(target, deliver) {
         resume_task(standing, tickets, open, target, deliver)
       },
+      rename,
+      admits,
       open,
       ceiling,
       signals,
       settled,
     )
   })
+}
+
+/// The capability to rename a listed session that a home page minted for
+/// `principal` with `ceiling` is handed: `ask` for the daemon's owner on a page
+/// minted to operate, and none for any other (protocol-change/067). The daemon
+/// checks both facts again when the request runs (`rename_for`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.home_rename_capability(member, access.Operator, ask) == None
+/// ```
+@internal
+pub fn home_rename_capability(
+  principal: access.Principal,
+  ceiling: access.Role,
+  ask: fn(String, String, fn(renames.Answer) -> Nil) -> Nil,
+) -> Option(fn(String, String, fn(renames.Answer) -> Nil) -> Nil) {
+  case principal.kind, ceiling {
+    access.OwnerPrincipal, access.Operator -> Some(ask)
+    access.OwnerPrincipal, access.Observer
+    | access.MemberPrincipal, access.Operator
+    | access.MemberPrincipal, access.Observer
+    -> None
+  }
 }
 
 /// The browser messages a home page takes: Lustre's `EventFired` for a
@@ -598,24 +676,55 @@ pub fn upgrade_home(
 /// assert !ui_socket.home_accepts("{\"kind\":1,\"name\":\"submit\"}")
 /// ```
 pub fn home_accepts(frame: String) -> Bool {
-  case json.parse(frame, home_click()) {
+  case json.parse(frame, home_event(Browsing)) {
     Ok(accepted) -> accepted
     Error(_) -> False
   }
 }
 
-fn home_click() -> decode.Decoder(Bool) {
+/// The browser messages an owner's home page takes: what `home_accepts` takes,
+/// and a `submit` beneath `home.table_path`, where the rename form of a row is
+/// (protocol-change/067). It is started only for a home whose principal is the
+/// daemon's owner on a page minted to operate, so a member's home and an
+/// observer-ceiling home drop the submit even if a frame names the path. A
+/// submit anywhere else, including the sidebar, is still dropped, and so is a
+/// batch with one in it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !ui_socket.home_owner_accepts("{\"kind\":1,\"name\":\"submit\",\"path\":\"0\\t1\\t0\"}")
+/// ```
+pub fn home_owner_accepts(frame: String) -> Bool {
+  case json.parse(frame, home_event(Renaming)) {
+    Ok(accepted) -> accepted
+    Error(_) -> False
+  }
+}
+
+// What a home socket admits besides a click on a row: nothing, or the owner's
+// rename submit.
+type HomeRights {
+  Browsing
+  Renaming
+}
+
+fn home_event(rights: HomeRights) -> decode.Decoder(Bool) {
   use kind <- decode.field("kind", decode.int)
   case kind {
     1 -> {
       use name <- decode.field("name", decode.string)
       use path <- decode.field("path", decode.string)
-      decode.success(name == "click" && home_row_path(path))
+      decode.success(case name, rights {
+        "click", _ -> home_row_path(path)
+        "submit", Renaming -> string.starts_with(path, home.table_path <> "\t")
+        _, _ -> False
+      })
     }
     3 -> {
       use messages <- decode.field(
         "messages",
-        decode.list(decode.recursive(home_click)),
+        decode.list(decode.recursive(fn() { home_event(rights) })),
       )
       decode.success(messages != [] && list.all(messages, fn(ok) { ok }))
     }
@@ -639,6 +748,8 @@ fn admit_home(
   attachment: server.HomeAttachment(instance),
   opening: fn(String) -> sessions.Answer,
   resuming: fn(String, fn(sessions.Answer) -> Nil) -> Nil,
+  rename: Option(fn(String, String, fn(renames.Answer) -> Nil) -> Nil),
+  admits: fn(String) -> Bool,
   open: fn() -> Result(Int, Nil),
   ceiling: access.Role,
   signals: process.Subject(Signal),
@@ -658,6 +769,11 @@ fn admit_home(
       },
       open: opening,
       resume: resuming,
+      now: bootstrap.system_time_ms,
+      activity: fn(ids, deliver) {
+        activity_task(attachment.activity, ids, deliver)
+      },
+      rename:,
     )
   let started = case transferred {
     Error(reason) -> {
@@ -665,7 +781,7 @@ fn admit_home(
       Error(Nil)
     }
     Ok(Nil) ->
-      launch(home.app(), start, home_accepts)
+      launch(home.app(), start, admits)
       |> result.map_error(fn(_) {
         upgrade_log.closed_early(
           upgrade_log.Page,
@@ -828,6 +944,7 @@ fn admit(
   open: fn() -> Result(Int, Nil),
   register: fn(ui_sessions.Images) -> Nil,
   invite: Option(fn(invites.Role) -> invites.Answer),
+  rename: Option(fn(String, fn(renames.Answer) -> Nil) -> Nil),
   reach: ui_sessions.Reach,
   expected: snapshot.Expected,
   signals: process.Subject(Signal),
@@ -860,6 +977,7 @@ fn admit(
       home: home_capability(reach, fn() {
         home_ticket_for(standing, tickets, open)
       }),
+      rename:,
     )
   let start =
     component.Start(
@@ -1433,6 +1551,41 @@ pub fn resume_task(
   Nil
 }
 
+/// Starts the home page's activity read in a run of its own and returns at
+/// once, so the page's runtime never waits for the sessions to answer;
+/// `deliver` is called, from that run, with what `ask` returned.
+///
+/// `ask` is the daemon's `sessions.activity` read (`server.activity_states`),
+/// which asks every named session concurrently under one deadline of its own
+/// and leaves out any that did not answer, so the run ends within that
+/// deadline. The run is linked to the calling process, which is the page's
+/// runtime, so a page that goes away cancels the read, and `deliver` is its last
+/// act, so a page that stays open is always answered, with an empty list when
+/// nothing answered. A run that crashed delivers nothing, and the page keeps
+/// the words it had until the next list asks again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.activity_task(attachment.activity, ["0198..."], deliver)
+/// ```
+@internal
+pub fn activity_task(
+  ask: fn(List(String)) -> List(#(String, sessions.Activity)),
+  ids: List(String),
+  deliver: fn(List(#(String, sessions.Activity))) -> Nil,
+) -> Nil {
+  let _ =
+    weft.new([
+      fn() {
+        deliver(ask(ids))
+        Ok(Nil)
+      },
+    ])
+    |> weft.start_witnessed
+  Nil
+}
+
 /// The daemon's answer to an owner's page asking to invite a person to the
 /// page's own session: an invitation, or the reason there is none
 /// (protocol-change/051, the addendum on inviting from the session page).
@@ -1632,6 +1785,161 @@ fn reason_of(refusal: Refusal) -> invites.Reason {
   }
 }
 
+/// The capability to rename the page's session that a page of `role` is
+/// handed: `ask` for an owner's page and none for any other, which is the whole
+/// of who may draw and use the rename control (protocol-change/067).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.rename_capability(ui_socket.Operating, ask) == None
+/// ```
+@internal
+pub fn rename_capability(
+  role: Role,
+  ask: fn(String, fn(renames.Answer) -> Nil) -> Nil,
+) -> Option(fn(String, fn(renames.Answer) -> Nil) -> Nil) {
+  case role {
+    Owning -> Some(ask)
+    Observing | Operating -> None
+  }
+}
+
+/// Renames `target` to `name` for the asking page's principal, or gives the
+/// reason it did not (protocol-change/067). A page's own session is the one it
+/// names, and the daemon reads it from the attachment and never from a frame.
+///
+/// Every step is the daemon's and is made afresh, with the digest of the
+/// credential the page was admitted under, and nothing is taken from the page
+/// but the text of the name:
+///
+/// 0. The asking page must still be open (`open`), as for every other action the
+///    page takes. A page that ended but whose socket is still up renames
+///    nothing (`NotOwner`).
+/// 1. The page must have been minted to operate. An observer-ceiling page is
+///    refused, whatever its principal is.
+/// 2. The credential must still authenticate, and as the principal the page was
+///    admitted for, and that principal must be the daemon's owner. The page's
+///    own role is not read: the rename control's presence says nothing here.
+/// 3. `target` must be a canonical session identity, which a forged or
+///    malformed one is not (`NotOwner`, the words for every standing the page
+///    cannot claim).
+/// 4. The name, trimmed, must pass `catalogue.display_name`: nonblank, at most
+///    256 bytes, no control, zero-width or direction-changing character
+///    (`InvalidName`).
+/// 5. `manager.rename` is the registry turn the control command's
+///    `sessions.rename` runs: it authenticates the credential and the epoch a
+///    second time, needs the owner, and writes the name and the catalogue
+///    revision together. An identity the catalogue does not hold is refused
+///    there (`NotOwner`), as is a stale epoch or a member.
+///
+/// The name an answer carries is the one the catalogue now holds. The detail of
+/// any other refusal stays in the daemon.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.rename_for(standing, open, epoch, session_id, "review auth")
+/// ```
+@internal
+pub fn rename_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  epoch: String,
+  target: String,
+  name: String,
+) -> renames.Answer {
+  let outcome = {
+    use _ <- result.try(open() |> result.replace_error(renames.NotOwner))
+    use _ <- result.try(
+      operating_ceiling(standing.ceiling)
+      |> result.replace_error(renames.NotOwner),
+    )
+    use principal <- result.try(
+      manager.authenticate(standing.registry, standing.digest)
+      |> result.replace_error(renames.NotOwner),
+    )
+    use _ <- result.try(
+      case principal.id == standing.principal, principal.kind {
+        True, access.OwnerPrincipal -> Ok(Nil)
+        True, access.MemberPrincipal | False, _ -> Error(renames.NotOwner)
+      },
+    )
+    use _ <- result.try(
+      ids.parse_session_id(target) |> result.replace_error(renames.NotOwner),
+    )
+    let name = string.trim(name)
+    use _ <- result.try(
+      catalogue.display_name(name) |> result.replace_error(renames.InvalidName),
+    )
+    use view <- result.map(
+      manager.rename(standing.registry, standing.digest, epoch, target, name)
+      |> result.map_error(rename_refusal),
+    )
+    view.registration.name
+  }
+  case outcome {
+    Ok(stored) -> renames.Renamed(stored)
+    Error(reason) -> renames.Declined(reason)
+  }
+}
+
+// The fixed reason for a refusal of the registry's rename. A principal that is
+// not the owner, a stale epoch and a session the catalogue does not hold read
+// alike, so a page learns nothing about which; a name the catalogue itself
+// refused is a bad name, and anything else is the daemon's to sort out.
+fn rename_refusal(error: manager.AdminError) -> renames.Reason {
+  case error {
+    manager.AdminForbidden
+    | manager.AdminStaleEpoch
+    | manager.AdminMetadata(catalogue.Missing) -> renames.NotOwner
+    manager.AdminMetadata(catalogue.Invalid(_)) -> renames.InvalidName
+    manager.AdminMetadata(catalogue.Unsupported)
+    | manager.AdminMetadata(catalogue.Conflict)
+    | manager.AdminMetadata(catalogue.Database(_))
+    | manager.IsolationRequired
+    | manager.AdminUnavailable
+    | manager.AdminBusy
+    | manager.AdminForeignPath -> renames.Unavailable
+  }
+}
+
+/// Starts `rename_for` in a run of its own and returns at once, so the page's
+/// runtime is free while the registry answers; `deliver` is called, from that
+/// run, with the answer, whatever it is.
+///
+/// The run is a weft run with one task, linked to the calling process, which is
+/// the page's runtime, as `resume_task`'s is: a page that goes away cancels it,
+/// and a rename the registry has already begun finishes on the registry's own
+/// turn. Every step of `rename_for` is bounded by its own call timeouts, so the
+/// task always answers within seconds and needs no deadline of its own. Its last
+/// act is `deliver`, so a page that stays open is always answered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.rename_task(standing, open, epoch, session_id, "review auth", deliver)
+/// ```
+@internal
+pub fn rename_task(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  epoch: String,
+  target: String,
+  name: String,
+  deliver: fn(renames.Answer) -> Nil,
+) -> Nil {
+  let _ =
+    weft.new([
+      fn() {
+        deliver(rename_for(standing, open, epoch, target, name))
+        Ok(Nil)
+      },
+    ])
+    |> weft.start_witnessed
+  Nil
+}
+
 /// The address a page's claim command names: `ws://` and the `Host` the page
 /// was reached at, then `/v2/control`, when `loom claim` accepts it.
 ///
@@ -1707,6 +2015,7 @@ pub fn listed_entry(view: manager.View) -> sessions.Entry {
       manager.Saved -> sessions.Saved
       manager.Reserved | manager.RecoveryBlocked(..) -> sessions.Blocked
     },
+    subtitle: record.subtitle,
   )
 }
 

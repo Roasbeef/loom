@@ -166,6 +166,7 @@ fn start() -> component.Start(process.Subject(String)) {
       resume: fn(_, _) { Nil },
       invite: None,
       home: None,
+      rename: None,
     ),
   )
 }
