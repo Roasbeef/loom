@@ -208,3 +208,23 @@ a complete multi-state witness. Syntax errors, timeouts and unrelated failures
 are not accepted. These are abstract model mutations; they have not been
 replayed against a metadata implementation. No store implementation or
 Ownership-to-Metadata simulation theorem is established.
+
+## Ingress timeout and restart witnesses
+
+With one credit, both ingress mutants reach QueueBound failure in four states:
+
+1. The credit is idle and the service queue is empty.
+2. Request 1 occupies the credit and remains queued.
+3. Socket timeout, or acceptor crash followed by replacement, incorrectly marks
+   that credit idle while request 1 remains queued.
+4. Request 2 uses the same credit. Two messages now survive in the service queue.
+
+The corrected model keeps the credit Busy after socket timeout, or Dead after
+acceptor crash. A delivered service reply plus ended socket permits reuse of a
+live credit. The timeout-recovery reachability control reaches that delivered
+reply in five states; the crash-with-pending control reaches its state in three.
+The reuse control reaches a second admission in seven states, after a socket
+timeout, service consumption, reply delivery and explicit credit release. This
+shows that the corrected bound does not depend on permanently disabling every
+timed-out live credit. These traces describe request custody, not proof of real
+TLS or BEAM scheduling.
