@@ -896,7 +896,7 @@ Answering(id) | Destroyed(reason)`. The invocation's deadline is
 `Answering`'s own state timeout, which is why these are states rather
 than a field: leaving the state cancels the timer, and weft drops a timer
 that fired while being cancelled instead of delivering it. A second
-`invoke` while one is open returns `Busy` (`InvokeError` at `codemode/satellite.gleam:2034`). The satellite also answers a second
+`invoke` while one is open returns `Busy` (`InvokeError` at `codemode/satellite.gleam:2156`). The satellite also answers a second
 `hook_call` with `busy` on its own side rather than queueing it, because
 a queue would mean a second token installed under the first invocation's
 worker.
@@ -1535,7 +1535,7 @@ whose door serves `cap/lsp` and automatic post-edit diagnostics (ADR-015,
 | `packages/ext/src/ext.gleam` | The author-facing vocabulary: `Ctx`, `Content`, `Terminate`, `Outcome`, `Refusal`, and the `Tool` alias at `packages/ext/src/ext.gleam:110`. No effects, no FFI. |
 | `ext/runtime.gleam` | What an extension's generated entry serves from: `serve` (`ext/runtime.gleam:148`), `serving` (`ext/runtime.gleam:172`), `answer` (`ext/runtime.gleam:193`), and the five refusal codes. |
 | `cap/runtime.gleam` | The satellite's own serving loop: `serve` (`cap/runtime.gleam:549`), `serve_over` (`cap/runtime.gleam:582`), the per-invocation token install, and the `busy` and `crashed` answers. |
-| `codemode/satellite.gleam` | Both shapes of node: `run` for one execution, and the persistent `Host` (`codemode/satellite.gleam:1949`) with `start`, `invoke` (`codemode/satellite.gleam:2201`) and `stop`. |
+| `codemode/satellite.gleam` | Both shapes of node: `run` for one execution, and the persistent `Host` (`codemode/satellite.gleam:2071`) with `start`, `invoke` (`codemode/satellite.gleam:2178`) and `stop`. |
 | `client/extension/hosts.gleam` | The session's host registry: `HookFailure` (`extension/hosts.gleam:90`), `invoke` (`extension/hosts.gleam:354`), `invoke_event` (`extension/hosts.gleam:446`), and the reaping on the way out. |
 | `codemode/vet/policy.gleam` | The four seams. The fourth, `resident` (`vet/policy.gleam:459`), is frozen for a tier that does not exist. `extension_cap_modules` (`vet/policy.gleam:607`) and `extension_stdlib_modules` (`vet/policy.gleam:626`) widen the effect-only workspace subset, so extensions do not gain child custody. |
 | `codemode/vet/package.gleam` | Vetting a *package*: `installed_subset` (`vet/package.gleam:201`), the native-file refusal, the `gleam.toml` dependency gate, and the sibling-import widening. |
@@ -1560,7 +1560,7 @@ whose door serves `cap/lsp` and automatic post-edit diagnostics (ADR-015,
 | `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:451`) and the collision that refuses a boot. |
 | `broker/egress.gleam` | The outbound HTTP surface: `request` (`broker/egress.gleam:374`), `one_host`, `Secret` (`broker/egress.gleam:159`), and a `Refusal` type with nowhere to put a credential. |
 | `broker/internal/ffi_egress.gleam` | One hop over `httpc` on a broker-private profile: `fetch` (`broker/internal/ffi_egress.gleam:61`). The only impurity in the path. |
-| `tui/tui.gleam` | `loom ext …` forwarded to the server by the same ladder a local session uses; the `Forward` arm is at `tui.gleam:311`. |
+| `tui/tui.gleam` | `loom ext …` forwarded to the server by the same ladder a local session uses; the `Forward` arm is at `tui.gleam:317`. |
 | `client/test/client/extension_test.gleam` | The install acceptance, layer by layer, plus the one real jailed build. |
 | `client/test/client/extension/profile_test.gleam` | The profile tier: both tiers' manifest refusals, `[[check]]` decoding, an install that never fetches or builds, record format 3, the load's profile comparison, and `loom ext check`'s refusals and report. |
 | `client/test/client/lsp/profile_check_test.gleam` | The check runner over a fake door: a pass, the set comparison, both directions of a mismatch, and an error. |

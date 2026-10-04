@@ -171,7 +171,15 @@ pub fn a_call_with_no_result_is_running_test() {
     )
 
   assert only(trace)
-    == trace_view.Program(Running, "Program 1", None, Some(5000), Pending, None)
+    == trace_view.Program(
+      Running,
+      "Program 1",
+      None,
+      Some(5000),
+      Pending,
+      None,
+      [],
+    )
 }
 
 pub fn a_completed_program_shows_its_value_test() {
@@ -369,4 +377,164 @@ pub fn a_program_that_opens_with_code_is_numbered_test() {
 
   assert list.map(trace.programs, fn(shown) { shown.label })
     == ["Program 1", "Program 2", "later"]
+}
+
+// An assistant message with reasoning ahead of a `code_mode` call, the shape
+// real models write.
+fn reasoned_call(call_id: String) -> message.AgentMessage {
+  message.AssistantMessage(
+    [
+      message.AssistantThinking("plan the program", None, False),
+      message.AssistantToolCall(message.ToolCall(
+        call_id,
+        "code_mode",
+        program("pub fn main() {}", None),
+        None,
+        None,
+      )),
+    ],
+    "test",
+    "test",
+    "test",
+    None,
+    None,
+    None,
+    usage(),
+    message.Stop,
+    None,
+    None,
+    None,
+    None,
+    0,
+  )
+}
+
+pub fn a_program_called_after_reasoning_is_listed_test() {
+  let records = [
+    record(2, result("c1", "code_mode", "done", status("completed", []), False)),
+    record(1, reasoned_call("c1")),
+  ]
+
+  assert list.length(trace_view.fold(records).programs) == 1
+}
+
+// --- the newest program of one strand, and the call record --------------
+
+fn on(strand: String, records: List(protocol.EntryRecord)) {
+  list.map(records, fn(found) { protocol.EntryRecord(..found, strand:) })
+}
+
+fn calls_record(total: Int, failed: Int) -> json.JsonValue {
+  json.Object([
+    #("started_unix_ms", json.Int(0)),
+    #("elapsed_ms", json.Int(120)),
+    #("total", json.Int(total)),
+    #("failed", json.Int(failed)),
+    #("cancelled", json.Int(0)),
+    #("unsettled", json.Int(0)),
+    #(
+      "items",
+      json.Array([
+        json.Object([
+          #("cap", json.String("fs.read")),
+          #("args", json.String("a.gleam")),
+          #("status", json.String("ok")),
+          #("start_ms", json.Int(1)),
+          #("duration_ms", json.Int(2)),
+        ]),
+      ]),
+    ),
+  ])
+}
+
+pub fn a_strand_with_no_program_has_no_newest_test() {
+  assert trace_view.newest([], "main") == None
+  let other = on("sub:a", exchange(0, program("pub fn main() {}", None), None))
+  assert trace_view.newest(other, "main") == None
+    as "another strand's program is not this strand's"
+}
+
+pub fn the_newest_program_wins_whatever_the_order_test() {
+  let older = exchange(0, program("// older", None), None)
+  let newer = exchange(1, program("// newer", None), None)
+  let forward = trace_view.newest(list.append(older, newer), "main")
+  let backward =
+    trace_view.newest(list.reverse(list.append(older, newer)), "main")
+  assert forward == backward
+  let assert Some(found) = forward
+  assert found.source == ["  1 │ // newer"]
+  assert found.program.label == "newer"
+}
+
+pub fn a_running_program_has_its_source_and_no_calls_test() {
+  let assert Some(found) =
+    trace_view.newest(
+      exchange(0, program("import cap/fs\npub fn main() {}", None), None),
+      "main",
+    )
+  assert found.program.state == Running
+  assert found.program.excerpt == None
+  assert found.program.calls == []
+  assert found.source == ["  1 │ import cap/fs", "  2 │ pub fn main() {}"]
+}
+
+pub fn a_result_with_a_call_record_lists_its_calls_test() {
+  let details =
+    status("completed", [
+      #("value", json.String("42")),
+      #("calls", calls_record(1, 0)),
+    ])
+  let assert Some(found) =
+    trace_view.newest(
+      exchange(
+        0,
+        program("pub fn main() {}", None),
+        Some(#("fallback", details, False)),
+      ),
+      "main",
+    )
+  assert found.program.state == Completed
+  let assert [heading, row] = found.program.calls
+  assert heading == "CALLS · 1 call · 0 failed"
+  assert string.contains(row, "fs.read")
+  assert string.contains(row, "a.gleam")
+  assert trace_view.first_call(found.program) == row
+}
+
+pub fn a_result_with_no_record_lists_no_calls_test() {
+  let assert Some(found) =
+    trace_view.newest(
+      exchange(
+        0,
+        program("x", None),
+        Some(#("it failed", status("run_failed", []), True)),
+      ),
+      "main",
+    )
+  assert found.program.state == RunFailed
+  assert found.program.calls == []
+  assert trace_view.first_call(found.program) == "Program 1"
+}
+
+pub fn a_state_is_worded_as_the_transcript_words_it_test() {
+  assert trace_view.state_title(CompileFailed) == "compile error"
+  assert trace_view.state_title(Rejected) == "refused by vetting"
+  assert trace_view.state_title(RunFailed) == "did not finish"
+  assert trace_view.state_title(Errored) == "program failed"
+  assert trace_view.state_title(Failed) == "failed"
+}
+
+pub fn a_long_program_is_cut_and_counted_test() {
+  let source = list.repeat("let x = 1", 30) |> string.join("\n")
+  let rows = trace_view.source_rows(source)
+  assert list.length(rows) == trace_view.source_lines + 1
+  assert list.last(rows)
+    == Ok("    … 18 more lines · the transcript has the rest")
+  assert list.first(rows) == Ok("  1 │ let x = 1")
+}
+
+pub fn program_text_is_one_line_per_row_test() {
+  let rows = trace_view.source_rows("a\u{001B}[31mb\nc")
+  assert !list.any(rows, string.contains(_, "\u{001B}"))
+    as "a control sequence in the program never reaches a host"
 }

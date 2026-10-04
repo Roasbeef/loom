@@ -1,0 +1,40 @@
+ ◆ pi-gui · fix readme badge · strand main                                                                kimi-k3 · low 
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ ◆ main                                                                                                                 
+   Mail watcher re-armed. Both reviewers are still working; continuing to wait.                                         
+                                                                                                                        
+ ◇ loom · background job 01a0eff2 lost: its sandbox helper exited without a status · Ctrl+g                             
+   a notice from Loom, not a message from you                                                                           
+                                                                                                                        
+ ▸ tools · 14 calls · 1 failed · Ctrl+g expands                                                                         
+                                                                                                                        
+ ✓ agent_wait · 2 subagents ×15 · 7m 30s · last: both still working after 30s                                           
+                                                                                                                        
+ ! provider returned http 429 ×20 · 3m 12s · retrying in 8s · Ctrl+g lists them                                         
+                                                                                                                        
+ ∴ Reasoning (summarized) · 13s                                                                                         
+   Respawning two timed-out reviewers with leaner briefs and a 15-minute budget.                                        
+                                                                                                                        
+ ● agent_spawn ×2  adversarial-code-review-48f3 · docs-accuracy-review                                                  
+                                                                                                                        
+ › Once the review comments are in, implement them and restructure the commits.  queued after this turn                 
+ ↑ reading · 38 rows below · End jumps to latest                                                                        
+╭─ To main · Enter queues · Tab steers ────────────────── ◐ agent_wait · 2 subagents · 51s · queue 1 · Esc interrupts ─╮
+│ › ← sessions · ↓ agents · / commands                                                                                 │
+╰─ kimi-k3 · low › ctx ~41% › est $1.86 ────────────────────────────────────────────────────────────────── 0 need you ─╯
+   ● main                                 Waiting for adversarial-code-review, docs-accuracy-review   4m 10s · 259k ctx 
+   ? sub:tests                            Needs approval · network                                        34s ·  9k ctx 
+   ● sub:adversarial-code-review-48f3     Tracing quit-path publish_herdr reachability                 2m 45s · 65k ctx 
+   ● sub:adversarial-code-review-ec14     Grep-searching herdr:loom references                        1m 03s · 144k ctx 
+   ● sub:docs-accuracy-review             Writing an early note before reading herdr.gleam             2m 38s · 74k ctx 
+   ● sub:bootstrap-resume                 Grepping bootstrap.gleam for resume references                 51s · 119k ctx 

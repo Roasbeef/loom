@@ -57,12 +57,15 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set.{type Set}
 import gleam/string
 import session_view/advisor_history
 import session_view/agent_roster
 import session_view/block_summary
+import session_view/call_tree.{type CallLog}
 import session_view/composer
 import session_view/file_read_view
+import session_view/image_header
 import session_view/notes_view
 import session_view/protocol
 import session_view/snapshot
@@ -74,9 +77,11 @@ import session_view/todo_board
 import session_view/tool_activity
 import session_view/transcript_line.{
   type CacheNotice, type Line, type Speaker, type Stream, type Submission,
-  type ToolTail, Assistant, Failure, HeldPrompt, Interjection, Line, Reasoning,
-  ReasoningDigest, Spacer, Stream, SummarizedAdvice, SummarizedReasoning, System,
-  ToolCall, ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
+  type ToolTail, Assistant, Failure, HeldPrompt, ImageRow, Interjection, Line,
+  PeerMessage, ProgramFailure, ProgramRunning, Reasoning, ReasoningDigest,
+  SentMessage, Spacer, StrandMessage, Stream, SummarizedAdvice,
+  SummarizedReasoning, System, ToolCall, ToolDetail, ToolFailure, ToolGroup,
+  ToolPatch, ToolResult, User,
 }
 import session_view/worktree_view
 
@@ -117,6 +122,9 @@ pub type Presentation {
     compact_call_cache: Dict(tool_activity.Call, List(Line)),
     /// The captured worktree diff board and its explanation.
     worktree: worktree_view.State,
+    /// The local clock's offset from UTC in minutes, which a message's
+    /// heading needs to show its time (`model.Shared.clock_offset`).
+    clock: Option(Int),
   )
 }
 
@@ -953,7 +961,12 @@ fn record_blocks(
             spliced_sequence(item, fn(value) { value.seq }),
             #(
               expanded_source(item),
-              expanded_lines(item, owner, presentation.summaries),
+              expanded_lines(
+                item,
+                owner,
+                presentation.summaries,
+                presentation.clock,
+              ),
             ),
           )
         })
@@ -967,6 +980,7 @@ fn record_blocks(
     // its own, so one opening a narrative under a group's bare last row
     // would otherwise sit welded to it.
     notes_view.Excerpt -> {
+      let found = joined(entries)
       let #(reversed, calls, narratives) =
         entries
         |> tool_activity.project_split(advisor_splits(advisor))
@@ -985,12 +999,21 @@ fn record_blocks(
                 item_sequence(item, sequences),
                 presentation,
                 owner,
+                found,
               )
           }
         })
+
+      // A provider error that repeats on every retry is one row with a
+      // count, not a wall of identical rows.
       #(
         reversed
           |> list.reverse
+          |> collapse_repeats(
+            fn(block) { block.1.1 },
+            fn(block) { repeated_failure(block.1.1) },
+            fn(block, rows) { #(block.0, #(block.1.0, rows)) },
+          )
           |> merge_sequence_blocks(sourced_advisor_blocks(advisor)),
         calls,
         narratives,
@@ -1020,10 +1043,11 @@ fn expanded_lines(
   spliced: Spliced(entry.Entry),
   owner: Option(message.Origin),
   labels: block_summary.Labels,
+  clock: Option(Int),
 ) -> List(Line) {
   case spliced {
     Transient(text, _) -> [Line(System, text)]
-    Projected(value) -> entry_lines(value, True, owner, labels)
+    Projected(value) -> clocked_entry_lines(value, True, owner, labels, clock)
   }
 }
 
@@ -1045,6 +1069,7 @@ fn compact_item_lines(
   seq: Int,
   presentation: Presentation,
   owner: Option(message.Origin),
+  found: Joined,
 ) -> #(
   List(#(Int, #(Source, List(Line)))),
   Dict(tool_activity.Call, List(Line)),
@@ -1054,22 +1079,59 @@ fn compact_item_lines(
     // The labels the entry's rows would show are part of the key, so a
     // label arriving is a new key and the entry is projected again, while
     // every other cached narrative is reused.
-    tool_activity.Narrative(value) -> {
-      let key = #(value, owner, labels_for(value, presentation.summaries))
-      let lines =
-        dict.get(presentation.compact_entry_cache, key)
-        |> result.lazy_unwrap(fn() {
-          entry_lines(value, False, owner, presentation.summaries)
-        })
-      #(
-        [#(seq, #(FromEntry(value), lines)), ..acc.0],
-        acc.1,
-        dict.insert(acc.2, key, lines),
-      )
-    }
+    // A send's result that its call's row already draws is no rows at
+    // all, and a response holding a send is drawn afresh rather than from
+    // the cache, since its row changes when the result arrives later.
+    tool_activity.Narrative(value) ->
+      case absorbed(found, value), reads_joined(value) {
+        True, _ -> #([#(seq, #(FromEntry(value), [])), ..acc.0], acc.1, acc.2)
+        False, True -> #(
+          [
+            #(
+              seq,
+              #(
+                FromEntry(value),
+                joined_entry_lines(
+                  value,
+                  owner,
+                  presentation.summaries,
+                  found,
+                  presentation.clock,
+                ),
+              ),
+            ),
+            ..acc.0
+          ],
+          acc.1,
+          acc.2,
+        )
+        False, False -> {
+          let key = #(value, owner, labels_for(value, presentation.summaries))
+          let lines =
+            dict.get(presentation.compact_entry_cache, key)
+            |> result.lazy_unwrap(fn() {
+              clocked_entry_lines(
+                value,
+                False,
+                owner,
+                presentation.summaries,
+                presentation.clock,
+              )
+            })
+          #(
+            [#(seq, #(FromEntry(value), lines)), ..acc.0],
+            acc.1,
+            dict.insert(acc.2, key, lines),
+          )
+        }
+      }
     tool_activity.Tools(calls) -> {
       let #(lines, cached) =
-        cached_activity_lines(calls, presentation.compact_call_cache)
+        cached_activity_lines(
+          calls,
+          presentation.compact_call_cache,
+          presentation.clock,
+        )
       #(
         [#(seq, #(FromTools(calls), lines)), ..acc.0],
         dict.merge(acc.1, cached),
@@ -1084,12 +1146,13 @@ fn compact_item_lines(
 fn cached_activity_lines(
   calls: List(tool_activity.Call),
   previous: Dict(tool_activity.Call, List(Line)),
+  clock: Option(Int),
 ) -> #(List(Line), Dict(tool_activity.Call, List(Line))) {
   let #(reversed, cached) =
     list.fold(calls, #([], dict.new()), fn(acc, call) {
       let lines =
         dict.get(previous, call)
-        |> result.lazy_unwrap(fn() { activity_call_lines(call) })
+        |> result.lazy_unwrap(fn() { clocked_call_lines(call, clock) })
       #([lines, ..acc.0], dict.insert(acc.1, call, lines))
     })
 
@@ -1100,10 +1163,115 @@ fn cached_activity_lines(
   #(
     [
       activity_heading(calls),
-      ..separated_tool_groups(list.reverse(reversed), WithinResponse)
+      ..reversed
+      |> list.reverse
+      |> collapse_repeats(fn(rows) { rows }, repeated_call, fn(_, rows) { rows })
+      |> separated_tool_groups(WithinResponse)
     ],
     cached,
   )
+}
+
+/// Folds each run of identical, consecutive repeatable items into the last
+/// of them, with the run's length on its first row: fifteen identical
+/// `✓ agent_wait · 2 subagents` rows become one `… ×15` row.
+///
+/// The last item is the one kept because it is the newest, so a host that
+/// pairs rows with durable identities lands on the latest of the run. The
+/// rows compared are the rows drawn, so two calls whose summaries differ in
+/// any word are never folded together. Only compact history folds: the
+/// expanded view still shows every original entry.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let row = [Line(ToolCall, "✓ agent_wait · 2 subagents")]
+/// assert transcript_lines.collapse_repeats(
+///     [row, row],
+///     fn(rows) { rows },
+///     transcript_lines.repeated_call,
+///     fn(_, rows) { rows },
+///   )
+///   == [[Line(ToolCall, "✓ agent_wait · 2 subagents ×2")]]
+/// ```
+@internal
+pub fn collapse_repeats(
+  items: List(a),
+  rows: fn(a) -> List(Line),
+  repeatable: fn(a) -> Bool,
+  rebuild: fn(a, List(Line)) -> a,
+) -> List(a) {
+  items
+  |> list.fold([], fn(runs, item) {
+    case runs {
+      [#(previous, count), ..rest] ->
+        case
+          repeatable(item)
+          && repeatable(previous)
+          && rows(previous) == rows(item)
+        {
+          True -> [#(item, count + 1), ..rest]
+          False -> [#(item, 1), ..runs]
+        }
+      [] -> [#(item, 1)]
+    }
+  })
+  |> list.reverse
+  |> list.map(fn(run) {
+    case run.1 {
+      1 -> run.0
+      count -> rebuild(run.0, counted(rows(run.0), count))
+    }
+  })
+}
+
+// The run's length, on the first row so it reads beside the summary.
+fn counted(rows: List(Line), count: Int) -> List(Line) {
+  case rows {
+    [first, ..rest] -> [
+      Line(..first, text: first.text <> " ×" <> int.to_string(count)),
+      ..rest
+    ]
+    [] -> []
+  }
+}
+
+/// Whether a tool call's rows may fold into a run of identical calls: a
+/// call that settled successfully and draws one row, as a poll such as
+/// `agent_wait` does. A pending call, a failure with its preview and a call
+/// with a patch or output under it keep their own rows, because a reader may
+/// be looking for that one call's detail and its place in the scrollback.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert transcript_lines.repeated_call([Line(ToolCall, "✓ agent_wait")])
+/// ```
+@internal
+pub fn repeated_call(rows: List(Line)) -> Bool {
+  case rows {
+    [Line(speaker: ToolCall, text: "✓ " <> _)] -> True
+    [] | [_, ..] -> False
+  }
+}
+
+/// Whether a narrative item's rows may fold into a run: only an entry that
+/// draws nothing but one failure row, such as a provider error repeated on
+/// every retry. Two identical prompts or answers are two things the reader
+/// has to see.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert transcript_lines.repeated_failure([Line(Failure, "http 429")])
+/// assert !transcript_lines.repeated_failure([Line(User, "again")])
+/// ```
+@internal
+pub fn repeated_failure(rows: List(Line)) -> Bool {
+  case rows {
+    [Line(speaker: Failure, ..)] -> True
+    [] | [_, ..] -> False
+  }
 }
 
 /// Which first row counts as opening a tool group, which depends on the
@@ -1144,13 +1312,16 @@ pub fn separated_tool_blocks(
 ) -> List(#(String, List(Line))) {
   blocks
   |> list.fold([], fn(placed, block) {
-    // `placed` is newest first, and its head is always a real block: a
-    // spacer is only ever pushed immediately beneath the block it precedes,
-    // so the row consulted here is never one this fold wrote.
-    let wanted = case placed {
-      [#(_, previous), ..] ->
+    // `placed` is newest first, and a spacer is only ever pushed
+    // immediately beneath the block it precedes, so the rows consulted here
+    // are never ones this fold wrote. A block that draws nothing, such as a
+    // result its call's row already draws (`joined`), is passed over: the
+    // block below comes to sit under the last block that drew a row.
+    let drew = fn(earlier: #(String, List(Line))) { earlier.1 != [] }
+    let wanted = case list.find(placed, drew) {
+      Ok(#(_, previous)) ->
         block_closes_bare(previous) && opens_bare(block.1, opening)
-      [] -> False
+      Error(Nil) -> False
     }
 
     case wanted {
@@ -1159,6 +1330,22 @@ pub fn separated_tool_blocks(
     }
   })
   |> list.reverse
+}
+
+/// `separated_tool_blocks` over lines that are not grouped into blocks,
+/// each line its own block: the transcript's own lines (the head, notices
+/// and approvals), which no fold over entries has seen. A line that closes
+/// bare and one that opens bare get the one blank row between them that the
+/// fold gives any two blocks.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.separated_lines(model.shared.transcript)
+/// ```
+@internal
+pub fn separated_lines(lines: List(Line)) -> List(Line) {
+  separated_tool_groups(list.map(lines, fn(line) { [line] }), BetweenEntries)
 }
 
 // The same separation over rows that carry no anchor identity.
@@ -1179,9 +1366,7 @@ fn separated_tool_groups(
 // Whether a block ends without a blank row of its own.
 //
 // Only the last row decides it, because that is the row the next block comes
-// to sit under. An empty block draws nothing and so closes nothing; the fold
-// treats it as already separated rather than reaching past it, which costs at
-// most a missing blank in a shape no projection currently produces.
+// to sit under. The fold never asks it of an empty block.
 fn block_closes_bare(rows: List(Line)) -> Bool {
   case list.last(rows) {
     Ok(line) -> closes_bare(line.speaker)
@@ -1195,7 +1380,7 @@ fn block_closes_bare(rows: List(Line)) -> Bool {
 /// blank, which is why it is a function rather than a second copy of the list:
 /// moving a speaker into or out of the tool family changes both the row drawn
 /// and the gap the fold above owes it, and the two have to move together.
-/// Everything else already ends in a blank, and a `Spacer` is a blank.
+/// Everything else ends in a blank, and a `Spacer` is a blank.
 @internal
 pub fn closes_bare(speaker: Speaker) -> Bool {
   case speaker {
@@ -1204,15 +1389,22 @@ pub fn closes_bare(speaker: Speaker) -> Bool {
     | ToolFailure
     | ToolPatch
     | ReasoningDigest
-    | SummarizedReasoning -> True
+    | SummarizedReasoning
+    | ProgramRunning
+    | ProgramFailure
+    | ImageRow(..) -> True
     System
+    | ToolGroup
     | User
     | Assistant
     | Reasoning
     | ToolDetail
     | Failure
     | Spacer
-    | SummarizedAdvice -> False
+    | SummarizedAdvice
+    | SentMessage
+    | StrandMessage
+    | PeerMessage -> False
   }
 }
 
@@ -1225,7 +1417,20 @@ pub fn closes_bare(speaker: Speaker) -> Bool {
 pub fn opens_bare(rows: List(Line), opening: GroupOpening) -> Bool {
   case rows {
     [Line(speaker: ToolCall, ..), ..] -> True
+    [Line(speaker: ProgramRunning, ..), ..] -> True
+    [Line(speaker: ProgramFailure, ..), ..] -> True
     [Line(speaker: ReasoningDigest, ..), ..] -> True
+
+    // A turn, an answer and a message between agents end in a blank row
+    // and bring none above themselves, so whatever comes before one of them
+    // is one blank row away: the blank it closed with, or a spacer under a
+    // call that closed bare.
+    [Line(speaker: User, ..), ..] -> True
+    [Line(speaker: Assistant, ..), ..] -> True
+    [Line(speaker: Reasoning, ..), ..] -> True
+    [Line(speaker: SentMessage, ..), ..] -> True
+    [Line(speaker: StrandMessage, ..), ..] -> True
+    [Line(speaker: PeerMessage, ..), ..] -> True
     [Line(speaker: SummarizedReasoning, ..), ..] -> True
 
     // A harness row, such as advisor commentary, a notice or a tool group's
@@ -1233,7 +1438,12 @@ pub fn opens_bare(rows: List(Line), opening: GroupOpening) -> Bool {
     // under a call's bare last row it would sit welded to that call without a
     // gap of its own.
     [Line(speaker: System, ..), ..] -> True
+    [Line(speaker: ToolGroup, ..), ..] -> True
     [Line(speaker: SummarizedAdvice, ..), ..] -> True
+
+    // A provider error after a run of calls is its own entry, and like the
+    // harness rows it would otherwise sit welded under the last call.
+    [Line(speaker: Failure, ..), ..] -> True
 
     // The one row whose meaning depends on the boundary being walked; see
     // `GroupOpening`.
@@ -1271,20 +1481,56 @@ pub fn activity_heading(calls: List(tool_activity.Call)) -> Line {
       n -> " · " <> int.to_string(n) <> " failed"
     }
     <> " · Ctrl+g expands details"
-  Line(System, heading)
+  Line(ToolGroup, heading)
 }
 
 /// The rows for one tool call: its summary, and its result or failure once
 /// the outcome is known.
 @internal
 pub fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
+  clocked_call_lines(call, None)
+}
+
+/// `activity_call_lines` with the local clock's offset, so a send's row
+/// shows when its recipient took it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.clocked_call_lines(call, Some(60))
+/// ```
+@internal
+pub fn clocked_call_lines(
+  call: tool_activity.Call,
+  clock: Option(Int),
+) -> List(Line) {
+  call_rows(call.invocation, call.outcome, clock)
+}
+
+// The compact rows of one call and the result joined to it, if any: what a
+// tool group draws for each of its calls, and what a narrative response
+// draws for a call whose result `joined` found in the window.
+fn call_rows(
+  invocation: message.ToolCall,
+  outcome: Option(message.AgentMessage),
+  clock: Option(Int),
+) -> List(Line) {
+  // A send is its message row and a program its own rows, each drawn from
+  // the call and the result the group joined to it.
+  use <- result.lazy_unwrap(sent_lines(
+    invocation,
+    outcome,
+    notes_view.Excerpt,
+    clock,
+  ))
+  use <- result.lazy_unwrap(program_lines(invocation, outcome))
+
   // The invocation owns its source preview, so settling a result changes the
   // status without adding or removing code rows. Reuse the expanded entry's
   // Gleam renderer instead of displaying the transport JSON as a summary.
-  let program =
-    code_mode_program(call.invocation.name, call.invocation.arguments, False)
-  let summary = program_summary(call, program)
-  let rows = case call.outcome {
+  let program = code_mode_program(invocation.name, invocation.arguments, False)
+  let summary = program_summary(invocation, program)
+  let rows = case outcome {
     None -> [Line(ToolCall, summary <> " · awaiting result")]
     Some(message.ToolResultMessage(is_error: True, content:, ..)) -> [
       Line(ToolFailure, summary),
@@ -1301,7 +1547,7 @@ pub fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
       details: Some(json.Object(fields)),
       ..,
     ))
-      if call.invocation.name == "fs_edit"
+      if invocation.name == "fs_edit"
     -> [Line(ToolCall, "✓ " <> summary), ..edit_patch_lines(fields, False)]
     Some(message.ToolResultMessage(
       is_error: False,
@@ -1309,7 +1555,7 @@ pub fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
       details: details,
       ..,
     ))
-      if call.invocation.name == "context_remaining"
+      if invocation.name == "context_remaining"
     -> [
       Line(ToolCall, "✓ " <> summary),
       ..tool_result_lines(
@@ -1325,7 +1571,7 @@ pub fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
     // call stays one row, which also keeps the compact height rule: the
     // pending row it replaces was one row too.
     Some(message.ToolResultMessage(is_error: False, details: Some(details), ..))
-      if call.invocation.name == todo_board.tool_name
+      if invocation.name == todo_board.tool_name
     -> [
       Line(
         ToolCall,
@@ -1344,7 +1590,7 @@ pub fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
     | Some(message.AssistantMessage(..))
     | Some(message.CustomMessage(..)) -> [Line(ToolCall, summary)]
   }
-  let program = case call.outcome {
+  let program = case outcome {
     Some(message.ToolResultMessage(is_error: False, ..)) -> None
     _ -> program
   }
@@ -1356,14 +1602,39 @@ pub fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
     ]
     [], Some(_) | _, None -> rows
   }
-  list.append(
+  let images = case outcome {
+    Some(message.ToolResultMessage(content:, ..)) -> result_image_lines(content)
+    Some(_) | None -> []
+  }
+  list.flatten([
     rows,
-    note_call_lines(
-      call.invocation.name,
-      call.invocation.arguments,
-      notes_view.Excerpt,
-    ),
-  )
+    note_call_lines(invocation.name, invocation.arguments, notes_view.Excerpt),
+    images,
+  ])
+}
+
+// The placeholder rows of a tool result's images, under the rows of the
+// call that returned them.
+fn result_image_lines(content: List(message.ToolResultBlock)) -> List(Line) {
+  content
+  |> list.filter_map(fn(block) {
+    case block {
+      message.ToolResultImage(data:, mime_type:) -> Ok(#(mime_type, data))
+      message.ToolResultText(..) -> Error(Nil)
+    }
+  })
+  |> image_lines
+}
+
+// One placeholder row per image, numbered by its place among its row's
+// images, the numbering `transcript_image` names an image by.
+fn image_lines(images: List(#(String, String))) -> List(Line) {
+  list.index_map(images, fn(image, index) {
+    Line(
+      ImageRow(image_header.picture(image.0, image.1)),
+      image_header.describe(index + 1, image.0, image.1),
+    )
+  })
 }
 
 /// The rows the terminal's `Ctrl+g` shows for one tool call under its
@@ -1395,6 +1666,9 @@ pub fn expanded_call_lines(call: tool_activity.Call) -> List(Line) {
       None,
     )
   {
+    // A send's row is not its summary: it carries the whole message, which
+    // is what expanding the call is for.
+    [Line(speaker: SentMessage, ..) as head, ..rest] -> [head, ..rest]
     [head, ..rest] ->
       case string.contains(call_summary(call), "…") {
         True -> [head, ..rest]
@@ -1403,7 +1677,7 @@ pub fn expanded_call_lines(call: tool_activity.Call) -> List(Line) {
     [] -> []
   }
   let outcome = case call.outcome {
-    Some(result) -> message_lines(result, True, None, [])
+    Some(result) -> message_lines(result, True, None, [], unjoined, None)
     None -> []
   }
   list.append(invocation, outcome)
@@ -1420,19 +1694,18 @@ pub fn expanded_call_lines(call: tool_activity.Call) -> List(Line) {
 /// ```
 pub fn call_summary(call: tool_activity.Call) -> String {
   program_summary(
-    call,
+    call.invocation,
     code_mode_program(call.invocation.name, call.invocation.arguments, False),
   )
 }
 
 fn program_summary(
-  call: tool_activity.Call,
+  invocation: message.ToolCall,
   program: Option(String),
 ) -> String {
   case program {
     Some(_) -> "code_mode"
-    None ->
-      tool_call_summary(call.invocation.name, call.invocation.arguments, False)
+    None -> tool_call_summary(invocation.name, invocation.arguments, False)
   }
 }
 
@@ -1495,8 +1768,564 @@ fn note_call_lines(
   }
 }
 
-// A message preview preserves Markdown paragraphs; expansion exposes the
-// complete body from the same immutable call arguments.
+// The one row an `agent_send` call becomes, or an error when its arguments
+// do not name a recipient and a message, or when the tool refused the send,
+// which leaves the call to the generic rows every other tool gets, so a
+// refusal's reason shows. The heading is built from the call's arguments
+// and its result, which is `None` when no result is joined to the call
+// here; the body is drawn beneath it and never read.
+fn sent_lines(
+  call: message.ToolCall,
+  outcome: Option(message.AgentMessage),
+  extent: notes_view.Extent,
+  clock: Option(Int),
+) -> Result(List(Line), Nil) {
+  use fields <- result.try(case call.name, call.arguments {
+    "agent_send", json.Object(fields) -> Ok(fields)
+    _, _ -> Error(Nil)
+  })
+  use recipient <- result.try(option.to_result(string_field(fields, "to"), Nil))
+  use body <- result.try(option.to_result(string_field(fields, "message"), Nil))
+  use taken <- result.try(case outcome {
+    None -> Ok("")
+    Some(message.ToolResultMessage(
+      is_error: False,
+      details: Some(json.Object(fields)),
+      timestamp:,
+      ..,
+    )) ->
+      case string_field(fields, "delivery") {
+        Some("started") ->
+          Ok(" · started a run on it" <> clock_text(timestamp, clock))
+        _ -> Ok(" · admitted to its queue" <> clock_text(timestamp, clock))
+      }
+    Some(message.ToolResultMessage(is_error: False, timestamp:, ..)) ->
+      Ok(" · admitted to its queue" <> clock_text(timestamp, clock))
+    Some(_) -> Error(Nil)
+  })
+  Ok([
+    Line(
+      SentMessage,
+      "→ to "
+        <> text_hygiene.single_line(recipient)
+        <> " · agent_send"
+        <> taken
+        <> "\n"
+        <> message_body(body, extent),
+    ),
+  ])
+}
+
+// The rows a compact `code_mode` call becomes, from its program and the
+// result joined to it, or an error for a call that is not a foreground
+// program, which leaves it to the generic rows. A program that completed
+// is one row with its value; one that failed is a titled block with the
+// error; one with no result yet is a titled block with the opening of its
+// program, which is all the client receives while it runs.
+fn program_lines(
+  call: message.ToolCall,
+  outcome: Option(message.AgentMessage),
+) -> Result(List(Line), Nil) {
+  use fields <- result.try(case call.name, call.arguments {
+    "code_mode", json.Object(fields) -> Ok(fields)
+    _, _ -> Error(Nil)
+  })
+  use program <- result.try(option.to_result(
+    string_field(fields, "program"),
+    Nil,
+  ))
+  case outcome {
+    None -> Ok([Line(ProgramRunning, running_text(program, fields))])
+    Some(message.ToolResultMessage(
+      is_error: False,
+      details: Some(json.Object(details)),
+      content:,
+      ..,
+    )) -> Ok([Line(ToolCall, "✓ " <> settled_text(details, content))])
+    Some(message.ToolResultMessage(
+      is_error: True,
+      details: Some(json.Object(details)),
+      content:,
+      ..,
+    )) -> Ok([Line(ProgramFailure, failure_text(details, content, fields))])
+    Some(_) -> Error(Nil)
+  }
+}
+
+// How many of a program's lines a running block shows.
+const fragment_lines = 4
+
+// How many lines of an error a failure block shows.
+const error_lines = 4
+
+// A settled program's one row: its status and its value, cut to a row.
+fn settled_text(
+  details: List(#(String, json.JsonValue)),
+  content: List(message.ToolResultBlock),
+) -> String {
+  let status = string_field(details, "status") |> option.unwrap("completed")
+  let value = case list.key_find(details, "value") {
+    Ok(value) -> json.to_string(value)
+    Error(Nil) -> content |> list.map(tool_result_text) |> string.join("\n")
+  }
+  let calls = case call_tree.read(json.Object(details)) {
+    Some(log) -> " · " <> call_count(log)
+    None -> ""
+  }
+  "code_mode · " <> status <> calls <> " · result " <> compact(value, 90)
+}
+
+// A record's count as a settled row says it: `4 calls` when every call
+// settled, and the record's whole summary when any did not.
+fn call_count(log: CallLog) -> String {
+  case log.failed + log.cancelled + log.unsettled {
+    0 -> count_text(log.total, "call", "calls")
+    _ -> call_tree.summary(log)
+  }
+}
+
+// How many groups of calls a failure block lists.
+const call_groups = 4
+
+// The calls section of a failure block, from the host's record: a
+// `CALLS · …` line and the calls grouped where consecutive calls share a
+// capability and an ending, with a closing line for the groups and calls
+// not listed. The arguments start in one column, after the widest glyph,
+// capability and count, so a list of calls reads as a table. A failure
+// names its error code in words (`failed · exit status`), and a call that
+// failed, that had not settled or that took over a second says how long
+// it took (`· 4.1s`). A call's argument summary is the host's redacted
+// one, cut to a row.
+@internal
+pub fn call_section(log: CallLog) -> List(String) {
+  let groups = call_groups_of(log.items)
+  let shown = list.take(groups, call_groups)
+  let unlisted =
+    list.fold(list.drop(groups, call_groups), 0, fn(total, group) {
+      total + group.count
+    })
+    + log.total
+    - list.length(log.items)
+  let labels =
+    list.map(shown, fn(group) {
+      let glyph = case group.call.status {
+        call_tree.Settled -> "✓ "
+        call_tree.Failed -> "× "
+        call_tree.Cancelled -> "○ "
+        call_tree.Unsettled -> "◐ "
+      }
+      let times = case group.count {
+        1 -> ""
+        n -> " ×" <> int.to_string(n)
+      }
+      glyph <> text_hygiene.single_line(group.call.cap) <> times
+    })
+  let column =
+    list.fold(labels, 0, fn(widest, label) {
+      int.max(widest, string.length(label))
+    })
+  let rows =
+    list.map2(shown, labels, fn(group, label) {
+      let ending = case group.call.status {
+        call_tree.Settled -> ""
+        call_tree.Failed ->
+          "  failed"
+          <> option_text(option.map(group.call.error, error_words), " · ")
+        call_tree.Cancelled -> "  cancelled"
+        call_tree.Unsettled -> "  not settled"
+      }
+      let took = case group.call.status, group.duration_ms > 1000 {
+        call_tree.Failed, _ | call_tree.Unsettled, _ | _, True ->
+          " · " <> seconds_text(group.duration_ms)
+        call_tree.Settled, False | call_tree.Cancelled, False -> ""
+      }
+      string.pad_end(label, column, " ")
+      <> case group.args {
+        [] -> ""
+        args -> "  " <> compact(string.join(args, " · "), 72)
+      }
+      <> ending
+      <> took
+    })
+  let more = case unlisted {
+    0 -> []
+    n -> ["… " <> count_text(n, "more call", "more calls")]
+  }
+  ["", "CALLS · " <> call_tree.summary(log), ..list.append(rows, more)]
+}
+
+// A run of consecutive calls that share a capability, an ending and an
+// error code.
+type CallGroup {
+  CallGroup(
+    // The first call of the run, which names the capability and ending.
+    call: call_tree.Call,
+    // How many calls the run holds.
+    count: Int,
+    // Their argument summaries, in order.
+    args: List(String),
+    // Their durations added up, in milliseconds.
+    duration_ms: Int,
+  )
+}
+
+fn call_groups_of(calls: List(call_tree.Call)) -> List(CallGroup) {
+  calls
+  |> list.fold([], fn(groups: List(CallGroup), call) {
+    let args = case call.args {
+      Some(args) -> [text_hygiene.single_line(args)]
+      None -> []
+    }
+    case groups {
+      [first, ..rest]
+        if first.call.cap == call.cap
+        && first.call.status == call.status
+        && first.call.error == call.error
+      -> [
+        CallGroup(
+          ..first,
+          count: first.count + 1,
+          args: list.append(first.args, args),
+          duration_ms: first.duration_ms + call.duration_ms,
+        ),
+        ..rest
+      ]
+      [] | [_, ..] -> [CallGroup(call, 1, args, call.duration_ms), ..groups]
+    }
+  })
+  |> list.reverse
+}
+
+// A capability's error code as a reader says it: the codes the host
+// writes in words, and any other code as it is.
+fn error_words(code: String) -> String {
+  case code {
+    "exit_status" -> "exit status"
+    "policy" -> "policy refused"
+    "budget" -> "budget"
+    "aborted" -> "aborted"
+    "unauthorized" -> "unauthorized"
+    "not_found" -> "not found"
+    "permission_denied" -> "permission denied"
+    "fs_failure" -> "file system failure"
+    other -> text_hygiene.single_line(other)
+  }
+}
+
+// A call's duration: tenths of a second from one second up, and whole
+// milliseconds below it.
+fn seconds_text(ms: Int) -> String {
+  case ms >= 1000 {
+    True -> {
+      let tenths = { ms + 50 } / 100
+      int.to_string(tenths / 10) <> "." <> int.to_string(tenths % 10) <> "s"
+    }
+    False -> int.to_string(ms) <> "ms"
+  }
+}
+
+// A running block: the title, the foot naming the budget the call asked
+// for, and the opening of the program, each shown line under its own
+// number. Blank lines are skipped, so the lines shown are ones that say
+// something.
+fn running_text(
+  program: String,
+  fields: List(#(String, json.JsonValue)),
+) -> String {
+  let lines = string.split(string.trim_end(program), "\n")
+  let shown =
+    lines
+    |> list.index_map(fn(line, index) { #(index + 1, line) })
+    |> list.filter(fn(pair) { string.trim(pair.1) != "" })
+    |> list.take(fragment_lines)
+  let budget = case int_field(fields, "within_ms") {
+    Some(ms) -> "budget " <> duration_text(ms)
+    None -> ""
+  }
+
+  // The key that expands a response is on its heading, once; a block's
+  // foot keeps only its facts.
+  [
+    "◐ code_mode · awaiting its result",
+    budget,
+    "PROGRAM · "
+      <> count_text(list.length(lines), "line", "lines")
+      <> ", "
+      <> int.to_string(list.length(shown))
+      <> " shown",
+    ..numbered(shown)
+  ]
+  |> list.append([
+    "",
+    "RESULT · none yet · the result arrives when the program ends",
+  ])
+  |> string.join("\n")
+}
+
+/// The title a code-mode result's status is worded as: what failed, in the
+/// transcript's failure block and anywhere else that names a program's end.
+/// A status this does not know is a plain failure.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert transcript_lines.status_title("vetting_rejected")
+///   == "refused by vetting"
+/// ```
+@internal
+pub fn status_title(status: String) -> String {
+  case status {
+    "compile_failed" -> "compile error"
+    "vetting_rejected" -> "refused by vetting"
+    "run_failed" -> "did not finish"
+    "program_failed" -> "program failed"
+    _ -> "failed"
+  }
+}
+
+// A failure block: what failed in the title, why in the body, and how much
+// more there is in the foot. A compiler's diagnostic is cut to its heading
+// and the source lines it names; any other error is its opening lines.
+fn failure_text(
+  details: List(#(String, json.JsonValue)),
+  content: List(message.ToolResultBlock),
+  arguments: List(#(String, json.JsonValue)),
+) -> String {
+  // A program the deadline stopped says the budget it ran out of, when the
+  // call named one.
+  let budget = case int_field(arguments, "within_ms") {
+    Some(ms) -> " · budget " <> duration_text(ms)
+    None -> ""
+  }
+  let said = content |> list.map(tool_result_text) |> string.join("\n")
+  let status = string_field(details, "status") |> option.unwrap("")
+  let title = status_title(status)
+  let #(foot, error) = case status {
+    "compile_failed" -> #(
+      "the program did not run",
+      string_field(details, "detail") |> option.unwrap(said),
+    )
+    "vetting_rejected" -> #("the program did not run", said)
+    "run_failed" -> #("the program was stopped" <> budget, said)
+    "program_failed" -> #(
+      "the program reported a failure",
+      string_field(details, "message") |> option.unwrap(said),
+    )
+    _ -> #("the program did not finish", said)
+  }
+  let all = string.split(string.trim(text_hygiene.multiline(error)), "\n")
+  let body = diagnostic(all)
+  let more = case list.length(all) > list.length(body) {
+    True -> " · " <> count_text(list.length(all), "line", "lines")
+    False -> ""
+  }
+  let calls = case call_tree.read(json.Object(details)) {
+    Some(log) -> call_section(log)
+    None -> []
+  }
+  ["× code_mode · " <> title, foot <> more, ..list.append(body, calls)]
+  |> string.join("\n")
+}
+
+// The rows of an error a failure block shows. A Gleam diagnostic opens with
+// `error: …`, names its place on a `┌─ path:line:column` line, and quotes
+// the source under numbered `│` gutters: the heading gains the line number,
+// and the quoted lines follow it. Text in any other shape is shown from the
+// top.
+fn diagnostic(lines: List(String)) -> List(String) {
+  let quoted =
+    list.filter(lines, fn(line) {
+      let trimmed = string.trim_start(line)
+      case string.split_once(trimmed, " │") {
+        Ok(#(number, _)) -> int.parse(number) |> result.is_ok
+        Error(Nil) ->
+          string.starts_with(trimmed, "│") && string.contains(line, "^")
+      }
+    })
+  let place =
+    list.find_map(lines, fn(line) {
+      use #(_, path) <- result.try(string.split_once(line, "┌─ "))
+      case list.reverse(string.split(path, ":")) {
+        [_column, line, ..] -> int.parse(line)
+        _ -> Error(Nil)
+      }
+    })
+  case lines, quoted, place {
+    [heading, ..], [_, ..], Ok(number) -> [
+      heading <> " · line " <> int.to_string(number),
+      ..list.take(quoted, error_lines - 1)
+    ]
+    _, _, _ ->
+      lines
+      |> list.filter(fn(line) { string.trim(line) != "" })
+      |> list.take(error_lines)
+  }
+}
+
+// Program lines under right-aligned numbers and a gutter, the form the
+// renderer draws as source.
+fn numbered(lines: List(#(Int, String))) -> List(String) {
+  let width =
+    list.fold(lines, 1, fn(widest, pair) {
+      int.max(widest, string.length(int.to_string(pair.0)))
+    })
+  list.map(lines, fn(pair) {
+    "  "
+    <> string.pad_start(int.to_string(pair.0), width, " ")
+    <> " │ "
+    <> text_hygiene.single_line(pair.1)
+  })
+}
+
+fn count_text(count: Int, one: String, many: String) -> String {
+  int.to_string(count)
+  <> " "
+  <> case count {
+    1 -> one
+    _ -> many
+  }
+}
+
+// A budget in milliseconds, in whole seconds when it is one.
+fn duration_text(ms: Int) -> String {
+  case ms % 1000 {
+    0 -> int.to_string(ms / 1000) <> "s"
+    _ -> int.to_string(ms) <> "ms"
+  }
+}
+
+/// The results of a compact window joined to the calls they answer, for
+/// responses whose calls are drawn as narrative.
+///
+/// A response that carries prose is narrative (`tool_activity`), so its
+/// calls are drawn inside it and their results arrive as entries of their
+/// own. Each call is drawn as a tool group draws it, settled, failed with
+/// its reason, a send with its admission, a program with its value, an
+/// image result with its image's row, which only the result knows; so the
+/// call's rows are drawn from both and the result entry draws nothing.
+pub opaque type Joined {
+  Joined(
+    // Keyed by the calling entry's identity and the provider call id.
+    outcomes: Dict(#(String, String), message.AgentMessage),
+    // The result entries whose content a call's row now draws.
+    absorbed: Set(String),
+  )
+}
+
+/// Joins each result of a joined tool in `entries`, oldest first, to the
+/// latest earlier call with its provider id.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let found = transcript_lines.joined([])
+/// ```
+@internal
+pub fn joined(entries: List(entry.Entry)) -> Joined {
+  let #(found, _open) =
+    list.fold(
+      entries,
+      #(Joined(dict.new(), set.new()), dict.new()),
+      fn(acc, value) {
+        let #(found, open) = acc
+        case value {
+          // A reused provider id replaces the earlier call: the next result
+          // with that id answers the latest call that made it.
+          entry.MessageEntry(
+            message: message.AssistantMessage(content:, ..),
+            ..,
+          ) -> {
+            let caller = ids.entry_id_to_string(value.id)
+            let open =
+              list.fold(content, open, fn(open, block) {
+                case block {
+                  message.AssistantToolCall(message.ToolCall(id:, ..)) ->
+                    dict.insert(open, id, caller)
+                  message.AssistantText(..) | message.AssistantThinking(..) ->
+                    open
+                }
+              })
+            #(found, open)
+          }
+
+          // A result joined to its call is drawn by the call's row, a
+          // failure's included: the call's rows carry the failure and its
+          // reason, as a tool group's do.
+          entry.MessageEntry(
+            message: message.ToolResultMessage(tool_call_id:, ..) as outcome,
+            ..,
+          ) ->
+            case dict.get(open, tool_call_id) {
+              Ok(caller) -> #(
+                Joined(
+                  outcomes: dict.insert(
+                    found.outcomes,
+                    #(caller, tool_call_id),
+                    outcome,
+                  ),
+                  absorbed: set.insert(
+                    found.absorbed,
+                    ids.entry_id_to_string(value.id),
+                  ),
+                ),
+                dict.delete(open, tool_call_id),
+              )
+              Error(Nil) -> #(found, open)
+            }
+
+          entry.MessageEntry(..)
+          | entry.CompactionEntry(..)
+          | entry.BranchSummaryEntry(..)
+          | entry.CustomEntry(..) -> #(found, open)
+        }
+      },
+    )
+  found
+}
+
+/// Whether `value` is a result that its call's row already draws
+/// (`joined`), and so draws no rows of its own in compact history.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.absorbed(transcript_lines.joined(entries), result)
+/// ```
+@internal
+pub fn absorbed(found: Joined, value: entry.Entry) -> Bool {
+  set.contains(found.absorbed, ids.entry_id_to_string(value.id))
+}
+
+/// Whether drawing `value` in compact history reads a joined result, so
+/// that its rows cannot be cached against the entry alone: the result
+/// arrives as a later entry and changes the row of a call already drawn.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.reads_joined(response)
+/// ```
+@internal
+pub fn reads_joined(value: entry.Entry) -> Bool {
+  case value {
+    entry.MessageEntry(message: message.AssistantMessage(content:, ..), ..) ->
+      list.any(content, fn(block) {
+        case block {
+          message.AssistantToolCall(..) -> True
+          message.AssistantText(..) | message.AssistantThinking(..) -> False
+        }
+      })
+    entry.MessageEntry(..)
+    | entry.CompactionEntry(..)
+    | entry.BranchSummaryEntry(..)
+    | entry.CustomEntry(..) -> False
+  }
+}
+
+// A message preview is its first twelve lines and the hint that expands
+// it; expansion exposes the complete body from the same immutable call
+// arguments. The terminal draws a message body as text, line by line, so a
+// cut needs no regard for Markdown.
 fn message_excerpt(body: String) -> String {
   let lines = string.split(body, "\n")
   case list.drop(lines, 12) {
@@ -1582,6 +2411,92 @@ pub fn entry_lines(
   local_owner: Option(message.Origin),
   labels: block_summary.Labels,
 ) -> List(Line) {
+  entry_rows(value, details_expanded, local_owner, labels, unjoined, None)
+}
+
+/// `entry_lines` with the local clock's offset (`Presentation.clock`), so
+/// a message's heading shows the time it was admitted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.clocked_entry_lines(value, False, None, labels, Some(60))
+/// ```
+@internal
+pub fn clocked_entry_lines(
+  value: entry.Entry,
+  details_expanded: Bool,
+  local_owner: Option(message.Origin),
+  labels: block_summary.Labels,
+  clock: Option(Int),
+) -> List(Line) {
+  entry_rows(value, details_expanded, local_owner, labels, unjoined, clock)
+}
+
+/// `entry_lines` in compact history for an entry whose sends and programs
+/// have their results joined in `found` (`joined`): each such call's row
+/// is drawn from its result.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.joined_entry_lines(response, None, labels, found)
+/// ```
+@internal
+pub fn joined_entry_lines(
+  value: entry.Entry,
+  local_owner: Option(message.Origin),
+  labels: block_summary.Labels,
+  found: Joined,
+  clock: Option(Int),
+) -> List(Line) {
+  entry_rows(value, False, local_owner, labels, outcome_in(found, value), clock)
+}
+
+/// `assistant_block_lines` in compact history for one block of `value`,
+/// with the results joined in `found`: the rows `joined_entry_lines` draws
+/// for that block, for a host that keeps a response's blocks apart.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.joined_block_lines(block, None, response, found)
+/// ```
+@internal
+pub fn joined_block_lines(
+  block: message.AssistantBlock,
+  label: Option(String),
+  value: entry.Entry,
+  found: Joined,
+) -> List(Line) {
+  block_lines(block, False, label, outcome_in(found, value), None)
+}
+
+// The joined result of each of `value`'s calls.
+fn outcome_in(
+  found: Joined,
+  value: entry.Entry,
+) -> fn(message.ToolCall) -> Option(message.AgentMessage) {
+  let caller = ids.entry_id_to_string(value.id)
+  fn(call: message.ToolCall) {
+    dict.get(found.outcomes, #(caller, call.id)) |> option.from_result
+  }
+}
+
+// No result is joined to any call: expanded history draws each result as
+// its own entry, and a host drawing one block alone has no window to join.
+fn unjoined(_call: message.ToolCall) -> Option(message.AgentMessage) {
+  None
+}
+
+fn entry_rows(
+  value: entry.Entry,
+  details_expanded: Bool,
+  local_owner: Option(message.Origin),
+  labels: block_summary.Labels,
+  receipt: fn(message.ToolCall) -> Option(message.AgentMessage),
+  clock: Option(Int),
+) -> List(Line) {
   let found = labels_for(value, labels)
   case value {
     entry.MessageEntry(message: value, ..) ->
@@ -1591,13 +2506,20 @@ pub fn entry_lines(
         block_label(found, 0),
       )
       |> option.lazy_or(fn() {
-        peer_message_lines(value, details_extent(details_expanded))
+        peer_message_lines(value, details_extent(details_expanded), clock)
       })
       |> option.lazy_or(fn() {
-        sibling_message_lines(value, details_extent(details_expanded))
+        sibling_message_lines(value, details_extent(details_expanded), clock)
       })
       |> option.lazy_unwrap(fn() {
-        message_lines(value, details_expanded, local_owner, found)
+        message_lines(
+          value,
+          details_expanded,
+          local_owner,
+          found,
+          receipt,
+          clock,
+        )
       })
     entry.CompactionEntry(retained_tail:, tokens_before:, ..) -> [
       Line(
@@ -1671,24 +2593,61 @@ fn harness_message_lines(
 fn peer_message_lines(
   value: message.AgentMessage,
   extent: notes_view.Extent,
+  clock: Option(Int),
 ) -> Option(List(Line)) {
   case value {
     message.UserMessage(
       content:,
       origin: Some(message.PeerOrigin(session:, strand:)),
-      ..,
+      timestamp:,
     ) ->
       Some([
         Line(
-          System,
-          "peer · "
-            <> text_hygiene.single_line(session)
+          PeerMessage,
+          "⇄ peer session "
+            <> short_session(text_hygiene.single_line(session))
+            <> " · strand "
+            <> text_hygiene.single_line(strand)
             <> " · "
-            <> text_hygiene.single_line(strand),
+            <> origin_checked
+            <> clock_text(timestamp, clock)
+            <> "\n"
+            <> message_body(user_body(content), extent),
         ),
-        prose_line(user_body(content), extent),
       ])
     _ -> None
+  }
+}
+
+// A message heading's time: ` · 14:02`, the local clock time `at` (Unix
+// milliseconds) falls on, or nothing when the host knows no offset. A clock
+// time never goes stale, which a relative age (`12s ago`) on a cached row
+// would.
+fn clock_text(at: Int, clock: Option(Int)) -> String {
+  case clock {
+    None -> ""
+    Some(offset) -> {
+      let minutes = int.modulo(at / 60_000 + offset, 1440) |> result.unwrap(0)
+      " · "
+      <> string.pad_start(int.to_string(minutes / 60), 2, "0")
+      <> ":"
+      <> string.pad_start(int.to_string(minutes % 60), 2, "0")
+    }
+  }
+}
+
+/// The words a peer message's heading ends with. Only a `PeerOrigin` draws
+/// them, and the admission host writes that origin only after it has
+/// authenticated the sending session, so the claim is the daemon's and not
+/// the sender's.
+pub const origin_checked = "✓ origin checked by the daemon"
+
+// A session identifier, a UUID, is named by the eight characters before
+// its first dash, as the picker names one. Anything else is shown whole.
+fn short_session(session: String) -> String {
+  case string.slice(session, 8, 1) {
+    "-" -> string.slice(session, 0, 8)
+    _ -> session
   }
 }
 
@@ -1702,40 +2661,44 @@ fn peer_message_lines(
 fn sibling_message_lines(
   value: message.AgentMessage,
   extent: notes_view.Extent,
+  clock: Option(Int),
 ) -> Option(List(Line)) {
   case value {
     message.UserMessage(
       content:,
       origin: Some(message.StrandOrigin(strand:)),
-      ..,
+      timestamp:,
     ) -> {
       let framed = strand_framing.strip(user_body(content), strand)
-      let trailer = case framed.trailer {
-        Some(instruction) -> [prose_line(instruction, extent)]
-        None -> []
+      let body = case framed.trailer {
+        Some(instruction) -> framed.body <> "\n\n" <> instruction
+        None -> framed.body
       }
       Some([
-        Line(System, "strand · " <> text_hygiene.single_line(strand)),
-        prose_line(framed.body, extent),
-        ..trailer
+        Line(
+          StrandMessage,
+          "← from "
+            <> text_hygiene.single_line(strand)
+            <> " · strand message"
+            <> clock_text(timestamp, clock)
+            <> "\n"
+            <> message_body(body, extent),
+        ),
       ])
     }
     _ -> None
   }
 }
 
-// An agent's prose as one row. A long message collapses to a preview and
-// an expand hint. The preview can stop inside a fence, which would swallow
-// the hint into a code block, so only the whole body is drawn as Markdown.
-fn prose_line(body: String, extent: notes_view.Extent) -> Line {
-  let whole = composer.transcript_text(body, True)
+// A message body as its row draws it: the complete text when details are
+// expanded, and otherwise its first twelve lines with the hint that expands
+// it. Every kind of message is cut the same way, so a sent, a sibling's and
+// a peer's message of one length preview to one height.
+fn message_body(body: String, extent: notes_view.Extent) -> String {
+  let body = text_hygiene.multiline(body)
   case extent {
-    notes_view.Complete -> Line(ToolDetail, whole)
-    notes_view.Excerpt ->
-      case composer.transcript_text(body, False) {
-        preview if preview == whole -> Line(ToolDetail, whole)
-        preview -> Line(System, preview)
-      }
+    notes_view.Complete -> body
+    notes_view.Excerpt -> message_excerpt(body)
   }
 }
 
@@ -2239,6 +3202,8 @@ fn message_lines(
   details_expanded: Bool,
   local_owner: Option(message.Origin),
   found: List(#(Int, String)),
+  receipt: fn(message.ToolCall) -> Option(message.AgentMessage),
+  clock: Option(Int),
 ) -> List(Line) {
   case value {
     message.UserMessage(content:, origin:, ..) -> [
@@ -2251,6 +3216,14 @@ fn message_lines(
           |> composer.transcript_text(details_expanded)
         },
       ),
+      ..content
+      |> list.filter_map(fn(block) {
+        case block {
+          message.UserImage(data:, mime_type:) -> Ok(#(mime_type, data))
+          message.UserText(..) -> Error(Nil)
+        }
+      })
+      |> image_lines
     ]
     message.AssistantMessage(content:, error_message:, stop_reason:, ..) -> {
       // Expanded history has no activity group to fold a run of parallel
@@ -2260,10 +3233,12 @@ fn message_lines(
       let lines =
         content
         |> list.index_map(fn(block, index) {
-          assistant_block_lines(
+          block_lines(
             block,
             details_expanded,
             block_label(found, index),
+            receipt,
+            clock,
           )
         })
         |> separated_tool_groups(WithinResponse)
@@ -2271,7 +3246,16 @@ fn message_lines(
       list.append(lines, assistant_terminal_lines(stop_reason, error_message))
     }
     message.ToolResultMessage(tool_name:, content:, details:, is_error:, ..) ->
-      tool_result_lines(tool_name, content, details, is_error, details_expanded)
+      list.append(
+        tool_result_lines(
+          tool_name,
+          content,
+          details,
+          is_error,
+          details_expanded,
+        ),
+        result_image_lines(content),
+      )
     message.CustomMessage(schema:, payload:) -> [
       Line(System, schema <> " · " <> json.to_string(payload)),
     ]
@@ -2358,6 +3342,16 @@ pub fn assistant_block_lines(
   details_expanded: Bool,
   label: Option(String),
 ) -> List(Line) {
+  block_lines(block, details_expanded, label, unjoined, None)
+}
+
+fn block_lines(
+  block: message.AssistantBlock,
+  details_expanded: Bool,
+  label: Option(String),
+  receipt: fn(message.ToolCall) -> Option(message.AgentMessage),
+  clock: Option(Int),
+) -> List(Line) {
   case block {
     message.AssistantText(text:, ..) -> [Line(Assistant, text)]
     message.AssistantThinking(thinking:, redacted:, ..) ->
@@ -2374,7 +3368,28 @@ pub fn assistant_block_lines(
           ),
         ]
       }
+
+    // A call whose result the window joined to it draws the rows a tool
+    // group draws for it, so a response holding prose settles its calls
+    // as a group of calls does.
     message.AssistantToolCall(call:) -> {
+      use <- result.lazy_unwrap(case details_expanded, receipt(call) {
+        False, Some(outcome) -> Ok(call_rows(call, Some(outcome), clock))
+        False, None | True, _ -> Error(Nil)
+      })
+      use <- result.lazy_unwrap(sent_lines(
+        call,
+        receipt(call),
+        details_extent(details_expanded),
+        clock,
+      ))
+
+      // Expanded history draws the whole program and, below it, the whole
+      // result entry; compact history draws the program's own rows.
+      use <- result.lazy_unwrap(case details_expanded {
+        False -> program_lines(call, receipt(call))
+        True -> Error(Nil)
+      })
       let message.ToolCall(name:, arguments:, ..) = call
       case
         code_mode_program(name, arguments, details_expanded),
@@ -2642,6 +3657,7 @@ fn tool_result_lines(
           False -> failure_preview(result)
         },
       ),
+      ..failed_call_lines(tool_name, details, details_expanded)
     ]
 
     // Expanded, a wait shows each child's report as the child's answer
@@ -2878,29 +3894,114 @@ fn code_mode_result_lines(
     Error(Nil) -> json.String(fallback)
   }
   let sandbox = sandbox_summary(fields)
+
+  // The host's record of the program's capability calls, when this result
+  // carries a readable one. Results written before the record existed, and
+  // ones whose record is malformed, read as no record and render exactly
+  // as they always did.
+  let calls = call_tree.read(json.Object(fields))
+  let summary = option.map(calls, call_tree.summary)
   case details_expanded {
     False -> [
       Line(
         ToolResult,
         "code_mode · "
           <> status
+          <> option_text(summary, " · ")
           <> " · result "
           <> compact(json.to_string(value), 90)
           <> option_text(sandbox, " · "),
       ),
     ]
     True -> [
-      Line(ToolResult, "code_mode · " <> status),
+      Line(ToolResult, "code_mode · " <> status <> option_text(summary, " · ")),
       Line(
         ToolDetail,
         "result\n\n```json\n" <> pretty_json(value, 0) <> "\n```",
       ),
-      ..case sandbox {
-        Some(summary) -> [Line(System, summary)]
-        None -> []
-      }
+      ..list.append(
+        case calls {
+          Some(log) -> call_rows_lines(log)
+          None -> []
+        },
+        case sandbox {
+          Some(summary) -> [Line(System, summary)]
+          None -> []
+        },
+      )
     ]
   }
+}
+
+// The call record under a `code_mode` failure, when there is one. A
+// program that fails or hits its deadline is where the record matters most,
+// and a failure result is not a `code_mode` success, so it reaches this
+// from the failure arm. A failure with no readable record, and any other
+// tool's failure, gets nothing added.
+fn failed_call_lines(
+  tool_name: String,
+  details: Option(json.JsonValue),
+  details_expanded: Bool,
+) -> List(Line) {
+  case tool_name, details {
+    "code_mode", Some(details) ->
+      case call_tree.read(details) {
+        Some(log) -> [
+          Line(ToolResult, "code_mode · " <> call_tree.summary(log)),
+          ..case details_expanded {
+            True -> call_rows_lines(log)
+            False -> []
+          }
+        ]
+        None -> []
+      }
+    _, _ -> []
+  }
+}
+
+// One row per itemised call, in admission order, and a closing row for the
+// calls the host counted and did not itemise. The rows are drawn as text in
+// a fence, so no field of a call, all of which derive from program-chosen
+// strings, can be read as markup.
+fn call_rows_lines(log: CallLog) -> List(Line) {
+  case log.items {
+    [] -> []
+    items -> {
+      let unlisted = log.total - list.length(items)
+      let rows = list.map(items, call_row)
+      let rows = case unlisted > 0 {
+        True ->
+          list.append(rows, [
+            "… " <> int.to_string(unlisted) <> " more calls not itemised",
+          ])
+        False -> rows
+      }
+      [
+        Line(
+          ToolDetail,
+          "calls\n\n```text\n" <> string.join(rows, "\n") <> "\n```",
+        ),
+      ]
+    }
+  }
+}
+
+fn call_row(call: call_tree.Call) -> String {
+  let status = case call.status {
+    call_tree.Settled -> "ok"
+    call_tree.Failed -> "failed" <> option_text(call.error, " ")
+    call_tree.Cancelled -> "cancelled"
+    call_tree.Unsettled -> "unsettled"
+  }
+  call.cap
+  <> option_text(call.args, " ")
+  <> " · "
+  <> status
+  <> " · +"
+  <> int.to_string(call.start_ms)
+  <> "ms, "
+  <> int.to_string(call.duration_ms)
+  <> "ms"
 }
 
 /// The `sandbox · build enforced N layers; skipped M · satellite …` line a

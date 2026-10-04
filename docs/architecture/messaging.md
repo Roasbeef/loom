@@ -346,12 +346,25 @@ rather than replayed as anonymous text.
 
 A message one strand sends another in the same session (`agent_send`, a
 spawn brief) has its own origin variant, `StrandOrigin(strand)`
-(protocol-change/059). The terminal and the web view read it, draw a
-`strand · <id>` heading and remove the Agency's framing with
-`session_view/strand_framing`, and provider projection leaves its content
-unchanged. In release N nothing writes it yet: the Agency still admits these
-messages with `origin: None`, and release N+1 sets it from the authenticated
-caller.
+(protocol-change/059). The terminal and the web view read it and remove
+the Agency's framing with `session_view/strand_framing`: the terminal draws
+a `← from <id> · strand message` heading over the body, the web view a
+`strand · <id>` card, and provider projection leaves its content unchanged.
+The terminal heads the other two kinds of agent traffic the same way: a
+send it projects from the `agent_send` call and its result, `→ to <id> ·
+agent_send · admitted to its queue`, and a `PeerOrigin` message as a band,
+`⇄ peer session <id> · strand <id> · ✓ origin checked by the daemon`. Each
+heading is built from the call or the origin and never from the body.
+The Agency is the only writer: `agent_send` admission and `brief_message` set
+`StrandOrigin(caller.strand)` from the authenticated caller, never from the
+tool arguments, and the model-visible text stays `frame_message` or
+`frame_brief` plus the result contract. The reader and the writer ship in
+the same release, so a client that predates both fails a whole session that
+holds one such entry, and older clients must be stopped before that release is
+selected (see [updating](../updating.md)). The origin is attribution and not authority: no
+code reads it to grant, widen or skip a check, and the vision turn bound ends
+a turn at a sibling message as it does at a peer message, with an admitted
+image-bearing prompt still protected through the operation's own batch.
 
 A background execution keeps one satellite alive under a fixed deadline.
 `cap/execution.receive` reads committed input that the program can decode

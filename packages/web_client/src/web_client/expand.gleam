@@ -1,26 +1,26 @@
-//// `<loom-expand>`: a row shown compact or in full, chosen in the browser
-//// with no round trip to the server.
+//// `<loom-expand>`: a row with a line and a body, the body opened and closed
+//// in the browser with no round trip to the server.
 ////
-//// The terminal's `Ctrl+g` shows a call's whole program and result and a
-//// reasoning block's whole text, where the transcript shows a few lines.
-//// The page holds the same records, so the server draws both forms of a row
-//// that has more to show (`web_view/view/lane`): the compact rows in a child
-//// marked `slot="compact"`, the full rows, cut to the page's budget, in a
-//// child marked `slot="full"`. This element owns only which of them is
-//// shown. Its shadow root holds one button and one slot; every word the
-//// reader sees of the session is the server's light-DOM children projected
-//// through that slot. The element takes no attribute and renders no session
-//// text of its own, and its button carries fixed words (`expand_rule`).
+//// A step of a turn reads as one line (`Edit calc.py +3 −1`) and has more
+//// behind it: the program, the result, the whole reasoning. The server draws
+//// both (`web_view/view/fold_row`), the line in a child marked `slot="head"`
+//// and the rest in a child marked `slot="body"`. This element owns only
+//// whether the body is shown. Its shadow root holds one button, which carries
+//// the chevron and the head slot, and, while the row is open, the body slot.
+//// Every word the reader sees is the server's light-DOM children projected
+//// through those slots; the element takes no attribute, renders no session
+//// text of its own and has no words of its own (`expand_rule`).
 ////
-//// The row starts compact on every page, and the reader's choice survives
-//// the server's later patches, because the server never renders the state.
-//// The button is a real button, so a keyboard opens it as it opens any
-//// button; the element handles no key itself.
+//// The row starts closed on every page, and the reader's choice survives the
+//// server's later patches, because the server never renders the state. The
+//// button is a real button, so a keyboard opens it as it opens any button;
+//// the element handles no key itself. The row's line is the button's
+//// accessible name.
 ////
 //// Each toggle dispatches `fold.toggled_event`, the event `<loom-fold>`
 //// sends, so `<loom-follow>` takes the size change that follows as the
-//// reader's own doing: expanding the newest row at the bottom does not
-//// scroll the page past the button the reader just pressed.
+//// reader's own doing: opening the newest row at the bottom does not scroll
+//// the page past the line the reader just pressed.
 
 import gleam/json
 import lustre
@@ -38,7 +38,7 @@ pub const name = "loom-expand"
 
 /// Everything the element can be told.
 pub type Msg {
-  /// The reader pressed the button.
+  /// The reader pressed the row's line.
   Toggled
 }
 
@@ -55,7 +55,7 @@ pub fn register() -> Result(Nil, lustre.Error) {
 }
 
 fn init(_: Nil) -> #(Shown, Effect(Msg)) {
-  #(expand_rule.Compact, effect.none())
+  #(expand_rule.Closed, effect.none())
 }
 
 fn update(shown: Shown, message: Msg) -> #(Shown, Effect(Msg)) {
@@ -76,16 +76,19 @@ fn view(shown: Shown) -> Element(Msg) {
       [
         attribute.type_("button"),
         attribute.class("expand-toggle"),
-        attribute.aria_expanded(shown == expand_rule.Full),
+        attribute.aria_expanded(shown == expand_rule.Open),
         event.on_click(Toggled),
       ],
       [
         html.span([attribute.class("fold-glyph"), attribute.aria_hidden(True)], [
           html.text(expand_rule.glyph(shown)),
         ]),
-        html.text(expand_rule.words(shown)),
+        component.named_slot("head", [], []),
       ],
     ),
-    component.named_slot(expand_rule.slot(shown), [], []),
+    case shown {
+      expand_rule.Open -> component.named_slot("body", [], [])
+      expand_rule.Closed -> element.none()
+    },
   ])
 }

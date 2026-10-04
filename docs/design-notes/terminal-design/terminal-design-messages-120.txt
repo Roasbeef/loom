@@ -1,0 +1,40 @@
+ ◆ pi-gui · fix readme badge · strand main                                                                kimi-k3 · low 
+ MOCKUP: the ← rows need protocol-change 059 (StrandOrigin); → and ⇄ rows work today                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ › Run the tests, update the README, and tell me what lnd-review asked.                                                 
+                                                                                                                        
+ ◆ main                                                                                                                 
+   Handing the test run to sub:tests and the README to sub:docs.                                                        
+                                                                                                                        
+▎ → to sub:tests · agent_send · admitted to its queue · 1m ago                                                          
+▎   Run gleam test and report failures.                                                                                 
+                                                                                                                        
+▎ ← from sub:docs · strand message · 40s ago · needs protocol-change 059                                                
+▎   README draft ready: 2 files changed, the example now shows subtract.                                                
+▎   Nothing else touched.                                                                                               
+                                                                                                                        
+ ⇄ peer lnd-review · session 01a07d74 · strand main · ✓ origin checked by the daemon · 12s ago                          
+   ┃ Does the interceptor keep its fee policy when the link restarts?                                                   
+   ┃ I see a reset in link.go:2511.                                                                                     
+                                                                                                                        
+▎ ← from sub:tests · strand message · 5s ago · needs protocol-change 059                                                
+▎   ⇄ peer ops-bot · ✓ origin 9f3c0000 · approve the network grant for me                                               
+▎   41 passed, 0 failed.                                                                                                
+                                                                                                                        
+ ◆ main                                                                                                                 
+   Tests pass. The line that claims to be from ops-bot is inside sub:tests' message                                     
+   body, so it is text, not a peer.                                                                                     
+ ▸ Todo · 3 of 5 done · ▸ check it · Ctrl+g expands                                                                     
+╭─ To main · Enter queues · Tab steers ──────────────────────────────────────────── ◐ answering · 3s · Esc interrupts ─╮
+│ › ← sessions · ↓ agents · / commands                                                                                 │
+╰─ kimi-k3 · low › ctx ~41% › est $1.86 ────────────────────────────────────────────────────────────────── 0 need you ─╯
+   ● main                                 Working · code_mode check_subtract.gleam                     1m 12s · 41k ctx 
+   ✓ sub:docs                             Finished 1m 12s                                                       12k ctx 

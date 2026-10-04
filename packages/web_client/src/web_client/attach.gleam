@@ -1,7 +1,7 @@
 //// `<loom-attach name="images" limits="...">`: the operator composer's image
 //// attachments (protocol-change/051, the addendum on images).
 ////
-//// The element draws an "Attach image" button, the chips of the images
+//// The element draws a "+" button, labelled "Attach image" for assistive technology,, the chips of the images
 //// already attached each with a Remove button, and a line saying why a file
 //// was refused. An image comes from the file picker the button opens or from
 //// a paste into the composer, and its bytes are read in the browser and held
@@ -277,10 +277,12 @@ fn view(model: Model) -> Element(Msg) {
         [
           attribute.type_("button"),
           attribute.class("attach-add"),
+          attribute.aria_label("Attach image"),
+          attribute.title("Attach image"),
           attribute.disabled(attach_rule.full(state)),
           event.on_click(PickRequested),
         ],
-        [html.text("Attach image")],
+        [html.text("+")],
       ),
       html.input([
         attribute.type_("file"),

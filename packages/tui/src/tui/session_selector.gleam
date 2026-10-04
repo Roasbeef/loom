@@ -37,7 +37,7 @@
 ////    `reselect` the row so the highlight follows the identity.
 //// 6. `render` picks a layout by width, draws the grouped rows (`list_lines`,
 ////    `row_lines`, `window`) beside the details pane (`detail_lines`), and ends
-////    with `help_line`; `visible` is the one drawn order the highlight indexes.
+////    with `help_lines`; `visible` is the one drawn order the highlight indexes.
 
 import etui/buffer
 import etui/geometry.{type Rect}
@@ -52,10 +52,14 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set
 import gleam/string
+import session_view/agent_roster
 import session_view/text_hygiene
+import tui/agent_row
 import tui/daemon/protocol
 import tui/theme
+import tui/workspace
 
 /// The selected metadata collection, independent of runtime status.
 pub type Collection {
@@ -719,22 +723,73 @@ pub fn counts(state: State) -> List(#(Filter, Int)) {
 /// The narrowest inner width that gets a details pane beside the list.
 const details_width = 96
 
+/// The widest the picker grows. Past this a wider terminal only spreads the
+/// columns apart, so a 200-column screen draws the picker at the size a
+/// 120-column one does and the rows stay easy to follow across.
+const widest = 116
+
+/// The cells of the state-word column: the longest word, `needs you`, and
+/// one spare, so the column after it always starts in the same cell.
+const state_width = 10
+
+/// The cells of the age column, right-aligned: `12m`, `2d`, `now`.
+const age_width = 3
+
 // Whether the highlighted row's details have a pane of their own. Without
-// one, each row carries its status and identity on a second line.
+// one, the highlighted row carries its reason and last message on a second
+// line instead.
 type Arrangement {
   ListOnly
   WithDetails
 }
 
+// The list's width and the cells its two flexible columns get. Everything
+// else in a row has a fixed width, so these numbers are the whole layout:
+// marker 2, glyph 2, name, gap 1, state 10, gap 1, summary, age 3, and a
+// one-cell margin before the divider. Without a pane there is no summary
+// column (`summary` is zero), and the age follows the state word directly;
+// the highlighted bar still spans the full `width`.
+type Columns {
+  Columns(width: Int, name: Int, summary: Int)
+}
+
+fn columns(width: Int, arrangement: Arrangement) -> Columns {
+  case arrangement {
+    WithDetails -> {
+      let name = int.clamp(width - 37, min: 12, max: 40)
+      Columns(width:, name:, summary: int.max(0, width - name - 20))
+    }
+    ListOnly ->
+      Columns(
+        width:,
+        name: int.clamp({ width - 20 } / 2, min: 12, max: 28),
+        summary: 0,
+      )
+  }
+}
+
 /// Renders only one bounded page and its explicit action hints.
+///
+/// The picker owns the whole of `screen`: it clears it before drawing, so
+/// nothing of the transcript shows in the margins beside the frame. The
+/// caller hands it the screen below the identity line.
+///
+/// `now_ms` is the host's wall clock, and it is used for one thing: the age
+/// column, which is the row's creation age because the page carries no
+/// last-activity time.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // session_selector.render(buffer, screen, selector)
+/// // session_selector.render(buffer, screen, selector, model.view.wall_ms)
 /// ```
-pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
-  let width = int.max(1, int.min(160, screen.size.width - 4))
+pub fn render(
+  buf: buffer.Buffer,
+  screen: Rect,
+  state: State,
+  now_ms: Int,
+) -> buffer.Buffer {
+  let width = int.max(1, int.min(widest, screen.size.width - 4))
 
   // The inner width is the frame's less its border and padding. Knowing it
   // before the frame is placed is what lets the height fit the content.
@@ -753,15 +808,15 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
 
   // Both columns are laid out before the frame is placed, since the taller
   // of the two decides the frame's height.
-  let list_lines = list_lines(state, list_width, arrangement)
+  let list_lines = list_lines(state, list_width, arrangement, now_ms)
   let detail_lines = case arrangement, selected_row(state) {
     WithDetails, Some(row) -> detail_lines(state, row, detail_width)
     WithDetails, None | ListOnly, _ -> []
   }
 
-  // Small catalogues need no empty scroll area. Six rows are chrome: the
-  // tabs, their rule, the blank line and help below the body, and the top
-  // and bottom padding; the border adds two more.
+  // Small catalogues need no empty scroll area. Eight rows are chrome: the
+  // border's two, the top padding, the tabs and their rule, and the blank
+  // line and two hint rows below the body.
   let body_rows =
     int.max(1, int.max(list.length(list_lines), list.length(detail_lines)))
   let area =
@@ -779,7 +834,7 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
       [
         span.span_styled(
           case state.collection {
-            Active -> " SESSIONS · active "
+            Active -> " SESSIONS · Left from an empty composer "
             Archived -> " SESSIONS · archived "
           },
           theme.overlay_signal(),
@@ -787,12 +842,13 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
       ],
       block.Top,
     )
-    |> block.with_padding(1, 1, 1, 1)
+    |> block.with_padding(1, 0, 1, 1)
 
   // The tabs and their rule take the top two rows of the inside, and the
-  // blank line and help the bottom two; the body is what is left between.
+  // blank line and the two hint rows the bottom three; the body is what is
+  // left between.
   let inside = block.inner(area, frame)
-  let body_height = int.max(0, inside.size.height - 4)
+  let body_height = int.max(0, inside.size.height - 5)
   let body_y = inside.position.y + 2
   let list_area =
     geometry.rect_new(inside.position.x, body_y, list_width, body_height)
@@ -808,11 +864,16 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
       inside.position.x,
       body_y + body_height,
       inside.size.width,
-      2,
+      3,
     )
+
+  // etui's background fill covers the area inside the padding only, so
+  // the padding cells are given the modal background first; without it a
+  // column of terminal background runs down each side inside the border.
   let painted =
     buf
-    |> buffer.clear(area)
+    |> buffer.clear(screen)
+    |> buffer.set_style(area, theme.overlay_plain())
     |> block.render(area, frame)
     |> paragraph.render_styled(inside, [
       tabs_line(state, inside.size.width),
@@ -824,7 +885,7 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
     )
     |> paragraph.render_styled(footer, [
       span.line_new([]),
-      help_line(state, inside.size.width),
+      ..help_lines(state, inside.size.width)
     ])
 
   // An empty page has no row to describe, so it gets no pane and no divider
@@ -865,7 +926,7 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
 }
 
 // A drawn list line, tagged with the visible-row index it draws, if any, so
-// the window can keep the highlighted row on screen.
+// the window can keep the highlighted row on screen and count what it hides.
 type ListLine {
   ListLine(row: Option(Int), line: span.Line)
 }
@@ -875,15 +936,18 @@ fn list_lines(
   state: State,
   width: Int,
   arrangement: Arrangement,
+  now_ms: Int,
 ) -> List(ListLine) {
   let groups = groups(state)
+  let columns = columns(width, arrangement)
+  let twins = twin_names(state)
   case groups {
     [] -> [
       ListLine(
         None,
         span.line_new([
           span.span_styled(
-            text.truncate(empty_message(state), width, "…"),
+            text.truncate(" " <> empty_message(state), width, "…"),
             theme.overlay_quiet(),
           ),
         ]),
@@ -894,22 +958,13 @@ fn list_lines(
         list.fold(groups, #([], 0), fn(acc, group) {
           let #(lines, first) = acc
           let #(workspace, rows) = group
-          let count = " " <> int.to_string(list.length(rows))
           let header =
-            ListLine(
-              None,
-              span.line_new([
-                span.span_styled(
-                  fit_workspace(workspace, width - text.cell_width(count))
-                    <> count,
-                  theme.overlay_quiet(),
-                ),
-              ]),
-            )
+            ListLine(None, group_header(workspace, list.length(rows), width))
           let drawn =
             rows
             |> list.index_map(fn(row, offset) {
-              row_lines(state, row, first + offset, width, arrangement)
+              let label = row_label(row, twins)
+              row_lines(state, row, label, first + offset, columns, now_ms)
               |> list.map(ListLine(Some(first + offset), _))
             })
             |> list.flatten
@@ -929,121 +984,491 @@ fn list_lines(
 
 fn empty_message(state: State) -> String {
   case state.page.sessions, state.filter {
-    [], _ -> "No saved sessions. Press n to create one explicitly."
+    [], _ -> "No saved sessions. Press n to create one."
     _, _ -> "No sessions match this filter. Tab shows the next one."
   }
 }
 
-// One row. The first line is the marker, the presence glyph, the name and
-// the current-session tag. A wide picker adds the lifecycle tag and short
-// identity on the same line and leaves the rest to the details pane. A
-// narrow one has no pane, so it gives them a second line of their own:
-// two sessions can share a name, and a row that cut its identity to keep
-// the name, or the reverse, would leave the operator unable to tell them
-// apart.
-fn row_lines(
-  state: State,
-  row: protocol.Session,
-  index: Int,
-  width: Int,
-  arrangement: Arrangement,
-) -> List(span.Line) {
-  let #(marker, name_style) = case index == state.selected {
-    True -> #("▸ ", theme.overlay_signal())
-    False -> #("  ", theme.overlay_plain())
-  }
-  let presence = presence(state, row)
-  let identity = short_identity(row.session_id)
-  let tag = case row.status {
-    protocol.Resident(_) -> ""
-    status -> " [" <> lifecycle(status) <> "]"
-  }
-  let suffix = case arrangement {
-    WithDetails -> tag <> " · " <> identity
-    ListOnly -> ""
-  }
-  let current = case row.session_id == state.current {
-    True -> " current"
-    False -> ""
-  }
+// The names more than one row on this page carries. Two sessions of one
+// workspace are often both called after its branch, and a row that showed
+// only the name would leave the operator unable to tell which one Enter
+// opens, so a twin's row carries its short identity too.
+fn twin_names(state: State) -> set.Set(String) {
+  let #(_, twins) =
+    list.fold(state.page.sessions, #(set.new(), set.new()), fn(acc, row) {
+      let #(seen, twins) = acc
+      case set.contains(seen, row.name) {
+        True -> #(seen, set.insert(twins, row.name))
+        False -> #(set.insert(seen, row.name), twins)
+      }
+    })
+  twins
+}
 
-  // The name gets whatever the fixed pieces leave, and the current tag is
-  // pushed to the right edge by padding after it.
-  let fixed =
-    text.cell_width(marker)
-    + 2
-    + text.cell_width(suffix)
-    + text.cell_width(current)
-  let name =
-    text.truncate(
-      text_hygiene.single_line(row.name),
-      int.max(0, width - fixed),
-      "…",
-    )
-  let used = fixed + text.cell_width(name)
-  let first =
-    span.line_new([
-      span.span_styled(marker, name_style),
-      span.span_styled(glyph(presence) <> " ", presence_style(presence)),
-      span.span_styled(name, name_style),
-      span.span_styled(suffix, theme.overlay_quiet()),
-      span.span_styled(string.repeat(" ", int.max(0, width - used)), name_style),
-      span.span_styled(current, theme.overlay_current()),
-    ])
-  case arrangement {
-    WithDetails -> [first]
-    ListOnly -> [
-      first,
-      span.line_new([
-        span.span_styled(
-          text.truncate(
-            "    " <> short_status(presence, row) <> " · " <> identity,
-            width,
-            "…",
-          ),
-          theme.overlay_quiet(),
-        ),
-      ]),
-    ]
+// The label a row draws: its name, and for a twin its short identity, which
+// a truncation must keep, so the name is cut first.
+type Label {
+  Plain(name: String)
+  Twin(name: String, identity: String)
+}
+
+fn row_label(row: protocol.Session, twins: set.Set(String)) -> Label {
+  let name = text_hygiene.single_line(row.name)
+  case set.contains(twins, row.name) {
+    True -> Twin(name, short_identity(row.session_id))
+    False -> Plain(name)
   }
 }
 
-// The one or two words a narrow row has room for.
-fn short_status(presence: Presence, row: protocol.Session) -> String {
+fn fit_label(label: Label, width: Int) -> String {
+  case label {
+    Plain(name) -> text.truncate(name, width, "…")
+    Twin(name, identity) -> {
+      let suffix = " · " <> identity
+      let room = width - text.cell_width(suffix)
+      case room >= 4 {
+        True -> text.truncate(name, room, "…") <> suffix
+        False -> text.truncate(identity, width, "…")
+      }
+    }
+  }
+}
+
+// One workspace heading: its last path segment in capitals, the path
+// shortened to the home directory, and how many of its sessions the filter
+// shows, right-aligned over the age column.
+fn group_header(workspace: String, count: Int, width: Int) -> span.Line {
+  let label =
+    text.truncate(
+      " " <> string.uppercase(workspace_name(workspace)),
+      int.max(4, width / 3),
+      "…",
+    )
+  let tally = int.to_string(count) <> " "
+  let room = width - text.cell_width(label) - 2 - text.cell_width(tally) - 1
+  let path = fit_tail(home_relative(workspace), int.max(0, room))
+  let used =
+    text.cell_width(label) + 2 + text.cell_width(path) + text.cell_width(tally)
+  span.line_new([
+    span.span_styled(
+      label,
+      style.new(theme.quiet, theme.graphite, style.bold()),
+    ),
+    span.span_styled("  " <> path, theme.overlay_quiet()),
+    span.span_styled(
+      string.repeat(" ", int.max(0, width - used)),
+      theme.overlay_quiet(),
+    ),
+    span.span_styled(tally, theme.overlay_quiet()),
+  ])
+}
+
+fn workspace_name(workspace: String) -> String {
+  let name =
+    workspace
+    |> text_hygiene.single_line
+    |> string.split("/")
+    |> list.last
+    |> result.unwrap("")
+  case name {
+    "" -> text_hygiene.single_line(workspace)
+    name -> name
+  }
+}
+
+// A path under a conventional home root reads as `~/…`, as the terminal
+// writes its own workspace (`workspace.path_label`). The shortening is
+// presentation only: no path drawn here is ever used for routing.
+fn home_relative(path: String) -> String {
+  workspace.path_label(text_hygiene.single_line(path))
+}
+
+// One row. The first line is the marker, the glyph, the label, the state
+// word, a short reason and the age, each in a column of its own. Without a
+// details pane the highlighted row gets a second line with the longer
+// reason and the session's last message, which the pane would otherwise
+// show. The highlighted row is painted on the raised background across the
+// list's full width, so it reads as one bar.
+fn row_lines(
+  state: State,
+  row: protocol.Session,
+  label: Label,
+  index: Int,
+  columns: Columns,
+  now_ms: Int,
+) -> List(span.Line) {
+  let presence = presence(state, row)
+  let activity = option.from_result(dict.get(state.activity, row.session_id))
+
+  // The cursor's mark is amber and bold; the attached session's is quiet,
+  // so one column never shows two marks that both read as a selection.
+  let #(marker, background, name_weight, mark_look) = case
+    index == state.selected,
+    row.session_id == state.current
+  {
+    True, _ -> #(
+      "▸ ",
+      theme.raised,
+      style.bold(),
+      #(theme.signal, style.bold()),
+    )
+    False, True -> #(
+      "› ",
+      theme.graphite,
+      style.none(),
+      #(theme.quiet, style.none()),
+    )
+    False, False -> #(
+      "  ",
+      theme.graphite,
+      style.none(),
+      #(theme.quiet, style.none()),
+    )
+  }
+  let tone = tone(presence, row.status)
+  let name = text.pad_right(fit_label(label, columns.name), columns.name)
+  let word = text.pad_right(state_word(presence, row.status), state_width)
+
+  // The summary column is one cell narrower than its width, so a summary
+  // that fills it still leaves a space before the age.
+  let summary = case columns.summary {
+    0 -> ""
+    cells ->
+      text.pad_right(
+        text.truncate(summary_phrase(presence, row, activity), cells - 1, "…"),
+        cells,
+      )
+  }
+  let first =
+    span.line_new([
+      span.span_styled(marker, style.new(mark_look.0, background, mark_look.1)),
+      span.span_styled(
+        glyph(presence, row.status) <> " ",
+        style.new(tone.0, background, tone.1),
+      ),
+      span.span_styled(
+        name <> " ",
+        style.new(theme.paper, background, name_weight),
+      ),
+      span.span_styled(word <> " ", style.new(tone.0, background, style.none())),
+      span.span_styled(
+        summary,
+        style.new(theme.quiet, background, style.none()),
+      ),
+      span.span_styled(
+        text.pad_left(age(now_ms, row.created_at), age_width) <> " ",
+        style.new(theme.quiet, background, style.none()),
+      ),
+    ])
+  let width = columns.width
+  let first = pad_line(first, width, background)
+  case index == state.selected, columns.summary {
+    True, 0 -> [
+      first,
+      pad_line(
+        span.line_new([
+          span.span_styled(
+            "    " <> cut(expansion(state, presence, row, activity), width - 5),
+            style.new(theme.quiet, background, style.none()),
+          ),
+        ]),
+        width,
+        background,
+      ),
+    ]
+    True, _ | False, _ -> [first]
+  }
+}
+
+// Extends a line to `width` cells on `background`, so the highlighted bar
+// has no ragged right edge where its last column ends early.
+fn pad_line(line: span.Line, width: Int, background: style.Color) -> span.Line {
+  let used =
+    list.fold(line.spans, 0, fn(total, piece) {
+      total + text.cell_width(piece.content)
+    })
+  case used < width {
+    True ->
+      span.line_new(
+        list.append(line.spans, [
+          span.span_styled(
+            string.repeat(" ", width - used),
+            style.new(theme.quiet, background, style.none()),
+          ),
+        ]),
+      )
+    False -> line
+  }
+}
+
+// The colour and weight a presence is drawn in. Every presence also has a
+// glyph and a word, so a row reads without colour.
+fn tone(
+  presence: Presence,
+  status: protocol.Lifecycle,
+) -> #(style.Color, style.Modifier) {
+  case presence, status {
+    NeedsYou, _ -> #(theme.danger, style.bold())
+    Working, _ -> #(theme.current, style.none())
+    Inactive, protocol.RecoveryBlocked -> #(theme.danger, style.none())
+    Idle, _ | Unobserved, _ | Inactive, _ -> #(theme.quiet, style.none())
+  }
+}
+
+fn glyph(presence: Presence, status: protocol.Lifecycle) -> String {
+  case presence, status {
+    NeedsYou, _ -> "!"
+    Working, _ -> "●"
+    Idle, _ -> "○"
+    Unobserved, _ -> "◌"
+    Inactive, protocol.RecoveryBlocked -> "×"
+    Inactive, _ -> "·"
+  }
+}
+
+// The one word in the state column. An inactive row names its lifecycle,
+// because "saved" and "blocked" ask different things of the operator.
+fn state_word(presence: Presence, status: protocol.Lifecycle) -> String {
   case presence {
     NeedsYou -> "needs you"
     Working -> "working"
     Idle -> "idle"
     Unobserved -> "resident"
-    Inactive -> lifecycle(row.status)
+    Inactive ->
+      case status {
+        protocol.RecoveryBlocked -> "blocked"
+        other -> lifecycle(other)
+      }
   }
 }
 
-// Scrolls so every line of the highlighted row is on screen, by bringing
-// its last line to the bottom when it would otherwise fall below.
+// The short reason in the summary column: what the operator would ask
+// next about a row in this state. It is empty when there is nothing more
+// to say than the state word.
+fn summary_phrase(
+  presence: Presence,
+  row: protocol.Session,
+  activity: Option(protocol.Activity),
+) -> String {
+  case presence, activity {
+    NeedsYou, Some(protocol.Activity(approvals:, ..)) if approvals > 0 ->
+      plural(approvals, "approval")
+    NeedsYou,
+      Some(protocol.Activity(last_outcome: Some(protocol.LastFailed), ..))
+    -> "last run failed"
+    NeedsYou, _ -> ""
+
+    // `strands` counts every strand the session has ever held, finished
+    // sub-agents included, so the working count leads.
+    Working, Some(protocol.Activity(working:, strands:, ..))
+      if strands > working
+    -> int.to_string(working) <> " of " <> plural(strands, "strand")
+    Working, Some(protocol.Activity(working:, ..)) -> plural(working, "strand")
+    Working, None -> ""
+    Idle, Some(protocol.Activity(strands:, ..)) if strands > 1 ->
+      plural(strands, "strand")
+    Idle, Some(protocol.Activity(last_outcome: Some(protocol.LastAborted), ..))
+    -> "last run aborted"
+    Idle, Some(protocol.Activity(last_outcome: Some(protocol.LastFailed), ..))
+    -> "last run failed"
+    Idle, _ -> ""
+    Unobserved, Some(_) -> "did not answer"
+    Unobserved, None -> "not yet observed"
+    Inactive, _ ->
+      case row.status {
+        protocol.RecoveryBlocked -> "recovery blocked"
+        protocol.Reserved
+        | protocol.Saved
+        | protocol.Opening(_)
+        | protocol.Resident(_)
+        | protocol.Stopping(_) -> ""
+      }
+  }
+}
+
+// The longer reason, which the details pane's status line and a narrow
+// picker's second line both carry.
+fn reason(
+  state: State,
+  presence: Presence,
+  row: protocol.Session,
+  activity: Option(protocol.Activity),
+) -> String {
+  case presence, activity {
+    NeedsYou, Some(protocol.Activity(approvals:, ..)) if approvals > 0 ->
+      plural(approvals, "approval") <> " pending"
+    NeedsYou,
+      Some(protocol.Activity(last_outcome: Some(protocol.LastFailed), ..))
+    -> "last run failed"
+    NeedsYou, _ -> ""
+    Working, Some(protocol.Activity(working:, strands:, ..))
+      if strands > working
+    ->
+      int.to_string(working)
+      <> " of "
+      <> plural(strands, "strand")
+      <> " working"
+    Working, Some(protocol.Activity(working:, ..)) ->
+      plural(working, "strand") <> " working"
+    Working, None -> ""
+    Idle,
+      Some(protocol.Activity(last_outcome: Some(protocol.LastCompleted), ..))
+    -> "last run completed"
+    Idle, Some(protocol.Activity(last_outcome: Some(protocol.LastAborted), ..))
+    -> "last run aborted"
+    Idle, Some(protocol.Activity(last_outcome: Some(protocol.LastFailed), ..))
+    -> "last run failed"
+    Idle, _ -> ""
+    Unobserved, Some(_) -> "did not answer"
+    Unobserved, None -> "activity not yet observed"
+    Inactive, _ -> {
+      let enter = case state.collection {
+        Active -> "Enter opens"
+        Archived -> "Enter restores"
+      }
+      case row.status {
+        protocol.RecoveryBlocked -> "recovery blocked · " <> enter
+        protocol.Reserved
+        | protocol.Saved
+        | protocol.Opening(_)
+        | protocol.Resident(_)
+        | protocol.Stopping(_) -> enter
+      }
+    }
+  }
+}
+
+// A narrow picker's second line: the reason, then the last message.
+fn expansion(
+  state: State,
+  presence: Presence,
+  row: protocol.Session,
+  activity: Option(protocol.Activity),
+) -> String {
+  let message = case activity {
+    Some(protocol.Activity(last_message: Some(message), ..)) ->
+      text_hygiene.single_line(message)
+    Some(protocol.Activity(last_message: None, ..)) | None -> ""
+  }
+  [reason(state, presence, row, activity), message]
+  |> list.filter(fn(part) { part != "" })
+  |> string.join(" · ")
+}
+
+// A creation age in the largest whole unit, at most three cells. A clock
+// behind the row's own timestamp reads as `now` rather than a negative age.
+fn age(now_ms: Int, created_at: Int) -> String {
+  let seconds = int.max(0, now_ms - created_at) / 1000
+  case seconds {
+    seconds if seconds < 60 -> "now"
+    seconds if seconds < 3600 -> int.to_string(seconds / 60) <> "m"
+    seconds if seconds < 86_400 -> int.to_string(seconds / 3600) <> "h"
+    seconds if seconds < 604_800 -> int.to_string(seconds / 86_400) <> "d"
+    seconds if seconds < 31_536_000 -> int.to_string(seconds / 604_800) <> "w"
+    seconds -> int.to_string(seconds / 31_536_000) <> "y"
+  }
+}
+
+// Scrolls so every line of the highlighted row is on screen. When lines
+// are cut off, a row at the edge says how many sessions lie beyond it, so
+// a list that ends at the frame never reads as the whole page.
 fn window(lines: List(ListLine), state: State, height: Int) -> List(span.Line) {
-  let position =
+  let total = list.length(lines)
+  let selected =
     lines
     |> list.index_map(fn(line, index) { #(line.row, index) })
     |> list.filter(fn(pair) { pair.0 == Some(state.selected) })
-    |> list.last
-    |> result.map(fn(pair) { pair.1 })
-    |> result.unwrap(0)
-  let start = int.max(0, position - height + 1)
-  lines
-  |> list.drop(start)
-  |> list.take(height)
-  |> list.map(fn(line) { line.line })
+    |> list.map(fn(pair) { pair.1 })
+  let first = list.first(selected) |> result.unwrap(0)
+  let last = list.last(selected) |> result.unwrap(0)
+  let shown = case total <= height || height < 4 {
+    True ->
+      lines |> list.drop(int.max(0, last - height + 1)) |> list.take(height)
+    False -> scrolled(lines, total, first, last, height)
+  }
+  list.map(shown, fn(line) { line.line })
 }
 
-// The tab row. A narrow picker drops the Tab hint before it drops a tab.
+// The window over a list taller than its area, given the first and last
+// line of the highlighted row. Each case gives up one row per cut side to
+// the count of what that side hides.
+fn scrolled(
+  lines: List(ListLine),
+  total: Int,
+  first: Int,
+  last: Int,
+  height: Int,
+) -> List(ListLine) {
+  case last < height - 1, first >= total - { height - 1 } {
+    // The top of the list holds the selection: only rows below are cut.
+    True, _ -> {
+      let shown = list.take(lines, height - 1)
+      list.append(shown, [
+        more(list.drop(lines, height - 1), shown, "↓", "below"),
+      ])
+    }
+
+    // The end of the list holds the selection: only rows above are cut.
+    False, True -> {
+      let shown = list.drop(lines, total - { height - 1 })
+      [
+        more(list.take(lines, total - { height - 1 }), shown, "↑", "above"),
+        ..shown
+      ]
+    }
+
+    // The selection is in the middle: rows are cut on both sides.
+    False, False -> {
+      let start = last - { height - 2 } + 1
+      let shown = lines |> list.drop(start) |> list.take(height - 2)
+      let below = list.drop(lines, start + height - 2)
+      [
+        more(list.take(lines, start), shown, "↑", "above"),
+        ..list.append(shown, [more(below, shown, "↓", "below")])
+      ]
+    }
+  }
+}
+
+// A count of the sessions with a line in `hidden` and none in `shown`, as
+// one list line. A row whose second line is cut but whose first is drawn
+// is on screen, so it is not counted.
+fn more(
+  hidden: List(ListLine),
+  shown: List(ListLine),
+  arrow: String,
+  side: String,
+) -> ListLine {
+  let drawn =
+    list.filter_map(shown, fn(line) { option.to_result(line.row, Nil) })
+  let count =
+    hidden
+    |> list.filter_map(fn(line) { option.to_result(line.row, Nil) })
+    |> list.unique
+    |> list.filter(fn(index) { !list.contains(drawn, index) })
+    |> list.length
+  ListLine(
+    None,
+    span.line_new([
+      span.span_styled(
+        "  " <> arrow <> " " <> int.to_string(count) <> " more " <> side,
+        theme.overlay_quiet(),
+      ),
+    ]),
+  )
+}
+
+// The tab row, one cell between tabs. A narrow picker drops the Tab hint
+// before it drops a tab. The Needs-you tab is drawn in the danger colour
+// while it counts anything, so the one tab that asks for action is seen
+// before it is read.
 fn tabs_line(state: State, width: Int) -> span.Line {
   case state.collection {
     Archived ->
       span.line_new([
         span.span_styled(
           text.truncate(
-            "Archived sessions are restored before they can be opened.",
+            " Archived sessions are restored before they can be opened.",
             width,
             "…",
           ),
@@ -1052,25 +1477,27 @@ fn tabs_line(state: State, width: Int) -> span.Line {
       ])
     Active -> {
       let tabs =
-        list.map(counts(state), fn(pair) {
+        list.flat_map(counts(state), fn(pair) {
           let #(filter, count) = pair
-          let label = filter_label(filter) <> " " <> int.to_string(count)
-          case filter == state.filter {
-            True ->
-              span.span_styled(
-                " " <> label <> " ",
-                style.new(theme.graphite, theme.signal, style.bold()),
-              )
-            False ->
-              span.span_styled(" " <> label <> " ", theme.overlay_quiet())
+          let label =
+            " " <> filter_label(filter) <> " " <> int.to_string(count) <> " "
+          let look = case filter == state.filter, filter, count {
+            True, _, _ -> style.new(theme.paper, theme.raised, style.bold())
+            False, NeedsYouSessions, count if count > 0 ->
+              style.new(theme.danger, theme.graphite, style.none())
+            False, _, _ -> theme.overlay_quiet()
           }
+          [
+            span.span_styled(label, look),
+            span.span_styled(" ", theme.overlay_quiet()),
+          ]
         })
       let hint = "Tab filter"
       let used =
         list.fold(tabs, 0, fn(total, tab) {
           total + text.cell_width(tab.content)
         })
-      let hint_spans = case used + text.cell_width(hint) + 2 <= width {
+      let hint_spans = case used + text.cell_width(hint) + 1 <= width {
         True -> [
           span.span_styled(
             string.repeat(" ", width - used - text.cell_width(hint)),
@@ -1095,30 +1522,11 @@ fn filter_label(filter: Filter) -> String {
   }
 }
 
-// Every presence has a glyph as well as a color, so the list reads without
-// color.
-fn glyph(presence: Presence) -> String {
-  case presence {
-    NeedsYou -> "!"
-    Working -> "●"
-    Idle -> "○"
-    Unobserved -> "◌"
-    Inactive -> "·"
-  }
-}
-
-fn presence_style(presence: Presence) -> style.Style {
-  case presence {
-    NeedsYou -> style.new(theme.danger, theme.graphite, style.bold())
-    Working -> theme.overlay_current()
-    Idle -> style.new(theme.added, theme.graphite, style.none())
-    Unobserved | Inactive -> theme.overlay_quiet()
-  }
-}
-
-// The details pane for the highlighted row: what it is doing and why, the
-// daemon's last word from it and its agents, then where it lives. Every
-// line is pre-wrapped to the pane, because an overlay row never wraps.
+// The details pane for the highlighted row: its name and why it is where
+// it is, the daemon's last word from it and its strands, then a table of
+// where it lives. Every line is pre-wrapped to the pane, because an
+// overlay row never wraps, and each section appears only when the daemon's
+// answer carries it.
 fn detail_lines(
   state: State,
   row: protocol.Session,
@@ -1126,103 +1534,176 @@ fn detail_lines(
 ) -> List(span.Line) {
   let presence = presence(state, row)
   let activity = option.from_result(dict.get(state.activity, row.session_id))
-  let plain = theme.overlay_plain()
-  let quiet = theme.overlay_quiet()
+  let tone = tone(presence, row.status)
 
-  // The name and the status line say what the row is doing; the sections
-  // below appear only when the daemon's answer carries them.
-  let heading =
-    wrapped(text_hygiene.single_line(row.name), width, theme.overlay_signal())
+  // The heading names the session as the design does, `loom · main`: its
+  // workspace, then its name, on one line and cut with an ellipsis.
+  let heading = [
+    span.line_new([
+      span.span_styled(
+        cut(
+          workspace_name(row.workspace)
+            <> " · "
+            <> text_hygiene.single_line(row.name),
+          width,
+        ),
+        style.new(theme.paper, theme.graphite, style.bold()),
+      ),
+    ]),
+  ]
+  let reason = case reason(state, presence, row, activity) {
+    "" -> ""
+    reason -> " · " <> reason
+  }
   let status = [
     span.line_new([
-      span.span_styled(glyph(presence) <> " ", presence_style(presence)),
       span.span_styled(
-        text.truncate(status_text(presence, row, activity), width - 2, "…"),
-        presence_style(presence),
+        glyph(presence, row.status) <> " " <> state_word(presence, row.status),
+        style.new(tone.0, theme.graphite, style.bold()),
+      ),
+      span.span_styled(
+        text.truncate(
+          reason,
+          int.max(
+            0,
+            width - 2 - text.cell_width(state_word(presence, row.status)),
+          ),
+          "…",
+        ),
+        theme.overlay_quiet(),
       ),
     ]),
   ]
 
   let message = case activity {
     Some(protocol.Activity(last_message: Some(message), ..)) ->
-      section("Last message", wrapped(message, width, plain) |> list.take(8))
+      section(
+        [label("LAST MESSAGE")],
+        wrapped_at_most(message, 4, width, theme.overlay_plain()),
+      )
     _ -> []
   }
-  let agents = case activity {
-    Some(protocol.Activity(glances: [_, ..] as glances, ..)) ->
+  let strands = case activity {
+    Some(protocol.Activity(strands:, working:, glances:, ..)) if strands > 0 ->
       section(
-        "Agents",
-        list.flat_map(glances, fn(glance) {
-          list.append(
-            wrapped(glance.strand <> " · " <> glance.title, width, plain)
-              |> list.take(1),
-            wrapped(glance.summary, width, quiet) |> list.take(2),
-          )
-        }),
+        [
+          label("STRANDS"),
+          span.span_styled(
+            " · "
+              <> int.to_string(strands)
+              <> case working {
+              0 -> ""
+              working -> ", " <> int.to_string(working) <> " working"
+            },
+            theme.overlay_quiet(),
+          ),
+        ],
+        list.flat_map(glances, glance_lines(_, width)),
       )
     _ -> []
   }
   let model = case activity {
     Some(protocol.Activity(model: Some(model), ..)) ->
-      section("Model", wrapped(model, width, plain))
+      table_row("MODEL", model, width, theme.overlay_plain())
     _ -> []
   }
-  list.flatten([
-    heading,
-    status,
-    message,
-    agents,
-    section("Workspace", wrapped(row.workspace, width, plain)),
-    model,
-    section("Session", wrapped(row.session_id, width, plain)),
-  ])
+  let identity = case text.cell_width(row.session_id) <= width - 11 {
+    True -> row.session_id
+    False -> short_identity(row.session_id)
+  }
+  let place =
+    list.flatten([
+      model,
+      table_row(
+        "WORKSPACE",
+        fit_tail(home_relative(row.workspace), int.max(0, width - 11)),
+        width,
+        theme.overlay_plain(),
+      ),
+      table_row("ID", identity, width, theme.overlay_quiet()),
+    ])
+  list.flatten([heading, status, message, strands, [span.line_new([]), ..place]])
 }
 
-fn section(label: String, body: List(span.Line)) -> List(span.Line) {
+// One strand of the session, as the daemon's glance describes it: its name,
+// then what it is doing, indented under it. A glance carries no state, so
+// the strand gets a neutral mark rather than a guessed one.
+fn glance_lines(glance: protocol.GlanceLine, width: Int) -> List(span.Line) {
+  let doing = case glance.summary {
+    "" -> glance.title
+    summary -> summary
+  }
   [
-    span.line_new([]),
-    span.line_new([span.span_styled(label, theme.overlay_quiet())]),
-    ..body
+    span.line_new([
+      span.span_styled("· ", theme.overlay_quiet()),
+      span.span_styled(
+        text.truncate(
+          agent_roster.short_name(text_hygiene.single_line(glance.strand)),
+          int.max(0, width - 2),
+          "…",
+        ),
+        theme.overlay_plain(),
+      ),
+    ]),
+    span.line_new([
+      span.span_styled(
+        "    " <> cut(text_hygiene.single_line(doing), width - 4),
+        theme.overlay_quiet(),
+      ),
+    ]),
   ]
 }
 
-fn wrapped(value: String, width: Int, style: style.Style) -> List(span.Line) {
-  value
-  |> text_hygiene.single_line
-  |> text.wrap(int.max(1, width))
-  |> list.map(fn(line) { span.line_new([span.span_styled(line, style)]) })
+// A dim bold label, the one style every pane heading and table key shares.
+fn label(value: String) -> span.Span {
+  span.span_styled(value, style.new(theme.quiet, theme.graphite, style.bold()))
 }
 
-// Says why a row is where it is. The reason for `NeedsYou` comes first
-// because it is what the operator has to act on.
-fn status_text(
-  presence: Presence,
-  row: protocol.Session,
-  activity: Option(protocol.Activity),
-) -> String {
-  case presence, activity {
-    NeedsYou, Some(protocol.Activity(approvals:, ..)) if approvals > 0 ->
-      "Needs you · " <> plural(approvals, "approval") <> " pending"
-    NeedsYou,
-      Some(protocol.Activity(last_outcome: Some(protocol.LastFailed), ..))
-    -> "Needs you · last run failed"
-    NeedsYou, _ -> "Needs you"
+fn section(heading: List(span.Span), body: List(span.Line)) -> List(span.Line) {
+  [span.line_new([]), span.line_new(heading), ..body]
+}
 
-    // `strands` counts every strand the session has ever held, finished
-    // sub-agents included, so only the running count is worth printing.
-    Working, Some(protocol.Activity(working:, ..)) if working > 1 ->
-      "Working · " <> plural(working, "agent") <> " running"
-    Working, _ -> "Working"
-    Idle,
-      Some(protocol.Activity(last_outcome: Some(protocol.LastCompleted), ..))
-    -> "Idle · last run completed"
-    Idle, Some(protocol.Activity(last_outcome: Some(protocol.LastAborted), ..))
-    -> "Idle · last run aborted"
-    Idle, _ -> "Idle"
-    Unobserved, Some(_) -> "Resident · did not answer"
-    Unobserved, None -> "Resident · activity not yet observed"
-    Inactive, _ -> "Inactive · " <> lifecycle(row.status) <> " · Enter opens"
+// One key and value of the pane's closing table. The keys share an
+// eleven-cell column so the values start in one column; a value too long
+// for its row is cut, since the pane never wraps a table row.
+fn table_row(
+  key: String,
+  value: String,
+  width: Int,
+  look: style.Style,
+) -> List(span.Line) {
+  [
+    span.line_new([
+      label(text.pad_right(key, 11)),
+      span.span_styled(
+        text.truncate(
+          text_hygiene.single_line(value),
+          int.max(0, width - 11),
+          "…",
+        ),
+        look,
+      ),
+    ]),
+  ]
+}
+
+// At most `rows` wrapped lines. A longer value ends its last row with an
+// ellipsis at a word boundary, so a cut message never reads as complete.
+fn wrapped_at_most(
+  value: String,
+  rows: Int,
+  width: Int,
+  look: style.Style,
+) -> List(span.Line) {
+  let lines = value |> text_hygiene.single_line |> text.wrap(int.max(1, width))
+  let kept = case list.drop(lines, rows) {
+    [] -> lines
+    [_, ..] ->
+      list.append(list.take(lines, rows - 1), [
+        cut(string.join(list.drop(lines, rows - 1), " "), width),
+      ])
   }
+  list.map(kept, fn(line) { span.line_new([span.span_styled(line, look)]) })
 }
 
 fn plural(count: Int, noun: String) -> String {
@@ -1240,87 +1721,126 @@ fn short_identity(identity: String) -> String {
   string.slice(identity, 0, 13)
 }
 
-// Path tails distinguish worktrees. Reverse only for cell-aware truncation;
-// markers and the compact identity are separate spans and cannot be clipped.
-fn fit_workspace(workspace: String, width: Int) -> String {
-  workspace
+// Keeps the end of a value: path tails distinguish worktrees, and the end
+// of a name being typed is where the cursor is. Reverse only for cell-aware
+// truncation; markers are separate spans and cannot be clipped.
+fn fit_tail(value: String, width: Int) -> String {
+  value
   |> text_hygiene.single_line
   |> string.reverse
   |> text.truncate(width, "…")
   |> string.reverse
 }
 
-// The last line is either the key legend or the open question. Replacing it
-// rather than adding a line keeps the question where the reader's eye already
-// is, and leaves no doubt about which keys are live.
-fn help_line(state: State, width: Int) {
+// The hint rows: movement and opening first, the rarer keys second. While a
+// question is open it takes the first row, where the reader's eye already
+// is, and the second row is left empty so no stale key is advertised beside
+// it.
+fn help_lines(state: State, width: Int) -> List(span.Line) {
+  let more = case state.page.after {
+    Some(_) -> ["→ more"]
+    None -> []
+  }
   case state.prompt {
     Browsing ->
-      span.line_new([
-        span.span_styled(
-          text.truncate(
-            case state.collection {
-              Active ->
-                "↑↓ select · Enter open · Tab filter · l link · n new · r rename · d archive · a archived · ←→ pages · Esc close"
-              Archived ->
-                "↑↓ select · Enter restore · r rename · d delete · a active · ←→ pages · Esc close"
-            },
+      case state.collection {
+        Active -> [
+          hints(["↑↓ move", "Enter open", "Tab filter", "n new"], width),
+          hints(
+            list.flatten([
+              ["l link", "r rename", "d archive", "a archived"],
+              more,
+              ["Esc close"],
+            ]),
             width,
-            "…",
           ),
-          theme.overlay_quiet(),
-        ),
-      ])
-
-    LinkUnavailable ->
-      span.line_new([
-        span.span_styled(
-          text.truncate(
-            "Open this saved session before linking it · Esc back",
+        ]
+        Archived -> [
+          hints(["↑↓ move", "Enter restore", "a active"], width),
+          hints(
+            list.flatten([["r rename", "d delete"], more, ["Esc close"]]),
             width,
-            "…",
           ),
-          theme.overlay_signal(),
-        ),
-      ])
+        ]
+      }
 
-    Renaming(_, draft) ->
-      span.line_new([
-        span.span_styled(
-          text.truncate(
-            "Name: "
-              <> text_hygiene.single_line(draft)
-              <> "▏ · Enter save · Ctrl+U clear · Esc cancel",
-            width,
-            "…",
-          ),
-          theme.overlay_signal(),
-        ),
-      ])
+    LinkUnavailable -> [
+      question("Open this saved session before linking it.", width),
+      hints(["Esc back"], width),
+    ]
 
-    // A canonical identity is bounded by the wire at 64 bytes, so this line
-    // needs no truncation of its own; hygiene still applies because the text
-    // reaches a terminal.
-    ConfirmingArchive(session_id) ->
-      span.line_new([
-        span.span_styled(
-          text_hygiene.single_line(
-            "stop and archive " <> session_id <> "? history is kept · y/n",
-          ),
-          theme.overlay_signal(),
-        ),
-      ])
+    Renaming(_, draft) -> [
+      question(
+        "Name: " <> fit_tail(text_hygiene.single_line(draft) <> "▏", width - 6),
+        width,
+      ),
+      hints(["Enter save", "Ctrl+U clear", "Esc cancel"], width),
+    ]
 
-    ConfirmingDelete(session_id) ->
-      span.line_new([
-        span.span_styled(
-          text_hygiene.single_line(
-            "permanently delete " <> session_id <> " and its history? y/n",
-          ),
-          theme.overlay_signal(),
-        ),
-      ])
+    // The question names the session the way its row does, so the operator
+    // can check it against the list; the answer keys get a row of their own
+    // so a long name can never push them out of the frame.
+    ConfirmingArchive(session_id) -> [
+      question(
+        "Stop and archive "
+          <> named(state, session_id)
+          <> "? Its history is kept.",
+        width,
+      ),
+      hints(["y archive", "any other key keeps it"], width),
+    ]
+
+    ConfirmingDelete(session_id) -> [
+      question(
+        "Permanently delete " <> named(state, session_id) <> " and its history?",
+        width,
+      ),
+      hints(["y delete", "any other key keeps it"], width),
+    ]
   }
+}
+
+// A session as a question names it: its name and short identity, or the
+// identity alone when the row has left the page.
+fn named(state: State, session_id: String) -> String {
+  let identity = short_identity(text_hygiene.single_line(session_id))
+  case
+    list.find(state.page.sessions, fn(row) { row.session_id == session_id })
+  {
+    Ok(row) -> text_hygiene.single_line(row.name) <> " (" <> identity <> ")"
+    Error(Nil) -> identity
+  }
+}
+
+// Joins key hints with ` · `, skipping a hint that does not fit rather than
+// cutting it in half, so every hint drawn names a whole key and action and
+// a short closing hint such as `Esc close` survives a long one before it.
+fn hints(items: List(String), width: Int) -> span.Line {
+  let joined =
+    list.fold(items, "", fn(line, item) {
+      let next = case line {
+        "" -> item
+        _ -> line <> " · " <> item
+      }
+      case text.cell_width(next) <= width {
+        True -> next
+        False -> line
+      }
+    })
+  span.line_new([span.span_styled(joined, theme.overlay_quiet())])
+}
+
+// The picker cuts text as every agent surface does, at a word with an
+// ellipsis, or inside a last word too long to end before
+// (`agent_row.cut`).
+fn cut(value: String, width: Int) -> String {
+  agent_row.cut(value, width)
+}
+
+fn question(value: String, width: Int) -> span.Line {
+  span.line_new([
+    span.span_styled(cut(value, width), theme.overlay_signal()),
+  ])
 }
 
 fn lifecycle(status) {

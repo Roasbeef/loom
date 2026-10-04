@@ -1803,6 +1803,162 @@ pub fn an_unusable_cell_is_caught_on_the_way_back_out_test() {
   close(harness)
 }
 
+// Every strand-attributed user message the session holds, placed or still
+// queued, read back through the codec so the stored representation is what
+// is asserted on: the admission doors write the origin, and replay reads it.
+fn strand_attributed(harness: Harness) -> List(message.AgentMessage) {
+  let assert Ok(entries) =
+    storage.scan_entries(harness.runtime.session.store, storage.entry_scan())
+    as "admission must remain readable from durable history"
+  let placed =
+    list.filter_map(entries, fn(value) {
+      case value {
+        entry.MessageEntry(
+          message: message.UserMessage(
+            origin: Some(message.StrandOrigin(..)),
+            ..,
+          ) as stored,
+          ..,
+        ) -> Ok(stored)
+        entry.MessageEntry(..)
+        | entry.CompactionEntry(..)
+        | entry.BranchSummaryEntry(..)
+        | entry.CustomEntry(..) -> Error(Nil)
+      }
+    })
+  let assert Ok(cells) =
+    storage.list_registers(
+      harness.runtime.session.store,
+      register.PendingEntry,
+      None,
+    )
+    as "queued admission must remain readable"
+  let queued =
+    list.filter_map(cells, fn(cell) {
+      case machine_codec.decode_pending_entry(cell.1.value.payload) {
+        Ok(operation.PendingMessage(
+          message: message.UserMessage(
+            origin: Some(message.StrandOrigin(..)),
+            ..,
+          ) as stored,
+        )) -> Ok(stored)
+        Ok(operation.PendingMessage(..))
+        | Ok(operation.PendingCustom(..))
+        | Error(_) -> Error(Nil)
+      }
+    })
+  list.append(placed, queued)
+}
+
+fn text_of(sent: message.AgentMessage) -> String {
+  case sent {
+    message.UserMessage(content: [message.UserText(text, None)], ..) -> text
+    message.UserMessage(..)
+    | message.AssistantMessage(..)
+    | message.ToolResultMessage(..)
+    | message.CustomMessage(..) -> ""
+  }
+}
+
+// Whether a message with exactly this text and this sender is held.
+fn sent_by(
+  held: List(message.AgentMessage),
+  text: String,
+  sender: String,
+) -> Bool {
+  list.any(held, fn(stored) {
+    case stored {
+      message.UserMessage(origin: Some(message.StrandOrigin(from)), ..) ->
+        text_of(stored) == text && from == sender
+      message.UserMessage(origin: Some(_), ..)
+      | message.UserMessage(origin: None, ..)
+      | message.AssistantMessage(..)
+      | message.ToolResultMessage(..)
+      | message.CustomMessage(..) -> False
+    }
+  })
+}
+
+// Protocol-change 059, release N+1: the Agency is the only writer of the
+// strand origin, and it takes it from the authenticated caller. The text the
+// model is shown does not change.
+pub fn a_spawn_brief_carries_the_callers_strand_origin_test() {
+  let harness = start_harness(Hangs)
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(_) = harness.seam.spawn(caller, a_spawn("plain"))
+    as "a brief without a schema must spawn"
+  let assert Ok(_) =
+    harness.seam.spawn(
+      caller_on("main", "turn-1:tools", 1),
+      a_spawn_wanting("schema"),
+    )
+    as "a brief with a schema must spawn"
+  let plain = agency.frame_brief(from: "main", body: "read the file and report")
+  let wanting = plain <> agency.result_contract(Some(a_schema()))
+  let held = strand_attributed(harness)
+  assert list.map(held, text_of) |> list.sort(string.compare)
+    == list.sort([plain, wanting], string.compare)
+    as "the model-visible text is still the framed brief and its contract"
+  assert list.all(held, fn(stored) {
+    case stored {
+      message.UserMessage(origin: Some(origin), ..) ->
+        origin == message.StrandOrigin("main")
+      message.AssistantMessage(..)
+      | message.ToolResultMessage(..)
+      | message.CustomMessage(..)
+      | message.UserMessage(origin: None, ..) -> False
+    }
+  })
+    as "every brief names its sender and not its text"
+  list.each(held, fn(stored) {
+    assert codec.decode_message(codec.encode_message(stored)) == Ok(stored)
+  })
+  close(harness)
+}
+
+pub fn agent_send_carries_the_callers_strand_origin_downward_and_upward_test() {
+  let harness = start_harness(HoldsParent)
+  let parent = open_parent(harness, "first parent")
+  let assert Ok(child) = harness.seam.spawn(parent, a_spawn("review"))
+    as "the child must spawn"
+  assert settled(harness, child.handle) as "the first review must complete"
+
+  // Downward: a parent continues its idle child.
+  let assert Ok(agent.Started(..)) =
+    harness.seam.send(parent, child.strand, "one more thing", None)
+    as "a parent may continue its idle child"
+
+  // Upward: the child reports to the parent whose run is still open.
+  let assert Ok(agent.Steered(..)) =
+    harness.seam.send(
+      caller_on(child.strand, "turn-1:tools", 0),
+      "main",
+      "here is what I found",
+      None,
+    )
+    as "a child may report into its open parent run"
+  let held = strand_attributed(harness)
+  assert sent_by(
+    held,
+    agency.frame_message(from: "main", body: "one more thing"),
+    "main",
+  )
+    as "the downward message names the parent as its sender"
+  assert sent_by(
+    held,
+    agency.frame_message(from: child.strand, body: "here is what I found"),
+    child.strand,
+  )
+    as "the upward message names the child as its sender"
+  assert !sent_by(
+    held,
+    agency.frame_message(from: child.strand, body: "here is what I found"),
+    "main",
+  )
+    as "the origin is the caller and never the addressee"
+  close(harness)
+}
+
 pub fn a_spawn_with_no_schema_behaves_exactly_as_before_test() {
   // The compatibility floor. No contract cell, nothing appended to the
   // brief, and a join that reports no verdict at all rather than an

@@ -12,8 +12,9 @@
 ////   operation's elapsed time.
 //// - `<loom-fold>` (`web_client/fold`) opens and closes a turn's folded
 ////   work.
-//// - `<loom-expand>` (`web_client/expand`) shows a row compact or in full,
-////   as the terminal's `Ctrl+g` does, from two slots the server wrote.
+//// - `<loom-expand>` (`web_client/expand`) draws a row's line with one
+////   chevron and shows the body behind it once the reader opens it, from two
+////   slots the server wrote.
 //// - `<loom-follow>` (`web_client/follow`) is the transcript's scroll
 ////   container. It keeps the lane's newest row in view while the reader is
 ////   at the bottom, and offers a way back to it while they are not.

@@ -1,14 +1,14 @@
- ◆ loom                      demo · /w/demo                      baseten-kimi-k3 · Ctrl+g detai…
- transcript / main
+ ◆ demo · strand main                                                           baseten-kimi-k3
 
 
 
 
 
 
-─ To main · prompt · enter sends · / commands                                                  ─
-
-────────────────────────────────────────────────────────────────────────────────────────────────
+╭─ To main · Enter sends ────────────────────────────────────────────────────── ○ main · idle ─╮
+│ details expanded                                                                             │
+│ ›  / commands                                                                                │
+╰─ baseten-kimi-k3 › ctx — › $0.00 ────────────────────────────────────────────────────────────╯
  /w/demo                                                                        baseten-kimi-k3
  cache 0/0 · ctx — · est $0.00 · in 0 · out 0
  0 agents · 0 working · 0 attention · details expanded

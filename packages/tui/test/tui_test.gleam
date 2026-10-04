@@ -180,9 +180,9 @@ pub fn footer_rows_depend_on_the_width_alone_test() {
   assert layout.footer_rows(112) == 2
   assert layout.footer_rows(111) == 3
   assert layout.footer_rows(40) == 3
-  assert layout.transcript_height(40, 3, 2) == 32
-  assert layout.transcript_height(40, 3, 3) == 31
-  assert layout.transcript_height(40, 3, 1) == 33
+  assert layout.transcript_height(40, 3, 2) == 33
+  assert layout.transcript_height(40, 3, 3) == 32
+  assert layout.transcript_height(40, 3, 1) == 34
   assert projection.viewport_height_changed(
     layout.transcript_height(40, 3, 2),
     layout.transcript_height(40, 3, 1),
@@ -1848,7 +1848,7 @@ pub fn a_malformed_recording_line_is_a_worded_error_test() {
 
 // The transcript's inner area on a 60x12 screen: one header row, then the
 // panel border, so text starts at row 2, column 1.
-const transcript_origin = Position(1, 2)
+const transcript_origin = Position(1, 1)
 
 pub fn a_drag_over_the_transcript_copies_what_it_highlighted_test() {
   let inbox = connection.new_inbox()
@@ -1900,7 +1900,7 @@ pub fn a_drag_over_the_transcript_copies_what_it_highlighted_test() {
   assert selection.text(last, selected) == "alpha beta\n"
 }
 
-pub fn assistant_rows_use_the_subtle_background_test() {
+pub fn an_answer_opens_under_its_strand_name_test() {
   let inbox = connection.new_inbox()
   let model = assistant_copy_model(inbox)
   let script =
@@ -1912,13 +1912,16 @@ pub fn assistant_rows_use_the_subtle_background_test() {
   let assert Ok(run) = tui.run_script(model, script)
   let assert Ok(last) = list.last(run.frames)
   let rows = frame.buffer_to_lines(last)
-  let assert Ok(answer_y) = row_containing(rows, "◆ opening paragraph")
+  let assert Ok(heading_y) = row_containing(rows, "◆ main")
+  let assert Ok(answer_y) = row_containing(rows, "  opening paragraph")
   let area = layout.hit_area(run.final, Position(2, 2))
 
-  assert buffer.get_cell(last, Position(area.position.x, answer_y)).style.bg
-    == theme.assistant_background
+  // The heading names the strand and the body sits under it, unshaded: the
+  // heading, not a band, says whose words these are.
+  assert answer_y == heading_y + 1
+  assert !list.any(rows, string.contains(_, "◆ opening paragraph"))
   assert buffer.get_cell(last, Position(geometry.right(area) - 1, answer_y)).style.bg
-    == theme.assistant_background
+    == style.Default
 }
 
 pub fn rendered_assistant_copy_keeps_authored_structure_test() {
@@ -1933,7 +1936,7 @@ pub fn rendered_assistant_copy_keeps_authored_structure_test() {
   let assert Ok(previewed) = tui.run_script(model, preview)
   let assert Ok(drawn) = list.last(previewed.frames)
   let rows = frame.buffer_to_lines(drawn)
-  let assert Ok(first_y) = row_containing(rows, "◆ opening paragraph")
+  let assert Ok(first_y) = row_containing(rows, "  opening paragraph")
   let assert Ok(last_y) = row_containing(rows, "let answer = 1")
   let area = layout.hit_area(previewed.final, Position(2, 2))
   let last_x = area.position.x + 22
@@ -1965,7 +1968,7 @@ pub fn rendered_assistant_copy_keeps_authored_structure_test() {
     )
 
   assert copied
-    == "◆ opening paragraph\n\nsecond paragraph\n\n▎ gleam\n▎   let answer = 1"
+    == "opening paragraph\n\nsecond paragraph\n\n▎ gleam\n▎   let answer = 1"
 }
 
 pub fn rendered_assistant_copy_handles_partial_and_reverse_drags_test() {
@@ -1980,7 +1983,7 @@ pub fn rendered_assistant_copy_handles_partial_and_reverse_drags_test() {
   let assert Ok(previewed) = tui.run_script(model, preview)
   let assert Ok(drawn) = list.last(previewed.frames)
   let rows = frame.buffer_to_lines(drawn)
-  let assert Ok(first_y) = row_containing(rows, "◆ opening paragraph")
+  let assert Ok(first_y) = row_containing(rows, "  opening paragraph")
   let assert Ok(last_y) = row_containing(rows, "let answer = 1")
   let area = layout.hit_area(previewed.final, Position(2, 2))
   let assert Some(tui_model.FrameCache(selection_gutters:, ..)) =
@@ -2024,7 +2027,7 @@ pub fn rendered_assistant_copy_handles_partial_and_reverse_drags_test() {
       selected,
       run.final.view.selection_gutters,
     )
-    == "◆ opening paragraph\n\nsecond paragraph\n\n▎ gleam\n▎   let answer = 1"
+    == "opening paragraph\n\nsecond paragraph\n\n▎ gleam\n▎   let answer = 1"
 }
 
 fn assistant_copy_model(
@@ -2338,7 +2341,7 @@ pub fn a_live_recording_replays_to_its_settled_frame_test() {
   // live strand paints the elapsed seconds of the *replay* into the
   // prompt border, so a fixture truncated mid-turn would flake under
   // load; the idle border title is that property, asserted.
-  assert string.contains(text, "prompt · enter sends · / commands")
+  assert string.contains(text, "· idle")
   assert !string.contains(text, "Design-preview echo received.")
   assert count_occurrences(text, "Reply with exactly this sentence") == 1
   snapshot_test.assert_snapshot("live-gemini-flash-reply", text)

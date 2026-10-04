@@ -112,6 +112,7 @@ fn admit_reply(model: Model, arrival: job.Arrival(job.Daemon)) -> Model {
     job.ActivityArrived(key:, reply:) -> admit_activity(model, key, reply)
     job.ConfigurationArrived(key:, reply:) ->
       admit_configuration(model, key, reply)
+    job.ImageArrived(key:, reply:) -> admit_image(model, key, reply)
     job.AttachArrived(key:, reply:) ->
       attachment.admit(model.view.candidate, key, reply)
       |> result.map(fn(candidate) {
@@ -180,6 +181,21 @@ fn admit_activity(
             activity_poll: ActivityAsking(awaiting, asked),
           ),
         )
+      })
+  }
+}
+
+fn admit_image(
+  model: Model,
+  key: job.Key,
+  reply: job.ImageReply,
+) -> Result(Model, Nil) {
+  case model.view.opening_image {
+    None -> Error(Nil)
+    Some(awaiting) ->
+      job.admit(awaiting, key, reply)
+      |> result.map(fn(awaiting) {
+        Model(..model, view: View(..model.view, opening_image: Some(awaiting)))
       })
   }
 }

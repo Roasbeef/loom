@@ -247,7 +247,7 @@ pub fn settled_work_folds_under_one_closed_divider_test() {
   let drawn = html(settled())
   assert string.contains(
     drawn,
-    "class=\"work\"><span class=\"work-divider\" slot=\"summary\">worked 48s · 3 steps · 2 files</span>",
+    "class=\"work\"><span class=\"work-divider\" slot=\"summary\">Worked 48s · 3 steps · 2 files</span>",
   )
 
   // The fold's state is the browser's: the server renders no attribute for
@@ -259,10 +259,24 @@ pub fn settled_work_folds_under_one_closed_divider_test() {
   // stays outside it.
   assert in_order(drawn, [
     "review the &lt;patch&gt; &amp; report",
-    "worked 48s",
+    "Worked 48s",
     "</loom-fold>",
     "Done: two files.",
   ])
+}
+
+// The records name who sent a prompt and not in what capacity, so the lane
+// draws the page's own role only beside the page's own person.
+pub fn a_prompt_carries_the_readers_role_only_for_the_reader_test() {
+  let mine = html(page([lane_fixture.own_prompt()]))
+  assert string.contains(
+    mine,
+    "<span class=\"who-name\">Alice</span> · operator</p>",
+  )
+
+  let theirs = html(settled())
+  assert string.contains(theirs, "<span class=\"who-name\">Alice</span></p>")
+  assert !string.contains(theirs, "operator</p>")
 }
 
 pub fn a_running_turn_is_drawn_open_test() {
@@ -275,14 +289,11 @@ pub fn a_running_turn_is_drawn_open_test() {
 pub fn a_spawn_and_its_result_wear_the_childs_hue_test() {
   let drawn = html(settled())
   assert in_order(drawn, [
-    "class=\"spawn hue-2\">",
-    "↳ agent_spawn · ",
+    "class=\"who spawn hue-2\">Spawned ",
     ">sub:&lt;b&gt;review</button>",
-    "review &lt;the&gt; patch",
-    "class=\"result-card hue-2\">",
-    "from ",
-    ">sub:&lt;b&gt;review</button>",
-    " · result · completed",
+    " · review &lt;the&gt; patch",
+    "class=\"result hue-2\">",
+    ">sub:&lt;b&gt;review</button> finished</p>",
     "looks &lt;fine&gt; &amp; tidy",
   ])
 }
@@ -393,14 +404,17 @@ pub fn session_markup_arrives_only_as_text_test() {
 
 fn key(piece: turns.Piece) -> String {
   case piece {
-    turns.Plain(block, _) | turns.Commentary(block) -> block.key
+    turns.Plain(block, _, _)
+    | turns.Prompt(block:, ..)
+    | turns.Commentary(block:, ..) -> block.key
     turns.Work(key:, ..)
     | turns.Spawned(key:, ..)
     | turns.Returned(key:, ..)
     | turns.Nudged(key:, ..)
     | turns.Peer(key:, ..)
     | turns.Sibling(key:, ..)
-    | turns.Missed(key:, ..) -> key
+    | turns.Missed(key:, ..)
+    | turns.Decided(key:, ..) -> key
   }
 }
 

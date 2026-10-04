@@ -76,6 +76,7 @@ pub fn recent_activity_joins_prose_calls_without_borrowing_another_run_test() {
       2,
       message.AssistantMessage(
         [
+          message.AssistantThinking("Which file?", None, False),
           message.AssistantText("Reading it now.", None),
           message.AssistantToolCall(call(
             "fs_read",

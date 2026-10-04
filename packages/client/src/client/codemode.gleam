@@ -250,6 +250,7 @@ import lsp/query
 import simplifile
 import tools/agent.{type Agency}
 import tools/blob
+import tools/call_record
 import tools/codemode as codemode_tool
 import tools/directory_access
 import tools/fs
@@ -1709,6 +1710,7 @@ fn execute_after_vetting(
           <> "was dispatched",
         ),
         refusal: codemode_tool.NothingRefused,
+        calls: call_record.empty(),
       )
     }
     Ok(Nil) -> {
@@ -1746,6 +1748,7 @@ fn execute_after_vetting(
         result: translate(execution.outcome),
         enforcement: translate_enforcement(execution.enforcement),
         refusal: reported_refusal(shortfalls),
+        calls: execution.calls,
       )
     }
   }
@@ -1778,6 +1781,7 @@ fn vet_rejected_execution(
       ),
     ),
     refusal: codemode_tool.NothingRefused,
+    calls: call_record.empty(),
   )
 }
 
@@ -2006,6 +2010,7 @@ fn unserved(
       <> "was dispatched",
     ),
     refusal: codemode_tool.NothingRefused,
+    calls: call_record.empty(),
   )
 }
 

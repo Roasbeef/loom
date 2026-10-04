@@ -867,4 +867,5 @@ invocations, not admitted satellite lifetimes. Protocol 048 and the
 [async architecture](architecture/async-collaboration.md) define these limits.
 Conversation codecs preserve a distinct `PeerOrigin(session, strand)` and a
 distinct `StrandOrigin(strand)` (protocol-change/059) while retaining the
-existing human-origin encoding.
+existing human-origin encoding. Only the Agency writes `StrandOrigin`, from
+the authenticated calling strand, on `agent_send` messages and spawn briefs.

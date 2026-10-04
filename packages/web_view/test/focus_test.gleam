@@ -288,7 +288,7 @@ pub fn an_operators_prompt_goes_to_the_focused_strand_test() {
 
   // The composer names the strand it addresses.
   let drawn = element.to_string(operator_page.view(model))
-  assert string.contains(drawn, "→ advisor")
+  assert string.contains(drawn, "to-tag")
   assert string.contains(drawn, "Message advisor")
 }
 

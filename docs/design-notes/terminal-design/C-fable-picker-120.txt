@@ -1,0 +1,40 @@
+ ◆ loom                                     ws · main · ~/code/pi-gui (main)                   kimi-k3 · Ctrl+g details 
+  transcript / main                                                                                                     
+ │ › Owner · operator                                                                                                   
+ │ ╭ SESSIONS  All 7  Needs you 1  Working 2  Idle 1  Inactive 3 ─────────────────────────── tab filter · esc close ╮   
+ │ │                                                                                                                │   
+ │ │ ~/code/pi-gui                                                            3 │ ws · main                         │   
+ │ │ ❯ ● ws · main                      2 working · 1 approval          kimi-k3 │ ● Working · 2 of 5 strands · 1 a… │   
+   │   ○ fix readme badge               idle · last run completed       kimi-k3 │                                   │   
+   │   · extension api probe            saved · created 3d ago                  │ LAST MESSAGE                      │   
+   │                                                                            │ I added subtract next to add. Bo… │   
+   │ ~/code/lnd-review                                                        2 │ tests should pass once sub:tests  │   
+   │   ● review htlc interceptor        1 working                       GLM-5.3 │ reports back.                     │   
+   │   ! nightly: deps bump             needs you · last run failed ·…  GLM-5.3 │                                   │   
+   │                                                                            │ STRANDS                           │   
+   │ ~/code/loom-worktrees                                                    2 │ ● main       code_mode · 1m 02s   │   
+   │   ◌ loom-herdr-update · herdr-upd… opening                                 │ ? sub:tests  gleam test · approv… │   
+   │   · vision-routing                 recovery blocked                        │ ✓ sub:docs   README draft · done  │   
+   │                                                                            │                                   │   
+   │                                                                            │ kimi-k3 · ctx ~41% · est $1.86    │   
+   │                                                                            │ 01a0a1e2 · ~/code/pi-gui          │   
+   │                                                                            │                                   │   
+   │                                                                            │ enter opens · l links a strand    │   
+   │                                                                            │                                   │   
+   │                                                                            │                                   │   
+   │                                                                            │                                   │   
+   │                                                                            │                                   │   
+   │                                                                            │                                   │   
+   │                                                                            │                                   │   
+   │                                                                            │                                   │   
+   │                                                                            │                                   │   
+   │────────────────────────────────────────────────────────────────────────────────────────────────────────────────│   
+   │  ↑↓ move · enter open · l link · n new · r rename · d archive · a archived · ←→ page                           │   
+   ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯   
+                                                                                                                        
+                                                                                                                        
+─ To main · enter queues · tab steers ────────────────────────────────────────────────────────────────────── ws · main ─
+ ◐ thinking · 9s · esc interrupts                                                                                       
+                                                                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ cache ≤3m · kimi-k3 · ctx ~41% · est $1.86                                          5 agents · 2 working · 1 attention 

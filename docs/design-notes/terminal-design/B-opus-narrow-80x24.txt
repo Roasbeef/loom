@@ -1,0 +1,24 @@
+     └ ✓ sub:docs   Finished 1m 12s · 2 files    12k                            
+                                                                                
+ ● advisor · nudge for main · 12s ago · delivered on main's next run            
+   Consider running the unit tests before committing.                           
+                                                                                
+ ┆ peer lnd-review asked a question · Ctrl+G shows it                           
+                                                                                
+ ∴ Reasoning (summarized) · 9s                                                  
+   Comparing list.range with int.range semantics before choosing the loop form. 
+                                                                                
+ ● code_mode  check_subtract.gleam  · running 1.2s · Trace tab                  
+                                                                                
+ ● sub:tests waits for approval · fetch https://proxy.golang.org · a reviews    
+                                                                                
+ ● main                                                                         
+   I added subtract next to add. Both tests should pass once sub:tests reports  
+   back, then I will update the README example.                                 
+ Todo 3/5 · ▸ check it                                                          
+ ◐ main · code_mode · 1.2s                                       Esc interrupts 
+╭─ To main · Tab steers ─────────────────────────────────────────── ws · main ─╮
+│ › ← sessions · ↓ strands · / commands                                        │
+╰─ kimi-k3 › ctx ~41% › $1.86 ─────────────────────────────────── 1 needs you ─╯
+   ● main       Working · code_mode                                1m 12s · 41k 
+   ? sub:tests  Needs approval                                        34s ·  9k 

@@ -13,17 +13,22 @@
 ////
 //// ## Flow
 ////
-//// `layout` → `queue_body_layout` → `body_layout` → `footer_split` → `hit_area`
+//// `layout` → `queue_body_layout` → `footer_split` → `hit_area`
 ////
-//// 1. `layout` cuts the screen into header, body, composer and footer rows, asking
-////    `input_height` and `footer_height` (plus `strip_height`) how tall the last
-////    two must be.
+//// 1. `layout` cuts the screen into the identity line, then the rail's column
+////    (`rail_columns`, decided by `tui/rail`) from the right, and cuts what
+////    is left into body, composer and footer rows, asking `input_height` and
+////    `footer_height` (plus `strip_height`) how tall the last two must be. The
+////    rail runs the height under the identity line, so the composer and the
+////    footer span the transcript's column only, and every width they read is
+////    `column_width`, not the terminal's.
 //// 2. `queue_body_layout` takes the body and reserves the pinned todo panel and
 ////    the queue card (`body_split`, `queue_height`, `todo_height`), leaving the
 ////    conversation row.
-//// 3. `body_layout` splits the conversation row into transcript, agent rail and
-////    changes pane; the changes pane borrows the rail's column
-////    (`diff_pane_width`).
+//// 3. The conversation row is the transcript's whole. The rail is not part of
+////    it: `rail_area` is the rail's rectangle and `rail_content_area` is what
+////    its tab draws in, which is where the changes panel sits while the
+////    changes are open (`diff_pane_width`).
 //// 4. `footer_split` divides the footer rectangle into the footer proper and the
 ////    agent strip beneath it.
 //// 5. The composer's own shape comes from `input_layout`, `input_view_state` and
@@ -46,6 +51,7 @@ import gleam/string
 import session_view/advisor_pending
 import session_view/agent_roster
 import session_view/agent_view
+import session_view/commands
 import session_view/composer
 import session_view/context_view
 import session_view/goal_view
@@ -60,13 +66,14 @@ import session_view/worktree_view
 import tui/agent_strip
 import tui/agents
 import tui/diff_panel
+import tui/input_frame
 import tui/model.{
   type Model, AccessManager, AgentInspector, ApprovalInspector, DaemonSelector,
-  DiffHidden, DiffVisible, GoalInspector, ModelSelector, NoOverlay,
-  PeerLinkManager,
+  DiffVisible, GoalInspector, ModelSelector, NoOverlay, PeerLinkManager,
 } as tui_model
 import tui/queue_editor
 import tui/queue_panel
+import tui/rail
 import tui/todo_panel
 
 /// The area inside a one-cell rounded border.
@@ -87,6 +94,27 @@ pub fn panel_inner(area: Rect) -> Rect {
   )
 }
 
+/// The transcript's reading area inside its panel: the full height but the
+/// bottom row, which the reading row takes while the reader is above the
+/// tail, and one cell in from each side for the gutter. The panel has no
+/// heading row; the identity line names the strand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert layout.transcript_inner(geometry.rect_new(0, 1, 10, 5))
+///   == geometry.rect_new(1, 1, 8, 4)
+/// ```
+@internal
+pub fn transcript_inner(panel: Rect) -> Rect {
+  geometry.rect_new(
+    panel.position.x + 1,
+    panel.position.y,
+    int.max(0, panel.size.width - 2),
+    int.max(0, panel.size.height - 1),
+  )
+}
+
 /// Splits the screen into the header, body, composer and footer rows.
 ///
 /// The footer rectangle includes the agent strip beneath the footer proper;
@@ -95,37 +123,154 @@ pub fn panel_inner(area: Rect) -> Rect {
 /// by the strip growing and shrinking.
 @internal
 pub fn layout(screen: Rect, model: Model) -> #(Rect, Rect, Rect, Rect) {
+  let #(header, below) = case geometry.split_v(screen, [Length(1), Fill]) {
+    [header, below] -> #(header, below)
+    _ -> #(screen, screen)
+  }
+  let column = case
+    geometry.split_h(below, [Fill, Length(rail_columns(model))])
+  {
+    [column, _] -> column
+    _ -> below
+  }
   case
-    geometry.split_v(screen, [
-      Length(1),
+    geometry.split_v(column, [
       Fill,
       Length(input_height(model)),
       Length(footer_height(model) + strip_height(model)),
     ])
   {
-    [header, body, input, footer] -> #(header, body, input, footer)
+    [body, input, footer] -> #(header, body, input, footer)
     _ -> #(screen, screen, screen, screen)
   }
 }
 
-/// The changes pane gets a readable column without squeezing the conversation
-/// below sixty-eight cells. It borrows the optional rail's place; closing it
-/// restores the operator's rail preference rather than changing that setting.
+/// The tab the rail shows (`rail.tab`).
 @internal
-pub fn body_layout(body: Rect, model: Model) -> #(Rect, Rect, Rect) {
-  let changes = diff_pane_width(model)
-  let rail = case model.view.agent_rail_visible && model.view.width >= 100 {
-    True -> 34
+pub fn rail_tab(model: Model) -> rail.Tab {
+  rail.tab(model.view.diff_view, model.view.rail_tab)
+}
+
+/// The columns the rail takes, its separator included, or zero when it is
+/// not docked (`rail.columns`).
+@internal
+pub fn rail_columns(model: Model) -> Int {
+  rail.columns(model.view.width, model.view.rail, rail_tab(model))
+}
+
+/// Whether the sheet is on screen: the rail's form on a terminal too narrow to
+/// dock it. It replaces the transcript, leaving the input frame where it is,
+/// and it is shown when it was opened or when the changes are open, since
+/// the changes live on the rail's Changes tab and a narrow terminal has no
+/// other place for it. A terminal wide enough to dock the rail never shows it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // layout.sheet_shown(model) == False  (at 120 columns or wider)
+/// ```
+@internal
+pub fn sheet_shown(model: Model) -> Bool {
+  model.view.width < rail.narrowest
+  && case model.view.sheet, model.view.diff_view {
+    tui_model.SheetOpen, _ | tui_model.SheetClosed, DiffVisible -> True
+    tui_model.SheetClosed, tui_model.DiffHidden -> False
+  }
+}
+
+/// Whether the rail is on screen in either form, docked or as the sheet.
+/// Everything that reads what the rail shows or who has its keyboard asks this;
+/// the geometry of the columns asks `rail_columns`.
+@internal
+pub fn rail_present(model: Model) -> Bool {
+  rail_columns(model) > 0 || sheet_shown(model)
+}
+
+/// How many columns of the rail's rectangle are its separator: one when it is
+/// docked beside the transcript, none for the sheet, which has no neighbour.
+@internal
+pub fn rail_lead(model: Model) -> Int {
+  case rail_columns(model) > 0 {
+    True -> 1
     False -> 0
   }
-  let secondary = case changes > 0 {
-    True -> changes
-    False -> rail
+}
+
+/// The width of the transcript's column: the terminal less the rail. The
+/// composer wraps to it and the footer is sized by it.
+@internal
+pub fn column_width(model: Model) -> Int {
+  model.view.width - rail_columns(model)
+}
+
+/// The rail's rectangle. Docked, it is the columns on the right, from the row
+/// under the identity line to the last row, and its first column is the
+/// separator. As the sheet it is the conversation's rectangle, which it
+/// replaces. Zero-sized when the rail is neither, and while an approval is
+/// open: the approval block spans the screen above the input frame, so a rail
+/// beside it would leave its lower rows stranded beside the frame. The rail
+/// steps aside in painting only. Its columns stay reserved, so opening or
+/// closing an approval never changes the transcript's width, which would
+/// re-wrap every row and re-place every image.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // layout.rail_area(screen, model).size.width == layout.rail_columns(model)
+/// ```
+@internal
+pub fn rail_area(screen: Rect, model: Model) -> Rect {
+  case model.view.overlay {
+    ApprovalInspector(_) -> geometry.rect_zero()
+    NoOverlay
+    | ModelSelector(_)
+    | AgentInspector(_)
+    | GoalInspector(_)
+    | DaemonSelector(_)
+    | PeerLinkManager(_)
+    | AccessManager(_) -> shown_rail_area(screen, model)
   }
-  case geometry.split_h(body, [Fill, Length(secondary)]) {
-    [main, side] if changes > 0 -> #(main, geometry.rect_zero(), side)
-    [main, side] -> #(main, side, geometry.rect_zero())
-    _ -> #(body, geometry.rect_zero(), geometry.rect_zero())
+}
+
+// Where the rail is when it is on screen at all: the conversation's rectangle
+// for the sheet, the docked column otherwise.
+fn shown_rail_area(screen: Rect, model: Model) -> Rect {
+  case sheet_shown(model) {
+    True -> {
+      let #(_, body, _, _) = layout(screen, model)
+      let #(conversation, _) = queue_body_layout(body, model)
+      conversation
+    }
+    False -> docked_rail_area(screen, model)
+  }
+}
+
+fn docked_rail_area(screen: Rect, model: Model) -> Rect {
+  case geometry.split_v(screen, [Length(1), Fill]) {
+    [_, below] ->
+      case geometry.split_h(below, [Fill, Length(rail_columns(model))]) {
+        [_, rail] -> rail
+        _ -> geometry.rect_zero()
+      }
+    _ -> geometry.rect_zero()
+  }
+}
+
+/// The rail's content: the rail less its separator, its tab bar and rule at
+/// the top, and its key hint at the bottom. A tab draws in this rectangle.
+@internal
+pub fn rail_content_area(screen: Rect, model: Model) -> Rect {
+  let area = rail_area(screen, model)
+  let lead = rail_lead(model)
+  case area.size.width > 0 {
+    True ->
+      geometry.rect_new(
+        area.position.x + lead,
+        area.position.y + 2,
+        int.max(0, area.size.width - lead),
+        int.max(0, area.size.height - 3),
+      )
+    False -> geometry.rect_zero()
   }
 }
 
@@ -209,10 +354,90 @@ pub fn todo_area(body: Rect, model: Model) -> Rect {
   panel
 }
 
+// The width the changes panel has in the rail, or zero when the changes are
+// not open in a rail that is on screen. In the sheet that is the whole width.
 fn diff_pane_width(model: Model) -> Int {
-  case model.view.diff_view != DiffHidden && model.view.width >= 140 {
-    True -> int.min(72, model.view.width / 2)
-    False -> 0
+  case rail_tab(model), rail_columns(model) {
+    rail.Changes, columns if columns > 0 -> columns - 1
+    rail.Changes, _ ->
+      case sheet_shown(model) {
+        True -> model.view.width
+        False -> 0
+      }
+    rail.Strands, _ | rail.Trace, _ | rail.Session, _ -> 0
+  }
+}
+
+/// The rectangle the changes panel is drawn in: the rail's content while the
+/// changes are open in a docked rail, and nothing otherwise.
+@internal
+pub fn changes_panel_area(screen: Rect, model: Model) -> Rect {
+  case diff_pane_width(model) > 0 {
+    True -> {
+      // The panel's geometry is `panel_inner` of its rectangle everywhere, so
+      // the rectangle is the content grown by the cell a border would take.
+      // No border is drawn in the rail: the tab is the title and the
+      // separator is the edge. The panel's content is inset one cell on each
+      // side, so its text keeps the margin the Trace and Session rows have
+      // and does not touch the separator or the screen's edge.
+      let content = rail_content_area(screen, model)
+      geometry.rect_new(
+        content.position.x,
+        content.position.y - 1,
+        content.size.width,
+        content.size.height + 2,
+      )
+    }
+    False -> geometry.rect_zero()
+  }
+}
+
+/// Whether the rail is docked on the Strands tab, where it lists the agents
+/// the strip would list.
+@internal
+pub fn rail_lists_strands(model: Model) -> Bool {
+  rail_tab(model) == rail.Strands && rail_present(model)
+}
+
+/// Whether the agents are listed anywhere the keyboard can enter: the strip
+/// under the input, or the rail on Strands.
+@internal
+pub fn strands_listed(model: Model) -> Bool {
+  strip_height(model) > 0
+  || { rail_lists_strands(model) && list.drop(strip_lines(model), 1) != [] }
+}
+
+/// Whether any row of agents is drawn: the strip under the input, or the rail
+/// on Strands, even when it lists a single agent. The elapsed figures on those
+/// rows move with the clock, so the clock is ticked while any is drawn;
+/// `strands_listed` is the narrower question of whether a keyboard can enter
+/// them.
+@internal
+pub fn agents_drawn(model: Model) -> Bool {
+  strip_height(model) > 0 || rail_lists_strands(model)
+}
+
+/// Whether the agent under the cursor is running and so can be stopped. A
+/// settled agent has nothing to stop, and the key that stops one is ignored
+/// there.
+@internal
+pub fn cursor_stoppable(model: Model) -> Bool {
+  case model.view.strip_focus {
+    agent_strip.Composing -> False
+    agent_strip.Browsing(id) ->
+      case list.find(strip_lines(model), fn(line) { line.id == id }) {
+        Ok(line) ->
+          case line.status {
+            agent_view.Working | agent_view.Waiting | agent_view.NeedsInput ->
+              True
+            agent_view.Idle
+            | agent_view.Finished
+            | agent_view.Failed
+            | agent_view.Halted
+            | agent_view.Unavailable -> False
+          }
+        Error(Nil) -> False
+      }
   }
 }
 
@@ -223,11 +448,20 @@ pub fn diff_shown(model: Model) -> Bool {
   model.view.diff_view == DiffVisible || diff_pane_width(model) > 0
 }
 
-/// Reports whether captured edits replace the conversation as the main
-/// surface, which happens only when there is no room for a side pane.
+/// Reports whether the changes cover the transcript, so that nothing of it is
+/// on screen to scroll, select or catch up to: they are open in the sheet,
+/// which replaces it. Opened in the docked rail they do not, since the
+/// transcript is still beside them. There is no third place for them: where
+/// the rail cannot dock, the sheet is the rail.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // layout.diff_covers_transcript(model) == False  (nothing open)
+/// ```
 @internal
-pub fn main_shows_diff(model: Model) -> Bool {
-  model.view.diff_view == DiffVisible && diff_pane_width(model) == 0
+pub fn diff_covers_transcript(model: Model) -> Bool {
+  model.view.diff_view == DiffVisible && sheet_shown(model)
 }
 
 /// Divides the footer rectangle from `layout` into the footer proper and the
@@ -240,19 +474,31 @@ pub fn footer_split(area: Rect, model: Model) -> #(Rect, Rect) {
   }
 }
 
-/// The rows the agent strip draws, from the same roster the workspace uses.
+/// The rows the agents are listed in, from the same roster the workspace uses.
+///
+/// Under the input the strip lists only the agents worth watching. While the
+/// rail is docked on Strands it lists every agent, in the workspace's
+/// attention order, settled ones and the advisor included, so the one cursor
+/// and its keys (`agent_strip.key`) walk exactly the rows the rail draws.
 @internal
 pub fn strip_lines(model: Model) -> List(agent_strip.Line) {
-  agent_strip.lines(
-    tui_model.strip(model),
-    displayed_agents(model),
-    model.shared.active_strand,
-  )
+  case rail_lists_strands(model) {
+    True ->
+      agents.listed(displayed_agents(model), agents.AllAgents)
+      |> list.map(agent_roster.describe(model.shared.roster, _))
+    False ->
+      agent_strip.lines(
+        tui_model.strip(model),
+        displayed_agents(model),
+        model.shared.active_strand,
+      )
+  }
 }
 
 /// The rows the agent strip takes on this screen.
 @internal
 pub fn strip_height(model: Model) -> Int {
+  use <- bool.guard(rail_lists_strands(model), 0)
   agent_strip.height_for_count(
     agent_roster.listed_count(
       displayed_agents(model),
@@ -268,14 +514,13 @@ fn footer_height(model: Model) -> Int {
     && model.view.height <= 12
   {
     True -> 1
+
+    // The everyday status lives on the input frame's rules, so the footer
+    // takes rows only for Ctrl+g's accounting detail.
     False ->
       case model.shared.details_expanded {
-        True -> footer_rows(model.view.width)
-        False ->
-          case model.view.width < 100 {
-            True -> 2
-            False -> 1
-          }
+        True -> footer_rows(column_width(model))
+        False -> 0
       }
   }
 }
@@ -502,15 +747,6 @@ pub fn composer_status_lines(model: Model) -> List(String) {
     _, True | None, False -> []
     Some(board), False -> goal_view.row(board)
   }
-  let active = case active_status_label(model) {
-    None -> []
-    Some(status) -> [
-      activity_glyph(model.view.activity_frame)
-      <> " "
-      <> text_hygiene.single_line(status)
-      <> elapsed_label(model.shared.activity_elapsed_s),
-    ]
-  }
 
   // The workspace, the visible rail and the agent strip already own the
   // roster. Repeating it above the editor would spend its typing space on
@@ -518,20 +754,46 @@ pub fn composer_status_lines(model: Model) -> List(String) {
   let reviewers = case model.view.overlay, queue_focused {
     _, True | AgentInspector(_), False -> []
     _, False ->
-      case
-        model.view.agent_rail_visible
-        && model.view.width >= 100
-        && diff_pane_width(model) == 0
-        || strip_height(model) > 0
-      {
+      case rail_lists_strands(model) || strip_height(model) > 0 {
         True -> []
         False -> reviewer_band_lines(model)
       }
   }
-  list.append(
-    active,
-    list.append(reviewers, list.append(goal, list.append(nudges, pending))),
-  )
+
+  // What the strand is doing is on the input frame's top rule, unless the
+  // frame is too narrow to carry it beside the keys.
+  let active = case
+    active_status_label(model),
+    column_width(model) < input_frame.carries_activity
+  {
+    Some(status), True -> [
+      activity_glyph(model.view.activity_frame)
+      <> " "
+      <> text_hygiene.single_line(status)
+      <> elapsed_label(model.shared.activity_elapsed_s),
+    ]
+    Some(_), False | None, _ -> []
+  }
+
+  // A notice and the reason behind an unusual key are news, so they sit
+  // here inside the frame rather than on its rules, which carry keys and
+  // figures.
+  // The queue editor owns the band while it is focused, as it does for the
+  // nudges and the goal.
+  // The reason behind a held key says what the interrupt's own notice says,
+  // so while it stands the notice is not drawn a second time.
+  let reason = input_keys(model).1 |> option.unwrap("")
+  let notice = case model.shared.notice == commands.stopping_notice, reason {
+    True, "" | False, _ -> text_hygiene.single_line(model.shared.notice)
+    True, _ -> ""
+  }
+  let news = case queue_focused {
+    True -> []
+    False ->
+      [model.view.cache_outlook, notice, reason]
+      |> list.filter(fn(piece) { piece != "" })
+  }
+  list.flatten([active, reviewers, goal, nudges, news, pending])
 }
 
 // An ordinary-height narrow terminal has no agent rail, so the composer owns
@@ -565,6 +827,61 @@ fn reviewer_band_lines(model: Model) -> List(String) {
   }
 }
 
+/// What the next key does on the input frame's top rule, and the reason it
+/// is not the ordinary Enter when there is one, for the status band.
+///
+/// Composer guidance answers what the next Enter does. The agent rail can
+/// still display the last operation's outcome, so its terminal status alone
+/// cannot establish whether this idle strand retains queued input.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // layout.input_keys(model) == #(" Enter sends ", None)
+/// ```
+@internal
+pub fn input_keys(model: Model) -> #(String, Option(String)) {
+  use <- bool.guard(
+    model.shared.captured != None
+      && !session_model.is_known_strand(
+      model.shared.strands,
+      model.shared.active_strand,
+    ),
+    #(" ^O agents ", Some("Recipient unavailable · your draft is kept")),
+  )
+  use <- bool.guard(
+    model.shared.peer == session_model.Disconnected,
+    case model.view.reconnect {
+      tui_model.ReconnectAttempting(..) -> #(
+        " draft kept ",
+        Some("Reconnecting to the daemon · draft retained"),
+      )
+      tui_model.ReconnectIdle | tui_model.ReconnectSpent -> #(
+        " /sessions reconnects ",
+        Some("Disconnected · /sessions to reconnect · draft retained"),
+      )
+    },
+  )
+  let held = #(
+    " Enter sends held input ",
+    Some("Stopped · your next message is sent with the held input"),
+  )
+  use <- bool.guard(tui_model.active_queue_halted(model), held)
+  case
+    session_model.active_interrupt(model.shared),
+    active_status_label(model),
+    model.view.submission_mode
+  {
+    Some(_), _, _ -> held
+    None, None, _ -> #(" Enter sends ", None)
+    None, Some(_), tui_model.SteerNow -> #(" Enter steers · Tab queues ", None)
+    None, Some(_), tui_model.PromptNext -> #(
+      " Enter queues · Tab steers ",
+      None,
+    )
+  }
+}
+
 /// Splits the composer panel into the status band above and the editor
 /// below.
 @internal
@@ -588,7 +905,7 @@ fn pending_status(model: Model) -> Option(String) {
 // Stacking the chips leaves the editor the full interior width, so the wrap
 // the operator sees no longer depends on what is attached.
 fn editor_content_width(model: Model) -> Int {
-  int.max(2, model.view.width - 2)
+  int.max(2, column_width(model) - input_frame.prompt_margin)
 }
 
 /// How long the active strand has been busy, in the shape the prompt
@@ -742,8 +1059,8 @@ pub fn note_detail_area(model: Model) -> Rect {
   let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
   let #(_, body, _, _) = layout(screen, model)
   let #(conversation, _) = queue_body_layout(body, model)
-  let #(transcript, _, _) = body_layout(conversation, model)
-  panel_inner(transcript)
+  let transcript = conversation
+  transcript_inner(transcript)
 }
 
 /// Returns the message preview's actual rectangle for viewport regressions.
@@ -757,7 +1074,43 @@ pub fn note_detail_area(model: Model) -> Rect {
 pub fn message_detail_area(model: Model) -> Rect {
   let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
   let #(_, body, _, _) = layout(screen, model)
-  agents.inspection_detail_area(body)
+  let inspector = case model.view.overlay {
+    AgentInspector(inspector) -> inspector
+    _ -> agents.inspect(model.shared.active_strand)
+  }
+  agents.inspection_detail_area(
+    workspace_area(screen, body, inspector),
+    displayed_agents(model),
+    inspector,
+  )
+}
+
+/// Where the agent workspace is drawn. While the operator browses it owns
+/// the screen below the identity line, covering the strip and the input
+/// frame; while they write to the recipient from inside it, the composer
+/// keeps its rows and the workspace takes the body above it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // layout.workspace_area(screen, body, agents.inspect("main"))
+/// ```
+@internal
+pub fn workspace_area(
+  screen: Rect,
+  body: Rect,
+  inspector: agents.Inspector,
+) -> Rect {
+  case inspector.focus {
+    agents.Composing -> body
+    agents.Browsing ->
+      geometry.rect_new(
+        screen.position.x,
+        screen.position.y + 1,
+        screen.size.width,
+        int.max(0, screen.size.height - 1),
+      )
+  }
 }
 
 /// The area a press at this cell selects within.
@@ -778,12 +1131,16 @@ pub fn hit_area(model: Model, at: geometry.Position) -> Rect {
   let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
   let #(_, body_area, input_area, _) = layout(screen, model)
   let #(conversation, queue) = queue_body_layout(body_area, model)
-  let #(transcript_panel, agent_panel, changes_panel) =
-    body_layout(conversation, model)
+
+  // The sheet covers the transcript, so a point on it is not on the
+  // transcript whatever tab the sheet shows.
+  let transcript = case sheet_shown(model) {
+    True -> geometry.rect_zero()
+    False -> transcript_inner(conversation)
+  }
   [
-    panel_inner(transcript_panel),
-    panel_inner(agent_panel),
-    panel_inner(changes_panel),
+    transcript,
+    panel_inner(changes_panel_area(screen, model)),
     panel_inner(input_area),
     panel_inner(queue),
   ]
@@ -797,7 +1154,7 @@ pub fn transcript_viewport_height(model: Model) -> Int {
   let screen = model_screen(model)
   let #(_, body, _, _) = layout(screen, model)
   let #(conversation, _) = queue_body_layout(body, model)
-  int.max(1, panel_inner(conversation).size.height)
+  int.max(1, transcript_inner(conversation).size.height)
 }
 
 /// Returns the transcript rows left after fixed terminal surfaces are reserved.
@@ -807,8 +1164,8 @@ pub fn transcript_height(
   input_rows: Int,
   footer_rows: Int,
 ) -> Int {
-  // The header consumes one row and the transcript border consumes two.
-  int.max(1, height - input_rows - footer_rows - 3)
+  // The identity line consumes one row and the reading row one more.
+  int.max(1, height - input_rows - footer_rows - 2)
 }
 
 /// The width of a transcript row at the current screen size.
@@ -817,7 +1174,7 @@ pub fn transcript_width(model: Model) -> Int {
   let screen = model_screen(model)
   let #(_, body, _, _) = layout(screen, model)
   let #(conversation, _) = queue_body_layout(body, model)
-  let #(main, _, _) = body_layout(conversation, model)
+  let main = conversation
   int.max(1, main.size.width - 2)
 }
 
@@ -950,10 +1307,10 @@ fn normal_diff_panel(model: Model) -> Rect {
   let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
   let #(_, body, _, _) = layout(screen, model)
   let #(conversation, _) = queue_body_layout(body, model)
-  let #(main, _, changes) = body_layout(conversation, model)
-  case main_shows_diff(model) {
-    True -> main
-    False -> changes
+  let main = conversation
+  case diff_pane_width(model) {
+    0 -> main
+    _ -> changes_panel_area(screen, model)
   }
 }
 
@@ -962,8 +1319,14 @@ fn normal_diff_panel(model: Model) -> Rect {
 @internal
 pub fn borrowed_diff_panel(model: Model) -> Option(Rect) {
   let normal = normal_diff_panel(model)
+
+  // A panel in the docked rail has the rail's whole height, and drawing a
+  // taller one over it would cover the tab bar. The sheet is short on a short
+  // terminal, and may borrow.
   use <- bool.guard(
-    !diff_borrow_eligible(model) || panel_inner(normal).size.height >= 8,
+    !diff_borrow_eligible(model)
+      || panel_inner(normal).size.height >= 8
+      || { diff_pane_width(model) > 0 && rail_columns(model) > 0 },
     None,
   )
   let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)

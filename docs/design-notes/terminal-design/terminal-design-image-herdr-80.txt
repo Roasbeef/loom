@@ -1,0 +1,24 @@
+ ◆ pi-gui · fix readme badge · strand main                        kimi-k3 · low 
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ › Look at plots/latency.png. Why does the p99 line jump after 14:00?           
+                                                                                
+ ◆ main                                                                         
+   I will open the chart.                                                       
+ ✓ fs_read plots/latency.png · image/png · 84 KB                                
+ ▣ image 1 · image/png · 1200×700 · 84 KB   o opens externally                  
+   inside Herdr: pane graphics are not passed through                           
+                                                                                
+ ◆ main                                                                         
+   The jump lines up with the 14:00 deploy: p99 doubles                         
+   while p50 stays flat, so a slow path, not load.                              
+ ▸ Todo · 3 of 5 done · ▸ check it · Ctrl+g expands                             
+╭─ To main · Tab steers ─────────────────────────────────────── ○ main · idle ─╮
+│ › ← sessions · ↓ agents · / commands                                         │
+╰─ kimi-k3 › ctx ~41% › $1.86 ──────────────────────────────────── 0 need you ─╯
+   ○ main                     Idle                                      41k ctx 

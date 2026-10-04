@@ -19,9 +19,32 @@ Arrows inspect without changing `Model.shared.active_strand`; Enter explicitly o
 the selected transcript and recipient. Missing selections stay visible as
 unavailable until navigation chooses another row. `n` visits the next attention
 state, `a` opens the existing exact-request approval panel, and PgUp/PgDn scroll
-the selected detail. The real composer stays visible below the workspace. Tab
+the selected detail. The real composer stays visible below the workspace. `w`
 transfers keyboard ownership to it without changing the inspected ID or recipient;
-Escape returns to the roster. Editing uses the existing submission and command
+Escape returns to the list. Tab and Shift+Tab cycle `agents.Filter` (All, Need
+you, Working, Settled), as the session picker's tabs do; a filter that hides the
+selection selects its own first row.
+
+The list draws each agent as one `agent_row.TableRow` row (glyph, name, action,
+elapsed, context) in attention order after `main`: needs input, failed, halted,
+working, idle, finished, unavailable, and the advisor last. `agents.listed` is
+that order and the filter, and `navigate` and `next_attention` read it, so Up
+and Down always move to the row drawn next. The Activity detail is labelled
+sections, each said once: Task (cut at a word, with a line saying where the
+rest is), Now (a pending approval's request and the `a` key, or a failure's
+error with "the error is not repeated here"), Latest messages from
+`agent_messages`, Inbox and Tools, and the identity dimmest. The figures come
+from `agents.Facts`, the strip's `agent_roster.Roster` and the captured sends,
+through `agent_roster.describe`, which also describes the settled agents a
+strip does not list. At an inside width of 96 or more the detail sits beside a
+69-cell list; narrower, it stacks under a rule and keeps only Task and Now.
+While browsing, the workspace owns the screen below the identity line
+(`layout.workspace_area`), covering the strip and the composer, and is as tall
+as its content, anchored at the top; while writing (`w`) it takes the body
+above the composer. A list cut by its room ends in `↓ N more below`, a
+section label whose body was cut is not drawn, the latest messages read
+oldest first (a captured send has no time, so there is no age), and the
+footer names the recipient quietly with the recipient in bold paper. Editing uses the existing submission and command
 completion paths, including the visible command palette. The ordinary
 `Shift+Tab` rail shares the same task summaries, with a reserved Advisor section
 and a separately labelled worktree observation. A missing Git observation is
@@ -108,9 +131,15 @@ running several strands can see what each is doing without opening `/agents`.
 working, waiting, needs input or is halted. Settled strands leave the strip,
 and the advisor, which has its own band, is listed only while it is active.
 The strip appears once a second agent is listed and the terminal is at least
-`min_screen_height` rows. It grows a row per agent, up to a quarter of the
-screen and never more than `max_rows`; any further rows fold into a
-`+N more · ^O agents` row. `layout.layout` includes it in the footer
+`min_screen_height` rows. It grows a row per agent, up to a fifth of the
+screen plus one (five rows at 24, eight at 40) and never more than `max_rows`; any further rows fold into a
+`+N more · Down enters the strip · F2 opens the list` row. Its rows are
+`agent_row.StripRow` rows, the shape the workspace list draws: the cursor's
+row is the raised bar marked `❯`, the viewed strand is marked `›`, and the
+name and figure columns are as wide as the widest the strip shows, so the
+`·` between time and context lines up at the right edge. Two agents whose
+slugs match keep the head of their digest (`agent_row.labels`), and a name too
+long for its column is cut in the middle so that suffix survives. `layout.layout` includes it in the footer
 rectangle and `layout.footer_split` divides the two, so no other hit-test
 or scroll path sees it. While it is drawn, the reviewer band above the
 composer steps aside.
@@ -357,13 +386,21 @@ Gleam forbids import cycles and none of the `tui/` modules may import
 - `tui/terminal_lane`: `Lane` and `Output`, the session lane with the
   terminal's connection and recorder as its handle types, and `perform`,
   the only place a lane's outputs touch the websocket or the recording.
+- `tui/image_support`, `tui/image_box`, `tui/image_shown`: drawn images,
+  described under "Drawn images" below. They import etui, `session_view`
+  and `theme`, and nothing that imports the model; `effect` carries
+  `image_shown.Command`.
+- `tui/layout_memory`: the layout file, its digest key and its total decoder,
+  described under "Layout memory" below. It imports `host/bootstrap` and
+  `core/json`; `effect` carries its `Layout`.
 - `tui/effect`: `Effect`, the closed vocabulary of fire-and-forget effects a
   step decides on, input recording lines among them (`Record`). The session
   reducers' effects arrive as `Step(step_effect.Effect(Connection,
   Recorder))`, `session_view/step_effect`'s type bound to the terminal's
   handles. It imports the modules whose handles its variants carry
-  (`attachment`, `connection`, `herdr`, `job`, `recording`) and nothing
-  that imports the model.
+  (`attachment`, `connection`, `herdr`, `image_shown`, `job`, `recording`)
+  and nothing that imports the model. `DrawImages(commands)` and
+  `WakeLoop` are the image effects.
 - `tui/model`: the `Model` record, `Model(shared: TerminalShared, view:
   View)`. `TerminalShared` binds `Shared`'s four parameters to
   `connection.Connection`, `recording.Recorder`,
@@ -832,10 +869,11 @@ boundaries and the split's measurements under Invariants.
   already holds `remote.json`; `prepare` then writes `credential` and `claim`
   (the token's digest) at `0600` before any connection, reusing a stored
   credential only when `claim` names this same token. The exchange sends only
-  the credential's digest on `/v2/claim`, checks the reply's fingerprint
-  against that digest, and writes `remote.json`. A `not_found`, `expired` or
-  `conflict` deletes `credential` and `claim`; anything else is `Unknown` and
-  keeps them for a rerun. `enroll` stores a credential, removes a stale
+  the credential's digest, and the optional `--name` (`Options.name`, empty for
+  none), on `/v2/claim`, checks the reply's fingerprint against that digest,
+  and writes `remote.json`. A `not_found`, `expired` or `conflict` deletes
+  `credential` and `claim`; `invalid_name` is `Invalid` and keeps them, since
+  nothing was bound; anything else is `Unknown` and keeps them for a rerun. `enroll` stores a credential, removes a stale
   `claim`, and prints only its digest and fingerprint. The token arrives on
   standard input through `ffi_terminal.read_standard_line`, which prompts
   only on a terminal.
@@ -1018,7 +1056,8 @@ boundaries and the split's measurements under Invariants.
 - `tui/session_selector.State` retains one authorized, revision-fenced page.
   It is also the cross-session view: rows are grouped by workspace in page
   order, each carries a `Presence` glyph (`!` needs you, `●` working, `○`
-  idle, `◌` resident but unobserved, `·` inactive), and Tab/Shift+Tab cycle
+  idle, `◌` resident but unobserved, `×` recovery blocked, `·` other
+  inactive), and Tab/Shift+Tab cycle
   a `Filter` over All, Needs you, Working, Idle and Inactive whose counts are
   of the page on screen. `presence` joins the row's lifecycle with
   `State.activity`, the latest `sessions.activity` answer per resident
@@ -1028,10 +1067,20 @@ boundaries and the split's measurements under Invariants.
   highlighted identity when it is still drawn. `observe` treats an asked
   identity absent from the reply as no longer resident. `carry` keeps the
   tab and the answers for rows still on a reloaded page of the same
-  collection. At an inner width of 96 or more a details pane shows the
-  highlighted row's status and reason, last message, agent glances,
-  workspace, model and identity; narrower pickers put status and short
-  identity on a second row line instead. `Model.view.activity_poll` fills
+  collection. `render` takes the host's wall clock (`Model.view.wall_ms`)
+  for one column, the creation age, because the page has no last-activity
+  time. A row is one line of fixed columns (marker, glyph, name, state word,
+  short reason, age), so the state words and ages line up down the list;
+  workspace headings shorten a home path to `~/…` and count their rows;
+  rows sharing a name carry their short identity so twins stay apart; the
+  `current` session is marked `›`. At an inner width of 96 or more a
+  details pane shows the highlighted row's state and reason, last message,
+  strands from the glances, and a model, workspace and identity table;
+  narrower pickers give only the highlighted row a second line with its
+  reason and last message, and a list taller than the frame says how many
+  sessions it hides (`↓ 3 more below`). Hints are two rows (movement and
+  opening, then the rarer keys); an open question takes the first and its
+  answer keys the second. The picker is at most 116 cells wide. `Model.view.activity_poll` fills
   `State.activity`: while the picker is open on the active collection with
   resident rows, `session_control.service_activity` (from the tick) asks
   `sessions.activity` for at most `protocol.activity_limit` of them, on a
@@ -1192,6 +1241,12 @@ boundaries and the split's measurements under Invariants.
   overlay"): the principal and membership lists, their paging, the y/N
   review of each change, and the pure `update` that returns an `Action`.
   `tui/session_control` runs its requests and `tui/render` paints it.
+- `tui/agent_row.{Shape, Mark}` draws one agent as one row for both the
+  strip (`StripRow`) and the workspace list (`TableRow`): `rows` labels the
+  list together (`labels`, twins keep a digest head), sizes its columns and
+  marks the cursor and the viewed strand. `status_mark`, `status_style` and
+  `glyph` are the status vocabulary every agent surface draws; `cut_middle`
+  and `cut` are its two truncations.
 - `tui/agent_strip.{State, Focus, Line, Outcome, StripKey}` is the pinned
   per-agent strip under the footer (see "Agent strip"). `State` holds
   keyboard focus beside an `agent_roster.Roster` (decoded glances,
@@ -1293,9 +1348,10 @@ boundaries and the split's measurements under Invariants.
   bootstrap and WebSocket transport;
   `core` and `machine` for pure total entry/register/state decoding; `weft` for guarded,
   deadline-bounded connection startup; `etui` at commit
-  `c10f6a64b29ef7b59dd3872bb4471c59deeac681` (the fork's stack pinned in
-  `gleam.toml`, whose last commit is etui#5, a linear wrap for a word wider
-  than the row) with bounded
+  `4d5e466cf433c322012cb874f147be4d6a400eef` (the fork's stack pinned in
+  `gleam.toml`, whose last commit is etui#6, inline images: the terminal
+  graphics probe, kitty placeholders and OSC 1337; etui#5, a linear wrap for
+  a word wider than the row, is below it) with bounded
   input bursts,
   POSIX flow control disabled in raw mode, Unicode emoji widths, synchronized
   frames, full-screen scroll-region presentation, closed-input EOF,
@@ -1418,10 +1474,10 @@ untouched.
   `fs_edit` diffs remain the explicitly labelled fallback when a worktree observation is
   unavailable. Current-action labels use the captured operation's
   effect-pending batch indices rather than unmatched transcript calls.
-- **Responsive changes pane**: `/diff` toggles a persistent right-hand pane at
-  140 columns or wider and a single-panel changes view below that width. The
-  pane temporarily occupies the agent rail's space without changing its saved
-  visibility. Conversation and changes retain separate scroll offsets; wheel
+- **Responsive changes pane**: `/diff` opens the changes on the docked rail's
+  Changes tab at 120 columns or wider and as a single-panel changes view below
+  that width. Opening them docks the rail without changing the operator's
+  saved choice. Conversation and changes retain separate scroll offsets; wheel
   input follows the pointer, while PgUp/PgDn scroll the open changes view.
   Layout, wrapping, and selection use the same body geometry. Captured diff
   rows reuse unchanged line layouts at the same width and discard old keys
@@ -1600,12 +1656,43 @@ untouched.
 - **Prompt view**: the editor retains the exact source and cursor state used by
   history and submission. Rendering wraps that state by terminal cells into a
   bounded one-to-four-row viewport; it never inserts newlines into the prompt.
-- **Conversation and footer**: the reading surface has a heading and gutter;
-  horizontal rules separate the composer. Scrollback controls replace the
-  transcript heading, so Enter's send mode remains visible and entering history
-  does not change the viewport height. Compact mode shows model, context estimate,
-  estimated session cost, notices and an attention summary in one row, or two
-  below 100 columns. The attention summary reserves its own space. Ctrl+G exposes
+- **Identity line and input frame** (`tui/input_frame`): the top row is the
+  identity line on the raised background, the workspace's last segment, the
+  session's name (left out when it repeats the workspace), `strand <id>`, the
+  viewed sub-agent's task, and on the right the model's last segment and the
+  strand's effort. Nothing on it changes while a turn runs. The composer is a
+  rounded frame whose rules carry everything live: top-left `To <strand> ·`
+  and what Enter does, in keys (`layout.input_keys`), top-right what the
+  strand is doing with its elapsed time, queue count and `Esc interrupts` (or
+  `○ <strand> · idle`), bottom-left only model, effort, `ctx ~N%` and
+  `est $N`, bottom-right `N need you` from `strand_card.needing`, drawn only
+  while it is above zero. A notice, the cache outlook and the reason behind
+  an unusual key (`Stopped · …`, `Disconnected · …`) are rows of the status
+  band inside the frame (`layout.composer_status_lines`), never the rules. When the two labels of
+  a rule do not fit, the top rule keeps its left and the bottom rule its right.
+  Below 72 columns the top rule carries no activity and the status band above
+  the editor shows it, as it did before. An open approval locks the frame
+  (`locked while deciding`). The editor sits two cells in from the left side,
+  behind a `›` prompt; an empty draft shows the live key hints as placeholder
+  text. `input_frame.prompt_margin` is the editor's wrap allowance.
+- **Conversation and footer**: the reading surface has a gutter and no
+  heading row (`layout.transcript_inner`); the identity line names the
+  strand. Its bottom row is the reading row: while the reader is above the
+  tail it reads `↑ reading · N rows below · End jumps to latest` and a
+  click on it jumps; while help, notes or a diff borrow the area it names
+  them. Neither changes the viewport height.
+- **Approval block** (`approval_panel.render`): a full-width block under a
+  rule directly above the input frame, headed `? <strand> · <question>`
+  from the escalation's scope (`approval.Review.strand`) with `1 of N` at
+  the right while N questions wait, then the request, its action, the
+  grant and whether session approval exists, then `1`, `2`, `3` choices
+  that select and never confirm, Enter to confirm, `d` for the raw request
+  and Escape to defer; the input frame says it is locked meanwhile. An open
+  question counts in the bottom rule's `N need you`, beside the agents
+  whose rows need input (`render.needs_you`). The status band's rows sit
+  one cell in from the frame's side, and the interrupt's own notice is not
+  drawn while the held key's reason says the same.
+  The compact footer is gone; its facts are on the input frame. Ctrl+G exposes
   the complete input/output/cache/rate accounting in the existing adaptive footer.
   Both footers fit whole pieces (`render.fit_pieces`): a piece that does not
   fit is dropped from the right, never cut through a figure. The detailed row
@@ -1614,7 +1701,7 @@ untouched.
   output and rate. Millions keep one decimal.
   Coherent cuts supply usage and cost; model names never imply prices. Workspace
   and branch discovery still runs once before the event loop, through bounded
-  regular-file reads, and the header shows the resulting workspace label.
+  regular-file reads, and the identity line shows the workspace's last segment.
   Pushed usage rows update the output rate, never cumulative usage. The latest
   row per strand waits for a capture covering its sequence before it updates
   the cache watch, so a remote model change can discard a stale comparison.
@@ -2411,6 +2498,14 @@ a selected frame through the virtual loop cannot reorder it behind newer
 socket traffic. These tests complement the scripted snapshots here; they
 exercise actual server commands and durable replies.
 
+`test/frame_scene.gleam` builds whole frames from durable entries: `attach`
+runs a scene's entries (`user`, `assistant`, `call`, `result`,
+`provider_error`) through the shipped capture decoder and the `Captured`
+update, `screen` paints the full frame at a size through
+`render.render_frame`, and `write_styled` writes it with its colour for a
+review render. Layout tests that need the screen in context use it rather
+than painting one widget onto a blank buffer.
+
 `test/snapshots/*.txt` hold rendered frames as plain text, compared by
 `test/snapshot_test.gleam`. Each snapshot drives the shipped loop under the
 virtual backend with scripted keys and gateway frames and pins the last
@@ -2563,13 +2658,365 @@ not claim which configured ceiling was exhausted.
 
 ## Peer attribution
 
-Existing conversation rendering uses `core/origin.display_label` for both
-human and peer sources. A `PeerOrigin` appears as `peer session/strand` and
-survives the entry codec; it is not rendered as the local operator. This is
-attribution within the existing conversation view. A `StrandOrigin` message
-(a strand of the same session) is drawn by `transcript_lines` as a
-`strand · <id>` heading and its body as Markdown, with the Agency's framing
-removed and a brief's result contract on a line of its own.
+Existing conversation rendering uses `core/origin.display_label` for human
+sources. Agent traffic has three speakers of its own, which
+`session_view/transcript_lines` chooses from the call or the stored origin
+and never from the text, and `tui/message_rows` draws: a `SentMessage`
+(`→ to sub:tests · agent_send · admitted to its queue`), a `StrandMessage`
+(`← from sub:docs · strand message`, the Agency's framing removed and a
+brief's result contract after the body) and a `PeerMessage`, a band reading
+`⇄ peer session 01a07d74 · strand main · ✓ origin checked by the daemon`.
+A line's text is its heading, a newline and its body; only the heading is
+drawn as a heading, so body text that reads like one stays body text
+(`test/message_rows_test.gleam` pins it). A body is drawn as text, each
+line the agent wrote a row of its own. A heading ends in the local clock
+time the message was admitted (`· 14:02`) when the terminal knows its zone:
+`tui.new_model` reads the offset once at start into
+`Shared.clock_offset`, and a model built for a test keeps none and draws no
+time. The first two kinds hang from a bar in the other strand's hue, one of
+cyan, violet and green (`message_rows.strand_hue`), which `render` paints in
+the margin column left of the transcript (`message_rows.margin_bar`), so the
+row's own cells and copy gutter are where any row has them.
+
+Every narrative block opens bare and closes with a blank row: a turn, an
+answer, a message, a notice. The tool family opens and closes bare, and the
+fold places a spacer between a block that closed bare and one that opens
+bare, so there is one blank row between any two blocks. A call keeps the
+gutter with its glyph (`× ` for a failure) and only its result hangs under it,
+`  └ `; a tool group's heading is its own speaker, `ToolGroup`, drawn `▸`.
+
+A call's settled row needs its result. A response holding prose draws its
+calls inside itself, so `transcript_lines.joined` joins every result to its
+call across the compact window: the call is drawn as a tool group draws it,
+the result entry draws no rows, and the response is projected afresh rather
+than from the entry cache.
+`record_anchors_for` mirrors both halves, an empty block for the absorbed
+result and `joined_block_lines` for the response's blocks, since a program's
+block and its settled row differ in height. The separation fold passes over
+an empty block to the last block that drew a row.
+
+A code-mode program that settled is one `✓ code_mode · completed · result …`
+row. One the client has no result for yet, and one that failed,
+are titled blocks drawn by `tui/program_rows`: a rule carrying the title, a
+box holding the body, and a rule carrying the foot, two cells in and one
+short of the pane's right edge, the border in `theme.current` while it waits
+and `theme.danger` when it failed. A running block shows `PROGRAM · N lines,
+M shown`, the program's first non-blank lines under their numbers, and
+`RESULT · none yet`; its foot names the `within_ms` budget the call asked
+for. A failure block shows the error; a compiler's diagnostic is cut to its
+heading with `· line N` and the source it quotes, and the foot says how
+many lines the whole error has. The key that expands a response is named
+once, on its heading; the feet carry only facts. Body rows holding a number
+and a `│` gutter are drawn as source on the raised ground. A result that
+carries the call record of protocol-change 060 adds to both: the settled row
+says `4 calls` (or the record's whole summary when any call did not settle),
+and a failure block lists the calls under `CALLS · 7 calls · 1 failed`,
+consecutive calls with one capability and ending grouped as `✓ fs.read ×3
+a.gleam · b.gleam`, and drawn in the success or danger colour by that
+leading glyph. The record is written on a result only, so a block still
+awaiting its result has no call list.
+
+An image a tool returned, or a person attached, is a placeholder row under
+the row that carries it, `▣ image 1 · image/png · 1200×700 · 84 KB   o opens
+externally`, built by `session_view/image_header`, which reads the pixel
+size from a PNG, JPEG or GIF header in the data's first 64 KiB. Inside
+Herdr (`herdr_reporter` set) a second row says pane graphics are not passed
+through; `projection.noted_images` adds it to the line before rows and
+anchors are built from it, so the two agree. While the reader is above the
+tail with nothing typed, `o` opens the strand's newest image outside the
+terminal: `image_drain.open_newest` starts `job.OpenImage`, whose worker
+(`image_open.open`) writes the bytes to a file in a `0700` directory under
+`TMPDIR` and hands the path to the platform opener with its output dropped
+(`view_link.quiet_opener`: `/bin/sh -c 'exec "$0" "$1" >/dev/null 2>&1'` with
+the opener and the path as positional arguments, over the same
+`run_forwarding` launch `loom ui --open` uses), and
+`image_drain.drain` turns the reply into the notice. The newest image is
+chosen rather than the one on screen, since a row does not name its image
+without the anchors.
+
+## The docked rail
+
+The rail is one column of the terminal, beside the transcript, replacing the
+34-cell agent rail and the 72-cell changes pane that used to borrow the same
+place. `tui/rail` decides it over plain values (`rail.columns`) and
+`tui/layout` takes it from the screen before the body is cut: the identity
+line spans the screen, the rail runs from the row under it to the last row, and
+the input frame and the footer span the transcript's column only, so every
+width they read is `layout.column_width` and not the terminal's. It docks only
+where the transcript keeps 75 cells: 44 cells and a separator from 120
+columns, 56 from 160. From 160 it is docked by default; narrower, Shift+Tab
+docks it. A remembered choice (`View.rail`, the field `layout_memory` keeps)
+wins either way, and below 120 columns it does not dock whatever was chosen
+(the sheet is its form there, below). Opening the changes (`/diff`)
+docks it wherever it fits, on its Changes tab, and closing them puts it back
+as chosen; while they are open Shift+Tab closes them. Below 120 columns
+Shift+Tab opens and closes the sheet and records nothing. While an approval is
+open the rail steps aside in painting only (`layout.rail_area` is zero and
+`rail_view.render` draws nothing; `layout.rail_columns` is unchanged), because
+the approval block spans the screen, and the columns stay reserved so opening
+or closing an approval never re-wraps the transcript or re-places an image. The input frame's top rule cuts the recipient and the
+keys before it drops the activity, and the Ctrl+g footer is compacted to the
+transcript's column (`layout.column_width`), not the terminal's. The changes
+panel in the rail has no border of its own: its rectangle is the rail's
+content grown by the cell a border would take (`layout.changes_panel_area`), so
+`panel_inner` of it is the content, and it never borrows rows above the
+composer. `View.diff_view` has two values now, `DiffHidden` and `DiffVisible`;
+the automatic side pane it once named is gone.
+
+The rail has four tabs, in the web view's order: Strands, Changes, Trace,
+Session. The tab is a preference, except Changes. `View.rail_tab` is the tab
+the operator left the rail on (none is Strands), the layout memory keeps it
+(`tab`: `strands`, `trace` or `session`), and `rail.tab` takes it with the
+changes setting: while the changes are open the rail shows Changes, and
+closing them shows the remembered tab again. Changes is never remembered,
+because it opens an observation of the worktree that a launch has not made; a
+file that names it is read as no choice. The digits `1` to `4` choose a tab
+while the rail has the keyboard. The strip under the input stays visible off
+Strands, so with two or more agents `down` from the composer enters the strip,
+and a digit pressed there chooses a tab (`update_strip_key`), landing on
+Trace or Session with the keyboard on the tab (`keep_tab_keyboard`); with one
+agent `down` gives the tab the keyboard directly (`View.rail_focus`). On a tab
+with the keyboard the digits choose a tab, `up`/`down` and `pageup`/`pagedown`
+scroll it (`View.rail_scroll`, cut to `rail_tabs.scroll_limit`), `Esc` hands
+the keyboard back, and any other key is the composer's and takes it back. At
+the composer the digits are ordinary characters. `/diff` opens Changes and
+`/trace` opens Trace, on the docked rail or below 120 columns on the sheet
+(`submit.select_rail_tab` docks it where it can; it records a rail choice only when the
+choice is what docked it, not on a rail docked by default). Session is reached
+by its digit: `/summary` is the full-screen summary at every width, which has
+the completion evidence the tab does not carry. Choosing Session asks for a
+fresh read of the live jobs. A code-mode program's end is worded as the
+transcript words it (`transcript_lines.status_title`), not as the raw status.
+
+Below 120 columns the rail's tabs are the sheet (`View.sheet`, `SheetClosed`
+or `SheetOpen`; `layout.sheet_shown`). It is drawn by `rail_view` into the
+conversation's rectangle, which it replaces, with no separator
+(`layout.rail_lead` is 0 there and 1 when docked). It is shown when it was
+opened or when the changes are open, since the Changes tab lives there too.
+`layout.rail_present` is the question "is the rail on screen in either form"
+that key routing and tab content ask; `rail_columns` stays the geometry of the
+docked column. `layout.diff_covers_transcript` is true for the Changes tab in the sheet,
+which is when the transcript has nothing to scroll, select or catch up to;
+there is no separate main-surface diff, because where the rail cannot dock the
+sheet is the rail. `Shift+Tab`, `/trace` and `/diff`
+open it (`submit.open_sheet`, `select_rail_tab`), `Esc`, `Shift+Tab` or
+leaving the Strands list closes it (`submit.close_sheet`), and choosing an
+agent closes it after the switch. Opening it records no rail choice
+(`View.rail` is untouched) and the launch never opens it. A resize to 120
+columns or wider closes an open sheet (`submit.hand_off_sheet`, in the Resized
+step, through `close_sheet`, so the strip cursor and the rail focus are reset
+too), keeping `View.rail_tab`, and says `sheet closed · Shift+Tab docks the rail
+on <Tab>`; narrowing never opens one. While a sheet is on screen `Esc` closes it
+and the changes with it and never interrupts the strand
+(`update_main_key_without_palette`), a digit chooses a tab while the rail holds
+the keyboard including on Changes (`chosen_tab`), and the wheel and page keys
+scroll the Trace and Session tabs rather than the hidden transcript
+(`sheet_text_tab`). The Changes panel is inset one cell on each side
+(`layout.changes_panel_area`), as the Trace and Session rows are, and the hint
+row says "closes" for the sheet where the docked rail's says "hides".
+
+Trace and Session are text, in `tui/rail_tabs`. Trace is
+`session_view/trace_view.newest` of the strand on screen, the same module the
+web view's Trace pane folds: the newest code-mode program by entry sequence,
+running until its result arrives, then how it ended
+(`trace_view.state_title`) with the result's excerpt and its calls under
+`CALLS · …` as the transcript's failure block groups them
+(`transcript_lines.call_section`, carried on `Program.calls`). It draws the
+program's opening twelve lines numbered and no timing, because per-call timing
+is its own piece of work. Session is the goal row, `session_summary`'s jobs and
+viewers, and the cost, the web view's Session tab's rows.
+
+`tui/rail_view` paints it: a separator, a tab bar (`Strands ●n  Changes`, the
+count being agents that need the operator) and its rule, the tab's content, and
+one row of key hints. Strands draws every agent in the workspace's attention
+order, the advisor and the settled ones included, through `agent_row.rows`
+with the strip's `StripRow` shape, so there is no second row renderer and a
+long name is cut in the middle, keeping the suffix that tells twin sub-agents
+apart (the `TableRow` shape's 8-cell name column would cut it at its tail). The rail's rows are `layout.strip_lines` while it lists Strands, and
+the strip under the input is hidden then (`strip_height` is zero), so the
+strip's one cursor and its keys (`down` from the composer, `up`/`down`,
+`Enter`, `Esc`) move through the rail: `layout.strands_listed` is what
+`down_from_composer` and the strip's key handler ask. The Changes tab is the
+changes panel, painted by `render` into `layout.changes_panel_area`, the rail's
+content rectangle. The `PEERS` section the design draws is not built: nothing
+in the terminal's model says what another session asked.
+
+## Layout memory
+
+The terminal remembers the person's layout choices per workspace in one file,
+`<state-dir>/tui/layout.json` (`~/.loom/tui/layout.json` unless `--state-dir`
+says otherwise), the way the web view remembers its layout in the browser. The
+key is the lower-case SHA-256 of the workspace path in hex, the same
+construction as the daemon's web digest but over the terminal's own discovered
+workspace root made absolute, so the two stores do not share keys, and a path
+never reaches the file. The file holds
+`{"version":1,"workspaces":[{"key":"<digest>","rail":"shown","tab":"trace"}]}`, most
+recently changed first, at most 64 entries. `rail` is `shown` or `hidden` and
+is absent for a workspace whose rail was never toggled, so a remembered choice
+is told from the default. Nothing from a session is stored: not the
+transcript, the focused strand, the session, a path or a name. `tab` is
+`strands`, `trace` or `session` and is absent the same way. A later slice adds
+the todo line as a further optional word, which an older terminal ignores.
+
+`layout_memory` is the file over plain values and `layout_save` is the join to
+the model. `layout_save.remember_launch` runs once in `interactive`, for a
+local launch (its `--state-dir`) or a remote one (the default root), and
+applies the workspace's rail choice; a replay, the demo and every printing
+subcommand call nothing, so their models have no `View.layout_target` and
+neither read nor write. `layout_save.settle` runs at the end of each step and
+queues `effect.SaveLayout` only when the layout differs from the last one
+saved, so a tick, a keystroke or a scroll writes nothing and a toggle writes
+once. The runtime performs it with `layout_memory.save` and drops a failure,
+since the alternate screen has nowhere to show it.
+
+Reading is total (`layout_memory.load`). A file that is missing, a link, a
+directory, owned by another user, readable by group or world, over 64 KiB, not
+JSON, not an object, or of another `version` is the empty memory and every
+workspace gets the default. Within a readable file an entry whose key is not a
+digest is dropped, a repeated key keeps its first, an unknown word is that
+field's default, and the list is cut at 64. The next change rewrites the whole
+file, which repairs a corrupt one and replaces another version's.
+
+Writing is read-modify-write. `layout_memory.save` reads the file again,
+puts this workspace's entry first, and replaces the file with
+`atomic_write_private` (mode 0600, in a 0700 directory made with
+`ensure_private_directory`), so a reader sees the whole old file or the whole
+new one. Two terminals on different workspaces therefore keep each other's
+entries, because each writes only its own into whatever the file holds now.
+Two terminals on the same workspace share one entry and the later change wins;
+neither sees the other's change until it next launches. There is no lock: a
+write that lands between another terminal's read and its rename can cost that
+terminal's entry for a different workspace, and a layout preference is not
+worth more than that. It needs no new FFI: the file helpers are the launcher's
+own (`host/bootstrap`) and the JSON is `core/json`'s total parser.
+
+## Drawn images
+
+On a terminal that can draw them, an image's placeholder row grows into a
+labelled box and the terminal draws the picture into it. The placeholder row
+is still the answer everywhere else (scrollback, `loom replay`, a terminal
+that did not answer the probe, a Herdr pane, a plain palette).
+
+**The probe.** `interactive` calls `image_support.probe_terminal(palette,
+getenv)` once, in the process that runs the loop and immediately before
+`app.run_buffered_cursor_adaptive`, so nothing printed earlier can be taken
+for a reply and the raw mode `probe.run` leaves on is the one the backend
+inherits. `image_support.detect` applies Loom's plain-palette rule first (a
+plain palette is never probed), then etui's `graphics.decide` (Herdr and
+`NO_COLOR` skip the probe), then runs `probe.run(200)` and maps the answer
+with `from_capabilities`: `KittyPlaceholders(cell)` for kitty and Ghostty,
+`Iterm2Inline(cell)` for iTerm2, `TextOnly(why)` otherwise, with the cell
+size guessed at 8 by 16 pixels if the terminal did not give one. A probe that
+times out is `TextOnly(NotAnswered)`. The answer lives in
+`View.image_support` for the whole process, and `new_model` starts it at
+`TextOnly(NotProbed)`, which is what every replay and test sees.
+
+**The box.** `session_view/image_header.picture` gives an `ImageRow` its
+`Picture` (fingerprint, media type, pixel size, byte count), so a `Line`, a
+cache key, never holds the data. `image_box.verdict` decides what an image
+row becomes: a `Drawing` (id and box), `Keep` (the placeholder row stands) or
+`Refuse(note)`. The note appears under the placeholder row for two reasons
+only: kitty and Ghostty carry a PNG as it is and cannot carry a JPEG or GIF
+(`this terminal draws PNG images only`), and an image over
+`image_box.max_bytes`, 4 MiB decoded, is never sent (`too large to draw in
+the terminal (limit 4.0 MB)`). The box is `graphics.fit` of the header's
+size into the cell size, at most 60 columns and at most the pane's width less
+the indent and frame, and at most `image_box.picture_rows(height)` rows: about
+half the transcript the terminal leaves, between 3 and 12, so a short terminal
+keeps the text around the image. The number comes from the terminal's own
+height (`model.view.height`), which moves only on a resize, never from the
+transcript's height, which moves as the composer wraps; the record cache and
+`image_shown`'s fits are keyed on it (`projection.same_image_height`), so
+typing never rebuilds them. The frame is as wide as
+the picture or the label needs, and the picture is centred in it. Two images
+in a row get one blank row between them (`projection.noted_images`). `projection.line_rows_for` builds the rows
+(`image_box.rows`: a top border that carries the image's words, one row per
+box row, a foot that carries `o opens externally`), and the anchors and the
+row cache use the same function, so rows and anchors agree. On kitty and
+Ghostty each cell is a Unicode placeholder (U+10EEEE and three combining
+marks) in a true-colour foreground that is the low 24 bits of the image id,
+which is ordinary text that scrolls and clips with the rows. On iTerm2 each
+cell is a no-break space in that colour, and the picture is drawn over it.
+The id is `image_box.id_of` the fingerprint, a stateless 24-bit hash,
+because a row is built before anything is sent and must already carry its
+colour; two images in one transcript collide with probability about
+n squared over 2 to the 25th, and the later one sent would show in both
+boxes.
+
+**Not recoloured.** `appearance.apply` leaves any cell whose symbol begins
+with the placeholder character exactly as it is, on every palette: the
+colour is the address, and a remap to a theme colour would show another image
+or none. The test is a prefix test on the cell's symbol, made only on the
+palettes that remap.
+
+**What the terminal is told.** `image_plan.settle` runs at the end of each
+step, after `refresh_frame_cache`. On a `TextOnly` terminal it returns at
+once. Otherwise it reads `render.transcript_window` (the rows the frame is
+about to show, through the same `window` function `render_rows` uses) with
+`image_box.found`, which reads boxes back out of the rows by their marked
+cells and says whether each is whole or clipped by the window. It finds each
+image's data again from the strand's entries by hashing each entry's
+fingerprint to its id (`find`); that scan runs only the first time an image
+is fitted, uploaded or drawn, and `image_shown.Shown.fits` remembers the
+fit. `image_shown.reconcile` is pure: given what the terminal was last told
+and what the next frame shows, it answers with commands. They leave as
+`effect.DrawImages`, which `runtime.perform_io` writes with `io.print`,
+the way the OSC 52 clipboard sequence is written, so they land between
+frames in the order decided.
+
+- Nothing is decided before the alternate screen is open. `Shown.screen`
+  is `BeforeScreen` until the first `msg.Resized`, which the backend sends
+  only after it has entered the alternate screen, and kitty and Ghostty keep
+  each screen's images apart.
+- kitty and Ghostty: an image entering view is `Upload` (transmit, then
+  its virtual placement), one whose box changed size is `Place` again, and
+  one that left view is `Remove`. The upload checks the PNG signature first.
+  The order against the frame does not matter, since the cells are text.
+- iTerm2: the picture is not text and anything the frame writes over a
+  drawn cell erases it, so it is only drawn after the frame that laid its
+  box out. A box seen for the first time is only owed (`Shown.owed`) and the
+  step queues `WakeLoop`, so the next step runs after that frame is drawn
+  and not at the next tick; that step draws it if it is still wanted. A box
+  that moved or left view is erased at once (`Erase`). A resize repaints
+  every cell, so `image_plan.resized` forgets what was drawn and owed
+  without erasing it, and the pictures are drawn again after the next frame.
+  Only a whole box is drawn: one clipped by the window's edge, or whose cells
+  are not intact on the cached frame (`image_plan.showing`, which is how a
+  surface drawn over the transcript is noticed), is not.
+- A marked span is a box only if the whole span is made of the placeholder
+  character or of no-break spaces. Text that merely starts with one, such as
+  a pasted line indented with no-break spaces, is not a box. An image that
+  cannot be found when it is fitted is dropped without a notice: a row the
+  projection built carries an image it read from the transcript, so a miss
+  means the cells were never a box.
+- The step that sets `quit` deletes every uploaded kitty image
+  (`image_shown.release`), while the alternate screen is still open.
+- An image whose data is missing, is not valid base64, or is not a PNG
+  where kitty needs one is put in `Shown.failed` and never tried again. The
+  step sets the notice `could not draw an image: ...` once, and the box
+  stays as an empty frame.
+
+The terminal's own memory is bounded by the viewport, because an image is
+held only while its box is in view and each is at most `max_bytes`. When the
+alternate screen is left the terminal drops the screen's images with it.
+
+`tui/demo_image` seeds the `--demo` launch with a prompt, an `fs_read` call
+and a result carrying a real 480 by 280 PNG, so `bin/loom --demo` in a
+terminal that draws shows the box end to end.
+
+`image_draw_test` covers the probed-yes and probed-no frames, the recolour
+exemption, the effect order, and the error paths. `LOOM_IMAGE_ANSI=<path>`
+makes `the_inline_frame_can_be_written_for_a_terminal_test` write the raw
+bytes of one inline frame (the image uploaded, then the frame with its
+placeholder cells) to `<path>`, for `cat` in Ghostty or kitty. `string.contains`
+cannot find a placeholder in a row, because it matches whole graphemes and a
+placeholder is the base of one; the tests count codepoints.
+
+An operator's turn is one band, `› text`, wrapped under its own first word,
+with no title row. An answer opens with a heading naming the strand,
+`◆ main`, and its body sits under it at the gutter with no band; the
+heading is why `render.render_line` and `render.finish_markdown_rows` take
+the strand.
 
 The Collaboration tab projects a selected strand's background executions,
 readiness, outgoing peer links, named workflow intents, and peer-authored

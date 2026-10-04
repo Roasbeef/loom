@@ -99,6 +99,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import tools/blob
+import tools/call_record.{type CallLog}
 import tools/codemode_recipes
 import tools/directory_access
 import tools/fs
@@ -432,11 +433,19 @@ pub type PolicyRefusal {
 /// *ran*, and a refusal is the harness deciding a stage may not run. A
 /// harness-side decision folded into that report is exactly the
 /// applied-versus-skipped confusion the report exists to prevent.
+///
+/// `calls` is the host's record of the capability calls the program made
+/// (protocol change 060). It sits here beside `enforcement`, and not on
+/// `Ran`, because a deadline or a dead satellite settles as `RunFailed`
+/// and is exactly when the calls made so far matter. Only the foreground
+/// result writers attach it to the stored `details`; `execution_value`,
+/// which the background path stores and the model reads, never does.
 pub type Execution {
   Execution(
     result: ExecResult,
     enforcement: Enforcement,
     refusal: PolicyRefusal,
+    calls: CallLog,
   )
 }
 
@@ -1797,6 +1806,7 @@ fn run_failed_outcome(
       #("kind", json.String(kind)),
       #("detail", json.String(run_failure_detail(failure))),
       #("sandbox", enforcement_json(execution.enforcement)),
+      #("calls", call_record.to_json(execution.calls)),
     ]),
   )
 }
@@ -1848,6 +1858,7 @@ fn ran_outcome(
         [
           #("manifest_hash", json.String(manifest_hash)),
           #("sandbox", enforcement_json(execution.enforcement)),
+          #("calls", call_record.to_json(execution.calls)),
         ],
       ]),
     )

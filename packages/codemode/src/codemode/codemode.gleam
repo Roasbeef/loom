@@ -42,6 +42,7 @@ import codemode/satellite.{
 import codemode/vet.{type Rejection, type Vetted}
 import codemode/vet/policy.{type VetPolicy}
 import gleam/list
+import tools/call_record.{type CallLog}
 
 /// One whole code-mode execution: how far it got, what the kernel
 /// enforced on each jailed stage, and what an approved escalation
@@ -55,8 +56,19 @@ import gleam/list
 /// approved says so, naming them, and one that did not says which of the
 /// two ways that happened. A widening that could not be found in the
 /// record would be a widening nobody reviews.
+///
+/// `calls` is what the program did: the host's record of its capability
+/// calls (protocol change 060). It is empty for an execution that never
+/// reached a node, and it is present for a run that failed, because a
+/// deadline or a dead satellite is exactly when the calls made so far
+/// matter.
 pub type Execution {
-  Execution(outcome: ExecOutcome, enforcement: Enforcement, widening: Widening)
+  Execution(
+    outcome: ExecOutcome,
+    enforcement: Enforcement,
+    widening: Widening,
+    calls: CallLog,
+  )
 }
 
 /// The result of running a code-mode program end to end. Each variant is
@@ -146,6 +158,7 @@ fn vet_rejected(rejections: List(Rejection), config: ExecConfig) -> Execution {
       carrying: approved(config),
       because: "vetting refused the program, so no stage composed the grants",
     ),
+    calls: call_record.empty(),
   )
 }
 
@@ -218,6 +231,7 @@ fn compile_failed(
       because: "the program did not compile, and the hermetic build is never "
         <> "widened by an approval",
     ),
+    calls: call_record.empty(),
   )
 }
 
@@ -242,6 +256,7 @@ fn run_and_report(
     },
     enforcement: Enforcement(build:, node: ran.node),
     widening: run_widening(approved(config), ran.outcome),
+    calls: ran.calls,
   )
 }
 

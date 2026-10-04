@@ -33,7 +33,7 @@ fn mode(path: String) -> Int {
 
 fn remote(directory: String) -> claim.Remote {
   let assert Ok(remote) =
-    claim.remote(claim.Options("ws://127.0.0.1:9/v2/control", "", directory))
+    claim.remote(claim.Options("ws://127.0.0.1:9/v2/control", "", directory, ""))
     as "a loopback remote is prepared"
   remote
 }
@@ -61,6 +61,41 @@ pub fn claim_arguments_take_an_optional_token_test() {
     as "enroll takes no positional word"
 }
 
+pub fn claim_takes_an_optional_display_name_test() {
+  let assert Ok(#(options, Some("loomclaim_x"))) =
+    claim.parse_claim([
+      "--addr",
+      "wss://h/v2/control",
+      "--name",
+      "Alex Doe",
+      "loomclaim_x",
+    ])
+    as "--name takes one value and the token stays positional"
+  assert options.name == "Alex Doe"
+  let assert Ok(#(unnamed, None)) =
+    claim.parse_claim(["--addr", "wss://h/v2/control"])
+  assert unnamed.name == ""
+  let assert Error(claim.Invalid(_)) =
+    claim.parse_claim(["--addr", "wss://h/v2/control", "--name"])
+    as "--name needs a value"
+  let assert Error(claim.Invalid(_)) =
+    claim.parse_claim(["--addr", "wss://h/v2/control", "--name", ""])
+    as "an empty name is refused, not read as none"
+  let assert Error(claim.Invalid(_)) =
+    claim.parse_claim([
+      "--addr",
+      "wss://h/v2/control",
+      "--name",
+      "A",
+      "--name",
+      "B",
+    ])
+    as "--name is given once"
+  let assert Error(claim.Invalid(_)) =
+    claim.parse_enroll(["--addr", "wss://h/v2/control", "--name", "Alex"])
+    as "enroll draws no name"
+}
+
 pub fn remote_refuses_cleartext_to_another_host_and_escaping_labels_test() {
   let directory = state("address")
   let assert Error(_) =
@@ -68,19 +103,21 @@ pub fn remote_refuses_cleartext_to_another_host_and_escaping_labels_test() {
       "ws://loom.example.com/v2/control",
       "",
       directory,
+      "",
     ))
     as "ws:// to a non-loopback host is refused"
   let assert Error(_) =
-    claim.remote(claim.Options("wss://h/v2/control", "../escape", directory))
+    claim.remote(claim.Options("wss://h/v2/control", "../escape", directory, ""))
     as "a label cannot climb out of remotes/"
   let assert Error(_) =
-    claim.remote(claim.Options("wss://h/v2/control", ".hidden", directory))
+    claim.remote(claim.Options("wss://h/v2/control", ".hidden", directory, ""))
     as "a label cannot be hidden"
   let assert Ok(named) =
     claim.remote(claim.Options(
       "wss://loom.example.com/v2/control",
       "",
       directory,
+      "",
     ))
     as "a TLS remote gets the host as its label"
   assert named.label == "loom.example.com"
@@ -89,6 +126,7 @@ pub fn remote_refuses_cleartext_to_another_host_and_escaping_labels_test() {
       "wss://loom.example.com:8443/v2/control",
       "",
       directory,
+      "",
     ))
     as "a port other than 443 is part of the label"
   assert ported.label == "loom.example.com:8443"
@@ -103,7 +141,7 @@ pub fn claim_files_are_private_and_written_before_any_connection_test() {
   // Nothing listens on port 9, so the exchange cannot happen. The files must
   // already exist when it fails: that ordering is what lets a rerun complete
   // a claim whose reply was lost.
-  let assert Error(claim.Unknown(_)) = claim.redeem(remote, issued)
+  let assert Error(claim.Unknown(_)) = claim.redeem(remote, issued, "")
     as "an unreachable daemon is an unknown outcome"
   assert mode(remote.directory) == 0o700
   assert mode(directory <> "/remotes") == 0o700
@@ -146,9 +184,10 @@ pub fn claim_refuses_a_bearer_shaped_token_and_a_finished_remote_test() {
   let directory = state("refusals")
   let remote = remote(directory)
   let assert Error(claim.Invalid(_)) =
-    claim.redeem(remote, string.repeat("a", 64))
+    claim.redeem(remote, string.repeat("a", 64), "")
     as "a bearer is not a claim"
-  let assert Error(claim.Invalid(_)) = claim.redeem(remote, "loomclaim_short")
+  let assert Error(claim.Invalid(_)) =
+    claim.redeem(remote, "loomclaim_short", "")
     as "a truncated claim is refused"
   assert simplifile.is_file(claim.credential_path(remote)) == Ok(False)
 
@@ -157,7 +196,7 @@ pub fn claim_refuses_a_bearer_shaped_token_and_a_finished_remote_test() {
   let assert Ok(Nil) =
     simplifile.write(claim.record_path(remote), "{\"addr\":\"x\"}")
   let issued = token.mint_token(fn(count) { <<3:size(count)-unit(8)>> })
-  let assert Error(claim.Invalid(_)) = claim.redeem(remote, issued)
+  let assert Error(claim.Invalid(_)) = claim.redeem(remote, issued, "")
     as "a finished remote is refused"
   assert simplifile.is_file(claim.credential_path(remote)) == Ok(False)
   let _ = simplifile.delete(directory)

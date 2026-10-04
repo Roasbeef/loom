@@ -24,6 +24,7 @@ import session_view/cache_miss
 import session_view/cache_watch
 import session_view/connection_event
 import session_view/model as session_model
+import session_view/notice_words
 import session_view/protocol
 import session_view/session_channel
 import session_view/snapshot
@@ -1113,6 +1114,6 @@ pub fn a_queued_prompt_reads_as_a_booked_turn_rather_than_a_refusal_test() {
     )
   assert queued.shared.submitting == None
     as "nothing is running here yet; the daemon holds the prompt"
-  assert string.contains(queued.shared.notice, "queued")
+  assert queued.shared.notice == notice_words.outcome("prompt", "queued")
     as "the operator is told the turn is booked, not that it was refused"
 }

@@ -88,7 +88,7 @@ pub fn inspected_worker_notes_keep_the_main_draft_and_target_test() {
   assert loaded.shared.active_strand == "main"
   assert textarea.value(loaded.view.input) == "draft for main"
   assert string.contains(rendered, "Review the scheduler")
-  assert string.contains(rendered, "[3 Notes]")
+  assert string.contains(rendered, " 3 Notes ")
   assert string.contains(rendered, "worker")
 }
 

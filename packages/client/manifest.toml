@@ -14,7 +14,7 @@ packages = [
   { name = "cowlib", version = "2.20.0", build_tools = ["make", "rebar3"], requirements = [], otp_app = "cowlib", source = "hex", outer_checksum = "7D41A0DD2C093041FF3779AC5FE8A1585A68EC7CB2DD1DE0536BDD2452FD7BA1" },
   { name = "envoy", version = "1.2.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "envoy", source = "hex", outer_checksum = "9C6FBB6BFA02A52798BEEC5977A738CAD6E4A057F4B67FD0C8061AD2502C191A" },
   { name = "esqlite_loom", version = "0.9.1", build_tools = ["rebar3"], requirements = [], otp_app = "esqlite", source = "hex", outer_checksum = "85BBB5309D97C0BD412D47486A91509222C5C729A7DE5EA4FCE9978D5688BBC1" },
-  { name = "etui", version = "2.0.0", build_tools = ["gleam"], requirements = ["gleam_javascript", "gleam_stdlib"], source = "git", repo = "https://github.com/Roasbeef/etui.git", commit = "c10f6a64b29ef7b59dd3872bb4471c59deeac681" },
+  { name = "etui", version = "2.0.0", build_tools = ["gleam"], requirements = ["gleam_javascript", "gleam_stdlib"], source = "git", repo = "https://github.com/Roasbeef/etui.git", commit = "4d5e466cf433c322012cb874f147be4d6a400eef" },
   { name = "events", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_otp", "gleam_stdlib", "parrot", "sqlight_loom", "storage", "telemetry"], source = "local", path = "../events" },
   { name = "exception", version = "2.1.1", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "exception", source = "hex", outer_checksum = "6BDEA95248093599391C3B5DF1835C5C6A86C353C2F99CE539B450E3432FE117" },
   { name = "filepath", version = "1.1.2", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "filepath", source = "hex", outer_checksum = "B06A9AF0BF10E51401D64B98E4B627F1D2E48C154967DA7AF4D0914780A6D40A" },
@@ -62,7 +62,7 @@ packages = [
   { name = "telemetry", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_stdlib"], source = "local", path = "../telemetry" },
   { name = "tom", version = "2.1.0", build_tools = ["gleam"], requirements = ["gleam_stdlib", "gleam_time"], otp_app = "tom", source = "hex", outer_checksum = "DCF04CB7AB35D58CFC598C66EA2E1816D160759802C89B2BA6238780D59BC256" },
   { name = "tools", version = "0.2.0", build_tools = ["gleam"], requirements = ["broker", "core", "gleam_erlang", "gleam_regexp", "gleam_stdlib", "lsp", "simplifile"], source = "local", path = "../tools" },
-  { name = "tui", version = "0.2.0", build_tools = ["gleam"], requirements = ["argv", "core", "etui", "filepath", "gleam_erlang", "gleam_http", "gleam_stdlib", "gun", "host", "machine", "session_view", "simplifile", "weft"], source = "local", path = "../tui" },
+  { name = "tui", version = "0.2.0", build_tools = ["gleam"], requirements = ["argv", "core", "etui", "filepath", "gleam_erlang", "gleam_http", "gleam_stdlib", "gleam_time", "gun", "host", "machine", "session_view", "simplifile", "weft"], source = "local", path = "../tui" },
   { name = "web_view", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_stdlib", "houdini", "lustre", "session_view"], source = "local", path = "../web_view" },
   { name = "weft", version = "0.4.5", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], otp_app = "weft", source = "hex", outer_checksum = "CDD540819BE4E87D3C19FD4843F02AB1707A979FE909AE85EEF2034C1E48ED6C" },
   { name = "yamerl", version = "0.10.0", build_tools = ["rebar3"], requirements = [], otp_app = "yamerl", source = "hex", outer_checksum = "346ADB2963F1051DC837A2364E4ACF6EB7D80097C0F53CBDC3046EC8EC4B4E6E" },
@@ -73,7 +73,7 @@ argv = { version = ">= 1.1.0 and < 2.0.0" }
 broker = { path = "../broker" }
 codemode = { path = "../codemode" }
 core = { path = "../core" }
-etui = { git = "https://github.com/Roasbeef/etui.git", ref = "c10f6a64b29ef7b59dd3872bb4471c59deeac681" }
+etui = { git = "https://github.com/Roasbeef/etui.git", ref = "4d5e466cf433c322012cb874f147be4d6a400eef" }
 events = { path = "../events" }
 filepath = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_erlang = { version = ">= 1.0.0 and < 2.0.0" }

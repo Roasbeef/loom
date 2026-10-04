@@ -4,7 +4,6 @@
 //// prompt leaves that boundary unknown instead of borrowing a predecessor's
 //// tools. Dependency labels come only from effect-pending agent_wait calls.
 
-import core/entry
 import core/ids
 import core/json
 import core/message
@@ -124,43 +123,11 @@ pub fn recent(
       entries
       |> list.filter(fn(value) { value.seq > start })
       |> list.sort(fn(a, b) { int.compare(a.seq, b.seq) })
-      |> list.map(activity_entry)
-      |> tool_activity.project
-      |> list.flat_map(fn(item) {
-        case item {
-          tool_activity.Tools(calls) -> calls
-          tool_activity.Narrative(_) -> []
-        }
-      })
+      |> tool_activity.calls
       |> list.reverse
       |> list.take(5)
       |> list.reverse
       |> list.map(call_summary)
-  }
-}
-
-// A response may contain prose and tool calls together. This projection only
-// needs invocation identity; removing prose from this temporary copy lets the
-// existing result join cover that shape without changing the stored message.
-fn activity_entry(value: entry.Entry) -> entry.Entry {
-  case value {
-    entry.MessageEntry(
-      message: message.AssistantMessage(content:, ..) as response,
-      ..,
-    ) ->
-      entry.MessageEntry(
-        ..value,
-        message: message.AssistantMessage(
-          ..response,
-          content: list.filter(content, fn(block) {
-            case block {
-              message.AssistantToolCall(_) -> True
-              message.AssistantText(..) | message.AssistantThinking(..) -> False
-            }
-          }),
-        ),
-      )
-    _ -> value
   }
 }
 

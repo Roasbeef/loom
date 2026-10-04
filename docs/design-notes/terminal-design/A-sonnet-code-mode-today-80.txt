@@ -1,0 +1,24 @@
+ ◆ loom   ws · pi-gui (main)                           kimi-k3 · Ctrl+g details 
+ transcript / main                                                              
+   Checking the new function with a program.                                    
+                                                                                
+ ╭─ ✓ code_mode · read_config.gleam · 14 lines ────────────────────────────────╮
+ │ result: ok · config parsed, 3 keys                                          │
+ ╰─ Ctrl+g shows the program ──────────────────────────────────────────────────╯
+                                                                                
+ ╭─ × code_mode · check_subtract.gleam · failed ───────────────────────────────╮
+ │ import cap/proc                                                             │
+ │ let assert Ok(out) = proc.run("gleam", ["test"])                            │
+ │ + 11 more lines                                                             │
+ │                                                                             │
+ │ result: failed · the program exited with status 2                           │
+ │ details: assertion failed at line 2 (message and details as returned)       │
+ ╰─ Ctrl+g: full program and result ───────────────────────────────────────────╯
+                                                                                
+ ● code_mode fix_subtract.gleam · running 1.2s                                  
+─ To main · enter queues · tab steers ──────────────────────────────────────────
+ ›                                                                              
+ ◒ streaming (3s) · esc to interrupt                                            
+                                                                                
+ kimi-k3 · ctx ~41% · est $1.86                                                 
+ F2 strands · F3 changes                     3 agents · 2 working · 1 needs you 

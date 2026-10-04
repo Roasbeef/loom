@@ -59,9 +59,12 @@ import tui/daemon/selection as daemon_selection
 import tui/effect.{type Effect}
 import tui/herdr
 import tui/image_drop
+import tui/image_shown
+import tui/internal/ffi_terminal
 import tui/job
 import tui/job_runner
 import tui/keymap
+import tui/layout_memory
 import tui/model.{type Model, Model, View} as tui_model
 import tui/msg.{type Msg}
 import tui/recording
@@ -302,7 +305,8 @@ fn checked(
     | job.ControlArrived(..)
     | job.ReconnectArrived(..)
     | job.ActivityArrived(..)
-    | job.ConfigurationArrived(..) -> arrival
+    | job.ConfigurationArrived(..)
+    | job.ImageArrived(..) -> arrival
   }
 }
 
@@ -433,6 +437,9 @@ fn perform_one(
     | effect.Discard(_)
     | effect.Record(..)
     | effect.WriteClipboard(_)
+    | effect.DrawImages(_)
+    | effect.SaveLayout(..)
+    | effect.WakeLoop
     | effect.AnnounceHerdr(..)
     | effect.ReportHerdr(..)
     | effect.ReleaseHerdr(..) -> {
@@ -455,6 +462,20 @@ fn perform_io(requested: Effect) -> Nil {
     // Etui draws its frames with `io:put_chars`, so a sequence printed the
     // same way lands on the terminal in order with them.
     effect.WriteClipboard(sequence) -> io.print(sequence)
+
+    // Image commands are written the same way, so they land between the
+    // frames in the order the step decided them. The wake is sent to the
+    // process performing the effect, which is the loop's.
+    effect.DrawImages(commands) -> io.print(image_shown.sequence(commands))
+    effect.WakeLoop -> ffi_terminal.wake_loop(process.self())
+
+    // A failed save is dropped: the alternate screen is open, so there is
+    // nowhere to say so, and the layout is a preference that the next change
+    // writes again.
+    effect.SaveLayout(path, key, layout) -> {
+      let _ = layout_memory.save(path, key, layout)
+      Nil
+    }
     effect.AnnounceHerdr(reporter, session) ->
       herdr.announce(Some(reporter), session)
     effect.ReportHerdr(reporter, state, session, message) ->

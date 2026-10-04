@@ -1,0 +1,40 @@
+ ◆ loom                        native-fixture · native UI fixture                        fixture-model · Ctrl+g details
+
+ ╭ AGENT WORKSPACE 6 agents · 2 working · 3 attention ────────────────────────────────────────────────────────────────╮
+ │ SESSION                             1 Activity  [2 Messages]  3 Notes  4 Collaborate                               │
+ │ ▸ main · to                                                                                                        │
+ │   Integrate the agent workspace a…  OBSERVED SENDS · latest 20       MESSAGE PREVIEW                               │
+ │   ● Working · agent_send            Acceptance is not a read recei…   sub:protocol-review → main                   │
+ │                                     ▸ sub:protocol-review → main      Accepted by recipient · Complete captured b… │
+ │ STRANDS                               Accepted                        revision 32 · observed only                  │
+ │   sub:viewport-review                 Approval ownership is still …                                                │
+ │   Review scroll anchors and per-s…    main → sub:protocol-review      Approval ownership is still exact.           │
+ │   ✓ Finished · Finished               Started                         The request belongs to sub:protocol-review.  │
+ │                                       Please verify the approval o…   The main strand may continue after the       │
+ │   sub:terminal-checks                                                 recorded decision.                           │
+ │   Exercise small terminals, Unico…                                                                                 │
+ │   × Failed · …n-label check failed                                                                                 │
+ │                                                                                                                    │
+ │   sub:protocol-review                                                                                              │
+ │   Verify exact-request approval o…                                                                                 │
+ │   ? Needs input · …proval required                                                                                 │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │ To: main · Enter opens selected transcript                                                                         │
+ │ ↑/↓ inspect · n attention · a review permission                                                                    │
+ │ [/] message · o sender · PgUp/Dn body · Tab write · Esc close                                                      │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+─ To main · Tab writes · Enter opens agent                                                                             ─
+ ◐ Message to sub:protocol-review (43s)
+ goal paused (you paused it) · 51200/400000 tokens · 3 continuations · Finish the native agent workspace, preserve eve…
+ advisor nudges pending (1) · held for your next prompt to main
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ illustrative fixture · no provider calls · fixture-model · ctx — · est $0.00         6 agents · 2 working · 3 attention
+› ● main                   agent_send                                                                                43s
+  ? sub:protocol-review    Approval required                                                                         43s
+  ! sub:paused-review      Operation aborted
