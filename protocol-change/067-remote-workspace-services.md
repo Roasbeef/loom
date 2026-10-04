@@ -790,3 +790,24 @@ Copyable Gleam permit values remain local to the trusted first-Submit continuati
 The [live-admission review](../docs/review/distributed-live-compile-admission.md)
 records the independent gate and corrected prose finding. Production native
 routing and physical service assembly remain required before product acceptance.
+
+## Addendum: Complete command routes on native exchanges
+
+An owner reservation for a physical command MUST retain its complete CommandRef
+alongside the native key and exact Prepared value. Challenge, Submit, Query,
+Stdin, Cancel and DurableReceipt MUST use that same route, including cancellation
+after the original network worker stops.
+
+The command frame wraps the canonical full reference and existing native
+envelope under `loom.remote.command/1`. Its decoder MUST enforce the existing
+aggregate frame bound, native Prepared bound, authenticated scope and operation
+correspondence. A response MUST carry the original full reference and transport
+generation. A plain native response or changed reference is uncertain, never an
+implicit fallback to the ordinary native lane.
+
+Framing establishes correspondence only. The server MUST separately enforce the
+original live-claim admission rule and exact retained association for historical
+controls and duplicate Submit readback. The owner codec and dispatcher implement
+this route; the current server reader remains native-only until that admission
+assembly is installed. The [routing review](../docs/review/distributed-physical-command-routing.md)
+records the real TLS controls and their integration limits.
