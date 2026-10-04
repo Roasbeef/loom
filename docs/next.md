@@ -29,8 +29,10 @@ are on #696.
   Live/Granted rows. The per-execution relay (`broker/relay` over the pure
   `broker/execution` core) watches the helper actor too, so a dead helper
   settles at once as `ExecutionLost`. The one-shot build and check planes run
-  on it as well. `broker/direct` survives only behind `broker.start`, which
-  59 call sites in 43 test and demo files use.
+  on it as well. `broker/direct` is deleted. `broker.start(BrokerConfig)`
+  stays for the callers that hold a pool's seams and no session (the tests
+  of every package that runs a tool, and the M3 demo): it starts a service
+  over `checkout` and `checkin`, with no custody query and no pool to close.
 - **Lifecycle rules a change must keep.**
   - A deliberate kill retains the port and is judged by exposure: no jail,
     a settled jail, or a live jail. A live jail retires only under bwrap,
@@ -41,6 +43,22 @@ are on #696.
   - The relay's own cancel is an ask to the service.
   - `executor.close(draining:, helpers:)` always gives the pool its full
     native-exit budget.
+  - A write that fails to a helper's port waits for the exit status that may be
+    queued behind it (`PendingExit(Unprompted(..))`, bounded by the same
+    five-second witness window) and does not record the proof lost at once. A
+    port delivers `{exit_status, S}` and then closes, so a helper that died by
+    itself and met a write had its status dropped, which held its pool slot for
+    the life of the pool and blocked the writer lease (protocol-change/014,
+    addendum of 2026-10-03).
+  - The snapshot's custody is read in the observer's process. The service
+    answers an `executor_view.Observation` of its own rows and books, and the
+    caller joins the pool's custody to it (`executor_view.completed`), so a slow
+    pool delays the observer and no settlement. The halves are not one instant.
+  - A stale relay cancel cannot reach the next execution on a reused helper,
+    and `cancel_fence_test` shows it: through the link the service builds
+    (`executor.relay_link`, internal) the cancel is dropped with its row, and a
+    control link that cancels the helper directly cancels the next execution.
+    The stale cancel is injected, since a real relay never produces one.
 - **Observability.** `executor.snapshot` is bounded and secret-free
   (`executor_view`). It also writes one telemetry line per settlement. There
   is no operator command: every daemon route is the client protocol, and
@@ -60,24 +78,38 @@ are on #696.
 - **Measure with** `make bench-exec`, the opt-in real-helper benchmark. The S0
   baselines are on the executor page.
 
+- **Testing the service.** `executor_property_test` draws seeded plans (starts,
+  broker and caller cancels, caller death, helper crash, a close in flight) and
+  holds every plan to exactly-one-settlement, an empty inventory with dead
+  relays, a bounded pool census, a clean close for a quiet plan and a stored
+  second verdict; `LOOM_EXECUTOR_PROPERTY_SEEDS` sizes it and
+  `LOOM_EXECUTOR_PROPERTY_ONLY` replays a seed. `leak_census_test` draws its
+  hundred endings from a seed as well. The simulation runner sends each tool
+  call through the executor over fake helpers before applying the fault
+  schedule, with two checks, `effects/no-orphan` and `effects/one-settlement`
+  (`docs/architecture/simulation.md`, "The effect plane"). Each check was shown
+  failing by mutation (the commit messages name them).
+- **A kill's cgroup directory (#702).** `loom-exec` now sweeps, at the start of
+  server mode, the `exec-<id>-<pid>` directories in its delegated base whose
+  execution process has gone and whose cgroup is unpopulated (`cgroup.Sweep`).
+  The pid test is not in the issue's proposal and is what keeps a sweeping
+  helper from removing a cgroup another helper has made and not yet entered.
+  Only a Linux host with a delegated `LOOM_CGROUP_BASE` runs the real-cgroup test
+  (`TestSweepRemovesARealCgroup`); the fake-base tests run everywhere.
+
 **Left open, in order of value.**
 1. [#703](https://github.com/Roasbeef/loom/issues/703): `OutputIsWire` leases
    (the LSP jail) stream uncapped, so their mailbox is bounded only by the
    consumer.
-2. The snapshot asks the pool for custody inside the serial service, which
-   can delay settlements by up to a second per poll during a slow spawn
-   (S3 review F4). Move that query to the observer's process.
-3. Migrate the 59 `broker.start` call sites onto the service, then delete
-   `broker/direct`.
-4. [#702](https://github.com/Roasbeef/loom/issues/702): a kill leaves the
-   per-execution cgroup directory behind.
-5. Other spellings of `skip:` could use `exec.skip_prefix`: codemode's own
-   `skip_prefix` constant, the two literals in `client/lsp` (`manager` and
-   `jail`), and the pattern in `packages/executor`.
-6. The single-sender ordering that fences a stale cancel is argued but not
-   tested: no test fails if the relay cancels the helper directly. Write the
-   real-helper race test.
-7. Idle retirement (#283) is still unbuilt; the service only must not block
+2. `stop_one_shot`'s `stop_pool` fallback stays on purpose. The follow-up brief
+   called it dead because `executor.close` already sends `StopPool`, but
+   `stop_pool` also sends `ForgetPool`, which reaps a pool whose proof arrives
+   after a timed-out close. `stop_helpers` (the session path) has no such
+   fallback, so a late proof there leaves the pool to its owner's death.
+3. The simulation schedule has no fault aimed at a helper, and the plane's
+   helpers are fake: what a real helper does to a payload under a mid-execution
+   fault is still the jailed end-to-end suite's.
+4. Idle retirement (#283) is still unbuilt; the service only must not block
    it.
 
 ## LSP dependency preparation work (2026-10-03)
