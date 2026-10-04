@@ -5709,3 +5709,21 @@ returns unknown, never the local replay fallback. Daemon configuration and
 remote workspace/transport wiring remain required; these modules are not yet
 a shipped remote deployment. See [remote custody](../../docs/architecture/remote-custody.md)
 for identities, bounds, recovery and remaining end-to-end acceptance.
+
+## Semantic workspace owner receipts
+
+`remote/workspace_binding` reserves a distinct Workspace child through the
+supervised custodian before canonical invocation bytes can be sent. A retry
+reads the original UUID first and compares the complete candidate; it cannot
+replace uncertain work with a new identity. The binding validates the parent
+ToolKey's operation, step and provenance, or an explicit named system origin.
+Derived physical child coordinates still need their own trusted assembly.
+
+`receive` checks the completion against its original typed request and rechecks
+the retained invocation before committing exact bytes. Only that commit creates
+an opaque Acknowledgement. Recovery reads original bytes and optional receipts
+without executing a tool. Workspace requests and receipts have separate typed
+9-MiB and 32-MiB entry points; native mailbox limits remain unchanged. Assembly
+still owns aggregate caller admission. `scripts/e2e_remote_workspace.sh` joins
+this binding to real TLS, two SQLite journals and filesystem effects in one VM;
+it does not enable remote execution in the shipped daemon.
