@@ -1064,3 +1064,26 @@ agent concrete import discipline: import only used modules and constructors,
 use qualified standard-library helpers, and repair every reported diagnostic
 before resubmitting. It keeps the compiler gate intact and encourages a small
 first program rather than a large unrelated rewrite after each failure.
+
+
+## Executor-local semantic workspace host
+
+`workspace_local.Host` binds the complete registered scope, executor-local
+Ctx and post-write observer. `run` refuses any scope mismatch before effects,
+then performs the closed `workspace.Request` through existing filesystem,
+hashline and search semantics. Operation, step and real tool source index come
+from the unchanged invocation. System callers retain explicit system provenance.
+
+Reads share native signature detection and bounded text rendering with fs.
+Writes and edits preserve protected targets, stale-content evidence and the
+existing observer-after-landing ordering. Stat resolves the parent and observes
+the final entry with lstat semantics. Git, guidance and initialization use typed
+callbacks; an unbound callback is unavailable, never fabricated empty success.
+
+`Completed` retains both the typed response and optional post-write diagnostics.
+Transport must preserve both and reserve enough result capacity for edit preimage
+and postimage. This host does not journal admission or acknowledgements; outer
+custody must preserve uncertainty after a landed mutation whose reply is lost.
+The local production filesystem remains authoritative until remote assembly
+explicitly selects this host; no owner-local fallback is permitted for a remote
+binding.
