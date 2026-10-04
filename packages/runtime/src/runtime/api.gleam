@@ -98,6 +98,7 @@ import runtime/supervisor.{type SessionTree, type Tolerance, Tolerance}
 import runtime/writer
 import session/session.{type Session}
 import storage/storage
+import telemetry/context
 import telemetry/log.{type Logger}
 import weft/poll
 import weft/registry as address
@@ -419,7 +420,15 @@ pub fn open_published(
   let retry_policy = options.retry_policy
   let poll_interval_ms = options.poll_interval_ms
   let idle_poll_interval_ms = options.idle_poll_interval_ms
-  let logger = options.logger
+
+  // The session id is known here and nowhere the drivers are built, so the
+  // logger carries it from this point: every strand's lines and its
+  // ownership label then name their session, not only their strand.
+  let logger =
+    log.scoped(
+      options.logger,
+      context.for_session(ids.session_id_to_string(session_id)),
+    )
 
   let describe_runtime = fn(tree) {
     Runtime(tree:, session:, session_id:, effects:, strand:, settings:)

@@ -38,6 +38,7 @@ import telemetry/context.{type Context}
 import telemetry/field.{type Field}
 import telemetry/internal/ffi_logger
 import telemetry/level.{type Level}
+import telemetry/owner.{type Role}
 import telemetry/record.{type Record, Record}
 
 /// Where records go. A sink runs on the calling process and must not
@@ -201,7 +202,8 @@ pub fn for_step(logger: Logger, op op: String, step step: String) -> Logger {
 }
 
 /// Stamps this logger's context onto the *calling* process's `logger`
-/// metadata. Call it once at the top of a spawned body, in addition to
+/// metadata, and labels the process as `role` under the same session and
+/// strand for the ownership inspector (`telemetry/owner`). Call it once at the top of a spawned body, in addition to
 /// carrying the logger itself: it does nothing for our own lines and
 /// everything for the ones we do not author — an OTP crash report from
 /// an effect process lands with the same `{session, strand, op, step}`
@@ -210,12 +212,13 @@ pub fn for_step(logger: Logger, op op: String, step step: String) -> Logger {
 /// ## Examples
 ///
 /// ```gleam
-/// // process.spawn(fn() { log.adopt(logger) ... })
+/// // process.spawn(fn() { log.adopt(logger, owner.EffectWorker) ... })
 /// ```
 ///
-pub fn adopt(logger: Logger) -> Nil {
+pub fn adopt(logger: Logger, role: Role) -> Nil {
   let slots = logger.context
   ffi_logger.stamp(slots.session, slots.strand, slots.op, slots.step)
+  owner.label_for(slots, role)
 }
 
 /// The context stamped on the calling process, or `context.anonymous`

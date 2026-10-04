@@ -238,6 +238,7 @@ import session/session
 import storage/access
 import storage/snapshot
 import storage/storage
+import telemetry/owner
 import tools/history
 import tools/tool.{type Registry}
 import weft
@@ -995,6 +996,13 @@ fn start_with_delivery(
     })
 
   actor.new_with_initialiser(5000, fn(subject) {
+    // The initialiser runs in the gateway's own process, so this label names
+    // the gateway to the ownership inspector under its canonical session id.
+    owner.label(
+      [#("session", ids.session_id_to_string(api.session_id(options.runtime)))],
+      owner.Gateway,
+    )
+
     let selector = case options.bus {
       Some(events_bus) -> {
         // Keyed by the session's *canonical* id, never by the

@@ -16,6 +16,7 @@
     emit/2,
     stamp/4,
     stamped/0,
+    set_owner_label/2,
     format/2
 ]).
 
@@ -61,6 +62,16 @@ stamp(Session, Strand, Op, Step) ->
         {loom_step, Step}
     ]),
     _ = logger:set_process_metadata(maps:merge(Existing, Context)),
+    nil.
+
+%% proc_lib:set_label/1 — declares the calling process's owner for an
+%% external inspector. The shape is frozen by protocol-change/065:
+%% `{pickglass_owner, 1, Path, Role}`, Path a list of `{Kind, Id}`
+%% binary pairs outermost first, Role a binary. set_label replaces any
+%% label the process already had, which is why Loom uses labels for
+%% ownership and nothing else.
+set_owner_label(Path, Role) ->
+    proc_lib:set_label({pickglass_owner, 1, Path, Role}),
     nil.
 
 %% Gleam `Option(String)` is `{some, Binary} | none`; a `none` slot

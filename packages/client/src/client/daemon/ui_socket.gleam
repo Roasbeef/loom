@@ -116,6 +116,7 @@ import session_view/snapshot
 import session_view/transcript_image
 import storage/access
 import storage/catalogue
+import telemetry/owner
 import web_view/component
 import web_view/ending
 import web_view/invites
@@ -1115,6 +1116,11 @@ fn serve(
   case lustre.start_server_component(app, start) {
     Error(_) -> Error(Nil)
     Ok(runtime) -> {
+      // This process owns the component and ends with it, so it is the page's
+      // owner for the inspector; the component's own process belongs to
+      // Lustre and stays unlabelled.
+      owner.label([#("session", start.session_id)], owner.PageSocket)
+
       // The component's messages for the browser arrive on a subject this
       // socket owns, and are written from this process's own turns.
       let client = process.new_subject()
