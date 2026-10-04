@@ -58,6 +58,7 @@ import broker/exec
 import broker/framing.{type OutputStream}
 import core/clock.{type Clock}
 import core/ids.{type OpId}
+import core/remote_tool
 import gleam/erlang/process.{type Pid}
 import gleam/option.{type Option}
 
@@ -178,6 +179,9 @@ pub type CallContext {
     operation: OpId,
     /// The exact internal step name; external admission must bound it.
     step: String,
+    /// Optional durable parent provenance, never an authorization grant.
+    /// Remote admission requires it; local unmanaged callers supply `None`.
+    origin: Option(remote_tool.ChildOrigin),
   )
 }
 

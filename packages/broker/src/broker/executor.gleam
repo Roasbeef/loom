@@ -239,11 +239,19 @@ pub type Unreachable {
   Unreachable
 }
 
+// Remote admission must survive helper checkout and queued Run delays without
+// turning the same frozen budget into a fresh native wall timeout.
+type StartWindow {
+  RelayOwned
+  NativeDeadline
+}
+
 /// The service's message type. Opaque: callers reach the service through
 /// this module's functions and through the closures of an `Execution`.
 pub opaque type Msg {
   Start(
     request: dispatch.Dispatch,
+    window: StartWindow,
     reply: Subject(Result(dispatch.Execution, dispatch.StartRefusal)),
   )
   Cancel(id: dispatch.ExecutionId)
@@ -455,11 +463,28 @@ pub fn pid(executor: Executor) -> Pid {
 /// ```
 ///
 pub fn dispatcher(executor: Executor) -> Dispatcher {
+  dispatcher_window(executor, RelayOwned)
+}
+
+/// Requires the cleared native policy to fit its frozen remote admission budget.
+/// Checks follow checkout and recur at the helper actor before native dispatch.
+/// The policy is never shortened or otherwise rewritten after clearance.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // executor.dispatcher_with_native_deadline(service).start(remote_request)
+/// ```
+pub fn dispatcher_with_native_deadline(executor: Executor) -> Dispatcher {
+  dispatcher_window(executor, NativeDeadline)
+}
+
+fn dispatcher_window(executor: Executor, window: StartWindow) -> Dispatcher {
   let subject = executor.subject
   dispatch.Dispatcher(start: fn(request) {
     let asked =
       call.try_call(subject, waiting: start_budget_ms(), sending: fn(reply) {
-        Start(request:, reply:)
+        Start(request:, window:, reply:)
       })
     case asked {
       Ok(answer) -> answer
@@ -593,8 +618,8 @@ fn handle(
   message: Msg,
 ) -> state_machine.Next(Phase, State, Msg) {
   case phase, message {
-    Serving, Start(request:, reply:) -> {
-      let #(state, answer) = begin_execution(state, request)
+    Serving, Start(request:, window:, reply:) -> {
+      let #(state, answer) = begin_execution(state, request, window)
       process.send(reply, answer)
       state_machine.keep(state)
     }
@@ -710,9 +735,10 @@ fn conclude(
 fn begin_execution(
   state: State,
   request: dispatch.Dispatch,
+  window: StartWindow,
 ) -> #(State, Result(dispatch.Execution, dispatch.StartRefusal)) {
   let entered = now_ms()
-  case dispatch_execution(state, request) {
+  case dispatch_execution(state, request, window) {
     Ok(#(state, execution)) -> {
       let books =
         executor_view.record_start(state.books, launch_ms: now_ms() - entered)
@@ -736,6 +762,7 @@ fn now_ms() -> Int {
 fn dispatch_execution(
   state: State,
   request: dispatch.Dispatch,
+  window: StartWindow,
 ) -> Result(#(State, dispatch.Execution), dispatch.StartRefusal) {
   // A sequence number still in the table is a late `start` the broker gave
   // up on (see the module doc); taking it would overwrite a live row.
@@ -746,6 +773,26 @@ fn dispatch_execution(
   use helper <- result.try(
     state.config.checkout() |> result.map_error(dispatch.NoHelper(error: _)),
   )
+
+  // Checkout may have waited for another execution. Return the idle helper
+  // immediately if that wait consumed the admitted native wall allowance.
+  use Nil <- result.try(case window {
+    RelayOwned -> Ok(Nil)
+    NativeDeadline ->
+      case
+        exec.native_wall_fits(
+          request.request,
+          request.clock,
+          request.deadline_ms,
+        )
+      {
+        True -> Ok(Nil)
+        False -> {
+          state.config.checkin(helper)
+          Error(dispatch.NotStarted)
+        }
+      }
+  })
   let id =
     dispatch.execution_id(
       incarnation: state.config.incarnation,
@@ -782,14 +829,25 @@ fn dispatch_execution(
   // caller sees one settlement either way. The
   // service sends it on the relay's own subject, which the relay reads as
   // the helper's failure event.
-  case
-    exec.run(
-      helper,
-      request.request,
-      events: started.events,
-      waiting: run_wait_ms,
-    )
-  {
+  let dispatched = case window {
+    RelayOwned ->
+      exec.run(
+        helper,
+        request.request,
+        events: started.events,
+        waiting: run_wait_ms,
+      )
+    NativeDeadline ->
+      exec.run_before(
+        helper,
+        request.request,
+        request.clock,
+        request.deadline_ms,
+        events: started.events,
+        waiting: run_wait_ms,
+      )
+  }
+  case dispatched {
     Ok(Nil) -> Nil
     Error(failure) -> process.send(started.events, exec.Failed(failure:))
   }

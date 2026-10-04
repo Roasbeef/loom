@@ -7,6 +7,7 @@ import broker/policy
 import broker/token
 import core/clock
 import core/ids
+import core/remote_tool
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -121,7 +122,11 @@ pub fn clear_call_hands_the_dispatcher_a_complete_dispatch_test() {
   // first call id, and the caller is the process that owns `events`.
   let assert Started(request:, guarantor: _) = next(observed)
   assert request.context
-    == dispatch.CallContext(operation: spec.op_id, step: spec.step_id)
+    == dispatch.CallContext(
+      operation: spec.op_id,
+      step: spec.step_id,
+      origin: None,
+    )
   assert request.deadline_ms == 100_000
   assert request.seq == 1
   assert request.caller == Some(process.self())
@@ -300,7 +305,7 @@ pub fn successive_cleared_calls_keep_context_independent_of_sequence_test() {
     let assert Ok(_) = broker.clear_call(started, spec, events:, waiting: 2000)
     let assert Started(request: second, guarantor: _) = next(observed)
     assert first.context
-      == dispatch.CallContext(operation: spec.op_id, step: name)
+      == dispatch.CallContext(operation: spec.op_id, step: name, origin: None)
     assert second.context == first.context
     assert second.seq == first.seq + 1
   })
@@ -321,7 +326,97 @@ pub fn successive_cleared_calls_keep_context_independent_of_sequence_test() {
     == dispatch.CallContext(
       operation: other_spec.op_id,
       step: other_spec.step_id,
+      origin: None,
     )
   assert other.context.operation != base.op_id
+  broker.stop(started)
+}
+
+/// Same-batch tools preserve distinct custody parents without splitting budgets.
+pub fn durable_origins_survive_clearance_without_replacing_physical_context_test() {
+  let observed = process.new_subject()
+  let started = broker_over(fake(observed, refusing: None))
+  let spec = capped_spec(op(), 4)
+  let events = process.new_subject()
+  let generator = ids.generator(clock.fixed(at: 1_700_000_000_000), seed: 71)
+  let #(session, generator) = ids.mint_session(generator)
+  let #(entry_a, generator) = ids.mint_entry(generator)
+  let #(entry_b, _) = ids.mint_entry(generator)
+  let digest =
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  let assert Ok(parent_a) =
+    remote_tool.key(session, spec.op_id, spec.step_id, 0, digest, entry_a)
+    as "the first durable parent must validate"
+  let assert Ok(parent_b) =
+    remote_tool.key(session, spec.op_id, spec.step_id, 1, digest, entry_b)
+    as "the second durable parent must validate"
+  let assert Ok(origin_a) =
+    remote_tool.tool_child(parent_a, remote_tool.Compile)
+    as "compile has a bounded child role"
+  let assert Ok(origin_b) = remote_tool.tool_child(parent_b, remote_tool.Launch)
+    as "launch has a bounded child role"
+
+  // Provenance passes through clearance unchanged; physical phases retain their
+  // own coordinates. The remote adapter validates the explicit relationship.
+  let build_spec = broker.CallSpec(..spec, step_id: spec.step_id <> "-build")
+  let assert Ok(_) =
+    broker.clear_call_from(
+      started,
+      origin_a,
+      build_spec,
+      events:,
+      waiting: 2000,
+    )
+    as "the derived build must clear"
+  let assert Started(request: first, guarantor: _) = next(observed)
+    as "the dispatcher must see the build"
+  let assert Ok(_) =
+    broker.clear_call_from(started, origin_b, spec, events:, waiting: 2000)
+    as "the second tool must clear"
+  let assert Started(request: second, guarantor: _) = next(observed)
+    as "the dispatcher must see the launch"
+  assert first.context.origin == Some(origin_a)
+  assert second.context.origin == Some(origin_b)
+  assert first.context.operation == spec.op_id
+  assert first.context.step == build_spec.step_id
+  assert second.context.step == spec.step_id
+  assert first.context.origin != second.context.origin
+  broker.stop(started)
+}
+
+/// Congestion may retry physical attempts but must retain the same durable child.
+pub fn congestion_retries_keep_the_original_child_origin_test() {
+  let observed = process.new_subject()
+  let attempts = process.new_subject()
+  let normal = fake(observed, refusing: None)
+  let adapter =
+    dispatch.Dispatcher(start: fn(request) {
+      process.send(attempts, request.context)
+      case request.seq {
+        1 -> Error(dispatch.NoHelper(exec.AllBusy(size: 1)))
+        _ -> normal.start(request)
+      }
+    })
+  let started = broker_over(adapter)
+  let generator = ids.generator(clock.fixed(at: 1_700_000_000_000), seed: 79)
+  let #(session, _) = ids.mint_session(generator)
+  let assert Ok(origin) = remote_tool.system_child(session, "lsp", 19)
+    as "the retained system invocation must validate"
+  let events = process.new_subject()
+  let spec = capped_spec(op(), 1)
+  let assert Ok(_) =
+    broker.clear_call_from(started, origin, spec, events:, waiting: 2000)
+    as "the second physical attempt must clear"
+
+  // The pooled slot is released on congestion, but provenance is not reminted.
+  let assert Ok(first) = process.receive(attempts, 1000)
+    as "the refused first attempt must be observed"
+  let assert Ok(second) = process.receive(attempts, 1000)
+    as "the successful retry must be observed"
+  assert first == second
+  assert second.origin == Some(origin)
+  let assert Started(request:, guarantor: _) = next(observed)
+    as "the retry must reach the dispatcher"
+  assert request.seq == 2
   broker.stop(started)
 }

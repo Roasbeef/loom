@@ -1360,6 +1360,8 @@ fn execution_lost_text(cause: exec.LossCause) -> String {
     exec.HelperActorDown -> "the sandbox helper process manager died"
     exec.RelayDown -> "the output relay for the execution died"
     exec.ExecutorClosing -> "the session's executor was closing"
+    exec.RemoteOutcomeUncertain ->
+      "the remote exchange did not establish a definitive result; retained request evidence must be reconciled before any retry"
   }
   "the execution may have run, and its outcome is unknown: " <> reason
 }

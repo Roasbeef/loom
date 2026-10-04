@@ -325,7 +325,11 @@ pub fn the_settled_snapshot_and_the_log_carry_no_request_test() {
   let assert Ok(started) =
     executor.dispatcher(service_of(plane)).start(
       dispatch.Dispatch(
-        context: dispatch.CallContext(operation: planes.op(), step: "fixture"),
+        context: dispatch.CallContext(
+          operation: planes.op(),
+          step: "fixture",
+          origin: None,
+        ),
         request: exec.ExecRequest(
           argv: [marker],
           env: [#("SECRET", marker)],

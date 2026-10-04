@@ -641,6 +641,7 @@ pub fn outcome_detail(outcome: Outcome) -> String {
     Failed(kind:) -> kind
     Lost(cause: exec.HelperActorDown) -> "HelperActorDown"
     Lost(cause: exec.RelayDown) -> "RelayDown"
+    Lost(cause: exec.RemoteOutcomeUncertain) -> "RemoteOutcomeUncertain"
     Lost(cause: exec.ExecutorClosing) -> "ExecutorClosing"
   }
 }

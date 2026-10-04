@@ -267,7 +267,12 @@ pub fn a_helper_ahead_of_this_build_blames_the_harness_test() {
 // to retry, and it can only decide well if the text says the command may
 // already have run.
 pub fn a_lost_execution_says_it_may_have_run_test() {
-  let causes = [exec.HelperActorDown, exec.RelayDown, exec.ExecutorClosing]
+  let causes = [
+    exec.HelperActorDown,
+    exec.RelayDown,
+    exec.ExecutorClosing,
+    exec.RemoteOutcomeUncertain,
+  ]
   list.each(causes, fn(cause) {
     let text = tool.exec_failure_text(exec.ExecutionLost(cause:))
     assert string.contains(text, "may have run")
