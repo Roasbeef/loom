@@ -213,7 +213,6 @@ import client/install
 import client/internal/ffi_os
 import client/jobseam
 import client/jobtools
-import client/lsp/codemode_rename
 import client/mcp as mcp_wiring
 import client/scheduleseam
 import client/scratch
@@ -225,9 +224,11 @@ import codemode/enforcement
 import codemode/identity
 import codemode/launch
 import codemode/lsp as codemode_lsp
+import codemode/lsp_host/codemode_rename
 import codemode/notes
 import codemode/observation as codemode_observation
 import codemode/orchestration
+import codemode/physical
 import codemode/satellite
 import codemode/search as search_router
 import codemode/seed
@@ -1951,10 +1952,17 @@ pub fn launch_refusal(
   reason: String,
   deadline_ms: Int,
 ) -> codemode_tool.PolicyRefusal {
+  // An executor artifact needs executor admission, never a local policy
+  // widening inferred by interpreting its reference as a host path.
+  use requirements <- or_nothing_refused(launch.node_requirements(
+    spec,
+    host_mounts:,
+    now_ms:,
+  ))
   let #(_effective, narrowings) =
     policy.compose(
       base: spec.base_policy,
-      requirements: launch.node_requirements(spec, host_mounts:, now_ms:),
+      requirements:,
       grants: identity.grants(spec.identity),
     )
   case narrowings {
@@ -1968,6 +1976,17 @@ pub fn launch_refusal(
         ),
         deadline_ms:,
       )
+  }
+}
+
+// A locality refusal cannot be repaired with broader filesystem grants.
+fn or_nothing_refused(
+  requirements: Result(SandboxPolicy, String),
+  then: fn(SandboxPolicy) -> codemode_tool.PolicyRefusal,
+) -> codemode_tool.PolicyRefusal {
+  case requirements {
+    Ok(policy) -> then(policy)
+    Error(_reason) -> codemode_tool.NothingRefused
   }
 }
 
@@ -2459,7 +2478,7 @@ pub fn exec_config(
   let seam = vetting_seam(request.seam)
   pipeline.ExecConfig(
     vet_policy: seam_allowlist(config, seam),
-    compile: compile.CompileConfig(
+    compile: compile.local_service(compile.CompileConfig(
       build_root: root,
       dependencies: compile.default_dependencies(),
       // The whole table this host generated; `pipeline.execute` narrows
@@ -2468,7 +2487,7 @@ pub fn exec_config(
       // no build time at all.
       generated: mcp_wiring.generated(seam_mcp(config, seam)),
       build: build.builder(build_config(config, request)),
-    ),
+    )),
     broker: config.broker,
     identity: identity.for_execution(
       op_id: request.op_id,
@@ -2502,7 +2521,7 @@ pub fn exec_config(
       call_timeout_ms: config.call_timeout_ms,
     ),
     launch: launch.launcher(launch.LaunchConfig(
-      broker: config.broker,
+      runner: physical.local(config.broker),
       clock: config.clock,
       erl_path: config.erl_path,
       host_mounts: config.host_mounts,
@@ -3517,7 +3536,7 @@ pub fn build_config(
   request: codemode_tool.Request,
 ) -> build.BuildConfig {
   build.BuildConfig(
-    broker: config.broker,
+    runner: physical.local(config.broker),
     seed_root: config.seed_root,
     gleam_path: config.gleam_path,
     base_policy: execution_policy(request.base_policy),
@@ -3602,7 +3621,7 @@ pub fn translate(outcome: pipeline.ExecOutcome) -> codemode_tool.ExecResult {
     pipeline.Ran(source: _, artifact:, outcome:) ->
       codemode_tool.Ran(
         outcome: program_outcome(outcome),
-        manifest_hash: artifact.manifest_hash,
+        manifest_hash: compile.artifact_hash(artifact),
       )
   }
 }

@@ -40,7 +40,7 @@
 
 import broker/broker.{type Broker}
 import broker/policy.{type Grant} as _
-import codemode/compile.{type Artifact, type CompileConfig, type CompileError}
+import codemode/compile.{type Artifact, type CompileError, type CompileService}
 import codemode/enforcement.{
   type Enforcement, type Report, type Widening, Enforcement, Unreported,
 }
@@ -110,7 +110,7 @@ pub type ExecOutcome {
 }
 
 /// The injected dependencies `execute` needs beyond the source and its vet
-/// policy: the compile configuration, the running broker, the satellite
+/// policy: the whole compile service, the running owner broker, the satellite
 /// configuration and launcher, and the one execution identity.
 ///
 /// `identity` is the only place in the whole pipeline an operation, a
@@ -130,11 +130,18 @@ pub type ExecOutcome {
 /// attributed to this execution widens nothing (design §5.3).
 pub type ExecConfig {
   ExecConfig(
+    /// The owner-selected import and foreign-interface policy.
     vet_policy: VetPolicy,
-    compile: CompileConfig,
+    /// Whole physical preparation/build service; invoked only after vetting
+    /// and generated-import selection, with the derived build phase.
+    compile: CompileService,
+    /// Owner authority for the satellite capability router and pooled budget.
     broker: Broker,
+    /// The one execution identity from which build and run phases derive.
     identity: ExecIdentity,
+    /// Owner token checks, router and capability admission dependencies.
     satellite: SatelliteConfig,
+    /// Physical satellite launcher, returning local channel/teardown handles.
     launch: Launcher,
   )
 }
@@ -142,6 +149,13 @@ pub type ExecConfig {
 /// Runs one model-written program through vet → compile → run, returning
 /// one structured `Execution`. Total: every failure is a value, and every
 /// outcome carries both stages' enforcement reports and the widening.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let execution = codemode.execute(source, configuration)
+/// // execution.enforcement carries both physical stages' reports.
+/// ```
 pub fn execute(source: String, config: ExecConfig) -> Execution {
   case vet.vet(source, config.vet_policy) {
     vet.Rejected(rejections) -> vet_rejected(rejections, config)
@@ -210,14 +224,12 @@ fn compile_and_run(
 // than supplied alongside it: that derivation is the only thing standing
 // between the build and a ledger of its own invention.
 fn compile_once(vetted: Vetted, config: ExecConfig) -> compile.Compiled {
-  compile.compile(
-    vetted,
-    compile.CompileConfig(
-      ..config.compile,
-      generated: imported(config.compile.generated, vetted),
-    ),
-    identity.build_phase(config.identity),
-  )
+  config.compile.compile(compile.CompileRequest(
+    vetted:,
+    dependencies: config.compile.dependencies,
+    generated: imported(config.compile.generated, vetted),
+    identity: identity.build_phase(config.identity),
+  ))
 }
 
 // The program without the imports a failed build named as unused, vetted

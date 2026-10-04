@@ -1,3 +1,8 @@
+//// The physical LSP host runs beside its workspace, on either a local host
+//// or an executor. Administrative executable, environment and cache facts
+//// are injected; clearance remains a callback to the existing authority.
+//// This module imports neither client wiring nor owner administration.
+////
 //// A language server run inside the jail, and the wire the harness speaks
 //// to it over (ADR-015 §1).
 ////
@@ -33,7 +38,7 @@
 ////
 //// **The transport** (`transport`) is a `lsp/transport.ChannelTransport`
 //// whose `connect` starts a relay process. The relay acquires a helper
-//// lease (`client/lsp/leases`), clears the call, and turns broker events
+//// lease (`codemode/lsp_host/leases`), clears the call, and turns broker events
 //// into transport events: stdout chunks become `TransportData`, the
 //// settlement becomes `TransportClosed` carrying the exit and the tail of
 //// the server's stderr. A truncated stdout chunk is fatal, because the
@@ -131,7 +136,7 @@
 //// - **A relative command** (`executable_path`). It would resolve against
 ////   whatever directory the daemon happened to start in.
 //// - **A server that runs without confinement.** The enforcement probe in
-////   `client/lsp/manager` clears a trivial command under this exact policy
+////   `codemode/lsp_host/manager` clears a trivial command under this exact policy
 ////   and demand before the server is cleared, and `call_spec` takes the
 ////   demand as a parameter so the server cannot clear under a weaker one.
 //// - **A lease that dies hours in.** The three per-command limits are
@@ -145,10 +150,8 @@ import broker/budget
 import broker/exec
 import broker/framing
 import broker/policy.{type Mount, type Narrowing, type SandboxPolicy}
-import client/codemode.{type Toolchain}
-import client/internal/ffi_os
-import client/lsp/leases
-import client/lsp/profile.{type LspServer, type Places}
+import codemode/lsp_host/leases
+import codemode/lsp_host/profile.{type LspServer, type Places}
 import core/clock.{type Clock}
 import core/ids.{type OpId}
 import filepath
@@ -160,9 +163,9 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import host/bootstrap
 import lsp/transport
 import simplifile
+import tools/blob
 import tools/fs
 import tools/tool.{type RunningCall}
 import weft/state_machine as sm
@@ -268,9 +271,8 @@ pub fn step_id(server: String, root: String) -> String {
 }
 
 fn root_digest(root: String) -> String {
-  bootstrap.sha256(bit_array.from_string(root))
-  |> bit_array.base16_encode
-  |> string.lowercase
+  blob.ref_for(bit_array.from_string(root))
+  |> string.drop_start(7)
   |> string.slice(at_index: 0, length: 16)
 }
 
@@ -298,7 +300,7 @@ pub fn scratch_directory(
 ) -> String {
   workspace
   <> "/"
-  <> codemode.work_directory
+  <> ".codemode"
   <> "/lsp/"
   <> server
   <> "-"
@@ -341,17 +343,31 @@ pub type Executable {
   )
 }
 
+/// Executor-local executable facts approved by host administration.
+///
+/// Lookup runs only on the physical host. A retained configuration carries
+/// neither an owner toolchain nor a concrete owner broker. The bundled Gleam
+/// path takes precedence over bare-name lookup; absolute commands still pass
+/// the existing link and executable-region checks.
+pub type Executables {
+  Executables(
+    /// The physical host's discovered Gleam compiler, when available.
+    gleam_path: Option(String),
+    /// Resolves a bare command from the physical host's administrative PATH.
+    find: fn(String) -> Result(String, Nil),
+  )
+}
+
 /// Resolves a server's `command` head to the executable the jail runs, and
 /// follows it if it is a symbolic link.
 ///
 /// Three shapes, in order. An absolute path is taken as written and must be
-/// a file. The bare name `gleam`, when code mode located a toolchain, is
-/// that toolchain's `gleam`: the copy this server shipped beside, or the one
-/// `client/codemode.discover` settled on, so the compiler that analyses the
-/// project is the one that builds its programs. Any other bare name is
-/// looked up on the daemon's `PATH`, the lookup `client/codemode.locate`
-/// falls back to. A relative path with a slash in it is refused, because it
-/// would resolve against whatever directory the daemon was started in.
+/// a file. The bare name `gleam` uses `executables.gleam_path` when host
+/// administration discovered a compiler, so analysis and physical builds
+/// use the same compiler. Every other bare name passes through the injected
+/// `executables.find`. No owner PATH or owner toolchain is consulted here.
+/// A relative path with a slash is refused because it would depend on the
+/// working directory of the host process.
 ///
 /// A link is followed here, once, so that `regions` stays a pure function
 /// of the answer. The chain is refused, by name, when it loops, when it
@@ -362,9 +378,9 @@ pub type Executable {
 /// ## Examples
 ///
 /// ```gleam
-/// // jail.locate(server, None)
+/// // jail.locate(server, executables)
 /// //   == Ok(Executable("/usr/local/bin/gleam", PlainExecutable))
-/// // jail.locate(rust_analyzer, None)
+/// // jail.locate(rust_analyzer, executables)
 /// //   == Ok(Executable(
 /// //     "/home/o/.cargo/bin/rust-analyzer",
 /// //     LinkedExecutable(["/home/o/.cargo/bin/rustup"]),
@@ -373,13 +389,13 @@ pub type Executable {
 ///
 pub fn locate(
   server: LspServer,
-  toolchain: Option(Toolchain),
+  executables: Executables,
 ) -> Result(Executable, String) {
   use head <- result.try(case server.command {
     [head, ..] -> Ok(head)
     [] -> Error("lsp." <> server.name <> " has an empty command")
   })
-  use path <- result.try(executable_path(server.name, head, toolchain))
+  use path <- result.try(executable_path(server.name, head, executables))
   use file <- result.try(measured(server.name, path))
   Ok(Executable(path:, file:))
 }
@@ -400,9 +416,13 @@ pub fn locate(
 fn executable_path(
   name: String,
   head: String,
-  toolchain: Option(Toolchain),
+  executables: Executables,
 ) -> Result(String, String) {
-  case string.starts_with(head, "/"), string.contains(head, "/"), toolchain {
+  case
+    string.starts_with(head, "/"),
+    string.contains(head, "/"),
+    executables.gleam_path
+  {
     True, _, _ -> Ok(head)
     False, True, _ ->
       Error(
@@ -413,9 +433,9 @@ fn executable_path(
         <> " is a relative path; write an absolute path or a bare name "
         <> "looked up on PATH",
       )
-    False, False, Some(found) if head == "gleam" -> Ok(found.gleam_path)
+    False, False, Some(found) if head == "gleam" -> Ok(found)
     False, False, _ ->
-      ffi_os.find_executable(head)
+      executables.find(head)
       |> result.map_error(fn(_nil) {
         "lsp." <> name <> "'s command " <> head <> " is not on PATH"
       })
@@ -1405,8 +1425,9 @@ pub fn default_timing() -> Timing {
 /// abort its step, the lease counter, the clearance itself, the scratch
 /// directory to prepare, and the waits.
 ///
-/// `run` and `abort` are closures so a test drives the relay with a fake
-/// broker; `launch` builds the production pair.
+/// `run` and `abort` are injected physical clearance and cancellation
+/// callbacks. `launch` binds them to one prepared lease and attribution
+/// operation, without retaining a concrete owner broker.
 pub type Launch {
   Launch(
     /// Clears and dispatches the call: `tools/tool.broker_runner`.
@@ -1428,19 +1449,23 @@ pub type Launch {
 /// How long a clearance may wait out a full helper pool before refusing.
 pub const clearance_wait_ms = 30_000
 
-/// The production launch for one jail: the broker's runner and step abort,
-/// under `op_id` and `demand`, with the budget deadline read from `clock`
-/// now.
+/// Binds physical clearance and teardown callbacks to one server lease.
+///
+/// The runner returns stdin and cancellation handles for the exact cleared
+/// command. The abort callback revokes only this lease's operation and step;
+/// settlement remains the evidence required to return its helper lease.
+/// The budget deadline is read from the injected clock at construction.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // jail.transport(jail.launch(broker, counter, built, lsp_op, clock,
-/// //   demand: settings.demand))
+/// // jail.transport(jail.launch(run, abort_step, counter, built, lsp_op,
+/// //   clock, demand: settings.demand))
 /// ```
 ///
 pub fn launch(
-  broker_actor: broker.Broker,
+  run: fn(CallSpec, Subject(CallEvent)) -> Result(RunningCall, broker.Refusal),
+  abort_step: fn(OpId, String) -> Nil,
   counter: leases.Leases,
   jail: Jail,
   op_id: OpId,
@@ -1449,11 +1474,10 @@ pub fn launch(
 ) -> Launch {
   let #(now, _clock) = clock.read(clock)
   let spec = call_spec(jail, op_id, now_ms: now, demand:)
+  let step = jail.step_id
   Launch(
-    run: tool.broker_runner(broker: broker_actor, waiting: clearance_wait_ms),
-    abort: fn() {
-      broker.abort_step(broker_actor, op_id, step_id: jail.step_id)
-    },
+    run:,
+    abort: fn() { abort_step(op_id, step) },
     leases: counter,
     spec:,
     scratch: jail.scratch,

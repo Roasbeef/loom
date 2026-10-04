@@ -7,17 +7,18 @@
 //// and every read passes the same real-path and protection gate as LSP
 //// answer reads, using the authorized workspace as its outer boundary.
 
-import client/lsp/resolve
+import codemode/lsp_host/resolve
 import core/json
 import filepath
+import gleam/bit_array
 import gleam/bool
 import gleam/dict
 import gleam/list
 import gleam/result
 import gleam/string
-import host/claim
 import simplifile
 import tom
+import tools/blob
 
 /// Fingerprints dependency inputs and the selected package's installation.
 ///
@@ -47,7 +48,7 @@ pub fn fingerprint(
       protected,
       authorized,
       root <> "/manifest.toml",
-      fn(text) { Ok(claim.digest(text)) },
+      fn(text) { Ok(digest(text)) },
     ),
   )
   use inventory <- result.try(generated(
@@ -57,7 +58,7 @@ pub fn fingerprint(
     root <> "/build/packages/packages.toml",
     inventory_digest,
   ))
-  Ok(claim.digest(string.join([manifest, inventory, ..configs], "\n")))
+  Ok(digest(string.join([manifest, inventory, ..configs], "\n")))
 }
 
 // Cycles in path dependencies do not turn a query into an unbounded walk.
@@ -102,7 +103,7 @@ fn walk(
         authorized,
         list.append(rest, children),
         [real, ..seen],
-        [real <> ":" <> claim.digest(config), ..digests],
+        [real <> ":" <> digest(config), ..digests],
       )
     }
   }
@@ -164,7 +165,7 @@ fn inventory_digest(text: String) -> Result(String, String) {
     |> result.replace_error("package inventory is not valid TOML"),
   )
   use value <- result.try(inventory_value(tom.Table(fields), 0))
-  Ok(value |> json.canonical |> json.to_string |> claim.digest)
+  Ok(value |> json.canonical |> json.to_string |> digest)
 }
 
 // Current inventories reach root -> git -> package -> commit. Refuse an
@@ -266,4 +267,10 @@ fn admit(
     False ->
       Error(path <> " is outside the session's authorized dependency roots")
   }
+}
+
+// Keep the existing SHA-256 text fingerprints without importing owner claim
+// administration. The shared blob address uses the same digest bytes.
+fn digest(value: String) -> String {
+  blob.ref_for(bit_array.from_string(value)) |> string.drop_start(7)
 }

@@ -56,12 +56,12 @@ fn exec_config(
     )
   codemode.ExecConfig(
     vet_policy: vet_policy.default(),
-    compile: compile.CompileConfig(
+    compile: compile.local_service(compile.CompileConfig(
       build_root: dir <> "/build",
       dependencies: compile.default_dependencies(),
       generated: [],
       build:,
-    ),
+    )),
     broker:,
     identity: identity.for_execution(
       op_id: op_id(),
@@ -167,7 +167,7 @@ pub fn full_pipeline_returns_ran_with_persistable_seam_test() {
   // durable entry — the seam `execute` exposes rather than reaching into
   // storage itself.
   assert returned == source
-  assert artifact.manifest_hash == "beef"
+  assert compile.artifact_hash(artifact) == "beef"
   assert outcome
     == satellite.Completed(value: msgpack.StringValue("orchestrated"))
   // The point of issue #5: a *healthy* run carries both stages' reports.

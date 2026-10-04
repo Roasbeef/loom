@@ -15,6 +15,7 @@ import codemode/compile
 import codemode/enforcement
 import codemode/identity
 import codemode/launch
+import codemode/physical
 import codemode/satellite
 import core/clock
 import core/ids
@@ -85,7 +86,7 @@ fn spec(dir: String, wire: Subject(satellite.WireIn)) -> satellite.LaunchSpec {
 
 fn config(broker_actor: broker.Broker) -> launch.LaunchConfig {
   launch.LaunchConfig(
-    broker: broker_actor,
+    runner: physical.local(broker_actor),
     clock: clock.fixed(at: t),
     erl_path: "/usr/bin/erl",
     host_mounts: [],
@@ -138,7 +139,7 @@ pub fn the_cap_handles_match_the_boot_runtimes_names_test() {
 // --- argv and environment -------------------------------------------------
 
 pub fn node_argv_disables_distribution_test() {
-  let argv = launch.node_argv("/usr/bin/erl", artifact("/w"))
+  let assert Ok(argv) = launch.node_argv("/usr/bin/erl", artifact("/w"))
   // Distribution off, no epmd, and no -name/-sname anywhere: the framed
   // cap socket is the node's only link to anything.
   assert list.contains(argv, "-proto_dist")
@@ -190,7 +191,8 @@ pub fn node_requirements_turn_the_network_off_test() {
         network: policy.NetworkFull,
       ),
     )
-  let requirements = launch.node_requirements(open, host_mounts: [], now_ms: t)
+  let assert Ok(requirements) =
+    launch.node_requirements(open, host_mounts: [], now_ms: t)
   assert requirements.network == policy.NetworkOff
   // Composition takes the meet, so a network-off requirement against a
   // network-full base really is off.
@@ -206,7 +208,7 @@ pub fn node_requirements_bound_the_wall_by_the_deadline_test() {
   // 30 seconds left of the pooled deadline, against a base that would
   // allow 600: the node's own wall limit is the tighter one, so the jail
   // kills it even if the host's timer never fires.
-  let requirements =
+  let assert Ok(requirements) =
     launch.node_requirements(spec(dir, wire), host_mounts: [], now_ms: t)
   assert requirements.limits.wall_s == 30
 }
@@ -214,7 +216,7 @@ pub fn node_requirements_bound_the_wall_by_the_deadline_test() {
 pub fn node_requirements_name_the_socket_and_token_directories_test() {
   let dir = "/work/x"
   let wire = process.new_subject()
-  let requirements =
+  let assert Ok(requirements) =
     launch.node_requirements(spec(dir, wire), host_mounts: [], now_ms: t)
   assert list.contains(requirements.readable_roots, dir <> "/sock")
   assert list.contains(requirements.readable_roots, dir <> "/token")
@@ -241,7 +243,7 @@ pub fn node_requirements_state_the_host_mounts_verbatim_test() {
       requirement: policy.MountRequired,
     ),
   ]
-  let requirements =
+  let assert Ok(requirements) =
     launch.node_requirements(spec(dir, wire), host_mounts: wanted, now_ms: t)
   assert requirements.mounts == wanted
 }
@@ -253,7 +255,7 @@ pub fn node_requirements_ask_for_no_mount_of_their_own_test() {
   // workspace one the base derives.
   let dir = "/work/x"
   let wire = process.new_subject()
-  let requirements =
+  let assert Ok(requirements) =
     launch.node_requirements(spec(dir, wire), host_mounts: [], now_ms: t)
   assert requirements.mounts == []
 }
@@ -270,7 +272,7 @@ pub fn a_base_carrying_the_host_mounts_composes_to_them_test() {
   ]
   let open = spec(dir, wire)
   let base = policy.SandboxPolicy(..open.base_policy, mounts: wanted)
-  let requirements =
+  let assert Ok(requirements) =
     launch.node_requirements(
       satellite.LaunchSpec(..open, base_policy: base),
       host_mounts: wanted,
@@ -292,7 +294,7 @@ pub fn a_base_without_the_host_mounts_narrows_by_name_test() {
       access: policy.MountReadOnly,
       requirement: policy.MountRequired,
     )
-  let requirements =
+  let assert Ok(requirements) =
     launch.node_requirements(open, host_mounts: [wanted], now_ms: t)
   let #(_effective, narrowings) =
     policy.compose(base: open.base_policy, requirements:, grants: [])
@@ -641,4 +643,88 @@ pub fn a_second_destroy_is_answered_from_the_held_report_test() {
   assert second == first
   let assert enforcement.Reported(..) = second
   broker.stop(broker_actor)
+}
+
+pub fn teardown_cancels_a_late_clearance_through_the_injected_runner_test() {
+  let dir = fresh_dir("injected-late-clearance")
+  let wire = process.new_subject()
+  let pending = process.new_subject()
+  let aborted = process.new_subject()
+  let cancelled = process.new_subject()
+  let reports = process.new_subject()
+  let launched = spec(dir, wire)
+  let runner =
+    physical.Runner(
+      clear: fn(call, events) {
+        let release = process.new_subject()
+        process.send(pending, #(call, release))
+        let assert Ok(Nil) = process.receive(release, 3000)
+          as "the fixture must release its pending clearance"
+        Ok(
+          physical.RunningCall(cancel: fn() {
+            process.send(cancelled, Nil)
+            process.send(
+              events,
+              broker.CallSettled(
+                broker.CallExited(exec.ExecResult(
+                  code: 143,
+                  signal: 0,
+                  stdout_bytes: 0,
+                  stderr_bytes: 0,
+                  stdout_truncated: False,
+                  stderr_truncated: False,
+                  enforcement: ["bwrap", "skip:landlock: fixture unavailable"],
+                  degraded: False,
+                  wall_ms: 1,
+                  timed_out: False,
+                  cancelled: True,
+                )),
+              ),
+            )
+          }),
+        )
+      },
+      abort_step: fn(operation, step) {
+        process.send(aborted, #(operation, step))
+      },
+    )
+  let configured =
+    launch.LaunchConfig(
+      runner:,
+      clock: clock.fixed(t),
+      erl_path: "/usr/bin/erl",
+      host_mounts: [],
+      demand: exec.BestEffort,
+      accept_timeout_ms: 3000,
+    )
+  let assert Ok(connection) = launch.launcher(configured)(launched)
+    as "the production launcher must accept an injected physical runner"
+  let assert Ok(#(call, release)) = process.receive(pending, 3000)
+    as "the physical runner must receive the node's exact prepared clearance"
+  assert call.op_id == identity.op_id(launched.identity)
+  assert call.step_id == identity.step_id(launched.identity)
+  assert call.budget == identity.pooled_budget(launched.identity)
+  assert call.grants == identity.grants(launched.identity)
+  assert call.demand == configured.demand
+  assert call.env == launch.node_env(launched)
+  let assert Ok(argv) = launch.node_argv(configured.erl_path, launched.artifact)
+    as "the local artifact must have local argv"
+  assert call.argv == argv
+
+  // Teardown sweeps the step before the pending clearance has a handle.
+  // The holder must cancel that handle as soon as it eventually arrives.
+  process.spawn_unlinked(fn() { process.send(reports, connection.destroy()) })
+  let assert Ok(aborted_identity) = process.receive(aborted, 3000)
+    as "teardown must first revoke the execution step"
+  assert aborted_identity == identity.ledger_key(launched.identity)
+  process.send(release, Nil)
+  let assert Ok(Nil) = process.receive(cancelled, 3000)
+    as "late clearance must be cancelled through its physical callback"
+  let assert Ok(report) = process.receive(reports, 3000)
+    as "teardown must wait for the actual settlement report"
+  let assert enforcement.Reported(entries:, degraded:) = report
+    as "the original physical enforcement report must survive cancellation"
+  assert entries == ["bwrap", "skip:landlock: fixture unavailable"]
+  assert degraded
+  assert !rig.exists(launched.cap_socket_path)
 }

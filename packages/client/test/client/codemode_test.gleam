@@ -591,14 +591,11 @@ pub fn the_build_lives_in_that_directory_and_the_socket_beside_it_test() {
   let broker_actor = idle_broker()
   let config = config_for(broker_actor)
   let request = request_for("turn-4:tools")
-  let built =
-    codemode.exec_config(
-      config,
-      request,
-      "/work/.codemode/one",
-      9000,
-      widened_by: [],
-    )
+  let assert Ok(here) = simplifile.current_directory()
+    as "the fixture must have a working directory"
+  let root = here <> "/build/codemode-selected-build-root"
+  let _ = simplifile.delete(root)
+  let built = codemode.exec_config(config, request, root, 9000, widened_by: [])
   assert built.satellite.cap_socket_path
     == codemode.socket_path(codemode.socket_directory(
       config,
@@ -607,7 +604,26 @@ pub fn the_build_lives_in_that_directory_and_the_socket_beside_it_test() {
       source_index: request.source_index,
     ))
   assert string.starts_with(built.satellite.cap_socket_path, config.work_root)
-  assert built.compile.build_root == "/work/.codemode/one"
+  assert built.compile.dependencies == compile.default_dependencies()
+
+  // The whole service hides its local root. Check the selected directory
+  // by exercising preparation, rather than replacing the original root
+  // assertion with an inspection of unrelated service metadata.
+  let source =
+    "import cap/report\npub fn main() { report.text(\"selected\") }\n"
+  let assert vet.Passed(vetted) = vet.vet(source, built.vet_policy)
+    as "the root fixture must pass owner vetting"
+  let _compiled =
+    built.compile.compile(compile.CompileRequest(
+      vetted:,
+      dependencies: built.compile.dependencies,
+      generated: [],
+      identity: identity.build_phase(built.identity),
+    ))
+  assert simplifile.read(root <> "/src/" <> compile.program_module <> ".gleam")
+    == Ok(source)
+  assert simplifile.read(root <> "/gleam.toml")
+    == Ok(compile.project_toml(compile.default_dependencies()))
   broker.stop(broker_actor)
 }
 

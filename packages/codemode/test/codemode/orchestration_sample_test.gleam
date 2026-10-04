@@ -64,6 +64,7 @@ import codemode/enforcement
 import codemode/identity
 import codemode/launch
 import codemode/orchestration
+import codemode/physical
 import codemode/satellite
 import codemode/vet/policy as vet_policy
 import core/clock
@@ -137,8 +138,8 @@ fn run_sample(prerequisites: Prerequisites) -> Nil {
     execution.outcome
     as "the orchestration sample must vet, compile, and run to an outcome"
   assert returned == source
-  assert artifact.entry_module == compile.entry_module
-  assert string.starts_with(artifact.manifest_hash, "sha256-")
+  assert compile.artifact_entry(artifact) == compile.entry_module
+  assert string.starts_with(compile.artifact_hash(artifact), "sha256-")
 
   let assert satellite.Completed(value) = outcome
     as "the sample must complete with a structured outcome"
@@ -371,13 +372,13 @@ fn exec_config(
     // optional: the sample imports `cap/strand`, which no other policy
     // admits.
     vet_policy: vet_policy.orchestration(),
-    compile: compile.CompileConfig(
+    compile: compile.local_service(compile.CompileConfig(
       build_root: live.build_root,
       dependencies: compile.default_dependencies(),
       generated: [],
       build: build.builder(build.BuildConfig(
         observe: tool.ignore_output(),
-        broker: live.broker,
+        runner: physical.local(live.broker),
         seed_root: prerequisites.seed_root,
         gleam_path: prerequisites.gleam_path,
         base_policy: live.base_policy,
@@ -387,7 +388,7 @@ fn exec_config(
         dependencies: compile.default_dependencies(),
         timeout_ms: 120_000,
       )),
-    ),
+    )),
     broker: live.broker,
     identity: identity.for_execution(
       op_id: op_id(now),
@@ -423,7 +424,7 @@ fn exec_config(
       call_timeout_ms: 60_000,
     ),
     launch: launch.launcher(launch.LaunchConfig(
-      broker: live.broker,
+      runner: physical.local(live.broker),
       clock: rig.wall_clock(),
       erl_path: prerequisites.erl_path,
       host_mounts: rig.toolchain_mounts(prerequisites),

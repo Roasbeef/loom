@@ -18,6 +18,7 @@ import codemode/codemode
 import codemode/compile
 import codemode/enforcement
 import codemode/identity
+import codemode/physical
 import codemode/satellite
 import codemode/seed
 import codemode/vet/policy as vet_policy
@@ -99,12 +100,12 @@ fn exec_config(dir: String, build: compile.Builder) -> codemode.ExecConfig {
     as "the broker must start"
   codemode.ExecConfig(
     vet_policy: allowing_both(),
-    compile: compile.CompileConfig(
+    compile: compile.local_service(compile.CompileConfig(
       build_root: dir <> "/build",
       dependencies: compile.default_dependencies(),
       generated: table(),
       build:,
-    ),
+    )),
     broker: started,
     identity: identity.for_execution(
       op_id: op_id(),
@@ -240,7 +241,7 @@ fn prepare_seed(seed_root: String) -> Nil {
 fn build_config(seed_root: String) -> build.BuildConfig {
   build.BuildConfig(
     observe: tool.ignore_output(),
-    broker: idle_broker(),
+    runner: physical.local(idle_broker()),
     seed_root:,
     gleam_path: "/usr/local/bin/gleam",
     base_policy: policy.workspace_default("/work"),
