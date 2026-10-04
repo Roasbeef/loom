@@ -15,6 +15,7 @@ import executor/remote/workspace_service as service
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/int
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleam/time/timestamp
@@ -445,7 +446,14 @@ pub fn failed_completion_persistence_after_write_keeps_unknown_on_recovery_test(
     )
     process.send(held.release, Nil)
     gone(held.worker)
-    assert service.query(remote, input) == Error(service.Custody(j.Closed))
+
+    // The worker observes the failed commit reply before the journal finishes
+    // shutting down. A query racing that shutdown can lose its reply instead
+    // of observing an already-closed actor; neither result permits replay.
+    assert list.contains(
+      [Error(service.Custody(j.Closed)), Error(service.Custody(j.Uncertain))],
+      service.query(remote, input),
+    )
     assert service.close(remote) == Error(service.Uncertain)
     let final = recover(root)
     assert j.inspect(final, input) == Ok(j.Unknown)
