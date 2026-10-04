@@ -310,6 +310,13 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   is `deliver(answer)`, which the component dispatches as `Linked`. `resumed_for`
   is the socket's gate: an observer role is refused `NotHeld` before any task.
   `listed_entry` maps `Reserved` and `RecoveryBlocked` to `sessions.Blocked`.
+  The home's activity words (protocol-change/065, the home-list addendum) come
+  from `HomeAttachment.activity`, which `server.home_activity` builds: for the
+  owner the control command's `sessions.activity` read reduced to one state word
+  per session that answered (`activity_states`), for a member a read that
+  answers nothing. `activity_task(ask, ids, deliver)` runs it in a weft run
+  linked to the Lustre runtime and returns at once, as `resume_task` does;
+  `Start.now` is `bootstrap.system_time_ms`.
   `ui.link` and a switch build the exchange path with `page.exchange_path`.
   An owner's operator page can also invite (protocol-change/051, the addendum
   on inviting from the session page). `ui_socket.Role` has a third value,

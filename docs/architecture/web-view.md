@@ -240,12 +240,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:242`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:254`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:1753`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:1789`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -755,7 +755,8 @@ for both kinds of ticket.
 The socket (`ui_socket.upgrade_home`) shares `websocket` with the session
 page and starts `web_view/home` with no relay. The component draws the A2
 frame with the sidebar (`sidebar.home`, a "Home" entry above the rows), a
-table per workspace (`view/home_table`), and no strand panel (the frame class
+list per workspace (`view/home_table`: name, a quiet line with the residency,
+the activity word and the age), and no strand panel (the frame class
 `loom-home` hides the panel column in the stylesheet). It reads the sessions
 with the page's credential digest when it opens and every 30 s
 (`ui_socket.home_listing`); that read is also the page's check: a UI session
@@ -765,6 +766,14 @@ the socket closes. The read runs in the component's process, as the
 sidebar's does. The only handlers are a running session's rows, and the socket
 admits a click beneath them and no other frame (`ui_socket.home_accepts`, next
 section).
+
+What each running session is doing is a second read, started by every list that
+answers: `Start.activity` hands the ids (at most 24) to
+`ui_socket.activity_task`, a weft run linked to the runtime that calls
+`server.home_activity`, which is the control command's `sessions.activity`
+(protocol-change/050) reduced to one state word per session. The runtime never
+waits for it, the answer comes back as `Observed`, and a member's page is
+handed a read that answers nothing, since 050 is the owner's alone.
 
 ### Navigation: home to session and back
 
@@ -886,7 +895,9 @@ Three places draw it:
   it, and no region after the heading changes its path.
 - **A reload of an ended page**, and a ticket that was used or expired, get a
   small document for the ending (`page.refusal`) under the status they always
-  had, in place of the bare status text.
+  had, in place of the bare status text: the brand, the headline, the advice's
+  lead (`ending.Advice`) and the command that mints a fresh link in a
+  `<loom-copy subject="link">` box, so the document loads the client bundle.
 - **A page that never connects** shows a fixed paragraph the shell puts inside
   the `<lustre-server-component>` element. It is the element's light-DOM
   content, which Lustre's runtime hides when it attaches the shadow root on
@@ -1060,7 +1071,7 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/page.gleam` | The shell, the exchange page, the two scripts, the stylesheet, the keyed paths and the content security policy. |
 | `packages/client/src/client/daemon/server.gleam` | `/ui` routing and its check order, `ui.link`, and the `hello` `ui` field. |
 | `packages/client/src/client/daemon/ui_http.gleam` | Pure request checks and response headers: route, host, `Sec-Fetch-Site`, origin, cookies. |
-| `packages/web_view/src/web_view/home.gleam`, `view/home_bar.gleam`, `view/home_table.gleam` | The home page's component, top bar and per-workspace tables, whose running rows open a session and, on an operator-ceiling page, whose saved rows resume one (protocol-change/065). |
+| `packages/web_view/src/web_view/home.gleam`, `view/home_bar.gleam`, `view/home_table.gleam` | The home page's component, top bar and per-workspace lists, whose running rows open a session and, on an operator-ceiling page, whose saved rows resume one (protocol-change/065). |
 | `packages/web_view/src/web_view/view/resume.gleam` | The one rule for a saved row on the sidebar and the home's table: text, a resume button, or "opening" while a resume is out. |
 | `packages/client/src/client/daemon/ui_sessions.gleam` | The ticket and UI-session actor: mint, single-use redeem, lookup, key and nonce comparison, sweep, and the page-minted invitations' allowance (three an hour per credential). |
 | `packages/client/src/client/daemon/ui_socket.gleam` | The page's WebSocket: permit custody, the component chosen by role (observer, member operator, owner), frame filtering by role, the session and home tickets (`Standing`, `ticket_for`, `home_ticket_for`) and the invitation the daemon makes for a page, the home's socket and its row clicks, shutdown. |

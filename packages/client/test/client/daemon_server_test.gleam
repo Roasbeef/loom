@@ -33,6 +33,7 @@ import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws.{type Socket}
 import tui/connection
 import tui/daemon/protocol as terminal_protocol
+import web_view/sessions
 import weft
 import weft/poll
 
@@ -1539,5 +1540,86 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
     assert field(field(denied, "body"), "code") == json.String("forbidden")
     let _ = ffi_ws.tcp_close(socket)
     assert catalogue.close(store) == Ok(Nil)
+  })
+}
+
+// A home page's activity read is the control command's read reduced to a state
+// word for each session that answered: a resident that answers is idle, then
+// needs you once an approval is pending, a resident that never answers and an
+// identity with no resident are left out, and nothing but the state leaves the
+// daemon. A member's page is handed a read that asks nothing, since the command
+// is the owner's alone.
+pub fn a_homes_activity_read_is_a_state_word_for_each_answer_test() {
+  let #(idle, _) = ids.mint_session(ids.generator(clock.fixed(0), 811))
+  let #(stuck, _) = ids.mint_session(ids.generator(clock.fixed(0), 812))
+  let #(absent, _) = ids.mint_session(ids.generator(clock.fixed(0), 813))
+  let idle_id = ids.session_id_to_string(idle)
+  let stuck_id = ids.session_id_to_string(stuck)
+  let absent_id = ids.session_id_to_string(absent)
+  let runtime = gateway_test.reserved_fixture(idle).runtime
+  let endpoint = fn(instance) {
+    case instance == idle_id {
+      True ->
+        Some(
+          peer_mail.Endpoint(instance, fn(command) {
+            peer_mail.handle(runtime, clock.fixed(0), command)
+          }),
+        )
+      False ->
+        Some(
+          peer_mail.Endpoint(instance, fn(_) {
+            process.sleep_forever()
+            Error("never answers")
+          }),
+        )
+    }
+  }
+  fixture_with_peers(limits.defaults, endpoint, fn(daemon, ready, _, _) {
+    list.each([#(idle_id, 811), #(stuck_id, 812)], fn(pair) {
+      let assert Ok(_) =
+        manager.create(
+          ready.registry,
+          manager.Creation(pair.0, ready.state_root, pair.0, ""),
+          directory: ready.sessions_directory,
+          generator: ids.generator(clock.fixed(0), pair.1),
+        )
+        as "the session is created"
+      let assert poll.Answered(_) =
+        poll.until(within: 2000, every: 1, attempt: fn() {
+          case manager.resolve(ready.registry, pair.0) {
+            Ok(instance) -> poll.Done(instance)
+            Error(_) -> poll.Retry
+          }
+        })
+        as "the session becomes resident"
+    })
+    let config =
+      server.Config(
+        peer_endpoint: endpoint,
+        daemon:,
+        domain_configuration: "",
+        generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
+        session_upgrade: fn(_, _) {
+          response.new(501)
+          |> response.set_body(mist.Bytes(bytes_tree.from_string("absent")))
+        },
+        ui: None,
+      )
+    let owner = access.Principal("owner", "Owner", access.OwnerPrincipal)
+    let member = access.Principal("alice", "Alice", access.MemberPrincipal)
+    let asked = [idle_id, stuck_id, absent_id]
+
+    // Only the idle resident answers; the rest leave no entry.
+    let read = server.home_activity(config, ready.registry, owner)
+    assert read(asked) == [#(idle_id, sessions.Idle)]
+
+    // A pending approval moves it to needs you.
+    let assert Ok(Nil) = api.raise_escalation(runtime, "esc-1", json.Object([]))
+      as "an approval is pending"
+    assert read([idle_id]) == [#(idle_id, sessions.NeedsYou)]
+
+    // A member's page asks nothing and learns nothing.
+    let none = server.home_activity(config, ready.registry, member)
+    assert none(asked) == []
   })
 }

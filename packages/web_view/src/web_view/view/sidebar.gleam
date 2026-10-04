@@ -64,6 +64,7 @@ import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/element/svg
 import lustre/event
 import session_view/agent_view
 import session_view/turns
@@ -189,9 +190,29 @@ pub fn home(
         attribute.class("sidebar-home"),
         attribute.attribute("aria-current", "page"),
       ],
-      [html.text("Home")],
+      [house(), html.text("Home")],
     )
   column(groups, lead, "", [], open, resume)
+}
+
+// The house glyph of the "Home" entry: a fixed outline, decoration only, drawn
+// with the entry's own colour. It holds no text and no value from the page.
+fn house() -> Element(message) {
+  svg.svg(
+    [
+      attribute.class("nav-glyph"),
+      attribute.attribute("viewBox", "0 0 16 16"),
+      attribute.aria_hidden(True),
+    ],
+    [
+      svg.path([
+        attribute.attribute(
+          "d",
+          "M2 7.5 8 2.5l6 5M3.5 6.5v7h3.2v-4h2.6v4h3.2v-7",
+        ),
+      ]),
+    ],
+  )
 }
 
 // The column itself: its title, the navigation slot, and one section per

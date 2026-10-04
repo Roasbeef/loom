@@ -19,6 +19,15 @@
 //// answer as a message when it finishes, so the page keeps drawing while a
 //// session starts.
 ////
+//// What each running session is doing is not in the catalogue. Every list that
+//// answers starts a second read, `Start.activity`, for the running sessions it
+//// lists (at most `activity_limit`): the daemon asks each session from a task
+//// of its own, under the deadline `sessions.activity` has (protocol-change/050),
+//// and hands back one state word for each as `Observed`. The page draws the
+//// list first and the words when they arrive, and a session the daemon could
+//// not ask keeps a row that says only that it is resident. The runtime never
+//// waits for it: `activity` returns at once, as `resume` does.
+////
 //// The component draws a list and takes two inputs (protocol-change/065, the
 //// second and third pull requests): the press of a running session's row, in
 //// the table or in the sidebar, and, on a page minted to operate, the press of
@@ -54,6 +63,7 @@
 //// | none out | starts one, if the page may operate | nothing to answer | stays none |
 //// | one out | asks nothing | clears it, then departs or says why | clears it |
 
+import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -64,8 +74,9 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/server_component
 import web_view/ending.{type Ending}
-import web_view/sessions.{type Entry, type Group}
+import web_view/sessions.{type Activity, type Entry, type Group, Live}
 import web_view/view/ended
+import web_view/view/heading
 import web_view/view/home_bar
 import web_view/view/home_table
 import web_view/view/resume.{type Resume}
@@ -81,7 +92,7 @@ import web_view/view/switch
 /// no other event; `home_test` fails if the view moves either region.
 pub const sidebar_path = "0\t1"
 
-/// The Lustre event path of the sessions table on the home page: the centre
+/// The Lustre event path of the sessions lists on the home page: the centre
 /// column is the third child of the frame, and the table's section is the
 /// centre's second child, after the notice's place. Every handler beneath it is
 /// one running session's name, which asks the daemon for a ticket to open that
@@ -93,6 +104,14 @@ pub const table_path = "0\t2\t1"
 /// which is rare, and a read is a catalogue query. It is the same interval the
 /// session page's sidebar keeps (`component.sessions_refresh_ms`).
 pub const refresh_ms = 30_000
+
+/// The most running sessions one activity read names. It is the daemon's own
+/// bound on `sessions.activity` (protocol-change/050): each answer is one
+/// row of at most 2,400 bytes under one 2,000 ms deadline, and the reply holds
+/// 24. A principal with more running sessions than this sees the activity of
+/// the first ones in the order the page draws them, and the rest show only
+/// that they are resident.
+pub const activity_limit = 24
 
 /// The most the page was minted to do. The daemon's link carries it and the
 /// top bar says it in fixed words; it decides nothing on this page, which only
@@ -146,6 +165,18 @@ pub type Start {
     /// from the daemon's own task, as `Linked`'s message. A page whose ceiling
     /// is the observer's never calls it, and the daemon refuses if one did.
     resume: fn(String, fn(sessions.Answer) -> Nil) -> Nil,
+    /// The wall-clock time in Unix milliseconds, which the rows' ages are
+    /// counted from. It is read once for each list, in the component's
+    /// process, and must return at once.
+    now: fn() -> Int,
+    /// Asks the daemon what the named running sessions are doing, at most
+    /// `activity_limit` of them, all of which the page's own list holds. It
+    /// must return at once, as `resume` must: the daemon asks each session from
+    /// a task of its own, under its own deadline, and the answer goes to the
+    /// function it is given, from that task, as `Observed`'s message. A session
+    /// the daemon could not ask, or that was slow to answer, is left out of the
+    /// answer, and its row says nothing about what it is doing.
+    activity: fn(List(String), fn(List(#(String, Activity))) -> Nil) -> Nil,
   )
 }
 
@@ -170,6 +201,13 @@ pub opaque type Model {
     /// The entries of the last list, grouped for the sidebar and the table.
     /// It is built when a read lists, so a render regroups nothing.
     groups: List(Group),
+    /// What the daemon last said each running session is doing, by identity.
+    /// An answer replaces it whole, so a session that stopped running leaves it
+    /// at the next one.
+    activity: Dict(String, Activity),
+    /// The time the last list was read, in Unix milliseconds, which the rows'
+    /// ages are counted from.
+    now: Int,
     status: Status,
     /// The refresh timer's subject, known once the runtime has made it.
     timer: Option(Subject(Nil)),
@@ -199,6 +237,11 @@ pub type Msg {
 
   /// The answer to a read.
   Answered(listing: Listing)
+
+  /// The daemon's answer to the activity read a list started: one state for
+  /// each session it could ask. It is the effect's own message, dispatched from
+  /// the daemon's task, and no handler carries it.
+  Observed(rows: List(#(String, Activity)))
 
   /// A running session's row was pressed: ask the daemon for a ticket to open
   /// it. The identity is the catalogue's, fixed when the tree was drawn, and
@@ -240,6 +283,8 @@ pub fn new(start: Start) -> Model {
   Model(
     start:,
     groups: [],
+    activity: dict.new(),
+    now: 0,
     status: Connecting,
     timer: None,
     departure: None,
@@ -294,7 +339,23 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         Connecting | Connected -> #(model, refreshing(model))
       }
 
-    Answered(listing:) -> #(answered(model, listing), effect.none())
+    // A list that answered starts the read of what its running sessions are
+    // doing. The read is the daemon's own task and returns at once, so the
+    // list is drawn now and the activity words arrive with `Observed`.
+    Answered(listing:) -> {
+      let model = answered(model, listing)
+      #(model, observing(model))
+    }
+
+    // An ended page keeps the activity it last drew, as it keeps its list.
+    Observed(rows:) ->
+      case model.status {
+        Ended(_) -> #(model, effect.none())
+        Connecting | Connected -> #(
+          Model(..model, activity: dict.from_list(rows)),
+          effect.none(),
+        )
+      }
 
     // A press asks the daemon in the component's own process. An ended page
     // asks nothing: its principal's access is gone, and the daemon would
@@ -366,6 +427,26 @@ fn resuming(
   resume(session, fn(answer) { dispatch(Linked(answer)) })
 }
 
+// Starts the activity read for the running sessions the page lists, in the
+// order it draws them and no more than `activity_limit`, and returns at once;
+// the answer arrives later as `Observed`, dispatched from the daemon's task as
+// `Linked` is. A page with no running session asks nothing, and a page that
+// ended asks nothing more.
+fn observing(model: Model) -> Effect(Msg) {
+  let running =
+    list.flat_map(model.groups, fn(group) { group.entries })
+    |> list.filter(fn(entry) { entry.residency == Live })
+    |> list.take(activity_limit)
+    |> list.map(fn(entry) { entry.id })
+  case running, model.status {
+    [], _ | _, Ended(_) | _, Connecting -> effect.none()
+    [_, ..], Connected -> {
+      use dispatch <- effect.from
+      model.start.activity(running, fn(rows) { dispatch(Observed(rows)) })
+    }
+  }
+}
+
 // The daemon's answer, in the component's process, as a message.
 fn asking(open: fn(String) -> sessions.Answer, session: String) -> Effect(Msg) {
   use dispatch <- effect.from
@@ -399,6 +480,7 @@ fn answered(model: Model, listing: Listing) -> Model {
       Model(
         ..model,
         groups: sessions.grouped(list.take(entries, sessions.listed_limit), ""),
+        now: model.start.now(),
         status: Connected,
       )
     Unread -> model
@@ -430,12 +512,12 @@ pub fn status(model: Model) -> Status {
 }
 
 /// The page: the frame a session's page draws, with the principal's sessions
-/// in the sidebar and as tables in the centre, and no strand panel. Its top
+/// in the sidebar and as lists in the centre, and no strand panel. Its top
 /// bar names the page, the principal and the most the page may do, and carries
 /// the notice of a page that ended.
 ///
 /// The centre's children are, in order, the notice of the last press (an
-/// empty node when there is none, so the table keeps its path), the tables
+/// empty node when there is none, so the list keeps its path), the lists
 /// (`table_path`), and the hidden `<loom-switch>` element, last so that no
 /// admitted path moves with it.
 ///
@@ -451,12 +533,19 @@ pub fn view(model: Model) -> Element(Msg) {
       name: model.start.name,
       ceiling: ceiling_words(model.start.ceiling),
       status: status_words(model.status),
+      tone: status_tone(model.status),
       notice: ended.home(ended_ending(model.status)),
     ),
     shell_sidebar(model),
     [
       press_notice(model.notice),
-      home_table.view(model.groups, Opening, resume_offer(model)),
+      home_table.view(
+        model.groups,
+        model.activity,
+        model.now,
+        Opening,
+        resume_offer(model),
+      ),
       switch.view(model.departure),
     ],
     element.none(),
@@ -498,6 +587,15 @@ fn ceiling_words(ceiling: Ceiling) -> String {
   case ceiling {
     OperatorCeiling -> "operator"
     ObserverCeiling -> "read-only"
+  }
+}
+
+// The pill's colour follows the standing, as a session page's does.
+fn status_tone(status: Status) -> heading.Tone {
+  case status {
+    Connecting -> heading.Pending
+    Connected -> heading.Live
+    Ended(_) -> heading.Closed
   }
 }
 

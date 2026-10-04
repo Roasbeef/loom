@@ -425,32 +425,41 @@
      runs the session, and when it was created. The table scrolls in the
      centre, which does not scroll itself. */
   :host(.loom-home) .region-panel,:host(.loom-home) .toggle-panel{display:none;}
-  .sidebar-home{margin:0 0 12px 0;padding:4px 8px;border:1px solid color-mix(in srgb,var(--color-current) 40%,var(--color-divider));border-radius:6px;background:color-mix(in srgb,var(--color-current) 7%,var(--color-bg-raised));font-size:12px;}
-  .session-head .home-who{color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);}
-  .home-badge{margin-left:8px;padding:0 6px;border:1px solid var(--color-divider);border-radius:99px;font:600 11px/1.4 var(--font-mono);}
+  .sidebar-home{display:flex;align-items:center;gap:8px;margin:0 0 12px 0;padding:4px 7px;border-radius:6px;font:13px/1.4 var(--font-sans);}
+  .sidebar-home[aria-current]{background:color-mix(in srgb,var(--color-current) 10%,var(--color-bg-raised));}
+  .nav-glyph{width:14px;height:14px;flex:0 0 auto;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round;}
+  /* The home's bar is the session bar's: the principal in the bar's sans face
+     with the ceiling as a quiet pill, and the status as the same pill. */
+  .session-head .home-who{display:flex;align-items:center;gap:8px;margin-left:auto;color:var(--color-fg);font:500 13px/1.4 var(--font-sans);}
+  .home-badge{padding:0 8px;border:1px solid var(--color-divider);border-radius:99px;color:var(--color-fg-quiet);font:12px/1.6 var(--font-sans);}
   main.centre > .home-sessions{flex:1 1 0;min-height:0;max-width:960px;padding-bottom:24px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
   .home-heading{margin:0 0 12px 0;font:600 15px/1.4 var(--font-sans);}
   .home-empty{margin:0;color:var(--color-fg-quiet);}
-  table.home-table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:13px;}
-  .home-table th:nth-child(2){width:140px;}
-  .home-table th:nth-child(3){width:200px;}
-  table.home-table + table.home-table{margin-top:24px;}
-  .home-table caption{padding:0 0 6px 0;text-align:left;font:600 11px/1.4 var(--font-mono);letter-spacing:.04em;color:var(--color-fg-quiet);overflow-wrap:anywhere;}
-  .home-table th{padding:6px 12px 6px 0;text-align:left;font:500 12px/1.4 var(--font-mono);color:var(--color-fg-quiet);border-bottom:1px solid var(--color-divider);}
-  .home-table td{padding:8px 12px 8px 0;vertical-align:baseline;border-bottom:1px solid var(--color-divider);}
-  .home-table td.home-name{min-width:0;overflow-wrap:anywhere;}
-  .home-table td.home-created{color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);white-space:nowrap;}
-  /* A running session's row opens it (protocol-change/065, the second pull
-     request). The name is a button whose ::after covers the row, so the whole
-     row is the target and reads as one list row: a tint on hover, a ring on
-     keyboard focus, no shadow. A saved session's name is text and its row has
-     no tint. */
-  .home-table tr.home-row{position:relative;}
-  .home-table tr.home-row:has(.home-open):hover{background:var(--color-bg-raised);}
-  .home-table tr.home-row:has(.home-open:focus-visible){outline:2px solid var(--color-current);outline-offset:-2px;}
-  .home-open{margin:0;padding:0;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;}
-  .home-open::after{content:"";position:absolute;inset:0;}
-  .home-open:focus-visible{outline:none;}
+  /* One list for each workspace: a heading with the shortened path and the
+     count as the sidebar's eyebrow has them, and a hairline-ruled row for each
+     session. A row is a button when a press opens it, filling the row, tinted
+     on hover and ringed on keyboard focus, with a chevron that says it opens;
+     a row that cannot be pressed is the same words in a block with no tint.
+     No shadow, no coloured edge. */
+  .home-group + .home-group{margin-top:24px;}
+  .home-workspace{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:0 0 6px 0;font:500 13px/1.4 var(--font-sans);color:var(--color-fg-quiet);overflow-wrap:anywhere;}
+  .home-count{flex:0 0 auto;font-weight:400;font-variant-numeric:tabular-nums;}
+  ul.home-list{list-style:none;margin:0;padding:0;border-top:1px solid var(--color-divider);}
+  li.home-row{margin:0;border-bottom:1px solid var(--color-divider);}
+  .home-open,.home-item{display:flex;align-items:center;gap:12px;width:100%;box-sizing:border-box;min-height:44px;margin:0;padding:6px 10px;border:0;border-radius:0;background:transparent;color:inherit;font:inherit;text-align:left;}
+  .home-open{cursor:pointer;}
+  .home-open:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);}
+  .home-open:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
+  .home-glyph{flex:0 0 auto;width:1em;text-align:center;color:var(--color-fg-quiet);}
+  .home-row.live .home-glyph,.home-row.idle .home-glyph,.home-row.working .home-glyph,.home-row.opening .home-glyph{color:var(--color-current);}
+  .home-row.working .home-glyph{animation:loom-pulse 1.4s ease-in-out infinite;}
+  .home-row.needs-you .home-glyph{color:var(--color-signal-text);}
+  .home-text{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px;}
+  .home-name{font:500 14px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  .home-sub{font:12px/1.4 var(--font-sans);color:var(--color-fg-quiet);overflow-wrap:anywhere;}
+  .home-row.needs-you .home-sub{color:var(--color-signal-text);}
+  .home-chevron{flex:0 0 auto;color:var(--color-fg-quiet);font-size:16px;line-height:1;}
+  .home-open:hover .home-chevron{color:var(--color-fg);}
   .home-notice{margin:0 0 12px 0;padding:8px 12px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font-size:13px;}
   /* The way back to the home, on a session page opened from one: a quiet
      button after the brand, tinted on hover like a list row. */
@@ -666,7 +675,12 @@
   .ended-notice p{margin:0;overflow-wrap:anywhere;}
   .ended-headline{color:var(--color-danger-text);font-weight:600;}
   .ended-advice{margin-top:2px;}
-  .ended-document{max-width:640px;margin:48px auto;}
+  .ended-page{display:flex;justify-content:center;padding:48px 16px;}
+  .ended-document{box-sizing:border-box;width:100%;max-width:560px;padding:20px 24px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);font:14px/1.5 var(--font-sans);}
+  .ended-brand{margin:0 0 12px 0;font:600 14px/1.4 var(--font-sans);letter-spacing:.02em;}
+  .ended-document .ended-headline{margin:0 0 8px 0;font-size:16px;overflow-wrap:anywhere;}
+  .ended-document .ended-advice{margin:0 0 8px 0;overflow-wrap:anywhere;}
+  code.ended-command{display:block;margin:2px 0 4px 0;padding:6px 8px;background:var(--color-bg);border:1px solid var(--color-divider);border-radius:4px;font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
   /* The todo panel: the strand's board and the reviewer band, above the
      composer in the operator's dock and above the observer's bar. Its height
      is capped and it scrolls on its own, so a long phase cannot cover the

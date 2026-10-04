@@ -1006,3 +1006,82 @@ also ask the daemon to open a saved session its principal operates or owns, whic
 the principal's own `loom` could already do through `sessions.open`. It consumes
 registry capacity at a browser's request, within the bounds a terminal's open
 has, and cannot open a session the principal only observes or does not hold.
+
+## Addendum: the home as a session list (2026-10-04)
+
+**Status**: IMPLEMENTED in the change that adds it. It is the round-3 critique's
+batch B10 (F57, F58 in part, F70). It adds no route, no frozen interface and no
+kind of wire frame, and the socket admits exactly the clicks it did.
+
+**The list.** The home's centre is one list for each workspace, not a table. A
+workspace is a heading (its path with the owner's home directory written `~`,
+the whole path in `title`, and the session count) over a `ul`; a session is one
+`li` holding a glyph, the name, and under it a quiet line: `resident · working ·
+created 2h ago` for a running session and `saved · 2h ago` for one on disk.
+`home.table_path` is unchanged (`0\t2\t1`): `home_table.view` is still the one
+section that is the centre's second child, and every handler is still a button
+beneath it, one for each pressable row, so `ui_socket.home_accepts` admits the
+same paths and `home_test` pins the count of buttons as before. A running row
+and a saved row on an operator page open on press, as before; a saved row on an
+observer page, a blocked row, and a row whose resume is out are the same words
+in a block with no handler. The age is counted from `Start.now`, read once for
+each list, and the exact UTC minute is the `time` element's `title`. A session's
+name, a workspace's path and the principal's name are text nodes only.
+
+**The bar and the Home entry.** The bar is the session bar's: the status is the
+`pill` with the page's `Tone` (online, pending, ended), the principal is in the
+bar's sans face, and the ceiling is a quiet pill. Nothing on it is monospaced.
+The sidebar's `Home` entry carries a fixed house glyph (inline SVG, no text, no
+value from the page) and is tinted, not boxed, when it is the page on screen.
+
+**Activity.** `sessions.activity` (protocol-change/050) says what a running
+session is doing. The home asks for it for the running sessions its own list
+holds, at most `home.activity_limit` (24, the command's own bound), every time
+a list answers. The read is `Start.activity`, of the shape `fn(List(String),
+fn(List(#(String, Activity))) -> Nil) -> Nil`: it returns at once, as `resume`
+does, and the answer arrives as `Observed` from a task. `ui_socket.activity_task`
+runs the daemon's read in a weft run linked to the Lustre runtime, so the
+runtime never waits for a session to answer, and a page that goes away cancels
+the read. The read is `server.activity`, the control command's own function, with
+its own bounds: one 2,000 ms deadline over every session asked, a row cut to
+2,400 bytes, and an `unknown` row for a session that did not answer. Only the
+state word leaves the daemon (`needs_you`, `working`, `idle`, drawn as `needs
+you`, `working`, `idle`); `last_message`, `model` and the glances are dropped
+before the page sees them, and a state the page does not know is no activity.
+The page draws its list first and the words when they arrive; a row with no
+answer says only `resident`.
+
+**Who is asked.** The control command is the owner's alone (050 refuses a member
+with `forbidden`), because it calls into every resident session. A home page does
+not widen that: `server.home_activity` hands an owner's page the read and a
+member's page a read that asks nothing and answers nothing, so a member's rows
+say only `resident`. Showing a member the working state of the sessions they hold
+would be a change to 050's ruling, and it is not made here.
+
+**The expired page (F70).** The document a refused request is answered with
+(`page.refusal`, `page.home_refusal`) carries the brand, the headline, the
+advice's lead and, where a fresh link helps, the command that mints one in a
+`<loom-copy subject="link">`, with the same command in a `code` element inside it
+for a browser without scripts. `ending.Advice` splits the sentence the live
+notice says into `lead` and `command`; `advice` is `lead`, then "Run `command`
+for a fresh link.", so the live notice's words did not change in kind, and a
+few connectives did ("If it stays closed, it needs a new link."). `<loom-copy>`
+gains a third subject word, `link`, whose text it copies only if it is `loom ui`
+or `loom ui --session ` and a session identity of hexadecimal digits and hyphens,
+at most 64: the same rule, and the same refusal of a newline or a second command,
+the two invitation texts have. The document now loads the client bundle, the
+page's own file from this origin, so the policy is the one every `/ui` response
+has. The "Go to home" button waits for the browser login.
+
+**Subtitles (F58), not built.** The critique's subtitle is the first prompt's
+first 60 characters. The catalogue has no such field and the home has no prompt
+on the wire, so building it needs a column and a wire field, which this change
+does not add. The row's second line is the creation age until that is decided.
+The smallest design is recorded in the pull request that made this change.
+
+**Cost.** An owner's home page with running sessions asks them what they are
+doing once for each list, every 30 seconds by default. Each ask is
+a call into the session's Agency actor and delays that session's other peer
+commands by the time its reads take, which is 050's own cost, paid at the
+interval of a page that is open, for at most 24 sessions. A page with no running
+session asks nothing.

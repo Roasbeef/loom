@@ -658,6 +658,10 @@ fn admit_home(
       },
       open: opening,
       resume: resuming,
+      now: bootstrap.system_time_ms,
+      activity: fn(ids, deliver) {
+        activity_task(attachment.activity, ids, deliver)
+      },
     )
   let started = case transferred {
     Error(reason) -> {
@@ -1426,6 +1430,41 @@ pub fn resume_task(
           target,
           within: resume_wait_ms,
         ))
+        Ok(Nil)
+      },
+    ])
+    |> weft.start_witnessed
+  Nil
+}
+
+/// Starts the home page's activity read in a run of its own and returns at
+/// once, so the page's runtime never waits for the sessions to answer;
+/// `deliver` is called, from that run, with what `ask` returned.
+///
+/// `ask` is the daemon's `sessions.activity` read (`server.activity_states`),
+/// which asks every named session concurrently under one deadline of its own
+/// and leaves out any that did not answer, so the run ends within that
+/// deadline. The run is linked to the calling process, which is the page's
+/// runtime, so a page that goes away cancels the read, and `deliver` is its last
+/// act, so a page that stays open is always answered, with an empty list when
+/// nothing answered. A run that crashed delivers nothing, and the page keeps
+/// the words it had until the next list asks again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.activity_task(attachment.activity, ["0198..."], deliver)
+/// ```
+@internal
+pub fn activity_task(
+  ask: fn(List(String)) -> List(#(String, sessions.Activity)),
+  ids: List(String),
+  deliver: fn(List(#(String, sessions.Activity))) -> Nil,
+) -> Nil {
+  let _ =
+    weft.new([
+      fn() {
+        deliver(ask(ids))
         Ok(Nil)
       },
     ])

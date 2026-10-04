@@ -89,8 +89,11 @@ page keys and nonces, and the relay into the session's gateway.
   (`Status`: `Connecting | Connected | Ended`) and stops the reads; `Unread`
   keeps the last list. The view is `shell.view(shell.Home, ...)`:
   `view/home_bar`, `sidebar.home(groups, open, resume)` (a "Home" entry, then the rows),
-  `view/home_table` (a table per workspace: name, resident or saved in words,
-  created in UTC) and no panel; the stylesheet hides the panel column for the
+  `view/home_table` (a list per workspace: a heading with the shortened path
+  and a count, and one item per session with a glyph, the name, and a quiet
+  line of `resident · working · created 2h ago` or `saved · 2h ago`; the UTC
+  minute is the `time`'s `title`; `home_bar` draws the session bar's `pill`
+  and `Tone`) and no panel; the stylesheet hides the panel column for the
   frame class `loom-home`. `view/switch.view(address)` draws the hidden
   `<loom-switch>` for both this page and the session page. The one input is a running session's row, in the
   table and in the sidebar: `home.Opening(id)` asks `Start.open` (in the
@@ -103,6 +106,14 @@ page keys and nonces, and the relay into the session's gateway.
   `Start.resume(id, deliver)`, which starts the daemon's task and returns, sets
   `resuming` and draws the row "opening"; `deliver` dispatches `Linked` from
   the task. A second press, an observer ceiling and an ended page ask nothing.
+  Every list that answers also starts `Start.activity(ids, deliver)` for the
+  running sessions it lists (at most `home.activity_limit`, 24): it returns
+  at once, the daemon asks the sessions in a task of its own, and the answer is
+  `Observed(rows)`, one `sessions.Activity` (`NeedsYou | Working | Idle`) per
+  session that answered, which the rows draw as words and a glyph hue; a row
+  with none says only `resident`. `Start.now` is the clock the ages count from,
+  read once per list. `ending.Advice` (`lead`, `command`) is the ending's
+  advice split, `advised`/`home_advised`; `advice` is it said as a sentence.
   `ending.home_headline` and
   `home_advice`, `ended.home`, `page.home_shell`, `home_path`,
   `home_exchange_path`, `home_refusal` word and address it. `home_test` reads

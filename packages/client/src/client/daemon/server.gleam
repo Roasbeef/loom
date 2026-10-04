@@ -73,6 +73,7 @@ import storage/domain
 import web_view/ending.{type Ending}
 import web_view/image
 import web_view/page
+import web_view/sessions as listed_sessions
 import weft
 
 /// Capabilities owned by the daemon, not supplied over the wire.
@@ -149,6 +150,14 @@ pub type HomeAttachment(instance) {
     permit: root.Permit,
     /// The registry the page's reads go to.
     registry: manager.Manager(instance),
+    /// Asks the named sessions what they are doing: the `sessions.activity`
+    /// read (protocol-change/050) the control socket serves the owner, made on
+    /// an owner's page for sessions its own list holds, and reduced to one
+    /// state for each session that answered (`home_activity`). A member's page
+    /// is handed a read that answers nothing. It blocks for up to the read's own
+    /// deadline, so the page never calls it from its runtime
+    /// (`ui_socket.activity_task`).
+    activity: fn(List(String)) -> List(#(String, listed_sessions.Activity)),
   )
 }
 
@@ -400,6 +409,7 @@ fn home_upgrade(
             digest: grant.credential,
             permit:,
             registry: state.registry,
+            activity: home_activity(config, state.registry, principal),
           ),
           open,
           grant.ceiling,
@@ -2317,6 +2327,89 @@ fn activity(
       | weft.CancellationUnconfirmed(..) -> unknown_row(id)
     }
   })
+}
+
+/// The activity read a home page is handed: `activity_states` for the daemon's
+/// owner, and for a member a read that asks nothing and answers nothing. The
+/// control command is the owner's alone (protocol-change/050 refuses a member
+/// with `forbidden`, since it calls into every resident session), and a home
+/// page does not widen that: a member's rows say only that a session is
+/// resident.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.home_activity(config, registry, member)(["0198..."]) == []
+/// ```
+@internal
+pub fn home_activity(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  principal: access.Principal,
+) -> fn(List(String)) -> List(#(String, listed_sessions.Activity)) {
+  case principal.kind {
+    access.OwnerPrincipal -> fn(ids) { activity_states(config, registry, ids) }
+    access.MemberPrincipal -> fn(_) { [] }
+  }
+}
+
+/// What the named sessions are doing, for a home page's list: the same read
+/// the control command `sessions.activity` makes (`activity`, with its
+/// deadline and its bound on a row), reduced to the one state word the page
+/// draws for each session that answered. A session that was not running, did
+/// not answer in time, or answered with a state the page does not know has no
+/// entry. Only the state leaves the daemon here: the row's last message, model
+/// and glances, which the control command hands the owner, are dropped, so the
+/// page learns no more about a session than whether it works.
+///
+/// The caller names sessions from the page's own authorized list, at most 24
+/// of them, and runs this off the page's runtime. It blocks for up to the
+/// deadline.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.activity_states(config, registry, ["0198..."]) == [#("0198...", Working)]
+/// ```
+@internal
+pub fn activity_states(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  sessions: List(String),
+) -> List(#(String, listed_sessions.Activity)) {
+  activity(config, registry, sessions)
+  |> list.filter_map(state_of)
+}
+
+// The session and the state a reply row names, when it names a state the page
+// knows.
+fn state_of(
+  row: JsonValue,
+) -> Result(#(String, listed_sessions.Activity), Nil) {
+  case row {
+    json.Object(fields) -> {
+      use id <- result.try(text_field(fields, "session_id"))
+      use state <- result.try(text_field(fields, "state"))
+      use doing <- result.map(listed_sessions.activity_of(state))
+      #(id, doing)
+    }
+    json.Array(_)
+    | json.String(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Bool(_)
+    | json.Null -> Error(Nil)
+  }
+}
+
+fn text_field(
+  fields: List(#(String, JsonValue)),
+  name: String,
+) -> Result(String, Nil) {
+  case list.key_find(fields, name) {
+    Ok(json.String(value)) -> Ok(value)
+    Ok(_) | Error(Nil) -> Error(Nil)
+  }
 }
 
 fn bounded_row(row: JsonValue) -> Result(JsonValue, Nil) {
