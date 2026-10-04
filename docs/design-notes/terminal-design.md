@@ -195,14 +195,32 @@ and `Esc` closes it. Grid: [txt](terminal-design/terminal-design-layout-80.txt) 
 [light](terminal-design/terminal-design-layout-80-light.png). The sheet looks
 like [A's narrow sheet](terminal-design/A-sonnet-narrow-strands-dark.png).
 
-Today's code: `layout.layout` (`packages/tui/src/tui/layout.gleam:97`)
-(`layout`) stacks header, body, composer and footer. `body_layout`
-(`packages/tui/src/tui/layout.gleam:94`) (`body_layout`) gives the body one
-side pane, the 34-cell agent rail or the 72-cell changes pane. The footer is
-built in `footer_rows` (`packages/tui/src/tui/layout.gleam:349`)
+Before slice 13 `layout.layout` (`packages/tui/src/tui/layout.gleam:105`)
+(`layout`) stacked header, body, composer and footer, and `body_layout` gave the
+body one side pane, the 34-cell agent rail or the 72-cell changes pane. The
+footer is built in `footer_rows` (`packages/tui/src/tui/layout.gleam:446`)
 (`footer_rows`). The new layout replaces the header and footer with the
 identity line and the input frame, and replaces the two side panes with one
 rail.
+
+*As built (slice 13).* `body_layout` and both side panes are gone. `layout`
+takes the rail's column from the screen under the identity line (`rail_columns`,
+decided by `tui/rail`) before it cuts the body, so the input frame and the
+footer span the transcript's column and the rail runs to the last row, as the
+frames draw it. It docks only where the transcript keeps 75 cells: 44 cells and
+a separator from 120 columns (`75 + 1 + 44`), 56 from 160, docked by default
+from 160 and on `Shift+Tab` from 120; a remembered choice wins; below 120 it
+does not dock (the sheet is slice 15). Opening `/diff` docks it on its Changes
+tab wherever it fits and closing them restores the choice, so the automatic
+side pane at 140 columns is gone: nothing opens the changes unasked. Strands
+lists every agent through `agent_row.rows` (`StripRow`) in the workspace's
+attention order, the advisor and settled agents included, and the strip is
+hidden while it does. Not built here: the `PEERS` section (the terminal holds no
+fact about what another session asked), the cache-outlook column the frames
+draw beside each strand, the second key-hint row, the Trace and Session tabs
+(slice 14), and the tab bar's `1-4` keys, since only two tabs exist. The stored
+layout gains no word: the tab follows the changes setting, which is not a
+preference.
 
 ## 4. The header and the input frame
 
