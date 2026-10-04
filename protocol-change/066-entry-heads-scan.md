@@ -63,9 +63,11 @@ single normative sentence, and it carries the whole contract:
   `to_seq`, `order`, and `limit`, including the rule that a limit of zero or
   below returns no rows.
 - The same entries come back, in the same order, with no row added or dropped.
-- A row whose stored columns do not parse as ids is `CorruptRow`, the error
-  `scan_entries` gives for a damaged row. The projection is a view over the
-  same rows, so it adds no new failure.
+- A row whose stored id text does not parse is `CorruptRow`. A column of the
+  wrong type (a `seq` that is not an integer, an `id` that is not text) fails
+  the row decoder and is a `BackendFault`, exactly as `scan_entries` answers
+  for a payload that is not a blob. The projection is a view over the same
+  rows, so it adds no new failure.
 - Rule 5 applies: the SQLite query is served from an index with no
   `TEMP B-TREE FOR ORDER BY`. It orders by `seq` through `ix_entry_seq`, which
   also carries the primary key, and CI asserts the plan.
