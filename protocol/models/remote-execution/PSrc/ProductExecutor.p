@@ -12,6 +12,7 @@ machine ProductExecutor {
   var leases: map[int, tLease];
   var resourceOwnerAlive: bool;
   var associated: map[int, tPreparedProduct];
+  var outerReceipts: set[int];
   start state Init {
     entry (p: (driver: machine, mode: tProductMode)) {
       driver = p.driver; mode = p.mode; resourceOwnerAlive = true; goto Ready;
@@ -50,12 +51,18 @@ machine ProductExecutor {
         createResource(rows[id]);
         if ((id == 2 && mode == ProductResourceUnknown) || (id == 1 && mode == ProductCompileUnknown)) {
           send this, eProductExecutorCrash;
-        } else { send this, eProductCommitReady, id; }
+        } else if (mode == CompileFailLateReady) { send driver, eCompileCreated, id; }
+        else { send this, eProductCommitReady, id; }
       }
     }
     on eProductCommitReady do (id: int) {
       var candidate: tLease;
-      if (!(id in claims) || phases[id] != Preparing || !(id in created)) { return; }
+      if (!(id in claims) || phases[id] != Preparing || !(id in created)) {
+        if (compileControl(mode)) {
+          announce mCompileReadyRefused, id; send driver, eCompileReadyRefused, id;
+        }
+        return;
+      }
       if (mode == ProductOfferConflict && id == 2) {
         candidate = (service = rows[id], artifact = 2, compileRequest = 1, scope = 2, resources = 2);
         acceptLease(candidate);
@@ -90,17 +97,28 @@ machine ProductExecutor {
         send owner, eProductOffer, changed;
       }
     }
-    on eProductNativeAdmission do (p: tPreparedProduct) {
-      if (p.offer.service.id in rows && p.offer.service == rows[p.offer.service.id]) {
+    on eProductNativeAdmission do (read: tProductAdmission) {
+      var p: tPreparedProduct;
+      p = read.prepared;
+      if (read.evidence.answer != Prior || read.evidence.request != p.native || read.evidence.row.request != p.native) {
+        if (compileControl(mode)) {
+          announce mCompileAssociationRefused, p; send driver, eCompileAssociationRefused, p;
+        }
+        return;
+      }
+      if (p.offer.service.id in rows && p.offer.service == rows[p.offer.service.id] &&
+          p.offer.service.id in leases && !(p.offer.service.id in completed)) {
         if (!(p.offer.commandRef in associated)) {
           associated[p.offer.commandRef] = p;
           announce mProductNativeAssociated, p;
         }
       }
     }
-    on eProductNativeTerminal do (n: tRequest) {
+    on eProductNativeTerminal do (read: tProductTerminal) {
+      var n: tRequest;
       var p: tProductResult;
       var candidate: tPreparedProduct;
+      n = read.native;
       if (!(n.key.execution in associated)) { return; }
       candidate = associated[n.key.execution];
       candidate.native = n;
@@ -109,8 +127,16 @@ machine ProductExecutor {
         return;
       }
       announce mProductTerminalAssociated, candidate;
+      if (read.payload.request != n || read.evidence.request != n) { return; }
+      if (read.evidence.phase != Terminal || read.evidence.terminalDigest != read.payload.digest) {
+        if (compileControl(mode)) {
+          announce mCompileTerminalPending, read; send driver, eCompileView, compileView(n.key.execution);
+        }
+        return;
+      }
+      announce mCompileNativeSettled, read;
       if (!(n.key.execution in completed)) {
-        p = (service = rows[n.key.execution], resultDigest = 2, kind = n.key.execution, artifact = 1);
+        p = (service = rows[n.key.execution], resultDigest = 2, kind = n.key.execution, artifact = 1, provenance = NativeCompletion);
         completed[n.key.execution] = p;
         announce mProductCompleted, p;
         if (mode != ProductFaults || n.key.execution == 1 || !choose()) { send owner, eProductCompleted, p; }
@@ -118,9 +144,38 @@ machine ProductExecutor {
     }
     on eProductReceipt do (p: tProductResult) {
       if (p.service.id in completed && completed[p.service.id] == p) {
+        outerReceipts += (p.service.id);
         announce mProductReceipt, p;
+        if (mode == CompileIndependentReceipts || mode == CompileFailLateReady) { send driver, eCompileView, compileView(p.service.id); }
         if (p.service.id == 2) { announce mProductWitness, ProductComplete; }
       }
+    }
+    on eCompileFailPreparation do (p: tProductResult) {
+      var id: int;
+      id = p.service.id;
+      if (!(id in rows) || rows[id] != p.service || id != 1 || p != compileBefore(rows[id])) { return; }
+      // Exact historical retry never consults volatile claims or a native endpoint.
+      if (id in completed) {
+        if (completed[id] == p) { send driver, eCompileView, compileView(id); }
+        return;
+      }
+      if (phases[id] != Preparing || !(id in claims) || id in leases || id in associated) {
+        announce mCompileFailureRefused, compileView(id); send driver, eCompileView, compileView(id);
+        return;
+      }
+      // One durable transaction retains failure and fences every queued late Ready.
+      completed[id] = p; phases[id] = ResourceUncertain; claims -= (id);
+      announce mCompileBeforeCommitted, p;
+      announce mProductClaimRevoked, rows[id];
+      send owner, eProductCompleted, p;
+      send driver, eCompileView, compileView(id);
+    }
+    on eCompileQuery do (id: int) {
+      announce mCompileReadback, compileView(id); send driver, eCompileView, compileView(id);
+    }
+    on eCompileCleanup do (id: int) {
+      if (id in rows) { phases[id] = ResourceReleased; claims -= (id); announce mCompileReleased, rows[id]; }
+      send driver, eCompileView, compileView(id);
     }
     on eProductResourceQuery do {
       if (mode == ProductCompileUnknown || mode == ProductCompileLeaseRecovery) { queryResource(1); }
@@ -139,6 +194,7 @@ machine ProductExecutor {
         }
         id = id + 1;
       }
+      if (compileControl(mode)) { announce mCompileRecovered, compileView(1); send driver, eCompileRecovered; }
     }
     on eProductResourceOwnerDeath do {
       resourceOwnerAlive = false;
@@ -148,8 +204,15 @@ machine ProductExecutor {
       }
     }
   }
+  fun compileView(id: int): tCompileView {
+    var v: tCompileView;
+    v = (service = rows[id], retained = false, result = default(tProductResult),
+      acknowledged = id in outerReceipts, associated = id in associated, preparation = phases[id]);
+    if (id in completed) { v.retained = true; v.result = completed[id]; }
+    return v;
+  }
   fun acceptAssociation(s: tService, producer: tProductResult): bool {
-    return s.association == producer.resultDigest && s.artifact == producer.artifact && s.compileRequest == producer.service.requestDigest &&
+    return producer.provenance == NativeCompletion && s.association == producer.resultDigest && s.artifact == producer.artifact && s.compileRequest == producer.service.requestDigest &&
       s.scope == producer.service.scope && s.enrollment == producer.service.enrollment &&
       s.tokenCommitment == 1;
   }

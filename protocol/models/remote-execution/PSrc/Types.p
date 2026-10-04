@@ -7,14 +7,14 @@ type tEpoch = (session: int, workspace: int);
 enum tPhase { Admitted, Intent, Running, Terminal }
 enum tOutcome { NoOutcome, Succeeded, Cancelled }
 type tRow = (request: tRequest, phase: tPhase, launchBoot: int,
-             retired: bool, receipt: bool, outcome: tOutcome);
+             retired: bool, receipt: bool, outcome: tOutcome, terminalDigest: int);
 enum tAnswer { Prior, Conflict, Fenced, Capacity, Missing }
 type tReply = (request: tRequest, answer: tAnswer, row: tRow,
                connection: int, boot: int);
 type tWire = (owner: machine, request: tRequest, connection: int);
 type tNative = (key: tKey, boot: int);
 type tCancelEffect = (asked: tNative, active: tNative);
-enum tMode { Reliable, Lossy, CrashBeforeStart, CrashAfterSend }
+enum tMode { Reliable, Lossy, CrashBeforeStart, CrashAfterSend, TerminalCommitPaused }
 enum tWitness { Success, Uncertain, Reuse, Pressure, ClosedReconcile, OldFence,
                 Advance, ConflictSeen, LostTransport, ReceiptLost, CancelLost, AdmissionLost, AdmissionAckLost, ResultLost }
 type tSetup = (driver: machine, mode: tMode);
@@ -88,3 +88,11 @@ fun rowSafe(row: tRow): bool {
 }
 
 enum tWithheld { ReceiptPending, RetirementPending }
+
+// Native payload retention and reducer commit are separate durable decisions.
+// Digests 1, 3 and 2 denote Prepared, native terminal and outer result classes.
+type tTerminalPayload = (request: tRequest, native: tNative, digest: int, outcome: tOutcome);
+event eCommitNativeTerminal: tNative;
+event eNativePayloadView: tTerminalPayload;
+event mNativePayloadRetained: tTerminalPayload;
+event mNativeTerminalCommitted: tTerminalPayload;
