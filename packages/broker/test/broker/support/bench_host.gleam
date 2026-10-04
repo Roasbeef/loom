@@ -207,3 +207,22 @@ pub fn resume(pid: Pid) -> Nil {
   let _ = sys_resume(pid)
   Nil
 }
+
+@external(erlang, "erlang", "process_info")
+fn process_info(pid: Pid, item: atom.Atom) -> Dynamic
+
+/// How many messages wait in a process's mailbox, or `0` once it has
+/// exited. A suspended actor's mailbox only grows, so a test reads it to
+/// know that a request it sent has arrived before it does the next thing,
+/// without guessing how long the send takes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // bench_host.queued(actor_pid)
+/// ```
+pub fn queued(pid: Pid) -> Int {
+  process_info(pid, atom.create("message_queue_len"))
+  |> decode.run(decode.at([1], decode.int))
+  |> result.unwrap(0)
+}

@@ -895,9 +895,32 @@ pub fn real_helper_failed_write_keeps_a_queued_status_test() {
       process.spawn_unlinked(fn() {
         process.send(answers, exec.heartbeat(helper, waiting: 5000))
       })
-      process.sleep(100)
+
+      // The request must be in the suspended actor's mailbox before the
+      // helper dies, so that the exit status queues behind it and the write
+      // fails with the status already waiting. Polling the mailbox and then
+      // the port list states both orderings instead of guessing at them.
+      let assert poll.Answered(Nil) =
+        poll.until(within: 5000, every: 10, attempt: fn() {
+          case host.queued(actor) >= 1 {
+            True -> poll.Done(Nil)
+            False -> poll.Retry
+          }
+        })
+        as "the request is queued behind the suspension"
       host.signal(victim, "KILL")
-      process.sleep(500)
+
+      // A port whose child exited leaves `erlang:ports()` only after it has
+      // delivered `{exit_status, _}`, so once the victim's port is gone the
+      // status is queued behind the request.
+      let assert poll.Answered(Nil) =
+        poll.until(within: 5000, every: 10, attempt: fn() {
+          case list.contains(host.port_os_pids(), victim) {
+            True -> poll.Retry
+            False -> poll.Done(Nil)
+          }
+        })
+        as "the killed helper's port has delivered its status and closed"
       host.resume(actor)
 
       assert process.receive(answers, 5000) == Ok(Error(exec.SendFailed))
@@ -931,9 +954,32 @@ pub fn real_helper_failed_shutdown_write_keeps_a_queued_status_test() {
       process.spawn_unlinked(fn() {
         process.send(verdicts, exec.close(helper, waiting: 5000))
       })
-      process.sleep(100)
+
+      // The request must be in the suspended actor's mailbox before the
+      // helper dies, so that the exit status queues behind it and the write
+      // fails with the status already waiting. Polling the mailbox and then
+      // the port list states both orderings instead of guessing at them.
+      let assert poll.Answered(Nil) =
+        poll.until(within: 5000, every: 10, attempt: fn() {
+          case host.queued(actor) >= 1 {
+            True -> poll.Done(Nil)
+            False -> poll.Retry
+          }
+        })
+        as "the request is queued behind the suspension"
       host.signal(victim, "KILL")
-      process.sleep(500)
+
+      // A port whose child exited leaves `erlang:ports()` only after it has
+      // delivered `{exit_status, _}`, so once the victim's port is gone the
+      // status is queued behind the request.
+      let assert poll.Answered(Nil) =
+        poll.until(within: 5000, every: 10, attempt: fn() {
+          case list.contains(host.port_os_pids(), victim) {
+            True -> poll.Retry
+            False -> poll.Done(Nil)
+          }
+        })
+        as "the killed helper's port has delivered its status and closed"
       host.resume(actor)
 
       assert process.receive(verdicts, 5000) == Ok(Ok(Nil))
