@@ -795,7 +795,8 @@ fn result_report(report: String) -> List(Element(message)) {
 }
 
 // The first line of a report that says something, without the Markdown
-// marker it opens with and cut to a line's width.
+// marker it opens with or the backticks of a code span, and cut to a line's
+// width.
 fn first_line(report: String) -> String {
   let line =
     report
@@ -803,7 +804,7 @@ fn first_line(report: String) -> String {
     |> list.map(string.trim)
     |> list.find(fn(line) { line != "" })
     |> result.unwrap("")
-    |> string.drop_start(0)
+    |> string.replace("`", "")
   let bare = case line {
     "#" <> rest | ">" <> rest | "-" <> rest | "*" <> rest -> string.trim(rest)
     _ -> line
