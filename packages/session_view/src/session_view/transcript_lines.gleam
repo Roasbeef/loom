@@ -1896,7 +1896,8 @@ const call_groups = 4
 // failed, that had not settled or that took over a second says how long
 // it took (`· 4.1s`). A call's argument summary is the host's redacted
 // one, cut to a row.
-fn call_section(log: CallLog) -> List(String) {
+@internal
+pub fn call_section(log: CallLog) -> List(String) {
   let groups = call_groups_of(log.items)
   let shown = list.take(groups, call_groups)
   let unlisted =
@@ -2061,6 +2062,27 @@ fn running_text(
   |> string.join("\n")
 }
 
+/// The title a code-mode result's status is worded as: what failed, in the
+/// transcript's failure block and anywhere else that names a program's end.
+/// A status this does not know is a plain failure.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert transcript_lines.status_title("vetting_rejected")
+///   == "refused by vetting"
+/// ```
+@internal
+pub fn status_title(status: String) -> String {
+  case status {
+    "compile_failed" -> "compile error"
+    "vetting_rejected" -> "refused by vetting"
+    "run_failed" -> "did not finish"
+    "program_failed" -> "program failed"
+    _ -> "failed"
+  }
+}
+
 // A failure block: what failed in the title, why in the body, and how much
 // more there is in the foot. A compiler's diagnostic is cut to its heading
 // and the source lines it names; any other error is its opening lines.
@@ -2076,28 +2098,20 @@ fn failure_text(
     None -> ""
   }
   let said = content |> list.map(tool_result_text) |> string.join("\n")
-  let #(title, foot, error) = case string_field(details, "status") {
-    Some("compile_failed") -> #(
-      "compile error",
+  let status = string_field(details, "status") |> option.unwrap("")
+  let title = status_title(status)
+  let #(foot, error) = case status {
+    "compile_failed" -> #(
       "the program did not run",
       string_field(details, "detail") |> option.unwrap(said),
     )
-    Some("vetting_rejected") -> #(
-      "refused by vetting",
-      "the program did not run",
-      said,
-    )
-    Some("run_failed") -> #(
-      "did not finish",
-      "the program was stopped" <> budget,
-      said,
-    )
-    Some("program_failed") -> #(
-      "program failed",
+    "vetting_rejected" -> #("the program did not run", said)
+    "run_failed" -> #("the program was stopped" <> budget, said)
+    "program_failed" -> #(
       "the program reported a failure",
       string_field(details, "message") |> option.unwrap(said),
     )
-    Some(_) | None -> #("failed", "the program did not finish", said)
+    _ -> #("the program did not finish", said)
   }
   let all = string.split(string.trim(text_hygiene.multiline(error)), "\n")
   let body = diagnostic(all)

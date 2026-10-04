@@ -73,6 +73,9 @@ pub type Surface {
   /// Inspect the latest completed operation and separately observed live jobs.
   Summary
 
+  /// Show the strand's latest code-mode program, its result and its calls.
+  Trace
+
   /// Inspect current context totals.
   Context
 
@@ -376,6 +379,11 @@ fn all_suggestions() -> List(Suggestion) {
     Suggestion("/context", "inspect current context usage", False),
     Suggestion("/contextall", "inspect context items", False),
     Suggestion("/summary", "inspect the latest completed operation", False),
+    Suggestion(
+      "/trace",
+      "show the latest code-mode program and its calls",
+      False,
+    ),
     Suggestion("/details", "toggle reasoning and tool detail", False),
     Suggestion("/effort", "set the active strand's reasoning level", True),
     Suggestion("/goal", "show status; add a space for goal actions", False),
@@ -457,6 +465,7 @@ pub fn parse(input: String) -> Command {
     "/notes" -> Surface(Notes)
     "/diff" -> Surface(Diff)
     "/summary" -> Surface(Summary)
+    "/trace" -> Surface(Trace)
     "/context" -> Surface(Context)
     "/context all" | "/contextall" -> Surface(ContextAll)
     "/details" -> Surface(Details)
@@ -722,6 +731,7 @@ pub fn help_text() -> String {
   <> "/abort            abort the live operation\n"
   <> "/steer <text>     inject into the live operation\n"
   <> "/summary          inspect latest completion and live jobs\n"
+  <> "/trace            show the latest code-mode program and its calls\n"
   <> "/queue            inspect and edit queued inputs\n"
   <> "/queue <text>     run after the live operation\n"
   <> "/clear            clear this local transcript\n"
