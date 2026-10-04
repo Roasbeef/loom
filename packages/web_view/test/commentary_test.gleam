@@ -148,6 +148,21 @@ pub fn the_section_is_one_closed_summary_line_test() {
     == "Advisor · 1 review · last: Nothing to correct."
 }
 
+// A heading or list marker is Markdown's and is not quoted.
+pub fn a_leading_marker_is_not_quoted_in_the_summary_test() {
+  let quoted = fn(text) {
+    commentary.summary(advisor_history.Board(
+      [advisor_history.Item("a", 1, 0, text, advisor_history.AdvisorUpdate)],
+      None,
+    ))
+  }
+
+  assert quoted("# Nothing to fix")
+    == "Advisor · 1 review · last: Nothing to fix"
+  assert quoted("- one thing") == "Advisor · 1 review · last: one thing"
+  assert quoted("* another") == "Advisor · 1 review · last: another"
+}
+
 // A long first line is cut with an ellipsis at the limit.
 pub fn a_long_first_line_is_cut_in_the_summary_test() {
   let board =

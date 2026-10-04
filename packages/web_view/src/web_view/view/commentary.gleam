@@ -143,12 +143,23 @@ fn first_line(text: String) -> String {
     |> list.map(string.trim)
     |> list.find(fn(line) { line != "" })
     |> result.unwrap("")
+    |> without_marker
     |> string.replace("`", "")
     |> string.replace("**", "")
 
   case string.length(line) > summary_limit {
     True -> string.slice(line, 0, summary_limit - 1) <> "…"
     False -> line
+  }
+}
+
+// A leading heading or list marker is Markdown's, not the advisor's words.
+fn without_marker(line: String) -> String {
+  let markers = ["### ", "## ", "# ", "- ", "* "]
+
+  case list.find(markers, string.starts_with(line, _)) {
+    Ok(marker) -> string.drop_start(line, string.length(marker))
+    Error(Nil) -> line
   }
 }
 

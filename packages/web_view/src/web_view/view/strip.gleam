@@ -391,9 +391,11 @@ pub fn status(line: agent_roster.Line) -> Element(message) {
 
 // The card's tooltip, only when it says more than the line does.
 fn title(line: agent_roster.Line) -> List(attribute.Attribute(message)) {
-  case strand_card.status_title(line) == strand_card.status_line(line) {
+  let whole = strand_card.status_title(line)
+
+  case whole == strand_card.status_line(line) {
     True -> []
-    False -> [attribute.title(strand_card.status_title(line))]
+    False -> [attribute.title(whole)]
   }
 }
 
