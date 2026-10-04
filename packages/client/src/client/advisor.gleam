@@ -161,6 +161,7 @@ import client/advisorslice
 import client/goalcheck
 import client/goalloop
 import client/goalstate
+import client/internal/session_owner
 import client/notes
 import core/clock.{type Clock}
 import core/entry.{type Entry}
@@ -189,6 +190,7 @@ import session/session.{type Session}
 import storage/storage
 import telemetry/field
 import telemetry/log.{type Logger}
+import telemetry/owner
 import tools/advise
 import weft
 import weft/actor
@@ -753,12 +755,21 @@ pub fn start(wiring: Wiring) -> actor.StartResult(Subject(Message)) {
       block_cooldown_reviews: wiring.settings.block_cooldown_reviews,
     )
 
-  actor.new(State(
-    wiring:,
-    policy:,
-    recall: Unread,
-    origin: present_seq(wiring.session),
-  ))
+  actor.new_with_initialiser(5000, fn(subject) {
+    // The initialiser runs in the actor's own process, so this label names
+    // it to the ownership inspector under its session. The runtime is only
+    // borrowed here, and a refused borrow leaves the process unlabelled.
+    session_owner.label_borrowed(wiring.runtime, owner.Advisor)
+
+    actor.initialised(State(
+      wiring:,
+      policy:,
+      recall: Unread,
+      origin: present_seq(wiring.session),
+    ))
+    |> actor.returning(subject)
+    |> Ok
+  })
   |> actor.on_message(handle)
   |> actor.addressed(wiring.name)
   |> actor.hibernate_after(residency.hibernate_after_ms)
