@@ -637,21 +637,17 @@ pub fn home_listing(
   }
 }
 
-// The three steps of a home's read, each made afresh: the page is live, the
-// credential authenticates, and the catalogue's authorized page is read with
-// that credential.
+// The two steps of a home's read, each made afresh: the page is live, and the
+// catalogue's authorized page is read with the credential, which authenticates
+// it first.
 fn home_read(
   attachment: server.HomeAttachment(instance),
   open: fn() -> Result(Int, Nil),
 ) -> Result(List(sessions.Entry), Failure) {
   use _ <- result.try(open() |> result.replace_error(Gone(ending.PageEnded)))
-  use _ <- result.try(
-    manager.authenticate(attachment.registry, attachment.digest)
-    |> result.map_error(authentication_failure),
-  )
   use #(_, views) <- result.map(
     manager.authorized_page(attachment.registry, attachment.digest, after: "")
-    |> result.replace_error(Unreadable),
+    |> result.map_error(authentication_failure),
   )
   list.map(views, listed_entry)
 }
