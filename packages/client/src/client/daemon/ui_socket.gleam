@@ -1652,9 +1652,13 @@ pub fn create_for(
   case outcome {
     Error(reason) -> creations.Declined(reason)
     Ok(#(principal, session)) -> {
+      // Both are identifiers the catalogue minted and carry no authority, so
+      // they are written as `ident`: the free-text rule would replace a long
+      // unbroken run, which a principal's identity can be, with a redaction
+      // marker, and the line exists so a run of creations can be attributed.
       log.info(log.erlang(threshold: level.Info), "daemon.session_created", [
-        field.text("principal", principal.id),
-        field.text("session", session),
+        field.ident("principal", principal.id),
+        field.ident("session", session),
         field.ident("via", "page"),
       ])
       case opened_ticket(standing, tickets, open, session, within) {
