@@ -104,9 +104,9 @@ class SelectTest(unittest.TestCase):
         self.assertEqual(affected.daemon_packages(GRAPH), {
             "client", "host", "core", "storage", "session", "machine", "prompt",
             "events", "runtime", "broker", "provider", "tools", "codemode", "mcp",
-            "lsp", "telemetry"})
+            "lsp", "telemetry", "executor"})
         for package in ("runtime", "session", "storage", "events", "broker",
-                        "provider", "mcp", "lsp", "host", "tools"):
+                        "provider", "mcp", "lsp", "host", "tools", "executor"):
             with self.subTest(package=package):
                 selection = affected.select([f"packages/{package}/src/x.gleam"], GRAPH)
                 self.assertTrue(any("touches the daemon" in note for note in selection.signoff))
