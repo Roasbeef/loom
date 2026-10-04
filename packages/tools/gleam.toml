@@ -7,6 +7,7 @@ gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 core = { path = "../core" }
 broker = { path = "../broker" }
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
+gleam_otp = ">= 1.0.0 and < 2.0.0"
 gleam_regexp = ">= 1.1.1 and < 2.0.0"
 simplifile = ">= 2.0.0 and < 3.0.0"
 lsp = { path = "../lsp" }
@@ -16,4 +17,3 @@ lsp = { path = "../lsp" }
 # keys the program-side library writes are checked against each other.
 cap = { path = "../cap" }
 gleeunit = ">= 1.0.0 and < 2.0.0"
-gleam_otp = ">= 1.0.0 and < 2.0.0"
