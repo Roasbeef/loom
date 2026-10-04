@@ -509,6 +509,7 @@ pub fn tool_context_construction_test() {
   let operation = op_id()
   let run =
     effects.ToolRun(
+      result_entry: ids.mint_entry(ids.generator(clock.fixed(at: 0), seed: 991)).0,
       operation:,
       step_id: "turn-3:tools",
       source_index: 2,
@@ -546,6 +547,7 @@ pub fn run_tool_wraps_outcome_as_result_message_test() {
   let config = wide_config()
   let run =
     effects.ToolRun(
+      result_entry: ids.mint_entry(ids.generator(clock.fixed(at: 0), seed: 991)).0,
       operation: op_id(),
       step_id: "turn-1:tools",
       source_index: 0,
@@ -583,6 +585,7 @@ pub fn run_tool_unknown_name_is_in_band_error_test() {
   let config = wide_config()
   let run =
     effects.ToolRun(
+      result_entry: ids.mint_entry(ids.generator(clock.fixed(at: 0), seed: 991)).0,
       operation: op_id(),
       step_id: "turn-1:tools",
       source_index: 0,
@@ -617,6 +620,7 @@ pub fn run_tool_policy_refusal_carries_wanted_grants_test() {
     )
   let run =
     effects.ToolRun(
+      result_entry: ids.mint_entry(ids.generator(clock.fixed(at: 0), seed: 991)).0,
       operation: op_id(),
       step_id: "turn-1:tools",
       source_index: 0,

@@ -538,6 +538,7 @@ fn effects_answering(clearance: effects.Clearance) -> effects.Effects {
       timeout_ms: 0,
     ),
     tools: effects.ToolSurface(
+      recover: fn(_run, _complete) { effects.UnmanagedLocal },
       clear: fn(_query) { clearance },
       run: fn(_run) { panic as "no tool is run" },
       replay_still_safe: fn(_name) { False },

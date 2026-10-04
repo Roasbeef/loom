@@ -113,6 +113,7 @@ import gleam/result
 import gleam/string
 import machine/classification
 import machine/codec
+import machine/internal/build
 import machine/operation.{
   type NormalizedRetryPolicy, type Operation, type OperationState,
   type PendingEntry, type StructuralPreparation, type SummaryGeneration,
@@ -238,6 +239,9 @@ pub opaque type Message {
   /// A tool effect settled.
   ToolDone(token: EffectToken, outcome: effects.ToolOutcome)
 
+  /// A custody lookup or reconciliation completed under the original token.
+  ToolRecoveryDone(token: EffectToken, verdict: effects.ToolRecovery)
+
   /// A monitored effect process exited.
   EffectExit(down: process.Down)
 }
@@ -263,6 +267,11 @@ type ProviderWaitEvent {
   ProviderCancelExpired
 }
 
+type RecoveryFallback {
+  RestartOrphan
+  LiveCallbackLost
+}
+
 type Live {
   Live(
     token: EffectToken,
@@ -274,6 +283,8 @@ type Live {
     configuration: StrandConfiguration,
     /// The source tool call, for synthetic tool failure results.
     call: Option(ToolCall),
+    /// Local callbacks retain their previous live-failure versus restart policy.
+    recovery_fallback: Option(RecoveryFallback),
   )
 }
 
@@ -579,6 +590,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       finish(logger, provider_done(state, token, terminal))
     ToolDone(token:, outcome:) ->
       finish(logger, tool_done(state, token, outcome))
+    ToolRecoveryDone(token:, verdict:) ->
+      finish(logger, tool_recovery_done(state, token, verdict))
     EffectExit(down:) -> finish(logger, effect_exit(state, down))
   }
 }
@@ -952,15 +965,59 @@ fn effect_exit(state: State, down: process.Down) -> Outcome {
         AssistantEffect(..) | PollEffect(..) | SummaryEffect(..) ->
           Halt("a provider effect exited before its stream owner drained")
         ToolEffect(..) ->
-          tool_done(
-            state,
-            live.token,
-            effects.ToolFailed(
-              reason: "the tool effect process exited before settling",
-            ),
-          )
+          case live.recovery_fallback {
+            None -> recover_tool_exit(state, live)
+            Some(_) ->
+              tool_done(
+                state,
+                live.token,
+                effects.ToolFailed(
+                  "remote tool recovery observer exited; owner evidence remains retained",
+                ),
+              )
+          }
       }
     }
+  }
+}
+
+// A live callback can disappear after owner.finish committed its exact result.
+// Consult custody before synthesizing failure, just as restart does. The local
+// fallback remains the old live-effect failure, not a new replay permission.
+fn recover_tool_exit(state: State, live: Live) -> Outcome {
+  use #(_removed, state) <- or_continue(
+    take_live(state, live.token),
+    otherwise: state,
+  )
+  case live.token, live.call {
+    ToolEffect(operation:, step_id:, source_index:, result_entry:), Some(call)
+    -> {
+      use arguments <- or_halt(read_tool_arguments(
+        state,
+        build.tool_args_key(operation, step_id, source_index),
+      ))
+      let run =
+        effects.ToolRun(
+          operation:,
+          step_id:,
+          source_index:,
+          result_entry:,
+          strand: state.strand,
+          call:,
+          arguments:,
+          replay: operation.ReplayNever,
+          grants: [],
+        )
+      use control <- or_halt(recovery_control(state, operation))
+      Continue(spawn_tool_recovery(
+        State(..state, cleared: None),
+        live.configuration,
+        run,
+        LiveCallbackLost,
+        control,
+      ))
+    }
+    _, _ -> Halt("lost tool callback has no original durable identity")
   }
 }
 
@@ -1193,6 +1250,14 @@ fn await_effect_action(
         other -> Continue(push_observation_front(state, other))
       }
     KeyObservation(refined) -> plan(state, loaded, refined, fuel - 1)
+    KeyRecovery(run) ->
+      Continue(spawn_tool_recovery(
+        State(..state, cleared: None),
+        loaded.configuration,
+        run,
+        RestartOrphan,
+        loaded.op_state.control,
+      ))
     KeyCleared(observation: refined, cleared:) ->
       plan(State(..state, cleared: Some(cleared)), loaded, refined, fuel - 1)
   }
@@ -1310,6 +1375,7 @@ type KeyResolution {
   /// at the query, which is exactly the severed channel this variant
   /// exists to close.
   KeyCleared(observation: Observation, cleared: Cleared)
+  KeyRecovery(run: effects.ToolRun)
   KeyWait
   KeyHalt(String)
 }
@@ -1362,8 +1428,8 @@ fn resolve_key(
       overflow_preparation_key(state, hooks, operation, observation)
     planner.ToolClearanceKey(operation:, step_id:, source_index:) ->
       tool_clearance_key(state, loaded, operation, step_id, source_index, now)
-    planner.ToolKey(operation:, step_id:, source_index:, result_entry: _) ->
-      tool_key(state, loaded, operation, step_id, source_index)
+    planner.ToolKey(operation:, step_id:, source_index:, result_entry:) ->
+      tool_key(state, loaded, operation, step_id, source_index, result_entry)
     planner.PollAdmissionKey(operation: _, step_id: _, poll: _) ->
       KeyObservation(
         planner.ObservedResolution(resolution: hooks.resolution(
@@ -1552,21 +1618,33 @@ fn tool_key(
   operation: OpId,
   step_id: String,
   source_index: Int,
+  result_entry: EntryId,
 ) -> KeyResolution {
-  // Any pending call's observation satisfies the key.
   use <- bool.guard(
     when: has_live_tool(state, operation, step_id),
     return: KeyWait,
   )
   use call <- or_key_halt(source_call(loaded, source_index))
-
-  // Loom has no durable tool checkpoints (no list store — spec-gaps
-  // WP-D item 2), so the checkpoint is always absent.
-  KeyObservation(planner.ObservedToolOrphaned(
-    source_index:,
-    replay_still_safe: state.effects.tools.replay_still_safe(call.name),
-    checkpoint: None,
+  use arguments <- or_key_halt(read_tool_arguments(
+    state,
+    build.tool_args_key(operation, step_id, source_index),
   ))
+
+  // Recovery has no clearance or authority to send. It consumes the same
+  // persisted arguments and reserved entry, with every spent grant removed.
+  KeyRecovery(
+    effects.ToolRun(
+      operation:,
+      step_id:,
+      source_index:,
+      result_entry:,
+      strand: state.strand,
+      call:,
+      arguments:,
+      replay: operation.ReplayNever,
+      grants: [],
+    ),
+  )
 }
 
 fn summary_key(
@@ -1699,6 +1777,7 @@ fn start_effect(
           operation:,
           step_id:,
           source_index:,
+          result_entry:,
           strand: state.strand,
           call:,
           arguments: effective_arguments,
@@ -1724,6 +1803,7 @@ fn start_effect(
           operation:,
           step_id:,
           source_index:,
+          result_entry:,
           strand: state.strand,
           call:,
           arguments:,
@@ -2323,7 +2403,15 @@ fn spawn_provider(
     })
   let monitor = process.monitor(pid)
   State(..state, live: [
-    Live(token:, pid:, stop:, monitor:, configuration:, call: None),
+    Live(
+      token:,
+      pid:,
+      stop:,
+      monitor:,
+      configuration:,
+      call: None,
+      recovery_fallback: None,
+    ),
     ..state.live
   ])
 }
@@ -2524,9 +2612,196 @@ fn spawn_tool(
     })
   let monitor = process.monitor(pid)
   State(..state, live: [
-    Live(token:, pid:, stop:, monitor:, configuration:, call: Some(call)),
+    Live(
+      token:,
+      pid:,
+      stop:,
+      monitor:,
+      configuration:,
+      call: Some(call),
+      recovery_fallback: None,
+    ),
     ..state.live
   ])
+}
+
+// The first abort stops existing effects. Recovery created by their DOWN must
+// retain that durable cancellation instead of installing a fresh unbounded wait.
+// Reading through the writer preserves its serialization and corruption checks.
+fn recovery_control(
+  state: State,
+  operation: OpId,
+) -> Result(operation.Control, String) {
+  use cell <- result.try(read_decoded(
+    state,
+    register.OpState,
+    ids.op_id_to_string(operation),
+    codec.decode_state,
+  ))
+  use #(_, operation_state) <- result.try(option.to_result(
+    cell,
+    "remote recovery lost its durable operation state",
+  ))
+  Ok(operation_state.control)
+}
+
+// Recovery waits on one supervised effect, so checkpoint ticks never call the
+// model or dispatch the request while reconciliation owns its original token.
+fn spawn_tool_recovery(
+  state: State,
+  configuration: StrandConfiguration,
+  run: effects.ToolRun,
+  fallback: RecoveryFallback,
+  control: operation.Control,
+) -> State {
+  let token =
+    ToolEffect(
+      operation: run.operation,
+      step_id: run.step_id,
+      source_index: run.source_index,
+      result_entry: run.result_entry,
+    )
+  let parent = state.internal
+  let recover = state.effects.tools.recover
+  let logger = step_logger(state, token)
+  let #(pid, stop) =
+    spawn_provider_effect(state.reaper, logger, fn(stop) {
+      let completion = process.new_subject()
+      let verdict = recover(run, fn(done) { process.send(completion, done) })
+      case verdict, control {
+        effects.PendingReconciliation, operation.CancelRequested(..) ->
+          wake(
+            parent,
+            ToolRecoveryDone(
+              token:,
+              verdict: effects.UnknownOutcome(
+                "operation cancelled while reconciliation remains pending",
+              ),
+            ),
+          )
+        effects.PendingReconciliation, operation.Running -> {
+          // The completion wake and cancellation share one selector. The
+          // durable custodian retains evidence even when this observer drains.
+          let selector =
+            process.new_selector()
+            |> process.select_map(stop, fn(_) { None })
+            |> process.select_map(completion, Some)
+          case process.selector_receive_forever(selector) {
+            None -> Nil
+            Some(effects.RecoveryCompleted(outcome)) ->
+              wake(
+                parent,
+                ToolRecoveryDone(
+                  token:,
+                  verdict: effects.RecoveredOutcome(outcome),
+                ),
+              )
+            Some(effects.RecoveryUnknown(evidence)) ->
+              wake(
+                parent,
+                ToolRecoveryDone(
+                  token:,
+                  verdict: effects.UnknownOutcome(evidence),
+                ),
+              )
+          }
+        }
+        effects.UnmanagedLocal, _
+        | effects.RecoveredOutcome(_), _
+        | effects.UnknownOutcome(_), _
+        -> wake(parent, ToolRecoveryDone(token:, verdict:))
+      }
+    })
+  let monitor = process.monitor(pid)
+  State(..state, live: [
+    Live(
+      token:,
+      pid:,
+      stop:,
+      monitor:,
+      configuration:,
+      call: Some(run.call),
+      recovery_fallback: Some(fallback),
+    ),
+    ..state.live
+  ])
+}
+
+fn tool_recovery_done(
+  state: State,
+  token: EffectToken,
+  verdict: effects.ToolRecovery,
+) -> Outcome {
+  case verdict {
+    effects.RecoveredOutcome(outcome) -> {
+      case list.find(state.live, fn(live) { live.token == token }) {
+        Error(Nil) -> Continue(state)
+        Ok(live) -> {
+          let validated = case outcome, live.call {
+            effects.ToolCompleted(
+              result: ToolResultMessage(tool_call_id:, tool_name:, ..),
+              ..,
+            ),
+              Some(call)
+              if tool_call_id == call.id && tool_name == call.name
+            -> outcome
+            effects.ToolFailed(_), Some(_) -> outcome
+            _, _ ->
+              effects.ToolFailed(
+                "remote tool outcome unknown; retained evidence: final outcome conflicts with original tool call",
+              )
+          }
+          tool_done(state, token, validated)
+        }
+      }
+    }
+    effects.UnknownOutcome(evidence) ->
+      tool_done(
+        state,
+        token,
+        effects.ToolFailed(
+          "remote tool outcome unknown; retained evidence: " <> evidence,
+        ),
+      )
+    effects.PendingReconciliation ->
+      Halt("pending recovery cannot deliver a terminal wake")
+    effects.UnmanagedLocal -> {
+      use #(live, state) <- or_continue(
+        take_live(state, token),
+        otherwise: state,
+      )
+      case token, live.call {
+        ToolEffect(source_index:, ..), Some(call) ->
+          case live.recovery_fallback {
+            Some(RestartOrphan) ->
+              drive(push_observation(
+                state,
+                planner.ObservedToolOrphaned(
+                  source_index:,
+                  replay_still_safe: state.effects.tools.replay_still_safe(
+                    call.name,
+                  ),
+                  checkpoint: None,
+                ),
+              ))
+            Some(LiveCallbackLost) -> {
+              let #(now, state) = read_clock(state)
+              use observation <- or_halt(tool_observation(
+                live,
+                effects.ToolFailed(
+                  "the tool effect process exited before settling",
+                ),
+                source_index,
+                now,
+              ))
+              drive(push_observation(state, observation))
+            }
+            None -> Halt("local recovery completion has no fallback provenance")
+          }
+        _, _ -> Halt("local orphan recovery lost its source tool identity")
+      }
+    }
+  }
 }
 
 // --- loading and validation (spec §3.1) -----------------------------------
