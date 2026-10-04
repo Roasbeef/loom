@@ -50,7 +50,12 @@ pub opaque type Config {
 
 /// A reclaimable address, resolving the current supervised owner each ask.
 pub opaque type Handle {
-  Handle(address: registry.Address(Message), task_ms: Int)
+  Handle(
+    address: registry.Address(Message),
+    task_ms: Int,
+    /// Pre-send quota bound, rechecked against the actor store configuration.
+    limits: custody.Limits,
+  )
 }
 
 /// Closed actor vocabulary; no caller can submit a query closure.
@@ -74,6 +79,22 @@ pub opaque type Message {
     ids.EntryId,
     BitArray,
     process.Subject(Result(#(ids.EntryId, BitArray), custody.Error)),
+  )
+
+  /// A configured, byte-bounded semantic invocation reservation.
+  ReserveWorkspace(
+    remote_tool.ChildOrigin,
+    ids.EntryId,
+    custody.WorkspaceRequest,
+    process.Subject(Result(Nil, custody.Error)),
+  )
+
+  /// A configured, byte-bounded semantic completion custody transfer.
+  ReceiveWorkspace(
+    remote_tool.ChildOrigin,
+    ids.EntryId,
+    custody.WorkspaceCompletion,
+    process.Subject(Result(Nil, custody.Error)),
   )
   ReadChild(
     remote_tool.ChildOrigin,
@@ -154,7 +175,7 @@ pub fn config(
 /// // let owner = custodian.new(names, config)
 /// ```
 pub fn new(names: registry.Registry, config: Config) -> Handle {
-  Handle(registry.new_address(names), config.task_ms)
+  Handle(registry.new_address(names), config.task_ms, config.limits)
 }
 
 /// Starts the actor; production embeds supervised instead.
@@ -269,6 +290,39 @@ pub fn reserve_child(
 ) -> Result(#(ids.EntryId, BitArray), custody.Error) {
   use Nil <- result.try(input_bound(request, 131_072))
   ask(owner, fn(reply) { ReserveChild(origin, proposed_id, request, reply) })
+}
+
+/// Reserves exact workspace invocation bytes with their original UUID.
+/// Both semantic and configured byte limits are checked before mailbox send.
+/// A concurrent candidate with another UUID conflicts, rather than executing.
+///
+/// ## Examples
+///
+/// `reserve_workspace_child(owner, origin, id, bytes)` commits before send.
+pub fn reserve_workspace_child(
+  owner: Handle,
+  origin: remote_tool.ChildOrigin,
+  id: ids.EntryId,
+  request: BitArray,
+) -> Result(Nil, custody.Error) {
+  use request <- result.try(custody.workspace_request(owner.limits, request))
+  ask(owner, fn(reply) { ReserveWorkspace(origin, id, request, reply) })
+}
+
+/// Commits exact workspace completion bytes before returning durable custody.
+/// The configured byte quota is checked before bytes enter the owner mailbox.
+///
+/// ## Examples
+///
+/// `receive_workspace_child(owner, origin, id, bytes)` permits an exact duplicate.
+pub fn receive_workspace_child(
+  owner: Handle,
+  origin: remote_tool.ChildOrigin,
+  id: ids.EntryId,
+  receipt: BitArray,
+) -> Result(Nil, custody.Error) {
+  use receipt <- result.try(custody.workspace_completion(owner.limits, receipt))
+  ask(owner, fn(reply) { ReceiveWorkspace(origin, id, receipt, reply) })
 }
 
 /// Retrieves stable UUID, outgoing bytes and optional exact child receipt.
@@ -428,6 +482,20 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
     ReserveChild(origin, candidate, request, reply) -> {
       process.send(reply, reserve(state, origin, candidate, request))
+      resume(state)
+    }
+    ReserveWorkspace(origin, id, request, reply) -> {
+      process.send(
+        reply,
+        custody.admit_workspace_child(state.store, origin, id, request),
+      )
+      resume(state)
+    }
+    ReceiveWorkspace(origin, id, receipt, reply) -> {
+      process.send(
+        reply,
+        custody.receive_workspace_child(state.store, origin, id, receipt),
+      )
       resume(state)
     }
     ReadChild(origin, reply) -> {

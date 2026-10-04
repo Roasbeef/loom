@@ -58,6 +58,24 @@ pub opaque type Payload {
   Payload(bytes: BitArray)
 }
 
+/// A bounded semantic invocation admitted only through workspace child methods.
+pub opaque type WorkspaceRequest {
+  /// Exact bytes, with no ephemeral content references.
+  WorkspaceRequest(
+    /// Exact bytes admitted under the configured invocation ceiling.
+    payload: Payload,
+  )
+}
+
+/// A bounded semantic completion admitted only through workspace receipt methods.
+pub opaque type WorkspaceCompletion {
+  /// Exact bytes retained before durable acknowledgement.
+  WorkspaceCompletion(
+    /// Exact bytes admitted under the configured completion ceiling.
+    payload: Payload,
+  )
+}
+
 /// A serialized handle for one session's custody database.
 pub opaque type Store {
   Store(connection: sqlight.Connection, session: SessionId, limits: Limits)
@@ -130,6 +148,11 @@ pub type Admission {
   Retained
 }
 
+type ReceiptPolicy {
+  NativeReceipt
+  WorkspaceReceipt
+}
+
 /// Checks finite per-session row, byte and per-payload ceilings.
 /// Frozen fences count toward row and byte quotas and are never evicted.
 ///
@@ -150,7 +173,7 @@ pub fn limits(
     && children > 0
     && children <= 65_536
     && payload > 0
-    && payload <= 2_097_152
+    && payload <= 33_554_432
     && bytes > 0
     && bytes <= 268_435_456
   {
@@ -171,8 +194,55 @@ pub fn payload(limits: Limits, bytes: BitArray) -> Result(Payload, Error) {
     when: bit_array.bit_size(bytes) % 8 != 0,
     return: Error(Invalid("owner payload must contain whole bytes")),
   )
-  case bit_array.byte_size(bytes) <= limits.payload {
+  case
+    bit_array.byte_size(bytes) <= limits.payload
+    && bit_array.byte_size(bytes) <= 2_097_152
+  {
     True -> Ok(Payload(bytes:))
+    False -> Error(Capacity)
+  }
+}
+
+/// Checks the configured quota and nine-MiB invocation limit before mailbox send.
+///
+/// ## Examples
+///
+/// A smaller configured quota still refuses a larger workspace invocation.
+pub fn workspace_request(
+  limits: Limits,
+  bytes: BitArray,
+) -> Result(WorkspaceRequest, Error) {
+  use value <- result.try(workspace_payload(limits, bytes, 9_437_184))
+  Ok(WorkspaceRequest(value))
+}
+
+/// Checks the configured quota and thirty-two-MiB completion limit.
+///
+/// ## Examples
+///
+/// `workspace_completion(limits, bytes)` never enlarges persisted limits.
+pub fn workspace_completion(
+  limits: Limits,
+  bytes: BitArray,
+) -> Result(WorkspaceCompletion, Error) {
+  use value <- result.try(workspace_payload(limits, bytes, 33_554_432))
+  Ok(WorkspaceCompletion(value))
+}
+
+fn workspace_payload(
+  limits: Limits,
+  bytes: BitArray,
+  maximum: Int,
+) -> Result(Payload, Error) {
+  use <- bool.guard(
+    when: bit_array.bit_size(bytes) % 8 != 0,
+    return: Error(Invalid("workspace payload must contain whole bytes")),
+  )
+  case
+    bit_array.byte_size(bytes) <= limits.payload
+    && bit_array.byte_size(bytes) <= maximum
+  {
+    True -> Ok(Payload(bytes))
     False -> Error(Capacity)
   }
 }
@@ -411,8 +481,33 @@ pub fn admit_child(
   request_id: EntryId,
   request: Payload,
 ) -> Result(Nil, Error) {
-  use Nil <- result.try(same_session(store, remote_tool.child_session(origin)))
   use Nil <- result.try(check_payload(store, request))
+  admit_child_payload(store, origin, request_id, request)
+}
+
+/// Reserves the full configured result allowance before workspace effects.
+/// Exact UUID and complete invocation bytes must match on every retained retry.
+///
+/// ## Examples
+///
+/// `admit_workspace_child(store, origin, id, request)` commits before send.
+pub fn admit_workspace_child(
+  store: Store,
+  origin: ChildOrigin,
+  request_id: EntryId,
+  request: WorkspaceRequest,
+) -> Result(Nil, Error) {
+  use _ <- result.try(workspace_request(store.limits, request.payload.bytes))
+  admit_child_payload(store, origin, request_id, request.payload)
+}
+
+fn admit_child_payload(
+  store: Store,
+  origin: ChildOrigin,
+  request_id: EntryId,
+  request: Payload,
+) -> Result(Nil, Error) {
+  use Nil <- result.try(same_session(store, remote_tool.child_session(origin)))
   transaction(store, fn() {
     use Nil <- result.try(parent_retained(store, origin))
     use Nil <- result.try(not_cancelled(store, origin))
@@ -555,13 +650,49 @@ pub fn receive_child(
   request_id: EntryId,
   terminal: Payload,
 ) -> Result(Nil, Error) {
-  use Nil <- result.try(same_session(store, remote_tool.child_session(origin)))
   use Nil <- result.try(check_payload(store, terminal))
+  receive_child_payload(store, origin, request_id, terminal, NativeReceipt)
+}
+
+/// Commits complete workspace evidence; cancellation refuses a late receipt.
+/// This grants child custody only, never final ToolOutcome custody.
+///
+/// ## Examples
+///
+/// `receive_workspace_child(store, origin, id, completion)` is idempotent exactly.
+pub fn receive_workspace_child(
+  store: Store,
+  origin: ChildOrigin,
+  request_id: EntryId,
+  terminal: WorkspaceCompletion,
+) -> Result(Nil, Error) {
+  use _ <- result.try(workspace_completion(store.limits, terminal.payload.bytes))
+  receive_child_payload(
+    store,
+    origin,
+    request_id,
+    terminal.payload,
+    WorkspaceReceipt,
+  )
+}
+
+fn receive_child_payload(
+  store: Store,
+  origin: ChildOrigin,
+  request_id: EntryId,
+  terminal: Payload,
+  policy: ReceiptPolicy,
+) -> Result(Nil, Error) {
+  use Nil <- result.try(same_session(store, remote_tool.child_session(origin)))
   transaction(store, fn() {
     use Nil <- result.try(parent_retained(store, origin))
     use row <- result.try(child_row(store, origin))
     use #(header, row) <- result.try(option.to_result(row, Missing))
     use <- bool.guard(when: header.state == "frozen", return: Error(Frozen))
+    use Nil <- result.try(case policy, header.state {
+      WorkspaceReceipt, "cancelled" -> Error(Frozen)
+      NativeReceipt, _ | WorkspaceReceipt, _ -> Ok(Nil)
+    })
     use Nil <- result.try(equal_string(
       header.request_id,
       ids.entry_id_to_string(request_id),

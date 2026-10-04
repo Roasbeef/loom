@@ -36,6 +36,12 @@ pub type ChildRole {
 
   /// One nested capability invocation, numbered by the admitted program.
   Capability(ordinal: Int)
+
+  /// One semantic workspace invocation, disjoint from physical execution roles.
+  Workspace(
+    /// The stable ordinal assigned by the admitted caller.
+    ordinal: Int,
+  )
 }
 
 /// A child request belongs to a tool or an explicitly named system service.
@@ -178,7 +184,7 @@ pub fn tool_child(
 ) -> Result(ChildOrigin, String) {
   case role {
     Compile | Launch -> Ok(ToolChild(key:, role:))
-    Capability(ordinal) -> {
+    Capability(ordinal) | Workspace(ordinal) -> {
       use Nil <- result.try(bounded_ordinal(ordinal))
       Ok(ToolChild(key:, role:))
     }
@@ -252,6 +258,8 @@ pub fn child_address(origin: ChildOrigin) -> String {
     ToolChild(role: Launch, ..) -> json.Array([json.String("launch")])
     ToolChild(role: Capability(ordinal), ..) ->
       json.Array([json.String("cap"), json.Int(ordinal)])
+    ToolChild(role: Workspace(ordinal), ..) ->
+      json.Array([json.String("workspace"), json.Int(ordinal)])
     SystemChild(ordinal:, ..) ->
       json.Array([json.String("system"), json.Int(ordinal)])
   }
@@ -287,5 +295,26 @@ fn bounded_ordinal(ordinal: Int) -> Result(Nil, String) {
   case ordinal >= 0 && ordinal <= 4095 {
     True -> Ok(Nil)
     False -> Error("remote child ordinal is outside its bound")
+  }
+}
+
+/// Projects immutable source index and canonical argument digest for provenance.
+///
+/// ## Examples
+///
+/// `provenance(key)` retains the runtime source rather than allocating a new one.
+pub fn provenance(key: ToolKey) -> #(Int, String) {
+  #(key.source_index, key.argument_digest)
+}
+
+/// Projects a tool child's role while keeping a system origin explicit.
+///
+/// ## Examples
+///
+/// `child_role(system_origin)` returns `Error(Nil)`.
+pub fn child_role(origin: ChildOrigin) -> Result(ChildRole, Nil) {
+  case origin {
+    ToolChild(role:, ..) -> Ok(role)
+    SystemChild(..) -> Error(Nil)
   }
 }
