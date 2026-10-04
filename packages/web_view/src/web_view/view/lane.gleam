@@ -747,8 +747,10 @@ fn standing_text(standing: turns.Standing) -> String {
 // A block drawn as the transcript draws it, one line per row. The blank a
 // terminal places between tool groups is spacing here, so a spacer block
 // never reaches the lane. A reasoning row is a row of its own, `Reasoning ·
-// 4s`, opened to the full reasoning when the page holds it (`thoughts`, by
-// the row's key) and to its opening line when that is all there is.
+// 4s` (the time is the response's, from the record before it to its own, not
+// the block's alone), opened to the full reasoning when the page holds it
+// (`thoughts`, by the row's key) and to its opening line when that is all
+// there is.
 fn block_element(
   block: transcript_lines.Block,
   thoughts: Dict(String, List(Line)),
@@ -763,7 +765,7 @@ fn block_element(
           fold_row.reasoning(
             took,
             list.map(
-              result.unwrap(dict.get(thoughts, row.0), [row.1]),
+              result.lazy_unwrap(dict.get(thoughts, row.0), fn() { [row.1] }),
               fold_row.line_row(_, draw),
             ),
           )
@@ -807,7 +809,12 @@ fn first_line(report: String) -> String {
     |> result.unwrap("")
     |> string.replace("`", "")
   let bare = case line {
-    "#" <> rest | ">" <> rest | "-" <> rest | "*" <> rest -> string.trim(rest)
+    "# " <> rest
+    | "## " <> rest
+    | "### " <> rest
+    | "> " <> rest
+    | "- " <> rest
+    | "* " <> rest -> string.trim(rest)
     _ -> line
   }
   case string.length(bare) > 120 {

@@ -351,3 +351,32 @@ pub fn a_diff_past_the_bound_says_how_many_lines_it_left_out_test() {
     "<p class=\"diff-cut\">31 more lines not shown</p>",
   )
 }
+
+// A report's first line loses a Markdown marker only when it is one: a marker
+// is the sign and its space, so `-1 is wrong` and `**bold**` keep their first
+// characters.
+pub fn a_reports_first_line_keeps_text_that_only_looks_like_a_marker_test() {
+  let head = fn(report) {
+    drawn([
+      turns.Returned(
+        "6.0/0/0",
+        "sub:main/scan-1a2b3c",
+        "completed",
+        report,
+        turns.Sub(0),
+      ),
+    ])
+  }
+  assert string.contains(
+    head("-1 is wrong\nmore"),
+    "<span class=\"subject\">-1 is wrong</span>",
+  )
+  assert string.contains(
+    head("**bold** start\nmore"),
+    "<span class=\"subject\">**bold** start</span>",
+  )
+  assert string.contains(
+    head("- a list item\nmore"),
+    "<span class=\"subject\">a list item</span>",
+  )
+}
