@@ -5,7 +5,9 @@ spec PreparationSafety observes mProductCustody, mProductCompleted, mProductReso
   mProductFingerprintChecked, mProductResourceOwnerDead, mProductLeaseUsable,
   mProductWallSelected, mProductWallRefused, mProductOfferRetained, mProductTime,
   mProductClearanceAttempt, mProductCleared, mProductNativeReserved, mAdmit, mStart,
-  mProductNativeAssociated, mProductTerminalAssociated, mProductNativeQuery {
+  mProductNativeAssociated, mProductTerminalAssociated, mProductNativeQuery,
+  mOriginalClaim, mLiveClaimRevoked, mCommandPending, mCommandPermitIssued,
+  mCommandPermitConsumed, mCommandControlForwarded, mCommandNativeRecovered, mIntent, mCommandReplyLost {
   var custody: map[int, tService];
   var completed: map[int, tProductResult];
   var intents: set[int];
@@ -22,7 +24,54 @@ spec PreparationSafety observes mProductCustody, mProductCompleted, mProductReso
   var associated: map[int, tPreparedProduct];
   var remainingAtClear: map[int, int];
   var elapsed: int;
+  var liveClaims: map[int, tLiveClaim];
+  var pendingCommands: map[tKey, tAssociationRequest];
+  var issuedPermits: map[tKey, tAssociationRequest];
+  var consumedPermits: map[tKey, tAssociationRequest];
+  var nativeBoot: int;
+  var lostReplies: set[tKey];
   start state Watching {
+    entry { nativeBoot = 1; }
+    on mOriginalClaim do (c: tLiveClaim) {
+      assert !(c.service.id in liveClaims), "original live Claim was recreated";
+      liveClaims[c.service.id] = c;
+    }
+    on mLiveClaimRevoked do (c: tLiveClaim) { liveClaims -= (c.service.id); }
+    on mCommandPending do (a: tAssociationRequest) {
+      assert a.command.prepared.native.key in admitted && admitted[a.command.prepared.native.key] == a.command.prepared.native,
+        "command continuation preceded actual native Admit";
+      pendingCommands[a.command.prepared.native.key] = a;
+    }
+    on mCommandReplyLost do (a: tAssociationRequest) { lostReplies += (a.command.prepared.native.key); }
+    on mCommandNativeRecovered do (boot: int) { nativeBoot = boot; }
+    on mCommandPermitIssued do (a: tAssociationRequest) {
+      var id: int;
+      id = a.command.prepared.offer.service.id;
+      assert id in liveClaims && liveClaims[id] == a.command.claim &&
+        a.command.prepared.offer.commandRef in associated && associated[a.command.prepared.offer.commandRef] == a.command.prepared &&
+        !(a.command.prepared.native.key in issuedPermits), "permit lacked unique original live Claim and exact committed association";
+      issuedPermits[a.command.prepared.native.key] = a;
+      liveClaims -= (id);
+    }
+    on mCommandPermitConsumed do (a: tAssociationRequest) {
+      assert a.command.prepared.native.key in issuedPermits && issuedPermits[a.command.prepared.native.key] == a &&
+        a.command.prepared.native.key in pendingCommands && pendingCommands[a.command.prepared.native.key] == a &&
+        a.boot == nativeBoot && !(a.command.prepared.native.key in consumedPermits) && !(a.command.prepared.native.key in lostReplies),
+        "native launch consumed absent stale or duplicate original permit";
+      consumedPermits[a.command.prepared.native.key] = a;
+    }
+    on mCommandControlForwarded do (c: tCommandControl) {
+      assert c.command.prepared.offer.commandRef in associated && associated[c.command.prepared.offer.commandRef] == c.command.prepared &&
+        c.wire.request == c.command.prepared.native, "command control lacked exact retained association";
+    }
+    on mIntent do (n: tNative) {
+      if (n.key.execution in native) {
+        assert n.key in consumedPermits && consumedPermits[n.key].boot == n.boot &&
+          consumedPermits[n.key].command.prepared.offer.commandRef in associated &&
+          associated[consumedPermits[n.key].command.prepared.offer.commandRef] == consumedPermits[n.key].command.prepared,
+          "command Intent preceded exact association and original live permit";
+      }
+    }
     on mProductCustody do (s: tService) {
       if (s.id in custody) { assert custody[s.id] == s, "original service input changed"; }
       custody[s.id] = s;
@@ -115,6 +164,8 @@ spec PreparationSafety observes mProductCustody, mProductCompleted, mProductReso
       assert p.native.key in admitted && admitted[p.native.key] == p.native &&
         p.offer.commandRef in native && native[p.offer.commandRef] == p,
         "service admission lacked actual native evidence";
+      assert p.offer.service.id in liveClaims && liveClaims[p.offer.service.id].service == p.offer.service &&
+        !(p.offer.commandRef in associated), "fresh association lacked original live Claim";
       associated[p.offer.commandRef] = p;
     }
     on mProductTerminalAssociated do (p: tPreparedProduct) {
