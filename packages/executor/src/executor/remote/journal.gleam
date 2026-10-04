@@ -17,10 +17,15 @@
 //// Timeout also means uncertainty, never definite refusal. Recovery returns no
 //// launch decisions. The live caller must apply a returned Launch at most once;
 //// this module neither launches processes nor proves native restart recovery.
+////
+//// Named queries and their row decoders come from Parrot/sqlc. The SQL source
+//// owns storage shape; this module owns transactions and admission ordering.
 
+import executor/custody_schema
 import executor/remote/admission
 import executor/remote/identity
 import executor/remote/journal_codec as codec
+import executor/sql
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -28,6 +33,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import parrot/dev
 import simplifile
 import sqlight
 import weft/actor
@@ -116,9 +122,6 @@ type Message {
   )
   Release(reply: process.Subject(Result(Nil, Error)))
 }
-
-const schema =
-  "CREATE TABLE custody_meta (id INTEGER PRIMARY KEY CHECK(id=1), binding BLOB NOT NULL, capacity INTEGER NOT NULL, version INTEGER NOT NULL CHECK(version>=0 AND version<=capacity*6+1), bytes INTEGER NOT NULL CHECK(bytes>=0 AND bytes<=version*138)); CREATE TABLE custody_event (seq INTEGER PRIMARY KEY, payload BLOB NOT NULL);"
 
 const timeout_ms = 30_000
 
@@ -420,47 +423,30 @@ fn create(
   config: Config,
 ) -> Result(Nil, Error) {
   use Nil <- result.try(
-    sqlight.exec(schema, connection)
+    sqlight.exec(custody_schema.schema, connection)
     |> sql_error,
   )
-  sqlight.query(
-    "INSERT INTO custody_meta VALUES (1, ?, ?, 0, 0)",
+  statement(
     connection,
-    [
-      sqlight.blob(codec.binding(config.scope)),
-      sqlight.int(admission.capacity_value(config.capacity)),
-    ],
-    decode.int,
+    sql.initialize_custody(
+      codec.binding(config.scope),
+      admission.capacity_value(config.capacity),
+    ),
   )
-  |> sql_error
-  |> result.map(fn(_) { Nil })
 }
 
 fn metadata(
   connection: sqlight.Connection,
   config: Config,
 ) -> Result(#(Int, Int), Error) {
-  let decoder = {
-    use binding <- decode.field(0, decode.bit_array)
-    use capacity <- decode.field(1, decode.int)
-    use version <- decode.field(2, decode.int)
-    use bytes <- decode.field(3, decode.int)
-    decode.success(#(binding, capacity, version, bytes))
-  }
-
   // SQLite affinity permits blobs in integer columns. Project only bounded
   // scalars so corruption cannot allocate a blob before the decoder refuses it.
   use rows <- result.try(
-    sqlight.query(
-      "SELECT CASE WHEN typeof(binding)='blob' AND length(binding)<=303 THEN binding ELSE NULL END, CASE WHEN typeof(capacity)='integer' THEN capacity ELSE NULL END, CASE WHEN typeof(version)='integer' THEN version ELSE NULL END, CASE WHEN typeof(bytes)='integer' THEN bytes ELSE NULL END FROM custody_meta LIMIT 2",
-      connection,
-      [],
-      decoder,
-    )
+    query(connection, sql.custody_metadata())
     |> result.map_error(fn(_) { Corrupt }),
   )
   case rows {
-    [#(binding, capacity, version, bytes)] -> {
+    [sql.CustodyMetadata(binding:, capacity:, version:, bytes:)] -> {
       use Nil <- result.try(
         case
           binding == codec.binding(config.scope)
@@ -499,17 +485,10 @@ fn load_rows(
   meta: #(Int, Int),
 ) -> Result(Snapshot, Error) {
   let #(version, bytes) = meta
-  let decoder = {
-    use sequence <- decode.field(0, decode.int)
-    use payload <- decode.field(1, decode.bit_array)
-    decode.success(#(sequence, payload))
-  }
   use rows <- result.try(
-    sqlight.query(
-      "SELECT seq, CASE WHEN typeof(payload)='blob' AND length(payload)<=138 THEN payload ELSE NULL END FROM custody_event ORDER BY seq LIMIT ?",
+    query(
       connection,
-      [sqlight.int(admission.capacity_value(config.capacity) * 6 + 2)],
-      decoder,
+      sql.custody_events(admission.capacity_value(config.capacity) * 6 + 2),
     )
     |> result.map_error(fn(_) { Corrupt }),
   )
@@ -517,7 +496,9 @@ fn load_rows(
     list.try_fold(
       rows,
       Snapshot(admission.new(config.scope, config.capacity), 0, 0),
-      fn(snapshot, row) { replay(snapshot, row, config.scope) },
+      fn(snapshot, row) {
+        replay(snapshot, #(row.seq, row.payload), config.scope)
+      },
     ),
   )
   case snapshot.version == version && snapshot.bytes == bytes {
@@ -636,34 +617,20 @@ fn append(
 ) -> Result(Snapshot, Error) {
   let version = old.version + 1
   let bytes = old.bytes + bit_array.byte_size(payload)
-  use _ <- result.try(
-    sqlight.query(
-      "INSERT INTO custody_event VALUES (?, ?)",
-      connection,
-      [sqlight.int(version), sqlight.blob(payload)],
-      decode.int,
-    )
-    |> sql_error,
-  )
+  use _ <- result.try(statement(
+    connection,
+    sql.append_custody_event(version, payload),
+  ))
 
   // The writer lock makes this CAS uncontended in normal operation. Checking
   // its returned row also refuses a schema or trigger that lost the head update.
-  use rows <- result.try(
-    sqlight.query(
-      "UPDATE custody_meta SET version=?, bytes=? WHERE id=1 AND version=? AND bytes=? RETURNING version",
-      connection,
-      [
-        sqlight.int(version),
-        sqlight.int(bytes),
-        sqlight.int(old.version),
-        sqlight.int(old.bytes),
-      ],
-      decode.field(0, decode.int, decode.success),
-    )
-    |> sql_error,
-  )
+  use rows <- result.try(query(
+    connection,
+    sql.advance_custody_head(version, bytes, old.version, old.bytes),
+  ))
   case rows {
-    [value] if value == version -> Ok(Snapshot(book, version, bytes))
+    [sql.AdvanceCustodyHead(version: value)] if value == version ->
+      Ok(Snapshot(book, version, bytes))
     _ -> Error(Uncertain)
   }
 }
@@ -748,6 +715,44 @@ fn settle_inspect(
       process.send(reply, Error(error))
       actor.stop()
     }
+  }
+}
+
+// Generated statements run on the actor's existing transaction. The adapter
+// preserves sqlc's parameter order and decoder instead of maintaining a second
+// handwritten account of the query's columns.
+fn statement(
+  connection: sqlight.Connection,
+  generated: #(String, List(dev.Param)),
+) -> Result(Nil, Error) {
+  let #(text, parameters) = generated
+  query(connection, #(text, parameters, decode.success(Nil)))
+  |> result.replace(Nil)
+}
+
+fn query(
+  connection: sqlight.Connection,
+  generated: #(String, List(dev.Param), decode.Decoder(a)),
+) -> Result(List(a), Error) {
+  let #(text, parameters, decoder) = generated
+  use arguments <- result.try(list.try_map(parameters, parameter))
+  sqlight.query(text, connection, arguments, decoder) |> sql_error
+}
+
+// The custody schema binds only integers and binary payloads. A generator or
+// schema change introducing another kind must update this explicit boundary.
+fn parameter(value: dev.Param) -> Result(sqlight.Value, Error) {
+  case value {
+    dev.ParamInt(value) -> Ok(sqlight.int(value))
+    dev.ParamBitArray(value) -> Ok(sqlight.blob(value))
+    dev.ParamString(_)
+    | dev.ParamFloat(_)
+    | dev.ParamBool(_)
+    | dev.ParamTimestamp(_)
+    | dev.ParamDate(_)
+    | dev.ParamList(_)
+    | dev.ParamDynamic(_)
+    | dev.ParamNullable(_) -> Error(Uncertain)
   }
 }
 
