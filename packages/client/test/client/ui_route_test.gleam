@@ -180,7 +180,23 @@ fn fixture_lasting(
           }
         },
         home: fn(request, attachment, open, ceiling) {
-          homed(ready.state_root, request, attachment, open, ceiling)
+          case serving {
+            // The home's own socket, as the daemon serves it. A request that
+            // carries `x-revoke-between` names a credential revoked after the
+            // router admitted the page and before the component's first read,
+            // which the refresh interval is far too long for a test to wait
+            // out.
+            Real -> {
+              case req.get_header(request, "x-revoke-between") {
+                Ok(token) -> revoke(ready.state_root, token)
+                Error(Nil) -> Nil
+              }
+              ui_socket.upgrade_home(daemon, request, attachment, open, ceiling)
+            }
+
+            Stubbed | Pictured | Switching | Inviting ->
+              homed(ready.state_root, request, attachment, open, ceiling)
+          }
         },
       )),
     )
@@ -333,18 +349,7 @@ fn homed(
   let first = read()
   let reads = case req.get_header(request, "x-revoke-between") {
     Ok(token) -> {
-      let assert Ok(digest) =
-        token
-        |> bit_array.from_string
-        |> bootstrap.sha256
-        |> bit_array.base16_encode
-        |> string.lowercase
-        |> access.credential_digest
-        as "the digest is valid"
-      let assert Ok(store) = catalogue.open(state_root <> "/catalogue.db")
-        as "fixture administration opens the durable catalogue"
-      assert access.revoke_credential(store, digest) == Ok(Nil)
-      assert catalogue.close(store) == Ok(Nil)
+      revoke(state_root, token)
       [first, read()]
     }
     Error(Nil) -> [first]
@@ -354,6 +359,23 @@ fn homed(
     access.Observer -> "observer"
   }
   stub(280, string.join([attachment.principal.id, who, ..reads], "\n"))
+}
+
+// Revokes the credential `token` names, as the owner's administration would.
+fn revoke(state_root: String, token: String) -> Nil {
+  let assert Ok(digest) =
+    token
+    |> bit_array.from_string
+    |> bootstrap.sha256
+    |> bit_array.base16_encode
+    |> string.lowercase
+    |> access.credential_digest
+    as "the digest is valid"
+  let assert Ok(store) = catalogue.open(state_root <> "/catalogue.db")
+    as "fixture administration opens the durable catalogue"
+  assert access.revoke_credential(store, digest) == Ok(Nil)
+  assert catalogue.close(store) == Ok(Nil)
+  Nil
 }
 
 fn stub(status: Int, text: String) {
@@ -1012,6 +1034,15 @@ type Closed {
 }
 
 fn watch_socket(port: Int, entered: Entered) -> Closed {
+  let socket = connect_socket(port, entered, [])
+  let closed = read_until_closed(socket, [])
+  let _ = ffi_ws.tcp_close(socket)
+  closed
+}
+
+// The handshake alone, with more request headers: a WebSocket to the page's
+// socket that is open and not yet read.
+fn connect_socket(port: Int, entered: Entered, more: List(#(String, String))) {
   let assert Ok(socket) =
     ffi_daemon_socket.connect(
       #(127, 0, 0, 1),
@@ -1031,6 +1062,9 @@ fn watch_socket(port: Int, entered: Entered) -> Closed {
     <> int.to_string(port)
     <> "\r\nCookie: loom_ui="
     <> entered.cookie
+    <> string.concat(
+      list.map(more, fn(header) { "\r\n" <> header.0 <> ": " <> header.1 }),
+    )
     <> "\r\nUpgrade: websocket\r\nConnection: Upgrade"
     <> "\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="
     <> "\r\nSec-WebSocket-Version: 13\r\n\r\n"
@@ -1038,9 +1072,7 @@ fn watch_socket(port: Int, entered: Entered) -> Closed {
     == Ok(Nil)
   let head = read_head(socket, "")
   assert string.starts_with(head, "HTTP/1.1 101")
-  let closed = read_until_closed(socket, [])
-  let _ = ffi_ws.tcp_close(socket)
-  closed
+  socket
 }
 
 // Reads server frames, which are never masked, until a close frame or the
@@ -1595,6 +1627,25 @@ pub fn a_revoked_credential_ends_the_home_test() {
   })
 }
 
+// The home's own socket, not the stub: a home whose credential is revoked
+// after the router admitted it reads the catalogue, finds no such credential,
+// draws the home's ending and closes the socket.
+pub fn a_revoked_credential_closes_the_real_home_socket_test() {
+  fixture_with(Real, fn(ready, port, _) {
+    let session = create_session(ready, "home-real", 967)
+    let credential = member(ready, "home-real-member", session, access.Operator)
+    let page = enter(port, operator_home(port, credential))
+    let socket = connect_socket(port, page, [#("x-revoke-between", credential)])
+    let closed = read_until_closed(socket, [])
+    let _ = ffi_ws.tcp_close(socket)
+    assert closed.code != 0
+    assert string.contains(
+      string.join(closed.texts, "\n"),
+      ending.home_headline(ending.AccessRevoked),
+    )
+  })
+}
+
 // A home that has been replaced by a fifth is the oldest's end, and a home
 // beyond the cap leaves the principal's session pages open.
 pub fn homes_are_capped_apart_from_session_pages_test() {
@@ -1652,7 +1703,7 @@ pub fn a_malformed_session_is_not_a_home_link_test() {
         within_ms: 1000,
       )
     let assert Ok(refusal) = field(refused, "body") as "a refusal body"
-    assert field(refusal, "path") == Error(Nil)
+    assert field(refusal, "code") == Ok(json.String("bad_request"))
     let _ = ffi_ws.tcp_close(socket)
     Nil
   })
