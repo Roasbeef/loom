@@ -7,8 +7,11 @@ preparation claim. Its independent review found no actionable defect, and the
 integrated executor gate passed 241 tests with no skips. The
 [native-command review](review/distributed-native-command-admission.md) separates
 that evidence from the pending whole Compile service, server forwarding, owner
-consumer and separate-host acceptance. Owner command binding and the updated P
-live-association model are being validated independently. Atomic initial Compile
+consumer and separate-host acceptance. Owner command binding passed independent review, twelve focused controls and
+the full storage gate. Its integrated client gate exited zero with 2767 reported
+passes and 15 optional skips. The updated P live-association model passed its
+safety, reachability and mutation gates; the review record retains the bounded
+proof limits. Atomic initial Compile
 admission and cancellation are the next resource-journal slice.
 
 The [user journeys and ownership design](design-notes/distributed-runtime.md)

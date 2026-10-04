@@ -187,6 +187,55 @@ the command template, complete SandboxPolicy, cleared native envelope and
 service-specific completion associations. Storage opacity does not establish
 those semantic checks or authorize execution.
 
+## The original Broker reserves a compiler command
+
+`dispatch_binding.with_commands` extends the existing dispatcher configuration
+with a closed CompileCommand path. It retains the same owner custodian,
+connection, clock, preparation callback and UUID allocator. Ordinary native
+origins keep their existing path; SatelliteCommand explicitly refuses until
+Launch assembly exists.
+
+The Broker first clears a real Dispatch. The command binding then reads its
+indexed offer and complete retained service input. It checks canonical bytes,
+input and offer digests, original enrollment, physical operation and step, and
+the complete derived compiler template. Reconstructing the expected allocation
+checks its literal identity; it does not prepare files or prove executor Ready.
+That evidence belongs to the whole Compile consumer.
+
+Only after those checks does the binding call its original preparation callback.
+The returned Prepared must preserve the actual cleared request and step. Its
+argv, environment and cwd must match the offer exactly, and its effective policy
+must stay within the expected requirements. Protected roots and environment
+allowlists are compared as sets; the binding never reorders the outgoing request
+or substitutes a newly constructed policy.
+
+The atomic owner transaction retains the complete request and returns the
+original UUID on an exact retry. The binding uses that returned identity to
+construct CommandReserved. It does not read the child first and then decide
+whether to create a replacement. Recovery reads retained evidence through
+separate APIs and cannot obtain a fresh sendable reservation from this callback.
+
+Receipt and cancellation also resolve the full reference through the original
+origin. Receipt checks the retained UUID and Prepared digest, then commits the
+ordered output chunks and terminal before the dispatcher sends DurableReceipt.
+Cancellation fences the complete service, its offer and any allocated native
+child. A missing command lookup cannot fall back to ordinary native cancellation;
+the binding refuses and invokes the existing fatal fence when custody is lost.
+Cancellation before an offer exists belongs to the outer consumer, which already
+holds the complete ServiceKey.
+
+The new path makes three bounded custodian asks during native reservation. The
+whole Compile consumer must include those pending waits in its original budget.
+The startup allowance is `44000 + clearance_wait_ms + 2 * exchange_wait_ms`,
+or 59000 ms when both configurable waits are 5000 ms. The separate native
+challenge window remains 1000 ms. These are successful-call allowances, not hard
+real-time guarantees; an expired ask does not prove that no effect occurred.
+
+The [owner-binding review](../review/distributed-owner-command-binding.md)
+records real Broker controls and the limits of that evidence. Whole-service
+assembly still owns original PhaseIdentity construction, actual Ready validation
+and native-ceiling ordering before clearance.
+
 ## Verification and remaining integration
 
 Tests use actual owner and session SQLite files. They cover duplicate and
