@@ -177,6 +177,17 @@ gates passed 167 and 159 tests; the extraction review found no actionable
 findings, and bypassing preflight failed six intended boundary controls. See
 the [bounded-wire review](review/distributed-bounded-wire.md).
 
+Exact Compile/Launch service and command-offer custody is now implemented with
+named Parrot/sqlc queries. Format 3 validates and migrates format-2 journals;
+review caught and fixed a valid UUID-less collected-cancellation fence that the
+first predicate refused. Offers allocate no native UUID. Atomic native
+reservation retains the original complete request, and cancellation preserves
+late native evidence. Collection refuses any physical service or offer until
+its recovery duties can be transferred. Root's combined gates passed 170 core,
+166 storage and 2,754 client tests, plus lint and documentation checks. See the
+[command-custody review](review/distributed-command-custody.md). Command template
+validation, enrollment/resources and whole physical assembly remain ahead.
+
 The product P and Channel PlusCal models now cover exact command offers,
 resource/launch uncertainty, separate native/outer receipts and final-consumer
 credit in both directions. Independent review found and repaired two vacuous
