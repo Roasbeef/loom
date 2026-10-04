@@ -65,13 +65,25 @@ gen_package() {
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_recent_folders.sql
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_profiles.sql
     sqlite3 "$tmpdb" < packages/storage/sql/session.sql
+    sqlite3 "$tmpdb" < packages/storage/sql/owner_custody.sql
   fi
   (cd "packages/$pkg" && gleam run --module parrot -- --sqlite "$tmpdb")
 }
 
-gen_package events
-gen_package storage
-gen_package executor
+# An optional package list lets independent schema owners regenerate only
+# their artifacts. The default remains the complete repository surface.
+packages=("$@")
+if [[ ${#packages[@]} -eq 0 ]]; then
+  packages=(events storage executor)
+fi
+for pkg in "${packages[@]}"; do
+  case "$pkg" in
+    events|storage|executor) gen_package "$pkg" ;;
+    *) echo "gen-sql: unsupported package $pkg" >&2; exit 1 ;;
+  esac
+done
+
+# Schema constants are deterministic copies and do not invoke sqlc.
 python3 scripts/embed-sql-schema.py packages/executor/sql/schema.sql \
   packages/executor/src/executor/custody_schema.gleam
 gleam format packages/executor/src/executor/custody_schema.gleam
@@ -105,4 +117,7 @@ gleam format packages/storage/src/storage/catalogue_recent_folders_schema.gleam
 python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_profiles.sql \
   packages/storage/src/storage/catalogue_profiles_schema.gleam
 gleam format packages/storage/src/storage/catalogue_profiles_schema.gleam
+python3 scripts/embed-sql-schema.py packages/storage/sql/owner_custody.sql \
+  packages/storage/src/storage/owner_custody_schema.gleam
+gleam format packages/storage/src/storage/owner_custody_schema.gleam
 echo "generated SQL modules are up to date; review and commit the diff"
