@@ -5926,3 +5926,11 @@ without executing a tool. Workspace requests and receipts have separate typed
 still owns aggregate caller admission. `scripts/e2e_remote_workspace.sh` joins
 this binding to real TLS, two SQLite journals and filesystem effects in one VM;
 it does not enable remote execution in the shipped daemon.
+
+`remote/workspace_client` is the concrete semantic exchange consumer. It validates
+the endpoint scope before construction, reserves original content before Submit,
+and observes retained identities through Query. Completed answers require exact
+owner receipt custody before ACK. One weft deadline bounds storage and network
+observation together; expiry and observer loss retain ChildOrigin for recovery.
+Assembly must cap concurrent callers at four. This component is not yet wired
+into shipped daemon workspace selection or filesystem tools.

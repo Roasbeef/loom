@@ -310,3 +310,67 @@ SQLite/WAL disk bound. The journal never performs a filesystem effect itself.
 The codec, journal and transfer are separate components until production
 assembly binds them together. Their component tests do not satisfy the
 remote-workspace product gate above.
+
+
+## Addendum: semantic effects and owner receipt custody
+
+The owner reserves a distinct Workspace child ordinal before sending canonical
+invocation content. Direct tool children MUST match their original ToolKey's
+operation, step, source index and argument digest. Explicit system children
+retain their named system provenance. Derived compiler or capability operations
+need a separate trusted binding; they MUST NOT bypass this comparison with
+caller-supplied coordinates.
+
+A retry reads its retained UUID before encoding and compares the complete
+candidate against retained bytes. Concurrent candidates may conflict; a loser
+MUST NOT adopt a fresh execution identity. Recovery reads the original request
+and optional exact receipt without running a tool. Receipt admission validates
+the typed response against the original request and rechecks the full retained
+invocation. Only successful durable receipt commit creates acknowledgement
+authority. Final parent ToolOutcome custody remains a separate obligation.
+
+Workspace requests and receipts use typed 9-MiB and 32-MiB payload boundaries.
+Ordinary owner Payload values retain their 2-MiB ceiling, native request entry
+points retain their smaller bound, and the aggregate owner reservation ceiling
+remains 256 MiB. Named Parrot/sqlc queries enforce the configured row and payload limits.
+Transaction and connection setup retain the existing SQLite control statements.
+
+Workspace journal format 2 records Open or Sealed authority. Admission and first
+claim MUST check this mode within the same serialized transaction that would
+create permission. Seal prevents new admission and first claims from retained
+Accepted rows, including through independently opened connections. Retained
+query, finish and acknowledgement may still reconcile evidence after seal.
+Old or mismatched formats are refused; this change supplies no migration.
+
+The semantic service admits at most four active managed tasks. It commits the
+first claim before creating the concrete workspace-local worker, commits encoded
+completion before reporting success, and returns task capacity only after the
+managed run's final drain report. Encoding failure, task death and lost commit
+answers preserve uncertainty. Close attempts durable seal before cancelling and
+joining workers. An untrappable kill cannot execute a shutdown hook and therefore
+requires reconciliation; neither process death nor cancellation proves rollback.
+
+The semantic endpoint prefixes its existing versioned, role-checked full-scope
+hello with `LWS` and version byte 1. A control frame contains `LWQ`, version 1,
+and command byte 0 (Submit), 1 (Query), or 2 (Acknowledge, followed by its 32-byte
+digest). Canonical invocation chunks follow every command. The status frame uses
+`LWR`, version 1, and byte 0 (Accepted), 1 (Unknown), 2 (Finished, followed by
+completion chunks), 3 (Acknowledged, followed by digest), 4 (Cancelled), or 5
+(refused). Connection generation is correlation only; it renews no workspace
+claim or sealed authority. The existing TLS certificate pin and peer identity
+checks remain required.
+
+A finite whole-exchange deadline covers DNS, TLS and every content frame.
+Admission credits MUST also cover requests already handed to a service: closing
+or timing out their sockets MUST NOT release credits while those requests remain
+unconsumed. The embedding host closes listener admission before sealing the
+service and releases journals only after its separate retirement obligations.
+
+The owner consumer applies one managed deadline to the complete invocation or
+recovery call, including custody reads, reservation, completion decoding,
+receipt commit and transport. Expiry ends observation; an already queued owner
+write may still commit. ObservationExpired and ObservationLost retain the
+original ChildOrigin and MUST NOT authorize a new UUID, a replay or an ACK.
+The caller recovers the same child to establish its durable outcome. The
+embedding session still owns a finite aggregate caller-admission limit; a
+bounded observer wait alone does not bound another actor's mailbox.
