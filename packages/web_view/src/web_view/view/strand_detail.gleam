@@ -41,6 +41,7 @@ import gleam/option.{None, Some}
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
+import session_view/agent_view
 import session_view/strand_card
 import web_view/view/strip.{type Chip}
 
@@ -84,6 +85,7 @@ fn figures(chip: Chip) -> List(Element(message)) {
     },
     case chip.model {
       "" -> []
+      model if model == agent_view.model_unavailable -> []
       model ->
         figure("Model", [
           html.span([attribute.title(model)], [

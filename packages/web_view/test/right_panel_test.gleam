@@ -132,6 +132,13 @@ pub fn a_strands_view_names_the_task_and_shortens_the_model_test() {
       ),
     )
   assert !string.contains(element.to_string(strand_detail.view(unread)), "Task")
+
+  // So is the model the capture could not name.
+  let unnamed = strip.Chip(..base, model: agent_view.model_unavailable)
+  assert !string.contains(
+    element.to_string(strand_detail.view(unnamed)),
+    "Model",
+  )
 }
 
 pub fn a_strand_that_ran_no_tool_shows_its_answers_first_line_test() {

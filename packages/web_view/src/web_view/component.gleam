@@ -1681,7 +1681,8 @@ fn settled_chip(
 // history as unavailable, which is not an answer either.
 fn answer_line(row: agent_view.Row) -> Option(String) {
   case row.update_entry, row.update {
-    Some(_), "Latest update unavailable" | None, _ -> None
+    None, _ -> None
+    Some(_), update if update == agent_view.update_unavailable -> None
     Some(_), update -> Some(text_hygiene.single_line(update))
   }
 }

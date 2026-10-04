@@ -263,8 +263,9 @@ pub fn a_focused_strand_has_a_breadcrumb_and_a_view_test() {
 // no row is a cost: the session keeps its cost as one total, not per strand.
 pub fn a_strands_view_draws_the_figures_it_knows_test() {
   let html = observer(focused(settled(), lane_fixture.child))
+  // The fixture's capture names no model, so there is no Model row.
+  assert !string.contains(html, "<dt class=\"detail-term\">Model</dt>")
   assert in_order(html, [
-    "<dt class=\"detail-term\">Model</dt>",
     "<dt class=\"detail-term\">Context</dt>",
     "<dt class=\"detail-term\">Running</dt>",
     "loom-elapsed",

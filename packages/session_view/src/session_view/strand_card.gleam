@@ -163,9 +163,17 @@ pub fn glyph(status: agent_view.Status) -> String {
 /// assert strand_card.task_words("Task unavailable") == None
 /// ```
 pub fn task_words(title: String) -> Option(String) {
-  case string.lowercase(title) {
-    "" | "task unavailable" | "task brief outside loaded history" -> None
-    _ -> Some(title)
+  let placeholder = fn(known: String) {
+    string.lowercase(title) == string.lowercase(known)
+  }
+
+  case
+    title == ""
+    || placeholder(agent_view.task_unavailable)
+    || placeholder(agent_view.task_outside_history)
+  {
+    True -> None
+    False -> Some(title)
   }
 }
 

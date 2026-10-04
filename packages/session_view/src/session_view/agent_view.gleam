@@ -34,6 +34,20 @@ import session_view/snapshot_view
 import session_view/text_hygiene
 import session_view/tool_activity
 
+/// The task a row holds when the strand has none to read: an older recording
+/// or a strand with no capture. A host that shows a task leaves this out.
+pub const task_unavailable = "Task unavailable"
+
+/// The task a row holds when its operation's prompt is outside the loaded
+/// history. `reviewer_status` words it in lower case, so compare without case.
+pub const task_outside_history = "Task brief outside loaded history"
+
+/// The update a row holds when no assistant text of the operation is loaded.
+pub const update_unavailable = "Latest update unavailable"
+
+/// The model a row holds when the capture names none.
+pub const model_unavailable = "Model unavailable"
+
 /// Presentation vocabulary, never a second operation state machine.
 pub type Status {
   /// Captured work is in progress.
@@ -110,16 +124,16 @@ pub fn legacy(strands: List(protocol.Strand)) -> List(Row) {
         Some(_) -> Working
         None -> Unavailable
       },
-      "Task unavailable",
+      task_unavailable,
       text_hygiene.single_line(option.unwrap(
         strand.live_phase,
         "State unavailable",
       )),
-      "Latest update unavailable",
+      update_unavailable,
       None,
       "Pending input unknown",
       [],
-      "Model unavailable",
+      model_unavailable,
       [],
       "",
     )
@@ -182,7 +196,7 @@ pub fn observe(
           "" ->
             earlier
             |> result.map(fn(row) { row.task })
-            |> result.unwrap("Task brief outside loaded history")
+            |> result.unwrap(task_outside_history)
           text -> text
         }
       }
@@ -194,7 +208,7 @@ pub fn observe(
       |> result.try(assistant_text)
       |> result.lazy_unwrap(fn() {
         case latest {
-          None -> "Latest update unavailable"
+          None -> update_unavailable
           Some(_) ->
             earlier
             |> result.try(fn(row) {
@@ -203,7 +217,7 @@ pub fn observe(
                 False -> Error(Nil)
               }
             })
-            |> result.unwrap("Latest update unavailable")
+            |> result.unwrap(update_unavailable)
         }
       })
 
@@ -273,7 +287,7 @@ pub fn observe(
       approvals,
       dict.get(view.configurations, strand.id)
         |> result.map(fn(config) { config.configuration.model.model_id })
-        |> result.unwrap("Model unavailable")
+        |> result.unwrap(model_unavailable)
         |> text_hygiene.single_line,
       agent_activity.recent(view, window, strand.id, current),
       decision,
