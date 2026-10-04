@@ -380,11 +380,12 @@ pub fn whole_call_deadline_preserves_effect_and_original_identity_test() {
   finish(f)
 }
 
-// Poll completion and the enclosing task deadline can race, but neither answer
-// grants another effect. Both must retain exactly the original recovery key.
+// Poll completion, a bounded transport failure and the enclosing task deadline
+// can race. None grants another effect; each retains the original recovery key.
 fn assert_observation_only(answer, reserved) {
   case answer {
-    Ok(client.Pending(retained, client.AwaitingEvidence)) -> {
+    Ok(client.Pending(retained, client.AwaitingEvidence))
+    | Ok(client.Pending(retained, client.TransportUncertain)) -> {
       assert binding.content(retained) == binding.content(reserved)
     }
     Error(client.ObservationExpired(origin)) -> {
