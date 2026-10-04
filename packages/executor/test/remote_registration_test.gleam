@@ -6,6 +6,7 @@
 import broker/exec
 import broker/policy
 import core/ids
+import core/workspace
 import executor/remote/identity
 import executor/remote/registration
 import executor/remote/wire
@@ -256,4 +257,32 @@ pub fn registration_rejects_empty_and_excessive_working_roots_test() {
       Ok,
     )
     == Error(Nil)
+}
+
+/// Description retains every administrative field and never exports a callback.
+pub fn native_description_preserves_exact_scope_policy_and_digest_test() {
+  let registered = registered()
+  let digest = registration.digest(registered)
+  let assert Ok(facts) = registration.describe(registered)
+    as "Validated executor identity converts totally to shared scope."
+  let assert Ok(expected) =
+    workspace.scope_from_fields(
+      "00000000-0000-7000-8000-000000000001",
+      "checkout",
+      "linux",
+      1,
+      1,
+    )
+    as "The shared scope keeps both epochs."
+  assert facts.scope == expected
+  assert facts.working_roots == ["/work"]
+  assert facts.ceiling == ceiling()
+  assert facts.demand == exec.FullEnforcement
+  assert registration.digest(registered) == digest
+  let assert Ok(other) =
+    registration.new(scope(2), ["/work"], ceiling(), exec.FullEnforcement, Ok)
+    as "A changed administrative epoch is distinct."
+  let assert Ok(changed) = registration.describe(other)
+    as "Total changed description."
+  assert changed.scope != facts.scope
 }
