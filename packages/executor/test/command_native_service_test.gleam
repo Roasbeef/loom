@@ -49,6 +49,7 @@ type Fixture {
     journal: journal.Journal,
     native: local.Executor,
     service: service.Service,
+    compile_deadline_ms: Int,
   )
 }
 
@@ -58,9 +59,20 @@ pub fn original_claim_and_concrete_endpoint_are_checked_test() {
     let b = original(f, 5, "second")
     let claim = prepared(f, a)
     let _ = prepared(f, b)
-    assert service.live_command_context(f.service, claim, ref(b))
+    assert service.live_command_context(
+        f.service,
+        claim,
+        ref(b),
+        f.compile_deadline_ms,
+      )
       == Error(service.Invalid)
-    let assert Ok(_) = service.live_command_context(f.service, claim, ref(a))
+    let assert Ok(_) =
+      service.live_command_context(
+        f.service,
+        claim,
+        ref(a),
+        f.compile_deadline_ms,
+      )
       as "The original Claim matches its complete service key."
     let assert Ok(capacity) = admission.capacity(16)
       as "Other endpoint capacity."
@@ -76,12 +88,22 @@ pub fn original_claim_and_concrete_endpoint_are_checked_test() {
         ),
       )
       as "Separate same-scope native service."
-    assert service.live_command_context(server, claim, ref(a))
+    assert service.live_command_context(
+        server,
+        claim,
+        ref(a),
+        f.compile_deadline_ms,
+      )
       == Error(service.Invalid)
     assert service.command_context(server, f.resources, ref(a))
       == Error(service.Invalid)
     let assert Ok(context) =
-      service.live_command_context(f.service, claim, ref(a))
+      service.live_command_context(
+        f.service,
+        claim,
+        ref(a),
+        f.compile_deadline_ms,
+      )
       as "Correct native endpoint."
     assert exchange(
         server,
@@ -420,7 +442,8 @@ pub fn real_compiler_checkout_follows_committed_association_and_duplicates_do_no
     let assert Ok(server) =
       service.start(service.Config(..service.configuration(f.service), native:))
       as "Same journal engine with an observed real helper pool."
-    let assert Ok(context) = service.live_command_context(server, claim, ref(a))
+    let assert Ok(context) =
+      service.live_command_context(server, claim, ref(a), f.compile_deadline_ms)
       as "Original Claim is passed to this exact service."
     let root = request.request.cwd
     prepare_project(root)
@@ -501,7 +524,8 @@ pub fn foreign_controls_cannot_cancel_or_feed_a_live_compiler_test() {
     let assert Ok(server) =
       service.start(service.Config(..service.configuration(f.service), native:))
       as "A real compiler stays in live native custody during foreign controls."
-    let assert Ok(context) = service.live_command_context(server, claim, ref(b))
+    let assert Ok(context) =
+      service.live_command_context(server, claim, ref(b), f.compile_deadline_ms)
       as "B's original Claim."
     let assert Ok(history) =
       service.command_context(server, f.resources, ref(a))
@@ -693,7 +717,8 @@ pub fn elapsed_time_after_association_cannot_renew_native_deadline_test() {
         ),
       )
       as "Original elapsed authority, with no deadline refresh."
-    let assert Ok(context) = service.live_command_context(server, claim, ref(a))
+    let assert Ok(context) =
+      service.live_command_context(server, claim, ref(a), 105_000)
       as "Original claim under the observed clock."
     let request = request(f, a)
     let hash = digest(request)
@@ -711,12 +736,229 @@ pub fn elapsed_time_after_association_cannot_renew_native_deadline_test() {
       as "Exact refusal evidence."
     assert phase(f.journal, k, hash)
       == admission.Refused(terminal_hash, admission.ReceiptPending)
+    assert retained_authority(f.journal, k, hash) == #(1, 105_000, 5000)
     assert j.inspect_native(f.resources, a)
       == Ok(j.Associated(ref(a), k, hash, request))
     assert exchange(server, context, ref(a), wire.Query(k, hash, 0))
       == Ok(wire.Terminal(k, hash, bytes))
     assert service.shutdown(server) == Ok(Nil)
   })
+}
+
+pub fn original_compile_cap_clamps_retained_authority_without_rewriting_prepared_test() {
+  fixture("cap-authority", fn(f) {
+    let a = original(f, 3, "first")
+    let claim = prepared(f, a)
+    let server = clocked(f, fn() { 100_000 })
+    let assert Ok(context) =
+      service.live_command_context(server, claim, ref(a), 103_000)
+      as "The original executor elapsed deadline accompanies the Claim."
+    let request = request(f, a)
+    let hash = digest(request)
+    let k = key(a, 8)
+    let nonce = challenge(server, context, ref(a), k, hash)
+    assert j.mark_unknown(f.resources, a) == Ok(j.Unknown(Some(ready(f, a))))
+
+    // Authority is real and durable even when the independent resource fence wins.
+    assert exchange(
+        server,
+        context,
+        ref(a),
+        wire.Submit(k, hash, request, nonce, 8000),
+      )
+      == Error(service.Uncertain)
+    assert retained_authority(f.journal, k, hash) == #(1, 103_000, 8000)
+    let assert Ok(bytes) = wire.encode_prepared(request)
+      as "Original Prepared bytes."
+    let assert Ok(items) = journal.payloads(f.journal, k, hash)
+      as "Actual retained native payloads."
+    assert list.contains(items, payload.Request(bytes))
+    assert phase(f.journal, k, hash) == admission.Admitted
+    assert j.inspect_native(f.resources, a) == Ok(j.Unassociated)
+    assert service.shutdown(server) == Ok(Nil)
+  })
+}
+
+pub fn inflated_incoming_budget_cannot_launch_selected_wall_past_original_cap_test() {
+  fixture("cap-wall", fn(f) {
+    let a = original(f, 3, "first")
+    let claim = prepared(f, a)
+    let server = clocked(f, fn() { 100_000 })
+    let assert Ok(context) =
+      service.live_command_context(server, claim, ref(a), 101_500)
+      as "Only 1500 original elapsed milliseconds remain."
+    let request = request(f, a)
+    let assert Some(policy) = request.request.policy
+      as "Actual unchanged cleared policy."
+    assert policy.limits.wall_s == 2
+    let hash = digest(request)
+    let k = key(a, 8)
+    let nonce = challenge(server, context, ref(a), k, hash)
+
+    // A later owner Unix rollback can inflate this budget; it cannot change the
+    // native continuation's original cap or shrink the already selected two seconds.
+    let assert Ok(wire.Terminal(_, _, terminal)) =
+      exchange(
+        server,
+        context,
+        ref(a),
+        wire.Submit(k, hash, request, nonce, 8000),
+      )
+      as "Selected wall cannot fit original elapsed authority: no helper launch."
+    assert retained_authority(f.journal, k, hash) == #(1, 101_500, 8000)
+    let assert Ok(terminal_hash) = wire.digest(terminal)
+      as "Exact native refusal."
+    assert phase(f.journal, k, hash)
+      == admission.Refused(terminal_hash, admission.ReceiptPending)
+    assert j.inspect_native(f.resources, a)
+      == Ok(j.Associated(ref(a), k, hash, request))
+    assert exchange(
+        server,
+        context,
+        ref(a),
+        wire.Submit(k, hash, request, nonce, 9000),
+      )
+      == Ok(wire.Terminal(k, hash, terminal))
+    assert retained_authority(f.journal, k, hash) == #(1, 101_500, 8000)
+    let assert Ok(history) =
+      service.command_context(server, f.resources, ref(a))
+      as "Retained association is historical data."
+    assert exchange(server, history, ref(a), wire.Query(k, hash, 0))
+      == Ok(wire.Terminal(k, hash, terminal))
+    assert service.shutdown(server) == Ok(Nil)
+  })
+}
+
+pub fn zero_and_elapsed_compile_caps_refuse_without_native_payload_test() {
+  fixture("cap-expired", fn(f) {
+    let a = original(f, 3, "first")
+    let claim = prepared(f, a)
+    let server = clocked(f, fn() { 100_000 })
+    assert service.live_command_context(server, claim, ref(a), 0)
+      == Error(service.Invalid)
+    let assert Ok(context) =
+      service.live_command_context(server, claim, ref(a), 100_000)
+      as "An expired original cap remains data until finite authorization checks it."
+    let request = request(f, a)
+    let hash = digest(request)
+    let k = key(a, 8)
+    let nonce = challenge(server, context, ref(a), k, hash)
+    assert exchange(
+        server,
+        context,
+        ref(a),
+        wire.Submit(k, hash, request, nonce, 8000),
+      )
+      == Error(service.Expired)
+    assert journal.payloads(f.journal, k, hash) == Ok([])
+    assert journal.inspect(f.journal, k, hash)
+      == Error(journal.Rejected(admission.UnknownRequest))
+    assert j.inspect_native(f.resources, a) == Ok(j.Unassociated)
+    assert service.shutdown(server) == Ok(Nil)
+  })
+}
+
+pub fn negative_monotonic_era_is_valid_and_ordinary_native_deadline_is_unchanged_test() {
+  fixture("cap-negative", fn(f) {
+    let a = original(f, 3, "first")
+    let claim = prepared(f, a)
+    let server = clocked(f, fn() { -100_000 })
+    let assert Ok(context) =
+      service.live_command_context(server, claim, ref(a), -97_000)
+      as "Negative nonzero deadlines can still be future elapsed authority."
+    let request = request(f, a)
+    let hash = digest(request)
+    let k = key(a, 8)
+    let nonce = challenge(server, context, ref(a), k, hash)
+    assert j.mark_unknown(f.resources, a) == Ok(j.Unknown(Some(ready(f, a))))
+    assert exchange(
+        server,
+        context,
+        ref(a),
+        wire.Submit(k, hash, request, nonce, 8000),
+      )
+      == Error(service.Uncertain)
+    assert retained_authority(f.journal, k, hash) == #(1, -97_000, 8000)
+
+    // Ordinary Native retains its challenge-derived deadline without a Compile cap.
+    let assert Some(policy) = request.request.policy
+      as "Complete native policy."
+    let native_request =
+      wire.Prepared(
+        ..request,
+        request: exec.ExecRequest(
+          ..request.request,
+          policy: Some(
+            policy.SandboxPolicy(
+              ..policy,
+              limits: policy.Limits(..policy.limits, wall_s: 9),
+            ),
+          ),
+        ),
+      )
+    let native_hash = digest(native_request)
+    let native_key = key(a, 9)
+    let assert Ok(wire.Challenge(_, _, native_nonce, _)) =
+      service.exchange(
+        server,
+        envelope(wire.ChallengeRequest(native_key, native_hash)),
+      )
+      as "Original ordinary native ticket."
+    let assert Ok(wire.Terminal(_, _, _)) =
+      service.exchange(
+        server,
+        envelope(wire.Submit(
+          native_key,
+          native_hash,
+          native_request,
+          native_nonce,
+          8000,
+        )),
+      )
+      as "Nine seconds cannot fit eight; ordinary refusal stays unchanged."
+    assert retained_authority(f.journal, native_key, native_hash)
+      == #(1, -92_000, 8000)
+    assert service.shutdown(server) == Ok(Nil)
+  })
+}
+
+fn clocked(f: Fixture, now: fn() -> Int) -> service.Service {
+  let assert Ok(server) =
+    service.start(
+      service.Config(
+        ..service.configuration(f.service),
+        now:,
+        native: native_executor(f.path, fn() {
+          panic as "These deadline controls must refuse before checking out a real helper."
+        }),
+      ),
+    )
+    as "Existing real native service with an injected elapsed clock."
+  server
+}
+
+fn retained_authority(
+  book: journal.Journal,
+  key: identity.RequestKey,
+  hash: identity.Digest,
+) -> #(Int, Int, Int) {
+  let assert Ok(items) = journal.payloads(book, key, hash)
+    as "Actual native journal readback."
+  let assert Ok(payload.Authority(bytes)) =
+    list.find(items, fn(item) {
+      case item {
+        payload.Authority(_) -> True
+        _ -> False
+      }
+    })
+    as "Finite authorization was durably retained."
+  let assert Ok(mp.ArrayValue([
+    mp.IntValue(generation),
+    mp.IntValue(deadline),
+    mp.IntValue(budget),
+  ])) = wire.decode_value(bytes)
+    as "Exact canonical finite Authority tuple."
+  #(generation, deadline, budget)
 }
 
 fn controls(k: identity.RequestKey, hash: identity.Digest) -> List(wire.Body) {
@@ -766,7 +1008,15 @@ fn fixture(name: String, run: fn(Fixture) -> Nil) -> Nil {
       poll.monotonic().now,
     ))
     as "Scoped service admission engine."
-  run(Fixture(path, enrolled, resources, book, native, server))
+  run(Fixture(
+    path,
+    enrolled,
+    resources,
+    book,
+    native,
+    server,
+    poll.monotonic().now() + 10_000,
+  ))
 
   // Native drain is witnessed independently of resource metadata or receipt.
   assert service.shutdown(server) == Ok(Nil)
@@ -1015,7 +1265,12 @@ fn prepared(f: Fixture, original: j.Input) -> j.Claim {
 fn live(f: Fixture, original: j.Input) -> service.CommandContext {
   let claim = prepared(f, original)
   let assert Ok(context) =
-    service.live_command_context(f.service, claim, ref(original))
+    service.live_command_context(
+      f.service,
+      claim,
+      ref(original),
+      f.compile_deadline_ms,
+    )
     as "Original Claim identity retained."
   context
 }
