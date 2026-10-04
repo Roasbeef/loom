@@ -758,6 +758,7 @@ fn effects_placing(follow_up: Option(AgentMessage)) -> effects.Effects {
       timeout_ms: 0,
     ),
     tools: effects.ToolSurface(
+      recover: fn(_run, _complete) { effects.UnmanagedLocal },
       clear: fn(_query) {
         effects.Cleared(
           effective_arguments: json.Object([]),

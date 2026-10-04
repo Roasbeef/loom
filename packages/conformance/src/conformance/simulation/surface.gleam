@@ -188,6 +188,7 @@ pub fn build_on(
       timeout_ms: provider_timeout_ms,
     ),
     tools: effects.ToolSurface(
+      recover: fn(_run, _complete) { effects.UnmanagedLocal },
       clear: fn(query: effects.ClearanceQuery) {
         clearance(ctl, script, strand, query)
       },

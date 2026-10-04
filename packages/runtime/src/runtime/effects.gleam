@@ -20,17 +20,22 @@
 //// `ProviderError` into that convention using `provider/retry.classify`.
 
 import core/clock.{type Clock}
+import core/codec as message_codec
+import core/corruption
 import core/entry.{type UsageRow}
 import core/ids.{type EntryId, type OpId}
 import core/json.{type JsonValue}
 import core/message.{
   type AgentMessage, type DeferredHandle, type ToolCall, AssistantMessage,
-  Errored,
+  Errored, ToolResultMessage,
 }
+import gleam/bit_array
+import gleam/bool
 import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import machine/operation.{type ReplayPolicy, type StructuralPreparation}
 import machine/planner.{
   type ModelResolution, type PreparationOutcome, type RequestAdmission,
@@ -226,6 +231,8 @@ pub type ToolRun {
     operation: OpId,
     step_id: String,
     source_index: Int,
+    /// The already reserved result entry; owner custody must retain this ID.
+    result_entry: EntryId,
     strand: String,
     call: ToolCall,
     arguments: JsonValue,
@@ -244,6 +251,96 @@ pub type ToolOutcome {
   /// The execution failed outside the tool's own result channel (runner
   /// refusal, channel death). The driver stages a synthetic error result.
   ToolFailed(reason: String)
+}
+
+/// Owner recovery is closed: only unmanaged local calls may use orphan replay.
+/// The callback runs on a reaper-owned effect, never on the strand handler.
+pub type ToolRecovery {
+  /// No owner remote custody applies to this local tool.
+  UnmanagedLocal
+
+  /// Exact final bytes were decoded; child results cannot produce this verdict.
+  RecoveredOutcome(outcome: ToolOutcome)
+
+  /// A supervised owner reconciliation will issue one terminal completion wake.
+  PendingReconciliation
+
+  /// Submission or finalization remains unknown; retain and describe evidence.
+  UnknownOutcome(evidence: String)
+}
+
+/// A pending reconciliation's terminal wake cannot authorize local replay.
+pub type RecoveryCompletion {
+  /// The owner persisted and decoded the exact final ToolOutcome.
+  RecoveryCompleted(outcome: ToolOutcome)
+
+  /// Reconciliation ended without an exact final report; evidence remains held.
+  RecoveryUnknown(evidence: String)
+}
+
+/// Encodes the exact final outcome with the existing total core message codec.
+/// Callers must also enforce their smaller configured journal payload ceiling.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert effects.decode_tool_outcome(effects.encode_tool_outcome(effects.ToolFailed("lost")) |> result.unwrap(<<>>)) == Ok(effects.ToolFailed("lost"))
+/// ```
+pub fn encode_tool_outcome(outcome: ToolOutcome) -> Result(BitArray, String) {
+  let value = case outcome {
+    ToolCompleted(result:, terminate:) ->
+      json.Array([
+        json.String("completed"),
+        message_codec.encode_message(result),
+        json.Bool(terminate),
+      ])
+    ToolFailed(reason:) ->
+      json.Array([json.String("failed"), json.String(reason)])
+  }
+  let bytes = value |> json.to_string |> bit_array.from_string
+  use <- bool.guard(
+    when: bit_array.byte_size(bytes) > 262_144,
+    return: Error("final tool outcome exceeds custody payload bound"),
+  )
+  Ok(bytes)
+}
+
+/// Refuses oversized, malformed or non-tool-result payloads before recovery.
+/// Length is checked before UTF-8 or JSON parsing; core/json bounds recursion.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert effects.decode_tool_outcome(<<>>) == Error("invalid final tool outcome JSON")
+/// ```
+pub fn decode_tool_outcome(bytes: BitArray) -> Result(ToolOutcome, String) {
+  use <- bool.guard(
+    when: bit_array.byte_size(bytes) > 262_144,
+    return: Error("final tool outcome exceeds custody payload bound"),
+  )
+  use text <- result.try(
+    bit_array.to_string(bytes)
+    |> result.replace_error("invalid final tool outcome UTF-8"),
+  )
+  use value <- result.try(
+    json.parse(text)
+    |> result.replace_error("invalid final tool outcome JSON"),
+  )
+  case value {
+    json.Array([json.String("failed"), json.String(reason)]) ->
+      Ok(ToolFailed(reason:))
+    json.Array([json.String("completed"), message, json.Bool(terminate)]) -> {
+      use message <- result.try(
+        message_codec.decode_message(message)
+        |> result.map_error(corruption.describe),
+      )
+      case message {
+        ToolResultMessage(..) -> Ok(ToolCompleted(result: message, terminate:))
+        _ -> Error("final tool outcome is not a tool result message")
+      }
+    }
+    _ -> Error("invalid final tool outcome envelope")
+  }
 }
 
 /// Clearance for one planned call: the pre-effect half of the broker's
@@ -300,6 +397,11 @@ pub type ToolSurface {
     /// Runs one cleared call; called on the effect process and may block
     /// for the execution's duration.
     run: fn(ToolRun) -> ToolOutcome,
+    /// Consumes the original persisted effective arguments and result entry.
+    /// Grants are always empty. Pending ownership belongs to the supervised
+    /// custodian, which commits final bytes before delivering one wake. An
+    /// unavailable managed journal must return UnknownOutcome, not Unmanaged.
+    recover: fn(ToolRun, fn(RecoveryCompletion) -> Nil) -> ToolRecovery,
     /// Whether the named tool's *current* registration still declares
     /// safe replay (pi §4.5: both stored and current declarations must
     /// say safe for a re-execution).

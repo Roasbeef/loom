@@ -114,6 +114,7 @@ pub fn effects(
           }
         }
       },
+      recover: fn(_run, _wake) { effects.UnmanagedLocal },
       replay_still_safe: fn(name) {
         case list.key_find(registry, name) {
           Ok(operation.ReplaySafe) -> True

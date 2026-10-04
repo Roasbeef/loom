@@ -563,6 +563,7 @@ fn routed_gateway() -> provider_gateway.Gateway {
 
 fn refusing_tools() -> effects.ToolSurface {
   effects.ToolSurface(
+    recover: fn(_run, _complete) { effects.UnmanagedLocal },
     clear: fn(_query) {
       effects.ClearanceRefused(reason: "no jailed tools in this harness")
     },
