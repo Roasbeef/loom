@@ -272,8 +272,13 @@ pub fn uncertain_cleanup_keeps_original_custody_test() {
   assert host.close(running) == Error(host.CleanupUncertain)
   assert simplifile.read(fixture.path <> "/proof") == Ok("x")
   let monitor = process.monitor(host.pid(running))
+  let service_monitor = process.monitor(view.service)
   process.send_abnormal_exit(host.pid(running), Shutdown)
   down(monitor, 12_000)
+
+  // The parent's DOWN does not order a linked child's exit at this observer.
+  // Require the child's own witness before asserting that its custody ended.
+  down(service_monitor, 12_000)
   assert !process.is_alive(view.service)
   assert journal.payloads(fixture.book, key(1), digest) == Ok(items)
   assert journal.release(fixture.book) == Ok(Nil)
