@@ -3737,9 +3737,15 @@ interface.
 
 ### Cost
 
-- A tooltip is the first attribute that holds session text. It is inert, but
-  the rule is now "no attribute but a `title` is built from session content",
-  and a later change that adds a second exception must amend this addendum.
+- Two more attributes hold session-derived text, both inert `title`s Lustre
+  escapes. The attributes that carry such text are now exactly these: the
+  active strand's identity (a slug of a model-supplied purpose, letters,
+  digits and dashes) as the composer's `aria-label` and `placeholder`
+  (`operator_page`), the session identity and the workspace path as `title`s
+  (`heading`, `sidebar`), and the two tooltips this addendum adds, a card's
+  activity text and a model's identifier. Everything else the session wrote
+  stays a text node, and a later change that adds another attribute must amend
+  this addendum.
 - The commentary's bodies are one click further away, and a short summary quotes
   only the newest review's first line.
 - A card's activity text is cut at the first ` · ` when the part before it is a
