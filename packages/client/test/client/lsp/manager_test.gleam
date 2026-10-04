@@ -21,13 +21,13 @@ import broker/framing
 import broker/policy
 import broker/token
 import client/internal/ffi_os
-import client/lsp/dependency_state
-import client/lsp/jail
-import client/lsp/leases
-import client/lsp/manager
-import client/lsp/preparation
-import client/lsp/profile
-import client/lsp/resolve
+import codemode/lsp_host/dependency_state
+import codemode/lsp_host/jail
+import codemode/lsp_host/leases
+import codemode/lsp_host/manager
+import codemode/lsp_host/preparation
+import codemode/lsp_host/profile
+import codemode/lsp_host/resolve
 import core/clock
 import core/ids
 import core/json
@@ -545,7 +545,10 @@ fn probe_jailed(
     workspace:,
     session_base: probe_session_base(workspace),
     demand:,
-    toolchain: None,
+    executables: jail.Executables(
+      gleam_path: None,
+      find: ffi_os.find_executable,
+    ),
     places: profile.Places(home: None, cache: None),
     reading: fn(name) {
       case name {
@@ -1841,7 +1844,10 @@ fn live_manager(
       workspace: live.workspace,
       session_base: live_base(live.workspace),
       demand: exec.BestEffort,
-      toolchain: None,
+      executables: jail.Executables(
+        gleam_path: None,
+        find: ffi_os.find_executable,
+      ),
       places: profile.Places(home: Some(live.workspace <> "/home"), cache: None),
       reading:,
       run: tool.broker_runner(
@@ -2836,7 +2842,10 @@ fn run_prepared_gleam(live: Live) -> Nil {
         network: policy.NetworkOff,
       ),
       demand: exec.BestEffort,
-      toolchain: None,
+      executables: jail.Executables(
+        gleam_path: None,
+        find: ffi_os.find_executable,
+      ),
       places: profile.Places(
         home: None,
         cache: Some(live.workspace <> "/private-cache"),

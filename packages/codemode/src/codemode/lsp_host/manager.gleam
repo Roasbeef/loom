@@ -1,3 +1,9 @@
+//// The physical LSP manager owns root discovery, document reads and server
+//// custody beside the workspace it resolves. It is shared by local and
+//// executor hosts under protocol 067. Configuration contains physical paths,
+//// approved profiles and injected clearance callbacks; provider, session
+//// runtime and profile installation remain with the owner.
+////
 //// The session's language-server manager: the one process that knows which
 //// server is running, and the `lsp/query.Door` every surface asks through
 //// (ADR-015 §§1, 3–6).
@@ -175,13 +181,12 @@ import broker/broker.{type CallEvent, type CallSpec}
 import broker/budget
 import broker/exec
 import broker/policy.{type SandboxPolicy}
-import client/codemode.{type Toolchain}
-import client/lsp/dependency_state
-import client/lsp/jail
-import client/lsp/leases
-import client/lsp/preparation
-import client/lsp/profile.{type LspServer, type Places}
-import client/lsp/resolve.{type Identity, type Owned, type Symbol}
+import codemode/lsp_host/dependency_state
+import codemode/lsp_host/jail
+import codemode/lsp_host/leases
+import codemode/lsp_host/preparation
+import codemode/lsp_host/profile.{type LspServer, type Places}
+import codemode/lsp_host/resolve.{type Identity, type Owned, type Symbol}
 import core/clock.{type Clock}
 import core/ids.{type OpId}
 import filepath
@@ -1784,13 +1789,27 @@ fn still_loading(titles: List(String)) -> String {
 }
 
 fn owned(manager: Manager, path: String) -> Result(Owned, QueryError) {
-  resolve.owner(manager.servers, manager.workspace, path)
-  |> result.map_error(fn(unowned) {
-    case unowned {
-      resolve.NoOwner(reason:) | resolve.Refused(reason:) ->
-        query.NoServer(reason:)
-    }
-  })
+  use owned <- result.try(
+    resolve.owner(manager.servers, manager.workspace, path)
+    |> result.map_error(fn(unowned) {
+      case unowned {
+        resolve.NoOwner(reason:) | resolve.Refused(reason:) ->
+          query.NoServer(reason:)
+      }
+    }),
+  )
+
+  // Root ownership does not grant a protected document. Apply the same
+  // admission used for server-named paths before any caller reads its text.
+  use path <- result.try(
+    resolve.admit(
+      root: owned.identity.root,
+      protected: manager.protected,
+      path: owned.path,
+    )
+    |> result.map_error(query.NoServer),
+  )
+  Ok(resolve.Owned(..owned, path:))
 }
 
 // Turns a question into a position, by the three rules ADR-015 §5 names:
@@ -2412,13 +2431,14 @@ pub type Jailed {
     /// The session's enforcement demand, `settings.demand` — the same one
     /// `bash` uses. The server, its probe and every search clear under it.
     demand: exec.EnforcementDemand,
-    /// Code mode's located toolchain, which is the `gleam` a bare `gleam`
-    /// command means (`jail.locate`).
-    toolchain: Option(Toolchain),
-    /// The daemon's own `HOME` and cache directory, which expand a
-    /// table's `~/` and `<cache>/` roots.
+    /// The physical host's compiler path and administrative executable lookup.
+    /// A bare `gleam` uses the compiler path when available (`jail.locate`).
+    executables: jail.Executables,
+    /// Physical host HOME and cache facts, which expand an approved
+    /// profile's `~/` and `<cache>/` roots.
     places: Places,
-    /// The daemon's environment, read for `PATH` and the configured names.
+    /// Physical host administrative environment, read only for `PATH` and
+    /// the profile's explicitly configured names.
     reading: fn(String) -> Result(String, Nil),
     /// Clears and dispatches one call: `tool.broker_runner` in production.
     run: fn(CallSpec, Subject(CallEvent)) -> Result(RunningCall, broker.Refusal),
@@ -2570,7 +2590,7 @@ fn jail_for(
   server: LspServer,
   root: String,
 ) -> Result(jail.Jail, String) {
-  use executable <- result.try(jail.locate(server, jailed.toolchain))
+  use executable <- result.try(jail.locate(server, jailed.executables))
   let placement =
     jail.Placement(
       server:,

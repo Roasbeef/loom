@@ -97,6 +97,7 @@ import client/extension/seam
 import codemode/compile
 import codemode/identity
 import codemode/launch
+import codemode/physical
 import codemode/satellite
 import codemode/search
 import codemode/workspace
@@ -448,7 +449,7 @@ fn start_host(
     artifact_at(artifact, written),
     host,
     config.launch(launch.LaunchConfig(
-      broker: config.host.broker,
+      runner: physical.local(config.host.broker),
       clock: config.host.clock,
       erl_path: config.host.erl_path,
       host_mounts: config.host.host_mounts,

@@ -74,8 +74,8 @@ pub fn compile_writes_program_under_pinned_name_test() {
     )
   let compiled = compile.compile(vetted(source), config, build_phase())
   let assert Ok(artifact) = compiled.result
-  assert artifact.entry_module == compile.entry_module
-  assert artifact.manifest_hash == "cafef00d"
+  assert compile.artifact_entry(artifact) == compile.entry_module
+  assert compile.artifact_hash(artifact) == "cafef00d"
   // The build's jail travels with its products: a caller holding the
   // artifact holds what confined the build that made it.
   assert compiled.enforcement
@@ -227,4 +227,47 @@ pub fn workspace_setup_failure_is_reported_test() {
   // The builder was never reached, so nothing is claimed about a jail.
   let assert enforcement.Unreported(why) = compiled.enforcement
   assert string.contains(why, "never dispatched")
+}
+
+pub fn the_local_service_prepares_before_the_existing_builder_test() {
+  let root = fresh_root("local-service")
+  let source = "import cap/report\npub fn main() { report.text(\"local\") }\n"
+  let generated = [#("cap/mcp/selected", "generated source")]
+  let configured =
+    compile.local_service(
+      compile.CompileConfig(
+        build_root: root,
+        dependencies: compile.default_dependencies(),
+        generated:,
+        build: fn(phase, prepared, modules) {
+          assert phase == build_phase()
+          assert prepared == root
+          assert modules == generated
+          assert simplifile.read(
+              root <> "/src/" <> compile.program_module <> ".gleam",
+            )
+            == Ok(source)
+          assert simplifile.read(
+              root <> "/src/" <> compile.entry_module <> ".gleam",
+            )
+            == Ok(compile.entry_source())
+          assert simplifile.read(root <> "/gleam.toml")
+            == Ok(compile.project_toml(compile.default_dependencies()))
+          ok_builder(phase, prepared, modules)
+        },
+      ),
+    )
+  let compiled =
+    configured.compile(compile.CompileRequest(
+      vetted: vetted(source),
+      dependencies: configured.dependencies,
+      generated: configured.generated,
+      identity: build_phase(),
+    ))
+  let assert Ok(compile.Artifact(build_root:, beam_dir:, ..)) = compiled.result
+    as "the local service must return local build products"
+  assert build_root == root
+  assert beam_dir == root <> "/ebin"
+  assert compiled.enforcement
+    == enforcement.Reported(entries: ["bwrap"], degraded: False)
 }

@@ -79,6 +79,15 @@
 //// program actually being built, so a configured server a program never
 //// imports costs it nothing.
 ////
+//// # The physical service seam
+////
+//// `CompileService` surrounds the whole local compiler, including the
+//// filesystem preparation before Builder. The owner pipeline vets and
+//// selects generated imports before sending its CompileRequest. A local
+//// service closes over its root and Builder; a later executor service
+//// returns an issued ExecutorArtifact without exposing executor paths to
+//// owner-local filesystem consumers.
+////
 //// # The build seam
 ////
 //// Running `gleam build` is an *effect*, so it is injected as a `Builder`.
@@ -95,6 +104,8 @@
 import codemode/enforcement.{type Report}
 import codemode/identity.{type PhaseIdentity}
 import codemode/vet.{type Vetted}
+import core/ids
+import core/workspace
 import gleam/list
 import gleam/result
 import gleam/string
@@ -140,6 +151,7 @@ pub const json_version = "3.1.0"
 
 /// A compiled code-mode program ready to run in a satellite node.
 pub type Artifact {
+  /// A local build, whose paths may be interpreted only by a local launcher.
   Artifact(
     /// The build workspace root (where source and `gleam.toml` were
     /// written and the build ran).
@@ -152,6 +164,59 @@ pub type Artifact {
     /// entry the orchestrator persists.
     manifest_hash: String,
   )
+
+  /// An executor-issued artifact. No executor pathname becomes a local path.
+  /// The remote consumer must compare the full scope and execution binding,
+  /// resolve the issued artifact ID and verify its hash and seed contract.
+  ExecutorArtifact(
+    /// Session, registration and both authority epochs of the physical build.
+    scope: workspace.Scope,
+    /// Owner operation that requested compilation.
+    operation: ids.OpId,
+    /// Original bounded step, never reconstructed from a token or sequence.
+    step: workspace.Step,
+    /// Stable compile request UUID, validated by the remote wire decoder.
+    request_id: String,
+    /// Canonical compile request digest binding source, selected generated
+    /// modules, dependency/seed contract and stable execution requirements.
+    request_digest: String,
+    /// Executor-issued artifact ID, bounded and resolved only by its issuer.
+    artifact_id: String,
+    /// Negotiated prelude/seed contract digest used for the physical build.
+    contract_digest: String,
+    /// Pinned generated entry module, checked again by the physical consumer.
+    entry_module: String,
+    /// Content fingerprint returned with the complete build enforcement report.
+    manifest_hash: String,
+  )
+}
+
+/// Reads the durable content fingerprint without interpreting artifact location.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert compile.artifact_hash(compile.Artifact("/b", "/b/ebin", "entry", "hash")) == "hash"
+/// ```
+pub fn artifact_hash(artifact: Artifact) -> String {
+  case artifact {
+    Artifact(manifest_hash:, ..) | ExecutorArtifact(manifest_hash:, ..) ->
+      manifest_hash
+  }
+}
+
+/// Reads the entry module name; remote admission must still check its contract.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert compile.artifact_entry(compile.Artifact("/b", "/b/ebin", "entry", "hash")) == "entry"
+/// ```
+pub fn artifact_entry(artifact: Artifact) -> String {
+  case artifact {
+    Artifact(entry_module:, ..) | ExecutorArtifact(entry_module:, ..) ->
+      entry_module
+  }
 }
 
 /// Why compilation did not produce an artifact. Every variant is returned
@@ -220,6 +285,55 @@ pub type Compiled {
   Compiled(result: Result(Artifact, CompileError), enforcement: Report)
 }
 
+/// The whole physical compile request, made only after owner vetting.
+/// It contains no owner-local pathname or Builder callback.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let request = compile.CompileRequest(
+///   vetted: program, dependencies: compile.default_dependencies(),
+///   generated: [], identity: identity.build_phase(execution_identity),
+/// )
+/// ```
+pub type CompileRequest {
+  /// Local services use the opaque Vetted; remote adapters serialize its
+  /// source and re-vet at the executor under the negotiated contract.
+  CompileRequest(
+    /// Source admitted by the owner pipeline's selected capability seam.
+    vetted: Vetted,
+    /// Pinned dependency table; the service must compare its seed contract.
+    dependencies: List(Dependency),
+    /// Only generated modules actually imported by this vetted program.
+    generated: List(#(String, String)),
+    /// Build phase derived from the execution's one identity, with no grants.
+    identity: PhaseIdentity,
+  )
+}
+
+/// Owner-side selection and the whole physical compilation operation.
+/// Pipeline import filtering happens before `compile` is invoked.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let service = compile.local_service(local_configuration)
+/// let result = service.compile(prepared_request)
+/// ```
+pub type CompileService {
+  /// A local adapter owns preparation and Builder; a later remote adapter
+  /// owns declarative request submission, never an owner-local placeholder.
+  CompileService(
+    /// The dependency table selected by the host for this service.
+    dependencies: List(Dependency),
+    /// Host-generated modules before the pipeline narrows them by import.
+    generated: List(#(String, String)),
+    /// Prepares, builds and fingerprints at the physical host, returning its
+    /// complete enforcement report with either success or failure.
+    compile: fn(CompileRequest) -> Compiled,
+  )
+}
+
 /// One pinned build dependency. The generated `gleam.toml` lists only
 /// these, so the build sees exactly the prelude and stdlib (design rule 3).
 pub type Dependency {
@@ -254,6 +368,31 @@ pub type CompileConfig {
     /// The injected build seam.
     build: Builder,
   )
+}
+
+/// Wraps existing local preparation and hermetic build as one service.
+/// The root and Builder stay in this local closure and never enter a request.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let service = compile.local_service(local_config)
+/// // pipeline.ExecConfig(..., compile: service, ...)
+/// ```
+pub fn local_service(config: CompileConfig) -> CompileService {
+  let CompileConfig(build_root:, dependencies:, generated:, build:) = config
+  CompileService(dependencies:, generated:, compile: fn(request) {
+    compile(
+      request.vetted,
+      CompileConfig(
+        build_root:,
+        dependencies: request.dependencies,
+        generated: request.generated,
+        build:,
+      ),
+      request.identity,
+    )
+  })
 }
 
 /// Where one generated capability module is written inside a build root:

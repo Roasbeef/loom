@@ -1,5 +1,21 @@
 # client
 
+## Physical service ownership
+
+The client selects profiles and supplies local administrative facts, but the
+whole compiler and LSP host are reusable physical services in `codemode`.
+`serve` and the extension checker construct `lsp_host/jail.Executables` from
+the local toolchain and executable lookup. The shared manager owns root
+discovery, document reads, dependency preparation, URI admission and rename
+landing beside the selected workspace. No shared host imports client or
+provider state. The current production construction remains local.
+
+`codemode` wiring selects a `compile.CompileService` before any source
+preparation, and injects `physical.local` for ordinary broker clearance.
+A remote artifact cannot pass the local launcher or be treated as a local
+filesystem approval. Owner satellite token validation and capability routing
+remain on the owner; the extraction introduces no second budget authority.
+
 ## LSP query handle ownership
 
 `lsp/manager.Manager` retains reachability, workspace/server identity,
@@ -1054,7 +1070,7 @@ catalogue without opening runtimes. Explicit admission invokes
   listing and resolves `set_config`'s `model_name` against it; `serve`
   loads it from `--config` or shapes a one-entry catalogue from the
   `LOOM_*` environment. `Catalog.lsp_servers` is decoded by
-  `client/lsp/profile.decode_servers`, not here: `catalog` checks only
+  `codemode/lsp_host/profile.decode_servers`, not here: `catalog` checks only
   that `[lsp]` is a table and hands over its entries.
 - `client/secrets.{Source, Entry, Failure, Capture, Runner, parse,
   resolve, store, host_runner}` — the `[secrets]` table of the same
@@ -5250,7 +5266,7 @@ addendum), installed with `loomd ext install <url> --rev v0.1.0` and proved
 with `loomd ext check`. The tests here use synthetic profiles, and a name
 such as `lsp_go` in them is a fixture's, not a dependency on that repository.
 
-- `client/lsp/profile.{LspServer, ProjectAccess, LspPath, ModuleCase,
+- `codemode/lsp_host/profile.{LspServer, ProjectAccess, LspPath, ModuleCase,
   Places, decode_servers, decode_server, claim_extensions, expand_path,
   cache_place, cache_env_paths, private_cache_fault, mangling_fault,
   not_server_owned}` — the one
@@ -5318,7 +5334,7 @@ such as `lsp_go` in them is a fixture's, not a dependency on that repository.
   `Errored(reason)`. **Invariant: sites compare as sets**, since a server
   answers in no fixed order and two references on one line share a
   `path:line`; `profile_check_test` pins it.
-- `client/lsp/manager.{Manager, Config, Backend, Timing, Jailed, Search, Hit,
+- `codemode/lsp_host/manager.{Manager, Config, Backend, Timing, Jailed, Search, Hit,
   Msg, start, supervised, addressed, stop, door, jailed, connect_jailed,
   probe, probe_server, search_jailed}` — the session's one-server manager.
   `probe_server(jailed, server, root)` clears the same probe over the
@@ -5339,7 +5355,7 @@ such as `lsp_go` in them is a fixture's, not a dependency on that repository.
   the manager's `Phase` (`Idle`, `Starting`, `Running`) and the keeper's
   `KeeperPhase` (`AwaitingPrevious`, `Beginning`, `Holding`); the state,
   message and keeper types sit before the first function.
-- `client/lsp/resolve.{Identity, Owned, Unowned, Symbol, owner, admit,
+- `codemode/lsp_host/resolve.{Identity, Owned, Unowned, Symbol, owner, admit,
   same, display, split_symbol, cased, satisfies, named, container,
   outline, site}` — the pure half: which `{server, root}` owns a path
   (nearest root marker, real path under the root; an absolute path is
@@ -5383,7 +5399,7 @@ such as `lsp_go` in them is a fixture's, not a dependency on that repository.
   or `after_write`: a server that leaks a token costs one "still loading"
   at start, not a deadline per query, and a warm server re-indexing
   answers from its previous state as it does for any editor.
-- `client/lsp/jail.{Placement, Jail, Launch, Executable, ExecutableFile,
+- `codemode/lsp_host/jail.{Placement, Jail, Launch, Executable, ExecutableFile,
   max_link_hops, operation, step_id, locate, regions, policy_for,
   directory_unlinked, caches_unlinked, call_spec, launch, transport}` —
   one server's jail and its transport.
@@ -5439,7 +5455,7 @@ such as `lsp_go` in them is a fixture's, not a dependency on that repository.
   directory is the one judged). The cache place itself is resolved first,
   so a linked `~/.cache` is admitted. Both are point-in-time: they close a
   planted link, not one swapped between the read and the helper's bind.
-- `client/lsp/leases.{Leases, Lease, Refusal, cap_for, start, acquire,
+- `codemode/lsp_host/leases.{Leases, Lease, Refusal, cap_for, start, acquire,
   release, stop}` — the per-session cap on session-lived helper leases,
   `pool_size - reserved_helpers`.
 - **Traffic.** `manager.Msg`: `Acquire(identity, reply)` (a caller wants the
@@ -5495,7 +5511,7 @@ table's `unsupported_cap`. `lsp_on` excludes extensions and resident hooks.
 
 The field holds the door, not a `codemode/lsp.Seam`, because the seam's
 applied rename is bound to one execution's write boundary.
-`client/lsp/codemode_rename.seam(door, workspace:, roots:, protected:)`
+`codemode/lsp_host/codemode_rename.seam(door, workspace:, roots:, protected:)`
 builds it per request from the request's workspace, its approved writable
 roots and its base policy's protected list, the values `workspace_seam`
 gives `cap/fs.write`: `door.prepare_rename`, then `tools/lsp.land` with
@@ -5618,7 +5634,7 @@ scratch refusal proves the daemon's global profile is missing or broken.
 
 ## Finite language-server observations
 
-`client/lsp/manager.observation_door` fills `lsp/observation.Door` beside the
+`codemode/lsp_host/manager.observation_door` fills `lsp/observation.Door` beside the
 interactive `query.Door`. Collection admits one configured server and root,
 pulls the explicit source documents into that server, waits for readiness,
 and queries only the requested outlines and reference seeds. It uses one
