@@ -116,3 +116,37 @@ pub fn the_words_are_fixed_and_say_what_happened_test() {
   assert copy_rule.words(copy_rule.Token, copy_rule.Failed)
     == "Copy failed. Select the text and copy it."
 }
+
+// The ended page's box copies the command that mints a fresh link, and only
+// that: `loom ui`, alone or for one session's canonical identity.
+pub fn the_link_subject_copies_only_the_ui_command_test() {
+  assert copy_rule.subject("link") == Ok(copy_rule.Link)
+  let session = "loom ui --session 0198a2f4-7c3b-7d11-9e6a-5b0c2d4e8f10"
+  assert copy_rule.text(copy_rule.Link, "loom ui") == Ok("loom ui")
+  assert copy_rule.text(copy_rule.Link, session) == Ok(session)
+  list.each(
+    [
+      "",
+      "loom ui ",
+      "loom ui --session ",
+      "loom ui\nrm -rf ~",
+      "loom ui; rm -rf ~",
+      "loom ui --session abc; id",
+      "loom ui --session $(id)",
+      "loom ui --session abc def",
+      "loom ui --session " <> string.repeat("a", 65),
+      " loom ui",
+      "sh loom ui",
+      command,
+      token,
+    ],
+    fn(value) {
+      assert copy_rule.text(copy_rule.Link, value) == Error(Nil)
+    },
+  )
+
+  // The link is not a command or a token, and neither is it the link.
+  assert copy_rule.text(copy_rule.Command, "loom ui") == Error(Nil)
+  assert copy_rule.text(copy_rule.Token, "loom ui") == Error(Nil)
+  assert copy_rule.words(copy_rule.Link, copy_rule.Idle) == "Copy command"
+}

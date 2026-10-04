@@ -101,3 +101,32 @@ Each request costs up to 24 registry lookups and up to 24 concurrent Agency
 calls. The route reports nothing about saved sessions, usage, tokens, or git
 state, and it records nothing about whether the operator has seen a session.
 The terminal gains one command, one reply, and a total decoder for the row.
+
+## Addendum: members are answered for the sessions they hold (2026-10-04)
+
+**Status**: IMPLEMENTED with the home page's activity words (065, the addendum on
+the home list). It amends the decision above, which refused a member.
+
+**Ruling (owner, 2026-10-04).** A non-owner principal is answered, with rows
+only for the ids where it holds a membership, at any role. An id it does not
+hold is omitted exactly as an unknown or non-resident id is, so the reply never
+distinguishes "not a member" from "not resident". The request's validation
+(1 to 24 distinct canonical ids, `bad_request` before authorization), the
+epoch check, the 2,000 ms deadline and the 2,400-byte row cap are unchanged. The
+owner is unchanged: it is answered for every id.
+
+**How.** `server.held` asks the registry, with the credential's digest and at
+the moment of the read, whether the credential holds each id
+(`manager.session_authority`, the check every other per-session command uses),
+and passes only those ids to `activity`. Membership is never taken from the
+request, from a page's list or from an earlier read, so a revoked credential or a
+removed membership reads nothing from the next request on. The home page's read
+(`server.home_activity`) is the same function over the page's own credential.
+
+**What this changes.** `forbidden` is no longer a member's answer to
+`sessions.activity`. A member can learn the state word, the last outcome, the
+last message, the model and the glances of a session it holds, which are what
+its own page of that session shows it. It learns nothing about any other
+session, and cannot tell whether one exists or runs. The cost is as above, for at
+most 24 sessions the member holds, and a member's registry check adds up to 24
+registry calls to a request.

@@ -1031,7 +1031,7 @@ boundaries and the split's measurements under Invariants.
   `tui/daemon/protocol` is the independent, total control codec:
   `Page` is bounded to 100 authorized records, lifecycle requests use the hello
   epoch, and `GetOperation` refuses an operation from another epoch locally.
-  `SessionActivity(sessions)` encodes owner-only `sessions.activity`
+  `SessionActivity(sessions)` encodes `sessions.activity` (a member is answered only for its own sessions)
   (`protocol-change/050`), refusing locally an empty, duplicated, or
   over-24 list; its `ActivityReply` holds one `Activity` row per resident, in
   request order, and a requested id missing from it is not resident. The row

@@ -34,6 +34,10 @@ fn entry(
   Entry(id:, name:, workspace:, created_at:, residency:)
 }
 
+// The instant the page reads the clock at: two hours and a few minutes after
+// the second session was created, and long after the first.
+const now = 7_400_000
+
 // Three workspaces: `/src/weft` holds the newest session, so it comes first.
 fn listing() -> List(Entry) {
   [
@@ -52,6 +56,8 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     sessions: read,
     open: fn(_) { sessions.Declined(sessions.NotHeld) },
     resume: fn(_, _) { Nil },
+    now: fn() { now },
+    activity: fn(_, _) { Nil },
   )
 }
 
@@ -124,26 +130,210 @@ pub fn the_page_lists_the_sessions_grouped_by_workspace_test() {
 pub fn resident_and_saved_are_marked_in_words_test() {
   let #(model, _) = opened(start())
   let html = drawn(model)
-  assert string.contains(html, ">resident<")
-  assert string.contains(html, ">saved<")
+  assert string.contains(html, "resident · created ")
+  assert string.contains(html, "saved · ")
   assert string.contains(html, "Session D")
   assert string.contains(html, "vetting lint")
 
-  // The table has a caption naming the workspace's whole path, and a header
-  // for each column.
-  assert string.contains(html, ">/src/weft</caption>")
-  assert string.contains(html, "scope=\"col\">Name<")
-  assert string.contains(html, "scope=\"col\">State<")
-  assert string.contains(html, "scope=\"col\">Created<")
+  // The centre is a list for each workspace, not a table: a heading with the
+  // workspace's path and a count, and one item for each session.
+  assert string.contains(html, "class=\"home-workspace\"")
+  assert string.contains(html, ">/src/weft<")
+  assert !string.contains(html, "<table")
+  assert !string.contains(html, "<th")
+  assert list.length(string.split(html, "class=\"home-row ")) == 5
 }
 
-// The catalogue's creation time is drawn as UTC, from the integer alone.
-pub fn the_creation_time_is_shown_in_utc_test() {
+// The workspace heading shortens the owner's home directory to `~` and keeps
+// the whole path in its title, with the session count beside it.
+pub fn the_workspace_heading_is_shortened_and_counted_test() {
+  let #(model, _) =
+    opened(
+      start_with(home.OperatorCeiling, fn() {
+        home.Listed([
+          entry("A", "web ui", "/Users/ada/src/loom", 1, Live),
+          entry("B", "lint", "/Users/ada/src/loom", 2, Live),
+        ])
+      }),
+    )
+  let html = drawn(model)
+  assert string.contains(
+    html,
+    "<h3 class=\"home-workspace\" title=\"/Users/ada/src/loom\">~/src/loom"
+      <> "<span class=\"home-count\">2</span></h3>",
+  )
+}
+
+// A row's age is counted from the clock the page read with its list, and the
+// exact creation minute in UTC, from the integer alone, is the time element's
+// title and datetime. A running session's age says it was created; a saved
+// session's is bare after "saved".
+pub fn the_creation_time_is_an_age_with_the_utc_minute_in_its_title_test() {
   let #(model, _) = opened(start())
   let html = drawn(model)
   assert string.contains(html, "datetime=\"2026-09-21T14:13Z\"")
-  assert string.contains(html, ">2026-09-21 14:13 UTC<")
-  assert string.contains(html, ">1970-01-01 00:08 UTC<")
+  assert string.contains(html, "title=\"2026-09-21 14:13 UTC\"")
+  assert string.contains(html, "title=\"1970-01-01 00:08 UTC\"")
+  assert string.contains(
+    html,
+    "resident · created <time datetime=\"1970-01-01T00:05Z\""
+      <> " title=\"1970-01-01 00:05 UTC\">1h ago</time>",
+  )
+  assert string.contains(html, "saved · <time datetime=\"1970-01-01T00:08Z\"")
+  assert string.contains(html, ">2h ago</time>")
+
+  // A creation after the page's clock is as recent as the clock can say.
+  assert string.contains(html, ">just now</time>")
+}
+
+pub fn an_age_is_counted_in_whole_units_test() {
+  assert sessions.ago(59_999, 0) == "just now"
+  assert sessions.ago(60_000, 0) == "1m ago"
+  assert sessions.ago(3_599_000, 0) == "59m ago"
+  assert sessions.ago(3_600_000, 0) == "1h ago"
+  assert sessions.ago(86_399_000, 0) == "23h ago"
+  assert sessions.ago(86_400_000, 0) == "1d ago"
+  assert sessions.ago(2_591_999_000, 0) == "29d ago"
+  assert sessions.ago(2_592_000_000, 0) == "over a month ago"
+  assert sessions.ago(0, 5000) == "just now"
+}
+
+// A row says what its running session is doing, in the words the daemon's
+// state gave, once the daemon has answered; before that, and for a session the
+// daemon could not ask, it says only that the session is resident. A saved
+// session has no activity, whatever a stale answer says.
+pub fn a_running_row_says_what_it_is_doing_test() {
+  let asked = process.new_subject()
+  let #(model, _) =
+    opened(
+      home.Start(..start(), activity: fn(ids, deliver) {
+        process.send(asked, ids)
+        deliver([
+          #("B", sessions.Working),
+          #("A", sessions.NeedsYou),
+          #("C", sessions.Idle),
+        ])
+      }),
+    )
+
+  // The list asked for its two running sessions, in the order drawn, and
+  // never for a saved one.
+  assert process.receive(asked, 0) == Ok(["B", "A"])
+  let html = drawn(model)
+  assert string.contains(html, "resident · working · created ")
+  assert string.contains(html, "resident · needs you · created ")
+  assert string.contains(html, "home-row working")
+  assert string.contains(html, "home-row needs-you")
+  assert !string.contains(html, "idle")
+  assert !string.contains(html, "saved · idle")
+
+  // Before the answer, a running row shows only that it is resident.
+  let before =
+    drawn(run(home.new(start()), home.Answered(home.Listed(listing()))))
+  assert string.contains(before, "resident · created ")
+  assert !string.contains(before, "working")
+}
+
+// Every answer replaces the last, so a session that went idle says so and one
+// that stopped running leaves the words behind.
+pub fn an_activity_answer_replaces_the_last_test() {
+  let #(model, _) = opened(start())
+  let model =
+    run(model, home.Observed([#("B", sessions.Working), #("A", sessions.Idle)]))
+  assert string.contains(drawn(model), "resident · idle · created ")
+  let model = run(model, home.Observed([#("B", sessions.Idle)]))
+  assert !string.contains(drawn(model), "working")
+  assert list.length(string.split(drawn(model), "resident · idle")) == 2
+}
+
+// The daemon's own bound is the page's: no more running sessions than
+// `activity_limit` are named in one read, the first ones in the order drawn,
+// and a page with no running session asks nothing.
+pub fn the_activity_read_is_bounded_and_skips_a_page_with_nothing_running_test() {
+  let asked = process.new_subject()
+  let ask = fn(ids, _) { process.send(asked, ids) }
+  let many =
+    list.repeat(Nil, home.activity_limit + 6)
+    |> list.index_map(fn(_, index) {
+      let n = index + 1
+      entry(string.inspect(n), "s", "/src/x", 1000 * n, Live)
+    })
+  let _ =
+    opened(
+      home.Start(
+        ..start_with(home.OperatorCeiling, fn() { home.Listed(many) }),
+        activity: ask,
+      ),
+    )
+  let assert Ok(ids) = process.receive(asked, 0)
+  assert list.length(ids) == home.activity_limit
+  assert list.first(ids) == Ok(string.inspect(home.activity_limit + 6))
+
+  let _ =
+    opened(
+      home.Start(
+        ..start_with(home.OperatorCeiling, fn() {
+          home.Listed([entry("C", "saved", "/src/x", 1, Saved)])
+        }),
+        activity: ask,
+      ),
+    )
+  assert process.receive(asked, 0) == Error(Nil)
+}
+
+// An ended page asks for no activity, and keeps the words it had.
+pub fn an_ended_page_asks_for_no_activity_test() {
+  let asked = process.new_subject()
+  let #(model, _) =
+    opened(
+      home.Start(..start(), activity: fn(ids, _) { process.send(asked, ids) }),
+    )
+  let _ = process.receive(asked, 0)
+  let ended = run(model, home.Answered(home.Closed(ending.AccessRevoked)))
+  let ended = run(ended, home.Observed([#("B", sessions.Working)]))
+  assert process.receive(asked, 0) == Error(Nil)
+  assert !string.contains(drawn(ended), "working")
+}
+
+// The daemon's state words map to activities, and a word the page does not
+// know is no activity.
+pub fn the_daemons_state_words_are_total_test() {
+  assert sessions.activity_of("needs_you") == Ok(sessions.NeedsYou)
+  assert sessions.activity_of("working") == Ok(sessions.Working)
+  assert sessions.activity_of("idle") == Ok(sessions.Idle)
+  assert sessions.activity_of("unknown") == Error(Nil)
+  assert sessions.activity_of("") == Error(Nil)
+  assert sessions.activity_of("<script>") == Error(Nil)
+  assert sessions.activity_words(sessions.NeedsYou) == "needs you"
+}
+
+// The list's pressable rows are buttons that fill the item, and a row that is
+// text has no button, so a hover tint is drawn only where a press works.
+pub fn a_row_is_a_button_only_where_a_press_works_test() {
+  let #(observer, _) =
+    opened(start_with(home.ObserverCeiling, fn() { home.Listed(listing()) }))
+  let html = drawn(observer)
+  assert string.contains(html, "<button class=\"home-open\"")
+  assert string.contains(html, "class=\"home-item\"")
+  assert string.contains(
+    html,
+    "<span aria-hidden=\"true\" class=\"home-chevron\">",
+  )
+}
+
+// The bar is the session page's: the status is the same pill, coloured by the
+// page's standing, and the principal and ceiling are plain text spans with no
+// monospaced class.
+pub fn the_bar_matches_the_session_pages_test() {
+  let #(model, _) = opened(start())
+  let html = drawn(model)
+  assert string.contains(html, "class=\"status pill online\"")
+  let connecting = drawn(home.new(start()))
+  assert string.contains(connecting, "class=\"status pill pending\"")
+  let ended =
+    drawn(run(model, home.Answered(home.Closed(ending.AccessRevoked))))
+  assert string.contains(ended, "class=\"status pill ended\"")
+  assert !string.contains(html, "mono")
 }
 
 pub fn the_clock_is_civil_utc_test() {
@@ -380,8 +570,9 @@ pub fn the_frame_is_the_session_pages_without_a_panel_test() {
   )
   assert string.contains(
     html,
-    "<p aria-current=\"page\" class=\"sidebar-home\">Home</p>",
+    "<p aria-current=\"page\" class=\"sidebar-home\"><svg",
   )
+  assert string.contains(html, "</svg>Home</p>")
   assert !string.contains(html, "aria-current=\"true\"")
   assert !string.contains(html, "Strand panel")
 
@@ -528,9 +719,11 @@ pub fn a_refused_home_names_no_session_test() {
   list.each(ending.all(), fn(reason) {
     let refusal = page.home_refusal(reason)
     assert string.contains(refusal, "role=\"alert\"")
-    assert string.contains(refusal, "Run `loom ui`")
+    assert string.contains(refusal, "subject=\"link\" text=\"loom ui\"")
     assert !string.contains(refusal, "--session")
-    assert !string.contains(refusal, "<script")
+
+    // The only script is the page's own client bundle.
+    assert list.length(string.split(refusal, "<script")) == 2
   })
 }
 
