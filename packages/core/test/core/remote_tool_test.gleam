@@ -194,3 +194,10 @@ pub fn capability_names_are_bounded_without_delimiter_aliases_test() {
     })
   assert list.length(list.unique(addresses)) == list.length(names)
 }
+
+/// Reading a source coordinate does not decode or recreate its identity.
+pub fn source_index_projects_the_original_tool_position_test() {
+  let assert Ok(key) = make_key("step", 2, string.repeat("a", 64))
+    as "The complete original key validates."
+  assert remote_tool.source_index(key) == 2
+}
