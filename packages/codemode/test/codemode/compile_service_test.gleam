@@ -227,7 +227,7 @@ pub fn local_launcher_refuses_an_executor_reference_before_any_resources_test() 
   let configured =
     launch.LaunchConfig(
       runner: physical.Runner(
-        clear: fn(_call, _events) {
+        clear: fn(_origin, _call, _events) {
           process.send(seen, Nil)
           Error(broker.BrokerUnavailable)
         },

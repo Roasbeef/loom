@@ -122,6 +122,7 @@ import codemode/internal/ffi_unix.{type Listener, type Socket}
 import codemode/physical
 import codemode/satellite.{type CapConnection, type LaunchSpec}
 import core/clock.{type Clock}
+import core/remote_tool
 import filepath
 import gleam/bit_array
 import gleam/erlang/process.{type Pid, type Subject}
@@ -848,8 +849,14 @@ fn spawn_node(
   let deadline_ms = identity.pooled_budget(spec.identity).deadline_ms
   let waiting = int.max(deadline_ms - now, 0) + settle_margin_ms
   process.spawn_unlinked(fn() {
-    case node_call(config, spec, requirements) {
-      Ok(call) -> run_node(config, call, exits, settlement, waiting)
+    let prepared = {
+      use origin <- result.try(identity.command_origin(spec.identity))
+      use call <- result.try(node_call(config, spec, requirements))
+      Ok(#(origin, call))
+    }
+    case prepared {
+      Ok(#(origin, call)) ->
+        run_node(config, origin, call, exits, settlement, waiting)
       Error(reason) -> {
         process.send(settlement, Settled(enforcement.Unreported(reason)))
         process.send(exits, reason)
@@ -861,13 +868,14 @@ fn spawn_node(
 
 fn run_node(
   config: LaunchConfig,
+  origin: Option(remote_tool.ChildOrigin),
   call: CallSpec,
   exits: Subject(String),
   settlement: Subject(Settlement),
   waiting: Int,
 ) -> Nil {
   let events = process.new_subject()
-  case config.runner.clear(call, events) {
+  case config.runner.clear(origin, call, events) {
     Error(refusal) -> report_refused(exits, settlement, refusal)
     Ok(handle) -> {
       process.send(settlement, Cleared(handle:))
