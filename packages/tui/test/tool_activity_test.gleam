@@ -341,7 +341,8 @@ pub fn diff_resize_uses_one_panel_below_the_readable_split_width_test() {
   assert layout.rail_columns(wide) == 45
   let #(narrow, single) = painted_buffer(wide, 119)
   let text = frame.buffer_to_text(single)
-  assert string.contains(text, "captured changes")
+  assert string.contains(text, "Captured edits")
+    as "below 120 columns the changes are in the sheet"
   assert !string.contains(text, "CONVERSATION_MARKER")
   let #(restored, split) = painted_buffer(narrow, 160)
   assert string.contains(columns(split, 0, 103), "CONVERSATION_MARKER")

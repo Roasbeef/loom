@@ -625,15 +625,14 @@ fn render_transcript(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
-  case model.view.notes_open, layout.main_shows_diff(model) {
-    True, _ ->
+  case model.view.notes_open {
+    True ->
       paragraph.render_styled(
         buffer.clear(buf, area),
         area,
         notes_content(model, area, model.shared.active_strand).lines,
       )
-    False, True -> render_diff_view(buf, area, model)
-    False, False ->
+    False ->
       render_rows(
         buf,
         area,
@@ -763,15 +762,10 @@ fn render_transcript_row(
 // What borrows the transcript's area, named with its strand, or `None` for
 // the transcript itself.
 fn surface_title(model: Model) -> Option(String) {
-  let surface = case
-    model.view.help_open,
-    model.view.notes_open,
-    layout.main_shows_diff(model)
-  {
-    True, _, _ -> Some("help")
-    False, True, _ -> Some("agent notes")
-    False, False, True -> Some(diff_title(model))
-    False, False, False -> None
+  let surface = case model.view.help_open, model.view.notes_open {
+    True, _ -> Some("help")
+    False, True -> Some("agent notes")
+    False, False -> None
   }
   option.map(surface, fn(surface) {
     " "

@@ -198,7 +198,7 @@ like [A's narrow sheet](terminal-design/A-sonnet-narrow-strands-dark.png).
 Before slice 13 `layout.layout` (`packages/tui/src/tui/layout.gleam:105`)
 (`layout`) stacked header, body, composer and footer, and `body_layout` gave the
 body one side pane, the 34-cell agent rail or the 72-cell changes pane. The
-footer is built in `footer_rows` (`packages/tui/src/tui/layout.gleam:446`)
+footer is built in `footer_rows` (`packages/tui/src/tui/layout.gleam:517`)
 (`footer_rows`). The new layout replaces the header and footer with the
 identity line and the input frame, and replaces the two side panes with one
 rail.
@@ -210,7 +210,7 @@ footer span the transcript's column and the rail runs to the last row, as the
 frames draw it. It docks only where the transcript keeps 75 cells: 44 cells and
 a separator from 120 columns (`75 + 1 + 44`), 56 from 160, docked by default
 from 160 and on `Shift+Tab` from 120; a remembered choice wins; below 120 it
-does not dock (the sheet is slice 15). Opening `/diff` docks it on its Changes
+does not dock (the sheet, slice 15, is its form there). Opening `/diff` docks it on its Changes
 tab wherever it fits and closing them restores the choice, so the automatic
 side pane at 140 columns is gone: nothing opens the changes unasked. Strands
 lists every agent through `agent_row.rows` (`StripRow`) in the workspace's
@@ -228,13 +228,32 @@ digits `1` to `4` choose a tab while the rail has the keyboard (the Strands
 cursor, or `Down` from the composer on a tab with no cursor; with two or more
 agents the strip is visible off Strands and a digit pressed in it chooses the
 tab), `/diff` and `/trace` open Changes and Trace wherever the rail can dock,
-and below 120 columns `/trace` says why nothing opened. `/summary` is the
+and below 120 columns `/trace` opens the sheet on Trace. `/summary` is the
 full-screen summary at every width; Session is reached by its digit, and no
-`/session` command exists. The strip stays visible under Trace and Session. The tab is now a preference and the layout memory
+`/session` command exists. The strip stays visible under Trace and Session.
+The tab is now a preference and the layout memory
 gains one optional word for it, except Changes, which opens an observation a
 launch has not made and is never remembered. The Changes tab is still the
 changes panel and not `changes_view.fold`, since the panel already shows the
 session's captured edits beside the worktree observation.
+
+*As built (slice 15).* Below 120 columns the rail's four tabs are a sheet that
+replaces the transcript and leaves the input frame, the strip and the footer in
+place (`View.sheet`, `layout.sheet_shown`, drawn by `rail_view` into the
+conversation's rectangle with no separator). `Shift+Tab`, `/trace` and `/diff`
+open it, so a 100 to 119 column or 80 column terminal reaches Strands,
+Changes, Trace and Session; `/summary` still opens the full-screen summary.
+`Shift+Tab` opens the sheet on the tab the operator left and closes it again,
+`Esc` closes it from any tab, and the digit keys `1` to `4` choose a tab as in
+the docked rail. Choosing an agent in the Strands tab closes the sheet, so the
+chosen transcript is the one on screen. The changes below 120 columns are on
+the sheet's Changes tab, which replaces the earlier main-surface panel, and
+borrow rows above the composer when the sheet is short. The sheet is not a
+preference: opening it records no rail choice and a launch never opens it. It
+hands off to the rail only in one direction: a resize to 120 columns or wider
+closes an open sheet and the tab it showed is the tab the rail shows once
+`Shift+Tab` docks it, while narrowing a terminal with the rail docked opens
+nothing over the transcript being read.
 
 ## 4. The header and the input frame
 
@@ -537,7 +556,7 @@ main ▸ sub:tests`) and the identity line names it. Focus from the timeline wit
 |---|---|---|
 | `←`, empty composer, no attachment | Open the session picker | Unchanged (`packages/tui/src/tui/interaction.gleam:1376`) (`open_session_selector`) |
 | `↓`, idle composer | Enter the agent strip. While the rail shows Strands, focus the rail's list | Unchanged (`packages/tui/src/tui/interaction.gleam:1236`) (`down_from_composer`) |
-| `Shift+Tab` | Dock or hide the rail; a sheet below 120 columns | Replaces "toggle the rail" (`packages/tui/src/tui/interaction.gleam:1378`) (`toggle_agent_rail`) |
+| `Shift+Tab` | Dock or hide the rail; open or close the sheet below 120 columns | Replaces "toggle the rail" (`packages/tui/src/tui/interaction.gleam:1428`) (`toggle_agent_rail`) |
 | Escape | Interrupt; closes the surface on top first | Unchanged (`packages/tui/src/tui/interaction.gleam:1337`) (`interrupt_active`) |
 | `Ctrl+O`, `F2`, `/agents` | Open the agent workspace | Unchanged |
 | `/diff`, `/trace` | Open the rail on Changes, Trace | `/diff` exists; `/trace` is new; `/summary` stays the full-screen summary and Session is the digit `4` |
@@ -641,7 +660,7 @@ wire change.
     bar, Strands over the shared renderer, `Shift+Tab`, and the removal of the
     34-cell rail and the 72-cell diff pane.
 14. **Changes and Session tabs**, `/diff`, `/trace`, `/summary`.
-15. **The 80x24 sheet.**
+15. **The 80x24 sheet.** Built; see "As built (slice 15)" in section 3.
 16. **Strand focus from the timeline**, if the owner wants it (question 4).
 
 The terminal's move onto the shared step (option (d) of #569) is not a

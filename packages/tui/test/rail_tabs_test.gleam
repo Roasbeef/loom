@@ -10,6 +10,7 @@
 import core/json
 import etui/backend
 import etui/buffer
+import etui/widgets/textarea
 import frame_scene
 import gleam/int
 import gleam/list
@@ -29,6 +30,7 @@ import tui/layout_save
 import tui/model.{type Model, Model} as tui_model
 import tui/queue_editor
 import tui/rail
+import tui/rail_tabs
 import tui/submit
 import tui_test/stepping
 
@@ -400,15 +402,194 @@ pub fn trace_and_diff_open_their_tabs_on_a_terminal_that_can_dock_test() {
     as "closing the changes shows the tab that was chosen"
 }
 
-pub fn a_narrow_terminal_says_there_is_no_rail_for_trace_test() {
-  let model = at(ended(), 80, 24)
-  let trace = command(model, "/trace")
-  assert layout.rail_columns(trace) == 0
-  assert string.contains(trace.shared.notice, "Trace tab needs the rail")
-  assert string.contains(trace.shared.notice, "120 columns")
-  let summary = command(model, "/summary")
+pub fn summary_below_120_is_still_the_full_screen_summary_test() {
+  let summary = command(at(ended(), 80, 24), "/summary")
   assert summary.view.summary_surface != queue_editor.Closed
     as "below 120 columns /summary is still the full-screen summary"
+}
+
+// -------------------------------------------------------------- the sheet
+
+pub fn trace_below_120_opens_the_sheet_and_not_a_rail_choice_test() {
+  let trace = command(at(ended(), 80, 24), "/trace")
+  assert layout.rail_columns(trace) == 0
+  assert layout.sheet_shown(trace)
+  assert layout.rail_tab(trace) == rail.Trace
+  assert trace.view.rail == None
+    as "a sheet is not a docked-rail preference, so none is recorded"
+  let shown = text(trace)
+  assert string.contains(shown, "fs.read")
+  assert !string.contains(shown, "Check the calculator.")
+    as "the sheet replaces the transcript while it is open"
+}
+
+pub fn shift_tab_below_120_opens_and_closes_the_sheet_test() {
+  let model = at(with_agents(ended()), 80, 24)
+  let opened = key(model, "backtab")
+  assert layout.sheet_shown(opened)
+  assert opened.view.rail == None
+  assert string.contains(text(opened), "STRANDS · 2")
+  let closed = key(opened, "backtab")
+  assert !layout.sheet_shown(closed)
+  assert closed.view.rail == None
+  assert string.contains(text(closed), "Check the calculator.")
+}
+
+pub fn escape_closes_the_sheet_and_gives_back_the_composer_test() {
+  let trace = command(at(ended(), 100, 30), "/trace")
+  assert trace.view.rail_focus == tui_model.FocusTab
+  let closed = key(trace, "esc")
+  assert !layout.sheet_shown(closed)
+  assert closed.view.rail_focus == tui_model.FocusComposer
+  assert string.contains(text(closed), "Check the calculator.")
+}
+
+pub fn the_digit_keys_move_between_tabs_in_the_sheet_test() {
+  let trace = command(at(ended(), 100, 30), "/trace")
+  let session = key(trace, "4")
+  assert layout.sheet_shown(session)
+  assert layout.rail_tab(session) == rail.Session
+  let changes = key(session, "2")
+  assert layout.rail_tab(changes) == rail.Changes
+  assert layout.sheet_shown(changes)
+}
+
+pub fn with_two_agents_a_digit_from_the_sheets_list_chooses_a_tab_test() {
+  let opened = key(at(with_agents(ended()), 100, 30), "backtab")
+  assert layout.rail_tab(opened) == rail.Strands
+  let trace = key(opened, "3")
+  assert layout.sheet_shown(trace)
+  assert layout.rail_tab(trace) == rail.Trace
+  assert trace.view.rail_focus == tui_model.FocusTab
+  let back = key(trace, "1")
+  assert layout.rail_tab(back) == rail.Strands
+}
+
+// A digit chosen on Changes leaves the keyboard on the rail, so the next
+// digit chooses a tab and is not typed.
+pub fn a_digit_after_choosing_changes_is_not_typed_test() {
+  let sheet = command(at(ended(), 80, 24), "/trace")
+  let changes = key(sheet, "2")
+  assert layout.rail_tab(changes) == rail.Changes
+  let trace = key(changes, "3")
+  assert layout.rail_tab(trace) == rail.Trace
+  assert textarea.value(trace.view.input) == ""
+    as "the digit chose a tab and did not reach the composer"
+  let docked =
+    submit.select_rail_tab(at(ended(), 200, 50), rail.Trace)
+    |> key("down")
+    |> key("2")
+    |> key("3")
+  assert layout.rail_tab(docked) == rail.Trace
+  assert textarea.value(docked.view.input) == ""
+}
+
+// Whether pressing Escape reached the interrupt. `interrupt_active` always
+// answers: a frame effect when it sends the abort, otherwise a notice saying
+// why nothing was sent. This scene has no running operation, so the notice
+// is "nothing is running" and the control below pins that the probe sees it.
+fn escape_sends(model: Model) -> #(Model, Bool) {
+  let #(next, effects) = stepping.step(backend.KeyPress("esc"), model)
+  #(next, effects != [] || next.shared.notice == "nothing is running")
+}
+
+// Escape closes the surface on top, and with a sheet on screen that is the
+// sheet: it never interrupts the strand behind it.
+pub fn escape_closes_the_sheet_instead_of_interrupting_test() {
+  let #(_, control) = escape_sends(at(ended(), 200, 50))
+  assert control as "with no sheet, Escape reaches the interrupt"
+
+  let typed = key(command(at(ended(), 80, 24), "/trace"), "a")
+  assert layout.sheet_shown(typed)
+  let #(closed, sent) = escape_sends(typed)
+  assert !layout.sheet_shown(closed)
+    as "Escape after typing on a sheet tab closes the sheet"
+  assert !sent as "and sends no interrupt"
+
+  let changes = key(key(key(at(ended(), 80, 24), "backtab"), "3"), "2")
+  assert layout.sheet_shown(changes)
+  let #(first, first_sent) = escape_sends(changes)
+  let #(second, second_sent) = escape_sends(first)
+  assert !layout.sheet_shown(second)
+  assert second.view.diff_view == tui_model.DiffHidden
+  assert !first_sent && !second_sent as "neither Escape interrupts"
+}
+
+pub fn a_click_on_the_sheets_bottom_row_does_not_scroll_the_transcript_test() {
+  let sheet = command(at(ended(), 80, 12), "/trace")
+  let reading =
+    Model(..sheet, view: tui_model.View(..sheet.view, scroll_offset: 3))
+  let rows = layout.transcript_viewport_height(reading)
+  let clicked =
+    tui.update(backend.MousePress(2, rows, backend.MouseLeft), reading)
+  assert clicked.view.scroll_offset == reading.view.scroll_offset
+    as "a press on the sheet is not on the transcript behind it"
+}
+
+pub fn the_hand_off_closes_the_sheet_wholly_and_says_so_test() {
+  let opened = key(at(with_agents(ended()), 100, 30), "backtab")
+  assert opened.view.strip_focus != agent_strip.Composing
+    as "the sheet's list holds the cursor"
+  let wide = at(opened, 120, 40)
+  assert !layout.sheet_shown(wide)
+  assert wide.view.strip_focus == agent_strip.Composing
+  assert wide.view.rail_focus == tui_model.FocusComposer
+  assert string.contains(
+    wide.shared.notice,
+    "sheet closed · Shift+Tab docks the rail on Strands",
+  )
+}
+
+pub fn the_wheel_scrolls_a_sheet_tab_and_not_the_transcript_test() {
+  let sheet = command(at(ended(), 80, 12), "/trace")
+  assert rail_tabs.scroll_limit(sheet) > 0
+  let up = tui.update(backend.MouseScroll(10, 6, True), sheet)
+  let down = tui.update(backend.MouseScroll(10, 6, False), sheet)
+  assert int.max(up.view.rail_scroll, down.view.rail_scroll) > 0
+    as "the wheel moved the tab"
+  assert up.view.scroll_offset == sheet.view.scroll_offset
+  assert down.view.scroll_offset == sheet.view.scroll_offset
+}
+
+pub fn choosing_an_agent_in_the_sheets_list_closes_it_test() {
+  let opened = key(at(with_agents(ended()), 100, 30), "backtab")
+  let moved = key(opened, "down")
+  let chosen = key(moved, "enter")
+  assert !layout.sheet_shown(chosen)
+  assert !layout.sheet_shown(key(opened, "esc"))
+    as "leaving the list leaves the sheet"
+}
+
+pub fn the_sheets_hints_say_closes_test() {
+  let single = key(at(ended(), 80, 24), "backtab")
+  assert string.contains(text(single), "Esc closes")
+  assert !string.contains(text(single), "hides")
+  let docked = key(at(ended(), 200, 50), "down")
+  assert !string.contains(text(docked), "closes")
+}
+
+pub fn the_changes_open_in_the_sheet_below_120_test() {
+  let opened = submit.open_diff(at(ended(), 100, 30))
+  assert layout.sheet_shown(opened)
+  assert layout.rail_tab(opened) == rail.Changes
+  assert string.contains(text(opened), "Captured edits")
+  let closed = submit.open_diff(opened)
+  assert !layout.sheet_shown(closed)
+}
+
+pub fn growing_to_120_hands_the_sheet_off_to_the_rail_test() {
+  let trace = command(at(ended(), 100, 30), "/trace")
+  assert layout.sheet_shown(trace)
+  let wide = at(trace, 120, 40)
+  assert !layout.sheet_shown(wide)
+  assert layout.rail_tab(wide) == rail.Trace
+    as "the tab the sheet was on is the tab the rail shows when docked"
+  let docked = key(wide, "backtab")
+  assert layout.rail_columns(docked) == 45
+  assert layout.rail_tab(docked) == rail.Trace
+  let narrow = at(docked, 100, 30)
+  assert !layout.sheet_shown(narrow)
+    as "narrowing does not open a sheet over what is being read"
 }
 
 // ----------------------------------------------------------- persistence
@@ -519,6 +700,44 @@ pub fn a_remembered_tab_is_applied_at_launch_but_changes_is_not_test() {
 
 // -------------------------------------------------------------- the renders
 
+// The sheet at the two sizes below the docking width, closed and on each tab,
+// and the 120 column terminal it hands off to when the same terminal grows.
+fn sheet_frames() -> List(#(String, Model)) {
+  let sizes = [#(80, 24), #(100, 30)]
+  let per_size =
+    list.flat_map(sizes, fn(size) {
+      let base = at(with_agents(ended()), size.0, size.1)
+      let named = fn(word) { "sheet-" <> word <> "-" <> int.to_string(size.0) }
+      [
+        #(named("closed") <> "x" <> int.to_string(size.1), base),
+        #(
+          named("strands") <> "x" <> int.to_string(size.1),
+          submit.select_rail_tab(base, rail.Strands),
+        ),
+        #(
+          named("changes") <> "x" <> int.to_string(size.1),
+          submit.select_rail_tab(base, rail.Changes),
+        ),
+        #(
+          named("trace") <> "x" <> int.to_string(size.1),
+          submit.select_rail_tab(base, rail.Trace),
+        ),
+        #(
+          named("session") <> "x" <> int.to_string(size.1),
+          submit.select_rail_tab(base, rail.Session),
+        ),
+      ]
+    })
+  let opened =
+    submit.select_rail_tab(at(with_agents(ended()), 100, 30), rail.Trace)
+  let handed_off = at(opened, 120, 40)
+  [
+    #("sheet-handoff-120x40-closed", handed_off),
+    #("sheet-handoff-120x40-docked", key(handed_off, "backtab")),
+    ..per_size
+  ]
+}
+
 pub fn one_frame_per_tab_can_be_written_for_review_test() {
   let wide = at(ended(), 200, 50)
   let medium = at(ended(), 120, 40)
@@ -538,7 +757,6 @@ pub fn one_frame_per_tab_can_be_written_for_review_test() {
     #("tab-changes-120x40", submit.select_rail_tab(medium, rail.Changes)),
     #("tab-trace-120x40", submit.select_rail_tab(medium, rail.Trace)),
     #("tab-session-120x40", submit.select_rail_tab(medium, rail.Session)),
-    #("tab-80x24-trace-command", command(at(ended(), 80, 24), "/trace")),
     #("tab-80x24-summary-surface", command(at(ended(), 80, 24), "/summary")),
     #(
       "tab-trace-two-agents-200x50",
@@ -548,6 +766,7 @@ pub fn one_frame_per_tab_can_be_written_for_review_test() {
       "tab-trace-two-agents-120x40",
       submit.select_rail_tab(at(with_agents(ended()), 120, 40), rail.Trace),
     ),
+    ..sheet_frames()
   ]
   list.each(frames, fn(entry) {
     assert string.length(text(entry.1)) > 0
@@ -565,5 +784,5 @@ pub fn one_frame_per_tab_can_be_written_for_review_test() {
     }
     Error(Nil) -> Nil
   }
-  assert int.to_string(list.length(frames)) == "13"
+  assert int.to_string(list.length(frames)) == "24"
 }

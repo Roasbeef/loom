@@ -155,6 +155,13 @@ pub type DiffVisibility {
   DiffVisible
 }
 
+/// Whether the rail's sheet is open on a terminal too narrow to dock the rail.
+@internal
+pub type Sheet {
+  SheetClosed
+  SheetOpen
+}
+
 /// Who has the keyboard while the rail shows a tab with no cursor of its own.
 @internal
 pub type RailFocus {
@@ -556,6 +563,10 @@ pub type View {
     /// Changes tab is not kept here: it is the changes setting's
     /// (`diff_view`), and closing the changes shows this tab again.
     rail_tab: Option(layout_memory.Tab),
+    /// Whether the sheet is open, the rail's form on a terminal too narrow to
+    /// dock it (`layout.sheet_shown`). It is not a preference and is not
+    /// remembered: a launch never opens the sheet.
+    sheet: Sheet,
     /// Who has the keyboard while the rail shows Trace or Session, tabs with
     /// no cursor of their own. Strands uses the strip's focus.
     rail_focus: RailFocus,

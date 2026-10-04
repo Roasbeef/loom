@@ -13,7 +13,9 @@
 //// - **It docks only when the transcript keeps 75 cells.** At 44 cells wide
 ////   that is 120 columns (75 + 1 + 44), and the rail is 56 wide from 160
 ////   columns, where the transcript still keeps 103. Below 120 it does not
-////   dock at all; a sheet for narrow terminals is a later slice.
+////   dock at all; there `tui/rail_view` draws the same tabs as a sheet
+////   over the transcript (`layout.sheet_shown`), which this module does not
+////   decide: a sheet is not a preference and nothing here remembers it.
 //// - **A remembered choice wins; with none, a wide terminal docks it.** At
 ////   160 columns and wider an operator who never touched the rail sees it
 ////   docked on Strands. Narrower, the operator opens it with Shift+Tab. The

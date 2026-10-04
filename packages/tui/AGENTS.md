@@ -2747,10 +2747,10 @@ where the transcript keeps 75 cells: 44 cells and a separator from 120
 columns, 56 from 160. From 160 it is docked by default; narrower, Shift+Tab
 docks it. A remembered choice (`View.rail`, the field `layout_memory` keeps)
 wins either way, and below 120 columns it does not dock whatever was chosen
-(`toggle_agent_rail` says so in the notice). Opening the changes (`/diff`)
+(the sheet is its form there, below). Opening the changes (`/diff`)
 docks it wherever it fits, on its Changes tab, and closing them puts it back
 as chosen; while they are open Shift+Tab closes them. Below 120 columns
-Shift+Tab only says why nothing moved and records nothing. While an approval is
+Shift+Tab opens and closes the sheet and records nothing. While an approval is
 open the rail steps aside in painting only (`layout.rail_area` is zero and
 `rail_view.render` draws nothing; `layout.rail_columns` is unchanged), because
 the approval block spans the screen, and the columns stay reserved so opening
@@ -2780,13 +2780,40 @@ with the keyboard the digits choose a tab, `up`/`down` and `pageup`/`pagedown`
 scroll it (`View.rail_scroll`, cut to `rail_tabs.scroll_limit`), `Esc` hands
 the keyboard back, and any other key is the composer's and takes it back. At
 the composer the digits are ordinary characters. `/diff` opens Changes and
-`/trace` opens Trace on a terminal that can dock the rail
-(`submit.select_rail_tab` docks it; it records a rail choice only when the
+`/trace` opens Trace, on the docked rail or below 120 columns on the sheet
+(`submit.select_rail_tab` docks it where it can; it records a rail choice only when the
 choice is what docked it, not on a rail docked by default). Session is reached
 by its digit: `/summary` is the full-screen summary at every width, which has
 the completion evidence the tab does not carry. Choosing Session asks for a
 fresh read of the live jobs. A code-mode program's end is worded as the
 transcript words it (`transcript_lines.status_title`), not as the raw status.
+
+Below 120 columns the rail's tabs are the sheet (`View.sheet`, `SheetClosed`
+or `SheetOpen`; `layout.sheet_shown`). It is drawn by `rail_view` into the
+conversation's rectangle, which it replaces, with no separator
+(`layout.rail_lead` is 0 there and 1 when docked). It is shown when it was
+opened or when the changes are open, since the Changes tab lives there too.
+`layout.rail_present` is the question "is the rail on screen in either form"
+that key routing and tab content ask; `rail_columns` stays the geometry of the
+docked column. `layout.diff_covers_transcript` is true for the Changes tab in the sheet,
+which is when the transcript has nothing to scroll, select or catch up to;
+there is no separate main-surface diff, because where the rail cannot dock the
+sheet is the rail. `Shift+Tab`, `/trace` and `/diff`
+open it (`submit.open_sheet`, `select_rail_tab`), `Esc`, `Shift+Tab` or
+leaving the Strands list closes it (`submit.close_sheet`), and choosing an
+agent closes it after the switch. Opening it records no rail choice
+(`View.rail` is untouched) and the launch never opens it. A resize to 120
+columns or wider closes an open sheet (`submit.hand_off_sheet`, in the Resized
+step, through `close_sheet`, so the strip cursor and the rail focus are reset
+too), keeping `View.rail_tab`, and says `sheet closed · Shift+Tab docks the rail
+on <Tab>`; narrowing never opens one. While a sheet is on screen `Esc` closes it
+and the changes with it and never interrupts the strand
+(`update_main_key_without_palette`), a digit chooses a tab while the rail holds
+the keyboard including on Changes (`chosen_tab`), and the wheel and page keys
+scroll the Trace and Session tabs rather than the hidden transcript
+(`sheet_text_tab`). The Changes panel is inset one cell on each side
+(`layout.changes_panel_area`), as the Trace and Session rows are, and the hint
+row says "closes" for the sheet where the docked rail's says "hides".
 
 Trace and Session are text, in `tui/rail_tabs`. Trace is
 `session_view/trace_view.newest` of the strand on screen, the same module the

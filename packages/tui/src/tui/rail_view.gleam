@@ -49,7 +49,8 @@ import tui/rail
 import tui/rail_tabs
 import tui/theme
 
-/// Paints the docked rail into a frame, or nothing when it is not docked.
+/// Paints the rail into a frame, docked beside the transcript or as the sheet
+/// that replaces it, or nothing when it is neither.
 ///
 /// ## Examples
 ///
@@ -62,13 +63,20 @@ pub fn render(buf: buffer.Buffer, screen: Rect, model: Model) -> buffer.Buffer {
     False -> buf
     True -> {
       let content = layout.rail_content_area(screen, model)
-      let width = area.size.width - 1
+      let lead = layout.rail_lead(model)
+      let width = area.size.width - lead
       let lines = layout.strip_lines(model)
       let tab = layout.rail_tab(model)
-      buf
-      |> separator(area)
+
+      // Docked, the rail's first column is its separator. As the sheet it
+      // covers the transcript it replaces, so the transcript is cleared.
+      let ground = case lead {
+        0 -> buffer.clear(buf, area)
+        _ -> separator(buf, area)
+      }
+      ground
       |> paragraph.render_styled(
-        geometry.rect_new(area.position.x + 1, area.position.y, width, 2),
+        geometry.rect_new(area.position.x + lead, area.position.y, width, 2),
         tab_bar(tab, lines, width),
       )
       |> strands(content, model, lines, tab)
@@ -244,13 +252,13 @@ fn hint(
     | rail.Session, _, tui_model.FocusComposer
     -> "↓ then 1-4 tab · Shift+Tab hides"
   }
-  let width = int.max(0, area.size.width - 2)
+  let width = int.max(0, area.size.width - layout.rail_lead(model) - 1)
   paragraph.render_styled(
     buf,
     geometry.rect_new(
-      area.position.x + 1,
+      area.position.x + layout.rail_lead(model),
       area.position.y + area.size.height - 1,
-      area.size.width - 1,
+      area.size.width - layout.rail_lead(model),
       1,
     ),
     [

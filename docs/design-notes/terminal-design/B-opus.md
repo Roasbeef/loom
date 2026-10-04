@@ -216,7 +216,7 @@ No protocol change is needed for the view as drawn.
 |---|---|---|
 | Header row: brand, session, model, `Ctrl+g details` | removed; session name on the input frame's top rule | one row back at every size |
 | `transcript / main` label | a breadcrumb row only when a strand other than `main` is focused | the frame already names the target |
-| Footer of one to three rows (`footer_rows`, `tui/layout.gleam:446`) | the input frame's bottom rule: model › workspace › branch › ctx › cost, needs-you count on the right | up to three rows back; omp and Codex show this is enough |
+| Footer of one to three rows (`footer_rows`, `tui/layout.gleam:517`) | the input frame's bottom rule: model › workspace › branch › ctx › cost, needs-you count on the right | up to three rows back; omp and Codex show this is enough |
 | Status band under the composer rule | an activity line above the input frame | the spinner sits next to the thing it describes |
 | Agent strip under the footer | kept, under the input frame, with the same keys | the owner's recordings show it is the part that works |
 | 34-cell rail toggled by `Shift+Tab` (`body_layout` at `tui/layout.gleam:138`) and the 72-cell changes pane | one drawer with tabs; `Shift+Tab` docks and hides it | one side region instead of two that take turns |
@@ -351,9 +351,9 @@ call list in both needs a new wire record (section 10).
 | Key | Today | Concept B |
 |---|---|---|
 | `←` on an empty composer | session picker (`tui/interaction.gleam:1376`) | unchanged |
-| `↓` on an empty composer | into the strip (`down_from_composer` at `tui/interaction.gleam:1429`) | unchanged; lands on `main` when another strand is focused |
-| `Shift+Tab` | toggle the rail (`tui/interaction.gleam:1378`) | toggle the drawer, which replaces the rail |
-| `Ctrl+O`, `F2` | open `/agents` (`open_agents` at `tui/interaction.gleam:1318`) | open Strands: full body, or focus the docked drawer |
+| `↓` on an empty composer | into the strip (`down_from_composer` at `tui/interaction.gleam:1479`) | unchanged; lands on `main` when another strand is focused |
+| `Shift+Tab` | toggle the rail (`tui/interaction.gleam:1428`) | toggle the drawer, which replaces the rail |
+| `Ctrl+O`, `F2` | open `/agents` (`open_agents` at `tui/interaction.gleam:1368`) | open Strands: full body, or focus the docked drawer |
 | `Ctrl+T` | unbound | timeline cursor (new) |
 | `Ctrl+G` | details everywhere | unchanged |
 | `Ctrl+D` | changes navigator focus | focus the drawer on Changes |

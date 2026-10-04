@@ -402,7 +402,10 @@ fn pace_policy(model: Model) -> pacing.PacePolicy {
 /// ```
 @internal
 pub fn viewport_pacing(model: Model) -> pacing.ViewportPacing {
-  use <- bool.guard(layout.main_shows_diff(model), pacing.ViewportSettled)
+  use <- bool.guard(
+    layout.diff_covers_transcript(model),
+    pacing.ViewportSettled,
+  )
   pacing.viewport_pacing(backlog: tui_model.viewport_backlog(model))
 }
 

@@ -137,6 +137,7 @@ import tui/render
 import tui/runtime
 import tui/session_control
 import tui/session_table
+import tui/submit
 import tui/summary_panel
 import tui/tick
 import tui/update
@@ -715,6 +716,7 @@ pub fn new_model_with_clock(
       next_attempt: 1,
       rail: None,
       rail_tab: None,
+      sheet: tui_model.SheetClosed,
       rail_focus: tui_model.FocusComposer,
       rail_scroll: 0,
       repaint_phase: False,
@@ -2220,6 +2222,7 @@ fn apply_input(event: msg.Event, model: Model) -> Model {
         ),
       )
       |> image_plan.resized
+      |> submit.hand_off_sheet
       |> tui_model.mark_activity
       |> tui_model.invalidate_frame
     msg.Ticked -> tick.update_tick(model)

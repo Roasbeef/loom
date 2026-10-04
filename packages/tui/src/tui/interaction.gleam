@@ -1121,15 +1121,35 @@ fn inspect_agent_approval(model: Model, strand: String) -> Model {
 }
 
 fn update_main_key(key: keys.Key, model: Model) -> Model {
-  case tab_has_keyboard(model), model.view.rail_focus {
-    True, _ -> update_tab_key(key, model)
+  case focused_tab(model), tab_of_key(key) {
+    // A digit while the keyboard is on the rail chooses a tab, on Changes as
+    // well: its panel has a focus of its own, but the keyboard is still the
+    // rail's until a key that is not a digit takes it back.
+    Some(_), Ok(tab) ->
+      submit.select_rail_tab(model, tab)
+      |> keep_tab_keyboard(tab)
 
-    // The tab left the screen while it held the keyboard, because the rail
-    // was hidden or the terminal narrowed, so the keyboard goes back to the
-    // composer with this key. Escape is consumed by that reset: forwarded, it
-    // would interrupt the strand, which a key pressed at a tab that had gone
-    // away cannot have meant.
-    False, tui_model.FocusTab -> {
+    // The tabs with keys of their own. Strands has them only in the sheet
+    // when it has no list to hold a cursor, which is the one case that sets
+    // the keyboard on it.
+    Some(rail.Trace), Error(Nil)
+    | Some(rail.Session), Error(Nil)
+    | Some(rail.Strands), Error(Nil)
+    -> update_tab_key(key, model)
+
+    Some(rail.Changes), Error(Nil) | None, _ -> composer_takes(key, model)
+  }
+}
+
+// The keyboard is the composer's again. When the rail had it and the tab left
+// the screen (the rail was hidden or the terminal narrowed), the focus is
+// reset with this key. Escape is consumed by that reset: forwarded, it would
+// interrupt the strand, which a key pressed at a tab that had gone away
+// cannot have meant.
+fn composer_takes(key: keys.Key, model: Model) -> Model {
+  case model.view.rail_focus {
+    tui_model.FocusComposer -> update_main_key_strip(key, model)
+    tui_model.FocusTab -> {
       let returned =
         Model(
           ..model,
@@ -1140,17 +1160,24 @@ fn update_main_key(key: keys.Key, model: Model) -> Model {
         _ -> update_main_key_strip(key, returned)
       }
     }
-    False, tui_model.FocusComposer -> update_main_key_strip(key, model)
   }
 }
 
-// Whether the Trace or Session tab is on screen and has the keyboard.
-fn tab_has_keyboard(model: Model) -> Bool {
-  model.view.rail_focus == tui_model.FocusTab
-  && layout.rail_columns(model) > 0
-  && case layout.rail_tab(model) {
-    rail.Trace | rail.Session -> True
-    rail.Strands | rail.Changes -> False
+// The tab the rail is showing, in either form, or none when it is not on
+// screen.
+fn shown_tab(model: Model) -> Option(rail.Tab) {
+  case layout.rail_present(model) {
+    True -> Some(layout.rail_tab(model))
+    False -> None
+  }
+}
+
+// The tab that holds the keyboard: the shown one while the keyboard is on the
+// rail, and none when it is the composer's or the tab has left the screen.
+fn focused_tab(model: Model) -> Option(rail.Tab) {
+  case model.view.rail_focus {
+    tui_model.FocusTab -> shown_tab(model)
+    tui_model.FocusComposer -> None
   }
 }
 
@@ -1168,10 +1195,14 @@ fn update_tab_key(key: keys.Key, model: Model) -> Model {
     Error(Nil), keys.PageUp -> scrolled_tab(model, -10)
     Error(Nil), keys.PageDown -> scrolled_tab(model, 10)
     Error(Nil), keys.Escape ->
-      Model(
-        ..model,
-        view: View(..model.view, rail_focus: tui_model.FocusComposer),
-      )
+      case layout.sheet_shown(model) {
+        True -> submit.close_sheet(model)
+        False ->
+          Model(
+            ..model,
+            view: View(..model.view, rail_focus: tui_model.FocusComposer),
+          )
+      }
     Error(Nil), _ ->
       update_main_key_strip(
         key,
@@ -1219,12 +1250,12 @@ fn tab_of_key(key: keys.Key) -> Result(rail.Tab, Nil) {
 // Down, and Changes has its own focus.
 fn keep_tab_keyboard(model: Model, tab: rail.Tab) -> Model {
   case tab {
-    rail.Trace | rail.Session ->
+    rail.Trace | rail.Session | rail.Changes ->
       Model(..model, view: View(..model.view, rail_focus: tui_model.FocusTab))
       |> fn(held) {
         tui_model.store_strip(held, agent_strip.leave(tui_model.strip(held)))
       }
-    rail.Strands | rail.Changes -> model
+    rail.Strands -> model
   }
 }
 
@@ -1271,7 +1302,7 @@ fn update_main_key_strip(key: keys.Key, model: Model) -> Model {
 // workspace's Enter uses, so the draft is parked with its strand and the
 // transcript, the composer's recipient and its badge change together.
 fn update_strip_key(key: keys.Key, model: Model) -> Model {
-  case layout.rail_columns(model) > 0, tab_of_key(key) {
+  case layout.rail_present(model), tab_of_key(key) {
     True, Ok(tab) ->
       submit.select_rail_tab(model, tab)
       |> keep_tab_keyboard(tab)
@@ -1290,8 +1321,18 @@ fn update_strip_key_in_list(key: keys.Key, model: Model) -> Model {
   }
   let strip = tui_model.strip(model)
   case agent_strip.key(strip, pressed, layout.strip_lines(model)) {
-    agent_strip.Moved(strip) | agent_strip.Left(strip) ->
-      tui_model.store_strip(model, strip)
+    agent_strip.Moved(strip) -> tui_model.store_strip(model, strip)
+
+    // Leaving the list in the sheet leaves the sheet: it has nothing else
+    // for a key to be about.
+    agent_strip.Left(strip) ->
+      case layout.sheet_shown(model) {
+        True -> submit.close_sheet(tui_model.store_strip(model, strip))
+        False -> tui_model.store_strip(model, strip)
+      }
+
+    // Choosing an agent in the sheet closes it, so the transcript that was
+    // chosen is the one on screen.
     agent_strip.Open(strip, strand) ->
       case strand == model.shared.active_strand {
         True -> tui_model.store_strip(model, strip)
@@ -1301,10 +1342,19 @@ fn update_strip_key_in_list(key: keys.Key, model: Model) -> Model {
             strand,
           )
       }
+      |> close_sheet_after_open
     agent_strip.Stop(strip, strand) ->
       submit.stop_strand(tui_model.store_strip(model, strip), strand)
     agent_strip.Pass(strip) ->
       update_main_key_composing(key, tui_model.store_strip(model, strip))
+  }
+}
+
+// Choosing an agent from the sheet closes the sheet.
+fn close_sheet_after_open(model: Model) -> Model {
+  case layout.sheet_shown(model) && model.view.sheet == tui_model.SheetOpen {
+    True -> submit.close_sheet(model)
+    False -> model
   }
 }
 
@@ -1431,7 +1481,7 @@ fn down_from_composer(model: Model) -> Model {
   case
     model.view.history_index,
     layout.strands_listed(model),
-    rail_has_tab(model)
+    shown_tab(model)
   {
     0, True, _ ->
       tui_model.store_strip(
@@ -1445,18 +1495,9 @@ fn down_from_composer(model: Model) -> Model {
 
     // The rail shows Trace or Session, which have no list to enter, so Down
     // gives the keyboard to the tab, where the digits choose a tab.
-    0, False, True ->
+    0, False, Some(rail.Trace) | 0, False, Some(rail.Session) ->
       Model(..model, view: View(..model.view, rail_focus: tui_model.FocusTab))
     _, _, _ -> submit.navigate_history(model, False)
-  }
-}
-
-// Whether the rail is docked on Trace or Session.
-fn rail_has_tab(model: Model) -> Bool {
-  layout.rail_columns(model) > 0
-  && case layout.rail_tab(model) {
-    rail.Trace | rail.Session -> True
-    rail.Strands | rail.Changes -> False
   }
 }
 
@@ -1467,8 +1508,17 @@ pub fn command_palette_escape(key: keys.Key) -> Bool {
 }
 
 fn update_main_key_without_palette(key: keys.Key, model: Model) -> Model {
-  case key, model.view.diff_view {
-    keys.Escape, DiffVisible ->
+  case key, layout.sheet_shown(model), model.view.diff_view {
+    // The sheet is the surface on top, so Escape closes it, and the changes
+    // with it, and never interrupts the strand behind it.
+    keys.Escape, True, _ ->
+      Model(
+        shared: Shared(..model.shared, notice: "sheet closed"),
+        view: View(..model.view, diff_view: DiffHidden),
+      )
+      |> submit.close_sheet
+
+    keys.Escape, False, DiffVisible ->
       Model(
         shared: Shared(..model.shared, notice: "changes closed"),
         view: View(
@@ -1477,7 +1527,7 @@ fn update_main_key_without_palette(key: keys.Key, model: Model) -> Model {
           repaint_phase: !model.view.repaint_phase,
         ),
       )
-    _, _ -> update_conversation_key(key, model)
+    _, _, _ -> update_conversation_key(key, model)
   }
 }
 
@@ -1719,6 +1769,7 @@ pub fn begin_selection(model: Model, at: geometry.Position) -> Model {
   let transcript = conversation
   use <- bool.lazy_guard(
     tui_model.reading_history(model)
+      && !layout.sheet_shown(model)
       && at.y == geometry.bottom(transcript) - 1
       && at.x < geometry.right(transcript),
     fn() {
@@ -1863,7 +1914,7 @@ fn selection_covers_transcript(
   let #(conversation, _) = layout.queue_body_layout(body_area, model)
   let transcript_panel = conversation
   selected.area == layout.transcript_inner(transcript_panel)
-  && !layout.main_shows_diff(model)
+  && !layout.diff_covers_transcript(model)
 }
 
 /// Reads selected transcript cells without copying their visual left gutter.
@@ -2070,11 +2121,17 @@ fn scroll_reading_panel(
   rows: Int,
 ) -> Model {
   case
-    layout.main_shows_diff(model)
-    || model.shared.worktree.focus == worktree_view.Navigator
+    layout.diff_covers_transcript(model)
+    || model.shared.worktree.focus == worktree_view.Navigator,
+    sheet_text_tab(model)
   {
-    True -> scroll_diff(model, direction, layout.diff_patch_height(model))
-    False -> scroll_transcript(model, direction == Older, rows)
+    True, _ -> scroll_diff(model, direction, layout.diff_patch_height(model))
+    False, True ->
+      scrolled_tab(model, case direction {
+        Older -> -rows
+        Newer -> rows
+      })
+    False, False -> scroll_transcript(model, direction == Older, rows)
   }
 }
 
@@ -2096,14 +2153,30 @@ pub fn scroll_at(
     },
   )
   case
-    layout.main_shows_diff(model)
+    layout.diff_covers_transcript(model)
     || {
       layout.diff_shown(model)
       && geometry.contains(layout.active_diff_panel(model), position)
-    }
+    },
+    sheet_text_tab(model)
   {
-    True -> scroll_diff(model, direction, 3)
-    False -> scroll_transcript(model, direction == Older, 3)
+    True, _ -> scroll_diff(model, direction, 3)
+    False, True ->
+      scrolled_tab(model, case direction {
+        Older -> -3
+        Newer -> 3
+      })
+    False, False -> scroll_transcript(model, direction == Older, 3)
+  }
+}
+
+// Whether the sheet is showing Trace or Session, which are text with a scroll
+// of their own, over a transcript the wheel must not move.
+fn sheet_text_tab(model: Model) -> Bool {
+  layout.sheet_shown(model)
+  && case layout.rail_tab(model) {
+    rail.Trace | rail.Session -> True
+    rail.Strands | rail.Changes -> False
   }
 }
 

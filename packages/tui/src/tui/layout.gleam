@@ -158,6 +158,44 @@ pub fn rail_columns(model: Model) -> Int {
   rail.columns(model.view.width, model.view.rail, rail_tab(model))
 }
 
+/// Whether the sheet is on screen: the rail's form on a terminal too narrow to
+/// dock it. It replaces the transcript, leaving the input frame where it is,
+/// and it is shown when it was opened or when the changes are open, since
+/// the changes live on the rail's Changes tab and a narrow terminal has no
+/// other place for it. A terminal wide enough to dock the rail never shows it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // layout.sheet_shown(model) == False  (at 120 columns or wider)
+/// ```
+@internal
+pub fn sheet_shown(model: Model) -> Bool {
+  model.view.width < rail.narrowest
+  && case model.view.sheet, model.view.diff_view {
+    tui_model.SheetOpen, _ | tui_model.SheetClosed, DiffVisible -> True
+    tui_model.SheetClosed, tui_model.DiffHidden -> False
+  }
+}
+
+/// Whether the rail is on screen in either form, docked or as the sheet.
+/// Everything that reads what the rail shows or who has its keyboard asks this;
+/// the geometry of the columns asks `rail_columns`.
+@internal
+pub fn rail_present(model: Model) -> Bool {
+  rail_columns(model) > 0 || sheet_shown(model)
+}
+
+/// How many columns of the rail's rectangle are its separator: one when it is
+/// docked beside the transcript, none for the sheet, which has no neighbour.
+@internal
+pub fn rail_lead(model: Model) -> Int {
+  case rail_columns(model) > 0 {
+    True -> 1
+    False -> 0
+  }
+}
+
 /// The width of the transcript's column: the terminal less the rail. The
 /// composer wraps to it and the footer is sized by it.
 @internal
@@ -165,10 +203,11 @@ pub fn column_width(model: Model) -> Int {
   model.view.width - rail_columns(model)
 }
 
-/// The rail's rectangle: the columns on the right, from the row under the
-/// identity line to the last row. Its first column is the separator.
-/// Zero-sized when the rail is not docked, and while an approval is open:
-/// the approval block spans the screen above the input frame, so a rail
+/// The rail's rectangle. Docked, it is the columns on the right, from the row
+/// under the identity line to the last row, and its first column is the
+/// separator. As the sheet it is the conversation's rectangle, which it
+/// replaces. Zero-sized when the rail is neither, and while an approval is
+/// open: the approval block spans the screen above the input frame, so a rail
 /// beside it would leave its lower rows stranded beside the frame. The rail
 /// steps aside in painting only. Its columns stay reserved, so opening or
 /// closing an approval never changes the transcript's width, which would
@@ -189,15 +228,31 @@ pub fn rail_area(screen: Rect, model: Model) -> Rect {
     | GoalInspector(_)
     | DaemonSelector(_)
     | PeerLinkManager(_)
-    | AccessManager(_) ->
-      case geometry.split_v(screen, [Length(1), Fill]) {
-        [_, below] ->
-          case geometry.split_h(below, [Fill, Length(rail_columns(model))]) {
-            [_, rail] -> rail
-            _ -> geometry.rect_zero()
-          }
+    | AccessManager(_) -> shown_rail_area(screen, model)
+  }
+}
+
+// Where the rail is when it is on screen at all: the conversation's rectangle
+// for the sheet, the docked column otherwise.
+fn shown_rail_area(screen: Rect, model: Model) -> Rect {
+  case sheet_shown(model) {
+    True -> {
+      let #(_, body, _, _) = layout(screen, model)
+      let #(conversation, _) = queue_body_layout(body, model)
+      conversation
+    }
+    False -> docked_rail_area(screen, model)
+  }
+}
+
+fn docked_rail_area(screen: Rect, model: Model) -> Rect {
+  case geometry.split_v(screen, [Length(1), Fill]) {
+    [_, below] ->
+      case geometry.split_h(below, [Fill, Length(rail_columns(model))]) {
+        [_, rail] -> rail
         _ -> geometry.rect_zero()
       }
+    _ -> geometry.rect_zero()
   }
 }
 
@@ -206,12 +261,13 @@ pub fn rail_area(screen: Rect, model: Model) -> Rect {
 @internal
 pub fn rail_content_area(screen: Rect, model: Model) -> Rect {
   let area = rail_area(screen, model)
+  let lead = rail_lead(model)
   case area.size.width > 0 {
     True ->
       geometry.rect_new(
-        area.position.x + 1,
+        area.position.x + lead,
         area.position.y + 2,
-        int.max(0, area.size.width - 1),
+        int.max(0, area.size.width - lead),
         int.max(0, area.size.height - 3),
       )
     False -> geometry.rect_zero()
@@ -299,11 +355,16 @@ pub fn todo_area(body: Rect, model: Model) -> Rect {
 }
 
 // The width the changes panel has in the rail, or zero when the changes are
-// not open in a rail that is docked.
+// not open in a rail that is on screen. In the sheet that is the whole width.
 fn diff_pane_width(model: Model) -> Int {
   case rail_tab(model), rail_columns(model) {
     rail.Changes, columns if columns > 0 -> columns - 1
-    rail.Changes, _ | rail.Strands, _ | rail.Trace, _ | rail.Session, _ -> 0
+    rail.Changes, _ ->
+      case sheet_shown(model) {
+        True -> model.view.width
+        False -> 0
+      }
+    rail.Strands, _ | rail.Trace, _ | rail.Session, _ -> 0
   }
 }
 
@@ -333,7 +394,7 @@ pub fn changes_panel_area(screen: Rect, model: Model) -> Rect {
 /// the strip would list.
 @internal
 pub fn rail_lists_strands(model: Model) -> Bool {
-  rail_tab(model) == rail.Strands && rail_columns(model) > 0
+  rail_tab(model) == rail.Strands && rail_present(model)
 }
 
 /// Whether the agents are listed anywhere the keyboard can enter: the strip
@@ -385,11 +446,20 @@ pub fn diff_shown(model: Model) -> Bool {
   model.view.diff_view == DiffVisible || diff_pane_width(model) > 0
 }
 
-/// Reports whether captured edits replace the conversation as the main
-/// surface, which happens only when there is no room for a side pane.
+/// Reports whether the changes cover the transcript, so that nothing of it is
+/// on screen to scroll, select or catch up to: they are open in the sheet,
+/// which replaces it. Opened in the docked rail they do not, since the
+/// transcript is still beside them. There is no third place for them: where
+/// the rail cannot dock, the sheet is the rail.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // layout.diff_covers_transcript(model) == False  (nothing open)
+/// ```
 @internal
-pub fn main_shows_diff(model: Model) -> Bool {
-  model.view.diff_view == DiffVisible && diff_pane_width(model) == 0
+pub fn diff_covers_transcript(model: Model) -> Bool {
+  model.view.diff_view == DiffVisible && sheet_shown(model)
 }
 
 /// Divides the footer rectangle from `layout` into the footer proper and the
@@ -1059,8 +1129,15 @@ pub fn hit_area(model: Model, at: geometry.Position) -> Rect {
   let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
   let #(_, body_area, input_area, _) = layout(screen, model)
   let #(conversation, queue) = queue_body_layout(body_area, model)
+
+  // The sheet covers the transcript, so a point on it is not on the
+  // transcript whatever tab the sheet shows.
+  let transcript = case sheet_shown(model) {
+    True -> geometry.rect_zero()
+    False -> transcript_inner(conversation)
+  }
   [
-    transcript_inner(conversation),
+    transcript,
     panel_inner(changes_panel_area(screen, model)),
     panel_inner(input_area),
     panel_inner(queue),
@@ -1229,9 +1306,9 @@ fn normal_diff_panel(model: Model) -> Rect {
   let #(_, body, _, _) = layout(screen, model)
   let #(conversation, _) = queue_body_layout(body, model)
   let main = conversation
-  case main_shows_diff(model) {
-    True -> main
-    False -> changes_panel_area(screen, model)
+  case diff_pane_width(model) {
+    0 -> main
+    _ -> changes_panel_area(screen, model)
   }
 }
 
@@ -1241,12 +1318,13 @@ fn normal_diff_panel(model: Model) -> Rect {
 pub fn borrowed_diff_panel(model: Model) -> Option(Rect) {
   let normal = normal_diff_panel(model)
 
-  // A panel in the rail has the rail's whole height, and drawing a taller
-  // one over it would cover the tab bar.
+  // A panel in the docked rail has the rail's whole height, and drawing a
+  // taller one over it would cover the tab bar. The sheet is short on a short
+  // terminal, and may borrow.
   use <- bool.guard(
     !diff_borrow_eligible(model)
       || panel_inner(normal).size.height >= 8
-      || diff_pane_width(model) > 0,
+      || { diff_pane_width(model) > 0 && rail_columns(model) > 0 },
     None,
   )
   let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)

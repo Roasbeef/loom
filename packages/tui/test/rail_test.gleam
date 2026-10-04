@@ -193,12 +193,12 @@ pub fn shift_tab_docks_and_hides_the_rail_at_120_test() {
   assert layout.strip_height(hidden) > 0
 }
 
-pub fn shift_tab_on_a_narrow_terminal_says_why_nothing_moved_test() {
+pub fn shift_tab_on_a_narrow_terminal_opens_the_sheet_unrecorded_test() {
   let model = tui.update(backend.Resize(80, 24), scene())
   let #(after, _) = stepping.step(backend.KeyPress("backtab"), model)
   assert layout.rail_columns(after) == 0
-  assert after.view.rail == None as "nothing moved, so nothing is recorded"
-  assert string.contains(after.shared.notice, "docks from 120 columns")
+  assert layout.sheet_shown(after)
+  assert after.view.rail == None as "a sheet is not a preference"
 }
 
 // What Escape does at a composer with nothing to dismiss is interrupt the

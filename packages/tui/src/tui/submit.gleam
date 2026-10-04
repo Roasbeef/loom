@@ -429,12 +429,13 @@ pub fn interrupt_and_insert(model: Model, character: String) -> Model {
 /// Docks or hides the rail, and records the choice.
 ///
 /// The choice is what the layout memory keeps. On a terminal too narrow to
-/// dock the rail nothing moves, so nothing is recorded: the notice says why
-/// and the choice stays as it was. While the changes are open the rail is on
-/// Changes and cannot be hidden, so the same key closes them.
+/// dock the rail the same key opens and closes the sheet instead, which is
+/// not a choice and is not recorded: it is the rail's form for a terminal that
+/// cannot spare a column. While the changes are open the rail is on Changes
+/// and cannot be hidden, so the same key closes them.
 @internal
 pub fn toggle_agent_rail(model: Model) -> Model {
-  case layout.diff_shown(model) && layout.rail_columns(model) > 0 {
+  case layout.diff_shown(model) && layout.rail_present(model) {
     True ->
       Model(
         shared: Shared(..model.shared, notice: "changes closed"),
@@ -447,15 +448,10 @@ pub fn toggle_agent_rail(model: Model) -> Model {
     False ->
       case model.view.width >= rail.narrowest {
         False ->
-          Model(
-            ..model,
-            shared: Shared(
-              ..model.shared,
-              notice: "the rail docks from "
-                <> int.to_string(rail.narrowest)
-                <> " columns",
-            ),
-          )
+          case layout.sheet_shown(model) {
+            True -> close_sheet(model)
+            False -> open_sheet(model)
+          }
         True -> {
           let docked = layout.rail_columns(model) > 0
           let choice = case docked {
@@ -624,6 +620,17 @@ pub fn switch_active_strand(model: Model, strand: String) -> Model {
 /// ```
 @internal
 pub fn select_rail_tab(model: Model, tab: rail.Tab) -> Model {
+  let chosen = choose_rail_tab(model, tab)
+
+  // The sheet is a place the keyboard goes to, so choosing a tab in it
+  // leaves the keyboard there; the docked rail leaves it where it was.
+  case layout.sheet_shown(chosen) {
+    True -> focus_sheet(chosen)
+    False -> chosen
+  }
+}
+
+fn choose_rail_tab(model: Model, tab: rail.Tab) -> Model {
   case tab {
     rail.Changes ->
       case layout.diff_shown(model) {
@@ -643,6 +650,7 @@ pub fn select_rail_tab(model: Model, tab: rail.Tab) -> Model {
             rail_tab: rail.remembered(tab),
             rail_scroll: 0,
             rail_focus: tui_model.FocusComposer,
+            sheet: sheet_for(closed),
             rail: docked_choice(closed),
           ),
         )
@@ -678,7 +686,111 @@ fn docked_choice(model: Model) -> Option(layout_memory.Rail) {
   }
 }
 
-/// `/trace`: the Trace tab, or a notice that there is no rail to show it on.
+// Whether choosing a tab on this terminal opens the sheet: it does where the
+// rail cannot dock, and means nothing where it can.
+fn sheet_for(model: Model) -> tui_model.Sheet {
+  case model.view.width < rail.narrowest {
+    True -> tui_model.SheetOpen
+    False -> model.view.sheet
+  }
+}
+
+/// Opens the sheet on the tab the operator left the rail on, and gives it
+/// the keyboard.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = submit.open_sheet(model)
+/// ```
+@internal
+pub fn open_sheet(model: Model) -> Model {
+  Model(..model, view: View(..model.view, sheet: tui_model.SheetOpen))
+  |> focus_sheet
+  |> tui_model.invalidate_transcript
+  |> tui_model.invalidate_frame
+}
+
+/// Closes the sheet and gives the keyboard back to the composer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = submit.close_sheet(model)
+/// ```
+@internal
+pub fn close_sheet(model: Model) -> Model {
+  let closed =
+    Model(
+      ..model,
+      view: View(
+        ..model.view,
+        sheet: tui_model.SheetClosed,
+        rail_focus: tui_model.FocusComposer,
+      ),
+    )
+  tui_model.store_strip(closed, agent_strip.leave(tui_model.strip(closed)))
+  |> tui_model.invalidate_transcript
+  |> tui_model.invalidate_frame
+}
+
+// The keyboard goes to the sheet. On Strands, with agents to choose among,
+// that is the list's cursor; otherwise, and on every other tab but Changes,
+// which has its own focus, it is the tab itself.
+fn focus_sheet(model: Model) -> Model {
+  case layout.rail_tab(model) {
+    rail.Changes -> model
+    rail.Strands ->
+      case layout.strands_listed(model) {
+        True ->
+          tui_model.store_strip(
+            model,
+            agent_strip.enter(
+              tui_model.strip(model),
+              layout.strip_lines(model),
+              model.shared.active_strand,
+            ),
+          )
+        False ->
+          Model(
+            ..model,
+            view: View(..model.view, rail_focus: tui_model.FocusTab),
+          )
+      }
+    rail.Trace | rail.Session ->
+      Model(..model, view: View(..model.view, rail_focus: tui_model.FocusTab))
+  }
+}
+
+/// Hands the sheet off to the rail when a resize makes the terminal wide
+/// enough to dock one: the sheet is closed, so it does not come back if the
+/// terminal narrows again. The other direction is not followed: narrowing a
+/// terminal that had the rail docked leaves the sheet closed, because opening
+/// it would cover the transcript the person was reading.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = submit.hand_off_sheet(model)
+/// ```
+@internal
+pub fn hand_off_sheet(model: Model) -> Model {
+  case model.view.sheet, model.view.width >= rail.narrowest {
+    tui_model.SheetOpen, True ->
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          sheet: tui_model.SheetClosed,
+          rail_focus: tui_model.FocusComposer,
+        ),
+      )
+    tui_model.SheetOpen, False | tui_model.SheetClosed, _ -> model
+  }
+}
+
+/// `/trace`: the Trace tab, on the docked rail where there is one and on the
+/// sheet where there is not.
 ///
 /// ## Examples
 ///
@@ -687,25 +799,9 @@ fn docked_choice(model: Model) -> Option(layout_memory.Rail) {
 /// ```
 @internal
 pub fn open_trace_tab(model: Model) -> Model {
-  case model.view.width >= rail.narrowest {
-    True -> select_rail_tab(model, rail.Trace)
-    False -> needs_rail(model, "Trace")
-  }
+  select_rail_tab(model, rail.Trace)
 }
 
-fn needs_rail(model: Model, tab: String) -> Model {
-  Model(
-    ..model,
-    shared: Shared(
-      ..model.shared,
-      notice: "the "
-        <> tab
-        <> " tab needs the rail, which docks from "
-        <> int.to_string(rail.narrowest)
-        <> " columns",
-    ),
-  )
-}
 
 /// Opens held-input inspection without touching composer text or attachments.
 ///

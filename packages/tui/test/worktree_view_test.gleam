@@ -417,7 +417,7 @@ pub fn borrowed_side_patch_routes_wheel_without_moving_transcript_test() {
 
 pub fn mouse_selection_replaces_cached_patch_without_resize_test() {
   let selected =
-    tui.update(backend.MousePress(2, 6, backend.MouseLeft), model_with_patch())
+    tui.update(backend.MousePress(2, 7, backend.MouseLeft), model_with_patch())
   assert selected.shared.worktree.selected == 2
   let visible = painted(selected)
   assert string.contains(visible, "second patch")
@@ -525,13 +525,13 @@ pub fn wide_rail_opens_changes_on_request_and_preserves_composer_test() {
   assert !string.contains(painted(resized), "captured changes")
   assert textarea.value(resized.view.input) == "draft"
 
-  // Below 120 columns the rail does not dock, so the changes take the
-  // transcript's place instead.
+  // Below 120 columns the rail does not dock, so the changes open in the
+  // sheet, which takes the transcript's place.
   let narrow = tui.update(backend.Resize(100, 35), wide)
-  assert !string.contains(painted(narrow), "captured changes")
+  assert !string.contains(painted(narrow), "Captured edits")
   let manual = submit.open_diff(narrow)
   assert manual.view.diff_view == tui_model.DiffVisible
-  assert string.contains(painted(manual), "captured changes")
+  assert string.contains(painted(manual), "Captured edits")
 }
 
 pub fn changes_during_observation_schedule_exactly_one_followup_test() {
