@@ -254,8 +254,12 @@ fn provenance(
       use role <- result.try(remote_tool.child_role(child) |> conflict)
       use Nil <- result.try(case role {
         remote_tool.Workspace(_) -> Ok(Nil)
-        remote_tool.Compile | remote_tool.Launch | remote_tool.Capability(_) ->
-          Error(custody.Conflict)
+        remote_tool.Compile
+        | remote_tool.Launch
+        | remote_tool.CompileCommand
+        | remote_tool.SatelliteCommand
+        | remote_tool.Capability(_)
+        | remote_tool.AdmittedCapability(_, _, _) -> Error(custody.Conflict)
       })
       let #(index, digest) = workspace.tool_origin_fields(source)
       let hex = digest |> bit_array.base16_encode |> string.lowercase
