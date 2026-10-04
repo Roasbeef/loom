@@ -2903,7 +2903,18 @@ fn code_mode_result_lines(
   }
 }
 
-fn sandbox_summary(fields: List(#(String, json.JsonValue))) -> Option(String) {
+/// The `sandbox · build enforced N layers; skipped M · satellite …` line a
+/// `code_mode` result's `details` carry, or nothing when they name no sandbox.
+/// Public so the Trace tab shows the line the lane's step detail shows.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert transcript_lines.sandbox_summary([]) == None
+/// ```
+pub fn sandbox_summary(
+  fields: List(#(String, json.JsonValue)),
+) -> Option(String) {
   case list.key_find(fields, "sandbox") {
     Ok(json.Object(sandbox)) -> {
       let build = enforcement_summary(sandbox, "build")
