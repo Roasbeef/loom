@@ -365,53 +365,37 @@ pub fn workspace_default(workspace: String) -> SandboxPolicy {
   )
 }
 
-/// What a session lease's standard output *is*, which decides whether the
-/// helper's per-stream output cap may stay on it.
+/// What a session lease's standard output represents.
 ///
-/// The type names the role of the stream rather than the flag it sets,
-/// because the role is what a caller knows and the cap is a consequence.
-/// An extension host's stdout is a log: diagnostics nobody parses, where
-/// the 4 MiB per-stream cap truncating a chatty node loses nothing the
-/// session depends on and bounds what a runaway node can pour into the
-/// relay. A language server's stdout is its wire: every JSON-RPC reply
-/// and notification rides it for the whole session, so a cap sized for
-/// one command's output would, some hours in, stop the stream mid-frame
-/// and leave a live server that can never answer again. A third role
-/// would be a third variant, decided here rather than at a call site.
+/// Logs retain the ordinary per-command cap. Protocol streams receive a
+/// larger finite allowance because their bytes carry replies for the whole
+/// lease. Both remain bounded at the native producer, even if a consumer
+/// stops reading. This is cumulative accounting, not consumption credit.
 pub type LeaseOutput {
-  /// The stream is a log. `output_bytes` passes through from the base,
-  /// so the helper's per-stream cap still applies.
+  /// Diagnostic output retains the base's per-stream cap.
   OutputIsLog
 
-  /// The stream is the lease's protocol. `output_bytes` is zeroed,
-  /// which the helper reads as "no cap of its own".
+  /// Protocol output has a 64 MiB lifetime cap per stream. Crossing it must
+  /// fail the protocol consumer, since dropped bytes invalidate framing.
   OutputIsWire
 }
 
-/// The base policy for a jailed process held open for the session — an
-/// extension host, a language server — rather than one that runs a
-/// command and exits: the base with `wall_s` and `cpu_s` at zero, and
-/// `output_bytes` at zero too when the output is a wire.
+/// Derives policy for a process held open until its session releases it.
 ///
-/// The zeros go on the *base* because of how composition treats them.
-/// Limits meet with `0` as "unlimited", so a base zero leaves the field
-/// to whatever the requirements carry and a requirements zero against a
-/// non-zero base takes the base's number. Asking for unlimited in the
-/// requirements alone is therefore a narrowing: `shortfall` reports it
-/// as `NarrowedLimit(wanted: 0, granted: 600)`, and a clearance under
-/// `RefuseNarrowed` refuses the whole lease. With the zeros on the base,
-/// a requirements policy that also carries zeros composes to zeros with
-/// nothing narrowed.
+/// Wall and CPU limits become zero so per-command timers do not expire a
+/// session lease. The pooled budget still governs its admitted lifetime.
+/// Memory, process, file and filesystem authority stay unchanged.
 ///
-/// The zero wall does not make a lease unbounded. What bounds it is the
-/// pooled budget deadline its clearance carries (`budget.deadline_ms`,
-/// enforced at the relay), which the caller sets to the lease's
-/// lifetime; the zero only stops the helper's own wall timer and
-/// RLIMIT_CPU from killing it sooner, at numbers sized for one command.
-/// Every other field is passed through untouched — the roots, the
-/// protected paths, the network mode, the environment allowlist, and in
-/// particular `mem_bytes`, `pids` and `fsize_bytes`, so a lease is held
-/// to the same memory and process ceilings as any execution.
+/// A wire gets a finite 64 MiB allowance per stream. At most 128 MiB of
+/// combined stdout/stderr payload can reach an unread consumer over one
+/// lease, plus bounded framing overhead. Reaching the allowance produces a
+/// truncated chunk; LSP treats truncated stdout as a failed stream and
+/// cancels the lease. It must never treat the retained prefix as a reply.
+/// A future consumption-credit protocol can support indefinite traffic;
+/// removing this producer cap without that protocol would unbound mailboxes.
+///
+/// Callers must request the same finite output allowance. An unlimited
+/// request is deliberately narrowed and refused under `RefuseNarrowed`.
 ///
 /// ## Examples
 ///
@@ -419,16 +403,15 @@ pub type LeaseOutput {
 /// let base = policy.workspace_default("/work")
 /// let lease = policy.session_lease(base, policy.OutputIsWire)
 /// assert lease.limits.wall_s == 0
-/// assert lease.limits.output_bytes == 0
+/// assert lease.limits.output_bytes == 67_108_864
 /// ```
-///
 pub fn session_lease(
   base: SandboxPolicy,
   output: LeaseOutput,
 ) -> SandboxPolicy {
   let output_bytes = case output {
     OutputIsLog -> base.limits.output_bytes
-    OutputIsWire -> 0
+    OutputIsWire -> 67_108_864
   }
   SandboxPolicy(
     ..base,
