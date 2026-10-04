@@ -115,7 +115,7 @@ selected matrix described below. `required_layers_for_features` now chooses
 Linux or Darwin from the helper's hello features, and each backend names its
 own mechanisms. The discussion remains as the argument that led there.
 
-`required_layers` (`packages/broker/src/broker/exec.gleam:1857`) derives
+`required_layers` (`packages/broker/src/broker/exec.gleam:1934`) derives
 the layer tags an execution must be able to show as applied. Four are
 unconditional — `["bwrap", "mounts", "landlock", "no-new-privs"]` — and
 four more are conditional on what the policy asked for: `seccomp-net`
@@ -127,7 +127,7 @@ shows from what the policy demanded, splitting each report entry at its
 first `:` or `=` through `layer_tag`
 (`packages/broker/src/broker/exec.gleam:1631`) so that `landlock:abi=5`
 counts as the landlock layer and `mounts:ro=2,rw=1,…` as the mount layer.
-`degraded_report` (`packages/broker/src/broker/exec.gleam:2013`) then
+`degraded_report` (`packages/broker/src/broker/exec.gleam:2090`) then
 fails a `FullEnforcement` demand on any of three grounds: the helper's
 degraded bool, any `skip:` entry, or any required layer simply absent
 from the list.
@@ -154,7 +154,7 @@ refuses everything.
 The fix is that the demanded set has to become a property of the driver
 rather than a constant, or be negotiated at handshake. The helper already
 sends a `hello` with a feature list the broker reads
-(`handle_hello`, `packages/broker/src/broker/exec.gleam:2107`), and at the time
+(`handle_hello`, `packages/broker/src/broker/exec.gleam:2184`), and at the time
 that list was consulted for exactly one thing: whether it contained
 `"degraded"` (`degraded_features`,
 `packages/broker/src/broker/exec.gleam:1460`). Issue #64 already proposes
@@ -431,7 +431,7 @@ and it is routinely absent on a developer laptop (macOS without HVF, a
 Linux VM without nested virt enabled) and inside CI containers. This is
 decisive for the shape of the work: the VM tier is an **additional tier,
 not a replacement**. The bwrap driver stays the local default, and
-`host_platform_for` (`packages/broker/src/broker/exec.gleam:2597`) grows
+`host_platform_for` (`packages/broker/src/broker/exec.gleam:2674`) grows
 a third answer rather than having its two replaced. Any plan that treats
 the microVM as the new baseline is a plan to make the tree untestable on
 the machines it is developed on.

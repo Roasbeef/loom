@@ -425,7 +425,7 @@ first consumer of `CallOutput` chunks as a stream. #185, adjacent: the
 spill is called from one place for jobs, and the seam-level refactor for
 foreground tools stays #185. #74 lands first, because the jobs work adds
 variants to `ExecFailure` and today they would fall silently into
-`denial_for_failure`'s `_ -> None` (`broker/broker.gleam:757`).
+`denial_for_failure`'s `_ -> None` (`broker/broker.gleam:801`).
 
 ## Contracts touched
 
