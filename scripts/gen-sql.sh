@@ -52,9 +52,10 @@ command -v sqlite3 >/dev/null || {
 gen_package() {
   local pkg="$1"
   echo "==> $pkg"
-  local tmpdb
+  local tmpdb output
   tmpdb="$(mktemp -t loom-gen-sql-XXXXXX.db)"
-  trap 'rm -f "$tmpdb"' RETURN
+  output="$(mktemp -t loom-gen-sql-XXXXXX.log)"
+  trap 'rm -f "$tmpdb" "$output"' RETURN
   sqlite3 "$tmpdb" < "packages/$pkg/sql/schema.sql"
   if [[ "$pkg" == storage ]]; then
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_names.sql
@@ -72,7 +73,14 @@ gen_package() {
   if [[ "$pkg" == executor ]]; then
     sqlite3 "$tmpdb" < packages/executor/sql/workspace.sql
   fi
-  (cd "packages/$pkg" && gleam run --module parrot -- --sqlite "$tmpdb")
+  # Parrot 2.3.0 prints generation errors but returns zero. Its success marker
+  # follows sqlc, code generation and formatting; require it as well as the
+  # process exit status so a stale committed binding cannot masquerade as fresh.
+  (cd "packages/$pkg" && gleam run --module parrot -- --sqlite "$tmpdb") | tee "$output"
+  if ! grep -Fq 'SQL successfully generated!' "$output"; then
+    echo "gen-sql: $pkg generation did not complete successfully" >&2
+    return 1
+  fi
 }
 
 # An optional package list lets independent schema owners regenerate only
