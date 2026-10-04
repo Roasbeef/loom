@@ -9,8 +9,10 @@ VALUES (1, @session_id, @tool_limit, @child_limit, @byte_limit, @payload_limit);
 -- name: OwnerCustodyBudget :one
 SELECT CAST((SELECT COUNT(*) FROM owner_custody_tools) AS INTEGER) AS tools,
   CAST((SELECT COUNT(*) FROM owner_custody_children) AS INTEGER) AS children,
+  CAST((SELECT COUNT(*) FROM owner_custody_command_offers) AS INTEGER) AS offers,
   CAST(COALESCE((SELECT SUM(reserved_bytes) FROM owner_custody_tools), 0)
-    + COALESCE((SELECT SUM(reserved_bytes) FROM owner_custody_children), 0) AS INTEGER) AS bytes;
+    + COALESCE((SELECT SUM(reserved_bytes) FROM owner_custody_children), 0)
+    + COALESCE((SELECT SUM(reserved_bytes) FROM owner_custody_command_offers), 0) AS INTEGER) AS bytes;
 
 -- name: OwnerToolHeader :many
 SELECT CAST(CASE WHEN typeof(identity) = 'blob' THEN length(identity) ELSE -1 END AS INTEGER) AS identity_bytes, CAST(CASE WHEN typeof(arguments) = 'blob' THEN length(arguments) ELSE -1 END AS INTEGER) AS argument_bytes,
@@ -63,3 +65,67 @@ UPDATE owner_custody_children SET request = X'', terminal = NULL, state = 'froze
 INSERT INTO owner_custody_children(origin, parent, request_id, request, state, reserved_bytes)
 VALUES (@origin, @parent, NULL, X'', 'cancelled', @reserved_bytes)
 ON CONFLICT(origin) DO UPDATE SET state = CASE WHEN state = 'frozen' THEN 'frozen' ELSE 'cancelled' END;
+
+
+-- name: OwnerLegacyCustodyBudget :one
+SELECT CAST((SELECT COUNT(*) FROM owner_custody_tools) AS INTEGER) AS tools,
+  CAST((SELECT COUNT(*) FROM owner_custody_children) AS INTEGER) AS children,
+  CAST(COALESCE((SELECT SUM(reserved_bytes) FROM owner_custody_tools), 0)
+    + COALESCE((SELECT SUM(reserved_bytes) FROM owner_custody_children), 0) AS INTEGER) AS bytes;
+
+-- name: OwnerLegacyInvalidHeaders :one
+SELECT CAST(
+  (SELECT COUNT(*) FROM owner_custody_tools WHERE
+    typeof(address) != 'text' OR length(CAST(address AS BLOB)) > 8192
+    OR typeof(identity) != 'blob' OR length(identity) > 8192
+    OR typeof(arguments) != 'blob' OR length(arguments) > CAST(@payload_limit AS INTEGER)
+    OR typeof(request) != 'blob' OR length(request) > CAST(@payload_limit AS INTEGER)
+    OR (outcome IS NOT NULL AND (typeof(outcome) != 'blob' OR length(outcome) > CAST(@payload_limit AS INTEGER)))
+    OR state NOT IN ('retained', 'frozen') OR typeof(reserved_bytes) != 'integer'
+    OR reserved_bytes < length(identity) + length(CAST(address AS BLOB)) + 128
+      + CASE WHEN state = 'frozen' THEN 0 ELSE length(arguments) + length(request) + CAST(@payload_limit AS INTEGER) END)
+  + (SELECT COUNT(*) FROM owner_custody_children WHERE
+    typeof(origin) != 'text' OR length(CAST(origin AS BLOB)) > 8192
+    OR typeof(parent) != 'text' OR length(CAST(parent AS BLOB)) > 8192
+    OR (request_id IS NULL AND (state NOT IN ('cancelled', 'frozen') OR length(request) != 0 OR terminal IS NOT NULL))
+    OR (request_id IS NOT NULL AND (typeof(request_id) != 'text' OR length(CAST(request_id AS BLOB)) != 36))
+    OR typeof(request) != 'blob' OR length(request) > CAST(@payload_limit AS INTEGER)
+    OR (terminal IS NOT NULL AND (typeof(terminal) != 'blob' OR length(terminal) > CAST(@payload_limit AS INTEGER)))
+    OR state NOT IN ('retained', 'cancelled', 'frozen') OR typeof(reserved_bytes) != 'integer'
+    OR reserved_bytes < length(CAST(origin AS BLOB)) + length(CAST(parent AS BLOB)) + 164
+      + CASE WHEN state = 'frozen' THEN 0 ELSE length(request) + CASE WHEN request_id IS NULL THEN 0 ELSE CAST(@payload_limit AS INTEGER) END END)
+  AS INTEGER) AS invalid;
+
+-- name: OwnerCommandOfferHeader :many
+SELECT
+  CASE WHEN typeof(parent) = 'text' AND length(CAST(parent AS BLOB)) <= 8192 THEN parent ELSE '' END AS parent,
+  CASE WHEN typeof(service_origin) = 'text' AND length(CAST(service_origin AS BLOB)) <= 8192 THEN service_origin ELSE '' END AS service_origin,
+  CASE WHEN typeof(service_id) = 'text' AND length(CAST(service_id AS BLOB)) = 36 THEN service_id ELSE '' END AS service_id,
+  CASE WHEN typeof(native_origin) = 'text' AND length(CAST(native_origin AS BLOB)) <= 8192 THEN native_origin ELSE '' END AS native_origin,
+  CASE WHEN typeof(offer_digest) = 'text' AND length(CAST(offer_digest AS BLOB)) = 64 THEN offer_digest ELSE '' END AS offer_digest,
+  CAST(CASE WHEN typeof(identity) = 'blob' THEN length(identity) ELSE -1 END AS INTEGER) AS identity_bytes,
+  CAST(CASE WHEN typeof(offer) = 'blob' THEN length(offer) ELSE -1 END AS INTEGER) AS offer_bytes,
+  CASE WHEN state IN ('retained', 'cancelled', 'frozen') THEN state ELSE '' END AS state,
+  reserved_bytes FROM owner_custody_command_offers WHERE address = @address LIMIT 2;
+
+-- name: OwnerCommandOfferValue :many
+SELECT identity, offer FROM owner_custody_command_offers WHERE address = @address
+  AND typeof(identity) = 'blob' AND length(identity) <= 8192
+  AND typeof(offer) = 'blob' AND length(offer) <= CAST(@offer_limit AS INTEGER) LIMIT 2;
+
+-- name: OwnerCommandOfferCount :one
+SELECT CAST(COUNT(*) AS INTEGER) AS offers FROM owner_custody_command_offers WHERE parent = @parent;
+
+-- name: InsertOwnerCommandOffer :exec
+INSERT INTO owner_custody_command_offers(address, parent, service_origin, service_id, identity,
+  native_origin, offer_digest, offer, state, reserved_bytes)
+VALUES (@address, @parent, @service_origin, @service_id, @identity,
+  @native_origin, @offer_digest, @offer, 'retained', @reserved_bytes);
+
+-- name: CancelOwnerCommandOffers :exec
+UPDATE owner_custody_command_offers SET state = CASE WHEN state = 'frozen' THEN 'frozen' ELSE 'cancelled' END
+WHERE service_origin = @service_origin;
+
+-- name: CancelOwnerAllocatedChild :exec
+UPDATE owner_custody_children SET state = CASE WHEN state = 'frozen' THEN 'frozen' ELSE 'cancelled' END
+WHERE origin = @origin;
