@@ -19,6 +19,10 @@ pub fn generated_queries_match_named_sql_sources_test() {
     sql.custody_events(8).0,
     sql.append_custody_event(1, <<>>).0,
     sql.advance_custody_head(1, 1, 0, 0).0,
+    sql.payload_inventory(<<>>, 0).0,
+    sql.payload_reservations().0,
+    sql.read_custody_payload(<<>>).0,
+    sql.insert_custody_payload(<<>>, <<>>, 0, 0, <<>>).0,
   ]
   assert normalize(source) == normalize(string.join(generated, "\n"))
 }

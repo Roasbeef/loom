@@ -20,11 +20,20 @@
 ////
 //// Named queries and their row decoders come from Parrot/sqlc. The SQL source
 //// owns storage shape; this module owns transactions and admission ordering.
+////
+//// ## Flow
+////
+//// `fresh` and `recover` enter `setup` then `load`. Calls enter `exchange` and
+//// `handle`: `transact` reads `current`, applies the pure reducer and commits
+//// before replying. `payload_write` performs the same locked admission preflight
+//// before storing exact bytes. `read_payload` checks blob-free aggregate bounds
+//// then decodes generated SQL rows; it never recreates a launch decision.
 
 import executor/custody_schema
 import executor/remote/admission
 import executor/remote/identity
 import executor/remote/journal_codec as codec
+import executor/remote/payload
 import executor/sql
 import gleam/bit_array
 import gleam/dynamic/decode
@@ -119,6 +128,17 @@ type Message {
     key: identity.RequestKey,
     digest: identity.Digest,
     reply: process.Subject(Result(admission.Evidence, Error)),
+  )
+  PutPayload(
+    key: identity.RequestKey,
+    digest: identity.Digest,
+    item: payload.Item,
+    reply: process.Subject(Result(Nil, Error)),
+  )
+  ReadPayload(
+    key: identity.RequestKey,
+    digest: identity.Digest,
+    reply: process.Subject(Result(List(payload.Item), Error)),
   )
   Release(reply: process.Subject(Result(Nil, Error)))
 }
@@ -218,6 +238,40 @@ pub fn inspect(
   digest: identity.Digest,
 ) -> Result(admission.Evidence, Error) {
   exchange(journal, Inspect(key, digest, _))
+}
+
+/// Commits immutable bounded bytes before admission, output or terminal acknowledgement.
+/// Request reservation consumes a lifetime slot even if admission later fails.
+/// Duplicate items compare exact bytes and append nothing; conflicting bytes fail.
+///
+/// ## Examples
+///
+/// ```gleam
+/// journal.put_payload(journal, key, digest, payload.Request(bytes))
+/// ```
+pub fn put_payload(
+  journal: Journal,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+  item: payload.Item,
+) -> Result(Nil, Error) {
+  exchange(journal, PutPayload(key, digest, item, _))
+}
+
+/// Retrieves original bounded immutable evidence, including after compaction.
+/// No receipt or broker release deletes the only copy of result bytes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// journal.payloads(journal, key, digest) // -> exact retained items.
+/// ```
+pub fn payloads(
+  journal: Journal,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+) -> Result(List(payload.Item), Error) {
+  exchange(journal, ReadPayload(key, digest, _))
 }
 
 /// Releases this connection without closing the epoch or declaring native drain.
@@ -330,6 +384,31 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     Inspect(key, digest, reply), Ready(config, connection, snapshot) -> {
       let outcome = read_current(connection, config, snapshot)
       settle_inspect(outcome, config, connection, key, digest, reply)
+    }
+    PutPayload(key, digest, item, reply), Ready(config, connection, snapshot) -> {
+      let outcome =
+        payload_write(connection, config, snapshot, key, digest, item)
+      process.send(reply, outcome)
+      case outcome {
+        Ok(_) | Error(Rejected(_)) -> actor.continue(state)
+        Error(_) -> actor.stop()
+      }
+    }
+    ReadPayload(key, digest, reply), Ready(config, connection, _) -> {
+      let outcome = read_payload(connection, config, key, digest)
+      process.send(reply, outcome)
+      case outcome {
+        Ok(_) | Error(Rejected(_)) -> actor.continue(state)
+        Error(_) -> actor.stop()
+      }
+    }
+    PutPayload(_, _, _, reply), Waiting(_) -> {
+      process.send(reply, Error(Closed))
+      actor.continue(state)
+    }
+    ReadPayload(_, _, reply), Waiting(_) -> {
+      process.send(reply, Error(Closed))
+      actor.continue(state)
     }
     Release(reply), Ready(_, connection, _) -> {
       process.send(reply, sqlight.close(connection) |> sql_error)
@@ -768,4 +847,164 @@ fn shutdown(state: State, _reason: process.ExitReason) -> Nil {
     }
     Waiting(_) -> Nil
   }
+}
+
+fn read_payload(
+  connection: sqlight.Connection,
+  config: Config,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+) -> Result(List(payload.Item), Error) {
+  use Nil <- result.try(case identity.key_scope(key) == config.scope {
+    True -> Ok(Nil)
+    False -> Error(Rejected(admission.ScopeMismatch))
+  })
+
+  // Aggregates contain no blobs. Corrupt counts and cumulative bytes are
+  // refused before the driver can materialize any payload body.
+  use Nil <- result.try(
+    list.try_each(
+      [
+        #(0, 1, 131_072),
+        #(1, 1, 1024),
+        #(2, 64, 1_048_576),
+        #(3, 1, 32_768),
+        #(4, 1, 32_768),
+      ],
+      fn(bound) {
+        let #(kind, count, bytes) = bound
+        use inventory <- result.try(query(
+          connection,
+          sql.payload_inventory(payload_locator(key, digest), kind),
+        ))
+        case inventory {
+          [sql.PayloadInventory(items, total)]
+            if items >= 0 && items <= count && total >= 0 && total <= bytes
+          -> Ok(Nil)
+          _ -> Error(Corrupt)
+        }
+      },
+    ),
+  )
+  use rows <- result.try(query(
+    connection,
+    sql.read_custody_payload(payload_locator(key, digest)),
+  ))
+  use items <- result.try(
+    list.try_map(rows, fn(row) {
+      use Nil <- result.try(case row.digest == identity.digest_bytes(digest) {
+        True -> Ok(Nil)
+        False -> Error(Rejected(admission.RequestConflict))
+      })
+      payload.from_fields(row.kind, row.ordinal, row.body)
+      |> result.map_error(fn(_) { Corrupt })
+    }),
+  )
+  payload.validate_inventory(items) |> result.map_error(fn(_) { Corrupt })
+}
+
+fn payload_write(
+  connection: sqlight.Connection,
+  config: Config,
+  snapshot: Snapshot,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+  item: payload.Item,
+) -> Result(Nil, Error) {
+  use Nil <- result.try(
+    payload.validate(item) |> result.map_error(fn(_) { Corrupt }),
+  )
+  use Nil <- result.try(
+    sqlight.exec("BEGIN IMMEDIATE", connection) |> sql_error,
+  )
+  let outcome = {
+    use snapshot <- result.try(current(connection, config, snapshot))
+
+    // Admission preflight is pure: a closed epoch cannot acquire new payload
+    // custody, while existing keys still reconcile output and terminal bytes.
+    use _ <- result.try(
+      admission.admit(snapshot.book, key, digest) |> result.map_error(Rejected),
+    )
+    persist_payload(connection, config, key, digest, item)
+  }
+  case outcome {
+    Ok(Nil) -> sqlight.exec("COMMIT", connection) |> sql_error
+    Error(error) -> {
+      let _ = sqlight.exec("ROLLBACK", connection)
+      Error(error)
+    }
+  }
+}
+
+fn persist_payload(
+  connection: sqlight.Connection,
+  config: Config,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+  item: payload.Item,
+) -> Result(Nil, Error) {
+  use previous <- result.try(read_payload(connection, config, key, digest))
+  let #(kind, ordinal, body) = payload.fields(item)
+  case
+    list.find(previous, fn(old) {
+      let #(old_kind, old_ordinal, _) = payload.fields(old)
+      old_kind == kind && old_ordinal == ordinal
+    })
+  {
+    Ok(old) if old == item -> Ok(Nil)
+    Ok(_) -> Error(Rejected(admission.ResultConflict))
+    Error(_) ->
+      insert_payload(connection, config, key, digest, previous, item, body)
+  }
+}
+
+fn insert_payload(
+  connection: sqlight.Connection,
+  config: Config,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+  previous: List(payload.Item),
+  item: payload.Item,
+  body: BitArray,
+) -> Result(Nil, Error) {
+  use _ <- result.try(
+    payload.validate_inventory([item, ..previous])
+    |> result.map_error(fn(_) { Rejected(admission.Saturated) }),
+  )
+  let #(kind, ordinal, _) = payload.fields(item)
+  use Nil <- result.try(case item, previous {
+    payload.Request(_), [] | payload.Cancellation(_), [] -> {
+      use counts <- result.try(query(connection, sql.payload_reservations()))
+      let maximum = admission.capacity_value(config.capacity)
+      case counts {
+        [sql.PayloadReservations(items)] if items >= 0 && items < maximum ->
+          Ok(Nil)
+        _ -> Error(Rejected(admission.Saturated))
+      }
+    }
+    payload.Request(_), _ -> Error(Rejected(admission.RequestConflict))
+    _, [] -> Error(Rejected(admission.UnknownRequest))
+    _, _ -> Ok(Nil)
+  })
+  statement(
+    connection,
+    sql.insert_custody_payload(
+      payload_locator(key, digest),
+      identity.digest_bytes(digest),
+      kind,
+      ordinal,
+      body,
+    ),
+  )
+}
+
+fn payload_locator(
+  key: identity.RequestKey,
+  digest: identity.Digest,
+) -> BitArray {
+  // Admit encoding ends in fixed 32-byte content evidence. The locator keeps
+  // only logical identity so conflicting digests cannot reserve a second slot.
+  let bytes = codec.encode(codec.Admit(key, digest))
+  bit_array.slice(bytes, 0, bit_array.byte_size(bytes) - 32)
+  |> result.lazy_unwrap(fn() { <<>> })
 }
