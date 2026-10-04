@@ -13,22 +13,31 @@
 //// The activity text of a working strand is session text (a model wrote the
 //// summary, or the captured tool name is shown), and hosts draw it as text.
 //// The fixed words carry the state; the text after the separator only adds
-//// to it.
+//// to it. The roster's text is the engine's, and some of it is the engine's
+//// vocabulary rather than a person's: the phase `assistant`, a state word it
+//// already said (`Waiting · Waiting for x`), or a tool's whole command line.
+//// `status_line` words those for a card, and `status_title` keeps the whole
+//// text for a host's tooltip, so a long command is one hover away and not on
+//// the card.
 ////
 //// The module is portable: it holds no `@external`, performs no I/O and
 //// reads no clock.
 
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import session_view/agent_roster
 import session_view/agent_view
 
 /// The card's one status line for `line`.
 ///
 /// A strand that needs a decision reads `Needs approval`. A working or
-/// waiting strand reads its state word, and its activity after ` · ` when it
-/// has one. A finished strand adds how long its last operation ran, when the
-/// roster knows. The other states are their state words.
+/// waiting strand reads its state word, and what it is doing after ` · ` when
+/// that adds something: the engine's phase `assistant` reads `thinking`, a
+/// tool's activity names the tool and drops its command, and an activity that
+/// already starts with the state word (`Waiting for x` under `Waiting`) is the
+/// line by itself. A finished strand adds how long its last operation ran,
+/// when the roster knows. The other states are their state words.
 ///
 /// ## Examples
 ///
@@ -38,11 +47,19 @@ import session_view/agent_view
 pub fn status_line(line: agent_roster.Line) -> String {
   case line.status {
     agent_view.NeedsInput -> "Needs approval"
-    agent_view.Working | agent_view.Waiting ->
-      case line.text {
-        "" -> agent_view.label(line.status)
-        text -> agent_view.label(line.status) <> " · " <> text
+    agent_view.Working | agent_view.Waiting -> {
+      let word = agent_view.label(line.status)
+      case
+        string.starts_with(string.lowercase(line.text), string.lowercase(word))
+      {
+        True -> line.text
+        False ->
+          case doing(line.text) {
+            "" -> word
+            text -> word <> " · " <> text
+          }
       }
+    }
     agent_view.Finished ->
       case line.elapsed_s {
         Some(seconds) ->
@@ -53,6 +70,100 @@ pub fn status_line(line: agent_roster.Line) -> String {
     | agent_view.Halted
     | agent_view.Idle
     | agent_view.Unavailable -> agent_view.label(line.status)
+  }
+}
+
+/// Everything the roster knows about what the strand is doing, for a host's
+/// tooltip on the card: the status line, and after it the whole activity text
+/// when the line shortened it, such as the command of a tool. It is session
+/// text, so a host draws it as an escaped attribute or a text node, never
+/// as markup, and it is cut to `title_limit` characters.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // strand_card.status_title(line) == "Working · bash · make check"
+/// ```
+pub fn status_title(line: agent_roster.Line) -> String {
+  case line.status, line.text {
+    _, "" -> status_line(line)
+    agent_view.Working, text | agent_view.Waiting, text -> {
+      let word = agent_view.label(line.status)
+      let whole = case
+        string.starts_with(string.lowercase(text), string.lowercase(word))
+      {
+        True -> text
+        False -> word <> " · " <> text
+      }
+
+      string.slice(whole, 0, title_limit)
+    }
+    _, _ -> status_line(line)
+  }
+}
+
+/// The most characters `status_title` keeps.
+pub const title_limit = 240
+
+// What a working strand is doing, in a person's words, or empty when the
+// engine's text adds nothing to the state word. The phases are the engine's:
+// `assistant` and `streaming` are the model generating, and `tool`,
+// `running tools` and `running` say only that something runs. A tool's
+// activity is `name · command`; the name is one word and the command is
+// everything after it, so a first part that is one word is the tool.
+fn doing(text: String) -> String {
+  case text {
+    "" | "tool" | "running tools" | "running" -> ""
+    "assistant" | "streaming" -> "thinking"
+    _ ->
+      case string.split_once(text, " · ") {
+        Ok(#(name, _)) ->
+          case string.contains(name, " ") {
+            True -> text
+            False -> name
+          }
+        Error(Nil) -> text
+      }
+  }
+}
+
+/// The glyph before a status line: `●` for work in progress, `◌` for a wait,
+/// `!` for a decision, `✓` for a finished strand and so on. It is the
+/// state's mark and carries no session text, so a host may draw it in the
+/// state's colour and pulse the working one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert strand_card.glyph(agent_view.Finished) == "✓"
+/// ```
+pub fn glyph(status: agent_view.Status) -> String {
+  case status {
+    agent_view.Working -> "●"
+    agent_view.Waiting -> "◌"
+    agent_view.NeedsInput -> "!"
+    agent_view.Finished -> "✓"
+    agent_view.Failed -> "×"
+    agent_view.Halted -> "■"
+    agent_view.Idle -> "○"
+    agent_view.Unavailable -> "–"
+  }
+}
+
+/// A model's name as a strand's own view shows it: the last path segment of
+/// its identifier, so `zai-org/GLM-5.3` reads `GLM-5.3`. A host keeps the
+/// whole identifier for a tooltip.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert strand_card.model_name("zai-org/GLM-5.3") == "GLM-5.3"
+/// assert strand_card.model_name("kimi-k3") == "kimi-k3"
+/// ```
+pub fn model_name(model: String) -> String {
+  case list.last(string.split(model, "/")) {
+    Ok("") | Error(Nil) -> model
+    Ok(name) -> name
   }
 }
 
