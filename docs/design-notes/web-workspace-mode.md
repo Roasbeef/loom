@@ -76,8 +76,8 @@ the page's cookie, key and nonce in one actor. A ticket for it is minted
 only by `UiLink` (`client/daemon/server.gleam:1387`) over the principal's own
 control connection, after `session_authority`
 (`client/daemon/manager.gleam:936`) finds a membership, and by a page
-switching to another session (`ticket_for` (`ui_socket.gleam:760`)). The
-exchange redeems it once (`redeem` (`ui_sessions.gleam:412`)), the page and
+switching to another session (`ticket_for` (`ui_socket.gleam:827`)). The
+exchange redeems it once (`redeem` (`ui_sessions.gleam:414`)), the page and
 its socket are re-authorized on every request (`page_grant`
 (`client/daemon/server.gleam:356`)), and every route is checked in 051's
 order: `loopback_host` (`ui_http.gleam:156`), then `navigation_allowed`
