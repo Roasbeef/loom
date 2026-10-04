@@ -23,11 +23,11 @@
 import broker/dispatch
 import broker/exec
 import broker/framing
+import core/bounded_msgpack
 import core/msgpack as mp
 import core/workspace
 import executor/remote/identity
 import executor/remote/journal_codec as codec
-import executor/remote/tls
 import gleam/bit_array
 import gleam/crypto
 import gleam/list
@@ -721,24 +721,9 @@ fn decode_prepared_value(value: mp.MsgPackValue) -> Result(Prepared, Error) {
   }
 }
 
-// Preflight checks raw lengths/counts before core/msgpack allocates containers.
-// A binary cannot hide an unbounded native frame: that frame is checked again.
+// Nested native frames pass the same pure preflight as their outer envelope.
 fn unpack(bytes: BitArray) -> Result(mp.MsgPackValue, Error) {
-  use Nil <- result.try(
-    case
-      bit_array.byte_size(bytes) > 0
-      && bit_array.byte_size(bytes) <= tls.max_frame_bytes
-    {
-      True -> Ok(Nil)
-      False -> Error(Invalid)
-    },
-  )
-  use parsed <- result.try(scan(bytes, 0, 2048))
-  use Nil <- result.try(case parsed.0 == <<>> {
-    True -> Ok(Nil)
-    False -> Error(Invalid)
-  })
-  mp.decode(bytes) |> result.map_error(fn(_) { Invalid })
+  bounded_msgpack.decode(bytes) |> result.map_error(fn(_) { Invalid })
 }
 
 fn pack(value: mp.MsgPackValue) -> Result(BitArray, Error) {
@@ -747,78 +732,6 @@ fn pack(value: mp.MsgPackValue) -> Result(BitArray, Error) {
   )
   use _ <- result.try(unpack(bytes))
   Ok(bytes)
-}
-
-fn scan(
-  bytes: BitArray,
-  depth: Int,
-  nodes: Int,
-) -> Result(#(BitArray, Int), Error) {
-  use Nil <- result.try(case depth <= 16 && nodes > 0 {
-    True -> Ok(Nil)
-    False -> Error(Invalid)
-  })
-  case bytes {
-    <<tag, rest:bits>>
-      if tag <= 0x7f || tag >= 0xe0 || tag == 0xc0 || tag == 0xc2 || tag == 0xc3
-    -> Ok(#(rest, nodes - 1))
-    <<tag, rest:bits>> if tag >= 0xa0 && tag <= 0xbf ->
-      skip(rest, tag - 0xa0, nodes - 1, 8192)
-    <<tag, rest:bits>> if tag >= 0x90 && tag <= 0x9f ->
-      scan_many(rest, tag - 0x90, depth + 1, nodes - 1)
-    <<tag, rest:bits>> if tag >= 0x80 && tag <= 0x8f ->
-      scan_many(rest, { tag - 0x80 } * 2, depth + 1, nodes - 1)
-    <<0xdc, n:size(16), rest:bits>> if n <= 128 ->
-      scan_many(rest, n, depth + 1, nodes - 1)
-    <<0xdd, n:size(32), rest:bits>> if n <= 128 ->
-      scan_many(rest, n, depth + 1, nodes - 1)
-    <<0xde, n:size(16), rest:bits>> if n <= 128 ->
-      scan_many(rest, n * 2, depth + 1, nodes - 1)
-    <<0xdf, n:size(32), rest:bits>> if n <= 128 ->
-      scan_many(rest, n * 2, depth + 1, nodes - 1)
-    <<0xd9, n, rest:bits>> -> skip(rest, n, nodes - 1, 8192)
-    <<0xda, n:size(16), rest:bits>> -> skip(rest, n, nodes - 1, 8192)
-    <<0xdb, n:size(32), rest:bits>> -> skip(rest, n, nodes - 1, 8192)
-    <<0xc4, n, rest:bits>> -> skip(rest, n, nodes - 1, 131_072)
-    <<0xc5, n:size(16), rest:bits>> -> skip(rest, n, nodes - 1, 131_072)
-    <<0xc6, n:size(32), rest:bits>> -> skip(rest, n, nodes - 1, 131_072)
-    <<tag, rest:bits>> if tag == 0xcc || tag == 0xd0 ->
-      skip(rest, 1, nodes - 1, 8)
-    <<tag, rest:bits>> if tag == 0xcd || tag == 0xd1 ->
-      skip(rest, 2, nodes - 1, 8)
-    <<tag, rest:bits>> if tag == 0xce || tag == 0xd2 ->
-      skip(rest, 4, nodes - 1, 8)
-    <<tag, rest:bits>> if tag == 0xcf || tag == 0xd3 || tag == 0xcb ->
-      skip(rest, 8, nodes - 1, 8)
-    _ -> Error(Invalid)
-  }
-}
-
-fn skip(
-  bytes: BitArray,
-  count: Int,
-  nodes: Int,
-  maximum: Int,
-) -> Result(#(BitArray, Int), Error) {
-  case bytes {
-    <<_:bytes-size(count), rest:bits>> if count <= maximum -> Ok(#(rest, nodes))
-    _ -> Error(Invalid)
-  }
-}
-
-fn scan_many(
-  bytes: BitArray,
-  count: Int,
-  depth: Int,
-  nodes: Int,
-) -> Result(#(BitArray, Int), Error) {
-  case count {
-    0 -> Ok(#(bytes, nodes))
-    _ -> {
-      use parsed <- result.try(scan(bytes, depth, nodes))
-      scan_many(parsed.0, count - 1, depth, parsed.1)
-    }
-  }
 }
 
 fn validate_body(body: Body) -> Result(Nil, Error) {
