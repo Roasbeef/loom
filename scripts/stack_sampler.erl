@@ -19,8 +19,18 @@
 %%   erl -name s@127.0.0.1 -noshell -pa <dir> -run stack_sampler main \
 %%       <node> <cookie-file> <window-ms> [interval-ms] [top-n]
 -module(stack_sampler).
--export([main/1, sample/2, calls/2]).
+-export([main/1, sample/2, calls/2, callers/2]).
 
+main(["callers", NodeStr, CookieFile, MillisStr, MfasStr]) ->
+    Node = attach(NodeStr, CookieFile),
+    Millis = list_to_integer(MillisStr),
+    Mfas = [begin [M, F, A] = string:split(S, ":", all), {list_to_atom(M), list_to_atom(F), list_to_integer(A)} end
+            || S <- string:split(MfasStr, ",", all)],
+    Rows = rpc:call(Node, ?MODULE, callers, [Millis, Mfas], Millis + 60000),
+    io:format("~n== calls by caller~n"),
+    [io:format("  ~6b  ~s  <-  ~s~n      ~s~n", [N, format(Mfa), format(Caller), Arg])
+     || {{Mfa, Caller, Arg}, N} <- Rows],
+    erlang:halt(0, [{flush, true}]);
 main(["calls", NodeStr, CookieFile, MillisStr, ModulesStr]) ->
     Node = attach(NodeStr, CookieFile),
     Millis = list_to_integer(MillisStr),
@@ -142,3 +152,30 @@ calls(Millis, Modules) ->
                Count > 0],
     [erlang:trace_pattern(P, false, [local, call_time]) || P <- Patterns],
     lists:reverse(lists:keysort(3, Rows)).
+
+%% Runs on the target node: traces calls to each of `Mfas` for `Millis` and
+%% answers how often each was called from each caller, with the first
+%% argument other than the store abbreviated so the query can be read.
+callers(Millis, Mfas) ->
+    Self = self(),
+    [code:ensure_loaded(M) || {M, _, _} <- Mfas],
+    Tracer = spawn(fun() -> collect(#{}, Self) end),
+    [erlang:trace_pattern(Mfa, [{'_', [], [{message, {caller}}]}], [local]) || Mfa <- Mfas],
+    erlang:trace(all, true, [call, {tracer, Tracer}]),
+    timer:sleep(Millis),
+    erlang:trace(all, false, [call]),
+    [erlang:trace_pattern(Mfa, false, [local]) || Mfa <- Mfas],
+    Tracer ! {done, Self},
+    receive {counts, Counts} -> lists:reverse(lists:keysort(2, maps:to_list(Counts))) end.
+
+collect(Counts, Owner) ->
+    receive
+        {trace, _Pid, call, {M, F, Args}, Caller} ->
+            Arg = case Args of
+                [_Store, Q | _] -> lists:flatten(io_lib:format("~0P", [Q, 12]));
+                _ -> ""
+            end,
+            Key = {{M, F, length(Args)}, Caller, string:slice(Arg, 0, 300)},
+            collect(maps:update_with(Key, fun(N) -> N + 1 end, 1, Counts), Owner);
+        {done, Owner} -> Owner ! {counts, Counts}
+    end.
