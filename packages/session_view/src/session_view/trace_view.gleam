@@ -223,8 +223,7 @@ pub fn fold(records: List(protocol.EntryRecord)) -> Trace {
     records
     |> list.reverse
     |> list.map(fn(record) { record.entry })
-    |> tool_activity.project
-    |> list.flat_map(calls)
+    |> tool_activity.calls
     |> list.filter(fn(call) { call.invocation.name == "code_mode" })
     |> list.index_map(fn(call, index) { program(call, index + 1) })
 
@@ -233,15 +232,6 @@ pub fn fold(records: List(protocol.EntryRecord)) -> Trace {
     programs: list.drop(programs, int.max(0, total - max_programs)),
     omitted: int.max(0, total - max_programs),
   )
-}
-
-// The calls of a tool group. Prose, and a result whose call is outside the
-// window, hold none.
-fn calls(item: tool_activity.Item) -> List(tool_activity.Call) {
-  case item {
-    tool_activity.Tools(calls:) -> calls
-    tool_activity.Narrative(_) -> []
-  }
 }
 
 // One call as a program: the arguments give the label and the budget, the

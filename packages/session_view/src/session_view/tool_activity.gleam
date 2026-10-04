@@ -5,6 +5,8 @@
 //// arrive out of order. It never guesses ownership from a command or path:
 //// an orphan result remains an ordinary entry. Expanded history bypasses
 //// this projection and shows every original message, including reasoning.
+//// `calls` lists the calls alone, for views that ask what ran rather than
+//// how the transcript groups it.
 
 import core/entry
 import core/ids
@@ -43,6 +45,80 @@ pub type Call {
 
 type Group {
   Group(order: List(String), calls: Dict(String, Call))
+}
+
+/// Lists every call in oldest-first entries, joined to its result, whether or
+/// not the message that made it also carries reasoning or text.
+///
+/// `project` answers how the transcript groups work, so a message with visible
+/// prose is a boundary there and its calls do not join a group. A caller that
+/// wants the calls themselves (the trace of `code_mode` programs, the files
+/// the session changed) is asking a different question, and real models put a
+/// sentence or a reasoning block ahead of most calls. Prose never hides a call
+/// here. A result joins the latest call with its provider id that has no
+/// result yet, so a reused id attaches to the invocation it answers, and a
+/// result whose call is outside the window is dropped.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tool_activity.calls([]) == []
+/// ```
+pub fn calls(entries: List(entry.Entry)) -> List(Call) {
+  entries
+  |> list.fold([], fn(found, value) {
+    case value {
+      entry.MessageEntry(
+        message: message.AssistantMessage(content:, error_message: None, ..),
+        ..,
+      ) ->
+        list.fold(content, found, fn(found, block) {
+          case block {
+            message.AssistantToolCall(invocation) -> [
+              Call(value.id, invocation, None, None),
+              ..found
+            ]
+            message.AssistantText(..) | message.AssistantThinking(..) -> found
+          }
+        })
+      entry.MessageEntry(
+        message: message.ToolResultMessage(tool_call_id:, ..) as outcome,
+        ..,
+      ) -> join_result(found, tool_call_id, outcome, value.id)
+      entry.MessageEntry(..)
+      | entry.CompactionEntry(..)
+      | entry.BranchSummaryEntry(..)
+      | entry.CustomEntry(..) -> found
+    }
+  })
+  |> list.reverse
+}
+
+// Newest-first `found` lets the first open call with the id be the latest.
+fn join_result(
+  found: List(Call),
+  tool_call_id: String,
+  outcome: message.AgentMessage,
+  result_source: ids.EntryId,
+) -> List(Call) {
+  case found {
+    [] -> []
+    [call, ..rest] ->
+      case call.invocation.id == tool_call_id, call.outcome {
+        True, None -> [
+          Call(
+            ..call,
+            outcome: Some(outcome),
+            result_source: Some(result_source),
+          ),
+          ..rest
+        ]
+        True, Some(_) | False, _ -> [
+          call,
+          ..join_result(rest, tool_call_id, outcome, result_source)
+        ]
+      }
+  }
 }
 
 /// Projects oldest-first entries without changing their durable contents.

@@ -410,3 +410,57 @@ pub fn the_board_holds_at_most_its_files_and_counts_them_all_test() {
   assert board.file_count == 40
   assert board.added == 40
 }
+
+// --- calls beside prose -------------------------------------------------------
+
+// A call message that also carries a sentence of text, the shape real models
+// write.
+fn with_text(
+  call_id: String,
+  name: String,
+  arguments: json.JsonValue,
+) -> message.AgentMessage {
+  assistant([
+    message.AssistantText("Applying it now.", None),
+    message.AssistantToolCall(message.ToolCall(
+      call_id,
+      name,
+      arguments,
+      None,
+      None,
+    )),
+  ])
+}
+
+pub fn an_edit_in_a_message_with_text_is_a_file_test() {
+  let records = [
+    record(
+      2,
+      result("c0", "fs_edit", edit_details("calc.py", calc_diff), False),
+    ),
+    record(1, with_text("c0", "fs_edit", json.Object([]))),
+  ]
+
+  let assert [file] = changes_view.fold(records).files as "the edited file"
+  assert file.path == "calc.py"
+}
+
+pub fn a_write_in_a_message_with_text_is_a_file_test() {
+  let records = [
+    record(2, result("w1", "fs_write", write_details("calc.py"), False)),
+    record(
+      1,
+      with_text(
+        "w1",
+        "fs_write",
+        json.Object([
+          #("path", json.String("calc.py")),
+          #("content", json.String("a = 1\n")),
+        ]),
+      ),
+    ),
+  ]
+
+  let assert [file] = changes_view.fold(records).files as "the written file"
+  assert file.origin == changes_view.Written
+}
