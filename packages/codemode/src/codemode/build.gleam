@@ -74,6 +74,7 @@
 //// the build cannot reach or write.
 
 import broker/broker.{type CallSpec}
+import broker/command
 import broker/exec.{type EnforcementDemand, type ExecResult}
 import broker/policy.{type SandboxPolicy}
 import codemode/compile.{
@@ -81,6 +82,7 @@ import codemode/compile.{
 }
 import codemode/enforcement
 import codemode/identity.{type PhaseIdentity}
+import codemode/native_command
 import codemode/physical
 import codemode/seed
 import filepath
@@ -103,8 +105,6 @@ const settle_margin_ms = 10_000
 
 // How much compiler output to carry back as diagnostics.
 const diagnostics_limit = 8000
-
-const tmp_env = "TMPDIR"
 
 /// Everything the production builder needs beyond the build phase's
 /// identity and the build root.
@@ -476,20 +476,21 @@ pub fn build_call(
   phase: PhaseIdentity,
   root: String,
 ) -> CallSpec {
+  let native = compiler_command(config, root)
   broker.CallSpec(
     op_id: identity.op_id(phase),
     step_id: identity.step_id(phase),
-    base_policy: build_base_policy(config),
-    requirements: build_requirements(config, root),
+    base_policy: native_command.compiler_base(config.base_policy),
+    requirements: native.requirements,
     grants: identity.grants(phase),
     // Nothing about a hermetic build is best-effort: a session base that
     // cannot deliver these requirements must refuse, not run a build with
     // the network on or the workspace writable.
     response: broker.RefuseNarrowed,
     demand: config.demand,
-    argv: [config.gleam_path, "build", "--warnings-as-errors"],
-    env: build_env(config, root),
-    cwd: root,
+    argv: native.argv,
+    env: native.env,
+    cwd: native.cwd,
     budget: identity.pooled_budget(phase),
   )
 }
@@ -498,32 +499,19 @@ pub fn build_call(
 /// every dimension it touches: one writable root, the toolchain readable,
 /// the network off, and only the environment names actually passed.
 pub fn build_requirements(config: BuildConfig, root: String) -> SandboxPolicy {
-  let env = build_env(config, root)
-  policy.SandboxPolicy(
-    ..config.base_policy,
-    writable_roots: [root],
-    readable_roots: list.unique([root, ..config.toolchain_roots]),
-    network: policy.NetworkOff,
-    env_allow: list.map(env, fn(pair) { pair.0 }),
-  )
+  compiler_command(config, root).requirements
 }
 
-// The temporary directory is part of the prepared build root, the one
-// writable root the jail admits. Pinning it here also prevents a caller's
-// environment from shadowing it with a host path the jail cannot use.
-fn build_env(config: BuildConfig, root: String) -> List(#(String, String)) {
-  let permitted = list.filter(config.env, fn(pair) { pair.0 != tmp_env })
-  [#(tmp_env, root <> "/tmp"), ..permitted]
-}
-
-// TMPDIR is minted by this builder and points beneath its one writable root.
-// Authorizing the name on the derived call base lets it survive the policy
-// meet without widening the session base or the model-written run phase.
-fn build_base_policy(config: BuildConfig) -> SandboxPolicy {
-  policy.SandboxPolicy(
-    ..config.base_policy,
-    env_allow: list.unique(list.append(config.base_policy.env_allow, [tmp_env])),
-  )
+// Local execution and remote acceptance share the same literal command shape.
+// Process handles and phase authority stay outside this pure construction.
+fn compiler_command(config: BuildConfig, root: String) -> command.CommandData {
+  native_command.compiler(native_command.Compiler(
+    executable: config.gleam_path,
+    root:,
+    base: config.base_policy,
+    toolchain_roots: config.toolchain_roots,
+    env: config.env,
+  ))
 }
 
 // --- the products ---------------------------------------------------------
