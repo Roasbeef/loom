@@ -16,6 +16,7 @@ state="$(mktemp -d "${TMPDIR:-/tmp}/loom-profile-launcher.XXXXXXXX")"
 trap 'rm -rf "$state"' EXIT
 export HOME="$state/home"
 export LOOM_PROFILE_TOOL="/profile-tool"
+export LOOM_PROFILE_WATCH_INTERVAL=1
 
 loom_profile_consume client --workspace /workspace --profile --state-dir "$state/client" -- --profile
 [[ "$LOOM_PROFILE_ENABLED" == 1 ]]
@@ -153,5 +154,120 @@ cp "$FAKE_ERL_ARGS" "$state/erl.before-observer"
 /bin/bash "$ROOT/bin/loom" observer --help > "$state/observer.help"
 rg -q 'Usage: loom observer' "$state/observer.help"
 cmp "$FAKE_ERL_ARGS" "$state/erl.before-observer"
+
+# The profiled launch above exec'd the fake emulator, so its credential
+# directory must disappear once that process has exited. The watcher polls, so
+# allow it a few intervals.
+wait_for_empty() {
+  local directory="$1"
+  local attempt=0
+  while (( attempt < 50 )); do
+    if [[ -z "$(ls -A "$directory")" ]]; then
+      return 0
+    fi
+    sleep 0.2
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+wait_for_empty "$state/slim/tokens"
+
+# Help and the subcommands that run and exit never start a node, so they must
+# not create credentials, name a node or print the banner, even when the
+# daemon's configuration asks for profiling.
+profile_config="$state/exit-only.toml"
+cat > "$profile_config" <<'EOF'
+[daemon]
+profile = true
+EOF
+export LOOM_PROFILE_CONFIG_READER="$reader"
+export PROFILE_READER_PATH="$state/exit-only-reader.path"
+exit_state="$state/exit-only"
+for invocation in \
+  "daemon --help" "daemon -h" "daemon help" "daemon access list" "daemon peer list" \
+  "daemon ext list" "daemon access --help" "daemon --state-dir $exit_state --help" \
+  "client --help" "client -h" "client help" "client --profile --help" \
+  "client access list" "client claim --profile" "client enroll" "client update" \
+  "client sessions" "client replay x.jsonl"; do
+  read -r -a words <<< "$invocation"
+  role="${words[0]}"
+  banner="$(loom_profile_consume "$role" "${words[@]:1}" --state-dir "$exit_state" --config "$profile_config" 2>&1)"
+  loom_profile_consume "$role" "${words[@]:1}" --state-dir "$exit_state" --config "$profile_config" 2>/dev/null
+  [[ "$LOOM_PROFILE_ENABLED" == 0 ]]
+  [[ -z "$LOOM_PROFILE_NODE" && -z "$LOOM_PROFILE_COOKIE_HOME" ]]
+  [[ -z "$banner" ]]
+  [[ ! -e "$exit_state/tokens" ]]
+done
+
+# A daemon launch with the same configuration still profiles, so the rule is
+# about the invocation rather than the configuration being ignored.
+loom_profile_consume daemon --state-dir "$exit_state" --config "$profile_config" 2>/dev/null
+[[ "$LOOM_PROFILE_ENABLED" == 1 ]]
+[[ -d "$LOOM_PROFILE_COOKIE_HOME" ]]
+unset LOOM_PROFILE_CONFIG_READER PROFILE_READER_PATH
+
+# The same holds through the generated client launcher.
+before="$(ls -A "$state/slim/tokens" | wc -l | tr -d ' ')"
+/bin/bash "$ROOT/bin/loom" --profile --state-dir "$state/slim" --help > /dev/null
+/bin/bash "$ROOT/bin/loom" access list --state-dir "$state/slim"
+[[ "$(ls -A "$state/slim/tokens" | wc -l | tr -d ' ')" == "$before" ]]
+
+# The stale-directory sweep removes only dead directories of the exact shape
+# the launchers create, and leaves live, young and unrelated entries alone.
+sweep="$state/sweep/tokens"
+mkdir -p "$sweep/loom-daemon-profile.deadDEAD" "$sweep/loom-client-profile.dead0000" \
+  "$sweep/loom-daemon-profile.liveLIVE" "$sweep/loom-daemon-profile.young000" \
+  "$sweep/loom-other-profile.abcdefgh" "$sweep/loom-daemon-profile.short" \
+  "$sweep/loom-daemon-profile.toolong123" "$sweep/unrelated"
+: > "$sweep/loom-daemon-profile.fileFILE"
+: > "$sweep/notes.txt"
+ln -s "$sweep/unrelated" "$sweep/loom-client-profile.symlink"
+for old in loom-daemon-profile.deadDEAD loom-client-profile.dead0000 loom-daemon-profile.liveLIVE \
+  loom-other-profile.abcdefgh loom-daemon-profile.short loom-daemon-profile.toolong123 \
+  loom-daemon-profile.fileFILE; do
+  touch -t 200001010000 "$sweep/$old"
+done
+
+mkdir -p "$state/ps-bin"
+cat > "$state/ps-bin/ps" <<'EOF'
+#!/usr/bin/env bash
+cat "$FAKE_PS_OUTPUT"
+EOF
+chmod +x "$state/ps-bin/ps"
+export FAKE_PS_OUTPUT="$state/ps.output"
+printf '%s\n' \
+  "/usr/bin/some-process --unrelated" \
+  "/erts/bin/beam.smp -name loom_daemon_profile_1_x@127.0.0.1 -home $sweep/loom-daemon-profile.liveLIVE -noshell" \
+  > "$FAKE_PS_OUTPUT"
+
+PATH="$state/ps-bin:$PATH" loom_profile_sweep "$sweep"
+[[ ! -e "$sweep/loom-daemon-profile.deadDEAD" ]]
+[[ ! -e "$sweep/loom-client-profile.dead0000" ]]
+[[ -d "$sweep/loom-daemon-profile.liveLIVE" ]]
+[[ -d "$sweep/loom-daemon-profile.young000" ]]
+[[ -d "$sweep/loom-other-profile.abcdefgh" ]]
+[[ -d "$sweep/loom-daemon-profile.short" ]]
+[[ -d "$sweep/loom-daemon-profile.toolong123" ]]
+[[ -f "$sweep/loom-daemon-profile.fileFILE" ]]
+[[ -L "$sweep/loom-client-profile.symlink" && -d "$sweep/unrelated" ]]
+[[ -f "$sweep/notes.txt" ]]
+
+# An unreadable process table must remove nothing.
+cat > "$state/ps-bin/ps" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+mkdir "$sweep/loom-daemon-profile.deadDEAD"
+touch -t 200001010000 "$sweep/loom-daemon-profile.deadDEAD"
+PATH="$state/ps-bin:$PATH" loom_profile_sweep "$sweep"
+[[ -d "$sweep/loom-daemon-profile.deadDEAD" ]]
+
+# A profiled launch sweeps its own state root: the next launch removes what an
+# older release, or a killed launcher, left behind.
+mkdir -p "$state/leftover/tokens/loom-daemon-profile.oldOLD00"
+touch -t 200001010000 "$state/leftover/tokens/loom-daemon-profile.oldOLD00"
+loom_profile_consume client --state-dir "$state/leftover" --profile 2>/dev/null
+[[ ! -e "$state/leftover/tokens/loom-daemon-profile.oldOLD00" ]]
+[[ -d "$LOOM_PROFILE_COOKIE_HOME" ]]
 
 echo "profile launcher: argument and credential checks passed"
