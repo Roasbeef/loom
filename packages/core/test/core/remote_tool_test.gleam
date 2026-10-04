@@ -2,7 +2,9 @@
 
 import core/clock
 import core/ids
+import core/json
 import core/remote_tool
+import gleam/list
 import gleam/result
 import gleam/string
 
@@ -90,4 +92,105 @@ pub fn workspace_child_is_disjoint_and_ordinals_are_bounded_test() {
     |> result.is_error
   assert remote_tool.tool_child(key, remote_tool.Workspace(4096))
     |> result.is_error
+}
+
+/// The same per-capability ordinal names different effects and retained rows.
+pub fn admitted_capability_tuples_and_command_roles_do_not_alias_test() {
+  let assert Ok(key) = make_key("step", 0, string.repeat("a", 64))
+    as "The original tool key validates."
+  let roles = [
+    remote_tool.Compile,
+    remote_tool.Launch,
+    remote_tool.CompileCommand,
+    remote_tool.SatelliteCommand,
+    remote_tool.Capability(0),
+    remote_tool.Workspace(0),
+    remote_tool.AdmittedCapability("fs.read", 0, remote_tool.SemanticWorkspace),
+    remote_tool.AdmittedCapability("proc.run", 0, remote_tool.SemanticWorkspace),
+    remote_tool.AdmittedCapability("fs.read", 0, remote_tool.NativeCommand),
+    remote_tool.AdmittedCapability("proc.run", 0, remote_tool.NativeCommand),
+  ]
+  let addresses =
+    list.map(roles, fn(role) {
+      let assert Ok(child) = remote_tool.tool_child(key, role)
+        as "Each admitted logical role validates."
+      assert remote_tool.child_tool(child) == Ok(key)
+      remote_tool.child_address(child)
+    })
+  assert list.length(list.unique(addresses)) == list.length(roles)
+}
+
+/// New role tags must not change the keys of already retained legacy evidence.
+pub fn legacy_child_addresses_remain_byte_exact_test() {
+  let assert Ok(key) = make_key("step", 0, string.repeat("a", 64))
+    as "The original tool key validates."
+  let legacy = [
+    #(remote_tool.Compile, json.Array([json.String("compile")])),
+    #(remote_tool.Launch, json.Array([json.String("launch")])),
+    #(remote_tool.Capability(0), json.Array([json.String("cap"), json.Int(0)])),
+    #(
+      remote_tool.Workspace(0),
+      json.Array([json.String("workspace"), json.Int(0)]),
+    ),
+  ]
+  list.each(legacy, fn(entry) {
+    let assert Ok(child) = remote_tool.tool_child(key, entry.0)
+      as "The legacy role remains constructible."
+    let expected =
+      json.to_string(
+        json.Array([
+          json.String(remote_tool.address(key)),
+          entry.1,
+        ]),
+      )
+    assert remote_tool.child_address(child) == expected
+  })
+}
+
+/// Names have an independent byte bound and retain exact tuple encoding.
+pub fn capability_names_are_bounded_without_delimiter_aliases_test() {
+  let assert Ok(key) = make_key("step", 0, string.repeat("a", 64))
+    as "The original tool key validates."
+  list.each(["", "fs\u{0000}read", string.repeat("é", 65)], fn(name) {
+    assert remote_tool.tool_child(
+        key,
+        remote_tool.AdmittedCapability(name, 0, remote_tool.SemanticWorkspace),
+      )
+      |> result.is_error
+  })
+  list.each([-1, 4096], fn(ordinal) {
+    assert remote_tool.tool_child(
+        key,
+        remote_tool.AdmittedCapability(
+          "fs.read",
+          ordinal,
+          remote_tool.SemanticWorkspace,
+        ),
+      )
+      |> result.is_error
+  })
+
+  let assert Ok(maximum) =
+    remote_tool.tool_child(
+      key,
+      remote_tool.AdmittedCapability(
+        string.repeat("é", 64),
+        4095,
+        remote_tool.NativeCommand,
+      ),
+    )
+    as "The exact name and ordinal bounds are accepted."
+  assert remote_tool.child_tool(maximum) == Ok(key)
+  let names = ["fs.read", "fs.read:0:workspace", "fs.read\",0,\"workspace"]
+  let addresses =
+    list.map(names, fn(name) {
+      let assert Ok(child) =
+        remote_tool.tool_child(
+          key,
+          remote_tool.AdmittedCapability(name, 0, remote_tool.SemanticWorkspace),
+        )
+        as "Separators remain literal name data in the canonical tuple."
+      remote_tool.child_address(child)
+    })
+  assert list.length(list.unique(addresses)) == list.length(names)
 }

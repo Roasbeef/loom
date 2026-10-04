@@ -338,7 +338,19 @@ pub fn toolkey_provenance_and_native_workspace_namespace_are_checked_test() {
     )
     == Error(custody.Conflict)
   list.each(
-    [remote_tool.Compile, remote_tool.Launch, remote_tool.Capability(0)],
+    [
+      remote_tool.Compile,
+      remote_tool.Launch,
+      remote_tool.CompileCommand,
+      remote_tool.SatelliteCommand,
+      remote_tool.Capability(0),
+      remote_tool.AdmittedCapability(
+        "fs.read",
+        0,
+        remote_tool.SemanticWorkspace,
+      ),
+      remote_tool.AdmittedCapability("proc.run", 0, remote_tool.NativeCommand),
+    ],
     fn(role) {
       assert binding.reserve(
           b,
