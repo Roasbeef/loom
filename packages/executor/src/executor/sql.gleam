@@ -475,6 +475,23 @@ pub fn mark_resource_unknown_decoder() -> decode.Decoder(MarkResourceUnknown) {
   decode.success(MarkResourceUnknown(phase:))
 }
 
+pub type FenceResourcePreparation {
+  FenceResourcePreparation(phase: Int)
+}
+
+pub fn fence_resource_preparation(id id: BitArray) {
+  let sql =
+    "UPDATE resource_call SET phase=3 WHERE id=? AND phase IN (0,1,2) RETURNING phase"
+  #(sql, [dev.ParamBitArray(id)], fence_resource_preparation_decoder())
+}
+
+pub fn fence_resource_preparation_decoder() -> decode.Decoder(
+  FenceResourcePreparation,
+) {
+  use phase <- decode.field(0, decode.int)
+  decode.success(FenceResourcePreparation(phase:))
+}
+
 pub type ReleaseResource {
   ReleaseResource(phase: Int)
 }
