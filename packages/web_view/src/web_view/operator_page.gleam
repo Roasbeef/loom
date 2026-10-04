@@ -43,6 +43,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import lustre
 import lustre/attribute
 import lustre/effect.{type Effect}
@@ -447,7 +448,11 @@ fn card(
         html.pre([attribute.class("approval-action")], [html.text(shown.action)]),
         html.ul(
           [attribute.class("approval-authority")],
-          list.map(shown.authority, fn(line) { html.li([], [html.text(line)]) }),
+          list.map(shown.authority, fn(line) {
+            // The terminal's lines carry their own dash, and a list item
+            // draws its own marker.
+            html.li([], [html.text(string.drop_start(line, 2))])
+          }),
         ),
         html.div(
           [attribute.class("approval-actions"), attribute.class("arming")],

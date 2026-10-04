@@ -3612,10 +3612,14 @@ interface.
   nothing, as the approvals are, so the composer stays the last child and
   the path of its form does not depend on a goal.
 - **Reads of the decision ledger.** A decided approval is drawn in the lane
-  as a who line (`Owner denied bash`). It is read from the escalation cells
-  every metadata cut already carries (`session_view/decisions`), so it adds
-  no event, frame or field. A request still waiting has no line, and the
-  approval card is unchanged in where it sits.
+  as a who line (`Owner denied bash`). It is read from the approval ledger
+  the page already keeps: the host looks a request up when it leaves the
+  pending cut, and the ledger holds the author, the verdict and the tool
+  (`approval.decisions`, sixteen at most). The strand the request was raised
+  on comes from the pending cell, which the capture held while the request
+  waited (`session_view/decisions`). It adds no event, frame or field. A
+  request still waiting has no line, and the approval card is unchanged in
+  where it sits.
 
 ### What was considered
 
@@ -3629,8 +3633,8 @@ interface.
   hand on the button without opening a tab; the line is one row, and only
   while it is running or held.
 - **Add a transcript record for a decision.** The register already keeps the
-  decided escalation, its author and the strand it was raised on. A second
-  channel would duplicate it.
+  decided escalation, its author and the strand it was raised on, and the
+  ledger carries the first two. A second channel would duplicate it.
 
 ### Cost
 
@@ -3640,9 +3644,13 @@ interface.
   scrolling the row.
 - A decision's line is placed by the register sequence that committed it,
   which orders it among the transcript's records but gives no clock time, so
-  the line says who and what and not when. The line is read from the cells,
-  so a cut that no longer holds a resolved escalation's cell holds no line
-  for it.
+  the line says who and what and not when.
+- A page that opens after a request was decided never saw it pending, so it
+  has no lookup to make and shows no line for it; the ledger is the page's
+  own and is bounded to sixteen. The register keeps every decided escalation
+  durably, but a metadata cut carries only the pending ones, so a line that
+  survives a reload needs the daemon to list decided escalations. That is a
+  wire change and is not made here.
 
 ### Verification
 
@@ -3654,7 +3662,7 @@ drawing no control. `page_events_test` pins the section's handler at
 `component.session_controls_path` and none on the observer's page;
 `invite_test` still pins the invitation's two buttons at `invite_path`.
 `ui_socket_test` pins the admissions. `operator_page_test` shows the decision
-line drawn from a rejected and an approved escalation cell for the strand the
+line drawn from a rejected and an approved ledger entry for the strand the
 page follows and not for another's. No browser was in the loop for the tests;
 the drive screenshots under `docs/design-notes/web-design/drive-b4/` show the
 rendered dock and Session tab.

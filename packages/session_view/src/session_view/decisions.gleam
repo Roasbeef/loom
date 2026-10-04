@@ -2,13 +2,21 @@
 //// draw: `Owner denied bash`, `Owner allowed bash`.
 ////
 //// An approval that was answered leaves nothing in the transcript. The tool
-//// call fails or runs, and a reader who opens the session later cannot tell
-//// an operator's denial from a jail's refusal. The record that can say so is
-//// the escalation the harness kept in its register: it holds the decision's
-//// status and the author who made it (`approval.Review.origin`), the tool,
-//// and the strand and call it was raised for. It is in every metadata cut,
-//// so reading it adds no wire data and no second channel; this module only
-//// reads what the capture already carries.
+//// call fails or runs, and a reader cannot tell an operator's denial from a
+//// jail's refusal. The record that can say so is the escalation the harness
+//// keeps in its register: its status, the author who decided
+//// (`approval.Review.origin`), the tool, and the strand it was raised on.
+//// A metadata cut carries only the escalations still pending. Once one is
+//// decided, the host looks it up and keeps the answer in the approval ledger
+//// (`approval.decisions`), sixteen at most, and this module reads that
+//// ledger, which is data the page already receives: no wire field is added.
+//// The strand comes from the pending cell, which the capture held while the
+//// request waited (`strands`); the host remembers it until the decision.
+////
+//// A page that opens after a request was decided never saw it pending and
+//// has no way to look it up, so its timeline shows no line for it. Closing
+//// that gap takes the daemon listing decided escalations, which is a wire
+//// change and not made here.
 ////
 //// A decision's sequence is the register write that committed it. Storage
 //// numbers register writes and transcript entries from one counter within a
@@ -60,43 +68,47 @@ pub type Decision {
   )
 }
 
-/// The decisions the cells record for `strand`, oldest first.
+/// The decisions the approval ledger holds for `strand`, oldest first.
+///
+/// `raised` says which strand each request was raised on, by the request's
+/// identity (`strands`), because the ledger's summary of a decided request
+/// keeps no scope. A request that is still pending is no decision, and one
+/// whose strand is not known is left out rather than guessed at.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert decisions.from_cells([], "main") == []
+/// assert decisions.from_ledger([], [], "main") == []
 /// ```
-pub fn from_cells(
-  cells: List(snapshot_view.Cell),
+pub fn from_ledger(
+  ledger: List(approval.Review),
+  raised: List(#(String, String)),
   strand: String,
 ) -> List(Decision) {
-  cells
-  |> list.filter(fn(cell) {
-    cell.namespace == register.FactCustom
-    && string.starts_with(cell.key, "escalation/")
-  })
-  |> list.filter_map(fn(cell) { decision(cell, strand) })
+  ledger
+  |> list.filter_map(fn(review) { decision(review, raised, strand) })
   |> list.sort(fn(a, b) { int.compare(a.seq, b.seq) })
 }
 
-// One cell as a decision for `strand`, or nothing: a record that does not
-// decode, one still pending, and one raised on another strand are skipped.
-fn decision(cell: snapshot_view.Cell, strand: String) -> Result(Decision, Nil) {
-  use review <- result.try(approval.decode(cell) |> result.replace_error(Nil))
+// One ledger entry as a decision for `strand`, or nothing.
+fn decision(
+  review: approval.Review,
+  raised: List(#(String, String)),
+  strand: String,
+) -> Result(Decision, Nil) {
   use verdict <- result.try(case review.status {
     approval.Pending -> Error(Nil)
     approval.Approved | approval.Consumed -> Ok(Allowed)
     approval.Rejected -> Ok(Denied)
   })
-  use owner <- result.try(raised_on(cell.value))
+  use owner <- result.try(list.key_find(raised, review.id))
   use <- bool.guard(owner != strand, Error(Nil))
   let who = case review.origin {
     Some(author) -> origin.display_label(author)
     None -> "Someone"
   }
   Ok(Decision(
-    seq: cell.seq,
+    seq: review.seq,
     strand: owner,
     who:,
     verdict:,
@@ -122,9 +134,9 @@ fn raised_on(value: json.JsonValue) -> Result(String, Nil) {
 }
 
 /// The strand each escalation was raised on, by the escalation's identity,
-/// for every record the cells hold, pending or decided. A card for a request
-/// that waits names the strand that is waiting, which the ledger's own
-/// summary does not keep.
+/// for every record the cells hold. A card for a request that waits names the
+/// strand that is waiting, and the host keeps the pair for the decision's
+/// line, since the ledger's summary of a decided request keeps no scope.
 ///
 /// ## Examples
 ///

@@ -319,8 +319,10 @@ page keys and nonces, and the relay into the session's gateway.
   with the strand from the escalation record's scope
   (`component.raised_on`) and the arming delay drawn as the `Arming…` note.
 - A decided approval is a `turns.Decided` piece: `session_view/decisions`
-  reads the escalation cells of the capture, and `turns.with_decisions`
-  places each by the register sequence that committed it. The lane draws
+  reads the approval ledger (`shared.approvals`) and the strands the
+  captures saw pending requests raised on (`View.raised`), and
+  `turns.with_decisions`, called by `component.pieces`, places each by the
+  register sequence that committed it. The lane draws
   `p.decided` with the author, the verb and the tool as text nodes.
 - `lane.Replies(fn(key) -> message)` or `NoReplies`, the last argument of
   `lane.view`. A peer card draws a `Reply to

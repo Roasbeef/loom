@@ -8,6 +8,7 @@
 //// through Lustre's simulator, which dispatches only to handlers the
 //// rendered tree carries, as the browser runtime does.
 
+import core/message
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
@@ -19,6 +20,7 @@ import lustre/dev/simulate
 import lustre/effect
 import lustre/element
 import page_fixture
+import session_view/approval
 import session_view/connection_event
 import session_view/operator
 import session_view/session_channel
@@ -829,25 +831,43 @@ pub fn an_approval_card_is_worded_for_a_reader_test() {
   assert !string.contains(html, "Waits for approval")
 }
 
-// A decided approval leaves a line in the lane, from the escalation record
-// the capture already carries: who answered, what, and for which tool. The
-// strand that raised the request owns the line.
+// A decided approval leaves a line in the lane: who answered, what, and for
+// which tool. The page saw each request pending, which told it the strand that
+// raised it, and the host's lookup of the decision put the author in the
+// ledger. The line belongs to the strand that raised the request.
 pub fn a_denied_approval_leaves_a_who_line_in_the_lane_test() {
   let #(model, _) = page("operator", [])
   let model =
     component.apply(model, [
       lane_fixture.captured_cells(10, None, [], [
-        page_fixture.decided("esc-9", 5, "bash", "rejected", "Owner", "main"),
-        page_fixture.decided(
-          "esc-10",
-          8,
-          "fs_write",
-          "approved",
-          "Owner",
-          "main",
-        ),
-        page_fixture.decided("esc-11", 9, "bash", "rejected", "Owner", "sub:x"),
+        page_fixture.pending_cell("esc-9", 12, "bash", "main"),
+        page_fixture.pending_cell("esc-10", 14, "fs_write", "main"),
+        page_fixture.pending_cell("esc-11", 15, "bash", "sub:x"),
       ]),
+    ])
+  let owner = Some(message.Origin("principal-owner", "Owner"))
+  let resolved = fn(id, seq, status, tool) {
+    approval.Review(
+      id,
+      seq,
+      status,
+      tool,
+      "printf hi",
+      owner,
+      approval.Unavailable("this decision is already resolved"),
+    )
+  }
+  let model =
+    component.apply(model, [
+      lane_fixture.captured_cells(10, None, [], []),
+      session_channel.LookedUp(
+        [
+          resolved("esc-9", 5, approval.Rejected, "bash"),
+          resolved("esc-10", 8, approval.Approved, "fs_write"),
+          resolved("esc-11", 9, approval.Rejected, "bash"),
+        ],
+        [],
+      ),
     ])
   let html = element.to_string(operator_page.view(model))
   assert in_order(html, [

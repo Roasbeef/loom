@@ -533,7 +533,9 @@ fn readable_preview(tool: String, preview: String) -> String {
         )
       }
       "bash" | "shell" -> {
-        use _ <- result.try(only_keys(fields, ["command", "timeout_ms"]))
+        use _ <- result.try(
+          only_keys(fields, ["command", "timeout_ms", "permissions"]),
+        )
         use command <- result.try(text(fields, "command"))
         use _ <- result.try(optional_integer(fields, "timeout_ms"))
         Ok(

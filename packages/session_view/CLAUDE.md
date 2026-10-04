@@ -213,9 +213,9 @@ for a host with no surfaces.
   next turn`, so no wire name is a notice. `reviewer_status.lines` words the
   advisor row `watching <strand>` and cuts a sub-agent's brief to its first
   sentence; `without_idle_advisor` is the page's filter.
-- `decisions` (`from_cells`, `strands`, `words`): the approval decisions the
-  escalation cells of a capture record, with the author, the verdict and the
-  strand the request was raised on. `turns.with_decisions` places each as a
+- `decisions` (`from_ledger`, `strands`, `words`): the approval decisions the
+  approval ledger holds, with the author, the verdict and the strand the
+  request was raised on (from the pending cell the capture held). `turns.with_decisions` places each as a
   `turns.Decided` piece by the register sequence that committed it, which
   storage numbers from the same counter as transcript entries.
 - `approval.wants(tool)`: the fixed words for what a request asks to do

@@ -650,6 +650,12 @@ type View(socket) {
     /// starts afresh for it, while a refresh that leaves the words alone does
     /// not restart the fade of the ones on screen.
     noticed: Int,
+    /// The strand each approval request was raised on, by the request's
+    /// identity, as the captures saw it while the request was pending. The
+    /// approval ledger's summary of a decided request keeps no scope, so the
+    /// decision's line (`decisions.from_ledger`) reads the strand from here.
+    /// It holds the newest sixty-four.
+    raised: List(#(String, String)),
     /// How many of the controls' forms have sent a command. The forms are
     /// keyed by it, so a form that sent is replaced by a closed, empty one
     /// while a refused one keeps what the operator typed.
@@ -792,6 +798,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       returned: [],
       consumed: 0,
       noticed: 0,
+      raised: [],
       sent_forms: 0,
       timer: None,
       armed: None,
@@ -1420,9 +1427,6 @@ fn relaned(model: Model(socket)) -> Model(socket) {
       let #(blocks, fit) =
         held(lead, opened, branch.unloaded, limit(model.view.paging))
       let latest = turns.latest(view, shared.agent_rows, shared.active_strand)
-
-      // The register's decided approvals are drawn as lines among the
-      // pieces, because no transcript record says who answered a request.
       let pieces =
         turns.pieces(
           blocks,
@@ -1430,10 +1434,6 @@ fn relaned(model: Model(socket)) -> Model(socket) {
           latest,
           turns.Expand(expansion.capped),
         )
-        |> turns.with_decisions(decisions.from_cells(
-          view.cells,
-          shared.active_strand,
-        ))
       let #(scrollback, earlier) = case fit, branch.unloaded {
         Whole, None -> #(shared.scrollback, Reached)
         Whole, Some(_) ->
@@ -1457,6 +1457,7 @@ fn relaned(model: Model(socket)) -> Model(socket) {
           ..model.view,
           blocks:,
           pieces:,
+          raised: remembered(model.view.raised, view.cells),
           earlier:,
           paging:,
           changes: changes_view.fold(branch.records),
@@ -2578,6 +2579,11 @@ pub fn lines(model: Model(socket)) -> List(Line) {
 /// ```
 pub fn pieces(model: Model(socket)) -> List(turns.Piece) {
   model.view.pieces
+  |> turns.with_decisions(decisions.from_ledger(
+    model.shared.approvals,
+    model.view.raised,
+    model.shared.active_strand,
+  ))
 }
 
 /// The live region's rows: the reasoning the provider is writing, with how
@@ -2798,8 +2804,8 @@ pub fn renew_notice(model: Model(socket)) -> Model(socket) {
 }
 
 /// The strand each approval request was raised on, by the request's identity,
-/// from the escalation records of the last capture. A request the capture
-/// does not name a strand for is absent.
+/// as the captures saw it while the request was pending. A request no capture
+/// named a strand for is absent.
 ///
 /// ## Examples
 ///
@@ -2807,10 +2813,18 @@ pub fn renew_notice(model: Model(socket)) -> Model(socket) {
 /// // component.raised_on(model)
 /// ```
 pub fn raised_on(model: Model(socket)) -> List(#(String, String)) {
-  case model.shared.captured {
-    Some(#(_, view)) -> decisions.strands(view.cells)
-    None -> []
-  }
+  model.view.raised
+}
+
+// The strands requests were raised on: the capture's pending cells first,
+// then what was remembered, one entry for each request, the newest sixty-four.
+fn remembered(
+  known: List(#(String, String)),
+  cells: List(snapshot_view.Cell),
+) -> List(#(String, String)) {
+  list.append(decisions.strands(cells), known)
+  |> list.unique
+  |> list.take(64)
 }
 
 /// How many drafts have left the composer, which keys the composer's
@@ -2942,7 +2956,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
     [
       crumb(model),
       lane.view(
-        model.view.pieces,
+        pieces(model),
         live(model),
         top(model),
         OlderRequested,

@@ -587,21 +587,18 @@ pub fn commands(frames: List(String)) -> List(String) {
   })
 }
 
-/// An escalation record that was decided, as a capture's metadata cell: its
-/// status (`approved`, `rejected` or `consumed`), the author the decision
-/// stored, and the strand whose call raised it, as the harness stores one.
+/// A pending escalation as a capture's metadata cell, naming the strand
+/// whose call raised it, as the harness stores one.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// page_fixture.decided("esc-9", 12, "bash", "rejected", "Owner", "main")
+/// page_fixture.pending_cell("esc-9", 12, "bash", "main")
 /// ```
-pub fn decided(
+pub fn pending_cell(
   id: String,
   seq: Int,
   tool: String,
-  status: String,
-  who: String,
   strand: String,
 ) -> snapshot_view.Cell {
   snapshot_view.Cell(
@@ -610,16 +607,9 @@ pub fn decided(
     seq,
     json.Object([
       #("id", json.String(id)),
-      #("status", json.String(status)),
+      #("status", json.String("pending")),
       #("tool", json.String(tool)),
       #("preview", json.String("printf hi")),
-      #(
-        "origin",
-        json.Object([
-          #("principal", json.String("principal-" <> who)),
-          #("name", json.String(who)),
-        ]),
-      ),
       #("scope", json.Object([#("strand", json.String(strand))])),
     ]),
   )
