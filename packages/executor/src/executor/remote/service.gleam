@@ -27,7 +27,10 @@
 //// Exit alone stays NativeUnconfirmed; close permanently fences the epoch and
 //// only a witnessed scoped pool drain confirms native retirement.
 ////
-//// The command door retains either the original Claim or historical Input data.
+//// The command door retains either the original Claim with its original Compile
+//// elapsed deadline or historical Input data. Native authorization clamps to that
+//// deadline before Authority is retained, so a later owner Unix-clock rollback
+//// cannot enlarge it. Association and helper startup consume the same cap.
 //// Full wrapper/context and concrete endpoint equality precede native writes.
 //// After Request, Authority and Admit, the separate resource actor commits live
 //// association before any AuthorizeLaunch. Cancellation which wins that writer
@@ -45,6 +48,7 @@
 //// `command_body` fences historical work and `command_association` checks controls.
 //// `associate_command` orders its permit; `ticket_route` binds both nonce lanes.
 //// `validate_command` checks the complete local endpoint and original identity.
+//// `command_deadline` clamps live command authority to original elapsed custody.
 ////
 //// 1. `exchange` admits one bounded service ask outside the network writer.
 //// 2. `apply_envelope` fences peer, role, scope and generation before mutation.
@@ -74,6 +78,7 @@ import gleam/bit_array
 import gleam/crypto
 import gleam/dict.{type Dict}
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor as otp_actor
@@ -148,7 +153,12 @@ type CommandPermission {
   Historical
 
   /// Original live preparation custody is consumed through resource association.
-  Live(claim: resource_journal.Claim)
+  Live(
+    /// Original preparation custody; historical data cannot recreate it.
+    claim: resource_journal.Claim,
+    /// Original executor-local Compile deadline in Config.now's monotonic era.
+    compile_deadline_ms: Int,
+  )
 }
 
 // Routing stays local and closed; the ticket retains identity without the Claim.
@@ -413,18 +423,28 @@ pub fn send_exchange(
 /// Retains first-Submit custody from the original live preparation Claim.
 /// Full original identity and concrete native endpoint are checked before any ask.
 /// The physical service still owns source admission and at-most-once Claim use.
+/// It copies the deadline captured by original live admission in Config.now's era;
+/// neither the Claim, service input nor incoming remaining budget can derive it.
+/// Zero is reserved for session authority and refuses. Negative monotonic-era
+/// deadlines are valid; authorization and launch compare their elapsed remaining.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// service.live_command_context(remote, claim, ref) // -> Ok(context).
+/// service.live_command_context(remote, claim, ref, original_compile_deadline_ms)
+/// // -> Ok(context).
 /// ```
 @internal
 pub fn live_command_context(
   service: Service,
   claim: resource_journal.Claim,
   ref: command.CommandRef,
+  compile_deadline_ms: Int,
 ) -> Result(CommandContext, Error) {
+  use Nil <- result.try(case compile_deadline_ms {
+    0 -> Error(Invalid)
+    _ -> Ok(Nil)
+  })
   let original = resource_journal.original(claim)
   let resources = resource_journal.claim_journal(claim)
   use Nil <- result.try(validate_command(
@@ -433,7 +453,7 @@ pub fn live_command_context(
     original,
     ref,
   ))
-  Ok(CommandContext(resources, original, ref, Live(claim)))
+  Ok(CommandContext(resources, original, ref, Live(claim, compile_deadline_ms)))
 }
 
 /// Reads exact bounded original data without reconstructing preparation custody.
@@ -717,7 +737,7 @@ fn command_body(route: Route, body: wire.Body) -> Result(Nil, Error) {
     | Command(context), wire.Submit(_, _, _, _, _)
     -> {
       use Nil <- result.try(case context.permission {
-        Live(_) -> Ok(Nil)
+        Live(_, _) -> Ok(Nil)
         Historical -> Error(Uncertain)
       })
       case body {
@@ -1001,7 +1021,7 @@ fn associate_command(
     Native -> Ok(Nil)
     Command(context) -> {
       use claim <- result.try(case context.permission {
-        Live(claim) -> Ok(claim)
+        Live(claim, _) -> Ok(claim)
         Historical -> Error(Uncertain)
       })
       use permit <- result.try(
@@ -1062,7 +1082,32 @@ fn authorize(
         && budget < ceiling
         && now + budget != 0
       {
-        True -> Ok(now + budget)
+        True -> {
+          // Native duration alone can reflect a later owner wall-clock rollback.
+          // Only live command admission carries the original elapsed Compile cap.
+          command_deadline(route, now + budget, now)
+        }
+        False -> Error(Expired)
+      }
+    }
+  }
+}
+
+fn command_deadline(
+  route: Route,
+  native_deadline_ms: Int,
+  now_ms: Int,
+) -> Result(Int, Error) {
+  case route {
+    Native -> Ok(native_deadline_ms)
+    Command(context) -> {
+      use cap <- result.try(case context.permission {
+        Live(_, cap) -> Ok(cap)
+        Historical -> Error(Uncertain)
+      })
+      let deadline = int.min(native_deadline_ms, cap)
+      case deadline > now_ms {
+        True -> Ok(deadline)
         False -> Error(Expired)
       }
     }
