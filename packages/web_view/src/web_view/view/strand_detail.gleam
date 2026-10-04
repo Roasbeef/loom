@@ -64,7 +64,7 @@ pub fn view(chip: Chip) -> Element(message) {
       [html.text("← Strands")],
     ),
     html.div([attribute.class("detail-head")], [
-      strip.ring(chip.cache, strip.Detail),
+      strip.ring(chip, strip.Detail),
       html.div([attribute.class("detail-title")], [
         html.span([attribute.class("detail-name")], [html.text(line.name)]),
         strip.status(line),
