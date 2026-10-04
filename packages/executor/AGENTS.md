@@ -28,6 +28,41 @@ A standalone executor has no caller until the distributed-runtime epic
 transport is a `Dispatcher` whose `start` forwards a `Dispatch` to a peer.
 No second type names it.
 
+## Closed native command routing
+
+`remote/wire.CommandEnvelope` carries exactly one full `core/command.CommandRef`
+and the unchanged native Envelope as a MessagePack value. Its canonical shape is
+`[1, "loom.remote.command/1", canonical_ref_json, native_value]`. Native schema and
+body tags are unchanged; the aggregate still has a 256-KiB frame, 2048 nodes and
+depth 16, while Prepared has its existing separate 128-KiB encoding bound.
+`command_envelope` checks native role, full scope, operation and Submit step;
+Hello, CloseScope and ScopeRetirement cannot be wrapped. `command_ref` and
+`native_envelope` expose the validated values, and `encode_command`/
+`decode_command` enforce bounded canonical framing. These checks establish shape
+correspondence, not durable ownership of the native UUID or Prepared digest.
+Authenticated server assembly must prove the complete retained association before
+forwarding every key-bearing control or returning another native request's bytes.
+
+`remote/connection.exchange_command(config, ref, body)` shares pinned TLS, ordinary
+Hello, cumulative exchange budget and socket closure with `exchange`. Command
+replies must carry the exact full ref and generation. Plain replies and changed
+refs are uncertain. The current server reader deliberately accepts only native
+requests; this owner transport component does not enable command admission.
+
+`remote/dispatcher.CommandReserved(key:, prepared:, ref:)` retains the complete
+service command route beside the original native UUID and immutable Prepared.
+The existing `Reserved(key:, prepared:)` callers keep the native lane. Worker and
+parked guarantor retain the same closed route through Challenge, Submit, Query,
+Stdin, output, detached Cancel and DurableReceipt. The command reservation's
+native ChildOrigin must equal the original Dispatch context, and physical
+correspondence is validated before the guarantor permits the first send. No
+retry creates another identity, clearance, grant or deadline.
+
+`command_route_test` uses fixed transport-only peers over the real pinned TLS
+primitive to check all routed bodies and both dispatcher paths. Those peers do
+not admit a service or launch native work. Existing native fixtures exercise the
+production native server separately; production Compile assembly remains open.
+
 ## Closed Compile completion
 
 `remote/compile_completion.CompileCompletion` retains the original whole Compile
