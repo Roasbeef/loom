@@ -59,6 +59,7 @@ import client/internal/instance_host as host
 import client/internal/instance_owner as custody
 import core/glance
 import core/ids
+import core/workspace
 import filepath
 import gleam/bit_array
 import gleam/bool
@@ -146,7 +147,7 @@ pub type Creation {
     /// Stable across retries, including retries after daemon restart.
     request_key: String,
     /// Canonical workspace selected by the owner, never a collaborator's path.
-    workspace: String,
+    workspace: workspace.Binding,
     /// Display label, not a database filename.
     name: String,
     /// Validated configuration reference with no credential values.
@@ -590,12 +591,13 @@ type Message(instance) {
     String,
     Subject(Result(catalogue.Registration, AdminError)),
   )
-  WorkspaceDefault(String, Subject(Result(View, Error)))
-  SetDefault(String, String, Subject(Result(View, Error)))
+  WorkspaceDefault(workspace.WorkspaceKey, Subject(Result(View, Error)))
+  SetDefault(workspace.WorkspaceKey, String, Subject(Result(View, Error)))
   Open(String, Subject(Result(Status, Error)))
   StopSession(String, Subject(Result(Status, Error)))
   StopIncarnation(String, String, Subject(Result(Status, Error)))
   Get(String, Subject(Result(View, Error)))
+  CreationRegistration(String, Subject(Result(catalogue.Registration, Error)))
   Page(String, Subject(Result(#(Int, List(View)), Error)))
   Resolve(String, Subject(Result(instance, Error)))
   ResolveIncarnation(String, String, Subject(Result(instance, Error)))
@@ -1508,6 +1510,27 @@ pub fn create_scoped(
   |> result.unwrap(Error(Unavailable))
 }
 
+/// Reads original creation metadata before administrative epoch resolution.
+/// Display-name overrides do not change immutable creation-key comparison.
+/// Missing is Catalogue(Missing); any other failure forbids fresh allocation.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.creation_registration(registry, "request-key")
+/// ```
+@internal
+pub fn creation_registration(
+  manager: Manager(instance),
+  request_key: String,
+) -> Result(catalogue.Registration, Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: CreationRegistration(
+    request_key,
+    _,
+  ))
+  |> result.unwrap(Error(Unavailable))
+}
+
 /// Reads domain metadata without admitting a runtime or opening derived stores.
 ///
 /// ## Examples
@@ -1603,7 +1626,7 @@ pub fn delete_session(
 @internal
 pub fn workspace_default(
   manager: Manager(instance),
-  workspace: String,
+  workspace: workspace.WorkspaceKey,
 ) -> Result(View, Error) {
   call.try_call(manager.commands, waiting: 5000, sending: WorkspaceDefault(
     workspace,
@@ -1622,7 +1645,7 @@ pub fn workspace_default(
 @internal
 pub fn set_default(
   manager: Manager(instance),
-  workspace: String,
+  workspace: workspace.WorkspaceKey,
   id: String,
 ) -> Result(View, Error) {
   call.try_call(manager.commands, waiting: 5000, sending: SetDefault(
@@ -2325,6 +2348,14 @@ fn handle(
       process.send(reply, outcome)
       sm.keep(book)
     }
+    CreationRegistration(key, reply) -> {
+      process.send(
+        reply,
+        catalogue.by_request_key(book.catalogue, key)
+          |> result.map_error(Catalogue),
+      )
+      sm.keep(book)
+    }
     Get(id, reply) -> {
       let view =
         catalogue.get(book.catalogue, id)
@@ -2856,7 +2887,12 @@ fn select_creation_domain(
     "" -> configuration
     explicit -> explicit
   }
-  case domain.get(store, domain.key(scope, record.workspace, record.id)) {
+  case
+    domain.get(
+      store,
+      domain.key(scope, workspace.binding_key(record.workspace), record.id),
+    )
+  {
     Ok(existing) -> Ok(existing)
     Error(catalogue.Missing) ->
       Ok(domain_record(record, scope, configuration, state_root))
@@ -2874,6 +2910,8 @@ fn domain_record(
     domain.WorkspacePrivate -> {
       let hash =
         record.workspace
+        |> workspace.binding_key
+        |> workspace.key_string
         |> bit_array.from_string
         |> bootstrap.sha256
         |> bit_array.base16_encode
@@ -2883,9 +2921,9 @@ fn domain_record(
     domain.SessionOnly -> state_root <> "/domains/sessions/" <> record.id
   }
   domain.Domain(
-    domain.key(scope, record.workspace, record.id),
+    domain.key(scope, workspace.binding_key(record.workspace), record.id),
     scope,
-    record.workspace,
+    workspace.binding_key(record.workspace),
     configuration,
     directory <> "/loom-memory.db",
     directory <> "/loom-search.db",

@@ -682,10 +682,10 @@ fn invocation(number: Int) -> BitArray {
 }
 
 fn workspace_host(root: String) -> workspace_local.Host {
-  workspace_local.new(
+  local_host(
     semantic_scope(),
     tool.Ctx(
-      workspace: root,
+      workspace: tool.LocalWorkspace(root, fs.real_filesystem()),
       strand: "main",
       op_id: operation(),
       step_id: "ingress",
@@ -696,8 +696,7 @@ fn workspace_host(root: String) -> workspace_local.Host {
       demand: exec.FullEnforcement,
       env: [],
       clock: clock.fixed(0),
-      filesystem: fs.real_filesystem(),
-      blob_root: root <> "/.blobs",
+      owner_blobs: tool.OwnerBlobs(root <> "/.blobs", fs.real_filesystem()),
       clear_call: fn(_, _) { Error(broker.BrokerUnavailable) },
       raise_refusal: tool.no_raise(),
       observe_output: tool.ignore_output(),
@@ -777,4 +776,15 @@ fn no_credits(tree: process.Pid, within: Int) {
       }
     })
     == poll.Answered(Nil)
+}
+
+// A registered context cannot construct the executor-local host.
+fn local_host(
+  scope: cw.Scope,
+  ctx: tool.Ctx,
+  observer: fn(String) -> option.Option(String),
+) -> workspace_local.Host {
+  let assert Ok(host) = workspace_local.new(scope, ctx, observer)
+    as "fixture must have local authority"
+  host
 }

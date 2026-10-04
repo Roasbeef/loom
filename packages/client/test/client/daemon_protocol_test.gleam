@@ -6,6 +6,7 @@ import client/peer_mail
 import core/clock
 import core/ids
 import core/json
+import core/workspace
 import gleam/bit_array
 import gleam/int
 import gleam/list
@@ -47,16 +48,19 @@ pub fn creation_configuration_preserves_defaults_and_rejects_invalid_fields_test
         ..fields
       ]),
     )
-    == Ok(protocol.Request(
-      1,
-      protocol.CreateSession(
-        "key",
-        "/workspace",
-        "name",
-        "",
-        domain.WorkspacePrivate,
+    == Ok(
+      protocol.Request(
+        1,
+        protocol.CreateSession(
+          "key",
+          workspace.LocalDirectory("/workspace"),
+          "name",
+          "",
+          domain.WorkspacePrivate,
+        ),
+        [],
       ),
-    ))
+    )
   let assert Error(_) = protocol.decode(envelope(1, "sessions.create", fields))
     as "configuration remains a required field even when empty"
   list.each(
@@ -156,11 +160,15 @@ pub fn every_control_command_has_one_typed_decode_test() {
       [session, epoch, #("transcript", json.String("share_existing"))],
       protocol.IsolateSession(id, "epoch"),
     ),
-    #("sessions.default", [workspace], protocol.WorkspaceDefault("/workspace")),
+    #(
+      "sessions.default",
+      [workspace],
+      protocol.WorkspaceDefault(workspace.LocalKey("/workspace")),
+    ),
     #(
       "sessions.set_default",
       [workspace, session],
-      protocol.SetDefault("/workspace", id),
+      protocol.SetDefault(workspace.LocalKey("/workspace"), id),
     ),
     #(
       "sessions.create",
@@ -172,7 +180,7 @@ pub fn every_control_command_has_one_typed_decode_test() {
       ],
       protocol.CreateSession(
         "key",
-        "/workspace",
+        workspace.LocalDirectory("/workspace"),
         "name",
         "/config",
         domain.WorkspacePrivate,
@@ -189,7 +197,7 @@ pub fn every_control_command_has_one_typed_decode_test() {
   ]
   list.each(cases, fn(example) {
     assert protocol.decode(envelope(7, example.0, example.1))
-      == Ok(protocol.Request(7, example.2))
+      == Ok(protocol.Request(7, example.2, []))
   })
 }
 
@@ -232,7 +240,7 @@ pub fn generated_request_ids_preserve_positive_correlation_only_test() {
     case id > 0 {
       True -> {
         assert protocol.decode(envelope(id, "status", []))
-          == Ok(protocol.Request(id, protocol.Status))
+          == Ok(protocol.Request(id, protocol.Status, []))
       }
       False -> {
         let assert Error(protocol.Fault(reply_to: None, ..)) =
@@ -298,17 +306,17 @@ pub fn generated_revision_types_cannot_silently_disable_fencing_test() {
           #("revision", json.Int(revision)),
         ]),
       )
-      == Ok(protocol.Request(1, protocol.ListSessions("", Some(revision))))
+      == Ok(protocol.Request(1, protocol.ListSessions("", Some(revision)), []))
   })
 }
 
 pub fn principal_listings_decode_optional_cursors_and_refuse_malformed_ones_test() {
   assert protocol.decode(envelope(1, "principals.list", []))
-    == Ok(protocol.Request(1, protocol.ListPrincipals("")))
+    == Ok(protocol.Request(1, protocol.ListPrincipals(""), []))
   assert protocol.decode(
       envelope(2, "principals.list", [#("after", json.String("alice"))]),
     )
-    == Ok(protocol.Request(2, protocol.ListPrincipals("alice")))
+    == Ok(protocol.Request(2, protocol.ListPrincipals("alice"), []))
   list.each(
     [
       json.Null,
@@ -330,14 +338,16 @@ pub fn principal_listings_decode_optional_cursors_and_refuse_malformed_ones_test
         #("principal_id", json.String("alice")),
       ]),
     )
-    == Ok(protocol.Request(4, protocol.PrincipalMemberships("alice", "")))
+    == Ok(protocol.Request(4, protocol.PrincipalMemberships("alice", ""), []))
   assert protocol.decode(
       envelope(5, "principals.memberships", [
         #("principal_id", json.String("alice")),
         #("after", json.String(session)),
       ]),
     )
-    == Ok(protocol.Request(5, protocol.PrincipalMemberships("alice", session)))
+    == Ok(
+      protocol.Request(5, protocol.PrincipalMemberships("alice", session), []),
+    )
 
   // The principal is required and bounded, and the cursor is a canonical
   // session ID, as it is for `sessions.list`.
@@ -392,17 +402,20 @@ pub fn peer_controls_require_explicit_wake_and_canonical_sessions_test() {
   assert protocol.decode(
       envelope(1, "peers.link", [#("wake", json.String("busy_only")), ..fields]),
     )
-    == Ok(protocol.Request(
-      1,
-      protocol.LinkPeers(
-        session_id(),
-        "main",
-        session_id(),
-        "reviewer",
-        peer_mail.BusyOnly,
-        "epoch",
+    == Ok(
+      protocol.Request(
+        1,
+        protocol.LinkPeers(
+          session_id(),
+          "main",
+          session_id(),
+          "reviewer",
+          peer_mail.BusyOnly,
+          "epoch",
+        ),
+        [],
       ),
-    ))
+    )
   assert result.is_error(protocol.decode(envelope(1, "peers.link", fields)))
   assert result.is_error(
     protocol.decode(
@@ -410,16 +423,19 @@ pub fn peer_controls_require_explicit_wake_and_canonical_sessions_test() {
     ),
   )
   assert protocol.decode(envelope(2, "peers.unlink", fields))
-    == Ok(protocol.Request(
-      2,
-      protocol.UnlinkPeers(
-        session_id(),
-        "main",
-        session_id(),
-        "reviewer",
-        "epoch",
+    == Ok(
+      protocol.Request(
+        2,
+        protocol.UnlinkPeers(
+          session_id(),
+          "main",
+          session_id(),
+          "reviewer",
+          "epoch",
+        ),
+        [],
       ),
-    ))
+    )
 }
 
 pub fn peer_send_decodes_bounded_identity_and_payload_test() {
@@ -440,18 +456,21 @@ pub fn peer_send_decodes_bounded_identity_and_payload_test() {
       "peers.send",
       list.append(coordinates, payload),
     ))
-    == Ok(protocol.Request(
-      7,
-      protocol.SendPeer(
-        id,
-        "main",
-        id,
-        "reviewer",
-        "review-1",
-        "finding",
-        "epoch",
+    == Ok(
+      protocol.Request(
+        7,
+        protocol.SendPeer(
+          id,
+          "main",
+          id,
+          "reviewer",
+          "review-1",
+          "finding",
+          "epoch",
+        ),
+        [],
       ),
-    ))
+    )
   list.each([#("message_id", 129), #("text", 32_769)], fn(pair) {
     list.each(["", string.repeat("x", pair.1)], fn(value) {
       let fields =
@@ -484,7 +503,7 @@ pub fn principal_rename_decodes_a_name_and_an_optional_principal_test() {
         #("epoch", json.String("e1")),
       ]),
     )
-    == Ok(protocol.Request(1, protocol.RenamePrincipal(None, "Mira", "e1")))
+    == Ok(protocol.Request(1, protocol.RenamePrincipal(None, "Mira", "e1"), []))
   assert protocol.decode(
       envelope(2, "principals.rename", [
         #("principal_id", json.String("guest-1a2b3c4d")),
@@ -492,10 +511,13 @@ pub fn principal_rename_decodes_a_name_and_an_optional_principal_test() {
         #("epoch", json.String("e1")),
       ]),
     )
-    == Ok(protocol.Request(
-      2,
-      protocol.RenamePrincipal(Some("guest-1a2b3c4d"), "  Mira K  ", "e1"),
-    ))
+    == Ok(
+      protocol.Request(
+        2,
+        protocol.RenamePrincipal(Some("guest-1a2b3c4d"), "  Mira K  ", "e1"),
+        [],
+      ),
+    )
 
   // A blank or control-bearing name is decoded as it is: refusing it is the
   // catalogue's, so the refusal is `invalid_name` and not `bad_request`.
@@ -506,7 +528,7 @@ pub fn principal_rename_decodes_a_name_and_an_optional_principal_test() {
           #("epoch", json.String("e1")),
         ]),
       )
-      == Ok(protocol.Request(3, protocol.RenamePrincipal(None, name, "e1")))
+      == Ok(protocol.Request(3, protocol.RenamePrincipal(None, name, "e1"), []))
   })
 }
 
@@ -544,4 +566,116 @@ pub fn principal_rename_refuses_malformed_requests_test() {
       )
     },
   )
+}
+
+fn feature_envelope(features: json.JsonValue) {
+  json.to_string(
+    json.Object([
+      #("v", json.Int(2)),
+      #("id", json.Int(1)),
+      #("cmd", json.String("status")),
+      #("body", json.Object([])),
+      #("accepts", features),
+    ]),
+  )
+}
+
+pub fn accepted_features_are_distinct_bounded_ascii_and_do_not_reject_unknown_names_test() {
+  let names = ["registered_workspace_v1", "future_feature"]
+  assert protocol.decode(
+      feature_envelope(json.Array(list.map(names, json.String))),
+    )
+    == Ok(protocol.Request(1, protocol.Status, names))
+  list.each(
+    [
+      json.Null,
+      json.String("registered_workspace_v1"),
+      json.Array([json.String("same"), json.String("same")]),
+      json.Array([json.String("")]),
+      json.Array([json.String(string.repeat("x", 65))]),
+      json.Array([json.String("with space")]),
+      json.Array([json.String("non_ascii_é")]),
+      json.Array([json.Int(1)]),
+      json.Array(list.map(feature_names(9), json.String)),
+    ],
+    fn(features) {
+      let assert Error(_) = protocol.decode(feature_envelope(features))
+        as "malformed assertions never grant registered workspace support"
+    },
+  )
+  let eight = feature_names(8)
+  assert protocol.decode(
+      feature_envelope(json.Array(list.map(eight, json.String))),
+    )
+    == Ok(protocol.Request(1, protocol.Status, eight))
+  let longest = string.repeat("x", 64)
+  assert protocol.decode(feature_envelope(json.Array([json.String(longest)])))
+    == Ok(protocol.Request(1, protocol.Status, [longest]))
+}
+
+pub fn registered_selection_is_closed_and_carries_no_client_supplied_epochs_test() {
+  let selected = [
+    #("kind", json.String("registered")),
+    #("executor", json.String("executor")),
+    #("workspace", json.String("project")),
+  ]
+  let creation = [
+    #("request_key", json.String("key")),
+    #("name", json.String("Name")),
+    #("configuration", json.String("")),
+  ]
+  let assert Ok(selector) = workspace.selector("executor", "project")
+    as "the wire names a valid administrative selector"
+  assert protocol.decode(
+      envelope(1, "sessions.create", [
+        #("workspace_selection", json.Object(selected)),
+        ..creation
+      ]),
+    )
+    == Ok(
+      protocol.Request(
+        1,
+        protocol.CreateSession(
+          "key",
+          workspace.RegisteredWorkspace(selector),
+          "Name",
+          "",
+          domain.WorkspacePrivate,
+        ),
+        [],
+      ),
+    )
+  list.each(
+    [
+      [#("workspace_epoch", json.Int(1)), ..selected],
+      [#("session_epoch", json.Int(1)), ..selected],
+      [#("path", json.String("/fallback")), ..selected],
+      [#("endpoint", json.String("host")), ..selected],
+    ],
+    fn(fields) {
+      let assert Error(_) =
+        protocol.decode(
+          envelope(1, "sessions.create", [
+            #("workspace_selection", json.Object(fields)),
+            ..creation
+          ]),
+        )
+        as "selection cannot smuggle binding authority or physical paths"
+    },
+  )
+  let assert Error(_) =
+    protocol.decode(
+      envelope(1, "sessions.create", [
+        #("workspace", json.String("/fallback")),
+        #("workspace_selection", json.Object(selected)),
+        ..creation
+      ]),
+    )
+    as "legacy and tagged workspace forms are mutually exclusive"
+}
+
+fn feature_names(count: Int) -> List(String) {
+  int.range(from: 0, to: count, with: [], run: fn(names, n) {
+    [int.to_string(n), ..names]
+  })
 }

@@ -14,6 +14,7 @@ import client/peer_mail
 import core/clock
 import core/ids
 import core/json
+import core/workspace
 import gleam/bit_array
 import gleam/bytes_tree
 import gleam/erlang/process
@@ -29,6 +30,7 @@ import runtime/api
 import simplifile
 import storage/access
 import storage/catalogue
+import storage/domain
 import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws.{type Socket}
 import tui/connection
@@ -56,6 +58,20 @@ fn fixture_with_limits(connection_limits: limits.Limits, run) {
 }
 
 fn fixture_with_peers(connection_limits: limits.Limits, peer_endpoint, run) {
+  fixture_with_authority(
+    connection_limits,
+    peer_endpoint,
+    server.local_workspace_authority(),
+    run,
+  )
+}
+
+fn fixture_with_authority(
+  connection_limits: limits.Limits,
+  peer_endpoint,
+  workspace_authority,
+  run,
+) {
   let directory =
     "build/test_db/daemon-wire-"
     <> bit_array.base16_encode(token.production_entropy()(8))
@@ -81,6 +97,7 @@ fn fixture_with_peers(connection_limits: limits.Limits, peer_endpoint, run) {
       peer_endpoint:,
       daemon:,
       domain_configuration: "",
+      workspace_authority:,
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
       session_upgrade: fn(_, _) {
         response.new(501)
@@ -122,6 +139,10 @@ fn fixture_with_peers(connection_limits: limits.Limits, peer_endpoint, run) {
 
 @internal
 pub fn connect(port, credential, path) {
+  connect_headers(port, credential, path, "")
+}
+
+fn connect_headers(port, credential, path, extra: String) {
   let assert Ok(socket) =
     ffi_daemon_socket.connect(
       #(127, 0, 0, 1),
@@ -135,7 +156,9 @@ pub fn connect(port, credential, path) {
     <> path
     <> " HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nAuthorization: Bearer "
     <> credential
-    <> "\r\n\r\n"
+    <> "\r\n"
+    <> extra
+    <> "\r\n"
   assert ffi_daemon_socket.send(socket, bit_array.from_string(handshake))
     == Ok(Nil)
   #(socket, headers(socket, "", 4096))
@@ -196,6 +219,10 @@ pub fn frame(socket: Socket, within_ms within_ms: Int) {
 /// forwards it unchanged to the read that follows the write.
 @internal
 pub fn send(socket, id, command, body, within_ms within_ms: Int) {
+  send_features(socket, id, command, body, [], within_ms)
+}
+
+fn send_features(socket, id, command, body, features, within_ms: Int) {
   let text =
     json.to_string(
       json.Object([
@@ -203,6 +230,7 @@ pub fn send(socket, id, command, body, within_ms within_ms: Int) {
         #("id", json.Int(id)),
         #("cmd", json.String(command)),
         #("body", body),
+        ..features
       ]),
     )
   let bytes = bit_array.from_string(text)
@@ -398,7 +426,12 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
     let assert Ok(visible) =
       manager.create(
         ready.registry,
-        manager.Creation("visible", ready.state_root, "Visible", ""),
+        manager.Creation(
+          "visible",
+          workspace.LocalBinding(ready.state_root),
+          "Visible",
+          "",
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 100),
       )
@@ -406,7 +439,12 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
     let assert Ok(hidden) =
       manager.create(
         ready.registry,
-        manager.Creation("hidden", ready.state_root, "Hidden", ""),
+        manager.Creation(
+          "hidden",
+          workspace.LocalBinding(ready.state_root),
+          "Hidden",
+          "",
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 101),
       )
@@ -796,7 +834,12 @@ pub fn a_member_cannot_delete_a_session_it_can_read_test() {
     let assert Ok(visible) =
       manager.create(
         ready.registry,
-        manager.Creation("member-visible", ready.state_root, "Visible", ""),
+        manager.Creation(
+          "member-visible",
+          workspace.LocalBinding(ready.state_root),
+          "Visible",
+          "",
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 200),
       )
@@ -843,7 +886,7 @@ pub fn owner_archives_and_restores_through_the_control_socket_test() {
       catalogue.Registration(
         id,
         path,
-        ready.state_root,
+        workspace.LocalBinding(ready.state_root),
         "Retained session",
         "",
         1000,
@@ -1006,7 +1049,12 @@ pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_or_saved_tes
     let assert Ok(source) =
       manager.create(
         ready.registry,
-        manager.Creation("source", ready.state_root, "Source", ""),
+        manager.Creation(
+          "source",
+          workspace.LocalBinding(ready.state_root),
+          "Source",
+          "",
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 400),
       )
@@ -1014,7 +1062,12 @@ pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_or_saved_tes
     let assert Ok(target) =
       manager.create(
         ready.registry,
-        manager.Creation("target", ready.state_root, "Target", ""),
+        manager.Creation(
+          "target",
+          workspace.LocalBinding(ready.state_root),
+          "Target",
+          "",
+        ),
         directory: ready.sessions_directory,
         generator: generator,
       )
@@ -1164,7 +1217,12 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
     let assert Ok(source) =
       manager.create(
         ready.registry,
-        manager.Creation("cli-source", ready.state_root, "Source", ""),
+        manager.Creation(
+          "cli-source",
+          workspace.LocalBinding(ready.state_root),
+          "Source",
+          "",
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 701),
       )
@@ -1172,7 +1230,12 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
     let assert Ok(target) =
       manager.create(
         ready.registry,
-        manager.Creation("cli-target", ready.state_root, "Target", ""),
+        manager.Creation(
+          "cli-target",
+          workspace.LocalBinding(ready.state_root),
+          "Target",
+          "",
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 702),
       )
@@ -1340,7 +1403,12 @@ pub fn peer_cli_collects_bounded_inspection_pages_test() {
     let assert Ok(source) =
       manager.create(
         ready.registry,
-        manager.Creation("paged-cli-source", ready.state_root, "Source", ""),
+        manager.Creation(
+          "paged-cli-source",
+          workspace.LocalBinding(ready.state_root),
+          "Source",
+          "",
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 703),
       )
@@ -1403,7 +1471,12 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
       let assert Ok(created) =
         manager.create(
           ready.registry,
-          manager.Creation(pair.0, ready.state_root, pair.0, ""),
+          manager.Creation(
+            pair.0,
+            workspace.LocalBinding(ready.state_root),
+            pair.0,
+            "",
+          ),
           directory: ready.sessions_directory,
           generator: ids.generator(clock.fixed(0), pair.1),
         )
@@ -1525,7 +1598,12 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
     let assert Ok(_) =
       manager.create(
         ready.registry,
-        manager.Creation(other_id, ready.state_root, other_id, ""),
+        manager.Creation(
+          other_id,
+          workspace.LocalBinding(ready.state_root),
+          other_id,
+          "",
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 804),
       )
@@ -1693,7 +1771,12 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
         let assert Ok(_) =
           manager.create(
             ready.registry,
-            manager.Creation(pair.0, ready.state_root, pair.0, ""),
+            manager.Creation(
+              pair.0,
+              workspace.LocalBinding(ready.state_root),
+              pair.0,
+              "",
+            ),
             directory: ready.sessions_directory,
             generator: ids.generator(clock.fixed(0), pair.1),
           )
@@ -1710,6 +1793,7 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
       let config =
         server.Config(
           peer_endpoint: endpoint,
+          workspace_authority: server.local_workspace_authority(),
           daemon:,
           domain_configuration: "",
           generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
@@ -1863,7 +1947,12 @@ pub fn a_browser_row_authenticates_on_no_v2_route_test() {
     let assert Ok(visible) =
       manager.create(
         ready.registry,
-        manager.Creation("visible", ready.state_root, "Visible", ""),
+        manager.Creation(
+          "visible",
+          workspace.LocalBinding(ready.state_root),
+          "Visible",
+          "",
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 100),
       )
@@ -1905,6 +1994,430 @@ pub fn a_browser_row_authenticates_on_no_v2_route_test() {
     // The owner's bearer is unaffected by the row's existence.
     let #(socket, response) = connect(port, owner_credential, "/v2/control")
     assert string.contains(response, "101")
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+fn registered_fixture_binding(epoch: Int) {
+  let assert Ok(selector) = workspace.selector("executor", "project")
+    as "fixture labels are valid administrative identities"
+  let assert Ok(binding) = workspace.registered_binding(selector, epoch, 3)
+    as "fixture epochs are valid authority coordinates"
+  workspace.Registered(binding)
+}
+
+fn registered_creation_body(key, name) {
+  json.Object([
+    #("request_key", json.String(key)),
+    #("name", json.String(name)),
+    #("configuration", json.String("")),
+    #(
+      "workspace_selection",
+      json.Object([
+        #("kind", json.String("registered")),
+        #("executor", json.String("executor")),
+        #("workspace", json.String("project")),
+      ]),
+    ),
+  ])
+}
+
+fn registered_features() {
+  [#("accepts", json.Array([json.String("registered_workspace_v1")]))]
+}
+
+pub fn registered_retry_revalidates_retained_epochs_before_any_resolution_test() {
+  let resolved = process.new_subject()
+  let revalidated = process.new_subject()
+  let original = registered_fixture_binding(2)
+  let authority =
+    server.WorkspaceAuthority(
+      resolve: fn(_) {
+        process.send(resolved, Nil)
+        Ok(registered_fixture_binding(9))
+      },
+      revalidate: fn(binding) {
+        process.send(revalidated, binding)
+        Ok(Nil)
+      },
+    )
+  fixture_with_authority(
+    limits.defaults,
+    fn(_) { None },
+    authority,
+    fn(_, ready, port, credential) {
+      let assert Ok(retained) =
+        manager.create_scoped(
+          ready.registry,
+          manager.Creation("retained", original, "Retained", ""),
+          directory: ready.sessions_directory,
+          generator: ids.generator(clock.fixed(0), 100),
+          scope: domain.WorkspacePrivate,
+          configuration: "",
+        )
+        as "an earlier partial request retained exact authority"
+      let #(socket, _) = connect(port, credential, "/v2/control")
+      let _hello = frame(socket, within_ms: 1000)
+      let answer =
+        send_features(
+          socket,
+          1,
+          "sessions.create",
+          registered_creation_body("retained", "Retained"),
+          registered_features(),
+          1000,
+        )
+      assert field(answer, "event") == json.String("sessions.create")
+      assert field(field(answer, "body"), "session_id")
+        == json.String(retained.registration.id)
+
+      let assert Ok(record) =
+        manager.creation_registration(ready.registry, "retained")
+        as "retry keeps the same durable registration"
+      assert record.workspace == original
+      let _ = ffi_ws.tcp_close(socket)
+      Nil
+    },
+  )
+  assert process.receive(revalidated, 1000) == Ok(original)
+  assert process.receive(revalidated, 0) == Error(Nil)
+  assert process.receive(resolved, 0) == Error(Nil)
+}
+
+pub fn registered_legacy_reads_and_stale_retry_refuse_without_replacement_test() {
+  let resolved = process.new_subject()
+  let revalidated = process.new_subject()
+  let original = registered_fixture_binding(2)
+  let authority =
+    server.WorkspaceAuthority(
+      resolve: fn(_) {
+        process.send(resolved, Nil)
+        Ok(registered_fixture_binding(9))
+      },
+      revalidate: fn(binding) {
+        process.send(revalidated, binding)
+        Error("workspace_unavailable")
+      },
+    )
+  fixture_with_authority(
+    limits.defaults,
+    fn(_) { None },
+    authority,
+    fn(_, ready, port, credential) {
+      let assert Ok(retained) =
+        manager.create_scoped(
+          ready.registry,
+          manager.Creation("retained", original, "Retained", ""),
+          directory: ready.sessions_directory,
+          generator: ids.generator(clock.fixed(0), 100),
+          scope: domain.WorkspacePrivate,
+          configuration: "",
+        )
+        as "catalogue contains one registered session"
+      let #(socket, _) = connect(port, credential, "/v2/control")
+      let _hello = frame(socket, within_ms: 1000)
+      let refused =
+        send(
+          socket,
+          1,
+          "sessions.create",
+          registered_creation_body("new", "New"),
+          within_ms: 1000,
+        )
+      assert field(field(refused, "body"), "code")
+        == json.String("unsupported_workspace")
+      let listed =
+        send(
+          socket,
+          2,
+          "sessions.list",
+          json.Object([#("after", json.String(""))]),
+          within_ms: 1000,
+        )
+      assert field(field(listed, "body"), "code")
+        == json.String("unsupported_workspace")
+      let got =
+        send(
+          socket,
+          3,
+          "sessions.get",
+          json.Object([#("session_id", json.String(retained.registration.id))]),
+          within_ms: 1000,
+        )
+      assert field(field(got, "body"), "code")
+        == json.String("unsupported_workspace")
+      let opened =
+        send(
+          socket,
+          31,
+          "sessions.open",
+          json.Object([
+            #("session_id", json.String(retained.registration.id)),
+            #("epoch", json.String(ready.epoch)),
+          ]),
+          within_ms: 1000,
+        )
+      assert field(field(opened, "body"), "code")
+        == json.String("unsupported_workspace")
+      let defaulted =
+        send(
+          socket,
+          32,
+          "sessions.default",
+          json.Object([
+            #(
+              "workspace_selection",
+              json.Object([
+                #("kind", json.String("registered")),
+                #("executor", json.String("executor")),
+                #("workspace", json.String("project")),
+              ]),
+            ),
+          ]),
+          within_ms: 1000,
+        )
+      assert field(field(defaulted, "body"), "code")
+        == json.String("unsupported_workspace")
+      let accepted =
+        send_features(
+          socket,
+          33,
+          "sessions.list",
+          json.Object([
+            #("after", json.String("")),
+          ]),
+          registered_features(),
+          1000,
+        )
+      let assert json.Array([row]) = field(field(accepted, "body"), "sessions")
+        as "supporting clients receive the registered row"
+      assert field(row, "workspace_binding")
+        == workspace.encode_binding(original)
+      let assert json.Object(fields) = row as "registration is a JSON object"
+      assert list.key_find(fields, "workspace") == Error(Nil)
+
+      let stale =
+        send_features(
+          socket,
+          4,
+          "sessions.create",
+          registered_creation_body("retained", "Retained"),
+          registered_features(),
+          1000,
+        )
+      assert field(field(stale, "body"), "code")
+        == json.String("workspace_unavailable")
+
+      let assert Ok(record) =
+        manager.creation_registration(ready.registry, "retained")
+        as "stale authority cannot replace retained binding"
+      assert record.workspace == original
+      assert manager.creation_registration(ready.registry, "new")
+        == Error(manager.Catalogue(catalogue.Missing))
+      let _ = ffi_ws.tcp_close(socket)
+      Nil
+    },
+  )
+  assert process.receive(revalidated, 1000) == Ok(original)
+  assert process.receive(revalidated, 0) == Error(Nil)
+  assert process.receive(resolved, 0) == Error(Nil)
+}
+
+pub fn native_registered_upgrade_requires_exact_header_but_does_not_renew_execution_authority_test() {
+  let calls = process.new_subject()
+  let authority =
+    server.WorkspaceAuthority(
+      resolve: fn(_) {
+        process.send(calls, Nil)
+        Error("workspace_unavailable")
+      },
+      revalidate: fn(_) {
+        process.send(calls, Nil)
+        Error("workspace_unavailable")
+      },
+    )
+  fixture_with_authority(
+    limits.defaults,
+    fn(_) { None },
+    authority,
+    fn(_, ready, port, credential) {
+      let assert Ok(retained) =
+        manager.create_scoped(
+          ready.registry,
+          manager.Creation(
+            "attachment",
+            registered_fixture_binding(2),
+            "Attachment",
+            "",
+          ),
+          directory: ready.sessions_directory,
+          generator: ids.generator(clock.fixed(0), 100),
+          scope: domain.WorkspacePrivate,
+          configuration: "",
+        )
+        as "owner assembly supplies a resident registered session"
+      let assert poll.Answered(_) =
+        poll.until(within: 5000, every: 1, attempt: fn() {
+          case manager.resolve(ready.registry, retained.registration.id) {
+            Ok(instance) -> poll.Done(instance)
+            Error(_) -> poll.Retry
+          }
+        })
+        as "assembly admission completes before reconnect"
+      let path = "/v2/sessions/" <> retained.registration.id <> "/ws"
+      list.each(
+        [
+          "",
+          "x-loom-accepts: future_feature\r\n",
+          "x-loom-accepts: registered_workspace_v1,other\r\n",
+        ],
+        fn(header) {
+          let #(socket, response) =
+            connect_headers(port, credential, path, header)
+          assert string.contains(response, "409")
+          let _ = ffi_ws.tcp_close(socket)
+        },
+      )
+      let #(socket, response) =
+        connect_headers(
+          port,
+          credential,
+          path,
+          "x-loom-accepts: registered_workspace_v1\r\n",
+        )
+      assert string.contains(response, "501")
+
+      let _ = ffi_ws.tcp_close(socket)
+      Nil
+    },
+  )
+  assert process.receive(calls, 0) == Error(Nil)
+}
+
+pub fn legacy_registered_lifecycle_mutations_are_refused_before_revision_or_visibility_changes_test() {
+  let binding = registered_fixture_binding(2)
+  fixture(fn(_, ready, port, credential) {
+    let assert Ok(active) =
+      manager.create_scoped(
+        ready.registry,
+        manager.Creation("lifecycle-active", binding, "Original", ""),
+        directory: ready.sessions_directory,
+        generator: ids.generator(clock.fixed(0), 100),
+        scope: domain.WorkspacePrivate,
+        configuration: "",
+      )
+      as "owner admission creates a registered session"
+    let assert manager.Opening(operation) = active.status
+      as "the creation response retains its operation identity"
+
+    // Admission confirms the catalogue asynchronously. The revision baseline
+    // belongs after that transition, while the original operation stays fixed.
+    let assert poll.Answered(_) =
+      poll.until(within: 5000, every: 1, attempt: fn() {
+        case manager.resolve(ready.registry, active.registration.id) {
+          Ok(instance) -> poll.Done(instance)
+          Error(_) -> poll.Retry
+        }
+      })
+      as "resident admission precedes the mutation revision baseline"
+    let #(archived_id, _) = ids.mint_session(ids.generator(clock.fixed(0), 101))
+    let archived_id = ids.session_id_to_string(archived_id)
+    let archived =
+      catalogue.Registration(
+        archived_id,
+        ready.sessions_directory <> "/" <> archived_id <> ".db",
+        binding,
+        "Archived",
+        "",
+        1,
+        "lifecycle-archived",
+        catalogue.Reserved,
+        option.None,
+      )
+    let assert Ok(store) = catalogue.open(ready.state_root <> "/catalogue.db")
+      as "fixture administration uses the existing catalogue"
+    assert catalogue.reserve(store, archived) == Ok(archived)
+    let assert Ok(_) = catalogue.confirm(store, archived_id)
+      as "the metadata fixture has a saved session"
+    let assert Ok(_) =
+      catalogue.set_visibility(store, archived_id, catalogue.Archived)
+      as "the fixture begins with a genuinely archived registration"
+    let assert Ok(before) = catalogue.page(store, after: "")
+      as "the original revision is known"
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let active_fields = [
+      #("session_id", json.String(active.registration.id)),
+      #("epoch", json.String(ready.epoch)),
+    ]
+    list.each(
+      [
+        #(
+          1,
+          "sessions.rename",
+          json.Object([#("name", json.String("Changed")), ..active_fields]),
+        ),
+        #(2, "sessions.archive", json.Object(active_fields)),
+        #(
+          3,
+          "sessions.restore",
+          json.Object([
+            #("session_id", json.String(archived_id)),
+            #("epoch", json.String(ready.epoch)),
+          ]),
+        ),
+        #(
+          4,
+          "operations.get",
+          json.Object([#("operation", json.String(operation)), ..active_fields]),
+        ),
+      ],
+      fn(request) {
+        let answer =
+          send(socket, request.0, request.1, request.2, within_ms: 1000)
+        assert field(field(answer, "body"), "code")
+          == json.String("unsupported_workspace")
+      },
+    )
+    let assert Ok(after) = catalogue.page(store, after: "")
+      as "refused requests leave the revision readable"
+    assert after.revision == before.revision
+    let assert Ok(record) = catalogue.get(store, active.registration.id)
+      as "refused rename leaves the original name"
+    assert record.name == "Original"
+    assert catalogue.visibility(store, active.registration.id)
+      == Ok(catalogue.Active)
+    assert catalogue.visibility(store, archived_id) == Ok(catalogue.Archived)
+    let stale =
+      send(
+        socket,
+        5,
+        "sessions.rename",
+        json.Object([
+          #("session_id", json.String(active.registration.id)),
+          #("name", json.String("Changed")),
+          #("epoch", json.String("old-epoch")),
+        ]),
+        within_ms: 1000,
+      )
+    assert field(field(stale, "body"), "code") == json.String("stale_epoch")
+    let supported =
+      send_features(
+        socket,
+        6,
+        "sessions.rename",
+        json.Object([#("name", json.String("Changed")), ..active_fields]),
+        registered_features(),
+        1000,
+      )
+    assert field(supported, "event") == json.String("sessions.rename")
+    assert field(field(supported, "body"), "workspace_binding")
+      == workspace.encode_binding(binding)
+    let assert Ok(changed) = catalogue.page(store, after: "")
+      as "supported rename advances the same catalogue revision"
+    assert changed.revision == before.revision + 1
+    assert catalogue.close(store) == Ok(Nil)
     let _ = ffi_ws.tcp_close(socket)
     Nil
   })

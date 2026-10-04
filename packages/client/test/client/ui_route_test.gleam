@@ -30,6 +30,7 @@ import client/gateway
 import core/clock
 import core/ids
 import core/json
+import core/workspace
 import gleam/bit_array
 import gleam/bytes_tree
 import gleam/dynamic/decode
@@ -193,6 +194,7 @@ fn fixture_lasting(
     as "the web view's assets are in web_view's and lustre's priv"
   let config =
     server.Config(
+      workspace_authority: server.local_workspace_authority(),
       peer_endpoint: fn(_) { None },
       daemon:,
       domain_configuration: "",
@@ -1315,7 +1317,7 @@ fn create_session(ready: root.Ready(String), key: String, seed: Int) -> String {
   let assert Ok(created) =
     manager.create(
       ready.registry,
-      manager.Creation(key, ready.state_root, key, ""),
+      manager.Creation(key, workspace.LocalBinding(ready.state_root), key, ""),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(0), seed),
     )
@@ -3165,7 +3167,7 @@ fn create_shared_session(
   let assert Ok(created) =
     manager.create_scoped(
       ready.registry,
-      manager.Creation(key, ready.state_root, key, ""),
+      manager.Creation(key, workspace.LocalBinding(ready.state_root), key, ""),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(0), seed),
       scope: domain.SessionOnly,

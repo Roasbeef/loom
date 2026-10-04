@@ -28,13 +28,24 @@ fn owner_ctx() -> tool.Ctx {
       read_link: fn(_) { panic as "remote tool touched owner path resolution" },
       rename: fn(_, _) { panic as "remote tool touched owner rename" },
     )
-  fake_broker.ctx(
-    workspace: "/owner/must/not/be/resolved",
-    filesystem:,
-    now: 1000,
-    script: [],
-    recorded: process.new_subject(),
-  )
+  let base =
+    fake_broker.ctx(
+      workspace: "/owner/must/not/be/resolved",
+      filesystem:,
+      now: 1000,
+      script: [],
+      recorded: process.new_subject(),
+    )
+  let assert Ok(scope) =
+    core_workspace.scope_from_fields(
+      "00000000-0000-7000-8000-000000000001",
+      "workspace",
+      "executor",
+      1,
+      1,
+    )
+    as "fixture scope is valid"
+  tool.Ctx(..base, workspace: tool.RegisteredWorkspace(scope))
 }
 
 fn local_ctx() -> tool.Ctx {
@@ -121,7 +132,8 @@ pub fn native_read_projection_matches_local_windows_and_empty_test() {
   let local = local_ctx()
   let owner = owner_ctx()
   let content = "one\ntwo\nlast"
-  assert local.filesystem.write("/work/a", <<content:utf8>>) == Ok(Nil)
+  assert local_workspace(local).filesystem.write("/work/a", <<content:utf8>>)
+    == Ok(Nil)
   list.each([#(1, 2), #(2, 1), #(9, 1)], fn(window) {
     let #(offset, limit) = window
     let arguments =
@@ -144,7 +156,7 @@ pub fn native_read_projection_matches_local_windows_and_empty_test() {
       )
     assert remote.run(owner, arguments) == fs.read_tool().run(local, arguments)
   })
-  assert local.filesystem.write("/work/a", <<>>) == Ok(Nil)
+  assert local_workspace(local).filesystem.write("/work/a", <<>>) == Ok(Nil)
   let remote =
     workspace_tools.read_tool(
       returned(
@@ -191,7 +203,8 @@ pub fn image_results_keep_all_native_blocks_test() {
     ],
     fn(image) {
       let #(bytes, media) = image
-      assert local.filesystem.write("/work/a.txt", bytes) == Ok(Nil)
+      assert local_workspace(local).filesystem.write("/work/a.txt", bytes)
+        == Ok(Nil)
       let remote =
         workspace_tools.read_tool(
           returned(
@@ -281,7 +294,8 @@ pub fn edits_preserve_original_plan_diff_anchors_and_diagnostics_test() {
   let edited = "new\nold\n"
   let plan =
     hashline.Plan(hashline.digest(before), [hashline.InsertAtStart(["new"])])
-  assert local.filesystem.write("/work/a", <<before:utf8>>) == Ok(Nil)
+  assert local_workspace(local).filesystem.write("/work/a", <<before:utf8>>)
+    == Ok(Nil)
   let editor =
     workspace_tools.edit_tool(fn(ctx, request) {
       process.send(recorded, #(ctx, request))
@@ -465,4 +479,11 @@ pub fn operation_errors_keep_existing_native_projection_test() {
       json.Object([#("path", json.String("a")), #("content", json.String("x"))]),
     )
     == fs.fs_error_outcome(tool.FsPermissionDenied("a"))
+}
+
+// Existing local fixtures expose physical authority explicitly after migration.
+fn local_workspace(ctx: tool.Ctx) -> tool.LocalWorkspaceAccess {
+  let assert Ok(local) = tool.require_local_workspace(ctx)
+    as "fixture requires a local workspace"
+  local
 }

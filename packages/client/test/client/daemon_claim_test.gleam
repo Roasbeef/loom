@@ -13,6 +13,7 @@ import client/session_socket_test
 import core/clock
 import core/ids
 import core/json.{type JsonValue}
+import core/workspace
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/erlang/atom
@@ -51,7 +52,12 @@ fn shared_session(ready: root.Ready(String), seed: Int) -> String {
   let assert Ok(view) =
     manager.create_scoped(
       ready.registry,
-      manager.Creation("claim-" <> int.to_string(seed), "/workspace", "S", ""),
+      manager.Creation(
+        "claim-" <> int.to_string(seed),
+        workspace.LocalBinding("/workspace"),
+        "S",
+        "",
+      ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(1), seed),
       scope: domain.SessionOnly,

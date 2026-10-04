@@ -43,13 +43,16 @@ import codemode/identity
 import codemode/satellite
 import core/clock
 import core/ids
+import core/json
 import core/message
 import core/msgpack
+import core/workspace as core_workspace
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import simplifile
 import tools/directory_access
 import tools/tool
 
@@ -1041,7 +1044,7 @@ fn a_ctx() -> tool.Ctx {
     ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 7))
   tool.Ctx(
     directory_access: directory_access.none(),
-    workspace:,
+    workspace: tool.LocalWorkspace(workspace, dead_filesystem()),
     strand: "main",
     op_id:,
     step_id: "step-1",
@@ -1051,8 +1054,7 @@ fn a_ctx() -> tool.Ctx {
     demand: exec.BestEffort,
     env: [],
     clock: clock.fixed(at: 0),
-    filesystem: dead_filesystem(),
-    blob_root: workspace <> "/.blobs",
+    owner_blobs: tool.OwnerBlobs(workspace <> "/.blobs", dead_filesystem()),
     clear_call: fn(_spec, _events) { Error(broker.BrokerUnavailable) },
     raise_refusal: tool.no_raise(),
     observe_output: tool.ignore_output(),
@@ -1068,4 +1070,61 @@ fn dead_filesystem() -> tool.FileSystem {
     read_link: fn(_path) { Ok(tool.LinkMissing) },
     rename: fn(from, _to) { Error(tool.FsNotFound(path: from)) },
   )
+}
+
+pub fn registered_extension_refuses_before_host_invocation_test() {
+  let broker_actor = idle_broker()
+  let host =
+    codemode.default_config(
+      broker: broker_actor,
+      clock: clock.fixed(at: 1000),
+      workspace: "/work",
+      toolchain: codemode.toolchain(
+        gleam_path: "/opt/gleam/bin/gleam",
+        erl_path: "/opt/erlang/bin/erl",
+        seed_root: "/opt/loom/seed",
+      ),
+    )
+  let config =
+    dispatch.Config(
+      host:,
+      hosts: hosts.Hosts(invoke: fn(_, _, _, _, _) {
+        panic as "registered extension invoked a physical host"
+      }),
+      memory: extension_memory.shut("no store"),
+      secrets: fn(_) { panic as "registered extension read owner secrets" },
+      trust: egress.SystemRoots,
+      launch: dispatch.jailed_node,
+    )
+  let root = "build/registered-extension-guard"
+  let assert Ok(Nil) = simplifile.create_directory_all(root <> "/schema")
+    as "schema fixture directory is writable"
+  let assert Ok(Nil) = simplifile.write(root <> "/schema/hello.json", "{}")
+    as "schema fixture is writable"
+  let assert Ok([definition]) =
+    dispatch.tools(
+      config,
+      a_record(),
+      a_manifest(),
+      sources: root,
+      artifact: "/unused",
+    )
+    as "one extension tool is registered"
+  let assert Ok(scope) =
+    core_workspace.scope_from_fields(
+      "00000000-0000-7000-8000-000000000001",
+      "workspace",
+      "executor",
+      1,
+      1,
+    )
+    as "registered fixture scope is valid"
+  let ctx = tool.Ctx(..a_ctx(), workspace: tool.RegisteredWorkspace(scope))
+  let assert Error(expected) = dispatch.coordinates(ctx)
+    as "physical coordinates require local authority"
+  let outcome = definition.run(ctx, json.Object([]))
+  assert outcome == expected
+  assert outcome.details
+    == Some(json.Object([#("error", json.String("local_workspace_required"))]))
+  broker.stop(broker_actor)
 }

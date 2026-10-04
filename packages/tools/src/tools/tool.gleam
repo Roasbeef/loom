@@ -12,8 +12,8 @@
 //// error result the model can read and react to.
 ////
 //// `Ctx` carries every effect seam a tool may touch: the workspace
-//// root, the injected clock, a `FileSystem` record of functions, the
-//// blob-overflow directory, the broker seam (`clear_call`) through
+//// authority, the injected clock, independent owner result storage, and the
+//// broker seam (`clear_call`) through
 //// which every jailed execution flows, and the observer
 //// (`observe_output`) a running execution's output tail is shown to.
 //// Production wires the seams to simplifile, a live `broker.Broker`
@@ -36,7 +36,8 @@
 //// 3. A tool body decodes its arguments with `required_string`,
 ////    `optional_int` and the other readers, chained by `with_arg`, which turns a
 ////    bad argument into the standard invalid-arguments outcome.
-//// 4. Later steps chain with `or_outcome`, which renders a domain error as a
+//// 4. Local effects first use `require_local_workspace`; registered identity
+////    cannot supply a physical root or workspace filesystem. Later steps chain with `or_outcome`, which renders a domain error as a
 ////    `ToolOutcome` through the tool's own function.
 //// 5. A tool that needs more sandbox authority calls `authorize_policy`, which
 ////    `ask_permission` raises as a refusal and resumes with the approved grants.
@@ -56,6 +57,7 @@ import core/corruption
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
 import core/message
+import core/workspace as core_workspace
 import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
@@ -235,11 +237,52 @@ pub type RunningCall {
   )
 }
 
+/// Workspace authority is either local physical access or registered identity.
+/// Registered contexts contain no pathname or local workspace filesystem.
+pub type WorkspaceAccess {
+  /// Physical workspace authority for existing local implementations.
+  LocalWorkspace(
+    /// Host-validated absolute workspace root.
+    root: String,
+    /// Workspace filesystem effects owned by this physical host.
+    filesystem: FileSystem,
+  )
+
+  /// Full registered authority used by separately bound semantic adapters.
+  RegisteredWorkspace(
+    /// Exact session, executor, workspace and authority epochs.
+    scope: core_workspace.Scope,
+  )
+}
+
+/// Explicit physical authority obtained before local-only effects.
+pub type LocalWorkspaceAccess {
+  /// A projection that cannot represent a registered workspace.
+  LocalWorkspaceAccess(
+    /// The local workspace root, unchanged by projection.
+    root: String,
+    /// The local workspace filesystem, never the owner blob store.
+    filesystem: FileSystem,
+  )
+}
+
+/// Owner result storage independent of workspace placement.
+pub type OwnerBlobs {
+  /// Local blob storage remains available for registered workspaces.
+  OwnerBlobs(
+    /// Owner-local content-addressed result directory.
+    root: String,
+    /// Owner blob read/store/rename effects.
+    filesystem: FileSystem,
+  )
+}
+
 /// Everything a tool's run may touch. Constructed per call by the
 /// strand driver (WP-E).
 ///
-/// Constructor invariants: `workspace` and `blob_root` are absolute
-/// paths; `env` is the allowlist-constructed child environment for
+/// Constructor invariants: a LocalWorkspace root and OwnerBlobs root are
+/// absolute paths; RegisteredWorkspace carries a validated complete scope.
+/// `env` is the allowlist-constructed child environment for
 /// jailed executions (never an inherited one); `clear_call` honors the
 /// broker contract — on `Ok` exactly one `CallSettled` eventually
 /// arrives on the events subject; `strand`, `op_id`, `step_id` and
@@ -253,8 +296,8 @@ pub type RunningCall {
 /// loop. Declared permissions and broker limits can be separate preflights.
 pub type Ctx {
   Ctx(
-    /// Absolute workspace root used to resolve relative tool paths.
-    workspace: String,
+    /// Explicit local authority or registered scope, without a fake path.
+    workspace: WorkspaceAccess,
     /// The strand whose driver dispatched this call.
     strand: String,
     /// The operation this tool call belongs to.
@@ -275,10 +318,8 @@ pub type Ctx {
     env: List(#(String, String)),
     /// The injected time source.
     clock: Clock,
-    /// The file-system seam.
-    filesystem: FileSystem,
-    /// Absolute directory for large-output blob overflow (spec §3.2).
-    blob_root: String,
+    /// Owner-local result storage independent of workspace authority.
+    owner_blobs: OwnerBlobs,
     /// The broker seam: clears and dispatches one jailed execution.
     clear_call: fn(broker.CallSpec, Subject(CallEvent)) ->
       Result(RunningCall, Refusal),
@@ -293,6 +334,32 @@ pub type Ctx {
     /// nobody watching, and for tests that are about something else.
     observe_output: fn(OutputTail) -> Nil,
   )
+}
+
+/// Projects local authority before any path lookup or broker effect.
+/// Registered contexts fail without consulting the separate owner blob store.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tool.require_local_workspace(ctx) -> Ok(tool.LocalWorkspaceAccess(root, filesystem))
+/// ```
+pub fn require_local_workspace(
+  ctx: Ctx,
+) -> Result(LocalWorkspaceAccess, ToolOutcome) {
+  case ctx.workspace {
+    LocalWorkspace(root, filesystem) ->
+      Ok(LocalWorkspaceAccess(root, filesystem))
+    RegisteredWorkspace(_) ->
+      Error(
+        failure(
+          "this operation requires a local workspace; the registered workspace needs its semantic service adapter",
+        )
+        |> with_details(
+          json.Object([#("error", json.String("local_workspace_required"))]),
+        ),
+      )
+  }
 }
 
 /// Obtains missing authority before an effect begins, bound to this call.

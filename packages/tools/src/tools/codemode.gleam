@@ -1336,7 +1336,10 @@ fn run_program(
   use program <- tool.or_outcome(load_source(ctx, input), fn(outcome) {
     outcome
   })
-  let asked = request(mode, ctx, program, within_ms, on: offer.seam)
+  use asked <- tool.or_outcome(
+    request(mode, ctx, program, within_ms, on: offer.seam),
+    fn(outcome) { outcome },
+  )
   case background {
     None -> render(ctx, offer, program, once_more_if_approved(mode, ctx, asked))
     Some(background) -> async_outcome(background.launch(asked))
@@ -1458,7 +1461,8 @@ fn chosen_seam(
 /// ## Examples
 ///
 /// ```gleam
-/// // codemode.request(mode, ctx, source, None, on: seam).op_id == ctx.op_id
+/// // let assert Ok(asked) = codemode.request(mode, ctx, source, None, on: seam)
+/// // asked.op_id == ctx.op_id
 /// ```
 ///
 pub fn request(
@@ -1467,15 +1471,17 @@ pub fn request(
   source: String,
   within_ms: Option(Int),
   on seam: Seam,
-) -> Request {
-  Request(
+) -> Result(Request, ToolOutcome) {
+  use local <- result.try(tool.require_local_workspace(ctx))
+
+  Ok(Request(
     source:,
     seam:,
     strand: ctx.strand,
     op_id: ctx.op_id,
     step_id: ctx.step_id,
     source_index: ctx.source_index,
-    workspace: ctx.workspace,
+    workspace: local.root,
     base_policy: ctx.base_policy,
     directory_access: ctx.directory_access,
     demand: ctx.demand,
@@ -1487,7 +1493,7 @@ pub fn request(
       min: 1,
       max: mode.max_within_ms,
     ),
-  )
+  ))
 }
 
 /// Renders a durable asynchronous result without retaining a tool context.

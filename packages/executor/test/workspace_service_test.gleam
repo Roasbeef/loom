@@ -45,7 +45,7 @@ pub fn config_binds_exact_scope_and_finite_run_caps_test() {
       == Error(service.InvalidConfiguration)
     assert service.configure(host, book, 1, 30_001)
       == Error(service.InvalidConfiguration)
-    let wrong = local.new(scope(2), ctx(root), fn(_) { None })
+    let wrong = local_host(scope(2), ctx(root), fn(_) { None })
     assert service.configure(wrong, book, 1, 1000)
       == Error(service.InvalidConfiguration)
     let remote = start(host, book, 4, 30_000)
@@ -532,7 +532,7 @@ fn invocation(number: Int, epoch: Int, request: w.Request) -> BitArray {
 
 fn ctx(root: String) -> tool.Ctx {
   tool.Ctx(
-    workspace: root,
+    workspace: tool.LocalWorkspace(root, fs.real_filesystem()),
     strand: "main",
     op_id: operation(),
     step_id: "physical-step",
@@ -543,8 +543,7 @@ fn ctx(root: String) -> tool.Ctx {
     demand: exec.FullEnforcement,
     env: [],
     clock: clock.fixed(0),
-    filesystem: fs.real_filesystem(),
-    blob_root: root <> "/.blobs",
+    owner_blobs: tool.OwnerBlobs(root <> "/.blobs", fs.real_filesystem()),
     clear_call: fn(_, _) { Error(broker.BrokerUnavailable) },
     raise_refusal: tool.no_raise(),
     observe_output: tool.ignore_output(),
@@ -552,7 +551,7 @@ fn ctx(root: String) -> tool.Ctx {
 }
 
 fn host(root: String, observer: fs.WriteObserver) -> local.Host {
-  local.new(scope(1), ctx(root), observer)
+  local_host(scope(1), ctx(root), observer)
 }
 
 fn start(
@@ -628,4 +627,15 @@ fn execute(root: String, text: String) {
     as "test fault connection"
   assert sqlight.exec(text, connection) == Ok(Nil)
   assert sqlight.close(connection) == Ok(Nil)
+}
+
+// A registered context cannot construct the executor-local host.
+fn local_host(
+  scope: cw.Scope,
+  ctx: tool.Ctx,
+  observer: fn(String) -> option.Option(String),
+) -> local.Host {
+  let assert Ok(host) = local.new(scope, ctx, observer)
+    as "fixture must have local authority"
+  host
 }

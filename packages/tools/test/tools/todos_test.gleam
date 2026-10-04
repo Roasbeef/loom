@@ -500,7 +500,17 @@ fn a_ctx() -> Ctx {
   let #(op, _) = ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 5))
   tool.Ctx(
     directory_access: directory_access.none(),
-    workspace:,
+    workspace: tool.LocalWorkspace(
+      workspace,
+      tool.FileSystem(
+        read: fn(path) { Error(tool.FsNotFound(path:)) },
+        write: fn(path, _bytes) { Error(tool.FsNotFound(path:)) },
+        create_directory_all: fn(path) { Error(tool.FsNotFound(path:)) },
+        is_file: fn(_path) { Ok(False) },
+        read_link: fn(_path) { Ok(tool.LinkMissing) },
+        rename: fn(from, _to) { Error(tool.FsNotFound(path: from)) },
+      ),
+    ),
     strand: "main",
     op_id: op,
     step_id: "turn",
@@ -510,15 +520,17 @@ fn a_ctx() -> Ctx {
     demand: exec.FullEnforcement,
     env: [],
     clock: clock.fixed(at: 1000),
-    filesystem: tool.FileSystem(
-      read: fn(path) { Error(tool.FsNotFound(path:)) },
-      write: fn(path, _bytes) { Error(tool.FsNotFound(path:)) },
-      create_directory_all: fn(path) { Error(tool.FsNotFound(path:)) },
-      is_file: fn(_path) { Ok(False) },
-      read_link: fn(_path) { Ok(tool.LinkMissing) },
-      rename: fn(from, _to) { Error(tool.FsNotFound(path: from)) },
+    owner_blobs: tool.OwnerBlobs(
+      workspace <> "/.blobs",
+      tool.FileSystem(
+        read: fn(path) { Error(tool.FsNotFound(path:)) },
+        write: fn(path, _bytes) { Error(tool.FsNotFound(path:)) },
+        create_directory_all: fn(path) { Error(tool.FsNotFound(path:)) },
+        is_file: fn(_path) { Ok(False) },
+        read_link: fn(_path) { Ok(tool.LinkMissing) },
+        rename: fn(from, _to) { Error(tool.FsNotFound(path: from)) },
+      ),
     ),
-    blob_root: workspace <> "/.blobs",
     clear_call: dead_broker,
     raise_refusal: tool.no_raise(),
     observe_output: tool.ignore_output(),
