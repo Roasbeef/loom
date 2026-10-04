@@ -24,8 +24,13 @@ pub type Fixture {
   )
 }
 
+/// Reuses ephemeral real mTLS credentials across executor component regressions.
+///
+/// ## Examples
+///
+/// `fixture()` mints a separate CA and leaf keys for each test.
 @external(erlang, "executor_remote_tls_test_ffi", "fixture")
-fn fixture() -> Fixture
+pub fn fixture() -> Fixture
 
 @external(erlang, "executor_remote_tls_test_ffi", "raw_send")
 fn raw_send(connection: tls.Connection, bytes: BitArray) -> Result(Nil, Nil)

@@ -89,7 +89,7 @@ pub type Config {
 
 /// A bounded actor owning serialized admission and live request controls.
 pub opaque type Service {
-  /// Transport handlers ask, never publish unbounded native work via casts.
+  /// The listener owns each asynchronous ask until its actual reply or death.
   Service(config: Config, subject: process.Subject(Message), pid: process.Pid)
 }
 
@@ -325,6 +325,22 @@ pub fn exchange(
   let reply = process.new_subject()
   process.send(service.subject, Exchange(envelope, reply))
   process.receive(reply, 30_000) |> result.unwrap(Error(Uncertain))
+}
+
+/// Transfers one concrete exchange to service custody without a caller timeout.
+/// The finite listener credit owns reply until consumption or service death.
+/// No network worker is allowed to use this door without that custody.
+///
+/// ## Examples
+///
+/// `send_exchange(service, envelope, reply)` sends exactly one typed ask.
+@internal
+pub fn send_exchange(
+  service: Service,
+  envelope: wire.Envelope,
+  reply: process.Subject(Result(wire.Body, Error)),
+) -> Nil {
+  process.send(service.subject, Exchange(envelope, reply))
 }
 
 /// Exposes only the immutable configured identity for transport validation.
