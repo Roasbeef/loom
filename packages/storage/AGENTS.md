@@ -602,7 +602,13 @@ its opaque `CommittedResult` authorizes `collect`, which freezes immutable
 identity and UUID fences permanently. Broker release grants no collection
 authority. Frozen rows continue to consume bounded capacity.
 
-The owner journal is format version 2. `admit_fresh` atomically returns `Fresh`
+The owner journal is format version 3. Version 2 upgrades additively in one
+immediate transaction after exact metadata/limits, aggregate accounting and
+bounded legacy row-header validation; the empty command-offer table and version
+bump commit together. Valid ID-less cancelled/frozen fences require an empty
+request, NULL terminal and their full fence reservation; migration preserves the
+prior cancellation-before-allocation followed by collection history. Older daemons
+refuse format 3. `admit_fresh` atomically returns `Fresh`
 only when the reservation was inserted; `Retained` is never dispatch permission.
 `validate_request` compares exact immutable scope/argument bytes without creating
 missing evidence. A `cancel_child` origin fence can precede UUID allocation: its
@@ -622,3 +628,41 @@ checks validate the full unused final/terminal allowance for retained rows, and
 the smaller frozen-fence formula for collected rows, before a terminal write can
 acknowledge new bytes. Version-1 journals are refused rather than silently opened
 with an incompatible cancellation schema.
+
+
+## Physical service and immutable offer custody
+
+`owner_custody.ServiceRequest` frames the full `core/command.ServiceKey` in a
+bounded canonical identity header before opaque exact service input. Its outer
+Compile/Launch child uses the existing nine-MiB request and configured full
+completion reservation. `service_child` compares the complete original key;
+changed scope, coordinates, UUID or input conflicts. Both fixed outer roles
+belong to a retained managed ToolKey; no system parent is invented here.
+
+`CommandOfferPayload` bounds immutable proposal bytes before mailbox delivery.
+The separate command-offer table retains full CommandRef identity, indexed
+service/native projections and exact content/digest. Named Parrot/sqlc queries
+check aggregate persistent counts/bytes; at most two offer purposes exist per
+parent, and global offer count is capped by the already persisted child limit.
+Offer admission reserves the entire configured allowance capped at 256 KiB.
+Frozen fences retain identity/digest and continue consuming count/byte capacity.
+Every header checks types, lengths, scalar projections and the full unused
+allowance before a BLOB value query.
+
+`admit_offer` compares exact retained original service envelope bytes inside its
+transaction. `admit_command_child` joins that service and exact offer to the
+complete post-clearance native envelope in one transaction, preserving original
+UUID on exact duplicate. Storage neither clears commands nor interprets broker
+policy. `cancel_service` atomically fences the outer service, offers and already
+allocated native rows; original native bytes survive and matching late receipt
+remains admissible. No partial Prepared, offer UUID or process ledger exists.
+
+`collect` returns CollectionPending before any freeze whenever either deterministic
+outer Compile/Launch child or any offer exists for its verified ToolKey. This
+covers no-offer resource uncertainty and orphan/corrupt offers. Final Failed or
+Unknown readback is not physical recovery transfer. New physical service parents
+remain bounded and retained until an actual whole-service custody transfer can
+prove later receipt/resource recovery survives deletion. Ordinary collection's
+existing actual-session readback proof remains necessary. Terminal receipt, resource
+cleanup and executor native retirement are separate duties; this slice adds no
+owner retirement authority or remote physical execution assembly.
