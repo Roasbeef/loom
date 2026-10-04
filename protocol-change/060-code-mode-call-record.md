@@ -1,8 +1,9 @@
 # protocol-change/060 — a per-call record for code-mode programs
 
-**Status**: ACCEPTED 2026-10-01 (PR #673); slices 1 to 3 and the terminal
-half of slice 4 implemented, the web Trace tab and the live feed (slice 5)
-not yet · proposed 2026-09-30 · **Affects**: the `details` object of the
+**Status**: ACCEPTED 2026-10-01 (PR #673); slices 1 to 4 implemented (the
+terminal in #760, the web Trace tab in #742, with call rows in both and
+no timing bars yet, #656), the live feed (slice 5) not yet, #765 ·
+proposed 2026-09-30 · **Affects**: the `details` object of the
 `code_mode` tool result (an open JSON value, not a Part 1 interface);
 `codemode/satellite`'s `Run`; `codemode/codemode`'s `Execution`;
 `tools/codemode`'s `Execution`; `session_view` (a new fold) · **Raised by**:
