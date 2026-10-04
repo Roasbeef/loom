@@ -57,10 +57,28 @@ digest returns retained evidence; a changed digest conflicts. A connection
 failure after possible submission yields an unknown outcome, never an
 automatic fresh mutation. Read retry policy is separate and explicit.
 
+## Remote outcome evidence
+
+`broker/exec.LossCause` adds `RemoteOutcomeUncertain` for an exchange that
+cannot establish a definitive result. It remains an `ExecutionLost`, so callers
+must reconcile the original retained request instead of treating it as a start
+refusal. It proves neither native retirement nor permission to replay. This
+separates remote uncertainty from a local output relay death in diagnostics.
+
 ## Clearance and physical execution
 
 Dispatch gains operation and step context copied from the actual cleared
-CallSpec. Sequence numbers, random token bytes and connection generations
+CallSpec, plus optional opaque `core/remote_tool.ChildOrigin` provenance.
+`broker.clear_call_from` supplies that provenance; the existing `clear_call`
+entry supplies `None` for unmanaged local execution. Congestion retries retain
+it unchanged. Remote reservation requires an explicit durable origin and
+validates its full immutable parent identity before transmission. Provenance
+is not authorization and does not change the broker's pooled budget key.
+Derived build phases and detached jobs keep the original parent ToolKey while
+retaining their distinct physical operation/step in the immutable child request;
+the trusted adapter validates that relationship rather than rewriting the key.
+Explicit system children identify durable service invocations, not fabricated
+tool calls. Sequence numbers, random token bytes and connection generations
 cannot substitute for that context. Session and workspace authority come from
 the configured adapter binding. The owner durably allocates each logical
 request identity before making it sendable.
@@ -76,6 +94,14 @@ against its registered ceiling and current epochs. Arbitrary argv, shell or
 environment strings are never rewritten to guess which paths they contain.
 Unmapped resources are refused. Provider credentials and ambient environments
 are not copied to the executor.
+
+The native executor checks the cleared wall policy against the frozen local
+admission deadline after helper checkout and again when the helper actor
+consumes its queued Run. It MUST NOT shorten, refresh or otherwise rewrite the
+cleared policy to make it fit. Expiry before native dispatch sends no start
+frame. The existing relay still enforces aggregate cancellation, and native
+retirement remains a separate obligation. These checks do not constitute a
+hard real-time guarantee across scheduler suspension or native port delivery.
 
 Physical compilation is abstracted above compile preparation, because source
 materialization and seed checks already access disk before the existing
