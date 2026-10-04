@@ -66,8 +66,8 @@ sequenceDiagram
     Owner->>Owner: Clear and retain original native request
     Owner->>Native: Submit exact cleared request
     Native->>Native: Retain request and authority, commit Admit
-    Native->>Resource: Validate full identity and compiler template
-    Note over Resource,Native: Live admission must also order association against cancellation.
+    Native->>Resource: Commit live association under the original claim
+    Resource-->>Native: Exact launch permit, or refusal
     Native->>Native: Commit launch intent, then start compiler
     Native->>Native: Retain output and commit terminal evidence
     Native-->>Compile: Exact committed native result
@@ -77,10 +77,36 @@ sequenceDiagram
     Owner->>Owner: Commit receipt before acknowledgement
 ```
 
-The existing historical association API validates and retains evidence. Live
-assembly must add the cancellation ordering at the marked boundary before that
-evidence can grant permission to launch. Reading an association after a lost reply
-must remain a read, even when the original request was otherwise valid.
+The resource journal now implements that live association boundary. Native service
+assembly must call it between native admission and launch intent. The historical
+association API remains available for reconciliation, but returns no launch permit.
+
+### Cancellation and admission share one transaction order
+
+`associate_live_native` requires the original preparation claim. It first reads
+the exact native request, finite authority and committed admission. Those reads
+occur outside the resource writer transaction so one actor does not hold a writer
+lock while asking another actor for evidence.
+
+The final resource transaction checks the full original input again. The scope
+must still be open, preparation must be Ready, and the native association must be
+absent. It commits the association before returning an opaque permit bound to the
+exact resource endpoint, command reference, native key and request digest.
+
+If cancellation commits first, the association refuses. If association commits
+first, cancellation follows the retained native key. The latter ordering can race
+process startup; it does not establish that no process ran. The native reducer's
+separate launch-intent transition still permits at most one launch.
+
+The permit carries no renewed deadline. The original native continuation must
+check elapsed time before launch. Duplicate association, a lost reply or journal
+recovery cannot return another permit. Gleam values are copyable, so trusted
+assembly must keep the returned permit in that original continuation.
+
+`retained_input` recovers the original bounded data through its complete service
+key, including after cancellation, scope sealing or native endpoint loss. It never
+reconstructs a preparation claim. This lets recovery compare history while keeping
+fresh execution permission unavailable.
 
 ## Failure preserves what can be proved
 
@@ -124,6 +150,11 @@ and targeted mutations. The [P model review](../review/distributed-compile-custo
 records bounded checks of preparation, settlement and receipt ordering. Those
 model checks do not establish database crash atomicity or operating-system
 behavior.
+
+The [live-admission review](../review/distributed-live-compile-admission.md)
+records the resource transaction controls, complete-identity mutations and
+independent executor gate. These checks precede the native service wiring shown
+in the sequence above.
 
 Production acceptance still requires the live Compile/Launch services, exact
 command routing, executor registration and ordinary tool consumers. The final
