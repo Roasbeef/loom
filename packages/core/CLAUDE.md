@@ -91,6 +91,10 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
   named in the frozen contracts.
 - `core/msgpack.MsgPackValue` — the canonical msgpack subset the
   effect-plane framing protocol uses (ADR-003).
+- `core/bounded_msgpack.decode` applies the fixed remote wire profile before
+  `core/msgpack` allocates terms: 256 KiB total, depth 16, 2,048 total nodes,
+  128 array elements/map entries, 8 KiB strings and 128 KiB binaries. Its
+  shared node budget covers the complete tree, including map keys.
 - `core/corruption.CorruptionReport` — the single error type every total
   decoder returns.
 - `core/clock.Clock` — the injected time capability; reading returns
@@ -138,7 +142,9 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
   mechanical decode-and-re-mint. Its public `encode_user_block` and
   `decode_user_block` functions let ClientGateway carry that same block shape
   without reimplementing it. `core/msgpack` is the effect-plane framing codec,
-  golden-pinned under `protocol/msgpack-fixtures/`.
+  golden-pinned under `protocol/msgpack-fixtures/`. `core/bounded_msgpack` is
+  the stricter pure raw preflight shared by remote wire codecs; it rejects
+  trailing or malformed raw data before delegating semantic decoding.
 
 ## Invariants
 
