@@ -310,6 +310,21 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   is `deliver(answer)`, which the component dispatches as `Linked`. `resumed_for`
   is the socket's gate: an observer role is refused `NotHeld` before any task.
   `listed_entry` maps `Reserved` and `RecoveryBlocked` to `sessions.Blocked`.
+  The owner's home creates a session (protocol-change/065, the fourth addendum).
+  `home_create_capability(principal, ceiling, ask)` is `Some` for the owner at
+  Operator ceiling only, `upgrade_home` passes it as `Start.create` and picks
+  `home_creator_accepts` (a `submit` beneath `home.table_path`, plus the clicks
+  `home_accepts` takes) for that socket and `home_accepts` for every other.
+  `create_for(standing, tickets, open, create, workspace, name, sharing,
+  within:)` re-derives the page from the grant: open (the epoch check), Operator
+  ceiling, the credential authenticates as the page's principal and that is the
+  owner, `creations.chosen_name`, a workspace the owner's `authorized_page`
+  lists, `ui_sessions.reserve_creation` (10 an hour per credential, apart from
+  invitations, not given back), then `create` (`HomeAttachment.create`, which is
+  `server.create_session`, the control command's own function) under a key
+  `web-<hex>`, a `daemon.session_created` line, and `opened_ticket` (the open,
+  wait and mint `resume_for` shares). `create_task` runs it in a weft run linked
+  to the Lustre runtime and returns at once.
   The home's activity words (protocol-change/065, the home-list addendum) come
   from `HomeAttachment.activity`, which `server.home_activity` builds: the
   control command's `sessions.activity` read over the ids the page's credential

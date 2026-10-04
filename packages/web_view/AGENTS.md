@@ -106,6 +106,17 @@ page keys and nonces, and the relay into the session's gateway.
   `Start.resume(id, deliver)`, which starts the daemon's task and returns, sets
   `resuming` and draws the row "opening"; `deliver` dispatches `Linked` from
   the task. A second press, an observer ceiling and an ended page ask nothing.
+  The owner's operator page also has `Start.create` (protocol-change/065, the
+  fourth addendum): `Some` only for the owner at operator ceiling, and then
+  `view/create` draws a "New session" button in each workspace head and the form
+  (`name`, `shareable`) under the chosen one. `home.Choosing(workspace)` opens it
+  (`create.Composing`), `home.Creating(workspace, name, sharing)` asks
+  `Start.create(workspace, name, sharing, deliver)` and sets `create.Waiting`, and
+  `Created(answer)` departs (a `creations.Ticketed` path into `departure`) or
+  words the refusal (`creations.reason_words`). Only the open form's submit asks,
+  and only once. `web_view/creations` holds `Sharing`, `Answer`, `Reason`,
+  `chosen_name` (the one rule for a name) and `folder`. The submit's event is
+  beneath `table_path`, a path the owner's socket admits and no other's.
   Every list that answers also starts `Start.activity(ids, deliver)` for the
   running sessions it lists (at most `home.activity_limit`, 24): it returns
   at once, the daemon asks the sessions in a task of its own, and the answer is
