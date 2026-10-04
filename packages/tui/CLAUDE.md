@@ -386,13 +386,18 @@ Gleam forbids import cycles and none of the `tui/` modules may import
 - `tui/terminal_lane`: `Lane` and `Output`, the session lane with the
   terminal's connection and recorder as its handle types, and `perform`,
   the only place a lane's outputs touch the websocket or the recording.
+- `tui/image_support`, `tui/image_box`, `tui/image_shown`: drawn images,
+  described under "Drawn images" below. They import etui, `session_view`
+  and `theme`, and nothing that imports the model; `effect` carries
+  `image_shown.Command`.
 - `tui/effect`: `Effect`, the closed vocabulary of fire-and-forget effects a
   step decides on, input recording lines among them (`Record`). The session
   reducers' effects arrive as `Step(step_effect.Effect(Connection,
   Recorder))`, `session_view/step_effect`'s type bound to the terminal's
   handles. It imports the modules whose handles its variants carry
-  (`attachment`, `connection`, `herdr`, `job`, `recording`) and nothing
-  that imports the model.
+  (`attachment`, `connection`, `herdr`, `image_shown`, `job`, `recording`)
+  and nothing that imports the model. `DrawImages(commands)` and
+  `WakeLoop` are the image effects.
 - `tui/model`: the `Model` record, `Model(shared: TerminalShared, view:
   View)`. `TerminalShared` binds `Shared`'s four parameters to
   `connection.Connection`, `recording.Recorder`,
@@ -1339,9 +1344,10 @@ boundaries and the split's measurements under Invariants.
   bootstrap and WebSocket transport;
   `core` and `machine` for pure total entry/register/state decoding; `weft` for guarded,
   deadline-bounded connection startup; `etui` at commit
-  `c10f6a64b29ef7b59dd3872bb4471c59deeac681` (the fork's stack pinned in
-  `gleam.toml`, whose last commit is etui#5, a linear wrap for a word wider
-  than the row) with bounded
+  `4d5e466cf433c322012cb874f147be4d6a400eef` (the fork's stack pinned in
+  `gleam.toml`, whose last commit is etui#6, inline images: the terminal
+  graphics probe, kitty placeholders and OSC 1337; etui#5, a linear wrap for
+  a word wider than the row, is below it) with bounded
   input bursts,
   POSIX flow control disabled in raw mode, Unicode emoji widths, synchronized
   frames, full-screen scroll-region presentation, closed-input EOF,
@@ -2723,6 +2729,128 @@ the opener and the path as positional arguments, over the same
 `image_drain.drain` turns the reply into the notice. The newest image is
 chosen rather than the one on screen, since a row does not name its image
 without the anchors.
+
+## Drawn images
+
+On a terminal that can draw them, an image's placeholder row grows into a
+labelled box and the terminal draws the picture into it. The placeholder row
+is still the answer everywhere else (scrollback, `loom replay`, a terminal
+that did not answer the probe, a Herdr pane, a plain palette).
+
+**The probe.** `interactive` calls `image_support.probe_terminal(palette,
+getenv)` once, in the process that runs the loop and immediately before
+`app.run_buffered_cursor_adaptive`, so nothing printed earlier can be taken
+for a reply and the raw mode `probe.run` leaves on is the one the backend
+inherits. `image_support.detect` applies Loom's plain-palette rule first (a
+plain palette is never probed), then etui's `graphics.decide` (Herdr and
+`NO_COLOR` skip the probe), then runs `probe.run(200)` and maps the answer
+with `from_capabilities`: `KittyPlaceholders(cell)` for kitty and Ghostty,
+`Iterm2Inline(cell)` for iTerm2, `TextOnly(why)` otherwise, with the cell
+size guessed at 8 by 16 pixels if the terminal did not give one. A probe that
+times out is `TextOnly(NotAnswered)`. The answer lives in
+`View.image_support` for the whole process, and `new_model` starts it at
+`TextOnly(NotProbed)`, which is what every replay and test sees.
+
+**The box.** `session_view/image_header.picture` gives an `ImageRow` its
+`Picture` (fingerprint, media type, pixel size, byte count), so a `Line`, a
+cache key, never holds the data. `image_box.verdict` decides what an image
+row becomes: a `Drawing` (id and box), `Keep` (the placeholder row stands) or
+`Refuse(note)`. The note appears under the placeholder row for two reasons
+only: kitty and Ghostty carry a PNG as it is and cannot carry a JPEG or GIF
+(`this terminal draws PNG images only`), and an image over
+`image_box.max_bytes`, 4 MiB decoded, is never sent (`too large to draw in
+the terminal (limit 4.0 MB)`). The box is `graphics.fit` of the header's
+size into the cell size, at most 60 columns and at most the pane's width less
+the indent and frame, and at most `image_box.picture_rows(height)` rows: about
+half the transcript the terminal leaves, between 3 and 12, so a short terminal
+keeps the text around the image. The number comes from the terminal's own
+height (`model.view.height`), which moves only on a resize, never from the
+transcript's height, which moves as the composer wraps; the record cache and
+`image_shown`'s fits are keyed on it (`projection.same_image_height`), so
+typing never rebuilds them. The frame is as wide as
+the picture or the label needs, and the picture is centred in it. Two images
+in a row get one blank row between them (`projection.noted_images`). `projection.line_rows_for` builds the rows
+(`image_box.rows`: a top border that carries the image's words, one row per
+box row, a foot that carries `o opens externally`), and the anchors and the
+row cache use the same function, so rows and anchors agree. On kitty and
+Ghostty each cell is a Unicode placeholder (U+10EEEE and three combining
+marks) in a true-colour foreground that is the low 24 bits of the image id,
+which is ordinary text that scrolls and clips with the rows. On iTerm2 each
+cell is a no-break space in that colour, and the picture is drawn over it.
+The id is `image_box.id_of` the fingerprint, a stateless 24-bit hash,
+because a row is built before anything is sent and must already carry its
+colour; two images in one transcript collide with probability about
+n squared over 2 to the 25th, and the later one sent would show in both
+boxes.
+
+**Not recoloured.** `appearance.apply` leaves any cell whose symbol begins
+with the placeholder character exactly as it is, on every palette: the
+colour is the address, and a remap to a theme colour would show another image
+or none. The test is a prefix test on the cell's symbol, made only on the
+palettes that remap.
+
+**What the terminal is told.** `image_plan.settle` runs at the end of each
+step, after `refresh_frame_cache`. On a `TextOnly` terminal it returns at
+once. Otherwise it reads `render.transcript_window` (the rows the frame is
+about to show, through the same `window` function `render_rows` uses) with
+`image_box.found`, which reads boxes back out of the rows by their marked
+cells and says whether each is whole or clipped by the window. It finds each
+image's data again from the strand's entries by hashing each entry's
+fingerprint to its id (`find`); that scan runs only the first time an image
+is fitted, uploaded or drawn, and `image_shown.Shown.fits` remembers the
+fit. `image_shown.reconcile` is pure: given what the terminal was last told
+and what the next frame shows, it answers with commands. They leave as
+`effect.DrawImages`, which `runtime.perform_io` writes with `io.print`,
+the way the OSC 52 clipboard sequence is written, so they land between
+frames in the order decided.
+
+- Nothing is decided before the alternate screen is open. `Shown.screen`
+  is `BeforeScreen` until the first `msg.Resized`, which the backend sends
+  only after it has entered the alternate screen, and kitty and Ghostty keep
+  each screen's images apart.
+- kitty and Ghostty: an image entering view is `Upload` (transmit, then
+  its virtual placement), one whose box changed size is `Place` again, and
+  one that left view is `Remove`. The upload checks the PNG signature first.
+  The order against the frame does not matter, since the cells are text.
+- iTerm2: the picture is not text and anything the frame writes over a
+  drawn cell erases it, so it is only drawn after the frame that laid its
+  box out. A box seen for the first time is only owed (`Shown.owed`) and the
+  step queues `WakeLoop`, so the next step runs after that frame is drawn
+  and not at the next tick; that step draws it if it is still wanted. A box
+  that moved or left view is erased at once (`Erase`). A resize repaints
+  every cell, so `image_plan.resized` forgets what was drawn and owed
+  without erasing it, and the pictures are drawn again after the next frame.
+  Only a whole box is drawn: one clipped by the window's edge, or whose cells
+  are not intact on the cached frame (`image_plan.showing`, which is how a
+  surface drawn over the transcript is noticed), is not.
+- A marked span is a box only if the whole span is made of the placeholder
+  character or of no-break spaces. Text that merely starts with one, such as
+  a pasted line indented with no-break spaces, is not a box. An image that
+  cannot be found when it is fitted is dropped without a notice: a row the
+  projection built carries an image it read from the transcript, so a miss
+  means the cells were never a box.
+- The step that sets `quit` deletes every uploaded kitty image
+  (`image_shown.release`), while the alternate screen is still open.
+- An image whose data is missing, is not valid base64, or is not a PNG
+  where kitty needs one is put in `Shown.failed` and never tried again. The
+  step sets the notice `could not draw an image: ...` once, and the box
+  stays as an empty frame.
+
+The terminal's own memory is bounded by the viewport, because an image is
+held only while its box is in view and each is at most `max_bytes`. When the
+alternate screen is left the terminal drops the screen's images with it.
+
+`tui/demo_image` seeds the `--demo` launch with a prompt, an `fs_read` call
+and a result carrying a real 480 by 280 PNG, so `bin/loom --demo` in a
+terminal that draws shows the box end to end.
+
+`image_draw_test` covers the probed-yes and probed-no frames, the recolour
+exemption, the effect order, and the error paths. `LOOM_IMAGE_ANSI=<path>`
+makes `the_inline_frame_can_be_written_for_a_terminal_test` write the raw
+bytes of one inline frame (the image uploaded, then the frame with its
+placeholder cells) to `<path>`, for `cat` in Ghostty or kitty. `string.contains`
+cannot find a placeholder in a row, because it matches whole graphemes and a
+placeholder is the base of one; the tests count codepoints.
 
 An operator's turn is one band, `› text`, wrapped under its own first word,
 with no title row. An answer opens with a heading naming the strand,

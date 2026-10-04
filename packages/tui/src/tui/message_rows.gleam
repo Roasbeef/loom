@@ -89,7 +89,7 @@ pub fn rows(speaker: Speaker, text: String, width: Int) -> List(span.Line) {
     | Spacer
     | ProgramRunning
     | ProgramFailure
-    | ImageRow -> body_rows(text, [], width)
+    | ImageRow(..) -> body_rows(text, [], width)
   }
   list.append(drawn, [span.line_plain("")])
 }

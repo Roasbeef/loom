@@ -718,7 +718,7 @@ fn render_transcript(
         buf,
         area,
         model.view.caches.rendered_rows,
-        model.view.scroll_offset + tui_model.viewport_backlog(model),
+        transcript_offset(model),
       )
   }
 }
@@ -730,14 +730,65 @@ fn render_rows(
   offset: Int,
 ) -> buffer.Buffer {
   let visible =
-    rows
-    |> list.drop(offset)
-    |> list.take(area.size.height)
-    |> list.reverse
+    window(rows, offset, area.size.height)
     |> list.index_map(fn(line, row) { #(line, row) })
   list.fold(visible, buf, fn(buf, row) {
     render_transcript_row(buf, area, row.0, row.1)
   })
+}
+
+// The rows a viewport shows, top first. The rows are held newest first, and
+// `offset` counts rows from the newest, so the viewport is a slice of the
+// held list that is then turned over.
+fn window(rows: List(span.Line), offset: Int, height: Int) -> List(span.Line) {
+  rows
+  |> list.drop(offset)
+  |> list.take(height)
+  |> list.reverse
+}
+
+/// The rectangle the transcript rows are painted into on a screen: the
+/// panel the layout gives the main strand, less its border and margin.
+///
+/// Anything that reasons about where a transcript row landed on screen reads
+/// it here rather than from `layout` itself, so that it asks the same
+/// question `render_frame` answers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let area = render.transcript_area(model, geometry.rect_new(0, 0, 80, 24))
+/// ```
+@internal
+pub fn transcript_area(model: Model, screen: Rect) -> Rect {
+  let #(_, body_area, _, _) = layout.layout(screen, model)
+  let #(conversation_area, _) = layout.queue_body_layout(body_area, model)
+  let #(transcript_panel, _, _) = layout.body_layout(conversation_area, model)
+  layout.transcript_inner(transcript_panel)
+}
+
+/// The transcript rows the frame shows in `area`, top first: exactly the
+/// rows `render_transcript` paints, so a row's place in this list is its
+/// distance in rows from the top of `area`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let rows = render.transcript_window(model, area)
+/// ```
+@internal
+pub fn transcript_window(model: Model, area: Rect) -> List(span.Line) {
+  window(
+    model.view.caches.rendered_rows,
+    transcript_offset(model),
+    area.size.height,
+  )
+}
+
+// How many rows the viewport is above the newest: the reader's scroll plus
+// the rows the pacing walk has not revealed yet.
+fn transcript_offset(model: Model) -> Int {
+  model.view.scroll_offset + tui_model.viewport_backlog(model)
 }
 
 // The speaker's background continues to the right edge. Padding has a known
@@ -854,7 +905,7 @@ pub fn render_line(line: Line, width: Int, strand: String) -> List(span.Line) {
     // A program block cuts every row to its box; a wrap could only break
     // the box's right edge onto a row of its own. An image's row is cut to
     // the pane, so its key stays at the end of the one row.
-    ProgramRunning | ProgramFailure | ImageRow ->
+    ProgramRunning | ProgramFailure | ImageRow(..) ->
       speaker_rows(line, width, strand)
 
     // Every other body is laid out against the full pane and has never been
@@ -972,7 +1023,7 @@ pub fn finish_markdown_rows(
     | PeerMessage
     | ProgramRunning
     | ProgramFailure
-    | ImageRow -> marked_rows(speaker, rows, run)
+    | ImageRow(..) -> marked_rows(speaker, rows, run)
   }
 }
 
@@ -1048,7 +1099,7 @@ fn speaker_mark(speaker: Speaker, text: String) -> #(String, style.Style) {
     | PeerMessage
     | ProgramRunning
     | ProgramFailure -> #("", theme.quiet_text())
-    ImageRow -> #("▣ ", theme.current_bold())
+    ImageRow(..) -> #("▣ ", theme.current_bold())
   }
 }
 
@@ -1136,7 +1187,7 @@ fn speaker_rows(line: Line, width: Int, strand: String) -> List(span.Line) {
 
     // An image's row names it and the key that opens it; a second row, when
     // the projection gives one, says why the picture itself is not drawn.
-    ImageRow -> image_rows(line.text, mark, mark_style, width)
+    ImageRow(..) -> image_rows(line.text, mark, mark_style, width)
 
     // Advice closes with a blank like every other system row.
     SummarizedAdvice ->
