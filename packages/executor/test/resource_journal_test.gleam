@@ -13,6 +13,7 @@ import codemode/service_resources as resources
 import core/command
 import core/ids
 import core/json
+import core/msgpack as mp
 import core/remote_tool
 import core/workspace as cw
 import executor/remote/admission
@@ -1085,6 +1086,402 @@ pub fn guarded_queries_refuse_each_oversized_projection_test() {
   )
 }
 
+pub fn live_association_returns_one_bound_permit_and_later_cancel_is_in_flight_test() {
+  fixture("live-first", limits(2, 30_000_000), fn(_path, book, native) {
+    let original = compiled("pub fn main() { Nil }", 3)
+    let claim = prepared_resource(book, original)
+    let prepared = prepared_command(original)
+    let key = native_key(original, 8)
+    let digest = retain_live_request(native, key, prepared)
+    let ref = command_ref(original)
+    let assert Ok(permit) = j.associate_live_native(claim, ref, key, digest)
+      as "Only the original live association commits launch eligibility."
+    assert j.native_launch_binding(permit) == #(book, ref, key, digest)
+    assert j.associate_live_native(claim, ref, key, digest) == Error(j.Conflict)
+    assert j.inspect_native(book, original)
+      == Ok(j.Associated(ref, key, digest, prepared))
+    assert j.mark_unknown(book, original)
+      == Ok(j.Unknown(Some(compile_ready(original.key))))
+    assert j.inspect_native(book, original)
+      == Ok(j.Associated(ref, key, digest, prepared))
+
+    // Cancellation after association follows that same tuple. Resource custody
+    // neither rolls back native admission nor promises cancellation before spawn.
+    let assert Ok(evidence) = native_journal.inspect(native, key, digest)
+      as "Actual original admitted record."
+    assert admission.phase(evidence) == admission.Admitted
+    let assert Ok(decision) =
+      native_journal.apply(native, key, digest, admission.AuthorizeLaunch)
+      as "The already-admitted native continuation retains its separate ordering."
+    let assert admission.Launch(_) = decision.effect
+      as "Native reducer grants launch once."
+    let assert Ok(duplicate) =
+      native_journal.apply(native, key, digest, admission.AuthorizeLaunch)
+      as "Native reducer rejects a second launch effect."
+    assert duplicate.effect == admission.NoLaunch
+  })
+}
+
+pub fn cancellation_before_live_association_blocks_permission_but_preserves_history_test() {
+  fixture("live-cancel-first", limits(2, 30_000_000), fn(_path, book, native) {
+    let original = compiled("pub fn main() { Nil }", 3)
+    let claim = prepared_resource(book, original)
+    let prepared = prepared_command(original)
+    let key = native_key(original, 8)
+    let digest = retain_live_request(native, key, prepared)
+    let ref = command_ref(original)
+    assert j.mark_unknown(book, original)
+      == Ok(j.Unknown(Some(compile_ready(original.key))))
+    assert j.associate_live_native(claim, ref, key, digest) == Error(j.Conflict)
+    assert j.inspect_native(book, original) == Ok(j.Unassociated)
+    assert j.associate_native(book, original, ref, key, digest)
+      == Ok(j.Associated(ref, key, digest, prepared))
+    assert j.associate_live_native(claim, ref, key, digest) == Error(j.Conflict)
+    let assert Ok(evidence) = native_journal.inspect(native, key, digest)
+      as "Historical association does not authorize native launch."
+    assert admission.phase(evidence) == admission.Admitted
+  })
+}
+
+pub fn live_association_requires_ready_and_open_scope_on_original_claim_test() {
+  list.each([0, 1, 2], fn(stage) {
+    fixture("live-eligibility", limits(2, 30_000_000), fn(_path, book, native) {
+      let original = compiled("pub fn main() { Nil }", 3)
+      assert j.reserve(book, original) == Ok(j.Reserved)
+      let assert Ok(j.Claimed(claim)) = j.claim_preparation(book, original)
+        as "Original preparation claim."
+      case stage {
+        0 -> Nil
+        1 -> {
+          let assert Ok(_) = j.commit_ready(claim, compile_ready(original.key))
+            as "Ready first."
+          assert j.seal(book) == Ok(j.SealedScope)
+        }
+        2 -> {
+          let assert Ok(_) = j.commit_ready(claim, compile_ready(original.key))
+            as "Ready first."
+          let assert Ok(_) =
+            j.mark_released(book, original, j.ResourceOwnerCleaned)
+            as "Actual owner cleanup."
+          Nil
+        }
+        _ -> Nil
+      }
+      let key = native_key(original, 8)
+      let digest = retain_live_request(native, key, prepared_command(original))
+      let error = case stage {
+        1 -> j.Sealed
+        _ -> j.Conflict
+      }
+      assert j.associate_live_native(claim, command_ref(original), key, digest)
+        == Error(error)
+      assert j.inspect_native(book, original) == Ok(j.Unassociated)
+    })
+  })
+}
+
+pub fn live_request_and_authority_without_actual_admit_cannot_grant_permission_test() {
+  fixture("live-no-admit", limits(2, 30_000_000), fn(_path, book, native) {
+    let original = compiled("pub fn main() { Nil }", 3)
+    let claim = prepared_resource(book, original)
+    let prepared = prepared_command(original)
+    let key = native_key(original, 8)
+    let bytes = encode_prepared(prepared)
+    let digest = hash_bytes(bytes)
+    assert native_journal.put_payload(
+        native,
+        key,
+        digest,
+        payload.Request(bytes),
+      )
+      == Ok(Nil)
+    assert native_journal.put_payload(
+        native,
+        key,
+        digest,
+        payload.Authority(authority(1, -30_000, 10_000)),
+      )
+      == Ok(Nil)
+    assert j.associate_live_native(claim, command_ref(original), key, digest)
+      == Error(j.Conflict)
+    assert j.inspect_native(book, original) == Ok(j.Unassociated)
+    let assert Ok(_) = native_journal.admit(native, key, digest)
+      as "Actual Admit follows both payloads."
+    let assert Ok(permit) =
+      j.associate_live_native(claim, command_ref(original), key, digest)
+      as "Negative absolute clock era is preserved without deriving a new deadline."
+    assert j.native_launch_binding(permit)
+      == #(book, command_ref(original), key, digest)
+  })
+}
+
+pub fn live_requires_exact_canonical_finite_authority_despite_actual_admit_test() {
+  let assert Ok(shape) =
+    wire.encode_value(mp.ArrayValue([mp.IntValue(1), mp.IntValue(10)]))
+    as "Wrong authority tuple size."
+  let authorities = [
+    None,
+    Some(authority(0, 30_000, 10_000)),
+    Some(authority(2_147_483_648, 30_000, 10_000)),
+    Some(authority(1, 0, 10_000)),
+    Some(authority(1, 30_000, 999)),
+    Some(authority(1, 30_000, 180_000)),
+    Some(shape),
+    Some(<<147, 204, 1, 2, 205, 3, 232>>),
+  ]
+  list.each(authorities, fn(value) {
+    fixture("live-authority", limits(2, 30_000_000), fn(_path, book, native) {
+      let original = compiled("pub fn main() { Nil }", 3)
+      let claim = prepared_resource(book, original)
+      let prepared = prepared_command(original)
+      let key = native_key(original, 8)
+      let digest = retain_native_request(native, key, prepared)
+      case value {
+        None -> Nil
+        Some(bytes) -> {
+          assert native_journal.put_payload(
+              native,
+              key,
+              digest,
+              payload.Authority(bytes),
+            )
+            == Ok(Nil)
+        }
+      }
+      assert j.associate_live_native(claim, command_ref(original), key, digest)
+        == Error(j.Conflict)
+      assert j.inspect_native(book, original) == Ok(j.Unassociated)
+
+      // These same genuine admitted records remain readable historically. New
+      // live eligibility alone requires the native actor's complete authority order.
+      assert j.associate_native(
+          book,
+          original,
+          command_ref(original),
+          key,
+          digest,
+        )
+        == Ok(j.Associated(command_ref(original), key, digest, prepared))
+    })
+  })
+}
+
+pub fn live_reference_and_original_endpoint_are_exactly_bound_test() {
+  fixture("live-exact-binding", limits(2, 30_000_000), fn(path, book, native) {
+    let original = compiled("pub fn main() { Nil }", 3)
+    let claim = prepared_resource(book, original)
+    assert j.claim_journal(claim) == book
+    assert j.native_endpoint(book) == native
+    let assert Ok(capacity) = admission.capacity(20)
+      as "Other native endpoint capacity."
+    let assert Ok(foreign) =
+      native_journal.fresh(path <> ".foreign", native_scope(), capacity)
+      as "Same scope does not imply identical actual native journal custody."
+    assert j.native_endpoint(book) != foreign
+    assert native_journal.scope(foreign) == native_journal.scope(native)
+    let prepared = prepared_command(original)
+    let key = native_key(original, 8)
+    let digest = retain_live_request(native, key, prepared)
+    let substituted =
+      rekey(original, "physical:build", 3, parent("parent", 3, hash("a"), 5))
+    assert j.associate_live_native(claim, command_ref(substituted), key, digest)
+      == Error(j.Conflict)
+    assert j.inspect_native(book, original) == Ok(j.Unassociated)
+    let ref = command_ref(original)
+    let assert Ok(permit) = j.associate_live_native(claim, ref, key, digest)
+      as "The exact reference succeeds after a refused substitution."
+    assert j.native_launch_binding(permit) == #(book, ref, key, digest)
+    assert native_journal.release(foreign) == Ok(Nil)
+  })
+}
+
+pub fn historical_input_lookup_compares_entire_key_at_same_logical_slot_test() {
+  fixture("read-full-key", limits(2, 30_000_000), fn(_path, book, _native) {
+    let original = compiled("pub fn main() { Nil }", 3)
+    assert j.retained_input(book, original.key) == Error(j.Missing)
+    assert j.reserve(book, original) == Ok(j.Reserved)
+    assert j.retained_input(book, original.key) == Ok(original)
+    let changed_body = compiled("pub fn main() { 1 }", 3)
+    let #(original_scope, operation, step) = command.coordinates(original.key)
+    let assert Ok(foreign_scope) =
+      cw.scope_from_fields(
+        "00000000-0000-7000-8000-000000000001",
+        "checkout",
+        "linux",
+        3,
+        7,
+      )
+      as "Changed authority epoch."
+    let assert Ok(changed_scope) =
+      command.service_key(
+        command.parent(original.key),
+        command.CompileService,
+        foreign_scope,
+        operation,
+        step,
+        id(3),
+        command.digests(original.key).0,
+        hash("b"),
+        hash("c"),
+      )
+      as "Full key with foreign epoch."
+    let assert Ok(changed_registration) =
+      command.service_key(
+        command.parent(original.key),
+        command.CompileService,
+        original_scope,
+        operation,
+        step,
+        id(3),
+        command.digests(original.key).0,
+        hash("d"),
+        hash("c"),
+      )
+      as "Full key with foreign registration."
+    let assert Ok(changed_contract) =
+      command.service_key(
+        command.parent(original.key),
+        command.CompileService,
+        original_scope,
+        operation,
+        step,
+        id(3),
+        command.digests(original.key).0,
+        hash("b"),
+        hash("d"),
+      )
+      as "Full key with foreign contract."
+    let substitutions = [
+      changed_body.key,
+      rekey(original, "different:step", 3, command.parent(original.key)).key,
+      rekey(original, "physical:build", 9, command.parent(original.key)).key,
+      rekey(original, "physical:build", 3, parent("parent", 3, hash("f"), 4)).key,
+      rekey(original, "physical:build", 3, parent("parent", 3, hash("a"), 5)).key,
+      changed_scope,
+      changed_registration,
+      changed_contract,
+    ]
+    list.each(substitutions, fn(key) {
+      assert remote_tool.child_address(command.service_origin(key))
+        == remote_tool.child_address(command.service_origin(original.key))
+      assert j.retained_input(book, key) == Error(j.Conflict)
+    })
+    assert j.retained_input(book, original.key) == Ok(original)
+  })
+}
+
+pub fn historical_input_ready_and_completion_survive_reopen_without_native_endpoint_test() {
+  fixture("read-reopen", limits(2, 30_000_000), fn(path, book, native) {
+    let original = compiled("pub fn main() { Nil }", 3)
+    let claim = prepared_resource(book, original)
+    let prepared = prepared_command(original)
+    let key = native_key(original, 8)
+    let digest = retain_live_request(native, key, prepared)
+    let ref = command_ref(original)
+    let assert Ok(_) = j.associate_live_native(claim, ref, key, digest)
+      as "Fresh original permission."
+    let terminal = native_terminal(native, key, digest)
+    let assert Ok(retained) =
+      j.commit_compile(book, original, success(original, key, digest, terminal))
+      as "Exact settled outcome."
+    assert j.seal(book) == Ok(j.SealedScope)
+    assert native_journal.release(native) == Ok(Nil)
+    assert j.retained_input(book, original.key) == Ok(original)
+    assert j.release_endpoint(book) == Ok(Nil)
+    let assert Ok(reopened) =
+      j.recover(path, enrolled(), limits(2, 30_000_000), native)
+      as "Historical evidence does not need a live native endpoint."
+    let assert Ok(saved) = j.retained_input(reopened, original.key)
+      as "Exact retained input only."
+    assert saved == original
+    assert j.inspect(reopened, saved)
+      == Ok(j.Prepared(compile_ready(original.key)))
+    assert j.inspect_compile(reopened, saved)
+      == Ok(j.CompileRetained(retained, j.ReceiptPending))
+    assert j.claim_preparation(reopened, saved)
+      == Ok(j.Existing(j.Prepared(compile_ready(original.key))))
+    assert j.associate_native(reopened, saved, ref, key, digest)
+      == Ok(j.Associated(ref, key, digest, prepared))
+    assert j.associate_live_native(claim, ref, key, digest) == Error(j.Closed)
+    assert j.release_endpoint(reopened) == Ok(Nil)
+  })
+}
+
+pub fn ignored_live_permission_reply_never_reconstructs_another_permit_test() {
+  fixture("live-lost-reply", limits(2, 30_000_000), fn(_path, book, native) {
+    let original = compiled("pub fn main() { Nil }", 3)
+    let claim = prepared_resource(book, original)
+    let prepared = prepared_command(original)
+    let key = native_key(original, 8)
+    let digest = retain_live_request(native, key, prepared)
+    let ref = command_ref(original)
+
+    // This caller discards the actual committed response, as after a lost ACK.
+    // No subsequent call may reconstruct its live continuation from the row.
+    let _ignored = j.associate_live_native(claim, ref, key, digest)
+    assert j.inspect_native(book, original)
+      == Ok(j.Associated(ref, key, digest, prepared))
+    assert j.associate_live_native(claim, ref, key, digest) == Error(j.Conflict)
+    assert j.associate_native(book, original, ref, key, digest)
+      == Ok(j.Associated(ref, key, digest, prepared))
+  })
+}
+
+pub fn historical_association_winning_first_never_grants_a_live_retry_test() {
+  fixture("history-first", limits(2, 30_000_000), fn(_path, book, native) {
+    let original = compiled("pub fn main() { Nil }", 3)
+    let claim = prepared_resource(book, original)
+    let prepared = prepared_command(original)
+    let key = native_key(original, 8)
+    let digest = retain_live_request(native, key, prepared)
+    let ref = command_ref(original)
+    assert j.associate_native(book, original, ref, key, digest)
+      == Ok(j.Associated(ref, key, digest, prepared))
+    assert j.associate_live_native(claim, ref, key, digest) == Error(j.Conflict)
+    assert j.retained_input(book, original.key) == Ok(original)
+  })
+}
+
+pub fn historical_launch_input_lookup_returns_data_without_a_compile_permit_test() {
+  fixture("history-launch", limits(2, 30_000_000), fn(_path, book, _native) {
+    let producer = compiled("pub fn main() { Nil }", 3)
+    let original = launched(producer.key, 8)
+    assert j.reserve(book, original) == Ok(j.Reserved)
+    let assert Ok(j.Claimed(claim)) = j.claim_preparation(book, original)
+      as "Original Launch preparation."
+    let ready = launch_ready(original.key, producer.key)
+    assert j.commit_ready(claim, ready) == Ok(j.Prepared(ready))
+    assert j.retained_input(book, original.key) == Ok(original)
+    let compiled_ref = command_ref(producer)
+    let native_key = native_key(producer, 9)
+    let digest = hash_bytes(<<>>)
+    assert j.associate_live_native(claim, compiled_ref, native_key, digest)
+      == Error(j.UnsupportedRole)
+  })
+}
+
+pub fn failed_live_association_commit_never_returns_permission_test() {
+  fixture("live-commit-failure", limits(2, 30_000_000), fn(path, book, native) {
+    let original = compiled("pub fn main() { Nil }", 3)
+    let claim = prepared_resource(book, original)
+    let key = native_key(original, 8)
+    let digest = retain_live_request(native, key, prepared_command(original))
+    let ref = command_ref(original)
+    execute(
+      path,
+      "PRAGMA foreign_keys=ON; CREATE TABLE live_parent(id INTEGER PRIMARY KEY); CREATE TABLE live_child(id INTEGER REFERENCES live_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fail_live_commit AFTER UPDATE OF native_id ON resource_call BEGIN INSERT INTO live_child VALUES(1); END",
+    )
+    assert j.associate_live_native(claim, ref, key, digest)
+      == Error(j.Uncertain)
+    let assert Ok(reopened) =
+      j.recover(path, enrolled(), limits(2, 30_000_000), native)
+      as "Association rolled back."
+    assert j.inspect_native(reopened, original) == Ok(j.Unassociated)
+    assert j.associate_live_native(claim, ref, key, digest) == Error(j.Closed)
+    assert j.release_endpoint(reopened) == Ok(Nil)
+  })
+}
+
 fn assert_projection_refused(
   answer: Result(List(a), sqlight.Error),
   field: Int,
@@ -1116,6 +1513,40 @@ fn encode_completion(value: completion.CompileCompletion) -> BitArray {
 fn hash_bytes(bytes: BitArray) -> identity.Digest {
   let assert Ok(hash) = wire.digest(bytes) as "Canonical SHA-256 evidence."
   hash
+}
+
+fn authority(generation: Int, deadline: Int, budget: Int) -> BitArray {
+  let assert Ok(bytes) =
+    wire.encode_value(
+      mp.ArrayValue([
+        mp.IntValue(generation),
+        mp.IntValue(deadline),
+        mp.IntValue(budget),
+      ]),
+    )
+    as "Canonical original native authority tuple."
+  bytes
+}
+
+fn retain_live_request(
+  native: native_journal.Journal,
+  key: identity.RequestKey,
+  prepared: wire.Prepared,
+) -> identity.Digest {
+  let bytes = encode_prepared(prepared)
+  let digest = hash_bytes(bytes)
+  assert native_journal.put_payload(native, key, digest, payload.Request(bytes))
+    == Ok(Nil)
+  assert native_journal.put_payload(
+      native,
+      key,
+      digest,
+      payload.Authority(authority(1, 30_000, 10_000)),
+    )
+    == Ok(Nil)
+  let assert Ok(_) = native_journal.admit(native, key, digest)
+    as "Real Request/Authority/Admit order."
+  digest
 }
 
 fn command_ref(original: j.Input) -> command.CommandRef {
