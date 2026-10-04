@@ -39,6 +39,117 @@ loom_profile_config_enabled() {
   "$LOOM_PROFILE_CONFIG_READER" "$config"
 }
 
+# A profiling node exists to be attached to, so it only makes sense for an
+# invocation that starts a long-lived daemon or client node. Help requests and
+# the subcommands that run and exit never start one; creating a credential
+# directory and printing a node name for them would be misleading, and with
+# `[daemon] profile = true` it would happen on every `loomd --help`.
+#
+# The recognition mirrors the applications' own dispatch: `--help` and `-h`
+# win wherever they appear, `help` only in first position, and the
+# subcommand words only in first position. `ui` is deliberately absent from
+# the client list: the web view is a long-lived node and may be profiled.
+loom_profile_is_exit_only() {
+  local role="$1"
+  shift
+
+  local word=""
+  for word in "$@"; do
+    case "$word" in
+      --help | -h)
+        return 0
+        ;;
+    esac
+  done
+
+  case "$role:${1:-}" in
+    client:help | client:ext | client:replay | client:sessions | client:version | client:--version | client:claim | client:enroll | client:access | client:update)
+      return 0
+      ;;
+    daemon:help | daemon:access | daemon:peer | daemon:ext)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Reports whether the process table text names the credential directory as a
+# running emulator's -home argument. That argument is how observer.sh pairs a
+# node with its credentials, and it is equally good evidence of liveness here.
+loom_profile_directory_in_use() {
+  local processes="$1"
+  local directory="$2"
+
+  [[ "$processes" == *" -home $directory "* || "$processes" == *" -home $directory"$'\n'* ]]
+}
+
+# Removes credential directories whose profiled process is gone. A launcher
+# that was killed outright, or a machine that rebooted, leaves its directory
+# behind, and older releases left every directory behind.
+#
+# Only names of the exact shape mktemp gives them are candidates, and only
+# real directories: nothing else under tokens/ is ever touched. A directory
+# is stale when no process was started with it as its HOME. One created in the
+# last two minutes is spared regardless, because a concurrent launcher creates
+# its directory before it execs the emulator that will claim it. When the
+# process table cannot be read, nothing is removed.
+loom_profile_sweep() {
+  local tokens="$1"
+
+  local processes
+  processes="$(ps -ww -axo command= 2>/dev/null)" || return 0
+
+  local directory=""
+  local name=""
+  for directory in "$tokens"/loom-daemon-profile.???????? "$tokens"/loom-client-profile.????????; do
+    if [[ -L "$directory" || ! -d "$directory" ]]; then
+      continue
+    fi
+
+    name="${directory##*/}"
+    if [[ ! "$name" =~ ^loom-(daemon|client)-profile\.[A-Za-z0-9]{8}$ ]]; then
+      continue
+    fi
+
+    if [[ -n "$(find "$directory" -maxdepth 0 -mmin -2 2>/dev/null)" ]]; then
+      continue
+    fi
+
+    if loom_profile_directory_in_use "$processes" "$directory"; then
+      continue
+    fi
+
+    rm -rf -- "$directory"
+  done
+}
+
+# Removes the credential directory once the launcher's process has exited.
+#
+# The launchers exec the emulator, so the launcher's PID becomes the
+# emulator's PID and no shell remains to run a trap afterwards. Keeping that
+# PID is also what lets observer.sh recognise the node, whose name embeds it.
+# A detached watcher therefore polls the PID and removes the directory when it
+# disappears, which covers a normal exit, a signal and SIGKILL alike. The
+# watcher ignores HUP, INT and QUIT so a terminal interrupt aimed at the
+# foreground client does not take it down first, and it holds none of the
+# caller's descriptors.
+loom_profile_watch() {
+  local owner="$$"
+  local directory="$1"
+  local interval="${LOOM_PROFILE_WATCH_INTERVAL:-2}"
+
+  (
+    trap '' HUP INT QUIT
+    while kill -0 "$owner" 2>/dev/null; do
+      sleep "$interval"
+    done
+    rm -rf -- "$directory"
+  ) </dev/null >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+}
+
 # Removes this launcher's --profile option while retaining the application's
 # original argument boundaries in LOOM_PROFILE_ARGS. It recognises options
 # only before -- and skips known option values, so a value named --profile is
@@ -53,10 +164,10 @@ loom_profile_consume() {
   LOOM_PROFILE_COOKIE_HOME=""
   LOOM_PROFILE_ORIGINAL_HOME="${HOME:-}"
 
-  # These client subcommands own their complete argument tail. In particular,
+  # These invocations own their complete argument tail. In particular,
   # `loom ext` forwards every word to the server, so a server-side --profile
   # must not be mistaken for a launcher option.
-  if [[ "$role" == client && ( "${1:-}" == ext || "${1:-}" == replay || "${1:-}" == sessions || "${1:-}" == version || "${1:-}" == --version ) ]]; then
+  if loom_profile_is_exit_only "$role" "$@"; then
     LOOM_PROFILE_ARGS=("$@")
     return 0
   fi
@@ -147,6 +258,7 @@ loom_profile_consume() {
   umask 077
   mkdir -p "$tokens"
   chmod 700 "$tokens"
+  loom_profile_sweep "$tokens"
   LOOM_PROFILE_COOKIE_HOME="$(mktemp -d "$tokens/loom-${role}-profile.XXXXXXXX")"
   umask "$old_umask"
 
@@ -155,10 +267,11 @@ loom_profile_consume() {
   printf '%s\n' "$cookie" >"$LOOM_PROFILE_COOKIE_HOME/.erlang.cookie"
   chmod 700 "$LOOM_PROFILE_COOKIE_HOME"
   chmod 600 "$LOOM_PROFILE_COOKIE_HOME/.erlang.cookie"
+  loom_profile_watch "$LOOM_PROFILE_COOKIE_HOME"
 
   LOOM_PROFILE_NODE="loom_${role}_profile_$$_$(loom_profile_random)@127.0.0.1"
   printf 'Loom profiling enabled for %s.\n' "$role" >&2
   printf '  node: %s\n' "$LOOM_PROFILE_NODE" >&2
   printf '  attach: %q %q %q\n' "${LOOM_PROFILE_TOOL:?}" "$LOOM_PROFILE_NODE" "$LOOM_PROFILE_COOKIE_HOME" >&2
-  printf '  remove the credential directory after the profiled process exits.\n' >&2
+  printf '  the credential directory is removed when the process exits.\n' >&2
 }

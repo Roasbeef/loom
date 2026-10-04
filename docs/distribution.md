@@ -479,8 +479,28 @@ reconfigured. The client does not send the flag in a control RPC. It does not
 inspect the complete tails of `ext`, `replay`, or `sessions`, stops recognizing
 options after `--`, and preserves values such as `--token --profile` as client
 arguments. The cookie never enters `ERL_FLAGS`, the application argument vector, OS process
-arguments, or a child emulator's environment. Remove the printed credential
-directory after the profiled process exits.
+arguments, or a child emulator's environment.
+
+Profiling applies only to an invocation that starts a long-lived node. `--help`,
+`-h`, `help`, `loomd access`, `loomd peer`, `loomd ext`, and the client's `ext`,
+`replay`, `sessions`, `version`, `claim`, `enroll`, `access`, and `update`
+commands run and exit, so they create no credential directory, print no node
+name, and ignore `daemon.profile = true`. Their arguments, including a
+`--profile`, reach the application unchanged.
+
+The credential directory belongs to the profiled process and is removed when
+that process exits. The launcher still `exec`s the emulator, which keeps the
+PID that the node name embeds and that `loom observer` matches, so it starts a
+small detached watcher first. The watcher polls the launcher's PID every two
+seconds and deletes the directory once the PID is gone, including after a
+signal or `SIGKILL`. Every profiled launch also sweeps its own state root's
+`tokens` directory for leftovers: directories named exactly
+`loom-daemon-profile.XXXXXXXX` or `loom-client-profile.XXXXXXXX` that no running
+process uses as its HOME and that are more than two minutes old, such as those
+left by older releases or by a reboot. Nothing else under `tokens` is touched,
+and nothing is removed if the process table cannot be read. Observer discovery
+needs a live PID, a matching node name and an existing cookie directory, so it
+never selects a directory that has been removed.
 
 An ordinary stripped release includes the census and OTP `runtime_tools`, so it
 can report heap and allocator state without debug symbols. `make install-debug`
