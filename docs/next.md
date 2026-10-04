@@ -71,10 +71,26 @@ without body re-execution. Independent Astra reviews found no remaining
 functional defect in these reviewed components. These results are not the
 full product gate or remote end-to-end acceptance.
 
-The next working slice connects exact executor payload custody, native
-execution and pinned TLS to that owner journal. A local semantic workspace
-host is also under review. Preserve their uncommitted work while integrating;
-neither is enabled by the shipped daemon yet. Bind every workspace consumer
+The native executor component in PR [#775](https://github.com/Roasbeef/loom/pull/775)
+now joins exact payload custody, pinned TLS, administrative registration checks
+and the existing sandbox helper. Its 105 tests pass both sequentially and with
+four-way parallel scheduling. A reverted output-sink lifetime mutation fails
+the 33-command process census while the other 22 native tests pass. The
+[review record](review/distributed-native-service.md) describes corrected stdin,
+cancellation and process-lifetime failures.
+
+The executor-local semantic workspace host in
+PR [#776](https://github.com/Roasbeef/loom/pull/776) passed 18 host tests and
+99 existing filesystem regressions, with no actionable independent review
+finding. The owner dispatch binding and real joined owner-journal/TLS/helper fixture now
+pass original-identity retry, custody restart and registration/policy/scope
+refusal checks. Test-only registration-bypass and skipped-receipt mutations
+fail the intended runtime assertions. The final independent review found no
+actionable issue; [the record](review/distributed-owner-dispatch.md) separates
+this one-emulator proof from product recovery and two-host acceptance.
+A closed bounded semantic codec and explicit native-host lifetime are the
+current working slices. Preserve their uncommitted work while integrating. Neither component is enabled
+by the shipped daemon yet. Bind every workspace consumer
 to the selected executor, then run the two-host acceptance fixture: the owner
 must have no copy of the target checkout, while ordinary file tools, Bash,
 code mode and LSP all operate there. Test lost replies and restarts without
