@@ -1650,3 +1650,11 @@ page was checked by reading the source at `998be7a64` (the `web_client`
 element modules and their rules, `web_view/view/*`, `component.gleam`,
 `ending.gleam`) and the tracker, not by driving a browser. Where the tracker
 and the code disagreed, the code was taken.
+
+The resource receipt slice now defines exact Compile/Launch location data under
+pinned enrollment. It preserves full keys and producing parent identity while
+allowing distinct physical steps. The bounded canonical codec does not grant
+resource liveness or recreation permission. Root's independent full code-mode
+gate passes 373 tests without skips, and the Astra high review has no actionable
+findings. See [the receipt review](review/distributed-resource-receipts.md).
+Durable preparation custody and the physical service assembly remain pending.
