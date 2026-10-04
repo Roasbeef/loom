@@ -906,8 +906,9 @@
   @media (max-width:1211px){.region-sidebar,.toggle-sidebar{display:none;}}
   @media (max-width:979px){
     .shell-body{flex-direction:column;}
-    .region-panel{order:-1;width:auto;border-left:0;border-bottom:1px solid var(--color-divider);}
-    .region-panel.closed{width:auto;height:0;transition:none;}
+    .region-panel{order:-1;width:auto;height:auto;overflow:visible;border-left:0;border-bottom:1px solid var(--color-divider);}
+    .region-panel.closed{width:auto;height:0;overflow:hidden;transition:none;}
+    .panel-body{flex:0 0 auto;}
     aside.panel{width:auto;height:auto;max-height:132px;padding:8px 16px;}
     aside.panel > section.nudges{display:none;}
     .pane-strands .panel-title,.pane-strands > section.commentary{display:none;}
