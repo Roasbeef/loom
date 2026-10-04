@@ -889,7 +889,7 @@ same in all phases binding the phase to a name, so a new message is still a
 compile error (`handle`, `broker/executor.gleam:422`). ADR-017 sketched the
 service as an actor holding a registry; closing is what made it a machine.
 
-On a `Close` in `Serving` (`begin_close`, `broker/executor.gleam:1146`) the
+On a `Close` in `Serving` (`begin_close`, `broker/executor.gleam:1137`) the
 service sends a cancel to every live row and, if any is still live, enters
 `Closing` with a state timeout of the drain budget. From then on it refuses new
 `start` calls with `NoHelper(PoolUnavailable)`, which is deliberately not
@@ -898,9 +898,9 @@ through their relays as the cancels land, and the service finishes as the last
 one is granted. If the drain budget expires first, the rows still live are
 settled `ExecutionLost(ExecutorClosing)`: the relay is killed first so it cannot
 answer a late ask, and the helper is returned busy so the pool retires it
-(`expire_live_rows`, `broker/executor.gleam:1176`). Then it calls `close_helpers`,
+(`expire_live_rows`, `broker/executor.gleam:1167`). Then it calls `close_helpers`,
 which is `close_pool`, with the whole helpers budget, and replies with the
-pool's retirement verdict (`finish_closing`, `broker/executor.gleam:1161`).
+pool's retirement verdict (`finish_closing`, `broker/executor.gleam:1152`).
 
 S2 separated the two budgets. `executor.close(service, draining:, helpers:)`
 takes a drain budget and a helpers budget, and the pool always gets the whole of

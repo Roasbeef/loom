@@ -806,7 +806,7 @@ fn start_relay(
   helper: Helper,
   id: dispatch.ExecutionId,
 ) -> Result(relay.Relay, dispatch.StartRefusal) {
-  let link = link_over(state.subject, id, helper)
+  let link = link_over(state.subject, id)
   let config =
     relay.Config(
       caller: request.caller,
@@ -834,19 +834,14 @@ fn start_relay(
 // closure sends to the service and names the execution by identity, so a late
 // one finds its row gone and is dropped.
 //
-// `cancel` is where the single-sender fence lives, and `_helper` is in the
-// signature only so that this is the one place a cancel could be sent to the
-// helper directly, which it deliberately is not: a relay's cancel that went
-// straight to the helper would be a second sender beside this service, and
-// nothing would order it before the `Run` this service sends for the next
-// execution on a reused helper. `a_stale_relay_cancel_never_reaches_the_next_execution_test`
+// `cancel` is where the single-sender fence lives. The link holds no helper,
+// so a relay has nothing to send a cancel to except this service: a relay's
+// cancel that went straight to the helper would be a second sender beside
+// this service, and nothing would order it before the `Run` this service
+// sends for the next execution on a reused helper. `a_stale_relay_cancel_never_reaches_the_next_execution_test`
 // shows a stale cancel through this link doing nothing and, as the control,
 // through a link that does send directly cancelling the next execution.
-fn link_over(
-  subject: Subject(Msg),
-  id: dispatch.ExecutionId,
-  _helper: Helper,
-) -> relay.Link {
+fn link_over(subject: Subject(Msg), id: dispatch.ExecutionId) -> relay.Link {
   relay.Link(
     cancel: fn() { ask_to_cancel(subject, id, waiting: relay.cancel_wait_ms) },
     may_settle: fn(verdict) {
@@ -856,7 +851,7 @@ fn link_over(
   )
 }
 
-/// The link a relay of execution `id` on `helper` is given, so a test can
+/// The link a relay of execution `id` is given, so a test can
 /// hold it and call its `cancel` late, as a relay delayed between deciding to
 /// cancel and cancelling would. Not part of the service's API: nothing outside
 /// the service has a reason to build one.
@@ -864,16 +859,12 @@ fn link_over(
 /// ## Examples
 ///
 /// ```gleam
-/// let link = executor.relay_link(service, execution.id, helper)
+/// let link = executor.relay_link(service, execution.id)
 /// link.cancel()
 /// ```
 @internal
-pub fn relay_link(
-  executor: Executor,
-  id: dispatch.ExecutionId,
-  helper: Helper,
-) -> relay.Link {
-  link_over(executor.subject, id, helper)
+pub fn relay_link(executor: Executor, id: dispatch.ExecutionId) -> relay.Link {
+  link_over(executor.subject, id)
 }
 
 // The relay's own cancel, asked from the relay's process. The service

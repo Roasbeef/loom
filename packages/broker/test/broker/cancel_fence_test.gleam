@@ -126,7 +126,10 @@ fn stale_cancel_outcome(
 /// on. A relay that cancelled the helper directly, instead of asking the
 /// service, makes this fail.
 pub fn a_stale_relay_cancel_never_reaches_the_next_execution_test() {
-  assert stale_cancel_outcome(executor.relay_link) == Error(Nil)
+  assert stale_cancel_outcome(fn(service, id, _helper) {
+      executor.relay_link(service, id)
+    })
+    == Error(Nil)
 }
 
 /// The control: a link whose cancel goes straight to the helper reaches the
