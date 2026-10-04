@@ -43,6 +43,19 @@
 //// the tab order (`shell_rule.reach`), so the keyboard never lands on a
 //// control the reader cannot see.
 ////
+//// Below 1212 px the sidebar is a drawer (`shell_rule.Frame`). The element
+//// asks the browser whether the page is narrow (`matchMedia`, one query,
+//// `shell_rule.narrow_query`) when it connects and again on every change, and
+//// keeps the answer in the model. While the page is narrow the sidebar's button
+//// and `Command` or `Control` with `B` open and close a drawer, a second state
+//// held beside the layout and never saved: the sidebar's wrapper is placed over
+//// the centre by the stylesheet, a scrim is drawn behind it, a click on the scrim
+//// or a press of a button inside the sidebar closes it, and `Escape` closes it
+//// before it does anything else. The drawer starts closed on every page and
+//// closes again when the page changes frame. It touches nothing the server holds
+//// and no stored layout, and the `Still` motion of the restore does not apply
+//// to it.
+////
 //// The panel's panes are the server's children of the `right` slot: one
 //// section for each tab, all of them drawn. The element shows one by
 //// setting a custom state on itself, `tab-strands`, `tab-changes`,
@@ -100,6 +113,24 @@
 //// the region of approval cards is dropped by the rule, whatever the key. The
 //// dock is in the centre column, which has no button, and the panel carries no
 //// decision control.
+////
+//// ## Flow
+////
+//// `register` → `init` → `update` → `view` → `column`
+////
+//// 1. `register` defines the element and subscribes to the server's two
+////    attributes and to connecting and disconnecting.
+//// 2. `init` starts both columns open, the drawer closed and the frame wide.
+//// 3. `update` is the one reducer: a press, a tab, a relayed click, a shortcut
+////    or an answer from the browser each become a new `Model` and effects.
+//// 4. `restore` reads the saved layout and theme after the first paint,
+////    `watch_frame` reads whether the page is narrow and listens for it
+////    to change, and `listen` hears the document's keys through `hear`
+////    and `respond`.
+//// 5. `view` draws the bar, the three body regions and, while a drawer is
+////    open, the `scrim`; `column` wraps a side column, `region_state` says
+////    which state the sidebar follows, and `row` and `marker` decode the
+////    clicks the element relays or acts on.
 
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -117,8 +148,8 @@ import lustre/event
 import web_client/internal/ffi_dom.{type Listener}
 import web_client/layout_rule.{type Theme, type Workspace}
 import web_client/shell_rule.{
-  type Intent, type Layout, type Motion, type Presence, type Region, type Relay,
-  type Tab,
+  type Frame, type Intent, type Layout, type Motion, type Presence, type Region,
+  type Relay, type State, type Tab,
 }
 
 /// The element's tag.
@@ -142,7 +173,21 @@ pub type Model {
     /// Whether a change of layout animates. It is `Still` until the saved
     /// layout has been drawn, so the restore is not seen as a slide.
     motion: Motion,
+    /// Whether the page is wide enough for a sidebar column, from the
+    /// browser's media query. A page assumes `Wide` until the query answers.
+    frame: Frame,
+    /// Whether the sidebar drawer is open. It means something only while the
+    /// frame is `Narrow`, it is never saved, and a change of frame closes it.
+    drawer: State,
+    /// The listener on the media query while the element is connected.
+    watch: Option(Watch),
   )
+}
+
+/// A running listener on the narrow-page media query, with the query it
+/// listens to, which `remove_listener` needs to name to stop it.
+pub type Watch {
+  Watch(query: ffi_dom.Element, listener: Listener)
 }
 
 /// Everything the element can be told.
@@ -188,6 +233,17 @@ pub type Msg {
   /// The frame that drew the restored layout has been painted, so later
   /// changes of layout may animate.
   Settled
+
+  /// The browser said whether the page is narrow, on connecting and whenever
+  /// the window crossed the breakpoint.
+  Framed(frame: Frame)
+
+  /// The media query's listener is in place.
+  Watching(watch: Watch)
+
+  /// The reader dismissed the drawer: a click on the scrim, or a press of a
+  /// button inside the sidebar.
+  DrawerDismissed
 }
 
 /// Registers the element with the browser.
@@ -235,6 +291,9 @@ fn init(_: Nil) -> #(Model, Effect(Msg)) {
       theme: layout_rule.System,
       keys: None,
       motion: shell_rule.Still,
+      frame: shell_rule.Wide,
+      drawer: shell_rule.Closed,
+      watch: None,
     ),
     component.set_pseudo_state(shell_rule.tab_state(layout.tab)),
   )
@@ -242,6 +301,17 @@ fn init(_: Nil) -> #(Model, Effect(Msg)) {
 
 fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   case message {
+    // The sidebar's press is the frame's to interpret: a column changes the
+    // saved layout, and a drawer changes only the drawer, which is not saved.
+    Toggled(shell_rule.Sidebar) -> {
+      let #(layout, drawer) =
+        shell_rule.sidebar_pressed(model.layout, model.frame, model.drawer)
+      let model = Model(..model, drawer:)
+      case layout == model.layout {
+        True -> #(model, effect.none())
+        False -> changed(model, layout, effect.none())
+      }
+    }
     Toggled(region:) ->
       changed(model, shell_rule.toggled(model.layout, region), effect.none())
 
@@ -264,7 +334,13 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // nothing listening on the document.
     Connected -> #(
       model,
-      effect.batch([stop_keys(model.keys), listen(), restore()]),
+      effect.batch([
+        stop_keys(model.keys),
+        stop_watch(model.watch),
+        listen(),
+        watch_frame(),
+        restore(),
+      ]),
     )
 
     // `listen` registers after the paint, so this can arrive after a later
@@ -275,7 +351,27 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       Model(..model, keys: Some(listener)),
       stop_keys(model.keys),
     )
-    Disconnected -> #(Model(..model, keys: None), stop_keys(model.keys))
+    Disconnected -> #(
+      Model(..model, keys: None, watch: None),
+      effect.batch([stop_keys(model.keys), stop_watch(model.watch)]),
+    )
+
+    // The same arrangement for the media query's listener as for the keys'.
+    Watching(watch:) -> #(
+      Model(..model, watch: Some(watch)),
+      stop_watch(model.watch),
+    )
+
+    // A drawer open across a change of frame would be a drawer the reader
+    // never asked for on the other side of it, so the change closes it.
+    Framed(frame:) -> #(
+      Model(..model, frame:, drawer: shell_rule.Closed),
+      effect.none(),
+    )
+    DrawerDismissed -> #(
+      Model(..model, drawer: shell_rule.Closed),
+      effect.none(),
+    )
 
     // The two toggles are the buttons' own turn, so a shortcut and a press
     // cannot differ. `Escape` presses the breadcrumb's link, which is the
@@ -284,7 +380,11 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       case intent {
         shell_rule.ToggleSidebar -> update(model, Toggled(shell_rule.Sidebar))
         shell_rule.TogglePanel -> update(model, Toggled(shell_rule.Panel))
-        shell_rule.LeaveStrand -> #(model, press_crumb())
+        shell_rule.LeaveStrand ->
+          case shell_rule.dismissal(model.frame, model.drawer) {
+            shell_rule.Dismiss -> update(model, DrawerDismissed)
+            shell_rule.Leave -> #(model, press_crumb())
+          }
       }
 
     // The layout changes first, so a panel that was closed is open when the
@@ -349,6 +449,45 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 fn settle() -> Effect(Msg) {
   use dispatch, _ <- effect.after_paint
   dispatch(Settled)
+}
+
+// Reports whether the page is narrow now, and again each time the window
+// crosses the breakpoint. The answer is read from the query when it is set up
+// and from the change event after that, and the query and its listener are
+// handed back so the element can stop listening when it leaves.
+fn watch_frame() -> Effect(Msg) {
+  use dispatch <- effect.from
+  let query = ffi_dom.media_query(shell_rule.narrow_query())
+  dispatch(Framed(frame_of(ffi_dom.media_matches(query))))
+  let listener =
+    ffi_dom.add_listener(query, "change", fn(event) {
+      case
+        decode.run(event, decode.field("matches", decode.bool, decode.success))
+      {
+        Ok(narrow) -> dispatch(Framed(frame_of(narrow)))
+        Error(_) -> Nil
+      }
+    })
+  dispatch(Watching(Watch(query:, listener:)))
+}
+
+// Stops the media query's listener, if one is in place.
+fn stop_watch(watch: Option(Watch)) -> Effect(Msg) {
+  case watch {
+    None -> effect.none()
+    Some(Watch(query:, listener:)) -> {
+      use _ <- effect.from
+      ffi_dom.remove_listener(query, "change", listener)
+    }
+  }
+}
+
+// The frame a query answer names: matching the narrow query is narrow.
+fn frame_of(matches: Bool) -> Frame {
+  case matches {
+    True -> shell_rule.Narrow
+    False -> shell_rule.Wide
+  }
 }
 
 // Sets `data-theme` on the document's root, or removes it where the theme
@@ -476,8 +615,37 @@ fn view(model: Model) -> Element(Msg) {
         component.default_slot([event.on("click", marker())], []),
       ]),
       column(model, shell_rule.Panel),
+      scrim(model),
     ]),
   ])
+}
+
+// The veil behind an open drawer, which a click dismisses. It is drawn only
+// while the drawer is open on a narrow page, and a pointer is the only thing
+// that reaches it: the keyboard has `Escape` and the sidebar's own button.
+fn scrim(model: Model) -> Element(Msg) {
+  case shell_rule.scrimmed(model.frame, model.drawer) {
+    True ->
+      html.div(
+        [
+          attribute.class("drawer-scrim"),
+          attribute.aria_hidden(True),
+          event.on_click(DrawerDismissed),
+        ],
+        [],
+      )
+    False -> element.none()
+  }
+}
+
+// The state a column shows: the sidebar's depends on the frame, the panel's is
+// the layout's.
+fn region_state(model: Model, region: Region) -> State {
+  case region {
+    shell_rule.Sidebar ->
+      shell_rule.sidebar_state(model.layout, model.frame, model.drawer)
+    shell_rule.Panel -> shell_rule.state(model.layout, region)
+  }
 }
 
 // Listens for `keydown` on the document. The document hears every key pressed
@@ -677,6 +845,18 @@ fn marker() -> decode.Decoder(Msg) {
   }
 }
 
+// A press inside the sidebar that closes the drawer: the tags of the nodes the
+// click passed through hold a button, whichever child of the button was hit.
+// Any other click fails the decoder and does nothing.
+fn row() -> decode.Decoder(Msg) {
+  use event <- decode.then(decode.dynamic)
+  let tags = ffi_dom.composed_path(event) |> list.filter_map(ffi_dom.tag_name)
+  case shell_rule.presses_button(tags) {
+    True -> decode.success(DrawerDismissed)
+    False -> decode.failure(DrawerDismissed, "a press on a sidebar button")
+  }
+}
+
 // A column's button, or nothing where the page has no such column. It is a
 // real button whose words say what pressing does and whose `aria-expanded`
 // says whether the column is open; its icon is drawn by the stylesheet and
@@ -685,7 +865,7 @@ fn button(model: Model, region: Region) -> Element(Msg) {
   case shell_rule.has_button(model.sidebar, region) {
     False -> element.none()
     True -> {
-      let state = shell_rule.state(model.layout, region)
+      let state = region_state(model, region)
       html.button(
         [
           attribute.type_("button"),
@@ -811,7 +991,9 @@ fn column(model: Model, region: Region) -> Element(Msg) {
     False -> element.none()
     True ->
       html.div(column_attributes(model, region), case region {
-        shell_rule.Sidebar -> [component.named_slot(slot(region), [], [])]
+        shell_rule.Sidebar -> [
+          component.named_slot(slot(region), [event.on("click", row())], []),
+        ]
         shell_rule.Panel -> [
           tab_bar(model),
           html.div([attribute.class("panel-body")], [
@@ -831,8 +1013,16 @@ fn column_attributes(
   region: Region,
 ) -> List(attribute.Attribute(Msg)) {
   let base = [attribute.class("region"), region_class(region)]
-  case shell_rule.reach(shell_rule.state(model.layout, region)) {
-    shell_rule.Reachable -> base
+  let state = region_state(model, region)
+  case shell_rule.reach(state) {
+    shell_rule.Reachable ->
+      case region, model.frame {
+        shell_rule.Sidebar, shell_rule.Narrow -> [
+          attribute.class("drawer"),
+          ..base
+        ]
+        _, _ -> base
+      }
     shell_rule.Unreachable -> [
       attribute.class("closed"),
       attribute.attribute("inert", ""),

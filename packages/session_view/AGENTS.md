@@ -48,7 +48,8 @@ for a host with no surfaces.
 
 - `strand_card.status_line(line)`, `status_title(line)`, `glyph(status)`,
   `model_name(model)`, `task_words(title)` (a task, or nothing for the
-  roster's placeholders), `needing(lines)` and `context_words(tokens)`: the one
+  roster's placeholders and the advisor's feed prompt; a brief is cut to its
+  first sentence and `task_limit` characters), `needing(lines)` and `context_words(tokens)`: the one
   status line under a strand's name on its card (`Needs approval` for a
   strand that waits on a decision, whatever the request was; the state word
   and what the strand is doing after ` · ` for a working one, where the
@@ -477,7 +478,11 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   each with a closed `State` read from the result's `status` word (`Running`
   while it has no result), a label (the `program_path`, else the text of the
   program's leading `//` comment after any imports, else `Program N`), a result
-  excerpt, the `within_ms` the call named, a closed `Vetting`, and `calls`, the
+  excerpt, the `within_ms` the call named, a closed `Vetting`, `detail` (the
+  result's own `detail`, the compiler's diagnostics or a run's reason, kept
+  apart from the excerpt, which for a failed build is the sentence written for
+  the model; the web Trace tab draws `detail` and `budget_words`, the terminal
+  keeps `excerpt` and `budget_line`), and `calls`, the
   rows of the protocol-change/060 call record the result carries (`CALLS · …`
   and one row per call, from `transcript_lines.call_section`; nothing for a
   running call or a result with no readable record). `newest(records, strand)`

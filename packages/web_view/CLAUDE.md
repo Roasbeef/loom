@@ -209,7 +209,9 @@ page keys and nonces, and the relay into the session's gateway.
   spans, the status as a `.pill` whose class follows the `Tone`
   (`online | pending | ended`), the `ctx ~41%` estimate and the cost
   `transcript_lines.cost_words` words as `est $0.04` or `est —` when tokens
-  were spent and none priced, each as a word and a `span.num`), with the ended
+  were spent and none priced, each as a word and a `span.num`; a figure with no
+  value is not drawn, so no `est` for an unpriced model and no `ctx` on the
+  primary strand before its first turn), with the ended
   page's notice as its last child; `component.heading(model, going_home)` reads those
   values from the model, draws `heading.home_link(going_home)` as `home`
   when the transport has the capability, and stays the entry point both pages
@@ -273,7 +275,7 @@ page keys and nonces, and the relay into the session's gateway.
   says `Esc`. `strand_detail.view(chip)` is a strand's own view, the
   Strands pane's third child after the list while a strand other than `main`
   is in focus (`component.detail`): a `← Strands` link (the marker `0`), the
-  ring, the name and status line, the figures the card leaves out (Task,
+  mark (`strip.ring`: the cache ring or the avatar), the name and status line, the figures the card leaves out (Task,
   Model by its last path segment with the whole in a `title`, Context, which
   says `not reported` while unknown, Cache, Running, the rest only when known; the cache words are
   `cache_miss.outlook_label`'s and no others; no Cost, since the session keeps
@@ -368,10 +370,10 @@ page keys and nonces, and the relay into the session's gateway.
   drawer (`markdown_view`), a `+n earlier reviews` count, and the board's
   not-loaded line. Read-only, no handler, hidden while the advisor is
   on screen (its own transcript already holds the same words as its ordinary
-  entries) and below 980px. The lane keeps one line per review
-  (`view/lane`'s `commentary-mark`): the advisor's tag and the request's
-  label, its dot carrying the advisor card's marker. The 051 addendum of
-  2026-10-02 records the move out of the lane.
+  entries) and below 980px. The lane draws no row for a review
+  (`view/lane.rows` filters `turns.Commentary` out before a timeline row is
+  built). The 051 addendum of 2026-10-02 records the move out of the lane,
+  and its 2026-10-04 amendment the hairline's removal.
 - `controls.session(bar)` draws the operator's controls in the Session pane,
   as its fourth child after the invitation control (so `invite_path` does not
   move; its own path is `component.session_controls_path`): the goal row in
@@ -490,8 +492,10 @@ page keys and nonces, and the relay into the session's gateway.
   literal classes. `Strip.followed` is the strand the strip marks as current
   (`component.strand(model)`). `strip.view(strip, focus)` draws each chip as
   `li > button.chip-hit` whose click is `focus(name)`, the name the strip was
-  built with, holding a ring (the outlook's shape and nothing else, hidden
-  from a screen reader), the name and one status line
+  built with, holding a mark (`strip.ring`: for a held outlook the ring, its
+  shape, the state's glyph inside and the outlook's words as a literal
+  `title`; for none, `strip.avatar`, a disc with the name's first letter as a
+  text node; both hidden from a screen reader), the name and one status line
   (`session_view/strand_card.status_line`, in the attention colour for a
   strand that needs approval). A card carries no clock and no figure: those
   are the strand's own view's. It carries `data-loom-card`, its position
@@ -681,7 +685,8 @@ page keys and nonces, and the relay into the session's gateway.
   scrolling) and makes `<loom-follow>` the scroll container between them
   and the dock. The element's two buttons hide and show the sidebar and the
   panel (a hidden column is `inert`, so its content leaves the tab order),
-  with nothing kept across a reload. The sidebar is dropped below 1212px, and below 980px the
+  with nothing kept across a reload. Below 1212px the sidebar is a drawer over the page
+  (opened by its bar button or Command/Control B, never saved), and below 980px the
   panel becomes a row of cards under the bar. It keeps the
   newest row in view while the reader is at the bottom, shows a "Jump to
   latest" button while they are not, and keeps the reader's place when a

@@ -33,6 +33,17 @@
 //// the key set and every exclusion. No intent sends anything to the session,
 //// and none decides an approval: an approval card is a place where no key acts.
 ////
+//// Below 1212 px the sessions sidebar is not a column. It is a drawer over the
+//// centre, behind a scrim, opened by the same button and the same `Command` or
+//// `Control` with `B` that hide the column on a wide page. Whether the page is
+//// wide or narrow is a fact about the window (`Frame`), and the drawer's state
+//// is a second `State` held beside the layout and never inside it: it is not
+//// saved, it starts closed on every page, and it is closed again whenever the
+//// window changes frame, so the reader's saved preference for the column is
+//// neither read nor written by a drawer. `sidebar_state` says which of the two
+//// states the sidebar's wrapper follows, `sidebar_pressed` what a press
+//// changes, and `dismissal` what `Escape` does while the drawer is open.
+////
 //// A layout is what a page starts with and what the reader changes. Keeping
 //// one across a reload is `web_client/layout_rule`'s, over the same types:
 //// the two columns and the tab are the whole of what is stored, and a page
@@ -183,6 +194,138 @@ pub fn toggled(layout: Layout, region: Region) -> Layout {
     Sidebar -> Layout(..layout, sidebar: flipped(layout.sidebar))
     Panel -> Layout(..layout, panel: flipped(layout.panel))
   }
+}
+
+/// Whether the window is wide enough for the sessions sidebar to be a column
+/// beside the transcript, or too narrow and the sidebar is a drawer over it.
+/// The stylesheet makes the same choice at the same width
+/// (`@media (max-width:1211px)`): the sidebar, the strand panel at its full
+/// width and a transcript of at least 640 px do not fit below it.
+pub type Frame {
+  /// 1212 px and wider: the sidebar is a column and `Layout.sidebar` governs it.
+  Wide
+
+  /// Under 1212 px: the sidebar is a drawer and the drawer's state governs it.
+  Narrow
+}
+
+/// The media query that is true exactly while the frame is `Narrow`. The
+/// element listens to it, and it must say what the stylesheet's breakpoint
+/// says (`web_client.css`, the narrow frames).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert shell_rule.narrow_query() == "(max-width: 1211px)"
+/// ```
+pub fn narrow_query() -> String {
+  "(max-width: 1211px)"
+}
+
+/// The state the sidebar's wrapper follows: the saved layout's on a wide page
+/// and the drawer's on a narrow one. The button's words, `aria-expanded`, the
+/// wrapper's reachability and the scrim all read this one answer, so they
+/// cannot disagree.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let closed = shell_rule.toggled(shell_rule.initial(), shell_rule.Sidebar)
+/// assert shell_rule.sidebar_state(shell_rule.Wide, closed, shell_rule.Open)
+///   == shell_rule.Closed
+/// assert shell_rule.sidebar_state(shell_rule.Narrow, closed, shell_rule.Open)
+///   == shell_rule.Open
+/// ```
+pub fn sidebar_state(layout: Layout, frame: Frame, drawer: State) -> State {
+  case frame {
+    Wide -> layout.sidebar
+    Narrow -> drawer
+  }
+}
+
+/// The layout and drawer after the reader presses the sidebar's button or its
+/// shortcut. On a wide page the layout's column changes and the drawer stays
+/// as it was; on a narrow one the drawer changes and the layout, which is what
+/// is saved, is returned unchanged.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let #(layout, drawer) =
+///   shell_rule.sidebar_pressed(
+///     shell_rule.initial(),
+///     shell_rule.Narrow,
+///     shell_rule.Closed,
+///   )
+/// assert layout == shell_rule.initial()
+/// assert drawer == shell_rule.Open
+/// ```
+pub fn sidebar_pressed(
+  layout: Layout,
+  frame: Frame,
+  drawer: State,
+) -> #(Layout, State) {
+  case frame {
+    Wide -> #(toggled(layout, Sidebar), drawer)
+    Narrow -> #(layout, flipped(drawer))
+  }
+}
+
+/// What `Escape` does: close the drawer while it is open, and otherwise leave
+/// the strand, as it always did. The drawer is a layer over the page, and the
+/// key closes the top layer first.
+pub type Dismissal {
+  /// The drawer is open on a narrow page, so `Escape` closes it.
+  Dismiss
+
+  /// There is no drawer to close, so `Escape` is `LeaveStrand`.
+  Leave
+}
+
+/// What `Escape` asks for, given the frame and the drawer's state.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert shell_rule.dismissal(shell_rule.Narrow, shell_rule.Open)
+///   == shell_rule.Dismiss
+/// assert shell_rule.dismissal(shell_rule.Wide, shell_rule.Closed)
+///   == shell_rule.Leave
+/// ```
+pub fn dismissal(frame: Frame, drawer: State) -> Dismissal {
+  case frame, drawer {
+    Narrow, Open -> Dismiss
+    _, _ -> Leave
+  }
+}
+
+/// Whether the scrim behind the drawer is drawn: while the drawer is open on
+/// a narrow page.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert shell_rule.scrimmed(shell_rule.Narrow, shell_rule.Open)
+/// assert !shell_rule.scrimmed(shell_rule.Wide, shell_rule.Open)
+/// ```
+pub fn scrimmed(frame: Frame, drawer: State) -> Bool {
+  dismissal(frame, drawer) == Dismiss
+}
+
+/// Whether a click inside the sidebar was on a button, from the tags of the
+/// nodes the click passed through. A session's row, the Home entry and a
+/// saved session's row are each a button, and pressing one leaves the page or
+/// the session it was on, so the drawer that held it closes. A click on the
+/// sidebar's padding or a heading is not a press and leaves the drawer open.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert shell_rule.presses_button(["span", "button", "li", "ul"])
+/// assert !shell_rule.presses_button(["h2", "section"])
+/// ```
+pub fn presses_button(tags: List(String)) -> Bool {
+  list.contains(tags, "button")
 }
 
 fn flipped(state: State) -> State {

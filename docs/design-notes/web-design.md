@@ -158,7 +158,7 @@ vocabulary the mockup shows:
 | A sub-strand's brief | one line with its state | the strand's output, by focusing it |
 | A peer's question | one line | the question |
 | An advisor nudge | a bordered card, text only | nothing |
-| The advisor's commentary (captured, not sent) | one quiet line: the tag and the request's label | the bodies, in the panel's Strands pane and in the advisor's own transcript (2026-10-02; the panel carries them, the lane keeps the hairline) |
+| The advisor's commentary (captured, not sent) | none in the lane (2026-10-04) | the bodies, in the panel's Strands pane and in the advisor's own transcript (2026-10-02; the panel carries them, the lane draws no row, 2026-10-04; below 980 px the section is hidden, so the only record there is the advisor's own transcript, reached by focusing its card) |
 | A cache miss | the dashed line the page draws today | nothing |
 
 The grouping of a turn's work into one divider is the rule `turns` already
@@ -411,8 +411,8 @@ small.
 **Narrow windows.** The mockup hides the right panel below 900 px and keeps
 the sidebar; #636 drops the sidebar below 1180 px. The design hides each
 sidebar below a breakpoint at which its column would leave the transcript under
-640 px, and has no overlay in the first build. (Default adopted by the
-orchestrator, open to the owner's override.)
+640 px. The first build had no overlay; item 11 of section 10 records the
+drawer that replaced that default for the sidebar.
 
 **What persists, and where the state lives.** Owner, 2026-09-29, issue #569:
 layout state lives in the browser's `localStorage`, per workspace.
@@ -972,7 +972,36 @@ Defaults the orchestrator adopted, open to the owner's override:
 10. No detail view for `main`. It would need a second piece of server state
     (which strand's detail is open).
 11. Below a breakpoint the sidebars hide, with no overlay in the first build.
+    Amended by round 3 (F69, batch B6): below 1212 px the sessions sidebar is
+    an overlay drawer. See the drawer ruling below.
 12. Viewers are shown in the Session tab on operator pages only.
+
+The drawer ruling (round-3 critique F69, batch B6). Below 1212 px, where the
+sidebar's column would leave the transcript under 640 px, the sessions sidebar
+is a 232 px drawer over the centre, behind a scrim of the page background at
+60%. The sidebar's bar button and Command or Control with `B` open and close
+it, a click on the scrim or `Escape` closes it, and pressing a button in it
+(a session's row, the Home entry) closes it. `Escape` closes an open drawer
+before it leaves a strand, so it leaves a strand only when no drawer is open.
+It does not act while focus is in the composer or another text field, where
+`Escape` stays the field's own; the scrim and the sidebar's button close the
+drawer from there. The drawer's state is held beside the saved layout and never in it: it
+starts closed on every page, it is not stored, and it is closed again when the
+window crosses the breakpoint, so the `Still` motion rule and the per-workspace
+persistence of section 4 do not apply to it, and a column saved as closed or
+open on a wide window does not decide what a narrow window shows. The strand
+panel is unchanged: below 980 px it is a row of cards under the bar, and its
+toggle hides the row. The drawer floats over the page, so it alone takes
+`--shadow-float`.
+
+Round 3 also found that the row of cards at 800 px was clipped by a 41 px
+panel. The panel now takes the height of its content below 980 px. With an
+approval card showing at 800x900 the transcript is 46% of the window with the
+strip visible, and 55% or more once the strip is folded away with its toggle:
+the top bar, tabs, strip, composer and one card take 430 px of the 900 between
+them, so a share above 52% with the strip showing is not reachable without
+removing something the reader needs. `scripts/web_narrow_check.sh` measures
+both.
 
 ## 11. Out of scope
 

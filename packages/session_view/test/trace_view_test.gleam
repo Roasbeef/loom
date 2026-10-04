@@ -178,6 +178,7 @@ pub fn a_call_with_no_result_is_running_test() {
       Some(5000),
       Pending,
       None,
+      None,
       [],
     )
 }
@@ -207,6 +208,110 @@ pub fn a_completed_program_shows_its_value_test() {
   assert shown.within_ms == Some(30_000)
   assert shown.vetting == Passed
   assert trace_view.budget_line(shown) == "30000 ms wall · vetted"
+}
+
+// The compiler's diagnostics are kept apart from the text written for the
+// model, so a host can show a reader the first and not the second.
+pub fn a_failed_build_keeps_its_diagnostics_apart_from_the_models_text_test() {
+  let outcome =
+    Some(#(
+      "the program did not compile and did not run. Fix the diagnostics below",
+      status("compile_failed", [#("detail", json.String("error: no module"))]),
+      True,
+    ))
+  let shown =
+    only(
+      trace_view.fold(
+        window([exchange(0, program("pub fn main() {}", None), outcome)]),
+      ),
+    )
+
+  assert shown.state == CompileFailed
+  assert shown.detail == Some("error: no module")
+
+  // The compiler's progress and warnings before the first error are not the
+  // reason, so the detail starts at the error.
+  let noisy =
+    Some(#(
+      "text",
+      status("compile_failed", [
+        #(
+          "detail",
+          json.String(
+            "Compiling app\nwarning: unused import\n\nerror: Unknown module\n  fs.nope",
+          ),
+        ),
+      ]),
+      True,
+    ))
+  assert only(
+      trace_view.fold(
+        window([exchange(0, program("pub fn main() {}", None), noisy)]),
+      ),
+    ).detail
+    == Some("error: Unknown module\n  fs.nope")
+  assert trace_view.budget_words(shown) == "default"
+  assert trace_view.budget_words(
+      trace_view.Program(..shown, within_ms: Some(30_000)),
+    )
+    == "30 s"
+  assert trace_view.budget_words(
+      trace_view.Program(..shown, within_ms: Some(1500)),
+    )
+    == "1500 ms"
+}
+
+// A vetting refusal keeps its reasons in `rejections`; the result's text ends
+// with an instruction to the model, which a reader is not shown.
+pub fn a_refused_program_shows_the_rejection_not_the_instruction_test() {
+  let rejection = fn(detail) {
+    json.Object([
+      #("rule", json.String("import_not_allowed")),
+      #("detail", json.String(detail)),
+    ])
+  }
+  let outcome =
+    Some(#(
+      "the program was refused before it ran; fix the program and submit it again.",
+      status("vetting_rejected", [
+        #(
+          "rejections",
+          json.Array([
+            rejection("import os is not allowed"),
+            rejection("second"),
+          ]),
+        ),
+      ]),
+      True,
+    ))
+  let shown =
+    only(
+      trace_view.fold(
+        window([exchange(0, program("import os", None), outcome)]),
+      ),
+    )
+
+  assert shown.state == Rejected
+  assert shown.detail == Some("import os is not allowed\nsecond")
+}
+
+// A failure with no reason in its details still shows what happened, as the
+// first sentence of its text, and never the instruction after it.
+pub fn an_empty_reason_falls_back_to_the_first_sentence_test() {
+  let outcome =
+    Some(#(
+      "the program did not compile and did not run. Fix the diagnostics below",
+      status("compile_failed", [#("detail", json.String(""))]),
+      True,
+    ))
+  let shown =
+    only(
+      trace_view.fold(
+        window([exchange(0, program("pub fn main() {}", None), outcome)]),
+      ),
+    )
+
+  assert shown.detail == Some("the program did not compile and did not run.")
 }
 
 pub fn a_named_file_is_the_label_test() {

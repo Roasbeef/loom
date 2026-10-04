@@ -2,8 +2,8 @@
 //// strand while watching the strand on screen, drawn in the strand panel
 //// beside the strands it observes.
 ////
-//// The lane keeps only a hairline per review (`view/lane`); the bodies
-//// live here and in the advisor's own focused transcript. The board is
+//// The lane draws no row for a review (`view/lane`); the bodies live here
+//// and in the advisor's own focused transcript. The board is
 //// the same `advisor_history` projection both read, and the section asks
 //// the same visibility rule the lane asks (`advisor_history.visible`): a
 //// board for `main` only, because the advisor's own transcript already

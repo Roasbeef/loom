@@ -34,6 +34,7 @@ fn program(state: trace_view.State, label: String) -> trace_view.Program {
     sandbox: Some(
       "sandbox · build enforced 4 layers; skipped 0 · satellite enforced 4 layers; skipped 0",
     ),
+    detail: None,
     calls: [],
   )
 }
@@ -63,17 +64,58 @@ pub fn the_newest_program_leads_and_the_earlier_ones_follow_test() {
     "third.gleam",
     "trace-running",
     "running",
-    "sandbox · build enforced 4 layers",
-    "<summary>Budget</summary>",
-    "30000 ms wall · vetted",
+    "Budget · 30 s",
     "Earlier",
     "second.gleam",
     "trace-completed",
     "first.gleam",
     "trace-failed",
     "2 older programs not shown",
-    "a program with no record lists none.",
+    "No calls recorded.",
   ])
+  assert !string.contains(html, "satellite")
+    as "the sandbox line is the Session tab's"
+  assert !string.contains(html, "vetted")
+}
+
+// A program that did not compile shows the compiler's diagnostics and never
+// the sentence the result carries for the model.
+pub fn a_failed_program_shows_its_diagnostics_not_the_models_instructions_test() {
+  let failed =
+    trace_view.Program(
+      ..program(trace_view.CompileFailed, "broken.gleam"),
+      excerpt: Some(
+        "the program did not compile and did not run. Fix the diagnostics below; warnings also fail the build: error: unknown module",
+      ),
+      detail: Some(
+        "error: unknown module\n  cap/nope\nhint: check imports\nmore",
+      ),
+      within_ms: None,
+    )
+  let html = drawn(trace_view.Trace(programs: [failed], omitted: 0))
+
+  assert string.contains(html, "compile failed")
+  assert string.contains(html, "error: unknown module")
+  assert string.contains(html, "<details class=\"trace-diagnostic\">")
+  assert !string.contains(html, "Fix the diagnostics")
+  assert !string.contains(html, "warnings also fail")
+  assert string.contains(html, "Budget · default")
+  assert !string.contains(html, "default wall budget")
+
+  let refused =
+    trace_view.Program(
+      ..program(trace_view.Rejected, "vetoed.gleam"),
+      excerpt: Some("refused; fix the program and submit it again."),
+      detail: Some("import os is not allowed"),
+    )
+  let html = drawn(trace_view.Trace(programs: [refused], omitted: 0))
+  assert string.contains(html, "import os is not allowed")
+  assert !string.contains(html, "submit it again")
+
+  let bare =
+    trace_view.Program(..failed, detail: None)
+    |> fn(program) { drawn(trace_view.Trace(programs: [program], omitted: 0)) }
+  assert !string.contains(bare, "Fix the diagnostics")
 }
 
 pub fn a_label_and_an_excerpt_are_only_ever_text_nodes_test() {
@@ -88,6 +130,7 @@ pub fn a_label_and_an_excerpt_are_only_ever_text_nodes_test() {
           within_ms: None,
           vetting: trace_view.Passed,
           sandbox: None,
+          detail: None,
           calls: ["CALLS · 1 call · 1 failed", "× " <> hostile],
         ),
       ],
@@ -98,7 +141,7 @@ pub fn a_label_and_an_excerpt_are_only_ever_text_nodes_test() {
   assert !string.contains(html, "<img")
   assert !string.contains(html, "onmouseover=\"x\"")
   assert string.contains(html, "trace-call") as "the call row is drawn, as text"
-  assert string.contains(html, "default wall budget · vetted")
+  assert string.contains(html, "Budget · default")
 }
 
 pub fn the_view_carries_no_handler_test() {

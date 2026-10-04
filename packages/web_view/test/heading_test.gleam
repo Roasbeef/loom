@@ -93,11 +93,37 @@ pub fn the_figures_emphasise_the_number_test() {
   assert string.contains(bar, "est <span class=\"num\">$0.04</span>")
   assert !string.contains(bar, "session est")
 
-  let unpriced = drawn(None, None, heading.Live, "est —")
-  assert string.contains(unpriced, "est <span class=\"num\">—</span>")
-  assert string.contains(unpriced, "title=\"No priced usage yet\"")
   assert string.contains(
     bar,
     "title=\"Estimated context use of the strand shown\"",
   )
+}
+
+// A model with no price has no estimate, and the bar does not draw a dash
+// for it; the context figure is still drawn beside where it would have been.
+pub fn an_unpriced_session_draws_no_estimate_test() {
+  let unpriced = drawn(None, None, heading.Live, "est —")
+  assert !string.contains(unpriced, "est ")
+  assert !string.contains(unpriced, "No priced usage yet")
+  assert string.contains(unpriced, "ctx <span class=\"num\">~2%</span>")
+}
+
+// A figure with no value is not drawn, so a first turn that has not
+// committed shows an empty figures area and not two dashes.
+pub fn a_figure_with_no_value_is_not_drawn_test() {
+  let bar =
+    heading.view(
+      session_id: "0192ab34cd",
+      home: element.none(),
+      name: None,
+      workspace: None,
+      status: "connected",
+      tone: heading.Live,
+      context: "",
+      cost: "est —",
+      notice: element.none(),
+    )
+    |> element.to_string
+
+  assert string.contains(bar, "<span class=\"figures\"></span>")
 }

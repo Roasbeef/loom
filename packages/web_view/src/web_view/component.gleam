@@ -3485,10 +3485,25 @@ pub fn heading(model: Model(socket), going_home: message) -> Element(message) {
     workspace: option.map(model.view.label, fn(label) { label.workspace }),
     status: status_text(model.view.status),
     tone: status_tone(model.view.status),
-    context: context_view.footer(model.shared.context),
+    context: context_figure(model),
     cost: cost_text(model),
     notice: ended.view(ended_ending(model.view.status), model.shared.session),
   )
+}
+
+// The top bar's context figure. The primary strand's has no value until its
+// first turn commits, and the bar draws nothing for that, since a dash there
+// reads as missing data. A strand the reader has focused keeps its dash,
+// which the bar's title explains: that strand has had no turn yet.
+fn context_figure(model: Model(socket)) -> String {
+  let words = context_view.footer(model.shared.context)
+  case
+    string.ends_with(words, " —")
+    && model.shared.active_strand == agent_roster.primary
+  {
+    True -> ""
+    False -> words
+  }
 }
 
 // The session's running cost as the top bar and the Session tab word it,

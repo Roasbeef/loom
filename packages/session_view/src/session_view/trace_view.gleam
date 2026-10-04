@@ -128,6 +128,14 @@ pub type Program {
     /// The sandbox line the result reported (`sandbox · build enforced 4
     /// layers; skipped 0 · satellite …`), when it reported one.
     sandbox: Option(String),
+    /// What went wrong in the result's own words, when the result keeps them
+    /// apart from the text it wrote for the model: the compiler's
+    /// diagnostics of a program that did not compile, the reason a run
+    /// failed. It is the one thing a reader wants from a failed program, and
+    /// `excerpt` is not it, since that is the text beside it that tells the
+    /// model what to do next. At most `max_detail` characters, lines kept.
+    /// Session text.
+    detail: Option(String),
     /// The rows of the call record the result carried (`CALLS · 2 calls · 1
     /// failed`, then one row per call), as the transcript's call section
     /// words them. Nothing while the call runs, and nothing for a result with
@@ -194,7 +202,7 @@ pub fn capability_calls_recorded() -> String {
 /// ```gleam
 /// let program = trace_view.Program(
 ///   trace_view.Running, "count.gleam", None, None, trace_view.Pending, None,
-///   [],
+///   None, [],
 /// )
 /// assert trace_view.first_call(program) == "count.gleam"
 /// ```
@@ -268,7 +276,7 @@ pub fn vetting_word(vetting: Vetting) -> String {
 /// ```gleam
 /// let program = trace_view.Program(
 ///   trace_view.Completed, "", None, Some(30_000), trace_view.Passed, None,
-///   [],
+///   None, [],
 /// )
 /// assert trace_view.budget_line(program) == "30000 ms wall · vetted"
 /// ```
@@ -278,6 +286,28 @@ pub fn budget_line(program: Program) -> String {
     None -> "default wall budget"
   }
   wall <> " · " <> vetting_word(program.vetting)
+}
+
+/// The budget a program named, as a reader says it: `30 s`, or `default` when
+/// the call named none. `budget_line` is the terminal's, which also says
+/// whether vetting passed; a program the page lists has a state chip that
+/// already says so.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let program = trace_view.Program(
+///   trace_view.Completed, "", None, Some(30_000), trace_view.Passed, None,
+///   None, [],
+/// )
+/// assert trace_view.budget_words(program) == "30 s"
+/// ```
+pub fn budget_words(program: Program) -> String {
+  case program.within_ms {
+    Some(ms) if ms >= 1000 && ms % 1000 == 0 -> int.to_string(ms / 1000) <> " s"
+    Some(ms) -> int.to_string(ms) <> " ms"
+    None -> "default"
+  }
 }
 
 /// Folds a window of records into the session's trace. Records arrive
@@ -421,11 +451,13 @@ fn program(call: tool_activity.Call, position: Int) -> Program {
         _ -> []
       }
       let state = state(fields, is_error)
+      let shown = excerpt(fields, content, state)
       Program(
         sandbox: transcript_lines.sandbox_summary(fields),
+        detail: detail(fields, state, shown),
         state:,
         label:,
-        excerpt: Some(excerpt(fields, content, state)),
+        excerpt: Some(shown),
         within_ms:,
         vetting: vetting(state),
         calls: call_rows(details),
@@ -439,8 +471,80 @@ fn program(call: tool_activity.Call, position: Int) -> Program {
         within_ms:,
         vetting: Pending,
         sandbox: None,
+        detail: None,
         calls: [],
       )
+  }
+}
+
+/// The most characters of a failure's detail a program keeps.
+pub const max_detail = 800
+
+// What went wrong, for a state that is a failure to compile, vet or run. The
+// result's own `detail` is the reason (the compiler's diagnostics, a run's
+// reason), and a vetting refusal keeps its reasons in `rejections[].detail`.
+// A result with neither, or with empty ones, falls back to the first sentence
+// of its text, which states what happened before it tells the model what to
+// do next. So a failed program always has a reason to show, and never the
+// instruction.
+fn detail(
+  fields: List(#(String, json.JsonValue)),
+  state: State,
+  excerpt: String,
+) -> Option(String) {
+  case state {
+    CompileFailed | RunFailed | Rejected ->
+      case reason(fields) {
+        "" ->
+          case first_sentence(excerpt) {
+            "" -> None
+            sentence -> Some(sentence)
+          }
+        text -> Some(bounded(text))
+      }
+    Running | Completed | Errored | Failed -> None
+  }
+}
+
+fn reason(fields: List(#(String, json.JsonValue))) -> String {
+  let from_detail = case list.key_find(fields, "detail") {
+    Ok(json.String(text)) -> text
+    _ -> ""
+  }
+  let text = case
+    string.trim(from_detail),
+    list.key_find(fields, "rejections")
+  {
+    "", Ok(json.Array(rejections)) ->
+      rejections
+      |> list.filter_map(fn(rejection) {
+        case rejection {
+          json.Object(entry) ->
+            case list.key_find(entry, "detail") {
+              Ok(json.String(text)) -> Ok(text)
+              _ -> Error(Nil)
+            }
+          _ -> Error(Nil)
+        }
+      })
+      |> string.join("\n")
+    _, _ -> from_detail
+  }
+  string.trim(from_first_error(text_hygiene.multiline(text)))
+}
+
+fn bounded(text: String) -> String {
+  case string.length(text) > max_detail {
+    True -> string.slice(text, 0, max_detail - 1) <> "…"
+    False -> text
+  }
+}
+
+// The text up to its first full stop followed by a space, with the stop.
+fn first_sentence(text: String) -> String {
+  case string.split_once(text, ". ") {
+    Ok(#(first, _)) -> first <> "."
+    Error(Nil) -> string.trim(text)
   }
 }
 
@@ -558,6 +662,16 @@ fn excerpt(
       })
       |> string.join(" ")
       |> clipped
+  }
+}
+
+// The text from its first `error` line on, or the whole text when it has no
+// such line.
+fn from_first_error(text: String) -> String {
+  let lines = string.split(text, "\n")
+  case list.drop_while(lines, fn(line) { !string.starts_with(line, "error") }) {
+    [] -> text
+    [_, ..] as from -> string.join(from, "\n")
   }
 }
 
