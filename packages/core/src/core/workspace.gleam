@@ -16,6 +16,7 @@
 //// its identities. `scope_fields` supplies the reverse adapter's input.
 
 import core/ids
+import core/json
 import gleam/list
 import gleam/result
 import gleam/string
@@ -89,6 +90,15 @@ pub type Binding {
   )
 }
 
+/// Stable catalogue identity; authority epochs belong to each session Binding.
+pub type WorkspaceKey {
+  /// Host-validated local path, preserved exactly in existing catalogue keys.
+  LocalKey(path: String)
+
+  /// Administrative selector, never a filesystem path.
+  RegisteredKey(selector: Selector)
+}
+
 /// The stable remote session scope, independent of a transport generation.
 pub opaque type Scope {
   /// Every field participates in equality.
@@ -140,6 +150,12 @@ pub type InputError {
 
   /// The projected session field was not a core UUIDv7.
   InvalidSession
+
+  /// A catalogue key was neither an absolute local path nor a registered key.
+  InvalidKey
+
+  /// A binding had missing, duplicated, extra or incorrectly typed fields.
+  BindingShape
 }
 
 /// Validates a wire pathname before any filesystem access. Checks run in
@@ -402,5 +418,204 @@ fn validate_epoch(epoch: Int) -> Result(Nil, InputError) {
   case epoch >= 1 && epoch <= 2_147_483_647 {
     True -> Ok(Nil)
     False -> Error(EpochRange)
+  }
+}
+
+/// Projects stable identity without changing retained authority epochs.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert workspace.binding_key(workspace.LocalBinding("/work")) == workspace.LocalKey("/work")
+/// ```
+pub fn binding_key(binding: Binding) -> WorkspaceKey {
+  case binding {
+    LocalBinding(path) -> LocalKey(path)
+    Registered(bound) -> RegisteredKey(bound.selector)
+  }
+}
+
+/// Projects creation identity before administrative epoch resolution.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert workspace.selection_key(workspace.LocalDirectory("/work")) == workspace.LocalKey("/work")
+/// ```
+pub fn selection_key(selection: Selection) -> WorkspaceKey {
+  case selection {
+    LocalDirectory(path) -> LocalKey(path)
+    RegisteredWorkspace(selected) -> RegisteredKey(selected)
+  }
+}
+
+/// Serializes a private catalogue key; registered keys are never paths.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert workspace.key_string(workspace.LocalKey("/work")) == "/work"
+/// ```
+pub fn key_string(key: WorkspaceKey) -> String {
+  case key {
+    LocalKey(path) -> path
+    RegisteredKey(selected) ->
+      "registered:" <> selected.executor <> ":" <> selected.workspace
+  }
+}
+
+/// Validates persisted identity without resolving any host pathname.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert workspace.decode_key("/work") == Ok(workspace.LocalKey("/work"))
+/// assert workspace.decode_key("relative") == Error(workspace.InvalidKey)
+/// ```
+pub fn decode_key(text: String) -> Result(WorkspaceKey, InputError) {
+  use Nil <- result.try(case string.byte_size(text) <= max_path_bytes {
+    True -> Ok(Nil)
+    False -> Error(InvalidKey)
+  })
+  use Nil <- result.try(validate_controls(<<text:utf8>>))
+  case text {
+    "/" <> _ -> Ok(LocalKey(text))
+    "registered:" <> labels -> {
+      use selected <- result.try(case string.split(labels, ":") {
+        [executor, workspace] -> selector(executor, workspace)
+        [] | [_] | [_, _, _, ..] -> Error(InvalidKey)
+      })
+      Ok(RegisteredKey(selected))
+    }
+    _ -> Error(InvalidKey)
+  }
+}
+
+/// Encodes resolved identity with fixed field order and no administrative secrets.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert workspace.decode_binding(workspace.encode_binding(workspace.LocalBinding("/work"))) == Ok(workspace.LocalBinding("/work"))
+/// ```
+pub fn encode_binding(binding: Binding) -> json.JsonValue {
+  case binding {
+    LocalBinding(path) ->
+      json.Object([
+        #("kind", json.String("local")),
+        #("path", json.String(path)),
+      ])
+    Registered(bound) ->
+      json.Object([
+        #("kind", json.String("registered")),
+        #("executor", json.String(bound.selector.executor)),
+        #("workspace", json.String(bound.selector.workspace)),
+        #("workspace_epoch", json.Int(bound.workspace_epoch)),
+        #("session_epoch", json.Int(bound.session_epoch)),
+      ])
+  }
+}
+
+/// Totally decodes a closed binding shape, validating labels and both epochs.
+/// Field order is irrelevant here; storage additionally checks canonical text.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert workspace.decode_binding(json.Null) == Error(workspace.BindingShape)
+/// ```
+pub fn decode_binding(value: json.JsonValue) -> Result(Binding, InputError) {
+  use fields <- result.try(case value {
+    json.Object(fields) -> Ok(fields)
+    json.Array(_)
+    | json.String(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Bool(_)
+    | json.Null -> Error(BindingShape)
+  })
+  use kind <- result.try(binding_text(fields, "kind"))
+  case kind {
+    "local" -> {
+      use Nil <- result.try(exact_fields(fields, ["kind", "path"]))
+      use path <- result.try(binding_text(fields, "path"))
+      use key <- result.try(decode_key(path))
+      case key {
+        LocalKey(path) -> Ok(LocalBinding(path))
+        RegisteredKey(_) -> Error(BindingShape)
+      }
+    }
+    "registered" -> {
+      use Nil <- result.try(
+        exact_fields(fields, [
+          "kind", "executor", "workspace", "workspace_epoch", "session_epoch",
+        ]),
+      )
+      use executor <- result.try(binding_text(fields, "executor"))
+      use name <- result.try(binding_text(fields, "workspace"))
+      use selected <- result.try(selector(executor, name))
+      use workspace_epoch <- result.try(binding_int(fields, "workspace_epoch"))
+      use session_epoch <- result.try(binding_int(fields, "session_epoch"))
+      use bound <- result.try(registered_binding(
+        selected,
+        workspace_epoch,
+        session_epoch,
+      ))
+      Ok(Registered(bound))
+    }
+    _ -> Error(BindingShape)
+  }
+}
+
+fn exact_fields(
+  fields: List(#(String, json.JsonValue)),
+  names: List(String),
+) -> Result(Nil, InputError) {
+  // Equal counts and exactly one occurrence per name reject duplicates even
+  // in hand-built JSON values that did not pass through the text parser.
+  case
+    list.length(fields) == list.length(names)
+    && list.all(names, fn(name) {
+      list.length(list.filter(fields, fn(field) { field.0 == name })) == 1
+    })
+  {
+    True -> Ok(Nil)
+    False -> Error(BindingShape)
+  }
+}
+
+fn binding_text(
+  fields: List(#(String, json.JsonValue)),
+  name: String,
+) -> Result(String, InputError) {
+  use value <- result.try(
+    list.key_find(fields, name) |> result.replace_error(BindingShape),
+  )
+  case value {
+    json.String(text) -> Ok(text)
+    json.Object(_)
+    | json.Array(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Bool(_)
+    | json.Null -> Error(BindingShape)
+  }
+}
+
+fn binding_int(
+  fields: List(#(String, json.JsonValue)),
+  name: String,
+) -> Result(Int, InputError) {
+  use value <- result.try(
+    list.key_find(fields, name) |> result.replace_error(BindingShape),
+  )
+  case value {
+    json.Int(number) -> Ok(number)
+    json.Object(_)
+    | json.Array(_)
+    | json.String(_)
+    | json.Float(_)
+    | json.Bool(_)
+    | json.Null -> Error(BindingShape)
   }
 }

@@ -1,4 +1,5 @@
 import core/ids
+import core/json as core_json
 import core/workspace
 import gleam/list
 import gleam/result
@@ -158,4 +159,67 @@ pub fn external_step_bound_preserves_generated_job_hook_build_and_uuid_names_tes
   assert workspace.step("") == Error(workspace.StepSize)
   assert workspace.step(string.repeat("a", 1025)) == Error(workspace.StepSize)
   assert workspace.step(string.repeat("é", 513)) == Error(workspace.StepSize)
+}
+
+pub fn catalogue_keys_preserve_local_identity_and_validate_registered_labels_test() {
+  let assert Ok(selected) = workspace.selector("linux-1", "project")
+    as "selector is valid"
+  let assert Ok(bound) = workspace.registered_binding(selected, 2, 3)
+    as "epochs are valid"
+  assert workspace.binding_key(workspace.Registered(bound))
+    == workspace.RegisteredKey(selected)
+  assert workspace.key_string(workspace.RegisteredKey(selected))
+    == "registered:linux-1:project"
+  assert workspace.decode_key("registered:linux-1:project")
+    == Ok(workspace.RegisteredKey(selected))
+  assert workspace.decode_key("/registered:linux-1:project")
+    == Ok(workspace.LocalKey("/registered:linux-1:project"))
+  list.each(
+    [
+      "registered::project",
+      "registered:linux:project:extra",
+      "registered:linux:bad/name",
+      "relative",
+      "",
+    ],
+    fn(text) {
+      assert workspace.decode_key(text) |> result.is_error
+    },
+  )
+}
+
+pub fn binding_codec_roundtrips_and_refuses_extra_duplicate_or_invalid_authority_test() {
+  let assert Ok(selected) = workspace.selector("linux", "project")
+    as "selector is valid"
+  let assert Ok(bound) = workspace.registered_binding(selected, 2, 3)
+    as "epochs are valid"
+  list.each(
+    [workspace.LocalBinding("/work"), workspace.Registered(bound)],
+    fn(binding) {
+      assert workspace.decode_binding(workspace.encode_binding(binding))
+        == Ok(binding)
+    },
+  )
+  let assert core_json.Object(fields) =
+    workspace.encode_binding(workspace.Registered(bound))
+    as "registered codec emits an object"
+  assert workspace.decode_binding(
+      core_json.Object([#("root", core_json.String("/host")), ..fields]),
+    )
+    == Error(workspace.BindingShape)
+  assert workspace.decode_binding(
+      core_json.Object([#("kind", core_json.String("registered")), ..fields]),
+    )
+    == Error(workspace.BindingShape)
+  let invalid =
+    list.map(fields, fn(field) {
+      case field.0 {
+        "session_epoch" -> #("session_epoch", core_json.Int(0))
+        _ -> field
+      }
+    })
+  assert workspace.decode_binding(core_json.Object(invalid))
+    == Error(workspace.EpochRange)
+  assert workspace.decode_binding(core_json.Null)
+    == Error(workspace.BindingShape)
 }
