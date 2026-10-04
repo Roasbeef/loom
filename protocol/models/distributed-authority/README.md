@@ -7,8 +7,9 @@ The contract comes from the reviewed
 [distributed runtime note](../../../docs/design-notes/distributed-runtime.md)
 and [API plan](../../../docs/design-notes/distributed-runtime-api.md).
 
-`Ownership.tla` contains the actual PlusCal algorithm and its generated TLA+
-translation. `run.py` checks the translation against the pinned translator,
+`Ownership.tla` contains the actual PlusCal handoff algorithm and its generated
+TLA+ translation. `Metadata.tla` expands the conditional metadata boundary into
+submission, durable settlement and caller observation, as described below. `run.py` checks the translation against the pinned translator,
 then exhaustively explores the finite safety model and requires the named
 reachability and mutation counterexamples. No root scripts, build targets,
 Gleam modules, or global configuration are changed by this runner.
@@ -23,11 +24,11 @@ python3 protocol/models/distributed-authority/run.py --case MutantAdmission
 python3 protocol/models/distributed-authority/run.py --translate
 ```
 
-The full runner exits **0** only when safety passes and all nine controls
-produce their intended witnesses. A control requires TLC exit **12**, the
+The full runner exits **0** only when safety passes and all nine ownership controls and fourteen metadata controls produce their
+intended witnesses. Both metadata capacity bounds must exhaust safely. A control requires TLC exit **12**, the
 exact named invariant, a state count, and a multi-state trace. A parse error,
 wrong invariant, unavailable tool, or timeout fails the runner with exit **1**.
-`--translate` updates only the generated section of `Ownership.tla` and does
+`--translate` updates only the generated sections of both models and does
 not run TLC. Ordinary checking regenerates into an isolated directory and
 fails on any byte difference after trimming the translator's trailing
 whitespace, without editing the checked-in model.
@@ -59,9 +60,8 @@ The TLC command inside each case directory is:
 ```
 
 The runner bounds each TLC process to **60 seconds**, a **512 MiB heap**,
-**64 MiB direct memory**, and **one worker**. Ten sequential cases give a
-600-second TLC budget, plus a 30-second translation and optional 60-second
-download. JVM native memory and retained log/state disk space are not capped
+**64 MiB direct memory**, and **one worker**. Twenty-six sequential cases give a 1560-second TLC budget, plus two
+30-second translations and an optional 60-second download. JVM native memory and retained log/state disk space are not capped
 by those JVM flags. `--timeout N` accepts 1..120 seconds; exceeding that budget
 is a failure, never a partial success. TLC performs complete breadth-first
 checking, not simulation or a depth-pruned search. Fingerprints are finite:
@@ -166,7 +166,7 @@ boundaries; the local SQLite lease alone is not a cluster fence.
 
 | Model boundary | Required implementation mapping | Deliberate gap |
 | --- | --- | --- |
-| Serialized directory replacement | Future C1 authority reducer and conditional metadata adapter under protocol-change/066. | No Khepri/Ra algorithm, quorum implementation, transaction FFI, ABA test, or receipt retention implementation is proved. |
+| Serialized directory replacement | Future C1 authority reducer and conditional metadata adapter under protocol-change/066. | The Metadata model checks abstract ABA and receipt-retention obligations; no Khepri/Ra algorithm, quorum implementation or transaction FFI is proved. |
 | Local freeze/cancel seal | Durable session writer admission and restart checks near `packages/storage` and `packages/runtime`. | Atomic local persistence, writer closure ordering, disk corruption, and competing local handles are assumed. |
 | Consistent cut and target verification | Future M1 backup/manifest/transfer/verification boundary. | No SQLite WAL, byte transfer, digest collision, artifact enumeration, or decoder implementation is modeled. |
 | Executor epoch closure and retirement | D2 P model, then future durable executor ledger and admission path in `packages/executor`. | The relevant executor set is fixed and complete. No enrollment race, workspace movement, native helper implementation, receipt GC, or authenticated wire is proved. |
@@ -186,3 +186,74 @@ and failure-injection tests, replay the mutation shapes through those tests,
 and keep that mapping pinned as code changes. No Lean-to-Gleam extraction or
 differential bridge exists here. A checked abstract transition graph is not
 an end-to-end proof of the authority implementation or the deployed runtime.
+
+
+## Conditional metadata after an ambiguous deadline
+
+The metadata compatibility spike observed a transaction return a timeout and
+later become visible with its retained receipt. `Metadata.tla` models that
+schedule without adopting Khepri or depending on its API. An accepted command
+can remain pending, settle atomically with its final receipt, and lose or delay
+its reply. A deadline only changes the caller's view to `Unknown`. An absent
+receipt before settlement also leaves that view unknown.
+
+The original request reserves capacity before transmission and retains its
+operation ID, digest and complete expected authority envelope. An exact retry
+uses those same fields. Receipt lookup precedes conditional mutation, so an
+already settled operation returns its stored outcome without another transition.
+An ID with a conflicting digest cannot overwrite the original reservation or
+receipt. Both successful and conditionally rejected outcomes remain retained.
+There is no receipt eviction to admit a new operation.
+
+The complete predicate compares incarnation, revision, ownership epoch and
+owner. Administrative recreation advances incarnation and both numeric fences;
+receipts remain valid historical results. A receipt does not construct an
+owner grant. `Ownership.tla` continues to check local freeze, target evidence,
+executor retirement and physical writer exclusivity separately.
+
+| Safety predicate | Obligation |
+| --- | --- |
+| `CapacityReserved` | Submitted identities already own one of the bounded retained receipt slots. |
+| `ReceiptRetained` | Every settled ID retains exactly its original digest, result and authority value through compaction. |
+| `StableOperationId` | Retrying one unresolved logical operation preserves its ID, digest and predicate. |
+| `OneLogicalCommit` | That logical operation changes authority at most once. |
+| `NoFalseNoCommit` | A timeout cannot assert non-commit while its receipt records success. |
+| `NoMinorityAck` | Every delivered success/rejection has actually settled and has a matching durable receipt. |
+| `MonotonicFence`, `NoReusedIncarnation` | Epoch/revision cannot fall below retained history; recreation cannot reuse the old incarnation. |
+| `ResultHasReceipt` | A caller's resolved outcome matches the stored outcome for its operation. |
+
+`NoMinorityAck` rejects a fabricated successful minority reply for an unsettled
+command. It permits delivery of a previously quorum-settled receipt after the
+caller becomes isolated. The distinction matters: a historical receipt can
+resolve uncertainty, but cannot establish current mutation authority.
+
+The bounds are one store/key, two operation IDs, three submitted envelopes
+(original, one retry, and either a stale contender or digest conflict), two
+digest equality classes, one recreation, epochs/revisions 1 through 4, and
+receipt capacity 1 or 2. Both capacities receive exhaustive safety checks.
+`Majority`, `Minority` and `Offline` represent access to one serialized store,
+not a Raft implementation or three explicit replica logs. Settlement requires
+quorum access; a minority submission can remain pending until healing. Delay
+is unbounded through stuttering. `Spec` has no fairness assumptions, and safe
+blocking or permanently unknown outcomes remain valid.
+
+Nine positive controls require unknown commit, missing receipt followed by
+commit, reconciliation after a lost success reply, a late reply, post-recreation
+stale rejection, conflicting digest, capacity refusal, minority submission
+followed by timeout/healing/commit, and reconciliation after compaction. Five
+mutants require the exact forbidden schedule: a timeout classified as no
+commit; a retry allocated a new ID with a refreshed predicate, committing the
+same logical transition twice; a success fabricated without quorum settlement;
+an ABA reset of the complete authority envelope; and receipt deletion during
+compaction. [Witnesses](WITNESSES.md) records the checked counts and traces.
+
+This expands an abstract metadata boundary. It is not a proved refinement
+relation to the handoff algorithm, a metadata reducer proof, or a compiled
+Gleam/store implementation bridge. Reservation, atomic receipt+authority
+settlement, authoritative reconciliation, digest binding and durable fences
+are implementation obligations. Disk failure, replica membership changes,
+Byzantine inputs, schema upgrades, actual snapshots, byte/disk budgets and
+receipt retention horizons are outside this bounded model. Compaction is only
+a projection that must retain the modeled facts. No automatic failover or
+unconditional progress is claimed. The existing Lean/Gleam admission bridge
+checks a different reducer and does not close these metadata gaps.

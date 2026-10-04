@@ -140,3 +140,71 @@ No second handoff identity or source fallback is allocated.
 abort receipt for ID 1, then allocates ID 2. `ReachStaleRoute` demonstrates
 refusal through the old A route. These are existential controls under no
 fairness assumption; they are not universal eventual-completion proofs.
+
+
+## Metadata submission, settlement and receipt witnesses
+
+The full runner was repeated on 2026-10-04 after adding `Metadata.tla`.
+Runner exit **0**, both pinned PlusCal translation exits **0**, and all
+**26** case verdicts passed. Evidence:
+`.runs/1791115309596221000/summary.json`. The unchanged Ownership model still
+has SHA-256 `642bd4d1eeb4d0ac132be19b03c520d63835a09c697e060e3a058ebfbac5b640`
+and exhausts 965,376 distinct states. Its nine existing controls passed again.
+The Metadata model SHA-256 is:
+
+```text
+2c6f1bbdbd5d445248f99f2890b839a388ded0dd588702ad2a8d934c7c85325b
+```
+
+| Case | TLC exit | Generated states | Distinct states | Witness states |
+| --- | --- | --- | --- | --- |
+| MetadataSafety | 0 | 439,134 | 78,978 | none |
+| MetadataSafetyCapacity | 0 | 385,322 | 66,918 | none |
+| MetadataReachUnknown | 12 | 46 | 31 | 4 |
+| MetadataReachMissing | 12 | 67 | 44 | 4 |
+| MetadataReachReconcile | 12 | 234 | 131 | 5 |
+| MetadataReachLate | 12 | 215 | 120 | 5 |
+| MetadataReachStale | 12 | 145 | 85 | 5 |
+| MetadataReachConflict | 12 | 37 | 25 | 4 |
+| MetadataReachCapacity | 12 | 7 | 6 | 3 |
+| MetadataReachMinority | 12 | 1,448 | 577 | 6 |
+| MetadataReachCompacted | 12 | 261 | 143 | 5 |
+| MetadataMutantTimeout | 12 | 46 | 31 | 4 |
+| MetadataMutantRetry | 12 | 858 | 406 | 6 |
+| MetadataMutantMinority | 12 | 85 | 52 | 4 |
+| MetadataMutantABA | 12 | 50 | 35 | 4 |
+| MetadataMutantReceipt | 12 | 51 | 36 | 4 |
+
+Capacity 2 exhausted at graph depth **18**; capacity 1 exhausted at depth
+**19**. Both queues were empty. The controls stop at the first named violation;
+their counts are partial exploration. All nine positive controls retain all
+ten safety predicates. Each mutant retains type closure and selects one
+intended forbidden property, avoiding a different earlier symptom.
+
+The four-state `MetadataReachUnknown` witness reserves/submits ID 1, settles
+its authority+receipt at epoch/revision 2, then times out before delivery. The
+caller remains Unknown even though the original operation has committed.
+`MetadataReachMinority` has six states: isolate, submit ID 1, time out without
+settlement, heal, then commit that same ID. No successful minority
+acknowledgement appears. Both witnesses refute cancellation inferred from a
+deadline.
+
+The five-state `MetadataReachReconcile` witness submits ID 1, commits its
+receipt, loses the successful reply, and then queries that same receipt. Its
+final view is Applied with exactly one primary commit. The compaction witness
+queries after compaction, which preserves the receipt. The missing-receipt
+witness queries before settlement and still permits the later commit.
+
+| Mutation | Checked counterexample |
+| --- | --- |
+| `MetadataMutantTimeout` | Four states: ID 1 settles at epoch 2; the undelivered reply times out and the mutant asserts NoCommit. `NoFalseNoCommit` fails. |
+| `MetadataMutantRetry` | Six states: ID 1 settles, its reply times out, the retry takes ID 2 with the current predicate, then settles at epoch 3. `primaryCommits = 2` violates `OneLogicalCommit`. |
+| `MetadataMutantMinority` | Four states: submit, isolate, then fabricate Applied with no settlement or receipt. `NoMinorityAck` fails. A previously quorum-settled receipt remains valid historical evidence after isolation. |
+| `MetadataMutantABA` | Four states: ID 1 commits epoch/revision 2; recreation resets the complete envelope to A/1/incarnation 1 while highWater remains 2. `MonotonicFence` fails and the old predicate becomes equal again. |
+| `MetadataMutantReceipt` | Four states: ID 1 settles; compaction deletes its receipt while the immutable historical fact remains. `ReceiptRetained` fails. |
+
+Each mutant TLC exit is **12**, with exactly the named invariant failure and
+a complete multi-state witness. Syntax errors, timeouts and unrelated failures
+are not accepted. These are abstract model mutations; they have not been
+replayed against a metadata implementation. No store implementation or
+Ownership-to-Metadata simulation theorem is established.
