@@ -228,3 +228,75 @@ timeout, service consumption, reply delivery and explicit credit release. This
 shows that the corrected bound does not depend on permanently disabling every
 timed-out live credit. These traces describe request custody, not proof of real
 TLS or BEAM scheduling.
+
+
+## Channel final-consumer, timeout and stream witnesses
+
+The complete four-family run on 2026-10-04 exited **0**, with all **47** verdicts
+passing and all four pinned translations matching the checked-in sources.
+Evidence is `.runs/1791126910739557000/summary.json`. The earlier Ownership,
+Metadata and Ingress source hashes and thirty-three control results are
+unchanged. Channel SHA-256:
+
+```text
+f385e6305714e83a266e48d62250b0662c8dbc935edd9acdbf82a168c099675a
+```
+
+| Case | TLC exit | Generated states | Distinct states | Witness states |
+| --- | --- | --- | --- | --- |
+| ChannelSafety | 0 | 21,389 | 7,737 | none |
+| ChannelSafetyQuota | 0 | 11,525 | 4,025 | none |
+| ChannelReachOutcome | 12 | 5,478 | 2,013 | 12 |
+| ChannelReachHookResult | 12 | 5,478 | 2,013 | 12 |
+| ChannelReachBidirectional | 12 | 71 | 44 | 5 |
+| ChannelReachLateAck | 12 | 384 | 180 | 6 |
+| ChannelReachQuota | 12 | 2,991 | 1,144 | 10 |
+| ChannelReachCancel | 12 | 131 | 76 | 5 |
+| ChannelMutantNetworkAck | 12 | 129 | 81 | 5 |
+| ChannelMutantTimeout | 12 | 455 | 219 | 6 |
+| ChannelMutantRestart | 12 | 466 | 231 | 6 |
+| ChannelMutantQuota | 12 | 2,991 | 1,144 | 10 |
+| ChannelMutantDroppedSuccess | 12 | 8,226 | 2,993 | 14 |
+| ChannelMutantControl | 12 | 10 | 10 | 3 |
+
+Both safety queues exhausted. Positive configurations retain all ten safety
+predicates and add exactly one negated desired state. Mutants retain TypeOK and
+the intended target, which is also checked in both unmutated safety runs.
+No fairness or universal completion claim is made.
+
+Network ACK returns credit during transport drainage. Its five-state trace
+queues item 1 at the final consumer, admits item 2 and queues it there too;
+ConsumerBound fails. Timeout and restart have six-state traces: queue item 1,
+lose its observer or owner, recreate its credit, then admit and queue item 2 in
+the surviving consumer. The strengthened six-state late-consumption control has item 1 in consumer
+custody and pending credit at state 3. State 4 times out with that same item
+still unconsumed and the lane closed. State 5 consumes item 1, records it in
+lateConsumed and emits its exact ACK. State 6 acknowledges that original item
+and clears pending custody while open remains FALSE. Consumption before
+timeout cannot set lateConsumed, so its later ACK cannot establish this witness.
+
+Quota's ten-state trace admits the first two frames (three scaled bytes),
+consumes and acknowledges them, then admits a third frame despite quota three.
+The independent retained history totals four and LifetimeBytesBound fails.
+The unmutated quota control refuses that third frame and records failure.
+
+Dropped-success has fourteen states. The incoming terminal is queued before
+an opposite-direction protocol item is dropped. Consuming the intact queued
+terminal and accepting success violates NoSuccessAfterLoss. The two twelve-
+state terminal controls consume the same ordered sequence with Outcome and
+HookResult respectively while every safety predicate holds.
+
+Control's three-state trace admits data and queues cancellation, whose mutated
+consumption guard now requires idle data credit. ControlIndependent fails
+immediately: the independently stated cancellation premise is true but the
+actual action guard is false. The positive pressure control consumes reserved
+cancellation with both pending data windows occupied in five states.
+
+The earlier source/run `.runs/1791125719313582000/summary.json` had a weaker
+late-ACK witness: consumption preceded timeout. Its checker verdicts remain
+valid for that source, but did not prove late final consumption. The independent
+review found that coverage gap; the current history predicate and trace above
+replace that claim. The larger current safety graphs include the added
+per-direction late-consumption history. The fourteen-state dropped-success
+witness still queues the inbound terminal, drops opposite-direction data, then
+consumes that terminal and incorrectly accepts success.
