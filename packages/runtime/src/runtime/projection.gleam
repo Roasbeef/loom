@@ -6,6 +6,9 @@
 //// write-once and grows at its leaf, so a scan made from one leaf stays a
 //// correct prefix of the scan from any later leaf on the same line, and
 //// the step only has to read the entries past the one it already holds.
+//// The driver keeps the scan's pure default projection alongside it, so an
+//// unchanged leaf also reuses messages and compaction metadata. Request-local
+//// context hooks run after that lookup and never become cached state.
 //// Before this the whole branch was read and decoded three times per
 //// step, and on a 1,200-entry branch that was most of the server's CPU
 //// (issue #359).
