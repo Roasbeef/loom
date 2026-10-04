@@ -5782,3 +5782,19 @@ reopens held documents. This snapshot tracks dependency preparation inputs,
 not transactional workspace coverage. Profiles without the recipe skip these
 reads and retain their existing network authority. Protocol 064 records the
 new consent boundary and the refused external path-dependency scope.
+
+## Remote owner custody
+
+`remote/custodian` owns the separate per-session request and final-report
+journal under a supervised weft actor. Atomic fresh admission starts a bounded
+weft task; retained evidence never reruns it. Exact final bytes commit before
+the caller ticket is answered, and task slots remain held until weft's drain
+notification. `remote/tool_custody` wraps only ToolSurface run/recover and keeps
+clearance and scheduling metadata unchanged. `remote/outcome` validates exact
+call identity and actual reserved session-result readback before collection.
+
+Managed versus local is an explicit assembly choice. Missing managed evidence
+returns unknown, never the local replay fallback. Daemon configuration and
+remote workspace/transport wiring remain required; these modules are not yet
+a shipped remote deployment. See [remote custody](../../docs/architecture/remote-custody.md)
+for identities, bounds, recovery and remaining end-to-end acceptance.
