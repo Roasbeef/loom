@@ -144,7 +144,14 @@ pub fn successful_close_witnesses_native_and_stops_owned_actors_test() {
   assert !process.is_alive(view.service)
   assert !process.is_alive(view.acceptors)
   assert !process.is_alive(local.pid(fixture.native))
-  assert journal.payloads(fixture.book, key(1), digest) == Error(journal.Closed)
+
+  // Release acknowledges the closed database before its actor exits. A read
+  // during that exit can observe the monitor instead of the initial liveness
+  // check. Both outcomes refuse access; the native retirement witnesses above
+  // establish cleanup independently of this scheduling order.
+  let readback = journal.payloads(fixture.book, key(1), digest)
+  assert readback == Error(journal.Closed)
+    || readback == Error(journal.Uncertain)
   assert connection.exchange(connection, wire.Hello)
     == Error(connection.Uncertain)
   assert host.observe(running) == Error(host.Unavailable)
