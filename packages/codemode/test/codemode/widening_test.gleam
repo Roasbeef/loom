@@ -19,6 +19,7 @@ import codemode/compile
 import codemode/enforcement
 import codemode/identity
 import codemode/launch
+import codemode/physical
 import codemode/satellite
 import codemode/vet/policy as vet_policy
 import core/clock
@@ -106,23 +107,17 @@ pub fn the_build_clearance_is_never_widened_test() {
 
 pub fn the_node_clearance_carries_the_approved_grants_test() {
   let spec = launch_spec("/work", widened_identity())
-  let call =
-    launch.node_call(
-      launch_config(),
-      spec,
-      launch.node_requirements(spec, host_mounts: [], now_ms: t),
-    )
+  let assert Ok(requirements) =
+    launch.node_requirements(spec, host_mounts: [], now_ms: t)
+  let assert Ok(call) = launch.node_call(launch_config(), spec, requirements)
   assert call.grants == approved()
 }
 
 pub fn an_unapproved_node_clearance_carries_none_test() {
   let spec = launch_spec("/work", plain_identity())
-  let call =
-    launch.node_call(
-      launch_config(),
-      spec,
-      launch.node_requirements(spec, host_mounts: [], now_ms: t),
-    )
+  let assert Ok(requirements) =
+    launch.node_requirements(spec, host_mounts: [], now_ms: t)
+  let assert Ok(call) = launch.node_call(launch_config(), spec, requirements)
   assert call.grants == []
 }
 
@@ -236,12 +231,12 @@ pub fn a_failed_build_never_spends_the_approval_test() {
   let config =
     codemode.ExecConfig(
       ..pipeline_config(dir, widened_identity()),
-      compile: compile.CompileConfig(
+      compile: compile.local_service(compile.CompileConfig(
         build_root: dir <> "/build",
         dependencies: compile.default_dependencies(),
         generated: [],
         build: failing,
-      ),
+      )),
     )
   let execution = codemode.execute(program(), config)
   let assert codemode.CompileFailed(_) = execution.outcome
@@ -292,7 +287,7 @@ fn started_broker() -> broker.Broker {
 fn build_config() -> build.BuildConfig {
   build.BuildConfig(
     observe: tool.ignore_output(),
-    broker: started_broker(),
+    runner: physical.local(started_broker()),
     seed_root: "/seed",
     gleam_path: "/usr/bin/gleam",
     base_policy: policy.workspace_default("/work"),
@@ -306,7 +301,7 @@ fn build_config() -> build.BuildConfig {
 
 fn launch_config() -> launch.LaunchConfig {
   launch.LaunchConfig(
-    broker: started_broker(),
+    runner: physical.local(started_broker()),
     clock: clock.fixed(at: t),
     erl_path: "/usr/bin/erl",
     host_mounts: [],
@@ -380,12 +375,12 @@ fn pipeline_config(
 ) -> codemode.ExecConfig {
   codemode.ExecConfig(
     vet_policy: vet_policy.default(),
-    compile: compile.CompileConfig(
+    compile: compile.local_service(compile.CompileConfig(
       build_root: dir <> "/build",
       dependencies: compile.default_dependencies(),
       generated: [],
       build: ok_builder,
-    ),
+    )),
     broker: started_broker(),
     identity: id,
     satellite: satellite.SatelliteConfig(

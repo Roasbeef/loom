@@ -31,7 +31,7 @@
 //// as they are found, is also what makes the answer independent of the
 //// order the extensions were discovered in.
 
-import client/lsp/profile.{type LspServer}
+import codemode/lsp_host/profile.{type LspServer}
 import gleam/list
 import gleam/result
 import gleam/string

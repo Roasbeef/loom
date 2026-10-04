@@ -45,7 +45,7 @@ Loom's release train.
 
 There is one place where the harness names a tool. The bare command
 `gleam` resolves to the toolchain code mode located, not to `PATH`
-(`executable_path`, `client/lsp/jail.gleam:400`), so the compiler
+(`executable_path`, `codemode/lsp_host/jail.gleam:400`), so the compiler
 analysing a project is the one that builds its programs. That is a rule
 about which release runs, not about Gleam's semantics, and it is stated
 here because a principle with an unstated exception is worse than a
@@ -59,7 +59,7 @@ all from a toolchain the model can edit. Rule Zero (no model-influenced
 code in the harness VM) therefore applies to the server as it does to
 `bash`. The broker's ordinary jailed exec holds it, under the session's
 own enforcement demand, and a probe proves the jail is enforced before the
-server starts. `policy_for` (`client/lsp/jail.gleam:922`) builds the
+server starts. `policy_for` (`codemode/lsp_host/jail.gleam:922`) builds the
 policy. Its read view includes the session-authorized portion of the
 workspace for sibling dependencies; writes remain at the selected package.
 Only the operator's table adds roots outside that workspace. Answer paths
@@ -87,7 +87,7 @@ audited.
 A tool takes a symbol as code spells it (`greet`, `util.Greet`),
 optionally narrowed by a `path` and the 1-based `line` that `fs_read`
 prints. The door turns that into the server's position (`SymbolQuery` in
-`lsp/query.gleam`, resolution in `client/lsp/resolve.gleam`). A model
+`lsp/query.gleam`, resolution in `codemode/lsp_host/resolve.gleam`). A model
 cannot count columns, and the protocol's columns are UTF-16 code units, so
 a guessed offset lands on the wrong token and the server answers about
 something else without saying so. Sites come back with codepoint columns,
@@ -110,12 +110,12 @@ The jail bounds what a server can read, but not which paths it can put in
 an answer, and the harness reads outside every jail. So every path out of
 an answer (a definition, a reference, a call edge, a published diagnostic,
 a rename's edit) becomes `Admitted` or `Withheld` through one function,
-`admit` (`client/lsp/resolve.gleam:420`), called from one place in the
-manager (`gate`, `client/lsp/manager.gleam:2308`). Without it, a hostile
+`admit` (`codemode/lsp_host/resolve.gleam:399`), called from one place in the
+manager (`gate`, `codemode/lsp_host/manager.gleam:2202`). Without it, a hostile
 project's server could name `~/.loom/owner.token` and have the harness
 print its first line.
 
-`owner` (`client/lsp/resolve.gleam:173`) is the same containment rule
+`owner` (`codemode/lsp_host/resolve.gleam:173`) is the same containment rule
 turned the other way: it keeps the model from asking about a file the jail
 hides. A refused path costs no request.
 
@@ -140,7 +140,7 @@ reading of its documentation.
 The modules are listed in the order a query travels through them, so
 reading down the tables follows a question from the model to the server.
 To read the code, start with `cap/lsp.gleam` and `codemode/lsp.gleam` to see
-what a program sends, then `client/lsp/manager.gleam` for the door, then
+what a program sends, then `codemode/lsp_host/manager.gleam` for the door, then
 `lsp/client.gleam` for one server's conversation, and read the jail and
 profile modules last, after the contract they protect is clear.
 The [style guide](../gleam-style.md#orientation-in-large-modules) requires a
@@ -151,8 +151,8 @@ they remain censuses, and their warnings do not justify padding module prose.
 Literate comments explain ownership, ordering and failure behavior beside the
 code. This document links those maintained accounts of the implementation. Each path is
 relative to its package's source root: `lsp/client.gleam` is
-`packages/lsp/src/lsp/client.gleam`, and `client/lsp/jail.gleam` is
-`packages/client/src/client/lsp/jail.gleam`.
+`packages/lsp/src/lsp/client.gleam`, and `codemode/lsp_host/jail.gleam` is
+`packages/codemode/src/codemode/lsp_host/jail.gleam`.
 
 **The surfaces: what the model and a program see.**
 
@@ -168,16 +168,16 @@ relative to its package's source root: `lsp/client.gleam` is
 | Module | Owns | Read first |
 |---|---|---|
 | `lsp/query.gleam` | The harness vocabulary and the `Door` contract every surface calls: `SymbolQuery`, `Site`, `Diagnostics`, `QueryError`. Types only. | its header |
-| `client/lsp/manager.gleam` | One server per session, the keepers that start servers, eviction, restart, the probe, the bare-symbol search, the gate on named paths, and `door`. | `## Flow` (`client/lsp/manager.gleam:100`), then `## Transitions of the manager` (`client/lsp/manager.gleam:124`) and `## Transitions of a keeper` (`client/lsp/manager.gleam:139`) |
-| `client/lsp/resolve.gleam` | The judgement half of the door: ownership, containment, the `admit` gate, qualified symbols, outline lookup and containers. | `## Flow` (`client/lsp/resolve.gleam:71`) |
-| `client/lsp/leases.gleam` | The per-session cap on session-lived helper leases. | its header |
-| `client/lsp/codemode_rename.gleam` | A program's applied rename, composed from the tools' landing and the program's write boundary. | its header |
+| `codemode/lsp_host/manager.gleam` | One server per session, the keepers that start servers, eviction, restart, the probe, the bare-symbol search, the gate on named paths, and `door`. | `## Flow` (`codemode/lsp_host/manager.gleam:100`), then `## Transitions of the manager` (`codemode/lsp_host/manager.gleam:124`) and `## Transitions of a keeper` (`codemode/lsp_host/manager.gleam:139`) |
+| `codemode/lsp_host/resolve.gleam` | The judgement half of the door: ownership, containment, the `admit` gate, qualified symbols, outline lookup and containers. | `## Flow` (`codemode/lsp_host/resolve.gleam:71`) |
+| `codemode/lsp_host/leases.gleam` | The per-session cap on session-lived helper leases. | its header |
+| `codemode/lsp_host/codemode_rename.gleam` | A program's applied rename, composed from the tools' landing and the program's write boundary. | its header |
 
 **The jail: what a server may touch.**
 
 | Module | Owns | Read first |
 |---|---|---|
-| `client/lsp/jail.gleam` | `policy_for`, executable location and mounts, the containment checks, and the jailed `ChannelTransport` with its relay state machine. | `## Flow` (`client/lsp/jail.gleam:61`), `## Transitions of the relay` (`client/lsp/jail.gleam:82`) and `## What each containment rule stops` (`client/lsp/jail.gleam:100`) |
+| `codemode/lsp_host/jail.gleam` | `policy_for`, executable location and mounts, the containment checks, and the jailed `ChannelTransport` with its relay state machine. | `## Flow` (`codemode/lsp_host/jail.gleam:61`), `## Transitions of the relay` (`codemode/lsp_host/jail.gleam:82`) and `## What each containment rule stops` (`codemode/lsp_host/jail.gleam:100`) |
 | `broker/policy.gleam` | `session_lease` and `LeaseOutput`, shared with extension hosts. | `session_lease` |
 
 **The protocol client: one server, one actor.**
@@ -204,7 +204,7 @@ privately.
 
 | Module | Owns | Read first |
 |---|---|---|
-| `client/lsp/profile.gleam` | The one `[lsp.<name>]` decoder (`LspServer`, `LspPath`, `ModuleCase`, `Places`), the extension-ownership check, `expand_path` and `cache_place`. Pure. | `## Flow` (`client/lsp/profile.gleam:62`) and `## Refusal rules` (`client/lsp/profile.gleam:87`) |
+| `codemode/lsp_host/profile.gleam` | The one `[lsp.<name>]` decoder (`LspServer`, `LspPath`, `ModuleCase`, `Places`), the extension-ownership check, `expand_path` and `cache_place`. Pure. | `## Flow` (`codemode/lsp_host/profile.gleam:62`) and `## Refusal rules` (`codemode/lsp_host/profile.gleam:87`) |
 | `client/lsp/profiles.gleam` | Combining `loom.toml` tables with installed profiles: the operator's file wins whole, and a conflict refuses the installed side. | its header |
 | `client/lsp/profile_check.gleam` | A profile's `[[check]]`s asked through the door and judged as sets of `path:line` (ADR-016 §5). | its header |
 | `client/extension/check.gleam` | `loomd ext check`: the scratch workspace, the check plane, the probe's jail line, and a manager over one server. | `## Flow` (`client/extension/check.gleam:58`) |
@@ -305,7 +305,7 @@ lives until it exits.
 
 ### The policy
 
-`client/lsp/jail.policy_for` turns one `[lsp.<name>]` table, the project
+`codemode/lsp_host/jail.policy_for` turns one `[lsp.<name>]` table, the project
 root a file was found in, and the session's base policy into the lease
 base and the requirements the clearance is judged under. The operator's
 table is the only thing that widens it; nothing the model supplies does.
@@ -373,7 +373,7 @@ twelve hours out, as for extension hosts.
 
 ### The transport
 
-`client/lsp/jail.transport` is an `lsp/transport.ChannelTransport` whose
+`codemode/lsp_host/jail.transport` is an `lsp/transport.ChannelTransport` whose
 `connect` starts a relay. The relay acquires a lease, clears the call
 through `broker.clear_call`, and turns broker events into transport
 events. A stdout chunk becomes data. The settlement becomes a close,
@@ -415,7 +415,7 @@ lease that took any of those three would turn an ordinary code-mode run
 into a wait that ends in a refusal.
 
 Two rules follow. The manager runs **at most one server per session**.
-And `client/lsp/leases` caps session-lived leases at `pool_size − 3`; a
+And `codemode/lsp_host/leases` caps session-lived leases at `pool_size − 3`; a
 server asked for at the cap is refused as `NoServer` with a sentence
 naming the cap, rather than queued behind helpers that may never come
 back. With one server and a pool of at least four, the cap cannot bind
@@ -779,7 +779,7 @@ harness looked and the looking is the answer.
 A program's rename previews in the router, which diffs the door's base
 and edited texts and needs nothing more. Apply is composed elsewhere,
 because it needs write authority the router must not hold.
-`client/lsp/codemode_rename` builds it per execution out of the door's
+`codemode/lsp_host/codemode_rename` builds it per execution out of the door's
 `prepare_rename`, the shared `tools/lsp.land`, and the write
 boundary a program's `cap/fs.write` is held to: the execution's
 workspace, its approved writable roots and its protected paths. A
@@ -876,8 +876,8 @@ holds it, such as `~/.cache` on Linux.
 value can only be a directory Loom owns: `cache_env = { XDG_CACHE_HOME
 = "xdg" }` sets the variable to `<cache>/loom/lsp/<server>/xdg`. The
 manager creates the directory just before a jail binds it
-(`client/lsp/manager.jail_for`, beside the scratch directory), the jail
-grants it writable (`client/lsp/jail.policy_for`), and the install
+(`codemode/lsp_host/manager.jail_for`, beside the scratch directory), the jail
+grants it writable (`codemode/lsp_host/jail.policy_for`), and the install
 approval prints it. It exists because a writable host cache is a way
 out of the jail when the host's own tools trust it: `go build` reads
 `GOCACHE` unverified, and `go list` in the jail runs cgo with flags the
@@ -915,7 +915,7 @@ is advertised on extension or resident seams that cannot use it. The hints
 remain operator-approved configuration text, not language-specific harness
 logic. A host with no hints adds no supplemental block.
 
-`client/lsp/profile` decodes the tables, and `client/catalog` hands it
+`codemode/lsp_host/profile` decodes the tables, and `client/catalog` hands it
 the `[lsp]` table's entries. It is the one decoder, which an extension
 that ships a profile will go through too (ADR-016 §1), and it is pure:
 the daemon's `HOME` and cache directory reach it as `profile.Places`,
@@ -959,7 +959,7 @@ decoder refuses each by name.
 ### Choosing the keys
 
 The full rules are ADR-016 §2, and the decoder
-(`client/lsp/profile.gleam`, its `## Refusal rules` section) refuses
+(`codemode/lsp_host/profile.gleam`, its `## Refusal rules` section) refuses
 anything outside them with a message naming `lsp.<name>.<key>`. Three
 keys are required: `command` (an argv, never a shell string),
 `extensions` and `root_markers`. The others answer one question each:
@@ -1112,9 +1112,9 @@ and constructs the offline server transport. The profile's resolved executable,
 project view, protected paths and private cache are shared between setup and
 server. Only setup's finite policy permits networking.
 
-`client/lsp/preparation` owns the fixed argv, 60-second deadline, output bound
+`codemode/lsp_host/preparation` owns the fixed argv, 60-second deadline, output bound
 and failure rendering. It never runs a shell or adds a general session grant.
-`client/lsp/dependency_state` fingerprints workspace-local dependency
+`codemode/lsp_host/dependency_state` fingerprints workspace-local dependency
 configurations and the selected package's manifest and installation inventory.
 The inventory stamp sorts parsed TOML table keys recursively, retaining supported
 string values. Unsupported values and excessive nesting refuse reuse.

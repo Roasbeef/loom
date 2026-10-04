@@ -30,6 +30,7 @@ import codemode/compile
 import codemode/enforcement
 import codemode/identity
 import codemode/launch
+import codemode/physical
 import codemode/satellite
 import codemode/vet
 import codemode/vet/policy as vet_policy
@@ -249,11 +250,11 @@ fn run_end_to_end(prerequisites: Prerequisites) -> Nil {
   assert source == program_source()
   // A real artifact: the generated entry really was compiled, and the
   // manifest hash is a content address over the whole compiled set.
-  assert artifact.entry_module == compile.entry_module
-  assert string.starts_with(artifact.manifest_hash, "sha256-")
-  assert simplifile.is_file(
-      artifact.beam_dir <> "/" <> compile.entry_module <> ".beam",
-    )
+  let assert compile.Artifact(beam_dir:, ..) = artifact
+    as "the local service must return local paths"
+  assert compile.artifact_entry(artifact) == compile.entry_module
+  assert string.starts_with(compile.artifact_hash(artifact), "sha256-")
+  assert simplifile.is_file(beam_dir <> "/" <> compile.entry_module <> ".beam")
     == Ok(True)
   // The structured outcome carries what the jailed `/bin/echo` printed —
   // through the cap channel, the broker's policy check, a second jail, and
@@ -283,7 +284,7 @@ fn run_end_to_end(prerequisites: Prerequisites) -> Nil {
   // it. A build root is meant to be fresh, and this one is not — the
   // builder must clear what a previous run left rather than let it join
   // the artifact and its content address.
-  let stale = artifact.beam_dir <> "/stale.beam"
+  let stale = beam_dir <> "/stale.beam"
   let assert Ok(Nil) = simplifile.write(to: stale, contents: "not a beam")
   let repeat =
     codemode.execute(
@@ -295,7 +296,7 @@ fn run_end_to_end(prerequisites: Prerequisites) -> Nil {
     as "the pipeline must be repeatable over the same build root"
   assert repeated == outcome
   assert !rig.exists(stale)
-  assert again.manifest_hash == artifact.manifest_hash
+  assert compile.artifact_hash(again) == compile.artifact_hash(artifact)
 
   // Why the two hashes agree, rather than that they happened to. Every
   // dependency's compiled bytes must be the seed's own, byte for byte: a
@@ -444,11 +445,12 @@ fn run_deadline(prerequisites: Prerequisites) -> Nil {
   let assert vet.Passed(vetted) = vet.vet(source, config.vet_policy)
     as "the spinning program must vet"
   let assert Ok(artifact) =
-    compile.compile(
-      vetted,
-      config.compile,
-      identity.build_phase(config.identity),
-    ).result
+    config.compile.compile(compile.CompileRequest(
+      vetted:,
+      dependencies: config.compile.dependencies,
+      generated: config.compile.generated,
+      identity: identity.build_phase(config.identity),
+    )).result
     as "the spinning program must compile"
   let #(started, _clock) = clock.read(rig.wall_clock())
   let short = budget.Budget(max_outstanding: 4, deadline_ms: started + 6000)
@@ -726,13 +728,13 @@ fn exec_config(
   let pooled = budget.Budget(max_outstanding: 4, deadline_ms: deadline)
   codemode.ExecConfig(
     vet_policy: vet_policy.default(),
-    compile: compile.CompileConfig(
+    compile: compile.local_service(compile.CompileConfig(
       build_root: live.build_root,
       dependencies: compile.default_dependencies(),
       generated: [],
       build: build.builder(build.BuildConfig(
         observe: tool.ignore_output(),
-        broker: live.broker,
+        runner: physical.local(live.broker),
         seed_root: prerequisites.seed_root,
         gleam_path: prerequisites.gleam_path,
         base_policy: live.base_policy,
@@ -742,7 +744,7 @@ fn exec_config(
         dependencies: compile.default_dependencies(),
         timeout_ms: 120_000,
       )),
-    ),
+    )),
     broker: live.broker,
     // One identity for the whole execution, with the hermetic build
     // accounted separately: a different jail under a different policy,
@@ -771,7 +773,7 @@ fn exec_config(
       call_timeout_ms: 60_000,
     ),
     launch: launch.launcher(launch.LaunchConfig(
-      broker: live.broker,
+      runner: physical.local(live.broker),
       clock: rig.wall_clock(),
       erl_path: prerequisites.erl_path,
       host_mounts: rig.toolchain_mounts(prerequisites),

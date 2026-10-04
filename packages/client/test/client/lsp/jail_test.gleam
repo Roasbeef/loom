@@ -23,9 +23,9 @@ import broker/framing
 import broker/policy
 import broker/token
 import client/internal/ffi_os
-import client/lsp/jail
-import client/lsp/leases
-import client/lsp/profile
+import codemode/lsp_host/jail
+import codemode/lsp_host/leases
+import codemode/lsp_host/profile
 import core/clock
 import core/ids
 import core/json
@@ -592,7 +592,7 @@ fn located(path: String) -> Result(jail.Executable, String) {
       path,
       "lsp",
     ]),
-    None,
+    jail.Executables(gleam_path: None, find: ffi_os.find_executable),
   )
 }
 
@@ -1249,7 +1249,11 @@ fn wall_clock() -> clock.Clock {
 fn run_live(helper: String, here: String) -> Nil {
   let live = live_rig(helper, here)
   let server = server(profile.ProjectWritable)
-  let assert Ok(executable) = jail.locate(server, None)
+  let assert Ok(executable) =
+    jail.locate(
+      server,
+      jail.Executables(gleam_path: None, find: ffi_os.find_executable),
+    )
     as "gleam must be located on PATH"
   let placement =
     jail.Placement(
@@ -1269,7 +1273,10 @@ fn run_live(helper: String, here: String) -> Nil {
     as "the live jail must compose"
   let launch =
     jail.launch(
-      live.broker,
+      tool.broker_runner(broker: live.broker, waiting: jail.clearance_wait_ms),
+      fn(operation, step) {
+        broker.abort_step(live.broker, operation, step_id: step)
+      },
       live.counter,
       built,
       op(),

@@ -61,6 +61,7 @@ import codemode/compile
 import codemode/enforcement
 import codemode/identity
 import codemode/launch
+import codemode/physical
 import codemode/satellite
 import codemode/vet/policy as vet_policy
 import core/clock
@@ -115,8 +116,8 @@ fn run_sample(prerequisites: Prerequisites) -> Nil {
     as "the migration sample must vet, compile, and run to an outcome"
   // The source handed back for the durable entry is the file's own bytes.
   assert returned == source
-  assert artifact.entry_module == compile.entry_module
-  assert string.starts_with(artifact.manifest_hash, "sha256-")
+  assert compile.artifact_entry(artifact) == compile.entry_module
+  assert string.starts_with(compile.artifact_hash(artifact), "sha256-")
 
   // One line, structured, off the terminal frame — not scraped stdout.
   let assert satellite.Completed(msgpack.StringValue(text)) = outcome
@@ -234,13 +235,13 @@ fn exec_config(live: Rig, prerequisites: Prerequisites) -> codemode.ExecConfig {
   let op = op_id(now)
   codemode.ExecConfig(
     vet_policy: vet_policy.default(),
-    compile: compile.CompileConfig(
+    compile: compile.local_service(compile.CompileConfig(
       build_root: live.build_root,
       dependencies: compile.default_dependencies(),
       generated: [],
       build: build.builder(build.BuildConfig(
         observe: tool.ignore_output(),
-        broker: live.broker,
+        runner: physical.local(live.broker),
         seed_root: prerequisites.seed_root,
         gleam_path: prerequisites.gleam_path,
         base_policy: live.base_policy,
@@ -250,7 +251,7 @@ fn exec_config(live: Rig, prerequisites: Prerequisites) -> codemode.ExecConfig {
         dependencies: compile.default_dependencies(),
         timeout_ms: 120_000,
       )),
-    ),
+    )),
     broker: live.broker,
     // The build is accounted separately, under the derived
     // `migration-sample-build` sub-step; the node and every capability
@@ -277,7 +278,7 @@ fn exec_config(live: Rig, prerequisites: Prerequisites) -> codemode.ExecConfig {
       call_timeout_ms: 60_000,
     ),
     launch: launch.launcher(launch.LaunchConfig(
-      broker: live.broker,
+      runner: physical.local(live.broker),
       clock: rig.wall_clock(),
       erl_path: prerequisites.erl_path,
       host_mounts: rig.toolchain_mounts(prerequisites),

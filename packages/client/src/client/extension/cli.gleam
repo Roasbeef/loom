@@ -40,12 +40,13 @@ import client/extension/manifest
 import client/extension/record
 import client/extension/source
 import client/internal/ffi_os
-import client/lsp/profile
 import client/serve
 import codemode/build
 import codemode/compile
 import codemode/enforcement
 import codemode/identity
+import codemode/lsp_host/profile
+import codemode/physical
 import core/clock.{type Clock}
 import core/ids
 import filepath
@@ -457,7 +458,7 @@ pub fn build_for(
   let builder =
     build.builder(build.BuildConfig(
       observe: tool.ignore_output(),
-      broker: plane.broker,
+      runner: physical.local(plane.broker),
       seed_root: plane.toolchain.seed_root,
       gleam_path: plane.toolchain.gleam_path,
       base_policy: plane.base_policy,
