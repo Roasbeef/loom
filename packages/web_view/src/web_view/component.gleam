@@ -3128,8 +3128,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
 fn observer_words(model: Model(socket)) -> String {
   case notice(model) {
     Warned(text) | Said(text) -> text
-    Quiet ->
-      "You can follow this session. Ask the owner for operator access."
+    Quiet -> "You can follow this session. Ask the owner for operator access."
   }
 }
 
