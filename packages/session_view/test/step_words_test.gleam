@@ -192,3 +192,16 @@ pub fn a_program_that_calls_nothing_is_just_code_mode_test() {
     == Words("code_mode", Unnamed, None)
   assert words("code_mode", []) == Words("code_mode", Unnamed, None)
 }
+
+// The words are session text: a tool name, or a module or function name in a
+// program, can be any length the model writes, so a step's line is bounded.
+pub fn a_huge_tool_or_function_name_is_clipped_test() {
+  let huge = string.repeat("a", 10_000)
+  let Words(verb:, ..) = words(huge, [])
+  assert string.length(verb) == step_words.subject_limit
+
+  let program = "import cap/fs\n\npub fn main() {\n  fs." <> huge <> "(1)\n}"
+  let assert Words(subject: Mono(shown), ..) =
+    step_words.of_call(called("code_mode", [#("program", text(program))], None))
+  assert string.length(shown) == step_words.subject_limit
+}

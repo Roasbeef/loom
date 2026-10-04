@@ -325,7 +325,7 @@ fn generic(name: String, arguments: JsonValue) -> Words {
     json.Object([]) -> Unnamed
     _ -> Mono(clip(json.to_string(arguments)))
   }
-  Words(text_hygiene.single_line(name), given, None)
+  Words(clip(name), given, None)
 }
 
 fn searched(arguments: JsonValue) -> Words {
@@ -372,7 +372,7 @@ fn todo_words(arguments: JsonValue) -> String {
 
 fn program(arguments: JsonValue) -> Words {
   case text_field(arguments, "program") |> option.then(first_call) {
-    Some(call) -> Words("code_mode", Mono(call), None)
+    Some(call) -> Words("code_mode", Mono(clip(call)), None)
     None -> Words("code_mode", Unnamed, None)
   }
 }
