@@ -429,8 +429,10 @@ pub fn attributed(
 /// Only an owner or an operator can send a message, so only those attachments
 /// say what capacity a message was sent in. An observer's attachment is not
 /// a role anything was authored in and is left out, and so is a peer that is
-/// not a person. A principal attached as both takes `owner`, the stronger.
-/// The words are fixed here, never the session's.
+/// not a person. A principal attached in both capacities takes `operator`: a
+/// terminal attaches as the owner and a web page as an operator, so a person
+/// with both open sends from the page, and the lane's words match the
+/// operator's own composer. The words are fixed here, never the session's.
 ///
 /// ## Examples
 ///
@@ -440,12 +442,12 @@ pub fn attributed(
 pub fn authors(peers: List(snapshot_view.Peer)) -> Dict(String, String) {
   list.fold(peers, dict.new(), fn(roles, peer) {
     case peer.origin, peer.role {
-      message.Origin(principal:, ..), snapshot.Owner ->
-        dict.insert(roles, principal, "owner")
       message.Origin(principal:, ..), snapshot.Operator ->
+        dict.insert(roles, principal, "operator")
+      message.Origin(principal:, ..), snapshot.Owner ->
         case dict.has_key(roles, principal) {
           True -> roles
-          False -> dict.insert(roles, principal, "operator")
+          False -> dict.insert(roles, principal, "owner")
         }
       _, _ -> roles
     }

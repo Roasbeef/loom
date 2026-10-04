@@ -1032,16 +1032,18 @@ pub fn a_prompt_draws_its_sender_apart_from_its_words_test() {
   assert theirs == None
 }
 
-// The author's role is the strongest capacity they are attached in, and the
+// The author's role is the operator capacity when they hold it, else owner, and the
 // viewer's own role never enters: a principal seen only as an observer
 // authored nothing in that capacity.
-pub fn an_authors_role_is_the_strongest_they_hold_test() {
+pub fn an_authors_role_prefers_operator_to_owner_test() {
   let who = message.Origin("principal-1", "Alice")
   assert turns.authors([
       snapshot_view.Peer("c1", who, snapshot.Operator),
       snapshot_view.Peer("c2", who, snapshot.Owner),
-      snapshot_view.Peer("c3", who, snapshot.Operator),
+      snapshot_view.Peer("c3", who, snapshot.Owner),
     ])
+    == dict.from_list([#("principal-1", "operator")])
+  assert turns.authors([snapshot_view.Peer("c1", who, snapshot.Owner)])
     == dict.from_list([#("principal-1", "owner")])
   assert turns.authors([snapshot_view.Peer("c1", who, snapshot.Observer)])
     == dict.new()

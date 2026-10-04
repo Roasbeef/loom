@@ -323,7 +323,8 @@ page keys and nonces, and the relay into the session's gateway.
   class="who-name">Owner</span> · operator`) above the words in a bubble. The
   name is session text; the role is the author's, never the reader's: `turns.authors`
   reads the capacity each principal is attached in from the presence rows
-  (`View.peers`, owners and operators only, since an observer cannot send) and
+  (`View.peers`, owners and operators only, since an observer cannot send;
+  `operator` wins when a principal holds both, as a terminal and a page do) and
   `turns.attributed` sets it on that principal's messages in
   `component.relaned`. A sender with no such attachment shows the name alone,
   so an observer's page and an operator's draw the same words for a message. A spawn is a line (`Spawned <tag> · purpose`)
