@@ -259,3 +259,54 @@ Executor scheduling, trusted-node metadata/routing, durable cross-node
 messaging and planned ownership handoff remain later dependent stack slices
 of #697. Passing the first remote-workspace fixture does not complete those
 phases. Automatic failover and workspace snapshot migration remain deferred.
+
+
+## Addendum: bounded semantic workspace content
+
+Semantic workspace invocations use canonical positional MessagePack, retaining
+the complete scope, physical operation/step, original tool or explicit system
+origin, reserved request UUID and typed request. Completions retain both the
+typed response and optional post-write diagnostics. Their decoders require the
+original request to reject a response of a different kind or projection.
+
+Invocation content is at most nine MiB. Completion content is at most
+thirty-two MiB: a maximal anchored edit can return an eight-MiB preimage and
+nearly sixteen-MiB postimage, plus diagnostics and envelope overhead. A
+reservation of exactly twenty-four MiB does not cover that producer. Decode
+admits lengths before allocation and limits nesting to 32, each container to
+8,192 elements and the complete value to 65,536 nodes. Runtime terms are not
+serializable results. A failure to encode after an effect must remain unknown;
+it cannot become a pre-effect refusal or permission to replay.
+
+These ceilings do not enlarge the 256-KiB TLS frame limit. Workspace content
+uses a fixed 41-byte header: ASCII `LWC`, version byte 1, direction byte
+(0 invocation, 1 completion), unsigned big-endian 32-bit total length, and
+32-byte SHA-256. Each data frame has ASCII `LWD`, version and direction bytes,
+an unsigned big-endian 32-bit content offset, then exactly 65,536 bytes or the
+remaining final bytes. There are at most 144 invocation or 512 completion
+frames. Wrong offsets, truncated/extra data, direction mismatch and a final
+digest mismatch refuse the transfer. Discard the connection after a failure.
+Application scope authentication precedes this content exchange; the digest
+is integrity evidence, not authority.
+
+The entire exchange runs under one finite supervised deadline, with a bounded
+number of connection credits. Individual frame deadlines are insufficient.
+The receiver retains chunks and concatenates once, so peak temporary memory
+can include both chunks and the completed binary. These content limits do not
+claim an equal resident-memory ceiling. Semantic validation and durable
+reservation still precede any effect.
+
+The workspace journal reserves the exact invocation size plus the full
+completion allowance before returning admission. `Started` commits before an
+opaque live claim can be returned. Duplicate or recovered `Started` returns
+Unknown and never a second claim. Only that live claim may finish with a
+validated completion. The owner must retain exact completion bytes durably
+before acknowledging their digest. Acknowledgement permits payload collection
+but retains the original UUID, request digest/size and result digest/size as a
+permanent replay fence. Cancellation before claim also fences the identity.
+Logical retained bytes and lifetime rows are finite; this is not a physical
+SQLite/WAL disk bound. The journal never performs a filesystem effect itself.
+
+The codec, journal and transfer are separate components until production
+assembly binds them together. Their component tests do not satisfy the
+remote-workspace product gate above.
