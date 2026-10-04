@@ -174,7 +174,7 @@ list of **contributions**, each a `Contribution(origin, tools)` whose
 
 ### The built-in contribution
 
-`built_in` (`client/contributions.gleam:264`) takes one `Option` per
+`built_in` (`client/contributions.gleam:308`) takes one `Option` per
 plane and returns the host's own contribution in a fixed order:
 
 1. the five core tools, `bash`, `grep`, `fs_read`, `fs_write`, and
@@ -186,8 +186,11 @@ plane and returns the host's own contribution in a fixed order:
 6. the three `schedule_*` tools, if the operator's schedule policy
    admits model-created schedules;
 7. `context_remaining`, given a `Context`;
-8. the three `job_*` tools, given a `Jobs` door;
-9. the seven `lsp_*` tools, given the session's language-server door.
+8. the three `job_*` tools, given a `Jobs` door.
+
+The LSP door enriches code-mode discovery with served language hints and
+adds diagnostics to landed writes. Semantic requests use `cap/lsp` and
+`cap/lsp_sql`; it registers no additional top-level tools.
 
 `client/serve` always supplies the `Agency`, `Context`, and `Jobs`
 seams, so on a served session only code mode, search, memory, and
@@ -217,7 +220,7 @@ covers how discovery turns an install record into tools.
 
 ### Collisions and deactivation
 
-`registry` (`client/contributions.gleam:406`) refuses a name that two
+`registry` (`client/contributions.gleam:451`) refuses a name that two
 contributions both claim. The refusal is a `Collision` naming both
 origins, and `client/serve` turns it into a boot failure. It is never a
 warning and never "last registration wins". If an extension could
@@ -322,7 +325,7 @@ shows where the tool layer enters it.
    which the intent commit persists. Clearance is not an execution
    grant: sandbox policy is composed later, inside the tool.
 3. **Scheduling.** The driver's check
-   `tool_may_start` (`runtime/strand_runtime.gleam:2787`) starts a
+   `tool_may_start` (`runtime/strand_runtime.gleam:2801`) starts a
    call only if no `Exclusive` tool is running, and starts an
    `Exclusive` tool only when nothing else is running. The default
    `tool_execution` setting is `parallel`, so calls to `Concurrent`
@@ -374,12 +377,11 @@ The declarations follow from each tool's effects:
   `schedule_create`, `schedule_cancel`, the `job_*` tools, and every
   extension tool are `Never`. Each either has an arbitrary external
   effect or mints a fresh identifier per call, so a replay would act
-  twice. `lsp_rename` is `Never` for a narrower reason: an applied
-  rename writes several files and is not atomic across them, so a replay
-  after a partial landing would ask the server about a half-renamed tree.
+  twice. A code-mode applied rename may write several files and is not
+  atomic across them; the outer program's `Never` contract prevents replay
+  against a half-renamed tree.
 - Every other tool is `Safe`. For `fs_read`, `grep`, `history_search`,
-  `context_remaining` and the six read-only `lsp_*` tools the reason is
-  that they only read.
+  `context_remaining` the reason is that they only read.
 - `fs_write` is `Safe` because writing the same bytes to the same path
   is idempotent. `fs_edit` is `Safe` because its plan is bound to the
   digest of the exact content it was computed against, so a replay after
@@ -445,7 +447,7 @@ model-authored code runs there, which is what Rule Zero requires.
 | `schedule_create`, `schedule_list`, `schedule_cancel` | Create, list, and cancel the model's scheduled heartbeats. | Harness VM | `automation.md` §"Scheduled heartbeats" |
 | `advise` | The advisor strand's verdict: `quiet`, `nudge`, or `block`, plus `continue` and `complete` for a goal feed. Active on the advisor strand only. | Harness VM | `advisor.md` |
 | `load_skill` | Load a skill's instructions by name. | Harness VM | `docs/skills.md`; `client.md` §"Skill discovery and activation" |
-| `lsp_definition`, `lsp_references`, `lsp_hover`, `lsp_symbols`, `lsp_calls`, `lsp_diagnostics`, `lsp_rename` | Ask the session's language server about a symbol by name, outline a file, list diagnostics, and preview or apply a rename; every site carries its `fs_edit` anchor. Registered only where a server is configured. | Harness VM; the server runs jailed (broker, helper) | `lsp.md` |
+| `cap/lsp`, `cap/lsp_sql` (through `code_mode`) | Ask semantic questions, preview/apply a rename, or query explicit observations with SQL. Offered only with the corresponding LSP door. | Programs and SQL in the jailed satellite; the server runs in a separate jailed lease | `lsp.md`, `lsp-sql.md` |
 | `peer_describe`, `peer_roster`, `peer_send` | Set this session's peer description, list linked sessions, and send to a peer. | Harness VM | `messaging.md` §"Explicit peers and background workflows" |
 | Extension tools | Whatever an installed extension's manifest declares. | Jailed (the extension's satellite) | `extensions.md` |
 
@@ -461,6 +463,17 @@ of them is registered:
 - `tools/hashline` is the pure anchor, plan, and apply core behind
   `fs_read` and `fs_edit`.
 
+## Saved code-mode input
+
+`code_mode` accepts exactly one of inline `program` or a real source file named
+by `program_path`. Invocation permissions are authorized before loading that
+file. `tools/fs.read_text` shares `fs_read` canonical target authorization and
+its eight-MiB UTF-8 whole-file bound; it returns source without image handling,
+windows or anchors. The loaded source goes through the ordinary pipeline and
+stays unchanged across an approval retry. A new invocation reloads the file.
+Background launch shares that path; async interaction commands do not read it.
+See [protocol 063](../../protocol-change/063-saved-code-mode-programs.md).
+
 ## Where the code lives
 
 | Path | What it holds |
@@ -471,7 +484,7 @@ of them is registered:
 | `tools/blob.gleam`, `tools/tail.gleam` | Output overflow and the rolling output window. |
 | `tools/permissions.gleam`, `tools/directory_access.gleam` | The optional `permissions` argument and explicit directory additions. |
 | `tools/agent.gleam`, `tools/job.gleam`, `tools/history.gleam`, `tools/remember.gleam`, `tools/schedule.gleam`, `tools/context.gleam`, `tools/advise.gleam`, `tools/codemode.gleam` | The shells over host seams, one module per family. |
-| `tools/lsp.gleam` | The `lsp_*` tools over `lsp/query.Door`, the rename landing, and the diagnostics observer. |
+| `tools/lsp.gleam` | Shared rename landing, diagnostics rendering/observer, clipping and changed spans. |
 | `tools/prelude.gleam` | Generated public-type prefixes for the description and full capability declarations for `cap://` reads (`make gen-prelude`). |
 | `client/contributions.gleam` | `Origin`, `Contribution`, `built_in`, `deactivate`, and the collision-checked `registry`. |
 | `client/serve.gleam` | Session assembly: opens the planes, builds the contribution list and registry, seeds `active_tool_names`, renders the prompt index. |
