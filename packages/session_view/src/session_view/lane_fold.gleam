@@ -75,6 +75,7 @@ import session_view/model.{
   LookupAnswered, NewSession, OutlookCleared, Preview, QueueRowsCaptured,
   ReplayAdopted, Replaying, SameSession, Shared, UnconfirmedSubmission,
 } as session_model
+import session_view/notice_words
 import session_view/outbound
 import session_view/protocol
 import session_view/queue_request
@@ -381,7 +382,7 @@ fn fold_update(
     session_channel.Acknowledged("edit_queued_input", "queued") ->
       Shared(
         ..shared,
-        notice: "queued input updated",
+        notice: notice_words.outcome("edit_queued_input", "queued"),
         queue_request: queue_request.new(),
         queue_notices: list.append(shared.queue_notices, [queue_request.Saved]),
       )
@@ -392,7 +393,7 @@ fn fold_update(
         Shared(
           ..settled,
           submitting: None,
-          notice: "prompt queued for the next turn",
+          notice: notice_words.outcome("prompt", "queued"),
         )
       }
       |> session_model.invalidate_frame
@@ -406,7 +407,7 @@ fn fold_update(
     session_channel.Acknowledged("abort", status) ->
       {
         let abandoned = event_fold.abandon_interjections(shared)
-        Shared(..abandoned, notice: "abort " <> status)
+        Shared(..abandoned, notice: notice_words.outcome("abort", status))
       }
       |> session_model.invalidate_frame
 
@@ -417,7 +418,7 @@ fn fold_update(
     session_channel.Acknowledged(command, status) ->
       {
         let settled = event_fold.settle_own_turn(shared)
-        Shared(..settled, notice: command <> " " <> status)
+        Shared(..settled, notice: notice_words.outcome(command, status))
       }
       |> session_model.invalidate_frame
 
