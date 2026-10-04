@@ -339,16 +339,38 @@ page keys and nonces, and the relay into the session's gateway.
   (`view/lane`'s `commentary-mark`): the advisor's tag and the request's
   label, its dot carrying the advisor card's marker. The 051 addendum of
   2026-10-02 records the move out of the lane.
-- `controls.view(bar)` draws the operator's controls in the dock, above the
-  approvals: the goal row in the terminal's words
-  (`goal_view.row`) with the buttons its status offers (Pause while active,
-  Resume while held or limited, Clear always, nothing to steer once complete)
-  in a `control-actions arming` row keyed by the status, and one `<details>`
-  holding a one-field form, Fork. Stop and Set goal are gone: stopping is the
-  terminal's Escape, and a goal is pinned by typing `/goal ...` in the
-  composer, which the page parses as a command. `controls.Bar` carries the
-  messages each button sends and the form's submit handler, since
-  `operator_page` owns the message type. The observer's page draws none of it.
+- `controls.session(bar)` draws the operator's controls in the Session pane,
+  as its fourth child after the invitation control (so `invite_path` does not
+  move; its own path is `component.session_controls_path`): the goal row in
+  the terminal's words (`goal_view.row`) with the buttons its status offers
+  (Pause while active, Resume while held or limited, Clear always, nothing to
+  steer once complete) in a `control-actions arming` row keyed by the status,
+  and one `<details>` holding a one-field form, Fork. `controls.dock(bar)` is
+  the dock's one goal line, drawn only while a goal is active or paused, with
+  its one steering button; otherwise an empty node. Stop and Set goal are
+  gone: stopping is the terminal's Escape, and a goal is pinned by typing
+  `/goal ...` in the composer, which the page parses as a command.
+  `controls.Bar` carries the messages each button sends and the form's submit
+  handler, since `operator_page` owns the message type. The observer's page
+  draws none of it. The 051 addendum of 2026-10-03 records the move.
+- The composer is a card of three rows: `To <tag>` (the strand's hue, no
+  handler), the borderless editor, and a footer with the attach element
+  (`<loom-attach>`, whose button is a `+` icon), the hint (`Cmd+Enter to
+  send`, `Turn is busy · ` when busy), the notice, `Owner · operator`, the
+  cache outlook and the Send, or Queue and Steer, buttons. The notice is
+  keyed by `component.notice_serial`, which `operator_page.update` raises
+  whenever the notice changed, so the stylesheet's fade starts for each new
+  one; a `warned` notice does not fade. Its words come from
+  `session_view/notice_words`, a closed table the terminal shares.
+- An approval card is headed `<b>strand</b> wants to <approval.wants(tool)>`,
+  with the strand from the escalation record's scope
+  (`component.raised_on`) and the arming delay drawn as the `Arming…` note.
+- A decided approval is a `turns.Decided` piece: `session_view/decisions`
+  reads the approval ledger (`shared.approvals`) and the strands the
+  captures saw pending requests raised on (`View.raised`), and
+  `turns.with_decisions`, called by `component.pieces`, places each by the
+  register sequence that committed it. The lane draws
+  `p.decided` with the author, the verb and the tool as text nodes.
 - `lane.Replies(fn(key) -> message)` or `NoReplies`, the last argument of
   `lane.view`. A peer card draws a `Reply to
   this peer` button after its body when the lane has replies, and the button

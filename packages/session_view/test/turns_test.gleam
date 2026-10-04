@@ -14,6 +14,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import session_view/composer
+import session_view/decisions
 import session_view/protocol
 import session_view/snapshot
 import session_view/snapshot_view
@@ -269,6 +270,7 @@ fn shape(piece: turns.Piece) -> String {
     turns.Peer(session:, ..) -> "peer:" <> session
     turns.Sibling(strand:, ..) -> "sibling:" <> strand
     turns.Missed(..) -> "missed"
+    turns.Decided(..) -> "decided"
     turns.Commentary(..) -> "commentary"
   }
 }
@@ -367,7 +369,8 @@ pub fn every_piece_keeps_its_key_when_the_turn_settles_test() {
         | turns.Nudged(key:, ..)
         | turns.Peer(key:, ..)
         | turns.Sibling(key:, ..)
-        | turns.Missed(key:, ..) -> key
+        | turns.Missed(key:, ..)
+        | turns.Decided(key:, ..) -> key
       }
     })
   }
@@ -834,7 +837,8 @@ pub fn framing_text_without_a_strand_origin_never_becomes_a_sibling_test() {
       | turns.Nudged(..)
       | turns.Commentary(..)
       | turns.Peer(..)
-      | turns.Missed(..) -> False
+      | turns.Missed(..)
+      | turns.Decided(..) -> False
     }
   }
   assert !list.any(call_forged, sibling)
@@ -1028,4 +1032,49 @@ pub fn reviews_that_follow_each_other_are_one_piece_test() {
     turns.Commentary(reviews: 1, ..),
   ] = laid
   assert first.key == "3.0"
+// A recorded approval decision is placed by the sequence that committed it:
+// before the first piece that starts after it, so it follows the step it
+// decided. One older than the window's first record is dropped, and one
+// newer than every piece goes last.
+pub fn a_decision_line_is_placed_by_its_sequence_test() {
+  let decide = fn(seq, verdict) {
+    decisions.Decision(
+      seq:,
+      strand: "main",
+      who: "Owner",
+      verdict:,
+      tool: "bash",
+    )
+  }
+  let laid =
+    pieces([])
+    |> turns.with_decisions([
+      decide(0, decisions.Denied),
+      decide(5, decisions.Denied),
+      decide(500, decisions.Allowed),
+    ])
+  assert list.map(laid, shape)
+    == [
+      "plain:Alice:\nreview the patch",
+      "work:folded",
+      "spawn:" <> child,
+      "decided",
+      "returned:" <> child,
+      "plain:Done: two files.",
+      "peer:lint-census",
+      "nudge",
+      "decided",
+    ]
+  let assert Ok(turns.Decided(decision:, ..)) =
+    list.find(laid, fn(piece) {
+      case piece {
+        turns.Decided(..) -> True
+        _ -> False
+      }
+    })
+  assert decisions.words(decision) == "Owner denied bash"
+}
+
+pub fn no_decisions_leave_the_pieces_untouched_test() {
+  assert turns.with_decisions(pieces([]), []) == pieces([])
 }

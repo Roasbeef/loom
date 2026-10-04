@@ -413,7 +413,8 @@ fn key(piece: turns.Piece) -> String {
     | turns.Nudged(key:, ..)
     | turns.Peer(key:, ..)
     | turns.Sibling(key:, ..)
-    | turns.Missed(key:, ..) -> key
+    | turns.Missed(key:, ..)
+    | turns.Decided(key:, ..) -> key
   }
 }
 

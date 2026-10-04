@@ -71,6 +71,7 @@ import gleam/set
 import gleam/string
 import session_view/agent_view
 import session_view/composer
+import session_view/decisions
 import session_view/protocol
 import session_view/snapshot_view
 import session_view/step_words
@@ -284,6 +285,12 @@ pub type Piece {
 
   /// A cache miss this client noticed after the turn that paid for it.
   Missed(key: String, text: String)
+
+  /// An approval decision the session recorded, placed among the records by
+  /// the sequence that committed it (`with_decisions`). The line is the
+  /// register's, not the transcript's: it says who answered a request, which
+  /// no transcript entry does.
+  Decided(key: String, decision: decisions.Decision)
 }
 
 /// Whether the pieces carry the rows a reader can expand a row to, and how
@@ -424,6 +431,73 @@ fn merge_commentary(pieces: List(Piece)) -> List(Piece) {
   |> list.reverse
 }
 
+/// The pieces with each recorded decision's line placed among them.
+///
+/// A decision goes before the first piece that starts after the sequence that
+/// committed it, which is after the step it decided: the step's own call is
+/// older than the decision, and its result and the strand's next words are
+/// newer. A decision is committed inside the turn that raised it, so a turn's
+/// work, which is one piece, ends before its decision's line, and the line
+/// reads as the turn's last word on the request. A decision older than the
+/// first piece the window holds is dropped, as the records it follows are
+/// not drawn, and one newer than every piece goes last.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert turns.with_decisions([], []) == []
+/// ```
+pub fn with_decisions(
+  pieces: List(Piece),
+  decided: List(decisions.Decision),
+) -> List(Piece) {
+  let first =
+    list.find_map(pieces, start_seq)
+    |> result.unwrap(0)
+  let waiting = list.filter(decided, fn(decision) { decision.seq > first })
+  let #(placed, left) =
+    list.fold(pieces, #([], waiting), fn(acc, piece) {
+      let #(placed, waiting) = acc
+      let #(older, newer) = case start_seq(piece) {
+        Ok(start) ->
+          list.split_while(waiting, fn(decision) { decision.seq < start })
+        Error(Nil) -> #([], waiting)
+      }
+      #([piece, ..list.append(list.reverse(lines(older)), placed)], newer)
+    })
+  list.reverse(list.append(list.reverse(lines(left)), placed))
+}
+
+// The decisions as the pieces that draw them, keyed by the sequence that
+// committed each: a sequence is the daemon's number, never session text, and
+// no block's key can equal it because a block's key has a dot in it.
+fn lines(decided: List(decisions.Decision)) -> List(Piece) {
+  list.map(decided, fn(decision) {
+    Decided(key: "decided-" <> int.to_string(decision.seq), decision:)
+  })
+}
+
+// The sequence a piece starts at, from the key of the first record it draws.
+fn start_seq(piece: Piece) -> Result(Int, Nil) {
+  case piece {
+    Plain(block:, ..) | Commentary(block:) -> key_seq(block.key)
+    Work(items: [Narrated(block:, ..), ..], ..) -> key_seq(block.key)
+    Work(items: [Step(key:, ..), ..], ..) -> key_seq(key)
+    Work(items: [], ..) | Decided(..) -> Error(Nil)
+    Spawned(key:, ..)
+    | Returned(key:, ..)
+    | Nudged(key:, ..)
+    | Peer(key:, ..)
+    | Sibling(key:, ..)
+    | Missed(key:, ..) -> key_seq(key)
+  }
+}
+
+fn key_seq(key: String) -> Result(Int, Nil) {
+  use #(seq, _) <- result.try(string.split_once(key, "."))
+  int.parse(seq)
+}
+
 /// The rows of a lane that carry images, each with the name a host gives it
 /// (`transcript_image.ref`) and its images: a person's message, a result
 /// whose call is outside the window, and a step's result.
@@ -452,7 +526,8 @@ pub fn pictured(pieces: List(Piece)) -> List(#(String, List(Image))) {
       | Commentary(..)
       | Peer(..)
       | Sibling(..)
-      | Missed(..) -> []
+      | Missed(..)
+      | Decided(..) -> []
     }
   })
   |> list.filter(fn(row) { row.1 != [] })
@@ -1331,7 +1406,8 @@ fn piece_key(piece: Piece) -> String {
     | Nudged(key:, ..)
     | Peer(key:, ..)
     | Sibling(key:, ..)
-    | Missed(key:, ..) -> key
+    | Missed(key:, ..)
+    | Decided(key:, ..) -> key
   }
 }
 

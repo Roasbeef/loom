@@ -3569,3 +3569,100 @@ worded; the section holding no button and no form; and the operator's page
 drawing the same hairline and section. The web client's gates pass unchanged.
 No browser was in the loop; the hairline's look beside a lane and the
 section's under the cards run only in one.
+
+## Addendum: the session controls move to the Session tab (2026-10-03)
+
+**Status**: PROPOSED, IMPLEMENTED with the web/b4-dock branch ·
+**Raised by**: the web UI critique, round 1 (F22) and round 2 (F41)
+
+The dock held a goal row, its buttons and the Fork form on every page,
+beside the todo line and the composer. The design's dock is the todo line and
+the composer only. This addendum amends the placement sentence of the addendum
+on the page's session controls (2026-09-29), which put them "in the dock,
+above the composer", and of the addendum on the dock (2026-10-02), which kept
+them there. It adds no event, removes no operation, and touches no frozen
+interface.
+
+### What changed
+
+- **The goal's buttons and the Fork form moved to the Session pane.** They
+  are one section, `view/controls.session`, drawn as the pane's fourth
+  child. The invitation control is the pane's third child
+  (`component.invite_path`, `0\t3\t2\t2`), and the section comes after it, so
+  that placing it there shifts no path the addendum on inviting pins:
+  `invite_test` and `page_events_test` hold the invitation's handlers at their
+  path and the new section's at `component.session_controls_path`
+  (`0\t3\t2\t3`). Placing the section before the invitation control would
+  have moved it to `0\t3\t2\t3`, and the section is therefore the later of
+  the two.
+- **The dock keeps one goal line, and only while a goal is active or
+  paused.** `view/controls.dock` draws the goal's first row of words and the
+  one button that steers it (Pause while active, Resume while paused). A
+  goal that is complete or limited, and no goal at all, draw nothing, an
+  empty node, so the dock's children keep their places. The `arming` row rule
+  carries over to both places unchanged: a change of the goal's status is a
+  new keyed row and the stylesheet refuses clicks on it for 600 ms.
+- **What the socket admits did not change.** The operator's socket admits a
+  click or a submit at any path but the invitation control's
+  (`client/daemon/ui_socket.operator_accepts`), so the new section's handlers
+  were already admitted; the observer's page draws no section and its socket
+  admits none. `ui_socket_test` pins both.
+- **The dock's children are now the todo panel, the goal line, the approvals
+  and the composer.** The goal line is `element.none()` when it draws
+  nothing, as the approvals are, so the composer stays the last child and
+  the path of its form does not depend on a goal.
+- **Reads of the decision ledger.** A decided approval is drawn in the lane
+  as a who line (`Owner denied bash`). It is read from the approval ledger
+  the page already keeps: the host looks a request up when it leaves the
+  pending cut, and the ledger holds the author, the verdict and the tool
+  (`approval.decisions`, sixteen at most). The strand the request was raised
+  on comes from the pending cell, which the capture held while the request
+  waited (`session_view/decisions`). It adds no event, frame or field. A
+  request still waiting has no line, and the approval card is unchanged in
+  where it sits.
+
+### What was considered
+
+- **Leave the controls in the dock and shrink them.** The goal row and Fork
+  are rare actions, and a form that is closed most of the time still costs a
+  row and a label on every page.
+- **Put the section before the invitation control.** It would shift the
+  invitation's pinned path, which the addendum on inviting forbids without
+  its own amendment. After it costs nothing, since the Session pane scrolls.
+- **Draw no goal line in the dock.** A loop that spends tokens is worth a
+  hand on the button without opening a tab; the line is one row, and only
+  while it is running or held.
+- **Add a transcript record for a decision.** The register already keeps the
+  decided escalation, its author and the strand it was raised on, and the
+  ledger carries the first two. A second channel would duplicate it.
+
+### Cost
+
+- The goal's Clear button and the Fork form are one tab away. An operator who
+  wants Fork opens the Session tab. Below 980px the panel is a short row of
+  cards, and the Session pane's controls are reached by choosing its tab and
+  scrolling the row.
+- A decision's line is placed by the register sequence that committed it,
+  which orders it among the transcript's records but gives no clock time, so
+  the line says who and what and not when.
+- A page that opens after a request was decided never saw it pending, so it
+  has no lookup to make and shows no line for it; the ledger is the page's
+  own and is bounded to sixteen. The register keeps every decided escalation
+  durably, but a metadata cut carries only the pending ones, so a line that
+  survives a reload needs the daemon to list decided escalations. That is a
+  wire change and is not made here.
+
+### Verification
+
+`page_actions_test` shows the dock drawing the goal line and Pause for an
+active goal and Resume for a paused one, nothing for a complete goal or none,
+and the Session pane holding Clear and the Fork form after the invitation
+control's place; the buttons still sending their commands; an observer's page
+drawing no control. `page_events_test` pins the section's handler at
+`component.session_controls_path` and none on the observer's page;
+`invite_test` still pins the invitation's two buttons at `invite_path`.
+`ui_socket_test` pins the admissions. `operator_page_test` shows the decision
+line drawn from a rejected and an approved ledger entry for the strand the
+page follows and not for another's. No browser was in the loop for the tests;
+the drive screenshots under `docs/design-notes/web-design/drive-b4/` show the
+rendered dock and Session tab.

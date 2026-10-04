@@ -32,6 +32,7 @@ fn drawn(jobs, viewers) -> String {
     jobs,
     viewers,
     element.none(),
+    element.none(),
   ))
 }
 
@@ -55,6 +56,7 @@ pub fn a_pinned_goal_is_the_terminals_row_and_no_goal_says_none_test() {
       Unread,
       None,
       element.none(),
+      element.none(),
     ))
   assert string.contains(with_goal, "Goal")
   assert string.contains(
@@ -75,6 +77,7 @@ pub fn the_goal_is_only_ever_a_text_node_test() {
       "est $0.00",
       Unread,
       None,
+      element.none(),
       element.none(),
     ))
   assert string.contains(html, "&lt;script&gt;alert(1)&lt;/script&gt;")

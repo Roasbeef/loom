@@ -149,6 +149,7 @@ import session_view/command
 import session_view/composer
 import session_view/connection_event
 import session_view/context_view
+import session_view/decisions
 import session_view/goal_view
 import session_view/history_view
 import session_view/inbox
@@ -290,6 +291,17 @@ pub const sidebar_path = "0\t1"
 /// (`client/daemon/ui_socket.invite_for`). `invite_test` fails if the view
 /// moves the control or a handler leaves the region.
 pub const invite_path = "0\t3\t2\t2"
+
+/// The Lustre event path of the operator's session controls, the goal's
+/// buttons and the Fork form: the fourth child of the Session pane, after the
+/// invitation control (`invite_path`), so that placing it there moved no path
+/// the socket admits. Every handler beneath it is a click or a submit of a
+/// control (protocol-change/051, the addendum on the session controls'
+/// placement). The operator's socket admits them like any click or submit
+/// that is not the invitation's, and an observer's socket admits none, the
+/// page drawing no control there. `page_events_test` fails if the view moves
+/// the controls.
+pub const session_controls_path = "0\t3\t2\t3"
 
 /// How long the sidebar's list stands before the page reads it again, in
 /// milliseconds of the transport's clock. The list changes when a session is
@@ -640,6 +652,17 @@ type View(socket) {
     /// so a consumed draft is replaced by an empty editor while a refused
     /// one stays as the operator left it.
     consumed: Int,
+    /// How many times the composer's notice has changed. The notice is keyed
+    /// by it, so each new notice is a new element and the stylesheet's fade
+    /// starts afresh for it, while a refresh that leaves the words alone does
+    /// not restart the fade of the ones on screen.
+    noticed: Int,
+    /// The strand each approval request was raised on, by the request's
+    /// identity, as the captures saw it while the request was pending. The
+    /// approval ledger's summary of a decided request keeps no scope, so the
+    /// decision's line (`decisions.from_ledger`) reads the strand from here.
+    /// It holds the newest sixty-four.
+    raised: List(#(String, String)),
     /// How many of the controls' forms have sent a command. The forms are
     /// keyed by it, so a form that sent is replaced by a closed, empty one
     /// while a refused one keeps what the operator typed.
@@ -782,6 +805,8 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       returns: 0,
       returned: [],
       consumed: 0,
+      noticed: 0,
+      raised: [],
       sent_forms: 0,
       timer: None,
       armed: None,
@@ -1441,6 +1466,7 @@ fn relaned(model: Model(socket)) -> Model(socket) {
           ..model.view,
           blocks:,
           pieces:,
+          raised: remembered(model.view.raised, view.cells),
           earlier:,
           paging:,
           changes: changes_view.fold(branch.records),
@@ -2098,6 +2124,7 @@ fn peer_named(piece: turns.Piece, key: String) -> Result(String, Nil) {
     | turns.Returned(..)
     | turns.Nudged(..)
     | turns.Missed(..)
+    | turns.Decided(..)
     | turns.Commentary(..) -> Error(Nil)
   }
 }
@@ -2582,6 +2609,11 @@ pub fn lines(model: Model(socket)) -> List(Line) {
 /// ```
 pub fn pieces(model: Model(socket)) -> List(turns.Piece) {
   model.view.pieces
+  |> turns.with_decisions(decisions.from_ledger(
+    model.shared.approvals,
+    model.view.raised,
+    model.shared.active_strand,
+  ))
 }
 
 /// The live region's rows: the reasoning the provider is writing, with how
@@ -2775,6 +2807,56 @@ pub fn notice(model: Model(socket)) -> Notice {
   }
 }
 
+/// How many times the composer's notice has changed, which keys the notice
+/// element so that a new notice fades from the start.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.notice_serial(model) == 0
+/// ```
+pub fn notice_serial(model: Model(socket)) -> Int {
+  model.view.noticed
+}
+
+/// The model with its notice counted as changed. The operator page calls it
+/// after a message that left a different notice than it found
+/// (`operator_page.update`); this module cannot see the message as one change
+/// because the notice is read from three places.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.renew_notice(model)
+/// ```
+pub fn renew_notice(model: Model(socket)) -> Model(socket) {
+  Model(..model, view: View(..model.view, noticed: model.view.noticed + 1))
+}
+
+/// The strand each approval request was raised on, by the request's identity,
+/// as the captures saw it while the request was pending. A request no capture
+/// named a strand for is absent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.raised_on(model)
+/// ```
+pub fn raised_on(model: Model(socket)) -> List(#(String, String)) {
+  model.view.raised
+}
+
+// The strands requests were raised on: the capture's pending cells first,
+// then what was remembered, one entry for each request, the newest sixty-four.
+fn remembered(
+  known: List(#(String, String)),
+  cells: List(snapshot_view.Cell),
+) -> List(#(String, String)) {
+  list.append(decisions.strands(cells), known)
+  |> list.unique
+  |> list.take(64)
+}
+
 /// How many drafts have left the composer, which keys the composer's
 /// editor: the ones the lane sent and the ones a command consumed.
 ///
@@ -2904,7 +2986,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
     [
       crumb(model),
       lane.view(
-        model.view.pieces,
+        pieces(model),
         live(model),
         top(model),
         OlderRequested,
@@ -2914,12 +2996,17 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
       ),
       plan(model),
       html.p([attribute.class("observer-bar")], [
-        html.text(
-          "Observer · read-only · you can follow this session; ask the owner for operator access",
-        ),
+        html.span([attribute.class("pill")], [
+          html.text("Observer · read-only"),
+        ]),
+        html.span([attribute.class("observer-note")], [
+          html.text(
+            "You can follow this session. Ask the owner for operator access.",
+          ),
+        ]),
       ]),
     ],
-    panel(model, FocusRequested, None, element.none()),
+    panel(model, FocusRequested, None, element.none(), element.none()),
     needing(model),
     workspace_digest(model),
   )
@@ -2941,13 +3028,14 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
 /// ## Examples
 ///
 /// ```gleam
-/// // component.panel(model, FocusRequested, None, element.none())
+/// // component.panel(model, FocusRequested, None, element.none(), element.none())
 /// ```
 pub fn panel(
   model: Model(socket),
   focus: fn(String) -> message,
   viewers: Option(session_summary.Viewers),
   share: Element(message),
+  controls: Element(message),
 ) -> Element(message) {
   panel.view(
     strip.count(model.view.strip),
@@ -2960,6 +3048,7 @@ pub fn panel(
       jobs(model),
       viewers,
       share,
+      controls,
     ),
     trace.view(trace(model)),
     nudges.view(pending_nudges(model)),
@@ -3079,7 +3168,10 @@ pub fn plan(model: Model(socket)) -> Element(message) {
 
   todo_panel.view(
     option.from_result(dict.get(model.shared.todo_boards, strand)),
-    reviewer_status.lines(model.shared.reviewer_rows, strand),
+    reviewer_status.lines(
+      reviewer_status.without_idle_advisor(model.shared.reviewer_rows),
+      strand,
+    ),
   )
 }
 

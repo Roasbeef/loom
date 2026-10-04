@@ -55,6 +55,7 @@ import lustre/element/html
 import lustre/element/keyed
 import lustre/event
 import session_view/agent_roster
+import session_view/decisions
 import session_view/markdown
 import session_view/step_words
 import session_view/transcript_image.{type Image}
@@ -342,7 +343,8 @@ fn piece_key(piece: turns.Piece) -> String {
     | turns.Nudged(key:, ..)
     | turns.Peer(key:, ..)
     | turns.Sibling(key:, ..)
-    | turns.Missed(key:, ..) -> key
+    | turns.Missed(key:, ..)
+    | turns.Decided(key:, ..) -> key
   }
 }
 
@@ -375,7 +377,11 @@ fn timeline_row(
 // session's message is nobody's here.
 fn belongs_to(piece: turns.Piece, marks: Marks) -> #(turns.Hue, Option(Int)) {
   case piece {
-    turns.Plain(..) | turns.Prompt(..) | turns.Work(..) | turns.Missed(..) -> #(
+    turns.Plain(..)
+    | turns.Prompt(..)
+    | turns.Work(..)
+    | turns.Missed(..)
+    | turns.Decided(..) -> #(
       marks.hue,
       None,
     )
@@ -574,6 +580,29 @@ fn piece_element(
 
     turns.Missed(text:, ..) ->
       html.p([attribute.class("cache-miss")], [html.text(text)])
+
+    // An approval decision, as the register recorded it: who answered, and
+    // what. The names are the principal's and the tool's, text nodes both;
+    // the class is chosen from the closed verdict.
+    turns.Decided(decision:, ..) ->
+      html.p(
+        [
+          attribute.class("decided"),
+          attribute.class(case decision.verdict {
+            decisions.Allowed -> "decided-allowed"
+            decisions.Denied -> "decided-denied"
+          }),
+        ],
+        [
+          html.span([attribute.class("decided-who")], [
+            html.text(decision.who),
+          ]),
+          html.text(decisions.verb(decision.verdict)),
+          html.span([attribute.class("decided-tool")], [
+            html.text(decisions.tool_words(decision.tool)),
+          ]),
+        ],
+      )
 
     // The advisor's own commentary, captured on its strand and not sent to
     // the primary. The primary never saw it, so the lane keeps only its

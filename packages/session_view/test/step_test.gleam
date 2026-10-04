@@ -464,7 +464,7 @@ pub fn a_reply_is_kept_as_the_answer_and_a_read_refusal_is_not_test() {
 
   let acknowledged =
     applied(shared, session_channel.Acknowledged("prompt", "admitted"))
-  assert acknowledged.answer == "prompt admitted"
+  assert acknowledged.answer == "Sent"
 
   let streamed =
     applied(
@@ -472,14 +472,14 @@ pub fn a_reply_is_kept_as_the_answer_and_a_read_refusal_is_not_test() {
       session_channel.Streamed("main", "op-1", "gen-1", "text", "hello"),
     )
   assert streamed.notice == "streaming text"
-  assert streamed.answer == "prompt admitted"
+  assert streamed.answer == "Sent"
 
   let read_refused =
     applied(
       streamed,
       session_channel.RequestRefused("advisor_pending", 4, "unsupported", "no"),
     )
-  assert read_refused.answer == "prompt admitted"
+  assert read_refused.answer == "Sent"
 
   let refused =
     applied(

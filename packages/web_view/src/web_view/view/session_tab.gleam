@@ -21,8 +21,9 @@
 ////
 //// The pane is drawn whether or not the Session tab shows (`view/panel`), and
 //// always has its heading and the cost row, so its place in the panel never
-//// moves. Below the list it has one more child, the owner's invitation
-//// control (`view/share`), or an empty node on a page that has none.
+//// moves. Below the list it has two more children: the owner's invitation
+//// control (`view/share`), or an empty node on a page that has none, and the
+//// operator's session controls (`view/controls`), or an empty node.
 ////
 //// Job lines, which carry a command excerpt, viewer names and the goal's
 //// objective, are session and principal text: each is drawn as a text node,
@@ -49,12 +50,16 @@ import session_view/session_summary.{
 /// control (`web_view/view/share`), which only an owner's page draws and which
 /// is `element.none()` everywhere else. It is the pane's third child, after the
 /// title and the list, and it stays there, so the path of its handlers
-/// (`component.invite_path`) does not depend on what the rows hold.
+/// (`component.invite_path`) does not depend on what the rows hold. `controls`
+/// is the operator's goal buttons and Fork form (`view/controls.session`), or
+/// `element.none()` on an observer's page. It is the pane's fourth child,
+/// after the invitation control and not before it, so that adding it moved no
+/// path the socket admits.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // session_tab.view([], "est $0.12", component.jobs(model), Some(component.viewers(model)), element.none())
+/// // session_tab.view([], "est $0.12", component.jobs(model), Some(component.viewers(model)), element.none(), element.none())
 /// ```
 pub fn view(
   goal: List(String),
@@ -62,6 +67,7 @@ pub fn view(
   jobs: Jobs,
   viewers: Option(Viewers),
   share: Element(message),
+  controls: Element(message),
 ) -> Element(message) {
   html.section(
     [
@@ -73,6 +79,7 @@ pub fn view(
       html.h2([attribute.class("panel-title")], [html.text("Session")]),
       rows(goal, cost, jobs, viewers),
       share,
+      controls,
     ],
   )
 }

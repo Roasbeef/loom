@@ -236,6 +236,18 @@ for a host with no surfaces.
   Its internal `listed_count` uses the same membership predicate without
   constructing display lines, for hosts measuring geometry. The roster test
   compares that count with `lines` across every status and active-strand choice.
+- `notice_words` (`sent`, `outcome`, `done`): the closed table that words a
+  command's outcome for the footer, `Goal pinned`, `Denied`, `Queued for the
+  next turn`, so no wire name is a notice. `reviewer_status.lines` words the
+  advisor row `watching <strand>` and cuts a sub-agent's brief to its first
+  sentence; `without_idle_advisor` is the page's filter.
+- `decisions` (`from_ledger`, `strands`, `words`): the approval decisions the
+  approval ledger holds, with the author, the verdict and the strand the
+  request was raised on (from the pending cell the capture held). `turns.with_decisions` places each as a
+  `turns.Decided` piece by the register sequence that committed it, which
+  storage numbers from the same counter as transcript entries.
+- `approval.wants(tool)`: the fixed words for what a request asks to do
+  (`run a command`), shared by the cards.
 - `cache_miss` (a miss reconstructed from two usage rows, and the TTL
   outlook the rows prove) and `cache_watch.Ledger` (which rows may be
   compared: `admit`, `settle`, `capture`, `observe`, `forget`, and `shown`,
