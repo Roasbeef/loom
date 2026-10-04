@@ -86,8 +86,24 @@ performs the existing preparation/build/hash sequence. `Artifact` separates
 local directories from executor references; local launcher helpers refuse an
 executor reference before creating their physical resources.
 
-`physical.Runner` injects exact-call clearance and step cancellation. Local
-construction delegates to the existing broker; it creates no second ledger.
+`physical.Runner` injects exact-call clearance and step cancellation. Its
+`clear` receives optional `ChildOrigin` beside the prepared `CallSpec`.
+`physical.local` forwards a retained origin through `broker.clear_call_from`;
+unmanaged calls preserve ordinary `clear_call`. Both paths use the existing
+owner broker and cancellation handle; neither creates a second ledger.
+
+`identity.for_managed_execution` derives operation and step from the original
+opaque `ToolKey` and retains that complete parent privately. Phase derivation
+preserves it: `command_origin` selects `CompileCommand` for Build and
+`SatelliteCommand` for Run. A separately accounted build still names its
+original tool parent while its physical step carries the existing `-build`
+suffix. `ledger_keys` projects operation/step only; source index, result entry,
+digest, session and role are provenance, never additional budget axes.
+`client/codemode.execute_managed` accepts a trusted custody `Invocation.key`
+and checks operation/step/source index before any local setup. It does not
+recompute the original argument envelope. Existing local entry points remain
+unmanaged. Native compiler and launcher provenance is implemented; nested
+satellite capability admission and production remote assembly remain deferred.
 The owner satellite host still checks tokens, routes capabilities and owns
 settlement. A remote assembly must replace the token/socket resource callbacks
 as well as the compiler and launcher; mixing a remote compiler with local
@@ -115,12 +131,14 @@ The shared host adds the existing `gleam_json` dependency for profile encoding.
   place in the pipeline an operation, a step, a budget *or an approval's
   grants* can be written.
 - `codemode/identity.{ExecIdentity, PhaseIdentity, Phase, BuildLedger,
-  for_execution, with_own_build_ledger, under_budget, widened_by,
+  for_execution, for_managed_execution, command_origin,
+  with_own_build_ledger, under_budget, widened_by,
   build_phase, run_phase, grants, ledger_keys}` — the identity one
   execution runs under, the approval that widens it, and
-  the phases derived from both. Both types are opaque: `for_execution` is
-  the only way to mint an `ExecIdentity`, and `build_phase` / `run_phase`
-  — which take one — are the only ways to obtain a `PhaseIdentity`.
+  the phases derived from both. Both types are opaque: `for_execution`
+  constructs local identity and `for_managed_execution` derives identity
+  from the retained original tool. `build_phase` / `run_phase`, which
+  take one, are the only ways to obtain a `PhaseIdentity`.
   `BuildLedger` (`BuildSharesLedger` | `BuildHasOwnLedger`) is the whole
   of the choice an execution has about its ledger count, and
   `ledger_keys` reads that count off the identity value before anything
@@ -684,11 +702,11 @@ The shared host adds the existing `gleam_json` dependency for profile encoding.
   execution identity, `client/codemode.exec_root` digests that triple so
   each execution's build root, cap socket and token file are its own, and
   the ledger keys on the pair deliberately (ADR-005, "Two programs in one
-  batch"). The source index is **not** a fourth field on `ExecIdentity`
-  and must not become one: what this value exports feeds ledger keys and
-  `CallSpec`s, so a per-call coordinate stored here would sit one
-  field-read from the budget key, where "completing" it would mint one
-  ledger per call in a batch the model authored (issue #87). The limit of the
+  batch"). Managed `ExecIdentity` retains the complete original `ToolKey`
+  privately for `command_origin`, including its source index. That parent
+  never changes the ledger projection: `ledger_keys` and `ledger_key`
+  remain operation/physical step pairs. Provenance distinguishes commands;
+  it must not mint one budget ledger per source call. The limit of the
   claim: `broker.CallSpec` is a public record shared with `tools` and
   `client`, so an injected router or launcher could still hand-write a
   clearance under coordinates it invented — closing that needs an opaque

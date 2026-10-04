@@ -345,8 +345,23 @@ fn clone_child(
 
 fn run_build(config: BuildConfig, phase: PhaseIdentity, root: String) -> Built {
   let events = process.new_subject()
-  case config.runner.clear(build_call(config, phase, root), events) {
-    Error(refusal) -> build_refused(refusal)
+  let cleared = {
+    use origin <- result.try(
+      identity.command_origin(phase)
+      |> result.map_error(fn(reason) {
+        Built(
+          result: Error(compile.BuildUnavailable(reason)),
+          enforcement: enforcement.Unreported(
+            "invalid command origin; nothing was dispatched",
+          ),
+        )
+      }),
+    )
+    config.runner.clear(origin, build_call(config, phase, root), events)
+    |> result.map_error(build_refused)
+  }
+  case cleared {
+    Error(built) -> built
     Ok(_handle) -> collect_build(config, root, events)
   }
 }
