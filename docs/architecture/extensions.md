@@ -891,7 +891,7 @@ reads one. `a_token_is_dead_once_its_invocation_closes_test`
 
 **One slot, and a breach costs the node.** The protocol allows one
 outstanding `hook_call` per satellite, so `Host`
-(`codemode/satellite.gleam:1973`) is a `weft/state_machine` over `Idle |
+(`codemode/satellite.gleam:2056`) is a `weft/state_machine` over `Idle |
 Answering(id) | Destroyed(reason)`. The invocation's deadline is
 `Answering`'s own state timeout, which is why these are states rather
 than a field: leaving the state cancels the timer, and weft drops a timer
