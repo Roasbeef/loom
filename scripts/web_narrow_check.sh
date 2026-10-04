@@ -162,5 +162,7 @@ settle
 m=$(measure)
 check "a wide page has its sidebar column and no scrim" \
 	"m['drawer'] and m['drawer']['width'] == 232 and m['scrim'] is None" "$m"
+check "an approval card leaves the transcript 55% at 1440 (F71)" \
+	"m['approvals'] is None or m['share'] >= 55" "$m"
 
 exit "$failed"

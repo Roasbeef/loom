@@ -982,8 +982,10 @@ is a 232 px drawer over the centre, behind a scrim of the page background at
 60%. The sidebar's bar button and Command or Control with `B` open and close
 it, a click on the scrim or `Escape` closes it, and pressing a button in it
 (a session's row, the Home entry) closes it. `Escape` closes an open drawer
-before it does anything else, so it leaves a strand only when no drawer is
-open. The drawer's state is held beside the saved layout and never in it: it
+before it leaves a strand, so it leaves a strand only when no drawer is open.
+It does not act while focus is in the composer or another text field, where
+`Escape` stays the field's own; the scrim and the sidebar's button close the
+drawer from there. The drawer's state is held beside the saved layout and never in it: it
 starts closed on every page, it is not stored, and it is closed again when the
 window crosses the breakpoint, so the `Still` motion rule and the per-workspace
 persistence of section 4 do not apply to it, and a column saved as closed or
