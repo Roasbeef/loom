@@ -428,8 +428,9 @@ the platform opener the `loom ui` link already uses (`opener_for`,
 The frame hugs the box, as wide as the picture or its label needs, rather than
 spanning the pane, and the picture is centred in it. The box's foot offers only
 `o opens externally`, because no key selects an image yet. The picture takes
-about half the transcript's height (at least 3 rows, at most 12), so an 80 by
-24 pane, which has 19 transcript rows, gets a 9-row picture and still shows the
+about half the transcript, taken from the terminal's own height so that typing
+never resizes it (at least 3 rows, at most 12), so an 80 by 24 terminal, which
+has 19 transcript rows, gets a 9-row picture and still shows the
 text around it. Two images in a row have one blank row between their boxes. A terminal that answered no graphics query shows the placeholder row alone,
 with no line saying so, so that a replay and a live session show the same row.
 And kitty and Ghostty draw PNG only, since their transmission carries the file

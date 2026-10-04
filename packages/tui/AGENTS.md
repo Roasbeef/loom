@@ -2762,9 +2762,12 @@ only: kitty and Ghostty carry a PNG as it is and cannot carry a JPEG or GIF
 the terminal (limit 4.0 MB)`). The box is `graphics.fit` of the header's
 size into the cell size, at most 60 columns and at most the pane's width less
 the indent and frame, and at most `image_box.picture_rows(height)` rows: about
-half the transcript's height, between 3 and 12, so a short pane keeps the text
-around the image. The record cache is keyed on the viewport height on a
-terminal that draws (`projection.same_image_height`). The frame is as wide as
+half the transcript the terminal leaves, between 3 and 12, so a short terminal
+keeps the text around the image. The number comes from the terminal's own
+height (`model.view.height`), which moves only on a resize, never from the
+transcript's height, which moves as the composer wraps; the record cache and
+`image_shown`'s fits are keyed on it (`projection.same_image_height`), so
+typing never rebuilds them. The frame is as wide as
 the picture or the label needs, and the picture is centred in it. Two images
 in a row get one blank row between them (`projection.noted_images`). `projection.line_rows_for` builds the rows
 (`image_box.rows`: a top border that carries the image's words, one row per
