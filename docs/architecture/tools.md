@@ -22,7 +22,7 @@ that owns its internals.
 
 ## What a tool is
 
-A tool is a record, `Tool` (`tools/tool.gleam:460`), with eight fields:
+A tool is a record, `Tool` (`tools/tool.gleam:527`), with eight fields:
 
 | Field | What it holds |
 |---|---|
@@ -60,17 +60,18 @@ explicitly.
 
 ### The per-call context
 
-`Ctx` (`tools/tool.gleam:254`) carries everything a tool's `run` may
+`Ctx` (`tools/tool.gleam:297`) carries everything a tool's `run` may
 touch. `client/wiring` builds a fresh one for every call. It holds:
 
-- the workspace root and the blob-overflow directory;
+- a typed workspace access value, separate from owner-local output storage;
 - the call's durable coordinates: `strand`, `op_id`, `step_id`, and
   `source_index`;
 - the session's base sandbox policy, the explicit directory additions,
   and the grants this call's clearance consumed;
 - the enforcement demand and the allowlist-built environment for jailed
   children;
-- an injected clock and a `FileSystem` record of functions;
+- an injected clock, with filesystem functions owned by the access value
+  that permits their use;
 - three seams: `clear_call`, which clears and starts one jailed
   execution through the broker; `raise_refusal`, which reports a policy
   refusal the tool met somewhere other than `clear_call`; and
@@ -86,6 +87,21 @@ the same coordinates and reconciles onto the same child.
 
 Every effect goes through a seam, so tests substitute an in-memory
 filesystem and a fake broker, and the tools run unchanged.
+
+`WorkspaceAccess` distinguishes `LocalWorkspace(root, filesystem)` from
+`RegisteredWorkspace(scope)`. A registered workspace has no owner-local root
+or filesystem to fall back to. Local-only tools must call
+`require_local_workspace` before resolving paths, requesting clearance or
+starting an effect. A registered context returns `local_workspace_required`
+until its semantic adapter is installed. The service-backed filesystem
+constructors instead capture a callback bound to the registered workspace.
+
+`OwnerBlobs(root, filesystem)` retains a separate local store for results.
+Reading `blob://` output and spilling large results still work when the
+workspace is remote. This authority cannot satisfy a workspace lookup: using
+the blob root for a source path would access a different machine's files.
+The context tests deliberately make owner filesystem callbacks fail if a
+registered workspace operation reaches them.
 
 ### Shells over seams
 
@@ -134,7 +150,7 @@ The rule is enforced in four places, from the tool outward:
    `exec_failure_outcome`). A policy refusal carries the exact wanted
    grants in `details`, ready for the escalation flow.
 2. **The registry's dispatch is total.** For an unknown name,
-   `dispatch` (`tools/tool.gleam:663`) answers with text saying that
+   `dispatch` (`tools/tool.gleam:726`) answers with text saying that
    tool is unavailable, `is_error` set, and no `details`. The
    registry does not invent a value for a tool's details contract.
 3. **The wiring always answers `ToolCompleted`.** The function
