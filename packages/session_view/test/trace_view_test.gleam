@@ -1,0 +1,372 @@
+//// `trace_view.fold` turns a window of records into the session's list of
+//// `code_mode` programs. These tests build records holding `code_mode` calls
+//// and results in the shape `tools/codemode` writes (`status`, `value`,
+//// `message`) and check the order, the state each result maps to, the
+//// excerpt and label bounds, that other tools add nothing, and that
+//// markup-laden or control-laden session text comes out as one clean line.
+
+import core/clock
+import core/entry
+import core/ids
+import core/json
+import core/message
+import gleam/int
+import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/string
+import session_view/protocol
+import session_view/trace_view.{
+  CompileFailed, Completed, Errored, Failed, Passed, Pending, Refused, Rejected,
+  RunFailed, Running,
+}
+
+fn id(seq: Int) -> ids.EntryId {
+  ids.mint_entry(ids.generator(clock.fixed(1000), seq)).0
+}
+
+fn record(seq: Int, body: message.AgentMessage) -> protocol.EntryRecord {
+  let parent = case seq {
+    1 -> None
+    _ -> Some(id(seq - 1))
+  }
+
+  protocol.EntryRecord(
+    "main",
+    entry.MessageEntry(id(seq), parent, seq, seq * 1000, body, False),
+  )
+}
+
+fn usage() -> message.Usage {
+  message.Usage(
+    0,
+    0,
+    0,
+    0,
+    None,
+    None,
+    0,
+    message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+  )
+}
+
+fn call(
+  call_id: String,
+  name: String,
+  arguments: json.JsonValue,
+) -> message.AgentMessage {
+  message.AssistantMessage(
+    [
+      message.AssistantToolCall(message.ToolCall(
+        call_id,
+        name,
+        arguments,
+        None,
+        None,
+      )),
+    ],
+    "test",
+    "test",
+    "test",
+    None,
+    None,
+    None,
+    usage(),
+    message.Stop,
+    None,
+    None,
+    None,
+    None,
+    0,
+  )
+}
+
+fn result(
+  call_id: String,
+  name: String,
+  text: String,
+  details: Option(json.JsonValue),
+  failed: Bool,
+) -> message.AgentMessage {
+  message.ToolResultMessage(
+    call_id,
+    name,
+    [message.ToolResultText(text, None)],
+    details,
+    None,
+    None,
+    failed,
+    0,
+  )
+}
+
+fn program(source: String, within_ms: Option(Int)) -> json.JsonValue {
+  json.Object(
+    list.append([#("program", json.String(source))], case within_ms {
+      Some(ms) -> [#("within_ms", json.Int(ms))]
+      None -> []
+    }),
+  )
+}
+
+fn status(
+  word: String,
+  rest: List(#(String, json.JsonValue)),
+) -> Option(json.JsonValue) {
+  Some(json.Object([#("status", json.String(word)), ..rest]))
+}
+
+// One `code_mode` call and its result as two records, oldest first. The
+// result is absent for a call still running.
+fn exchange(
+  index: Int,
+  arguments: json.JsonValue,
+  outcome: Option(#(String, Option(json.JsonValue), Bool)),
+) -> List(protocol.EntryRecord) {
+  let call_id = "call-" <> int.to_string(index)
+  let base = index * 2 + 1
+
+  [
+    record(base, call(call_id, "code_mode", arguments)),
+    ..case outcome {
+      None -> []
+      Some(#(text, details, failed)) -> [
+        record(base + 1, result(call_id, "code_mode", text, details, failed)),
+      ]
+    }
+  ]
+}
+
+// A window as a host holds it, newest first.
+fn window(
+  exchanges: List(List(protocol.EntryRecord)),
+) -> List(protocol.EntryRecord) {
+  exchanges |> list.flatten |> list.reverse
+}
+
+fn only(trace: trace_view.Trace) -> trace_view.Program {
+  let assert [program] = trace.programs as "one program"
+  program
+}
+
+pub fn an_empty_window_has_no_programs_test() {
+  assert trace_view.fold([]) == trace_view.empty()
+}
+
+pub fn other_tools_add_nothing_test() {
+  let records =
+    window([
+      [
+        record(1, call("c1", "fs_read", json.Object([]))),
+        record(2, result("c1", "fs_read", "text", None, False)),
+      ],
+    ])
+
+  assert trace_view.fold(records) == trace_view.empty()
+}
+
+pub fn a_call_with_no_result_is_running_test() {
+  let trace =
+    trace_view.fold(
+      window([exchange(0, program("pub fn main() {}", Some(5000)), None)]),
+    )
+
+  assert only(trace)
+    == trace_view.Program(Running, "Program 1", None, Some(5000), Pending, None)
+}
+
+pub fn a_completed_program_shows_its_value_test() {
+  let outcome =
+    Some(#(
+      "3\nsandbox: ...",
+      status("completed", [#("value", json.Int(3))]),
+      False,
+    ))
+  let trace =
+    trace_view.fold(
+      window([
+        exchange(
+          0,
+          program("\n// count functions\npub fn main() { 3 }", Some(30_000)),
+          outcome,
+        ),
+      ]),
+    )
+  let shown = only(trace)
+
+  assert shown.state == Completed
+  assert shown.label == "count functions"
+  assert shown.excerpt == Some("3")
+  assert shown.within_ms == Some(30_000)
+  assert shown.vetting == Passed
+  assert trace_view.budget_line(shown) == "30000 ms wall · vetted"
+}
+
+pub fn a_named_file_is_the_label_test() {
+  let arguments =
+    json.Object([
+      #("program_path", json.String("scripts/count.gleam")),
+      #("program", json.String("ignored")),
+    ])
+  let trace = trace_view.fold(window([exchange(0, arguments, None)]))
+
+  assert only(trace).label == "scripts/count.gleam"
+  assert trace_view.budget_line(only(trace))
+    == "default wall budget · not vetted yet"
+}
+
+pub fn each_status_word_maps_to_a_state_test() {
+  let cases = [
+    #("errored", Errored, Passed),
+    #("program_failed", Errored, Passed),
+    #("vetting_rejected", Rejected, Refused),
+    #("compile_failed", CompileFailed, Passed),
+    #("run_failed", RunFailed, Passed),
+    #("something_new", Failed, Pending),
+  ]
+
+  list.each(cases, fn(row) {
+    let #(word, state, vetting) = row
+    let trace =
+      trace_view.fold(
+        window([
+          exchange(
+            0,
+            program("x", None),
+            Some(#("boom", status(word, [#("message", json.String("m"))]), True)),
+          ),
+        ]),
+      )
+
+    assert only(trace).state == state
+    assert only(trace).vetting == vetting
+    assert only(trace).excerpt == Some("m")
+  })
+}
+
+pub fn an_error_with_no_details_falls_back_to_its_text_test() {
+  let trace =
+    trace_view.fold(
+      window([
+        exchange(0, program("x", None), Some(#("denied by policy", None, True))),
+      ]),
+    )
+
+  assert only(trace).state == Failed
+  assert only(trace).excerpt == Some("denied by policy")
+}
+
+pub fn programs_keep_their_order_and_the_newest_is_last_test() {
+  let trace =
+    trace_view.fold(
+      window([
+        exchange(
+          0,
+          program("first", None),
+          Some(#("1", status("completed", [#("value", json.Int(1))]), False)),
+        ),
+        exchange(1, program("second", None), None),
+      ]),
+    )
+
+  assert list.map(trace.programs, fn(shown) { shown.label })
+    == ["Program 1", "Program 2"]
+  assert list.map(trace.programs, fn(shown) { shown.state })
+    == [Completed, Running]
+}
+
+pub fn the_trace_keeps_the_newest_programs_and_counts_the_rest_test() {
+  let extra = 3
+  let exchanges =
+    list.repeat(Nil, trace_view.max_programs + extra)
+    |> list.index_map(fn(_, index) {
+      exchange(index, program("p" <> int.to_string(index), None), None)
+    })
+  let trace = trace_view.fold(window(exchanges))
+
+  assert list.length(trace.programs) == trace_view.max_programs
+  assert trace.omitted == extra
+  let assert Ok(first) = list.first(trace.programs)
+  assert first.label == "Program " <> int.to_string(extra + 1)
+}
+
+pub fn an_excerpt_is_one_clean_bounded_line_test() {
+  let long = string.repeat("a", trace_view.max_characters * 2)
+  let hostile = "<script>alert(1)</script>\n\u{1b}[31mred\u{7}" <> long
+  let trace =
+    trace_view.fold(
+      window([
+        exchange(
+          0,
+          program("// " <> hostile, None),
+          Some(#(
+            hostile,
+            status("completed", [#("value", json.String(hostile))]),
+            False,
+          )),
+        ),
+      ]),
+    )
+  let shown = only(trace)
+  let assert Some(excerpt) = shown.excerpt
+
+  assert string.length(excerpt) <= trace_view.max_characters
+  assert string.length(shown.label) <= trace_view.max_characters
+  assert !string.contains(excerpt, "\n")
+  assert !string.contains(excerpt, "\u{1b}")
+  assert string.contains(shown.label, "<script>")
+  assert string.ends_with(excerpt, "…")
+}
+
+pub fn the_sandbox_line_the_result_reported_is_kept_test() {
+  let layers = fn(enforced) {
+    json.Object([
+      #("reported", json.Bool(True)),
+      #("enforced", json.Array(enforced)),
+      #("skipped", json.Array([])),
+    ])
+  }
+  let sandbox =
+    json.Object([
+      #("build", layers([json.String("a"), json.String("b")])),
+      #("node", layers([json.String("a")])),
+    ])
+  let trace =
+    trace_view.fold(
+      window([
+        exchange(
+          0,
+          program("x", None),
+          Some(#("1", status("completed", [#("sandbox", sandbox)]), False)),
+        ),
+      ]),
+    )
+
+  assert only(trace).sandbox
+    == Some(
+      "sandbox · build enforced 2 layers; skipped 0 · satellite enforced 1 layers; skipped 0",
+    )
+  assert trace_view.first_call(only(trace)) == "Program 1"
+}
+
+pub fn the_label_is_the_leading_comment_after_the_imports_test() {
+  let source =
+    "\nimport cap/fs\nimport gleam/list\n\n//// Count the functions in calc.py.\npub fn main() { 1 }"
+  let trace =
+    trace_view.fold(window([exchange(0, program(source, None), None)]))
+
+  assert only(trace).label == "Count the functions in calc.py."
+}
+
+pub fn a_program_that_opens_with_code_is_numbered_test() {
+  let trace =
+    trace_view.fold(
+      window([
+        exchange(0, program("import cap/fs\npub fn main() { 1 }", None), None),
+        exchange(1, program("// \npub fn main() { 2 }", None), None),
+        exchange(2, program("// later\npub fn main() { 3 }", None), None),
+      ]),
+    )
+
+  assert list.map(trace.programs, fn(shown) { shown.label })
+    == ["Program 1", "Program 2", "later"]
+}

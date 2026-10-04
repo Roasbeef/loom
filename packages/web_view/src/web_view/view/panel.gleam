@@ -1,9 +1,9 @@
-//// The strand panel: the right-hand column, a tabbed panel of three panes,
-//// the Strands, Changes and Session tabs, with the advisor's pending
+//// The strand panel: the right-hand column, a tabbed panel of four panes,
+//// the Strands, Changes, Session and Trace tabs, with the advisor's pending
 //// nudges drawn under them.
 ////
 //// The panel is the page's last child (`view/shell`). It is an `aside` whose
-//// children are the three panes, always in the same order and all drawn, so
+//// children are the four panes, always in the same order and all drawn, so
 //// no pane's place depends on what another holds, and then the advisor's
 //// pending nudges, drawn by `view/nudges` as a section of their own under
 //// the panes. The nudge card is not a pane: the tab rules hide a tab's
@@ -41,7 +41,7 @@ import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 
-/// The panel around the three panes and the advisor's pending nudges,
+/// The panel around the four panes and the advisor's pending nudges,
 /// the first pane being `strands` under a title saying how many strands
 /// it lists.
 ///
@@ -49,7 +49,8 @@ import lustre/element/html
 /// yet captured a session does not say "Strands · 0". `detail` is the view of
 /// the strand in focus, when it has one, and the pane hides its title and list
 /// while it is drawn. `changes` and `session` are whole panes, drawn by their
-/// own modules. `nudges` is the advisor's pending-nudge card
+/// own modules; `trace` follows `session`, so the Session pane's path does not
+/// move (`view/trace`). `nudges` is the advisor's pending-nudge card
 /// (`view/nudges`), drawn under the panes on every tab, or
 /// `element.none()` when nothing is waiting — which keeps the aside's child
 /// list one length, so no handler's path moves when a nudge lands.
@@ -57,7 +58,7 @@ import lustre/element/html
 /// ## Examples
 ///
 /// ```gleam
-/// // panel.view(strip.count(strip), strip.view(strip, focus), None, changes.view(board), session, nudges.view(board))
+/// // panel.view(strip.count(strip), strip.view(strip, focus), None, changes.view(board), session, trace.view(trace), nudges.view(board))
 /// ```
 pub fn view(
   count: Int,
@@ -65,6 +66,7 @@ pub fn view(
   detail: Option(Element(message)),
   changes: Element(message),
   session: Element(message),
+  trace: Element(message),
   nudges: Element(message),
   commentary: Element(message),
 ) -> Element(message) {
@@ -99,6 +101,7 @@ pub fn view(
       ),
       changes,
       session,
+      trace,
       nudges,
     ],
   )

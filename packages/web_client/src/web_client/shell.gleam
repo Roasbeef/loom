@@ -45,8 +45,8 @@
 ////
 //// The panel's panes are the server's children of the `right` slot: one
 //// section for each tab, all of them drawn. The element shows one by
-//// setting a custom state on itself, `tab-strands`, `tab-changes` or
-//// `tab-session` (Lustre's `component.set_pseudo_state`), which the
+//// setting a custom state on itself, `tab-strands`, `tab-changes`,
+//// `tab-session` or `tab-trace` (Lustre's `component.set_pseudo_state`), which the
 //// stylesheet reads to hide the other panes (`loom-shell:state(tab-changes)`).
 //// A hidden pane is `display: none`, so its controls leave the tab order. A
 //// browser without custom states shows every pane, stacked, which is
@@ -112,6 +112,7 @@ import lustre/component
 import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/element/svg
 import lustre/event
 import web_client/internal/ffi_dom.{type Listener}
 import web_client/layout_rule.{type Theme, type Workspace}
@@ -696,20 +697,34 @@ fn button(model: Model, region: Region) -> Element(Msg) {
           attribute.aria_expanded(state == shell_rule.Open),
           event.on_click(Toggled(region)),
         ],
-        [
-          html.span(
-            [attribute.class("toggle-icon"), attribute.aria_hidden(True)],
-            [],
-          ),
-        ],
+        toggle_face(region),
       )
     }
   }
 }
 
-// The Theme button: a real button whose words say which theme the page shows
-// and what pressing it does. Its label is fixed words from the rule and holds
-// nothing from the session.
+// What a toggle draws: its icon and the visible key hint beside it. The
+// hint sits on the side facing the centre, so the icon stays at the edge of
+// the bar. Both are decoration, since the button's label and its
+// `aria-keyshortcuts` are what assistive technology reads.
+fn toggle_face(region: Region) -> List(Element(Msg)) {
+  let icon =
+    html.span([attribute.class("toggle-icon"), attribute.aria_hidden(True)], [])
+  let hint =
+    html.kbd([attribute.class("toggle-hint"), attribute.aria_hidden(True)], [
+      html.text(shell_rule.hint(region)),
+    ])
+
+  case region {
+    shell_rule.Sidebar -> [icon, hint]
+    shell_rule.Panel -> [hint, icon]
+  }
+}
+
+// The Theme button: a real button whose icon shows which theme the page is in
+// and whose label says what pressing it does. The label is fixed words from
+// the rule and holds nothing from the session, and the icon is decoration
+// drawn from fixed shapes, so assistive technology reads only the label.
 fn theme_button(model: Model) -> Element(Msg) {
   html.button(
     [
@@ -719,7 +734,62 @@ fn theme_button(model: Model) -> Element(Msg) {
       attribute.title(layout_rule.label(model.theme)),
       event.on_click(ThemeCycled),
     ],
-    [html.text(layout_rule.word(model.theme))],
+    [theme_icon(model.theme)],
+  )
+}
+
+// The icon for a theme: a half-filled disc while the page follows the system,
+// a sun for light and a moon for dark. Each is a stroked outline in the
+// button's text colour, 16 units square, with no text and no session data.
+fn theme_icon(theme: Theme) -> Element(Msg) {
+  let shapes = case theme {
+    layout_rule.System -> [
+      svg.circle([
+        attribute.attribute("cx", "8"),
+        attribute.attribute("cy", "8"),
+        attribute.attribute("r", "5.5"),
+      ]),
+      svg.path([
+        attribute.attribute("d", "M8 2.5a5.5 5.5 0 0 1 0 11z"),
+        attribute.attribute("fill", "currentColor"),
+      ]),
+    ]
+
+    layout_rule.Light -> [
+      svg.circle([
+        attribute.attribute("cx", "8"),
+        attribute.attribute("cy", "8"),
+        attribute.attribute("r", "2.8"),
+      ]),
+      svg.path([
+        attribute.attribute(
+          "d",
+          "M8 1.5v1.7M8 12.8v1.7M1.5 8h1.7M12.8 8h1.7M3.4 3.4l1.2 1.2M11.4 11.4l1.2 1.2M12.6 3.4l-1.2 1.2M4.6 11.4l-1.2 1.2",
+        ),
+      ]),
+    ]
+
+    layout_rule.Dark -> [
+      svg.path([
+        attribute.attribute(
+          "d",
+          "M13.2 9.6A5.6 5.6 0 0 1 6.4 2.8a5.6 5.6 0 1 0 6.8 6.8z",
+        ),
+      ]),
+    ]
+  }
+
+  svg.svg(
+    [
+      attribute.attribute("viewBox", "0 0 16 16"),
+      attribute.attribute("fill", "none"),
+      attribute.attribute("stroke", "currentColor"),
+      attribute.attribute("stroke-width", "1.4"),
+      attribute.attribute("stroke-linecap", "round"),
+      attribute.attribute("stroke-linejoin", "round"),
+      attribute.aria_hidden(True),
+    ],
+    shapes,
   )
 }
 

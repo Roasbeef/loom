@@ -161,10 +161,11 @@ pub type Command {
   )
 
   /// Asks for a single-use link that opens one session's web view in this
-  /// principal's browser (protocol-change/051).
+  /// principal's browser (protocol-change/051), or, with no session, the
+  /// principal's home page (protocol-change/065).
   UiLink(
-    /// Canonical authorized session identity.
-    session_id: String,
+    /// Canonical authorized session identity, or `None` for the home.
+    session_id: Option(String),
     /// The most the page may do. It caps the principal's membership role in
     /// the session and never grants one.
     page: WebPage,
@@ -707,16 +708,22 @@ fn command_fields(command: Command, epoch: Epoch) {
       })
       Ok([#("after", json.String(after)), ..extra])
     }
-    GetSession(id) | UiLink(id, ObserverPage) -> identity_fields(id)
+    GetSession(id) | UiLink(Some(id), ObserverPage) -> identity_fields(id)
 
     // An observer's page is the default, and its request is the one this
     // launcher sent before the field existed; only an operator's page names
     // it, which a daemon that predates the field ignores and serves as an
     // observer's (protocol-change/051, the operator addendum).
-    UiLink(id, OperatorPage) -> {
+    UiLink(Some(id), OperatorPage) -> {
       use fields <- result.map(identity_fields(id))
       list.append(fields, [#("page", json.String("operator"))])
     }
+
+    // A link to the home names no session, which is the whole of what makes it
+    // one (protocol-change/065). A daemon that predates the home refuses the
+    // request for want of a session, and the launcher says so.
+    UiLink(None, ObserverPage) -> Ok([])
+    UiLink(None, OperatorPage) -> Ok([#("page", json.String("operator"))])
     WorkspaceDefault(workspace) ->
       text_fields([#("workspace", workspace, 4096)])
     RenameSession(id, name) -> {

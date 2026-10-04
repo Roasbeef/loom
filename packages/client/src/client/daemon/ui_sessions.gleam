@@ -79,7 +79,9 @@ pub const ticket_ms = 60_000
 /// switching.
 pub const session_ms = 28_800_000
 
-/// The most live UI sessions one principal holds for one session.
+/// The most live UI sessions one principal holds for one session, and, as a
+/// separate count, for its home (protocol-change/065): a home page is a scope
+/// of its own, so opening homes never ends a session's page.
 ///
 /// The bound is on pages in this table, and so on the memory they hold: a
 /// live page keeps a cookie, a key and a nonce, and while its browser is
@@ -124,11 +126,38 @@ pub const invite_limit = 3
 /// unredeemed at once.
 pub const invite_window_ms = 3_600_000
 
+/// What page a ticket opens, which is also the page the UI session it becomes
+/// may be used for (protocol-change/065). The scope is part of the redemption:
+/// a ticket is honoured only at the exchange of its own scope, so a session's
+/// ticket cannot open a home and a home's cannot open a session.
+pub type Scope {
+  /// The page of one session. Every check a session page was held to before
+  /// scopes existed applies to it unchanged.
+  Session(id: String)
+
+  /// The principal's home page, which lists the sessions the credential may
+  /// see and is bound to no session.
+  Home
+}
+
+/// Which pages a link was minted for, which decides whether the page it
+/// opens draws a way back to the home (protocol-change/065). The daemon
+/// writes it when it mints and a page never says it of itself.
+pub type Reach {
+  /// A link `loom ui --session ID` printed, which a person may hand to
+  /// someone who is to see one session and nothing around it.
+  OneSession
+
+  /// A home page, and every page opened from one, whose person has already
+  /// seen the list of sessions.
+  Workspace
+}
+
 /// What a ticket and the UI session it becomes stand for.
 pub type Grant {
   Grant(
-    /// The one session the ticket names.
-    session_id: String,
+    /// The one page the ticket opens: a session's or the home.
+    scope: Scope,
     /// The digest of the credential that asked for the ticket. Every later
     /// check re-authenticates it, so revoking that credential ends the UI
     /// session.
@@ -140,6 +169,8 @@ pub type Grant {
     /// unless `loom ui --operate` asked for operator. It caps the
     /// membership role and never grants one (`ui_relay.capped`).
     ceiling: access.Role,
+    /// What the link was minted for. Only the page's view reads it.
+    reach: Reach,
   )
 }
 
@@ -178,11 +209,12 @@ pub type Refusal {
   /// redeemed, or it expired.
   UnknownTicket
 
-  /// The ticket is live but names another session than the path it was
-  /// presented on. It is spent all the same: a ticket presented where it
-  /// does not belong has been copied somewhere it should not be, and a
-  /// second try must not get another chance at it.
-  OtherSession
+  /// The ticket is live but names another page than the exchange it was
+  /// presented at: another session's, or the home's where a session's was
+  /// expected and the reverse. It is spent all the same: a ticket presented
+  /// where it does not belong has been copied somewhere it should not be,
+  /// and a second try must not get another chance at it.
+  OtherScope
 }
 
 /// The actor's clock and entropy, injected so a test can move time.
@@ -214,7 +246,7 @@ type Message {
   Mint(grant: Grant, until: Option(Int), reply: Subject(Issued))
   Redeem(
     ticket: String,
-    session_id: String,
+    scope: Scope,
     reply: Subject(Result(Redeemed, Refusal)),
   )
   Lookup(cookie: String, reply: Subject(Result(#(Page, Int), Nil)))
@@ -301,7 +333,7 @@ pub fn start(settings: Settings) -> Result(Sessions, String) {
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_sessions.mint(sessions, Grant(session, digest))
+/// // ui_sessions.mint(sessions, Grant(Home, digest, principal, role, Workspace))
 /// ```
 pub fn mint(sessions: Sessions, grant: Grant) -> Result(Issued, Nil) {
   call.try_call(sessions.subject, waiting: 1000, sending: Mint(grant, None, _))
@@ -367,26 +399,26 @@ pub fn release_invite(sessions: Sessions, credential: access.Digest) -> Nil {
   process.send(sessions.subject, Release(access.fingerprint(credential)))
 }
 
-/// Redeems `ticket` once, for the page of `session_id`. A successful
-/// redemption adds a UI session. The principal's other pages for the
-/// session keep their own cookies and stay open until their eight hours run
-/// out, except that a principal already holding `max_pages` live ones has
-/// its oldest ended to make room. A refused redemption leaves every page
+/// Redeems `ticket` once, for the page of `scope`. A successful redemption
+/// adds a UI session. The principal's other pages of that scope keep their
+/// own cookies and stay open until their eight hours run out, except that a
+/// principal already holding `max_pages` live ones has its oldest ended to
+/// make room. A refused redemption leaves every page
 /// alone, so a stale or misdirected link cannot sign a working page out.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_sessions.redeem(sessions, ticket, session_id)
+/// // ui_sessions.redeem(sessions, ticket, ui_sessions.Session(session_id))
 /// ```
 pub fn redeem(
   sessions: Sessions,
   ticket: String,
-  session_id: String,
+  scope: Scope,
 ) -> Result(Redeemed, Refusal) {
   call.try_call(sessions.subject, waiting: 1000, sending: Redeem(
     ticket,
-    session_id,
+    scope,
     _,
   ))
   |> result.unwrap(Error(UnknownTicket))
@@ -447,7 +479,7 @@ pub fn images(sessions: Sessions, cookie: String) -> Result(Images, Nil) {
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_sessions.grant(page).session_id
+/// // ui_sessions.grant(page).scope
 /// ```
 pub fn grant(page: Page) -> Grant {
   page.grant
@@ -579,10 +611,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 
     // The whole redemption happens in this one turn: the ticket is removed
     // whether or not it was still live, and only a live ticket for this
-    // session becomes a new UI session. Making room and inserting in one
+    // scope becomes a new UI session. Making room and inserting in one
     // turn keeps the bound exact: two redemptions at the fourth place reach
     // this actor one after the other, and the second sees the first's page.
-    Redeem(ticket:, session_id:, reply:) -> {
+    Redeem(ticket:, scope:, reply:) -> {
       let key = digest(ticket)
       let found = live(state.tickets, key, now)
       let tickets = dict.delete(state.tickets, key)
@@ -591,8 +623,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           process.send(reply, Error(UnknownTicket))
           actor.continue(State(..state, tickets:))
         }
-        Ok(Ticket(grant:, ..)) if grant.session_id != session_id -> {
-          process.send(reply, Error(OtherSession))
+        Ok(Ticket(grant:, ..)) if grant.scope != scope -> {
+          process.send(reply, Error(OtherScope))
           actor.continue(State(..state, tickets:))
         }
 
@@ -606,9 +638,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         }
 
         Ok(Ticket(grant:, until:)) -> {
+          let lasts = state.settings.session_ms
           let ends = case until {
-            Some(bound) -> int.min(bound, now + state.settings.session_ms)
-            None -> now + state.settings.session_ms
+            Some(bound) -> int.min(bound, now + lasts)
+            None -> now + lasts
           }
           let cookie = secret(state.settings)
           let key = secret(state.settings)
@@ -743,7 +776,9 @@ fn recent_invites(
 }
 
 // The table with room for one more of `grant`'s pages: unchanged while the
-// principal holds fewer than `max_pages` live ones, and otherwise without the
+// principal holds fewer than `max_pages` live ones of the same scope (a
+// principal's home is counted apart from each session, and each session
+// apart from the others), and otherwise without the
 // oldest, so the new page makes `max_pages`. An expired page is not counted
 // even before the sweep removes it, so a place frees at its deadline.
 fn with_room(
@@ -759,7 +794,7 @@ fn with_room(
       let other = entry.value.grant
       entry.expires_at > now
       && other.principal == grant.principal
-      && other.session_id == grant.session_id
+      && other.scope == grant.scope
     })
     |> list.sort(fn(a, b) {
       int.compare({ a.1 }.value.serial, { b.1 }.value.serial)

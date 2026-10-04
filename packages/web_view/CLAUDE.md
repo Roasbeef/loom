@@ -71,12 +71,31 @@ page keys and nonces, and the relay into the session's gateway.
   the shared step's commands read `active_strand`. A prompt the daemon hands
   back for any strand of the session is kept, and the notice names the
   strand it was held for when that is not the one on screen.
+- **The home page** (protocol-change/065). `web_view/home` is a server
+  component bound to no session: `Start(name, ceiling, refresh_ms, sessions)`
+  with `sessions: fn() -> Listing` (`Listed(entries) | Unread | Closed(ending)`),
+  read when the timer is wired and every `refresh_ms` (`home.refresh_ms`,
+  30 s), in the component's process. `Closed` ends the page (`Status`:
+  `Connecting | Connected | Ended`) and stops the reads; `Unread` keeps the
+  last list. The view is `shell.view(shell.Home, ...)`: `view/home_bar`,
+  `sidebar.home(groups)` (a "Home" entry, text rows), `view/home_table` (a
+  table per workspace: name, resident or saved in words, created in UTC) and
+  no panel; the stylesheet hides the panel column for the frame class
+  `loom-home`. It attaches no handler. `ending.home_headline` and
+  `home_advice`, `ended.home`, `page.home_shell`, `home_path`,
+  `home_exchange_path`, `home_refusal` word and address it. `home_test` reads
+  all of it.
 - **The session sidebar.** `web_view/sessions` holds `Entry`, `Residency`
   (`Live | Saved`), `Group` and `grouped(entries, current)` (the current
   session's workspace first, then by newest session, sessions newest first,
-  ties by identity and path). `view/sidebar.view(groups, current, open)` draws
-  it as the frame's second child (`aside.sidebar`, the left column;
-  `element.none()` where a page draws none), memoized. A row for a running
+  ties by identity and path). `view/sidebar.view(groups, current, bars, open)`
+  draws it as the frame's second child (`aside.sidebar`, the left column;
+  `element.none()` where a page draws none), memoized on the groups, the
+  identity and the bars. `bars` is `sidebar.bars(component.strip(model))`: one
+  `Bar(hue, pulse)` per listed strand and the advisor, drawn only on the
+  current row as `span.dots > span.bar.hue-N[.w]` (decoration, `aria-hidden`,
+  no handler). A `nav()` child, `element.none()` today, sits before the first
+  group for the app's navigation. A row for a running
   session other than the one on screen is a `button.session-open` whose
   message is `open(id)`; the current row and a saved session are text. A workspace is a
   section whose label the stylesheet draws as a small uppercase eyebrow with
@@ -157,9 +176,12 @@ page keys and nonces, and the relay into the session's gateway.
   by `component.view` and `operator_page.view`. None of them imports
   `component`, which imports them, so each takes what it draws as its own
   types or plain values. `heading.view(session_id, name, workspace,
-  status, context, cost, notice)` draws the top bar (the brand, the
-  workspace and name, the status, the `ctx ~41%` estimate and the session's
-  `est $` cost, worded as the terminal's footer words them), with the ended
+  status, tone, context, cost, notice)` draws the top bar (the brand, the
+  workspace's path with the home directory as `~` and then the name as two
+  spans, the status as a `.pill` whose class follows the `Tone`
+  (`online | pending | ended`), the `ctx ~41%` estimate and the cost
+  `transcript_lines.cost_words` words as `est $0.04` or `est —` when tokens
+  were spent and none priced, each as a word and a `span.num`), with the ended
   page's notice as its last child; `component.heading(model)` reads those
   values from the model and stays the entry point both pages call.
   `shell.view(audience, bar, sidebar, centre, panel, needing, workspace)`
@@ -179,10 +201,10 @@ page keys and nonces, and the relay into the session's gateway.
   the component counted and never session text. The server never renders
   whether a column is open or which tab shows: those are the reader's, in
   the element.
-  `panel.view(count, strands, changes, session)` is the panel's `aside`, a
-  tabbed panel of three panes, always all drawn and always in this order: the
-  Strands pane (a title, then the strip's list), `changes.view`'s pane and
-  `session_tab.view`'s pane. `component.panel(model, focus, viewers, share)`
+  `panel.view(count, strands, detail, changes, session, trace, nudges, commentary)` is the panel's `aside`, a
+  tabbed panel of four panes, always all drawn and always in this order: the
+  Strands pane (a title, then the strip's list), `changes.view`'s pane,
+  `session_tab.view`'s pane and `trace.view`'s pane. `component.panel(model, focus, viewers, share)`
   builds it for both pages, the operator's passing `Some(viewers)` and the
   observer's `None`, and the operator's its invitation control (an owner's) or
   `element.none()` as `share`. The tab bar is not drawn here: `<loom-shell>` draws it, keeps which
@@ -278,7 +300,7 @@ page keys and nonces, and the relay into the session's gateway.
   ones the server counted and did not send. It is read-only on both pages
   and holds no handler, because the queue has no accept or dismiss: the only
   operation on it is the `advisor_pending` read, and the primary's next run
-  start drains it. It is the strand panel's last child, under the three panes,
+  start drains it. It is the strand panel's last child, under the four panes,
   on every tab and on both pages (the 051 addendum of 2026-10-02 records the
   move out of the dock).
 - `commentary.view(board)` draws the advisor's settled commentary
@@ -327,6 +349,18 @@ page keys and nonces, and the relay into the session's gateway.
   between the lane and the bar on the observer's, so the lane's
   `older_path` is unchanged. The terminal's idle-advisor placeholder is not
   drawn.
+- `trace.view(trace)` draws the Trace pane, the panel's fourth (after Session,
+  before the nudges, so `strip_path` and `invite_path` do not move), on both
+  pages from `component.trace(model)`, the `session_view/trace_view` fold of
+  the same records `relaned` folds the Changes board from. It lists the
+  session's `code_mode` programs, and not the capability calls inside them:
+  no capability call is recorded on the page's wire (protocol-change/060
+  proposes the record), and the pane says so in its last line. The newest
+  program leads with its state chip, result excerpt and a collapsed `Budget`
+  `<details>`; earlier programs are rows under it. Labels and excerpts are
+  text nodes, a state's class is one of three literals chosen from the closed
+  `State`, there is no handler, and the pane is memoized on the trace. With
+  no program it is the heading and one line saying so.
 - `changes.view(board)` draws the Changes pane, the panel's second, on both
   pages from `component.changes(model)`, the board `session_view/changes_view`
   folds from the records of the window the page projects (`relaned` builds it

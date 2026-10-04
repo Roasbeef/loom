@@ -2903,7 +2903,18 @@ fn code_mode_result_lines(
   }
 }
 
-fn sandbox_summary(fields: List(#(String, json.JsonValue))) -> Option(String) {
+/// The `sandbox · build enforced N layers; skipped M · satellite …` line a
+/// `code_mode` result's `details` carry, or nothing when they name no sandbox.
+/// Public so the Trace tab shows the line the lane's step detail shows.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert transcript_lines.sandbox_summary([]) == None
+/// ```
+pub fn sandbox_summary(
+  fields: List(#(String, json.JsonValue)),
+) -> Option(String) {
   case list.key_find(fields, "sandbox") {
     Ok(json.Object(sandbox)) -> {
       let build = enforcement_summary(sandbox, "build")
@@ -3096,7 +3107,7 @@ pub fn usage_pieces(
     reading -> pair <> ", " <> reading
   }
   #(cache, [
-    "est $" <> money(usage.cost.total),
+    cost_words(usage),
     "in " <> tokens(usage.input),
     "out " <> tokens(usage.output),
   ])
@@ -3112,6 +3123,25 @@ pub fn usage_pieces(
 pub fn usage_summary(usage: message.Usage) -> String {
   let #(cache, spend) = usage_pieces(usage, "")
   string.join(list.append(spend, [cache]), " · ")
+}
+
+/// The estimated cost as the footer and the web bar word it: `est $0.04`,
+/// or `est —` when tokens were spent and the pricing model priced none of
+/// them. A model with no price entry reports a zero total, and `$0.00`
+/// after real work reads as a bug rather than as "unpriced". A session that
+/// has spent nothing yet is `est $0.00`, which is true.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // cost_words(priced) == "est $0.04"
+/// // cost_words(spent_but_unpriced) == "est —"
+/// ```
+pub fn cost_words(usage: message.Usage) -> String {
+  case usage.cost.total >. 0.0 || usage.total_tokens <= 0 {
+    True -> "est $" <> money(usage.cost.total)
+    False -> "est —"
+  }
 }
 
 /// Currency is display data. Round once to cents before splitting the whole

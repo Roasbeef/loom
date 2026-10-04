@@ -6,7 +6,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import web_client/layout_rule.{Anonymous, Identified}
 import web_client/shell_rule.{
-  Changes, Closed, Layout, Open, Panel, Session, Strands,
+  Changes, Closed, Layout, Open, Panel, Session, Strands, Trace,
 }
 
 const digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -34,7 +34,7 @@ pub fn every_layout_round_trips_test() {
     use tab <- list.flat_map(tabs)
     [Layout(sidebar:, panel:, tab:)]
   }
-  assert list.length(layouts) == 12
+  assert list.length(layouts) == 16
   assert list.all(layouts, fn(layout) {
     layout_rule.restore(Ok(layout_rule.encode(layout))) == layout
   })
@@ -78,13 +78,26 @@ pub fn a_field_of_the_wrong_type_discards_the_whole_record_test() {
 // default for that field alone: the columns the same object names are kept.
 pub fn an_unknown_tab_is_the_default_tab_and_keeps_the_columns_test() {
   assert layout_rule.restore(Ok(
-      "{\"sidebar\":\"closed\",\"panel\":\"open\",\"tab\":\"trace\"}",
+      "{\"sidebar\":\"closed\",\"panel\":\"open\",\"tab\":\"jobs\"}",
     ))
     == Layout(sidebar: Closed, panel: Open, tab: Strands)
   assert layout_rule.restore(Ok(
       "{\"sidebar\":\"open\",\"panel\":\"closed\",\"tab\":\"Changes\"}",
     ))
     == Layout(sidebar: Open, panel: Closed, tab: Strands)
+}
+
+// A layout stored before the Trace tab existed names one of the three older
+// tabs and decodes as it did, and a stored `trace` is the new tab.
+pub fn a_layout_stored_before_the_trace_tab_still_decodes_test() {
+  assert layout_rule.restore(Ok(
+      "{\"sidebar\":\"closed\",\"panel\":\"open\",\"tab\":\"session\"}",
+    ))
+    == Layout(sidebar: Closed, panel: Open, tab: Session)
+  assert layout_rule.restore(Ok(
+      "{\"sidebar\":\"open\",\"panel\":\"open\",\"tab\":\"trace\"}",
+    ))
+    == Layout(sidebar: Open, panel: Open, tab: Trace)
 }
 
 pub fn an_unknown_column_word_is_open_and_keeps_the_tab_test() {

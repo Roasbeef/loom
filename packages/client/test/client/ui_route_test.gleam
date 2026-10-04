@@ -51,6 +51,7 @@ import support/addresses
 import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws
 import web_view/ending
+import web_view/home
 import web_view/invites
 import web_view/page
 import web_view/sessions
@@ -144,44 +145,60 @@ fn fixture_lasting(
       domain_configuration: "",
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
       session_upgrade: fn(_, _) { stub(501, "v2 adapter absent") },
-      ui: Some(
-        server.Ui(
-          sessions:,
-          assets:,
-          upgrade: fn(request, attachment, open, register, ceiling) {
-            case serving {
-              // The router hands the page's upgrade the capped role. The
-              // stub reports what it was given.
-              Stubbed -> capped(attachment)
+      ui: Some(server.Ui(
+        sessions:,
+        assets:,
+        upgrade: fn(request, attachment, open, register, ceiling) {
+          case serving {
+            // The router hands the page's upgrade the capped role. The
+            // stub reports what it was given.
+            Stubbed -> capped(attachment)
 
-              Pictured -> {
-                register(held)
-                capped(attachment)
-              }
-
-              Switching ->
-                switching(sessions, request, attachment, ceiling, open)
-
-              Inviting -> inviting(sessions, request, attachment, open)
-
-              // The session is resident but its gateway is not running: the
-              // relay's attach is refused, as it is when a session is
-              // stopped between the router's check and the attach.
-              Real ->
-                ui_socket.upgrade(
-                  daemon,
-                  request,
-                  attachment,
-                  gateway.Gateway(name: addresses.new()),
-                  sessions,
-                  open,
-                  register,
-                  ceiling,
-                )
+            Pictured -> {
+              register(held)
+              capped(attachment)
             }
-          },
-        ),
-      ),
+
+            Switching -> switching(sessions, request, attachment, ceiling, open)
+
+            Inviting -> inviting(sessions, request, attachment, open)
+
+            // The session is resident but its gateway is not running: the
+            // relay's attach is refused, as it is when a session is
+            // stopped between the router's check and the attach.
+            Real ->
+              ui_socket.upgrade(
+                daemon,
+                request,
+                attachment,
+                gateway.Gateway(name: addresses.new()),
+                sessions,
+                open,
+                register,
+                ceiling,
+              )
+          }
+        },
+        home: fn(request, attachment, open, ceiling) {
+          case serving {
+            // The home's own socket, as the daemon serves it. A request that
+            // carries `x-revoke-between` names a credential revoked after the
+            // router admitted the page and before the component's first read,
+            // which the refresh interval is far too long for a test to wait
+            // out.
+            Real -> {
+              case req.get_header(request, "x-revoke-between") {
+                Ok(token) -> revoke(ready.state_root, token)
+                Error(Nil) -> Nil
+              }
+              ui_socket.upgrade_home(daemon, request, attachment, open, ceiling)
+            }
+
+            Stubbed | Pictured | Switching | Inviting ->
+              homed(ready.state_root, request, attachment, open, ceiling)
+          }
+        },
+      )),
     )
   let ports = process.new_subject()
   let assert Ok(listener) =
@@ -306,6 +323,59 @@ fn inviting(
     ui_socket.Operating, Error(Nil) -> stub(294, "no capability")
     ui_socket.Observing, Error(Nil) -> stub(295, "no capability")
   }
+}
+
+// The home's upgrade as the daemon's socket asks it: the read the home
+// component makes (`ui_socket.home_listing`), answered as status 280 and, one
+// to a line, the principal, the ceiling the router handed over and what the
+// read found. A request that carries `x-revoke-between` names a credential
+// that is revoked after the first read and before a second, which is the
+// home's next read after access was taken away; both answers are in the body.
+fn homed(
+  state_root: String,
+  request,
+  attachment: server.HomeAttachment(String),
+  open: fn() -> Result(Int, Nil),
+  ceiling: access.Role,
+) {
+  let read = fn() {
+    case ui_socket.home_listing(attachment, open, fn(_) { Nil }) {
+      home.Listed(entries) ->
+        "listed " <> string.join(list.map(entries, fn(entry) { entry.id }), ",")
+      home.Unread -> "unread"
+      home.Closed(reason) -> "closed " <> ending.reason(reason)
+    }
+  }
+  let first = read()
+  let reads = case req.get_header(request, "x-revoke-between") {
+    Ok(token) -> {
+      revoke(state_root, token)
+      [first, read()]
+    }
+    Error(Nil) -> [first]
+  }
+  let who = case ceiling {
+    access.Operator -> "operator"
+    access.Observer -> "observer"
+  }
+  stub(280, string.join([attachment.principal.id, who, ..reads], "\n"))
+}
+
+// Revokes the credential `token` names, as the owner's administration would.
+fn revoke(state_root: String, token: String) -> Nil {
+  let assert Ok(digest) =
+    token
+    |> bit_array.from_string
+    |> bootstrap.sha256
+    |> bit_array.base16_encode
+    |> string.lowercase
+    |> access.credential_digest
+    as "the digest is valid"
+  let assert Ok(store) = catalogue.open(state_root <> "/catalogue.db")
+    as "fixture administration opens the durable catalogue"
+  assert access.revoke_credential(store, digest) == Ok(Nil)
+  assert catalogue.close(store) == Ok(Nil)
+  Nil
 }
 
 fn stub(status: Int, text: String) {
@@ -964,6 +1034,15 @@ type Closed {
 }
 
 fn watch_socket(port: Int, entered: Entered) -> Closed {
+  let socket = connect_socket(port, entered, [])
+  let closed = read_until_closed(socket, [])
+  let _ = ffi_ws.tcp_close(socket)
+  closed
+}
+
+// The handshake alone, with more request headers: a WebSocket to the page's
+// socket that is open and not yet read.
+fn connect_socket(port: Int, entered: Entered, more: List(#(String, String))) {
   let assert Ok(socket) =
     ffi_daemon_socket.connect(
       #(127, 0, 0, 1),
@@ -983,6 +1062,9 @@ fn watch_socket(port: Int, entered: Entered) -> Closed {
     <> int.to_string(port)
     <> "\r\nCookie: loom_ui="
     <> entered.cookie
+    <> string.concat(
+      list.map(more, fn(header) { "\r\n" <> header.0 <> ": " <> header.1 }),
+    )
     <> "\r\nUpgrade: websocket\r\nConnection: Upgrade"
     <> "\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="
     <> "\r\nSec-WebSocket-Version: 13\r\n\r\n"
@@ -990,9 +1072,7 @@ fn watch_socket(port: Int, entered: Entered) -> Closed {
     == Ok(Nil)
   let head = read_head(socket, "")
   assert string.starts_with(head, "HTTP/1.1 101")
-  let closed = read_until_closed(socket, [])
-  let _ = ffi_ws.tcp_close(socket)
-  closed
+  socket
 }
 
 // Reads server frames, which are never masked, until a close frame or the
@@ -1279,6 +1359,353 @@ pub fn a_saved_session_is_not_opened_test() {
     let refused = ask(port, page, target)
     assert refused.status == 291
     assert refused.body == "NotRunning"
+  })
+}
+
+// --- the home (protocol-change/065) ------------------------------------------
+
+// A ticket for the home, as `loom ui` with no session asks for one: a
+// `ui.link` that names no session.
+fn home_link(
+  port: Int,
+  credential: String,
+  page: List(#(String, json.JsonValue)),
+) -> String {
+  let #(socket, _) = daemon_server_test.connect(port, credential, "/v2/control")
+  let _hello = daemon_server_test.frame(socket, within_ms: 1000)
+  let reply =
+    daemon_server_test.send(
+      socket,
+      1,
+      "ui.link",
+      json.Object(page),
+      within_ms: 1000,
+    )
+  let _ = ffi_ws.tcp_close(socket)
+  let assert Ok(body) = field(reply, "body") as "the reply has a body"
+  let assert Ok(json.String(path)) = field(body, "path") as "a link"
+  path
+}
+
+fn operator_home(port: Int, credential: String) -> String {
+  home_link(port, credential, [#("page", json.String("operator"))])
+}
+
+fn home_socket(port: Int, entered: Entered, more) -> Answer {
+  get(port, entered.page <> "/ws?csrf-token=" <> entered.nonce, [
+    host(port),
+    #("cookie", "loom_ui=" <> entered.cookie),
+    #("origin", "http://127.0.0.1:" <> int.to_string(port)),
+    ..more
+  ])
+}
+
+// The three routes of the home work in order: the ticket exchange, the keyed
+// page, and the socket, which the router hands to the home's upgrade with the
+// principal and the ceiling the ticket was minted with. The exchange's cookie
+// is scoped to the page's key as a session page's is.
+pub fn a_home_ticket_becomes_a_keyed_home_once_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "home-one", 960)
+    let path = operator_home(port, credential)
+    assert string.starts_with(path, "/ui/home?ticket=")
+
+    // The exchange's checks are the session exchange's.
+    assert get(port, path, [host(port), #("sec-fetch-site", "cross-site")]).status
+      == 403
+    let answer = exchange(port, path)
+    let page = entered(answer)
+    assert string.ends_with(page.page, "/home")
+    let assert Ok(set) = list.key_find(answer.headers, "set-cookie")
+      as "the cookie is set"
+    assert string.contains(set, "HttpOnly")
+    assert string.contains(set, "SameSite=Strict")
+    assert string.ends_with(
+      set,
+      "Path=" <> string.replace(page.page, "/home", ""),
+    )
+    assert exchange(port, path).status == 401
+
+    // The page is the home's shell, which names no session.
+    let opened = open_page(port, page)
+    assert opened.status == 200
+    assert string.contains(opened.body, "Loom · Home")
+    assert !string.contains(opened.body, page.nonce)
+    assert !string.contains(opened.body, session)
+    assert referrer_policy(opened) == Ok("no-referrer")
+
+    // The socket needs the host, the origin, the cookie, the key and the
+    // nonce, in that order.
+    let socket = page.page <> "/ws?csrf-token=" <> page.nonce
+    let with_cookie = #("cookie", "loom_ui=" <> page.cookie)
+    assert get(port, socket, [#("host", "evil.example"), with_cookie]).status
+      == 403
+    assert get(port, socket, [host(port), with_cookie]).status == 403
+    assert home_socket(port, Entered(..page, nonce: "forged"), []).status == 403
+    assert get(port, page.page <> "/ws", [
+        host(port),
+        with_cookie,
+        #("origin", "http://127.0.0.1:" <> int.to_string(port)),
+      ]).status
+      == 403
+    assert get(port, page.page <> "/ws?csrf-token=" <> page.nonce, [
+        host(port),
+        #("origin", "http://127.0.0.1:" <> int.to_string(port)),
+      ]).status
+      == 401
+    let upgraded = home_socket(port, page, [])
+    assert upgraded.status == 280
+    let assert [_, "operator", listed] = string.split(upgraded.body, "\n")
+    assert listed == "listed " <> session
+  })
+}
+
+// A ticket is honoured only at the exchange of its own scope: a session's at
+// the home and a home's at a session's are each refused and spent, and no
+// cookie is set for either.
+pub fn a_ticket_of_the_other_scope_is_refused_and_spent_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "scopes", 961)
+    let for_session = link(port, credential, session)
+    let for_home = home_link(port, credential, [])
+    let home_at_session =
+      "/ui/sessions/" <> session <> "?ticket=" <> after_ticket(for_home)
+    let session_at_home = "/ui/home?ticket=" <> after_ticket(for_session)
+
+    let refused = exchange(port, home_at_session)
+    assert refused.status == 403
+    assert list.key_find(refused.headers, "set-cookie") == Error(Nil)
+    let refused = exchange(port, session_at_home)
+    assert refused.status == 403
+    assert list.key_find(refused.headers, "set-cookie") == Error(Nil)
+
+    // Both are spent: neither opens its own exchange afterwards.
+    assert exchange(port, for_home).status == 401
+    assert exchange(port, for_session).status == 401
+  })
+}
+
+fn after_ticket(path: String) -> String {
+  let assert Ok(#(_, ticket)) = string.split_once(path, "?ticket=")
+    as "a link carries a ticket"
+  ticket
+}
+
+// A home page's cookie opens no session page and a session page's cookie
+// opens no home, under their own keys or each other's.
+pub fn a_cookie_opens_only_the_scope_it_was_issued_for_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "cookies", 962)
+    let home_page = enter(port, home_link(port, credential, []))
+    let session_page = enter(port, link(port, credential, session))
+    let home_key = string.replace(home_page.page, "/home", "")
+    let session_key =
+      string.replace(session_page.page, "/sessions/" <> session, "")
+
+    let wrong_scope = fn(path, cookie) {
+      get(port, path, [
+        host(port),
+        #("sec-fetch-site", "same-origin"),
+        #("cookie", "loom_ui=" <> cookie),
+      ]).status
+    }
+    assert wrong_scope(home_key <> "/sessions/" <> session, home_page.cookie)
+      == 403
+    assert wrong_scope(session_key <> "/home", session_page.cookie) == 403
+    assert wrong_scope(session_key <> "/home", home_page.cookie) == 401
+    assert open_page(port, home_page).status == 200
+    assert open_page(port, session_page).status == 200
+
+    // The home's socket is refused to a session page, and a session's socket
+    // to a home page, before any upgrade.
+    assert get(
+        port,
+        home_key
+          <> "/sessions/"
+          <> session
+          <> "/ws?csrf-token="
+          <> home_page.nonce,
+        [
+          host(port),
+          #("cookie", "loom_ui=" <> home_page.cookie),
+          #("origin", "http://127.0.0.1:" <> int.to_string(port)),
+        ],
+      ).status
+      == 403
+    assert get(
+        port,
+        session_key <> "/home/ws?csrf-token=" <> session_page.nonce,
+        [
+          host(port),
+          #("cookie", "loom_ui=" <> session_page.cookie),
+          #("origin", "http://127.0.0.1:" <> int.to_string(port)),
+        ],
+      ).status
+      == 403
+  })
+}
+
+pub fn the_home_page_needs_a_first_party_navigation_test() {
+  fixture(fn(_, port, credential) {
+    let page = enter(port, home_link(port, credential, []))
+    let from = fn(site) {
+      get(port, page.page, [
+        host(port),
+        #("sec-fetch-site", site),
+        #("cookie", "loom_ui=" <> page.cookie),
+      ]).status
+    }
+    assert from("same-origin") == 200
+    assert from("none") == 200
+    assert from("same-site") == 403
+    assert from("cross-site") == 403
+    assert get(port, page.page, [host(port)]).status == 403
+    assert get(port, "/ui/home", [host(port)]).status == 404
+  })
+}
+
+// The ceiling the ticket was minted with reaches the home's upgrade: a link
+// asked for with no page is an observer's, as `ui.link`'s default says.
+pub fn the_home_socket_carries_the_tickets_ceiling_test() {
+  fixture(fn(_, port, credential) {
+    let operator = enter(port, operator_home(port, credential))
+    let observer = enter(port, home_link(port, credential, []))
+    let ceiling_of = fn(page) {
+      let assert [_, ceiling, ..] =
+        string.split(home_socket(port, page, []).body, "\n")
+      ceiling
+    }
+    assert ceiling_of(operator) == "operator"
+    assert ceiling_of(observer) == "observer"
+  })
+}
+
+// A member's home lists only their memberships, and not the sessions the owner
+// holds that they do not.
+pub fn a_members_home_lists_only_their_sessions_test() {
+  fixture(fn(ready, port, credential) {
+    let held = create_session(ready, "member-held", 963)
+    let other = create_session(ready, "member-other", 964)
+    let member = member(ready, "home-member", held, access.Operator)
+    let as_member = enter(port, operator_home(port, member))
+    let body = home_socket(port, as_member, []).body
+    assert string.contains(body, "listed " <> held)
+    assert !string.contains(body, other)
+
+    let as_owner = enter(port, operator_home(port, credential))
+    let owner_body = home_socket(port, as_owner, []).body
+    assert string.contains(owner_body, held)
+    assert string.contains(owner_body, other)
+  })
+}
+
+// A revoked credential's home is refused at its next request, and a home
+// that is already open learns it at its next read, which answers `Closed`.
+pub fn a_revoked_credential_ends_the_home_test() {
+  fixture(fn(ready, port, _) {
+    let session = create_session(ready, "home-revoked", 965)
+    let credential =
+      member(ready, "home-revoked-member", session, access.Operator)
+    let page = enter(port, operator_home(port, credential))
+    assert open_page(port, page).status == 200
+
+    let read = home_socket(port, page, [#("x-revoke-between", credential)])
+    assert read.status == 280
+    let assert [_, _, first, second] = string.split(read.body, "\n")
+    assert first == "listed " <> session
+    assert second == "closed " <> ending.reason(ending.AccessRevoked)
+
+    let reloaded = open_page(port, page)
+    assert reloaded.status == 401
+    assert string.contains(
+      reloaded.body,
+      ending.home_headline(ending.AccessRevoked),
+    )
+    assert string.contains(reloaded.body, "Run `loom ui`")
+    assert !string.contains(reloaded.body, "--session")
+    assert home_socket(port, page, []).status == 401
+  })
+}
+
+// The home's own socket, not the stub: a home whose credential is revoked
+// after the router admitted it reads the catalogue, finds no such credential,
+// draws the home's ending and closes the socket.
+pub fn a_revoked_credential_closes_the_real_home_socket_test() {
+  fixture_with(Real, fn(ready, port, _) {
+    let session = create_session(ready, "home-real", 967)
+    let credential = member(ready, "home-real-member", session, access.Operator)
+    let page = enter(port, operator_home(port, credential))
+    let socket = connect_socket(port, page, [#("x-revoke-between", credential)])
+    let closed = read_until_closed(socket, [])
+    let _ = ffi_ws.tcp_close(socket)
+    assert closed.code != 0
+    assert string.contains(
+      string.join(closed.texts, "\n"),
+      ending.home_headline(ending.AccessRevoked),
+    )
+  })
+}
+
+// A home that has been replaced by a fifth is the oldest's end, and a home
+// beyond the cap leaves the principal's session pages open.
+pub fn homes_are_capped_apart_from_session_pages_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "home-cap", 966)
+    let session_page = enter(port, link(port, credential, session))
+    let homes =
+      list.map(list.repeat(Nil, ui_sessions.max_pages + 1), fn(_) {
+        enter(port, home_link(port, credential, []))
+      })
+    let assert [oldest, ..rest] = homes
+    assert open_page(port, oldest).status == 401
+    list.each(rest, fn(page) {
+      assert open_page(port, page).status == 200
+    })
+    assert open_page(port, session_page).status == 200
+  })
+}
+
+// Without `--ui` there is no home to link to.
+pub fn without_ui_a_home_link_is_refused_test() {
+  daemon_server_test.fixture(fn(_, _, port, credential) {
+    assert get(port, "/ui/home?ticket=t", [host(port)]).status == 404
+    let #(socket, _) =
+      daemon_server_test.connect(port, credential, "/v2/control")
+    let _hello = daemon_server_test.frame(socket, within_ms: 1000)
+    let refused =
+      daemon_server_test.send(
+        socket,
+        1,
+        "ui.link",
+        json.Object([]),
+        within_ms: 1000,
+      )
+    let assert Ok(refusal) = field(refused, "body") as "a refusal body"
+    assert field(refusal, "code") == Ok(json.String("unavailable"))
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+// A malformed session identity is refused, and never read as a request for
+// the home.
+pub fn a_malformed_session_is_not_a_home_link_test() {
+  fixture(fn(_, port, credential) {
+    let #(socket, _) =
+      daemon_server_test.connect(port, credential, "/v2/control")
+    let _hello = daemon_server_test.frame(socket, within_ms: 1000)
+    let refused =
+      daemon_server_test.send(
+        socket,
+        1,
+        "ui.link",
+        json.Object([#("session_id", json.String("not a session"))]),
+        within_ms: 1000,
+      )
+    let assert Ok(refusal) = field(refused, "body") as "a refusal body"
+    assert field(refusal, "code") == Ok(json.String("bad_request"))
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
   })
 }
 

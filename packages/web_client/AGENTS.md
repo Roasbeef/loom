@@ -75,7 +75,7 @@ renders again just for it:
   `layout_rule` for the stored layout (the two columns and the active tab,
   nothing else; the focused strand is never kept, so a reload shows `main`),
   and every change writes it back through `ffi_dom.storage_write`. A page
-  with no digest keeps nothing. A Theme button in the bar cycles the page
+  with no digest keeps nothing. A Theme icon button in the bar (a sun, moon or half disc drawn from fixed shapes, labelled by `layout_rule.label`) cycles the page
   through following the system, light and dark (`layout_rule.next_theme`) by
   setting or removing `data-theme` on `<html>`, which the stylesheet reads;
   the choice is kept per browser under its own item, and `assets/web_view_page.js` applies it from that item before first paint, since the shell connects only after the socket opens (`js_check` pins the item name to `layout_rule.theme_key`). The server never learns
@@ -83,12 +83,12 @@ renders again just for it:
   (protocol-change/051, the addendum on the storage decision). A hidden column takes no width and is `inert`, so
   its content leaves the tab order. The `sidebar` attribute is a fixed word
   the server writes (`listed` or `none`), so an observer's page, which has no
-  sidebar, gets no button for one. The strand panel has three tabs, Strands,
-  Changes and Session. The server draws a pane for each, all of them, as
+  sidebar, gets no button for one. The strand panel has four tabs, Strands,
+  Changes, Trace and Session. The server draws a pane for each, all of them, as
   children of the panel; the element draws the tab bar above the `right` slot
   and shows the chosen tab's pane by setting a custom state on itself
-  (`component.set_pseudo_state`, `tab-strands`, `tab-changes` or
-  `tab-session`), which the stylesheet reads to hide the other two
+  (`component.set_pseudo_state`, `tab-strands`, `tab-changes`,
+  `tab-session` or `tab-trace`), which the stylesheet reads to hide the others
   (`loom-shell:state(tab-changes) .pane:not(.pane-changes)`). A hidden pane is
   `display: none`, so its controls leave the tab order too; a browser without
   custom states shows every pane, stacked. The `needing` attribute is a count
@@ -214,7 +214,9 @@ time builds anything.
 - `shell_rule.Region` (`Sidebar` | `Panel`), `Tab` (`Strands` | `Changes` |
   `Session`), `State` (`Open` | `Closed`), `Layout(sidebar, panel, tab)`,
   `Presence` (`Listed` | `Unlisted`) and `Reach` (`Reachable` | `Unreachable`),
-  with `toggled`, `chosen`, `state`, `reach`, `label`, `tabs`, `tab_label`,
+  with `toggled`, `chosen`, `state`, `reach`, `label`, `hint` (the visible
+  `⌘B` / `⌘⌥B` words each toggle draws as an `aria-hidden` `kbd.toggle-hint`),
+  `tabs`, `tab_label`,
   `tab_state`, `has_button`, `presence` (a total decoder of the `sidebar`
   attribute), `needing` (a total decoder of the `needing` attribute: a plain
   number of at most four digits, else none), `badge` and `strands_words`,
@@ -414,7 +416,15 @@ sends the server nothing.
   token is under 4.5:1 on a surface it is drawn on (`bg`, `bg-raised`,
   `bg-sunk`, `bg-user`, `code`, and the diff backgrounds for `added-text` and
   `danger-text`) in either theme, or if a rule sets `color:` from a mark
-  token, `--hue` or `fg-faint`. It has its own self-test.
+  token, `--hue` or `fg-faint`. It has its own self-test. `on-danger` (the
+  tab badge's text) is held against `danger`, and `bg` against `fg` for the
+  filled primary buttons.
+- **The monospace face is for code.** Labels, rows and headings are
+  `--font-sans`; `--font-mono` is for code, paths, tags, diffs and tool
+  output. `scripts/web_client_css_check.sh`, run by `make lint`, fails a rule
+  whose selector names `.line`, `.step`, `.chip` or `.panel-title` and sets
+  the monospace face; a row that carries code names the code's own class
+  (`pre.tool-result`, `.step-summary`, `.diff-row`). It has its own self-test.
 - **Tokens live on `:root`; a shadow root only inherits them.** The Theme
   button sets `data-theme` on `<html>`, and custom properties inherit through
   every shadow root under it. Tailwind's `@theme` also writes the dark palette

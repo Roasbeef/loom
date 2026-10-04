@@ -251,7 +251,12 @@ fn sidebar_place(model: component.Model(socket)) -> shell.Sidebar(Msg(socket)) {
   case component.session_groups(model) {
     [] -> shell.Unlisted
     groups ->
-      shell.Listed(sidebar.view(groups, component.session_id(model), Opening))
+      shell.Listed(sidebar.view(
+        groups,
+        component.session_id(model),
+        sidebar.bars(component.strip(model)),
+        Opening,
+      ))
   }
 }
 

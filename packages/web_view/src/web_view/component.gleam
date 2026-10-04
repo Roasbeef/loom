@@ -167,6 +167,7 @@ import session_view/step
 import session_view/step_effect
 import session_view/strand_card
 import session_view/text_hygiene
+import session_view/trace_view
 import session_view/transcript
 import session_view/transcript_image.{type Image}
 import session_view/transcript_line.{
@@ -194,6 +195,7 @@ import web_view/view/shell
 import web_view/view/strand_detail
 import web_view/view/strip
 import web_view/view/todo_panel
+import web_view/view/trace
 
 /// The most frames one `Arrived` carries: the frame the selector matched
 /// and up to this many less one already waiting behind it.
@@ -576,6 +578,10 @@ type View(socket) {
     /// folded when the projection is built, so a message that changed none
     /// of its inputs costs the Changes section no fold.
     changes: changes_view.Board,
+    /// The `code_mode` programs the held window carries
+    /// (`session_view/trace_view`), folded with `changes` for the same
+    /// reason.
+    trace: trace_view.Trace,
     /// The live answers the page draws (`live`): the shared record's
     /// streams for the followed strand, and after a pushed entry clears
     /// them, the last ones until a capture holds the entry
@@ -751,6 +757,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       pieces: [],
       projected: projected_of(shared, Tail),
       changes: changes_view.empty(),
+      trace: trace_view.empty(),
       streams: [],
       strip: strip.Strip(
         chips: [],
@@ -1435,6 +1442,7 @@ fn relaned(model: Model(socket)) -> Model(socket) {
           earlier:,
           paging:,
           changes: changes_view.fold(branch.records),
+          trace: trace_view.fold(branch.records),
         ),
       ))
     }
@@ -2931,6 +2939,7 @@ pub fn panel(
       viewers,
       share,
     ),
+    trace.view(trace(model)),
     nudges.view(pending_nudges(model)),
     commentary.view(advisor_commentary(model)),
   )
@@ -3067,6 +3076,18 @@ pub fn changes(model: Model(socket)) -> changes_view.Board {
   model.view.changes
 }
 
+/// The `code_mode` programs of the session the page holds, from the records
+/// the page projects, for the Trace pane.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.trace(model)
+/// ```
+pub fn trace(model: Model(socket)) -> trace_view.Trace {
+  model.view.trace
+}
+
 /// The followed strand's live jobs, as the last read of them answered.
 ///
 /// ## Examples
@@ -3114,6 +3135,7 @@ pub fn heading(model: Model(socket)) -> Element(message) {
     name: option.map(model.view.label, fn(label) { label.name }),
     workspace: option.map(model.view.label, fn(label) { label.workspace }),
     status: status_text(model.view.status),
+    tone: status_tone(model.view.status),
     context: context_view.footer(model.shared.context),
     cost: cost_text(model),
     notice: ended.view(ended_ending(model.view.status), model.shared.session),
@@ -3123,7 +3145,7 @@ pub fn heading(model: Model(socket)) -> Element(message) {
 // The session's running cost as the top bar and the Session tab word it,
 // which is the terminal's footer's own words.
 fn cost_text(model: Model(socket)) -> String {
-  "est $" <> transcript_lines.money(model.shared.usage.cost.total)
+  transcript_lines.cost_words(model.shared.usage)
 }
 
 // The ending a page that has ended draws a notice for.
@@ -3131,6 +3153,15 @@ fn ended_ending(status: Status) -> Option(Ending) {
   case status {
     Connecting | Connected -> None
     Ended(ending:) -> Some(ending)
+  }
+}
+
+// The tone the heading's status pill takes.
+fn status_tone(status: Status) -> heading.Tone {
+  case status {
+    Connecting -> heading.Pending
+    Connected -> heading.Live
+    Ended(_) -> heading.Closed
   }
 }
 

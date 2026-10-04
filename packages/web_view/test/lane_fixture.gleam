@@ -1168,6 +1168,68 @@ pub fn edited(edits: List(#(String, String))) -> session_channel.Update {
   )
 }
 
+/// A capture of a session that runs two `code_mode` programs, in order, the
+/// first finishing with `value` and the second still running: the rows the
+/// Trace pane lists.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.traced("// count functions\npub fn main() { 3 }", "3")
+/// ```
+pub fn traced(program: String, value: String) -> session_channel.Update {
+  let outcome =
+    message.ToolResultMessage(
+      "t1",
+      "code_mode",
+      [message.ToolResultText(value, None)],
+      Some(
+        json.Object([
+          #("status", json.String("completed")),
+          #("value", json.String(value)),
+        ]),
+      ),
+      None,
+      None,
+      False,
+      12_000,
+    )
+  capture_of(
+    [
+      item(1, 10_000, said("run it", None)),
+      item(
+        2,
+        11_000,
+        assistant([
+          call(
+            "t1",
+            "code_mode",
+            json.Object([
+              #("program", json.String(program)),
+              #("within_ms", json.Int(30_000)),
+            ]),
+          ),
+        ]),
+      ),
+      item(3, 12_000, outcome),
+      item(
+        4,
+        13_000,
+        assistant([
+          call(
+            "t2",
+            "code_mode",
+            json.Object([#("program", json.String("pub fn main() { loop() }"))]),
+          ),
+        ]),
+      ),
+    ],
+    None,
+    [],
+    [],
+  )
+}
+
 /// `update`, when it is a capture, with `peers` as the session's presence
 /// rows. Any other update is returned as it is.
 ///

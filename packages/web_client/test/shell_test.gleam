@@ -6,7 +6,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import web_client/shell_rule.{
   Changes, Closed, Layout, Listed, Open, Panel, Reachable, Session, Sidebar,
-  Strands, Unlisted, Unreachable,
+  Strands, Trace, Unlisted, Unreachable,
 }
 
 pub fn a_page_starts_with_both_columns_open_on_the_strands_tab_test() {
@@ -107,9 +107,10 @@ pub fn closing_and_opening_the_panel_keeps_the_tab_test() {
 }
 
 pub fn the_tabs_are_drawn_in_a_fixed_order_with_fixed_words_test() {
-  assert shell_rule.tabs() == [Strands, Changes, Session]
+  assert shell_rule.tabs() == [Strands, Changes, Trace, Session]
   assert shell_rule.tab_label(Strands) == "Strands"
   assert shell_rule.tab_label(Changes) == "Changes"
+  assert shell_rule.tab_label(Trace) == "Trace"
   assert shell_rule.tab_label(Session) == "Session"
 }
 
@@ -119,6 +120,7 @@ pub fn each_tab_has_its_own_custom_state_test() {
   assert shell_rule.tab_state(Strands) == "tab-strands"
   assert shell_rule.tab_state(Changes) == "tab-changes"
   assert shell_rule.tab_state(Session) == "tab-session"
+  assert shell_rule.tab_state(Trace) == "tab-trace"
 }
 
 // The badge count is the server's number. Decoding is total: a value that is
@@ -457,6 +459,8 @@ pub fn the_toggles_name_their_shortcuts_test() {
     == "Show strands (Command or Control Alt B)"
   assert shell_rule.shortcuts(Sidebar) == "Meta+B Control+B"
   assert shell_rule.shortcuts(Panel) == "Meta+Alt+B Control+Alt+B"
+  assert shell_rule.hint(Sidebar) == "⌘B"
+  assert shell_rule.hint(Panel) == "⌘⌥B"
 }
 
 // `Escape` clicks the link a pointer clicks, which the server draws only

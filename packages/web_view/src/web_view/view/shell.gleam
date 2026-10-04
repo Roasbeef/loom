@@ -46,6 +46,12 @@
 //// The element ignores a `workspace` that is not a 64-digit lower-case hex
 //// string, so nothing here needs to validate it for the browser's sake.
 ////
+//// The home page (protocol-change/065) draws the same frame with its panel
+//// as `element.none()`. The frame's element still draws the panel's column
+//// and its button around an empty slot, so the home's class, `loom-home`, is
+//// what the stylesheet reads to leave them out. It is a class on the host and
+//// no attribute the element reads, so the element is unchanged.
+////
 //// The module takes plain elements and imports nothing from
 //// `web_view/component`, which imports it.
 
@@ -62,6 +68,11 @@ pub type Audience {
 
   /// The observer's page: read-only.
   Observer
+
+  /// The home page (protocol-change/065): the same frame with no strand
+  /// panel. Its class tells the stylesheet to leave the panel's column and
+  /// its button out, since the home has no panel to show.
+  Home
 }
 
 /// The frame's left column: the sessions' sidebar, or the absence of one.
@@ -135,6 +146,11 @@ fn frame_attributes(
       ..facts
     ]
     Observer -> [attribute.class("loom-session"), ..facts]
+    Home -> [
+      attribute.class("loom-session"),
+      attribute.class("loom-home"),
+      ..facts
+    ]
   }
 }
 

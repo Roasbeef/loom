@@ -1,4 +1,4 @@
-//// The strand panel: three panes in a fixed order as the frame's last child,
+//// The strand panel: four panes in a fixed order as the frame's last child,
 //// the badge's count, and the rule that the panel carries no decision.
 ////
 //// The tabs and the choice between them are `<loom-shell>`'s
@@ -118,8 +118,9 @@ pub fn every_pane_is_drawn_in_a_fixed_order_on_both_pages_test() {
       "pane pane-strands",
       "pane pane-changes",
       "pane pane-session",
+      "pane pane-trace",
     ])
-    assert count(panel, "<section") == 3
+    assert count(panel, "<section") == 4
   })
 }
 

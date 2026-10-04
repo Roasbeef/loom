@@ -225,8 +225,59 @@ pub fn advice(ending: Ending, session_id: String) -> String {
   }
 }
 
+/// `headline` for a home page (protocol-change/065), which has no session to
+/// be revoked from or to stop. An ending only a session page can reach reads
+/// as a failed connection.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ending.home_headline(ending.AccessRevoked)
+///   == "Your access was revoked or changed."
+/// ```
+pub fn home_headline(ending: Ending) -> String {
+  case ending {
+    PageEnded -> "This page has ended."
+    AccessRevoked -> "Your access was revoked or changed."
+    DaemonNotReady -> "The daemon was not ready."
+    LinkExpired -> "This link has expired or was already used."
+    SessionStopped | NotOpen | ConnectionFailed ->
+      "The connection to the daemon failed."
+  }
+}
+
+/// `advice` for a home page: the same reasons, and a fresh link that is
+/// `loom ui` with no session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(ending.home_advice(ending.LinkExpired), "`loom ui`")
+/// ```
+pub fn home_advice(ending: Ending) -> String {
+  case ending {
+    PageEnded ->
+      "A page lasts eight hours, and the daemon forgets every page when it "
+      <> "restarts. You can also have "
+      <> int.to_string(max_pages)
+      <> " home pages open at once; opening another ends the oldest. "
+      <> fresh_home_link
+    AccessRevoked ->
+      "Ask the owner to restore your access. Then " <> fresh_home_link
+    DaemonNotReady ->
+      "It may still be starting. Reload this page in a moment. If it keeps "
+      <> "failing, "
+      <> fresh_home_link
+    LinkExpired -> "A link works once, within 60 seconds. " <> fresh_home_link
+    SessionStopped | NotOpen | ConnectionFailed ->
+      "Reload this page. If it fails again, " <> fresh_home_link
+  }
+}
+
 // The sentence every ending that needs a new link ends with. It names a
 // command the person runs in a terminal; the page never runs it.
 fn fresh_link(session_id: String) -> String {
   "Run `loom ui --session " <> session_id <> "` for a fresh link."
 }
+
+const fresh_home_link = "Run `loom ui` for a fresh link."

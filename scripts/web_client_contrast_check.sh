@@ -30,7 +30,7 @@
 #      the ratio, so it must name `--color-signal-text`.
 #   3. `--color-fg-faint` is never text.
 #   4. The theme toggle's two light palettes agree (colour tokens: the
-#      `--shadow-card` value is not compared, only that it inherits), and every token reaches
+#      `--shadow-float` value is not compared, only that it inherits), and every token reaches
 #      each shadow root. The stylesheet writes the light palette twice, once
 #      for a system that prefers light and once for `data-theme="light"`,
 #      because CSS cannot share the two; they must declare the same tokens with
@@ -55,7 +55,7 @@ text_tokens="fg fg-quiet current signal-text advisor-text peer-text danger-text 
 surfaces="bg bg-raised bg-sunk bg-user code"
 
 # The pairs the diff draws on a coloured surface, as `token:surface`.
-extra_pairs="added-text:added-bg danger-text:removed-bg fg:added-bg fg:removed-bg"
+extra_pairs="added-text:added-bg danger-text:removed-bg fg:added-bg fg:removed-bg on-danger:danger bg:fg"
 
 # The mark tokens a `color:` may not read.
 marks='signal|advisor|peer|danger|added|strand-[2-6]|fg-faint'
@@ -139,7 +139,7 @@ agreement() {
 			seen[name] = 1
 		}
 		END {
-			seen["--shadow-card"] = 1
+			seen["--shadow-float"] = 1
 			for (name in seen) {
 				if (!(("light", name) in value) && !(("manual", name) in value) \
 					&& !(("dark", name) in value)) {

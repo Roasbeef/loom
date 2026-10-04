@@ -47,6 +47,17 @@ pub type Route {
   /// trusted: the page answers for a name and place it drew and no other.
   Image(key: String, session_id: String, ref: String, position: Int)
 
+  /// `GET /ui/home?ticket=<ticket>`: the home page's ticket exchange
+  /// (protocol-change/065).
+  HomeExchange(ticket: String)
+
+  /// `GET /ui/p/<key>/home`: the home page.
+  HomePage(key: String)
+
+  /// `GET /ui/p/<key>/home/ws`: the home component's socket, with the nonce
+  /// as the socket URL's `csrf-token`.
+  HomeSocket(key: String, nonce: Option(String))
+
   /// `GET /ui/assets/<name>`, for one of the fixed asset names.
   Asset(asset: Asset)
 
@@ -78,7 +89,8 @@ pub type Asset {
 pub const max_position = 256
 
 /// Routes a `/ui` request; every route is a `GET`. The session ID is returned as the path gave it;
-/// the caller parses it as a canonical ID before using it.
+/// the caller parses it as a canonical ID before using it. The home's three
+/// routes name no session (protocol-change/065).
 ///
 /// ## Examples
 ///
@@ -103,6 +115,14 @@ pub fn route(request: Request(body)) -> Route {
           Image(key, id, ref, place)
         _, _ -> Unknown
       }
+    http.Get, ["ui", "home"] ->
+      case query(request, "ticket") {
+        Some(ticket) -> HomeExchange(ticket)
+        None -> Unknown
+      }
+    http.Get, ["ui", "p", key, "home"] -> HomePage(key)
+    http.Get, ["ui", "p", key, "home", "ws"] ->
+      HomeSocket(key, query(request, "csrf-token"))
     http.Get, ["ui", "assets", name] ->
       case name {
         _ if name == page.runtime_asset -> Asset(Runtime)
