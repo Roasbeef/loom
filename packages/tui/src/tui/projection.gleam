@@ -79,7 +79,7 @@ pub fn refresh_render_cache(before: Model, after: Model) -> Model {
     after.shared.render_revision != after.view.rendered_revision
     || tui_model.reading_history(before) != tui_model.reading_history(after)
     || before.view.width != after.view.width
-    || before.view.agent_rail_visible != after.view.agent_rail_visible
+    || layout.rail_columns(before) != layout.rail_columns(after)
     || before.shared.details_expanded != after.shared.details_expanded
     || before.view.help_open != after.view.help_open
     || before.view.notes_open != after.view.notes_open

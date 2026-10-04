@@ -1177,7 +1177,7 @@ fn follow_queue_selection(
 /// ```
 @internal
 pub fn tick_strip(model: Model) -> Model {
-  case layout.strip_height(model) > 0 {
+  case layout.strands_listed(model) {
     False -> model
     True -> {
       let #(roster, repaint) =

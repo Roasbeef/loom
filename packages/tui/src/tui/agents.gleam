@@ -44,11 +44,9 @@
 //// 5. `list_lines` draws one shared-renderer row per agent, and `render_detail`
 ////    draws the selected agent's sections with `detail_rows`.
 //// 6. `footer_lines` ends the frame with the keys the focus allows.
-//// 7. `render_rail` is separate: it draws the compact task roster and keeps
-////    the active recipient in view.
 
 import etui/buffer
-import etui/geometry.{type Rect, Fill, Length}
+import etui/geometry.{type Rect}
 import etui/span
 import etui/style
 import etui/text
@@ -313,72 +311,6 @@ pub fn next_attention(inspector: Inspector, rows: List(Row)) -> Inspector {
     Ok(row) ->
       Inspector(..inspector, selected: row.id, scroll: 0, message: None)
     Error(Nil) -> inspector
-  }
-}
-
-/// Renders the compact task roster, keeping the active recipient in view.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // agents.render_rail(buffer, area, rows, "main")
-/// ```
-pub fn render_rail(
-  buf: buffer.Buffer,
-  area: Rect,
-  rows: List(Row),
-  active: String,
-) -> buffer.Buffer {
-  let frame =
-    block.block_new()
-    |> block.with_border(block.Rounded)
-    |> block.with_colors(theme.divider, style.Default)
-    |> block.with_title_styled(
-      [
-        span.span_styled(" AGENTS ", theme.current_bold()),
-        span.span_styled("· ^O inspect ", theme.quiet_text()),
-      ],
-      block.Top,
-    )
-  let inside = block.inner(area, frame)
-  let workers = list.filter(rows, fn(row) { row.id != "advisor" })
-  let advisor = list.filter(rows, fn(row) { row.id == "advisor" })
-  let parts =
-    geometry.split_v(inside, [
-      Length(2),
-      Fill,
-      Length(case advisor {
-        [] -> 0
-        _ -> 5
-      }),
-    ])
-  let painted = block.render(buf, area, frame)
-  case parts {
-    [summary, roster, review] -> {
-      let visible_count = int.max(1, { roster.size.height - 2 } / 4)
-      let #(visible, _) =
-        selection_window(workers, row_index(workers, active), visible_count)
-      let advisor_lines = case advisor {
-        [] -> [
-          line("ADVISOR", theme.quiet_text()),
-          line("Not captured", theme.quiet_text()),
-        ]
-        _ -> roster_lines(advisor, active, review.size.width)
-      }
-      painted
-      |> paragraph.render_styled(summary, [
-        line(
-          summary_rows(rows) |> string.replace(" agents · ", " · "),
-          theme.quiet_text(),
-        ),
-      ])
-      |> paragraph.render_styled(
-        roster,
-        roster_lines(visible, active, roster.size.width),
-      )
-      |> paragraph.render_styled(review, advisor_lines)
-    }
-    _ -> painted
   }
 }
 
@@ -1409,90 +1341,6 @@ fn wrapped(
   |> list.map(fn(row) { line(row, appearance) })
 }
 
-// The rail's rows: a role heading where the role changes, then each strand's
-// name, task and state over three lines. The rail is replaced by the docked
-// rail of a later slice; until then it keeps its own shape.
-fn roster_lines(
-  rows: List(Row),
-  active: String,
-  width: Int,
-) -> List(span.Line) {
-  case rows {
-    [] -> [line("No agents captured", theme.quiet_text())]
-    _ ->
-      list.index_map(rows, fn(row, index) {
-        let focus = case row.id == active {
-          True -> "▸ "
-          False -> "  "
-        }
-        let target = case row.id == active {
-          True -> " · to"
-          False -> ""
-        }
-        let background = case row.id == active {
-          True -> theme.raised
-          False -> style.Default
-        }
-        let name = case row.id == active {
-          True -> style.new(theme.signal, background, style.bold())
-          False -> identity_style(row, background)
-        }
-        let state =
-          "  " <> status_mark(row.status) <> " " <> agent_view.label(row.status)
-        let progress =
-          " · " <> fit_tail(row.activity, width - text.cell_width(state) - 3)
-
-        // Section headings distinguish roles without reordering live rows.
-        let section = role_heading(row.id)
-        let previous =
-          list.drop(rows, index - 1)
-          |> list.first
-          |> result.map(fn(previous) { role_heading(previous.id) })
-          |> result.unwrap("")
-        let heading = case index == 0 || section != previous {
-          True -> [
-            line(section, style.new(theme.quiet, background, style.none())),
-          ]
-          False -> []
-        }
-        list.append(heading, [
-          line(
-            focus
-              <> fit_tail(row.name, width - text.cell_width(focus <> target))
-              <> target |> text.pad_right(width),
-            name,
-          ),
-          line(
-            fit("  " <> row.task, width) |> text.pad_right(width),
-            style.new(theme.paper, background, style.none()),
-          ),
-          line(
-            fit(state <> progress, width) |> text.pad_right(width),
-            status_style(row.status, background),
-          ),
-          span.line_plain(""),
-        ])
-      })
-      |> list.flatten
-  }
-}
-
-fn role_heading(id: String) -> String {
-  case id {
-    "main" -> "SESSION"
-    "advisor" -> "ADVISOR · independent review"
-    _ -> "STRANDS"
-  }
-}
-
-fn identity_style(row: Row, background: style.Color) -> style.Style {
-  let color = case row.id {
-    "advisor" -> theme.advisor
-    _ -> theme.current
-  }
-  style.new(color, background, style.bold())
-}
-
 /// The colour a status is drawn in, on a given row background
 /// (`agent_row.status_style`).
 ///
@@ -1527,16 +1375,6 @@ fn line(value: String, appearance: style.Style) -> span.Line {
 
 fn fit(value: String, width: Int) -> String {
   text.truncate(text_hygiene.single_line(value), int.max(0, width), "…")
-}
-
-// Child identities share a long prefix, so their distinguishing suffix is
-// retained. Reverse by grapheme, then truncate by terminal cell width.
-fn fit_tail(value: String, width: Int) -> String {
-  value
-  |> text_hygiene.single_line
-  |> string.reverse
-  |> text.truncate(int.max(0, width), "…")
-  |> string.reverse
 }
 
 fn row_index(rows: List(Row), selected: String) -> Int {

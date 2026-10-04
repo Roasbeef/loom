@@ -540,8 +540,10 @@ pub type View {
     inspecting_approval: Option(String),
     /// Next terminal-local attachment identity, independent of server IDs.
     next_attempt: Int,
-    /// Whether the agent rail beside the transcript is shown.
-    agent_rail_visible: Bool,
+    /// The operator's choice about the rail beside the transcript: shown,
+    /// hidden, or none, which leaves it to the terminal's width
+    /// (`tui/rail`). It is the one layout choice the layout memory keeps.
+    rail: Option(layout_memory.Rail),
     /// Toggled by an action that replaces most of the viewport, so the
     /// next paint writes every vacated cell (`render.repaint_canvas`).
     repaint_phase: Bool,
