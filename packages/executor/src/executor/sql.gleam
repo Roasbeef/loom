@@ -175,3 +175,194 @@ pub fn insert_custody_payload(
     dev.ParamBitArray(body),
   ])
 }
+
+pub fn initialize_workspace(
+  binding binding: BitArray,
+  row_limit row_limit: Int,
+  byte_limit byte_limit: Int,
+) {
+  let sql =
+    "INSERT INTO workspace_meta(id, format, binding, row_limit, byte_limit) VALUES(1, 1, ?, ?, ?)"
+  #(sql, [
+    dev.ParamBitArray(binding),
+    dev.ParamInt(row_limit),
+    dev.ParamInt(byte_limit),
+  ])
+}
+
+pub type WorkspaceMetadata {
+  WorkspaceMetadata(binding: BitArray, row_limit: Int, byte_limit: Int)
+}
+
+pub fn workspace_metadata() {
+  let sql =
+    "SELECT CAST(CASE WHEN typeof(id)='integer' AND id=1 AND typeof(format)='integer' AND format=1 AND typeof(binding)='blob' AND length(binding)<=303 THEN binding ELSE NULL END AS BLOB) AS binding,
+       CAST(CASE WHEN typeof(row_limit)='integer' THEN row_limit ELSE NULL END AS INTEGER) AS row_limit,
+       CAST(CASE WHEN typeof(byte_limit)='integer' THEN byte_limit ELSE NULL END AS INTEGER) AS byte_limit
+FROM workspace_meta LIMIT 2"
+  #(sql, [], workspace_metadata_decoder())
+}
+
+pub fn workspace_metadata_decoder() -> decode.Decoder(WorkspaceMetadata) {
+  use binding <- decode.field(0, decode.bit_array)
+  use row_limit <- decode.field(1, decode.int)
+  use byte_limit <- decode.field(2, decode.int)
+  decode.success(WorkspaceMetadata(binding:, row_limit:, byte_limit:))
+}
+
+pub type WorkspaceHeaders {
+  WorkspaceHeaders(
+    id: BitArray,
+    request_digest: BitArray,
+    request_size: Int,
+    phase: Int,
+    result_digest: BitArray,
+    result_size: Int,
+    valid: Int,
+  )
+}
+
+pub fn workspace_headers(limit limit: Int) {
+  let sql =
+    "SELECT CAST(CASE WHEN typeof(id)='blob' AND length(id)=36 THEN id ELSE NULL END AS BLOB) AS id,
+       CAST(CASE WHEN typeof(request_digest)='blob' AND length(request_digest)=32 THEN request_digest ELSE NULL END AS BLOB) AS request_digest,
+       CAST(CASE WHEN typeof(request_size)='integer' AND request_size BETWEEN 1 AND 9437184 THEN request_size ELSE NULL END AS INTEGER) AS request_size,
+       CAST(CASE WHEN typeof(phase)='integer' AND phase BETWEEN 0 AND 4 THEN phase ELSE NULL END AS INTEGER) AS phase,
+       CAST(CASE WHEN typeof(result_digest)='blob' AND length(result_digest) IN (0,32) THEN result_digest ELSE NULL END AS BLOB) AS result_digest,
+       CAST(CASE WHEN typeof(result_size)='integer' AND result_size BETWEEN 0 AND 33554432 THEN result_size ELSE NULL END AS INTEGER) AS result_size,
+       CAST(CASE WHEN typeof(request)='blob' AND typeof(result)='blob'
+         AND ((phase IN (0,1,4) AND length(request)=request_size AND length(result)=0 AND result_size=0 AND length(result_digest)=0)
+           OR (phase=2 AND length(request)=request_size AND length(result)=result_size AND result_size>0 AND length(result_digest)=32)
+           OR (phase=3 AND length(request)=0 AND length(result)=0 AND result_size>0 AND length(result_digest)=32))
+         THEN 1 ELSE 0 END AS INTEGER) AS valid
+FROM workspace_call ORDER BY id LIMIT ?"
+  #(sql, [dev.ParamInt(limit)], workspace_headers_decoder())
+}
+
+pub fn workspace_headers_decoder() -> decode.Decoder(WorkspaceHeaders) {
+  use id <- decode.field(0, decode.bit_array)
+  use request_digest <- decode.field(1, decode.bit_array)
+  use request_size <- decode.field(2, decode.int)
+  use phase <- decode.field(3, decode.int)
+  use result_digest <- decode.field(4, decode.bit_array)
+  use result_size <- decode.field(5, decode.int)
+  use valid <- decode.field(6, decode.int)
+  decode.success(WorkspaceHeaders(
+    id:,
+    request_digest:,
+    request_size:,
+    phase:,
+    result_digest:,
+    result_size:,
+    valid:,
+  ))
+}
+
+pub type WorkspaceBodies {
+  WorkspaceBodies(request: BitArray, result: BitArray)
+}
+
+pub fn workspace_bodies(id id: BitArray) {
+  let sql =
+    "SELECT CAST(CASE WHEN typeof(request)='blob' AND length(request)<=9437184 THEN request ELSE NULL END AS BLOB) AS request,
+       CAST(CASE WHEN typeof(result)='blob' AND length(result)<=33554432 THEN result ELSE NULL END AS BLOB) AS result
+FROM workspace_call WHERE id=? LIMIT 2"
+  #(sql, [dev.ParamBitArray(id)], workspace_bodies_decoder())
+}
+
+pub fn workspace_bodies_decoder() -> decode.Decoder(WorkspaceBodies) {
+  use request <- decode.field(0, decode.bit_array)
+  use result <- decode.field(1, decode.bit_array)
+  decode.success(WorkspaceBodies(request:, result:))
+}
+
+pub fn insert_workspace(
+  id id: BitArray,
+  request_digest request_digest: BitArray,
+  request_size request_size: Int,
+  request request: BitArray,
+) {
+  let sql =
+    "INSERT INTO workspace_call(id,request_digest,request_size,phase,request,result_digest,result_size,result)
+VALUES(?,?,?,0,?,X'',0,X'')"
+  #(sql, [
+    dev.ParamBitArray(id),
+    dev.ParamBitArray(request_digest),
+    dev.ParamInt(request_size),
+    dev.ParamBitArray(request),
+  ])
+}
+
+pub type ClaimWorkspace {
+  ClaimWorkspace(phase: Int)
+}
+
+pub fn claim_workspace(id id: BitArray) {
+  let sql =
+    "UPDATE workspace_call SET phase=1 WHERE id=? AND phase=0 RETURNING phase"
+  #(sql, [dev.ParamBitArray(id)], claim_workspace_decoder())
+}
+
+pub fn claim_workspace_decoder() -> decode.Decoder(ClaimWorkspace) {
+  use phase <- decode.field(0, decode.int)
+  decode.success(ClaimWorkspace(phase:))
+}
+
+pub type FinishWorkspace {
+  FinishWorkspace(phase: Int)
+}
+
+pub fn finish_workspace(
+  result_digest result_digest: BitArray,
+  result_size result_size: Int,
+  result result: BitArray,
+  id id: BitArray,
+) {
+  let sql =
+    "UPDATE workspace_call SET phase=2,result_digest=?,result_size=?,result=? WHERE id=? AND phase=1 RETURNING phase"
+  #(
+    sql,
+    [
+      dev.ParamBitArray(result_digest),
+      dev.ParamInt(result_size),
+      dev.ParamBitArray(result),
+      dev.ParamBitArray(id),
+    ],
+    finish_workspace_decoder(),
+  )
+}
+
+pub fn finish_workspace_decoder() -> decode.Decoder(FinishWorkspace) {
+  use phase <- decode.field(0, decode.int)
+  decode.success(FinishWorkspace(phase:))
+}
+
+pub type AcknowledgeWorkspace {
+  AcknowledgeWorkspace(phase: Int)
+}
+
+pub fn acknowledge_workspace(id id: BitArray) {
+  let sql =
+    "UPDATE workspace_call SET phase=3,request=X'',result=X'' WHERE id=? AND phase=2 RETURNING phase"
+  #(sql, [dev.ParamBitArray(id)], acknowledge_workspace_decoder())
+}
+
+pub fn acknowledge_workspace_decoder() -> decode.Decoder(AcknowledgeWorkspace) {
+  use phase <- decode.field(0, decode.int)
+  decode.success(AcknowledgeWorkspace(phase:))
+}
+
+pub type CancelWorkspace {
+  CancelWorkspace(phase: Int)
+}
+
+pub fn cancel_workspace(id id: BitArray) {
+  let sql =
+    "UPDATE workspace_call SET phase=4 WHERE id=? AND phase=0 RETURNING phase"
+  #(sql, [dev.ParamBitArray(id)], cancel_workspace_decoder())
+}
+
+pub fn cancel_workspace_decoder() -> decode.Decoder(CancelWorkspace) {
+  use phase <- decode.field(0, decode.int)
+  decode.success(CancelWorkspace(phase:))
+}
