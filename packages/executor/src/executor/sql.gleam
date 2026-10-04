@@ -2,6 +2,7 @@
 ////
 
 import gleam/dynamic/decode
+import gleam/option.{type Option}
 import parrot/dev
 
 pub fn initialize_custody(binding binding: BitArray, capacity capacity: Int) {
@@ -183,12 +184,29 @@ pub fn initialize_resources(
 ) {
   let sql =
     "INSERT INTO resource_meta(id,format,mode,enrollment,row_limit,byte_limit)
-VALUES(1,1,0,?,?,?)"
+VALUES(1,2,0,?,?,?)"
   #(sql, [
     dev.ParamBitArray(enrollment),
     dev.ParamInt(row_limit),
     dev.ParamInt(byte_limit),
   ])
+}
+
+pub type ResourceFormat {
+  ResourceFormat(format: Int)
+}
+
+pub fn resource_format() {
+  let sql =
+    "SELECT CAST(CASE WHEN typeof(format)='integer' AND format BETWEEN 1 AND 2
+                 THEN format ELSE NULL END AS INTEGER) AS format
+FROM resource_meta WHERE id=1 LIMIT 2"
+  #(sql, [], resource_format_decoder())
+}
+
+pub fn resource_format_decoder() -> decode.Decoder(ResourceFormat) {
+  use format <- decode.field(0, decode.int)
+  decode.success(ResourceFormat(format:))
 }
 
 pub type ResourceMetadata {
@@ -202,7 +220,7 @@ pub type ResourceMetadata {
 
 pub fn resource_metadata() {
   let sql =
-    "SELECT CAST(CASE WHEN typeof(id)='integer' AND id=1 AND typeof(format)='integer' AND format=1
+    "SELECT CAST(CASE WHEN typeof(id)='integer' AND id=1 AND typeof(format)='integer' AND format=2
                  AND typeof(enrollment)='blob' AND length(enrollment) BETWEEN 1 AND 262144
                  THEN enrollment ELSE NULL END AS BLOB) AS enrollment,
        CAST(CASE WHEN typeof(mode)='integer' AND mode IN (0,1) THEN mode ELSE NULL END AS INTEGER) AS mode,
@@ -231,6 +249,13 @@ pub type ResourceHeaders {
     phase: Int,
     ready_digest: BitArray,
     ready_size: Int,
+    native_id: BitArray,
+    ref_size: Int,
+    identity_size: Int,
+    prepared_size: Int,
+    completion_size: Int,
+    completion_digest: BitArray,
+    outer_receipt: Int,
     valid: Int,
   )
 }
@@ -246,10 +271,21 @@ pub fn resource_headers(limit limit: Int) {
        CAST(CASE WHEN typeof(phase)='integer' AND phase BETWEEN 0 AND 4 THEN phase ELSE NULL END AS INTEGER) AS phase,
        CAST(CASE WHEN typeof(ready_digest)='blob' AND length(ready_digest) IN (0,32) THEN ready_digest ELSE NULL END AS BLOB) AS ready_digest,
        CAST(CASE WHEN typeof(ready_size)='integer' AND ready_size BETWEEN 0 AND 262144 THEN ready_size ELSE NULL END AS INTEGER) AS ready_size,
+       CAST(CASE WHEN native_id IS NULL THEN X'' WHEN typeof(native_id)='blob' AND length(native_id)=36 THEN native_id ELSE NULL END AS BLOB) AS native_id,
+       CAST(CASE WHEN typeof(command_ref)='blob' AND length(command_ref)<=8192 THEN length(command_ref) ELSE NULL END AS INTEGER) AS ref_size,
+       CAST(CASE WHEN typeof(native_identity)='blob' AND length(native_identity) IN (0,106) THEN length(native_identity) ELSE NULL END AS INTEGER) AS identity_size,
+       CAST(CASE WHEN typeof(native_prepared)='blob' AND length(native_prepared)<=131072 THEN length(native_prepared) ELSE NULL END AS INTEGER) AS prepared_size,
+       CAST(CASE WHEN typeof(completion)='blob' AND length(completion)<=262144 THEN length(completion) ELSE NULL END AS INTEGER) AS completion_size,
+       CAST(CASE WHEN typeof(completion_digest)='blob' AND length(completion_digest) IN (0,32) THEN completion_digest ELSE NULL END AS BLOB) AS completion_digest,
+       CAST(CASE WHEN typeof(outer_receipt)='integer' AND outer_receipt IN (0,1) THEN outer_receipt ELSE NULL END AS INTEGER) AS outer_receipt,
        CAST(CASE WHEN typeof(input)='blob' AND length(input)=input_size
                  AND typeof(ready)='blob' AND length(ready)=ready_size
                  AND ((ready_size=0 AND length(ready_digest)=0 AND phase IN (0,1,3,4))
                    OR (ready_size>0 AND length(ready_digest)=32 AND phase IN (2,3,4)))
+                 AND ((native_id IS NULL AND length(command_ref)=0 AND length(native_identity)=0 AND length(native_prepared)=0)
+                   OR (native_id IS NOT NULL AND length(command_ref)>0 AND length(native_identity)=106 AND length(native_prepared)>0 AND ready_size>0))
+                 AND ((length(completion)=0 AND length(completion_digest)=0 AND outer_receipt=0)
+                   OR (length(completion)>0 AND length(completion_digest)=32 AND (native_id IS NOT NULL OR (ready_size=0 AND phase IN (3,4)))))
                  THEN 1 ELSE 0 END AS INTEGER) AS valid
 FROM resource_call ORDER BY id LIMIT ?"
   #(sql, [dev.ParamInt(limit)], resource_headers_decoder())
@@ -265,7 +301,14 @@ pub fn resource_headers_decoder() -> decode.Decoder(ResourceHeaders) {
   use phase <- decode.field(6, decode.int)
   use ready_digest <- decode.field(7, decode.bit_array)
   use ready_size <- decode.field(8, decode.int)
-  use valid <- decode.field(9, decode.int)
+  use native_id <- decode.field(9, decode.bit_array)
+  use ref_size <- decode.field(10, decode.int)
+  use identity_size <- decode.field(11, decode.int)
+  use prepared_size <- decode.field(12, decode.int)
+  use completion_size <- decode.field(13, decode.int)
+  use completion_digest <- decode.field(14, decode.bit_array)
+  use outer_receipt <- decode.field(15, decode.int)
+  use valid <- decode.field(16, decode.int)
   decode.success(ResourceHeaders(
     id:,
     address_size:,
@@ -276,6 +319,13 @@ pub fn resource_headers_decoder() -> decode.Decoder(ResourceHeaders) {
     phase:,
     ready_digest:,
     ready_size:,
+    native_id:,
+    ref_size:,
+    identity_size:,
+    prepared_size:,
+    completion_size:,
+    completion_digest:,
+    outer_receipt:,
     valid:,
   ))
 }
@@ -286,6 +336,10 @@ pub type ResourceBodies {
     service_header: BitArray,
     input: BitArray,
     ready: BitArray,
+    command_ref: BitArray,
+    native_identity: BitArray,
+    native_prepared: BitArray,
+    completion: BitArray,
   )
 }
 
@@ -294,7 +348,11 @@ pub fn resource_bodies(id id: BitArray) {
     "SELECT CAST(CASE WHEN typeof(address)='blob' AND length(address) BETWEEN 1 AND 8192 THEN address ELSE NULL END AS BLOB) AS address,
        CAST(CASE WHEN typeof(service_header)='blob' AND length(service_header) BETWEEN 1 AND 8192 THEN service_header ELSE NULL END AS BLOB) AS service_header,
        CAST(CASE WHEN typeof(input)='blob' AND length(input) BETWEEN 1 AND 9437184 THEN input ELSE NULL END AS BLOB) AS input,
-       CAST(CASE WHEN typeof(ready)='blob' AND length(ready)<=262144 THEN ready ELSE NULL END AS BLOB) AS ready
+       CAST(CASE WHEN typeof(ready)='blob' AND length(ready)<=262144 THEN ready ELSE NULL END AS BLOB) AS ready,
+       CAST(CASE WHEN typeof(command_ref)='blob' AND length(command_ref)<=8192 THEN command_ref ELSE NULL END AS BLOB) AS command_ref,
+       CAST(CASE WHEN typeof(native_identity)='blob' AND length(native_identity) IN (0,106) THEN native_identity ELSE NULL END AS BLOB) AS native_identity,
+       CAST(CASE WHEN typeof(native_prepared)='blob' AND length(native_prepared)<=131072 THEN native_prepared ELSE NULL END AS BLOB) AS native_prepared,
+       CAST(CASE WHEN typeof(completion)='blob' AND length(completion)<=262144 THEN completion ELSE NULL END AS BLOB) AS completion
 FROM resource_call WHERE id=? LIMIT 2"
   #(sql, [dev.ParamBitArray(id)], resource_bodies_decoder())
 }
@@ -304,7 +362,20 @@ pub fn resource_bodies_decoder() -> decode.Decoder(ResourceBodies) {
   use service_header <- decode.field(1, decode.bit_array)
   use input <- decode.field(2, decode.bit_array)
   use ready <- decode.field(3, decode.bit_array)
-  decode.success(ResourceBodies(address:, service_header:, input:, ready:))
+  use command_ref <- decode.field(4, decode.bit_array)
+  use native_identity <- decode.field(5, decode.bit_array)
+  use native_prepared <- decode.field(6, decode.bit_array)
+  use completion <- decode.field(7, decode.bit_array)
+  decode.success(ResourceBodies(
+    address:,
+    service_header:,
+    input:,
+    ready:,
+    command_ref:,
+    native_identity:,
+    native_prepared:,
+    completion:,
+  ))
 }
 
 pub type InsertResource {
@@ -447,6 +518,145 @@ FROM resource_call WHERE address=? LIMIT 2"
 pub fn resource_address_decoder() -> decode.Decoder(ResourceAddress) {
   use id <- decode.field(0, decode.bit_array)
   decode.success(ResourceAddress(id:))
+}
+
+pub type AssociateResourceNative {
+  AssociateResourceNative(native_id: Option(BitArray))
+}
+
+pub fn associate_resource_native(
+  command_ref command_ref: BitArray,
+  native_id native_id: Option(BitArray),
+  native_identity native_identity: BitArray,
+  native_prepared native_prepared: BitArray,
+  id id: BitArray,
+) {
+  let sql =
+    "UPDATE resource_call SET command_ref=?,native_id=?,native_identity=?,native_prepared=?
+WHERE id=? AND native_id IS NULL AND ready_size>0 AND length(completion)=0 RETURNING native_id"
+  #(
+    sql,
+    [
+      dev.ParamBitArray(command_ref),
+      dev.ParamNullable(option.map(native_id, fn(v) { dev.ParamBitArray(v) })),
+      dev.ParamBitArray(native_identity),
+      dev.ParamBitArray(native_prepared),
+      dev.ParamBitArray(id),
+    ],
+    associate_resource_native_decoder(),
+  )
+}
+
+pub fn associate_resource_native_decoder() -> decode.Decoder(
+  AssociateResourceNative,
+) {
+  use native_id <- decode.field(0, decode.optional(decode.bit_array))
+  decode.success(AssociateResourceNative(native_id:))
+}
+
+pub type ResourceNativeOwner {
+  ResourceNativeOwner(id: BitArray)
+}
+
+pub fn resource_native_owner(native_id native_id: Option(BitArray)) {
+  let sql =
+    "SELECT CAST(CASE WHEN typeof(id)='blob' AND length(id)=36 THEN id ELSE NULL END AS BLOB) AS id
+FROM resource_call WHERE native_id=? LIMIT 2"
+  #(
+    sql,
+    [dev.ParamNullable(option.map(native_id, fn(v) { dev.ParamBitArray(v) }))],
+    resource_native_owner_decoder(),
+  )
+}
+
+pub fn resource_native_owner_decoder() -> decode.Decoder(ResourceNativeOwner) {
+  use id <- decode.field(0, decode.bit_array)
+  decode.success(ResourceNativeOwner(id:))
+}
+
+pub type CommitResourceCompile {
+  CommitResourceCompile(completion_digest: BitArray)
+}
+
+pub fn commit_resource_compile(
+  completion_digest completion_digest: BitArray,
+  completion completion: BitArray,
+  id id: BitArray,
+) {
+  let sql =
+    "UPDATE resource_call SET completion_digest=?,completion=?
+WHERE id=? AND native_id IS NOT NULL AND length(completion)=0 RETURNING completion_digest"
+  #(
+    sql,
+    [
+      dev.ParamBitArray(completion_digest),
+      dev.ParamBitArray(completion),
+      dev.ParamBitArray(id),
+    ],
+    commit_resource_compile_decoder(),
+  )
+}
+
+pub fn commit_resource_compile_decoder() -> decode.Decoder(
+  CommitResourceCompile,
+) {
+  use completion_digest <- decode.field(0, decode.bit_array)
+  decode.success(CommitResourceCompile(completion_digest:))
+}
+
+pub type FailResourcePreparation {
+  FailResourcePreparation(completion_digest: BitArray)
+}
+
+pub fn fail_resource_preparation(
+  completion_digest completion_digest: BitArray,
+  completion completion: BitArray,
+  id id: BitArray,
+) {
+  let sql =
+    "UPDATE resource_call SET phase=3,completion_digest=?,completion=?
+WHERE id=? AND phase=1 AND ready_size=0 AND native_id IS NULL AND length(completion)=0 RETURNING completion_digest"
+  #(
+    sql,
+    [
+      dev.ParamBitArray(completion_digest),
+      dev.ParamBitArray(completion),
+      dev.ParamBitArray(id),
+    ],
+    fail_resource_preparation_decoder(),
+  )
+}
+
+pub fn fail_resource_preparation_decoder() -> decode.Decoder(
+  FailResourcePreparation,
+) {
+  use completion_digest <- decode.field(0, decode.bit_array)
+  decode.success(FailResourcePreparation(completion_digest:))
+}
+
+pub type AcknowledgeResourceCompile {
+  AcknowledgeResourceCompile(outer_receipt: Int)
+}
+
+pub fn acknowledge_resource_compile(
+  id id: BitArray,
+  completion_digest completion_digest: BitArray,
+) {
+  let sql =
+    "UPDATE resource_call SET outer_receipt=1
+WHERE id=? AND completion_digest=? AND length(completion)>0 AND outer_receipt=0 RETURNING outer_receipt"
+  #(
+    sql,
+    [dev.ParamBitArray(id), dev.ParamBitArray(completion_digest)],
+    acknowledge_resource_compile_decoder(),
+  )
+}
+
+pub fn acknowledge_resource_compile_decoder() -> decode.Decoder(
+  AcknowledgeResourceCompile,
+) {
+  use outer_receipt <- decode.field(0, decode.int)
+  decode.success(AcknowledgeResourceCompile(outer_receipt:))
 }
 
 pub fn initialize_workspace(
