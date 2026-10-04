@@ -522,3 +522,48 @@ with these forks: they define the same modules.
   "From WP-C-full": rewrite scope, the memory backend's absent
   generation counter.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
+
+## Owner remote custody (protocol 067)
+
+`storage/owner_custody` owns a separate per-session SQLite format, leaving
+conversation and catalogue schemas unchanged. Its opaque `Store` is used by
+one serialized owner custodian; the module spawns nothing and handles no
+network. `Limits` persist finite tool, child, byte and payload ceilings, and
+`Payload` validates opaque bytes without interpreting runtime outcomes.
+Named queries in `src/storage/sql/owner_custody.sql` are generated into `storage/sql`;
+`owner_custody_schema` embeds `sql/owner_custody.sql`.
+
+`admit` commits the complete tool identity, canonical arguments and exact
+outgoing request before send, reserving space for a full final outcome.
+`admit_child` commits an already reserved UUIDv7 and immutable request before
+a connection uses it; `receive_child` commits exact terminal bytes before a
+durable receipt. Compile, launch, cap ordinal and system origins are typed
+by `core/remote_tool`. Changed content conflicts and exhaustion refuses without
+eviction. Header-only size and type guards run before blob materialization;
+reservations are checked before payload reads as well as writes.
+
+`finish` commits the exact opaque final ToolOutcome before a live callback
+returns. `lookup` distinguishes final bytes, child/request-only evidence and
+collected fences; a child result never reconstructs a final report.
+`verify_commit` reads the canonical session ID and the originally reserved
+MessageEntry from actual session storage. The injected total validator receives
+`ResultReadback`, including both finalized message and typed termination. Only
+its opaque `CommittedResult` authorizes `collect`, which freezes immutable
+identity and UUID fences permanently. Broker release grants no collection
+authority. Frozen rows continue to consume bounded capacity.
+
+The owner journal is format version 2. `admit_fresh` atomically returns `Fresh`
+only when the reservation was inserted; `Retained` is never dispatch permission.
+`validate_request` compares exact immutable scope/argument bytes without creating
+missing evidence. A `cancel_child` origin fence can precede UUID allocation: its
+cancelled row has a NULL request ID, and later admission refuses that original
+origin. Cancellation after admission preserves the original UUID and request,
+and permits exact receipt readback while refusing new submission.
+
+The per-payload hard ceiling is 2 MiB for bounded encoded child output and terminal
+receipts. The total hard ceiling stays 256 MiB; runtime final ToolOutcome codecs
+keep their independent 256 KiB ceiling. Limits remain fixed across reopen. Header
+checks validate the full unused final/terminal allowance for retained rows, and
+the smaller frozen-fence formula for collected rows, before a terminal write can
+acknowledge new bytes. Version-1 journals are refused rather than silently opened
+with an incompatible cancellation schema.
