@@ -1129,6 +1129,31 @@ pub fn remembered() -> session_channel.Update {
   )
 }
 
+/// A capture of `main` holding a prompt the page's own person sent, the
+/// principal the capture's attachment holds, and an answer: what the lane
+/// draws with the reader's role beside the name.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.own_prompt()
+/// ```
+pub fn own_prompt() -> session_channel.Update {
+  capture_of(
+    [
+      item(
+        1,
+        10_000,
+        said("my own prompt", Some(message.Origin("alice", "Alice"))),
+      ),
+      item(2, 10_001, assistant([message.AssistantText("done", None)])),
+    ],
+    None,
+    [],
+    [],
+  )
+}
+
 /// A capture of `main` holding one prompt and then one successful `fs_edit`
 /// call and result per edit, each edit a path and the unified diff its result
 /// reports, which is how a page's records read when the agent has edited

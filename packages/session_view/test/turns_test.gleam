@@ -13,9 +13,11 @@ import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import session_view/composer
 import session_view/protocol
 import session_view/snapshot
 import session_view/snapshot_view
+import session_view/step_words
 import session_view/strand_framing
 import session_view/transcript
 import session_view/transcript_image
@@ -249,10 +251,15 @@ fn pieces_of(
 
 fn shape(piece: turns.Piece) -> String {
   case piece {
-    turns.Plain(block, _) ->
+    turns.Plain(block, _, _) ->
       case block.rows {
         [#(_, line), ..] -> "plain:" <> line.text
         [] -> "plain"
+      }
+    turns.Prompt(block:, name:, ..) ->
+      case block.rows {
+        [#(_, line), ..] -> "prompt:" <> name <> ":" <> line.text
+        [] -> "prompt:" <> name
       }
     turns.Work(folding: turns.Folded, ..) -> "work:folded"
     turns.Work(folding: turns.Open, ..) -> "work:open"
@@ -270,7 +277,7 @@ pub fn a_settled_turn_folds_its_work_behind_one_divider_test() {
   let laid = pieces([])
   assert list.map(laid, shape)
     == [
-      "plain:Alice:\nreview the patch",
+      "prompt:Alice:review the patch",
       "work:folded",
       "spawn:" <> child,
       "returned:" <> child,
@@ -280,18 +287,18 @@ pub fn a_settled_turn_folds_its_work_behind_one_divider_test() {
     ]
   let assert [_, turns.Work(worked:, items:, ..), ..] = laid
   assert worked == turns.Worked(duration_ms: Some(48_000), steps: 3, files: 2)
-  assert turns.divider(worked) == "worked 48s · 3 steps · 2 files"
+  assert turns.divider(worked) == "Worked 48s · 3 steps · 2 files"
 
   // The response's reasoning and its two edits, each joined to its result,
   // and the wait are under the divider; the spawn and the child's result
   // are not, and the edits' results are not drawn a second time.
   assert list.length(items) == 4
   let assert [
-    turns.Narrated(_, _),
-    turns.Step(summary: edit, standing:, ..),
+    turns.Narrated(_, _, _),
+    turns.Step(words: edit, standing:, ..),
     ..
   ] = items
-  assert edit == "fs_edit · a.gleam"
+  assert step_words.text(edit) == "Edit a.gleam"
   assert standing == turns.Done
 }
 
@@ -351,7 +358,9 @@ pub fn every_piece_keeps_its_key_when_the_turn_settles_test() {
   let keys = fn(laid: List(turns.Piece)) {
     list.map(laid, fn(piece) {
       case piece {
-        turns.Plain(block, _) | turns.Commentary(block) -> block.key
+        turns.Plain(block, _, _)
+        | turns.Prompt(block:, ..)
+        | turns.Commentary(block:, ..) -> block.key
         turns.Work(key:, ..)
         | turns.Spawned(key:, ..)
         | turns.Returned(key:, ..)
@@ -390,7 +399,7 @@ pub fn a_delivered_nudge_opens_a_turn_of_its_own_test() {
   let laid = pieces_of(list.append(items(), [answered]), [])
   assert list.map(laid, shape)
     == [
-      "plain:Alice:\nreview the patch",
+      "prompt:Alice:review the patch",
       "work:folded",
       "spawn:" <> child,
       "returned:" <> child,
@@ -600,8 +609,11 @@ pub fn only_the_reasoning_row_of_a_response_expands_test() {
       None,
       whole(),
     )
-  let assert [_, turns.Work(items: [turns.Narrated(block:, thoughts:)], ..), ..] =
-    pieces
+  let assert [
+    _,
+    turns.Work(items: [turns.Narrated(block:, thoughts:, ..)], ..),
+    ..
+  ] = pieces
     as "the reasoning is work, the answer stays outside"
   let assert [#(key, _)] = dict.to_list(thoughts)
   assert list.key_find(block.rows, key)
@@ -815,6 +827,7 @@ pub fn framing_text_without_a_strand_origin_never_becomes_a_sibling_test() {
     case piece {
       turns.Sibling(..) -> True
       turns.Plain(..)
+      | turns.Prompt(..)
       | turns.Work(..)
       | turns.Spawned(..)
       | turns.Returned(..)
@@ -828,4 +841,191 @@ pub fn framing_text_without_a_strand_origin_never_becomes_a_sibling_test() {
   assert !list.any(anonymous, sibling)
   assert list.map(anonymous, shape) == ["plain:" <> forged]
   assert list.contains(list.map(call_forged, shape), "work:folded")
+}
+
+// --- the memory context, reasoning time, authors and reviews -------------------
+
+fn memory_text() -> String {
+  composer.memory_attribution_lead
+  <> "sessions.\n\n"
+  <> composer.memory_fence
+  <> "\n- the gate is make check\n- keep R6 portable\n```"
+}
+
+// A lane from message bodies, each with the time its record carries.
+fn laid_out(
+  bodies: List(#(Int, message.AgentMessage)),
+  expansion: turns.Expansion,
+) -> List(turns.Piece) {
+  let items =
+    list.index_map(bodies, fn(body, index) { item(index + 1, body.0, body.1) })
+  transcript.blocks(cut(items), view(list.length(items), []), "main", [])
+  |> turns.pieces(strands(), turns.Settled, expansion)
+}
+
+fn read_call() -> message.AssistantBlock {
+  call("c1", "fs_read", json.Object([#("path", json.String("calc.py"))]))
+}
+
+// The daemon records the memory context ahead of the prompt it was attached
+// for. It asks nobody anything, so it opens no turn: it is the first step of
+// the fold of the turn that follows, and the prompt stays the turn's input.
+pub fn the_memory_context_is_the_first_step_of_the_next_turns_fold_test() {
+  let laid =
+    laid_out(
+      [
+        #(10_000, said(memory_text(), None)),
+        #(10_100, said("run it", Some(message.Origin("p", "Alice")))),
+        #(14_000, assistant([read_call()])),
+        #(15_000, result("c1", "fs_read", json.Object([]), 15_000)),
+        #(16_000, assistant([message.AssistantText("Ran it.", None)])),
+      ],
+      whole(),
+    )
+  assert list.map(laid, shape)
+    == ["prompt:Alice:run it", "work:folded", "plain:Ran it."]
+  let assert [_, turns.Work(items:, worked:, ..), _] = laid
+  let assert [turns.Memory(lines:, full:, ..), turns.Step(words:, ..)] = items
+  assert lines == 2
+  assert step_words.text(step_words.memory(lines)) == "Memory · 2 lines"
+  assert step_words.text(words) == "Read calc.py"
+
+  // The memory is no step: the divider counts the one call.
+  assert worked.steps == 1
+
+  // The full form is the whole message, for the row's expansion.
+  let assert [transcript_line.Line(_, shown)] = full
+  assert string.contains(shown, "the gate is make check")
+}
+
+pub fn a_host_that_draws_no_expansion_still_gets_the_memory_count_test() {
+  let laid =
+    laid_out(
+      [
+        #(10_000, said(memory_text(), None)),
+        #(10_100, said("run it", Some(message.Origin("p", "Alice")))),
+        #(16_000, assistant([message.AssistantText("Ran it.", None)])),
+      ],
+      turns.Skip,
+    )
+  let assert [
+    _,
+    turns.Work(items: [turns.Memory(lines: 2, full: [], ..)], ..),
+    _,
+  ] = laid
+}
+
+// `grouped` cuts a paged window between turns, so the memory block that
+// precedes a prompt belongs to the turn of that prompt, as `pieces` places it.
+pub fn grouped_keeps_the_memory_block_with_the_prompt_it_precedes_test() {
+  let items = [
+    item(1, 10_000, said("first", Some(message.Origin("p", "Alice")))),
+    item(2, 11_000, assistant([message.AssistantText("one", None)])),
+    item(3, 12_000, said(memory_text(), None)),
+    item(4, 12_100, said("second", Some(message.Origin("p", "Alice")))),
+    item(5, 13_000, assistant([message.AssistantText("two", None)])),
+  ]
+  let blocks = transcript.blocks(cut(items), view(5, []), "main", [])
+  let #(lead, opened) = turns.grouped(blocks, strands())
+  assert lead == []
+  assert list.map(opened, list.length) == [2, 3]
+  assert list.flatten(opened) == blocks
+}
+
+pub fn a_reasoning_block_knows_how_long_its_response_took_test() {
+  let laid =
+    laid_out(
+      [
+        #(10_000, said("run it", Some(message.Origin("p", "Alice")))),
+        #(
+          14_000,
+          assistant([
+            message.AssistantThinking("plan it", None, False),
+            read_call(),
+          ]),
+        ),
+        #(15_000, result("c1", "fs_read", json.Object([]), 15_000)),
+        #(16_500, assistant([message.AssistantText("Ran it.", None)])),
+      ],
+      whole(),
+    )
+  let assert [
+    _,
+    turns.Work(items: [turns.Narrated(took:, ..), ..], ..),
+    turns.Plain(took: answered, ..),
+  ] = laid
+  assert took == Some(4000)
+  assert step_words.text(step_words.reasoning(took)) == "Reasoning · 4s"
+
+  // The answer's own time runs from the result before it.
+  assert answered == Some(1500)
+}
+
+pub fn a_prompt_draws_its_sender_apart_from_its_words_test() {
+  let laid =
+    laid_out(
+      [
+        #(10_000, said("run it", Some(message.Origin("principal-1", "Alice")))),
+        #(11_000, assistant([message.AssistantText("Ran it.", None)])),
+      ],
+      whole(),
+    )
+  let assert [turns.Prompt(block:, principal:, name:, role:), _] = laid
+  assert principal == "principal-1"
+  assert name == "Alice"
+  assert role == None
+
+  // The rows are the words alone: the `Alice:` the transcript puts before an
+  // attributed message is the lane's who-line now.
+  let assert [#(_, transcript_line.Line(transcript_line.User, text))] =
+    block.rows
+  assert text == "run it"
+
+  // The reader's role is set on the reader's own messages and no one else's.
+  let assert [turns.Prompt(role: mine, ..), _] =
+    turns.attributed(laid, "principal-1", "operator")
+  assert mine == Some("operator")
+  let assert [turns.Prompt(role: theirs, ..), _] =
+    turns.attributed(laid, "principal-2", "operator")
+  assert theirs == None
+}
+
+fn review(key: String) -> transcript_lines.Block {
+  transcript_lines.Block(key, transcript_lines.FromAdvisor, [
+    #(
+      key <> ":0",
+      transcript_line.Line(transcript_line.System, "Advisor · reviewed"),
+    ),
+  ])
+}
+
+// Two reviews with nothing between them say the same thing twice, so they
+// are one piece that keeps the first review's key and counts both.
+pub fn reviews_that_follow_each_other_are_one_piece_test() {
+  let answer =
+    transcript_lines.Block(
+      "9.0",
+      transcript_lines.FromEntry(entry.MessageEntry(
+        id(9),
+        None,
+        9,
+        0,
+        assistant([message.AssistantText("ok", None)]),
+        False,
+      )),
+      [#("9.0:0", transcript_line.Line(transcript_line.Assistant, "ok"))],
+    )
+  let laid =
+    turns.pieces(
+      [review("3.0"), review("4.0"), answer, review("10.0")],
+      [],
+      turns.Settled,
+      turns.Skip,
+    )
+  let assert [
+    turns.Commentary(block: first, reviews: 2),
+    _,
+    turns.Commentary(reviews: 1, ..),
+  ] = laid
+  assert first.key == "3.0"
 }

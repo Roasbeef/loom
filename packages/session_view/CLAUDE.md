@@ -167,14 +167,22 @@ for a host with no surfaces.
   is parsed.
 
 - `turns.pieces(blocks, strands, latest)`: one strand's lane as turns for a
-  host that draws more than rows (the web view): `Plain` blocks, one `Work`
-  divider per turn (`Folded`, or `Open` while the strand runs or waits on an
-  approval; its `Worked` figures come from the records), `Spawned` and
+  host that draws more than rows (the web view): `Plain` blocks, `Prompt` for a
+  person's message (the sender is a field, not a `name:` line of the text;
+  `turns.attributed` sets the reader's own role on the reader's messages), one
+  `Work` divider per turn (`Folded`, or `Open` while the strand runs or waits
+  on an approval; its `Worked` figures come from the records). The fold's
+  items are `Narrated` blocks (each with `took`, the response's time, which a
+  reasoning row reads), `Step`s (`words` from `step_words.of_call`) and
+  `Memory`, the memory context the daemon recorded ahead of a prompt: it is no
+  input, `split` and `grouped` hold it for the next input, and it is the first
+  item of that turn's fold. `Spawned` and
   `Returned` rows for sub-agents, `Nudged` for a delivered advisor frame,
   `Peer` for another session's message, `Sibling` for a message a strand of
   the same session sent (stored origin `StrandOrigin`, framing removed by
   `strand_framing.strip`, a brief's result-contract trailer kept apart),
-  `Missed` for a cache notice and `Commentary` for the advisor's board. It reads
+  `Missed` for a cache notice and `Commentary` for the advisor's board (reviews that
+  stand next to each other are one piece with a `reviews` count). It reads
   `transcript_lines.keyed_record_blocks` (`transcript.blocks`), which tags
   each block with its `Source`. `turns.grouped(blocks, strands)` splits
   the same blocks at their inputs, the lead before the first input and
@@ -188,6 +196,26 @@ for a host with no surfaces.
   `thoughts` by row key; both are empty when the expansion equals the compact
   rows, so no piece holds uncapped text. `grouped` skips them. The terminal
   does not call `turns`.
+- `step_words`: how one step of a turn reads, shared by every host that
+  draws a step. `of_call(call)` turns a tool's name, arguments and (for an
+  edit) its diff into `Words(verb, subject, change)`: `Read calc.py`,
+  `Edit calc.py +3 −1`, `Ran python3 -m unittest`, `Spawned scan`. A subject
+  is tagged `Mono` (a path or command), `Prose` (a name or purpose), `Figure`
+  (a count or a time) or `Unnamed`, which only says which face a host uses;
+  every subject is session text and is drawn as a text node. A tool the table
+  does not list keeps its own name. `memory`, `reasoning`, `worked`,
+  `returned` and `duration` word the rows that are not tool calls, `text`
+  flattens any `Words` to one line, and `first_call(program)` names the first
+  capability a `code_mode` program calls (`fs.read calc.py`) by reading its
+  text. That reader stands in for the trace view's fold of a program's calls.
+- `diff_view`: a unified diff read into lines a host can colour. `parse(diff)`
+  splits on newlines (a CRLF's `\r` is dropped), keeps at most `max_lines`
+  (400) and returns `Diff(lines, cut)`; `of_lines` reads lines a host already
+  bounded. Each `Line(kind, old, new, text)` has a closed `Kind` (`FileHeader`
+  before the first hunk only, `Hunk`, `Added`, `Removed`, `Context`,
+  `NoNewline`) and, inside a hunk, the line numbers the header's counters give.
+  An added, removed or context line's text has its marker removed. The text is
+  session text; the web view draws it as a text node.
 - `transcript_image`: the images a lane row carries, which the rows draw as
   `[image <type>]` text. `Image(mime_type, data)` holds the entry's own base64
   text (nothing is copied). `of_entry`, `of_message`, `of_outcome` and

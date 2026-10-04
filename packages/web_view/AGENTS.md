@@ -249,37 +249,62 @@ page keys and nonces, and the relay into the session's gateway.
   cost as one total) and the tools the strand ran lately. The pane carries the
   class `detailed`, which hides the title and the list in the stylesheet; the
   list stays in the page because the relay presses a card.
-- **Expanding a row.** The terminal's `Ctrl+g` shows a call's whole program
-  and result and a reasoning block's whole text. The page holds the same
-  records, and `component.relaned` asks `turns.pieces` for the expansions
-  (`turns.Expand(expansion.capped)`) when it projects a capture, so they are
-  built once per projection and never on a render. A `Step` carries its
-  `full` rows and a `Plain` or `Narrated` piece carries `thoughts`, the full
-  form of each reasoning row by the row's key, both already cut. `lane.view`
-  draws a row that has more to show as one `<loom-expand>` (`web_client`): the
-  compact rows in a child with `slot="compact"`, the full rows in one with
-  `slot="full"`. For a call that is the rows under its summary; for a
-  response it is only the reasoning row, so an answer beside the reasoning is
-  drawn once. A row whose full form equals the compact one (a call whose
-  result is already shown, a one-line reasoning block) has none. The rows are
-  the terminal's own builders (`transcript_lines.expanded_call_lines`, and
-  `assistant_block_lines` at expanded extent). No event, handler or socket
-  read is involved: the text is already in the model, so choosing which form
-  shows is the browser's, as a fold's open state is, and it works on an
-  observer's page. Both forms are in every viewer's document, so
-  `view/expansion.capped` cuts the full rows to `max_lines` (300) lines and
-  `max_characters` (8,000) characters per row and ends a cut row with one
-  line saying so. The rows are memoized per line as the compact ones are.
-  Session text is drawn as text nodes: a program is a Markdown code block,
-  so a `<pre><code>` holding text.
+- **Rows of a turn's work.** A turn's fold holds a column of steps, each drawn
+  by `view/fold_row` as one line and a body behind it. The line is a glyph for
+  how the call stands (the word for it stays in the row, visually hidden), the
+  verb, what it acted on and, for an edit, `+n −m`: the words are
+  `session_view/step_words` (`Read calc.py`, `Edit calc.py +3 −1`, `Ran
+  python3 -m unittest`, `Memory · 4 lines`, `Reasoning · 4s`), shared with the
+  terminal, and a subject's tag (`Mono`, `Prose`, `Figure`) picks its face and
+  never its text. The terminal's `Ctrl+g` shows a call's whole program and
+  result and a reasoning block's whole text, and the page holds the same
+  records: `component.relaned` asks `turns.pieces` for the expansions
+  (`turns.Expand(expansion.capped)`), so they are built once per projection and
+  never on a render. A `Step` carries its `full` rows, a `Memory` its message
+  and a `Plain` or `Narrated` piece carries `thoughts`, the full form of each
+  reasoning row by the row's key, all already cut. `fold_row` draws a row that
+  has a body as one `<loom-expand>` (`web_client`): the line in a child with
+  `slot="head"` and the body in one with `slot="body"`. The element draws the
+  one chevron, so a row has one and no per-step "Expand" button; a row with no
+  body (a call whose result adds nothing) draws no element and no chevron. The
+  body is the full form when the page holds one and the rows the transcript
+  draws under the call otherwise. A reasoning row's time is `Narrated.took`,
+  from the record before the response to its own. No event, handler or socket
+  read is involved: the text is already in the model, so opening a row is the
+  browser's, as a fold's open state is, and it works on an observer's page. The
+  bodies are in every viewer's document, so `view/expansion.capped` cuts the
+  full rows to `max_lines` (300) lines and `max_characters` (8,000) characters
+  per row and ends a cut row with one line saying so. The rows are memoized per
+  line (`fold_row.line_row`). Session text is drawn as text nodes: a program is
+  a Markdown code block, so a `<pre><code>` holding text.
+- **Diffs.** Every diff the page draws goes through `view/diff`: the opened
+  edit step (a `ToolPatch` line, drawn by `lane.line_element`) and the Changes
+  tab. `session_view/diff_view` reads the text into lines of a closed kind and
+  `view/diff` draws each as its own row: the old and new numbers in a quiet
+  gutter, the sign, and the text in a span, all text nodes. Added lines are
+  green with a green `+`, removed red with a red `−`, a hunk header sits in a
+  quiet band. The box scrolls sideways and never wraps. A diff is cut at
+  `diff_view.max_lines` with `n more lines not shown`.
+- **Prompts, spawns, results and reviews.** A person's message is
+  `turns.Prompt`: `lane` draws its sender as a line of its own (`<span
+  class="who-name">Owner</span> · operator`) above the words in a bubble. The
+  name is session text; the role is the page's own, set by `turns.attributed`
+  in `component.relaned` for the messages whose principal is the attachment's,
+  and absent for anyone else. A spawn is a line (`Spawned <tag> · purpose`)
+  and a result is a line naming the child (`<tag> finished`) with the first
+  line of the report, opened to the whole report when it runs longer
+  (`fold_row.reading`); neither is a card. Reviews of the advisor that follow
+  each other are one `turns.Commentary` that counts them, drawn `advisor · 2
+  reviews`.
 - **The live region.** `component.live(model)` turns the shared record's
   streams for the followed strand (`transcript_lines.display_streams`),
   `Shared.summaries` and the generation clock into `live.Row`s, and
   `lane.view(pieces, live, top, load, replies)` draws them through `view/live` as the
   lane's last keyed entry, keyed `live`. `live.Thinking(progress, elapsed_ms,
-  headline)` is the reasoning row: `12 lines · <loom-elapsed offset> so far`,
-  or with a headline the count and clock and the headline as text beneath
-  it; the thinking is not drawn. `live.Answer(line)` is the answer so far,
+  headline)` is the reasoning row: `Reasoning · <loom-elapsed offset>`, with the
+  line count as the row's `title` and the headline as text beneath it when one
+  has been pushed; the thinking is not drawn. The region is a row of the
+  timeline with its own dot, which pulses while the region exists. `live.Answer(line)` is the answer so far,
   drawn by the lane's own assistant line. A tool call being composed is not
   drawn. `View.streams` holds what the page last drew and is maintained by
   `component.streamed`, which follows the record's streams and, when a
@@ -586,7 +611,7 @@ page keys and nonces, and the relay into the session's gateway.
   record the page holds. The summary labels' read is not sent.
 - The page renders `web_client`'s custom elements by tag:
   `<loom-elapsed offset>` in a strand's own view and in the live reasoning row, `<loom-fold>` around a settled
-  turn's work, `<loom-expand>` around a row with more to show, and `<loom-follow>` around the lane and `<loom-shell>` around the page. The stylesheet pins the
+  turn's work, `<loom-expand>` around a step or reasoning row with a body, and `<loom-follow>` around the lane and `<loom-shell>` around the page. The stylesheet pins the
   page's frame (`<loom-shell>`: the top bar across the full width, and under
   it the sessions' sidebar, the centre and the strand panel; the dock or the
   observer's bar at the bottom of the centre, the page itself never
