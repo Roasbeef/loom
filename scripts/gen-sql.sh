@@ -27,6 +27,8 @@
 #                        catalogue_logins_schema.gleam. Each catalogue version
 #                        after the first has its own migration schema;
 #                        runtime catalogue creation never embeds session tables.
+#   packages/executor — sql/schema.sql and src/executor/sql/custody.sql
+#                     -> src/executor/sql.gleam and custody_schema.gleam.
 #
 # Known parrot 2.3.0 constraints (discovered by the WP-K pilot; keep in
 # mind when editing the .sql files):
@@ -65,6 +67,10 @@ gen_package() {
 
 gen_package events
 gen_package storage
+gen_package executor
+python3 scripts/embed-sql-schema.py packages/executor/sql/schema.sql \
+  packages/executor/src/executor/custody_schema.gleam
+gleam format packages/executor/src/executor/custody_schema.gleam
 python3 scripts/embed-sql-schema.py packages/storage/sql/schema.sql \
   packages/storage/src/storage/sql_schema.gleam
 python3 scripts/embed-sql-schema.py packages/storage/sql/session.sql \
