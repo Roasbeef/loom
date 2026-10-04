@@ -1,5 +1,21 @@
 # tools
 
+## Semantic workspace contract
+
+`workspace` defines closed read, write, anchored-edit, listing, search, metadata,
+Git-observation, guidance and initialization requests for protocol 067. It reuses
+the existing fs/hashline/search result types. `Invocation` retains the exact
+workspace scope, operation, step, tool or system origin and caller-reserved
+request UUID. The owner must persist that link before any possible remote send;
+the constructor itself supplies no durability or authorization.
+
+This module defines vocabulary, not a network filesystem or service. The physical
+service must validate bounds, registration epochs, symlinks and protected paths,
+then execute an entire semantic operation beside the checkout. A lost mutation
+reply remains an unknown outcome under the original invocation. `response_matches`
+rejects a response for a different operation or read/Git projection. Local tools
+continue to use their existing handlers until assembly selects a remote binding.
+
 ## LSP observer callback ownership
 
 The retired top-level LSP constructors are removed. `lsp.diagnostics_observer`

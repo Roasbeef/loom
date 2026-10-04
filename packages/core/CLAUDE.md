@@ -1,5 +1,17 @@
 # core
 
+## Workspace identity
+
+`workspace` supplies the pure local-or-registered selection and binding types
+for protocol 067. A registered scope contains the existing session ID, executor
+and workspace labels, and both authority epochs. Smart constructors bound labels,
+epochs, relative paths and external step names; they neither resolve a host nor
+grant access. Local paths retain their existing semantics. Remote paths use
+forward slashes, reject traversal and host-dependent separators, and name the
+root explicitly with `.`. The executor checks filesystem containment and current
+authority at use. `scope_from_fields` validates the executor identity module's
+projected fields without adding an executor dependency or I/O to core.
+
 ## Purpose
 
 The vocabulary every other package shares: opaque ids, the write-once
