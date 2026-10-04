@@ -132,6 +132,16 @@ pub fn usage_footer_keeps_input_output_cache_and_cost_visible_test() {
       cost: message.UsageCost(0.0, 0.0, 0.0, 0.0, 5.674667835999998),
     )
   assert string.contains(transcript_lines.usage_summary(measured), "est $5.67")
+
+  // Tokens were spent and none was priced: the figure is unknown, not zero.
+  let unpriced =
+    message.Usage(..usage, cost: message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0))
+  assert transcript_lines.cost_words(unpriced) == "est —"
+  assert string.contains(transcript_lines.usage_summary(unpriced), "est — ·")
+
+  // Nothing spent yet is a true zero.
+  let fresh = message.Usage(..unpriced, total_tokens: 0)
+  assert transcript_lines.cost_words(fresh) == "est $0.00"
 }
 
 pub fn elapsed_label_reads_like_a_clock_test() {
