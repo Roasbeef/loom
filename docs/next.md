@@ -1,21 +1,41 @@
 # Current handoff
 
-## Distributed runtime design (issue #697)
+## Distributed runtime foundations (issue #697)
 
-The proposed [user journeys and ownership design](design-notes/distributed-runtime.md)
-separates existing multiplayer access from remote execution and later clustered
-ownership. The first recommendation is executor-resident workspaces with a
-typed remote workspace service, without a shared POSIX filesystem. Session
-content stays with the owning orchestrator; Khepri is a candidate for small
-cluster metadata after a compatibility spike. No distributed runtime or new
-wrapper library is implemented by these notes.
+The [user journeys and ownership design](design-notes/distributed-runtime.md)
+and [API and delivery plan](design-notes/distributed-runtime-api.md) separate
+existing multiplayer access from remote execution and later clustered
+ownership. Workspaces stay on registered executors; session SQLite stays with
+the owning orchestrator. The first remote adapter uses typed workspace
+operations, without a shared POSIX filesystem. Khepri remains a candidate for
+small cluster metadata after a compatibility spike; no wrapper dependency has
+been selected.
 
-The companion [API and delivery plan](design-notes/distributed-runtime-api.md)
-records correct-by-construction boundaries, Loom style/lint requirements and
-separate PlusCal, P and Lean responsibilities. It identifies independent work
-packages for execution after contract review. Phone/laptop screen switching
-uses existing multiplayer; moving session ownership or workspace contents is
-a different operation.
+The first implementation wave adds validated remote identities and a bounded
+pure admission reducer under `packages/executor/src/executor/remote/`.
+[Protocol 066](../protocol-change/066-distributed-runtime-foundations.md)
+records the host obligations: serialize and persist before acknowledgement or
+launch, preserve uncertain launch intent, and retain replay evidence until
+native retirement and durable owner receipt are established. A request refused
+before launch has its own phase and cannot be confused with authorized work.
+The shipped local executor is unchanged; these modules do not enable remote
+execution.
+
+The [PlusCal ownership model](../protocol/models/distributed-authority/README.md)
+and [P execution model](../protocol/models/remote-execution/README.md) have
+separate bounded runners, reachability controls and mutations. Run both local
+runners: the existing generic `make model-check` discovers P projects but does
+not run TLC or the stricter model-local mutation gates. A model pass is not a
+proof of a durable adapter, TLS transport or kernel cleanup. Lean remains
+reserved for a small settled invariant with a maintained implementation bridge.
+
+Next, implement and test the serialized durable executor journal and its
+native adapter against these contracts, then authenticated transport and
+executor-resident workspace operations. Ordinary tools, code mode and LSP
+must all observe the same remote checkout before the first usable remote
+execution phase passes. Scheduler placement, cluster metadata and planned
+session ownership movement are later slices. Phone/laptop screen switching
+continues to use existing multiplayer.
 
 ## Executor service (issue #696)
 
