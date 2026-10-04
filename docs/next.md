@@ -152,12 +152,23 @@ gates pass 354 code-mode, 2,749 client and 158 core tests. The compiling
 origin-drop mutation fails the three intended production-path assertions. See
 [the provenance review](review/distributed-command-provenance.md).
 
-The clean Linux run at `88117f7b873a` passed five lanes, release verification and
-the skip census; its fast lane exposed a poisoned-journal test race. The
-reviewed test-only repair passes all 17 workspace service tests in that Linux
-image. This remains a targeted repair result, not a full clean Linux signoff.
-Next are admitted nested capability provenance and SQL-backed exact service and
-command-offer custody, followed by actual registered physical assembly.
+The clean Linux run at `88117f7b873a` exposed a poisoned-journal test race.
+After the reviewed repair, the fresh containerized Linux signoff at
+`4b8b57e934bd` passed all six lanes, release verification and the skip census
+in 1,277 seconds. The command exited zero; no undeclared test was skipped.
+This verifies the stack through managed command provenance, before the nested
+capability slice below. SQL-backed exact service and command-offer custody and
+registered physical assembly remain ahead of separate-host product acceptance.
+
+Admitted nested native capabilities now preserve the original ToolKey and
+per-capability ordinal in both satellite host modes. Derivation follows routing
+and both admission ceilings, so refused calls consume no child ordinal. The
+full code-mode suite passed 360 tests; root independently passed six focused
+controls, the 2,749-test client gate, lint and documentation checks. Fifteen
+existing client setup skips remain explicit. The independent review found no
+actionable findings, and a compiling origin-drop mutation failed four intended
+Dispatcher assertions. See the [capability provenance review](review/distributed-capability-provenance.md).
+This still precedes remote command custody and physical service assembly.
 
 The product P and Channel PlusCal models now cover exact command offers,
 resource/launch uncertainty, separate native/outer receipts and final-consumer
