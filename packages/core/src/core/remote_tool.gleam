@@ -26,6 +26,16 @@ pub opaque type ToolKey {
   )
 }
 
+/// Separates semantic effects from native commands for one admitted capability.
+/// The caller derives this purpose after router admission, never from peer data.
+pub type CapabilityPurpose {
+  /// A whole workspace operation with its own retained completion.
+  SemanticWorkspace
+
+  /// A native command whose exact cleared envelope has independent custody.
+  NativeCommand
+}
+
 /// A child invocation's role, independent of connection generations.
 pub type ChildRole {
   /// Physical preparation and compilation for this tool.
@@ -34,7 +44,24 @@ pub type ChildRole {
   /// Satellite or native launch for this tool.
   Launch
 
-  /// One nested capability invocation, numbered by the admitted program.
+  /// The native build command beneath an outer Compile service request.
+  CompileCommand
+
+  /// The native satellite command beneath an outer Launch service request.
+  SatelliteCommand
+
+  /// A newly admitted capability, addressed by its complete logical tuple.
+  /// Equal ordinals from different capabilities must never share a row.
+  AdmittedCapability(
+    /// The bounded name from the trusted admitted router request.
+    name: String,
+    /// The existing ordinal within this capability, not a global counter.
+    ordinal: Int,
+    /// The distinct effect whose immutable payload occupies the child row.
+    purpose: CapabilityPurpose,
+  )
+
+  /// A legacy capability address, retained for existing durable evidence.
   Capability(ordinal: Int)
 
   /// One semantic workspace invocation, disjoint from physical execution roles.
@@ -183,8 +210,14 @@ pub fn tool_child(
   role: ChildRole,
 ) -> Result(ChildOrigin, String) {
   case role {
-    Compile | Launch -> Ok(ToolChild(key:, role:))
+    Compile | Launch | CompileCommand | SatelliteCommand ->
+      Ok(ToolChild(key:, role:))
     Capability(ordinal) | Workspace(ordinal) -> {
+      use Nil <- result.try(bounded_ordinal(ordinal))
+      Ok(ToolChild(key:, role:))
+    }
+    AdmittedCapability(name, ordinal, _) -> {
+      use Nil <- result.try(bounded_name(name))
       use Nil <- result.try(bounded_ordinal(ordinal))
       Ok(ToolChild(key:, role:))
     }
@@ -256,6 +289,22 @@ pub fn child_address(origin: ChildOrigin) -> String {
   let role = case origin {
     ToolChild(role: Compile, ..) -> json.Array([json.String("compile")])
     ToolChild(role: Launch, ..) -> json.Array([json.String("launch")])
+    ToolChild(role: CompileCommand, ..) ->
+      json.Array([json.String("compile_command")])
+    ToolChild(role: SatelliteCommand, ..) ->
+      json.Array([json.String("satellite_command")])
+    ToolChild(role: AdmittedCapability(name, ordinal, purpose), ..) -> {
+      let purpose = case purpose {
+        SemanticWorkspace -> "workspace"
+        NativeCommand -> "native"
+      }
+      json.Array([
+        json.String("admitted_cap"),
+        json.String(name),
+        json.Int(ordinal),
+        json.String(purpose),
+      ])
+    }
     ToolChild(role: Capability(ordinal), ..) ->
       json.Array([json.String("cap"), json.Int(ordinal)])
     ToolChild(role: Workspace(ordinal), ..) ->
