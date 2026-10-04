@@ -15,6 +15,14 @@
 //// Transcript text must never reach this region, and no attribute here may
 //// be built from it.
 ////
+//// The location is two spans, the workspace's path and then the session's
+//// name, so a link can replace the first when the app has a home page to
+//// return to. The path is shown in full with the owner's home directory
+//// written as `~`, and is left out when it is only the name again.
+////
+//// The status is a pill whose colour and dot follow a `Tone` the component
+//// chooses from the connection, so the words and the colour cannot disagree.
+////
 //// The ended page's notice is the bar's last child, so a page with no
 //// session says why without moving any region after it. The stylesheet
 //// wraps it onto a row of its own beneath the figures.
@@ -24,21 +32,34 @@
 //// page out, and a module the component imports cannot import the
 //// component back.
 
-import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/result
 import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
+
+/// How the status pill is coloured: the connection is up, is being made, or
+/// has ended. The component maps its own status onto one, so the colour is
+/// never derived from the status words.
+pub type Tone {
+  /// The page is connected: a green pill with a dot.
+  Live
+
+  /// The page is connecting: an amber pill.
+  Pending
+
+  /// The page has ended: a red pill.
+  Closed
+}
 
 /// The page's top bar: the brand, the workspace and name that locate the
 /// session, the connection's status, and the context and cost figures.
 ///
 /// The name is the catalogue's label, or the session's identity shortened
 /// to its first eight characters when it has none; the whole identity is
-/// the heading's `title`. The workspace is drawn as its last path segment,
-/// with the whole path in a `title`. Both are text nodes and attribute
+/// the heading's `title`. The workspace is drawn as its whole path with the
+/// home directory written as `~` (`shorten_path`), and is omitted when it
+/// equals the name's first word; the whole path is in a `title`. Both are text nodes and attribute
 /// values that Lustre escapes. The catalogue's fields are written by the
 /// owner and the host, never by the session's agent, and a `title` is
 /// inert, so neither needs the stricter handling transcript text gets.
@@ -53,13 +74,14 @@ import lustre/element/html
 /// ## Examples
 ///
 /// ```gleam
-/// // heading.view("0192ab34cd", Some("docs"), Some("/src/loom"), "connected", "ctx ~41%", "est $0.04", element.none())
+/// // heading.view("0192ab34cd", Some("docs"), Some("/src/loom"), "connected", heading.Live, "ctx ~41%", "est $0.04", element.none())
 /// ```
 pub fn view(
   session_id session_id: String,
   name name: Option(String),
   workspace workspace: Option(String),
   status status: String,
+  tone tone: Tone,
   context context: String,
   cost cost: String,
   notice notice: Element(message),
@@ -68,21 +90,39 @@ pub fn view(
     [attribute.class("session-head"), attribute.attribute("slot", "bar")],
     [
       html.span([attribute.class("brand")], [html.text("Loom")]),
-      workspace_element(workspace),
+      workspace_element(workspace, session_name(session_id, name)),
       html.h1([attribute.title(session_id)], [
         html.text(session_name(session_id, name)),
       ]),
-      html.p([attribute.class("status"), attribute.role("status")], [
-        html.text(status),
-      ]),
+      html.p(
+        [
+          attribute.class("status"),
+          attribute.class("pill"),
+          attribute.class(tone_class(tone)),
+          attribute.role("status"),
+        ],
+        [html.text(status)],
+      ),
       html.span([attribute.class("figures")], [
-        html.span([attribute.class("figure")], [html.text(context)]),
         html.span(
           [
             attribute.class("figure"),
-            attribute.title("Estimated cost of the session, across strands"),
+            attribute.title(case string.ends_with(context, " —") {
+              True -> "No turn yet on the strand shown"
+              False -> "Estimated context use of the strand shown"
+            }),
           ],
-          [html.text("session " <> cost)],
+          figure_words(context),
+        ),
+        html.span(
+          [
+            attribute.class("figure"),
+            attribute.title(case string.ends_with(cost, " —") {
+              True -> "No priced usage yet"
+              False -> "Estimated cost of the session, across strands"
+            }),
+          ],
+          figure_words(cost),
         ),
       ]),
       notice,
@@ -108,22 +148,89 @@ pub fn session_name(session_id: String, name: Option(String)) -> String {
   }
 }
 
-// The workspace's last path segment, or nothing when it is unknown. The
-// bar keeps the same children either way, so the status line keeps its
-// place in the tree.
-fn workspace_element(workspace: Option(String)) -> Element(message) {
-  case workspace {
-    Some("") | None -> element.none()
-    Some(workspace) ->
-      html.span([attribute.class("workspace"), attribute.title(workspace)], [
-        html.text(basename(workspace)),
-      ])
+/// The class a tone gives the status pill, a complete literal so Tailwind
+/// finds it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert heading.tone_class(heading.Live) == "online"
+/// ```
+pub fn tone_class(tone: Tone) -> String {
+  case tone {
+    Live -> "online"
+    Pending -> "pending"
+    Closed -> "ended"
   }
 }
 
-fn basename(path: String) -> String {
-  string.split(path, "/")
-  |> list.filter(fn(segment) { segment != "" })
-  |> list.last
-  |> result.unwrap(path)
+/// A workspace path for the bar: the owner's home directory is written
+/// `~`, so `/Users/ada/src/loom` reads `~/src/loom`. Both the macOS and the
+/// Linux home roots are recognised, and any other path is returned as given.
+/// A trailing slash is dropped.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert heading.shorten_path("/Users/ada/src/loom") == "~/src/loom"
+/// assert heading.shorten_path("/home/ada") == "~"
+/// assert heading.shorten_path("/srv/loom") == "/srv/loom"
+/// ```
+pub fn shorten_path(path: String) -> String {
+  let path = case path != "/" && string.ends_with(path, "/") {
+    True -> string.drop_end(path, 1)
+    False -> path
+  }
+
+  case string.split(path, "/") {
+    ["", "Users", _, ..rest] | ["", "home", _, ..rest] ->
+      string.join(["~", ..rest], "/")
+    _ -> path
+  }
+}
+
+// The workspace's shortened path, or nothing when it is unknown or is only
+// the session's name again. The bar keeps the same children either way, so
+// the status keeps its place in the tree. The whole path is also the title.
+fn workspace_element(
+  workspace: Option(String),
+  name: String,
+) -> Element(message) {
+  case workspace {
+    Some("") | None -> element.none()
+    Some(workspace) ->
+      case shorten_path(workspace) == first_word(name) {
+        True -> element.none()
+        False ->
+          html.span([attribute.class("workspace"), attribute.title(workspace)], [
+            html.text(shorten_path(workspace)),
+          ])
+      }
+  }
+}
+
+fn first_word(name: String) -> String {
+  case string.split_once(name, " ") {
+    Ok(#(word, _)) -> word
+    Error(Nil) -> name
+  }
+}
+
+// The emphasised number of a figure. It is a classed span and not a `<b>`:
+// the page's tests treat a bare bold tag anywhere in the page as markup that
+// escaped from transcript text.
+fn number_element(number: String) -> Element(message) {
+  html.span([attribute.class("num")], [html.text(number)])
+}
+
+// A figure's label and its number: `ctx ~41%` is the word `ctx` and the
+// emphasised `~41%`. A figure with no space is all emphasis.
+fn figure_words(words: String) -> List(Element(message)) {
+  case string.split_once(words, " ") {
+    Ok(#(label, number)) -> [
+      html.text(label <> " "),
+      number_element(number),
+    ]
+    Error(Nil) -> [number_element(words)]
+  }
 }

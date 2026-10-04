@@ -297,7 +297,7 @@ pub fn the_heading_names_the_session_and_its_workspace_test() {
   )
   assert string.contains(
     html,
-    "<span class=\"workspace\" title=\"/home/me/src/loom/\">loom</span>",
+    "<span class=\"workspace\" title=\"/home/me/src/loom/\">~/src/loom</span>",
   )
 }
 

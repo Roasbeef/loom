@@ -88,9 +88,14 @@ page keys and nonces, and the relay into the session's gateway.
 - **The session sidebar.** `web_view/sessions` holds `Entry`, `Residency`
   (`Live | Saved`), `Group` and `grouped(entries, current)` (the current
   session's workspace first, then by newest session, sessions newest first,
-  ties by identity and path). `view/sidebar.view(groups, current, open)` draws
-  it as the frame's second child (`aside.sidebar`, the left column;
-  `element.none()` where a page draws none), memoized. A row for a running
+  ties by identity and path). `view/sidebar.view(groups, current, bars, open)`
+  draws it as the frame's second child (`aside.sidebar`, the left column;
+  `element.none()` where a page draws none), memoized on the groups, the
+  identity and the bars. `bars` is `sidebar.bars(component.strip(model))`: one
+  `Bar(hue, pulse)` per listed strand and the advisor, drawn only on the
+  current row as `span.dots > span.bar.hue-N[.w]` (decoration, `aria-hidden`,
+  no handler). A `nav()` child, `element.none()` today, sits before the first
+  group for the app's navigation. A row for a running
   session other than the one on screen is a `button.session-open` whose
   message is `open(id)`; the current row and a saved session are text. A workspace is a
   section whose label the stylesheet draws as a small uppercase eyebrow with
@@ -171,9 +176,12 @@ page keys and nonces, and the relay into the session's gateway.
   by `component.view` and `operator_page.view`. None of them imports
   `component`, which imports them, so each takes what it draws as its own
   types or plain values. `heading.view(session_id, name, workspace,
-  status, context, cost, notice)` draws the top bar (the brand, the
-  workspace and name, the status, the `ctx ~41%` estimate and the session's
-  `est $` cost, worded as the terminal's footer words them), with the ended
+  status, tone, context, cost, notice)` draws the top bar (the brand, the
+  workspace's path with the home directory as `~` and then the name as two
+  spans, the status as a `.pill` whose class follows the `Tone`
+  (`online | pending | ended`), the `ctx ~41%` estimate and the cost
+  `transcript_lines.cost_words` words as `est $0.04` or `est —` when tokens
+  were spent and none priced, each as a word and a `span.num`), with the ended
   page's notice as its last child; `component.heading(model)` reads those
   values from the model and stays the entry point both pages call.
   `shell.view(audience, bar, sidebar, centre, panel, needing, workspace)`

@@ -674,6 +674,24 @@ pub fn title(region: Region, state: State) -> String {
   }
 }
 
+/// The keys a toggle's visible hint shows, in the notation the design uses.
+/// They are the same chord as `shortcuts` names, written for the eye; the
+/// hint is decoration beside the button's icon and the button's label stays
+/// what assistive technology reads.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert shell_rule.hint(shell_rule.Sidebar) == "⌘B"
+/// assert shell_rule.hint(shell_rule.Panel) == "⌘⌥B"
+/// ```
+pub fn hint(region: Region) -> String {
+  case region {
+    Sidebar -> "⌘B"
+    Panel -> "⌘⌥B"
+  }
+}
+
 /// The value of a toggle's `aria-keyshortcuts`, which tells assistive
 /// technology which keys act.
 ///

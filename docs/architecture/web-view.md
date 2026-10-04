@@ -655,7 +655,11 @@ component reads it when the page opens and at most every 30 seconds on a
 tick (an observer's page is given an empty list and draws no sidebar, so a
 stolen observer link does not disclose the principal's other sessions),
 groups it by workspace (`web_view/sessions`), and `view/sidebar`
-draws it as the frame's second child (the left column). The entry carries
+draws it as the frame's second child (the left column). The row of the session
+on screen also carries one thin bar per live strand in the strand's hue, drawn
+from the strip the page already has and pulsing while the strand works; the
+bars are decoration with no handler and no focus. An empty `nav` child sits
+above the first group for the app's navigation. The entry carries
 name, workspace, creation time and residency, and nothing of the registration's
 path, key or configuration.
 

@@ -214,7 +214,9 @@ time builds anything.
 - `shell_rule.Region` (`Sidebar` | `Panel`), `Tab` (`Strands` | `Changes` |
   `Session`), `State` (`Open` | `Closed`), `Layout(sidebar, panel, tab)`,
   `Presence` (`Listed` | `Unlisted`) and `Reach` (`Reachable` | `Unreachable`),
-  with `toggled`, `chosen`, `state`, `reach`, `label`, `tabs`, `tab_label`,
+  with `toggled`, `chosen`, `state`, `reach`, `label`, `hint` (the visible
+  `⌘B` / `⌘⌥B` words each toggle draws as an `aria-hidden` `kbd.toggle-hint`),
+  `tabs`, `tab_label`,
   `tab_state`, `has_button`, `presence` (a total decoder of the `sidebar`
   attribute), `needing` (a total decoder of the `needing` attribute: a plain
   number of at most four digits, else none), `badge` and `strands_words`,

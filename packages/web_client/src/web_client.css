@@ -61,6 +61,8 @@
   --color-strand-6: #e07a5f;
   --color-strand-6-text: #e07a5f;
   --color-pill-ok-bg: color-mix(in srgb, var(--color-added) 12%, transparent);
+  --color-pill-wait-bg: color-mix(in srgb, var(--color-signal) 14%, transparent);
+  --color-pill-bad-bg: color-mix(in srgb, var(--color-danger) 12%, transparent);
   --color-primary-button: var(--color-fg);
   --shadow-float: 0 1px 2px rgba(0,0,0,.4);
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -201,6 +203,8 @@
   --color-strand-6: inherit;
   --color-strand-6-text: inherit;
   --color-pill-ok-bg: inherit;
+  --color-pill-wait-bg: inherit;
+  --color-pill-bad-bg: inherit;
   --color-primary-button: inherit;
   --shadow-float: inherit;
 }
@@ -239,11 +243,12 @@
   .session-head{display:flex;flex-wrap:wrap;align-items:center;flex:1 1 auto;gap:4px 12px;box-sizing:border-box;min-height:44px;min-width:0;padding:6px 12px;}
   .session-head .brand{font:600 14px/1.4 var(--font-sans);letter-spacing:.02em;}
   .session-head h1{font:600 13px/1.4 var(--font-sans);margin:0;min-width:0;overflow-wrap:anywhere;}
-  .session-head .status{margin:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  .session-head .status{margin:0;}
   .session-head .workspace{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);min-width:0;overflow-wrap:anywhere;}
   .session-head .workspace::after{content:" /";content:" /" / "";}
   .session-head .figures{display:flex;flex-wrap:wrap;gap:0 12px;margin-left:auto;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);font-variant-numeric:tabular-nums;}
   .session-head .figure{white-space:nowrap;}
+  .session-head .figure .num{color:var(--color-fg);font:500 12px/1.4 var(--font-mono);}
   /* The shell's own tree (web_client/shell), drawn in its shadow root: the
      bar with its two buttons, and under it a row of the sidebar's column, the
      centre and the panel's column. A column is a fixed-width wrapper around
@@ -279,7 +284,9 @@
   .shell.still .region,.shell.still .region.closed{transition:none;}
   /* The buttons: a real button at each end of the bar, drawn as a small
      window with its side column filled while the column is open. */
-  .shell-toggle{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:44px;padding:0;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);cursor:pointer;}
+  .toggle-hint{margin:0;color:var(--color-fg-quiet);font:11px/1.4 var(--font-sans);}
+  @media (max-width:979px){.toggle-hint{display:none;}}
+  .shell-toggle{flex:0 0 auto;display:flex;align-items:center;justify-content:center;gap:8px;min-width:44px;padding:0 12px;box-sizing:border-box;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);cursor:pointer;}
   .shell-toggle:hover{background:var(--color-bg-sunk);color:var(--color-fg);}
   .shell-toggle:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
   /* The Theme button sits beside the panel's toggle: a 28px icon button
@@ -380,16 +387,26 @@
   .workspace-group .workspace{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:0 0 6px 0;font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);overflow-wrap:anywhere;}
   .group-count{flex:0 0 auto;font-weight:400;letter-spacing:0;font-variant-numeric:tabular-nums;}
   ul.sessions{list-style:none;margin:0;padding:0;}
-  li.session{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:4px 8px;border-radius:6px;font-size:13px;}
-  li.session.current{background:var(--color-bg-raised);}
+  li.session{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:3px 7px;border:1px solid transparent;border-radius:6px;font-size:13px;}
+  li.session.current{background:color-mix(in srgb,var(--color-current) 10%,var(--color-bg-raised));border-color:color-mix(in srgb,var(--color-current) 28%,transparent);}
   .session-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .residency{flex:0 0 auto;color:var(--color-fg-quiet);font:11px/1.4 var(--font-sans);}
   .residency .glyph{margin-right:4px;}
   .residency.live .glyph{color:var(--color-current);}
+  /* The app's navigation slot above the first workspace group. It is empty
+     until the app has pages to link to. */
+  .sidebar .nav{display:flex;flex-direction:column;gap:2px;margin:0 0 12px 0;}
+  /* The strand bars on the current row: one thin bar per live strand in its
+     hue, pulsing while the strand works. They are decoration and take no
+     pointer or focus. */
+  .dots{flex:0 0 auto;display:flex;gap:2px;align-items:center;align-self:center;margin-left:auto;pointer-events:none;}
+  .bar{display:block;width:4px;height:14px;border-radius:2px;background:var(--hue);opacity:.5;}
+  .bar.w{opacity:1;animation:pulse 1.4s infinite;}
+  @keyframes pulse{50%{opacity:.35;}}
   /* A row that opens its session is a button filling the row, drawn like the
      row's text until it is hovered or focused. */
   li.session:has(>.session-open){padding:0;}
-  .session-open{flex:1 1 auto;display:flex;align-items:baseline;justify-content:space-between;gap:8px;min-width:0;margin:0;padding:4px 8px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;}
+  .session-open{flex:1 1 auto;display:flex;align-items:baseline;justify-content:space-between;gap:8px;min-width:0;margin:0;padding:3px 7px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;}
   .session-open:hover{background:var(--color-bg-raised);}
   .session-open:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
   /* The home page (web_view/home, protocol-change/065): the same frame with
@@ -760,7 +777,10 @@
   button.steer:hover{background:color-mix(in srgb,var(--color-signal) 10%,transparent);}
   /* A status pill (the connected state in the bar). */
   .pill{display:inline-flex;align-items:center;gap:6px;padding:0 8px;border-radius:999px;font:12px/1.6 var(--font-sans);}
-  .pill.live{background:var(--color-pill-ok-bg);color:var(--color-added-text);}
+  .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex:0 0 auto;}
+  .pill.online{background:var(--color-pill-ok-bg);color:var(--color-added-text);}
+  .pill.pending{background:var(--color-pill-wait-bg);color:var(--color-signal-text);}
+  .pill.ended{background:var(--color-pill-bad-bg);color:var(--color-danger-text);}
   button.approval-deny{border-color:var(--color-danger);color:var(--color-danger-text);}
   button.approval-allow{border-color:var(--color-added);color:var(--color-added-text);}
   button:focus-visible,textarea:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
