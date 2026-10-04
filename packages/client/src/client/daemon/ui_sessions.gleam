@@ -126,6 +126,30 @@ pub const invite_limit = 3
 /// unredeemed at once.
 pub const invite_window_ms = 3_600_000
 
+/// The most sessions the pages of one credential may create in
+/// `creation_window_ms` (protocol-change/065, the fourth pull request).
+///
+/// A page's creation starts an agent and writes a catalogue row, so a page that
+/// a program other than its owner's browser took must not be able to fill the
+/// catalogue or the registry's slots. Ten covers an owner starting a few
+/// sessions in a sitting and the press that had to be repeated, and it stops a
+/// program with the page's three secrets at ten an hour. The owner who needs
+/// more creates from a terminal, which has no such limit and is not a page. A
+/// refused creation still costs its place, which frees within the hour.
+pub const creation_limit = 10
+
+/// The window `creation_limit` is counted over, in milliseconds.
+pub const creation_window_ms = 3_600_000
+
+/// What a page may be limited in the number of.
+pub type Allowance {
+  /// The invitations a credential's pages mint (`invite_limit`).
+  Invitations
+
+  /// The sessions a credential's pages create (`creation_limit`).
+  Creations
+}
+
 /// What page a ticket opens, which is also the page the UI session it becomes
 /// may be used for (protocol-change/065). The scope is part of the redemption:
 /// a ticket is honoured only at the exchange of its own scope, so a session's
@@ -253,7 +277,11 @@ type Message {
   Register(cookie: String, images: Images)
   Read(cookie: String, reply: Subject(Result(Images, Nil)))
   Sizes(reply: Subject(#(Int, Int)))
-  Reserve(credential: String, reply: Subject(Result(Nil, Nil)))
+  Reserve(
+    allowance: Allowance,
+    credential: String,
+    reply: Subject(Result(Nil, Nil)),
+  )
   Release(credential: String)
   Sweep
 }
@@ -283,6 +311,9 @@ type State {
     /// for inside `invite_window_ms`, newest first, keyed by the
     /// credential's fingerprint. A credential with none has no entry.
     invites: Dict(String, List(Int)),
+    /// The same for the sessions each credential's pages have created inside
+    /// `creation_window_ms`.
+    creations: Dict(String, List(Int)),
   )
 }
 
@@ -315,6 +346,7 @@ pub fn start(settings: Settings) -> Result(Sessions, String) {
       dict.new(),
       dict.new(),
       0,
+      dict.new(),
       dict.new(),
       dict.new(),
     ))
@@ -381,6 +413,32 @@ pub fn reserve_invite(
   credential: access.Digest,
 ) -> Result(Nil, Nil) {
   call.try_call(sessions.subject, waiting: 1000, sending: Reserve(
+    Invitations,
+    access.fingerprint(credential),
+    _,
+  ))
+  |> result.unwrap(Error(Nil))
+}
+
+/// Reserves one of the credential's session creations, or refuses when it has
+/// created `creation_limit` in the last `creation_window_ms`
+/// (protocol-change/065, the fourth pull request). The count is made and taken in
+/// one message, so two pages asking at once cannot both take the last place. The
+/// place is not given back: a refused creation may still have reserved a
+/// session, and a reply that times out may have been counted, and either frees
+/// within the hour.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_sessions.reserve_creation(sessions, digest) == Ok(Nil)
+/// ```
+pub fn reserve_creation(
+  sessions: Sessions,
+  credential: access.Digest,
+) -> Result(Nil, Nil) {
+  call.try_call(sessions.subject, waiting: 1000, sending: Reserve(
+    Creations,
     access.fingerprint(credential),
     _,
   ))
@@ -710,8 +768,9 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     // The window is a rolling one: an instant older than it no longer counts,
     // so a place frees an hour after it was taken. The reservation is one
     // turn, so the count and the taking cannot be split by another page.
-    Reserve(credential:, reply:) -> {
-      let recent = recent_invites(state.invites, credential, now)
+    Reserve(allowance: Invitations, credential:, reply:) -> {
+      let recent =
+        recent_instants(state.invites, credential, now, invite_window_ms)
       case list.drop(recent, invite_limit - 1) {
         [_, ..] -> {
           process.send(reply, Error(Nil))
@@ -729,8 +788,33 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       }
     }
 
+    Reserve(allowance: Creations, credential:, reply:) -> {
+      let recent =
+        recent_instants(state.creations, credential, now, creation_window_ms)
+      case list.drop(recent, creation_limit - 1) {
+        [_, ..] -> {
+          process.send(reply, Error(Nil))
+          actor.continue(state)
+        }
+        [] -> {
+          process.send(reply, Ok(Nil))
+          actor.continue(
+            State(
+              ..state,
+              creations: dict.insert(state.creations, credential, [
+                now,
+                ..recent
+              ]),
+            ),
+          )
+        }
+      }
+    }
+
     Release(credential:) -> {
-      let held = case recent_invites(state.invites, credential, now) {
+      let held = case
+        recent_instants(state.invites, credential, now, invite_window_ms)
+      {
         [] -> state.invites
         [_newest, ..older] ->
           case older {
@@ -750,6 +834,9 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           invites: dict.filter(state.invites, fn(_, instants) {
             list.any(instants, fn(at) { at > now - invite_window_ms })
           }),
+          creations: dict.filter(state.creations, fn(_, instants) {
+            list.any(instants, fn(at) { at > now - creation_window_ms })
+          }),
           tickets: dict.filter(state.tickets, fn(_, entry) {
             entry.expires_at > now
           }),
@@ -763,16 +850,17 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
-// The instants of a credential's invitations that are still inside the
-// window, newest first.
-fn recent_invites(
-  invites: Dict(String, List(Int)),
+// The instants of a credential's invitations or creations that are still inside
+// the window, newest first. A table is read with its own window.
+fn recent_instants(
+  table: Dict(String, List(Int)),
   credential: String,
   now: Int,
+  window: Int,
 ) -> List(Int) {
-  dict.get(invites, credential)
+  dict.get(table, credential)
   |> result.unwrap([])
-  |> list.filter(fn(at) { at > now - invite_window_ms })
+  |> list.filter(fn(at) { at > now - window })
 }
 
 // The table with room for one more of `grant`'s pages: unchanged while the

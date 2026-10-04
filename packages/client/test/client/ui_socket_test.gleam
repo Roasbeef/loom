@@ -739,3 +739,103 @@ pub fn a_workspace_page_goes_home_and_a_one_session_page_cannot_test() {
     page.shutdown()
   })
 }
+
+// Protocol-change/065, the fourth pull request: the one new event an owner's
+// home admits is a `submit` beneath the sessions section, where the form that
+// creates a session is. Every other home drops it, and the owner's still drops
+// a submit anywhere else, a batch that holds one, and every other event kind,
+// so a click's admission is the same at both.
+pub fn only_the_owners_home_admits_a_submit_beneath_the_table_test() {
+  let event_at = fn(path, name) {
+    "{\"kind\":1,\"path\":"
+    <> json.to_string(json.string(path))
+    <> ",\"name\":\""
+    <> name
+    <> "\",\"event\":{}}"
+  }
+  let form = home.table_path <> "\t1\t0\t3"
+  let row = home.table_path <> "\t1\t2\t0\t0\t0"
+  let sidebar_row = home.sidebar_path <> "\t1\t1\t0\t0"
+
+  // The owner's socket takes the submit, alone or among clicks.
+  assert ui_socket.home_creator_accepts(event_at(form, "submit"))
+  assert ui_socket.home_creator_accepts(
+    "{\"kind\":3,\"messages\":["
+    <> event_at(form, "submit")
+    <> ","
+    <> event_at(row, "click")
+    <> "]}",
+  )
+
+  // A member's, an observer-ceiling and the plain home's takes none of it.
+  assert !ui_socket.home_accepts(event_at(form, "submit"))
+  assert !ui_socket.home_accepts(
+    "{\"kind\":3,\"messages\":["
+    <> event_at(row, "click")
+    <> ","
+    <> event_at(form, "submit")
+    <> "]}",
+  )
+
+  // Both take the same clicks.
+  list.each([row, form, sidebar_row], fn(path) {
+    assert ui_socket.home_creator_accepts(event_at(path, "click"))
+    assert ui_socket.home_accepts(event_at(path, "click"))
+  })
+
+  // The owner's drops a submit outside the section, the region's own path and
+  // a sibling that shares its digits, every other event, and a bad batch.
+  list.each(
+    [
+      event_at(sidebar_row, "submit"),
+      event_at(home.sidebar_path, "submit"),
+      event_at(home.table_path, "submit"),
+      event_at(home.table_path <> "0\t1", "submit"),
+      event_at("0\t0\t1", "submit"),
+      event_at("0\t2\t0", "submit"),
+      event_at("0\t2\t2", "submit"),
+      event_at("0", "submit"),
+      event_at(form, "keydown"),
+      event_at(form, "input"),
+      event_at(form, "change"),
+      event_at(form, "formdata"),
+      "{\"kind\":1,\"name\":\"submit\"}",
+      "{\"kind\":3,\"messages\":[]}",
+      "{\"kind\":3,\"messages\":["
+        <> event_at(form, "submit")
+        <> ","
+        <> event_at("0\t0\t1", "click")
+        <> "]}",
+      "{\"kind\":0,\"name\":\"route\",\"value\":\"/elsewhere\"}",
+      "not json",
+      "",
+    ],
+    fn(frame) {
+      assert !ui_socket.home_creator_accepts(frame)
+    },
+  )
+}
+
+// The capability to create is handed to the owner's page minted to operate, and
+// to no other: a member's page, and an owner's page minted to read, are given
+// none, so they draw no control and the component ignores the message.
+pub fn only_an_owners_operating_home_is_handed_the_creation_capability_test() {
+  let member =
+    access.Principal(
+      id: "guest",
+      display_name: "Guest",
+      kind: access.MemberPrincipal,
+    )
+  let owner =
+    access.Principal(
+      id: "o",
+      display_name: "Owner",
+      kind: access.OwnerPrincipal,
+    )
+  let ask = fn(_, _, _, _) { Nil }
+  let assert Some(_) =
+    ui_socket.home_create_capability(owner, access.Operator, ask)
+  assert ui_socket.home_create_capability(owner, access.Observer, ask) == None
+  assert ui_socket.home_create_capability(member, access.Operator, ask) == None
+  assert ui_socket.home_create_capability(member, access.Observer, ask) == None
+}
