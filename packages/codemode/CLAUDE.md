@@ -1,5 +1,34 @@
 # codemode
 
+## Remote service input boundary
+
+`service_input.CompileInput` and `LaunchInput` retain exact bounded data for the
+current Workspace/Orchestration CompileService path. Versioned framing separates
+canonical enrollment and MessagePack metadata from literal UTF-8 source bodies.
+Combined metadata stays within 256 KiB; `compile_envelope` and `launch_envelope`
+include the actual canonical core ServiceKey header in the existing nine-MiB
+ceiling. Sources, generated facade bytes, environment order and every policy
+field are preserved. Inputs retain original policy/stage ceilings; the final
+native wall is still selected only after durable Ready.
+
+`CompilationContract` comes from trusted assembly and pins the exact enrollment,
+enabled program seam, effective VetPolicy and ordered approved facade source.
+`admit_compile` re-vets with that effective policy and compares the complete
+selected facade list in trusted catalogue order. A workspace-only host uses
+`workspace_effects`; using `for_seam(WorkspaceSeam)` would silently admit the
+Agency capability set. Incoming module names, sources and digest claims cannot
+widen this pin. Dependencies equal the current ordered production table.
+
+`admit_launch` matches the full producing Compile ServiceKey and every field of
+its retained successful `compile.Compiled` executor artifact, with its reported
+build enforcement. Physical Compile/Launch steps may differ; original parents
+must agree. Local Artifact values and Ready locations alone refuse. These
+opaque admission products grant neither resource claims nor listener liveness.
+The exchange layer must authenticate and recompute SHA-256 of the canonical
+input body, and trusted provisioning owns contract digest meaning and immutable
+seed/prelude facts. This module performs no I/O or hashing and does not wire a
+production remote service or extension loader.
+
 ## Shared native command construction
 
 `native_command` contains the pure compiler argv/environment/policy construction
