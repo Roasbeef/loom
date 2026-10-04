@@ -841,6 +841,7 @@ fn open_runtime(label: String) -> api.Runtime {
           panic as "no provider in this harness"
         }),
         tools: effects.ToolSurface(
+          recover: fn(_run, _complete) { effects.UnmanagedLocal },
           clear: fn(_query) {
             effects.ClearanceRefused(reason: "no tools in this harness")
           },

@@ -518,6 +518,7 @@ fn tool_run(grants: List(json.JsonValue)) -> effects.ToolRun {
   let #(operation, _generator) =
     ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 1))
   effects.ToolRun(
+    result_entry: ids.mint_entry(ids.generator(clock.fixed(at: 0), seed: 991)).0,
     operation:,
     step_id: "turn-1:tools",
     source_index: 0,

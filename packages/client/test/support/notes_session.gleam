@@ -73,6 +73,7 @@ pub fn open(path: String, time: Clock) -> Session {
           },
         ),
         tools: effects.ToolSurface(
+          recover: fn(_run, _complete) { effects.UnmanagedLocal },
           clear: fn(_query) {
             effects.ClearanceRefused(reason: "no tools in this harness")
           },

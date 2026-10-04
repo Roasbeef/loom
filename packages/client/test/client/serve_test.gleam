@@ -956,6 +956,10 @@ pub fn a_spawn_model_from_the_boot_catalogue_reaches_the_provider_test() {
   let result =
     instance.runtime.effects.tools.run(
       effects.ToolRun(
+        result_entry: ids.mint_entry(ids.generator(
+          clock.fixed(at: 0),
+          seed: 991,
+        )).0,
         operation: operation_id,
         step_id: ids.entry_id_to_string(step),
         source_index: 0,

@@ -1197,6 +1197,10 @@ pub fn disk_image_read_routes_to_vision_and_preserves_pixels_test() {
     wiring.run_tool(
       config,
       effects.ToolRun(
+        result_entry: ids.mint_entry(ids.generator(
+          clock.fixed(at: 0),
+          seed: 991,
+        )).0,
         operation: operation_id,
         step_id: "read-image",
         source_index: 0,

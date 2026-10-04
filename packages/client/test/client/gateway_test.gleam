@@ -340,6 +340,7 @@ fn start_harness_adjusted(
           })
       },
       tools: effects.ToolSurface(
+        recover: fn(_run, _complete) { effects.UnmanagedLocal },
         clear: fn(_query) { effects.ClearanceRefused(reason: "no tools") },
         run: fn(_run) { effects.ToolFailed(reason: "no tools") },
         replay_still_safe: fn(_name) { False },

@@ -547,6 +547,7 @@ fn start_harness() -> Harness {
           stream.immediate(events: process.new_subject(), cancel: fn() { Nil })
         }),
         tools: effects.ToolSurface(
+          recover: fn(_run, _complete) { effects.UnmanagedLocal },
           clear: fn(_) {
             effects.ClearanceRefused(reason: "no tools in this harness")
           },
