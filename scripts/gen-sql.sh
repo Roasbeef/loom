@@ -22,7 +22,8 @@
 #                        session_schema.gleam, catalogue_names_schema.gleam,
 #                        catalogue_archives_schema.gleam,
 #                        catalogue_claims_schema.gleam and
-#                        catalogue_subtitles_schema.gleam. Each catalogue version
+#                        catalogue_subtitles_schema.gleam and
+#                        catalogue_credential_kinds_schema.gleam. Each catalogue version
 #                        after the first has its own migration schema;
 #                        runtime catalogue creation never embeds session tables.
 #
@@ -54,6 +55,7 @@ gen_package() {
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_archives.sql
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_claims.sql
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_subtitles.sql
+    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_credential_kinds.sql
     sqlite3 "$tmpdb" < packages/storage/sql/session.sql
   fi
   (cd "packages/$pkg" && gleam run --module parrot -- --sqlite "$tmpdb")
@@ -79,4 +81,7 @@ gleam format packages/storage/src/storage/catalogue_claims_schema.gleam
 python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_subtitles.sql \
   packages/storage/src/storage/catalogue_subtitles_schema.gleam
 gleam format packages/storage/src/storage/catalogue_subtitles_schema.gleam
+python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_credential_kinds.sql \
+  packages/storage/src/storage/catalogue_credential_kinds_schema.gleam
+gleam format packages/storage/src/storage/catalogue_credential_kinds_schema.gleam
 echo "generated SQL modules are up to date; review and commit the diff"

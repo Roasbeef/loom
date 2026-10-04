@@ -67,10 +67,14 @@ pub type AccessCredential {
   AccessCredential(digest: String, principal_id: String, state: String)
 }
 
-pub fn access_credential(digest digest: String) {
+pub fn access_credential(digest digest: String, kind kind: String) {
   let sql =
-    "SELECT digest, principal_id, state FROM access_credentials WHERE digest = ?"
-  #(sql, [dev.ParamString(digest)], access_credential_decoder())
+    "SELECT digest, principal_id, state FROM access_credentials WHERE digest = ? AND kind = ?"
+  #(
+    sql,
+    [dev.ParamString(digest), dev.ParamString(kind)],
+    access_credential_decoder(),
+  )
 }
 
 pub fn access_credential_decoder() -> decode.Decoder(AccessCredential) {
@@ -80,13 +84,37 @@ pub fn access_credential_decoder() -> decode.Decoder(AccessCredential) {
   decode.success(AccessCredential(digest:, principal_id:, state:))
 }
 
+pub type AccessCredentialAnyKind {
+  AccessCredentialAnyKind(digest: String, principal_id: String, state: String)
+}
+
+pub fn access_credential_any_kind(digest digest: String) {
+  let sql =
+    "SELECT digest, principal_id, state FROM access_credentials WHERE digest = ?"
+  #(sql, [dev.ParamString(digest)], access_credential_any_kind_decoder())
+}
+
+pub fn access_credential_any_kind_decoder() -> decode.Decoder(
+  AccessCredentialAnyKind,
+) {
+  use digest <- decode.field(0, decode.string)
+  use principal_id <- decode.field(1, decode.string)
+  use state <- decode.field(2, decode.string)
+  decode.success(AccessCredentialAnyKind(digest:, principal_id:, state:))
+}
+
 pub fn insert_access_credential(
   digest digest: String,
   principal_id principal_id: String,
+  kind kind: String,
 ) {
   let sql =
-    "INSERT INTO access_credentials(digest, principal_id, state) VALUES (?, ?, 'active')"
-  #(sql, [dev.ParamString(digest), dev.ParamString(principal_id)])
+    "INSERT INTO access_credentials(digest, principal_id, state, kind) VALUES (?, ?, 'active', ?)"
+  #(sql, [
+    dev.ParamString(digest),
+    dev.ParamString(principal_id),
+    dev.ParamString(kind),
+  ])
 }
 
 pub fn revoke_access_credential(digest digest: String) {
@@ -222,7 +250,7 @@ pub type ActiveMemberCredentials {
 
 pub fn active_member_credentials(principal_id principal_id: String) {
   let sql =
-    "SELECT digest FROM access_credentials WHERE principal_id = ? AND state = 'active' LIMIT 1"
+    "SELECT digest FROM access_credentials WHERE principal_id = ? AND state = 'active' AND kind = 'bearer' LIMIT 1"
   #(sql, [dev.ParamString(principal_id)], active_member_credentials_decoder())
 }
 
@@ -274,7 +302,7 @@ pub fn principal_active_credential(principal_id principal_id: String) {
   let sql =
     "SELECT c.digest, k.claimed_at_ms FROM access_credentials AS c
 LEFT JOIN access_claims AS k ON k.credential_digest = c.digest
-WHERE c.principal_id = ? AND c.state = 'active'
+WHERE c.principal_id = ? AND c.state = 'active' AND c.kind = 'bearer'
 ORDER BY c.digest LIMIT 1"
   #(sql, [dev.ParamString(principal_id)], principal_active_credential_decoder())
 }

@@ -803,7 +803,14 @@ fn member(
   session: String,
   role: access.Role,
 ) -> String {
-  let credential = name <> "-token"
+  // A wire bearer is 64 lowercase hex characters, so the fixture's token is
+  // the hash of a name-derived string rather than the string itself.
+  let credential =
+    { name <> "-token" }
+    |> bit_array.from_string
+    |> bootstrap.sha256
+    |> bit_array.base16_encode
+    |> string.lowercase
   let assert Ok(digest) =
     credential
     |> bit_array.from_string
@@ -2860,6 +2867,10 @@ fn standing_of(
     as "the web view's tables start"
   let assert Ok(digest) =
     { name <> "-token" }
+    |> bit_array.from_string
+    |> bootstrap.sha256
+    |> bit_array.base16_encode
+    |> string.lowercase
     |> bit_array.from_string
     |> bootstrap.sha256
     |> bit_array.base16_encode

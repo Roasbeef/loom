@@ -1173,3 +1173,47 @@ grant it holds, each layer enough alone.
 **Cost.** One event kind on one socket, `server.create_session` split out of the
 control command's dispatch, one more allowance table in `ui_sessions`, and a form
 on the owner's home.
+
+## Addendum: credential kinds, the seventh pull request (2026-10-04)
+
+**Status**: IMPLEMENTED in the change that adds it. It builds the design note's
+PR 7 and changes no frozen interface; the catalogue schema is not a Part 1
+contract.
+
+**What it builds.** The `kind`, `issued_at_ms` and `last_resumed_ms` columns of
+the "Storage" section, as the migration `sql/catalogue_credential_kinds.sql`.
+`access.authenticate` and `access.claim` take a `CredentialKind`;
+`access_credential` carries `AND kind = ?`; `principal_active_credential` and
+`active_member_credentials` carry `kind = 'bearer'`; and `credential` in
+`client/daemon/server.gleam` refuses a presented bearer that is not 64
+lowercase hex before hashing it.
+
+**The smallest reading, and where it stops.** No browser login exists yet, so
+every grant is `ui.link`'s and every wire path is a bearer: the manager fixes
+`Bearer` in one function, `bearer_principal`, and a grant will carry its kind
+when PR 8 mints the first `Browser` grant. A digest is one primary key across
+both kinds, so the checks that a digest is free (`create_member`, enrollment,
+`claim`, `rotate_credential`) and `revoke_credential` ask both kinds; only an
+authentication names one. The shape check reuses `access.credential_digest`,
+since a credential and a digest are the same 64-character shape.
+
+**The version number.** The sections above say version 5 because `main` was
+at 4 when they were written. The session-subtitle change (#806) landed first
+with version 5, so this change is catalogue version 6: `kind`, `issued_at_ms`
+and `last_resumed_ms` arrive at `user_version` 6, and "moves 4 to 5" reads as
+"moves 5 to 6".
+
+**What it costs an existing enrollment.** A digest-enrolled secret that is not
+64 lowercase hex no longer authenticates after this change, because the daemon
+refuses such a bearer before hashing it. `loom enroll` and `loom claim` draw
+64-hex secrets, so only a hand-made digest is affected; re-enroll it with `loom
+enroll`.
+
+**Left for PR 8.** `claim`'s `bind` runs `no_active_credential`, which counts
+`bearer` rows only, for a `Browser` bind as well. That is correct for PR 7,
+where only a bearer claim exists in production. PR 8 must make it kind-aware, so
+that a login is counted beside the bearer and never in its place.
+
+**One version constant.** `storage/catalogue.gleam` names `current_version`
+once, and a test asserts it equals the highest migration, so a second change
+that adds a migration and forgets to raise it fails a test.

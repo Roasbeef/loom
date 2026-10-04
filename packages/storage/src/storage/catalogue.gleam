@@ -28,6 +28,7 @@
 
 import core/ids
 import gleam/dynamic/decode
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -36,6 +37,7 @@ import parrot/dev
 import sqlight
 import storage/catalogue_archives_schema
 import storage/catalogue_claims_schema
+import storage/catalogue_credential_kinds_schema
 import storage/catalogue_names_schema
 import storage/catalogue_subtitles_schema
 import storage/sql
@@ -173,15 +175,17 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
   use found <- result.try(number(connection, "PRAGMA application_id"))
   use version <- result.try(number(connection, "PRAGMA user_version"))
   case found, version {
-    1_281_253_197, 5 -> {
+    1_281_253_197, found_version if found_version == current_version -> {
       use _revision <- result.try(revision(Catalogue(connection)))
       Ok(Nil)
     }
-    1_281_253_197, 1 | 1_281_253_197, 2 | 1_281_253_197, 3 | 1_281_253_197, 4 -> {
+    1_281_253_197, found_version
+      if found_version >= 1 && found_version < current_version
+    -> {
       use _revision <- result.try(revision(Catalogue(connection)))
       transaction(connection, fn() {
         use Nil <- result.try(migrations_after(connection, version))
-        execute(connection, "PRAGMA user_version=5")
+        execute(connection, user_version_pragma())
       })
     }
     0, 0 -> {
@@ -197,7 +201,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
             ))
             execute(
               connection,
-              "PRAGMA application_id=1281253197; PRAGMA user_version=5",
+              "PRAGMA application_id=1281253197; " <> user_version_pragma(),
             )
           })
         _ -> Error(Unsupported)
@@ -207,6 +211,30 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
   }
 }
 
+/// The `user_version` this build writes and accepts, which is the highest
+/// version in `migrations`. A change that adds a migration and forgets to
+/// raise this fails `migrations_end_at_the_current_version_test` rather than
+/// leaving a catalogue that claims a version whose migration never ran.
+@internal
+pub const current_version = 6
+
+/// The migration schemas in version order, each applied to a catalogue that
+/// lacks its version.
+@internal
+pub fn migrations() -> List(#(Int, String)) {
+  [
+    #(2, catalogue_names_schema.schema),
+    #(3, catalogue_archives_schema.schema),
+    #(4, catalogue_claims_schema.schema),
+    #(5, catalogue_subtitles_schema.schema),
+    #(6, catalogue_credential_kinds_schema.schema),
+  ]
+}
+
+fn user_version_pragma() -> String {
+  "PRAGMA user_version=" <> int.to_string(current_version)
+}
+
 // The schemas a catalogue at `version` lacks, applied in version order. A
 // fresh catalogue is version one once `sql_schema` is in place, so creation
 // and migration run the same list and cannot drift apart.
@@ -214,12 +242,7 @@ fn migrations_after(
   connection: sqlight.Connection,
   version: Int,
 ) -> Result(Nil, Error) {
-  [
-    #(2, catalogue_names_schema.schema),
-    #(3, catalogue_archives_schema.schema),
-    #(4, catalogue_claims_schema.schema),
-    #(5, catalogue_subtitles_schema.schema),
-  ]
+  migrations()
   |> list.filter(fn(migration) { migration.0 > version })
   |> list.try_each(fn(migration) { execute(connection, migration.1) })
 }
