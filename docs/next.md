@@ -88,9 +88,24 @@ refusal checks. Test-only registration-bypass and skipped-receipt mutations
 fail the intended runtime assertions. The final independent review found no
 actionable issue; [the record](review/distributed-owner-dispatch.md) separates
 this one-emulator proof from product recovery and two-host acceptance.
-A closed bounded semantic codec and explicit native-host lifetime are the
-current working slices. Preserve their uncommitted work while integrating. Neither component is enabled
-by the shipped daemon yet. Bind every workspace consumer
+The bounded semantic codec, explicit native-host lifetime, workspace custody
+and chunk transfer are now published in PRs #781, #782 and #783. The metadata
+formal model is in #779. The current workspace-exchange slice joins an owner
+reservation, real TLS, an executor filesystem effect and durable receipt before
+ACK. Its one-VM fixture passed lost-reply, duplicate-submission, custodian reopen,
+chunked readback and scope-refusal checks. Skipping the owner receipt commit
+fails the intended journal-readback assertion. This is not two-host acceptance.
+
+Independent review found that socket deadlines could recycle listener credits
+while service messages remained queued, in both workspace and native endpoints.
+Fixed Temporary listener credits now retain pending service custody beyond
+socket death and retire on uncertain downstream journal replies. The final
+executor gate passes 157 tests; the client remote suite passes 46. Real TLS
+regressions and old-listener/restart mutations distinguish the corrected bound.
+The owner consumer also bounds storage waits with one managed deadline and
+retains original identity after expiry or observer loss. See the
+[exchange review](review/distributed-workspace-exchange.md) for exact limits.
+None of these components is enabled by the shipped daemon yet. Bind every workspace consumer
 to the selected executor, then run the two-host acceptance fixture: the owner
 must have no copy of the target checkout, while ordinary file tools, Bash,
 code mode and LSP all operate there. Test lost replies and restarts without
