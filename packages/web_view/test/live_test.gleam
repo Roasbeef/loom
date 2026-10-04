@@ -515,8 +515,9 @@ pub fn an_opened_turn_shows_thinking_before_anything_streams_test() {
   let #(model, clock) = timed([running()])
   let model = at(model, clock, 1000)
 
-  // A running operation that has not reached the generating phase draws no
-  // row, as an idle lane does not.
+  // A running operation whose strand is not in its `assistant` phase (the
+  // fixture labels it with a phase the server never emits) draws no row, as
+  // an idle lane does not.
   list.each(pages(model), fn(view) {
     assert region(view) == ""
   })
@@ -583,5 +584,17 @@ pub fn the_opened_row_sits_beside_the_pulsing_dot_test() {
     let drawn = element.to_string(view)
     assert string.contains(drawn, "class=\"dot pulse\"")
     assert string.contains(region(view), "Thinking")
+  })
+}
+
+// A page that holds only the capture's phase has no generation clock yet. The
+// row is drawn for the phase, with no elapsed element: the operation's clock
+// would read the whole turn, and only the generation clock is ever shown.
+pub fn an_opened_turn_with_no_generation_clock_draws_no_time_test() {
+  let model = page([lane_fixture.phased(running(), "assistant")])
+  list.each(pages(model), fn(view) {
+    let drawn = region(view)
+    assert string.contains(drawn, ">Thinking</p>")
+    assert !string.contains(drawn, "loom-elapsed")
   })
 }

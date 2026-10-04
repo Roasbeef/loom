@@ -1477,3 +1477,36 @@ pub fn viewed_as(
     other -> other
   }
 }
+
+/// `update`, when it is a capture, with every strand that has a live phase in
+/// `phase` instead of the fixture's own label, which is a word the server
+/// never emits. The server's phase for a model generating is `assistant`. Any
+/// other update is returned as it is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.phased(lane_fixture.asked(Some(lane_fixture.main_op())), "assistant")
+/// ```
+pub fn phased(
+  update: session_channel.Update,
+  phase: String,
+) -> session_channel.Update {
+  case update {
+    session_channel.Captured(cut, view, refresh) ->
+      session_channel.Captured(
+        cut,
+        snapshot_view.View(
+          ..view,
+          strands: list.map(view.strands, fn(strand) {
+            case strand.live_phase {
+              Some(_) -> protocol.Strand(..strand, live_phase: Some(phase))
+              None -> strand
+            }
+          }),
+        ),
+        refresh,
+      )
+    other -> other
+  }
+}

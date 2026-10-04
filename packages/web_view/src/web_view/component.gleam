@@ -2802,8 +2802,10 @@ pub fn pieces(model: Model(socket)) -> List(turns.Piece) {
 /// The elapsed time is a reading, not a running clock: the browser counts
 /// on from it (`<loom-elapsed>`), so the server draws again when a fragment
 /// arrives and not to move a second. A turn that has opened and streamed
-/// nothing yet is one `Opened` row, drawn from the phase change. A tool call the model is composing is
-/// not drawn; the capture draws it as a running call as soon as it commits.
+/// nothing yet is one `Opened` row, drawn from the phase change with the
+/// generation clock's reading when that clock has started and no time before
+/// it. A tool call the model is composing is not drawn; the capture draws it
+/// as a running call as soon as it commits.
 ///
 /// ## Examples
 ///
@@ -2831,22 +2833,17 @@ pub fn live(model: Model(socket)) -> List(live.Row) {
       }
     })
 
-  // A strand in its generating phase with nothing streamed yet is a turn
+  // A strand in its `assistant` phase with nothing streamed yet is a turn
   // that has opened: the request is out and the model has said nothing. The
   // row stands from the phase change and not from the first fragment, which
   // a model that streams no reasoning text never sends before its answer.
   //
-  // The generation clock starts on an operation event or a first fragment,
-  // and a page that has only the capture's phase has neither yet, so the row
-  // falls back to the strand chip's operation clock, which the capture
-  // carries. Driving the page showed the first reading arrive from there.
+  // Only the generation clock is ever drawn. Until it starts, on an operation
+  // event or a first fragment, the row says `Thinking` with no time: the
+  // operation's own clock also counts earlier generations of the turn, so it
+  // would read minutes under an answer that just landed.
   case streamed, session_model.active_strand_phase(shared) {
-    [], Some("assistant") | [], Some("streaming") -> [
-      live.Opened(elapsed_ms: option.or(
-        elapsed_ms,
-        running_ms(shared, shared.active_strand),
-      )),
-    ]
+    [], Some("assistant") -> [live.Opened(elapsed_ms:)]
     _, _ -> streamed
   }
 }

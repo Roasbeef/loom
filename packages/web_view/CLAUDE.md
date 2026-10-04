@@ -344,7 +344,7 @@ page keys and nonces, and the relay into the session's gateway.
   row before anything streams: while the followed strand's phase is `assistant`
   or `streaming` and no stream is held, `component.live` returns it alone,
   `Thinking · <loom-elapsed offset>` (the browser counts the reading on, so no
-  server timer), and the first fragment replaces it with `Reasoning` or the
+  server timer; before the generation clock starts it says `Thinking` alone), and the first fragment replaces it with `Reasoning` or the
   answer. The region is a row of the
   timeline with its own dot, which pulses while the region exists. `live.Answer(line)` is the answer so far,
   drawn by the lane's own assistant line. A tool call being composed is not

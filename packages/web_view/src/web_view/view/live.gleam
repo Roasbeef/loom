@@ -66,7 +66,9 @@ pub type Row {
   /// no reasoning text makes. It is drawn as `Thinking · 0:03` so the lane is
   /// not silent, and a streamed row replaces it.
   Opened(
-    /// How long the generation had run, as in `Thinking`.
+    /// How long the generation had run, as in `Thinking`. `None` until the
+    /// generation clock starts, and then the row says `Thinking` alone; no
+    /// other clock stands in for it.
     elapsed_ms: Option(Int),
   )
 
