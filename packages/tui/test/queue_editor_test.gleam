@@ -18,6 +18,7 @@ import session_view/command
 import session_view/composer
 import session_view/connection_event
 import session_view/model as session_model
+import session_view/notice_words
 import session_view/protocol
 import session_view/queue_request
 import session_view/queued_input
@@ -590,7 +591,7 @@ pub fn complete_fetch_and_save_preserve_text_beyond_the_excerpt_test() {
   assert draft(saved).delivery == queue_editor.Saving
   assert saved.view.input == model.view.input
   assert saved.shared.attachments == model.shared.attachments
-  assert saved.shared.notice == "edit_queued_input sent"
+  assert saved.shared.notice == notice_words.sent("edit_queued_input")
   assert string.contains(painted(saved), "Saving this revision")
 
   // The lane deliberately records no sensitive body. Check the encoder used

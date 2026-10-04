@@ -17,6 +17,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import session_view/model as session_model
+import session_view/notice_words
 import session_view/session_channel
 import session_view/snapshot
 import session_view/step_effect
@@ -141,7 +142,7 @@ pub fn a_replayed_prompt_queues_no_write_test() {
   }
 
   let #(submitted, effects) = stepping.step(backend.KeyPress("enter"), model)
-  assert string.contains(submitted.shared.notice, "prompt sent")
+  assert string.contains(submitted.shared.notice, notice_words.sent("prompt"))
     as "premise: the submission took the live path's local half"
 
   // The notice alone would also be set on a path that went on to refuse the

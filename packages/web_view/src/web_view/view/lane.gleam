@@ -547,15 +547,9 @@ fn piece_element(
           html.span([attribute.class("decided-who")], [
             html.text(decision.who),
           ]),
-          html.text(case decision.verdict {
-            decisions.Allowed -> " allowed "
-            decisions.Denied -> " denied "
-          }),
+          html.text(decisions.verb(decision.verdict)),
           html.span([attribute.class("decided-tool")], [
-            html.text(case decision.tool {
-              "" -> "a request"
-              tool -> tool
-            }),
+            html.text(decisions.tool_words(decision.tool)),
           ]),
         ],
       )

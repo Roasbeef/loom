@@ -165,13 +165,34 @@ pub fn strands(cells: List(snapshot_view.Cell)) -> List(#(String, String)) {
 ///   == "Owner denied bash"
 /// ```
 pub fn words(decision: Decision) -> String {
-  let verb = case decision.verdict {
+  decision.who <> verb(decision.verdict) <> tool_words(decision.tool)
+}
+
+/// The verb of a decision's line, with its spaces: ` allowed `, ` denied `.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert decisions.verb(decisions.Denied) == " denied "
+/// ```
+pub fn verb(verdict: Verdict) -> String {
+  case verdict {
     Allowed -> " allowed "
     Denied -> " denied "
   }
-  let tool = case decision.tool {
+}
+
+/// The tool a decision's line names, or `a request` when the record names
+/// none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert decisions.tool_words("") == "a request"
+/// ```
+pub fn tool_words(tool: String) -> String {
+  case tool {
     "" -> "a request"
     tool -> tool
   }
-  decision.who <> verb <> tool
 }

@@ -31,6 +31,7 @@ import session_view/connection_event
 import session_view/goal_view
 import session_view/model as session_model
 import session_view/notes_view
+import session_view/notice_words
 import session_view/protocol.{type Strand, Strand}
 import session_view/reviewer_status
 import session_view/session_channel
@@ -1081,7 +1082,7 @@ pub fn an_automatic_goal_read_preserves_the_footer_notice_test() {
       ),
       session_channel.Submission(session_channel.Sent("goal_get", 501)),
     )
-  assert explicit.shared.notice == "goal_get sent"
+  assert explicit.shared.notice == notice_words.sent("goal_get")
 }
 
 // --- the command lane -------------------------------------------------------

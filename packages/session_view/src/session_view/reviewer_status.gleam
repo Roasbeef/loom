@@ -84,7 +84,7 @@ pub fn observe(
       Some(inputs) -> {
         let count = list.count(inputs, fn(input) { input.strand == strand.id })
         case count {
-          0 -> "no pending input"
+          0 -> no_pending_input
           _ -> int.to_string(count) <> " received, awaiting delivery"
         }
       }
@@ -169,6 +169,11 @@ fn brief_body(text) {
   }
 }
 
+/// What a row's `pending` says when no input waits for the reviewer. The row
+/// holds the words, so the filter below compares against this one constant
+/// and not a second copy of the phrase.
+pub const no_pending_input = "no pending input"
+
 /// Drops the rows a page need not draw: the advisor with nothing waiting for
 /// it. The panel's advisor card already says so, and a band line for it
 /// would only repeat that card in a second place.
@@ -178,10 +183,9 @@ fn brief_body(text) {
 /// ```gleam
 /// assert reviewer_status.without_idle_advisor([]) == []
 /// ```
-@internal
 pub fn without_idle_advisor(rows: List(Row)) -> List(Row) {
   list.filter(rows, fn(row) {
-    !{ row.strand == "advisor" && row.pending == "no pending input" }
+    !{ row.strand == "advisor" && row.pending == no_pending_input }
   })
 }
 

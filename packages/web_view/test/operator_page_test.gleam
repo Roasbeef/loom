@@ -862,9 +862,9 @@ pub fn a_denied_approval_leaves_a_who_line_in_the_lane_test() {
       lane_fixture.captured_cells(10, None, [], []),
       session_channel.LookedUp(
         [
-          resolved("esc-9", 5, approval.Rejected, "bash"),
-          resolved("esc-10", 8, approval.Approved, "fs_write"),
-          resolved("esc-11", 9, approval.Rejected, "bash"),
+          resolved("esc-9", 20, approval.Rejected, "bash"),
+          resolved("esc-10", 22, approval.Approved, "fs_write"),
+          resolved("esc-11", 23, approval.Rejected, "bash"),
         ],
         [],
       ),
