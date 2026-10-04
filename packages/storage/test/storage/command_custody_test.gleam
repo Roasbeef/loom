@@ -1203,3 +1203,30 @@ pub fn generated_offer_headers_keep_blob_reservation_scalar_before_decode_test()
     == refused
   assert custody.close(store) == Ok(Nil)
 }
+
+pub fn service_input_projection_preserves_exact_binary_body_and_full_header_after_reopen_test() {
+  let parent = key(0)
+  let service = make_service(parent, command.CompileService, "a")
+  let body = <<0, 255, "{not json}":utf8, 0>>
+  let assert Ok(original) = custody.service_request(limits(), service, body)
+    as "Bounded opaque service content frames arbitrary exact input bytes."
+  assert custody.service_input(original) == Ok(body)
+  let #(path, store) = open("input-projection", parent)
+  assert custody.admit_service_child(store, original) == Ok(Nil)
+  assert custody.close(store) == Ok(Nil)
+
+  // Recovery projects data under the exact complete key without a decoder copy.
+  let assert Ok(store) =
+    custody.open(path, remote_tool.session(parent), limits())
+    as "The historical SQLite owner reopens independently."
+  let assert Ok(#(retained, None)) = custody.service_child(store, service)
+    as "The exact full identity resolves its retained frame."
+  assert custody.service_content(retained) == custody.service_content(original)
+  assert custody.service_input(retained) == Ok(body)
+  assert custody.service_child(
+      store,
+      make_service(parent, command.CompileService, "b"),
+    )
+    == Error(custody.Conflict)
+  assert custody.close(store) == Ok(Nil)
+}
