@@ -628,10 +628,29 @@ pub fn generated_owner_queries_match_named_sql_source_test() {
     named(sql.finish_owner_child(None, "").0, ["terminal", "origin"]),
     named(sql.freeze_owner_children("").0, ["parent"]),
     named(sql.cancel_owner_child("", "", 0).0, [
-      "origin",
-      "parent",
-      "reserved_bytes",
+      "origin", "parent", "reserved_bytes",
     ]),
+    sql.owner_legacy_custody_budget().0,
+    named(sql.owner_legacy_invalid_headers(0).0, ["payload_limit"]),
+    named(sql.owner_command_offer_header("").0, ["address"]),
+    named(sql.owner_command_offer_value("", 0).0, ["address", "offer_limit"]),
+    named(sql.owner_command_offer_count("").0, ["parent"]),
+    named(
+      sql.insert_owner_command_offer("", "", "", "", empty, "", "", empty, 0).0,
+      [
+        "address",
+        "parent",
+        "service_origin",
+        "service_id",
+        "identity",
+        "native_origin",
+        "offer_digest",
+        "offer",
+        "reserved_bytes",
+      ],
+    ),
+    named(sql.cancel_owner_command_offers("").0, ["service_origin"]),
+    named(sql.cancel_owner_allocated_child("").0, ["origin"]),
   ]
   assert normalized(source) == normalized(string.join(generated, "\n"))
 }
