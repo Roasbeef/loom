@@ -390,6 +390,9 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   described under "Drawn images" below. They import etui, `session_view`
   and `theme`, and nothing that imports the model; `effect` carries
   `image_shown.Command`.
+- `tui/layout_memory`: the layout file, its digest key and its total decoder,
+  described under "Layout memory" below. It imports `host/bootstrap` and
+  `core/json`; `effect` carries its `Layout`.
 - `tui/effect`: `Effect`, the closed vocabulary of fire-and-forget effects a
   step decides on, input recording lines among them (`Record`). The session
   reducers' effects arrive as `Step(step_effect.Effect(Connection,
@@ -2730,6 +2733,55 @@ the opener and the path as positional arguments, over the same
 `image_drain.drain` turns the reply into the notice. The newest image is
 chosen rather than the one on screen, since a row does not name its image
 without the anchors.
+
+## Layout memory
+
+The terminal remembers the person's layout choices per workspace in one file,
+`<state-dir>/tui/layout.json` (`~/.loom/tui/layout.json` unless `--state-dir`
+says otherwise), the way the web view remembers its layout in the browser. The
+key is the lower-case SHA-256 of the workspace path in hex, the same
+construction as the daemon's web digest but over the terminal's own discovered
+workspace root made absolute, so the two stores do not share keys, and a path
+never reaches the file. The file holds
+`{"version":1,"workspaces":[{"key":"<digest>","rail":"shown"}]}`, most
+recently changed first, at most 64 entries. `rail` is `shown` or `hidden` and
+is absent for a workspace whose rail was never toggled, so a remembered choice
+is told from the default. Nothing from a session is stored: not the
+transcript, the focused strand, the session, a path or a name. Later slices
+add the rail's tab and the todo line as further optional words, which an older
+terminal ignores.
+
+`layout_memory` is the file over plain values and `layout_save` is the join to
+the model. `layout_save.remember_launch` runs once in `interactive`, for a
+local launch (its `--state-dir`) or a remote one (the default root), and
+applies the workspace's rail choice; a replay, the demo and every printing
+subcommand call nothing, so their models have no `View.layout_target` and
+neither read nor write. `layout_save.settle` runs at the end of each step and
+queues `effect.SaveLayout` only when the layout differs from the last one
+saved, so a tick, a keystroke or a scroll writes nothing and a toggle writes
+once. The runtime performs it with `layout_memory.save` and drops a failure,
+since the alternate screen has nowhere to show it.
+
+Reading is total (`layout_memory.load`). A file that is missing, a link, a
+directory, owned by another user, readable by group or world, over 64 KiB, not
+JSON, not an object, or of another `version` is the empty memory and every
+workspace gets the default. Within a readable file an entry whose key is not a
+digest is dropped, a repeated key keeps its first, an unknown word is that
+field's default, and the list is cut at 64. The next change rewrites the whole
+file, which repairs a corrupt one and replaces another version's.
+
+Writing is read-modify-write. `layout_memory.save` reads the file again,
+puts this workspace's entry first, and replaces the file with
+`atomic_write_private` (mode 0600, in a 0700 directory made with
+`ensure_private_directory`), so a reader sees the whole old file or the whole
+new one. Two terminals on different workspaces therefore keep each other's
+entries, because each writes only its own into whatever the file holds now.
+Two terminals on the same workspace share one entry and the later change wins;
+neither sees the other's change until it next launches. There is no lock: a
+write that lands between another terminal's read and its rename can cost that
+terminal's entry for a different workspace, and a layout preference is not
+worth more than that. It needs no new FFI: the file helpers are the launcher's
+own (`host/bootstrap`) and the JSON is `core/json`'s total parser.
 
 ## Drawn images
 
