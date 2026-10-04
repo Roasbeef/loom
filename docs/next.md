@@ -1760,3 +1760,14 @@ syntax. Root independently passed all 218 executor tests; three compiling guard
 mutations fail their intended assertions. The
 [live-admission review](review/distributed-live-compile-admission.md) records the
 limits. Native service wiring must still place this permit before launch intent.
+
+Physical command reservations now retain their complete CommandRef through every
+owner exchange, including detached cancellation. The connection rejects changed
+references, generations and plain native replies. Astra identified a test peer
+whose late assertion could be lost; its managed result is now awaited before
+teardown. Root's corrected focused gate passed seven controls and the combined
+executor gate passed 225 tests. The [routing review](review/distributed-physical-command-routing.md)
+also records an existing host-close assertion race and its test-only correction.
+The [compilation guide](architecture/remote-compilation.md) explains the two
+identities. The native server still refuses command wrappers pending live
+admission assembly; this is owner routing, not separate-host acceptance.

@@ -108,6 +108,38 @@ key, including after cancellation, scope sealing or native endpoint loss. It nev
 reconstructs a preparation claim. This lets recovery compare history while keeping
 fresh execution permission unavailable.
 
+## Every native exchange retains its physical service
+
+A compiler command has two identities. Its native key identifies the process
+request and retained output. Its `CommandRef` identifies the whole Compile
+service that prepared the files. The reference includes the original service
+UUID, parent tool, scope, physical step, input digest and enrollment digest.
+Keeping both prevents a request from using one service's preparation to control
+another service's compiler.
+
+The owner dispatcher represents this distinction with `CommandReserved`. It
+carries the exact reference through Challenge, Submit, Query, Stdin, Cancel and
+DurableReceipt. A detached cancellation retains the same route even after the
+main dispatch worker stops. Ordinary native reservations retain their existing
+wire format.
+
+`wire.CommandEnvelope` wraps the canonical reference and existing native
+envelope under a closed discriminator. Construction checks scope and physical
+operation correspondence. Decoding applies the existing aggregate frame bound
+and requires canonical bytes; the wrapper does not enlarge the Prepared limit.
+The connection checks the complete returned reference and transport generation
+before exposing a native answer. An ordinary native reply cannot satisfy a
+command exchange.
+
+These wire checks establish correspondence, not permission. The native service
+must still prove the exact retained resource association before forwarding
+historical control or returning an existing command's output. Fresh admission
+also needs the original live claim and association permit described above.
+The current server reader accepts ordinary native envelopes only; enabling the
+command route awaits that service assembly. The
+[routing review](../review/distributed-physical-command-routing.md) records the
+codec, real TLS and dispatcher controls for the owner half.
+
 ## Failure preserves what can be proved
 
 A failure during preparation can produce a Before-native completion only while
