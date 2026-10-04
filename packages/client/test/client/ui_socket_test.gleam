@@ -437,6 +437,7 @@ fn view(status: manager.Status) -> manager.View {
       created_at: 1_790_000_000_000,
       request_key: "request-key",
       state: catalogue.Saved,
+      subtitle: option.None,
     ),
     status:,
   )
