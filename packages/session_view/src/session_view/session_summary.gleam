@@ -15,8 +15,10 @@
 //// when the daemon observed it, and the rows carry that ("at last refresh").
 ////
 //// Viewers come from the presence rows of the coherent cut the host holds.
-//// Each row is one attachment, so a principal attached from two tabs is two
-//// rows, as the terminal's participant count counts them.
+//// Each presence row is one attachment, and the terminal's participant count
+//// counts attachments. A person is not an attachment: the same principal
+//// attached from three pages is one viewer with three pages, so the list
+//// names who is watching and the count says how many attachments there are.
 ////
 //// Both lists are bounded, because a host draws them into every viewer's
 //// document: `max_job_rows` job lines and `max_viewer_rows` viewers, each with
@@ -25,6 +27,7 @@
 //// portable: it holds no `@external` and performs no I/O.
 
 import core/origin
+import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import session_view/live_jobs
@@ -63,15 +66,18 @@ pub type Whose {
   Another
 }
 
-/// One attachment of the session.
+/// One principal's attachments to the session.
 pub type Viewer {
   Viewer(
     /// The principal's display name, or `peer session/strand` for a peer.
     /// Principal text.
     name: String,
-    /// The attachment's role, as a word.
-    role: String,
-    /// Whether it is this host's own attachment.
+    /// The roles the principal's attachments hold, as words, each once, in
+    /// the order the cut listed them.
+    roles: List(String),
+    /// How many attachments the principal has.
+    pages: Int,
+    /// Whether one of them is this host's own attachment.
     whose: Whose,
   )
 }
@@ -79,9 +85,11 @@ pub type Viewer {
 /// The attached viewers, as many as a summary carries.
 pub type Viewers {
   Viewers(
-    /// At most `max_viewer_rows`, in the order the cut listed them.
+    /// At most `max_viewer_rows` principals, in the order the cut first
+    /// listed them.
     rows: List(Viewer),
-    /// How many attachments the cut listed in all.
+    /// How many attachments the cut listed in all, whether or not their
+    /// principal has a row.
     total: Int,
   )
 }
@@ -112,7 +120,8 @@ pub fn jobs(board: Option(live_jobs.Board), strand: String) -> Jobs {
   }
 }
 
-/// The viewers of the coherent cut the host holds, or none before one.
+/// The viewers of the coherent cut the host holds, one per principal, or
+/// none before one.
 ///
 /// ## Examples
 ///
@@ -124,23 +133,60 @@ pub fn viewers(
 ) -> Viewers {
   case captured {
     None -> Viewers([], 0)
-    Some(#(cut, view)) ->
-      Viewers(
-        rows: view.peers
-          |> list.take(max_viewer_rows)
-          |> list.map(fn(peer) {
-            Viewer(
-              name: text_hygiene.single_line(origin.display_label(peer.origin)),
-              role: role_word(peer.role),
-              whose: case peer.connection_id == cut.attachment.connection_id {
-                True -> You
-                False -> Another
-              },
+    Some(#(cut, view)) -> {
+      let #(order, grouped) =
+        list.fold(view.peers, #([], dict.new()), fn(seen, peer) {
+          let #(order, grouped) = seen
+          let mine = case peer.connection_id == cut.attachment.connection_id {
+            True -> You
+            False -> Another
+          }
+          case dict.get(grouped, peer.origin) {
+            Ok(viewer) -> #(
+              order,
+              dict.insert(grouped, peer.origin, join(viewer, peer, mine)),
             )
-          }),
+            Error(Nil) -> #(
+              [peer.origin, ..order],
+              dict.insert(grouped, peer.origin, first(peer, mine)),
+            )
+          }
+        })
+
+      Viewers(
+        rows: list.reverse(order)
+          |> list.take(max_viewer_rows)
+          |> list.filter_map(dict.get(grouped, _)),
         total: list.length(view.peers),
       )
+    }
   }
+}
+
+// A principal's first attachment as a viewer.
+fn first(peer: snapshot_view.Peer, mine: Whose) -> Viewer {
+  Viewer(
+    name: text_hygiene.single_line(origin.display_label(peer.origin)),
+    roles: [role_word(peer.role)],
+    pages: 1,
+    whose: mine,
+  )
+}
+
+// A further attachment of a principal already listed.
+fn join(viewer: Viewer, peer: snapshot_view.Peer, mine: Whose) -> Viewer {
+  Viewer(
+    ..viewer,
+    roles: case list.contains(viewer.roles, role_word(peer.role)) {
+      True -> viewer.roles
+      False -> list.append(viewer.roles, [role_word(peer.role)])
+    },
+    pages: viewer.pages + 1,
+    whose: case viewer.whose, mine {
+      You, _ | _, You -> You
+      Another, Another -> Another
+    },
+  )
 }
 
 fn role_word(role: snapshot.Role) -> String {

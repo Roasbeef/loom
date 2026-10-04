@@ -3014,7 +3014,7 @@ pub fn panel(
     changes.view(model.view.changes),
     session_tab.view(
       option.map(goal(model), goal_view.row) |> option.unwrap([]),
-      cost_text(model),
+      cost_figure(model),
       jobs(model),
       viewers,
       share,
@@ -3215,7 +3215,12 @@ pub fn heading(model: Model(socket)) -> Element(message) {
 // The session's running cost as the top bar and the Session tab word it,
 // which is the terminal's footer's own words.
 fn cost_text(model: Model(socket)) -> String {
-  "est $" <> transcript_lines.money(model.shared.usage.cost.total)
+  "est " <> cost_figure(model)
+}
+
+// The session's cost as a figure alone, for a row whose label says estimate.
+fn cost_figure(model: Model(socket)) -> String {
+  "$" <> transcript_lines.money(model.shared.usage.cost.total)
 }
 
 // The ending a page that has ended draws a notice for.

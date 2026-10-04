@@ -1,6 +1,8 @@
 //// The Session tab of the strand panel: the session's goal, its live jobs,
 //// the attached viewers and its estimated cost, drawn as a key and value list
-//// on both pages.
+//// on both pages. The cost row's label says it is an estimate, so its value is
+//// the figure alone (`$0.12`), and a viewer is a principal, not an attachment:
+//// one person's three pages are one line that counts them.
 ////
 //// The rows are `session_view`'s wherever it words them
 //// (`session_summary`, `goal_view.row`), so the terminal can draw the same
@@ -32,6 +34,7 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -45,7 +48,7 @@ import session_view/session_summary.{
 ///
 /// `goal` is the terminal's goal row as its words (`goal_view.row`), empty when
 /// no goal is pinned or none was read. `cost` is the session's running total
-/// worded as the top bar words it. The list of rows is memoized on all four, so
+/// as a figure (`$0.12`), without the word `est`, which the row's label says. The list of rows is memoized on all four, so
 /// a page whose rows did not change diffs nothing. `share` is the invitation
 /// control (`web_view/view/share`), which only an owner's page draws and which
 /// is `element.none()` everywhere else. It is the pane's third child, after the
@@ -59,7 +62,7 @@ import session_view/session_summary.{
 /// ## Examples
 ///
 /// ```gleam
-/// // session_tab.view([], "est $0.12", component.jobs(model), Some(component.viewers(model)), element.none(), element.none())
+/// // session_tab.view([], "$0.12", component.jobs(model), Some(component.viewers(model)), element.none(), element.none())
 /// ```
 pub fn view(
   goal: List(String),
@@ -134,10 +137,7 @@ fn jobs_row(jobs: Jobs) -> List(Element(message)) {
     Live(total: 0, ..) -> [
       term("Jobs"),
       value([
-        html.p([], [html.text("none live")]),
-        html.p([attribute.class("session-quiet")], [
-          html.text("at last refresh"),
-        ]),
+        html.p([attribute.title("At the last refresh")], [html.text("none")]),
       ]),
     ]
     Live(total:, rows:, omitted:) -> [
@@ -171,19 +171,28 @@ fn viewers_row(viewers: Option(Viewers)) -> List(Element(message)) {
           [attribute.class("session-viewers")],
           list.map(viewers.rows, viewer),
         ),
-        more(viewers.total - list.length(viewers.rows), " more not shown"),
+        more(
+          viewers.total - list.fold(viewers.rows, 0, fn(n, v) { n + v.pages }),
+          " more not shown",
+        ),
       ]),
     ]
   }
 }
 
+// One principal: the name, the roles its pages hold, how many pages when more
+// than one, and whether one of them is this page.
 fn viewer(viewer: Viewer) -> Element(message) {
   html.li([], [
     html.text(viewer.name),
     html.span([attribute.class("session-quiet")], [
       html.text(
         " · "
-        <> viewer.role
+        <> string.join(viewer.roles, ", ")
+        <> case viewer.pages {
+          1 -> ""
+          pages -> " · " <> int.to_string(pages) <> " pages"
+        }
         <> case viewer.whose {
           You -> " · you"
           Another -> ""
