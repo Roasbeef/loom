@@ -68,6 +68,18 @@ and omission of unknown names, so prompt cache prefixes and authorization
 remain unchanged. Public request and target helpers retain their signatures and
 use the same projected implementations as the production surface.
 
+`Effects` is copied into every process and supervisor child specification
+that holds a session's runtime, and a closure over `wiring.Config` puts a full
+copy of the tool registry into each one. `client/serve` therefore builds its
+effects with `wiring.build_effects_held`: the `run` slot captures only the
+address of a `client/tool_holder` process, which keeps the one `Config` and
+hands it back to each tool run (`run_tool_held`). A holder that is gone or does
+not answer inside five seconds yields an in-band `ToolCompleted` failure, never
+a crash. The holder is published to custody as `instance_owner.ToolConfig`
+before `api.open_published` and retires directly after `Runtime`, because
+tools run until the runtime drains. `build_effects(config)` keeps the capturing
+closure for tests, the scripted demo and extension hooks.
+
 ## Code-mode alternatives on direct tools
 
 `contributions.built_in` appends a concrete capability call and result shape to
@@ -622,7 +634,9 @@ catalogue without opening runtimes. Explicit admission invokes
 - `client/internal/instance_owner.{Owner, Part, CloseOutcome}` retains
   published cleanup independently of a builder. Weft orders builder exit
   before the holder's cleanup run; `StillClosing` and `RecoveryBlocked`
-  retain reservations rather than authorizing replacement. The publication
+  retain reservations rather than authorizing replacement. Cleanup order is
+  `Runtime`, `ToolConfig`, `Services`, `Broker`, `Helpers`, `Mcp`, `Storage`,
+  `Namespace`. The publication
   handoff in `instance_owner.start` and the registry handoff in
   `lifetime.start` are both bounded at five seconds, and `distill_owner`'s
   cleanup run carries a wall deadline, so a wedged start or close settles
