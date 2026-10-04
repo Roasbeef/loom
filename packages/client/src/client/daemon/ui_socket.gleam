@@ -175,12 +175,6 @@ pub const operator_frame_limit = 12_582_912
 /// bound is on the wait and not on the open, which the registry owns.
 pub const resume_wait_ms = 30_000
 
-// How long the task that waits may live, in milliseconds: the wait, and then
-// the three registry calls that can each take their five seconds (the first
-// authority check, the open, the ticket's own checks). The run's deadline is a
-// backstop for a task that is stuck; the poll ends the wait on its own.
-const resume_task_ms = 45_000
-
 // How long a request for an image waits for the component's answer, in
 // milliseconds. The component answers from a lane it holds in memory, so a
 // second is long; a component that does not answer in that time is gone or
@@ -1398,13 +1392,11 @@ fn resident_within(
 /// runtime is free while a session starts; `deliver` is called, from that run,
 /// with the answer, whatever it is.
 ///
-/// The run is a weft run with one task, bounded by a deadline a little past the
-/// wait, and it is linked to the calling process, which is the page's runtime:
-/// a page that goes away cancels the wait, and the open it already asked for
-/// finishes on the registry's own custody as any open does. The task's last act
-/// is `deliver`, so a page that asked is always answered unless the task is
-/// killed, which only a stuck registry call can do; the page then keeps saying
-/// "opening" until its person reloads it, and nothing is left running.
+/// The run is a weft run with one task, linked to the calling process, which
+/// is the page's runtime: a page that goes away cancels the wait, and the open
+/// it already asked for finishes on the registry's own custody as any open
+/// does. The task's last act is `deliver`, so a page that stays open is always
+/// answered.
 ///
 /// ## Examples
 ///
@@ -1419,6 +1411,11 @@ pub fn resume_task(
   target: String,
   deliver: fn(sessions.Answer) -> Nil,
 ) -> Nil {
+  // The run has no deadline of its own. Every step of `resume_for` is bounded
+  // by its own call timeouts (the wait by `resume_wait_ms`, each registry call
+  // by its own few seconds), so the task always answers within about a minute;
+  // a deadline could only kill a task that would have answered. The link to
+  // the runtime still cancels it when the page goes away.
   let _ =
     weft.new([
       fn() {
@@ -1432,7 +1429,6 @@ pub fn resume_task(
         Ok(Nil)
       },
     ])
-    |> weft.deadline(resume_task_ms)
     |> weft.start_witnessed
   Nil
 }

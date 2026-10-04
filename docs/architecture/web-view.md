@@ -245,7 +245,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:1757`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:1753`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -821,7 +821,7 @@ read-only page or for a session the catalogue reports `Reserved` or
 The component calls `Start.resume` or `Transport.resume`, which starts the
 daemon's task and returns, so the Lustre runtime is free while a session
 starts; the task's answer arrives as `Linked`. `ui_socket.resume_task` runs
-`resume_for` in a weft run (one task, a deadline past the wait, linked to the
+`resume_for` in a weft run (one task, no deadline, linked to the
 runtime): the page is open, its ceiling is Operator, `session_authority` finds
 Owner or Operator in the target (an observer member is `NotOperator`),
 `manager.open`, a `weft/poll` over `manager.get` for at most

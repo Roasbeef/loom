@@ -766,15 +766,14 @@ for which `open()` still answers was admitted by this daemon, and `open()` is
 the epoch check.
 
 **The task.** The wait is long, so `ui_socket.resume_task` runs `resume_for` in
-a weft run of its own (one task, `weft.deadline` a little past the wait,
-`start_witnessed`, linked to the calling Lustre runtime so a page that goes
+a weft run of its own (one task, no deadline, `start_witnessed`, linked to the calling Lustre runtime so a page that goes
 away cancels it) and returns at once. The task's last act is the answer, which
 the component dispatches as `Linked`, the same message a switch's answer is.
 `Transport.resume` and `home.Start.resume` have the shape `fn(String,
-fn(Answer) -> Nil) -> Nil` for this. A task killed by its deadline answers
-nothing and the page keeps saying "opening" until it is reloaded; the poll ends
-the wait first by design, and the deadline is a backstop for a stuck registry
-call.
+fn(Answer) -> Nil) -> Nil` for this. The run has no deadline: every step of `resume_for` is
+bounded by its own call timeouts, so the task answers within about a minute, and
+a deadline could only kill a task that would have answered. Only a page that
+closes mid-open loses the answer, and then nobody is looking.
 
 **The refusals.** Two reasons join `sessions.Reason`. `NotOperator` is "Ask an
 operator to resume it." and `NotOpened` is "That session did not open. Resume it

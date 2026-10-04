@@ -305,7 +305,7 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   (`NotOperator` for an observer member), `manager.open` (any refusal is
   `NotOpened`), a `weft/poll` over `manager.get` until `Resident` for at most
   `resume_wait_ms` (30 s), then `ticket_for`. `resume_task` runs it in a weft
-  run of its own (one task, a deadline past the wait, `start_witnessed`, linked
+  run of its own (one task, no deadline, `start_witnessed`, linked
   to the Lustre runtime that called) and returns at once; the task's last act
   is `deliver(answer)`, which the component dispatches as `Linked`. `resumed_for`
   is the socket's gate: an observer role is refused `NotHeld` before any task.
