@@ -188,6 +188,18 @@ for a host with no surfaces.
   `thoughts` by row key; both are empty when the expansion equals the compact
   rows, so no piece holds uncapped text. `grouped` skips them. The terminal
   does not call `turns`.
+- `step_words`: how one step of a turn reads, shared by every host that
+  draws a step. `of_call(call)` turns a tool's name, arguments and (for an
+  edit) its diff into `Words(verb, subject, change)`: `Read calc.py`,
+  `Edit calc.py +3 −1`, `Ran python3 -m unittest`, `Spawned scan`. A subject
+  is tagged `Mono` (a path or command), `Prose` (a name or purpose), `Figure`
+  (a count or a time) or `Unnamed`, which only says which face a host uses;
+  every subject is session text and is drawn as a text node. A tool the table
+  does not list keeps its own name. `memory`, `reasoning`, `worked`,
+  `returned` and `duration` word the rows that are not tool calls, `text`
+  flattens any `Words` to one line, and `first_call(program)` names the first
+  capability a `code_mode` program calls (`fs.read calc.py`) by reading its
+  text. That reader stands in for the trace view's fold of a program's calls.
 - `transcript_image`: the images a lane row carries, which the rows draw as
   `[image <type>]` text. `Image(mime_type, data)` holds the entry's own base64
   text (nothing is copied). `of_entry`, `of_message`, `of_outcome` and
