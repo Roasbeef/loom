@@ -2835,8 +2835,18 @@ pub fn live(model: Model(socket)) -> List(live.Row) {
   // that has opened: the request is out and the model has said nothing. The
   // row stands from the phase change and not from the first fragment, which
   // a model that streams no reasoning text never sends before its answer.
+  //
+  // The generation clock starts on an operation event or a first fragment,
+  // and a page that has only the capture's phase has neither yet, so the row
+  // falls back to the strand chip's operation clock, which the capture
+  // carries. Driving the page showed the first reading arrive from there.
   case streamed, session_model.active_strand_phase(shared) {
-    [], Some("assistant") | [], Some("streaming") -> [live.Opened(elapsed_ms:)]
+    [], Some("assistant") | [], Some("streaming") -> [
+      live.Opened(elapsed_ms: option.or(
+        elapsed_ms,
+        running_ms(shared, shared.active_strand),
+      )),
+    ]
     _, _ -> streamed
   }
 }
