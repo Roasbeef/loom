@@ -33,6 +33,7 @@ import client/owned_assembly_test
 import client/serve
 import core/clock
 import core/ids
+import core/workspace
 import filepath
 import gleam/bit_array
 import gleam/erlang/process
@@ -383,7 +384,7 @@ fn resolved_with(
     catalogue.Registration(
       id,
       root <> "/sessions/" <> id <> ".db",
-      workspace,
+      workspace.LocalBinding(workspace),
       "State root",
       root <> "/loom.toml",
       1,
@@ -393,9 +394,9 @@ fn resolved_with(
     )
   let selected =
     domain.Domain(
-      domain.key(domain.SessionOnly, workspace, id),
+      domain.key(domain.SessionOnly, workspace.LocalKey(workspace), id),
       domain.SessionOnly,
-      workspace,
+      workspace.LocalKey(workspace),
       "",
       root <> "/domains/sessions/" <> id <> "/" <> memory.memory_file,
       root <> "/domains/sessions/" <> id <> "/loom-search.db",

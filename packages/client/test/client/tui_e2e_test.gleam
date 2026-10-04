@@ -66,6 +66,7 @@ import core/entry
 import core/ids
 import core/json
 import core/message
+import core/workspace
 import etui/backend
 import etui/widgets/textarea
 import filepath
@@ -918,6 +919,8 @@ fn boot(settings: serve.Settings) -> Result(Booted, String) {
       manager.Assembly(
         fn(_, _, _) { Ok(domain_service.inert()) },
         fn(record, selected_domain, _services, owner, _directory) {
+          let assert workspace.LocalBinding(local) = record.workspace
+            as "native fixture owns a local binding"
           let assert Ok(id) = ids.parse_session_id(record.id)
             as "the manager reserves a canonical session identity"
           assert bootstrap.ensure_private_directory(filepath.directory_name(
@@ -926,7 +929,7 @@ fn boot(settings: serve.Settings) -> Result(Booted, String) {
             == Ok(Nil)
           let base =
             policy.SandboxPolicy(
-              ..serve.base_policy(record.workspace),
+              ..serve.base_policy(local),
               readable_roots: settings.base_policy.readable_roots,
               mounts: settings.base_policy.mounts,
             )
@@ -935,7 +938,7 @@ fn boot(settings: serve.Settings) -> Result(Booted, String) {
               ..settings,
               session_id: record.id,
               session_path: record.path,
-              workspace: record.workspace,
+              workspace: local,
               domain_paths: Some(serve.DomainPaths(
                 selected_domain.memory_path,
                 selected_domain.index_path,
@@ -968,7 +971,12 @@ fn boot(settings: serve.Settings) -> Result(Booted, String) {
   let assert Ok(created) =
     manager.create(
       serving.ready.registry,
-      manager.Creation("terminal-fixture", settings.workspace, "terminal", ""),
+      manager.Creation(
+        "terminal-fixture",
+        workspace.LocalBinding(settings.workspace),
+        "terminal",
+        "",
+      ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(
         clock.from_function(ffi_os.system_time_ms),

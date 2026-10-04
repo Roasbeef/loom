@@ -67,7 +67,7 @@ pub fn unknown_tool_dispatch_is_structured_error_test() {
 
 pub fn dispatch_runs_the_named_tool_test() {
   let context = ctx()
-  let filesystem = context.filesystem
+  let filesystem = local_workspace(context).filesystem
   let assert Ok(Nil) = filesystem.write("/work/f.txt", <<"content\n":utf8>>)
   let outcome =
     tool.dispatch(
@@ -366,4 +366,11 @@ fn unused_limits() -> schedule.Limits {
     max_max_fires: 1000,
     max_expires_after_s: 604_800,
   )
+}
+
+// Existing local fixtures expose physical authority explicitly after migration.
+fn local_workspace(ctx: tool.Ctx) -> tool.LocalWorkspaceAccess {
+  let assert Ok(local) = tool.require_local_workspace(ctx)
+    as "fixture requires a local workspace"
+  local
 }

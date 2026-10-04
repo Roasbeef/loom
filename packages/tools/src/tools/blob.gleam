@@ -11,7 +11,7 @@
 //// ref, so replaying a `Safe` tool or re-running an identical command
 //// never duplicates storage.
 ////
-//// The blob directory is seam-injected (`Ctx.blob_root`); all I/O goes
+//// The blob directory is seam-injected (`Ctx.owner_blobs.root`); all I/O goes
 //// through the `FileSystem` seam, so tests run against an in-memory
 //// fake. Context projection (WP-C) is expected to surface the excerpts
 //// plus a note that the ref is readable via `fs_read` — which requires
@@ -67,9 +67,11 @@ pub fn bound(ctx: Ctx, text: String) -> Result(Bounded, FsError) {
     False -> Ok(Inline(text:))
     True -> {
       let ref = ref_for(bytes)
-      let filesystem = ctx.filesystem
-      use Nil <- result.try(filesystem.create_directory_all(ctx.blob_root))
-      let path = ref_path(ctx.blob_root, ref)
+      let filesystem = ctx.owner_blobs.filesystem
+      use Nil <- result.try(filesystem.create_directory_all(
+        ctx.owner_blobs.root,
+      ))
+      let path = ref_path(ctx.owner_blobs.root, ref)
       use present <- result.try(filesystem.is_file(path))
       use Nil <- result.try(case present {
         True -> Ok(Nil)
@@ -77,7 +79,7 @@ pub fn bound(ctx: Ctx, text: String) -> Result(Bounded, FsError) {
           write_addressed(
             filesystem:,
             path:,
-            temporary: temp_path(ctx.blob_root, ref, call_tag(ctx)),
+            temporary: temp_path(ctx.owner_blobs.root, ref, call_tag(ctx)),
             bytes:,
           )
       })

@@ -899,7 +899,7 @@ pub fn actual_local_file_results_survive_codec_without_projection_loss_test() {
   let ctx =
     fake_broker.ctx(root, fs.real_filesystem(), 1000, [], process.new_subject())
   let host =
-    local.new(scope(), ctx, fn(_) { Some("settled post-write diagnostics") })
+    local_host(scope(), ctx, fn(_) { Some("settled post-write diagnostics") })
 
   // The retained request selects the completion projection.
   let requests = [
@@ -1129,7 +1129,7 @@ pub fn maximal_landed_edit_plus_max_diagnostics_fits_reserved_completion_test() 
   let ctx =
     fake_broker.ctx(root, fs.real_filesystem(), 1000, [], process.new_subject())
   let diagnostics = string.repeat("d", value.max_diagnostic_bytes)
-  let host = local.new(scope(), ctx, fn(_) { Some(diagnostics) })
+  let host = local_host(scope(), ctx, fn(_) { Some(diagnostics) })
 
   // Completion evidence comes from the host after one real mutation.
   let request = w.AnchoredEdit(path("a"), plan)
@@ -1186,7 +1186,7 @@ pub fn native_short_line_window_above_line_reader_limit_roundtrips_test() {
     as "2001 empty lines on disk"
   let ctx =
     fake_broker.ctx(root, fs.real_filesystem(), 1000, [], process.new_subject())
-  let host = local.new(scope(), ctx, fn(_) { None })
+  let host = local_host(scope(), ctx, fn(_) { None })
   let request = w.Read(path("a"), w.Native(1, 2001))
   let call = invocation(request)
   let assert Ok(bytes) = codec.encode_invocation(call)
@@ -1221,7 +1221,7 @@ pub fn real_host_file_start_overlap_roundtrips_zero_coordinate_test() {
     as "overlap preimage"
   let ctx =
     fake_broker.ctx(root, fs.real_filesystem(), 1000, [], process.new_subject())
-  let host = local.new(scope(), ctx, fn(_) { None })
+  let host = local_host(scope(), ctx, fn(_) { None })
   let request =
     w.AnchoredEdit(
       path("a"),
@@ -1257,7 +1257,7 @@ pub fn real_host_repeated_stale_anchors_retain_order_and_duplicates_test() {
     as "repeated stale anchor fixture"
   let ctx =
     fake_broker.ctx(root, fs.real_filesystem(), 1000, [], process.new_subject())
-  let host = local.new(scope(), ctx, fn(_) { None })
+  let host = local_host(scope(), ctx, fn(_) { None })
 
   // Every hunk contributes its stale reference before overlap validation runs.
   let assert Ok(Nil) = simplifile.write(root <> "/a", "new\n")
@@ -1316,7 +1316,7 @@ pub fn real_host_stale_content_retains_5000_fresh_lines_test() {
   assert codec.decode_invocation(bytes) == Ok(call)
   let ctx =
     fake_broker.ctx(root, fs.real_filesystem(), 1000, [], process.new_subject())
-  let host = local.new(scope(), ctx, fn(_) { None })
+  let host = local_host(scope(), ctx, fn(_) { None })
 
   // StaleContent returns the full touched range, independently of listing caps.
   let output = local.run(host, call)
@@ -1348,7 +1348,7 @@ pub fn real_host_unix_colon_filename_listing_and_search_roundtrip_test() {
     as "Unix permits colon in observed filenames"
   let ctx =
     fake_broker.ctx(root, fs.real_filesystem(), 1000, [], process.new_subject())
-  let host = local.new(scope(), ctx, fn(_) { None })
+  let host = local_host(scope(), ctx, fn(_) { None })
   let request =
     w.ListEntries(
       cw.root(),
@@ -1398,4 +1398,15 @@ pub fn real_host_unix_colon_filename_listing_and_search_roundtrip_test() {
       )),
     )
     == Error(codec.InvalidPayload)
+}
+
+// A registered context cannot construct the executor-local host.
+fn local_host(
+  scope: cw.Scope,
+  ctx: tool.Ctx,
+  observer: fn(String) -> option.Option(String),
+) -> local.Host {
+  let assert Ok(host) = local.new(scope, ctx, observer)
+    as "fixture must have local authority"
+  host
 }

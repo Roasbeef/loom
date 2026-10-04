@@ -21,7 +21,7 @@ import tools/workspace_local
 pub fn read_projections_share_local_semantics_test() {
   let local = fixture("read_projections")
   let assert Ok(Nil) =
-    simplifile.write(local.workspace <> "/a.txt", "a\nb\nc\n")
+    simplifile.write(local_workspace(local).root <> "/a.txt", "a\nb\nc\n")
   let host = unobserved(local)
 
   assert run(host, workspace.Read(path("a.txt"), workspace.Text))
@@ -64,7 +64,10 @@ pub fn native_images_use_signatures_and_text_refuses_binary_test() {
   ]
   list.each(images, fn(image) {
     let assert Ok(Nil) =
-      simplifile.write_bits(local.workspace <> "/bytes.txt", image.0)
+      simplifile.write_bits(
+        local_workspace(local).root <> "/bytes.txt",
+        image.0,
+      )
     assert run(host, workspace.Read(path("bytes.txt"), workspace.Native(1, 1)))
       == workspace_local.Completed(
         workspace.ReadCompleted(Ok(workspace.ImageRead(image.0, image.1))),
@@ -73,7 +76,7 @@ pub fn native_images_use_signatures_and_text_refuses_binary_test() {
   })
 
   let assert Ok(Nil) =
-    simplifile.write_bits(local.workspace <> "/bytes.png", <<255>>)
+    simplifile.write_bits(local_workspace(local).root <> "/bytes.png", <<255>>)
   assert run(host, workspace.Read(path("bytes.png"), workspace.Text)).response
     == workspace.ReadCompleted(Error(workspace.FileReadFailed(fs.NotText)))
   assert run(host, workspace.Read(path("bytes.png"), workspace.Native(1, 1))).response
@@ -84,7 +87,7 @@ pub fn write_edit_observer_reads_landed_bytes_before_return_test() {
   let local = fixture("write_edit_order")
   let seen = process.new_subject()
   let host =
-    workspace_local.new(scope(), local, fn(resolved) {
+    local_host(scope(), local, fn(resolved) {
       let observed = simplifile.read(resolved)
       process.send(seen, #(resolved, observed))
       Some("settled diagnostics")
@@ -100,7 +103,7 @@ pub fn write_edit_observer_reads_landed_bytes_before_return_test() {
       )),
     )
   assert process.receive(seen, 0)
-    == Ok(#(local.workspace <> "/new/deep/a.txt", Ok("a\nb\n")))
+    == Ok(#(local_workspace(local).root <> "/new/deep/a.txt", Ok("a\nb\n")))
 
   let plan = replace_first("a\nb\n", "A")
   let edited = run(host, workspace.AnchoredEdit(path("new/deep/a.txt"), plan))
@@ -108,7 +111,7 @@ pub fn write_edit_observer_reads_landed_bytes_before_return_test() {
     == workspace.EditCompleted(Ok(fs.Landed("a\nb\n", "A\nb\n")))
   assert edited.diagnostics == Some("settled diagnostics")
   assert process.receive(seen, 0)
-    == Ok(#(local.workspace <> "/new/deep/a.txt", Ok("A\nb\n")))
+    == Ok(#(local_workspace(local).root <> "/new/deep/a.txt", Ok("A\nb\n")))
   assert process.receive(seen, 0) == Error(Nil)
 }
 
@@ -116,11 +119,12 @@ pub fn stale_digest_and_anchor_leave_disk_and_observer_untouched_test() {
   let local = fixture("stale_edit")
   let seen = process.new_subject()
   let host =
-    workspace_local.new(scope(), local, fn(resolved) {
+    local_host(scope(), local, fn(resolved) {
       process.send(seen, resolved)
       None
     })
-  let assert Ok(Nil) = simplifile.write(local.workspace <> "/a.txt", "a\nnew\n")
+  let assert Ok(Nil) =
+    simplifile.write(local_workspace(local).root <> "/a.txt", "a\nnew\n")
 
   // The referenced first line still matches; the digest binds the unreferenced
   // sibling line too. Checking anchors alone would overwrite this new text.
@@ -153,7 +157,8 @@ pub fn stale_digest_and_anchor_leave_disk_and_observer_untouched_test() {
     hashline.StaleAnchors([_]),
     _,
   ))) = anchored.response
-  assert simplifile.read(local.workspace <> "/a.txt") == Ok("a\nnew\n")
+  assert simplifile.read(local_workspace(local).root <> "/a.txt")
+    == Ok("a\nnew\n")
   assert process.receive(seen, 0) == Error(Nil)
 }
 
@@ -161,40 +166,54 @@ pub fn backend_write_failure_never_calls_observer_test() {
   let local = fixture("write_failed")
   let seen = process.new_subject()
   let filesystem =
-    tool.FileSystem(..local.filesystem, write: fn(resolved, _bytes) {
-      Error(tool.FsPermissionDenied(resolved))
-    })
+    tool.FileSystem(
+      ..local_workspace(local).filesystem,
+      write: fn(resolved, _bytes) { Error(tool.FsPermissionDenied(resolved)) },
+    )
   let host =
-    workspace_local.new(scope(), tool.Ctx(..local, filesystem:), fn(resolved) {
-      process.send(seen, resolved)
-      None
-    })
+    local_host(
+      scope(),
+      tool.Ctx(
+        ..local,
+        workspace: tool.LocalWorkspace(local_workspace(local).root, filesystem),
+      ),
+      fn(resolved) {
+        process.send(seen, resolved)
+        None
+      },
+    )
   assert run(host, workspace.Write(path("a.txt"), "text")).response
     == workspace.WriteCompleted(
-      Error(tool.FsPermissionDenied(local.workspace <> "/a.txt")),
+      Error(tool.FsPermissionDenied(local_workspace(local).root <> "/a.txt")),
     )
-  let assert Ok(Nil) = simplifile.write(local.workspace <> "/a.txt", "a\n")
+  let assert Ok(Nil) =
+    simplifile.write(local_workspace(local).root <> "/a.txt", "a\n")
   assert run(
       host,
       workspace.AnchoredEdit(path("a.txt"), replace_first("a\n", "A")),
     ).response
     == workspace.EditCompleted(
       Error(
-        fs.LandUnwritten(tool.FsPermissionDenied(local.workspace <> "/a.txt")),
+        fs.LandUnwritten(tool.FsPermissionDenied(
+          local_workspace(local).root <> "/a.txt",
+        )),
       ),
     )
-  assert simplifile.read(local.workspace <> "/a.txt") == Ok("a\n")
+  assert simplifile.read(local_workspace(local).root <> "/a.txt") == Ok("a\n")
   assert process.receive(seen, 0) == Error(Nil)
 }
 
 pub fn symlink_escape_refused_but_stat_preserves_lstat_test() {
   let local = fixture("symlink_escape")
-  let outside = local.workspace <> "-outside"
+  let outside = local_workspace(local).root <> "-outside"
   let _ = simplifile.delete(outside)
   let assert Ok(Nil) = simplifile.create_directory_all(outside)
   let assert Ok(Nil) = simplifile.write(outside <> "/a.txt", "secret\n")
   let assert Ok(Nil) =
-    simplifile.create_symlink(to: outside, from: local.workspace <> "/escape")
+    simplifile.create_symlink(
+      to: outside,
+      from: local_workspace(local).root <> "/escape",
+    )
   let host = unobserved(local)
   let operations = [
     workspace.Read(path("escape/a.txt"), workspace.Text),
@@ -224,13 +243,13 @@ pub fn symlink_escape_refused_but_stat_preserves_lstat_test() {
 
 pub fn protected_target_and_alias_refuse_write_and_edit_test() {
   let local = fixture("protected_alias")
-  let protected = local.workspace <> "/.git"
+  let protected = local_workspace(local).root <> "/.git"
   let assert Ok(Nil) = simplifile.create_directory_all(protected)
   let assert Ok(Nil) = simplifile.write(protected <> "/config", "a\n")
   let assert Ok(Nil) =
     simplifile.create_symlink(
       to: ".git/config",
-      from: local.workspace <> "/alias",
+      from: local_workspace(local).root <> "/alias",
     )
   let local =
     tool.Ctx(
@@ -265,14 +284,18 @@ pub fn protected_target_and_alias_refuse_write_and_edit_test() {
 
 pub fn contained_symlink_reads_and_writes_share_target_test() {
   let local = fixture("contained_link")
-  let assert Ok(Nil) = simplifile.write(local.workspace <> "/a.txt", "a\n")
   let assert Ok(Nil) =
-    simplifile.create_symlink(to: "a.txt", from: local.workspace <> "/alias")
+    simplifile.write(local_workspace(local).root <> "/a.txt", "a\n")
+  let assert Ok(Nil) =
+    simplifile.create_symlink(
+      to: "a.txt",
+      from: local_workspace(local).root <> "/alias",
+    )
   let host = unobserved(local)
   assert run(host, workspace.Read(path("alias"), workspace.Text)).response
     == workspace.ReadCompleted(Ok(workspace.TextRead("a\n")))
   let _ = run(host, workspace.Write(path("alias"), "b\n"))
-  assert simplifile.read(local.workspace <> "/a.txt") == Ok("b\n")
+  assert simplifile.read(local_workspace(local).root <> "/a.txt") == Ok("b\n")
   let assert workspace.StatCompleted(Ok(entry)) =
     run(host, workspace.Stat(path("alias"))).response
   assert entry.kind == search.Symlink("a.txt")
@@ -281,8 +304,12 @@ pub fn contained_symlink_reads_and_writes_share_target_test() {
 pub fn bounded_listing_and_search_keep_partial_coverage_test() {
   let local = fixture("bounded_search")
   let assert Ok(Nil) =
-    simplifile.write(local.workspace <> "/a.txt", "needle\nneedle\n")
-  let assert Ok(Nil) = simplifile.write(local.workspace <> "/b.txt", "needle\n")
+    simplifile.write(
+      local_workspace(local).root <> "/a.txt",
+      "needle\nneedle\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(local_workspace(local).root <> "/b.txt", "needle\n")
   let host = unobserved(local)
   let assert workspace.ListingCompleted(Ok(listing)) =
     run(host, workspace.ListEntries(path("."), listing_query(1))).response
@@ -294,7 +321,7 @@ pub fn bounded_listing_and_search_keep_partial_coverage_test() {
   assert found.coverage == search.MatchesCapped
 
   let assert Ok(Nil) =
-    simplifile.write_bits(local.workspace <> "/c.txt", <<255>>)
+    simplifile.write_bits(local_workspace(local).root <> "/c.txt", <<255>>)
   let assert workspace.SearchCompleted(Ok(found)) =
     run(host, workspace.Search(path("."), search_query(10))).response
   assert list.length(found.matches) == 3
@@ -312,7 +339,7 @@ pub fn native_inline_byte_cap_and_read_span_fail_explicitly_test() {
   let local = fixture("native_bounds")
   let assert Ok(Nil) =
     simplifile.write(
-      local.workspace <> "/large.txt",
+      local_workspace(local).root <> "/large.txt",
       string.repeat("x", 65_536),
     )
   let host = unobserved(local)
@@ -346,7 +373,7 @@ pub fn whole_file_byte_bound_is_retained_test() {
   let local = fixture("whole_file_bound")
   let assert Ok(Nil) =
     simplifile.write(
-      local.workspace <> "/large.txt",
+      local_workspace(local).root <> "/large.txt",
       string.repeat("x", fs.max_read_bytes + 1),
     )
   let host = unobserved(local)
@@ -375,7 +402,8 @@ pub fn fresh_write_anchors_are_complete_or_explicitly_omitted_test() {
   assert bytes == string.byte_size(content)
   assert digest == hashline.digest(content)
   assert anchors == workspace.RequiresWindowedRead
-  assert simplifile.read(local.workspace <> "/many_lines.txt") == Ok(content)
+  assert simplifile.read(local_workspace(local).root <> "/many_lines.txt")
+    == Ok(content)
   assert run(host, workspace.Write(path("empty"), "")).response
     == workspace.WriteCompleted(
       Ok(workspace.Written(0, hashline.digest(""), workspace.Included([]))),
@@ -412,7 +440,8 @@ pub fn mutation_capacity_refusal_precedes_all_filesystem_work_test() {
     )
     == Error(workspace.CapacityRefused)
   assert process.receive(effects, 0) == Error(Nil)
-  assert simplifile.is_directory(local.workspace <> "/new") == Ok(False)
+  assert simplifile.is_directory(local_workspace(local).root <> "/new")
+    == Ok(False)
 }
 
 pub fn every_scope_coordinate_fences_every_closed_request_test() {
@@ -420,7 +449,7 @@ pub fn every_scope_coordinate_fences_every_closed_request_test() {
   let effects = process.new_subject()
   let local = instrument(local, effects)
   let host =
-    workspace_local.new(scope(), local, fn(_resolved) {
+    local_host(scope(), local, fn(_resolved) {
       process.send(effects, "observer")
       None
     })
@@ -472,7 +501,7 @@ pub fn every_scope_coordinate_fences_every_closed_request_test() {
     })
   })
   assert process.receive(effects, 0) == Error(Nil)
-  assert simplifile.is_file(local.workspace <> "/a") == Ok(False)
+  assert simplifile.is_file(local_workspace(local).root <> "/a") == Ok(False)
 }
 
 pub fn unbound_callbacks_return_unavailable_test() {
@@ -530,7 +559,7 @@ pub fn typed_callbacks_retain_exact_invocation_and_local_context_test() {
     unobserved(local)
     |> workspace_local.with_git(fn(ctx, called, query) {
       process.send(calls, #(
-        ctx.workspace,
+        local_workspace(ctx).root,
         ctx.op_id,
         ctx.step_id,
         ctx.source_index,
@@ -561,7 +590,7 @@ pub fn typed_callbacks_retain_exact_invocation_and_local_context_test() {
     ))
   assert process.receive(calls, 0)
     == Ok(#(
-      local.workspace,
+      local_workspace(local).root,
       operation,
       "turn:7",
       7,
@@ -580,7 +609,7 @@ pub fn typed_callbacks_retain_exact_invocation_and_local_context_test() {
     })
     |> workspace_local.with_initialization(fn(_ctx, called) {
       assert workspace.request(called) == workspace.Initialize
-      Error(tool.FsPermissionDenied(local.workspace))
+      Error(tool.FsPermissionDenied(local_workspace(local).root))
     })
   assert run(host, workspace.Guidance).response
     == workspace.GuidanceCompleted(
@@ -591,7 +620,7 @@ pub fn typed_callbacks_retain_exact_invocation_and_local_context_test() {
     )
   assert run(host, workspace.Initialize).response
     == workspace.InitializationCompleted(
-      Error(tool.FsPermissionDenied(local.workspace)),
+      Error(tool.FsPermissionDenied(local_workspace(local).root)),
     )
 }
 
@@ -604,7 +633,7 @@ fn fixture(name: String) -> tool.Ctx {
 }
 
 fn unobserved(local: tool.Ctx) -> workspace_local.Host {
-  workspace_local.new(scope(), local, fn(_resolved) { None })
+  local_host(scope(), local, fn(_resolved) { None })
 }
 
 fn session() -> String {
@@ -691,34 +720,55 @@ fn search_query(limit: Int) -> search.GrepQuery {
 }
 
 fn instrument(local: tool.Ctx, effects: process.Subject(String)) -> tool.Ctx {
-  let filesystem = local.filesystem
+  let filesystem = local_workspace(local).filesystem
   tool.Ctx(
     ..local,
-    filesystem: tool.FileSystem(
-      read: fn(path) {
-        process.send(effects, "read")
-        filesystem.read(path)
-      },
-      write: fn(path, bytes) {
-        process.send(effects, "write")
-        filesystem.write(path, bytes)
-      },
-      create_directory_all: fn(path) {
-        process.send(effects, "mkdir")
-        filesystem.create_directory_all(path)
-      },
-      is_file: fn(path) {
-        process.send(effects, "is_file")
-        filesystem.is_file(path)
-      },
-      read_link: fn(path) {
-        process.send(effects, "read_link")
-        filesystem.read_link(path)
-      },
-      rename: fn(from, to) {
-        process.send(effects, "rename")
-        filesystem.rename(from, to)
-      },
+    workspace: tool.LocalWorkspace(
+      local_workspace(local).root,
+      tool.FileSystem(
+        read: fn(path) {
+          process.send(effects, "read")
+          filesystem.read(path)
+        },
+        write: fn(path, bytes) {
+          process.send(effects, "write")
+          filesystem.write(path, bytes)
+        },
+        create_directory_all: fn(path) {
+          process.send(effects, "mkdir")
+          filesystem.create_directory_all(path)
+        },
+        is_file: fn(path) {
+          process.send(effects, "is_file")
+          filesystem.is_file(path)
+        },
+        read_link: fn(path) {
+          process.send(effects, "read_link")
+          filesystem.read_link(path)
+        },
+        rename: fn(from, to) {
+          process.send(effects, "rename")
+          filesystem.rename(from, to)
+        },
+      ),
     ),
   )
+}
+
+// Existing local fixtures expose physical authority explicitly after migration.
+fn local_workspace(ctx: tool.Ctx) -> tool.LocalWorkspaceAccess {
+  let assert Ok(local) = tool.require_local_workspace(ctx)
+    as "fixture requires a local workspace"
+  local
+}
+
+// A registered context cannot construct the executor-local host.
+fn local_host(
+  scope: core_workspace.Scope,
+  ctx: tool.Ctx,
+  observer: fn(String) -> option.Option(String),
+) -> workspace_local.Host {
+  let assert Ok(host) = workspace_local.new(scope, ctx, observer)
+    as "fixture must have local authority"
+  host
 }

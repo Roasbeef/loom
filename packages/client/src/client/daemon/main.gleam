@@ -652,6 +652,7 @@ pub fn listen_serving(
       daemon:,
       peer_endpoint:,
       domain_configuration:,
+      workspace_authority: server.local_workspace_authority(),
       generator: fn() {
         ids.generator(
           clock.from_function(ffi_os.system_time_ms),

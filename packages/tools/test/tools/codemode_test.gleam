@@ -46,7 +46,7 @@ fn ctx_for(step: String) -> Ctx {
   let workspace = "/nonexistent/loom-codemode-test"
   tool.Ctx(
     directory_access: directory_access.none(),
-    workspace:,
+    workspace: tool.LocalWorkspace(workspace, dead_filesystem()),
     strand: "main",
     op_id: an_op(7),
     step_id: step,
@@ -56,8 +56,7 @@ fn ctx_for(step: String) -> Ctx {
     demand: exec.FullEnforcement,
     env: [#("PATH", "/usr/bin")],
     clock: clock.fixed(at: 1000),
-    filesystem: dead_filesystem(),
-    blob_root: workspace <> "/.blobs",
+    owner_blobs: tool.OwnerBlobs(workspace <> "/.blobs", dead_filesystem()),
     clear_call: dead_broker,
     raise_refusal: tool.no_raise(),
     observe_output: tool.ignore_output(),
@@ -266,10 +265,9 @@ fn source_ctx(name: String) -> Ctx {
   let assert Ok(Nil) = simplifile.create_directory_all(workspace)
   tool.Ctx(
     ..ctx_for(name),
-    workspace:,
+    workspace: tool.LocalWorkspace(workspace, fs.real_filesystem()),
     base_policy: policy.workspace_default(workspace),
-    filesystem: fs.real_filesystem(),
-    blob_root: workspace <> "/.blobs",
+    owner_blobs: tool.OwnerBlobs(workspace <> "/.blobs", fs.real_filesystem()),
   )
 }
 
@@ -290,10 +288,13 @@ pub fn source_inputs_are_exclusive_nonblank_strings_before_io_test() {
   let ctx =
     tool.Ctx(
       ..ctx_for("invalid-source"),
-      filesystem: tool.FileSystem(..filesystem, read: fn(path) {
-        process.send(reads, path)
-        Error(tool.FsNotFound(path:))
-      }),
+      workspace: tool.LocalWorkspace(
+        local_workspace(ctx_for("invalid-source")).root,
+        tool.FileSystem(..filesystem, read: fn(path) {
+          process.send(reads, path)
+          Error(tool.FsNotFound(path:))
+        }),
+      ),
     )
   let requests = process.new_subject()
   let mode = recording_source(requests)
@@ -317,7 +318,7 @@ pub fn source_inputs_are_exclusive_nonblank_strings_before_io_test() {
 
 pub fn file_source_is_read_whole_and_reloaded_on_a_fresh_run_test() {
   let ctx = source_ctx("fresh-runs")
-  let path = ctx.workspace <> "/analysis.gleam"
+  let path = local_workspace(ctx).root <> "/analysis.gleam"
   let first = "  import cap/report\npub fn main() { report.text(\"first\") }\n"
   let second = "pub fn main() { report.text(\"second\") }\n"
   let assert Ok(Nil) = simplifile.write(path, first)
@@ -329,7 +330,7 @@ pub fn file_source_is_read_whole_and_reloaded_on_a_fresh_run_test() {
   let assert [one, two] = drained(requests, [])
   assert one.source == first
   assert two.source == second
-  assert one.workspace == ctx.workspace
+  assert one.workspace == local_workspace(ctx).root
   assert one.grants == []
   assert two.grants == []
 }
@@ -337,9 +338,12 @@ pub fn file_source_is_read_whole_and_reloaded_on_a_fresh_run_test() {
 pub fn unreadable_or_empty_source_files_never_cross_the_seam_test() {
   let ctx = source_ctx("read-failures")
   let assert Ok(Nil) =
-    ctx.filesystem.write(ctx.workspace <> "/binary.gleam", <<255>>)
+    local_workspace(ctx).filesystem.write(
+      local_workspace(ctx).root <> "/binary.gleam",
+      <<255>>,
+    )
   let assert Ok(Nil) =
-    simplifile.write(ctx.workspace <> "/blank.gleam", " \n\t")
+    simplifile.write(local_workspace(ctx).root <> "/blank.gleam", " \n\t")
   let requests = process.new_subject()
   let runner = codemode.tool_for(recording_source(requests))
   let cases = [
@@ -357,12 +361,12 @@ pub fn unreadable_or_empty_source_files_never_cross_the_seam_test() {
 
 pub fn outside_and_symlinked_sources_need_canonical_read_authority_test() {
   let ctx = source_ctx("authority")
-  let outside = ctx.workspace <> "-outside.gleam"
+  let outside = local_workspace(ctx).root <> "-outside.gleam"
   let assert Ok(Nil) = simplifile.write(outside, "outside source")
   let assert Ok(Nil) =
     simplifile.create_symlink(
       to: outside,
-      from: ctx.workspace <> "/alias.gleam",
+      from: local_workspace(ctx).root <> "/alias.gleam",
     )
   let requests = process.new_subject()
   let runner = codemode.tool_for(recording_source(requests))
@@ -381,10 +385,10 @@ pub fn outside_and_symlinked_sources_need_canonical_read_authority_test() {
 
 pub fn source_read_approval_is_exact_precedes_io_and_is_not_retained_test() {
   let ctx = source_ctx("read-approval")
-  let outside = ctx.workspace <> "-outside.gleam"
+  let outside = local_workspace(ctx).root <> "-outside.gleam"
   let assert Ok(Nil) = simplifile.write(outside, "approved source")
   let reads = process.new_subject()
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   let counted =
     tool.FileSystem(..filesystem, read: fn(path) {
       process.send(reads, path)
@@ -394,7 +398,7 @@ pub fn source_read_approval_is_exact_precedes_io_and_is_not_retained_test() {
   let approved =
     tool.Ctx(
       ..ctx,
-      filesystem: counted,
+      workspace: tool.LocalWorkspace(local_workspace(ctx).root, counted),
       raise_refusal: fn(refusal: tool.RaisedRefusal) {
         assert drained(reads, []) == []
         process.send(approvals, refusal.denial.wanted)
@@ -414,16 +418,19 @@ pub fn source_read_approval_is_exact_precedes_io_and_is_not_retained_test() {
 pub fn requested_permissions_are_authorized_before_loading_source_test() {
   let ctx = source_ctx("permission-order")
   let assert Ok(Nil) =
-    simplifile.write(ctx.workspace <> "/source.gleam", "source")
+    simplifile.write(local_workspace(ctx).root <> "/source.gleam", "source")
   let reads = process.new_subject()
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   let ctx =
     tool.Ctx(
       ..ctx,
-      filesystem: tool.FileSystem(..filesystem, read: fn(path) {
-        process.send(reads, path)
-        filesystem.read(path)
-      }),
+      workspace: tool.LocalWorkspace(
+        local_workspace(ctx).root,
+        tool.FileSystem(..filesystem, read: fn(path) {
+          process.send(reads, path)
+          filesystem.read(path)
+        }),
+      ),
     )
   let requests = process.new_subject()
   let runner = codemode.tool_for(recording_source(requests))
@@ -441,25 +448,28 @@ pub fn requested_permissions_are_authorized_before_loading_source_test() {
       tool.Resume(refusal.denial.wanted)
     })
   assert !runner.run(approved, args).is_error
-  assert drained(reads, []) == [ctx.workspace <> "/source.gleam"]
+  assert drained(reads, []) == [local_workspace(ctx).root <> "/source.gleam"]
   let assert [request] = drained(requests, [])
   assert list.contains(request.grants, policy.GrantNetwork(policy.NetworkFull))
 }
 
 pub fn approval_retry_uses_the_loaded_source_without_rereading_test() {
   let ctx = source_ctx("retry-source")
-  let path = ctx.workspace <> "/source.gleam"
+  let path = local_workspace(ctx).root <> "/source.gleam"
   let assert Ok(Nil) = simplifile.write(path, "first source")
   let reads = process.new_subject()
   let requests = process.new_subject()
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   let ctx =
     tool.Ctx(
       ..ctx,
-      filesystem: tool.FileSystem(..filesystem, read: fn(path) {
-        process.send(reads, path)
-        filesystem.read(path)
-      }),
+      workspace: tool.LocalWorkspace(
+        local_workspace(ctx).root,
+        tool.FileSystem(..filesystem, read: fn(path) {
+          process.send(reads, path)
+          filesystem.read(path)
+        }),
+      ),
       raise_refusal: fn(_refusal) {
         let assert Ok(Nil) = simplifile.write(path, "changed source")
         tool.Resume([raised_grant])
@@ -486,7 +496,10 @@ pub fn approval_retry_uses_the_loaded_source_without_rereading_test() {
 pub fn background_launch_loads_source_but_interactions_never_do_test() {
   let ctx = source_ctx("background-source")
   let assert Ok(Nil) =
-    simplifile.write(ctx.workspace <> "/source.gleam", "launched source")
+    simplifile.write(
+      local_workspace(ctx).root <> "/source.gleam",
+      "launched source",
+    )
   let launches = process.new_subject()
   let interactions = process.new_subject()
   let mode =
@@ -534,13 +547,16 @@ pub fn background_launch_loads_source_but_interactions_never_do_test() {
 
   // A supplied source is irrelevant to a handle interaction, even when it
   // is malformed or names an unreadable file outside the workspace.
-  let filesystem = ctx.filesystem
+  let filesystem = local_workspace(ctx).filesystem
   let no_reads =
     tool.Ctx(
       ..ctx,
-      filesystem: tool.FileSystem(..filesystem, read: fn(_) {
-        panic as "asynchronous interactions must never read a source file"
-      }),
+      workspace: tool.LocalWorkspace(
+        local_workspace(ctx).root,
+        tool.FileSystem(..filesystem, read: fn(_) {
+          panic as "asynchronous interactions must never read a source file"
+        }),
+      ),
     )
   list.each(["check", "join", "cancel", "send"], fn(command) {
     assert !runner.run(
@@ -1139,7 +1155,10 @@ pub fn the_execution_runs_under_the_callers_coordinates_test() {
   ))
   assert list.contains(echoed, #("step", json.String("turn-9:tools")))
   assert list.contains(echoed, #("strand", json.String("main")))
-  assert list.contains(echoed, #("workspace", json.String(ctx.workspace)))
+  assert list.contains(echoed, #(
+    "workspace",
+    json.String(local_workspace(ctx).root),
+  ))
   // And the program crossed unaltered.
   assert list.contains(echoed, #(
     "source",
@@ -1697,7 +1716,7 @@ pub fn a_request_carries_the_grants_this_call_was_approved_test() {
   let wanted = policy.GrantEnv(name: "LOOM_CAP_SOCK")
   let ctx = tool.Ctx(..ctx_for("turn-1:tools"), grants: [wanted])
   let built =
-    codemode.request(
+    local_request(
       echoing(),
       ctx,
       "pub fn main() { todo }",
@@ -1711,7 +1730,7 @@ pub fn a_request_carries_the_grants_this_call_was_approved_test() {
 // approval did rather than something the request shape hands out.
 pub fn an_unapproved_request_carries_no_grants_test() {
   let built =
-    codemode.request(
+    local_request(
       echoing(),
       ctx_for("turn-1:tools"),
       "pub fn main() { todo }",
@@ -1915,7 +1934,7 @@ pub fn request_carries_the_callers_output_observer_test() {
       process.send(observed, observed_tail)
     })
   let request =
-    codemode.request(
+    local_request(
       echoing(),
       ctx,
       "pub fn main() {}",
@@ -2326,4 +2345,23 @@ pub fn the_lsp_sql_recipe_appears_once_however_many_seams_admit_it_test() {
       codemode_recipes.lsp_sql_skeleton(),
     )
     == 1
+}
+
+// Existing local fixtures expose physical authority explicitly after migration.
+fn local_workspace(ctx: tool.Ctx) -> tool.LocalWorkspaceAccess {
+  let assert Ok(local) = tool.require_local_workspace(ctx)
+    as "fixture requires a local workspace"
+  local
+}
+
+fn local_request(
+  mode: codemode.CodeMode,
+  ctx: tool.Ctx,
+  source: String,
+  within: option.Option(Int),
+  on seam: codemode.Seam,
+) -> codemode.Request {
+  let assert Ok(request) = codemode.request(mode, ctx, source, within, on: seam)
+    as "fixture has a local code-mode request"
+  request
 }

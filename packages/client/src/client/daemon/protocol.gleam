@@ -8,6 +8,7 @@
 import client/peer_mail
 import core/ids
 import core/json.{type JsonValue}
+import core/workspace
 import gleam/bit_array
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -194,15 +195,15 @@ pub type Command {
   GetSession(session_id: String)
 
   /// Reads the owner's durable workspace selection.
-  WorkspaceDefault(workspace: String)
+  WorkspaceDefault(workspace: workspace.WorkspaceKey)
 
   /// Changes the owner's workspace selection without starting work.
-  SetDefault(workspace: String, session_id: String)
+  SetDefault(workspace: workspace.WorkspaceKey, session_id: String)
 
   /// Reserves durable identity and explicitly initializes the new session.
   CreateSession(
     request_key: String,
-    workspace: String,
+    workspace: workspace.Selection,
     name: String,
     configuration: String,
     domain_scope: domain.Scope,
@@ -273,6 +274,9 @@ pub type Request {
     id: Int,
     /// The decoded operation, before authorization or admission.
     command: Command,
+    /// Up to eight distinct 1..64-byte ASCII tokens (0x21..0x7e, no spaces).
+    /// These assert decoder support for this request only.
+    accepts: List(String),
   )
 }
 
@@ -299,7 +303,7 @@ pub type Fault {
 ///
 /// ```gleam
 /// assert protocol.decode("{\"v\":2,\"id\":1,\"cmd\":\"status\",\"body\":{}}")
-///   == Ok(protocol.Request(1, protocol.Status))
+///   == Ok(protocol.Request(1, protocol.Status, []))
 /// ```
 pub fn decode(text: String) -> Result(Request, Fault) {
   use Nil <- result.try(within_limit(text, None))
@@ -336,7 +340,11 @@ pub fn decode(text: String) -> Result(Request, Fault) {
     decode_fields(fields)
     |> result.map_error(fn(reason) { Fault(Some(id), "bad_request", reason) }),
   )
-  Ok(Request(id, command))
+  use accepts <- result.try(
+    accepted_features(fields)
+    |> result.map_error(fn(reason) { Fault(Some(id), "bad_request", reason) }),
+  )
+  Ok(Request(id, command, accepts))
 }
 
 fn decode_fields(
@@ -524,16 +532,15 @@ fn decode_fields(
       Ok(ListArchivedSessions(after, revision))
     }
     "sessions.get" -> result.map(session_id(fields), GetSession)
-    "sessions.default" ->
-      result.map(text_field(fields, "workspace", 4096), WorkspaceDefault)
+    "sessions.default" -> result.map(workspace_key(fields), WorkspaceDefault)
     "sessions.set_default" -> {
-      use workspace <- result.try(text_field(fields, "workspace", 4096))
+      use workspace <- result.try(workspace_key(fields))
       use id <- result.map(session_id(fields))
       SetDefault(workspace, id)
     }
     "sessions.create" -> {
       use key <- result.try(text_field(fields, "request_key", 256))
-      use workspace <- result.try(text_field(fields, "workspace", 4096))
+      use workspace <- result.try(workspace_selection(fields))
       use name <- result.try(text_field(fields, "name", 256))
       use configuration <- result.try(configuration_field(fields))
       use scope <- result.map(domain_scope(fields))
@@ -922,5 +929,112 @@ fn within_limit(text: String, reply_to: Option(Int)) -> Result(Nil, Fault) {
     True -> Ok(Nil)
     False ->
       Error(Fault(reply_to, "too_large", "control message exceeds 64 KiB"))
+  }
+}
+
+// Feature support belongs to the request, so reconnect or another command
+// cannot accidentally inherit permission to interpret registered identities.
+fn accepted_features(
+  fields: List(#(String, JsonValue)),
+) -> Result(List(String), String) {
+  case list.key_find(fields, "accepts") {
+    Error(Nil) -> Ok([])
+    Ok(json.Array(values)) -> {
+      use Nil <- result.try(case list.drop(values, 8) == [] {
+        True -> Ok(Nil)
+        False -> Error("accepts exceeds eight features")
+      })
+      use names <- result.try(
+        list.try_map(values, fn(value) {
+          case value {
+            json.String(name) -> {
+              use Nil <- result.try(
+                case
+                  string.byte_size(name) > 0 && string.byte_size(name) <= 64
+                {
+                  True -> Ok(Nil)
+                  False -> Error("invalid accepted feature size")
+                },
+              )
+              use Nil <- result.try(feature_ascii(<<name:utf8>>))
+              Ok(name)
+            }
+            _ -> Error("expected accepted feature names")
+          }
+        }),
+      )
+      case list.unique(names) == names {
+        True -> Ok(names)
+        False -> Error("duplicate accepted feature")
+      }
+    }
+    Ok(_) -> Error("expected an accepts list")
+  }
+}
+
+fn feature_ascii(bytes: BitArray) -> Result(Nil, String) {
+  case bytes {
+    <<>> -> Ok(Nil)
+    <<byte, rest:bits>> if byte >= 33 && byte <= 126 -> feature_ascii(rest)
+    _ -> Error("expected bounded ASCII feature name")
+  }
+}
+
+fn workspace_key(
+  fields: List(#(String, JsonValue)),
+) -> Result(workspace.WorkspaceKey, String) {
+  workspace_selection(fields) |> result.map(workspace.selection_key)
+}
+
+fn workspace_selection(
+  fields: List(#(String, JsonValue)),
+) -> Result(workspace.Selection, String) {
+  case
+    list.key_find(fields, "workspace"),
+    list.key_find(fields, "workspace_selection")
+  {
+    Ok(_), Error(Nil) ->
+      text_field(fields, "workspace", 4096)
+      |> result.map(workspace.LocalDirectory)
+    Error(Nil), Ok(json.Object(selected)) -> {
+      use kind <- result.try(text_field(selected, "kind", 32))
+      case kind {
+        "local" -> {
+          use Nil <- result.try(selection_fields(selected, ["kind", "path"]))
+          text_field(selected, "path", 4096)
+          |> result.map(workspace.LocalDirectory)
+        }
+        "registered" -> {
+          use Nil <- result.try(
+            selection_fields(selected, ["kind", "executor", "workspace"]),
+          )
+          use executor <- result.try(text_field(selected, "executor", 128))
+          use name <- result.try(text_field(selected, "workspace", 128))
+          workspace.selector(executor, name)
+          |> result.map(workspace.RegisteredWorkspace)
+          |> result.replace_error("invalid registered selector")
+        }
+        _ -> Error("unknown workspace selection")
+      }
+    }
+    Error(Nil), Error(Nil) -> Error("expected workspace selection")
+    Ok(_), Ok(_) ->
+      Error("workspace and workspace_selection are mutually exclusive")
+    Error(Nil), Ok(_) -> Error("expected tagged workspace selection")
+  }
+}
+
+fn selection_fields(
+  fields: List(#(String, JsonValue)),
+  names: List(String),
+) -> Result(Nil, String) {
+  case
+    list.length(fields) == list.length(names)
+    && list.all(names, fn(name) {
+      list.length(list.filter(fields, fn(field) { field.0 == name })) == 1
+    })
+  {
+    True -> Ok(Nil)
+    False -> Error("unexpected workspace selection fields")
   }
 }
