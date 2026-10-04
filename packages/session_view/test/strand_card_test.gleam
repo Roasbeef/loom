@@ -103,6 +103,23 @@ pub fn a_placeholder_is_not_a_task_test() {
   assert strand_card.task_words("Task brief outside loaded history") == None
 }
 
+// The advisor's roster title is its feed's prompt, so it is no task, and a
+// sub-agent's brief is cut to its first sentence.
+pub fn the_advisor_feed_is_not_a_task_test() {
+  assert strand_card.task_words(
+      "[advisor feed: what the primary did since your last review] user: Three things, in order.",
+    )
+    == None
+  assert strand_card.task_words("Fix calc.py. Then add tests.")
+    == Some("Fix calc.py.")
+  assert strand_card.task_words("Fix the parser\nand the lexer")
+    == Some("Fix the parser and the lexer")
+
+  let assert Some(cut) = strand_card.task_words(string.repeat("word ", 60))
+  assert string.length(cut) == strand_card.task_limit
+  assert string.ends_with(cut, "…")
+}
+
 pub fn a_finished_strand_adds_how_long_it_ran_when_known_test() {
   assert strand_card.status_line(line(agent_view.Finished, "done", Some(72)))
     == "Finished 1m 12s"

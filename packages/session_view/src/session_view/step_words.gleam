@@ -48,7 +48,6 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import session_view/text_hygiene
-import session_view/todo_board
 import session_view/tool_activity
 
 /// The most characters of a command, a purpose or a pattern a step keeps. A
@@ -142,7 +141,7 @@ pub fn of_call(call: tool_activity.Call) -> Words {
     "agent_notes" -> Words("Listed notes", Unnamed, None)
     "remember" -> Words("Remembered", Prose("a durable note"), None)
     "context_remaining" -> Words("Checked context", Unnamed, None)
-    "todo" -> Words("Todo", Prose(todo_words(arguments)), None)
+    "todo" -> todo_words(arguments)
     "code_mode" -> program(arguments)
     _ -> generic(name, arguments)
   }
@@ -232,6 +231,63 @@ pub fn returned(outcome: String) -> String {
   case outcome {
     "completed" -> "finished"
     other -> other
+  }
+}
+
+/// The most characters a collapsed result line keeps before its ellipsis.
+pub const result_limit = 140
+
+/// The first line of a report that says something, as the line a reader scans:
+/// without the Markdown marker it opens with or the backticks of a code span,
+/// and cut at a word boundary to `result_limit` characters. A cut ends in an
+/// ellipsis inside the line, so a host that keeps the line on one row shows it
+/// at the end of that row and not on a row of its own. A report with no text
+/// is the empty string.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert step_words.result_line("# Summary\n\nFound two files.") == "Summary"
+/// assert step_words.result_line("") == ""
+/// ```
+pub fn result_line(report: String) -> String {
+  let line =
+    report
+    |> string.split("\n")
+    |> list.map(string.trim)
+    |> list.find(fn(line) { line != "" })
+    |> result.unwrap("")
+    |> string.replace("`", "")
+  let bare = case line {
+    "# " <> rest
+    | "## " <> rest
+    | "### " <> rest
+    | "> " <> rest
+    | "- " <> rest
+    | "* " <> rest -> string.trim(rest)
+    _ -> line
+  }
+  case string.length(bare) > result_limit {
+    True ->
+      at_word(
+        string.slice(bare, 0, result_limit),
+        string.slice(bare, result_limit, 1),
+      )
+      <> "…"
+    False -> bare
+  }
+}
+
+// A cut line backed up to the end of its last whole word, so the ellipsis
+// follows a word and not half of one. A cut that ends at a word's end (the
+// next character is a space) and a cut with no space in it keep every
+// character.
+fn at_word(cut: String, next: String) -> String {
+  case next, list.reverse(string.split(cut, " ")) {
+    " ", _ -> cut
+    _, [_partial, first, ..rest] ->
+      string.join(list.reverse([first, ..rest]), " ")
+    _, _ -> cut
   }
 }
 
@@ -380,13 +436,69 @@ fn keyed(key: Option(String)) -> Subject {
   }
 }
 
-// The `todo` call's own summary, `todo · add "task"`, without its leading
-// tool name, which the verb now says.
-fn todo_words(arguments: JsonValue) -> String {
-  let summary = todo_board.call_summary(arguments)
-  case string.split_once(summary, " · ") {
-    Ok(#(_, rest)) -> rest
-    Error(Nil) -> summary
+// The `todo` call as a reader says it: `Todo · 4 tasks` for a new list,
+// `Todo · done: Add modulo` for a task finished. The call's `op` is the
+// tool's own vocabulary (`init`, `drop`), which is for the model, so each op
+// is a word a person would use, and the task is the model's text cut to
+// `task_limit` characters. A call whose `op` is missing or not one the tool
+// knows keeps the op's own word, since the words are only the reader's gloss.
+fn todo_words(arguments: JsonValue) -> Words {
+  let op = option.unwrap(text_field(arguments, "op"), "")
+  let target = todo_target(arguments)
+  let said = fn(verb) { Words("Todo", Figure(verb <> target), None) }
+  case op {
+    "init" -> Words("Todo", Figure(planned(arguments)), None)
+    "append" -> Words("Todo", Figure("added " <> planned(arguments)), None)
+    "start" -> said("started")
+    "done" -> said("done")
+    "drop" -> said("dropped")
+    "remove" -> said("removed")
+    "block" -> said("blocked")
+    "unblock" -> said("unblocked")
+    "view" -> Words("Todo", Figure("viewed"), None)
+    "" -> Words("Todo", Unnamed, None)
+    other -> Words("Todo", Figure(other), None)
+  }
+}
+
+// What a `todo` op acted on, after its verb: `: Add modulo` for a task,
+// `: phase Setup` for a phase, and nothing for an op on the whole board.
+fn todo_target(arguments: JsonValue) -> String {
+  case text_field(arguments, "task"), text_field(arguments, "phase") {
+    Some(task), _ -> ": " <> clip_to(task, todo_task_limit)
+    None, Some(phase) -> ": phase " <> clip_to(phase, todo_task_limit)
+    None, None -> ""
+  }
+}
+
+// The most characters of a task a todo step keeps.
+const todo_task_limit = 60
+
+// How many tasks a new or extended list holds: the items of every phase of
+// `phases`, or the call's own `items`.
+fn planned(arguments: JsonValue) -> String {
+  let items = fn(value: JsonValue) {
+    case value {
+      json.Object(fields) ->
+        case list.key_find(fields, "items") {
+          Ok(json.Array(entries)) -> list.length(entries)
+          _ -> 0
+        }
+      _ -> 0
+    }
+  }
+  let total = case arguments {
+    json.Object(fields) ->
+      case list.key_find(fields, "phases") {
+        Ok(json.Array(phases)) ->
+          list.fold(phases, 0, fn(n, p) { n + items(p) })
+        _ -> items(arguments)
+      }
+    _ -> 0
+  }
+  case total {
+    0 -> "list"
+    _ -> counted(total, "task", "tasks")
   }
 }
 
@@ -559,10 +671,14 @@ fn first_line(text: String) -> String {
 }
 
 fn clip(text: String) -> String {
+  clip_to(text, subject_limit)
+}
+
+fn clip_to(text: String, limit: Int) -> String {
   let one_line = text_hygiene.single_line(text)
-  case string.drop_start(one_line, subject_limit) {
+  case string.drop_start(one_line, limit) {
     "" -> one_line
-    _ -> string.slice(one_line, 0, subject_limit - 1) <> "…"
+    _ -> string.slice(one_line, 0, limit - 1) <> "…"
   }
 }
 

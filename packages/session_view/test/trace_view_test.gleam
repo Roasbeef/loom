@@ -178,6 +178,7 @@ pub fn a_call_with_no_result_is_running_test() {
       Some(5000),
       Pending,
       None,
+      None,
       [],
     )
 }
@@ -207,6 +208,35 @@ pub fn a_completed_program_shows_its_value_test() {
   assert shown.within_ms == Some(30_000)
   assert shown.vetting == Passed
   assert trace_view.budget_line(shown) == "30000 ms wall · vetted"
+}
+
+// The compiler's diagnostics are kept apart from the text written for the
+// model, so a host can show a reader the first and not the second.
+pub fn a_failed_build_keeps_its_diagnostics_apart_from_the_models_text_test() {
+  let outcome =
+    Some(#(
+      "the program did not compile and did not run. Fix the diagnostics below",
+      status("compile_failed", [#("detail", json.String("error: no module"))]),
+      True,
+    ))
+  let shown =
+    only(
+      trace_view.fold(
+        window([exchange(0, program("pub fn main() {}", None), outcome)]),
+      ),
+    )
+
+  assert shown.state == CompileFailed
+  assert shown.detail == Some("error: no module")
+  assert trace_view.budget_words(shown) == "default"
+  assert trace_view.budget_words(
+      trace_view.Program(..shown, within_ms: Some(30_000)),
+    )
+    == "30 s"
+  assert trace_view.budget_words(
+      trace_view.Program(..shown, within_ms: Some(1500)),
+    )
+    == "1500 ms"
 }
 
 pub fn a_named_file_is_the_label_test() {

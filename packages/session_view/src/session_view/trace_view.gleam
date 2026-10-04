@@ -128,6 +128,14 @@ pub type Program {
     /// The sandbox line the result reported (`sandbox · build enforced 4
     /// layers; skipped 0 · satellite …`), when it reported one.
     sandbox: Option(String),
+    /// What went wrong in the result's own words, when the result keeps them
+    /// apart from the text it wrote for the model: the compiler's
+    /// diagnostics of a program that did not compile, the reason a run
+    /// failed. It is the one thing a reader wants from a failed program, and
+    /// `excerpt` is not it, since that is the text beside it that tells the
+    /// model what to do next. At most `max_detail` characters, lines kept.
+    /// Session text.
+    detail: Option(String),
     /// The rows of the call record the result carried (`CALLS · 2 calls · 1
     /// failed`, then one row per call), as the transcript's call section
     /// words them. Nothing while the call runs, and nothing for a result with
@@ -194,7 +202,7 @@ pub fn capability_calls_recorded() -> String {
 /// ```gleam
 /// let program = trace_view.Program(
 ///   trace_view.Running, "count.gleam", None, None, trace_view.Pending, None,
-///   [],
+///   None, [],
 /// )
 /// assert trace_view.first_call(program) == "count.gleam"
 /// ```
@@ -268,7 +276,7 @@ pub fn vetting_word(vetting: Vetting) -> String {
 /// ```gleam
 /// let program = trace_view.Program(
 ///   trace_view.Completed, "", None, Some(30_000), trace_view.Passed, None,
-///   [],
+///   None, [],
 /// )
 /// assert trace_view.budget_line(program) == "30000 ms wall · vetted"
 /// ```
@@ -278,6 +286,28 @@ pub fn budget_line(program: Program) -> String {
     None -> "default wall budget"
   }
   wall <> " · " <> vetting_word(program.vetting)
+}
+
+/// The budget a program named, as a reader says it: `30 s`, or `default` when
+/// the call named none. `budget_line` is the terminal's, which also says
+/// whether vetting passed; a program the page lists has a state chip that
+/// already says so.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let program = trace_view.Program(
+///   trace_view.Completed, "", None, Some(30_000), trace_view.Passed, None,
+///   None, [],
+/// )
+/// assert trace_view.budget_words(program) == "30 s"
+/// ```
+pub fn budget_words(program: Program) -> String {
+  case program.within_ms {
+    Some(ms) if ms >= 1000 && ms % 1000 == 0 -> int.to_string(ms / 1000) <> " s"
+    Some(ms) -> int.to_string(ms) <> " ms"
+    None -> "default"
+  }
 }
 
 /// Folds a window of records into the session's trace. Records arrive
@@ -423,6 +453,7 @@ fn program(call: tool_activity.Call, position: Int) -> Program {
       let state = state(fields, is_error)
       Program(
         sandbox: transcript_lines.sandbox_summary(fields),
+        detail: detail(fields),
         state:,
         label:,
         excerpt: Some(excerpt(fields, content, state)),
@@ -439,8 +470,30 @@ fn program(call: tool_activity.Call, position: Int) -> Program {
         within_ms:,
         vetting: Pending,
         sandbox: None,
+        detail: None,
         calls: [],
       )
+  }
+}
+
+/// The most characters of a failure's detail a program keeps.
+pub const max_detail = 800
+
+// The result's `detail` text, with its lines and a bound on its length. A
+// result that has none, or an empty one, has nothing to say apart from its
+// excerpt.
+fn detail(fields: List(#(String, json.JsonValue))) -> Option(String) {
+  case list.key_find(fields, "detail") {
+    Ok(json.String(text)) ->
+      case string.trim(text_hygiene.multiline(text)) {
+        "" -> None
+        shown ->
+          case string.length(shown) > max_detail {
+            True -> Some(string.slice(shown, 0, max_detail - 1) <> "…")
+            False -> Some(shown)
+          }
+      }
+    _ -> None
   }
 }
 
