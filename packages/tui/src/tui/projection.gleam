@@ -271,7 +271,7 @@ fn refresh_diff_cache(before: Model, after: Model) -> Model {
               previous_diff_layout(before, after),
               after.shared.active_strand,
               after.view.image_support,
-              layout.transcript_viewport_height(after),
+              after.view.height,
             )
           let count = list.length(rows)
           Model(
@@ -347,14 +347,16 @@ fn record_cache_matches(model: Model, width: Int) -> Bool {
   && model.view.record_cache_details == model.shared.details_expanded
 }
 
-// A short pane gives a picture fewer rows, so rows built for another height
-// are not the rows of this one. On a terminal that draws nothing the height
-// shapes no row, and a resize that only changes it keeps its cache.
+// A short terminal gives a picture fewer rows, so rows built for another
+// number of picture rows are not the rows of this one. The number comes from
+// the terminal's height, so typing never changes it. On a terminal that draws
+// nothing no row depends on it, and a resize that changes it keeps the cache.
 fn same_image_height(model: Model) -> Bool {
   case model.view.image_support {
     image_support.TextOnly(..) -> True
     image_support.KittyPlaceholders(..) | image_support.Iterm2Inline(..) ->
-      model.view.record_cache_height == layout.transcript_viewport_height(model)
+      model.view.record_cache_height
+      == image_box.picture_rows(model.view.height)
   }
 }
 
@@ -406,7 +408,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
           previous,
           model.shared.active_strand,
           model.view.image_support,
-          layout.transcript_viewport_height(model),
+          model.view.height,
         )
       Model(
         shared: Shared(
@@ -426,7 +428,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
           ),
           record_gutters:,
           record_cache_width: width,
-          record_cache_height: layout.transcript_viewport_height(model),
+          record_cache_height: image_box.picture_rows(model.view.height),
           record_cache_strand: model.shared.active_strand,
           record_cache_details: model.shared.details_expanded,
         ),
@@ -450,7 +452,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
           model.view.caches.record_line_cache,
           model.shared.active_strand,
           model.view.image_support,
-          layout.transcript_viewport_height(model),
+          model.view.height,
         )
 
       // Every cache here describes the current projection, and the appended
@@ -518,32 +520,38 @@ fn separated_from_screen(lines: List(Line), model: Model) -> List(Line) {
 // so the rows and the anchors built from the same lines agree on the row it
 // adds.
 fn noted_images(lines: List(Line), model: Model) -> List(Line) {
-  lines
-  |> list.fold(#([], False), fn(acc, line) {
-    let #(done, after_image) = acc
-    case image_of(line.speaker) {
-      None -> #([line, ..done], False)
-      Some(picture) -> {
-        let noted = case image_note(model, picture) {
-          Some(note) -> Line(line.speaker, line.text <> "\n" <> note)
-          None -> line
+  let #(done, _) =
+    list.fold(lines, #([], AfterOther), fn(acc, line) {
+      let #(done, previous) = acc
+      case image_of(line.speaker) {
+        None -> #([line, ..done], AfterOther)
+        Some(picture) -> {
+          let noted = case image_note(model, picture) {
+            Some(note) -> Line(line.speaker, line.text <> "\n" <> note)
+            None -> line
+          }
+          #([noted, ..stacked(done, previous, model)], AfterImage)
         }
-        #([noted, ..stacked(done, after_image, model)], True)
       }
-    }
-  })
-  |> fn(folded) { list.reverse(folded.0) }
+    })
+  list.reverse(done)
+}
+
+// What the line before the one being read was: an image or anything else.
+type Previous {
+  AfterImage
+  AfterOther
 }
 
 // One blank row between two images in a row, so two boxes (or two
 // placeholder rows with their notes) do not run together. It is added only
 // on a terminal that draws images, where the images are boxes.
-fn stacked(done: List(Line), after_image: Bool, model: Model) -> List(Line) {
-  case after_image, model.view.image_support {
-    True, image_support.KittyPlaceholders(..)
-    | True, image_support.Iterm2Inline(..)
+fn stacked(done: List(Line), previous: Previous, model: Model) -> List(Line) {
+  case previous, model.view.image_support {
+    AfterImage, image_support.KittyPlaceholders(..)
+    | AfterImage, image_support.Iterm2Inline(..)
     -> [Line(Spacer, ""), ..done]
-    True, image_support.TextOnly(..) | False, _ -> done
+    AfterImage, image_support.TextOnly(..) | AfterOther, _ -> done
   }
 }
 
@@ -824,7 +832,7 @@ fn record_anchors_for(
             width,
             model.shared.active_strand,
             model.view.image_support,
-            layout.transcript_viewport_height(model),
+            model.view.height,
           )
         })
       list.index_map(rendered, fn(_, wrapped) {

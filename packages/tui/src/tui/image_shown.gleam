@@ -99,12 +99,12 @@ pub type Shown {
   )
 }
 
-/// An image's box at one pane size, or the fact that it has none. The box
-/// depends on the pane's height as well as its width, because a short pane
-/// gives a picture fewer rows.
+/// An image's box at one pane width and picture height, or the fact that it
+/// has none. The box depends on how many rows a picture may take
+/// (`image_box.picture_rows`), because a short terminal gives it fewer.
 pub type Fit {
-  Fitted(width: Int, height: Int, box: Box)
-  Unfitted(width: Int, height: Int)
+  Fitted(width: Int, rows: Int, box: Box)
+  Unfitted(width: Int, rows: Int)
 }
 
 /// A shown state before the alternate screen: nothing sent, nothing owed.
@@ -191,7 +191,7 @@ pub type Facts {
     support: Support,
     /// The pane's width in cells, which the box is fitted to.
     width: Int,
-    /// The transcript's height in rows, which bounds the box's rows.
+    /// The terminal's height in rows, which bounds the picture's rows.
     height: Int,
     wants: List(Want),
     /// The image's header facts, from the transcript.
@@ -288,13 +288,12 @@ fn fitted(shown: Shown, facts: Facts) -> Fitting {
 }
 
 fn fit(fitting: Fitting, want: Want, facts: Facts) -> Fitting {
+  let current = image_box.picture_rows(facts.height)
   case dict.get(fitting.shown.fits, want.id) {
-    Ok(Fitted(width:, height:, box:))
-      if width == facts.width && height == facts.height
-    -> Fitting(..fitting, placed: [Placed(want:, box:), ..fitting.placed])
-    Ok(Unfitted(width:, height:))
-      if width == facts.width && height == facts.height
-    -> fitting
+    Ok(Fitted(width:, rows:, box:)) if width == facts.width && rows == current ->
+      Fitting(..fitting, placed: [Placed(want:, box:), ..fitting.placed])
+    Ok(Unfitted(width:, rows:)) if width == facts.width && rows == current ->
+      fitting
     Ok(_) | Error(Nil) -> look_up(fitting, want, facts)
   }
 }
@@ -308,7 +307,8 @@ fn fit(fitting: Fitting, want: Want, facts: Facts) -> Fitting {
 // happens to look like one, and a notice about an image would be about
 // nothing.
 fn look_up(fitting: Fitting, want: Want, facts: Facts) -> Fitting {
-  let unfitted = Unfitted(facts.width, facts.height)
+  let rows = image_box.picture_rows(facts.height)
+  let unfitted = Unfitted(facts.width, rows)
   case facts.picture(want.id) {
     Error(_) ->
       Fitting(..fitting, shown: remember(fitting.shown, want.id, unfitted))
@@ -321,7 +321,7 @@ fn look_up(fitting: Fitting, want: Want, facts: Facts) -> Fitting {
             shown: remember(
               fitting.shown,
               want.id,
-              Fitted(facts.width, facts.height, drawing.box),
+              Fitted(facts.width, rows, drawing.box),
             ),
             placed: [Placed(want:, box: drawing.box), ..fitting.placed],
           )

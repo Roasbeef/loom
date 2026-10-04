@@ -103,7 +103,14 @@ fn message_entry(n: Int, value: message.AgentMessage) -> entry.Entry {
   )
 }
 
-/// The demo's image, as base64.
+/// The demo's image, as base64: a complete 480 by 280 PNG bar chart in flat
+/// colours. The tests use it too, so it exists once.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.starts_with(demo_image.chart(), "iVBORw0KGgo")
+/// ```
 pub fn chart() -> String {
   "iVBORw0KGgoAAAANSUhEUgAAAeAAAAEYCAIAAAALd7K2AAAHHklEQVR42u3Yu6kCYRSFUcsQ"
   <> "DGxkKpgWBgswMbMNezCxC8EqTGzA0MRYQ0FQxONjO67N18Avl3UPMziZmVnkBn4CMzNAm5kZ"

@@ -85,7 +85,7 @@ fn reconciled(model: Model, support: image_support.Support) -> Model {
     image_shown.Facts(
       support:,
       width: layout.transcript_width(model),
-      height: layout.transcript_viewport_height(model),
+      height: model.view.height,
       wants: wants(support, model, area),
       picture: fn(id) { picture(records, strand, id) },
       bytes: fn(id) { bytes(records, strand, id) },

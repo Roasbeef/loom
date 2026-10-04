@@ -67,19 +67,26 @@ pub const max_rows = 12
 /// The fewest rows a picture is given, however short the pane.
 pub const min_rows = 3
 
-/// How many rows a picture may take on a pane whose transcript is `height`
-/// rows tall: about half of it, so a short pane still shows the text around
-/// the image, and never outside `min_rows` to `max_rows`. The box adds two
-/// rows of border to this.
+/// How many rows a picture may take on a terminal `height` rows tall: about
+/// half of the transcript it leaves, so a short terminal still shows the text
+/// around the image, and never outside `min_rows` to `max_rows`. The box adds
+/// two rows of border to this.
+///
+/// It is taken from the terminal's own height, which moves only when the
+/// terminal is resized, and not from the transcript's, which moves whenever
+/// the composer wraps or a status row appears. A picture that changed size as
+/// a person typed would throw the row cache away on every keystroke. The
+/// transcript is about five rows shorter than the terminal (the identity
+/// line, the input frame and the footer), which is the five taken off here.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert image_box.picture_rows(19) == 9
+/// assert image_box.picture_rows(24) == 9
 /// assert image_box.picture_rows(60) == 12
 /// ```
 pub fn picture_rows(height: Int) -> Int {
-  int.clamp(height / 2, min_rows, max_rows)
+  int.clamp({ height - 5 } / 2, min_rows, max_rows)
 }
 
 /// The largest image drawn, in decoded bytes. The terminal is sent the whole
@@ -129,8 +136,8 @@ pub type Verdict {
 ///
 /// The terminal's support comes first: nothing is drawn on a terminal that
 /// did not say it could. Then the image itself (`refusal`), and last the
-/// room the pane leaves for a box: its width, and `height` rows of
-/// transcript, of which the picture takes about half (`picture_rows`).
+/// room the pane leaves for a box: its width, and the terminal's `height`,
+/// of which the picture takes about half the transcript (`picture_rows`).
 ///
 /// ## Examples
 ///

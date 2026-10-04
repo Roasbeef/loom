@@ -40,6 +40,7 @@ import tui/layout
 import tui/model.{type Model, Model, View} as tui_model
 import tui/queue_editor
 import tui/render
+import tui/submit
 import tui_test/stepping
 
 fn kitty_support() -> image_support.Support {
@@ -799,7 +800,7 @@ pub fn a_short_pane_gives_the_picture_half_its_rows_test() {
       scene(kitty_support(), [#("image/png", image_fixture.png(1200, 700))]),
     )
   assert layout.transcript_viewport_height(model) == 19
-  assert image_box.picture_rows(19) == 9
+  assert image_box.picture_rows(24) == 9
   let cells = lines_of(model) |> list.filter(shows_placeholders)
   assert list.length(cells) == 9
 
@@ -893,10 +894,10 @@ pub fn a_strand_switch_removes_the_uploads_test() {
   let model = scene(kitty_support(), [#("image/png", image_fixture.chart())])
   let #(shown, effects) = stepping.step(backend.Resize(120, 50), model)
   let assert [image_shown.Upload(id, ..)] = image_commands(effects)
-  let elsewhere =
-    tui_model.invalidate_frame(
-      Model(..shown, shared: Shared(..shown.shared, active_strand: "sub:docs")),
-    )
+  // The switch is the reducer's own, so the next step sees the strand change
+  // and rebuilds the rows.
+  let elsewhere = submit.switch_active_strand(shown, "sub:docs")
+  assert elsewhere.shared.active_strand == "sub:docs"
   let #(_, effects) = stepping.step(backend.Tick, elsewhere)
   assert image_commands(effects) == [image_shown.Remove(id)]
 }
@@ -924,4 +925,32 @@ pub fn the_demo_scene_shows_a_box_test() {
   assert list.any(lines, string.contains(_, "╭─ image 1 · image/png · 480×280"))
   assert list.any(lines, string.contains(_, "fs_read"))
   let assert [image_shown.Upload(..)] = image_commands(effects)
+}
+
+// Typing a prompt long enough to wrap makes the composer taller and the
+// transcript shorter, but the picture's size follows the terminal's height,
+// so the row cache stays and no image is placed again.
+pub fn typing_a_wrapping_prompt_leaves_the_picture_alone_test() {
+  let #(start, effects) =
+    stepping.step(
+      backend.Resize(80, 24),
+      scene(kitty_support(), [#("image/png", image_fixture.chart())]),
+    )
+  let assert [image_shown.Upload(..)] = image_commands(effects)
+  let before = layout.transcript_viewport_height(start)
+  let rows = start.view.caches.record_rows
+  let typed =
+    string.repeat("a wrapping word ", 12)
+    |> string.to_graphemes
+    |> list.fold(start, fn(model, character) {
+      let #(next, effects) = stepping.step(backend.KeyPress(character), model)
+      assert image_commands(effects) == []
+        as "no key places or sends an image again"
+      next
+    })
+  assert layout.transcript_viewport_height(typed) < before
+    as "the composer wrapped and took rows from the transcript"
+  assert typed.view.caches.record_rows == rows
+    as "the record rows were kept, not rebuilt"
+  assert list.length(lines_of(typed) |> list.filter(shows_placeholders)) == 9
 }
