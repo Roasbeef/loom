@@ -14,12 +14,15 @@ import core/json
 import core/register
 import core/tx.{SetRegister, Tx}
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/system
 import machine/operation
 import machine/queue
 import runtime/api
+import runtime/effects
+import runtime/hooks
 import runtime/writer
 import session/session
 import support/fake
@@ -142,6 +145,67 @@ pub fn follow_up_is_drained_at_may_finish_test() {
     ]
   harness.assert_placement_invariants(sess)
   process.kill(rt.tree.supervisor)
+}
+
+// A cache belongs to the immutable durable branch. A context hook belongs to
+// one dispatch: its injected messages must neither enter the next cached
+// projection nor prevent a moved leaf from reaching the next request.
+pub fn cached_context_keeps_request_transforms_transient_test() {
+  let rec = recorder.start()
+  let contexts = process.new_subject()
+  let assert Ok(sess) =
+    session.open_memory(clock.stepping(from: 1_000_000, by: 7))
+    as "the memory session must open"
+  let base =
+    fake.effects(
+      rec,
+      clock.stepping(from: 2_000_000, by: 25),
+      [],
+      fn(spec) {
+        let assert effects.GenerationRequest(context:, ..) = spec
+          as "the provider must receive a generation"
+        process.send(contexts, list.map(context, harness.fingerprint))
+        fake.Reply(fake.answer("Done", 3))
+      },
+      fn(_run) {
+        fake.ToolReply(text: "unused", is_error: False, terminate: False)
+      },
+    )
+  let request_hooks =
+    hooks.new()
+    |> hooks.with_context(fn(_op, messages) {
+      let dispatch = recorder.bump(rec, "context-hook")
+      list.append(messages, [fake.user("transient " <> int.to_string(dispatch))])
+    })
+    |> hooks.build
+  let eff = effects.Effects(..base, hooks: request_hooks)
+  let assert Ok(rt) =
+    api.open(sess, eff, api.default_options(harness.configuration()))
+    as "the session tree must boot"
+
+  let assert Ok(first) = api.prompt(rt, [fake.user("One")])
+    as "the first prompt must be admitted"
+  let assert Ok(first_result) = api.await_result(rt, first, within_ms: 5000)
+    as "the first run must finish"
+  harness.assert_completed(first_result)
+  let assert Ok(first_context) = process.receive(contexts, within: 1000)
+    as "the first provider context must arrive"
+  assert first_context == ["user:One", "user:transient 1"]
+
+  // The same driver now extends its cached scan through the first answer and
+  // the next prompt. Only the newly dispatched hook result joins that request.
+  let assert Ok(second) = api.prompt(rt, [fake.user("Two")])
+    as "the second prompt must be admitted"
+  let assert Ok(second_result) = api.await_result(rt, second, within_ms: 5000)
+    as "the second run must finish"
+  harness.assert_completed(second_result)
+  let assert Ok(second_context) = process.receive(contexts, within: 1000)
+    as "the second provider context must arrive"
+  assert second_context
+    == ["user:One", "assistant:stop:Done", "user:Two", "user:transient 2"]
+  assert harness.final_projection(sess)
+    == ["user:One", "assistant:stop:Done", "user:Two", "assistant:stop:Done"]
+  let assert Ok(Nil) = api.close(rt) as "the session tree must close cleanly"
 }
 
 pub fn await_result_survives_a_later_run_test() {

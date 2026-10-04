@@ -785,14 +785,19 @@ extended by the M3 runtime wave.
   `plan`, hands it to the threshold hook inside `ThresholdQuery` and
   reads it again for the generation request, so the request and the
   threshold see one branch and the branch is scanned once. The scan is
-  memoised in `State.projection`, keyed by the leaf it was made from:
-  a step whose leaf has not moved reuses it, and one whose leaf moved
+  memoised together with its pure `hooks.Projected` result in the private
+  `CachedProjection` held by `State.projection`, keyed by the leaf it was
+  made from. A step whose leaf has not moved reuses both, and one whose leaf moved
   forward scans only the entries past the cached leaf's seq and joins
   them on when the oldest of them names the cached leaf as its parent
   and none is a compaction; anything else, a rewind, a fork, a
-  compaction, is a full rescan. It caches write-once entries and
-  nothing else, and a fresh incarnation starts without one, which is
-  the replay rule every projection here is held to. Before this a
+  compaction, is a full rescan. Only write-once entries and their pure
+  default projection are cached; threshold decisions and request-local
+  context hooks still run at their original boundaries. The request hook's
+  transformed list never enters the cache. Provider worker construction projects
+  the reaper before making its closure, so custody does not copy the whole
+  driver's scan, projection and sibling Effects into each worker. A fresh incarnation starts without
+  a cache, which is the replay rule every projection here is held to. Before this a
   1,200-entry branch was decoded three times per step (issue #359).
 - **Read-only context inspection shares the compaction projection.**
   `hooks.project_from_scan` accepts a newest-first branch stopped inclusively at

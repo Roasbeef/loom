@@ -137,6 +137,22 @@ no longer in this file. Open: [#703](https://github.com/Roasbeef/loom/issues/703
 epic [#697](https://github.com/Roasbeef/loom/issues/697) for remote
 executors. `make executor-smoke` and `make bench-exec` exist.
 
+### The runtime projection cache
+
+#724 keeps the strand's pure default projection beside the leaf-keyed scan
+cache, so planning over an unchanged leaf reuses the projected messages
+instead of rebuilding them; a live profile had found the same leaf rebuilt
+15 times in three seconds. Appends, forks, rewinds, compaction and a cold
+restart invalidate it through the scan cache's existing rules, and
+request-local transforms stay outside it. The same pull request projects
+the reaper before building the provider worker closure, which had captured
+the whole driver. The live profile is
+[daemon-profile-2026-10-02](review/daemon-profile-2026-10-02.md). The
+runtime package gate runs `scripts/projection_cache_bench.escript ...
+--expect-cached`, which checks both the cache-hit reductions and what the
+provider worker closure captures, so restoring either old behaviour fails it.
+A matched installed-daemon comparison is still item 8 below.
+
 ### What the previous edition got wrong
 
 - It named the terminal revamp as the first item of work, to begin with
