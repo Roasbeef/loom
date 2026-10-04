@@ -1191,7 +1191,25 @@ fn tab_of_key(key: keys.Key) -> Result(rail.Tab, Nil) {
         Ok(number) -> rail.of_number(number)
         Error(Nil) -> Error(Nil)
       }
-    _ -> Error(Nil)
+    keys.Up
+    | keys.Down
+    | keys.Left
+    | keys.Right
+    | keys.Enter
+    | keys.Backspace
+    | keys.Delete
+    | keys.Tab
+    | keys.BackTab
+    | keys.Home
+    | keys.End
+    | keys.PageUp
+    | keys.PageDown
+    | keys.Escape
+    | keys.Insert
+    | keys.F(_)
+    | keys.Ctrl(_)
+    | keys.Alt(_)
+    | keys.Unknown(_) -> Error(Nil)
   }
 }
 
@@ -1203,6 +1221,9 @@ fn keep_tab_keyboard(model: Model, tab: rail.Tab) -> Model {
   case tab {
     rail.Trace | rail.Session ->
       Model(..model, view: View(..model.view, rail_focus: tui_model.FocusTab))
+      |> fn(held) {
+        tui_model.store_strip(held, agent_strip.leave(tui_model.strip(held)))
+      }
     rail.Strands | rail.Changes -> model
   }
 }
@@ -1250,8 +1271,10 @@ fn update_main_key_strip(key: keys.Key, model: Model) -> Model {
 // workspace's Enter uses, so the draft is parked with its strand and the
 // transcript, the composer's recipient and its badge change together.
 fn update_strip_key(key: keys.Key, model: Model) -> Model {
-  case layout.rail_lists_strands(model), tab_of_key(key) {
-    True, Ok(tab) -> submit.select_rail_tab(model, tab)
+  case layout.rail_columns(model) > 0, tab_of_key(key) {
+    True, Ok(tab) ->
+      submit.select_rail_tab(model, tab)
+      |> keep_tab_keyboard(tab)
     True, Error(Nil) | False, _ -> update_strip_key_in_list(key, model)
   }
 }

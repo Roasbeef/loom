@@ -18,7 +18,6 @@ import gleam/string
 import host/bootstrap as host_bootstrap
 import session_view/agent_view
 import session_view/model.{Shared} as _
-import session_view/transcript_lines
 import simplifile
 import tui
 import tui/agent_strip
@@ -294,11 +293,20 @@ pub fn with_two_agents_the_digits_still_reach_a_cursorless_tab_test() {
   assert key(trace, "esc").view.rail_focus == tui_model.FocusComposer
 }
 
-pub fn a_failed_program_is_worded_as_the_transcript_words_it_test() {
-  assert transcript_lines.status_title("compile_failed") == "compile error"
-  assert transcript_lines.status_title("vetting_rejected")
-    == "refused by vetting"
-  assert transcript_lines.status_title("anything_else") == "failed"
+// The tab shows what the shared state says: a result whose status the fold
+// does not know is `Failed` when the tool reported an error, and
+// `Completed` when it did not, so the tab says "failed" and "completed".
+pub fn the_tab_words_an_unknown_status_by_the_tools_error_flag_test() {
+  let errored =
+    submit.select_rail_tab(
+      at(failed_with("anything_else"), 200, 50),
+      rail.Trace,
+    )
+  assert string.contains(text(errored), "× failed")
+  assert !string.contains(text(errored), "anything_else")
+  let plain =
+    submit.select_rail_tab(at(ended_with("anything_else"), 200, 50), rail.Trace)
+  assert string.contains(text(plain), "✓ completed")
 }
 
 // Narrowing below 120 columns takes the docked rail away from a tab that held
@@ -446,6 +454,24 @@ fn failed_with(status: String) -> Model {
       "no",
       json.Object([#("status", json.String(status))]),
       frame_scene.Errored,
+    ),
+  ])
+}
+
+// The same program with a result that is not an error and has `status`.
+fn ended_with(status: String) -> Model {
+  frame_scene.attach(frame_scene.model(), "fix readme badge", [
+    frame_scene.user(1, "Check the calculator."),
+    frame_scene.assistant(2, "", [
+      frame_scene.call("c1", "code_mode", [#("program", json.String(program()))]),
+    ]),
+    frame_scene.result_with(
+      3,
+      "c1",
+      "code_mode",
+      "fine",
+      json.Object([#("status", json.String(status))]),
+      frame_scene.Succeeded,
     ),
   ])
 }

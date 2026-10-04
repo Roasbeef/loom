@@ -230,8 +230,8 @@ fn hint(
     rail.Changes, _, _ -> "Esc or Shift+Tab closes the changes"
     rail.Strands, agent_strip.Browsing(_), _ ->
       case layout.cursor_stoppable(model) {
-        True -> "↑↓ select · Enter focus · x stop · Esc to composer"
-        False -> "↑↓ select · Enter focus · Esc to composer"
+        True -> "↑↓ · Enter focus · x stop · Esc"
+        False -> "↑↓ · Enter focus · Esc"
       }
     rail.Strands, agent_strip.Composing, _ ->
       case layout.strands_listed(model) {

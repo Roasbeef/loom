@@ -240,7 +240,7 @@ fn surface_command(model: Model, surface: command.Surface) -> Model {
         ),
       ))
     command.QueueInspect -> open_queue(cleared)
-    command.Summary -> open_session_tab(cleared)
+    command.Summary -> side_surfaces.open_summary(cleared)
     command.Trace -> open_trace_tab(cleared)
     command.Context ->
       side_surfaces.open_context(cleared, context_view.Overview)
@@ -668,11 +668,13 @@ pub fn select_rail_tab(model: Model, tab: rail.Tab) -> Model {
 }
 
 // The rail's choice after something asks for it to be shown: shown, when the
-// terminal is wide enough to dock it, and what it was otherwise.
+// terminal is wide enough to dock it and the rail is not already docked, and
+// what it was otherwise. A rail docked by default at 160 columns is not a
+// choice, so choosing a tab on it must not make it dock at 120 next launch.
 fn docked_choice(model: Model) -> Option(layout_memory.Rail) {
-  case model.view.width >= rail.narrowest {
-    True -> Some(layout_memory.RailShown)
-    False -> model.view.rail
+  case model.view.width >= rail.narrowest, layout.rail_columns(model) {
+    True, 0 -> Some(layout_memory.RailShown)
+    True, _ | False, _ -> model.view.rail
   }
 }
 
@@ -688,23 +690,6 @@ pub fn open_trace_tab(model: Model) -> Model {
   case model.view.width >= rail.narrowest {
     True -> select_rail_tab(model, rail.Trace)
     False -> needs_rail(model, "Trace")
-  }
-}
-
-/// `/summary`: the Session tab where the rail can dock, and the full-screen
-/// summary where it cannot, which also has the completion evidence the tab
-/// does not carry.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let model = submit.open_session_tab(model)
-/// ```
-@internal
-pub fn open_session_tab(model: Model) -> Model {
-  case model.view.width >= rail.narrowest {
-    True -> select_rail_tab(model, rail.Session)
-    False -> side_surfaces.open_summary(model)
   }
 }
 

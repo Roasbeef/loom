@@ -38,6 +38,7 @@ import session_view/goal_view
 import session_view/session_summary
 import session_view/trace_view
 import session_view/transcript_lines
+import session_view/worktree_view
 import tui/layout
 import tui/model.{type Model}
 import tui/rail
@@ -143,6 +144,16 @@ fn call_row(line: String) -> Row {
   Row(tone, line)
 }
 
+// The Jobs row before a read has answered: a read in flight says so, and one
+// that was never asked points at the summary, which asks.
+fn unread_jobs(model: Model) -> String {
+  case model.shared.jobs_refresh, model.shared.jobs_awaiting {
+    worktree_view.Requested, _ | worktree_view.Settled, Some(_) ->
+      "Jobs    reading…"
+    worktree_view.Settled, None -> "Jobs    not read · /summary"
+  }
+}
+
 fn session_rows(model: Model) -> List(Row) {
   let goal = case model.shared.goal {
     Some(board) ->
@@ -159,7 +170,7 @@ fn session_rows(model: Model) -> List(Row) {
   let jobs = case
     session_summary.jobs(model.shared.jobs, model.shared.active_strand)
   {
-    session_summary.Unread -> [Row(Quiet, "Jobs    not read · /summary")]
+    session_summary.Unread -> [Row(Quiet, unread_jobs(model))]
     session_summary.Live(total:, rows:, omitted:) ->
       list.flatten([
         [Row(Plain, "Jobs    " <> int.to_string(total) <> " live")],
