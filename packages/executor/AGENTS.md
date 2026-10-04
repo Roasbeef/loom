@@ -595,3 +595,30 @@ through its exact retained native tuple. Neither result proves cleanup, native
 retirement or cancellation before OS startup. Real independent-open tests join
 managed peers and inspect committed phases; they establish component ordering,
 not whole Compile or listener assembly.
+
+## Original Compile elapsed cap at native admission
+
+`remote/service.live_command_context(service, original_claim, ref,
+original_compile_deadline_ms)` retains the original executor-local Compile
+deadline alongside live preparation custody. Trusted Compile assembly copies
+that deadline once from its original admission in `Config.now`'s monotonic era;
+it never derives another deadline from service input, a Claim, owner wall time
+or retransmitted remaining budget. Zero refuses; negative values can represent
+valid future deadlines in a negative monotonic era.
+
+Finite command authorization validates the existing native challenge, then clamps
+its derived deadline to the original Compile cap before retaining Request/Authority
+and Admit. The exact clamped deadline reaches the existing post-association wall-fit
+check and native watchdog. Preparation, association and startup consume that same
+authority. A later owner Unix-clock rollback can inflate the proposed remaining
+budget but cannot enlarge this cap. Incoming Prepared, cleared policy, selected
+wall and budget bytes remain unchanged; ordinary Native routes keep their previous
+deadline semantics.
+
+Historical `command_context` has no deadline or live permission. Exact associated
+Query/Cancel/receipt and duplicate Submit reconcile retained data independently of
+fresh authorization; they cannot regenerate a ticket, permit or deadline. This
+boundary supplies no original Compile admission clock itself, cross-actor atomic
+spawn/cancel promise or whole-service assembly. The real continuation still owns
+original admission and at-most-once use. See [remote custody](../../docs/architecture/remote-custody.md)
+for those separate ownership and recovery duties.
