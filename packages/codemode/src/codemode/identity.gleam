@@ -29,8 +29,9 @@
 //// invariant is **one threaded `ExecIdentity` from which the build phase
 //// is derived**. Concretely:
 ////
-//// - `ExecIdentity` is opaque, so `for_execution` is the only way to mint
-////   one, and it is minted once per execution by whoever starts it.
+//// - `ExecIdentity` is opaque. `for_execution` constructs local identity;
+////   `for_managed_execution` derives coordinates from the original parent.
+////   Whoever starts an execution constructs its identity once.
 //// - `PhaseIdentity` is opaque too, and the only ways to obtain one are
 ////   `build_phase` and `run_phase`, both of which take an `ExecIdentity`.
 ////   A phase identity is therefore always *derived*, never assembled.
@@ -57,29 +58,21 @@
 //// way to see that a sibling configuration had already been filled in
 //// differently.
 ////
-//// # Two identities, and why only one of them is here
+//// # Provenance and the pooled ledger are separate projections
 ////
-//// `{op_id, step_id}` is the **batch** identity the broker pools on;
-//// `{op_id, step_id, source_index}` is the **execution** identity.
-//// `code_mode` is `tool.Exclusive`, which forbids a concurrent start and
-//// nothing more, so one batch may hold two `code_mode` calls that run
-//// back to back sharing a pair. Everything that names a *path* therefore
-//// keys on the triple — `client/codemode.exec_root` digests it, and the
-//// cap socket and the token file derive from that root — while the ledger
-//// keys on the pair, deliberately (`docs/adr/005-budget-pooling-
-//// granularity.md`, "Two programs in one batch").
+//// `{op_id, step_id}` is the batch identity the broker pools on. Paths
+//// distinguish individual calls with `source_index`, so two sequential
+//// programs in one batch have separate directories and one pooled budget.
+//// A managed execution additionally retains its complete original `ToolKey`
+//// privately: session, operation, step, source index, digest and result entry.
+//// `command_origin` derives native command roles from that unchanged parent.
 ////
-//// The source index is deliberately **not** a fourth field here, and the
-//// reason is the whole point of this module. What an `ExecIdentity`
-//// exports feeds exactly two things: ledger keys and `broker.CallSpec`s.
-//// ADR-005 requires a per-call coordinate to exist "without becoming a
-//// second axis of the budget key", and `ledger_keys` is one field-read
-//// away from whatever this value carries — so a source index stored here
-//// would sit beside the trigger, waiting for the next refactor to
-//// "complete" the key with the obviously-available third field and mint
-//// one ledger per call in a batch. That is an amplification the model
-//// controls, because the model authors the batch. A coordinate that
-//// names paths belongs where the paths are named.
+//// Retaining provenance does not change `ledger_keys` or `ledger_key`:
+//// both still project only operation and the derived physical step. Source
+//// index and command role never become budget axes. A separately accounted
+//// build can use the existing `-build` step while its origin continues to
+//// name the original tool step, rather than reconstructing a parent from
+//// the physical command's coordinates.
 ////
 //// # The widening, and why it lives here
 ////
@@ -126,7 +119,10 @@
 import broker/budget.{type Budget}
 import broker/policy.{type Grant}
 import core/ids.{type OpId}
+import core/remote_tool
 import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/result
 
 /// The sub-step the build phase runs under when it is accounted
 /// separately: `step_id <> build_suffix`.
@@ -175,7 +171,7 @@ pub type BuildLedger {
 /// and step the broker keys its pooled ledger by, the one parent budget
 /// every phase draws on, and where the build phase is accounted.
 ///
-/// Opaque: `for_execution` mints one, `build_phase` and `run_phase` derive
+/// Opaque: local and managed constructors mint one, `build_phase` and `run_phase` derive
 /// from it, and nothing else can produce one. See the module doc for what
 /// that buys.
 pub opaque type ExecIdentity {
@@ -185,6 +181,7 @@ pub opaque type ExecIdentity {
     budget: Budget,
     build_ledger: BuildLedger,
     grants: List(Grant),
+    parent: Option(remote_tool.ToolKey),
   )
 }
 
@@ -202,6 +199,7 @@ pub opaque type PhaseIdentity {
     step_id: String,
     budget: Budget,
     grants: List(Grant),
+    parent: Option(remote_tool.ToolKey),
   )
 }
 
@@ -227,7 +225,56 @@ pub fn for_execution(
     budget:,
     build_ledger: BuildSharesLedger,
     grants: [],
+    parent: None,
   )
+}
+
+/// Derives execution coordinates from one trusted retained tool invocation.
+/// Parent provenance survives phase derivation without adding a budget key.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // identity.for_managed_execution(parent, budget: pooled)
+/// //   |> identity.ledger_keys == [#(remote_tool.operation(parent), remote_tool.step(parent))]
+/// ```
+pub fn for_managed_execution(
+  parent: remote_tool.ToolKey,
+  budget budget: Budget,
+) -> ExecIdentity {
+  ExecIdentity(
+    ..for_execution(
+      op_id: remote_tool.operation(parent),
+      step_id: remote_tool.step(parent),
+      budget:,
+    ),
+    parent: Some(parent),
+  )
+}
+
+/// Derives the native command role from its physical phase.
+/// An unmanaged phase stays explicit; an invalid managed child never drops
+/// silently into unmanaged clearance.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // identity.command_origin(identity.build_phase(managed))
+/// //   == remote_tool.tool_child(parent, remote_tool.CompileCommand) |> result.map(Some)
+/// ```
+pub fn command_origin(
+  phase: PhaseIdentity,
+) -> Result(Option(remote_tool.ChildOrigin), String) {
+  case phase.parent {
+    None -> Ok(None)
+    Some(parent) -> {
+      let role = case phase.phase {
+        Build -> remote_tool.CompileCommand
+        Run -> remote_tool.SatelliteCommand
+      }
+      remote_tool.tool_child(parent, role) |> result.map(Some)
+    }
+  }
 }
 
 /// Accounts the build phase against its own ledger, under the derived
@@ -318,6 +365,7 @@ pub fn widened_by(
 ///
 pub fn build_phase(identity: ExecIdentity) -> PhaseIdentity {
   PhaseIdentity(
+    parent: identity.parent,
     phase: Build,
     op_id: identity.op_id,
     step_id: build_step(identity),
@@ -343,6 +391,7 @@ pub fn build_phase(identity: ExecIdentity) -> PhaseIdentity {
 ///
 pub fn run_phase(identity: ExecIdentity) -> PhaseIdentity {
   PhaseIdentity(
+    parent: identity.parent,
     phase: Run,
     op_id: identity.op_id,
     step_id: identity.step_id,
