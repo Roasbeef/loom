@@ -22,6 +22,7 @@ import simplifile
 import sqlight
 import storage/owner_command_offers_schema
 import storage/owner_custody as custody
+import storage/sql
 import storage/sqlite
 import storage/storage
 import support/fixtures
@@ -769,5 +770,436 @@ pub fn impossible_per_parent_offer_overcount_refuses_before_blob_materialization
     == Error(custody.Invalid(
       "command offer count exceeds fixed service purposes",
     ))
+  assert custody.close(store) == Ok(Nil)
+}
+
+// Only the UUID changes; the physical coordinates remain shared by the controls.
+fn with_id(
+  service: command.ServiceKey,
+  uuid: ids.EntryId,
+) -> command.ServiceKey {
+  let #(scope, operation, step) = command.coordinates(service)
+  let #(input, registration, contract) = command.digests(service)
+  let assert Ok(service) =
+    command.service_key(
+      command.parent(service),
+      command.service_role(service),
+      scope,
+      operation,
+      step,
+      uuid,
+      input,
+      registration,
+      contract,
+    )
+    as "The original full service has its distinct retained UUID."
+  service
+}
+
+fn lookup_fixture(name: String) {
+  let parent = key(0)
+  let service = make_service(parent, command.CompileService, "a")
+  let #(path, store) = open("indexed-" <> name, parent)
+  let offer = make_offer(service, "exact original command")
+  assert custody.admit_service_child(store, request(service)) == Ok(Nil)
+  assert custody.admit_offer(store, request(service), offer)
+    == Ok(custody.Fresh)
+  #(path, store, service, offer)
+}
+
+pub fn indexed_lookup_distinguishes_full_parents_with_same_physical_coordinates_test() {
+  let #(_, store, first, first_offer) = lookup_fixture("two-parents")
+  let other_parent = key(1)
+  let second =
+    make_service(other_parent, command.CompileService, "b") |> with_id(id(4))
+  let second_offer = make_offer(second, "second original command")
+  assert command.coordinates(first) == command.coordinates(second)
+  assert command.parent(first) != command.parent(second)
+  assert custody.admit(store, other_parent, payload("args"), payload("request"))
+    == Ok(Nil)
+  assert custody.admit_service_child(store, request(second)) == Ok(Nil)
+  assert custody.admit_offer(store, request(second), second_offer)
+    == Ok(custody.Fresh)
+
+  assert custody.command_offer_for_origin(
+      store,
+      command.native_origin(ref(first)),
+    )
+    == Ok(first_offer)
+  assert custody.command_offer_for_origin(
+      store,
+      command.native_origin(ref(second)),
+    )
+    == Ok(second_offer)
+  assert custody.child(store, command.native_origin(ref(first)))
+    == Error(custody.Missing)
+  assert custody.child(store, command.native_origin(ref(second)))
+    == Error(custody.Missing)
+  assert custody.close(store) == Ok(Nil)
+}
+
+pub fn indexed_lookup_cancelled_history_survives_reopen_without_live_reservation_test() {
+  let #(path, store, service, offer) = lookup_fixture("cancelled-reopen")
+  let origin = command.native_origin(ref(service))
+  assert custody.cancel_service(store, service) == Ok(Nil)
+  assert custody.offer(store, ref(service)) == Error(custody.Frozen)
+  assert custody.command_offer_for_origin(store, origin) == Ok(offer)
+  assert custody.admit_command_child(store, offer, id(2), payload("Prepared"))
+    == Error(custody.Frozen)
+  assert custody.close(store) == Ok(Nil)
+  let assert Ok(store) =
+    custody.open(path, remote_tool.session(key(0)), limits())
+    as "Historical lookup needs no original actor or native endpoint."
+  assert custody.command_offer_for_origin(store, origin) == Ok(offer)
+  assert custody.admit_command_child(store, offer, id(3), payload("Prepared"))
+    == Error(custody.Frozen)
+  assert custody.close(store) == Ok(Nil)
+}
+
+pub fn indexed_lookup_refuses_missing_wrong_role_session_and_complete_parent_test() {
+  let #(_, store, service, _) = lookup_fixture("wrong-origin")
+  let parent = command.parent(service)
+  let assert Ok(missing) =
+    remote_tool.tool_child(parent, remote_tool.SatelliteCommand)
+    as "A valid absent command role has no offer."
+  assert custody.command_offer_for_origin(store, missing)
+    == Error(custody.Missing)
+  assert custody.command_offer_for_origin(
+      store,
+      command.service_origin(service),
+    )
+    == Error(custody.Invalid("origin is not a physical command"))
+  let #(foreign_session, _) =
+    ids.mint_session(ids.generator(clock.fixed(9000), 999))
+  let assert Ok(foreign) =
+    remote_tool.key(
+      foreign_session,
+      remote_tool.operation(parent),
+      "parent",
+      0,
+      string.repeat("a", 64),
+      remote_tool.result_entry(parent),
+    )
+    as "A foreign session is a valid but different owner identity."
+  let assert Ok(foreign) =
+    remote_tool.tool_child(foreign, remote_tool.CompileCommand)
+    as "The foreign command remains well typed."
+  assert custody.command_offer_for_origin(store, foreign)
+    == Error(custody.Conflict)
+
+  // The index deliberately omits these immutable fields; full parent readback
+  // must refuse each substitution before returning retained command evidence.
+  list.each(
+    [
+      #(string.repeat("b", 64), remote_tool.result_entry(parent)),
+      #(string.repeat("a", 64), id(99)),
+    ],
+    fn(fields) {
+      let assert Ok(changed) =
+        remote_tool.key(
+          remote_tool.session(parent),
+          remote_tool.operation(parent),
+          "parent",
+          0,
+          fields.0,
+          fields.1,
+        )
+        as "Each changed parent is independently valid at the same logical address."
+      let assert Ok(origin) =
+        remote_tool.tool_child(changed, remote_tool.CompileCommand)
+        as "The valid changed origin retains its command role."
+      assert remote_tool.child_address(origin)
+        == remote_tool.child_address(command.native_origin(ref(service)))
+      assert custody.command_offer_for_origin(store, origin)
+        == Error(custody.Conflict)
+    },
+  )
+  assert custody.close(store) == Ok(Nil)
+}
+
+pub fn indexed_lookup_scalar_guards_precede_invalid_identity_and_offer_materialization_test() {
+  list.index_map(
+    [
+      #(
+        "offer=zeroblob(262145), identity=X'ff'",
+        custody.Invalid("owner payload exceeds bound before materialization"),
+      ),
+      #(
+        "offer=CAST(X'6162' AS TEXT), identity=X'ff'",
+        custody.Invalid("owner payload exceeds bound before materialization"),
+      ),
+      #(
+        "identity=zeroblob(8193)",
+        custody.Invalid("owner payload exceeds bound before materialization"),
+      ),
+      #(
+        "reserved_bytes=1, identity=X'ff'",
+        custody.Invalid(
+          "command offer reservation is smaller than retained bytes",
+        ),
+      ),
+    ],
+    fn(change, index) {
+      let #(path, store, service, _) =
+        lookup_fixture("scalar-" <> int.to_string(index))
+      corrupt(path, "UPDATE owner_custody_command_offers SET " <> change.0)
+      assert custody.command_offer_for_origin(
+          store,
+          command.native_origin(ref(service)),
+        )
+        == Error(change.1)
+      assert custody.close(store) == Ok(Nil)
+    },
+  )
+}
+
+pub fn indexed_lookup_rejects_changed_service_address_and_noncanonical_reference_test() {
+  list.index_map(
+    [
+      #("identity=X'5b5d'", custody.Invalid("invalid command reference")),
+      #("identity=X'ff'", custody.Invalid("invalid command reference UTF-8")),
+      #(
+        "identity=CAST(CAST(identity AS TEXT) || ' ' AS BLOB)",
+        custody.Conflict,
+      ),
+      #("service_id='00000000-0000-7000-8000-000000000001'", custody.Conflict),
+      #("service_origin='changed'", custody.Conflict),
+      #("address=address || '-changed'", custody.Conflict),
+      #(
+        "offer_digest='z' || substr(offer_digest, 2)",
+        custody.Invalid("command digest must be lowercase SHA-256 hex"),
+      ),
+    ],
+    fn(change, index) {
+      let #(path, store, service, _) =
+        lookup_fixture("semantic-" <> int.to_string(index))
+      // Extra reservation leaves each bounded semantic corruption distinguishable
+      // from the earlier reservation and materialization guard controls.
+      corrupt(
+        path,
+        "UPDATE owner_custody_command_offers SET reserved_bytes=reserved_bytes+32, "
+          <> change.0,
+      )
+      assert custody.command_offer_for_origin(
+          store,
+          command.native_origin(ref(service)),
+        )
+        == Error(change.1)
+      assert custody.close(store) == Ok(Nil)
+    },
+  )
+}
+
+pub fn indexed_lookup_lifetime_unique_mapping_cannot_be_rebound_test() {
+  let #(path, store, service, offer) = lookup_fixture("lifetime-unique")
+  assert custody.cancel_service(store, service) == Ok(Nil)
+  let assert Ok(db) = sqlight.open(path)
+    as "The unique index remains after cancellation."
+  assert sqlight.exec(
+      "INSERT INTO owner_custody_command_offers SELECT address || '-replacement', parent, service_origin, service_id, identity, native_origin, offer_digest, offer, 'retained', reserved_bytes FROM owner_custody_command_offers",
+      db,
+    )
+    |> result.is_error
+  assert scalar(db, "SELECT COUNT(*) FROM owner_custody_command_offers") == 1
+  assert sqlight.close(db) == Ok(Nil)
+  assert custody.command_offer_for_origin(
+      store,
+      command.native_origin(ref(service)),
+    )
+    == Ok(offer)
+  assert custody.close(store) == Ok(Nil)
+}
+
+pub fn indexed_lookup_refuses_corrupt_mapping_frozen_rows_and_collected_parents_test() {
+  list.index_map(
+    [
+      #(
+        "UPDATE owner_custody_command_offers SET state='frozen', offer=X'', reserved_bytes=reserved_bytes-4096",
+        custody.Frozen,
+      ),
+      #(
+        "UPDATE owner_custody_tools SET state='frozen', request=X'', arguments=X'', outcome=NULL",
+        custody.Frozen,
+      ),
+      #(
+        "UPDATE owner_custody_children SET state='frozen', request=X'', terminal=NULL",
+        custody.Frozen,
+      ),
+      #(
+        "UPDATE owner_custody_command_offers SET parent='wrong'",
+        custody.Conflict,
+      ),
+      #("DELETE FROM owner_custody_children", custody.Missing),
+    ],
+    fn(change, index) {
+      let #(path, store, service, _) =
+        lookup_fixture("fences-" <> int.to_string(index))
+      corrupt(path, change.0)
+      assert custody.command_offer_for_origin(
+          store,
+          command.native_origin(ref(service)),
+        )
+        == Error(change.1)
+      assert custody.close(store) == Ok(Nil)
+    },
+  )
+
+  // A different valid origin may select the index row, but cannot change the
+  // complete canonical ref inside it or the lifetime-unique native mapping.
+  let #(path, store, service, _) = lookup_fixture("native-mismatch")
+  let assert Ok(satellite) =
+    remote_tool.tool_child(
+      command.parent(service),
+      remote_tool.SatelliteCommand,
+    )
+    as "Both command roles can be constructed beneath the original parent."
+  corrupt(
+    path,
+    "UPDATE owner_custody_command_offers SET reserved_bytes=reserved_bytes+32, native_origin='"
+      <> remote_tool.child_address(satellite)
+      <> "'",
+  )
+  assert custody.command_offer_for_origin(store, satellite)
+    == Error(custody.Conflict)
+  assert custody.command_offer_for_origin(
+      store,
+      command.native_origin(ref(service)),
+    )
+    == Error(custody.Missing)
+  assert custody.close(store) == Ok(Nil)
+}
+
+pub fn indexed_lookup_cardinality_guard_precedes_oversized_neighbors_test() {
+  let #(path, store, service, _) = lookup_fixture("overcount")
+  corrupt(
+    path,
+    "INSERT INTO owner_custody_command_offers SELECT address || '-1', parent, service_origin, service_id, identity, native_origin || '-1', offer_digest, zeroblob(262145), state, reserved_bytes FROM owner_custody_command_offers; INSERT INTO owner_custody_command_offers SELECT address || '-2', parent, service_origin, service_id, identity, native_origin || '-2', offer_digest, zeroblob(262145), state, reserved_bytes FROM owner_custody_command_offers LIMIT 1",
+  )
+  assert custody.command_offer_for_origin(
+      store,
+      command.native_origin(ref(service)),
+    )
+    == Error(custody.Invalid(
+      "command offer count exceeds fixed service purposes",
+    ))
+  assert custody.close(store) == Ok(Nil)
+}
+
+pub fn indexed_lookup_complete_service_binding_rejects_canonical_substitution_test() {
+  let #(path, store, original, offer) = lookup_fixture("exact-service-binding")
+  let changed =
+    make_service(command.parent(original), command.CompileService, "b")
+  let identity =
+    ref(changed)
+    |> command.encode_ref
+    |> json.to_string
+    |> bit_array.from_string
+    |> bit_array.base16_encode
+  assert command.native_origin(ref(changed))
+    == command.native_origin(ref(original))
+  assert command.command_address(ref(changed))
+    == command.command_address(ref(original))
+
+  // The substituted ref is canonical, its indexed projections and reservation
+  // still agree, and only the actual retained original service proves conflict.
+  corrupt(
+    path,
+    "UPDATE owner_custody_command_offers SET identity=X'" <> identity <> "'",
+  )
+  assert custody.command_offer_for_origin(
+      store,
+      command.native_origin(ref(original)),
+    )
+    == Error(custody.Conflict)
+  assert custody.service_child(store, original)
+    == Ok(#(request(original), None))
+  assert custody.admit_command_child(store, offer, id(2), payload("Prepared"))
+    == Error(custody.Conflict)
+  assert custody.child(store, command.native_origin(ref(original)))
+    == Error(custody.Missing)
+  assert custody.close(store) == Ok(Nil)
+}
+
+// The raw header control distinguishes a scalar sentinel from a BLOB which
+// would otherwise be materialized before the generated integer decoder fails.
+type ReservationProjection {
+  ReservationScalar(Int)
+  ReservationBlob(bytes: Int)
+}
+
+pub fn generated_offer_headers_keep_blob_reservation_scalar_before_decode_test() {
+  let #(path, store, service, _) = lookup_fixture("reservation-type")
+  corrupt(
+    path,
+    "UPDATE owner_custody_command_offers SET reserved_bytes=zeroblob(1048576)",
+  )
+  let assert Ok(db) = sqlight.open(path)
+    as "The otherwise-valid retained row has a deliberately malformed reservation."
+  assert scalar(
+      db,
+      "SELECT length(reserved_bytes) FROM owner_custody_command_offers",
+    )
+    == 1_048_576
+  assert scalar(
+      db,
+      "SELECT reserved_bytes >= 0 FROM owner_custody_command_offers",
+    )
+    == 1
+  let address = command.command_address(ref(service))
+  let origin = command.native_origin(ref(service)) |> remote_tool.child_address
+  let by_address = sql.owner_command_offer_header(address)
+  let by_origin = sql.owner_command_offer_header_by_native_origin(origin)
+
+  // Both real generated decoders must receive an integer sentinel. Rejection
+  // by decode.int after transferring the original BLOB is too late.
+  let assert Ok([header]) =
+    sqlight.query(by_address.0, db, [sqlight.text(address)], by_address.2)
+    as "The address header receives a bounded integer despite BLOB reservation."
+  assert header.reserved_bytes == -1
+  let assert Ok([header]) =
+    sqlight.query(by_origin.0, db, [sqlight.text(origin)], by_origin.2)
+    as "The indexed header receives a bounded integer despite BLOB reservation."
+  assert header.reserved_bytes == -1
+
+  // Independent raw-cell inspection proves the query transferred the scalar,
+  // rather than relying on a typed decoder's refusal of a body-sized cell.
+  let projection =
+    decode.one_of(decode.map(decode.int, ReservationScalar), or: [
+      decode.map(decode.bit_array, fn(bytes) {
+        ReservationBlob(bit_array.byte_size(bytes))
+      }),
+    ])
+  let assert Ok([cell]) =
+    sqlight.query(
+      by_address.0,
+      db,
+      [sqlight.text(address)],
+      decode.field(8, projection, decode.success),
+    )
+    as "The raw address projection is independently observable."
+  assert cell == ReservationScalar(-1)
+  let assert Ok([cell]) =
+    sqlight.query(
+      by_origin.0,
+      db,
+      [sqlight.text(origin)],
+      decode.field(9, projection, decode.success),
+    )
+    as "The raw indexed projection is independently observable."
+  assert cell == ReservationScalar(-1)
+  assert sqlight.close(db) == Ok(Nil)
+
+  // Header accounting now refuses the sentinel before the existing value query;
+  // both public paths return corruption without accepting the forged allowance.
+  let refused =
+    Error(custody.Invalid(
+      "command offer reservation is smaller than retained bytes",
+    ))
+  assert custody.offer(store, ref(service)) == refused
+  assert custody.command_offer_for_origin(
+      store,
+      command.native_origin(ref(service)),
+    )
+    == refused
   assert custody.close(store) == Ok(Nil)
 }

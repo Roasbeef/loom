@@ -177,8 +177,16 @@ pub fn actor_reopen_preserves_exact_service_offer_and_original_native_uuid_test(
     as "The new actor recovers only retained evidence."
   assert custodian.service_child(owner, service()) == Ok(#(original, None))
   assert custodian.offer(owner, ref()) == Ok(offer("exact command"))
+  assert custodian.command_offer_for_origin(owner, command.native_origin(ref()))
+    == Ok(offer("exact command"))
   assert custodian.command_child(owner, ref()) == Ok(#(id(2), native, None))
   assert custodian.cancel_service(owner, service()) == Ok(Nil)
+  assert custodian.command_offer_for_origin(owner, command.native_origin(ref()))
+    == Ok(offer("exact command"))
+  assert custodian.reserve_command_child(owner, offer("exact command"), id(3), <<
+      "complete Prepared":utf8,
+    >>)
+    == Error(custody.Frozen)
   assert custodian.receive_child(owner, command.native_origin(ref()), id(2), <<
       "late terminal":utf8,
     >>)
@@ -333,4 +341,19 @@ pub fn actor_cancel_races_offer_admission_and_never_allocates_native_uuid_test()
     >>)
     == Error(custody.Frozen)
   stop(owner, pid)
+}
+
+pub fn indexed_offer_actor_missing_wrong_role_and_unavailable_are_distinct_test() {
+  let #(owner, _, pid, _path) = fixture("indexed-missing")
+  assert custodian.command_offer_for_origin(owner, command.native_origin(ref()))
+    == Error(custody.Missing)
+  assert custodian.command_offer_for_origin(
+      owner,
+      command.service_origin(service()),
+    )
+    == Error(custody.Invalid("origin is not a physical command"))
+  stop(owner, pid)
+  let assert Error(custody.Unavailable(_)) =
+    custodian.command_offer_for_origin(owner, command.native_origin(ref()))
+    as "Lost actor addressing cannot invent Missing historical evidence."
 }
