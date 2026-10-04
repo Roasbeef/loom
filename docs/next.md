@@ -1718,3 +1718,11 @@ Independent validation passes all 194 executor tests, and the review's scanner
 fixture correction passes all nine focused tests. See
 [the transfer review](review/distributed-compile-transfer.md). Semantic validation,
 physical service routing and durable receipt remain separate assembly duties.
+
+The Compile custody P extension now distinguishes retained terminal bytes from
+committed native evidence, and models Before-native settlement with a late-Ready
+fence. Independent review is clean. Root's strict gates pass 35 normal cases,
+44 exact witness probes and 30 compiling mutations with matched controls; see
+[the custody model review](review/distributed-compile-custody-model.md). These
+bounded results do not establish SQLite atomicity or production refinement.
+Physical Compile/Launch assembly and separate-host acceptance remain open.
