@@ -74,3 +74,15 @@ pub fn stamped() -> #(
   Option(String),
   Option(String),
 )
+
+/// Labels the *calling* process as owned by `path` in `role`, for an
+/// external inspector that attributes memory and CPU by owner.
+///
+/// Binds `proc_lib:set_label/1` via `telemetry_ffi:set_owner_label/2`,
+/// which builds the frozen `{pickglass_owner, 1, Path, Role}` term from
+/// `protocol-change/065`. No pure alternative exists: the label is an
+/// attribute of the process the emulator stores, and neither
+/// `gleam_erlang` nor `gleam_otp` binds it. `proc_lib:set_label/1`
+/// replaces any earlier label of the calling process.
+@external(erlang, "telemetry_ffi", "set_owner_label")
+pub fn set_owner_label(path: List(#(String, String)), role: String) -> Nil

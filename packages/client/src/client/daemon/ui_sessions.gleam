@@ -60,6 +60,7 @@ import gleam/string
 import host/bootstrap
 import session_view/transcript_image
 import storage/access
+import telemetry/owner
 import web_view/ending
 import weft/actor
 
@@ -273,7 +274,21 @@ pub fn production(now: fn() -> Int) -> Settings {
 /// // let assert Ok(sessions) = ui_sessions.start(settings)
 /// ```
 pub fn start(settings: Settings) -> Result(Sessions, String) {
-  actor.new(State(settings, dict.new(), dict.new(), 0, dict.new(), dict.new()))
+  actor.new_with_initialiser(1000, fn(subject) {
+    // The table belongs to the daemon and not to any session, so its label
+    // carries the empty owner path.
+    owner.label([], owner.PageSessions)
+    actor.initialised(State(
+      settings,
+      dict.new(),
+      dict.new(),
+      0,
+      dict.new(),
+      dict.new(),
+    ))
+    |> actor.returning(subject)
+    |> Ok
+  })
   |> actor.on_message(handle)
   |> actor.periodic(every: sweep_ms, sending: Sweep)
   |> actor.start
