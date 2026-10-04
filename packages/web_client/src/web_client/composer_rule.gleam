@@ -357,3 +357,58 @@ pub fn intent(
     _, _, _, _ -> None
   }
 }
+
+/// Whether the composer holds images, which `<loom-attach>` reports with the
+/// composer's `attached` attribute: an image alone is a message the daemon
+/// accepts, so a draft with no words is still sendable with one attached.
+pub type Attachments {
+  /// At least one image is attached and has finished reading.
+  Attached
+
+  /// No image is attached.
+  Unattached
+}
+
+/// Whether the composer's send buttons can be pressed.
+pub type Gate {
+  /// There is something to send.
+  Open
+
+  /// There is nothing to send: no words and no image. The buttons are
+  /// disabled, so the page never has to refuse the press with a notice that
+  /// stays on screen.
+  Shut
+}
+
+/// Whether there is something to send: a draft with a word in it, or an
+/// image. Whitespace alone is nothing, as the server counts it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert composer_rule.gate("", composer_rule.Unattached) == composer_rule.Shut
+/// assert composer_rule.gate("hi", composer_rule.Unattached) == composer_rule.Open
+/// assert composer_rule.gate("  \n", composer_rule.Attached) == composer_rule.Open
+/// ```
+pub fn gate(draft: String, attachments: Attachments) -> Gate {
+  case string.trim(draft), attachments {
+    "", Unattached -> Shut
+    _, _ -> Open
+  }
+}
+
+/// The attachments an `attached` attribute reports: `yes` for images, and
+/// anything else, including no value, for none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert composer_rule.attachments("yes") == composer_rule.Attached
+/// assert composer_rule.attachments("") == composer_rule.Unattached
+/// ```
+pub fn attachments(value: String) -> Attachments {
+  case value {
+    "yes" -> Attached
+    _ -> Unattached
+  }
+}

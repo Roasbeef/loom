@@ -195,3 +195,24 @@ pub fn a_row_above_the_view_is_brought_to_the_top_test() {
 pub fn a_row_below_the_view_is_brought_to_the_bottom_test() {
   assert composer_rule.revealed(160.0, 20.0, 40.0, 100.0) == 80.0
 }
+
+// The send buttons are disabled while there is nothing to send, so the page
+// never raises "Nothing to send." for a press of an empty editor.
+pub fn an_empty_editor_with_no_image_has_nothing_to_send_test() {
+  assert composer_rule.gate("", composer_rule.Unattached) == composer_rule.Shut
+  assert composer_rule.gate("  \n\t", composer_rule.Unattached)
+    == composer_rule.Shut
+}
+
+pub fn a_word_or_an_image_is_something_to_send_test() {
+  assert composer_rule.gate("hi", composer_rule.Unattached)
+    == composer_rule.Open
+  assert composer_rule.gate("", composer_rule.Attached) == composer_rule.Open
+  assert composer_rule.gate(" \n", composer_rule.Attached) == composer_rule.Open
+}
+
+pub fn the_attached_attribute_is_yes_or_nothing_test() {
+  assert composer_rule.attachments("yes") == composer_rule.Attached
+  assert composer_rule.attachments("no") == composer_rule.Unattached
+  assert composer_rule.attachments("") == composer_rule.Unattached
+}
