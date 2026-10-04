@@ -30,7 +30,8 @@
 ////
 //// 1. `read_tool_with` registers any virtual `Scheme`s; `run_read` decodes the
 ////    window, then sends a `scheme://` reference to `scheme_outcome` and
-////    every other path to `file_outcome`.
+////    every other path to the reader supplied by `read_tool_using`. The
+////    local constructor supplies `file_outcome`; semantic consumers never do.
 //// 2. `resolve_invocation` asks for approval of the exact target when it lies
 ////    outside the workspace, then resolves through `resolve_readable` or
 ////    `resolve_writable`.
@@ -39,9 +40,11 @@
 //// 4. A read goes on through `read_outcome` (text windows) or `image_outcome`.
 ////    `read_text` shares the authorization and bounded UTF-8 read for a
 ////    caller that needs whole source text instead of a rendered window.
-//// 5. `run_write` resolves for writing, so the protected-path list applies,
+//// 5. `run_write` decodes arguments before its supplied writer. Local
+////    `file_write` resolves for writing, so the protected-path list applies,
 ////    and `write_whole` creates parents and writes; `write_outcome` answers.
-//// 6. `run_edit` resolves, reads the pre-image with `read_text_file`,
+//// 6. `run_edit` decodes the original plan before its supplied editor. Local
+////    `file_edit` resolves, reads the pre-image with `read_text_file`,
 ////    applies the digest-bound plan with `hashline.apply`, and writes the
 ////    result;
 ////    `edit_outcome` or `apply_error_outcome` answers with fresh anchors.
@@ -778,6 +781,22 @@ pub fn read_tool() -> tool.Tool {
 /// ```
 ///
 pub fn read_tool_with(schemes: List(Scheme)) -> tool.Tool {
+  read_tool_using(schemes, file_outcome)
+}
+
+/// Shares native argument validation and virtual routing with semantic readers.
+/// Ordinary paths reach only the supplied reader after window validation.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.read_tool_using([], fn(ctx, path, offset, limit) { read(ctx, path, offset, limit) })
+/// ```
+@internal
+pub fn read_tool_using(
+  schemes: List(Scheme),
+  read: fn(Ctx, String, Int, Int) -> ToolOutcome,
+) -> tool.Tool {
   tool.Tool(
     name: "fs_read",
     description: "Read a text file as anchored lines (line:anchor|text). "
@@ -819,7 +838,7 @@ pub fn read_tool_with(schemes: List(Scheme)) -> tool.Tool {
     replay: tool.Safe,
     execution_mode: tool.Concurrent,
     requirements: read_only_requirements,
-    run: fn(ctx, args) { run_read(schemes, ctx, args) },
+    run: fn(ctx, args) { run_read(schemes, read, ctx, args) },
   )
 }
 
@@ -829,7 +848,12 @@ fn scheme_sentences(schemes: List(Scheme)) -> String {
   |> string.concat
 }
 
-fn run_read(schemes: List(Scheme), ctx: Ctx, args: JsonValue) -> ToolOutcome {
+fn run_read(
+  schemes: List(Scheme),
+  read: fn(Ctx, String, Int, Int) -> ToolOutcome,
+  ctx: Ctx,
+  args: JsonValue,
+) -> ToolOutcome {
   use path <- tool.with_arg(tool.required_string(args, "path"))
   use offset <- tool.with_arg(tool.optional_int(args, "offset"))
   use limit <- tool.with_arg(tool.optional_int(args, "limit"))
@@ -842,7 +866,7 @@ fn run_read(schemes: List(Scheme), ctx: Ctx, args: JsonValue) -> ToolOutcome {
   case string.split_once(path, on: "://") {
     Ok(#(name, reference)) ->
       scheme_outcome(schemes, ctx, name, reference, offset, limit)
-    Error(Nil) -> file_outcome(ctx, path, offset, limit)
+    Error(Nil) -> read(ctx, path, offset, limit)
   }
 }
 
@@ -983,7 +1007,16 @@ pub fn image_media_type(bytes: BitArray) -> Option(String) {
 
 // Images use the existing durable tool-result block. The accompanying text
 // identifies the file even when a later text-only turn placeholders its pixels.
-fn image_outcome(
+
+/// Renders a retained signature-detected image in the existing result blocks.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.image_outcome(...)
+/// ```
+@internal
+pub fn image_outcome(
   path: String,
   bytes: BitArray,
   mime_type: String,
@@ -1010,8 +1043,31 @@ fn read_outcome(
   offset: Int,
   limit: Int,
 ) -> ToolOutcome {
+  native_read_outcome(
+    path,
+    hashline.digest(content),
+    hashline.window(content, offset:, limit:),
+    limit,
+  )
+}
+
+/// Projects retained native anchors through the same inline rendering ceiling.
+/// No filesystem read or digest recomputation is needed after a remote receipt.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.native_read_outcome("a", digest, hashline.window("a", 1, 1), 1)
+/// ```
+@internal
+pub fn native_read_outcome(
+  path: String,
+  digest: String,
+  window: hashline.Window,
+  limit: Int,
+) -> ToolOutcome {
   use projection <- tool.or_outcome(
-    read_window(content, offset, limit),
+    render_read_window(digest, window),
     fn(_nil) {
       tool.failure(
         "the requested window renders larger than "
@@ -1020,7 +1076,6 @@ fn read_outcome(
       )
     },
   )
-  let window = projection.window
   tool.success(projection.text)
   |> tool.with_details(
     json.Object([
@@ -1030,7 +1085,7 @@ fn read_outcome(
       #("total_lines", json.Int(window.total_lines)),
       #("has_more", json.Bool(window.has_more)),
       #("trailing_newline", json.Bool(window.trailing_newline)),
-      #("digest", json.String(projection.digest)),
+      #("digest", json.String(digest)),
       #("anchor_version", json.Int(hashline.anchor_version)),
     ]),
   )
@@ -1065,9 +1120,15 @@ pub fn read_window(
   limit: Int,
 ) -> Result(ReadWindow, Nil) {
   let window = hashline.window(content, offset:, limit:)
-  let digest = hashline.digest(content)
+  render_read_window(hashline.digest(content), window)
+}
+
+fn render_read_window(
+  digest: String,
+  window: hashline.Window,
+) -> Result(ReadWindow, Nil) {
   let lines = case window.lines {
-    [] -> empty_window_text(window.total_lines, offset)
+    [] -> empty_window_text(window.total_lines, window.offset)
     _ -> hashline.render(window)
   }
 
@@ -1227,7 +1288,16 @@ pub fn read_bytes(
 // The prose the text tools have always answered a failed read with, one
 // sentence per `ReadError`. Extracting the decision above left the
 // wording here, unchanged, so a model reads what it read before.
-fn read_error_outcome(error: ReadError) -> ToolOutcome {
+
+/// Projects the existing bounded reader refusal without another read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.read_error_outcome(...)
+/// ```
+@internal
+pub fn read_error_outcome(error: ReadError) -> ToolOutcome {
   case error {
     ReadFailed(error:) -> fs_error_outcome(error)
     TooLarge(size: _, limit:) ->
@@ -1319,6 +1389,23 @@ pub fn write_tool() -> tool.Tool {
 /// ```
 ///
 pub fn write_tool_with(observer: WriteObserver) -> tool.Tool {
+  write_tool_using(fn(ctx, path, content) {
+    file_write(observer, ctx, path, content)
+  })
+}
+
+/// Shares native write decoding with a whole semantic write implementation.
+/// The callback owns the effect; this constructor adds no filesystem fallback.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.write_tool_using(fn(ctx, path, content) { write(ctx, path, content) })
+/// ```
+@internal
+pub fn write_tool_using(
+  write: fn(Ctx, String, String) -> ToolOutcome,
+) -> tool.Tool {
   tool.Tool(
     name: "fs_write",
     description: "Create or overwrite a whole file with the given content. "
@@ -1344,17 +1431,26 @@ pub fn write_tool_with(observer: WriteObserver) -> tool.Tool {
     replay: tool.Safe,
     execution_mode: tool.Exclusive,
     requirements: workspace_requirements,
-    run: fn(ctx, args) { run_write(observer, ctx, args) },
+    run: fn(ctx, args) { run_write(write, ctx, args) },
   )
 }
 
 fn run_write(
-  observer: WriteObserver,
+  write: fn(Ctx, String, String) -> ToolOutcome,
   ctx: Ctx,
   args: JsonValue,
 ) -> ToolOutcome {
   use path <- tool.with_arg(tool.required_string(args, "path"))
   use content <- tool.with_arg(tool.required_string(args, "content"))
+  write(ctx, path, content)
+}
+
+fn file_write(
+  observer: WriteObserver,
+  ctx: Ctx,
+  path: String,
+  content: String,
+) -> ToolOutcome {
   use resolved <- tool.or_outcome(
     resolve_invocation(ctx, path, Writing),
     fn(outcome) { outcome },
@@ -1417,36 +1513,57 @@ fn write_outcome(
   bytes: BitArray,
   observed: Option(String),
 ) -> ToolOutcome {
-  let size = bit_array.byte_size(bytes)
+  write_result_outcome(
+    path,
+    bit_array.byte_size(bytes),
+    hashline.digest(content),
+    written_lines(content),
+    observed,
+  )
+}
+
+/// Renders retained write evidence and settled diagnostics without rereading.
+/// Omitted anchors remain an explicit request for a subsequent windowed read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.write_result_outcome("a", 0, hashline.digest(""), Ok([]), None)
+/// ```
+@internal
+pub fn write_result_outcome(
+  path: String,
+  bytes: Int,
+  digest: String,
+  anchors: Result(List(hashline.AnchoredLine), Nil),
+  observed: Option(String),
+) -> ToolOutcome {
   let text =
     "wrote "
-    <> int.to_string(size)
+    <> int.to_string(bytes)
     <> " bytes to "
     <> path
     <> "\ndigest: "
-    <> hashline.digest(content)
-    <> written_anchor_text(content)
+    <> digest
+    <> written_anchor_text(anchors)
   tool.success(observed_text(text, observed))
   |> tool.with_details(
     json.Object(observed_fields(
-      [#("path", json.String(path)), #("bytes", json.Int(size))],
+      [
+        #("path", json.String(path)),
+        #("bytes", json.Int(bytes)),
+      ],
       observed,
     )),
   )
 }
 
 // The whole written file as one region, or the standing-in line when it is
-// too large.
-//
-// The size check comes first and decides on its own wherever it can:
-// anchored rendering is strictly larger than the content it renders, since
-// every line gains its number, its anchor and two delimiters, so a file
-// already at the cap cannot fit inside the block and there is no reason to
-// annotate it to find that out. Under the cap, the ordinary path runs and
-// the early-stop fold still has the final say — a file of very many very
-// short lines pays more in anchors than in content.
-fn written_anchor_text(content: String) -> String {
-  case written_lines(content) {
+// too large. The retained projection is already bounded by `written_lines`.
+fn written_anchor_text(
+  anchors: Result(List(hashline.AnchoredLine), Nil),
+) -> String {
+  case anchors {
     Error(Nil) ->
       oversized_text(write_too_large(hashline.Region(start: 1, end: 1)))
     Ok([]) -> "\n(the file is now empty)"
@@ -1454,6 +1571,14 @@ fn written_anchor_text(content: String) -> String {
       "\n" <> fresh_anchors_heading <> "\n" <> hashline.render_lines(lines)
   }
 }
+
+// The size check comes first and decides on its own wherever it can:
+// anchored rendering is strictly larger than the content it renders, since
+// every line gains its number, its anchor and two delimiters, so a file
+// already at the cap cannot fit inside the block and there is no reason to
+// annotate it to find that out. Under the cap, the ordinary path runs and
+// the early-stop fold still has the final say — a file of very many very
+// short lines pays more in anchors than in content.
 
 /// Returns all fresh write anchors only when the existing inline block fits.
 /// The native tool and semantic host share this whole-file shortcut and
@@ -1557,6 +1682,21 @@ pub fn edit_tool() -> tool.Tool {
 /// ```
 ///
 pub fn edit_tool_with(observer: WriteObserver) -> tool.Tool {
+  edit_tool_using(fn(ctx, path, plan) { file_edit(observer, ctx, path, plan) })
+}
+
+/// Shares native hunk decoding with a whole semantic anchored edit.
+/// The original plan reaches the callback without local resolution or reads.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.edit_tool_using(fn(ctx, path, plan) { edit(ctx, path, plan) })
+/// ```
+@internal
+pub fn edit_tool_using(
+  edit: fn(Ctx, String, hashline.Plan) -> ToolOutcome,
+) -> tool.Tool {
   tool.Tool(
     name: "fs_edit",
     description: "Apply anchored edit hunks to a file. Pass the digest from "
@@ -1578,7 +1718,7 @@ pub fn edit_tool_with(observer: WriteObserver) -> tool.Tool {
     replay: tool.Safe,
     execution_mode: tool.Exclusive,
     requirements: workspace_requirements,
-    run: fn(ctx, args) { run_edit(observer, ctx, args) },
+    run: fn(ctx, args) { run_edit(edit, ctx, args) },
   )
 }
 
@@ -1679,24 +1819,33 @@ fn edit_schema() -> JsonValue {
   ])
 }
 
-fn run_edit(observer: WriteObserver, ctx: Ctx, args: JsonValue) -> ToolOutcome {
+fn run_edit(
+  edit: fn(Ctx, String, hashline.Plan) -> ToolOutcome,
+  ctx: Ctx,
+  args: JsonValue,
+) -> ToolOutcome {
   use path <- tool.with_arg(tool.required_string(args, "path"))
   use digest <- tool.with_arg(tool.required_string(args, "digest"))
   use hunks <- tool.with_arg(decode_hunks(args))
   use Nil <- tool.with_arg(refuse_display_prefixes(hunks))
+  edit(ctx, path, hashline.Plan(digest:, hunks:))
+}
+
+fn file_edit(
+  observer: WriteObserver,
+  ctx: Ctx,
+  path: String,
+  plan: hashline.Plan,
+) -> ToolOutcome {
   use target <- tool.or_outcome(edit_target(ctx, path), fn(outcome) { outcome })
   use landed <- tool.or_outcome(
-    land_plan(
-      filesystem: ctx.filesystem,
-      target:,
-      plan: hashline.Plan(digest:, hunks:),
-    ),
+    land_plan(filesystem: ctx.filesystem, target:, plan:),
     land_error_outcome,
   )
 
   // The edit is on disk; only now may anything be told the file changed.
   let observed = observer(target.resolved)
-  edit_outcome(path, landed.before, hunks, landed.edited, observed)
+  edit_outcome(path, landed.before, plan.hunks, landed.edited, observed)
 }
 
 // --- the one landing path ------------------------------------------------
@@ -1877,7 +2026,16 @@ pub const max_fresh_anchor_bytes = 8192
 // current `{line, anchor}` pair to reference and the only way to get one
 // is to read the file again. Echoing them is what makes a chain of edits
 // on one file cost one read instead of one read per edit.
-fn edit_outcome(
+
+/// Renders retained edit preimage, postimage and original hunks with diagnostics.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.edit_outcome(...)
+/// ```
+@internal
+pub fn edit_outcome(
   path: String,
   before: String,
   hunks: List(hashline.Hunk),
@@ -2306,7 +2464,15 @@ pub fn path_outcome(error: PathError) -> ToolOutcome {
   }
 }
 
-fn fs_error_outcome(error: FsError) -> ToolOutcome {
+/// Projects the existing filesystem refusal without another effect.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.fs_error_outcome(...)
+/// ```
+@internal
+pub fn fs_error_outcome(error: FsError) -> ToolOutcome {
   case error {
     tool.FsNotFound(path:) -> tool.failure("file not found: " <> path)
     tool.FsPermissionDenied(path:) ->
