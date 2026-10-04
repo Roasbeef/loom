@@ -1,0 +1,5 @@
+.cache/
+.runs/
+__pycache__/
+*.old
+states/
