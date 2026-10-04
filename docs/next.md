@@ -1,5 +1,22 @@
 # Current handoff
 
+## Distributed runtime design (issue #697)
+
+The proposed [user journeys and ownership design](design-notes/distributed-runtime.md)
+separates existing multiplayer access from remote execution and later clustered
+ownership. The first recommendation is executor-resident workspaces with a
+typed remote workspace service, without a shared POSIX filesystem. Session
+content stays with the owning orchestrator; Khepri is a candidate for small
+cluster metadata after a compatibility spike. No distributed runtime or new
+wrapper library is implemented by these notes.
+
+The companion [API and delivery plan](design-notes/distributed-runtime-api.md)
+records correct-by-construction boundaries, Loom style/lint requirements and
+separate PlusCal, P and Lean responsibilities. It identifies independent work
+packages for execution after contract review. Phone/laptop screen switching
+uses existing multiplayer; moving session ownership or workspace contents is
+a different operation.
+
 ## Executor service (issue #696)
 
 Issue #696 is built as a stack of six phase branches, each a PR on the one
