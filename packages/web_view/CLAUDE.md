@@ -403,9 +403,10 @@ page keys and nonces, and the relay into the session's gateway.
   before the nudges, so `strip_path` and `invite_path` do not move), on both
   pages from `component.trace(model)`, the `session_view/trace_view` fold of
   the same records `relaned` folds the Changes board from. It lists the
-  session's `code_mode` programs, and not the capability calls inside them:
-  no capability call is recorded on the page's wire (protocol-change/060
-  proposes the record), and the pane says so in its last line. The newest
+  session's `code_mode` programs. The newest program also lists the rows of
+  the protocol-change/060 call record its result carried (`Program.calls`, as
+  text nodes under `trace-calls`), and a program with no record lists none; the
+  pane's last line says so (`trace_view.capability_calls_recorded`). The newest
   program leads with its state chip, result excerpt and a collapsed `Budget`
   `<details>`; earlier programs are rows under it. Labels and excerpts are
   text nodes, a state's class is one of three literals chosen from the closed

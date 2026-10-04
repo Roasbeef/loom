@@ -2761,8 +2761,39 @@ panel in the rail has no border of its own: its rectangle is the rail's
 content grown by the cell a border would take (`layout.changes_panel_area`), so
 `panel_inner` of it is the content, and it never borrows rows above the
 composer. `View.diff_view` has two values now, `DiffHidden` and `DiffVisible`;
-the automatic side pane it once named is gone. The tab is a function of
-the changes setting, not a state of its own, so nothing about it is remembered.
+the automatic side pane it once named is gone.
+
+The rail has four tabs, in the web view's order: Strands, Changes, Trace,
+Session. The tab is a preference, except Changes. `View.rail_tab` is the tab
+the operator left the rail on (none is Strands), the layout memory keeps it
+(`tab`: `strands`, `trace` or `session`), and `rail.tab` takes it with the
+changes setting: while the changes are open the rail shows Changes, and
+closing them shows the remembered tab again. Changes is never remembered,
+because it opens an observation of the worktree that a launch has not made; a
+file that names it is read as no choice. The digits `1` to `4` choose a tab
+while the rail has the keyboard: on Strands that is the list's cursor (`down`
+from the composer), and on Trace and Session, which have no cursor, `down`
+from the composer gives the keyboard to the tab (`View.rail_focus`). There the
+digits choose a tab, `up`/`down` and `pageup`/`pagedown` scroll it
+(`View.rail_scroll`, cut to `rail_tabs.scroll_limit`), `Esc` hands the
+keyboard back, and any other key is the composer's and takes it back. At the
+composer the digits are ordinary characters. `/diff` opens Changes,
+`/trace` opens Trace and `/summary` opens Session on a terminal that can dock
+the rail (`submit.select_rail_tab` docks it and records the choice); below 120
+columns `/trace` says the tab needs the rail and `/summary` still opens the
+full-screen summary, which also has the completion evidence the tab does not
+carry. Choosing Session asks for a fresh read of the live jobs.
+
+Trace and Session are text, in `tui/rail_tabs`. Trace is
+`session_view/trace_view.newest` of the strand on screen, the same module the
+web view's Trace pane folds: the newest code-mode program by entry sequence,
+running until its result arrives, then how it ended
+(`trace_view.state_title`) with the result's excerpt and its calls under
+`CALLS · …` as the transcript's failure block groups them
+(`transcript_lines.call_section`, carried on `Program.calls`). It draws the
+program's opening twelve lines numbered and no timing, because per-call timing
+is its own piece of work. Session is the goal row, `session_summary`'s jobs and
+viewers, and the cost, the web view's Session tab's rows.
 
 `tui/rail_view` paints it: a separator, a tab bar (`Strands ●n  Changes`, the
 count being agents that need the operator) and its rule, the tab's content, and
@@ -2788,13 +2819,13 @@ key is the lower-case SHA-256 of the workspace path in hex, the same
 construction as the daemon's web digest but over the terminal's own discovered
 workspace root made absolute, so the two stores do not share keys, and a path
 never reaches the file. The file holds
-`{"version":1,"workspaces":[{"key":"<digest>","rail":"shown"}]}`, most
+`{"version":1,"workspaces":[{"key":"<digest>","rail":"shown","tab":"trace"}]}`, most
 recently changed first, at most 64 entries. `rail` is `shown` or `hidden` and
 is absent for a workspace whose rail was never toggled, so a remembered choice
 is told from the default. Nothing from a session is stored: not the
-transcript, the focused strand, the session, a path or a name. Later slices
-add the rail's tab and the todo line as further optional words, which an older
-terminal ignores.
+transcript, the focused strand, the session, a path or a name. `tab` is
+`strands`, `trace` or `session` and is absent the same way. A later slice adds
+the todo line as a further optional word, which an older terminal ignores.
 
 `layout_memory` is the file over plain values and `layout_save` is the join to
 the model. `layout_save.remember_launch` runs once in `interactive`, for a

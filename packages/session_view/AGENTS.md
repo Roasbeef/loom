@@ -476,11 +476,20 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   them newest first, into the session's `code_mode` programs, oldest first:
   each with a closed `State` read from the result's `status` word (`Running`
   while it has no result), a label (the `program_path`, else the text of the
-  program's leading `//` comment after any imports, else `Program N`), a result excerpt, the `within_ms` the call named and
-  a closed `Vetting`. It lists programs because no per-capability call is
-  recorded yet (protocol-change/060). Bounded: `max_programs` 12 (older ones
-  counted in `omitted`) and `max_characters` 160 per label and excerpt, both
-  single-line and free of control characters. Portable, no externals.
+  program's leading `//` comment after any imports, else `Program N`), a result
+  excerpt, the `within_ms` the call named, a closed `Vetting`, and `calls`, the
+  rows of the protocol-change/060 call record the result carries (`CALLS · …`
+  and one row per call, from `transcript_lines.call_section`; nothing for a
+  running call or a result with no readable record). `newest(records, strand)`
+  is the terminal's form: one strand's newest program from a window that holds
+  several strands, in entry order whatever order the records arrive in, with
+  `source`, the program's opening twelve lines numbered. `state_title` words a
+  state as the transcript's failure block does (`compile error`, `refused by
+  vetting`), and `state_word` is the web's. `first_call` is a program's first
+  call row, else its label. Bounded: `max_programs` 12 (older ones counted in
+  `omitted`) and `max_characters` 160 per label and excerpt, both single-line
+  and free of control characters. Both hosts draw it: the web view's Trace pane
+  from `fold`, the terminal's Trace tab from `newest`. Portable, no externals.
 - `changes_view.fold(records)` folds a strand's records, as a branch holds
   them newest first, into the board of the session's own edits: the files
   the successful `fs_edit` results named, each with the diff the result
