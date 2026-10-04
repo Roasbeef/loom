@@ -151,6 +151,30 @@ Cancelling a service atomically fences its outer row, offers and any allocated
 native child. A late native receipt can still be retained under its original
 identity. Neither cancellation nor that receipt proves physical cleanup.
 
+### Recover an offer from its native origin
+
+The broker receives a managed native origin before it has the complete command
+reference. `command_offer_for_origin` uses the existing unique native-origin
+index to recover that reference and its exact offer. This lookup does not scan
+the journal or allocate a native UUID.
+
+The index address identifies a candidate; it does not establish complete
+identity. The reader first checks bounded scalar headers and the reserved
+capacity. It then loads the bounded bodies and verifies the original parent,
+canonical command reference and retained service. A changed parent digest that
+shares the same logical address therefore conflicts with the saved evidence.
+
+Cancelled offers remain readable because recovery still needs their original
+identity. Frozen evidence and collected parents refuse. The lookup grants no
+clearance, so the existing live reservation transaction still fences a cancelled
+service. This separation lets recovery inspect what happened without making the
+command executable again.
+
+Both offer-header queries project a non-integer reservation as an invalid scalar
+sentinel. SQLite's non-strict constraint can accept a BLOB in that column; rejecting
+it in the Gleam decoder would transfer the BLOB first. The SQL projection keeps
+that corruption check ahead of body materialization.
+
 Collection is deliberately conservative for these physical services. Any
 Compile or Launch child row, or any offer, prevents parent collection even
 after exact final-result readback. This includes a service that failed before
