@@ -734,7 +734,7 @@ A `ui_sessions.Grant` now names a `Scope` (`Session(id)` or `Home`) and a
 scope is part of redemption: a session's ticket at the home exchange and a
 home's at a session's are each spent and refused (`OtherScope`). The page cap
 (`max_pages`) is counted per principal and per scope, and a home lives
-`ui_sessions.home_ms`. The router adds `GET /ui/home`, `GET /ui/p/<key>/home`
+`ui_sessions.session_ms`, as a session page does. The router adds `GET /ui/home`, `GET /ui/p/<key>/home`
 and `GET /ui/p/<key>/home/ws`, checked in the session routes' order against a
 `Home` grant (`server.home_grant`); there is no membership check, since there
 is no session. One function (`server.entered`) builds the exchange response

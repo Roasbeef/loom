@@ -182,7 +182,7 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   `Reach` (`OneSession | Workspace`, not yet read). `ui.link` without
   `session_id` mints a `Home` grant; the home routes (`ui_http.HomeExchange`,
   `HomePage`, `HomeSocket`, `server.home_grant`/`home_socket`) and
-  `ui_socket.upgrade_home` serve it, a home living `ui_sessions.home_ms`.
+  `ui_socket.upgrade_home` serve it, a home living `ui_sessions.session_ms`.
   Redemption is one message: it spends
   the ticket, answers `UnknownTicket` or `OtherScope`, and mints three
   secrets, ending no other page except the principal's oldest when it

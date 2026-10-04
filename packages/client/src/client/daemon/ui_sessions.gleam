@@ -78,12 +78,6 @@ pub const ticket_ms = 60_000
 /// switching.
 pub const session_ms = 28_800_000
 
-/// How long a home page lives from its exchange, in milliseconds. It is the
-/// one place the home's lifetime is written, so a later change to how a
-/// browser stays signed in changes this and nothing else. Today it is a
-/// working day, as a session page's is.
-pub const home_ms = 28_800_000
-
 /// The most live UI sessions one principal holds for one session, and, as a
 /// separate count, for its home (protocol-change/065): a home page is a scope
 /// of its own, so opening homes never ends a session's page.
@@ -629,10 +623,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         }
 
         Ok(Ticket(grant:, until:)) -> {
-          let lasts = case grant.scope {
-            Session(_) -> state.settings.session_ms
-            Home -> home_ms
-          }
+          let lasts = state.settings.session_ms
           let ends = case until {
             Some(bound) -> int.min(bound, now + lasts)
             None -> now + lasts

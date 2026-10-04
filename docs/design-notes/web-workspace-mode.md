@@ -383,7 +383,7 @@ their bearer, since a login is not a claim.
 | `POST /ui/claim` | host, `Sec-Fetch-Site`, body at most 1 KiB, claim redeems | the enter page, with the login cookie and nonce (section 5.3) |
 
 A `Home` ticket presented at a session's exchange, or a session ticket at
-the home's, is spent and refused, as `OtherScope` (`ui_sessions.gleam:222`)
+the home's, is spent and refused, as `OtherScope` (`ui_sessions.gleam:216`)
 spends one presented against the wrong session today. The scope is part of
 the redemption, in the same actor message, so the property 053 wanted from a
 separate admin ticket table (a session ticket never redeems at the admin
