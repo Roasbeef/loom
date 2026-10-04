@@ -171,14 +171,7 @@ pub fn a_call_with_no_result_is_running_test() {
     )
 
   assert only(trace)
-    == trace_view.Program(
-      Running,
-      "pub fn main() {}",
-      None,
-      Some(5000),
-      Pending,
-      None,
-    )
+    == trace_view.Program(Running, "Program 1", None, Some(5000), Pending, None)
 }
 
 pub fn a_completed_program_shows_its_value_test() {
@@ -201,7 +194,7 @@ pub fn a_completed_program_shows_its_value_test() {
   let shown = only(trace)
 
   assert shown.state == Completed
-  assert shown.label == "// count functions"
+  assert shown.label == "count functions"
   assert shown.excerpt == Some("3")
   assert shown.within_ms == Some(30_000)
   assert shown.vetting == Passed
@@ -276,7 +269,7 @@ pub fn programs_keep_their_order_and_the_newest_is_last_test() {
     )
 
   assert list.map(trace.programs, fn(shown) { shown.label })
-    == ["first", "second"]
+    == ["Program 1", "Program 2"]
   assert list.map(trace.programs, fn(shown) { shown.state })
     == [Completed, Running]
 }
@@ -293,7 +286,7 @@ pub fn the_trace_keeps_the_newest_programs_and_counts_the_rest_test() {
   assert list.length(trace.programs) == trace_view.max_programs
   assert trace.omitted == extra
   let assert Ok(first) = list.first(trace.programs)
-  assert first.label == "p" <> int.to_string(extra)
+  assert first.label == "Program " <> int.to_string(extra + 1)
 }
 
 pub fn an_excerpt_is_one_clean_bounded_line_test() {
@@ -304,7 +297,7 @@ pub fn an_excerpt_is_one_clean_bounded_line_test() {
       window([
         exchange(
           0,
-          program(hostile, None),
+          program("// " <> hostile, None),
           Some(#(
             hostile,
             status("completed", [#("value", json.String(hostile))]),
@@ -352,5 +345,28 @@ pub fn the_sandbox_line_the_result_reported_is_kept_test() {
     == Some(
       "sandbox · build enforced 2 layers; skipped 0 · satellite enforced 1 layers; skipped 0",
     )
-  assert trace_view.first_call(only(trace)) == "x"
+  assert trace_view.first_call(only(trace)) == "Program 1"
+}
+
+pub fn the_label_is_the_leading_comment_after_the_imports_test() {
+  let source =
+    "\nimport cap/fs\nimport gleam/list\n\n//// Count the functions in calc.py.\npub fn main() { 1 }"
+  let trace =
+    trace_view.fold(window([exchange(0, program(source, None), None)]))
+
+  assert only(trace).label == "Count the functions in calc.py."
+}
+
+pub fn a_program_that_opens_with_code_is_numbered_test() {
+  let trace =
+    trace_view.fold(
+      window([
+        exchange(0, program("import cap/fs\npub fn main() { 1 }", None), None),
+        exchange(1, program("// \npub fn main() { 2 }", None), None),
+        exchange(2, program("// later\npub fn main() { 3 }", None), None),
+      ]),
+    )
+
+  assert list.map(trace.programs, fn(shown) { shown.label })
+    == ["Program 1", "Program 2", "later"]
 }

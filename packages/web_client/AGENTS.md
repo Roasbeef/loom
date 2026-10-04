@@ -83,12 +83,12 @@ renders again just for it:
   (protocol-change/051, the addendum on the storage decision). A hidden column takes no width and is `inert`, so
   its content leaves the tab order. The `sidebar` attribute is a fixed word
   the server writes (`listed` or `none`), so an observer's page, which has no
-  sidebar, gets no button for one. The strand panel has three tabs, Strands,
-  Changes and Session. The server draws a pane for each, all of them, as
+  sidebar, gets no button for one. The strand panel has four tabs, Strands,
+  Changes, Trace and Session. The server draws a pane for each, all of them, as
   children of the panel; the element draws the tab bar above the `right` slot
   and shows the chosen tab's pane by setting a custom state on itself
-  (`component.set_pseudo_state`, `tab-strands`, `tab-changes` or
-  `tab-session`), which the stylesheet reads to hide the other two
+  (`component.set_pseudo_state`, `tab-strands`, `tab-changes`,
+  `tab-session` or `tab-trace`), which the stylesheet reads to hide the others
   (`loom-shell:state(tab-changes) .pane:not(.pane-changes)`). A hidden pane is
   `display: none`, so its controls leave the tab order too; a browser without
   custom states shows every pane, stacked. The `needing` attribute is a count

@@ -14,7 +14,7 @@
 ////
 //// `fold` works over the records a host holds, the same window the
 //// transcript has, so a program older than the window is not listed. It
-//// reads the call's `program_path` or the first line of its `program` as a
+//// reads the call's `program_path` or the leading comment of its `program` as a
 //// label, its `within_ms` as the wall budget, and the result's `status` and
 //// `value`. A call whose result has not arrived is `Running`. Everything it
 //// returns is session text or a number: the label and the excerpt are cut,
@@ -34,7 +34,6 @@ import core/message
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/result
 import gleam/string
 import session_view/protocol
 import session_view/text_hygiene
@@ -90,8 +89,9 @@ pub type Program {
   Program(
     /// Where the program is.
     state: State,
-    /// The program's file when the call named one, otherwise its first
-    /// non-blank line, or nothing when it had neither. Session text.
+    /// The program's file when the call named one, otherwise its leading
+    /// comment's text, otherwise `Program N` for its place in the session.
+    /// Session text.
     label: String,
     /// The final value, or the failure's text, cut to `max_characters`.
     /// Nothing while the call runs. Session text.
@@ -226,7 +226,7 @@ pub fn fold(records: List(protocol.EntryRecord)) -> Trace {
     |> tool_activity.project
     |> list.flat_map(calls)
     |> list.filter(fn(call) { call.invocation.name == "code_mode" })
-    |> list.map(program)
+    |> list.index_map(fn(call, index) { program(call, index + 1) })
 
   let total = list.length(programs)
   Trace(
@@ -246,7 +246,7 @@ fn calls(item: tool_activity.Item) -> List(tool_activity.Call) {
 
 // One call as a program: the arguments give the label and the budget, the
 // result gives the state and the excerpt.
-fn program(call: tool_activity.Call) -> Program {
+fn program(call: tool_activity.Call, position: Int) -> Program {
   let arguments = case call.invocation.arguments {
     json.Object(fields) -> fields
     _ -> []
@@ -255,7 +255,7 @@ fn program(call: tool_activity.Call) -> Program {
     Ok(json.Int(value)) -> Some(value)
     _ -> None
   }
-  let label = label(arguments)
+  let label = label(arguments, position)
 
   case call.outcome {
     Some(message.ToolResultMessage(content:, details:, is_error:, ..)) -> {
@@ -285,20 +285,49 @@ fn program(call: tool_activity.Call) -> Program {
   }
 }
 
-// The file the call named, else the program's first non-blank line.
-fn label(arguments: List(#(String, json.JsonValue))) -> String {
+// The file the call named. Otherwise the text of the program's leading
+// comment, which is usually the model's description of it, found after any
+// blank lines and imports; a program that opens with code says nothing about
+// itself, so it is `Program N` for its place in the session.
+fn label(arguments: List(#(String, json.JsonValue)), position: Int) -> String {
+  let fallback = "Program " <> int.to_string(position)
   case
     list.key_find(arguments, "program_path"),
     list.key_find(arguments, "program")
   {
     Ok(json.String(path)), _ -> clipped(path)
     _, Ok(json.String(source)) ->
-      source
-      |> string.split("\n")
-      |> list.find(fn(line) { string.trim(line) != "" })
-      |> result.unwrap("")
-      |> clipped
-    _, _ -> ""
+      case leading_comment(string.split(source, "\n")) {
+        "" -> fallback
+        text -> clipped(text)
+      }
+    _, _ -> fallback
+  }
+}
+
+// The text of the first line that is not blank or an import, when that line
+// is a `//` comment, and nothing otherwise.
+fn leading_comment(lines: List(String)) -> String {
+  case lines {
+    [] -> ""
+    [line, ..rest] -> {
+      let line = string.trim(line)
+      case line, string.starts_with(line, "import ") {
+        "", _ | _, True -> leading_comment(rest)
+        _, False ->
+          case string.starts_with(line, "//") {
+            True -> line |> drop_slashes |> string.trim
+            False -> ""
+          }
+      }
+    }
+  }
+}
+
+fn drop_slashes(line: String) -> String {
+  case string.starts_with(line, "/") {
+    True -> drop_slashes(string.drop_start(line, 1))
+    False -> line
   }
 }
 

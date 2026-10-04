@@ -66,6 +66,10 @@ pub type Tab {
   /// The session's goal and cost and, where the page shows them, its jobs
   /// and viewers.
   Session
+
+  /// The session's `code_mode` programs, in order, with the newest one's
+  /// state, result and budget.
+  Trace
 }
 
 /// Whether a column is shown.
@@ -209,10 +213,15 @@ pub fn chosen(layout: Layout, tab: Tab) -> Layout {
 ///
 /// ```gleam
 /// assert shell_rule.tabs()
-///   == [shell_rule.Strands, shell_rule.Changes, shell_rule.Session]
+///   == [
+///     shell_rule.Strands,
+///     shell_rule.Changes,
+///     shell_rule.Trace,
+///     shell_rule.Session,
+///   ]
 /// ```
 pub fn tabs() -> List(Tab) {
-  [Strands, Changes, Session]
+  [Strands, Changes, Trace, Session]
 }
 
 /// The word on a tab's button.
@@ -227,6 +236,7 @@ pub fn tab_label(tab: Tab) -> String {
     Strands -> "Strands"
     Changes -> "Changes"
     Session -> "Session"
+    Trace -> "Trace"
   }
 }
 
@@ -246,6 +256,7 @@ pub fn tab_state(tab: Tab) -> String {
     Strands -> "tab-strands"
     Changes -> "tab-changes"
     Session -> "tab-session"
+    Trace -> "tab-trace"
   }
 }
 

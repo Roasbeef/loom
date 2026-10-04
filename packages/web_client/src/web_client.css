@@ -307,19 +307,20 @@
   .hue-5{--hue:var(--color-strand-5);--hue-text:var(--color-strand-5-text);}
   .hue-6{--hue:var(--color-strand-6);--hue-text:var(--color-strand-6-text);}
   .hue-none{--hue:var(--color-fg-quiet);--hue-text:var(--color-fg-quiet);}
-  /* The strand panel, the right column (web_view/view/panel): three panes,
+  /* The strand panel, the right column (web_view/view/panel): four panes,
      the Strands pane with a title and one card per strand top to bottom, then
-     Changes and Session. The shell shows the pane whose tab is chosen by a
+     Changes, Session and Trace. The shell shows the pane whose tab is chosen by a
      custom state it sets on itself (web_client/shell_rule.tab_state), so the
-     rules below hide the other two. A browser without custom states drops
+     rules below hide the others. A browser without custom states drops
      the rules and shows every pane. Below 980px the Strands pane is a row of
      cards under the bar instead, scrolling sideways. */
   aside.panel{width:100%;height:100%;box-sizing:border-box;min-height:0;padding:14px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
   loom-shell:state(tab-strands) .pane:not(.pane-strands){display:none;}
   loom-shell:state(tab-changes) .pane:not(.pane-changes){display:none;}
   loom-shell:state(tab-session) .pane:not(.pane-session){display:none;}
+  loom-shell:state(tab-trace) .pane:not(.pane-trace){display:none;}
   section.pane{min-width:0;}
-  .pane-changes,.pane-session{font:13px/1.5 var(--font-sans);}
+  .pane-changes,.pane-session,.pane-trace{font:13px/1.5 var(--font-sans);}
   .pane-empty{margin:0;color:var(--color-fg-quiet);}
   .panel-title{margin:0 0 10px 0;font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);}
   nav.agent-strip{margin:0;}
@@ -598,6 +599,24 @@
   .diff-added{background:var(--color-added-bg);}
   .diff-removed{background:var(--color-removed-bg);}
   .changes-cut{margin:4px 0 0 0;color:var(--color-fg-quiet);}
+  /* The Trace pane (web_view/view/trace): the session's code_mode programs,
+     the newest first with its result and a collapsed budget line. A state's
+     chip takes its colour from a class the view chose from a closed type. */
+  .trace-head,.trace-row{display:flex;align-items:baseline;justify-content:space-between;gap:8px;min-width:0;margin:0;}
+  .trace-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:13px/1.5 var(--font-sans);}
+  .trace-state{flex:none;font:12px/1.4 var(--font-sans);color:var(--color-fg-quiet);}
+  .trace-completed{color:var(--color-added-text);}
+  .trace-failed{color:var(--color-danger-text);}
+  .trace-running{color:var(--color-current);}
+  .trace-result{margin:4px 0 0 0;overflow-wrap:anywhere;font:12px/1.5 var(--font-mono);color:var(--color-fg-quiet);}
+  .trace-sandbox{margin:4px 0 0 0;overflow-wrap:anywhere;font:12px/1.5 var(--font-mono);color:var(--color-fg-quiet);}
+  details.trace-budget{margin:6px 0 0 0;}
+  details.trace-budget summary{cursor:pointer;color:var(--color-fg-quiet);}
+  details.trace-budget p{margin:2px 0 0 0;font:12px/1.5 var(--font-mono);}
+  .trace-earlier{margin-top:14px;}
+  .trace-subtitle{margin:0 0 6px 0;font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);}
+  ul.trace-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;}
+  .trace-cut,.trace-note{margin:8px 0 0 0;font:12px/1.4 var(--font-sans);color:var(--color-fg-quiet);}
   /* The Session pane (web_view/view/session_tab): the goal, the live jobs,
      on an operator's page the attached viewers, and the estimated cost. */
   .session-list{margin:4px 0 0 0;display:grid;grid-template-columns:max-content minmax(0,1fr);gap:2px 12px;}

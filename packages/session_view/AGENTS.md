@@ -377,8 +377,8 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
 - `trace_view.fold(records)` folds a strand's records, as a branch holds
   them newest first, into the session's `code_mode` programs, oldest first:
   each with a closed `State` read from the result's `status` word (`Running`
-  while it has no result), a label (the `program_path`, else the program's
-  first non-blank line), a result excerpt, the `within_ms` the call named and
+  while it has no result), a label (the `program_path`, else the text of the
+  program's leading `//` comment after any imports, else `Program N`), a result excerpt, the `within_ms` the call named and
   a closed `Vetting`. It lists programs because no per-capability call is
   recorded yet (protocol-change/060). Bounded: `max_programs` 12 (older ones
   counted in `omitted`) and `max_characters` 160 per label and excerpt, both
