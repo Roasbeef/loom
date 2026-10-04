@@ -138,11 +138,11 @@ Core, storage, tools, executor, client and conformance component gates pass;
 the final client run has 2,747 tests and conformance has 96. Root's final lint,
 doc and prelude checks pass, and SQL regeneration reproduces the bindings
 exactly. The Linux PR #786 run found two timing-sensitive test assumptions and
-an outdated dependency expectation/manifest. Focused Linux reruns pass after
-the repairs; a fresh full Linux signoff remains outstanding. Next, preserve
-managed ChildOrigin through physical compiler and satellite clearance, then
-join retained command offers, executor resources and consumption-credit
-channels before production remote assembly and the separate-host product gate.
+an outdated dependency expectation/manifest. The fresh full Linux signoff
+described below passes after those repairs. Managed provenance is now carried
+through compiler, satellite and nested native capability clearance. Retained
+command offers, executor resources and consumption-credit channels still
+precede production remote assembly and the separate-host product gate.
 
 Managed compiler and satellite provenance now reaches the real broker
 Dispatcher through the original ToolKey, with distinct native command roles.
@@ -169,6 +169,13 @@ existing client setup skips remain explicit. The independent review found no
 actionable findings, and a compiling origin-drop mutation failed four intended
 Dispatcher assertions. See the [capability provenance review](review/distributed-capability-provenance.md).
 This still precedes remote command custody and physical service assembly.
+
+The existing remote MessagePack preflight now lives in pure core code so the
+forthcoming broker command codec can reuse it without an executor dependency.
+Its limits and executor wire behavior are unchanged. Independent core/executor
+gates passed 167 and 159 tests; the extraction review found no actionable
+findings, and bypassing preflight failed six intended boundary controls. See
+the [bounded-wire review](review/distributed-bounded-wire.md).
 
 The product P and Channel PlusCal models now cover exact command offers,
 resource/launch uncertainty, separate native/outer receipts and final-consumer
