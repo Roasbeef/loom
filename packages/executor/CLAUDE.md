@@ -10,10 +10,11 @@ for one reason: its dependency list is the compile-time proof that the
 service needs no session runtime, provider, web view or daemon. It depends on
 `broker`, `core` and `telemetry` (for `log.discard()`), plus `weft`, `argv`,
 `envoy`, `gleam_json`, `gleam_time`, `gleam_erlang`, `simplifile` and
-`sqlight_loom`, and
+`sqlight_loom` and `parrot`, and
 never on `host` or `client`.
 
-It defines no socket, listener, frame or registration service. The pure
+The TLS primitive supplies pinned mutual authentication and bounded frames;
+no remote execution or registration service is wired yet. The pure
 `executor/remote/{identity,admission}` modules provide validated names and a
 bounded admission/custody reducer for #697. `executor/remote/journal` adds
 serialized SQLite persistence over that reducer. No native adapter consumes
@@ -59,9 +60,10 @@ No second type names it.
 
 Depends on `broker` (`broker`, `budget`, `census`, `exec`, `executor`,
 `policy`, `token`), `core` (`clock`, `ids`) and `telemetry` (`log`). Nothing
-depends on it. The new remote modules import only `core/ids`, each other
+depends on it. The pure identity and admission modules import only `core/ids`, each other
 and pure stdlib modules, with no I/O, processes, FFI or Dynamic. The journal
-imports those modules, `sqlight`, `simplifile` and `weft/actor`; its private
+imports those modules, generated `executor/sql`, `sqlight`, `parrot`,
+`simplifile` and `weft/actor`; its private
 actor owns the database connection. None of these modules implements or
 changes the `broker/dispatch.Dispatcher` seam.
 `make executor-smoke` builds the helper and runs the entrypoint; CI runs it in the jail job and `scripts/signoff.sh` in its
@@ -133,6 +135,11 @@ the bounded command history through the actual reducer. Recovery exposes no
 historical Launch. `release` closes the actor and its connection without
 closing the authority epoch or asserting native retirement.
 
+Static queries live in `src/executor/sql/custody.sql`; Parrot/sqlc generates
+`executor/sql.gleam`. `sql/schema.sql` generates `custody_schema.gleam`. Run
+`make gen-sql` after changing either source. Source parity tests catch drift;
+the journal keeps only transaction and PRAGMA control as handwritten SQL.
+
 A `weft/actor` serializes each handle. Every change also takes SQLite's
 `BEGIN IMMEDIATE` writer lock, reloads a newer committed head, appends its
 command and updates the metadata head in one transaction. Required WAL and
@@ -165,17 +172,33 @@ power-loss testing, multi-host transport or native-process restart recovery.
 An active WAL database requires a consistent SQLite backup cut for movement;
 copying only its main file is insufficient.
 
+## Authenticated transport primitive
+
+`remote/tls` wraps OTP SSL with mutual PKIX verification and exact leaf pins.
+Settings bound certificate sizes, handshake/frame/send budgets and a 256 KiB
+frame ceiling. Prefix and body reads consume one deadline. TCP establishment
+and TLS upgrade also share a deadline; expired upgrade attempts close the raw
+socket. Passive framing and explicit ownership transfer do not create an
+unbounded reader mailbox.
+
+OTP native DNS can exceed its connect timeout, so a service must supervise
+connection establishment with a bounded managed task. This primitive does not
+claim a hard wall bound over the native resolver. Twenty-one real-network
+regressions cover authentication, framing, slow peers and cumulative deadlines.
+They do not establish the remote service or its end-to-end delivery guarantees.
+
 ## Invariants
 
 - No `client` dependency. A change that adds one defeats the package.
-- No `@external`, no socket, no wire. Remote trust and transport are #697.
+- The TLS FFI is confined to `internal/ffi_tls`; it wraps OTP SSL, which the
+  available Gleam libraries cannot express. Admission remains pure.
 - Helper locality: the helper is spawned by `exec.prepare_helper` on the
   machine running this process, as the harness spawns it.
 - An incarnation is minted per boot from the wall clock in microseconds, so
   two boots in one VM never share one (the guarantee is per VM) and an `ExecutionId` of one boot
   never equals one of the other. The local entrypoint starts a fresh service
   on restart; it restores no executions. The remote reducer describes
-  retained intent recovery, but no durable adapter implements it yet.
+  retained intent recovery, and the journal persists it; native reconciliation is still unwired.
 - Versions are compared with `broker/census.skew`; features are never
   refused.
 - The scratch is removed only after a drain that returned `Ok`, and after a
