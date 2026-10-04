@@ -7,9 +7,13 @@
 import etui/geometry
 import frame_scene
 import gleam/list
+import gleam/option
 import gleam/string
+import session_view/model as session_model
 import tui/frame
 import tui/input_frame
+import tui/layout_memory
+import tui/model as tui_model
 
 fn attached() {
   frame_scene.attach(frame_scene.model(), "fix readme badge", [
@@ -89,4 +93,27 @@ pub fn a_narrow_frame_keeps_the_activity_in_the_band_test() {
 pub fn the_prompt_leaves_the_editor_its_own_columns_test() {
   assert input_frame.prompt_area(geometry.rect_new(1, 5, 20, 1))
     == geometry.rect_new(4, 5, 16, 1)
+}
+
+// A long sub-strand recipient and the activity at the rule's far end have to
+// share the rule of a 75-cell column, as they do beside a docked rail. The
+// keys give way before the status does, and the recipient keeps its tail.
+pub fn a_long_recipient_does_not_cost_the_frame_its_status_test() {
+  let base = attached()
+  let long = "sub:main/review-48f3a1b2"
+  let model =
+    tui_model.Model(
+      shared: session_model.Shared(..base.shared, active_strand: long),
+      view: tui_model.View(
+        ..base.view,
+        rail: option.Some(layout_memory.RailShown),
+      ),
+    )
+  let shown = lines(model, 120, 40)
+  let top = row_starting(shown, "╭─ To ")
+  let column = string.slice(top, 0, 75)
+  assert string.ends_with(column, "─╮")
+  assert string.contains(column, "idle")
+    as "the status survives the long recipient"
+  assert string.contains(column, "48f3") as "the recipient keeps its suffix"
 }

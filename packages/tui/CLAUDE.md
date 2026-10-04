@@ -1474,10 +1474,10 @@ untouched.
   `fs_edit` diffs remain the explicitly labelled fallback when a worktree observation is
   unavailable. Current-action labels use the captured operation's
   effect-pending batch indices rather than unmatched transcript calls.
-- **Responsive changes pane**: `/diff` toggles a persistent right-hand pane at
-  140 columns or wider and a single-panel changes view below that width. The
-  pane temporarily occupies the agent rail's space without changing its saved
-  visibility. Conversation and changes retain separate scroll offsets; wheel
+- **Responsive changes pane**: `/diff` opens the changes on the docked rail's
+  Changes tab at 120 columns or wider and as a single-panel changes view below
+  that width. Opening them docks the rail without changing the operator's
+  saved choice. Conversation and changes retain separate scroll offsets; wheel
   input follows the pointer, while PgUp/PgDn scroll the open changes view.
   Layout, wrapping, and selection use the same body geometry. Captured diff
   rows reuse unchanged line layouts at the same width and discard old keys
@@ -2733,6 +2733,51 @@ the opener and the path as positional arguments, over the same
 `image_drain.drain` turns the reply into the notice. The newest image is
 chosen rather than the one on screen, since a row does not name its image
 without the anchors.
+
+## The docked rail
+
+The rail is one column of the terminal, beside the transcript, replacing the
+34-cell agent rail and the 72-cell changes pane that used to borrow the same
+place. `tui/rail` decides it over plain values (`rail.columns`) and
+`tui/layout` takes it from the screen before the body is cut: the identity
+line spans the screen, the rail runs from the row under it to the last row, and
+the input frame and the footer span the transcript's column only, so every
+width they read is `layout.column_width` and not the terminal's. It docks only
+where the transcript keeps 75 cells: 44 cells and a separator from 120
+columns, 56 from 160. From 160 it is docked by default; narrower, Shift+Tab
+docks it. A remembered choice (`View.rail`, the field `layout_memory` keeps)
+wins either way, and below 120 columns it does not dock whatever was chosen
+(`toggle_agent_rail` says so in the notice). Opening the changes (`/diff`)
+docks it wherever it fits, on its Changes tab, and closing them puts it back
+as chosen; while they are open Shift+Tab closes them. Below 120 columns
+Shift+Tab only says why nothing moved and records nothing. While an approval is
+open the rail steps aside in painting only (`layout.rail_area` is zero and
+`rail_view.render` draws nothing; `layout.rail_columns` is unchanged), because
+the approval block spans the screen, and the columns stay reserved so opening
+or closing an approval never re-wraps the transcript or re-places an image. The input frame's top rule cuts the recipient and the
+keys before it drops the activity, and the Ctrl+g footer is compacted to the
+transcript's column (`layout.column_width`), not the terminal's. The changes
+panel in the rail has no border of its own: its rectangle is the rail's
+content grown by the cell a border would take (`layout.changes_panel_area`), so
+`panel_inner` of it is the content, and it never borrows rows above the
+composer. `View.diff_view` has two values now, `DiffHidden` and `DiffVisible`;
+the automatic side pane it once named is gone. The tab is a function of
+the changes setting, not a state of its own, so nothing about it is remembered.
+
+`tui/rail_view` paints it: a separator, a tab bar (`Strands ●n  Changes`, the
+count being agents that need the operator) and its rule, the tab's content, and
+one row of key hints. Strands draws every agent in the workspace's attention
+order, the advisor and the settled ones included, through `agent_row.rows`
+with the strip's `StripRow` shape, so there is no second row renderer and a
+long name is cut in the middle, keeping the suffix that tells twin sub-agents
+apart (the `TableRow` shape's 8-cell name column would cut it at its tail). The rail's rows are `layout.strip_lines` while it lists Strands, and
+the strip under the input is hidden then (`strip_height` is zero), so the
+strip's one cursor and its keys (`down` from the composer, `up`/`down`,
+`Enter`, `Esc`) move through the rail: `layout.strands_listed` is what
+`down_from_composer` and the strip's key handler ask. The Changes tab is the
+changes panel, painted by `render` into `layout.changes_panel_area`, the rail's
+content rectangle. The `PEERS` section the design draws is not built: nothing
+in the terminal's model says what another session asked.
 
 ## Layout memory
 

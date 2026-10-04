@@ -4,6 +4,7 @@
 //// locked while it is open.
 
 import core/json
+import etui/geometry
 import etui/keys
 import frame_scene
 import gleam/list
@@ -13,6 +14,7 @@ import session_view/approval
 import session_view/model as session_model
 import tui/approval_panel
 import tui/frame
+import tui/layout
 import tui/model as tui_model
 
 fn review() -> approval.Review {
@@ -141,4 +143,34 @@ pub fn a_network_grant_reads_as_words_test() {
     "net · proxy.golang.org:443 · via proxy",
   ))
   assert !list.any(lines, string.contains(_, "\"mode\""))
+}
+
+// The block spans the screen from the identity line to the input frame, so a
+// docked rail beside it would leave its lower rows and its key hint stranded
+// beside the frame. The rail steps aside in painting while an approval is
+// open, and comes back when it is decided.
+pub fn the_rail_steps_aside_while_an_approval_is_open_test() {
+  let open = deciding(approval_panel.new(review()))
+  let lines =
+    frame_scene.screen(open, 200, 50)
+    |> frame.buffer_to_lines
+  let sized =
+    tui_model.Model(
+      ..open,
+      view: tui_model.View(..open.view, width: 200, height: 50),
+    )
+  assert layout.rail_columns(sized) == 57
+    as "the rail's columns stay reserved so the transcript keeps its width"
+  assert layout.rail_area(geometry.rect_new(0, 0, 200, 50), sized).size.width
+    == 0
+  assert !list.any(lines, string.contains(_, "STRANDS"))
+  assert !list.any(lines, string.contains(_, "Shift+Tab hides"))
+
+  // Closed again, the same terminal docks the rail by default.
+  let closed =
+    tui_model.Model(
+      ..sized,
+      view: tui_model.View(..sized.view, overlay: tui_model.NoOverlay),
+    )
+  assert layout.rail_columns(closed) == 57
 }

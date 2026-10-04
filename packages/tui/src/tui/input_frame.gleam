@@ -283,8 +283,9 @@ pub fn render(buf: buffer.Buffer, area: Rect, status: Status) -> buffer.Buffer {
 
 // Which label of a rule survives when the two do not both fit.
 type Keep {
-  // The left label stays and the right gives way: on the top rule, where
-  // the recipient and what Enter does are the last things to go.
+  // The left label is cut before the right gives way, as long as the right
+  // keeps room beside a recipient: on the top rule, where the activity and
+  // the key that interrupts it matter more than the end of the key hints.
   KeepLeft
 
   // The right label stays and the left is cut: on the bottom rule, where
@@ -308,7 +309,10 @@ fn draw_rule(
   let fits = labels_width(left) + labels_width(right) + 1 <= inner
   let #(left, right) = case fits, keep {
     True, _ -> #(left, right)
-    False, KeepLeft -> #(left, [])
+    False, KeepLeft -> #(left, case labels_width(right) + 12 <= inner {
+      True -> right
+      False -> []
+    })
     False, KeepRight -> #(left, case labels_width(right) + 4 <= inner {
       True -> right
       False -> []

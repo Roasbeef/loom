@@ -19,6 +19,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap as host_bootstrap
 import simplifile
+import tui
 import tui/effect
 import tui/layout_memory.{Layout, Target}
 import tui/layout_save
@@ -242,7 +243,7 @@ pub fn two_clients_on_one_workspace_last_change_wins_test() {
       frame_scene.model(),
       Target(path:, key: key("same"), saved: shown()),
     )
-  assert model.view.agent_rail_visible
+  assert model.view.rail == Some(layout_memory.RailShown)
   let _ = simplifile.delete_all([dir])
 }
 
@@ -281,23 +282,21 @@ fn saves(effects: List(effect.Effect)) -> List(effect.Effect) {
   })
 }
 
-// The model starts with the rail visible, as it will when a wide terminal
-// docks it by default, so that a remembered `hidden` is seen to win over the
-// default rather than agree with it.
+// A remembered `hidden` is a choice, and it wins over whatever the rail would
+// have been: here the model starts with a choice of shown, and the launch
+// replaces it, as a wide terminal's default docking would be replaced.
 pub fn a_remembered_rail_is_applied_at_launch_test() {
   let base = frame_scene.model()
-  let visible = Model(..base, view: View(..base.view, agent_rail_visible: True))
-  let model = with_target(visible, target("/x/layout.json", shown()))
-  assert model.view.agent_rail_visible
+  let visible =
+    Model(..base, view: View(..base.view, rail: Some(layout_memory.RailShown)))
+  let model = with_target(base, target("/x/layout.json", shown()))
+  assert model.view.rail == Some(layout_memory.RailShown)
   let model = with_target(visible, target("/x/layout.json", hidden()))
-  assert !model.view.agent_rail_visible
+  assert model.view.rail == Some(layout_memory.RailHidden)
     as "a remembered hidden beats a rail that would be visible"
   let model =
-    with_target(visible, target("/x/layout.json", layout_memory.default()))
-  assert model.view.agent_rail_visible as "no choice leaves the default"
-  let model =
     with_target(base, target("/x/layout.json", layout_memory.default()))
-  assert !model.view.agent_rail_visible
+  assert model.view.rail == None as "no choice leaves the default"
 }
 
 pub fn toggling_the_rail_queues_one_save_and_nothing_else_does_test() {
@@ -327,10 +326,10 @@ pub fn toggling_the_rail_queues_one_save_and_nothing_else_does_test() {
 }
 
 pub fn a_terminal_with_no_target_reads_and_writes_nothing_test() {
-  let model = frame_scene.model()
+  let model = tui.update(backend.Resize(120, 40), frame_scene.model())
   assert model.view.layout_target == None
   let #(model, effects) = stepping.step(backend.KeyPress("backtab"), model)
-  assert model.view.agent_rail_visible
+  assert model.view.rail == Some(layout_memory.RailShown)
   assert saves(effects) == []
     as "a replay or a test keeps no layout, whatever it toggles"
 }
@@ -345,14 +344,14 @@ pub fn the_launcher_reads_the_file_under_the_state_root_test() {
 
   // The workspace's own entry applies.
   let model = layout_save.remember_launch(base, state)
-  assert model.view.agent_rail_visible
+  assert model.view.rail == Some(layout_memory.RailShown)
   assert model.view.layout_target
     == Some(Target(path:, key: workspace_key, saved: shown()))
   // A corrupt file starts the terminal with the defaults.
   let assert Ok(Nil) = simplifile.write(path, "}{")
   let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o600)
   let model = layout_save.remember_launch(base, state)
-  assert !model.view.agent_rail_visible
+  assert model.view.rail == None
   let _ = simplifile.delete_all([dir])
 }
 

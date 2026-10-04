@@ -1119,17 +1119,24 @@ fn inspect_agent_approval(model: Model, strand: String) -> Model {
 }
 
 fn update_main_key(key: keys.Key, model: Model) -> Model {
-  case model.view.strip_focus, layout.strip_height(model) > 0 {
+  case model.view.strip_focus, layout.strands_listed(model) {
     agent_strip.Browsing(_), True -> update_strip_key(key, model)
 
     // Every agent settled while the cursor was in the strip, so the strip
     // is gone. The keyboard returns to the composer with this key, rather
     // than an invisible cursor taking an Enter the operator meant to send.
-    agent_strip.Browsing(_), False ->
-      update_main_key_composing(
-        key,
-        tui_model.store_strip(model, agent_strip.leave(tui_model.strip(model))),
-      )
+    //
+    // Escape is consumed by that reset and not forwarded: forwarded, it would
+    // interrupt the strand, which is not what pressing it at a cursor that
+    // had gone away could have meant.
+    agent_strip.Browsing(_), False -> {
+      let left =
+        tui_model.store_strip(model, agent_strip.leave(tui_model.strip(model)))
+      case key {
+        keys.Escape -> left
+        _ -> update_main_key_composing(key, left)
+      }
+    }
     agent_strip.Composing, _ -> update_main_key_composing(key, model)
   }
 }
@@ -1287,8 +1294,8 @@ fn strip_covered(model: Model) -> Bool {
 // steps down into the agent strip, the next thing below the composer.
 fn down_from_composer(model: Model) -> Model {
   let lines = layout.strip_lines(model)
-  case model.view.history_index, layout.strip_height(model) {
-    0, rows if rows > 0 ->
+  case model.view.history_index, layout.strands_listed(model) {
+    0, True ->
       tui_model.store_strip(
         model,
         agent_strip.enter(
@@ -1557,7 +1564,7 @@ pub fn begin_selection(model: Model, at: geometry.Position) -> Model {
   let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
   let #(_, body, _, _) = layout.layout(screen, model)
   let #(conversation, queue) = layout.queue_body_layout(body, model)
-  let #(transcript, _, _) = layout.body_layout(conversation, model)
+  let transcript = conversation
   use <- bool.lazy_guard(
     tui_model.reading_history(model)
       && at.y == geometry.bottom(transcript) - 1
@@ -1702,7 +1709,7 @@ fn selection_covers_transcript(
   let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
   let #(_, body_area, _, _) = layout.layout(screen, model)
   let #(conversation, _) = layout.queue_body_layout(body_area, model)
-  let #(transcript_panel, _, _) = layout.body_layout(conversation, model)
+  let transcript_panel = conversation
   selected.area == layout.transcript_inner(transcript_panel)
   && !layout.main_shows_diff(model)
 }
@@ -1753,7 +1760,7 @@ pub fn selection_gutters_on_display(model: Model) -> List(#(Int, Int)) {
   let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
   let #(_, body_area, _, _) = layout.layout(screen, model)
   let #(conversation, _) = layout.queue_body_layout(body_area, model)
-  let #(transcript_panel, _, _) = layout.body_layout(conversation, model)
+  let transcript_panel = conversation
   let area = layout.transcript_inner(transcript_panel)
   model.view.rendered_gutters
   |> list.drop(model.view.scroll_offset + tui_model.viewport_backlog(model))

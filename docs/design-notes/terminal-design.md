@@ -505,7 +505,7 @@ main ▸ sub:tests`) and the identity line names it. Focus from the timeline wit
 |---|---|---|
 | `←`, empty composer, no attachment | Open the session picker | Unchanged (`packages/tui/src/tui/interaction.gleam:1376`) (`open_session_selector`) |
 | `↓`, idle composer | Enter the agent strip. While the rail shows Strands, focus the rail's list | Unchanged (`packages/tui/src/tui/interaction.gleam:1236`) (`down_from_composer`) |
-| `Shift+Tab` | Dock or hide the rail; a sheet below 120 columns | Replaces "toggle the rail" (`packages/tui/src/tui/interaction.gleam:1399`) (`toggle_agent_rail`) |
+| `Shift+Tab` | Dock or hide the rail; a sheet below 120 columns | Replaces "toggle the rail" (`packages/tui/src/tui/interaction.gleam:1406`) (`toggle_agent_rail`) |
 | Escape | Interrupt; closes the surface on top first | Unchanged (`packages/tui/src/tui/interaction.gleam:1337`) (`interrupt_active`) |
 | `Ctrl+O`, `F2`, `/agents` | Open the agent workspace | Unchanged |
 | `/diff`, `/trace`, `/summary` | Open the rail on Changes, Trace, Session | `/diff` exists; the others are new |

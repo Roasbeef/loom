@@ -45,6 +45,7 @@ import tui/approval_panel
 import tui/buffered
 import tui/connection
 import tui/frame
+import tui/layout_memory
 import tui/model as tui_model
 import tui/virtual_backend
 import tui/workspace
@@ -135,11 +136,23 @@ pub fn hostile_agent_names_render_inert_test() {
     let base = quiet_model(rail_inbox)
     tui_model.Model(
       ..base,
-      view: tui_model.View(..base.view, agent_rail_visible: True),
+      view: tui_model.View(
+        ..base.view,
+        rail: option.Some(layout_memory.RailShown),
+      ),
     )
   }
-  let rail = last_rows(railed, 120, 24, [deliver(names)])
-  assert_shows(rail, ["active-sentinel", "child-sentinel", "phase-sentinel"])
+  // The rail draws each agent in one row with the row renderer the strip and
+  // the workspace share, so its name column is 11 cells and its action keeps
+  // the head of the text. The markers are short and sit where that row keeps
+  // them: a name's tail and an action's head.
+  let rail_names =
+    gateway.strands_snapshot([
+      #("main", hostile_tail("act"), hostile("phs")),
+      #("sub:one", hostile_tail("chd"), "idle"),
+    ])
+  let rail = last_rows(railed, 200, 24, [deliver(rail_names)])
+  assert_shows(rail, ["act", "chd", "phs"])
   assert_inert(rail)
   assert_no_residue(rail)
 

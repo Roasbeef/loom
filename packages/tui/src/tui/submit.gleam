@@ -38,6 +38,7 @@ import tui/effect
 import tui/inbound
 import tui/job
 import tui/layout
+import tui/layout_memory
 import tui/model.{
   type Model, ActivityAsking, ActivityDue, ActivityResting, AgentInspector,
   DiffHidden, DiffVisible, Model, ModelSelector, NoOverlay, PromptNext,
@@ -46,6 +47,7 @@ import tui/model.{
 import tui/model_selector
 import tui/note_panel
 import tui/queue_editor
+import tui/rail
 import tui/session_control
 import tui/side_surfaces
 
@@ -420,21 +422,56 @@ pub fn interrupt_and_insert(model: Model, character: String) -> Model {
   )
 }
 
-/// Shows or hides the agent rail.
+/// Docks or hides the rail, and records the choice.
+///
+/// The choice is what the layout memory keeps. On a terminal too narrow to
+/// dock the rail nothing moves, so nothing is recorded: the notice says why
+/// and the choice stays as it was. While the changes are open the rail is on
+/// Changes and cannot be hidden, so the same key closes them.
 @internal
 pub fn toggle_agent_rail(model: Model) -> Model {
-  let visible = !model.view.agent_rail_visible
-  Model(
-    shared: Shared(..model.shared, notice: case visible {
-      True -> "agent rail shown"
-      False -> "agent rail hidden"
-    }),
-    view: View(
-      ..model.view,
-      agent_rail_visible: visible,
-      repaint_phase: !model.view.repaint_phase,
-    ),
-  )
+  case layout.diff_shown(model) && layout.rail_columns(model) > 0 {
+    True ->
+      Model(
+        shared: Shared(..model.shared, notice: "changes closed"),
+        view: View(
+          ..model.view,
+          diff_view: DiffHidden,
+          repaint_phase: !model.view.repaint_phase,
+        ),
+      )
+    False ->
+      case model.view.width >= rail.narrowest {
+        False ->
+          Model(
+            ..model,
+            shared: Shared(
+              ..model.shared,
+              notice: "the rail docks from "
+                <> int.to_string(rail.narrowest)
+                <> " columns",
+            ),
+          )
+        True -> {
+          let docked = layout.rail_columns(model) > 0
+          let choice = case docked {
+            True -> layout_memory.RailHidden
+            False -> layout_memory.RailShown
+          }
+          Model(
+            shared: Shared(..model.shared, notice: case docked {
+              True -> "rail hidden"
+              False -> "rail docked"
+            }),
+            view: View(
+              ..model.view,
+              rail: Some(choice),
+              repaint_phase: !model.view.repaint_phase,
+            ),
+          )
+        }
+      }
+  }
 }
 
 /// Expands or collapses transcript details such as reasoning and tool

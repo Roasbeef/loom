@@ -26,7 +26,7 @@
 //// the default.
 
 import filepath
-import gleam/option.{type Option, None, Some}
+import gleam/option.{None, Some}
 import gleam/result
 import host/bootstrap as host_bootstrap
 import tui/bootstrap
@@ -74,16 +74,11 @@ fn absolute(path: String) -> String {
 /// let model = layout_save.apply(model, target)
 /// ```
 pub fn apply(model: Model, target: layout_memory.Target) -> Model {
-  let visible = case target.saved.rail {
-    Some(layout_memory.RailShown) -> True
-    Some(layout_memory.RailHidden) -> False
-    None -> model.view.agent_rail_visible
-  }
   Model(
     ..model,
     view: View(
       ..model.view,
-      agent_rail_visible: visible,
+      rail: target.saved.rail,
       layout_target: Some(target),
     ),
   )
@@ -100,7 +95,7 @@ pub fn settle(model: Model) -> Model {
   case model.view.layout_target {
     None -> model
     Some(target) -> {
-      let current = current(model, target.saved)
+      let current = current(model)
       case current == target.saved {
         True -> model
         False ->
@@ -121,16 +116,9 @@ pub fn settle(model: Model) -> Model {
   }
 }
 
-// The layout the model has now. A rail that is hidden, in a workspace that
-// never chose, is no choice and stays out of the file.
-fn current(model: Model, saved: Layout) -> Layout {
-  let rail: Option(layout_memory.Rail) = case
-    model.view.agent_rail_visible,
-    saved.rail
-  {
-    True, _ -> Some(layout_memory.RailShown)
-    False, None -> None
-    False, Some(_) -> Some(layout_memory.RailHidden)
-  }
-  Layout(rail:)
+// The layout the model has now: the operator's choice about the rail, which
+// is none until it is made, so a workspace nobody touched stays out of the
+// file.
+fn current(model: Model) -> Layout {
+  Layout(rail: model.view.rail)
 }

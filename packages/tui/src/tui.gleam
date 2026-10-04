@@ -124,7 +124,7 @@ import tui/job_runner
 import tui/layout
 import tui/layout_save
 import tui/model.{
-  type Model, DiffAutomatic, Model, Newer, NoClipboard, NoOverlay, Older,
+  type Model, DiffHidden, Model, Newer, NoClipboard, NoOverlay, Older,
   PromptNext, ReconnectIdle, TerminalClipboard,
 } as tui_model
 import tui/msg
@@ -690,7 +690,7 @@ pub fn new_model_with_clock(
       summary_job_selected: 0,
       help_open: False,
       notes_open: False,
-      diff_view: DiffAutomatic,
+      diff_view: DiffHidden,
       diff_scroll_offset: 0,
       diff_row_count: 0,
       diff_worktree_source: #(None, 0),
@@ -713,7 +713,7 @@ pub fn new_model_with_clock(
       prompted_approvals: [],
       inspecting_approval: None,
       next_attempt: 1,
-      agent_rail_visible: False,
+      rail: None,
       repaint_phase: False,
       activity_frame: 0,
       reading_lines: None,
