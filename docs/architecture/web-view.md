@@ -772,8 +772,9 @@ answers: `Start.activity` hands the ids (at most 24) to
 `ui_socket.activity_task`, a weft run linked to the runtime that calls
 `server.home_activity`, which is the control command's `sessions.activity`
 (protocol-change/050) reduced to one state word per session. The runtime never
-waits for it, the answer comes back as `Observed`, and a member's page is
-handed a read that answers nothing, since 050 is the owner's alone.
+waits for it, the answer comes back as `Observed`, and the read covers only
+the ids the page's credential holds, re-derived in the registry at each read
+(050's addendum on members).
 
 ### Navigation: home to session and back
 

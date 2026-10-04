@@ -1051,12 +1051,13 @@ before the page sees them, and a state the page does not know is no activity.
 The page draws its list first and the words when they arrive; a row with no
 answer says only `resident`.
 
-**Who is asked.** The control command is the owner's alone (050 refuses a member
-with `forbidden`), because it calls into every resident session. A home page does
-not widen that: `server.home_activity` hands an owner's page the read and a
-member's page a read that asks nothing and answers nothing, so a member's rows
-say only `resident`. Showing a member the working state of the sessions they hold
-would be a change to 050's ruling, and it is not made here.
+**Who is asked.** Every principal's home asks, and is answered only for the
+sessions its credential holds. The owner ruled on 2026-10-04 that a member sees
+the activity of sessions it belongs to, and protocol-change/050 carries the
+amending addendum: `server.home_activity` re-derives membership in the registry
+at each read from the page's credential digest (`held`), never from the page's
+list, and an id the credential does not hold is dropped as an unknown id is. The
+control command `sessions.activity` answers a member the same way.
 
 **The expired page (F70).** The document a refused request is answered with
 (`page.refusal`, `page.home_refusal`) carries the brand, the headline, the
@@ -1079,7 +1080,7 @@ on the wire, so building it needs a column and a wire field, which this change
 does not add. The row's second line is the creation age until that is decided.
 The smallest design is recorded in the pull request that made this change.
 
-**Cost.** An owner's home page with running sessions asks them what they are
+**Cost.** A home page with running sessions asks them what they are
 doing once for each list, every 30 seconds by default. Each ask is
 a call into the session's Agency actor and delays that session's other peer
 commands by the time its reads take, which is 050's own cost, paid at the

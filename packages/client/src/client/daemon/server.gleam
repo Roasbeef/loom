@@ -152,9 +152,8 @@ pub type HomeAttachment(instance) {
     registry: manager.Manager(instance),
     /// Asks the named sessions what they are doing: the `sessions.activity`
     /// read (protocol-change/050) the control socket serves the owner, made on
-    /// an owner's page for sessions its own list holds, and reduced to one
-    /// state for each session that answered (`home_activity`). A member's page
-    /// is handed a read that answers nothing. It blocks for up to the read's own
+    /// a page for the sessions its credential holds, and reduced to one
+    /// state for each session that answered (`home_activity`). It blocks for up to the read's own
     /// deadline, so the page never calls it from its runtime
     /// (`ui_socket.activity_task`).
     activity: fn(List(String)) -> List(#(String, listed_sessions.Activity)),
@@ -409,7 +408,7 @@ fn home_upgrade(
             digest: grant.credential,
             permit:,
             registry: state.registry,
-            activity: home_activity(config, state.registry, principal),
+            activity: home_activity(config, state.registry, grant.credential),
           ),
           open,
           grant.ceiling,
@@ -1827,9 +1826,13 @@ fn dispatch_class(
       Ok(#("sessions.list", page_body(bounded, current)))
     }
     protocol.SessionActivity(sessions, supplied) -> {
-      use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))
-      let rows = activity(config, state.registry, sessions)
+
+      // A member is asked about only the sessions its credential holds; the
+      // rest are dropped as unknown identities are (protocol-change/050, the
+      // addendum on members).
+      let rows =
+        activity(config, state.registry, held(state.registry, digest, sessions))
       let body = json.Object([#("activity", json.Array(rows))])
 
       // Each row is bounded, so the reply fits by construction; the check
@@ -2329,28 +2332,39 @@ fn activity(
   })
 }
 
-/// The activity read a home page is handed: `activity_states` for the daemon's
-/// owner, and for a member a read that asks nothing and answers nothing. The
-/// control command is the owner's alone (protocol-change/050 refuses a member
-/// with `forbidden`, since it calls into every resident session), and a home
-/// page does not widen that: a member's rows say only that a session is
-/// resident.
+/// The activity read a home page is handed: `activity_states` over the
+/// sessions the page's credential holds. Membership is derived here, in the
+/// registry, at the moment of each read, from the credential's digest and never
+/// from the page's list, so a revoked credential or a removed membership reads
+/// nothing from the next read on.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // server.home_activity(config, registry, member)(["0198..."]) == []
+/// // server.home_activity(config, registry, digest)(["0198..."])
 /// ```
 @internal
 pub fn home_activity(
   config: Config(instance),
   registry: manager.Manager(instance),
-  principal: access.Principal,
+  digest: access.Digest,
 ) -> fn(List(String)) -> List(#(String, listed_sessions.Activity)) {
-  case principal.kind {
-    access.OwnerPrincipal -> fn(ids) { activity_states(config, registry, ids) }
-    access.MemberPrincipal -> fn(_) { [] }
-  }
+  fn(ids) { activity_states(config, registry, held(registry, digest, ids)) }
+}
+
+// The identities among `ids` the credential holds a membership in, at any role,
+// in their order. The owner holds every session in the catalogue. An identity
+// the credential does not hold is dropped exactly as one the registry has never
+// heard of is, so `activity` leaves both out the same way and a reply never
+// tells a session that is not the caller's from one that is not running.
+fn held(
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+  ids: List(String),
+) -> List(String) {
+  list.filter(ids, fn(id) {
+    manager.session_authority(registry, digest, id) |> result.is_ok
+  })
 }
 
 /// What the named sessions are doing, for a home page's list: the same read
