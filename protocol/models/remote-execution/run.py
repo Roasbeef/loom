@@ -9,6 +9,25 @@ import re
 from runner import ROOT, check_case, compile_model, record, snapshot_model
 
 PROBES = {
+    "tcProbeProductForeignNativeTerminal": "witness: same-key foreign native terminal refused before genuine completion",
+    "tcProbeProductForeignArtifact": "witness: foreign issued artifact refused before launch preparation",
+    "tcProbeProductBudgetReduced": "witness: ready remaining 150000 selected immutable wall 100",
+    "tcProbeProductCompileUnknown": "witness: compile creation crash retained original unknown preparation",
+    "tcProbeProductCompileReadyRecovery": "witness: original compile locations recovered after ready reply loss",
+    "tcProbeProductDeadResource": "witness: issued launch lease became unusable after resource owner death",
+    "tcProbeProductForeignAssociation": "witness: foreign compile completion refused before launch preparation",
+    "tcProbeProductBadFingerprint": "witness: physical fingerprint refused after resource ready before native launch",
+    "tcProbeProductBudgetOne": "witness: ready remaining 50100 selected immutable wall 1",
+    "tcProbeProductBudgetBelowCap": "witness: ready remaining 229099 selected immutable wall 179",
+    "tcProbeProductBudgetCap": "witness: ready remaining 229100 selected immutable wall 180",
+    "tcProbeProductBudgetCold": "witness: ready remaining 270000 selected immutable wall 180",
+    "tcProbeProductBudgetZero": "witness: ready remaining 0 refused before native reservation",
+    "tcProbeProductBudgetBelowOne": "witness: ready remaining 50099 refused before native reservation",
+    "tcProbeProductExpiredOffer": "witness: delayed immutable offer refused again on original identity recovery",
+    "tcProbeProductPostSendDelay": "witness: delayed post-start recovery queried original native child without clearance",
+    "tcProbeProductColdRun": "witness: cold preparation control and native compile completed under original authority",
+    "tcProbeProductActualServiceAdmission": "witness: owner-derived launch completed through actual native admission association",
+
     "tcProbeProductMixedFaults": "witness: mixed faults reached live launch resource cleanup",
     "tcProbeProductComplete": "witness: product completion retained before outer receipt",
     "tcProbeProductClearedPending": "witness: command cleared before native admission",
