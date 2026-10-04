@@ -100,10 +100,10 @@ pub fn a_dot_and_a_tag_hold_the_position_of_the_strand_they_name_test() {
     "class=\"tl-row hue-2\">",
     "<span aria-hidden=\"true\" class=\"dot\" data-loom-focus=\"1\"></span>",
     "Spawned ",
-    "<button class=\"tag\" data-loom-focus=\"1\" type=\"button\">sub:&lt;b&gt;review</button>",
+    "<button class=\"tag\" data-loom-focus=\"1\" type=\"button\">&lt;b&gt;review</button>",
     "class=\"tl-row hue-2\">",
     "<span aria-hidden=\"true\" class=\"dot\" data-loom-focus=\"1\"></span>",
-    "<button class=\"tag\" data-loom-focus=\"1\" type=\"button\">sub:&lt;b&gt;review</button>",
+    "<button class=\"tag\" data-loom-focus=\"1\" type=\"button\">&lt;b&gt;review</button>",
     " finished",
   ])
 
@@ -194,7 +194,7 @@ pub fn a_settled_strand_is_a_control_pointing_at_its_card_test() {
   assert reviewer == 3
   assert string.contains(
     html,
-    "<button class=\"tag\" data-loom-focus=\"3\" type=\"button\">sub:&lt;b&gt;review</button>",
+    "<button class=\"tag\" data-loom-focus=\"3\" type=\"button\">&lt;b&gt;review</button>",
   )
   assert string.contains(html, "data-loom-card=\"3\"")
 
@@ -250,7 +250,7 @@ pub fn a_focused_strand_has_a_breadcrumb_and_a_view_test() {
     "data-loom-card=\"1\"",
     "class=\"strand-detail hue-2\"",
     "<button class=\"detail-back\" data-loom-focus=\"0\" type=\"button\">← Strands</button>",
-    "ring ring-detail",
+    "avatar avatar-detail",
     "&lt;b&gt;review",
     "class=\"detail-figures\"",
     "Recent",

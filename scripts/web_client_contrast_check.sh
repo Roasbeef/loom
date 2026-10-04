@@ -29,7 +29,12 @@
 #      `color:var(--color-signal)` is text in a colour that was not held to
 #      the ratio, so it must name `--color-signal-text`.
 #   3. `--color-fg-faint` is never text.
-#   4. The theme toggle's two light palettes agree (colour tokens: the
+#   4. A strand's avatar letter (`--hue-text`) on its disc, a tint of the
+#      hue's mark colour over the surface (`avatar_tint` percent, the
+#      stylesheet's `.avatar` rule), has a ratio of at least 4.5 for every hue
+#      and every surface the card is drawn on, in each theme. The disc is not a
+#      token, so the script blends it the way `color-mix(in srgb, ...)` does.
+#   5. The theme toggle's two light palettes agree (colour tokens: the
 #      `--shadow-float` value is not compared, only that it inherits), and every token reaches
 #      each shadow root. The stylesheet writes the light palette twice, once
 #      for a system that prefers light and once for `data-theme="light"`,
@@ -57,6 +62,18 @@ surfaces="bg bg-raised bg-sunk bg-user code"
 # The pairs the diff draws on a coloured surface, as `token:surface`.
 extra_pairs="added-text:added-bg danger-text:removed-bg fg:added-bg fg:removed-bg fg-quiet:bg-sunk on-danger:danger bg:fg"
 
+# The avatar's discs: each hue's mark token and the text token the letter is
+# drawn in, as `mark:text`, tinted at `avatar_tint` percent over a surface.
+# The percentage is the stylesheet's `.avatar` rule's, which `check` holds
+# the stylesheet to. It is 8 and not the 14 the critique drew: at 14 the
+# light theme's strand text tokens, which clear 4.5 on the page by a hair,
+# fall to 4.2 on their own disc. The hue-less `fg-quiet` is left out: a
+# card's hue comes from its position and is never `hue-none`.
+avatar_hues="current:current advisor:advisor-text strand-2:strand-2-text strand-3:strand-3-text strand-4:strand-4-text strand-5:strand-5-text strand-6:strand-6-text"
+avatar_tint=8
+# The card is drawn on `bg-raised` and a strand's own view on the panel, `bg`.
+avatar_surfaces="bg bg-raised"
+
 # The mark tokens a `color:` may not read.
 marks='signal|advisor|peer|danger|added|strand-[2-6]|fg-faint'
 
@@ -65,7 +82,9 @@ marks='signal|advisor|peer|danger|added|strand-[2-6]|fg-faint'
 # `@theme` block; the light theme is the block under the light media query,
 # which the file spells after it.
 ratios() {
-	awk -v text="$text_tokens" -v surfaces="$surfaces" -v extra="$extra_pairs" '
+	awk -v text="$text_tokens" -v surfaces="$surfaces" -v extra="$extra_pairs" \
+		-v hues="$avatar_hues" -v tint="$avatar_tint" \
+		-v asurf="$avatar_surfaces" '
 		function hex(ch) { return index("0123456789abcdef", tolower(ch)) - 1 }
 		function channel(value, at,   n, c) {
 			n = hex(substr(value, at, 1)) * 16 + hex(substr(value, at + 1, 1))
@@ -74,6 +93,18 @@ ratios() {
 		}
 		function luminance(value) {
 			return 0.2126 * channel(value, 2) + 0.7152 * channel(value, 4) + 0.0722 * channel(value, 6)
+		}
+		# blend: `tint` percent of the mark colour over the surface, per sRGB
+		# channel, as hex. This is what `color-mix(in srgb, mark N%,
+		# transparent)` composites to on an opaque surface.
+		function blend(mark, surface,   at, out, m, s) {
+			out = "#"
+			for (at = 2; at <= 6; at += 2) {
+				m = hex(substr(mark, at, 1)) * 16 + hex(substr(mark, at + 1, 1))
+				s = hex(substr(surface, at, 1)) * 16 + hex(substr(surface, at + 1, 1))
+				out = out sprintf("%02x", int((m * tint + s * (100 - tint)) / 100 + 0.5))
+			}
+			return out
 		}
 		function ratio(a, b,   x, y, t) {
 			x = luminance(a); y = luminance(b)
@@ -110,6 +141,20 @@ ratios() {
 				for (k = 1; k <= ne; k++) {
 					split(pairs[k], pair, ":")
 					report(th, pair[1], pair[2])
+				}
+				nh = split(hues, hue, " ")
+				na = split(asurf, avs, " ")
+				for (i = 1; i <= nh; i++) {
+					split(hue[i], pair, ":")
+					for (j = 1; j <= na; j++) {
+						label = "avatar-" pair[2]
+						if (!((th, pair[1]) in value) || !((th, pair[2]) in value) || !((th, avs[j]) in value)) {
+							printf "%s %s %s missing\n", th, label, avs[j]
+							continue
+						}
+						printf "%s %s %s %.2f\n", th, label, avs[j], \
+							ratio(value[th, pair[2]], blend(value[th, pair[1]], value[th, avs[j]]))
+					}
 				}
 			}
 		}
@@ -190,6 +235,10 @@ check() {
 		echo "web_client_contrast_check: a rule sets text from a mark token; use its -text token" >&2
 		failed=1
 	fi
+	if ! grep -qE "\.avatar\{[^}]*color-mix\(in srgb,var\(--hue\) ${avatar_tint}%,transparent\)" "$css"; then
+		echo "web_client_contrast_check: the .avatar rule does not tint --hue at ${avatar_tint}%, the figure this check blends" >&2
+		failed=1
+	fi
 	if grep -nE '(^|[;{ ])color:var\(--hue,' "$css" >&2; then
 		echo "web_client_contrast_check: a rule sets text from --hue; use --hue-text" >&2
 		failed=1
@@ -220,6 +269,15 @@ self_test() {
 	awk '/--color-fg-quiet: #9a978f;/ { sub(/#9a978f/, "#3a3a3a") } { print }' \
 		"$default_css" >"$tmp/dark-quiet.css"
 
+	# A mark token dark enough that its tint drags the avatar's letter under the
+	# ratio on the disc, while the letter's own token still passes alone.
+	sed 's/--color-strand-5: #b0429f;/--color-strand-5: #000000;/' \
+		"$default_css" >"$tmp/pale-avatar.css"
+
+	# The avatar's tint drifting from the percentage this check blends.
+	sed 's/var(--hue) 8%,transparent/var(--hue) 14%,transparent/' \
+		"$default_css" >"$tmp/avatar-drift.css"
+
 	# A text token that is missing.
 	grep -v -- '--color-peer-text:' "$default_css" >"$tmp/missing.css"
 
@@ -240,7 +298,7 @@ self_test() {
 		"$default_css" >"$tmp/light-lacks.css"
 
 	local name
-	for name in light-mark-as-text dark-quiet missing raw-mark raw-hue faint \
+	for name in light-mark-as-text dark-quiet pale-avatar avatar-drift missing raw-mark raw-hue faint \
 		light-drift no-inherit light-lacks; do
 		if check "$tmp/$name.css" >/dev/null 2>&1; then
 			echo "web_client_contrast_check: self-test: $name passed the check" >&2

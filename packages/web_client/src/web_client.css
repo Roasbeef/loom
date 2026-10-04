@@ -235,7 +235,9 @@
      most 780px. Each side column is dropped where it would leave the
      transcript under 640px: the sidebar below 1212px (232 + 340 + 640), and
      the panel, which then becomes a row of cards beneath the bar, below 980px
-     (340 + 640). There is no drawer. */
+     (340 + 640). Where the sidebar is dropped it is a drawer: the same
+     wrapper placed over the centre behind a scrim (the narrow frames at the
+     end of this sheet). */
   loom-shell.loom-session{display:block;height:100dvh;min-width:0;overflow:hidden;background:var(--color-bg);}
   /* The top bar. It is 44px tall, and taller only when the ended page's
      notice wraps onto a row of its own. The shell draws the bar's border and
@@ -256,11 +258,11 @@
      no width, is not painted and is inert, which also takes its content out
      of the tab order, and it hides only after the width has finished
      shrinking. Opening shows it at once. Below the breakpoints of the frame
-     above the wrapper of the sidebar is not drawn, and the panel's wrapper
-     goes above the centre. */
+     above the wrapper of the sidebar is not drawn unless the reader opened
+     the drawer, and the panel's wrapper goes above the centre. */
   .shell{display:flex;flex-direction:column;height:100%;min-width:0;}
   .shell-bar{flex:0 0 auto;display:flex;align-items:stretch;min-width:0;background:var(--color-bg-raised);border-bottom:1px solid var(--color-divider);}
-  .shell-body{flex:1 1 0;display:flex;min-height:0;min-width:0;}
+  .shell-body{position:relative;flex:1 1 0;display:flex;min-height:0;min-width:0;}
   .shell-centre{flex:1 1 0;display:flex;min-width:0;min-height:0;}
   .region{flex:0 0 auto;min-height:0;overflow:hidden;transition:width 180ms ease;}
   .region-sidebar{width:232px;}
@@ -374,13 +376,13 @@
   .detail-name{color:var(--hue-text,var(--color-fg));font:600 15px/1.3 var(--font-sans);overflow-wrap:anywhere;}
   .detail-figures{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 14px;margin:0;font:12px/1.5 var(--font-sans);font-variant-numeric:tabular-nums;}
   .detail-term{color:var(--color-fg-quiet);}
-  .detail-value{margin:0;min-width:0;overflow-wrap:anywhere;text-align:right;}
+  .detail-value{margin:0;min-width:0;overflow-wrap:anywhere;text-align:left;}
   .detail-recent .panel-title{margin:0 0 6px 0;}
   .detail-answer{margin:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);overflow-wrap:anywhere;}
   ul.detail-tools{list-style:none;margin:0;padding:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-mono);overflow-wrap:anywhere;}
   /* The session sidebar, the left column: the principal's sessions by
      workspace, read-only. It is a column of the frame and scrolls on its own.
-     Below 1212px it is not drawn. */
+     Below 1212px it is a drawer over the centre, opened from the bar. */
   aside.sidebar{position:relative;width:232px;height:100%;box-sizing:border-box;min-height:0;padding:12px 10px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin; background:var(--color-bg-sunk);border-right:1px solid var(--color-divider);}
   /* The sections are set apart quietly: a small eyebrow above each group, a
      one-pixel hairline in the divider colour between groups, and space on
@@ -415,7 +417,7 @@
      row's text until it is hovered or focused. */
   li.session:has(>.session-open){padding:0;}
   .session-open{flex:1 1 auto;display:flex;align-items:baseline;justify-content:space-between;gap:8px;min-width:0;margin:0;padding:3px 7px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;}
-  .session-open:hover{background:var(--color-bg-raised);}
+  .session-open:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);}
   .session-open:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
   /* The home page (web_view/home, protocol-change/065): the same frame with
      no strand panel. The frame's element draws the panel's column and its
@@ -466,14 +468,26 @@
   .session-head .home-link{margin:0;padding:2px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:12px/1.4 var(--font-sans);cursor:pointer;}
   .session-head .home-link:hover{background:var(--color-bg-raised);}
   .session-head .home-link:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
-  .ring{display:inline-block;width:10px;height:10px;border-radius:50%;flex:0 0 auto; border:2px solid var(--color-divider);}
+  .ring{display:inline-flex;align-items:center;justify-content:center;width:10px;height:10px;border-radius:50%;flex:0 0 auto; border:2px solid var(--color-divider);}
   .ring.ring-head{border-color:var(--color-current);background:color-mix(in srgb,var(--color-current) 25%,transparent);}
   .ring.ring-tail{border-color:var(--color-divider);border-top-color:var(--color-signal);transform:rotate(45deg);}
   .ring.ring-idle{border-color:var(--color-fg-faint);}
   .ring.ring-elapsed{border:2px dashed var(--color-fg-faint);}
-  .ring.ring-none{border-color:var(--color-divider);}
   .ring.ring-card{box-sizing:border-box;width:34px;height:34px;border-width:4px;}
   .ring.ring-detail{box-sizing:border-box;width:44px;height:44px;border-width:5px;}
+  /* The state's glyph inside a held ring, in quiet text. The tail ring is
+     turned 45 degrees to put its signal arc at the top, so its glyph is
+     turned back. */
+  .ring-glyph{color:var(--color-fg-quiet);font:12px/1 var(--font-sans);}
+  .ring.ring-detail .ring-glyph{font-size:15px;}
+  .ring.ring-tail .ring-glyph{transform:rotate(-45deg);}
+  /* A strand with no cache outlook is drawn as an avatar, not a hollow ring:
+     a disc tinted toward the strand's hue with its first letter in the
+     hue's text colour. The letter's contrast on the tint is held by
+     scripts/web_client_contrast_check.sh, which blends the same 8%. */
+  .avatar{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;box-sizing:border-box;border-radius:50%;background:color-mix(in srgb,var(--hue) 8%,transparent);color:var(--hue-text);font:600 14px/1 var(--font-sans);user-select:none;}
+  .avatar.avatar-card{width:34px;height:34px;}
+  .avatar.avatar-detail{width:44px;height:44px;font-size:17px;}
   /* The transcript's scroll container: the client component draws the lane
      inside it and scrolls it (web_client/follow). Its height is what the
      frame leaves, so it never grows with the rows. Scroll anchoring is off
@@ -634,7 +648,8 @@
   .spawn-purpose{color:var(--color-fg);overflow-wrap:anywhere;}
   .result{min-width:0;}
   .result-line{margin:0;color:var(--color-fg);font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;}
-  .step.reading .subject{color:var(--color-fg);white-space:normal;}
+  .step.reading .subject{color:var(--color-fg);}
+  .result-line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   article.nudge,article.peer-card,article.sibling-card{background:var(--color-bg-raised);border-radius:10px;padding:9px 12px;min-width:0;}
   article.nudge{border:1px solid var(--color-advisor);}
   article.sibling-card{border:1px solid var(--color-divider);}
@@ -645,10 +660,6 @@
   .peer-from{min-width:0;overflow-wrap:anywhere;}
   .receipt{margin-left:auto;border:1px solid var(--color-divider);border-radius:999px;padding:0 8px;font-size:11px;}
   pre.card-body{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.5 var(--font-sans);}
-  /* The advisor's commentary hairline in the lane: one quiet line per
-     review, in the advisor's colour, never the full body. The dot beside
-     it focuses the advisor's own transcript, where the bodies live. */
-  p.commentary-mark{margin:0;color:var(--color-advisor-text);font:12px/1.4 var(--font-sans);}
   /* The commentary section in the Strands pane: the review bodies, under
      the strand cards. Read-only, no handler, hidden with the detail view
      while the advisor itself is on screen, and like the nudges card hidden
@@ -732,10 +743,10 @@
   .trace-failed{color:var(--color-danger-text);}
   .trace-running{color:var(--color-current);}
   .trace-result{margin:4px 0 0 0;overflow-wrap:anywhere;font:12px/1.5 var(--font-mono);color:var(--color-fg-quiet);}
-  .trace-sandbox{margin:4px 0 0 0;overflow-wrap:anywhere;font:12px/1.5 var(--font-mono);color:var(--color-fg-quiet);}
-  details.trace-budget{margin:6px 0 0 0;}
-  details.trace-budget summary{cursor:pointer;color:var(--color-fg-quiet);}
-  details.trace-budget p{margin:2px 0 0 0;font:12px/1.5 var(--font-mono);}
+  pre.trace-result,details.trace-diagnostic summary.trace-result{white-space:pre-wrap;}
+  details.trace-diagnostic summary{cursor:pointer;}
+  details.trace-diagnostic pre.trace-result{margin:0;}
+  .trace-budget{margin:6px 0 0 0;font:12px/1.5 var(--font-sans);color:var(--color-fg-quiet);}
   .trace-earlier{margin-top:14px;}
   .trace-subtitle{margin:0 0 6px 0;font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);}
   ul.trace-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;}
@@ -780,14 +791,14 @@
   /* The approvals sit in the dock above the composer. Their height is
      capped and they scroll on their own, so a long action preview or
      several pending cards cannot push the composer off the screen. */
-  section.approvals{margin:0 0 8px 0;max-height:35vh;overflow-y:auto;overscroll-behavior:contain;}
-  article.approval-card{background:var(--color-bg-raised);border:1px solid var(--color-danger);border-radius:10px;padding:12px 16px;margin:0 0 8px 0;}
+  section.approvals{margin:0 0 6px 0;max-height:35vh;overflow-y:auto;overscroll-behavior:contain;}
+  article.approval-card{background:var(--color-bg-raised);border:1px solid var(--color-danger);border-radius:10px;padding:10px 12px;margin:0 0 6px 0;}
   article.approval-card:last-child{margin-bottom:0;}
   .approval-head{margin:0 0 2px 0;color:var(--color-fg);font:14px/1.4 var(--font-sans);}
   .approval-strand{font-weight:600;}
-  .approval-question{margin:0 0 8px 0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);}
-  pre.approval-action{margin:0 0 8px 0;padding:8px;background:var(--color-bg);white-space:pre-wrap; overflow-wrap:anywhere;font:13px/1.4 var(--font-mono);}
-  ul.approval-authority{margin:0 0 12px 0;padding-left:20px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);}
+  .approval-question{margin:0 0 6px 0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);}
+  pre.approval-action{margin:0 0 6px 0;padding:6px 8px;background:var(--color-bg);white-space:pre-wrap; overflow-wrap:anywhere;font:13px/1.4 var(--font-mono);}
+  ul.approval-authority{margin:0 0 8px 0;padding-left:20px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);}
   .approval-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;}
   /* The arming note: shown for the 600 ms the row refuses clicks, and
      hidden after, so the delay is visible as words and not only as a dim. */
@@ -901,7 +912,8 @@
   button{font:13px/1.4 var(--font-sans);border-radius:6px;padding:4px 10px;cursor:pointer; border:1px solid var(--color-divider);background:var(--color-bg);color:var(--color-fg);}
   /* One filled primary per region, the rest quiet outlines. */
   button.send,button.queue{background:var(--color-primary-button);border-color:var(--color-primary-button);color:var(--color-bg);}
-  button.send:hover,button.queue:hover{background:color-mix(in srgb,var(--color-primary-button) 88%,var(--color-bg));}
+  button.send:hover:not(:disabled),button.queue:hover:not(:disabled){background:color-mix(in srgb,var(--color-primary-button) 88%,var(--color-bg));}
+  form.composer button[type="submit"]:disabled{opacity:.45;cursor:default;}
   button.steer{border-color:var(--color-signal);color:var(--color-signal-text);}
   button.steer:hover{background:color-mix(in srgb,var(--color-signal) 10%,transparent);}
   /* A status pill (the connected state in the bar). */
@@ -913,15 +925,24 @@
   button.approval-deny{border-color:var(--color-danger);color:var(--color-danger-text);}
   button.approval-allow{border-color:var(--color-added);color:var(--color-added-text);}
   button:focus-visible,textarea:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
-  /* The narrow frames. Below 1212px the sidebar's column and its button are
-     dropped. Below 980px the panel moves under the bar, one row of cards that
-     scrolls sideways, and the body is one column; its button still hides the
-     row. Below 640px the centre's padding shrinks. */
-  @media (max-width:1211px){.region-sidebar,.toggle-sidebar{display:none;}}
+  /* The narrow frames. Below 1212px the sidebar's column is dropped, and the
+     sidebar is a 232px drawer over the page, opened by its bar button or the
+     shortcut, behind a scrim that a click closes (web_client/shell). The
+     drawer floats, so it alone takes the float shadow. Below 980px the panel
+     moves under the bar, one row of cards that scrolls sideways, and the body
+     is one column; its button still hides the row. The panel then takes the
+     height its content has: the strip's cards, never a clipped 41px of tabs.
+     Below 640px the centre's padding shrinks. */
+  @media (max-width:1211px){
+    .region-sidebar{display:none;}
+    .region-sidebar.drawer{display:block;position:absolute;z-index:20;top:0;bottom:0;left:0;box-shadow:var(--shadow-float);}
+    .drawer-scrim{position:absolute;z-index:19;inset:0;background:color-mix(in srgb,var(--color-bg) 60%,transparent);}
+  }
   @media (max-width:979px){
     .shell-body{flex-direction:column;}
-    .region-panel{order:-1;width:auto;border-left:0;border-bottom:1px solid var(--color-divider);}
-    .region-panel.closed{width:auto;height:0;transition:none;}
+    .region-panel{order:-1;width:auto;height:auto;overflow:visible;border-left:0;border-bottom:1px solid var(--color-divider);}
+    .region-panel.closed{width:auto;height:0;overflow:hidden;transition:none;}
+    .panel-body{flex:0 0 auto;}
     aside.panel{width:auto;height:auto;max-height:132px;padding:8px 16px;}
     aside.panel > section.nudges{display:none;}
     .pane-strands .panel-title,.pane-strands > section.commentary{display:none;}

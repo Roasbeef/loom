@@ -5,11 +5,13 @@
 //// and classes (`Strip`, `Chip`, `chip-hit`) are from then; the stylesheet
 //// draws each chip as a card.
 ////
-//// A card is a ring, the strand's name and one status line
+//// A card is a mark, the strand's name and one status line
 //// (`session_view/strand_card`) that begins with the state's glyph, and
 //// nothing else: the model, the context, the cache's expiry and the elapsed
 //// time are figures of one strand's own view (`view/strand_detail`), not of a
-//// row in a list. The ring is the cache ring at 34 px. The line names a tool
+//// row in a list. The mark is the cache ring at 34 px when the strand has an
+//// outlook, and the strand's avatar, its first letter on a tint of its hue,
+//// when it has none. The line names a tool
 //// and not its command; the card's `title` holds the whole text for a reader
 //// who hovers. A strand that waits on a
 //// decision reads `Needs approval`, in the attention colour. The approval
@@ -82,6 +84,7 @@ import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -362,7 +365,7 @@ fn chip_element(
         title(line),
       ),
       [
-        ring(chip.cache, Card),
+        ring(chip, Card),
         html.span([attribute.class("chip-text")], [
           html.span([attribute.class("chip-name")], [html.text(line.name)]),
           status(line),
@@ -440,32 +443,73 @@ pub type Size {
   Detail
 }
 
-/// The cache ring: its shape from the outlook and nothing else, drawn at the
-/// size `size` names. The words for it (`cache_miss.outlook_label`) belong to
-/// a strand's own view, so a ring here is decoration, hidden from a screen
-/// reader. A strand with no outlook to show draws a plain ring, so every card
-/// lines up.
+/// A card's mark: the cache ring when the strand has an outlook to show, and
+/// otherwise the strand's avatar, at the size `size` names.
+///
+/// A held outlook is a ring whose shape says it, with the state's glyph inside
+/// and the outlook's words as its `title`, the same words the strand's own view
+/// carries in its Cache row. The words are the engine's literals
+/// (`cache_miss.outlook_label`), never a strand's text. A strand with no
+/// outlook has nothing for a ring to say, and a hollow one reads as a missing
+/// figure, so it draws `avatar` instead. Both are decoration for a screen
+/// reader, which has the status line.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // strip.ring(chip.cache, strip.Card)
+/// // strip.ring(chip, strip.Card)
 /// ```
-pub fn ring(
-  cache: Option(#(cache_miss.Outlook, String)),
-  size: Size,
-) -> Element(message) {
-  let shape = case cache {
-    Some(#(held, _)) -> ring_class(held)
-    None -> attribute.class("ring-none")
+pub fn ring(chip: Chip, size: Size) -> Element(message) {
+  case chip.cache {
+    Some(#(cache_miss.Unheld, _)) | None -> avatar(chip.line.name, size)
+    Some(#(held, words)) ->
+      html.span(
+        [
+          attribute.class("ring"),
+          case size {
+            Card -> attribute.class("ring-card")
+            Detail -> attribute.class("ring-detail")
+          },
+          ring_class(held),
+          attribute.title(words),
+          attribute.aria_hidden(True),
+        ],
+        [
+          html.span([attribute.class("ring-glyph")], [
+            html.text(strand_card.glyph(chip.line.status)),
+          ]),
+        ],
+      )
   }
-  let size = case size {
-    Card -> attribute.class("ring-card")
-    Detail -> attribute.class("ring-detail")
+}
+
+/// A strand's avatar: a disc tinted toward its hue with the name's first
+/// letter. The letter is a text node, the first grapheme of the name in upper
+/// case, and the disc's tint comes from the card's hue class, so nothing a
+/// strand wrote reaches an attribute or a class. A name with no grapheme draws
+/// `?`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // strip.avatar("review-readme-usage", strip.Card) draws the letter R
+/// ```
+pub fn avatar(name: String, size: Size) -> Element(message) {
+  let initial = case string.first(name) {
+    Ok(grapheme) -> string.uppercase(grapheme)
+    Error(Nil) -> "?"
   }
+
   html.span(
-    [attribute.class("ring"), size, shape, attribute.aria_hidden(True)],
-    [],
+    [
+      attribute.class("avatar"),
+      case size {
+        Card -> attribute.class("avatar-card")
+        Detail -> attribute.class("avatar-detail")
+      },
+      attribute.aria_hidden(True),
+    ],
+    [html.text(initial)],
   )
 }
 

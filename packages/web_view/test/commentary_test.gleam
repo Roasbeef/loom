@@ -1,7 +1,7 @@
-//// The advisor's commentary on the web page: one hairline in the lane per
-//// review, the bodies in the strand panel's Strands pane, and none of it a
-//// handler. What crosses into the lane before the panel existed, the full
-//// blocks, is gone.
+//// The advisor's commentary on the web page: no row in the lane, the bodies
+//// in the strand panel's Strands pane, and none of it a handler. What crossed
+//// into the lane before the panel existed, the full blocks and then a
+//// hairline per review, is gone.
 ////
 //// The fixture holds the forked capture: `main`, the reviewer and the
 //// advisor each have a transcript, and the advisor's one note (``advisor:
@@ -45,15 +45,13 @@ fn in_order(haystack: String, needles: List(String)) -> Bool {
   }
 }
 
-pub fn the_lane_keeps_one_quiet_line_per_review_test() {
+pub fn the_lane_draws_no_row_for_a_review_test() {
   let drawn = html(page([lane_fixture.forked(None, [])]))
 
-  // The hairline: the advisor's tag, the request's words, one line.
-  assert string.contains(drawn, "class=\"commentary-mark\"")
-  assert string.contains(drawn, "advisor</button> · commentary</p>")
-
-  // The full body and the heading are gone from the lane: everything
-  // before the panel holds neither, and the panel's section holds both.
+  // Neither the hairline nor the full body and heading are in the lane:
+  // everything before the panel holds none of them, and the panel's section
+  // holds the body.
+  assert !string.contains(drawn, "commentary-mark")
   let assert Ok(#(centre, _)) = string.split_once(drawn, "pane pane-strands")
     as "the page draws the panel"
   assert !string.contains(centre, "class=\"block commentary\"")
@@ -61,21 +59,10 @@ pub fn the_lane_keeps_one_quiet_line_per_review_test() {
   assert !string.contains(centre, "watch the &lt;sweep&gt;")
 }
 
-pub fn the_hairline_carries_the_advisors_marker_and_no_handler_test() {
+pub fn the_commentary_adds_no_handler_test() {
   let model = page([lane_fixture.forked(None, [])])
-  let drawn = html(model)
 
-  // The hairline's dot is the advisor's: the row carries the marker the
-  // relay presses the advisor's card with.
-  let assert Ok(#(_, from_mark)) =
-    string.split_once(drawn, "class=\"commentary-mark\"")
-    as "the marker is drawn"
-  let assert Ok(#(row, _)) = string.split_once(from_mark, "</p>")
-    as "the marker is closed"
-  assert string.contains(row, "data-loom-focus")
-
-  // No handler is drawn for it: an observer's page still holds only the
-  // strand cards' clicks.
+  // An observer's page still holds only the strand cards' clicks.
   let keys = handlers(component.view(model))
   let clicks = list.filter(keys, fn(key) { string.ends_with(key, "\nclick") })
   assert list.length(clicks) == 4
@@ -284,6 +271,6 @@ pub fn an_operators_page_draws_the_same_commentary_test() {
     }
     |> component.apply([lane_fixture.forked(None, [])])
   let drawn = element.to_string(operator_page.view(model))
-  assert string.contains(drawn, "class=\"commentary-mark\"")
+  assert !string.contains(drawn, "commentary-mark")
   assert string.contains(drawn, "class=\"commentary\"")
 }

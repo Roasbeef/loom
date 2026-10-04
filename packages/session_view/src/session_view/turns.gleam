@@ -865,10 +865,10 @@ fn entry_kind(
               block.key,
               session,
               strand,
-              composer.transcript_text(
+              composer.without_expand_hint(composer.transcript_text(
                 transcript_lines.user_body(content),
                 False,
-              ),
+              )),
             ),
             at,
           ),
@@ -885,8 +885,16 @@ fn entry_kind(
               Sibling(
                 block.key,
                 strand,
-                composer.transcript_text(framed.body, False),
-                option.map(framed.trailer, composer.transcript_text(_, False)),
+                composer.without_expand_hint(composer.transcript_text(
+                  framed.body,
+                  False,
+                )),
+                option.map(framed.trailer, fn(trailer) {
+                  composer.without_expand_hint(composer.transcript_text(
+                    trailer,
+                    False,
+                  ))
+                }),
               ),
               at,
             ),

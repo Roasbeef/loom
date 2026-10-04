@@ -38,6 +38,7 @@
 //// page out, and a module the component imports cannot import the
 //// component back.
 
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import lustre/attribute
@@ -76,7 +77,10 @@ pub type Tone {
 /// status as the page words it. `context` and `cost` are the two estimates
 /// the terminal's footer shows (`ctx ~41%` and `est $0.04`), already worded.
 /// The cost is the session's running total across strands, and the bar's
-/// label says so.
+/// label says so. A figure with no value is not drawn: an empty `context`
+/// draws no `ctx`, and a `cost` that ends in the dash (`est —`, a model with
+/// no price) draws no `est`, since two dashes beside each other read as
+/// missing data rather than as "not known".
 ///
 /// ## Examples
 ///
@@ -112,28 +116,44 @@ pub fn view(
         ],
         [html.text(status)],
       ),
-      html.span([attribute.class("figures")], [
-        html.span(
-          [
-            attribute.class("figure"),
-            attribute.title(case string.ends_with(context, " —") {
-              True -> "No turn yet on the strand shown"
-              False -> "Estimated context use of the strand shown"
-            }),
-          ],
-          figure_words(context),
-        ),
-        html.span(
-          [
-            attribute.class("figure"),
-            attribute.title(case string.ends_with(cost, " —") {
-              True -> "No priced usage yet"
-              False -> "Estimated cost of the session, across strands"
-            }),
-          ],
-          figure_words(cost),
-        ),
-      ]),
+      html.span(
+        [attribute.class("figures")],
+        list.flatten([
+          case context {
+            "" -> []
+            _ -> [
+              html.span(
+                [
+                  attribute.class("figure"),
+                  attribute.title(case string.ends_with(context, " —") {
+                    True -> "No turn yet on the strand shown"
+                    False -> "Estimated context use of the strand shown"
+                  }),
+                ],
+                figure_words(context),
+              ),
+            ]
+          },
+
+          // A session whose model has no price has no estimate to give, and
+          // two dashes read as missing data. The Session tab, which has a row
+          // labelled for the estimate, keeps its dash.
+          case cost == "" || string.ends_with(cost, " —") {
+            True -> []
+            False -> [
+              html.span(
+                [
+                  attribute.class("figure"),
+                  attribute.title(
+                    "Estimated cost of the session, across strands",
+                  ),
+                ],
+                figure_words(cost),
+              ),
+            ]
+          },
+        ]),
+      ),
       notice,
     ],
   )

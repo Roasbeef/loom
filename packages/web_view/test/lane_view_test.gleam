@@ -163,13 +163,14 @@ pub fn the_ring_and_the_outlook_say_only_what_the_rows_proved_test() {
     |> at(clock, 60_000)
   let drawn = html(warm)
 
-  // The card's ring is only a shape, hidden from a screen reader; its words
-  // are a strand's own view's, so the list carries none.
+  // The card's ring is hidden from a screen reader, carries the outlook's
+  // words as its `title` and the state's glyph inside; the words are drawn
+  // as text only in a strand's own view, so the list carries none.
   assert string.contains(
     drawn,
-    "<span aria-hidden=\"true\" class=\"ring ring-card ring-tail\"></span>",
+    "<span aria-hidden=\"true\" class=\"ring ring-card ring-tail\" title=\"cache tail ≤4m\"><span class=\"ring-glyph\">",
   )
-  assert !string.contains(drawn, "cache tail")
+  assert !string.contains(drawn, ">cache tail")
 
   // The operator's composer names the same outlook for the strand it
   // addresses.
@@ -185,6 +186,36 @@ pub fn the_ring_and_the_outlook_say_only_what_the_rows_proved_test() {
     warm
     |> component.apply([lane_fixture.captured(10, Some(lane_fixture.main_op()))])
   assert !string.contains(html(running), "ring-tail")
+}
+
+// A strand with no cache outlook has nothing for a ring to say, so its card
+// leads with an avatar: the first letter of its name as a text node, on a disc
+// the stylesheet tints from the card's hue class. No card is a hollow ring.
+pub fn a_card_without_an_outlook_leads_with_the_strands_initial_test() {
+  let drawn = html(settled())
+  assert !string.contains(drawn, "ring-none")
+  assert !string.contains(drawn, "class=\"ring ")
+  assert string.contains(
+    drawn,
+    "<span aria-hidden=\"true\" class=\"avatar avatar-card\">M</span>",
+  )
+  assert string.contains(
+    drawn,
+    "<span aria-hidden=\"true\" class=\"avatar avatar-card\">A</span>",
+  )
+
+  // The reviewer's name opens with markup. Its initial is escaped text and
+  // the name is in no attribute of the avatar.
+  assert string.contains(
+    drawn,
+    "<span aria-hidden=\"true\" class=\"avatar avatar-card\">&lt;</span>",
+  )
+
+  // A strand's own view takes the same rule at its larger size.
+  assert string.contains(
+    html(focused(settled(), "advisor")),
+    "<span aria-hidden=\"true\" class=\"avatar avatar-detail\">A</span>",
+  )
 }
 
 // The advisor is always listed, so its own view is the one a test can open
@@ -290,10 +321,10 @@ pub fn a_spawn_and_its_result_wear_the_childs_hue_test() {
   let drawn = html(settled())
   assert in_order(drawn, [
     "class=\"who spawn hue-2\">Spawned ",
-    ">sub:&lt;b&gt;review</button>",
+    ">&lt;b&gt;review</button>",
     " · review &lt;the&gt; patch",
     "class=\"result hue-2\">",
-    ">sub:&lt;b&gt;review</button> finished</p>",
+    ">&lt;b&gt;review</button> finished</p>",
     "looks &lt;fine&gt; &amp; tidy",
   ])
 }
