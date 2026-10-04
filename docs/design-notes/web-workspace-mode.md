@@ -1,14 +1,24 @@
 # The web view's workspace mode: a home, new sessions, an admin page and a chosen name
 
-**Status: proposed, for the owner's review.** This note answers the owner's
-request of 2026-10-03 for the web UI: "a mode where I can use it like a
-traditional system, so: make sessions, switch between them, admin interface
-where I can invite ppl to read/write sessions, when a multiplayer then they
-can choose an identifier". It says what the tree already has, what is new,
-why each new piece is shaped the way it is, what it costs a stolen page, and
-the order to build it in. The wire and route changes it needs are drafted in
+**Status: proposed; amended 2026-10-03 after the owner's rulings.** This
+note answers the owner's request of 2026-10-03 for the web UI: "a mode
+where I can use it like a traditional system, so: make sessions, switch
+between them, admin interface where I can invite ppl to read/write sessions,
+when a multiplayer then they can choose an identifier". It says what the
+tree already has, what is new, why each new piece is shaped the way it is,
+what it costs a stolen page, and the order to build it in. The wire and
+route changes it needs are drafted in
 [protocol-change/065](../../protocol-change/065-web-workspace-mode.md); this
 note is the reasoning and the plan, 065 is the rule.
+
+The owner ruled on four of the note's questions the same day (section 9):
+a browser login lasts thirty days; a browser-only invitee gets a cookie
+that is itself a credential, "like a macaroon", and is never shown a key
+to paste; a session created from the browser is created in a workspace the
+owner already has one in; and an operator-ceiling page may open a saved
+session through the control command's checks. The other recommendations
+stand. Section 1.4 is the macaroon design those rulings asked for, and
+section 9 says where it changes an earlier answer.
 
 It builds on [protocol-change/051](../../protocol-change/051-web-view-route.md)
 (the page, its three secrets, switching, the invite control),
@@ -21,37 +31,35 @@ access ([052](../../protocol-change/052-web-view-remote-origin.md)) is still
 a proposal; everything here assumes a loopback `Host`, and says where 052's
 `Remote(origin)` would change an answer. Nothing here puts TLS in `loomd`.
 
-Several things the request asks for were ruled against earlier, each for a
-reason that still holds in part. Section 9 lists them as questions, with the
-recommended answer. Nothing in this note is settled until the owner answers
-them.
-
 ## 0. The shape in short
 
 Today a browser reaches exactly one session's page through a 60 second
 ticket that `loom ui --session ID` mints; the page's cookie, key and nonce
 name that one session and nothing else. This note adds two more kinds of
-page under the same ticket, cookie, key and nonce machinery, and changes
-nothing about how a session page is admitted:
+page under the same ticket, cookie, key and nonce machinery, one browser
+login beneath them, and changes nothing about how a session page is
+admitted:
 
 - **A home page**, not bound to a session, that lists the sessions the
-  principal holds, grouped by workspace, and opens any of them. It is the
-  app's front door: the sidebar the session page already draws becomes the
-  navigation of the whole app, and every session page opened from a home
-  can get back to it. The owner's home also creates sessions and opens the
-  admin page.
+  principal holds, grouped by workspace, and opens any of them, a saved
+  one included. It is the app's front door: the sidebar the session page
+  already draws becomes the navigation of the whole app, and every session
+  page opened from a home can get back to it. The owner's home also
+  creates sessions and opens the admin page.
 - **An admin page**, for the owner only, fifteen minutes long, that lists
-  principals and memberships, invites per session with a role, changes a
-  role, revokes a membership or a credential, and rotates a credential. It
-  is 053's phase 4 page, with the grants the owner has since asked for, and
-  bounded the way the session page's invite control already is.
-
-Two things let a person into the home: their own `loom ui` (as today, now
-without `--session`), or, for a person with no `loom`, a browser sign-in
-form that takes their credential once, and a browser claim form that
-redeems an invitation, takes the name they want to be shown under, and
-signs them in. The browser never keeps a credential; it keeps a cookie that
-lives eight hours, as every page does today.
+  principals, memberships and sign-ins, invites per session with a role,
+  changes a role, revokes a membership, a credential or one sign-in, and
+  rotates a credential. It is 053's phase 4 page with the grants the owner
+  has since asked for, bounded the way the session page's invite control
+  already is.
+- **A browser login** that lasts thirty days: a cookie whose value is a
+  credential the daemon minted and can verify from a root key alone, a
+  macaroon. It is set when `loom ui` opens a home and when a browser claim
+  binds, and it lets the browser mint a fresh home page any day for a
+  month without `loom`. Pages minted from it are the eight-hour pages of
+  today, with their nonce and `Origin` checks unchanged. A person without
+  `loom` is never shown a key to keep; their login is their credential,
+  and revoking it is one row.
 
 The invitee's name is a label on an authenticated principal and nothing
 more: it is set when the claim binds, it goes into presence rows and
@@ -90,8 +98,15 @@ that mints a ticket and navigates (`view` (`web_view/view/sidebar.gleam:63`),
 sidebar, by ruling (051, the addendum on the session sidebar): an observer
 link is the one a person hands to someone who may only watch one session.
 
-There is no page without a session, no route a browser can present a
-credential to, and no way for a page to learn where it came from.
+A credential is a 32-byte bearer whose SHA-256 the catalogue keeps
+(`bootstrap_owner` (`storage/access.gleam:310`)); every check anywhere takes
+a digest. Nothing in the tree signs or verifies a token: `gleam_crypto`
+1.6.0 is a dependency of `host` already and provides `hmac` and
+`secure_compare`, which section 1.4 uses, so the macaroon needs no new
+dependency.
+
+There is no page without a session, no browser credential, and no way for
+a page to learn where it came from.
 
 ### 1.2 One grant, three scopes, and a reach
 
@@ -129,45 +144,243 @@ whose answer is a home ticket for the same principal and the same ceiling.
 
 ### 1.3 Three ways into a home
 
-**`loom ui [--operate] [--open]` with no `--session`.** `run_view` resolves
-the daemon as it does today (`view_request` (`tui.gleam:1122`)) and sends
-`ui.link` with no `session_id`. The daemon mints a `Home` ticket with the
-caller's principal and the requested ceiling, and `loom` prints or opens
-`/ui/home?ticket=<t>`. This is the owner's path, and the path of any member
-who has `loom`. The owner token never reaches a browser.
+**`loom ui [--observe] [--no-remember] [--open]` with no `--session`.**
+`run_view` resolves the daemon as it does today (`view_request`
+(`tui.gleam:1122`)) and sends `ui.link` with no `session_id`. The daemon
+mints a `Home` ticket with the caller's principal and the requested
+ceiling, and `loom` prints or opens `/ui/home?ticket=<t>`. The exchange
+opens the home page and, unless `--no-remember` was given, also sets the
+browser login of section 1.4, so the next visit needs no `loom`. This is
+the owner's path, and the path of any member who has `loom`. The owner
+token never reaches a browser.
 
-**`POST /ui/login`**, for a person with a credential and no `loom`. The
-form carries the credential and a "read-only" checkbox. The daemon checks
-the host and `Sec-Fetch-Site` as it checks the exchange, authenticates the
-credential (`authenticate` (`client/daemon/manager.gleam:913`)), mints and
-redeems a `Home` ticket in one step, and answers the enter page with the
-cookie, key and nonce, exactly as the exchange does. The credential is read
-from the form body, hashed, and dropped; it is never in a URL, a log or a
-page. The owner's credential is refused here (question 11): the owner has
-`loom ui`, and the owner token should not sit in a browser's form history
-or password manager.
+**The browser login**, for the thirty days after either of the other two.
+The browser visits its bookmark, `/ui/l/<login key>/home`, and the daemon
+verifies the login and mints a fresh home page for it (section 1.4). This
+is what "use it like a traditional system" needs: a bookmark that works
+tomorrow.
 
 **`POST /ui/claim`**, for an invitee with no `loom` (section 5.3). It
-redeems the claim, binds a credential the daemon draws, applies the chosen
-name, and signs the person in as `/ui/login` would.
+redeems the claim, binds a browser credential, applies the chosen name,
+and sets the login.
 
-A browser therefore holds, at most, an eight hour cookie; what it typed
-into a form was hashed and forgotten. Renewing a home costs one `loom ui`
-or one sign-in. A longer-lived "remember me" cookie was considered and is
-not proposed (question 1): 051 chose eight hours so that a cookie copied out
-of a browser profile stops working the same day, and a sign-in form makes
-renewal cheap enough that the bound can stay.
+A sign-in form that takes a pasted credential (`/ui/login` in the first
+draft) is not built: with a browser credential that is set by the claim,
+nobody holds a key to paste, and a member with `loom` runs `loom ui` once
+a month. Dropping it removes one of the two routes that took a secret in a
+form.
 
-### 1.4 Routes and checks
+### 1.4 The browser login: a macaroon
+
+The owner asked for a cookie that "can be credential based, like a
+macaroon". This is that design. The reader who knows macaroons will find
+the first-party chain and nothing more: no third-party caveats, no
+discharges, no binding of one macaroon to another. Those exist in the
+literature; none is needed here, and each would be a mechanism with no
+caller.
+
+**What a login is.** A credential the daemon minted, carried by the
+browser as a cookie, verifiable from a root key the daemon holds plus the
+token's own contents, and revocable by one catalogue row. The token is
+ASCII, at most about 400 bytes, and reads:
+
+```
+loomb1:<id>:<caveat>|<caveat>|...|<caveat>:<sig>
+```
+
+- `id` is 32 hexadecimal digits, 16 bytes from `crypto.strong_random_bytes`,
+  the identifier of this login. It is not secret: the signature is.
+- each caveat is `name=value`, with `name` one lowercase letter and `value`
+  from `[A-Za-z0-9._-]` (the alphabet of a principal ID, `valid_id`
+  (`storage/access.gleam:1074`), so an ID is a value as it stands). The
+  separators `:` and `|` are legal in a cookie value and absent from the
+  alphabet, so the token parses without escaping.
+- `sig` is 64 hexadecimal digits, the end of an HMAC-SHA256 chain:
+
+```
+sig0 = HMAC-SHA256(key: root, data: "loomb1:" <> id)
+sigN = HMAC-SHA256(key: sigN-1, data: caveatN)
+```
+
+The chain is the macaroon construction: each caveat is signed with the
+signature before it, so a holder can append a caveat and compute the new
+signature from the old one, and nobody without the root key can remove
+one or change one. `crypto.hmac(data, Sha256, key)` is the whole of the
+cryptography, and `crypto.secure_compare` the whole of the verification's
+comparison; both are in `gleam_crypto`, which `host` already depends on.
+No new dependency and no new FFI.
+
+**The root key** is 32 bytes drawn once and kept at `<state-dir>/browser.key`
+beside `owner.token`, written with `atomic_write_private`
+(`host/bootstrap.gleam:403`) at mode `0600`, and read at start. It is the
+one secret that verifies every login; it never leaves the daemon's host and
+is never derived from or written into a token. Deleting the file and
+restarting the daemon ends every login at once, which is the owner's
+whole-daemon revocation, and the daemon draws a fresh key.
+
+**The caveats a login is minted with**, all six, in this order:
+
+| Caveat | Meaning | Checked against |
+|---|---|---|
+| `p=<principal id>` | whose login it is | the credential row's principal |
+| `c=observer` or `c=operator` | the ceiling of every page it mints | the ticket's ceiling |
+| `r=workspace` | its reach | the ticket's reach |
+| `e=<unix ms>` | expiry: thirty days from minting, fixed, never extended | the clock |
+| `k=<32 hex>` | the login key, the path the cookie is scoped to | the request path |
+| `n=<64 hex>` | the SHA-256 of the login nonce (below) | the nonce the browser posts |
+
+**Attenuation later, without the daemon.** Because verification walks the
+chain and then takes the intersection of what the caveats allow, a token
+with more caveats is a narrower token and verifies with no change to the
+daemon. The rules the first cut already enforces, so that a later holder
+can narrow and never widen: a name may repeat, and a repeat narrows. `c`
+takes the smallest ceiling; `e` the earliest expiry; a future `s=<session
+id>` restricts every ticket the login mints to that session, and two
+different `s` values allow nothing; `p`, `r`, `k` and `n` may not repeat
+with another value; an unknown name refuses the token. Nothing in this
+note appends a caveat; the property is that when something does (a
+"read-only link to this one session for a day" is the obvious one, and the
+browser has HMAC-SHA256 in WebCrypto), the daemon needs no new table and
+no new route.
+
+**What the daemon stores.** Two things, and never the token:
+
+- the root key file;
+- one row in `access_credentials` per login, with `digest = SHA-256(id)`,
+  the principal, the state, and three new columns: `kind` (`bearer` or
+  `browser`), `issued_at_ms` and `last_seen_ms` (catalogue version 5; 065
+  has the migration).
+
+Keying the row by the digest of the identifier is what makes a login fit
+the existing model: every check in the tree takes a credential digest
+(`authenticate` (`client/daemon/manager.gleam:913`), `session_authority`,
+`frame_authority`, `administer`), and a page minted from a login carries
+`SHA-256(id)` as its `Grant.credential`. The page's socket, its relay, the
+gateway's per-frame re-check and the admin dispatch all run unchanged
+against that digest, so revoking the row ends every page the login minted
+at its next frame, exactly as revoking a bearer does today. A login
+presented as a bearer on `/v2/control` authenticates nothing: the daemon
+would hash the whole token string, which is not the row's digest; and
+`loom --token` and `--token-file` refuse a value beginning `loomb1:` as
+they refuse `loomclaim_`.
+
+**Verification**, at `POST /ui/l/<key>/home`, in order: the host and
+`Sec-Fetch-Site` as for every exchange; the cookie parses as the shape
+above, else `401`; the chain recomputes from the root key and
+`secure_compare` matches `sig`, else `401` (nothing after this runs on a
+forged token, so the catalogue is never asked about one); every caveat
+holds, with `k` equal to the path's key, `n` equal to the SHA-256 of the
+nonce in the body, and `e` after now, else `401`; the row is found, is
+`active`, is `browser`, and names the principal `p` names, else `401`.
+Then the daemon mints a `Home` grant for that digest, at the ceiling `c`
+gives and reach `Workspace`, and answers the enter page with a fresh page
+cookie, key and nonce, as the exchange does. The page is an ordinary
+eight-hour page. `last_seen_ms` is written at most once an hour per login,
+so a visit is one registry read and rarely a write.
+
+**Cookie attributes.** On loopback:
+`loom_login=<token>; HttpOnly; SameSite=Strict; Path=/ui/l/<key>;
+Max-Age=2592000`. Under 052's `Remote(origin)`:
+`__Host-loom_login=<token>; Secure; HttpOnly; SameSite=Strict; Path=/;
+Max-Age=2592000`, as 052 does for the page cookie, with the key still in
+the route. `Max-Age` is thirty days, the same instant `e` names; the
+browser drops the cookie when the token stops verifying.
+
+**Three secrets again.** 051 put a page on a cookie, a key in the path and
+a nonce in `sessionStorage` because a browser sends a cookie to every port
+of a host, and a server the session's agent runs on another loopback port
+would otherwise receive it. A login that lasts a month needs the same
+three, and the macaroon carries two of them as caveats:
+
+- the **cookie** is the token, scoped by `Path` to the login key, so a
+  link to another port carries it only if the link holds the key;
+- the **login key** `k` is in the bookmark's path, so a bookmark pasted
+  into a composer leaks it, as a page URL does today;
+- the **login nonce** is 32 random bytes delivered once, in the body of the
+  response that set the cookie, and kept by the enter script in
+  `localStorage` under `loom.login.<key>`, through the `storage_write` the
+  layout already uses. `localStorage` is scoped to scheme, host and port,
+  so no page on another port can read it, and the content security policy
+  admits no script that is not the daemon's. Its digest `n` is a caveat,
+  so the daemon stores nothing for it.
+
+`GET /ui/l/<key>/home` therefore serves a small fixed page whose script
+reads the nonce back and submits it in a same-origin form `POST` to the
+same path; the `POST` is the verification above. A tab with no nonce (a
+new profile, cleared storage) is told to run `loom ui` or to open a device
+link (below). A hostile port that received the cookie and knows the key
+cannot post the nonce; a process that reads the browser's profile gets all
+three, which 051 does not defend against and this note does not either.
+
+**A stolen login** is worth thirty days of everything a home at its
+ceiling can do: every session the principal holds, at the role the
+principal holds there; for the owner, sessions in known workspaces and
+fifteen-minute admin pages, each under the allowances of sections 2 and 4.
+That is the owner's ruling, and this note bounds it four ways rather than
+shortening it:
+
+- **Expiry is fixed at minting.** No sliding window: a login used every
+  day still ends on day thirty, so a stolen cookie that is used does not
+  renew itself. Renewal is the person's `loom ui`, or a device link.
+- **Every login is listed and revocable.** A member's home lists their own
+  sign-ins (issued, last seen, this browser marked) with "sign out" per row
+  and "sign out everywhere"; the admin page lists every principal's with
+  revoke; `loom access signins PRINCIPAL` and `loom access revoke-login
+  FINGERPRINT` do the same from a terminal; `revoke-credentials` and
+  `rotate` revoke bearer and browser credentials alike, as today they
+  revoke "every active credential".
+- **`last_seen_ms` makes use visible.** A login seen at hours its person
+  was not at a browser is the signal, weak but present, that the row
+  gives; the home draws it beside each sign-in.
+- **The root key is one file.** Deleting it ends every login daemon-wide.
+
+**Rotate on use** (a fresh token on each visit, the old one refused, reuse
+detected) was considered and is not recommended. It needs the daemon to
+store the current identifier per login and to replace it on every visit,
+which gives up "store only the root key and a row"; two tabs that visit at
+once race, and the loser is signed out; and a thief who uses the token
+first signs the owner out, which is detection by lockout. Fixed expiry,
+listing and last-seen give the owner the same facts without the race.
+
+**The owner's own `loom ui` sets the same login.** One mechanism: the
+exchange that `loom ui` opens sets the cookie and the nonce unless
+`--no-remember` was given, and the owner's row is a `browser` credential
+of the owner principal, so `administer` authenticates it as the owner and
+every owner action on a page runs as it does from a page today. The owner
+token is untouched: revoking the owner's login revokes a row, not
+`owner.token`, and the owner's terminal keeps working. An owner who wants
+no thirty-day credential in a browser passes `--no-remember` and renews
+by `loom ui` each day, which is today's rule.
+
+**Adding a device.** A browser-only member has no key to carry to a second
+browser. The home therefore has "sign in another device", which mints a
+`Home` ticket that lives ten minutes instead of sixty seconds and whose
+exchange sets a login; the link is shown once in a copy box and the person
+opens it on the other device. It costs one unit of the credential's grant
+allowance (three an hour, section 4), because a stolen home that could mint
+device links without bound could mint thirty-day credentials without
+bound, and each is listed as a sign-in the moment it is redeemed.
+
+**Relation to claims.** 053's rule 3 says a member has either one open
+claim and no active credential, or no open claim. A browser claim gives
+the principal its first credential, a `browser` one, and the rule holds as
+written. A browser-first member who later wants `loom` asks the owner to
+`rotate`, which revokes every credential, their logins included, and
+issues a claim for `loom claim`; they then sign the browser in again with
+`loom ui`. A `loom`-first member who runs `loom ui` gets a login beside
+their bearer, since a login is not a claim.
+
+### 1.5 Routes and checks
 
 | Route | Check order | Answer |
 |---|---|---|
-| `GET /ui/home?ticket=<t>` | host, `Sec-Fetch-Site` none or same-origin, redeem a `Home` ticket | the enter page; cookie `Path=/ui/p/<key>`; nonce in the body |
-| `GET /ui/p/<key>/home` | host, `Sec-Fetch-Site`, cookie under the key, credential authenticates | the shell for the home |
-| `GET /ui/p/<key>/home/ws?csrf-token=<n>` | host, `Origin`, nonce, cookie, credential | the home socket |
-| `POST /ui/login` | host, `Sec-Fetch-Site`, body at most 1 KiB, credential authenticates, not the owner | the enter page for a new `Home` grant |
+| `GET /ui/home?ticket=<t>` | host, `Sec-Fetch-Site` none or same-origin, redeem a `Home` ticket | the enter page; page cookie `Path=/ui/p/<key>`; page nonce in the body; and for a remembered ticket the login cookie and the login nonce |
+| `GET /ui/p/<key>/home` | host, `Sec-Fetch-Site`, page cookie under the key, credential authenticates | the shell for the home |
+| `GET /ui/p/<key>/home/ws?csrf-token=<n>` | host, `Origin`, page nonce, page cookie, credential | the home socket |
+| `GET /ui/l/<key>/home` | host, `Sec-Fetch-Site` | the fixed resume page, which posts the login nonce |
+| `POST /ui/l/<key>/home` | host, `Sec-Fetch-Site` same-origin, body at most 1 KiB, the login verifies (section 1.4) | the enter page for a new `Home` grant |
 | `GET /ui/claim` | host, `Sec-Fetch-Site` | the claim form, a fixed document |
-| `POST /ui/claim` | host, `Sec-Fetch-Site`, body at most 1 KiB, claim redeems | the welcome page (section 5.3) |
+| `POST /ui/claim` | host, `Sec-Fetch-Site`, body at most 1 KiB, claim redeems | the enter page, with the login cookie and nonce (section 5.3) |
 
 A `Home` ticket presented at a session's exchange, or a session ticket at
 the home's, is spent and refused, as `OtherSession` (`ui_sessions.gleam:184`)
@@ -176,12 +389,13 @@ the redemption, in the same actor message, so the property 053 wanted from a
 separate admin ticket table (a session ticket never redeems at the admin
 exchange) holds with one table.
 
-A home's `page_grant` checks the cookie, the key and the credential and
-skips the membership check, since there is no session; everything the home
-then shows is read with that credential digest and is what the principal is
-entitled to see.
+A home's `page_grant` checks the page cookie, the key and the credential
+and skips the membership check, since there is no session; everything the
+home then shows is read with that credential digest and is what the
+principal is entitled to see. The page cookie keeps no `Max-Age`: a page
+is eight hours, and only the login is thirty days.
 
-### 1.5 What the home draws
+### 1.6 What the home draws
 
 The home is the A2 shell (`view` (`web_view/view/shell.gleam:91`)) with the
 same four children in the same order, so the two pages feel like one app
@@ -198,8 +412,11 @@ and the stylesheet needs no second layout:
 2. The centre: the same sessions as a table with the detail a sidebar row
    has no room for: name, workspace, resident or saved, created, and for
    the owner the domain scope (`workspace_private` or `session_only`, which
-   decides whether it can be shared). The owner's centre also holds the
-   create form and an "Admin" button. A member's centre holds the table.
+   decides whether it can be shared). Below it, the principal's sign-ins
+   (section 1.4) with "sign in another device". The owner's centre also
+   holds the create form and an "Admin" button. The bookmark
+   `/ui/l/<key>/home` is drawn as text when the page was opened by a
+   remembered login, so the person can keep it.
 3. The panel: not drawn. The shell hides an absent right column.
 
 Nothing on the home comes from a session: no transcript, no agent text. The
@@ -214,50 +431,51 @@ can take longer, section 3).
 The home has no composer, no lane and no `session_view` state. It holds
 session logic as the sidebar does, which is none.
 
-### 1.6 Security
+### 1.7 Security
 
 The threat model is 051's: the session's agent reaches the loopback
 listener unless `--network off`, browsers send cookies to every port of a
-host, and a page stands on a cookie, a key and a nonce. The home adds these
-cases.
+host, and a page stands on a cookie, a key and a nonce. The home and the
+login add these cases.
 
-- **A stolen home page** (all three secrets, by a profile read) is worth,
-  for a member, the list of their sessions and an operator page on any
-  running one they operate, for up to eight hours: that is what a stolen
-  operator page is already worth after the switching addendum. For the
-  owner it is worth more: a session in any known workspace (section 2) and
-  fifteen minutes of the admin page (section 4), each bounded below. The
-  defences are unchanged: `HttpOnly`, `SameSite=Strict`, the key path, the
-  nonce in `sessionStorage`, the eight hours, and revocation of the
+- **A stolen home page** (its three page secrets, by a profile read) is
+  worth, for a member, the list of their sessions and an operator page on
+  any running one they operate, for up to eight hours: that is what a
+  stolen operator page is already worth after the switching addendum. For
+  the owner it is worth more: a session in any known workspace (section 2)
+  and fifteen minutes of the admin page (section 4), each bounded below.
+  The defences are unchanged: `HttpOnly`, `SameSite=Strict`, the key path,
+  the nonce in `sessionStorage`, the eight hours, and revocation of the
   credential, which ends every page it minted.
+- **A stolen login** is section 1.4's thirty days, bounded by fixed expiry,
+  listing, last-seen and revocation. It is the one new durable secret a
+  browser holds, and it is the owner's ruling that it exists.
 - **CSRF.** The home's actions are Lustre events over its socket, which
-  needs the nonce and an exact `Origin`; no action is an HTTP request a
-  cross-site page could make the browser send. The two HTTP `POST`s,
-  `/ui/login` and `/ui/claim`, are refused unless `Sec-Fetch-Site` is
-  `none` or `same-origin`, and each needs a secret the attacker lacks. A
-  login-CSRF, where an attacker signs the victim into the attacker's own
-  principal so the victim's prompts land in the attacker's sessions, is
-  refused by `Sec-Fetch-Site`, and would in any case produce a page whose
-  top bar names the attacker's principal.
-- **A hostile page on another loopback port** receives the cookie for a
-  path holding the key, as today, and nothing else; the home's socket needs
-  the nonce it cannot read. The `Referrer-Policy: no-referrer` that keeps
-  the key out of `Referer` covers the home's URLs too.
-- **An observer escalating.** An observer-ceiling home mints only observer
-  tickets (`mint_before` carries the page's ceiling). It cannot open a saved
-  session (section 3), create one, or reach the admin page: each is refused
-  by the daemon from the grant it holds, whatever the socket forwarded, and
-  the home component's observer variant has no message that asks.
-- **A sign-in form on loopback.** A bearer typed into a form on a page
-  served from `127.0.0.1` can be read by any process that can read the
-  browser's form history or a password manager's store. That is the
-  person's choice to make and the reason the owner's credential is refused
-  there. The form has `autocomplete="off"`, which password managers ignore;
-  the note does not pretend otherwise.
+  needs the page nonce and an exact `Origin`; no action is an HTTP request a
+  cross-site page could make the browser send. The two HTTP `POST`s, the
+  login's resume and `/ui/claim`, are refused unless `Sec-Fetch-Site` is
+  `same-origin` (the resume) or `none` or `same-origin` (the claim), and
+  each needs a secret the attacker lacks: the login nonce, or a claim.
+- **A hostile page on another loopback port** receives the page cookie for
+  a path holding the page key, and the login cookie for a path holding the
+  login key, as 051 accepts for the former; neither opens a socket or
+  mints a home without the nonce that `sessionStorage` or `localStorage`
+  keeps on this port alone. `Referrer-Policy: no-referrer` keeps both keys
+  out of `Referer`.
+- **An observer escalating.** An observer-ceiling home or login mints only
+  observer tickets (`mint_before` carries the page's ceiling; `c` carries
+  the login's). It cannot open a saved session (section 3), create one, or
+  reach the admin page: each is refused by the daemon from the grant it
+  holds, whatever the socket forwarded, and the home component's observer
+  variant has no message that asks.
+- **A forged token** costs the daemon one HMAC chain and no catalogue
+  read; a token with a valid chain and a revoked row costs one read. There
+  is nothing to brute-force: the signature is 256 bits under a 256-bit key.
 
-### 1.7 Left out of the home
+### 1.8 Left out of the home
 
-- A longer login. Eight hours, renewed by `loom ui` or a sign-in.
+- A sign-in form for a pasted credential. Section 1.3.
+- Sliding expiry, rotate-on-use, third-party caveats. Section 1.4.
 - Activity badges, strand bars on other sessions' rows, a People list, a
   Goals or Jobs page (the design note's section 2.2 left them out for the
   same reason: they need reads a page does not make).
@@ -295,7 +513,8 @@ button chooses that workspace; the form's submit sends
 1. resolves the workspace from the listing the daemon itself drew for this
    page's last read, by index, and refuses an index the listing does not
    have. The browser cannot name a path. Every workspace a session can be
-   created in from the browser is one the owner already has a session in;
+   created in from the browser is one the owner already has a session in
+   (ruled by the owner, 2026-10-03);
 2. checks the name as the catalogue does (`valid_name`
    (`storage/access.gleam:1088`) is the principal's rule; the registration's
    is the same bound, 256 bytes, no controls) and refuses the rest;
@@ -320,8 +539,7 @@ A free path field would let a stolen owner page create a session in any
 directory the daemon can read, and then prompt it. Today a stolen page
 reaches only sessions that exist. The widening is real and the request does
 not need it: a new workspace is created from a terminal once, and from then
-on it is in the list. Question 6 asks the owner to confirm leaving the path
-field out.
+on it is in the list. The owner confirmed this on 2026-10-03.
 
 ### 2.4 Security
 
@@ -353,7 +571,8 @@ epoch-checked path.
 
 Switching becomes the app's navigation: every page with `Workspace` reach
 has a "Home" control, the home opens any listed session, and an
-operator-ceiling page opens a saved session.
+operator-ceiling page opens a saved session (ruled by the owner,
+2026-10-03).
 
 **Opening a saved session** (`ui_socket.resume_for`) is the control
 command's path, run on the page's behalf with the page's credential digest
@@ -383,16 +602,17 @@ page.
 `ui_socket.home_ticket_for` mints a `Home` ticket with the page's
 principal, ceiling and deadline (`mint_before`), so a chain home and back
 ends with the page it began from. `switch_rule.target` accepts a second
-shape, `/ui/home?ticket=<64 hex>`, and nothing else new.
+shape, `/ui/home?ticket=<64 hex>`, and nothing else new. A ticket a page
+mints never sets a login: only `loom ui`, a claim and a device link do.
 
 ### 3.3 What changes in the ruling
 
 A page opening a saved session is the daemon starting a runtime at a
 browser's request, which the switching addendum said the rulings did not
-include. The request asks for it, and the path proposed is the control
-command's own, with the same authority and epoch checks, so the listing is
-still not permission: the membership is. Question 4 asks the owner to lift
-the ruling for operator-ceiling pages.
+include. The owner lifted that on 2026-10-03 for operator-ceiling pages,
+on the path proposed here: the control command's own, with the same
+authority and epoch checks, so the listing is still not permission; the
+membership is.
 
 ## 4. The admin page
 
@@ -410,24 +630,28 @@ session page already starts one of those from a browser, `invite_for`
 once. `loom access` has the whole grammar (`usage` (`host/access.gleam:169`)).
 
 What is missing: a per-session list of members (the listing is per
-principal), any grant other than the session page's invite from a browser,
-and the page itself.
+principal), a list of a principal's logins, any grant other than the
+session page's invite from a browser, and the page itself.
 
 ### 4.2 What is new
 
 The admin page is its own page kind, scope `Admin`, minted only from an
 `Owning` home by pressing "Admin" (`ui_socket.admin_ticket_for`) and living
 fifteen minutes from its exchange. The owner's home is unaffected when it
-ends; pressing "Admin" again mints another. `loom access page`, which 053
-proposed, is not built here; the home's button covers it.
+ends; pressing "Admin" again mints another, which a thirty-day login makes
+possible on any day. `loom access page`, which 053 proposed, is not built
+here; the home's button covers it.
 
-It draws, from `principals.list`, `principals.memberships` and the new
-`sessions.members` (065):
+It draws, from `principals.list`, `principals.memberships`, the new
+`sessions.members` and the new `credentials.signins` (065):
 
 - **Principals**: name, ID, kind, credential state (`active` with its
   fingerprint and `claimed_at_ms`, `claim_open` with the time left,
-  `claim_expired`, `none`). An open claim is a pending invitation; the page
-  lists them under that heading too.
+  `claim_expired`, `none`), and the count of live logins. An open claim is
+  a pending invitation; the page lists them under that heading too.
+- **Per principal, their sign-ins**: fingerprint, issued, last seen, with
+  a revoke button each. This is where the owner sees a login that is
+  active at hours its person was not.
 - **Per session**: the members and their roles, and the session's domain
   scope, so the owner sees before inviting whether the session must be
   isolated first.
@@ -438,11 +662,12 @@ dispatch:
 
 | Action | Fields the form has | Bound |
 |---|---|---|
-| Invite to a session | role (observer or operator), name | the credential's claim allowance (three an hour, shared with the session page's control); the claim lives an hour |
+| Invite to a session | role (observer or operator), name | the credential's grant allowance (three an hour, shared with the session page's control and with device links); the claim lives an hour |
 | Set role | role | the allowance when the role rises to operator; none when it falls |
 | Revoke membership | none, two-step button | none; it reduces |
-| Revoke credentials | none, two-step button | none; it reduces |
-| Rotate | none | the allowance; the claim lives an hour |
+| Revoke credentials | none, two-step button | none; it reduces; voids an open claim and every login |
+| Revoke one sign-in | none, two-step button | none; it reduces |
+| Rotate | none | the allowance; the claim lives an hour; every login of the principal ends |
 
 The invited principal is `guest-` and eight hex digits as the session
 page's is; the name field is the inviter's suggestion, which the invitee
@@ -462,32 +687,34 @@ session page can and no more.
 
 053's eight points are kept where the request allows:
 
-- Own flag (`--ui-admin`): dropped. The session page already grants from
-  the browser without one, and the admin page is minted only from an
-  owner's operator home, which exists only for an owner who ran `loom ui
-  --operate` or signed in; question 8 asks whether to keep the flag anyway.
+- Own flag (`--ui-admin`): dropped (accepted by the owner). The session
+  page already grants from the browser without one, and the admin page is
+  minted only from an owner's operator home.
 - Loopback only: kept. Under 052, a `Remote(origin)` request never mints
-  or admits an `Admin` or `Home`-with-creation page; a remote owner uses
+  or admits an `Admin` page or the create control; a remote owner uses
   `ssh -L`.
 - Minted only for the owner: kept, by the grant and by `administer`.
-- Fifteen minutes: kept.
+- Fifteen minutes: kept, per page. A login lets the owner mint one again
+  any day; that is what a login is for.
 - Reduce-only: not kept, by the owner's request. The 051 invite addendum
   already prices a page that grants; the admin page's grants are held to
   the same count, and `set-role` to operator counts as a grant.
 - No path to a grant: see the line above.
-- No session content: kept. The admin page draws names, IDs, roles and
-  states, all catalogue fields.
+- No session content: kept. The admin page draws names, IDs, roles,
+  states and times, all catalogue fields.
 - Own ticket kind, cookie path and lifetime: kept, by `Scope.Admin` in the
   one table and the key-scoped cookie path.
 
 A stolen admin page (its three secrets, inside its fifteen minutes) can
-revoke every member and credential (a denial of service the owner repairs
-by inviting again), read the principal list, and mint three claims an hour
-for the credential, each a membership that outlives the page until revoked.
-That last is the case 053 named and the owner accepted for the session page
-on 2026-09-30; the admin page widens it from the page's own session to any
-session, which is what "invite people to sessions" asks for. The page
-cannot reach the owner token, cannot change who the owner is, and cannot
+revoke every member, credential and login (a denial of service the owner
+repairs by inviting again), read the principal list, and mint three claims
+or device links an hour for the credential, each a membership or a login
+that outlives the page until revoked. That last is the case 053 named and
+the owner accepted for the session page on 2026-09-30; the admin page
+widens it from the page's own session to any session, which is what
+"invite people to sessions" asks for. A stolen owner login can mint admin
+pages for thirty days, under the same allowance. The page cannot reach the
+owner token or the root key, cannot change who the owner is, and cannot
 grant Owner.
 
 ## 5. The invitee chooses a name
@@ -521,7 +748,7 @@ Uniqueness: none. Two members may both be "Alice"; the ID is the identity,
 and the roster, the Session pane's viewers and the admin page draw the ID's
 first eight characters in a `title` beside the name, so the owner can tell
 them apart. A uniqueness rule would make a claim fail on a name the invitee
-cannot see is taken, and would mean nothing for authority (question 9).
+cannot see is taken, and would mean nothing for authority.
 
 Renaming later (`principals.rename`, a member for themselves and the owner
 for anyone) is cheap once the name is a request field, and is the last,
@@ -538,34 +765,24 @@ invitee chooses their name in the UI, so the claim has a browser form.
 2. the token must be `loomclaim_` and 64 hex digits, checked before any
    lookup, and `claim_known` (`client/daemon/manager.gleam:701`) must find
    it open;
-3. the daemon draws a 32-byte credential from `token.production_entropy`
-   (the source every secret here uses), and binds its digest with
-   `manager.claim`, with the name. This is 053's option B, the daemon
-   minting, chosen for the browser because the browser has no private file
-   to store a credential in before sending its digest, which was the whole
-   argument for option C in `loom claim`;
-4. it mints and redeems a `Home` ticket for the new credential at Operator
-   ceiling;
-5. it answers a welcome page: "You're in as NAME. This is your sign-in key;
-   it is shown once. Save it somewhere private: [copy box]. Continue." The
-   credential is in that one response body, under `no-store` and
-   `no-referrer`, and the Continue button runs the enter script that stores
-   the nonce and moves to the home. Without the key the person is still
-   signed in for eight hours; they need it only to sign in again at
-   `/ui/login` or to use `loom --token-file`.
+3. the daemon draws a login (section 1.4): an identifier, a login key, a
+   login nonce, and the token with its six caveats for this principal at
+   Operator ceiling; and binds `SHA-256(id)` as a `browser` credential with
+   `manager.claim`, with the name. The credential the claim binds is the
+   login itself; there is no bearer, and nothing is shown to keep (ruled
+   by the owner, 2026-10-03);
+4. it mints and redeems a `Home` grant for that digest;
+5. it answers the enter page with the page cookie, key and nonce, and the
+   login cookie and login nonce. The enter script keeps both nonces and
+   moves to the home, which draws the bookmark to keep.
 
-A lost welcome page loses the credential, as 053 said of option B; the
-owner rotates, which voids the credential and issues a new claim, and the
-listing shows `claimed_at_ms` so the owner can see a claim was redeemed by
-someone. The refusals are 053's, in fixed words: unknown or void, expired,
-bound to another credential (`conflict`), and a bad name, which binds
-nothing.
-
-Question 2 offers the alternative: never show a credential, and give a
-browser claimant a thirty-day home cookie instead. It is simpler to use and
-costs a stolen cookie thirty days instead of eight hours. This note
-recommends the key shown once, because it keeps one credential model and
-051's lifetime.
+The refusals are 053's, in fixed words: unknown or void, expired, bound to
+another credential (`conflict`), and a bad name, which binds nothing. A
+claim redeemed by the wrong person shows in `principals.list` as
+`claimed_at_ms` and as a sign-in the owner did not expect; the owner
+rotates, which ends that login and issues a new claim. The wrong person
+held the memberships the owner granted from the claim until the rotation,
+as 053 says.
 
 ### 5.4 Where the name shows
 
@@ -583,15 +800,20 @@ Part 1.6 only; 065 has the exact shapes.
 
 | Change | Kind |
 |---|---|
-| `ui.link`: `session_id` optional; absent means a `Home` ticket | additive |
-| New `/ui` routes: `/ui/home`, `/ui/p/<key>/home`, `/ui/p/<key>/home/ws`, `/ui/admin`, `/ui/p/<key>/admin`, `/ui/p/<key>/admin/ws`, `POST /ui/login`, `GET` and `POST /ui/claim` | new routes under 051's prefix |
+| `ui.link`: `session_id` optional; absent means a `Home` ticket; `remember` field | additive |
+| New `/ui` routes: `/ui/home`, `/ui/p/<key>/home`, `/ui/p/<key>/home/ws`, `/ui/l/<key>/home` (`GET` and `POST`), `/ui/admin`, `/ui/p/<key>/admin`, `/ui/p/<key>/admin/ws`, `GET` and `POST /ui/claim` | new routes under 051's prefix |
 | `credentials.claim`: optional `name` | additive |
 | New owner-only read `sessions.members` | new command |
+| New `credentials.signins` and `credentials.revoke_login` (self for a member, any for the owner) | new commands |
+| `principals.list`: a `logins` count per principal | additive |
 | New `principals.rename` (optional, last PR) | new command |
 
-No session-protocol frame changes. No catalogue schema change: the name is
-the existing `display_name` column, and the per-session members read is a
-new query over the existing tables (`make gen-sql`).
+No session-protocol frame changes. The catalogue moves from version 4 to
+5 for three columns on `access_credentials` (`kind`, `issued_at_ms`,
+`last_seen_ms`); the schema is not a Part 1 interface, and the migration
+is the forward one at `user_version` (`storage/catalogue.gleam:150`). The
+per-session members read and the sign-ins read are new queries over the
+existing tables (`make gen-sql`).
 
 ## 7. The pull requests
 
@@ -602,6 +824,9 @@ today, and the component tests through `lustre/dev/simulate`. Workers read
 051's addenda on switching and inviting first: the shape of every new
 daemon-side function is `ticket_for` or `invite_for`, and the shape of every
 new control is the invite control.
+
+PR 1 is being built from the first edition of this note. Its surface is
+kept; what the login needs from it is one thing, named under PR 1.
 
 **PR 1: the home page, read-only.** `Grant` gains `Scope` and `Reach`;
 `ui.link` without `session_id`; `loom ui` without `--session`; the home
@@ -615,7 +840,13 @@ memberships; a revoked credential's home ends at its next frame. Tests:
 homes), `ui_route_test` (the three home routes, both wrong-scope
 refusals, the credential checks), `home_test` in `web_view` (the listing,
 the grouping, text only, no handler), `tui` argument tests for `loom ui`
-with and without `--session`.
+with and without `--session`. *Room for the login (PR 7):* the response a
+redeemed `Home` ticket gets must be built by one function that takes the
+redeemed secrets and returns the enter document with its headers, so PR 7
+can add the login cookie and the login nonce to that one function for a
+remembered ticket and nowhere else; `/ui/l/...` stays `Unknown` in
+`ui_http.route`; and the page cookie keeps no `Max-Age`. A `remember` field
+on the grant is PR 7's, not PR 1's.
 
 **PR 2: navigation.** A home row for a running session mints and
 navigates (`ticket_for` reused with the page's ceiling); a `Workspace`
@@ -642,27 +873,29 @@ stub registry), `home_test` and `sidebar_test` (which rows are buttons at
 which ceiling).
 
 **PR 4: creating a session.** The per-workspace button, the form, the
-`Creating` message; `create_for`; the creation allowance in `ui_sessions`.
-Exit: the owner's operator home creates a session in a listed workspace
-with the typed name and lands on it; a member's home draws no control and
-the daemon refuses a forged submit; an index outside the listing is
-refused; an invalid name is refused and nothing is created; the eleventh
-creation in an hour is refused; a repeated press creates once. Tests:
-`ui_route_test` (create and land, the member refusal, the index refusal,
-the allowance), `home_test` (the form's decoder is total, the control's
-paths, text only), `ui_sessions_test` (the allowance).
+`Creating` message; `create_for`; the creation allowance in `ui_sessions`;
+the `daemon.session_created` log line. Exit: the owner's operator home
+creates a session in a listed workspace with the typed name and lands on
+it; a member's home draws no control and the daemon refuses a forged
+submit; an index outside the listing is refused; an invalid name is refused
+and nothing is created; the eleventh creation in an hour is refused; a
+repeated press creates once. Tests: `ui_route_test` (create and land, the
+member refusal, the index refusal, the allowance), `home_test` (the form's
+decoder is total, the control's paths, text only), `ui_sessions_test` (the
+allowance).
 
 **PR 5: `sessions.members` and the admin page.** The read, its SQL,
 `loom access members SESSION`; `Scope.Admin` with its fifteen minutes; the
-"Admin" button; `web_view/admin` with the lists and the five actions; the
-grant allowance shared with the session page's invite. Exit: the owner's
-home opens an admin page that lists principals, pending claims and a
-session's members; each action changes the catalogue and the page re-reads;
-a member's `sessions.members` is `forbidden`; the admin page ends at
-fifteen minutes and the home does not; a session ticket never redeems at
-the admin exchange; the fourth grant in an hour across the admin page and a
-session page is refused; a demotion costs no allowance; no frame on the
-admin socket carries `loomclaim_` except the one that shows it to the owner.
+"Admin" button; `web_view/admin` with the lists and the grant and reduce
+actions (the sign-in rows and their revoke wait for PR 7); the grant
+allowance shared with the session page's invite. Exit: the owner's home
+opens an admin page that lists principals, pending claims and a session's
+members; each action changes the catalogue and the page re-reads; a
+member's `sessions.members` is `forbidden`; the admin page ends at fifteen
+minutes and the home does not; a session ticket never redeems at the admin
+exchange; the fourth grant in an hour across the admin page and a session
+page is refused; a demotion costs no allowance; no frame on the admin
+socket carries `loomclaim_` except the one that shows it to the owner.
 Tests: a `storage` test for the query, `daemon_access_test` for the
 command and the CLI, `ui_route_test` for admission and the lifetime,
 `admin_test` in `web_view` for the component, `ui_sessions_test` for the
@@ -678,34 +911,68 @@ without a name keeps the inviter's. Tests: `storage` claim tests, the
 daemon's decoder test, the `loom claim` encoder test, a route test that
 reads the name back from `principals.list`.
 
-**PR 7: the browser claim and sign-in.** `GET` and `POST /ui/claim`, the
-welcome page, `POST /ui/login`. Exit: an invitee with no `loom` redeems a
-claim in the browser, chooses a name, is shown the key once, and lands on
-an operator home; signing in with that key later lands on a home; the
-read-only box lands on an observer-ceiling home; the owner's credential is
-refused at sign-in; a cross-site `POST` is refused at both; a claim-shaped
-value at sign-in and a bearer at the claim are refused before any lookup;
-the credential appears in exactly one response and under no file in the
-state root. Tests: `ui_route_test` for every refusal and the one success
-of each form, `page_test` for the two fixed documents and their headers,
-a state-root scan as `the_claim_redeems_and_only_its_digest_is_kept_test`
-does today.
+**PR 7: the browser login.** Catalogue version 5 (`kind`, `issued_at_ms`,
+`last_seen_ms` on `access_credentials`, with the migration test 053's
+version 4 has); the root key file; `host/login` (mint, parse, verify,
+intersect) with `crypto.hmac` and `crypto.secure_compare`; `Grant.remember`
+and `ui.link`'s `remember`; `loom ui --no-remember`; the login cookie and
+nonce on a remembered exchange; `GET` and `POST /ui/l/<key>/home` and the
+resume page; `credentials.signins`, `credentials.revoke_login`, the
+`logins` count, `loom access signins` and `revoke-login`; the home's
+sign-in rows, "sign out", "sign out everywhere" and "sign in another
+device" (a ten-minute remembered `Home` ticket under the grant allowance);
+the admin page's sign-in rows; `loom --token` refusing `loomb1:`. Exit:
+`loom ui --open` sets a login; the bookmark mints a home the next day
+without `loom`; the thirtieth day refuses it; `--no-remember` sets none; a
+token with a wrong signature, a missing caveat, a widened repeat, an
+unknown caveat name, a key not matching the path, a nonce not matching, an
+expired `e`, or a revoked row is refused `401` with no catalogue read for
+the first five; a token narrowed by an appended caveat verifies and is held
+to the narrower value; a login presented on `/v2/control` is `401`;
+revoking one sign-in ends its pages at their next frame and leaves the
+principal's other sign-ins; `revoke-credentials` and `rotate` end every
+login; deleting the root key ends every login; `last_seen_ms` moves at most
+once an hour; a device link redeems once within ten minutes, sets a login
+and appears as a sign-in, and costs one allowance unit; the token appears in
+no file under the state root and in no log line. Tests: `login_test` in
+`host` (the chain, parsing, every refusal, intersection, attenuation),
+`storage` migration and query tests, `ui_route_test` for the routes and
+the revocations, `ui_sessions_test` for the device-link lifetime and
+allowance, `home_test` for the rows, `page_test` for the resume document
+and its headers, a state-root and log scan. Mutations, each failing a
+named test: the chain compared with `==`; `e` extended on use; a repeated
+`c` taking the larger; the row looked up before the chain is verified; the
+page cookie given a `Max-Age`.
 
-**PR 8, optional: `principals.rename`** and a "Your name" control on the
+**PR 8: the browser claim.** `GET` and `POST /ui/claim`, binding a
+`browser` credential and setting the login. Exit: an invitee with no `loom`
+redeems a claim in the browser, chooses a name, and lands on an operator
+home with a login set; a spent, void, expired or otherwise-bound claim is
+refused in fixed words; a cross-site `POST` is refused; a bearer-shaped
+value is refused before any lookup; nothing but the digest is under the
+state root; `principals.list` shows the claim redeemed and one login.
+Tests: `ui_route_test` for every refusal and the success, `page_test` for
+the fixed form, a state-root scan as
+`the_claim_redeems_and_only_its_digest_is_kept_test` does today.
+
+**PR 9, optional: `principals.rename`** and a "Your name" control on the
 home for members; the owner renames anyone from the admin page.
 
 PRs 1 to 4 are a chain. PR 5 needs PR 1. PR 6 is independent. PR 7 needs
-PRs 1 and 6. PR 8 needs PR 5.
+PR 1 and, for the admin rows, PR 5. PR 8 needs PRs 6 and 7. PR 9 needs PR 5.
 
 ## 8. What this note leaves out, and why
 
-- **Remote access.** 052 is a proposal. The browser claim and sign-in make
-  it more useful, since they are what a teammate with no `loom` needs, and
-  065 says which of its answers 052 must keep (`Admin` and creation stay
-  loopback).
-- **A free workspace path field.** Section 2.3.
-- **A longer login or a remember-me cookie.** Section 1.3; question 1.
-- **Stop, delete, rename, archive from the browser.** Section 1.7.
+- **Remote access.** 052 is a proposal. The login and the browser claim
+  make it more useful, since they are what a teammate with no `loom`
+  needs, and 065 says which of its answers 052 must keep (`Admin` and
+  creation stay loopback; the login cookie takes the `__Host-` form).
+- **A free workspace path field.** Section 2.3, ruled.
+- **A sign-in form for a pasted credential.** Section 1.3.
+- **Sliding expiry, rotate-on-use, third-party caveats, attenuation in the
+  browser.** Section 1.4; the first cut only enforces the intersection
+  rules that make attenuation possible later.
+- **Stop, delete, rename, archive from the browser.** Section 1.8.
 - **Per-session member lists on the session page.** The Session pane shows
   viewers; members with roles are the admin page's.
 - **A composer target menu, Goals and Jobs pages, activity badges.** As the
@@ -714,51 +981,44 @@ PRs 1 and 6. PR 8 needs PR 5.
   command stays unbuilt.
 - **Uniqueness of names, name moderation.** Section 5.2.
 
-## 9. Questions for the owner, with recommendations
+## 9. Questions for the owner, and their answers
 
-1. **How long does a browser login last?** Recommended: eight hours, as
-   every page today, renewed by `loom ui` or by the sign-in form. A longer
-   cookie trades 051's "stops working the same day" for convenience.
-2. **How does a browser-only invitee get a credential?** Recommended: the
-   daemon mints it at the browser claim and shows it once as a sign-in key
-   (053's option B, applied where option C cannot work). Alternative: show
-   nothing and give the claimant a thirty-day home cookie; simpler, and a
-   stolen cookie is worth thirty days.
-3. **The default ceiling of a home.** Recommended: a home minted by `loom
-   ui` without `--session` is an operator's unless `--observe`, because a
-   home link is for oneself and the request is a read-write mode; `loom ui
-   --session ID` keeps its observer default, because that is the link one
-   hands out. The sign-in form defaults to operator with a read-only box.
-   Alternative: keep observer-by-default everywhere and require `--operate`.
-4. **May an operator-ceiling page open a saved session?** Recommended: yes,
-   through the control command's own checks (section 3). This lifts the
-   ruling "operator surfaces do not open saved sessions" for pages whose
-   principal holds Operator or Owner authority on the target.
-5. **Default domain scope for a session created from the browser.**
-   Recommended: `workspace_private`, the terminal's default, with a
-   "shareable" box that makes it `session_only`. Alternative:
-   `session_only` always, since the browser is where sharing happens; it
-   costs the new session the workspace's memory.
-6. **No free path field.** Recommended: confirm. A session in a new
-   workspace is created from a terminal once.
-7. **A home lists the principal's sessions at any ceiling.** Recommended:
-   yes. The observer ruling was about handed-out session links, which
-   `Reach.OneSession` keeps exactly as they are.
-8. **Does the admin page need `--ui-admin`?** Recommended: no. It is minted
-   only from an owner's operator home, and the session page already grants
-   without a flag. Keep it if the owner wants a daemon that serves the web
-   view but can never administer from it.
-9. **Are display names unique?** Recommended: no; the ID is the identity
-   and every surface shows the short ID beside the name.
-10. **Self-rename later** (`principals.rename`, PR 8). Recommended: build it
-    last, only if the claim-time name is not enough.
-11. **The owner's credential at `/ui/login`.** Recommended: refuse it; the
-    owner uses `loom ui`. Accepting it puts the owner token in a browser's
-    form history.
-12. **The grant allowance counts `set-role` to operator.** Recommended: yes;
-    a promotion is a grant a stolen admin page could make. A demotion is
-    free.
-13. **Build order.** Recommended: as section 7, with PR 3 (opening saved
-    sessions) before PR 4 (creation) so a created session can be opened.
-    If question 4 is answered no, PR 4 lands without landing on the new
-    session, and the row appears as saved.
+Ruled by the owner on 2026-10-03:
+
+1. **How long does a browser login last?** Thirty days, a remember-me, not
+   eight hours. Section 1.4 is the design; a page minted from it is still
+   eight hours.
+2. **How does a browser-only invitee get a credential?** A cookie that is
+   the credential, macaroon-style, set by the claim; no key is shown or
+   pasted. Section 1.4. The first draft's alternative (a key shown once and
+   a sign-in form) is withdrawn, and so is the sign-in form.
+4. **May an operator-ceiling page open a saved session?** Yes, through the
+   control command's own checks (section 3). The ruling "operator surfaces
+   do not open saved sessions" is lifted for those pages.
+6. **No free workspace path field.** Confirmed; a session is created in a
+   workspace the owner already has one in.
+
+Recommendations the owner accepted as made, with the one the macaroon
+changes marked:
+
+3. **The default ceiling of a home.** A home minted by `loom ui` without
+   `--session` is an operator's unless `--observe`; `loom ui --session ID`
+   keeps its observer default. *Changed by the login:* there is no sign-in
+   form, so its "read-only box" is gone; a login's ceiling is the `c`
+   caveat, fixed from the `loom ui` or the claim that set it (a claim sets
+   operator, the home's ceiling capped by the membership as always), and a
+   device link inherits the home's.
+5. **Default domain scope for a browser-created session.**
+   `workspace_private`, with a "shareable" box that makes it `session_only`.
+7. **A home lists the principal's sessions at any ceiling.** Yes.
+8. **No `--ui-admin` flag.** Confirmed.
+9. **Display names are not unique.** Confirmed.
+10. **Self-rename** is the optional last PR.
+11. **The owner's credential at `/ui/login`.** Moot: the form is gone. In
+    its place: the owner's `loom ui` sets a login like anyone's, and
+    `--no-remember` declines it. The owner token itself never reaches a
+    browser.
+12. **The grant allowance counts `set-role` to operator.** Yes; and now
+    device links too, since each is a thirty-day credential.
+13. **Build order.** As section 7, now nine PRs, with the login as PR 7
+    and the browser claim as PR 8 behind it.
