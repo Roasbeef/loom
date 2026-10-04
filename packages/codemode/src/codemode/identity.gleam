@@ -66,6 +66,7 @@
 //// A managed execution additionally retains its complete original `ToolKey`
 //// privately: session, operation, step, source index, digest and result entry.
 //// `command_origin` derives native command roles from that unchanged parent.
+//// `capability_origin` derives bounded admitted tuples only for managed Run.
 ////
 //// Retaining provenance does not change `ledger_keys` or `ledger_key`:
 //// both still project only operation and the derived physical step. Source
@@ -274,6 +275,34 @@ pub fn command_origin(
       }
       remote_tool.tool_child(parent, role) |> result.map(Some)
     }
+  }
+}
+
+/// Derives provenance for a capability the host has actually admitted.
+/// The trusted host chooses the closed purpose after routing and its ceilings.
+/// Managed capabilities require Run; unmanaged phases retain local behavior.
+/// Invalid names or ordinals refuse instead of dropping the original parent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // identity.capability_origin(run, "proc.run", 0, remote_tool.NativeCommand)
+/// ```
+pub fn capability_origin(
+  phase: PhaseIdentity,
+  trusted_cap: String,
+  admitted_ordinal: Int,
+  purpose: remote_tool.CapabilityPurpose,
+) -> Result(Option(remote_tool.ChildOrigin), String) {
+  case phase.parent, phase.phase {
+    None, Build | None, Run -> Ok(None)
+    Some(_), Build -> Error("managed capabilities require a run phase")
+    Some(parent), Run ->
+      remote_tool.tool_child(
+        parent,
+        remote_tool.AdmittedCapability(trusted_cap, admitted_ordinal, purpose),
+      )
+      |> result.map(Some)
   }
 }
 
