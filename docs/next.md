@@ -1658,3 +1658,12 @@ resource liveness or recreation permission. Root's independent full code-mode
 gate passes 373 tests without skips, and the Astra high review has no actionable
 findings. See [the receipt review](review/distributed-resource-receipts.md).
 Durable preparation custody and the physical service assembly remain pending.
+
+The physical-preparation P extension now passes independent strict safety and
+mutation runs: 31 normal cases, 40 witnessed probes and 27 compiled mutations.
+Astra identified two mutations that only fabricated monitor evidence; both now
+exercise the real transitions and the focused follow-up is clean. The re-clear
+case proves forbidden re-entry, not successful second clearance. See
+[the model review](review/distributed-preparation-model.md) for bounded claims,
+exact gates and the unchanged native/PlusCal/Lean scope. Production assembly and
+two-host acceptance remain outstanding.
