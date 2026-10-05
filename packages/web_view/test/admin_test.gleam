@@ -1,0 +1,689 @@
+//// The owner's admin page (protocol-change/065, the fifth pull request): the
+//// people the catalogue holds, the invitations waiting to be claimed, and the
+//// sessions with their members, drawn in the home's frame, and the five changes
+//// the owner makes from it.
+////
+//// These tests pin what the page lists and says, that every name is escaped
+//// text and nothing a peer wrote is an attribute, that every handler is a click
+//// or a submit beneath the one region the daemon's socket admits, that an ask is
+//// made once and its buttons are disabled meanwhile, that a revocation is two
+//// presses, that a claim is on screen once and until it is hidden, that a read
+//// that was overtaken is dropped, and how a page that can no longer be served
+//// ends.
+
+import gleam/erlang/process.{type Subject}
+import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/string
+import lustre/effect
+import lustre/element.{type Element}
+import web_view/admin
+import web_view/ending
+import web_view/grants
+import web_view/home
+import web_view/invites
+import web_view/sessions.{type Entry, Entry, Live, Saved}
+import web_view/view/admin_sessions
+
+@external(erlang, "page_events_ffi", "handlers")
+fn handlers(view: Element(message)) -> List(String)
+
+// A claim token, which is `loomclaim_` and 64 hexadecimal digits.
+const token =
+  "loomclaim_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+const session = "0198a2f4-7c3b-7e10-8d5a-3f9b2c4e6a71"
+
+const other_session = "0198a2f4-7c3b-7e10-8d5a-3f9b2c4e6a72"
+
+fn entry(id: String, name: String, residency: sessions.Residency) -> Entry {
+  Entry(
+    id:,
+    name:,
+    workspace: "/src/loom",
+    created_at: 100_000,
+    residency:,
+    subtitle: None,
+  )
+}
+
+fn people() -> List(grants.Principal) {
+  [
+    grants.Principal(
+      "owner",
+      "Olive Owner",
+      grants.OwnerKind,
+      grants.Active("aaaaaaaaaaaaaaaa", None),
+    ),
+    grants.Principal(
+      "bob",
+      "Bob",
+      grants.MemberKind,
+      grants.Active("bbbbbbbbbbbbbbbb", Some(1000)),
+    ),
+    grants.Principal(
+      "cara",
+      "Cara",
+      grants.MemberKind,
+      grants.ClaimOpen(3_000_000),
+    ),
+    grants.Principal("dan", "Dan", grants.MemberKind, grants.ClaimExpired),
+    grants.Principal("eve", "Eve", grants.MemberKind, grants.NoCredential),
+  ]
+}
+
+fn holders() -> List(grants.Holder) {
+  [
+    grants.Holder("bob", "Bob", invites.Observer),
+    grants.Holder("cara", "Cara", invites.Operator),
+  ]
+}
+
+// What a read finds when the owner has chosen `chosen`: the five people, two
+// sessions, and the members of the chosen one when it is the first.
+fn snapshot(chosen: Option(String)) -> grants.Snapshot {
+  grants.Snapshot(
+    principals: people(),
+    more_principals: grants.Whole,
+    sessions: [
+      entry(session, "review auth", Live),
+      entry(other_session, "notes", Saved),
+    ],
+    selection: case chosen {
+      Some(id) if id == session ->
+        Some(grants.Selection(session:, holders: holders(), more: grants.Whole))
+      Some(_) | None -> None
+    },
+  )
+}
+
+// A page whose reads answer at once with the catalogue above and tell `reads`
+// what was chosen, and whose asks tell `acts` what was asked and answer with
+// `answer`.
+fn start_with(
+  reads: Subject(Option(String)),
+  acts: Subject(grants.Action),
+  answer: grants.Answer,
+) -> admin.Start {
+  admin.Start(
+    name: "Olive",
+    refresh_ms: 5,
+    read: fn(chosen, deliver) {
+      process.send(reads, chosen)
+      deliver(grants.Read(snapshot(chosen)))
+    },
+    act: fn(action, deliver) {
+      process.send(acts, action)
+      deliver(answer)
+    },
+    now: fn() { 7_400_000 },
+  )
+}
+
+fn start() -> admin.Start {
+  start_with(process.new_subject(), process.new_subject(), grants.Changed)
+}
+
+// Runs one message through the component and performs its effects the way
+// Lustre's runtime would: a dispatched message is applied in its turn. The
+// effect's own dispatches are collected and folded back in, in order.
+fn run(model: admin.Model, message: admin.Msg) -> admin.Model {
+  let #(model, effects) = admin.update(model, message)
+  let dispatched = process.new_subject()
+  effect.perform(
+    effects,
+    fn(next) { process.send(dispatched, next) },
+    fn(_, _) { Nil },
+    fn(_) { Nil },
+    fn() { panic as "no dynamic value" },
+    fn(_, _) { Nil },
+    fn(_, _) { Nil },
+    fn(_) { Nil },
+  )
+  settle(model, dispatched)
+}
+
+fn settle(model: admin.Model, dispatched: Subject(admin.Msg)) -> admin.Model {
+  case process.receive(dispatched, 0) {
+    Ok(next) -> run(model, next)
+    Error(Nil) -> model
+  }
+}
+
+// A page whose timer exists and whose first read has answered.
+fn opened(start: admin.Start) -> #(admin.Model, Subject(Nil)) {
+  let timer = process.new_subject()
+  #(run(admin.new(start), admin.TimerReady(timer)), timer)
+}
+
+fn drawn(model: admin.Model) -> String {
+  element.to_string(admin.view(model))
+}
+
+fn count(html: String, needle: String) -> Int {
+  list.length(string.split(html, needle)) - 1
+}
+
+// A page that has read nothing has nothing to list: its words, the frame and no
+// handler, and it is not yet connected.
+pub fn a_page_that_has_read_nothing_draws_only_its_words_test() {
+  let model = admin.new(start())
+  let html = drawn(model)
+  assert admin.status(model) == admin.Connecting
+  assert string.contains(html, "Reading the catalogue.")
+  assert string.contains(html, "connecting")
+  assert string.contains(html, ">Admin<")
+  assert !string.contains(html, "People")
+  assert handlers(admin.view(model)) == [] as "no handler before a read"
+}
+
+// The page is the home's frame under its own title, with no sidebar and no
+// panel, and the principal's name and the ceiling in the bar.
+pub fn the_page_draws_in_the_homes_frame_test() {
+  let #(model, _) = opened(start())
+  let html = drawn(model)
+  assert admin.status(model) == admin.Connected
+  assert string.contains(html, "<loom-shell")
+  assert string.contains(html, "loom-home")
+  assert string.contains(html, "sidebar=\"none\"")
+  assert string.contains(html, ">Admin<")
+  assert string.contains(html, "Olive")
+  assert string.contains(html, ">operator<")
+  assert string.contains(html, "connected")
+  assert !string.contains(html, "<aside")
+}
+
+// The three sections, in order, with each person's credential in words: the
+// owner, an active member with when they joined, an open claim with the time it
+// has left, an expired one and none. The waiting list holds only the open claim.
+pub fn the_people_and_the_pending_invitations_are_listed_test() {
+  let #(model, _) = opened(start())
+  let html = drawn(model)
+  let assert [_, people_and_after] = string.split(html, ">People<")
+  let assert [people_section, rest] =
+    string.split(people_and_after, ">Pending invitations<")
+  let assert [pending_section, sessions_section] =
+    string.split(rest, ">Sessions<")
+
+  assert string.contains(people_section, "Olive Owner")
+  assert string.contains(
+    people_section,
+    "owner · active · key aaaaaaaaaaaaaaaa",
+  )
+  assert string.contains(
+    people_section,
+    "active · key bbbbbbbbbbbbbbbb · joined 2h ago",
+  )
+  assert string.contains(people_section, "invited · claim open, 50 min left")
+  assert string.contains(people_section, "invitation expired")
+  assert string.contains(people_section, "no credential")
+  assert count(people_section, "<li") == 5
+
+  assert string.contains(pending_section, "Cara")
+  assert string.contains(pending_section, "claim open, 50 min left")
+  assert !string.contains(pending_section, "Bob")
+  assert !string.contains(pending_section, "Dan")
+  assert count(pending_section, "<li") == 1
+
+  assert string.contains(sessions_section, "review auth")
+  assert string.contains(sessions_section, "notes")
+  assert string.contains(sessions_section, "Choose a session")
+}
+
+// The owner's row offers no action, a member's offers two, and the pending
+// list's offers one, each with the identity the server drew into the message
+// and none in the page.
+pub fn each_person_is_offered_the_changes_made_to_a_person_test() {
+  let #(model, _) = opened(start())
+  let html = drawn(model)
+
+  // Four members in the people list, each with Rotate and Revoke access, and the
+  // one waiting invitation again in the pending list, worded as voiding it.
+  assert count(html, ">Rotate<") == 4
+  assert count(html, ">Revoke access<") == 4
+  assert count(html, ">Void invitation<") == 1
+  assert !string.contains(html, "owner\"")
+}
+
+// Names are the peers': drawn as text nodes, escaped, and never an attribute, a
+// class or a key. The same holds for a session's name and for the claim's
+// principal.
+pub fn a_name_is_only_ever_a_text_node_test() {
+  let hostile = "<img src=x onerror=alert(1)> \"quoted\" & 'single'"
+  let start =
+    admin.Start(..start(), read: fn(_, deliver) {
+      deliver(
+        grants.Read(grants.Snapshot(
+          principals: [
+            grants.Principal(
+              "evil",
+              hostile,
+              grants.MemberKind,
+              grants.ClaimOpen(60_000),
+            ),
+          ],
+          more_principals: grants.Whole,
+          sessions: [entry(session, hostile, Live)],
+          selection: Some(grants.Selection(
+            session:,
+            holders: [grants.Holder("evil", hostile, invites.Observer)],
+            more: grants.Whole,
+          )),
+        )),
+      )
+    })
+  let #(model, _) = opened(start)
+  let model = run(model, admin.Choosing(session))
+  let model = run(model, admin.Arming(grants.RevokeCredentials("evil")))
+  let html = drawn(model)
+  assert !string.contains(html, "<img")
+  assert !string.contains(html, "onerror=alert(1)>")
+  assert string.contains(html, "&lt;img src=x onerror=alert(1)&gt;")
+  assert string.contains(html, "&quot;quoted&quot;")
+  assert string.contains(html, "&amp;")
+
+  // The name is in the armed button's words, as text.
+  assert string.contains(html, "Revoke &lt;img")
+}
+
+// Choosing a session reads its members at once and draws them with the role
+// each holds and the change that fits it: a role raised for an observer and
+// lowered for an operator, and a removal, and the form that invites someone in.
+pub fn choosing_a_session_reads_and_draws_its_members_test() {
+  let reads = process.new_subject()
+  let #(model, _) =
+    opened(start_with(reads, process.new_subject(), grants.Changed))
+  assert process.receive(reads, 0) == Ok(None)
+  let model = run(model, admin.Choosing(session))
+  assert process.receive(reads, 0) == Ok(Some(session))
+  let html = drawn(model)
+  assert string.contains(html, "Members of review auth")
+  assert string.contains(html, ">Make operator<")
+  assert string.contains(html, ">Make observer<")
+  assert count(html, ">Remove<") == 2
+  assert string.contains(html, "Invite someone to review auth")
+  assert string.contains(html, "name=\"role\"")
+  assert string.contains(html, "name=\"name\"")
+  assert string.contains(html, "aria-current=\"true\"")
+  assert !string.contains(html, "Choose a session")
+}
+
+// A session the catalogue no longer holds is forgotten: the next read finds no
+// members, so the page goes back to asking for a choice.
+pub fn a_chosen_session_that_is_gone_is_forgotten_test() {
+  let start =
+    admin.Start(..start(), read: fn(_, deliver) {
+      deliver(grants.Read(grants.Snapshot(..snapshot(None), selection: None)))
+    })
+  let #(model, _) = opened(start)
+  let model = run(model, admin.Choosing(session))
+  let html = drawn(model)
+  assert string.contains(html, "Choose a session")
+  assert !string.contains(html, "Members of")
+}
+
+// An ask goes to the daemon once. While it is out every button is drawn
+// disabled and carries no handler, a second ask asks nothing, and the answer
+// clears it, words the result and reads again.
+pub fn an_ask_is_made_once_and_its_buttons_wait_for_it_test() {
+  let acts = process.new_subject()
+  let reads = process.new_subject()
+  let pending = process.new_subject()
+  let start =
+    admin.Start(
+      ..start_with(reads, acts, grants.Changed),
+      act: fn(action, deliver) {
+        process.send(acts, action)
+        process.send(pending, deliver)
+      },
+    )
+  let #(model, _) = opened(start)
+  let model = run(model, admin.Choosing(session))
+  let action = grants.SetRole(session, "bob", invites.Operator)
+  let model = run(model, admin.Asking(action))
+  assert process.receive(acts, 0) == Ok(action)
+
+  // The second ask, and a revocation armed meanwhile, ask nothing.
+  let model = run(model, admin.Asking(grants.Rotate("cara")))
+  let model = run(model, admin.Arming(grants.RevokeCredentials("cara")))
+  assert process.receive(acts, 0) == Error(Nil)
+  let html = drawn(model)
+  assert !string.contains(html, "Revoke cara")
+
+  // Every button is disabled and the only handlers are the page's own, which
+  // are the session rows and the form.
+  assert string.contains(html, "disabled")
+  let clicks =
+    list.filter(handlers(admin.view(model)), string.ends_with(_, "\nclick"))
+  assert list.length(clicks) == 2 as "only the two session rows carry a press"
+
+  // The answer arrives from the daemon's task: it clears the ask, words the
+  // change and reads again.
+  let assert Ok(deliver) = process.receive(pending, 0)
+  let _ = deliver
+  let model = run(model, admin.Acted(grants.Changed))
+  assert string.contains(drawn(model), "Role changed.")
+  assert process.receive(reads, 0) == Ok(None)
+  assert process.receive(reads, 0) == Ok(Some(session))
+  assert process.receive(reads, 0) == Ok(Some(session))
+  let model = run(model, admin.Asking(grants.Rotate("cara")))
+  assert process.receive(acts, 0) == Ok(grants.Rotate("cara"))
+  let _ = model
+}
+
+// A refusal is worded in the reason's fixed words and nothing else, and the page
+// reads again so it stops drawing what is gone.
+pub fn a_refusal_is_worded_in_fixed_words_test() {
+  let reads = process.new_subject()
+  let #(model, _) =
+    opened(start_with(
+      reads,
+      process.new_subject(),
+      grants.Declined(grants.TooMany),
+    ))
+  let model = run(model, admin.Asking(grants.Rotate("cara")))
+  let html = drawn(model)
+  assert string.contains(html, grants.reason_words(grants.TooMany))
+  assert !string.contains(html, "loomclaim_")
+  assert process.receive(reads, 0) == Ok(None)
+  assert process.receive(reads, 0) == Ok(None)
+}
+
+// A revocation is two presses. The first shows what it will do in words that name
+// the person and asks nothing; Cancel puts it back; the second sends it. Choosing
+// another session, or a read that no longer lists the person, takes it back too.
+pub fn a_revocation_is_two_presses_test() {
+  let acts = process.new_subject()
+  let #(model, _) =
+    opened(start_with(process.new_subject(), acts, grants.Changed))
+  let model = run(model, admin.Choosing(session))
+  let revoke = grants.RevokeMembership(session, "bob")
+
+  let armed = run(model, admin.Arming(revoke))
+  assert process.receive(acts, 0) == Error(Nil)
+  let html = drawn(armed)
+  assert string.contains(html, "Remove Bob from review auth")
+  assert string.contains(html, ">Cancel<")
+
+  let cancelled = run(armed, admin.Disarming)
+  assert !string.contains(drawn(cancelled), "Remove Bob from review auth")
+  assert process.receive(acts, 0) == Error(Nil)
+
+  let sent = run(armed, admin.Asking(revoke))
+  assert process.receive(acts, 0) == Ok(revoke)
+  assert !string.contains(drawn(sent), "Remove Bob from review auth")
+
+  // Choosing another session takes it back.
+  let moved = run(armed, admin.Choosing(other_session))
+  assert !string.contains(drawn(moved), "Remove Bob from review auth")
+}
+
+// An armed revocation survives a refresh that still lists what it names, and goes
+// when the read no longer does.
+pub fn an_armed_revocation_follows_what_it_names_test() {
+  let #(model, _) = opened(start())
+  let model = run(model, admin.Choosing(session))
+  let armed = run(model, admin.Arming(grants.RevokeCredentials("bob")))
+  assert string.contains(drawn(armed), "Revoke Bob&#39;s access")
+    || string.contains(drawn(armed), "Revoke Bob's access")
+  let refreshed = run(armed, admin.Ticked)
+  assert string.contains(drawn(refreshed), "access")
+  assert count(drawn(refreshed), ">Cancel<") == 1
+
+  // A read without Bob takes the armed button back.
+  let without =
+    admin.Start(..start(), read: fn(_, deliver) {
+      deliver(grants.Read(
+        grants.Snapshot(
+          ..snapshot(Some(session)),
+          principals: list.filter(people(), fn(row) { row.id != "bob" }),
+        ),
+      ))
+    })
+  let #(other, _) = opened(without)
+  let other = run(other, admin.Choosing(session))
+  let other = run(other, admin.Arming(grants.RevokeCredentials("bob")))
+  assert count(drawn(other), ">Cancel<") == 0
+}
+
+// A claim an ask made is on screen once, in copy boxes, until the owner hides it;
+// a read, another ask and a refresh leave it there, and hiding it leaves no trace
+// of the token in the page.
+pub fn a_claim_is_shown_once_and_dropped_when_hidden_test() {
+  let claim =
+    grants.Claim(
+      principal: "guest-1a2b3c4d",
+      purpose: grants.Invited(invites.Operator),
+      command: "loom claim --addr ws://127.0.0.1:4000/v2/control",
+      token:,
+      expires_in_ms: 3_600_000,
+    )
+  let #(model, _) =
+    opened(start_with(
+      process.new_subject(),
+      process.new_subject(),
+      grants.Claimed(claim),
+    ))
+  assert !string.contains(drawn(model), "loomclaim_")
+  let model =
+    run(model, admin.Asking(grants.Invite(session, invites.Operator, "")))
+  assert admin.claim(model) == Some(claim)
+  let html = drawn(model)
+  assert count(html, token) == 1
+  assert string.contains(html, "text=\"" <> token <> "\"")
+  assert string.contains(html, "subject=\"token\"")
+  assert string.contains(html, "subject=\"command\"")
+  assert string.contains(html, "Invitation ready")
+  assert string.contains(html, "Role: operator. Principal: guest-1a2b3c4d.")
+  assert string.contains(html, "valid for 60 minutes")
+  assert string.contains(html, "outside Loom")
+  assert string.contains(html, "Hide the token")
+
+  // A refresh and a later answer leave it as it was, and still once.
+  let refreshed = run(model, admin.Ticked)
+  assert count(drawn(refreshed), token) == 1
+
+  // The button that hides it takes it out of the model and the tree.
+  let hidden = run(refreshed, admin.Dismissed)
+  assert admin.claim(hidden) == None
+  assert !string.contains(drawn(hidden), "loomclaim_")
+  assert !string.contains(drawn(hidden), "Hide the token")
+}
+
+// A rotation's claim says so, and a page that was never given a claim never
+// draws one: the catalogue's reads carry none.
+pub fn a_rotation_is_worded_as_one_and_a_read_carries_no_claim_test() {
+  let claim =
+    grants.Claim(
+      principal: "bob",
+      purpose: grants.Rotated,
+      command: "loom claim --addr ws://127.0.0.1:4000/v2/control",
+      token:,
+      expires_in_ms: 3_600_000,
+    )
+  let #(model, _) =
+    opened(start_with(
+      process.new_subject(),
+      process.new_subject(),
+      grants.Claimed(claim),
+    ))
+  assert !string.contains(drawn(model), "loomclaim_")
+  assert !string.contains(drawn(run(model, admin.Ticked)), "loomclaim_")
+  let model = run(model, admin.Asking(grants.Rotate("bob")))
+  let html = drawn(model)
+  assert string.contains(html, "New claim ready")
+  assert string.contains(html, "Their earlier credentials no longer work.")
+}
+
+// A read that was overtaken is dropped: the page keeps the answer to the latest
+// read it asked for, whatever order the answers arrive in.
+pub fn an_overtaken_read_is_dropped_test() {
+  let start = admin.Start(..start(), read: fn(_, _) { Nil })
+  let timer = process.new_subject()
+  let model = run(admin.new(start), admin.TimerReady(timer))
+  let model = run(model, admin.Choosing(session))
+
+  // Two reads are out, numbered one and two. The second answers first with the
+  // members, and the first answers late with none.
+  let model =
+    run(model, admin.Answered(2, grants.Read(snapshot(Some(session)))))
+  assert string.contains(drawn(model), "Members of review auth")
+  let model = run(model, admin.Answered(1, grants.Read(snapshot(None))))
+  assert string.contains(drawn(model), "Members of review auth")
+
+  // Neither an unread nor a closed answer from an older read changes anything.
+  let model = run(model, admin.Answered(1, grants.Closed(ending.AccessRevoked)))
+  assert admin.status(model) == admin.Connected
+}
+
+// A read that cannot be answered leaves the page as it was: a page that has not
+// connected stays so, and one that has keeps its snapshot.
+pub fn an_unread_read_changes_nothing_test() {
+  let unread =
+    admin.Start(..start(), read: fn(_, deliver) { deliver(grants.Unread) })
+  let #(waiting, _) = opened(unread)
+  assert admin.status(waiting) == admin.Connecting
+  assert string.contains(drawn(waiting), "Reading the catalogue.")
+
+  let #(connected, _) = opened(start())
+  let again = run(connected, admin.Answered(1, grants.Unread))
+  assert admin.status(again) == admin.Connected
+  assert string.contains(drawn(again), "Olive Owner")
+}
+
+// A page that can no longer be served draws why, in the admin page's words, and
+// asks for nothing more: not a read, not a change, not a revocation armed.
+pub fn a_page_that_ended_asks_nothing_more_test() {
+  let acts = process.new_subject()
+  let reads = process.new_subject()
+  let #(model, _) = opened(start_with(reads, acts, grants.Changed))
+  assert process.receive(reads, 0) == Ok(None)
+  let ended = run(model, admin.Answered(1, grants.Closed(ending.PageEnded)))
+  assert admin.status(ended) == admin.Ended(ending.PageEnded)
+  let html = drawn(ended)
+  assert string.contains(html, "disconnected")
+  assert string.contains(html, ending.admin_headline(ending.PageEnded))
+  assert string.contains(html, "fifteen minutes")
+
+  let ended = run(ended, admin.Ticked)
+  let ended = run(ended, admin.Choosing(session))
+  let ended = run(ended, admin.Asking(grants.Rotate("bob")))
+  let ended = run(ended, admin.Arming(grants.RevokeCredentials("bob")))
+  assert process.receive(reads, 0) == Error(Nil)
+  assert process.receive(acts, 0) == Error(Nil)
+  assert admin.status(ended) == admin.Ended(ending.PageEnded)
+}
+
+// The refresh is a timer: each tick reads again and arms the next, and a page
+// that ended arms none.
+pub fn the_timer_reads_and_rearms_test() {
+  let reads = process.new_subject()
+  let #(model, timer) =
+    opened(start_with(reads, process.new_subject(), grants.Changed))
+  assert process.receive(reads, 0) == Ok(None)
+  assert process.receive(timer, 100) == Ok(Nil)
+  let model = run(model, admin.Ticked)
+  assert process.receive(reads, 0) == Ok(None)
+  assert process.receive(timer, 100) == Ok(Nil)
+
+  let ended = run(model, admin.Answered(2, grants.Closed(ending.AccessRevoked)))
+  let _ = run(ended, admin.Ticked)
+  assert process.receive(reads, 0) == Error(Nil)
+  assert process.receive(timer, 50) == Error(Nil)
+}
+
+// Every handler on the page is a click or a submit beneath the body, the one
+// region the daemon's socket admits: none is in the bar, the notice's place or
+// anywhere else, with a session chosen, a revocation armed, a claim shown and a
+// notice drawn.
+pub fn every_handler_is_beneath_the_body_test() {
+  let claim =
+    grants.Claim(
+      principal: "guest-1a2b3c4d",
+      purpose: grants.Invited(invites.Observer),
+      command: "loom claim --addr ws://127.0.0.1:4000/v2/control",
+      token:,
+      expires_in_ms: 3_600_000,
+    )
+  let #(model, _) =
+    opened(start_with(
+      process.new_subject(),
+      process.new_subject(),
+      grants.Claimed(claim),
+    ))
+  let model = run(model, admin.Choosing(session))
+  let model = run(model, admin.Asking(grants.Rotate("bob")))
+  let model = run(model, admin.Arming(grants.RevokeMembership(session, "bob")))
+  let keys = handlers(admin.view(model))
+  assert keys != []
+  assert list.all(keys, fn(key) {
+    string.starts_with(key, admin.body_path <> "\t")
+    && { string.ends_with(key, "\nclick") || string.ends_with(key, "\nsubmit") }
+  })
+  assert list.any(keys, string.ends_with(_, "\nsubmit"))
+
+  // The body is where it was pinned, whether or not a notice is drawn above it.
+  assert admin.body_path == "0\t2\t1"
+  let without = run(model, admin.Answered(5, grants.Unread))
+  assert list.all(handlers(admin.view(without)), string.starts_with(
+    _,
+    admin.body_path <> "\t",
+  ))
+}
+
+// The page's own words stay out of the page's attributes: no handler's path
+// holds a name, and no class is made from one.
+pub fn no_identity_reaches_an_attribute_test() {
+  let #(model, _) = opened(start())
+  let model = run(model, admin.Choosing(session))
+  let html = drawn(model)
+  assert !string.contains(html, "class=\"bob")
+  assert !string.contains(html, "id=\"bob")
+  assert !string.contains(html, "key=\"")
+  assert !string.contains(html, session <> "\"")
+  assert !string.contains(html, "href")
+}
+
+// The invitation form takes exactly a name and a role the page offered, and
+// refuses everything else, so the daemon never sees a role that is not one of the
+// two or a field the form does not have.
+pub fn the_invitation_form_takes_exactly_a_name_and_a_role_test() {
+  assert admin_sessions.fields([#("name", "Ana"), #("role", "operator")])
+    == Ok(#("Ana", invites.Operator))
+  assert admin_sessions.fields([#("name", ""), #("role", "observer")])
+    == Ok(#("", invites.Observer))
+  assert admin_sessions.fields([#("role", "observer"), #("name", "x")])
+    == Ok(#("x", invites.Observer))
+
+  list.each(
+    [
+      [],
+      [#("name", "Ana")],
+      [#("role", "observer")],
+      [#("name", "Ana"), #("role", "owner")],
+      [#("name", "Ana"), #("role", "Observer")],
+      [#("name", "Ana"), #("role", "")],
+      [#("name", "Ana"), #("role", "operator"), #("extra", "x")],
+      [#("name", "Ana"), #("name", "Bo"), #("role", "operator")],
+      [#("name", "Ana"), #("role", "operator"), #("role", "observer")],
+      [#("text", "Ana"), #("role", "operator")],
+    ],
+    fn(listed) {
+      assert admin_sessions.fields(listed) == Error(Nil)
+    },
+  )
+}
+
+// The home's "Admin" button and this page are two ends of one pair, and neither
+// moves the other's paths: the page's body is the home's table's own place, and
+// the button is in the bar the page does not draw a handler in.
+pub fn the_two_pages_pin_their_paths_apart_test() {
+  assert admin.body_path == home.table_path
+  assert home.admin_path == "0\t0\t5"
+  let #(model, _) = opened(start())
+  let model = run(model, admin.Choosing(session))
+  assert !list.any(handlers(admin.view(model)), string.starts_with(
+    _,
+    home.admin_path,
+  ))
+}

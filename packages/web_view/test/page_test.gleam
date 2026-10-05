@@ -124,3 +124,29 @@ pub fn the_refused_document_offers_the_command_in_a_copy_box_test() {
     assert string.contains(document, "A link works once, within 60 seconds.")
   })
 }
+
+// The admin page's documents (protocol-change/065, the fifth pull request) are
+// the home's with their own words: the shell is titled for it, its waiting
+// paragraph names its fifteen minutes and the home's button, and a refused
+// request is answered in its words with the home's command for a fresh link.
+pub fn the_admin_pages_documents_are_the_homes_in_their_own_words_test() {
+  assert page.admin_path("abc") == "/ui/p/abc/admin"
+  assert page.admin_exchange_path("t") == "/ui/admin?ticket=t"
+
+  let shell = page.admin_shell()
+  assert string.contains(shell, "<title>Loom · Admin</title>")
+  assert string.contains(shell, "fifteen minutes")
+  assert string.contains(shell, "press Admin on the home page")
+  assert string.contains(shell, "/ui/assets/web_view_page.js")
+  assert !string.contains(shell, "--session")
+
+  let refused = page.admin_refusal(ending.PageEnded)
+  assert string.contains(refused, "This admin page has ended.")
+  assert string.contains(refused, "fifteen minutes")
+  assert string.contains(
+    refused,
+    "<loom-copy subject=\"link\" text=\"loom ui\">",
+  )
+  assert !string.contains(refused, "--session")
+  assert !string.contains(refused, "eight hours")
+}
