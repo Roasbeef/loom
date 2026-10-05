@@ -59,6 +59,7 @@ cap|schedule_test|installs the capability channel in cap/internal/dispatch's VM-
 cap|strand_map_test|installs the capability channel in cap/internal/dispatch's VM-global persistent_term slot
 cap|strand_test|depends on the capability channel in cap/internal/dispatch's VM-global persistent_term slot
 cap|workflow_test|installs and resets the capability channel in cap/internal/dispatch's VM-global persistent_term slot
+ext|ext@live_runtime_test|loads fixed trusted live-code slots and observes queued system operations
 ext|ext_test|start_serving resets cap/internal/dispatch's VM-global persistent_term slot for every serving test
 tools|tools@call_record_redaction_test|installs and resets the capability channel in cap/internal/dispatch's VM-global persistent_term slot to capture the arguments the cap encoders write
 
@@ -98,3 +99,5 @@ broker|broker@integration_test|differences the node's helper ports from erlang:p
 broker|broker@leak_census_test|differences erlang:system_info(process_count) across a hundred executions; the count is node-wide
 client|client@evolution_program_acceptance_test|owns real jailed helper identities and witnessed session retirement
 client|client@evolution_prompt_acceptance_test|owns isolated coding runtimes and aggregate native helper census
+client|client@live_upgrade_acceptance_test|owns real jailed live-code slots and native helper retirement census
+client|client@upgrade_native_test|loads VM-global reviewed scratch slots and verifies actor ownership across upgrades

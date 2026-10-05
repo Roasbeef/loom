@@ -252,6 +252,19 @@ pub fn with_extended_script(
   with_bounded_script(script, 600_000, run)
 }
 
+/// Runs the bounded live-upgrade matrix with separately compiled refusals.
+///
+/// ## Examples
+///
+/// `with_upgrade_script(steps, exercise)` permits at most 96 exchanges.
+pub fn with_upgrade_script(
+  script: List(Exchange),
+  run: fn(String) -> a,
+) -> #(a, Result(List(ObservedRequest), String)) {
+  assert list.length(script) <= 96 as "the upgrade script has at most 96 steps"
+  with_bounded_script(script, 600_000, run)
+}
+
 fn with_bounded_script(
   script: List(Exchange),
   deadline_ms: Int,

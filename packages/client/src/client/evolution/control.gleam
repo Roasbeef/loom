@@ -376,7 +376,19 @@ fn select_pending(
         )
       queue.enqueue(
         transitions,
-        live.Transition(request_id, expires_at, next, commit),
+        live.Transition(request_id, expires_at, next, commit, fn() {
+          store.request_receipt(
+            catalogue,
+            candidate_id,
+            evidence,
+            scope,
+            name,
+            expected_generation,
+            principal,
+            reason,
+            request_id,
+          )
+        }),
         signature,
       )
       |> result.map(queue_value)

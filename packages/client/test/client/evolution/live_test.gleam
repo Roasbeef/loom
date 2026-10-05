@@ -29,6 +29,7 @@ fn generation(
   retire: fn() -> Result(Nil, String),
 ) -> live.Generation {
   live.Generation(
+    mode: live.ReplacementOnly,
     selection:,
     tools: [],
     hooks: None,
@@ -61,6 +62,7 @@ fn transition(
     10_000,
     selected,
     commit,
+    fn() { Ok(None) },
   )
 }
 
@@ -182,10 +184,16 @@ pub fn expired_request_never_stages_or_commits_test() {
     )
   let selected = selection(1)
   let expired =
-    live.Transition("expired", 0, selected, fn() {
-      process.send(events, Nil)
-      Ok(selected)
-    })
+    live.Transition(
+      "expired",
+      0,
+      selected,
+      fn() {
+        process.send(events, Nil)
+        Ok(selected)
+      },
+      fn() { Ok(None) },
+    )
   live.activate(owner, expired, 1000) |> should.equal(Error(store.Busy))
   process.receive(events, 0) |> should.equal(Error(Nil))
 }
@@ -284,4 +292,137 @@ pub fn failed_selection_cas_rebuilds_committed_predecessor_before_return_test() 
   })
   |> should.equal(Ok(Some(1)))
   live.close(owner, 1000) |> should.equal(Ok(Nil))
+}
+
+pub fn uncertain_prepare_retains_cleanup_witness_until_close_test() {
+  let events = process.new_subject()
+  let witness =
+    retirement.repeat(fn() {
+      process.send(events, "cleanup")
+      Ok(Nil)
+    })
+  let owner =
+    owner(
+      fn(selected) {
+        let base = generation(selected, fn() { Ok(Nil) })
+        Ok(
+          live.Generation(
+            ..base,
+            mode: live.Stateful(fn(_) {
+              Error(store.CleanupUnconfirmed("pending prepare", witness))
+            }),
+          ),
+        )
+      },
+      fn(_) { Ok(Nil) },
+    )
+  let first = selection(1)
+  live.activate(owner, transition(first, fn() { Ok(first) }), 1000)
+  |> should.equal(Ok(first))
+  let next = selection(2)
+  live.activate(owner, transition(next, fn() { Ok(next) }), 1000)
+  |> result.is_error
+  |> should.be_true
+  live.close(owner, 1000) |> should.equal(Ok(Nil))
+  process.receive(events, 1000) |> should.equal(Ok("cleanup"))
+}
+
+pub fn durable_receipt_after_commit_error_publishes_without_compensation_test() {
+  let events = process.new_subject()
+  let owner =
+    owner(
+      fn(selected) {
+        let base = generation(selected, fn() { Ok(Nil) })
+        Ok(
+          live.Generation(
+            ..base,
+            mode: live.Stateful(fn(next) {
+              Ok(
+                live.PreparedUpgrade(
+                  generation(next, fn() { Ok(Nil) }),
+                  fn() {
+                    process.send(events, "publish")
+                    Ok(Nil)
+                  },
+                  fn() {
+                    process.send(events, "abort")
+                    Ok(Nil)
+                  },
+                ),
+              )
+            }),
+          ),
+        )
+      },
+      fn(_) { Ok(Nil) },
+    )
+  let first = selection(1)
+  live.activate(owner, transition(first, fn() { Ok(first) }), 1000)
+  |> should.equal(Ok(first))
+  let next = selection(2)
+  let request =
+    transition(next, fn() {
+      Error(store.Unavailable("acknowledgement lost after CAS"))
+    })
+  live.activate(
+    owner,
+    live.Transition(..request, reconcile: fn() { Ok(Some(next)) }),
+    1000,
+  )
+  |> should.equal(Ok(next))
+  process.receive(events, 1000) |> should.equal(Ok("publish"))
+  process.receive(events, 0) |> should.equal(Error(Nil))
+  live.close(owner, 1000) |> should.equal(Ok(Nil))
+}
+
+pub fn unavailable_receipt_holds_prepared_generation_without_compensation_test() {
+  let events = process.new_subject()
+  let owner =
+    owner(
+      fn(selected) {
+        let base = generation(selected, fn() { Ok(Nil) })
+        Ok(
+          live.Generation(
+            ..base,
+            mode: live.Stateful(fn(next) {
+              Ok(
+                live.PreparedUpgrade(
+                  generation(next, fn() {
+                    process.send(events, "retire")
+                    Ok(Nil)
+                  }),
+                  fn() {
+                    process.send(events, "publish")
+                    Ok(Nil)
+                  },
+                  fn() {
+                    process.send(events, "abort")
+                    Ok(Nil)
+                  },
+                ),
+              )
+            }),
+          ),
+        )
+      },
+      fn(_) { Ok(Nil) },
+    )
+  let first = selection(1)
+  live.activate(owner, transition(first, fn() { Ok(first) }), 1000)
+  |> should.equal(Ok(first))
+  let request =
+    transition(selection(2), fn() { Error(store.Unavailable("CAS reply lost")) })
+  live.activate(
+    owner,
+    live.Transition(..request, reconcile: fn() {
+      Error(store.Unavailable("receipt read lost"))
+    }),
+    1000,
+  )
+  |> result.is_error
+  |> should.be_true
+  process.receive(events, 0) |> should.equal(Error(Nil))
+  live.close(owner, 1000) |> should.equal(Ok(Nil))
+  process.receive(events, 1000) |> should.equal(Ok("retire"))
+  process.receive(events, 0) |> should.equal(Error(Nil))
 }

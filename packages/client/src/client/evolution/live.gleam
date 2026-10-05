@@ -28,6 +28,8 @@ pub type Generation {
   Generation(
     /// The exact catalogue selection this version will implement.
     selection: record.Selection,
+    /// The native activation mechanism, separate from the artifact generation.
+    mode: Mode,
     /// The immutable callable declarations and implementations.
     tools: List(Tool),
     /// The promoted hooks, separate from installed native hooks.
@@ -38,6 +40,29 @@ pub type Generation {
     validate: fn() -> Result(Nil, store.Refusal),
     /// Bounded native helper census for the dedicated generation plane.
     inventory: fn() -> Result(JsonValue, String),
+  )
+}
+
+/// The native activation mechanism admitted for this generation.
+pub type Mode {
+  /// Ordinary extensions replace their persistent satellite.
+  ReplacementOnly
+
+  /// Compatible opted-in code migrates the same jailed state owner.
+  Stateful(
+    prepare: fn(record.Selection) -> Result(PreparedUpgrade, store.Refusal),
+  )
+}
+
+/// A state migration awaiting the central generation-fenced selection CAS.
+pub type PreparedUpgrade {
+  PreparedUpgrade(
+    /// The successor declarations share the predecessor's native resource owner.
+    generation: Generation,
+    /// Publishes or reconciles the exact committed transition receipt.
+    publish: fn() -> Result(Nil, store.Refusal),
+    /// Compensates an unpublished transition and resumes the old callbacks.
+    abort: fn() -> Result(Nil, store.Refusal),
   )
 }
 
@@ -66,6 +91,8 @@ pub type Transition {
     selection: record.Selection,
     /// Performs the catalogue approval/revocation/selection CAS.
     commit: fn() -> Result(record.Selection, store.Refusal),
+    /// Reads the exact durable request receipt after an uncertain CAS reply.
+    reconcile: fn() -> Result(Option(record.Selection), store.Refusal),
   )
 }
 
@@ -452,7 +479,19 @@ fn changing(
           state,
           Error(store.Bounds("one executable evolution slot per session")),
         )
-        Some(_) | None ->
+        Some(previous) -> {
+          case previous.mode {
+            ReplacementOnly ->
+              staged(
+                state,
+                transition,
+                state.config.stage(transition.selection),
+              )
+            Stateful(prepare) ->
+              in_place(state, transition, prepare(transition.selection))
+          }
+        }
+        None ->
           staged(state, transition, state.config.stage(transition.selection))
       }
   }
@@ -854,5 +893,87 @@ fn execute_with(
         }
       }
     }
+  }
+}
+
+fn in_place(
+  state: State,
+  transition: Transition,
+  prepared: Result(PreparedUpgrade, store.Refusal),
+) -> #(State, Result(record.Selection, store.Refusal)) {
+  case prepared {
+    Error(reason) -> #(retained_refusal(state, reason), Error(reason))
+    Ok(prepared) -> {
+      let committed = transition.commit()
+      let state = case committed {
+        Ok(_) -> state
+        Error(reason) -> retained_refusal(state, reason)
+      }
+      case committed_in_place(transition, committed) {
+        Ok(Error(reason)) -> {
+          case prepared.abort() {
+            Ok(Nil) -> #(state, Error(reason))
+            Error(failure) -> #(
+              retained_refusal(
+                State(..state, active: None, held: active_list(state.active)),
+                failure,
+              ),
+              Error(failure),
+            )
+          }
+        }
+        Ok(Ok(selection)) -> publish_in_place(state, prepared, selection)
+        Error(reason) -> #(
+          retained_refusal(
+            State(..state, active: None, held: [prepared.generation]),
+            reason,
+          ),
+          Error(reason),
+        )
+      }
+    }
+  }
+}
+
+fn committed_in_place(
+  transition: Transition,
+  committed: Result(record.Selection, store.Refusal),
+) -> Result(Result(record.Selection, store.Refusal), store.Refusal) {
+  case committed {
+    Ok(selection) -> Ok(Ok(selection))
+    Error(reason) -> {
+      use receipt <- result.try(transition.reconcile())
+      case receipt {
+        Some(selection) -> Ok(Ok(selection))
+        None -> Ok(Error(reason))
+      }
+    }
+  }
+}
+
+fn publish_in_place(
+  state: State,
+  prepared: PreparedUpgrade,
+  selection: record.Selection,
+) -> #(State, Result(record.Selection, store.Refusal)) {
+  let published = {
+    use Nil <- result.try(prepared.publish())
+    state.config.adopt(selection)
+  }
+  case published {
+    Error(reason) -> #(
+      retained_refusal(
+        State(..state, active: None, held: [prepared.generation]),
+        reason,
+      ),
+      Error(reason),
+    )
+    Ok(Nil) -> #(
+      State(
+        ..state,
+        active: Some(Generation(..prepared.generation, selection:)),
+      ),
+      Ok(selection),
+    )
   }
 }

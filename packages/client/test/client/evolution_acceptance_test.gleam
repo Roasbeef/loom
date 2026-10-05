@@ -49,11 +49,11 @@ import telemetry/log
 import weft/actor
 import weft/poll
 
-type Authored {
+pub type Authored {
   Authored(candidate_id: String, evidence_id: String, evidence: String)
 }
 
-type ReceiptMessage {
+pub type ReceiptMessage {
   Published(Authored)
   Take(Subject(option.Option(Authored)))
   Done
@@ -212,8 +212,16 @@ fn author_script(
   version: Int,
   authored: Subject(ReceiptMessage),
 ) -> List(peer.Exchange) {
+  author_script_with(version, authored, fixture.extension(version))
+}
+
+/// Authors arbitrary source through the same production filesystem tools.
+pub fn author_script_with(
+  version: Int,
+  authored: Subject(ReceiptMessage),
+  files: List(#(String, String)),
+) -> List(peer.Exchange) {
   let suffix = "v" <> int.to_string(version)
-  let files = fixture.extension(version)
   let writes =
     list.index_map(files, fn(file, index) {
       let expect = case index {
@@ -290,7 +298,7 @@ fn author_script(
   list.append(writes, [propose, evaluation, settled])
 }
 
-fn invoke_script(prompt: String, expected: String) -> List(peer.Exchange) {
+pub fn invoke_script(prompt: String, expected: String) -> List(peer.Exchange) {
   [
     peer.ToolUseExchange(
       prompt,
@@ -336,20 +344,20 @@ fn latest_result(requests: List(peer.ObservedRequest)) -> json.JsonValue {
   value
 }
 
-fn field(value: json.JsonValue, name: String) -> json.JsonValue {
+pub fn field(value: json.JsonValue, name: String) -> json.JsonValue {
   let assert json.Object(fields) = value as "a tool receipt is an object"
   let assert Ok(found) = list.key_find(fields, name)
     as "the receipt contains the exact required field"
   found
 }
 
-fn required_text(value: json.JsonValue, name: String) -> String {
+pub fn required_text(value: json.JsonValue, name: String) -> String {
   let assert json.String(text) = field(value, name)
     as "the receipt identity is text"
   text
 }
 
-fn authored_result(subject: Subject(ReceiptMessage)) -> Authored {
+pub fn authored_result(subject: Subject(ReceiptMessage)) -> Authored {
   let assert Ok(Some(authored)) =
     call.try_call(subject, waiting: 1000, sending: Take)
     as "the real test result carries the durable evidence identity"
@@ -451,7 +459,7 @@ pub fn request(
   board
 }
 
-fn verify_evidence(
+pub fn verify_evidence(
   socket: gateway.ConnectionHandle,
   id: Int,
   authored: Authored,
@@ -476,7 +484,7 @@ fn verify_evidence(
     as "operator inspection reads the evidence durably before approval"
 }
 
-fn approve(socket: gateway.ConnectionHandle, id: Int, authored: Authored) {
+pub fn approve(socket: gateway.ConnectionHandle, id: Int, authored: Authored) {
   let _ =
     request(
       socket,
@@ -490,7 +498,7 @@ fn approve(socket: gateway.ConnectionHandle, id: Int, authored: Authored) {
   Nil
 }
 
-fn select(
+pub fn select(
   socket: gateway.ConnectionHandle,
   id: Int,
   authored: Authored,
@@ -702,13 +710,13 @@ pub fn helper_census_follows_native_setup_parent_and_refuses_foreign_vm_test() {
   assert !descendant(50, 10, rows, list.length(rows))
 }
 
-fn new_helpers(
+pub fn new_helpers(
   base: List(#(Int, native.ProcessIdentity)),
 ) -> List(#(Int, native.ProcessIdentity)) {
   helpers() |> list.filter(fn(helper) { !list.contains(base, helper) })
 }
 
-fn assert_departed(old: List(#(Int, native.ProcessIdentity))) {
+pub fn assert_departed(old: List(#(Int, native.ProcessIdentity))) {
   list.each(old, fn(helper) {
     assert native.process_identity(helper.0) != Ok(helper.1)
       as "publication waits for the predecessor's original native process to depart"

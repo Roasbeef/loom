@@ -8,11 +8,13 @@ import client/evolution/retirement
 import client/evolution/store
 import client/extension/archive
 import client/extension/install
+import client/extension/live_contract
 import client/extension/manifest
 import client/extension/record as extension_record
 import client/extension/source
 import codemode/compile
 import codemode/enforcement
+import codemode/live_slots
 import codemode/satellite
 import codemode/vet/package
 import codemode/vet/policy
@@ -68,13 +70,35 @@ pub fn prepare(
   directory: String,
   build: install.Build,
 ) -> Result(Prepared, store.Refusal) {
+  prepare_slot(catalogue, id, directory, build, live_slots.First)
+}
+
+/// Compiles the same immutable candidate into a native-selected reusable slot.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // evaluate.prepare_slot(store, id, root, build, live_slots.Second)
+/// ```
+///
+pub fn prepare_slot(
+  catalogue: store.Store,
+  id: record.CandidateId,
+  directory: String,
+  build: install.Build,
+  slot: live_slots.Slot,
+) -> Result(Prepared, store.Refusal) {
   use candidate <- result.try(store.read_candidate(catalogue, id))
   use Nil <- result.try(current(catalogue, candidate))
   use decoded <- result.try(decode_manifest(candidate))
   use vetted <- result.try(vet(candidate))
+  use Nil <- result.try(
+    live_contract.vet(candidate.files, vetted)
+    |> result.map_error(store.TestFailed),
+  )
   use Nil <- result.try(materialize(directory <> "/sources", candidate.files))
   use Nil <- result.try(
-    install.prepare(directory <> "/build", decoded, vetted)
+    prepare_build(candidate, directory <> "/build", decoded, vetted, slot)
     |> result.map_error(fn(error) { store.TestFailed(install.describe(error)) }),
   )
   let compile.Built(result: products, enforcement:) =
@@ -201,6 +225,10 @@ fn tested(
   use Nil <- result.try(current(catalogue, candidate))
   use decoded <- result.try(decode_manifest(candidate))
   use vetted <- result.try(vet(candidate))
+  use Nil <- result.try(
+    live_contract.vet(candidate.files, vetted)
+    |> result.map_error(store.TestFailed),
+  )
   use entry <- result.try(case candidate.test_entry {
     Some(entry) -> Ok(entry)
     None -> Error(store.TestFailed("candidate has no author test entry"))
@@ -334,4 +362,25 @@ fn write(path: String, text: String) -> Result(Nil, store.Refusal) {
 
 fn compile_error(error: compile.CompileError) -> store.Refusal {
   store.TestFailed(string.inspect(error))
+}
+
+fn prepare_build(
+  candidate: record.Candidate,
+  root: String,
+  decoded: manifest.Manifest,
+  vetted: package.VettedPackage,
+  slot: live_slots.Slot,
+) -> Result(Nil, install.Failure) {
+  use text <- result.try(
+    list.key_find(candidate.files, "extension.toml")
+    |> result.replace_error(install.Manifest("extension.toml absent")),
+  )
+  use contract <- result.try(
+    live_contract.decode(text, package.module_names(vetted))
+    |> result.map_error(install.Manifest),
+  )
+  case contract {
+    None -> install.prepare(root, decoded, vetted)
+    Some(contract) -> install.prepare_live(root, vetted, contract, slot)
+  }
 }

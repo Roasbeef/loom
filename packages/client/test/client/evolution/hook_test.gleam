@@ -114,6 +114,7 @@ fn stage(
     )
     as "promoted bus starts linked to its generation owner"
   Ok(live.Generation(
+    mode: live.ReplacementOnly,
     selection: selected,
     tools: [],
     hooks: Some(bus),
@@ -139,9 +140,13 @@ fn selected(version: Int) -> record.Selection {
 }
 
 fn transition(selection: record.Selection) -> live.Transition {
-  live.Transition(int.to_string(selection.generation), 10_000, selection, fn() {
-    Ok(selection)
-  })
+  live.Transition(
+    int.to_string(selection.generation),
+    10_000,
+    selection,
+    fn() { Ok(selection) },
+    fn() { Ok(None) },
+  )
 }
 
 fn request() -> effects.ToolRun {

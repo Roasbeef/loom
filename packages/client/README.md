@@ -181,6 +181,13 @@ This host also selects named workspace programs and pins exact-model prose
 profiles for new sessions. The catalogue, custody rules, module map and
 operator workflow are in [the evolution architecture](../../docs/architecture/evolution.md).
 
+Opted-in components also have a state-preserving upgrade path. Jailed
+extensions use explicit JSON-state migration; reviewed scratch implementations
+use a fixed typed ABI inside the harness. `loom evolution core_status`,
+`core_upgrade` and `core_downgrade` are owner-only controls for the latter.
+See [component upgrades](../../docs/architecture/live-upgrades.md) for the
+contract, current implementation status and acceptance evidence.
+
 ## A tour of the modules
 
 Paths are relative to `src/`; `client/escalate` is

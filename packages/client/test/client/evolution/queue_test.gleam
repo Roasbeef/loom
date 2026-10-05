@@ -28,6 +28,7 @@ pub fn staging_returns_immediately_and_deduplicates_one_native_commit_test() {
           process.receive(gate, 2000) |> should.equal(Ok(Nil))
           Ok(
             live.Generation(
+              mode: live.ReplacementOnly,
               selection:,
               inventory: fn() { Ok(json.Null) },
               tools: [],
@@ -48,10 +49,16 @@ pub fn staging_returns_immediately_and_deduplicates_one_native_commit_test() {
   let assert Ok(front) = queue.start(owner, clock.fixed(0))
     as "front door starts"
   let transition =
-    live.Transition("request", 10_000, selected, fn() {
-      process.send(events, "commit")
-      Ok(selected)
-    })
+    live.Transition(
+      "request",
+      10_000,
+      selected,
+      fn() {
+        process.send(events, "commit")
+        Ok(selected)
+      },
+      fn() { Ok(None) },
+    )
   queue.enqueue(front, transition, "native signature")
   |> should.equal(Ok(queue.Queued("request")))
   process.receive(events, 1000) |> should.equal(Ok("stage"))
@@ -103,6 +110,7 @@ pub fn expired_or_unbounded_request_never_allocates_a_staging_job_test() {
           process.send(events, Nil)
           Ok(
             live.Generation(
+              mode: live.ReplacementOnly,
               selection:,
               inventory: fn() { Ok(json.Null) },
               tools: [],
@@ -120,7 +128,10 @@ pub fn expired_or_unbounded_request_never_allocates_a_staging_job_test() {
   let assert Ok(front) = queue.start(owner, clock.fixed(100))
     as "front door starts"
   let selected = selection()
-  let expired = live.Transition("expired", 100, selected, fn() { Ok(selected) })
+  let expired =
+    live.Transition("expired", 100, selected, fn() { Ok(selected) }, fn() {
+      Ok(None)
+    })
   queue.enqueue(front, expired, "signature")
   |> result.is_error
   |> should.be_true

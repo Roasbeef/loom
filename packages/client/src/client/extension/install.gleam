@@ -1,3 +1,11 @@
+//// ## Flow
+////
+//// `run` → `fetched` → `compiled` → `prepare` → `entry_source` builds
+//// replacement extensions; `prepare_live` → `live_entry_source` builds the
+//// trusted entry for explicitly declared stateful jailed extensions.
+////
+//// ## Install pipeline
+////
 //// The install pipeline: from a source an operator typed to a directory
 //// the server will read at boot.
 ////
@@ -96,11 +104,13 @@
 //// place that mistake can be caught.
 
 import client/extension/archive.{type Caps, type Tree, Tree}
+import client/extension/live_contract
 import client/extension/manifest.{type Manifest}
 import client/extension/record.{type Record, type Root}
 import client/extension/source.{type Source}
 import codemode/compile
 import codemode/enforcement.{type Report}
+import codemode/live_slots
 import codemode/vet
 import codemode/vet/package.{type VettedPackage}
 import codemode/vet/policy as vet_policy
@@ -256,8 +266,19 @@ fn jailed(
   use files <- result.try(text_files(tree))
   use decoded <- result.try(read_manifest(files))
   use vetted <- result.try(vet_source(files))
+  use Nil <- result.try(
+    live_contract.vet(files, vetted) |> result.map_error(Manifest),
+  )
+  use text <- result.try(
+    list.key_find(files, "extension.toml")
+    |> result.replace_error(Manifest("extension.toml absent")),
+  )
+  use live <- result.try(
+    live_contract.decode(text, package.module_names(vetted))
+    |> result.map_error(Manifest),
+  )
   stage(config, from, rev, tree, decoded, fn(staging) {
-    compiled(config, decoded, vetted, staging)
+    compiled(config, decoded, vetted, live, staging)
   })
 }
 
@@ -644,10 +665,15 @@ fn compiled(
   config: Config,
   decoded: Manifest,
   vetted: VettedPackage,
+  live: Option(live_contract.Contract),
   staging: String,
 ) -> Result(Compiled, Failure) {
   let build_root = staging <> "/build"
-  use Nil <- result.try(prepare(build_root, decoded, vetted))
+  use Nil <- result.try(case live {
+    None -> prepare(build_root, decoded, vetted)
+    Some(contract) ->
+      prepare_live(build_root, vetted, contract, live_slots.First)
+  })
   let compile.Built(result: built, enforcement:) = config.build(build_root)
   use products <- result.try(
     result.map_error(built, fn(error) { Compile(compile_reason(error)) }),
@@ -930,4 +956,83 @@ fn directory_of(path: String) -> String {
 fn token(config: Config) -> String {
   int.to_base16(int.absolute_value(config.entropy()))
   <> int.to_base16(int.absolute_value(config.entropy()))
+}
+
+/// Writes an opted-in candidate into one of two reusable implementation slots.
+///
+/// Source vetting remains over the immutable authored envelope. Only native
+/// import tokens and module paths gain the fixed compiler namespace afterward.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // install.prepare_live(root, vetted, contract, live_slots.First)
+/// ```
+///
+pub fn prepare_live(
+  build_root: String,
+  vetted: VettedPackage,
+  contract: live_contract.Contract,
+  slot: live_slots.Slot,
+) -> Result(Nil, Failure) {
+  use Nil <- result.try(fresh(build_root <> "/src"))
+  use Nil <- result.try(fresh(build_root <> "/tmp"))
+  use Nil <- result.try(
+    list.try_each(live_slots.sources(vetted, slot), fn(module) {
+      write(build_root <> "/src/" <> module.0 <> ".gleam", module.1)
+    }),
+  )
+  use Nil <- result.try(write(
+    build_root <> "/src/" <> compile.entry_module <> ".gleam",
+    live_entry_source(vetted, contract, slot),
+  ))
+  write(
+    build_root <> "/gleam.toml",
+    compile.project_toml(compile.default_dependencies()),
+  )
+}
+
+/// Renders only native compiler-selected imports and the bounded live contract.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // install.live_entry_source(vetted, contract, live_slots.First)
+/// ```
+///
+pub fn live_entry_source(
+  vetted: VettedPackage,
+  contract: live_contract.Contract,
+  slot: live_slots.Slot,
+) -> String {
+  let quote = fn(text) { json.to_string(json.string(text)) }
+  let migration =
+    live_slots.module(slot, contract.migration) |> string.replace("/", "@")
+  let modules =
+    package.module_names(vetted) |> list.map(quote) |> string.join(", ")
+  "//// The native generated stateful satellite entry.\n"
+  <> "import ext/internal/live_runtime\n"
+  <> "import "
+  <> live_slots.module(slot, contract.entry)
+  <> " as implementation\n\n"
+  <> "pub fn main() -> Nil {\n  live_runtime.serving(\n    live_runtime.Config(\n"
+  <> "      version: "
+  <> quote(contract.state_version)
+  <> ",\n"
+  <> "      boundary: "
+  <> quote(contract.boundary)
+  <> ",\n"
+  <> "      modules: ["
+  <> modules
+  <> "],\n"
+  <> "      migration: "
+  <> quote(migration)
+  <> ",\n"
+  <> "      pause_ms: "
+  <> int.to_string(contract.pause_ms)
+  <> ",\n"
+  <> "      max_state_bytes: "
+  <> int.to_string(contract.max_state_bytes)
+  <> ",\n"
+  <> "    ),\n    implementation.definition(),\n  )\n}\n"
 }

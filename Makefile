@@ -459,6 +459,8 @@ e2e-evolution: binaries codemode-seed ## Author, test, approve, replace and roll
 		bash scripts/test.sh client --match client@evolution_program_acceptance_test:
 	@LOOM_EVOLUTION_E2E=1 LOOM_TEST_TIMEOUT_SECONDS=720 \
 		bash scripts/test.sh client --match client@evolution_prompt_acceptance_test:
+	@LOOM_EVOLUTION_E2E=1 LOOM_TEST_TIMEOUT_SECONDS=720 \
+		bash scripts/test.sh client --match client@live_upgrade_acceptance_test:
 
 # ------------------------------------------------------------- the signoff
 # The merge gate on a developer's own machines instead of hosted runners:

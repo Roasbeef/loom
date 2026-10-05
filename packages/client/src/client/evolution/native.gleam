@@ -16,6 +16,7 @@ import client/evolution/live
 import client/evolution/program
 import client/evolution/record
 import client/evolution/retirement
+import client/evolution/stateful
 import client/evolution/store
 import client/extension/archive
 import client/extension/dispatch
@@ -211,6 +212,7 @@ fn assemble_tools(
       assembled_hosts(
         config,
         hosting,
+        dispatch,
         plane,
         selection,
         prepared,
@@ -225,6 +227,7 @@ fn assemble_tools(
 fn assembled_hosts(
   config: Config,
   hosting: hosts.Hosts,
+  dispatch: dispatch.Config,
   plane: Plane,
   selection: record.Selection,
   prepared: evaluate.Prepared,
@@ -242,7 +245,7 @@ fn assembled_hosts(
           invoke: hosts.invoker(hosting, at: config.at),
         )
       let bus = hooks.start([subscribed], config.logger)
-      assembled_bus(
+      use generation <- result.try(assembled_bus(
         config,
         plane,
         selection,
@@ -250,7 +253,32 @@ fn assembled_hosts(
         started.pid,
         declarations,
         bus,
-      )
+      ))
+      let directory = prepared.directory
+      let host = dispatch.host
+      let base = private_base(config, directory)
+      let demand = config.at.demand
+      let catalogue = config.catalogue
+      let compile = fn(candidate, directory, slot) {
+        // Every later selection owns fresh execution identity and wall budget.
+        let build = compiler_for(host, base, demand)
+        evaluate.prepare_slot(catalogue, candidate, directory, build, slot)
+      }
+      case
+        stateful.attach(
+          generation,
+          catalogue,
+          dispatch,
+          hosting,
+          prepared,
+          compile,
+          config.at,
+        )
+      {
+        Ok(generation) -> Ok(generation)
+        Error(reason) ->
+          failed(Plane(..plane, close: generation.retire), reason)
+      }
     }
   }
 }
@@ -275,6 +303,7 @@ fn assembled_bus(
     Ok(bus) ->
       Ok(live.Generation(
         selection:,
+        mode: live.ReplacementOnly,
         inventory: plane.inventory,
         tools: declarations,
         hooks: Some(bus),
@@ -300,7 +329,15 @@ fn compiler(
   host: codemode.Config,
   base: policy.SandboxPolicy,
 ) -> install.Build {
-  let builder = private_builder(host, base, config.at.demand)
+  compiler_for(host, base, config.at.demand)
+}
+
+fn compiler_for(
+  host: codemode.Config,
+  base: policy.SandboxPolicy,
+  demand: exec.EnforcementDemand,
+) -> install.Build {
+  let builder = private_builder(host, base, demand)
   let #(now, _) = clock.read(host.clock)
   let #(operation, _) = ids.mint_op(ids.generator(host.clock, 807))
   let phase =
