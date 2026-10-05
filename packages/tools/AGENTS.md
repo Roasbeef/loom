@@ -74,6 +74,23 @@ run whose call record shows a failed capability call, add one line naming the
 `fs_read cap://<module>` reads (`tools/codemode_pointer`, at most two modules,
 none when nothing applies). Vetting refusals never get the line.
 
+## Complete retained report rendering
+
+`codemode.retained_tool` is the synchronous shell for an explicitly admitted
+complete-report profile. It refuses background configuration during assembly;
+asynchronous jobs retain their existing separate result contract. Its trusted
+retention callback receives the checked original value and complete bounded
+host observations before a preview is constructed. A failure returns a generic
+uncertain result without a reference or a no-terminal claim.
+
+`code_report` renders at most 32 value nodes and bounded UTF-8 string prefixes.
+It does not encode binary bytes or walk an entire container to produce a preview.
+The transcript text is at most 4,096 bytes and its closed details contain the
+exact retained reference. Only the actual VetRejected and CompileFailed branches
+produce `code_mode_not_run_v1`; a program error, lost satellite or failed COMMIT
+cannot use that schema. The existing inline and asynchronous renderers retain
+their contracts until assembly explicitly selects the retained shell.
+
 ## Saved program source
 
 A synchronous `code_mode` run or background launch selects exactly one of

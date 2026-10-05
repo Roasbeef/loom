@@ -27,6 +27,8 @@
 //// 6. `render` turns the `Execution` into the model's answer:
 ////    `vet_outcome`, `compile_outcome`, `run_failed_outcome` or
 ////    `ran_outcome`, each in band and none a crash.
+////    The retained path uses `report_outcome` and `report_metadata` before
+////    committing through the owner callback and rendering a bounded preview.
 //// 7. `bounded_success` and `bounded_failure` cap the output, and
 ////    `sandbox_text` says which enforcement layers actually applied.
 ////
@@ -92,6 +94,7 @@ import broker/policy.{type Grant, type SandboxPolicy}
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
 import core/msgpack.{type MsgPackValue}
+import core/report_value
 import gleam/bit_array
 import gleam/int
 import gleam/list
@@ -101,6 +104,7 @@ import gleam/string
 import tools/blob
 import tools/call_record.{type CallLog}
 import tools/codemode_pointer
+import tools/code_report
 import tools/codemode_recipes
 import tools/directory_access
 import tools/fs
@@ -638,6 +642,33 @@ pub fn tools(mode: CodeMode) -> List(Tool) {
 /// ```
 ///
 pub fn tool_for(mode: CodeMode) -> Tool {
+  tool_for_retention(mode, None)
+}
+
+/// Builds the synchronous tool whose complete results enter owner custody.
+/// Trusted assembly must pair this tool with the CodeModeReportV1 reservation
+/// profile. Background jobs have separate custody and are refused at assembly.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.retained_tool(mode, owner_retain)
+/// ```
+pub fn retained_tool(
+  mode: CodeMode,
+  retain: code_report.Retain,
+) -> Result(Tool, String) {
+  case mode.background {
+    Some(_) ->
+      Error("retained foreground reports require a synchronous code-mode host")
+    None -> Ok(tool_for_retention(mode, Some(retain)))
+  }
+}
+
+fn tool_for_retention(
+  mode: CodeMode,
+  retain: Option(code_report.Retain),
+) -> Tool {
   tool.Tool(
     name: tool_name,
     description: description(mode),
@@ -677,7 +708,7 @@ pub fn tool_for(mode: CodeMode) -> Tool {
     replay: tool.Never,
     execution_mode: tool.Exclusive,
     requirements:,
-    run: fn(ctx, args) { run(mode, ctx, args) },
+    run: fn(ctx, args) { run(mode, retain, ctx, args) },
   )
 }
 
@@ -1264,11 +1295,17 @@ pub fn requirements(workspace: String) -> SandboxPolicy {
   policy.SandboxPolicy(..base, readable_roots: [], env_allow: [])
 }
 
-fn run(mode: CodeMode, ctx: Ctx, args: JsonValue) -> ToolOutcome {
+fn run(
+  mode: CodeMode,
+  retain: Option(code_report.Retain),
+  ctx: Ctx,
+  args: JsonValue,
+) -> ToolOutcome {
   use named <- tool.with_arg(tool.optional_string(args, "mode"))
   case option.unwrap(named, "run"), mode.background {
-    "run", _ -> run_program(mode, ctx, args, None)
-    "launch", Some(background) -> run_program(mode, ctx, args, Some(background))
+    "run", _ -> run_program(mode, retain, ctx, args, None)
+    "launch", Some(background) ->
+      run_program(mode, retain, ctx, args, Some(background))
     command, Some(background) -> interact(background, ctx, args, command)
     _, None -> tool.failure("this host does not serve asynchronous code mode")
   }
@@ -1318,6 +1355,7 @@ fn async_outcome(answer: Result(JsonValue, String)) -> ToolOutcome {
 
 fn run_program(
   mode: CodeMode,
+  retain: Option(code_report.Retain),
   ctx: Ctx,
   args: JsonValue,
   background: Option(Background),
@@ -1341,7 +1379,13 @@ fn run_program(
     fn(outcome) { outcome },
   )
   case background {
-    None -> render(ctx, offer, program, once_more_if_approved(mode, ctx, asked))
+    None -> {
+      let execution = once_more_if_approved(mode, ctx, asked)
+      case retain {
+        None -> render(ctx, offer, program, execution)
+        Some(retain) -> retained_outcome(ctx, execution, retain)
+      }
+    }
     Some(background) -> async_outcome(background.launch(asked))
   }
 }
@@ -1582,6 +1626,110 @@ fn render(
     RunFailed(failure:) -> run_failed_outcome(execution, failure)
     Ran(outcome:, manifest_hash:) ->
       ran_outcome(ctx, offer, execution, outcome, manifest_hash)
+  }
+}
+
+// Only this dispatch over the actual pipeline result can label a report-free
+// final. A lost satellite or failed COMMIT is a generic failure and retains its
+// unresolved owner obligation; neither can impersonate a compile refusal.
+fn retained_outcome(
+  ctx: Ctx,
+  execution: Execution,
+  retain: code_report.Retain,
+) -> ToolOutcome {
+  case execution.result {
+    VetRejected(rejections) ->
+      code_report.not_run(
+        code_report.Vet,
+        "The program was refused before compilation. "
+          <> case rejections {
+          [] -> "No rejection details were supplied."
+          [first, ..] -> first.detail
+        },
+      )
+    CompileFailed(failure) ->
+      code_report.not_run(
+        code_report.Compile,
+        "The program did not compile or run. " <> compile_detail(failure),
+      )
+    RunFailed(_) ->
+      tool.failure(
+        "Code-mode outcome unknown; original custody remains unresolved.",
+      )
+    Ran(outcome, manifest_hash) -> {
+      let retained = {
+        use metadata <- result.try(report_metadata(execution, manifest_hash))
+        use report <- result.try(
+          report_value.from_outcome(report_outcome(outcome), metadata)
+          |> result.map_error(fn(error) { error.expected }),
+        )
+        use reference <- result.map(retain(ctx, report))
+        code_report.render(report, reference)
+      }
+      case retained {
+        Ok(outcome) -> outcome
+        Error(_) ->
+          tool.failure(
+            "Complete code-mode report could not be retained; original custody remains unresolved.",
+          )
+      }
+    }
+  }
+}
+
+fn report_outcome(outcome: Outcome) -> report_value.Outcome {
+  case outcome {
+    Completed(value) -> report_value.Completed(value)
+    Errored(message, details) -> report_value.Errored(message, details)
+  }
+}
+
+fn report_metadata(
+  execution: Execution,
+  manifest_hash: String,
+) -> Result(report_value.Metadata, String) {
+  let calls = execution.calls
+  report_value.metadata(
+    manifest_hash,
+    report_value.Enforcement(
+      report_stage(execution.enforcement.build),
+      report_stage(execution.enforcement.node),
+    ),
+    report_value.CallLog(
+      calls.started_unix_ms,
+      calls.elapsed_ms,
+      calls.total,
+      calls.failed,
+      calls.cancelled,
+      calls.unsettled,
+      list.map(calls.items, fn(item) {
+        report_value.CallRecord(
+          item.cap,
+          item.args,
+          case item.status {
+            call_record.CallOk -> report_value.CallOk
+            call_record.CallFailed -> report_value.CallFailed
+            call_record.CallCancelled -> report_value.CallCancelled
+            call_record.CallUnsettled -> report_value.CallUnsettled
+          },
+          item.error,
+          item.start_ms,
+          item.duration_ms,
+        )
+      }),
+    ),
+  )
+  |> result.map_error(fn(error) { error.expected })
+}
+
+fn report_stage(stage: Report) -> report_value.StageReport {
+  case stage {
+    Unreported(reason) -> report_value.Unreported(reason)
+    Enforced(applied, skipped, degraded) ->
+      report_value.Reported(applied, skipped, case degraded {
+        True -> report_value.Degraded
+        False -> report_value.Complete
+      })
   }
 }
 
