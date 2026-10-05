@@ -23,10 +23,10 @@ import core/ids
 import core/remote_tool
 import core/workspace
 import executor
-import executor/remote/connection
+import executor/remote/beam_endpoint as connection
 import executor/remote/dispatcher
+import executor/remote/distribution
 import executor/remote/identity
-import executor/remote/tls
 import executor/remote/wire
 import gleam/bit_array
 import gleam/erlang/process
@@ -37,6 +37,7 @@ import gleam/string
 import gleam/time/timestamp
 import simplifile
 import storage/owner_custody as custody
+import support/beam_owner_fixture
 import weft/actor
 import weft/poll
 import weft/registry
@@ -47,7 +48,7 @@ type Allocation {
 }
 
 type Fixture {
-  Fixture(owner: custodian.Handle, pid: process.Pid)
+  Fixture(owner: custodian.Handle, pid: process.Pid, peer: distribution.Peer)
 }
 
 fn session_id(number: Int) -> ids.SessionId {
@@ -90,7 +91,7 @@ fn limits() -> custody.Limits {
   value
 }
 
-fn new_fixture(name: String) -> Fixture {
+fn new_fixture(name: String, peer: distribution.Peer) -> Fixture {
   let #(seconds, nanos) =
     timestamp.system_time() |> timestamp.to_unix_seconds_and_nanoseconds
   let directory =
@@ -127,7 +128,7 @@ fn new_fixture(name: String) -> Fixture {
     as "Bounded actor."
   let owner = custodian.new(names, config)
   let assert Ok(started) = custodian.start(owner, config) as "Actual custodian."
-  Fixture(owner, started.pid)
+  Fixture(owner, started.pid, peer)
 }
 
 fn stop(fixture: Fixture) -> Nil {
@@ -141,36 +142,18 @@ fn stop(fixture: Fixture) -> Nil {
   Nil
 }
 
-fn settings() -> tls.Settings {
-  // These inert fixture credentials are parsed solely to construct real opaque
-  // TLS settings. The tests invoke no connection or authentication exchange.
-  let assert Ok(cert) =
-    bit_array.base64_decode(
-      "MIIBjzCCATWgAwIBAgIUYlLTKDvtMyvFfxpJRl0005XN75IwCgYIKoZIzj0EAwIwHTEbMBkGA1UEAwwSZGlzcGF0Y2gtdW5pdC10ZXN0MB4XDTI2MTAwNDExMzI0M1oXDTM2MTAwMTExMzI0M1owHTEbMBkGA1UEAwwSZGlzcGF0Y2gtdW5pdC10ZXN0MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEMGT3LSnwJ0zHY2tM7YqzARt9MLz9HjShrrnUjO7TeI2P0cfh0o2H1jN1v/gMkvYjKQJc12Q46q7yMol/e+02v6NTMFEwHQYDVR0OBBYEFKjKoOrEhHywVewGbYh0HPLDhpFnMB8GA1UdIwQYMBaAFKjKoOrEhHywVewGbYh0HPLDhpFnMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSAAwRQIgKWPzCuZuoJ/39nYyt2zihlPEbp2Jz3sulLM/MOZNCz4CIQDSSO/yFaAr01e5WnkCnd2VhC+UsNDOr0N/R034ZpKEqA==",
-    )
-    as "The test-only DER fixture decodes."
-  let assert Ok(key) =
-    bit_array.base64_decode(
-      "LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JR0hBZ0VBTUJNR0J5cUdTTTQ5QWdFR0NDcUdTTTQ5QXdFSEJHMHdhd0lCQVFRZzZFVjU4STM2UUsvaFNPZVoKUHd5dW1wVVMvK2VXMTU5N0cxNktabVptWjN1aFJBTkNBQVF3WlBjdEtmQW5UTWRqYTB6dGlyTUJHMzB3dlAwZQpOS0d1dWRTTTd0TjRqWS9SeCtIU2pZZldNM1cvK0F5UzlpTXBBbHpYWkRqcXJ2SXlpWDk3N1RhLwotLS0tLUVORCBQUklWQVRFIEtFWS0tLS0tCg==",
-    )
-    as "The test-only PEM private key fixture decodes."
-  let assert Ok(settings) =
-    tls.settings(cert, cert, key, <<1:size(256)>>, 1000, 1000, 100)
-    as "The real TLS settings constructor parses bounded material."
-  settings
-}
-
-fn connection(scope: identity.Scope) -> connection.Config {
+fn connection(
+  scope: identity.Scope,
+  peer: distribution.Peer,
+) -> connection.Config {
   let fields = identity.scope_fields(scope)
   connection.Config(
-    settings(),
-    "localhost",
-    12_345,
-    1000,
-    "owner",
-    fields.2,
-    1,
-    scope,
+    peer:,
+    owner: "owner",
+    executor: fields.2,
+    scope:,
+    generation: 1,
+    within_ms: 1000,
   )
 }
 
@@ -371,7 +354,7 @@ fn config(
   let assert Ok(value) =
     dispatch_binding.new(
       fixture.owner,
-      connection(scope()),
+      connection(scope(), fixture.peer),
       fn(_) { Ok(actual) },
       fn() { candidate },
       poll.monotonic().now,
@@ -386,7 +369,11 @@ fn config(
 }
 
 pub fn exact_retry_returns_original_uuid_and_prepared_test() {
-  let fixture = new_fixture("retry")
+  use peer <- beam_owner_fixture.run(
+    "client@remote@command_binding_test",
+    "exact_retry_returns_original_uuid_and_prepared_test",
+  )
+  let fixture = new_fixture("retry", peer)
   let proposal = proposal(0)
   retain(fixture, proposal)
   let actual = prepared(proposal, offer.data(proposal).requirements)
@@ -409,7 +396,11 @@ pub fn exact_retry_returns_original_uuid_and_prepared_test() {
 }
 
 pub fn narrowed_policy_is_preserved_and_wider_policy_refuses_test() {
-  let fixture = new_fixture("policy")
+  use peer <- beam_owner_fixture.run(
+    "client@remote@command_binding_test",
+    "narrowed_policy_is_preserved_and_wider_policy_refuses_test",
+  )
+  let fixture = new_fixture("policy", peer)
   let proposal = proposal(0)
   retain(fixture, proposal)
   let requirements = offer.data(proposal).requirements
@@ -431,7 +422,7 @@ pub fn narrowed_policy_is_preserved_and_wider_policy_refuses_test() {
   stop(fixture)
 
   // Broader network authority never enters native custody, even after preparation.
-  let fixture = new_fixture("wide-policy")
+  let fixture = new_fixture("wide-policy", peer)
   retain(fixture, proposal)
   let wider =
     prepared(
@@ -449,7 +440,11 @@ pub fn narrowed_policy_is_preserved_and_wider_policy_refuses_test() {
 }
 
 pub fn substituted_coordinates_token_or_callback_request_refuse_test() {
-  let fixture = new_fixture("substitution")
+  use peer <- beam_owner_fixture.run(
+    "client@remote@command_binding_test",
+    "substituted_coordinates_token_or_callback_request_refuse_test",
+  )
+  let fixture = new_fixture("substitution", peer)
   let proposal = proposal(0)
   retain(fixture, proposal)
   let actual = prepared(proposal, offer.data(proposal).requirements)
@@ -489,7 +484,11 @@ pub fn substituted_coordinates_token_or_callback_request_refuse_test() {
 }
 
 pub fn substituted_offer_template_and_build_mapping_refuse_test() {
-  let fixture = new_fixture("template")
+  use peer <- beam_owner_fixture.run(
+    "client@remote@command_binding_test",
+    "substituted_offer_template_and_build_mapping_refuse_test",
+  )
+  let fixture = new_fixture("template", peer)
   let original = proposal(0)
   let data = offer.data(original)
   let assert Ok(changed) =
@@ -512,7 +511,7 @@ pub fn substituted_offer_template_and_build_mapping_refuse_test() {
   stop(fixture)
 
   // A canonical but different allocation is still foreign to this exact key.
-  let fixture = new_fixture("mapping")
+  let fixture = new_fixture("mapping", peer)
   let assert Ok(changed) =
     offer.offer(
       offer.reference(original),
@@ -534,7 +533,11 @@ pub fn substituted_offer_template_and_build_mapping_refuse_test() {
 }
 
 pub fn missing_command_custody_fences_and_satellite_never_falls_back_test() {
-  let fixture = new_fixture("missing")
+  use peer <- beam_owner_fixture.run(
+    "client@remote@command_binding_test",
+    "missing_command_custody_fences_and_satellite_never_falls_back_test",
+  )
+  let fixture = new_fixture("missing", peer)
   let proposal = proposal(0)
   let actual = prepared(proposal, offer.data(proposal).requirements)
   let fenced = process.new_subject()
@@ -573,7 +576,11 @@ pub fn missing_command_custody_fences_and_satellite_never_falls_back_test() {
 }
 
 pub fn ordered_late_receipt_after_cancel_is_durable_and_identity_checked_test() {
-  let fixture = new_fixture("receipt")
+  use peer <- beam_owner_fixture.run(
+    "client@remote@command_binding_test",
+    "ordered_late_receipt_after_cancel_is_durable_and_identity_checked_test",
+  )
+  let fixture = new_fixture("receipt", peer)
   let proposal = proposal(0)
   retain(fixture, proposal)
   let actual = prepared(proposal, offer.data(proposal).requirements)
@@ -618,7 +625,11 @@ pub fn ordered_late_receipt_after_cancel_is_durable_and_identity_checked_test() 
 }
 
 pub fn changed_connection_scope_refuses_before_callbacks_test() {
-  let fixture = new_fixture("scope")
+  use peer <- beam_owner_fixture.run(
+    "client@remote@command_binding_test",
+    "changed_connection_scope_refuses_before_callbacks_test",
+  )
+  let fixture = new_fixture("scope", peer)
   let assert Ok(workspace) = identity.workspace_id("foreign")
     as "Different bounded workspace."
   let assert Ok(executor) = identity.executor_id("linux") as "Same executor."
@@ -636,7 +647,11 @@ pub fn changed_connection_scope_refuses_before_callbacks_test() {
 }
 
 pub fn one_original_broker_clears_two_compile_parents_and_ordinary_call_test() {
-  let fixture = new_fixture("original-broker")
+  use peer <- beam_owner_fixture.run(
+    "client@remote@command_binding_test",
+    "one_original_broker_clears_two_compile_parents_and_ordinary_call_test",
+  )
+  let fixture = new_fixture("original-broker", peer)
   let first = proposal(0)
   let second = proposal(1)
   retain(fixture, first)
@@ -659,7 +674,7 @@ pub fn one_original_broker_clears_two_compile_parents_and_ordinary_call_test() {
   let assert Ok(local) =
     dispatch_binding.new(
       fixture.owner,
-      connection(scope()),
+      connection(scope(), fixture.peer),
       fn(request) {
         let template = prepared(first, offer.data(first).requirements)
         let actual = wire.Prepared(..template, request: request.request)
@@ -768,7 +783,11 @@ fn clear(
 }
 
 pub fn one_live_broker_budget_caps_command_parents_before_second_preparation_test() {
-  let fixture = new_fixture("budget")
+  use peer <- beam_owner_fixture.run(
+    "client@remote@command_binding_test",
+    "one_live_broker_budget_caps_command_parents_before_second_preparation_test",
+  )
+  let fixture = new_fixture("budget", peer)
   let first = proposal(0)
   let second = proposal(1)
   retain(fixture, first)
@@ -778,7 +797,7 @@ pub fn one_live_broker_budget_caps_command_parents_before_second_preparation_tes
   let assert Ok(local) =
     dispatch_binding.new(
       fixture.owner,
-      connection(scope()),
+      connection(scope(), fixture.peer),
       fn(request) {
         let template = prepared(first, offer.data(first).requirements)
         let actual = wire.Prepared(..template, request: request.request)
@@ -878,7 +897,11 @@ pub fn one_live_broker_budget_caps_command_parents_before_second_preparation_tes
 }
 
 pub fn prepared_registration_stream_lifetime_and_ordered_env_refuse_test() {
-  let fixture = new_fixture("prepared-fields")
+  use peer <- beam_owner_fixture.run(
+    "client@remote@command_binding_test",
+    "prepared_registration_stream_lifetime_and_ordered_env_refuse_test",
+  )
+  let fixture = new_fixture("prepared-fields", peer)
   let proposal = proposal(0)
   retain(fixture, proposal)
   let actual = prepared(proposal, offer.data(proposal).requirements)
@@ -930,7 +953,11 @@ pub fn prepared_registration_stream_lifetime_and_ordered_env_refuse_test() {
 }
 
 pub fn retained_body_digest_and_administrative_digest_substitution_refuse_test() {
-  let fixture = new_fixture("body-digest")
+  use peer <- beam_owner_fixture.run(
+    "client@remote@command_binding_test",
+    "retained_body_digest_and_administrative_digest_substitution_refuse_test",
+  )
+  let fixture = new_fixture("body-digest", peer)
   let original_key = service(0, command.CompileService)
   let #(scope, operation, step) = command.coordinates(original_key)
   let assert Ok(changed_key) =
@@ -959,7 +986,7 @@ pub fn retained_body_digest_and_administrative_digest_substitution_refuse_test()
   stop(fixture)
 
   // A peer's self-consistent template still cannot change enrollment digests.
-  let fixture = new_fixture("administrative-digest")
+  let fixture = new_fixture("administrative-digest", peer)
   let #(input_digest, _, contract) = command.digests(original_key)
   let assert Ok(changed_key) =
     command.service_key(
@@ -993,7 +1020,11 @@ pub fn retained_body_digest_and_administrative_digest_substitution_refuse_test()
 }
 
 pub fn historical_recovery_and_digest_refusal_do_not_prepare_or_mint_test() {
-  let fixture = new_fixture("historical")
+  use peer <- beam_owner_fixture.run(
+    "client@remote@command_binding_test",
+    "historical_recovery_and_digest_refusal_do_not_prepare_or_mint_test",
+  )
+  let fixture = new_fixture("historical", peer)
   let proposal = proposal(0)
   retain(fixture, proposal)
   let actual = prepared(proposal, offer.data(proposal).requirements)
