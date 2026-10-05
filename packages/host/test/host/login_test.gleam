@@ -465,3 +465,37 @@ pub fn a_key_file_that_is_a_link_or_a_directory_refuses_start_test() {
   let assert Error(_) = login.probe_root(directory)
   assert simplifile.delete(directory) == Ok(Nil)
 }
+
+// Every comparison of a signature, a login key or a nonce digest goes through
+// `crypto.secure_compare`, never `==`. Equality of two strings cannot tell the
+// difference, so a test of behaviour cannot hold this: the source is read, and
+// no executable line of it may compare one of those values with `==` or `!=`.
+// The module's own comparisons of non-secret values (the reach, a count) are the
+// only equalities in it.
+pub fn no_secret_is_compared_with_equality_test() {
+  let assert Ok(source) = simplifile.read("src/host/login.gleam")
+    as "the module's source is readable"
+  let code =
+    string.split(source, "\n")
+    |> list.filter(fn(line) { !string.starts_with(string.trim(line), "//") })
+
+  // The two secret comparisons exist and use the constant-time function.
+  assert list.any(code, fn(line) {
+    string.contains(line, "crypto.secure_compare(expected, token.signature)")
+  })
+  assert list.length(
+      list.filter(code, fn(line) {
+        string.contains(line, "crypto.secure_compare(")
+      }),
+    )
+    >= 2
+
+  // No line compares a signature, a key or a digest with an operator.
+  let secret_words = ["signature", "allowance.key", "nonce_digest", "expected"]
+  list.each(code, fn(line) {
+    let compares =
+      string.contains(line, " == ") || string.contains(line, " != ")
+    let names = list.any(secret_words, fn(word) { string.contains(line, word) })
+    assert !{ compares && names }
+  })
+}

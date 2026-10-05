@@ -1559,14 +1559,19 @@ pub fn resumed_writes_at_most_once_an_hour_test() {
     == Ok(access.Unchanged)
 
   // The instant stayed where the first resume put it, so the window is
-  // counted from it and not from the visits it refused.
+  // counted from it and not from the visits it refused. The login's expiry is
+  // fixed when it is made, and no resume moves it.
   let assert Ok(page) = access.signins_page(store, alice.id, "", 0)
   assert list.map(page.entries, fn(row) { row.last_resumed_ms }) == [Some(1000)]
+  assert list.map(page.entries, fn(row) { row.expires_at_ms })
+    == [Some(99_999_999)]
   assert access.resumed(store, browser("1"), 1000 + window)
     == Ok(access.Stamped)
   let assert Ok(later) = access.signins_page(store, alice.id, "", 0)
   assert list.map(later.entries, fn(row) { row.last_resumed_ms })
     == [Some(1000 + window)]
+  assert list.map(later.entries, fn(row) { row.expires_at_ms })
+    == [Some(99_999_999)]
 
   // Only a login row has a resume to record.
   assert access.resumed(store, browser("9"), 1) == Error(catalogue.Missing)

@@ -4247,7 +4247,15 @@ pub fn the_bookmark_resumes_a_home_without_loom_test() {
     let enter_script = get(port, "/ui/assets/web_view_enter.js", [host(port)])
     assert string.contains(enter_script.body, page.login_nonce_item)
 
-    // Posting the nonce with the cookie mints a home page.
+    // Posting the nonce with the cookie mints a home page. The login's expiry
+    // is fixed when it is made: a resume reads it and never moves it.
+    let expiry = fn() {
+      list.map(listed_signins(port, credential), fn(row) {
+        field(row, "expires_at_ms")
+      })
+    }
+    let before = expiry()
+    assert before != [Error(Nil)]
     let resumed = resume_as(port, signed)
     assert resumed.status == 200
     let home = entered(resumed)
@@ -4255,8 +4263,10 @@ pub fn the_bookmark_resumes_a_home_without_loom_test() {
     assert home.nonce != signed.page.nonce
     assert home.cookie != signed.page.cookie
 
-    // It mints a page and not another login: the resume sets one cookie.
+    // It mints a page and not another login: the resume sets one cookie, and the
+    // login ends when it always did.
     assert list.length(set_cookies(resumed)) == 1
+    assert expiry() == before
     assert !string.contains(resumed.body, "data-login")
     let shown = open_page(port, home)
     assert shown.status == 200
@@ -5183,5 +5193,68 @@ pub fn the_principal_listing_counts_logins_beside_the_credential_test() {
     assert owner_logins == 2
     assert member_logins == 1
     assert field(member_credential, "state") == Ok(json.String("active"))
+  })
+}
+
+// A login made from a device link ends when the login that made it does, and
+// names it; a parent that has already ended makes none; and a page with no login
+// gives a fresh thirty days. This is `ui_login.issue`'s own rule, held with a
+// parent whose expiry is a day away, which an exchange minutes old cannot be.
+pub fn a_login_inherits_its_parents_expiry_and_a_dead_parent_makes_none_test() {
+  fixture(fn(ready, port, credential) {
+    let root = root_key(ready)
+    let assert Ok(digest) = access.credential_digest(sha256_text(credential))
+      as "the owner's digest is valid"
+    let grant =
+      ui_sessions.Grant(
+        scope: ui_sessions.Home,
+        credential: digest,
+        principal: ready.owner.id,
+        ceiling: access.Operator,
+        reach: ui_sessions.Workspace,
+        origin: ui_sessions.Fresh,
+        remember: ui_sessions.Remembered,
+      )
+    let now = bootstrap.system_time_ms()
+    let parent =
+      ui_sessions.Issuer(
+        fingerprint: "0123456789abcdef",
+        expires_at_ms: now + 86_400_000,
+        key: string.repeat("a", 32),
+      )
+
+    // A day left on the parent is a day on the child, in the cookie and in the
+    // row, and the row names the parent.
+    let assert Ok(child) =
+      ui_login.issue(root, ready.registry, grant, Some(parent), now)
+      as "a login is made from a device link"
+    assert child.issuer.expires_at_ms == parent.expires_at_ms
+    assert child.max_age_s == 86_400
+    let assert [row] = listed_signins(port, credential)
+    assert field(row, "expires_at_ms") == Ok(json.Int(parent.expires_at_ms))
+    assert field(row, "issued_by") == Ok(json.String("0123456789abcdef"))
+    let assert Ok(opened) =
+      login.open(
+        root,
+        child.token,
+        now_ms: now,
+        key: child.key,
+        nonce: child.nonce,
+      )
+      as "the token opens"
+    assert opened.allowance.expires_at_ms == parent.expires_at_ms
+
+    // A parent that has ended makes no login and writes no row.
+    let dead = ui_sessions.Issuer(..parent, expires_at_ms: now)
+    assert ui_login.issue(root, ready.registry, grant, Some(dead), now)
+      == Error(ui_login.ParentEnded)
+    assert list.length(listed_signins(port, credential)) == 1
+
+    // No parent gives thirty days of its own and no parent in the row.
+    let assert Ok(own) = ui_login.issue(root, ready.registry, grant, None, now)
+      as "a login with no parent is made"
+    assert own.max_age_s == 2_592_000
+    assert own.issuer.expires_at_ms == now + login.lifetime_ms
+    assert list.length(listed_signins(port, credential)) == 2
   })
 }
