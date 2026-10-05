@@ -42,6 +42,23 @@
 //// says why the memos have to be the leaves; `lane_memo_test` counts the
 //// lines a render draws, and a change here must leave its counts as they
 //// are.
+////
+//// ## Flow
+////
+//// `view` → `rows` → `piece_element` → `item_element` → `block_element`
+//// → `line_element`
+////
+//// 1. `view` draws the lane, and `rows` keys one timeline row per piece, with
+////    `live_entry` last while the provider is writing.
+//// 2. `piece_element` draws one piece: a prompt, a fold of work, a card, an
+////    answer.
+//// 3. `item_element` draws one item of a fold, a step, a memory row or a
+////    block of lines, and `work_items` keys them.
+//// 4. `block_element` draws a block's rows; a reasoning row of any speaker
+////    goes through `reasoning_row`, so every settled reasoning block closes
+////    to the same heading and preview.
+//// 5. `line_element` draws one transcript line inside its own memo, as
+////    Markdown or as it is (`body_of`).
 
 import gleam/dict.{type Dict}
 import gleam/int
@@ -738,11 +755,10 @@ fn standing_text(standing: turns.Standing) -> String {
 
 // A block drawn as the transcript draws it, one line per row. The blank a
 // terminal places between tool groups is spacing here, so a spacer block
-// never reaches the lane. A reasoning row is a row of its own, `Reasoning ·
-// 4s` (the time is the response's, from the record before it to its own, not
-// the block's alone), opened to the full reasoning when the page holds it
-// (`thoughts`, by the row's key) and to its opening line when that is all
-// there is.
+// never reaches the lane. A reasoning row is a row of its own (`reasoning_row`;
+// the time is the response's, from the record before it to its own, not the
+// block's alone), opened to the full reasoning when the page holds it
+// (`thoughts`, by the row's key).
 fn block_element(
   block: transcript_lines.Block,
   thoughts: Dict(String, List(Line)),
@@ -753,14 +769,24 @@ fn block_element(
   let rows =
     list.map(block.rows, fn(row) {
       case row.1.speaker {
-        transcript_line.ReasoningDigest ->
-          fold_row.reasoning(
+        transcript_line.ReasoningDigest -> {
+          let held = result.unwrap(dict.get(thoughts, row.0), [])
+          case held {
+            [first, ..] ->
+              reasoning_row(step_words.Raw, first.text, held, took, draw)
+            [] -> reasoning_row(step_words.Raw, row.1.text, [], took, draw)
+          }
+        }
+        transcript_line.Reasoning ->
+          reasoning_row(
+            step_words.Raw,
+            row.1.text,
+            more_of(row.1.text),
             took,
-            list.map(
-              result.lazy_unwrap(dict.get(thoughts, row.0), fn() { [row.1] }),
-              fold_row.line_row(_, draw),
-            ),
+            draw,
           )
+        transcript_line.SummarizedReasoning ->
+          summary_row(row.1.text, took, draw)
         _ -> fold_row.line_row(row.1, draw)
       }
     })
@@ -775,6 +801,62 @@ fn block_element(
       ),
     ),
   )
+}
+
+// Every settled reasoning block is drawn by this one function, whichever
+// speaker its row has: the digest the transcript keeps for a block (with the
+// whole text beside it when the page holds it), the whole text itself, or a
+// provider's summary. The row is the terminal's heading (`step_words`: the
+// verb, the line count when there is more to open, the time), then a one-line
+// Markdown preview of the text's first line, and behind the chevron the whole
+// text as Markdown. `body` is what opens: empty when the preview already says
+// everything, in which case the row has no chevron and no count. The text is
+// the model's or the provider's and is drawn only as text nodes.
+fn reasoning_row(
+  provenance: step_words.Provenance,
+  text: String,
+  body: List(Line),
+  took: Option(Int),
+  draw: fn(Line) -> Element(message),
+) -> Element(message) {
+  let count = case body {
+    [] -> None
+    [_, ..] -> Some(list.length(string.split(text, "\n")))
+  }
+  fold_row.reasoning(
+    step_words.reasoning_of(provenance, count, took),
+    markdown_view.line(text, step_words.result_limit),
+    list.map(body, fold_row.line_row(_, draw)),
+  )
+}
+
+// A summarized block's row text is the terminal's header line and the summary
+// beneath it; the summary is the text, and the header's words are the
+// heading's.
+fn summary_row(
+  text: String,
+  took: Option(Int),
+  draw: fn(Line) -> Element(message),
+) -> Element(message) {
+  let summary = case string.split_once(text, "\n") {
+    Ok(#(_, summary)) -> summary
+    Error(Nil) -> text
+  }
+  reasoning_row(step_words.Summarized, summary, more_of(summary), took, draw)
+}
+
+// The body of a block whose whole text is the row's text: the text itself
+// when it runs past the one line the preview shows, and nothing when it does
+// not, so a short block is not opened to what it already says.
+fn more_of(text: String) -> List(Line) {
+  let trimmed = string.trim(text)
+  case
+    string.contains(trimmed, "\n")
+    || string.length(trimmed) > step_words.result_limit
+  {
+    True -> [transcript_line.Line(transcript_line.Reasoning, text)]
+    False -> []
+  }
 }
 
 // A child's report under its who-line: nothing for an empty report, the text

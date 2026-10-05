@@ -533,10 +533,22 @@ page keys and nonces, and the relay into the session's gateway.
   streams for the followed strand (`transcript_lines.display_streams`),
   `Shared.summaries` and the generation clock into `live.Row`s, and
   `lane.view(pieces, live, top, load, replies)` draws them through `view/live` as the
-  lane's last keyed entry, keyed `live`. `live.Thinking(progress, elapsed_ms,
-  headline)` is the reasoning row: `Reasoning · <loom-elapsed offset>`, with the
-  line count as the row's `title` and the headline as text beneath it when one
-  has been pushed; the thinking is not drawn. `live.Opened(elapsed_ms)` is the
+  lane's last keyed entry, keyed `live`. `live.Thinking(progress, text,
+  elapsed_ms, headline)` is the reasoning row, drawn by `fold_row.live_reasoning`
+  as a `<loom-expand kind="live">`: `Reasoning · <loom-elapsed offset>` and a
+  one-line Markdown preview of the latest line, with the reasoning so far
+  behind the chevron. The body is drawn a paragraph at a time, cut at the last
+  blank line, so each render's `draw` memo holds for the earlier paragraphs and
+  only the one still being written is parsed. The line count is the row's
+  `title`, and the headline is text beneath it when one has been pushed. A
+  settled reasoning row is `kind="settled"`; an open live row publishes
+  `data-reasoning-open-until` on the document element and the settled row that
+  arrives takes it and opens (`web_client/expand`). A settled reasoning block of
+  every speaker shape (`ReasoningDigest` with or without `thoughts`,
+  `Reasoning`, `SummarizedReasoning`) is drawn by `lane.reasoning_row`:
+  `step_words.reasoning_of` heading (`Reasoning (summarized)`, the line count
+  when there is more to open, the time), a one-line preview, and the text as
+  Markdown behind the chevron. `live.Opened(elapsed_ms)` is the
   row before anything streams: while the followed strand's phase is `assistant`
   or `streaming` and no stream is held, `component.live` returns it alone,
   `Thinking · <loom-elapsed offset>` (the browser counts the reading on, so no

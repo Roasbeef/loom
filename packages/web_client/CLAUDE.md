@@ -39,7 +39,13 @@ renders again just for it:
 - `<loom-expand>` is a row of a turn's fold: one line with one chevron, and a
   body behind it. The server draws the line and the body as children
   (`slot="head"` and `slot="body"`); the element holds one button around the
-  head and the body slot while the row is open, with no round trip.
+  head and the body slot while the row is open, with no round trip. A
+  reasoning row carries `kind="live"` while the block streams and
+  `kind="settled"` once it has settled: an open live row leaves
+  `data-reasoning-open-until` on the document element (a deadline, never
+  reached while the row is on the page and `handoff_window_ms` after it leaves)
+  and the settled row that connects takes it and opens (`expand_rule.offers`),
+  so a reader who opened the reasoning keeps it open when it settles.
 - `<loom-follow>` is the transcript's scroll container: the page's frame is
   pinned and only it scrolls. It scrolls itself to a row that lands below
   its view while the reader is at the bottom; once the reader scrolls up it
