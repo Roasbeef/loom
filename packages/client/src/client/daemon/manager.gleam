@@ -505,6 +505,10 @@ type Message(instance) {
     String,
     Subject(Result(#(Int, List(View)), Error)),
   )
+  AuthorizedRoles(
+    access.Digest,
+    Subject(Result(List(#(String, access.Role)), Error)),
+  )
   Authenticate(access.Digest, Subject(Result(access.Principal, Error)))
   SessionAuthority(
     access.Digest,
@@ -1610,6 +1614,32 @@ pub fn authorized_page(
   |> result.unwrap(Error(Unavailable))
 }
 
+/// Lists the role the credential's principal holds in each session of its
+/// first page of memberships, as `authorized_page` lists the sessions.
+///
+/// The credential is authenticated again on this call. The owner holds no
+/// membership rows, so its answer is empty: the owner owns every session and a
+/// role would say nothing. A member's answer is its memberships in session-ID
+/// order, at most `access.listing_limit`, the same bound and order as the
+/// first page `authorized_page` reads, so a row of that page has its role here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.authorized_roles(registry, digest)
+/// ```
+@internal
+pub fn authorized_roles(
+  manager: Manager(instance),
+  digest: access.Digest,
+) -> Result(List(#(String, access.Role)), Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: AuthorizedRoles(
+    digest,
+    _,
+  ))
+  |> result.unwrap(Error(Unavailable))
+}
+
 /// Counts live reservations without scanning the durable catalogue.
 ///
 /// ## Examples
@@ -2076,6 +2106,23 @@ fn handle(
         }
       }
       process.send(reply, viewed_page(book, outcome))
+      sm.keep(book)
+    }
+    AuthorizedRoles(digest, reply) -> {
+      let outcome = {
+        use principal <- result.try(principal_of(book, digest))
+        case principal.kind {
+          access.OwnerPrincipal -> Ok([])
+          access.MemberPrincipal ->
+            access.memberships_page(book.catalogue, principal.id, "")
+            |> result.map(fn(page) {
+              list.map(page.entries, fn(entry) {
+                #(entry.session_id, entry.role)
+              })
+            })
+        }
+      }
+      process.send(reply, result.map_error(outcome, Catalogue))
       sm.keep(book)
     }
     Authenticate(digest, reply) -> {

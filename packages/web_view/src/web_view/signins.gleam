@@ -109,21 +109,30 @@ pub fn reason_words(reason: Reason) -> String {
 }
 
 /// How long until `then`, as `now` sees it, both in Unix milliseconds: "under a
-/// minute", then whole minutes, hours and days. A `then` that is not after `now`
-/// is "ended".
+/// minute", then minutes, hours and days, each rounded up. A person told a
+/// sign-in lasts 30 days should read `30d` on one made a moment ago, and a
+/// floor would show `29d` for thirty days less one second. A `then` that is not
+/// after `now` is "ended".
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert signins.ends_in(0, 5_184_000_000) == "60d"
+/// assert signins.ends_in(0, 5_183_999_000) == "60d"
 /// ```
 pub fn ends_in(now: Int, then: Int) -> String {
-  let seconds = int.max(then - now, 0) / 1000
+  let seconds = up(int.max(then - now, 0), 1000)
+  let minutes = up(seconds, 60)
+  let hours = up(seconds, 3600)
   case seconds {
     0 -> "ended"
     _ if seconds < 60 -> "under a minute"
-    _ if seconds < 3600 -> int.to_string(seconds / 60) <> "m"
-    _ if seconds < 86_400 -> int.to_string(seconds / 3600) <> "h"
-    _ -> int.to_string(seconds / 86_400) <> "d"
+    _ if minutes < 60 -> int.to_string(minutes) <> "m"
+    _ if hours < 24 -> int.to_string(hours) <> "h"
+    _ -> int.to_string(up(seconds, 86_400)) <> "d"
   }
+}
+
+// `count` divided by `unit`, rounded up, for a non-negative count.
+fn up(count: Int, unit: Int) -> Int {
+  { count + unit - 1 } / unit
 }

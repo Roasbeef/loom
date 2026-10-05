@@ -1051,7 +1051,14 @@ fn home_read(
     manager.authorized_page(attachment.registry, attachment.digest, after: "")
     |> result.map_error(authentication_failure),
   )
-  list.map(views, listed_entry)
+  let entries = list.map(views, listed_entry)
+
+  // A failed read of the roles leaves the rows without one, which is the owner's
+  // case too: a row that says less than it could is the safe way to be wrong.
+  case manager.authorized_roles(attachment.registry, attachment.digest) {
+    Ok(roles) -> with_roles(entries, roles)
+    Error(_) -> entries
+  }
 }
 
 // The catalogue holding no such credential is a revoked one. Every other
@@ -3698,7 +3705,37 @@ pub fn listed_entry(view: manager.View) -> sessions.Entry {
       manager.Reserved | manager.RecoveryBlocked(..) -> sessions.Blocked
     },
     subtitle: record.subtitle,
+    role: None,
   )
+}
+
+/// The entries with the role the principal holds in each, from the daemon's
+/// own membership rows (`manager.authorized_roles`). A session with no row,
+/// which is every session of the owner's, keeps no role.
+///
+/// The roles are matched by session identity and nothing else reaches them: a
+/// page sends the daemon no role, so the word a row says is the catalogue's
+/// and a person cannot raise it by anything they send.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.with_roles(entries, [#(session_id, access.Observer)])
+/// ```
+@internal
+pub fn with_roles(
+  entries: List(sessions.Entry),
+  roles: List(#(String, access.Role)),
+) -> List(sessions.Entry) {
+  list.map(entries, fn(entry) {
+    case list.key_find(roles, entry.id) {
+      Ok(access.Operator) ->
+        sessions.Entry(..entry, role: Some(sessions.Operates))
+      Ok(access.Observer) ->
+        sessions.Entry(..entry, role: Some(sessions.Observes))
+      Error(Nil) -> entry
+    }
+  })
 }
 
 /// A started page, as its socket holds it: how a browser frame reaches the

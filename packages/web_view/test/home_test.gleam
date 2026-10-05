@@ -36,7 +36,15 @@ fn entry(
   created_at: Int,
   residency: sessions.Residency,
 ) -> Entry {
-  Entry(id:, name:, workspace:, created_at:, residency:, subtitle: None)
+  Entry(
+    id:,
+    name:,
+    workspace:,
+    created_at:,
+    residency:,
+    subtitle: None,
+    role: None,
+  )
 }
 
 // The instant the page reads the clock at: two hours and a few minutes after
@@ -425,7 +433,7 @@ pub fn an_observer_homes_only_running_rows_carry_a_press_test() {
     )
     == 2
   let html = element.to_string(home.view(observer))
-  assert list.length(string.split(html, "<button")) == 5
+  assert list.length(string.split(html, "<button")) == 6
   assert !string.contains(html, "<a ")
   assert !string.contains(html, "<form")
   assert !string.contains(html, "href")
@@ -454,7 +462,7 @@ pub fn an_operator_home_presses_saved_rows_too_test() {
   assert list.length(keys) == 8
   assert list.all(keys, beneath_the_two_regions)
   let html = element.to_string(home.view(operator))
-  assert list.length(string.split(html, "<button")) == 9
+  assert list.length(string.split(html, "<button")) == 10
   assert string.contains(html, "title=\"Resume this session\"")
   assert string.contains(html, "stuck")
 
@@ -635,11 +643,17 @@ pub fn the_bar_names_the_principal_and_the_ceiling_test() {
   let html = drawn(operator)
   assert string.contains(html, "<h1>Home</h1>")
   assert string.contains(html, ">Alice<")
-  assert string.contains(html, ">operator<")
   assert string.contains(html, ">connected<")
+
+  // An operating page may do all its principal may, which is the normal case,
+  // so the bar says nothing beside the name.
+  assert !string.contains(html, "home-badge")
+  assert !string.contains(html, ">operator<")
   let #(observer, _) =
     opened(start_with(home.ObserverCeiling, fn() { home.Listed([]) }))
-  assert string.contains(drawn(observer), ">read-only<")
+  let watching = drawn(observer)
+  assert string.contains(watching, ">read-only link<")
+  assert string.contains(watching, "title=\"This link can only watch\"")
 }
 
 // The timer is armed when the page opens and again after each read, so the
@@ -1390,4 +1404,64 @@ pub fn an_unnamed_rows_form_has_no_name_to_copy_test() {
   assert string.contains(html, "home-rename-form")
   assert string.contains(html, "Rename Session D")
   assert !string.contains(html, "data-loom-name")
+}
+
+// Each row's quiet line carries the person's role in that session after the
+// state word, for a member. The owner's rows, which have no role, read as they
+// did. The role is the membership's, so the words are the two fixed ones.
+pub fn a_members_rows_say_the_role_they_hold_test() {
+  let rows = [
+    Entry(
+      ..entry("B", "vetting lint", "/src/loom", 300_000, Live),
+      role: Some(sessions.Observes),
+    ),
+    Entry(
+      ..entry("A", "web ui", "/src/loom", 100_000, Live),
+      role: Some(sessions.Operates),
+    ),
+    entry("C", "hex release", "/src/weft", 1_790_000_000_000, Saved),
+  ]
+  let #(model, _) =
+    opened(start_with(home.OperatorCeiling, fn() { home.Listed(rows) }))
+  let html = drawn(model)
+  assert string.contains(html, "resident · observer")
+  assert string.contains(html, "resident · operator")
+  assert list.length(string.split(html, "· observer")) == 2
+  assert list.length(string.split(html, "· operator")) == 2
+  let #(owner, _) = opened(start())
+  let owned = drawn(owner)
+  assert !string.contains(owned, "observer")
+  assert !string.contains(owned, "· operator")
+}
+
+// The sidebar says what the list says: a running row's word is the activity
+// read's answer, "needs you" in the signal hue, and nothing until the read has
+// answered. The words "saved" stay.
+pub fn the_sidebar_says_the_activity_word_the_list_says_test() {
+  let #(model, _) =
+    opened(
+      home.Start(..start(), activity: fn(_, deliver) {
+        deliver([#("B", sessions.Working), #("A", sessions.NeedsYou)])
+      }),
+    )
+  let html = drawn(model)
+  assert string.contains(
+    html,
+    "<span aria-hidden=\"true\" class=\"glyph\">●</span>working</span>",
+  )
+  assert string.contains(
+    html,
+    "<span aria-hidden=\"true\" class=\"glyph\">●</span>needs you</span>",
+  )
+  assert string.contains(html, "residency live needs-you")
+
+  // Before the answer, a running row's suffix is empty rather than "resident".
+  let before =
+    drawn(run(home.new(start()), home.Answered(home.Listed(listing()))))
+  assert string.contains(
+    before,
+    "<span aria-hidden=\"true\" class=\"glyph\">●</span></span>",
+  )
+  assert !string.contains(before, ">●</span>resident")
+  assert string.contains(before, ">○</span>saved")
 }

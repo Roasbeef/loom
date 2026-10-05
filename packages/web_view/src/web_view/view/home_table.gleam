@@ -190,6 +190,27 @@ fn standing(
   activity: Result(Activity, Nil),
   kind: resume.Kind(message),
 ) -> Standing {
+  let base = base_standing(entry, activity, kind)
+
+  // The person's role in this session ends the words, after the state: a
+  // member reads "resident · idle · observer", and the owner's rows, which have
+  // no role, read as they did.
+  case entry.role {
+    Some(role) ->
+      Standing(
+        ..base,
+        words: list.append(base.words, [sessions.role_words(role)]),
+      )
+    None -> base
+  }
+}
+
+// The row's glyph, class and state words, before the role is added.
+fn base_standing(
+  entry: Entry,
+  activity: Result(Activity, Nil),
+  kind: resume.Kind(message),
+) -> Standing {
   case entry.residency, kind {
     Live, _ ->
       case activity {

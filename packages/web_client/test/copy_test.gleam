@@ -222,3 +222,52 @@ pub fn the_claim_address_subject_copies_only_the_claim_page_test() {
   assert copy_rule.words(copy_rule.ClaimPage, copy_rule.Copied)
     == "Address copied"
 }
+
+// The home's bookmark box copies the address that resumes a remembered login,
+// and only that shape: `http://`, a loopback host and port, `/ui/l/`, the
+// login key's 32 lowercase hexadecimal digits and `/home`. The bookmark is a
+// bearer address, so a value that differs in any part is no value.
+pub fn the_bookmark_subject_copies_only_a_login_address_test() {
+  assert copy_rule.subject("bookmark") == Ok(copy_rule.Bookmark)
+  let key = string.repeat("ab", 16)
+  let bookmark = "http://127.0.0.1:4000/ui/l/" <> key <> "/home"
+  assert copy_rule.text(copy_rule.Bookmark, bookmark) == Ok(bookmark)
+  let bracketed = "http://[::1]:4000/ui/l/" <> key <> "/home"
+  assert copy_rule.text(copy_rule.Bookmark, bracketed) == Ok(bracketed)
+  list.each(
+    [
+      "",
+      "http://127.0.0.1:4000/ui/l/" <> string.repeat("ab", 15) <> "/home",
+      "http://127.0.0.1:4000/ui/l/" <> string.repeat("ab", 17) <> "/home",
+      "http://127.0.0.1:4000/ui/l/" <> string.uppercase(key) <> "/home",
+      "http://127.0.0.1:4000/ui/l/" <> string.repeat("g", 32) <> "/home",
+      "http://127.0.0.1:4000/ui/l/" <> key,
+      "http://127.0.0.1:4000/ui/l/" <> key <> "/home/",
+      "http://127.0.0.1:4000/ui/l/" <> key <> "/home\nrm -rf ~",
+      "http://127.0.0.1:4000/ui/l/" <> key <> "/home?x=1",
+      "http://127.0.0.1:4000/ui/l/" <> key <> "/sessions",
+      "https://127.0.0.1:4000/ui/l/" <> key <> "/home",
+      "http:///ui/l/" <> key <> "/home",
+      "http://127.0.0.1:4000/x/ui/l/" <> key <> "/home",
+      "http://evil.example/ cat /ui/l/" <> key <> "/home",
+      " http://127.0.0.1:4000/ui/l/" <> key <> "/home",
+      "http://" <> string.repeat("a", 65) <> "/ui/l/" <> key <> "/home",
+      "/ui/l/" <> key <> "/home",
+      command,
+      token,
+      "http://127.0.0.1:4000/ui/home?ticket=" <> string.repeat("ab", 32),
+    ],
+    fn(value) {
+      assert copy_rule.text(copy_rule.Bookmark, value) == Error(Nil)
+    },
+  )
+
+  // A bookmark is not any of the other subjects' text, nor theirs its.
+  assert copy_rule.text(copy_rule.Device, bookmark) == Error(Nil)
+  assert copy_rule.text(copy_rule.Command, bookmark) == Error(Nil)
+  assert copy_rule.words(copy_rule.Bookmark, copy_rule.Idle) == "Copy bookmark"
+  assert copy_rule.words(copy_rule.Bookmark, copy_rule.Copied)
+    == "Bookmark copied"
+  assert copy_rule.words(copy_rule.Bookmark, copy_rule.Failed)
+    == "Copy failed. Select the text and copy it."
+}

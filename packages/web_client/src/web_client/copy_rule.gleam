@@ -33,6 +33,14 @@
 //// secret, and it has the same rule: exactly that shape, so a page cannot
 //// alter it into another address.
 ////
+//// A sixth is the bookmark a remembered login's home draws, so the person can
+//// keep it (protocol-change/065, the browser login): the daemon's address, the
+//// login's path `/ui/l/` and the login key, 32 lowercase hexadecimal digits,
+//// then `/home`. The address is `http://` and a host and port made of the same
+//// characters a device link's are. The bookmark is a bearer address: whoever
+//// holds it can resume the login while it lasts, so the element copies exactly
+//// that shape and nothing else.
+////
 //// The module imports neither Lustre nor the DOM binding, so the tests load
 //// it under Node.
 
@@ -60,6 +68,11 @@ pub type Subject {
   /// The address that claims in a browser: `http://`, a loopback host and port
   /// and `/ui/claim`, with nothing after it.
   ClaimPage
+
+  /// The address that resumes a remembered login's home page: `http://`, a
+  /// loopback host and port, `/ui/l/`, the login key's 32 lowercase
+  /// hexadecimal digits and `/home`.
+  Bookmark
 }
 
 /// What the button has done so far.
@@ -93,6 +106,12 @@ const device_path = "/ui/home?ticket="
 
 const claim_page_path = "/ui/claim"
 
+const bookmark_path = "/ui/l/"
+
+const bookmark_tail = "/home"
+
+const key_digits = 32
+
 // The characters a loopback host and port are made of: letters, digits and the
 // punctuation of a name, an address and a port. No slash, no space, no quote.
 const host_characters =
@@ -125,6 +144,7 @@ pub fn subject(value: String) -> Result(Subject, Nil) {
     "link" -> Ok(Link)
     "device" -> Ok(Device)
     "claim-address" -> Ok(ClaimPage)
+    "bookmark" -> Ok(Bookmark)
     _ -> Error(Nil)
   }
 }
@@ -145,6 +165,7 @@ pub fn text(subject: Subject, value: String) -> Result(String, Nil) {
     Link -> link(value)
     Device -> device(value)
     ClaimPage -> claim_page(value)
+    Bookmark -> bookmark(value)
   }
   case shaped {
     True -> Ok(value)
@@ -218,6 +239,32 @@ fn claim_page(value: String) -> Bool {
   }
 }
 
+// `http://`, a loopback host, `/ui/l/`, exactly 32 lowercase hexadecimal digits
+// and `/home`, with nothing after it.
+fn bookmark(value: String) -> Bool {
+  case string.split_once(value, device_scheme) {
+    Ok(#("", rest)) ->
+      case string.split_once(rest, bookmark_path) {
+        Ok(#(host, after)) ->
+          host != ""
+          && !longer_than(host, host_limit)
+          && list.all(string.to_graphemes(host), fn(character) {
+            string.contains(host_characters, character)
+          })
+          && case string.split_once(after, bookmark_tail) {
+            Ok(#(key, "")) ->
+              exactly(key, key_digits)
+              && list.all(string.to_graphemes(key), fn(digit) {
+                string.contains("0123456789abcdef", digit)
+              })
+            Ok(#(_, _)) | Error(Nil) -> False
+          }
+        Error(Nil) -> False
+      }
+    Ok(_) | Error(Nil) -> False
+  }
+}
+
 // `loomclaim_` and exactly 64 hexadecimal digits.
 fn token(value: String) -> Bool {
   case string.split_once(value, token_prefix) {
@@ -275,15 +322,18 @@ pub fn words(subject: Subject, copying: Copying) -> String {
     Idle, Token -> "Copy token"
     Idle, Device -> "Copy link"
     Idle, ClaimPage -> "Copy address"
+    Idle, Bookmark -> "Copy bookmark"
     Copied, Command | Copied, Link -> "Command copied"
     Copied, Token -> "Token copied"
     Copied, Device -> "Link copied"
     Copied, ClaimPage -> "Address copied"
+    Copied, Bookmark -> "Bookmark copied"
     Failed, Command
     | Failed, Token
     | Failed, Link
     | Failed, Device
     | Failed, ClaimPage
+    | Failed, Bookmark
     -> "Copy failed. Select the text and copy it."
   }
 }

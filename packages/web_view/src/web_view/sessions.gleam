@@ -77,7 +77,38 @@ pub type Entry {
     /// a text node and nowhere else: never an attribute, a class, a key or a
     /// title. A session with no prompt, or one older than the field, has none.
     subtitle: Option(String),
+    /// The role the page's principal holds in this session, as the daemon's
+    /// membership says. A member is an operator or an observer of each session
+    /// it was invited to; the owner holds none, because it owns every session,
+    /// and a read that finds no membership leaves it `None`. It is never
+    /// something the page sent: the home's read fills it from the catalogue
+    /// beside the session list.
+    role: Option(Role),
   )
+}
+
+/// What a member may do in one session. It is the membership's own role, and
+/// not the ceiling of the page, which caps every session at once.
+pub type Role {
+  /// The member may send prompts and answer approvals.
+  Operates
+
+  /// The member may only watch.
+  Observes
+}
+
+/// The word the home's row says for a role.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert sessions.role_words(sessions.Observes) == "observer"
+/// ```
+pub fn role_words(role: Role) -> String {
+  case role {
+    Operates -> "operator"
+    Observes -> "observer"
+  }
 }
 
 /// What the page calls an entry: its name, or, for a session with no name,
@@ -88,7 +119,7 @@ pub type Entry {
 /// ## Examples
 ///
 /// ```gleam
-/// assert sessions.label(Entry("0198a2f4-7c3b", "", "/w", 0, Saved, None))
+/// assert sessions.label(Entry("0198a2f4-7c3b", "", "/w", 0, Saved, None, None))
 ///   == "Session 0198a2f4"
 /// ```
 pub fn label(entry: Entry) -> String {
