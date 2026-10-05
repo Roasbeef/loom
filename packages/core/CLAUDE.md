@@ -292,3 +292,16 @@ unsafe-u64 warnings; it does not establish exact u64 custody on JavaScript's
 Number representation. The Erlang build remains warning-free. The complete
 retention and read path is described in
 [distributed-final-results.md](../../docs/design-notes/distributed-final-results.md).
+
+## Raw transport scanning
+
+`internal/msgpack_scan` can locate an encoded transport value without building
+its MessagePack tree. The broker uses this scan to preserve the original body
+bytes while validating the small envelope header. Terminal report validation
+then applies its own shared node and depth budgets before generic allocation.
+Transport scanning preserves field order and nonminimal header encodings; it
+does not certify body UTF-8, duplicate keys or terminal semantics.
+
+The scanner's sibling loop uses direct tail recursion on JavaScript. This does
+not repair the separate generic MessagePack decoder's large-sibling stack limit
+on that target, nor does it establish exact JavaScript u64 representation.
