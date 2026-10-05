@@ -190,3 +190,41 @@ pub fn failed_provenance_prevents_transport_test() {
     as "provenance failure settles"
   assert process.receive(requests, within: 0) == Error(Nil)
 }
+
+pub fn refused_trial_admission_keeps_reason_and_acquires_no_credentials_test() {
+  let effects = process.new_subject()
+  let gw =
+    gateway.new(
+      transport: fixture.routing_transport(fn(_) {
+        process.send(effects, "transport")
+        []
+      }),
+      secrets: secret.from_function(fn(_) {
+        process.send(effects, "credential")
+        Ok("sk-fixture")
+      }),
+      clock: clock.fixed(1),
+    )
+    |> gateway.add_provider(gateway.AnthropicProvider(
+      "p",
+      "https://test",
+      "KEY",
+    ))
+    |> gateway.with_request_guard(fn(_, _, _) {
+      Error("aggregate token reservation exhausted")
+    })
+  let handle =
+    gateway.request(
+      gw,
+      fixture.request_for(fixture.resolved(provider: "p", model_id: "m")),
+    )
+  let assert Ok(#(_, stream.Failed(error))) =
+    stream.await_terminal(handle, within: 2000)
+    as "native refusal is a terminal observed result"
+  assert stream.underlying_error(error)
+    == stream.StreamError(
+      api_error_type: "request_admission",
+      message: "aggregate token reservation exhausted",
+    )
+  assert process.receive(effects, within: 0) == Error(Nil)
+}

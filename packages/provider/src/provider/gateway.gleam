@@ -1882,7 +1882,7 @@ fn attempt_one(
     config,
     ordinal,
   ))
-  use request <- or_profile_failure(case gateway.request_guard {
+  use request <- or_admission_failure(case gateway.request_guard {
     None -> Ok(request)
     Some(guard) -> guard(target, adapter_api(config), request)
   })
@@ -2020,6 +2020,25 @@ fn or_profile_failure(
         Failed(stream.StreamError(
           api_error_type: "profile_provenance",
           message: "the resolved prompt profile could not be recorded",
+        )),
+      )
+  }
+}
+
+// Admission owns its refusal before credentials or transport exist. Preserve
+// the native reason so an exhausted trial budget is not reported as lost
+// profile provenance, which would hide the boundary that stopped the request.
+fn or_admission_failure(
+  admitted: Result(ProviderRequest, String),
+  next: fn(ProviderRequest) -> AttemptOutcome,
+) -> AttemptOutcome {
+  case admitted {
+    Ok(request) -> next(request)
+    Error(reason) ->
+      AttemptTerminal(
+        Failed(stream.StreamError(
+          api_error_type: "request_admission",
+          message: reason,
         )),
       )
   }
