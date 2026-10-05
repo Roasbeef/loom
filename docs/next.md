@@ -9,11 +9,16 @@ maps the design, architecture and remaining acceptance criteria.
 
 Native execution, owner custody, semantic workspace operations and physical
 compilation components are implemented and individually reviewed. Whole Compile
-ownership, command forwarding and the owner consumer are being assembled.
+ownership, command forwarding and the owner consumer now use the trusted TLS
+BEAM endpoint. The Git-pinned Weft dependency is merged upstream. Combined
+owner, workspace and Compile controls pass all 68 tests; twelve endpoint and
+command-route controls pass, and the real native E2E covers executor generation
+replacement and owner SQLite restart. The [transport review](review/distributed-beam-transport-transition.md)
+records independent review, limits and the unresolved historical-refusal defect.
 The [owner discharge fix](review/distributed-owner-discharge.md) now retains
-unresolved run obligations across worker loss and owner restart. The combined
-storage and seeded client gates pass 193 and 2,832 tests, respectively. The
-client run has 15 optional skips and no hidden subject-ownership panic.
+unresolved run obligations across worker loss and owner restart. The earlier storage gate passed 193 tests; the current full client gate passes
+2,847 tests, with 15 explicit optional SKIP notices. These skipped paths still
+need their shipped-server or language-server prerequisites for full coverage.
 Launch/satellite, remote LSP, registered daemon configuration and the separate-host
 ordinary-tool/code-mode acceptance run remain pending. Main `7a9adf1e` is merged into this branch. The seeded code-mode, client, tools,
 storage and executor package gates passed; the full repository and separate-host
@@ -37,8 +42,9 @@ Those results do not establish assembled-system acceptance.
 
 The [owner discharge model](review/distributed-owner-discharge-model.md) adds
 eight normal cases, eight exact reachability probes and nine compiling mutation
-witnesses. Its full P gate passes 106 cases/probes and 46 mutations; the root
-independently replayed all new cases and mutations on the integration tree.
+witnesses. The current full P gate, including the TLS BEAM credit correspondence model,
+passes 114 cases/probes and 52 mutation controls. Focused independent review
+replayed the new credit cases, probes and mutations.
 The model assumes truthful COMMIT/drain events and makes no native-retirement or
 whole-system proof claim.
 

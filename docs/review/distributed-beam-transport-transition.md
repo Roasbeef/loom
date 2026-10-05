@@ -47,11 +47,144 @@ new issue. It traced the factory to the actual launch environment and checked
 the amendment's trust and implementation-status claims. The reviewer did not
 rerun the suites.
 
+## Bootstrap and owner-consumer evidence
+
+The bootstrap component now starts independent owner and executor BEAM processes
+with private cookie homes, pinned certificates and TLS-only distribution. Three
+focused tests pass, including the grouped wrong-certificate, wrong-name,
+plaintext, missing-client-certificate and wrong-cookie controls. These are local
+two-process tests; they do not establish separate-host routing or satellite
+credential exclusion. Commit `2f0028bb` contains the bootstrap component. Independent Sol review
+repeated the three controls and found no reachable defect. It qualified the
+erpc response timeout: distribution pressure can delay sending, so callers
+must own a whole-operation deadline. The public documentation now says so.
+An attempted Astra review ended with a service safety flag and supplies no
+signoff. Assembled-system review remains open.
+
+The migrated owner-custody suite passes all 25 original controls with no skips.
+Each control boots a fresh owner VM through the real membership constructor and
+requires an explicit completion witness as well as a zero process exit status.
+These controls preserve reservation, cancellation, receipt and recovery behavior;
+they deliberately do not claim to exercise an executor connection. The final
+fixture sources were compared byte-for-byte with the integration tree before
+recording the result.
+
+A real endpoint test exposed a shared-library defect: weft checked a remote
+consumer PID with the local-only `is_process_alive` operation. The repair uses
+weft's existing signal-delivery primitive. Local already-dead consumers must
+still prevent task startup; remote death or disconnection arrives asynchronously
+through the monitor. A dependency-overlay test is component evidence until the
+reviewed weft revision is pinned in the integration dependency. The rebased commit
+`368d01ab` was merged in [weft PR #17](https://github.com/Roasbeef/weft/pull/17)
+as `e6b63cfd`.
+Both the implementation run and independent Sol replay passed the full
+185-test gate, including remote consumer exit, node disconnection and the
+already-dead local consumer. After rebasing onto upstream main, the full local gate passes 188 tests.
+The integration pins the reviewed Git revision directly in all ten direct
+consumers; eleven generated locks resolve it. No local dependency overlay is
+needed. The standalone MCP package keeps its external dependency graph; the
+assembled client resolves that transitive dependency through its direct pin.
+
+Transport migration must preserve the following existing controls. A fixture
+that still constructs the old socket configuration blocks its package gate;
+it is not a reason to exclude the fixture from that gate.
+
+| Existing control | Required BEAM replacement | Status |
+| --- | --- | --- |
+| Owner dispatch and command custody | Real bootstrapped Peer; same 25 original assertions | Focused pass. |
+| Compile consumer and joined compiler | Independent executor VM; exact original broker, command and completion custody | Fifteen controls and six compiled mutations pass; independent Sol review completed. Exact outer completion bytes are asserted again. |
+| Workspace consumer | Executor-local filesystem and SQLite; owner receipt before ACK; all 11 original controls | Eleven real-peer controls and independent Sol replay pass. |
+| Native broker integration | Real helper, output, stdin, receipt and restart behavior | Root script passes with the Git-pinned dependency and real TLS peers. |
+| Command-route adversarial transport | Exact reference/generation checks and detached cancellation | Seven preserved controls pass in the root Git-pinned replay. |
+| Generation renewal | Quiescent replacement at generation 2 using the original journals and UUIDs | Component verifies ScopeRetirement, native DOWN and actual VM exit before recovery. Daemon assembly remains pending. |
+
+The integration run passes all 68 combined owner, workspace, Compile-consumer
+and whole-Compile actor controls with zero skips against the Git-pinned Weft
+source. Independent Sol review found that the migrated joined compiler fixture
+had omitted its original outer completion byte comparison. The fixture now
+compares the owner's persisted completion with the executor's retained bytes.
+The passing run includes that assertion.
+
+The root native E2E script builds a fresh helper, compiles the full client package
+without warnings and passes its independent owner/executor VM scenario. It
+checks generation 1 to 2 against the retained journal, original request identity,
+owner restart, output, receipt and refusal behavior. The worker also ran both
+named mutation scripts: missing owner receipt and bypassed registration each
+failed at the intended assertion. This is a local multi-process component test;
+separate-host and registered daemon acceptance remain open.
+
+The first root combined run selected Gleam 1.18.1 from a login shell while its
+seed was built with 1.19.0-rc2. Both real compiler controls failed after the
+version mismatch forced an offline dependency rebuild. The matching toolchain
+passed all 68 controls. A sandboxed attempt also failed because local TLS
+listeners were denied; the permissioned run supplies the passing evidence.
+Neither failed run is counted as a pass.
+
+The current endpoint binds a registration to one concrete service generation.
+It cannot replace that registration in place. Generation renewal therefore needs
+host-controlled ingress closure, joined transport and service work, and proof of
+native quiescence before replacement. Stopping the endpoint alone is insufficient.
+The old generation-1-to-2 recovery assertion remains an acceptance requirement.
+
+## Endpoint credit correspondence
+
+The endpoint correction binds each local service handoff to its original
+transport reference. A handoff delayed past transport drain cannot enter service
+custody after the same credit is assigned to another request. Five focused tests
+pass, including real TLS peers and deterministic stale-handoff injection while
+the credit is idle and after reuse. The test checks the entire retained credit
+state; it does not infer correctness from a missing output alone.
+
+The new P credit model passes four directed safety cases at 1,000 schedules each,
+four exact reachability witnesses, and six compiling mutation controls. Its
+monitors check the original reference, service-answer and transport-drain facts,
+sticky loss, closed admission and the shared four-data-credit ceiling. These
+are bounded model results, not a proof of OTP signal order or native retirement.
+Independent Sol review found no confirmed new defect and repeated all five
+endpoint tests, all four safety cases and probes, and all six mutation controls.
+It also verified the asynchronous Stop qualification below. The root repeated
+the five endpoint tests together with the seven command-route controls against
+the actual Git dependency; all twelve passed. The full P runner exited zero
+with 114 cases/probes and 52 mutation controls. Expected assertion failures in
+reachability probes and mutants are checked by the runner; they are not ignored
+failures.
+
+Endpoint stop remains asynchronous. Linked child shutdown and consumer monitors
+retire its managed runs, but endpoint DOWN alone precedes those completions.
+Replacement assembly must obtain an actual join/drain witness before treating
+the old transport lifetime as retired. Native retirement is a separate fact.
+
+## Assembled review and known refusal defect
+
+A fresh Astra source review covered bootstrap commit `2f0028bb`, the credit model,
+the assembled endpoint and consumers, whole-Compile metadata ordering and the
+native restart fixture. It found no additional reachable defect. It verified the
+restored exact completion-byte assertion and inspected the root's passing
+68-control replay and native E2E log. It did not independently rerun those gates.
+The reviewed implementation is committed in `0707dabe`, `94f6834c`, `bf9e10a35`
+and `0c1e505fe`; dependency commits `967a17538` and `4621d68ee` pin merged Weft.
+
+One known availability defect remains. `service.command_context` collapses a
+missing or conflicting historical resource lookup into `Uncertain`. Whole-Compile
+routing treats that answer as uncertain custody, fences admission and retains
+its metadata slot; the endpoint also retires its transport credit. A definite
+identity refusal therefore prevents later valid work. Genuine journal or ask
+uncertainty must keep this conservative behavior, but a known Missing or Conflict
+needs a definite refusal after the actual metadata worker drains.
+
+Automatic approval review rejected the proposed native service/interface edit.
+The owner has been asked for explicit approval; the native service source remains
+unchanged. The required regression must pass a missing/conflicting original
+through the actual command endpoint, observe metadata drain and then admit a
+separate valid operation. The passing component gates do not close this defect.
+
 ## Remaining acceptance
 
-Real TLS-distributed node authentication, endpoint admission/consumption bounds,
-owner consumer migration and registered daemon assembly are pending. Executor
-assembly must still exclude credential files and inherited descriptors from
+Independent review of the assembled bootstrap, endpoint, whole-Compile actor,
+owner consumers and native restart fixture found no additional reachable defect.
+It confirmed the known historical native lookup issue described below. The full client gate passes 2,847 tests with fifteen explicit optional SKIP
+notices (shipped-server fixtures and unavailable rust-analyzer). The remaining
+native fault controls and registered daemon assembly are still pending. Executor assembly must still exclude credential files and inherited descriptors from
 satellites, and test actual distribution-disabled execution. The environment
 test alone establishes none of those properties.
 

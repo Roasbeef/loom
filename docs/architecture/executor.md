@@ -1,5 +1,153 @@
 # The executor service
 
+The local executor service owns helper bookkeeping; native helpers and the
+kernel own confinement. The distributed executor extends that same effect
+boundary with exact durable request identity, original policy enrollment and
+retained results beside a workspace. Trusted executor BEAM nodes share the
+owner's runtime trust domain, while every model-written satellite remains in
+an external jail.
+
+The local service and standalone smoke entrypoint are implemented on main. The #697
+components described next exist in the integration tree, including whole
+Compile, owner consumption and the TLS BEAM endpoint. Registered daemon
+assembly, Launch/satellite, remote LSP and separate-host ordinary-tool
+acceptance remain pending. The following local-service design/history sections
+retain their original phase-specific evidence; their old cut lists are not a
+current inventory of distributed components.
+
+## Trusted executor membership
+
+`executor/remote/distribution` starts TLS distribution in a previously
+non-distributed OTP 29 VM, before endpoint publication. Administrative configuration contains
+one local full node name, at most thirty-two peer names and exact certificate
+pins. Names are validated before atoms are created. Mutual certificate
+verification checks the leaf pin and full-node subject alternative name in
+both directions. Boot refuses plaintext options, unsafe overrides and another
+distribution start. It provides no plaintext retry.
+
+The launcher uses a private OTP home for cookie loading and restores the
+operator's OS HOME inside the runtime. `protected_membership_paths` returns
+the five actual canonical credential/options paths checked at boot. Trusted
+registration and jail assembly must keep those paths inaccessible to executed
+programs. The bootstrap cannot establish that an embedding host retained those
+protections in every sandbox policy.
+
+A successful Membership can resolve an opaque Peer from the finite configured
+list. That Peer is administrative identity; `connect` separately observes
+connectivity under a finite budget. Fixed discovery resolves only
+`loom_executor_endpoint`. Hidden nodes and explicit-only connection policy
+constrain topology, not the privilege of a connected executor. Distributed
+Erlang permits remote process creation, so compromise of a member affects the
+runtime trust domain. Satellites must receive no cookie, private key, boot options or membership
+handle. Credential and descriptor exclusion in the deployed jail remains an
+acceptance check. Joining this domain does not add a Raft voter.
+
+## One concrete endpoint
+
+`executor/remote/beam_endpoint` binds trusted local registrations to existing
+service actors. A registration retains the original owner Peer, labels, full
+session/workspace scope, authority epochs and transport generation. Native
+registration requires the actual registered native service. Compile registration
+derives the native endpoint and enrollment from its whole Compile actor, so a
+same-scope replacement service cannot silently satisfy a live command route.
+Network frames cannot install registrations or choose a callback.
+
+```mermaid
+flowchart TD
+    Peer["Administrative TLS BEAM Peer"] --> Endpoint["Fixed executor endpoint"]
+    Endpoint --> Native["Native service"]
+    Endpoint --> Workspace["Concrete workspace service"]
+    Endpoint --> Compile["Whole Compile service"]
+    Compile -->|"Original Claim + original deadline"| Native
+    Native --> Helper["Executor-local helper pool"]
+    Helper --> Jail["Kernel jail"]
+    Native --> NJ[("Native journal")]
+    Workspace --> WJ[("Workspace journal")]
+    Compile --> RJ[("Resource journal")]
+```
+
+Up to sixteen registered scopes share four data credits and two control
+credits. First native/Compile admission and stdin use data capacity; query,
+cancellation and receipt have reserved control capacity. These limits cover
+admitted exchanges, not arbitrary mailbox traffic from a trusted full-node
+peer. Administrative close quiesces new admission; it supplies no native
+retirement evidence.
+
+The closed transport header is at most 1 KiB and retains the existing Hello's
+complete binding. Canonical payload bytes remain unchanged. Native frames are
+bounded to 256 KiB with a separate 128-KiB Prepared limit. Invocation transfer
+is at most nine MiB; workspace completion is at most thirty-two MiB; Compile
+completion is at most 256 KiB. Existing 64-KiB chunks require consumption replies
+one frame at a time. Content limits do not imply an equal resident-memory bound.
+
+A credit retains a stable final reply subject for the concrete service ask.
+Once that ask is queued, transport cancellation or caller death cannot retract
+it. Credit reuse requires the actual service answer and the managed transport's
+final `AllDelivered`. An unconsumed local handoff carries its run correlation;
+late handoffs from an old run are refused before touching a new registration.
+Lost asks or drain witnesses retire capacity. Endpoint death does not establish
+native cleanup, so the embedding owner must reconcile the service and helper
+lifetimes before replacement.
+
+## Durable work outlives transport
+
+The [custody guide](remote-custody.md) describes owner tool/run admission and
+immutable child reservations. The [compilation guide](remote-compilation.md)
+describes original preparation and native association. Transport references,
+node connectivity and endpoint generations never replace those durable keys.
+
+Native Request, finite Authority and Admit precede a live resource association.
+Only the original preparation Claim can obtain a new launch permit, and that
+association commits under the same writer lock as outer cancellation. The
+native engine then checks the original clamped monotonic deadline before its
+existing launch-intent path. Historical association reconciles evidence; it
+cannot grant another permit. The actor-owned Compile route supplies the
+original Claim, rather than constructing a live context from historical input.
+
+Compile has one to four original continuations and a separate bounded metadata
+window. It reserves input and full outer completion capacity before exclusive
+allocation, source preparation and Ready. Native output/terminal evidence must
+be committed before the original continuation finalizes the artifact and
+commits the exact closed completion. Ready is a preparation receipt, not
+successful Compile or evidence that a listener is live.
+
+Each resource database uses its existing actor and named Parrot/sqlc queries.
+No new transport database or generic remote procedure registry exists. Exact
+historical query/ACK can survive endpoint loss and journal reopening; neither
+recovery nor a changed clock supplies another deadline, UUID or preparation
+claim. Native retirement, resource cleanup, native owner receipt and outer
+owner receipt retain separate witnesses.
+
+## Distributed verification boundary
+
+Actual component tests boot two independent TLS BEAM VMs. Bootstrap controls
+cover pins, names, missing client certificates, plaintext, cookie mismatch and
+unsafe options. Endpoint controls exercise closed routes, shared credits and
+correlation-fenced handoffs. The owner Compile fixture joins the original
+Broker, real compiler/helper, both journals and exact durable receipts over
+that endpoint. Same-host VMs do not prove separate-host filesystem isolation.
+
+The [bounded P model](../../protocol/models/remote-execution/README.md) checks
+native/product custody, preparation, exact wall, live association, owner-run
+discharge and endpoint credits. Its service answers, durable commits and drain
+observations are assumed truthful. Channel PlusCal and the admission Lean
+bridge remain limited to their established contracts. These checks neither
+prove TLS/OTP signal delivery nor SQLite crash atomicity, physical compilation
+or kernel retirement. Component gates belong to exact source/dependency
+snapshots; a focused probe with an explicit weft overlay is not the final
+repository gate.
+
+The daemon has not yet assembled this into the ordinary registered-workspace
+product. Launch/satellite, remote LSP, configuration and the separate-host
+acceptance run remain required. Legacy socket transport modules and fixtures
+remain during migration; TLS BEAM is the selected single inter-node transport
+under the [protocol amendment](../../protocol-change/067-remote-workspace-services.md#addendum-trusted-executor-distribution).
+The native historical-context Missing/Conflict classification still has its
+separately pending correction. These limits belong to integration, rather than
+permission to fall back to local execution or replay uncertain work.
+
+## Local service design and history
+
 Loom runs untrusted work in a native jail and keeps the books on that work in
 Gleam. The two halves already existed: `broker/exec` supervises `loom-exec`
 helpers, and the helper builds the jail. What did not exist was a single
@@ -1262,9 +1410,10 @@ and not a frame's shape, kind, keys or version, and the spec (§1.4) makes ids
 opaque `u64`s the helper does not correlate for stdin, so it is not a wire
 change and files no protocol-change.
 
-## What is deliberately not built
+## The original local-service cut list
 
-The survey produced a cut list, and each item has a reason that a future reader
+The original #696 survey produced this cut list. Later #697 components are
+described above. Each historical item has a reason that a future reader
 should be able to find before proposing the item again.
 
 | Not built | Why |
@@ -1449,10 +1598,11 @@ memory ceiling, and anything on Darwin.
 
 ## Durable remote admission
 
-The #697 groundwork lives in `executor/remote/identity`, `admission`,
+The first #697 foundation snapshot lived in `executor/remote/identity`, `admission`,
 `journal_codec` and `journal`. It does not replace the local dispatcher or
-expose a listener. Protocol-change/066 defines the ordering required of the
-future adapter.
+expose a listener. Protocol-change/066 defined the ordering required of its
+future adapter. The current distributed sections above describe the later
+payload, service and transport boundaries.
 
 A request identity binds session, operation, executor, workspace and both
 authority epochs. The pure reducer reserves bounded request evidence and distinguishes

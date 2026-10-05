@@ -209,7 +209,7 @@ those semantic checks or authorize execution.
 
 `dispatch_binding.with_commands` extends the existing dispatcher configuration
 with a closed CompileCommand path. It retains the same owner custodian,
-connection, clock, preparation callback and UUID allocator. Ordinary native
+endpoint, clock, preparation callback and UUID allocator. Ordinary native
 origins keep their existing path; SatelliteCommand explicitly refuses until
 Launch assembly exists.
 
@@ -254,6 +254,47 @@ records real Broker controls and the limits of that evidence. Whole-service
 assembly still owns original PhaseIdentity construction, actual Ready validation
 and native-ceiling ordering before clearance.
 
+## TLS BEAM carries custody without replacing it
+
+The owner resolves its executor Peer from the original successful administrative
+boot. `beam_endpoint.Config` retains the exact labels, complete scope, generation
+and finite exchange wait. The same fixed endpoint carries native, workspace,
+whole Compile and physical command traffic. Its local registrations bind
+concrete actors; a network message cannot select an arbitrary function or create
+an enrollment. A trusted BEAM member has full runtime privileges, while jailed
+satellites remain outside that membership.
+
+The endpoint's sixteen registration slots share four data and two control
+credits. Each credit owns one actual service reply subject. A successful send
+means only distribution accepted the message. Caller loss and elapsed waits
+cannot prove that a queued reservation, receipt or cancellation was retracted.
+After service handoff, the actual service answer and `AllDelivered` must both
+arrive before credit reuse. Exact run correlations refuse delayed handoffs from
+a previous assignment. Ambiguous answers and lost drains retire capacity.
+
+This transport preserves the existing canonical request and receipt bytes.
+Native frames use their original bounded codecs; large semantic input and
+completion use acknowledged fixed chunks. The transport bounds retained
+content and admitted exchanges. It does not impose a global memory ceiling
+on a trusted peer's BEAM mailbox or replace durable journal quotas.
+
+Owner consumers use the original runner's incarnation-pinned custodian Handle.
+`compile_client` supplies the actual `compile.CompileService` adapter within
+that already bounded managed body. It reserves complete original service input
+before transmission, consumes exact Ready, retains the immutable command offer
+and clears through the original session Broker. It creates no independent
+actor, Broker or budget. On uncertain live custody it calls the real
+`custodian.fatal_fence` on the pinned owner; the durable run-discharge rule also
+covers a worker killed before any callback could run.
+
+The dispatcher retains the ordered native receipt before DurableReceipt.
+The consumer then checks the complete outer Compile result and corresponding
+native receipt, commits the exact outer child receipt and only afterward sends
+outer Acknowledge. Cancellation does not invalidate a later exact receipt;
+conflicting bytes or digest refuse. Best-effort historical ACK failure leaves
+that already committed completion usable. Historical recovery neither challenges
+nor submits, clears, prepares, allocates a UUID or renews a deadline.
+
 ## Verification and remaining integration
 
 Tests use actual owner and session SQLite files. They cover duplicate and
@@ -264,7 +305,9 @@ fail against the pre-fix implementation and pass with the fix.
 
 Independent review found the cancellation wait and reservation-accounting
 bugs, which now have regression tests. Component tests and review do not
-establish the final remote product. Remaining assembly must bind configured
-scope, supervised custody, durable child identity, cleared materialization and
-receipt callbacks. The two-host fixture must then prove that ordinary file
+establish the final remote product. The implemented Compile consumer and
+concrete TLS BEAM endpoint bind those
+component callbacks, while registered daemon assembly still must select them
+under the original supervised custody and enrollment. The two-host fixture must
+then prove that ordinary file
 tools, Bash, code mode and LSP use a checkout absent from the owner's disk.
