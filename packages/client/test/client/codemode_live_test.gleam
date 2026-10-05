@@ -34,6 +34,9 @@ import client/internal/ffi_os
 import client/mcp as mcp_wiring
 import client/peer_mail
 import client/peers
+import client/remote/code_reports
+import client/remote/custodian
+import client/remote/tool_custody
 import client/schedule
 import client/scheduleseam
 import client/scratch
@@ -43,6 +46,7 @@ import core/clock
 import core/ids
 import core/json
 import core/message
+import core/report_value
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/int
@@ -53,12 +57,15 @@ import gleam/result
 import gleam/string
 import gleam_mcp/client as mcp_client
 import gleam_mcp/json as mcp_json
+import host/bootstrap
 import machine/operation
 import mcp/codegen
 import provider/secret
 import runtime/api
+import runtime/effects
 import session/session
 import simplifile
+import storage/owner_custody
 import support/addresses
 import support/fake_mcp
 import support/notes_session
@@ -71,6 +78,7 @@ import tools/fs
 import tools/tool
 import tools/working_directory as directory
 import weft/poll
+import weft/registry
 
 // What the jailed `/bin/echo` prints, and therefore what has to survive
 // three trust boundaries to reach the tool result.
@@ -3604,4 +3612,295 @@ fn directory_case(rig: Rig) -> Nil {
     "remembered cwd changed its canonical target",
   )
   assert api.close(harness.runtime) == Ok(Nil)
+}
+
+// --- complete reports through a real retained renderer and jailed reader ---
+
+/// A live satellite returns more than one report chunk, and a fresh invocation
+/// reads the exact complete value through its session owner's bounded router.
+///
+/// ## Examples
+///
+/// Run this test with a current helper and prepared code-mode seed.
+pub fn retained_report_loads_through_a_fresh_jailed_invocation_test() {
+  case prerequisites() {
+    Error(reason) ->
+      io.println_error(
+        "SKIP retained_report_loads_through_a_fresh_jailed_invocation: "
+        <> reason,
+      )
+    Ok(ready) -> run_retained_report(ready)
+  }
+}
+
+fn run_retained_report(ready: Ready) -> Nil {
+  let private = ready.root <> "/owner-only"
+  let assert Ok(Nil) = simplifile.create_directory_all(private)
+    as "The owner directory must exist before its protected-path mask."
+  let canary = private <> "/marker"
+  let assert Ok(Nil) = simplifile.write(canary, "owner-database-canary")
+    as "The protected marker is real owner-local data."
+  let rig = rig_protecting(ready, under: ready.root, protected: [private])
+  let session = ids.mint_session(ids.generator(wall_clock(), 720)).0
+  let assert Ok(limits) = owner_custody.limits(8, 32, 64_000_000, 262_144)
+    as "The owner reserves complete reports and finite final allowances."
+  let assert Ok(config) =
+    custodian.config_with_reports(
+      private <> "/owner.db",
+      session,
+      limits,
+      1,
+      900_000,
+      fn(owner, key, run) {
+        let config =
+          codemode.default_config(
+            broker: rig.broker,
+            clock: wall_clock(),
+            workspace: rig.workspace,
+            toolchain: rig.toolchain,
+          )
+          |> codemode.over_reports(
+            option.Some(codemode.ReportReader(owner, session)),
+          )
+        let assert Ok(tool) = code_reports.retained_tool(config, owner, key)
+          as "The real pipeline and renderer bind the original admitted owner."
+        let ctx = live_ctx(rig.workspace, rig.base_policy, wall_clock())
+        let outcome =
+          tool.run(
+            tool.Ctx(
+              ..ctx,
+              op_id: run.operation,
+              step_id: run.step_id,
+              source_index: run.source_index,
+              strand: run.strand,
+            ),
+            run.arguments,
+          )
+        io.println_error("retained live renderer: " <> rendered_text(outcome))
+        effects.ToolCompleted(
+          tool.to_result_message(outcome, run.call.id, run.call.name, 1000),
+          False,
+        )
+      },
+      bootstrap.sha256,
+    )
+    as "The production owner uses actual SHA-256 and SQLite custody."
+  let assert Ok(names) = registry.start()
+    as "The owner address registry starts."
+  let owner = custodian.new(names, config)
+  let assert Ok(started) = custodian.start(owner, config)
+    as "Validated owner custody starts before the first original admission."
+  let first = retained_live_run(0, retained_large_source())
+  let final = retained_live_invoke(owner, session, first)
+  let reference = retained_live_reference(final)
+  assert string.byte_size(reference) <= 160
+  assert string.byte_size(retained_live_text(final)) < 4096
+  let assert Ok(checked) = report_value.parse_ref(reference)
+    as "The renderer names the canonical retained report."
+  assert report_value.ref_session(checked) == session
+  assert report_value.ref_result_entry(checked) == first.result_entry
+  assert report_value.ref_byte_length(checked) > 131_072
+
+  // Readback uses real bounded SQL slices, never a fabricated terminal value.
+  let assert Ok(a) = custodian.read_report_chunk(owner, checked, 0)
+    as "The first SQL chunk is durable before final admission."
+  let assert Ok(b) = custodian.read_report_chunk(owner, checked, 65_536)
+    as "The second SQL chunk preserves the middle of the scalar."
+  let assert Ok(c) = custodian.read_report_chunk(owner, checked, 131_072)
+    as "The final SQL chunk preserves the scalar suffix and metadata."
+  let assert Ok(saved) =
+    report_value.decode(bit_array.concat([a.bytes, b.bytes, c.bytes]))
+    as "The owner stored the complete terminal and independently typed metadata."
+  let manifest = report_value.manifest_hash(report_value.report_metadata(saved))
+  assert string.starts_with(manifest, "sha256-")
+  assert string.byte_size(manifest) == 71
+  assert report_value.calls(report_value.report_metadata(saved)).total == 1
+  let second =
+    retained_live_run(1, retained_reader_source(reference, manifest, private))
+  assert second.operation != first.operation
+  assert second.result_entry != first.result_entry
+  let loaded = retained_live_invoke(owner, session, second)
+  assert string.contains(
+    retained_live_text(loaded),
+    "complete report and owner isolation proved",
+  )
+    as retained_live_text(loaded)
+  io.println_error(
+    "retained live proof: complete "
+    <> int.to_string(report_value.ref_byte_length(checked))
+    <> "-byte report, three SQL chunks, fresh original invocation, jailed owner canaries refused",
+  )
+  let short_reference = retained_live_reference(loaded)
+  let assert Ok(short) = report_value.parse_ref(short_reference)
+    as "The reader returns a canonical complete-report reference."
+  assert report_value.ref_byte_length(short) <= 65_536
+    as "The exhaustion probe must need exactly one chunk."
+  let quota =
+    retained_live_run(2, retained_quota_source(reference, short_reference))
+  assert quota.operation != first.operation
+    && quota.operation != second.operation
+  let exhausted = retained_live_invoke(owner, session, quota)
+  assert string.contains(
+    retained_live_text(exhausted),
+    "cumulative 261 chunks proved",
+  )
+    as retained_live_text(exhausted)
+  io.println_error(
+    "retained live quota: 258 chunks of first report plus three of second; 262nd chunk denied through the one-chunk reference",
+  )
+  let monitor = process.monitor(started.pid)
+  let assert Ok(Nil) = custodian.stop(owner)
+    as "The owner closes its SQLite journal."
+  let assert Ok(process.ProcessDown(_, _, process.Normal)) =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(down) { down })
+    |> process.selector_receive(5000)
+    as "The owner journal is joined before removing the rig's paths."
+  stop_rig(rig)
+}
+
+fn retained_live_run(index: Int, source: String) -> effects.ToolRun {
+  let operation = ids.mint_op(ids.generator(wall_clock(), 730 + index)).0
+  let entry = ids.mint_entry(ids.generator(wall_clock(), 740 + index)).0
+  let arguments =
+    json.Object([
+      #("program", json.String(source)),
+      #("within_ms", json.Int(600_000)),
+    ])
+  effects.ToolRun(
+    operation,
+    "retained-live-" <> int.to_string(index),
+    index,
+    entry,
+    "main",
+    message.ToolCall(
+      "retained-call-" <> int.to_string(index),
+      "code_mode",
+      arguments,
+      option.None,
+      option.None,
+    ),
+    arguments,
+    operation.ReplayNever,
+    [],
+  )
+}
+
+fn retained_live_invoke(
+  owner: custodian.Handle,
+  session: ids.SessionId,
+  run: effects.ToolRun,
+) -> effects.ToolOutcome {
+  let assert Ok(input) =
+    tool_custody.invocation(
+      session,
+      <<"retained-live-original-scope":utf8>>,
+      run,
+    )
+    as "The original runtime invocation constructs immutable custody coordinates."
+  let assert Ok(final) =
+    custodian.execute_with_profile(
+      owner,
+      input.key,
+      input.arguments,
+      input.request,
+      run,
+      owner_custody.CodeModeReportV1,
+    )
+    as "The real compiled terminal must commit before the owner returns its final."
+  let assert Ok(owner_custody.FinalOutcome(bytes)) =
+    custodian.lookup(owner, input.key, input.arguments, input.request)
+    as "The exact original final is durable in SQLite."
+  assert effects.decode_tool_outcome(owner_custody.bytes(bytes)) == Ok(final)
+  final
+}
+
+fn retained_live_reference(final: effects.ToolOutcome) -> String {
+  let assert effects.ToolCompleted(
+    message.ToolResultMessage(
+      is_error: False,
+      details: option.Some(json.Object([
+        #("kind", json.String("code_mode_report_v1")),
+        #("reference", json.String(uri)),
+      ])),
+      ..,
+    ),
+    False,
+  ) = final
+    as "The actual retained renderer returns its closed reference final."
+  uri
+}
+
+fn retained_live_text(final: effects.ToolOutcome) -> String {
+  let assert effects.ToolCompleted(message.ToolResultMessage(content:, ..), _) =
+    final
+    as "A settled owner final contains a tool result."
+  content
+  |> list.map(fn(block) {
+    case block {
+      message.ToolResultText(text:, ..) -> text
+      _ -> ""
+    }
+  })
+  |> string.join("\n")
+}
+
+fn retained_large_source() -> String {
+  "import cap/proc\nimport cap/report\nimport gleam/string\npub fn main() -> report.Outcome {\n"
+  <> "  case proc.run(proc.command([\"/bin/echo\", \"original-retained-invocation\"])) {\n"
+  <> "    Ok(output) -> case output.exit_code == 0 {\n"
+  <> "      True -> report.Completed(report.object([#(\"payload\", report.string(string.repeat(\"full-retained-\", 11_000))), #(\"integer\", report.int(7)), #(\"float\", report.float(7.0))]))\n"
+  <> "      False -> report.failure(\"original proc failed\")\n    }\n"
+  <> "    Error(_) -> report.failure(\"original proc refused\")\n  }\n}\n"
+}
+
+fn retained_reader_source(
+  reference: String,
+  manifest: String,
+  private: String,
+) -> String {
+  "import cap/proc\nimport cap/report\nimport gleam/result\nimport gleam/string\npub fn main() -> report.Outcome {\n"
+  <> "  case report.load_result(\""
+  <> reference
+  <> "\") {\n"
+  <> "    Ok(saved) -> case saved.outcome {\n"
+  <> "      report.Completed(value) -> case verify(value) && saved.manifest_hash == \""
+  <> manifest
+  <> "\" && saved.calls.total == 1 && saved.calls.failed == 0 && saved.calls.cancelled == 0 && saved.calls.unsettled == 0 {\n"
+  <> "        True -> isolation()\n        False -> report.failure(\"complete value or original metadata changed\")\n      }\n"
+  <> "      report.Errored(_, _) -> report.failure(\"original outcome changed\")\n    }\n"
+  <> "    Error(_) -> report.failure(\"owner report read refused\")\n  }\n}\n"
+  <> "fn verify(value: report.Value) -> Bool {\n"
+  <> "  case result.try(report.field(value, \"payload\"), report.as_string), result.try(report.field(value, \"integer\"), report.as_int), result.try(report.field(value, \"float\"), report.as_float) {\n"
+  <> "    Ok(payload), Ok(7), Ok(7.0) -> payload == string.repeat(\"full-retained-\", 11_000)\n"
+  <> "    _, _, _ -> False\n  }\n}\n"
+  <> "fn isolation() -> report.Outcome {\n"
+  <> "  case proc.run(proc.command([\"/bin/cat\", \""
+  <> private
+  <> "/marker\"])), proc.run(proc.command([\"/bin/cat\", \""
+  <> private
+  <> "/owner.db\"])) {\n"
+  <> "    Ok(marker), Ok(db) -> case marker.exit_code != 0 && marker.stdout == \"\" && db.exit_code != 0 && db.stdout == \"\" {\n"
+  <> "      True -> report.text(\"complete report and owner isolation proved\")\n"
+  <> "      False -> report.failure(\"jailed program read owner-local data\")\n    }\n"
+  <> "    _, _ -> report.failure(\"owner isolation canary did not execute\")\n  }\n}\n"
+}
+
+// Two durable references consume one invocation's original admission credits.
+// Each complete long report uses three chunks, and the small second report one.
+fn retained_quota_source(long: String, short: String) -> String {
+  "import cap/report\nimport gleam/list\nimport gleam/result\npub fn main() -> report.Outcome {\n"
+  <> "  let admitted = { use _ <- result.try(read(\""
+  <> long
+  <> "\", 86)) read(\""
+  <> short
+  <> "\", 3) }\n"
+  <> "  case admitted {\n    Ok(3) -> case report.load_result(\""
+  <> short
+  <> "\") {\n"
+  <> "      Error(report.ReadDenied(code: \"admission_ceiling\", message: _)) -> report.text(\"cumulative 261 chunks proved\")\n"
+  <> "      _ -> report.failure(\"shared result credit ceiling changed\")\n    }\n"
+  <> "    _ -> report.failure(\"report credits expired before the exact ceiling\")\n  }\n}\n"
+  <> "fn read(reference: String, count: Int) -> Result(Int, report.ReadError) {\n"
+  <> "  list.fold(list.repeat(Nil, count), Ok(0), fn(total, _) { use read <- result.try(total) use _ <- result.try(report.load_result(reference)) Ok(read + 1) })\n}\n"
 }
