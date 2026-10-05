@@ -83,6 +83,15 @@ and every jail. The catalogue reuses `session.open_sqlite_owned`, generated
 storage queries and reserved facts. There is no handwritten SQL or separate
 schema. Compilation and execution hold no catalogue writer lease.
 
+Catalogue handles for the same canonical file share its fenced writer lease,
+including callers from separate sessions or VMs. Admission uses a one-second
+`weft/poll` budget, with a ten-millisecond native SQLite busy timeout.
+Only typed native lock-busy or held-lease refusals before ownership are retried;
+an admitted operation
+and its acknowledged retirement each run once. Transition deadlines are checked
+after admission and immediately before a new selection CAS. An exact committed
+receipt remains recoverable after that deadline.
+
 Native compilers receive a writable view of only their own artifact directory
 and discovered toolchain mounts. Satellite nodes receive that directory read
 only. Caller grants cannot widen either native launch view. Capability calls

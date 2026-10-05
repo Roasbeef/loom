@@ -30,6 +30,8 @@ Approval binds the exact candidate and evidence. Editing a covered input produce
 
 A shared `<state>/evolution/evolution.db` uses the existing session storage schema and fenced writer lease. Each short mutation atomically appends a lifecycle entry and updates its reserved facts under sequence expectations. The lease and storage process retirement witness are released before compilation, execution or model evaluation.
 
+Independent catalogue borrowers use a one-second monotonic admission budget and a ten-millisecond native SQLite busy timeout. Only typed native lock-busy or held-lease refusals before ownership may be repeated. Admitted work and retirement MUST NOT be replayed by that wait. A new selection MUST recheck its native absolute deadline after lease admission and before CAS; an exact existing committed receipt remains recoverable after expiry.
+
 The central catalogue is authoritative for approval, revocation and selection. A selection transaction MUST compare the current approval/revocation sequence and the previous selection generation. Comparing only a candidate identity is insufficient because rollback can select an earlier identity again.
 
 A live session records an idempotent adoption audit referencing the central transition. These commits are not atomic across databases. Recovery completes a missing audit and revalidates approval before publishing the recovered generation.

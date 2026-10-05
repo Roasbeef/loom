@@ -33,6 +33,21 @@ extension 7.007 seconds, program 3.903 seconds and prompt 2.260 seconds. These
 are whole fixture times with scripted HTTP, not isolated activation latency or
 commercial-model cache measurements. Documentation checks also passed.
 
+A subsequent real Program fixture opens two production sessions with separate
+state and the same canonical workspace catalogue. The second discovers the
+first session's selected program, invokes fresh input, and proves its own
+stricter protected-directory policy governs effects. Both native retirements
+and the helper census are checked.
+
+Linux validation exposed two reachable defects after that local baseline:
+Landlock gave valid file roots directory rights, and concurrent catalogue
+borrowers could receive an immediate held-lease refusal. The corrections
+classify rules in the current jail view and bound pre-open lease admission.
+Admitted work and cleanup run once; transition expiry is checked again before
+a new CAS, while an exact committed receipt remains recoverable. New kernel
+and ownership regressions cover both paths. Do not carry the older local
+verdict onto these corrections; use the final exact-head PR checks.
+
 Astra's independent review found five reachable issues: trial policy inheritance,
 unknown attempt spend, durable selection deduplication, cleanup continuation
 ownership and the advertised prompt-evaluation schema. Each was verified and
