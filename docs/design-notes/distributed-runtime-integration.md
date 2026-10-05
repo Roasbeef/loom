@@ -15,12 +15,15 @@ implementation phases. A workspace stays on its registered executor. The owning
 orchestrator retains the session's SQLite store, approval authority and budget.
 Clients can reconnect to that owner from another device without moving files.
 
-Two transports serve different trust boundaries. Executors use bounded framed
-messages over authenticated TLS. The planned trusted orchestrator cluster uses
-TLS-protected BEAM distribution within one administrative domain: this is
-distributed Erlang/BEAM, with TLS securing its node connections. Executors do
-not join that cluster. A live socket or BEAM process is never a durable
-ownership record.
+The owner has selected TLS-protected BEAM distribution for trusted executors
+as well as orchestrators. This replaces the original custom framed TLS adapter;
+the replacement is in progress. Executors join the same runtime trust domain,
+while model-authored satellites remain distribution-disabled in their native
+sandboxes. A compromised executor VM can compromise connected orchestrator
+runtimes. Executor membership does not grant Raft voting membership. The
+[protocol amendment](../../protocol-change/067-remote-workspace-services.md#addendum-trusted-executor-distribution)
+defines the boundary and replacement gates. A live BEAM process is never a
+durable ownership record.
 
 ## Read the components in this order
 
