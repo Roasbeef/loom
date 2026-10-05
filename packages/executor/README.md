@@ -124,13 +124,14 @@ Paths are relative to `src/`. The dependency manifest adds `core`, `broker`,
 | `executor.gleam` | Local boot, jailed smoke, census and witnessed drain. |
 | `executor/remote/distribution` | Administrative TLS BEAM bootstrap and opaque peer identity. |
 | `executor/remote/beam_endpoint` | Fixed discovery, closed routing and shared ingress custody. |
+| `executor/remote/host` | Native scope publication, ordered fencing and witnessed cleanup over a borrowed shared endpoint. |
 | `executor/remote/identity`, `admission`, `journal`, `payload`, `service` | Native identity, pure decisions, durable evidence and original launch continuation. |
 | `executor/remote/registration`, `wire`, `dispatcher` | Exact native policy enrollment, canonical frames and owner dispatcher adapter. |
 | `executor/remote/workspace_journal`, `workspace_service`, `workspace_transfer` | Once-only semantic workspace work and bounded canonical content transfer. |
 | `executor/remote/resource_journal` | Original physical input, preparation fence, native binding and outer completion custody. |
 | `executor/remote/compile_service`, `compile_observation`, `compile_completion`, `compile_wire` | Whole Compile lifecycle, committed native evidence, closed result and transport segments. |
 
-The older `connection`, `listener` and `host` modules record the socket transport
+The older `connection` and `listener` modules record the socket transport
 being replaced. They are not an alternative deployment mode. Removal waits for
 all consumers and acceptance fixtures to finish the TLS BEAM migration.
 
