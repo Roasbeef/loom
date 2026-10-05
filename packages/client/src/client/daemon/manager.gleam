@@ -1835,10 +1835,11 @@ fn handle(
       sm.keep(book)
     }
 
-    // The login messages. A write drops the frame memo whatever the outcome
-    // and before the reply leaves, as `Administer` does, so a revoked login's
-    // pages are refused at their next frame and never answered from a memo that
-    // predates the revocation.
+    // The login messages. A revocation drops the frame memo whatever the
+    // outcome and before the reply leaves, as `Administer` does, so a revoked
+    // login's pages are refused at their next frame and never answered from a
+    // memo that predates the revocation. Issuing a login adds a row and changes
+    // no existing credential's answer, so it leaves the memo alone.
     IssueLogin(principal_id, digest, issued_at_ms, expires_at_ms, from, reply) -> {
       let outcome =
         access.issue_login(
@@ -1850,7 +1851,6 @@ fn handle(
           from,
         )
         |> result.map_error(Catalogue)
-      let book = Book(..book, authority: dict.new())
       process.send(reply, outcome)
       sm.keep(book)
     }

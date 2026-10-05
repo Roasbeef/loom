@@ -61,7 +61,9 @@ pub const lifetime_ms = 2_592_000_000
 /// The longest token the parser reads, in bytes. It is the longest the
 /// grammar allows with a 128-byte principal identifier, and the parser refuses
 /// anything longer before it reads a field, so a request stuffed with bytes
-/// costs one length check.
+/// costs one length check. A token narrowed by an `s` caveat (nothing mints one
+/// today) must keep its `p` caveat to 97 bytes or fewer, or the narrowed token
+/// is longer than this and its own parser refuses it.
 pub const max_token_bytes = 384
 
 /// The file in the state directory that holds the root key, beside

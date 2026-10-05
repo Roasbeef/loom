@@ -359,18 +359,6 @@ pub fn browser_digest(value: String) -> Result(Digest, Error) {
   }
 }
 
-/// The kind of credential a digest names.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // access.credential_kind(digest) == access.Bearer
-/// ```
-@internal
-pub fn credential_kind(digest: Digest) -> CredentialKind {
-  digest.kind
-}
-
 /// The first 16 hexadecimal characters of a credential digest, which the owner
 /// and the invitee compare out of band to confirm who bound a claim. It is not
 /// secret: it is part of a digest of the credential, not the credential.
