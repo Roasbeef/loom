@@ -250,7 +250,7 @@ pub type ActiveMemberCredentials {
 
 pub fn active_member_credentials(principal_id principal_id: String) {
   let sql =
-    "SELECT digest FROM access_credentials WHERE principal_id = ? AND state = 'active' AND kind = 'bearer' LIMIT 1"
+    "SELECT digest FROM access_credentials WHERE principal_id = ? AND state = 'active' LIMIT 1"
   #(sql, [dev.ParamString(principal_id)], active_member_credentials_decoder())
 }
 
@@ -357,6 +357,214 @@ pub fn principal_memberships_decoder() -> decode.Decoder(PrincipalMemberships) {
   use name <- decode.field(1, decode.string)
   use role <- decode.field(2, decode.string)
   decode.success(PrincipalMemberships(session_id:, name:, role:))
+}
+
+pub fn insert_access_login(
+  digest digest: String,
+  principal_id principal_id: String,
+  issued_at_ms issued_at_ms: Option(Int),
+  expires_at_ms expires_at_ms: Option(Int),
+) {
+  let sql =
+    "
+INSERT INTO access_credentials(digest, principal_id, state, kind, issued_at_ms, expires_at_ms)
+VALUES (?, ?, 'active', 'browser', ?, ?)"
+  #(sql, [
+    dev.ParamString(digest),
+    dev.ParamString(principal_id),
+    dev.ParamNullable(option.map(issued_at_ms, fn(v) { dev.ParamInt(v) })),
+    dev.ParamNullable(option.map(expires_at_ms, fn(v) { dev.ParamInt(v) })),
+  ])
+}
+
+pub fn insert_access_login_from(
+  digest digest: String,
+  principal_id principal_id: String,
+  issued_at_ms issued_at_ms: Option(Int),
+  expires_at_ms expires_at_ms: Option(Int),
+  issued_by issued_by: Option(String),
+) {
+  let sql =
+    "INSERT INTO access_credentials(digest, principal_id, state, kind, issued_at_ms, expires_at_ms, issued_by)
+VALUES (?, ?, 'active', 'browser', ?, ?, ?)"
+  #(sql, [
+    dev.ParamString(digest),
+    dev.ParamString(principal_id),
+    dev.ParamNullable(option.map(issued_at_ms, fn(v) { dev.ParamInt(v) })),
+    dev.ParamNullable(option.map(expires_at_ms, fn(v) { dev.ParamInt(v) })),
+    dev.ParamNullable(option.map(issued_by, fn(v) { dev.ParamString(v) })),
+  ])
+}
+
+pub fn insert_access_claimed_login(
+  digest digest: String,
+  principal_id principal_id: String,
+  issued_at_ms issued_at_ms: Option(Int),
+) {
+  let sql =
+    "INSERT INTO access_credentials(digest, principal_id, state, kind, issued_at_ms)
+VALUES (?, ?, 'active', 'browser', ?)"
+  #(sql, [
+    dev.ParamString(digest),
+    dev.ParamString(principal_id),
+    dev.ParamNullable(option.map(issued_at_ms, fn(v) { dev.ParamInt(v) })),
+  ])
+}
+
+pub type PrincipalLogins {
+  PrincipalLogins(
+    digest: String,
+    issued_at_ms: Option(Int),
+    last_resumed_ms: Option(Int),
+    expires_at_ms: Option(Int),
+    issued_by: Option(String),
+  )
+}
+
+pub fn principal_logins(
+  principal_id principal_id: String,
+  expires_at_ms expires_at_ms: Option(Int),
+  digest digest: String,
+) {
+  let sql =
+    "SELECT digest, issued_at_ms, last_resumed_ms, expires_at_ms, issued_by FROM access_credentials
+WHERE principal_id = ? AND kind = 'browser' AND state = 'active'
+  AND (expires_at_ms IS NULL OR expires_at_ms > ?)
+  AND substr(digest, 1, 16) > ?
+ORDER BY digest LIMIT 101"
+  #(
+    sql,
+    [
+      dev.ParamString(principal_id),
+      dev.ParamNullable(option.map(expires_at_ms, fn(v) { dev.ParamInt(v) })),
+      dev.ParamString(digest),
+    ],
+    principal_logins_decoder(),
+  )
+}
+
+pub fn principal_logins_decoder() -> decode.Decoder(PrincipalLogins) {
+  use digest <- decode.field(0, decode.string)
+  use issued_at_ms <- decode.field(1, decode.optional(decode.int))
+  use last_resumed_ms <- decode.field(2, decode.optional(decode.int))
+  use expires_at_ms <- decode.field(3, decode.optional(decode.int))
+  use issued_by <- decode.field(4, decode.optional(decode.string))
+  decode.success(PrincipalLogins(
+    digest:,
+    issued_at_ms:,
+    last_resumed_ms:,
+    expires_at_ms:,
+    issued_by:,
+  ))
+}
+
+pub type PrincipalLoginCount {
+  PrincipalLoginCount(count: Int)
+}
+
+pub fn principal_login_count(
+  principal_id principal_id: String,
+  expires_at_ms expires_at_ms: Option(Int),
+) {
+  let sql =
+    "SELECT COUNT(*) FROM access_credentials
+WHERE principal_id = ? AND kind = 'browser' AND state = 'active'
+  AND (expires_at_ms IS NULL OR expires_at_ms > ?)"
+  #(
+    sql,
+    [
+      dev.ParamString(principal_id),
+      dev.ParamNullable(option.map(expires_at_ms, fn(v) { dev.ParamInt(v) })),
+    ],
+    principal_login_count_decoder(),
+  )
+}
+
+pub fn principal_login_count_decoder() -> decode.Decoder(PrincipalLoginCount) {
+  use count <- decode.field(0, decode.int)
+  decode.success(PrincipalLoginCount(count:))
+}
+
+pub type PrincipalLoginByFingerprint {
+  PrincipalLoginByFingerprint(digest: String, state: String)
+}
+
+pub fn principal_login_by_fingerprint(
+  principal_id principal_id: String,
+  digest digest: String,
+) {
+  let sql =
+    "SELECT digest, state FROM access_credentials
+WHERE principal_id = ? AND kind = 'browser' AND substr(digest, 1, 16) = ?
+LIMIT 2"
+  #(
+    sql,
+    [dev.ParamString(principal_id), dev.ParamString(digest)],
+    principal_login_by_fingerprint_decoder(),
+  )
+}
+
+pub fn principal_login_by_fingerprint_decoder() -> decode.Decoder(
+  PrincipalLoginByFingerprint,
+) {
+  use digest <- decode.field(0, decode.string)
+  use state <- decode.field(1, decode.string)
+  decode.success(PrincipalLoginByFingerprint(digest:, state:))
+}
+
+pub fn revoke_principal_logins(principal_id principal_id: String) {
+  let sql =
+    "UPDATE access_credentials SET state = 'revoked'
+WHERE principal_id = ? AND kind = 'browser' AND state = 'active'"
+  #(sql, [dev.ParamString(principal_id)])
+}
+
+pub type ActiveLoginCount {
+  ActiveLoginCount(count: Int)
+}
+
+pub fn active_login_count() {
+  let sql =
+    "SELECT COUNT(*) FROM access_credentials WHERE kind = 'browser' AND state = 'active'"
+  #(sql, [], active_login_count_decoder())
+}
+
+pub fn active_login_count_decoder() -> decode.Decoder(ActiveLoginCount) {
+  use count <- decode.field(0, decode.int)
+  decode.success(ActiveLoginCount(count:))
+}
+
+pub fn revoke_all_logins() {
+  let sql =
+    "UPDATE access_credentials SET state = 'revoked' WHERE kind = 'browser' AND state = 'active'"
+  #(sql, [])
+}
+
+pub type LoginResumedAt {
+  LoginResumedAt(last_resumed_ms: Option(Int))
+}
+
+pub fn login_resumed_at(digest digest: String) {
+  let sql =
+    "SELECT last_resumed_ms FROM access_credentials WHERE digest = ? AND kind = 'browser'"
+  #(sql, [dev.ParamString(digest)], login_resumed_at_decoder())
+}
+
+pub fn login_resumed_at_decoder() -> decode.Decoder(LoginResumedAt) {
+  use last_resumed_ms <- decode.field(0, decode.optional(decode.int))
+  decode.success(LoginResumedAt(last_resumed_ms:))
+}
+
+pub fn stamp_login_resumed(
+  last_resumed_ms last_resumed_ms: Option(Int),
+  digest digest: String,
+) {
+  let sql =
+    "UPDATE access_credentials SET last_resumed_ms = ? WHERE digest = ? AND kind = 'browser'"
+  #(sql, [
+    dev.ParamNullable(option.map(last_resumed_ms, fn(v) { dev.ParamInt(v) })),
+    dev.ParamString(digest),
+  ])
 }
 
 pub fn initialize_catalogue_revision() {

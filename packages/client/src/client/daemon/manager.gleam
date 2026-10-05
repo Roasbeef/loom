@@ -1539,7 +1539,7 @@ fn handle(
     ArchivedPage(caller, after, reply) -> {
       let outcome = {
         use principal <- result.try(
-          bearer_principal(book, caller)
+          principal_of(book, caller)
           |> result.replace_error(AdminForbidden),
         )
         use Nil <- result.try(case principal.kind {
@@ -1607,7 +1607,6 @@ fn handle(
             book.catalogue,
             claim,
             credential,
-            access.Bearer,
             name,
             now_ms,
             same_digest,
@@ -1646,7 +1645,7 @@ fn handle(
     }
     AuthorizedPage(digest, after, reply) -> {
       let outcome = {
-        use principal <- result.try(bearer_principal(book, digest))
+        use principal <- result.try(principal_of(book, digest))
         case principal.kind {
           access.OwnerPrincipal -> catalogue.page(book.catalogue, after:)
           access.MemberPrincipal ->
@@ -1659,14 +1658,14 @@ fn handle(
     Authenticate(digest, reply) -> {
       process.send(
         reply,
-        bearer_principal(book, digest)
+        principal_of(book, digest)
           |> result.map_error(Catalogue),
       )
       sm.keep(book)
     }
     SessionAuthority(digest, id, reply) -> {
       let outcome = {
-        use principal <- result.try(bearer_principal(book, digest))
+        use principal <- result.try(principal_of(book, digest))
         use authority <- result.try(access.authorization(
           book.catalogue,
           principal.id,
@@ -1849,18 +1848,19 @@ fn administer_now(phase, book: Book(instance), digest, epoch, action) {
 // The owner check every read-only owner command shares: the credential must
 // still authenticate, and as the owner. Reads carry no epoch, since they
 // change nothing a previous daemon lifetime could have meant differently.
-// Every digest this actor authenticates is a wire bearer's or a `ui.link`
-// page's, and both are `Bearer` rows (protocol-change/065). A page minted from
-// a browser login will carry its kind in its grant and reach `access` with it;
-// until then the kind is fixed here, in one place, so that no `Browser` row can
-// authenticate through any message below.
-fn bearer_principal(book: Book(instance), digest: access.Digest) {
-  access.authenticate(book.catalogue, digest, access.Bearer)
+// Every digest this actor authenticates is looked up as the kind it was made
+// as (protocol-change/065). A wire path makes its digest with
+// `access.credential_digest`, which is a `Bearer`, so a string a connection
+// presents can never reach a login's row; a page minted from a browser login
+// carries the `Browser` digest the daemon made from the login's identifier.
+// Authentication is in this one function, so no message below can skip it.
+fn principal_of(book: Book(instance), digest: access.Digest) {
+  access.authenticate(book.catalogue, digest)
 }
 
 fn authenticated_owner(book: Book(instance), digest) {
   use principal <- result.try(
-    bearer_principal(book, digest)
+    principal_of(book, digest)
     |> result.replace_error(AdminForbidden),
   )
   case principal.kind {
@@ -1875,7 +1875,7 @@ fn authorize_admin(phase, book: Book(instance), digest, epoch) {
     ShuttingDown -> Error(AdminUnavailable)
   })
   use principal <- result.try(
-    bearer_principal(book, digest)
+    principal_of(book, digest)
     |> result.replace_error(AdminForbidden),
   )
   use Nil <- result.try(case principal.kind {
@@ -2960,7 +2960,7 @@ fn resolve_authority(
   digest: access.Digest,
 ) -> Result(#(access.Principal, access.Authority), FrameRefusal) {
   {
-    use principal <- result.try(bearer_principal(book, digest))
+    use principal <- result.try(principal_of(book, digest))
     use authority <- result.try(access.authorization(
       book.catalogue,
       principal.id,
