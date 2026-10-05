@@ -281,10 +281,14 @@ pub type Start {
     /// The interval between reads, in milliseconds. Production passes
     /// `refresh_ms`; a test passes a short one.
     refresh_ms: Int,
-    /// Reads the principal's sessions. It runs in the component's own process,
-    /// when the page opens and every `refresh_ms` after, and it must not run
-    /// long: the page's runtime waits for it.
-    sessions: fn() -> Listing,
+    /// Starts the read of the principal's sessions and returns at once: the
+    /// daemon's task calls the function it is given with the listing, and
+    /// that call is dispatched as `Refreshed` (on open and every `refresh_ms`)
+    /// or `Answered` (after an action). The read is registry calls of up to
+    /// five seconds each, and a runtime that made them itself held every
+    /// click and patch behind them (protocol-change/051: the runtime never
+    /// blocks).
+    sessions: fn(fn(Listing) -> Nil) -> Nil,
     /// Asks the daemon for a ticket to open the named session: the daemon
     /// checks that the page is open, that its principal holds the session and
     /// that a process runs it, and mints a ticket with the page's own ceiling
@@ -344,10 +348,11 @@ pub type Start {
     /// unless the page is the owner's operating home that a `loom ui` exchange
     /// opened, and the daemon checks that again when it runs.
     manage: Option(fn(actions.Action, String, fn(actions.Answer) -> Nil) -> Nil),
-    /// Reads the principal's sign-ins, with the page's own credential, which the
-    /// registry authenticates again. It runs in the component's process with the
-    /// list's read, and must not run long.
-    signins: fn() -> signins.Listing,
+    /// Starts the read of the principal's sign-ins, with the page's own
+    /// credential, which the registry authenticates again, and returns at
+    /// once; the daemon's task delivers the listing, dispatched as
+    /// `SigninsRead`. It is asked after each list that was not `Closed`.
+    signins: fn(fn(signins.Listing) -> Nil) -> Nil,
     /// The fingerprint of the browser login this page belongs to, if it does,
     /// which the list marks as "This browser".
     login: Option(String),
@@ -375,11 +380,12 @@ pub type Start {
     /// owner again, whatever this page said.
     admin: Option(fn(fn(sessions.Answer) -> Nil) -> Nil),
     /// Reads the principal's display name as the catalogue holds it now, with the
-    /// page's own credential, which the registry authenticates again. It runs in
-    /// the component's process with the list's read, and must not run long. It is
-    /// `None` when the registry did not answer, and the page keeps the name it
-    /// has.
-    who: fn() -> Option(String),
+    /// page's own credential, which the registry authenticates again. It
+    /// starts the read and returns at once; the daemon's task delivers the
+    /// name, dispatched as `NameRead`, after each list that was not `Closed`.
+    /// It is `None` when the registry did not answer, and the page keeps the
+    /// name it has.
+    who: fn(fn(Option(String)) -> Nil) -> Nil,
     /// Asks the daemon to change the page's principal's display name to the
     /// typed text (protocol-change/065, the tenth pull request): the daemon
     /// checks that the page is open and was minted to operate, that its
@@ -453,6 +459,12 @@ pub opaque type Model {
     status: Status,
     /// The refresh timer's subject, known once the runtime has made it.
     timer: Option(Subject(Nil)),
+    /// How many list reads have been started, which numbers the next. An
+    /// answer carries the number of the read it answers, and one whose number
+    /// is not the latest was overtaken by a newer read and is dropped: a
+    /// timer's read still in flight when an action read again would otherwise
+    /// put the row the action removed back on the page until the next tick.
+    reads: Int,
     /// The ticket exchange the daemon minted for the session the person
     /// chose, which `<loom-switch>` navigates to. It stays until the next
     /// press replaces it: the ticket is single use and lives 60 seconds.
@@ -506,8 +518,17 @@ pub type Msg {
   /// The refresh interval passed.
   Ticked
 
-  /// The answer to a read.
-  Answered(listing: Listing)
+  /// The answer to the timer's read, on open and at each interval, numbered
+  /// by the read it answers. The sign-ins and the name are read after it, and
+  /// the timer is armed from it, so the next interval starts after the read.
+  /// An answer a newer read overtook is dropped and arms the timer alone. It
+  /// is the effect's own message, dispatched from the daemon's task.
+  Refreshed(serial: Int, listing: Listing)
+
+  /// The answer to a read made after an action, numbered by the read it
+  /// answers, which arms no timer: the interval already running fires on its
+  /// own. An answer a newer read overtook is dropped.
+  Answered(serial: Int, listing: Listing)
 
   /// The daemon's answer to the activity read a list started: one state for
   /// each session it could ask. It is the effect's own message, dispatched from
@@ -686,6 +707,7 @@ pub fn new(start: Start) -> Model {
     now: 0,
     status: Connecting,
     timer: None,
+    reads: 0,
     departure: None,
     note: None,
     opening: None,
@@ -736,25 +758,41 @@ fn wire() -> Effect(Msg) {
 /// ```
 pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   case message {
-    TimerReady(timer:) -> {
-      let model = Model(..model, timer: Some(timer))
-      #(model, refreshing(model))
-    }
+    TimerReady(timer:) -> refreshing(Model(..model, timer: Some(timer)))
 
     // An ended page is not asked again, so its timer is left to lapse.
     Ticked ->
       case model.status {
         Ended(_) -> #(model, effect.none())
-        Connecting | Connected -> #(model, refreshing(model))
+        Connecting | Connected -> refreshing(model)
       }
 
     // A list that answered starts the read of what its running sessions are
     // doing. The read is the daemon's own task and returns at once, so the
-    // list is drawn now and the activity words arrive with `Observed`.
-    Answered(listing:) -> {
-      let model = answered(model, listing)
-      #(model, observing(model))
-    }
+    // list is drawn now and the activity words arrive with `Observed`. An
+    // answer a newer read overtook is older than what the page will draw
+    // next, so it is dropped.
+    Answered(serial:, listing:) ->
+      case serial == model.reads {
+        True -> {
+          let model = answered(model, listing)
+          #(model, observing(model))
+        }
+        False -> #(model, effect.none())
+      }
+
+    // The timer's read answered: the list is drawn, the sign-ins and the name
+    // are read with it, and the timer is armed for the next read. An answer a
+    // newer read overtook is dropped, and still arms the timer: the cadence
+    // is the timer's read's to keep, whatever its answer was worth.
+    Refreshed(serial:, listing:) ->
+      case serial == model.reads {
+        True -> {
+          let model = answered(model, listing)
+          #(model, effect.batch([observing(model), following(model, listing)]))
+        }
+        False -> #(model, arming(model))
+      }
 
     // An ended page keeps the activity it last drew, as it keeps its list.
     Observed(rows:) ->
@@ -987,30 +1025,30 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // is dropped.
     ActionAnswered(answer:) ->
       case model.acting, answer {
-        actions.Working(session:, ..), actions.Done(action:) -> #(
-          Model(
-            ..model,
-            acting: actions.Calm,
-            note: Some(beside(
-              model,
-              session,
-              notice.Said(actions.done_words(action)),
-            )),
-          ),
-          reading(model),
-        )
-        actions.Working(session:, ..), actions.Declined(reason:) -> #(
-          Model(
-            ..model,
-            acting: actions.Calm,
-            note: Some(beside(
-              model,
-              session,
-              notice.Refused(actions.reason_words(reason)),
-            )),
-          ),
-          reading(model),
-        )
+        actions.Working(session:, ..), actions.Done(action:) ->
+          reading(
+            Model(
+              ..model,
+              acting: actions.Calm,
+              note: Some(beside(
+                model,
+                session,
+                notice.Said(actions.done_words(action)),
+              )),
+            ),
+          )
+        actions.Working(session:, ..), actions.Declined(reason:) ->
+          reading(
+            Model(
+              ..model,
+              acting: actions.Calm,
+              note: Some(beside(
+                model,
+                session,
+                notice.Refused(actions.reason_words(reason)),
+              )),
+            ),
+          )
         actions.Calm, _ | actions.Confirming(..), _ -> #(model, effect.none())
       }
 
@@ -1239,7 +1277,7 @@ fn renaming_self(
 // Reads the principal's sign-ins again, after one changed.
 fn reading_signins(model: Model) -> Effect(Msg) {
   use dispatch <- effect.from
-  dispatch(SigninsRead(model.start.signins()))
+  model.start.signins(fn(read) { dispatch(SigninsRead(read)) })
 }
 
 // Starts the daemon's task that mints an admin ticket and returns at once; the
@@ -1370,11 +1408,17 @@ fn managing(
   ask(action, session, fn(answer) { dispatch(ActionAnswered(answer)) })
 }
 
-// Reads the list now, after an action changed it, without arming the timer: the
-// interval already running will fire on its own.
-fn reading(model: Model) -> Effect(Msg) {
-  use dispatch <- effect.from
-  dispatch(Answered(model.start.sessions()))
+// Starts a read of the list now, after an action changed it, without arming
+// the timer: the interval already running will fire on its own. The read is
+// numbered, so an older read still in flight is dropped when it answers.
+fn reading(model: Model) -> #(Model, Effect(Msg)) {
+  let serial = model.reads + 1
+  let model = Model(..model, reads: serial)
+  let effect = {
+    use dispatch <- effect.from
+    model.start.sessions(fn(listing) { dispatch(Answered(serial, listing)) })
+  }
+  #(model, effect)
 }
 
 // Starts the daemon's rename task and returns at once; the task's answer
@@ -1463,32 +1507,49 @@ fn asking(open: fn(String) -> sessions.Answer, session: String) -> Effect(Msg) {
   dispatch(Linked(open(session)))
 }
 
-// The read, and then the arming of the timer for the next one. Both are
-// one effect so that the read is made before the interval starts. A read that
-// answers `Closed` arms nothing: that page has ended, so the read is its last.
-fn refreshing(model: Model) -> Effect(Msg) {
-  use dispatch <- effect.from
-  let listing = model.start.sessions()
-  dispatch(Answered(listing))
-
-  // The sign-ins are read with the list, so a login that ended since the last
-  // read leaves the page at the same pace a session does. A page whose read was
-  // closed asks nothing more.
-  case listing {
-    Closed(..) -> Nil
-    Listed(_) | Unread -> {
-      dispatch(SigninsRead(model.start.signins()))
-      dispatch(NameRead(model.start.who()))
-    }
+// Starts the timer's read, numbered. The daemon's task delivers the list,
+// which lands as `Refreshed`; the reads that follow it and the arming of the
+// timer wait for that answer, so the interval starts after the read, as it
+// did when the read was made here.
+fn refreshing(model: Model) -> #(Model, Effect(Msg)) {
+  let serial = model.reads + 1
+  let model = Model(..model, reads: serial)
+  let effect = {
+    use dispatch <- effect.from
+    model.start.sessions(fn(listing) { dispatch(Refreshed(serial, listing)) })
   }
+  #(model, effect)
+}
 
-  case listing, model.timer {
-    Closed(..), _ -> Nil
-    _, None -> Nil
-    _, Some(timer) -> {
+// Arms the timer for the next read, when the runtime has made it.
+fn arming(model: Model) -> Effect(Msg) {
+  case model.timer {
+    None -> effect.none()
+    Some(timer) -> {
+      use _ <- effect.from
       let _ = process.send_after(timer, model.start.refresh_ms, Nil)
       Nil
     }
+  }
+}
+
+// What follows the timer's read: the sign-ins and the name are read with the
+// list, so a login that ended since the last read leaves the page at the same
+// pace a session does, and the timer is armed for the next read. A read that
+// answered `Closed` asks nothing more and arms nothing: that page has ended,
+// so the read is its last.
+fn following(model: Model, listing: Listing) -> Effect(Msg) {
+  case listing {
+    Closed(..) -> effect.none()
+    Listed(_) | Unread ->
+      effect.batch([
+        {
+          use dispatch <- effect.from
+          model.start.signins(fn(read) { dispatch(SigninsRead(read)) })
+          model.start.who(fn(name) { dispatch(NameRead(name)) })
+        },
+        arming(model),
+      ])
   }
 }
 
@@ -1517,6 +1578,19 @@ fn answered(model: Model, listing: Listing) -> Model {
 /// ```gleam
 /// assert home.groups(home.new(start)) == []
 /// ```
+/// How many list reads the page has started. An answer carries the number
+/// of the read it answers (`Refreshed`, `Answered`), and only the latest
+/// read's answer is drawn.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // home.update(model, home.Answered(home.reads(model), home.Unread))
+/// ```
+pub fn reads(model: Model) -> Int {
+  model.reads
+}
+
 pub fn groups(model: Model) -> List(Group) {
   model.groups
 }

@@ -3962,37 +3962,57 @@ admits. It changes which process makes one daemon call.
 ### What changed
 
 - **`Transport.sessions` starts a task and returns.** The sidebar's read of
-  the principal's sessions (`manager.authorized_page`, then
-  `manager.authorized_roles`) was made inside the page's Lustre runtime, from
-  the effect that asks for it on `Opened` and every `sessions_refresh_ms`.
-  Lustre performs an effect inside the runtime process and broadcasts the
-  render only after it returns, and each registry call waits up to five
-  seconds, so a registry busy with a turn could hold the page for up to ten
-  seconds at a time with every click, every pushed frame and every patch
-  waiting behind it. The read now runs in a weft run of its own
-  (`ui_socket.listed_task`), as a resume, a rename and the home's activity
-  read already do, and answers as the component's own `SessionsListed`. An
-  observer's page is delivered its empty list without a task, as before.
+  the principal's sessions (one registry call, `manager.authorized_page`)
+  was made inside the page's Lustre runtime, from the effect that asks for
+  it on `Opened` and every `sessions_refresh_ms`. Lustre performs an effect
+  inside the runtime process and broadcasts the render only after it
+  returns, and the call waits up to five seconds, so a registry busy with a
+  turn could hold the page for up to five seconds every thirty, with every
+  click, every pushed frame and every patch waiting behind it. The read now
+  runs in a weft run of its own (`ui_socket.listed_task`), as a resume, a
+  rename and the home's activity read already do, and answers as the
+  component's own `SessionsListed`. An observer's page is delivered its
+  empty list without a task, as before.
 - **`Transport.sessions` takes the function the answer is delivered to**,
   the shape `resume` and `rename` have; it answers no value.
+- **The home's three timer-driven reads take the same shape.** `home.Start`'s
+  `sessions`, `signins` and `who` ran in the home's runtime from the one
+  effect that refreshes the page on open and every `home.refresh_ms`: the
+  list is `authorized_page` and `authorized_roles`, the sign-ins one
+  registry call and the name one more, four calls of up to five seconds
+  each, so up to twenty seconds inside the home's runtime. Each now takes
+  the function its answer is delivered to and starts a task
+  (`ui_socket.home_task`), answering as `Answered`, `SigninsRead` and
+  `NameRead`; the sign-ins and the name are asked once the list has answered
+  and was not `Closed`, as before, and the refresh timer is armed from the
+  list's answer, so the next interval still starts after the read.
 
 ### What was considered
 
 - **A shorter registry timeout.** It would bound the stall and not remove it,
-  and the two calls are correct at their timeouts: the registry is allowed to
-  be slow, the page is not allowed to wait for it.
-- **Leaving `Transport.open`, `home` and `invite` in the runtime.** Each runs
-  only on a press and is refused while one is out, so a press pays its own
-  wait; the sidebar's read ran on a timer and charged the wait to whatever
-  the person did next. They stay as they were.
+  and the call is correct at its timeout: the registry is allowed to be
+  slow, the page is not allowed to wait for it.
+- **Leaving the press-time calls in the runtime** (`Transport.open`, `home`
+  and `invite` on the session page; `open`, `sign_out`, `sign_out_all` and
+  `device` on the home). Each runs only on a press and is refused while one
+  is out. The wait is still the whole page's, not the press's: Lustre runs
+  the effect before it broadcasts the render, so every frame and click waits
+  with it. They stay as they were because a press is rare and the wait is
+  one call; the timer-driven reads ran unasked and charged their wait to
+  whatever the person did next.
 
 ### Cost
 
 One short-lived process per sidebar read, at most one every thirty seconds
-per page.
+per page, and three per home refresh.
 
 ### Verification
 
 `sidebar_test` pins that a read which answers late, or never, leaves `Opened`
 and the ticks after it returning at once with an empty sidebar, and that the
-list lands as `SessionsListed` when the task delivers it.
+list lands as `SessionsListed` when the task delivers it. `ui_socket_test`
+pins that `listed_task` returns while its read still waits and delivers once
+the read answers, and that an observer's page is answered with no read.
+`home_test` pins that a list which answers late leaves the home open with
+no groups, that the sign-ins and the name are asked after the list and not
+after a closed one, and that the timer is armed from the answer.

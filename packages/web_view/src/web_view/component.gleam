@@ -752,8 +752,10 @@ type View(socket) {
     jobs_asked_at: Option(Int),
     /// What the page refused to send, until the operator's next input.
     refusal: Option(String),
-    /// How many submits were refused with the draft kept, by the page
-    /// (`refused`) or by the lane's admission check (`submitting`). The
+    /// How many composer submits were refused with the draft kept, by the
+    /// page (`refused_draft`) or by the lane's admission check
+    /// (`submitting`); a refusal of anything but the composer's draft is
+    /// not counted. The
     /// composer's element reads it as the `refused` attribute, so a pending
     /// line it drew for a press can be taken down and the draft put back
     /// (`web_client/pending_rule`); a taken draft replaces the editor instead.
@@ -2058,9 +2060,9 @@ pub fn submit(
   images: List(String),
 ) -> #(Model(socket), Effect(Msg(socket))) {
   case string.trim(text), images, string.byte_size(text) > prompt_limit {
-    "", [], _ -> refused(model, "Nothing to send.")
+    "", [], _ -> refused_draft(model, "Nothing to send.")
     _, _, True ->
-      refused(
+      refused_draft(
         model,
         "The draft is longer than the page sends ("
           <> int.to_string(prompt_limit)
@@ -2068,10 +2070,27 @@ pub fn submit(
       )
     _, _, False ->
       case web_image.admit(images) {
-        Error(notice) -> refused(model, notice)
+        Error(notice) -> refused_draft(model, notice)
         Ok(attached) -> submitting(model, text, delivery, attached)
       }
   }
+}
+
+// A composer submit the page refused with the draft kept: the refusal, and
+// the count the composer's element reads to take its pending line down
+// (`refusals`). Only the composer's paths count, since the element's line is
+// the composer's draft: a stale approval, a reply that found no message or a
+// control form refused are told in the notice and must leave a steer the
+// lane holds in flight, or a second press would send it twice.
+fn refused_draft(
+  model: Model(socket),
+  text: String,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let #(after, effects) = refused(model, text)
+  #(
+    Model(..after, view: View(..after.view, refusals: after.view.refusals + 1)),
+    effects,
+  )
 }
 
 // A draft that passed the page's own limits, with the images that passed
@@ -2090,13 +2109,13 @@ fn submitting(
 ) -> #(Model(socket), Effect(Msg(socket))) {
   case attached, delivery {
     [_, ..], operator.Steer ->
-      refused(
+      refused_draft(
         model,
         "Images go with Send or Queue, not Steer. Nothing was sent.",
       )
     _, _ ->
       case page_command(command.parse_with_skills(text, model.shared.skills)) {
-        Error(notice) -> refused(model, notice)
+        Error(notice) -> refused_draft(model, notice)
         Ok(session) -> {
           let attaching =
             Shared(
@@ -2394,14 +2413,7 @@ fn refused(
   text: String,
 ) -> #(Model(socket), Effect(Msg(socket))) {
   #(
-    Model(
-      ..model,
-      view: View(
-        ..model.view,
-        refusal: Some(text),
-        refusals: model.view.refusals + 1,
-      ),
-    ),
+    Model(..model, view: View(..model.view, refusal: Some(text))),
     effect.none(),
   )
 }
@@ -3123,10 +3135,12 @@ pub fn pieces(model: Model(socket)) -> List(turns.Piece) {
 
 /// The live region's rows: the reasoning the provider is writing, with how
 /// much of it has arrived, how long the generation has run and the
-/// summarizer's headline when one was pushed, and the answer as it stands.
-/// All of it is the terminal's own state (`Shared.streams`,
-/// `Shared.summaries` and the generation clock), and the page reads no
-/// extra frame for it.
+/// summarizer's headline when one was pushed, the answer as it stands, and
+/// after them the inputs the daemon holds for the strand (a steer waiting
+/// for the next boundary, the prompts queued behind the turn), as the
+/// terminal draws them. All of it is the terminal's own state
+/// (`Shared.streams`, `Shared.summaries`, the generation clock and the
+/// capture's `pending_inputs`), and the page reads no extra frame for it.
 ///
 /// The elapsed time is a reading, not a running clock: the browser counts
 /// on from it (`<loom-elapsed>`), so the server draws again when a fragment
@@ -3171,10 +3185,27 @@ pub fn live(model: Model(socket)) -> List(live.Row) {
   // event or a first fragment, the row says `Thinking` with no time: the
   // operation's own clock also counts earlier generations of the turn, so it
   // would read minutes under an answer that just landed.
-  case streamed, session_model.active_strand_phase(shared) {
+  let streamed = case streamed, session_model.active_strand_phase(shared) {
     [], Some("assistant") -> [live.Opened(elapsed_ms:)]
     _, _ -> streamed
   }
+
+  // The held inputs are the newest thing on the page: typed after the run
+  // above them started, and run after it. The capture lists them, so a
+  // message the daemon took but has not run is drawn from the capture that
+  // first lists it until the one that no longer does, when its own row has
+  // landed above (`transcript_lines.held_inputs` is the terminal's rule).
+  let held =
+    session_model.presentation(shared)
+    |> transcript_lines.held_inputs
+    |> option.unwrap([])
+    |> list.map(fn(input) {
+      live.Held(
+        text: input.text,
+        words: transcript_lines.held_words(input.kind),
+      )
+    })
+  list.append(streamed, held)
 }
 
 /// The sidebar's groups: the principal's sessions by workspace, newest
@@ -3355,9 +3386,10 @@ pub fn notice_serial(model: Model(socket)) -> Int {
   model.view.noticed
 }
 
-/// How many submits were refused with the draft kept, by the page or by the
-/// lane's admission check. The operator page writes it as the composer
-/// element's `refused` attribute.
+/// How many composer submits were refused with the draft kept, by the page
+/// or by the lane's admission check; a stale approval, a reply with no
+/// message or a refused control form do not count. The operator page writes
+/// it as the composer element's `refused` attribute.
 ///
 /// ## Examples
 ///

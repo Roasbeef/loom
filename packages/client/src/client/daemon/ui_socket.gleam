@@ -1024,16 +1024,20 @@ fn admit_home(
       name: attachment.principal.display_name,
       ceiling: home_ceiling(ceiling),
       refresh_ms: home.refresh_ms,
-      sessions: fn() {
-        case
-          home_listing(attachment, open, fn(reason) {
-            process.send(signals, Ended(reason))
-          })
-        {
-          home.Listed(entries) -> home.Listed(with_projects(entries))
-          home.Unread -> home.Unread
-          home.Closed(reason) -> home.Closed(reason)
-        }
+      sessions: fn(deliver) {
+        read_task(deliver, fn() {
+          // The project lookup is a few stats for each entry, so it runs in the
+          // same task as the read it decorates and never on the home's runtime.
+          case
+            home_listing(attachment, open, fn(reason) {
+              process.send(signals, Ended(reason))
+            })
+          {
+            home.Listed(entries) -> home.Listed(with_projects(entries))
+            home.Unread -> home.Unread
+            home.Closed(reason) -> home.Closed(reason)
+          }
+        })
       },
       open: opening,
       resume: resuming,
@@ -1044,14 +1048,14 @@ fn admit_home(
       rename:,
       manage: managing,
       create: creating,
-      signins: signing.read,
+      signins: fn(deliver) { read_task(deliver, signing.read) },
       login: signing.login,
       bookmark: signing.bookmark,
       sign_out: signing.out,
       sign_out_all: signing.all,
       device: signing.device,
       admin: administering,
-      who: signing.who,
+      who: fn(deliver) { read_task(deliver, signing.who) },
       rename_self: signing.rename_self,
     )
   let started = case transferred {
@@ -1251,7 +1255,9 @@ fn admit(
       transmit: ui_relay.transmit,
       shut: ui_relay.shut,
       now: bootstrap.monotonic_time_ms,
-      sessions: fn(deliver) { listed_task(role, attachment, deliver) },
+      sessions: fn(deliver) {
+        listed_task(role, fn() { listed(attachment) }, deliver)
+      },
       activity: fn(ids, deliver) {
         activity_for(role, attachment.activity, ids, deliver)
       },
@@ -1384,31 +1390,39 @@ fn closing(close: ending.Close) -> mist.Next(Phase, Signal) {
   }
 }
 
-// Starts the sidebar's read in a run of its own and returns at once, so the
-// page's runtime is free while the registry answers; `deliver` is called,
-// from that run, with the list, whatever it is. An observer's page is handed
-// its empty list without a task, since no read is made for it (`listed_for`).
-//
-// The read is two registry calls (`manager.authorized_page` and
-// `manager.authorized_roles`), each bounded by its own timeout of a few
-// seconds, and a registry busy with a turn can hold either for that long.
-// Made in the runtime's own process they held every click and patch of the
-// page behind them (protocol-change/051: the runtime never blocks, and daemon
-// work runs as weft tasks). The run is linked to the runtime, so a page that
-// goes away cancels a read still waiting; the task's last act is `deliver`,
-// so a page that stays open is always answered.
-fn listed_task(
+/// Starts the sidebar's read in a run of its own and returns at once, so the
+/// page's runtime is free while the registry answers; `deliver` is called,
+/// from that run, with the list, whatever it is. `listed_for` decides the
+/// read's place: an observer's page is handed its empty list and `read` is
+/// never called, so no task is started for it.
+///
+/// The read is one registry call (`manager.authorized_page`), bounded by its
+/// own five-second timeout, and a registry busy with a turn can hold it for
+/// that long. Made in the runtime's own process it held every click and
+/// patch of the page behind it for up to five seconds every thirty
+/// (protocol-change/051: the runtime never blocks, and daemon work runs as
+/// weft tasks). The run is linked to the calling process, the page's runtime,
+/// so a page that goes away cancels a read still waiting; the task's last act
+/// is `deliver`, so a page that stays open is always answered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.listed_task(Operating, read, deliver)
+/// ```
+@internal
+pub fn listed_task(
   role: Role,
-  attachment: server.Attachment(instance),
+  read: fn() -> List(sessions.Entry),
   deliver: fn(List(sessions.Entry)) -> Nil,
 ) -> Nil {
   case role {
-    Observing -> deliver([])
+    Observing -> deliver(listed_for(role, read))
     Operating | Owning -> {
       let _ =
         weft.new([
           fn() {
-            deliver(listed(attachment))
+            deliver(listed_for(role, read))
             Ok(Nil)
           },
         ])
@@ -1427,8 +1441,9 @@ fn listed_task(
 // credential none. It carries the catalogue's own fields, and never a
 // database path or a configuration, which the entry has no place for. A
 // failed read is an empty list, which the sidebar draws as nothing. It blocks
-// the calling process on the registry and, for a workspace not yet seen, on the
-// project cache, so `listed_task` runs it off the page's runtime.
+// the calling process on the registry for up to the call's five seconds, and
+// on a few stats for each entry's project, so `listed_task` runs it off the
+// page's runtime.
 fn listed(attachment: server.Attachment(instance)) -> List(sessions.Entry) {
   case
     manager.authorized_page(attachment.registry, attachment.digest, after: "")
@@ -2455,10 +2470,30 @@ pub fn activity_task(
   ids: List(String),
   deliver: fn(List(#(String, sessions.Activity))) -> Nil,
 ) -> Nil {
+  read_task(deliver, fn() { ask(ids) })
+}
+
+/// Runs `read`, a registry read that may wait up to its calls' timeouts, in
+/// a weft run of its own and returns at once; `deliver` is called from that
+/// run with the answer, whatever it is. The home's three timer-driven reads
+/// (the list, the sign-ins and the name) take this shape, as the activity
+/// read does, so the home's runtime never waits on the registry
+/// (protocol-change/051, the addendum on the sidebar's read). The run is
+/// linked to the calling process, the page's runtime, so a page that goes
+/// away cancels a read still waiting; the task's last act is `deliver`, so a
+/// page that stays open is always answered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.read_task(deliver, fn() { signins_read(standing, open) })
+/// ```
+@internal
+pub fn read_task(deliver: fn(answer) -> Nil, read: fn() -> answer) -> Nil {
   let _ =
     weft.new([
       fn() {
-        deliver(ask(ids))
+        deliver(read())
         Ok(Nil)
       },
     ])

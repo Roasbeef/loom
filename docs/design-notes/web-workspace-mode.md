@@ -711,7 +711,7 @@ the membership and that the session is resident (`running`
 (`ui_socket.gleam:1012`)), mints with the page's own ceiling and deadline,
 and `<loom-switch>` navigates to the exchange. A saved session is text in
 the sidebar, and the refusal says to resume it from a terminal
-(`reason_words` (`web_view/sessions.gleam:228`)). The ruling "operator
+(`reason_words` (`web_view/sessions.gleam:236`)). The ruling "operator
 surfaces do not open saved sessions" was about the listing not being
 permission to activate; the open must go through the membership- and
 epoch-checked path.

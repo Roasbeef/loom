@@ -834,6 +834,12 @@
   .thinking{min-width:0;}
   .thinking-head{margin:0;}
   .thinking-headline{margin:2px 0 0 0;color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;}
+  /* An input the daemon holds (web_view/view/live, the Held row): the
+     person's words, quiet, and beneath them how the daemon will run them,
+     the terminal's "steer · runs next" and "queued · after this turn". */
+  .held{min-width:0;margin-top:6px;}
+  .held-text{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.5 var(--font-sans);color:var(--color-fg-quiet);}
+  .held-mark{margin:2px 0 0 0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
   /* A row drawn from Markdown (web_view/markdown_view). Its text wraps as
      prose; only code keeps its whitespace. Every class is one the view
      spells from a closed type, never from the session's text. */

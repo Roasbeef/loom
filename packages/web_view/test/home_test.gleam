@@ -68,7 +68,7 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     name: "Alice",
     ceiling:,
     refresh_ms: 5,
-    sessions: read,
+    sessions: fn(deliver) { deliver(read()) },
     open: fn(_) { sessions.Declined(sessions.NotHeld) },
     resume: fn(_, _) { Nil },
     now: fn() { now },
@@ -76,14 +76,14 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     rename: None,
     manage: None,
     create: None,
-    signins: fn() { signins.Listed([]) },
+    signins: fn(deliver) { deliver(signins.Listed([])) },
     login: None,
     bookmark: None,
     sign_out: fn(_) { signins.Declined(signins.NotFound) },
     sign_out_all: fn() { signins.Revoked },
     device: None,
     admin: None,
-    who: fn() { None },
+    who: fn(deliver) { deliver(None) },
     rename_self: None,
   )
 }
@@ -111,9 +111,13 @@ fn run(model: home.Model, message: home.Msg) -> home.Model {
   settle(model, dispatched)
 }
 
+// Every message the effects dispatched is applied in order, as the runtime
+// would apply them: the timer's read now answers with the list and then
+// starts the sign-ins, the name and the activity reads from that answer, so a
+// settle that took one message would drop the rest.
 fn settle(model: home.Model, dispatched: Subject(home.Msg)) -> home.Model {
   case process.receive(dispatched, 0) {
-    Ok(next) -> run(model, next)
+    Ok(next) -> settle(run(model, next), dispatched)
     Error(Nil) -> model
   }
 }
@@ -138,6 +142,81 @@ pub fn a_new_page_has_read_nothing_test() {
   assert string.contains(html, "connecting")
   assert string.contains(html, "You hold no sessions yet.")
   assert string.contains(html, "sidebar=\"none\"")
+}
+
+// The list is read off the runtime: a read that has not answered leaves the
+// page connecting with no groups, asks for no sign-ins and arms no timer,
+// and the answer, when the task delivers it, lands as `Refreshed`, after
+// which the sign-ins are read and the timer armed.
+pub fn a_list_that_answers_late_leaves_the_page_open_test() {
+  let delivery = process.new_subject()
+  let signins_asked = process.new_subject()
+  let #(model, timer) =
+    opened(
+      home.Start(
+        ..start(),
+        sessions: fn(deliver) { process.send(delivery, deliver) },
+        signins: fn(deliver) {
+          process.send(signins_asked, Nil)
+          deliver(signins.Listed([]))
+        },
+      ),
+    )
+  let assert Ok(_) = process.receive(delivery, 0) as "the read was started"
+  assert home.status(model) == home.Connecting
+  assert home.groups(model) == []
+  assert process.receive(signins_asked, 0) == Error(Nil)
+  assert process.receive(timer, 20) == Error(Nil)
+
+  let model =
+    run(model, home.Refreshed(home.reads(model), home.Listed(listing())))
+  assert home.status(model) == home.Connected
+  assert list.length(home.groups(model)) == 3
+  assert process.receive(signins_asked, 0) == Ok(Nil)
+  assert process.receive(timer, 1000) == Ok(Nil)
+}
+
+// A timer read still in flight when an action reads again answers late, with
+// a list older than the action's: it is dropped, so the archived row stays
+// gone instead of coming back until the next tick, and it still arms the
+// timer, so the cadence continues.
+pub fn a_late_timer_read_is_dropped_behind_an_actions_read_test() {
+  let delivery = process.new_subject()
+  let ask = fn(action, _session, deliver) { deliver(actions.Done(action)) }
+  let #(owner, timer) =
+    opened(
+      home.Start(..start(), manage: Some(ask), sessions: fn(deliver) {
+        process.send(delivery, deliver)
+      }),
+    )
+
+  // The open's read, the first, answers and arms the timer.
+  let owner = run(owner, home.Refreshed(1, home.Listed(listing())))
+  assert lists(owner, "C")
+  let _ = process.receive(timer, 1000)
+
+  // The timer fires, so the second read is out; before it answers the owner
+  // archives C, and the action's answer starts the third read, which lands.
+  let model = run(owner, home.Ticked)
+  let model = run(model, home.ArchiveRequested("C"))
+  assert home.reads(model) == 3
+  let without_c = list.filter(listing(), fn(row) { row.id != "C" })
+  let model = run(model, home.Answered(3, home.Listed(without_c)))
+  assert !lists(model, "C")
+
+  // The second read lands late with C still in it: dropped, and the timer
+  // is armed from it all the same.
+  let model = run(model, home.Refreshed(2, home.Listed(listing())))
+  assert !lists(model, "C")
+  assert home.reads(model) == 3
+  assert process.receive(timer, 1000) == Ok(Nil)
+}
+
+// Whether the page's groups hold the session.
+fn lists(model: home.Model, session: String) -> Bool {
+  list.any(home.groups(model), fn(group) {
+    list.any(group.entries, fn(entry) { entry.id == session })
+  })
 }
 
 // The first read answers when the timer exists, the sessions are grouped by
@@ -264,7 +343,10 @@ pub fn a_running_row_says_what_it_is_doing_test() {
 
   // Before the answer, a running row shows only that it is running.
   let before =
-    drawn(run(home.new(start()), home.Answered(home.Listed(listing()))))
+    drawn(run(
+      home.new(start()),
+      home.Answered(home.reads(home.new(start())), home.Listed(listing())),
+    ))
   assert string.contains(before, "running · created ")
   assert !string.contains(before, "working")
 }
@@ -354,7 +436,11 @@ pub fn an_ended_page_asks_for_no_activity_test() {
       home.Start(..start(), activity: fn(ids, _) { process.send(asked, ids) }),
     )
   let _ = process.receive(asked, 0)
-  let ended = run(model, home.Answered(home.Closed(ending.AccessRevoked)))
+  let ended =
+    run(
+      model,
+      home.Answered(home.reads(model), home.Closed(ending.AccessRevoked)),
+    )
   let ended = run(ended, home.Observed([#("B", sessions.Working)]))
   assert process.receive(asked, 0) == Error(Nil)
   assert !string.contains(drawn(ended), "working")
@@ -396,7 +482,10 @@ pub fn the_bar_matches_the_session_pages_test() {
   let connecting = drawn(home.new(start()))
   assert string.contains(connecting, "class=\"status pill pending\"")
   let ended =
-    drawn(run(model, home.Answered(home.Closed(ending.AccessRevoked))))
+    drawn(run(
+      model,
+      home.Answered(home.reads(model), home.Closed(ending.AccessRevoked)),
+    ))
   assert string.contains(ended, "class=\"status pill ended\"")
   assert !string.contains(html, "mono")
 }
@@ -552,7 +641,11 @@ pub fn a_resume_is_dropped_on_an_observer_or_ended_page_test() {
   assert !string.contains(drawn(observer), "Opening that session")
 
   let #(operator, _) = opened(home.Start(..start(), resume: ask))
-  let ended = run(operator, home.Answered(home.Closed(ending.AccessRevoked)))
+  let ended =
+    run(
+      operator,
+      home.Answered(home.reads(operator), home.Closed(ending.AccessRevoked)),
+    )
   let ended = run(ended, home.Resuming("C"))
   assert process.receive(asked, 0) == Error(Nil)
   assert !string.contains(drawn(ended), "Opening that session")
@@ -622,7 +715,11 @@ pub fn an_ended_page_asks_for_no_ticket_test() {
         sessions.Ticketed("/ui/sessions/A?ticket=t")
       }),
     )
-  let model = run(model, home.Answered(home.Closed(ending.AccessRevoked)))
+  let model =
+    run(
+      model,
+      home.Answered(home.reads(model), home.Closed(ending.AccessRevoked)),
+    )
   let model = run(model, home.Opening("A"))
   assert process.receive(asked, 0) == Error(Nil)
   assert !string.contains(drawn(model), " to=")
@@ -711,12 +808,16 @@ pub fn the_list_is_read_at_the_interval_test() {
 // not end it.
 pub fn an_unread_list_keeps_the_last_one_test() {
   let #(model, _) = opened(start())
-  let model = run(model, home.Answered(home.Unread))
+  let model = run(model, home.Answered(home.reads(model), home.Unread))
   assert home.status(model) == home.Connected
   assert list.length(home.groups(model)) == 3
 
   // A page that never read stays connecting.
-  let fresh = run(home.new(start()), home.Answered(home.Unread))
+  let fresh =
+    run(
+      home.new(start()),
+      home.Answered(home.reads(home.new(start())), home.Unread),
+    )
   assert home.status(fresh) == home.Connecting
 }
 
@@ -726,7 +827,10 @@ pub fn a_new_list_replaces_the_old_one_test() {
   let model =
     run(
       model,
-      home.Answered(home.Listed([entry("A", "web ui", "/src/loom", 1, Live)])),
+      home.Answered(
+        home.reads(model),
+        home.Listed([entry("A", "web ui", "/src/loom", 1, Live)]),
+      ),
     )
   assert list.map(home.groups(model), fn(group) { group.workspace })
     == ["/src/loom"]
@@ -747,7 +851,11 @@ pub fn a_closed_page_draws_its_ending_and_reads_no_more_test() {
     )
   let _ = process.receive(reads, 0)
   let _ = process.receive(timer, 1000)
-  let model = run(model, home.Answered(home.Closed(ending.AccessRevoked)))
+  let model =
+    run(
+      model,
+      home.Answered(home.reads(model), home.Closed(ending.AccessRevoked)),
+    )
   assert home.status(model) == home.Ended(ending.AccessRevoked)
   let html = drawn(model)
   assert string.contains(html, ">disconnected<")
@@ -1255,8 +1363,8 @@ pub fn the_form_draws_the_workspace_only_as_text_test() {
   let hostile = "/src/<script>alert(1)</script>"
   let #(model, _) =
     opened(
-      home.Start(..creator(fn(_, _, _, _) { Nil }), sessions: fn() {
-        home.Listed([entry("Z", "x", hostile, 1, Live)])
+      home.Start(..creator(fn(_, _, _, _) { Nil }), sessions: fn(deliver) {
+        deliver(home.Listed([entry("Z", "x", hostile, 1, Live)]))
       }),
     )
   let model = run(model, home.Choosing(hostile))
@@ -1357,7 +1465,11 @@ pub fn the_admin_button_is_drawn_only_with_the_capability_test() {
   // And a page that has read nothing, or whose access ended, draws none.
   let waiting = home.new(home.Start(..start(), admin: Some(fn(_) { Nil })))
   assert !string.contains(drawn(waiting), "home-admin")
-  let ended = run(owner, home.Answered(home.Closed(ending.AccessRevoked)))
+  let ended =
+    run(
+      owner,
+      home.Answered(home.reads(owner), home.Closed(ending.AccessRevoked)),
+    )
   assert !string.contains(drawn(ended), "home-admin")
 }
 
@@ -1414,7 +1526,10 @@ pub fn a_page_without_the_capability_ignores_the_admin_press_test() {
   let #(owner, _) = opened(offered)
   let ended =
     run(
-      run(owner, home.Answered(home.Closed(ending.PageEnded))),
+      run(
+        owner,
+        home.Answered(home.reads(owner), home.Closed(ending.PageEnded)),
+      ),
       home.AdminRequested,
     )
   assert process.receive(asked, 0) == Error(Nil)
@@ -1484,7 +1599,10 @@ pub fn the_sidebar_says_the_activity_word_the_list_says_test() {
 
   // Before the answer, a running row's suffix is empty rather than "running".
   let before =
-    drawn(run(home.new(start()), home.Answered(home.Listed(listing()))))
+    drawn(run(
+      home.new(start()),
+      home.Answered(home.reads(home.new(start())), home.Listed(listing())),
+    ))
   assert string.contains(
     before,
     "<span aria-hidden=\"true\" class=\"glyph\">●</span></span>",
@@ -1617,8 +1735,8 @@ pub fn the_confirmation_names_its_row_as_text_test() {
   let ask = fn(_action, _session, _deliver) { Nil }
   let #(owner, _) =
     opened(
-      home.Start(..start(), manage: Some(ask), sessions: fn() {
-        home.Listed([entry("C", hostile, "/src/weft", 1, Saved)])
+      home.Start(..start(), manage: Some(ask), sessions: fn(deliver) {
+        deliver(home.Listed([entry("C", hostile, "/src/weft", 1, Saved)]))
       }),
     )
   let model = run(owner, home.DeleteRequested("C"))
@@ -1639,8 +1757,8 @@ pub fn a_blocked_row_draws_no_action_test() {
   let ask = fn(_action, _session, _deliver) { Nil }
   let #(owner, _) =
     opened(
-      home.Start(..start(), manage: Some(ask), sessions: fn() {
-        home.Listed([entry("X", "stuck", "/src/weft", 1, Blocked)])
+      home.Start(..start(), manage: Some(ask), sessions: fn(deliver) {
+        deliver(home.Listed([entry("X", "stuck", "/src/weft", 1, Blocked)]))
       }),
     )
   let html = drawn(owner)
@@ -1769,7 +1887,8 @@ pub fn a_note_for_a_vanished_row_names_it_in_the_heading_test() {
   let #(owner, _) = opened(home.Start(..start(), manage: Some(ask)))
   let model = run(owner, home.ArchiveRequested("C"))
   let without_c = list.filter(listing(), fn(row) { row.id != "C" })
-  let model = run(model, home.Answered(home.Listed(without_c)))
+  let model =
+    run(model, home.Answered(home.reads(model), home.Listed(without_c)))
   let html = drawn(model)
   assert string.contains(html, "hex release archived.")
   assert string.contains(html, "notice-line")
@@ -1833,7 +1952,8 @@ pub fn a_rows_handlers_do_not_move_when_a_row_above_goes_test() {
 
   // B is the first row of its workspace and A the second.
   let without_b = list.filter(listing(), fn(row) { row.id != "B" })
-  let after_model = run(owner, home.Answered(home.Listed(without_b)))
+  let after_model =
+    run(owner, home.Answered(home.reads(owner), home.Listed(without_b)))
   let after = handlers(home.view(after_model))
   let table_only =
     list.filter(after, string.starts_with(_, home.table_path <> "\t"))

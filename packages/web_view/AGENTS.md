@@ -113,9 +113,16 @@ page keys and nonces, and the relay into the session's gateway.
   strand it was held for when that is not the one on screen.
 - **The home page** (protocol-change/065). `web_view/home` is a server
   component bound to no session: `Start(name, ceiling, refresh_ms, sessions,
-  open, resume)` with `sessions: fn() -> Listing` (`Listed(entries) | Unread |
-  Closed(ending)`), read when the timer is wired and every `refresh_ms`
-  (`home.refresh_ms`, 30 s), in the component's process. `Closed` ends the page
+  open, resume)` with `sessions: fn(fn(Listing) -> Nil) -> Nil` (`Listed(entries) |
+  Unread | Closed(ending)`), started when the timer is wired and every
+  `refresh_ms` (`home.refresh_ms`, 30 s) and answered from the daemon's task
+  as `Refreshed` (after which `signins` and `who`, the same shape, are started
+  and the timer armed) or, after an action, `Answered`; the runtime waits on
+  none of them (`ui_socket.read_task`). Each read is numbered (`Model.reads`,
+  `home.reads`) and both answers carry their read's number, so a timer's read
+  still in flight when an action read again is dropped when it lands rather
+  than putting the removed row back, and a dropped `Refreshed` still arms the
+  timer. `Closed` ends the page
   (`Status`: `Connecting | Connected | Ended`) and stops the reads; `Unread`
   keeps the last list. The view is `shell.view(shell.Home, ...)`:
   `view/home_bar`, `sidebar.home(groups, open, resume)` (a "Home" entry, then the rows),
@@ -559,7 +566,9 @@ page keys and nonces, and the relay into the session's gateway.
   reviews`.
 - **The live region.** `component.live(model)` turns the shared record's
   streams for the followed strand (`transcript_lines.display_streams`),
-  `Shared.summaries` and the generation clock into `live.Row`s, and
+  `Shared.summaries`, the generation clock and the inputs the daemon holds
+  for the strand (the capture's `pending_inputs`, through
+  `transcript_lines.held_inputs`, the terminal's rule) into `live.Row`s, and
   `lane.view(pieces, live, top, load, replies)` draws them through `view/live` as the
   lane's last keyed entry, keyed `live`. `live.Thinking(progress, elapsed_ms,
   headline)` is the reasoning row: `Reasoning · <loom-elapsed offset>`, with the
@@ -584,7 +593,15 @@ page keys and nonces, and the relay into the session's gateway.
   are unchanged. `live_test` pins the rows, the hand-over and the patch
   size (107 to 268 bytes for a fragment on a page of 150 rows, the same
   within two bytes on a page of one; `delivery_test`: a burst is one patch
-  of 576 to 668 bytes on the real runtime).
+  of 576 to 668 bytes on the real runtime). `live.Held(text, words)` rows
+  follow the streams: one per input the daemon holds for the strand on
+  screen, a steer not yet folded in or a prompt queued behind the turn,
+  the daemon's excerpt of the person's words and beneath it
+  `transcript_lines.held_words` (`steer · runs next`, `queued · after this
+  turn`), both text nodes in a quiet `div.held`. A capture lists them, so a
+  message the daemon took but has not run is on the page from the capture
+  that first lists it until the one that no longer does; no read or socket
+  event is added (`live_test` pins the row's arrival and departure).
 - `nudges.view(board)` draws the advisor's pending nudges
   (`Shared.nudges`, the terminal's "Advisor · pending, not delivered"), every
   body received oldest first as a text node and a `+n more waiting` line for the
