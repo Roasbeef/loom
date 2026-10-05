@@ -221,6 +221,20 @@ pub fn a_type_error_comes_back_in_band_test_() -> EunitTest {
   })
 }
 
+/// A program whose only fault is an unused import is rebuilt once without
+/// it, by the real compiler in the real jail, and then runs.
+pub fn an_unused_import_is_removed_and_the_program_runs_test_() -> EunitTest {
+  jailed(fn() {
+    case rig.prerequisites() {
+      Error(reason) ->
+        io.println_error(
+          "SKIP an_unused_import_is_removed_and_the_program_runs: " <> reason,
+        )
+      Ok(prerequisites) -> run_unused_import(prerequisites)
+    }
+  })
+}
+
 // --- the happy path -------------------------------------------------------
 
 fn run_end_to_end(prerequisites: Prerequisites) -> Nil {
@@ -615,6 +629,31 @@ fn run_type_error(prerequisites: Prerequisites) -> Nil {
     execution.outcome
     as "a type error must come back in band"
   assert string.contains(diagnostics, "Type mismatch")
+  rig.stop(live)
+}
+
+fn run_unused_import(prerequisites: Prerequisites) -> Nil {
+  let live = rig.start(name: "unused-import", prerequisites:, pool_size: 2)
+  let source =
+    "import cap/report\n"
+    <> "import gleam/int\n"
+    <> "\n"
+    <> "pub fn main() -> report.Outcome {\n"
+    <> "  report.text(\"ran\")\n"
+    <> "}\n"
+  let execution =
+    codemode.execute(source, exec_config(live, prerequisites, "unused-import"))
+  let assert codemode.Ran(source: ran_source, artifact:, outcome:) =
+    execution.outcome
+    as "the unused import must be removed and the program must run"
+
+  // What ran is the program without the import, and the artifact's address
+  // is over what was built from it.
+  assert ran_source
+    == "import cap/report\n\npub fn main() -> report.Outcome {\n  report.text(\"ran\")\n}\n"
+  assert string.starts_with(artifact.manifest_hash, "sha256-")
+  assert outcome == satellite.Completed(value: msgpack.StringValue("ran"))
+  assert execution.edits == ["removed unused import gleam/int (line 2)"]
   rig.stop(live)
 }
 
