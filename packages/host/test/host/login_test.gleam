@@ -399,18 +399,20 @@ fn state_root() -> String {
   path
 }
 
-pub fn a_missing_key_file_is_drawn_and_a_present_one_is_kept_test() {
+pub fn a_missing_key_file_is_absent_and_a_written_one_is_kept_test() {
   let directory = state_root()
-  let assert Ok(login.Drawn(drawn)) = login.load_root(directory, fixed(0x33))
+  assert login.probe_root(directory) == Ok(login.Absent)
+
+  let assert Ok(drawn) = login.write_root(directory, fixed(0x33))
   let assert Ok(text) = simplifile.read(directory <> "/browser.key")
   assert text == string.repeat("33", 32)
   let assert Ok(info) = simplifile.file_info(directory <> "/browser.key")
   assert int.bitwise_and(simplifile.file_info_permissions_octal(info), 0o777)
     == 0o600
 
-  // The next start reads the same key back and draws nothing, whatever the
-  // entropy it was handed.
-  let assert Ok(login.Kept(kept)) = login.load_root(directory, fixed(0x44))
+  // The next start reads the same key back, and a token the drawn key signed
+  // verifies under it.
+  let assert Ok(login.Present(kept)) = login.probe_root(directory)
   let minted = login.issue(drawn, id(), minting())
   assert login.verify(kept, parsed(minted)) == Ok(Nil)
   assert simplifile.delete(directory) == Ok(Nil)
@@ -432,7 +434,7 @@ pub fn a_key_file_that_is_not_the_daemons_private_key_refuses_start_test() {
     ],
     fn(contents) {
       let assert Ok(Nil) = bootstrap.atomic_write_private(path, contents)
-      let assert Error(_) = login.load_root(directory, fixed(0x44))
+      let assert Error(_) = login.probe_root(directory)
       assert simplifile.read(path) == Ok(contents)
     },
   )
@@ -441,7 +443,7 @@ pub fn a_key_file_that_is_not_the_daemons_private_key_refuses_start_test() {
   let assert Ok(Nil) =
     bootstrap.atomic_write_private(path, string.repeat("33", 32))
   let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o644)
-  let assert Error(_) = login.load_root(directory, fixed(0x44))
+  let assert Error(_) = login.probe_root(directory)
   assert simplifile.delete(directory) == Ok(Nil)
 }
 
@@ -452,14 +454,14 @@ pub fn a_key_file_that_is_a_link_or_a_directory_refuses_start_test() {
   let assert Ok(Nil) =
     bootstrap.atomic_write_private(target, string.repeat("33", 32))
   let assert Ok(Nil) = simplifile.create_symlink(target, path)
-  let assert Error(_) = login.load_root(directory, fixed(0x44))
+  let assert Error(_) = login.probe_root(directory)
   let assert Ok(Nil) = simplifile.delete(path)
   let assert Ok(Nil) = simplifile.create_directory(path)
-  let assert Error(_) = login.load_root(directory, fixed(0x44))
+  let assert Error(_) = login.probe_root(directory)
 
   // A dangling link is an entry too, and is not replaced by a fresh key.
   let assert Ok(Nil) = simplifile.delete(path)
   let assert Ok(Nil) = simplifile.create_symlink(directory <> "/nowhere", path)
-  let assert Error(_) = login.load_root(directory, fixed(0x44))
+  let assert Error(_) = login.probe_root(directory)
   assert simplifile.delete(directory) == Ok(Nil)
 }

@@ -21,7 +21,7 @@
 //// and the catalogue's lookup names the credential kind that digest belongs
 //// to (`storage/access`, `Browser`), so a bearer's lookup never finds it.
 ////
-//// This module is pure apart from the root key's file, which `load_root`
+//// This module is pure apart from the root key's file, which `probe_root`
 //// reads and writes through the same private-file rules `owner.token` uses.
 //// The clock and the entropy are arguments, so a test moves time and draws
 //// fixed bytes. The cryptography is `crypto.hmac` and `crypto.secure_compare`
@@ -181,13 +181,14 @@ pub type Refusal {
 }
 
 /// What the root key's file said at start.
-pub type Rooted {
+pub type Probe {
   /// The file held a key, which is the key.
-  Kept(key: RootKey)
+  Present(key: RootKey)
 
-  /// There was no file. A key was drawn and written, which ends every login
-  /// minted under an earlier one, so the caller revokes their rows.
-  Drawn(key: RootKey)
+  /// There was no file. Every login minted under the lost key can no longer
+  /// verify, so the caller revokes their rows and then asks `write_root` for a
+  /// new key.
+  Absent
 }
 
 /// What a login is minted with.
@@ -204,6 +205,36 @@ pub type Minting {
     /// The SHA-256 of the login nonce (`nonce_digest`).
     nonce_digest: String,
   )
+}
+
+/// Whether a value is login-shaped, meaning it begins with `loomb1:`. A login is
+/// a cookie a browser holds and never a credential a terminal presents, so a
+/// value of this shape offered as a bearer is refused before any connection, as
+/// a claim token is: presenting it would fail anyway, and refusing it names the
+/// mistake. It is a courtesy to the person and not a defence; the daemon refuses
+/// every string that is not a 64-digit bearer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert login.is_login_shaped("loomb1:00:p=a:00")
+/// assert !login.is_login_shaped(string.repeat("a", 64))
+/// ```
+pub fn is_login_shaped(value: String) -> Bool {
+  string.starts_with(value, "loomb1:")
+}
+
+/// Whether a value has the shape of a login key: 32 lowercase hexadecimal
+/// digits. A route under `/ui/l` names a login only by one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert login.is_key(string.repeat("a", 32))
+/// assert !login.is_key("abc")
+/// ```
+pub fn is_key(value: String) -> Bool {
+  is_hex(value, 32)
 }
 
 /// Draws a fresh login identifier: the hex of 16 bytes.
@@ -279,46 +310,55 @@ pub fn draw_root(entropy: fn(Int) -> BitArray) -> RootKey {
   RootKey(entropy(32))
 }
 
-/// Reads or draws the root key at `<state_root>/browser.key`, which decides
-/// what a daemon start does about logins. A file that holds a key is the key.
-/// A file that is present and not readable, that is not the daemon's own
-/// private regular file, or that is not exactly a 32-byte key refuses start
-/// and is never regenerated: a key that was tampered with or truncated is not a
-/// reason to quietly start a new family of logins. A missing file draws a key,
-/// writes it at mode `0600` and answers `Drawn`, so the caller can revoke every
-/// login row the lost key had verified.
+/// Reads the root key at `<state_root>/browser.key`, which is the first half of
+/// what a daemon start does about logins. A file that holds a key is the key. A
+/// file that is present and not readable, that is not the daemon's own private
+/// regular file, or that is not exactly a 32-byte key refuses start and is never
+/// regenerated: a key that was tampered with or truncated is not a reason to
+/// quietly start a new family of logins. A missing file is `Absent`, which is
+/// the owner's whole-daemon revocation, and the caller finishes it.
 ///
-/// The key is written as 64 lowercase hex characters, as `owner.token` is,
-/// because the private-file writer takes text. The 32 bytes are what the hex
-/// decodes to, and a file of any other length is refused.
+/// The key is kept as 64 lowercase hex characters, as `owner.token` is, because
+/// the private-file writer takes text. The 32 bytes are what the hex decodes to,
+/// and a file of any other length is refused.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // login.load_root("/home/o/.loom", crypto.strong_random_bytes)
+/// // login.probe_root("/home/o/.loom")
 /// ```
-pub fn load_root(
-  state_root: String,
-  entropy: fn(Int) -> BitArray,
-) -> Result(Rooted, String) {
+pub fn probe_root(state_root: String) -> Result(Probe, String) {
   let path = state_root <> "/" <> root_file
   case bootstrap.path_exists(path) {
-    True -> read_root(path) |> result.map(Kept)
-    False -> {
-      let key = draw_root(entropy)
-      use Nil <- result.try(
-        bootstrap.atomic_write_private(path, root_text(key))
-        |> result.map_error(fn(reason) {
-          "the browser login key could not be written: " <> reason
-        }),
-      )
-
-      // The key is read back through the same rule as an existing one, so a
-      // directory that quietly changed what was written fails here and not at
-      // the first login.
-      read_root(path) |> result.map(Drawn)
-    }
+    True -> read_root(path) |> result.map(Present)
+    False -> Ok(Absent)
   }
+}
+
+/// Draws a root key from `entropy`, writes it to `<state_root>/browser.key` at
+/// mode `0600` and reads it back through the rule an existing key is read by,
+/// so a directory that quietly changed what was written fails here and not at
+/// the first login. It is the second half of a start that found no file, and it
+/// runs after the rows of the lost key were revoked: a start that crashed
+/// between the two finds no file again and revokes nothing more.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // login.write_root("/home/o/.loom", crypto.strong_random_bytes)
+/// ```
+pub fn write_root(
+  state_root: String,
+  entropy: fn(Int) -> BitArray,
+) -> Result(RootKey, String) {
+  let path = state_root <> "/" <> root_file
+  use Nil <- result.try(
+    bootstrap.atomic_write_private(path, root_text(draw_root(entropy)))
+    |> result.map_error(fn(reason) {
+      "the browser login key could not be written: " <> reason
+    }),
+  )
+  read_root(path)
 }
 
 fn root_text(key: RootKey) -> String {

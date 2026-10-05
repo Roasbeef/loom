@@ -76,6 +76,7 @@ import host/bootstrap as host_bootstrap
 import host/build_identity
 import host/claim as claim_token
 import host/endpoint
+import host/login
 import session_view/advisor_history
 import session_view/agent_roster
 import session_view/attempt
@@ -1166,13 +1167,16 @@ pub type ViewRequest {
     options: bootstrap.Options,
     session: Option(String),
     page: control_protocol.WebPage,
+    /// Whether the home's exchange also sets a browser login, which
+    /// `--no-remember` declines (protocol-change/065).
+    remember: control_protocol.Remembering,
     delivery: view_link.Delivery,
   )
 }
 
 /// Parses the words after `loom ui` (or what is left of argv once `--ui`
 /// is taken out): an optional `--session <id>`, an optional `--operate` or
-/// `--observe`, an optional `--open`, and the shared local options
+/// `--observe`, an optional `--no-remember`, an optional `--open`, and the shared local options
 /// `--state-dir`, `--config`, `--server` and `--workspace`, in any order.
 ///
 /// With no `--session` the request is for the home page, which is a link for
@@ -1199,12 +1203,22 @@ pub type ViewRequest {
 pub fn view_request(arguments: List(String)) -> Result(ViewRequest, String) {
   let #(operate, arguments) = take_switch(arguments, "--operate")
   let #(observe, arguments) = take_switch(arguments, "--observe")
+  let #(forget, arguments) = take_switch(arguments, "--no-remember")
   let #(open, rest) = take_switch(arguments, "--open")
   let delivery = case open {
     True -> view_link.OpenInBrowser
     False -> view_link.PrintLink
   }
   use session <- result.try(view_session(rest))
+  use remember <- result.try(case session, forget {
+    Some(_), True ->
+      Error(
+        "--no-remember applies to the home page, which no --session names\n"
+        <> ui_usage(),
+      )
+    None, True -> Ok(control_protocol.Forget)
+    _, False -> Ok(control_protocol.Remember)
+  })
   let asked = case operate, observe {
     True, True -> AskedBoth
     True, False -> AskedOperator
@@ -1218,7 +1232,8 @@ pub fn view_request(arguments: List(String)) -> Result(ViewRequest, String) {
       default_bootstrap_options(),
     )
   {
-    Ok(options) -> Ok(ViewRequest(options:, session:, page:, delivery:))
+    Ok(options) ->
+      Ok(ViewRequest(options:, session:, page:, remember:, delivery:))
     Error(reason) -> Error(reason <> "\n" <> ui_usage())
   }
 }
@@ -1279,7 +1294,7 @@ fn without_flag(arguments: List(String), flag: String) -> List(String) {
 // The link is printed before any opener runs, and the ticket in it is
 // written nowhere but standard output and the opener's argument vector.
 fn run_view(request: ViewRequest) -> Nil {
-  let ViewRequest(options:, session:, page:, delivery:) = request
+  let ViewRequest(options:, session:, page:, remember:, delivery:) = request
   let outcome = {
     use connected <- result.try(bootstrap.resolve_viewing_daemon(
       options,
@@ -1297,7 +1312,11 @@ fn run_view(request: ViewRequest) -> Nil {
       ))
       use Nil <- result.try(opened_for_link(host, session))
       use reply <- result.try(
-        daemon.request(control, control_protocol.UiLink(session, page), 5000)
+        daemon.request(
+          control,
+          control_protocol.UiLink(session, page, remember),
+          5000,
+        )
         |> result.map_error(daemon_selection.failure),
       )
       case reply {
@@ -1686,13 +1705,19 @@ pub fn launch_token(arguments: List(String)) -> Result(String, String) {
         )
     },
   )
-  case claim_token.is_claim_shaped(token) {
-    False -> Ok(token)
-    True ->
+  case claim_token.is_claim_shaped(token), login.is_login_shaped(token) {
+    True, _ ->
       Error(
         "that is a claim token, not a credential; redeem it with "
         <> "`loom claim --addr ADDRESS` and pass the credential file it writes",
       )
+    False, True ->
+      Error(
+        "that is a browser login, not a credential; a browser signs in with "
+        <> "`loom ui`, and the terminal's credential is the owner token or the "
+        <> "one `loom claim` wrote",
+      )
+    False, False -> Ok(token)
   }
 }
 
@@ -1728,15 +1753,18 @@ fn launch_usage() -> String {
 }
 
 fn ui_usage() -> String {
-  "usage: loom ui [--session <id>] [--operate | --observe] [--open] "
-  <> "[--state-dir <path>] [--config <loom.toml>] [--server <path>]\n"
+  "usage: loom ui [--session <id>] [--operate | --observe] [--no-remember] "
+  <> "[--open] [--state-dir <path>] [--config <loom.toml>] "
+  <> "[--server <path>]\n"
   <> "  Print a link to the web view, starting a daemon that serves it when\n"
   <> "  none runs. With no --session the link opens your home page, which\n"
   <> "  lists your sessions by workspace and is an operator's page unless\n"
   <> "  --observe asks for a read-only one. With --session it opens that\n"
   <> "  session, read-only unless --operate asks for an operator's, which is\n"
   <> "  the link to hand to someone who may only watch. --open also opens the\n"
-  <> "  link in the default browser. Options may come in any order.\n"
+  <> "  link in the default browser. The home page also signs the browser in for\n"
+  <> "  30 days, so its bookmark works without `loom ui`; --no-remember opens\n"
+  <> "  the page and signs nothing in. Options may come in any order.\n"
   <> "  `loom --ui ...` is the same command."
 }
 

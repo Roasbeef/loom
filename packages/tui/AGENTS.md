@@ -304,7 +304,7 @@ composer; image bytes must be reattached by the operator.
 
 ## Web view link (`loom ui`)
 
-`loom ui --session <id> [--operate]` (`tui.run_view`) resolves the daemon through
+`loom ui [--session <id>] [--operate | --observe] [--no-remember] [--open]` (`tui.run_view`) resolves the daemon through
 `bootstrap.resolve_viewing_daemon`, which adds `--ui` to the launch
 arguments only when it starts one. A running daemon whose `hello` has
 `view: NoWebView` is refused by `view_served` with status 1 and never
@@ -319,7 +319,10 @@ never grants a role (protocol-change/051, the operator addendum).
 (the older spelling, taken out with `take_switch`), to the one parser
 `tui.view_request`; `tui.launch_view` is the test seam over that routing.
 `tui.view_request` parses the remaining words into a `ViewRequest`
-carrying that `page` and a `delivery`, which is `view_link.PrintLink` or,
+carrying that `page`, a `remember` (`control_protocol.Remember | Forget`:
+`--no-remember` opens the home and signs the browser in for nothing, and is
+refused with `--session`, since only the home's exchange sets a browser login,
+protocol-change/065, PR 8) and a `delivery`, which is `view_link.PrintLink` or,
 with `--open`, `view_link.OpenInBrowser`. `view_link.deliver` always emits
 the link first, then runs the opener when asked; a failed opener is a
 `Note` on stderr and the command still exits 0. `view_link.opener_for`

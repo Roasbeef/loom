@@ -102,6 +102,16 @@ pub type MemberRole {
   ObserverRole
 }
 
+/// Whether the home's `ui.link` exchange also sets a browser login, so the next
+/// visit needs no `loom ui` (protocol-change/065).
+pub type Remembering {
+  /// Set the login: the default.
+  Remember
+
+  /// Open the page and set none: `loom ui --no-remember`.
+  Forget
+}
+
 /// Requests are explicit; metadata reads never imply an open.
 /// What a web page may do: the ceiling `ui.link` asks for. An operator's
 /// page is asked for only with `loom ui --operate`.
@@ -169,6 +179,10 @@ pub type Command {
     /// The most the page may do. It caps the principal's membership role in
     /// the session and never grants one.
     page: WebPage,
+    /// Whether the exchange also sets a browser login, which only the home's
+    /// link may decline (`loom ui --no-remember`). A session's link is always
+    /// `Remember`, which is never sent.
+    remember: Remembering,
   )
 
   /// Looks up a workspace selection without starting it.
@@ -713,13 +727,13 @@ fn command_fields(command: Command, epoch: Epoch) {
       })
       Ok([#("after", json.String(after)), ..extra])
     }
-    GetSession(id) | UiLink(Some(id), ObserverPage) -> identity_fields(id)
+    GetSession(id) | UiLink(Some(id), ObserverPage, _) -> identity_fields(id)
 
     // An observer's page is the default, and its request is the one this
     // launcher sent before the field existed; only an operator's page names
     // it, which a daemon that predates the field ignores and serves as an
     // observer's (protocol-change/051, the operator addendum).
-    UiLink(Some(id), OperatorPage) -> {
+    UiLink(Some(id), OperatorPage, _) -> {
       use fields <- result.map(identity_fields(id))
       list.append(fields, [#("page", json.String("operator"))])
     }
@@ -727,8 +741,23 @@ fn command_fields(command: Command, epoch: Epoch) {
     // A link to the home names no session, which is the whole of what makes it
     // one (protocol-change/065). A daemon that predates the home refuses the
     // request for want of a session, and the launcher says so.
-    UiLink(None, ObserverPage) -> Ok([])
-    UiLink(None, OperatorPage) -> Ok([#("page", json.String("operator"))])
+    //
+    // The login is set unless the person declined it, and only a decline is
+    // sent: a daemon that predates the field sets none, and its absence is the
+    // default.
+    UiLink(None, page, remember) ->
+      Ok(
+        list.append(
+          case page {
+            ObserverPage -> []
+            OperatorPage -> [#("page", json.String("operator"))]
+          },
+          case remember {
+            Remember -> []
+            Forget -> [#("remember", json.Bool(False))]
+          },
+        ),
+      )
     WorkspaceDefault(workspace) ->
       text_fields([#("workspace", workspace, 4096)])
     RenameSession(id, name) -> {
