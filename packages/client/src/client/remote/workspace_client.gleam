@@ -24,9 +24,9 @@ import client/remote/workspace_binding as binding
 import core/ids
 import core/remote_tool
 import core/workspace as scope
-import executor/remote/connection
+import executor/remote/beam_endpoint as connection
 import executor/remote/identity
-import executor/remote/workspace_connection as transport
+import executor/remote/internal/beam_protocol as transport
 import executor/remote/workspace_journal as journal
 import gleam/int
 import gleam/option.{None, Some}
@@ -150,7 +150,7 @@ pub fn new(
     |> result.replace_error(InvalidConfiguration),
   )
   use _ <- result.try(
-    transport.client(endpoint) |> result.replace_error(InvalidConfiguration),
+    connection.validate(endpoint) |> result.replace_error(InvalidConfiguration),
   )
   case
     semantic == bound
@@ -259,7 +259,7 @@ fn observe(
       from: AwaitingEvidence,
       attempt: fn(last) {
         // Poll makes a final attempt at expiry. Preserve its last observation
-        // without opening another socket after the shared budget is exhausted.
+        // without sending another request after the shared budget is exhausted.
         use Nil <- or_expired(deadline, last)
         case exchange(config, reservation, transport.Query, deadline) {
           Ok(journal.Finished(bytes)) -> poll.Settled(bytes)
@@ -374,21 +374,20 @@ fn acknowledge(
 fn exchange(
   config: Config,
   reservation: binding.Reservation,
-  command: transport.Command,
+  command: transport.WorkspaceCommand,
   deadline: Int,
 ) {
   let remaining = deadline - poll.monotonic().now()
   use Nil <- result.try(case remaining > 0 {
     True -> Ok(Nil)
-    False -> Error(transport.Uncertain)
+    False -> Error(connection.Uncertain)
   })
   let endpoint =
     connection.Config(
       ..config.endpoint,
       within_ms: int.min(config.endpoint.within_ms, remaining),
     )
-  use client <- result.try(transport.client(endpoint))
-  transport.exchange(client, command, binding.content(reservation))
+  connection.workspace_exchange(endpoint, command, binding.content(reservation))
 }
 
 fn or_pending(
