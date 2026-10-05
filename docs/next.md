@@ -413,8 +413,9 @@ None of these is unfinished work somebody forgot.
 - **[#730](https://github.com/Roasbeef/loom/issues/730)** (runtime
   observatory) has its phase 0 proposal in
   `protocol-change/068-runtime-observatory.md`: one node, no distribution,
-  three read operations on the session socket, the control socket and
-  `cap/observe`. Phase 2 waits on #697's node identities.
+  read operations on the session socket and the owner's control socket.
+  The agent surface is deferred under a rule that it never reveals an
+  escalation; phase 2 waits on #697's node identities.
 - **Issue [#672](https://github.com/Roasbeef/loom/issues/672)** was the
   revamp's design-review thread and is closed. Its rulings are in
   the design note. #504 (rail and changes pane together) was closed on the
