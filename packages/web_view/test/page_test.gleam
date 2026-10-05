@@ -27,6 +27,36 @@ pub fn the_shell_loads_the_bundle_and_the_stylesheet_from_this_origin_test() {
   assert !string.contains(shell, "<script>")
 }
 
+// Every document the daemon serves under `/ui` links the one tab icon, by the
+// fixed asset path, so a browser has no reason to ask for `/favicon.ico`
+// (which the daemon answers 404, the same as any path outside `/ui`).
+pub fn every_document_links_the_tab_icon_test() {
+  let link =
+    "<link rel=\"icon\" type=\"image/svg+xml\" "
+    <> "href=\"/ui/assets/favicon.svg\">"
+  assert page.icon_link() == link
+  list.each(
+    [
+      page.shell("S"),
+      page.home_shell(),
+      page.admin_shell(),
+      page.login_page(),
+      page.claim_page(None),
+      page.enter("/ui/p/k/home", "n"),
+      page.enter_remembered("/ui/p/k/home", "n", "lk", "ln"),
+      page.refusal(ending.PageEnded, "0192ab"),
+      page.refusal(ending.LinkExpired, "0192ab"),
+      page.home_refusal(ending.PageEnded),
+      page.home_refusal(ending.LinkExpired),
+      page.admin_refusal(ending.PageEnded),
+      page.admin_refusal(ending.LinkExpired),
+    ],
+    fn(document) {
+      assert string.contains(document, link)
+    },
+  )
+}
+
 // A session page's document is titled with the product alone until the
 // component has drawn the bar, and never with the session's identity, which
 // names nothing a person could tell tabs apart by. An identity that holds
@@ -77,6 +107,7 @@ pub fn every_owned_asset_is_in_this_packages_priv_test() {
       page.page_asset,
       page.resume_asset,
       page.client_asset,
+      page.favicon_asset,
     ],
     fn(name) {
       let assert Ok(path) = page.static_file(name)

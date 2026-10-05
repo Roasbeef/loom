@@ -862,7 +862,8 @@ page keys and nonces, and the relay into the session's gateway.
   client runtime hides when it mounts and which so shows exactly while the
   page has no session; `refusal(ending, session_id)`, the document a
   refused page request is answered with; the exchange page (`enter(next, nonce)`), the asset
-  names (`stylesheet_asset`, `enter_asset`, `page_asset`, `client_asset`,
+  names (`stylesheet_asset`, `enter_asset`, `page_asset`, `client_asset`, `favicon_asset` (linked from every
+  document's head by `icon_link`),
   `runtime_asset`) and where each is on disk (`static_file`,
   `runtime_file`), the keyed paths (`keyed_prefix`, `session_path`) and
   `content_security_policy(host)`.
