@@ -15,6 +15,7 @@ import session_view/connection_event
 import session_view/model as session_model
 import session_view/protocol
 import session_view/session_channel
+import session_view/shared_set
 import session_view/snapshot
 import session_view/transcript_line
 import tui
@@ -26,6 +27,7 @@ import tui/job
 import tui/model as tui_model
 import tui/runtime
 import tui/session_control
+import tui/view_set
 import tui/workspace
 import weft
 
@@ -54,12 +56,10 @@ fn disconnected() -> tui_model.Model {
   // terminal was attached and its transport has gone. A fresh model starts
   // in `Preview`, which is not a state a daemon death can reach.
   tui_model.Model(
-    shared: session_model.Shared(
-      ..base.shared,
-      session: "s",
-      peer: session_model.Disconnected,
-    ),
-    view: tui_model.View(..base.view, local_options: Some(options())),
+    shared: base.shared
+      |> shared_set.session("s")
+      |> shared_set.peer(session_model.Disconnected),
+    view: view_set.local_options(base.view, Some(options())),
   )
 }
 
@@ -97,30 +97,21 @@ pub fn an_operator_quit_and_a_remote_attachment_do_not_reconnect_test() {
   let quitting =
     lose_the_channel({
       let base = disconnected()
-      tui_model.Model(
-        ..base,
-        shared: session_model.Shared(..base.shared, quit: True),
-      )
+      tui_model.Model(..base, shared: shared_set.quit(base.shared, True))
     })
   assert quitting.view.reconnect == tui_model.ReconnectIdle
 
   let remote =
     lose_the_channel({
       let base = disconnected()
-      tui_model.Model(
-        ..base,
-        view: tui_model.View(..base.view, local_options: None),
-      )
+      tui_model.Model(..base, view: view_set.local_options(base.view, None))
     })
   assert remote.view.reconnect == tui_model.ReconnectIdle
 
   let unattached =
     lose_the_channel({
       let base = disconnected()
-      tui_model.Model(
-        ..base,
-        shared: session_model.Shared(..base.shared, session: ""),
-      )
+      tui_model.Model(..base, shared: shared_set.session(base.shared, ""))
     })
   assert unattached.view.reconnect == tui_model.ReconnectIdle
 }
@@ -281,9 +272,9 @@ pub fn a_custody_return_never_overwrites_a_draft_in_progress_test() {
   let typing =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        input: text_area.state_from_string("half typed"),
+      view: view_set.input(
+        model.view,
+        text_area.state_from_string("half typed"),
       ),
     )
   let returned =

@@ -23,7 +23,8 @@ import tui
 import tui/effect
 import tui/layout_memory.{Layout, Target}
 import tui/layout_save
-import tui/model.{type Model, Model, View}
+import tui/model.{type Model, Model}
+import tui/view_set
 import tui/workspace
 import tui_test/stepping
 
@@ -345,7 +346,7 @@ fn saves(effects: List(effect.Effect)) -> List(effect.Effect) {
 pub fn a_remembered_rail_is_applied_at_launch_test() {
   let base = frame_scene.model()
   let visible =
-    Model(..base, view: View(..base.view, rail: Some(layout_memory.RailShown)))
+    Model(..base, view: view_set.rail(base.view, Some(layout_memory.RailShown)))
   let model = with_target(base, target("/x/layout.json", shown()))
   assert model.view.rail == Some(layout_memory.RailShown)
   let model = with_target(visible, target("/x/layout.json", hidden()))
@@ -426,9 +427,9 @@ pub fn a_relative_workspace_is_keyed_by_its_absolute_path_test() {
   let relative =
     Model(
       ..base,
-      view: View(
-        ..base.view,
-        workspace: workspace.Context(path: ".", branch: None),
+      view: view_set.workspace(
+        base.view,
+        workspace.Context(path: ".", branch: None),
       ),
     )
   let model = layout_save.remember_launch(relative, dir)

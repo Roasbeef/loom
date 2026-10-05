@@ -16,6 +16,7 @@ import tui/connection
 import tui/effect
 import tui/herdr
 import tui/model as tui_model
+import tui/view_set
 import tui/workspace
 import tui_test/stepping
 
@@ -443,7 +444,7 @@ pub fn a_quitting_step_publishes_nothing_after_the_release_test() {
   let model =
     tui_model.Model(
       ..base,
-      view: tui_model.View(..base.view, herdr_reporter: Some(reporter)),
+      view: view_set.herdr_reporter(base.view, Some(reporter)),
     )
 
   let #(_quit, effects) = stepping.step(backend.KeyPress("ctrl+c"), model)

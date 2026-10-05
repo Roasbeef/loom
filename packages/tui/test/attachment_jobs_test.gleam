@@ -26,6 +26,7 @@ import tui/job_runner
 import tui/model as tui_model
 import tui/runtime
 import tui/session_control
+import tui/view_set
 import tui/workspace
 import tui_test/pushed
 import tui_test/stepping
@@ -66,10 +67,7 @@ pub fn the_frames_inbox_comes_only_from_the_prepared_test() {
   let model =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        candidate: attachment.opening(key, None),
-      ),
+      view: view_set.candidate(model.view, attachment.opening(key, None)),
     )
   let frames = connection.new_inbox()
   list.each(pushed.transfer(1, "1:1", "recent", 10), process.send(frames, _))
@@ -108,10 +106,7 @@ pub fn a_stale_prepared_has_its_socket_closed_test() {
   let waiting =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        candidate: attachment.opening(current, None),
-      ),
+      view: view_set.candidate(model.view, attachment.opening(current, None)),
     )
 
   let owner: Subject(Dynamic) = process.new_subject()
@@ -160,10 +155,7 @@ pub fn a_second_prepared_for_the_same_attempt_is_closed_test() {
   let model =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        candidate: attachment.opening(key, None),
-      ),
+      view: view_set.candidate(model.view, attachment.opening(key, None)),
     )
     |> runtime.hold(job.AttachArrived(
       key,
@@ -200,10 +192,7 @@ pub fn an_arrival_for_a_cancelled_attach_key_is_never_delivered_test() {
   let model =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        candidate: attachment.opening(key, None),
-      ),
+      view: view_set.candidate(model.view, attachment.opening(key, None)),
     )
   let #(quit, effects) = stepping.step(backend.KeyPress("ctrl+c"), model)
   assert list.contains(effects, effect.CancelJob(key))
@@ -239,10 +228,7 @@ pub fn a_failed_attempt_cancels_its_job_ahead_of_its_cleanup_test() {
   let model =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        candidate: attachment.opening(key, None),
-      ),
+      view: view_set.candidate(model.view, attachment.opening(key, None)),
     )
     |> runtime.hold(job.AttachArrived(
       key,

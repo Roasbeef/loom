@@ -19,7 +19,7 @@ import frame_scene
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
-import session_view/model as session_model
+import session_view/shared_set
 import session_view/strand_framing
 import session_view/transcript_lines
 import tui/frame
@@ -314,7 +314,7 @@ pub fn a_message_heading_shows_its_local_time_test() {
   let model =
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, clock_offset: Some(60)),
+      shared: shared_set.clock_offset(base.shared, Some(60)),
     )
   let lines = frame_scene.screen(model, 120, 40) |> frame.buffer_to_lines
   let assert Ok(_) = find(lines, transcript_lines.origin_checked <> " · 09:00")

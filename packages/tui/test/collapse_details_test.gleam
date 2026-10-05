@@ -28,7 +28,7 @@ import gleam/list
 import gleam/option.{None}
 import gleam/string
 import session_view/connection_event
-import session_view/model as session_model
+import session_view/shared_set
 import tui
 import tui/connection
 import tui/frame
@@ -217,12 +217,10 @@ fn quiet_model(inbox: Subject(connection_event.Message)) -> tui_model.Model {
       tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None))
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        transcript: [],
-        strands: [],
-        notice: "ready",
-      ),
+      shared: base.shared
+        |> shared_set.transcript([])
+        |> shared_set.strands([])
+        |> shared_set.notice("ready"),
     )
   }
 }

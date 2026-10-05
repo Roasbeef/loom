@@ -36,6 +36,7 @@ import tui/markdown
 import tui/model as tui_model
 import tui/projection
 import tui/render
+import tui/view_set
 import tui_test/pushed
 
 // A linear congruential sequence: the tests need a fixed, reproducible
@@ -504,14 +505,16 @@ pub fn a_projection_keeping_the_cache_matches_one_that_kept_nothing_test() {
             painted,
             tui_model.Model(
               ..painted,
-              view: tui_model.View(
-                ..painted.view,
-                caches: tui_model.Caches(
-                  ..painted.view.caches,
-                  live_tail: live_tail.new(),
+              view: painted.view
+                |> view_set.caches(
+                  tui_model.Caches(
+                    ..painted.view.caches,
+                    live_tail: live_tail.new(),
+                  ),
+                )
+                |> view_set.rendered_revision(
+                  painted.view.rendered_revision - 1,
                 ),
-                rendered_revision: painted.view.rendered_revision - 1,
-              ),
             ),
           )
         assert fresh.view.caches.rendered_rows

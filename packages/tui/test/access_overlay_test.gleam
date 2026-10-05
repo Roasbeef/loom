@@ -33,6 +33,7 @@ import tui/model as tui_model
 import tui/runtime
 import tui/selection
 import tui/session_control
+import tui/view_set
 import tui/workspace
 import tui_test/stepping
 import weft
@@ -635,7 +636,7 @@ fn blank() -> tui_model.Model {
 fn typing(model: tui_model.Model, text: String) -> tui_model.Model {
   tui_model.Model(
     ..model,
-    view: tui_model.View(..model.view, input: textarea.state_from_string(text)),
+    view: view_set.input(model.view, textarea.state_from_string(text)),
   )
 }
 
@@ -730,9 +731,9 @@ pub fn a_second_confirmation_while_busy_sends_nothing_test() {
   let busy =
     tui_model.Model(
       ..occupied,
-      view: tui_model.View(
-        ..occupied.view,
-        control_request: Some(tui_model.ControlRequest(job.awaiting(key), None)),
+      view: view_set.control_request(
+        occupied.view,
+        Some(tui_model.ControlRequest(job.awaiting(key), None)),
       ),
     )
   let #(refused, effects) = stepping.step(backend.KeyPress("y"), busy)

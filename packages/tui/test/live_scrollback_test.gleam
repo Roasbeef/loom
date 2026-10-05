@@ -10,12 +10,14 @@ import gleam/string
 import session_view/connection_event
 import session_view/model as session_model
 import session_view/protocol
+import session_view/shared_set
 import tui
 import tui/buffered
 import tui/connection
 import tui/frame
 import tui/model as tui_model
 import tui/render
+import tui/view_set
 import tui/workspace
 import tui_test/gateway
 
@@ -115,9 +117,9 @@ pub fn clicking_the_visible_jump_hint_preserves_a_draft_test() {
     render.view(
       tui_model.Model(
         ..drafting,
-        view: tui_model.View(
-          ..drafting.view,
-          caches: tui_model.Caches(..drafting.view.caches, frame_cache: None),
+        view: view_set.caches(
+          drafting.view,
+          tui_model.Caches(..drafting.view.caches, frame_cache: None),
         ),
       ),
       geometry.rect_new(0, 0, drafting.view.width, drafting.view.height),
@@ -159,10 +161,7 @@ pub fn a_disconnected_terminal_names_its_retained_draft_first_test() {
   let offline =
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        peer: session_model.Disconnected,
-      ),
+      shared: shared_set.peer(base.shared, session_model.Disconnected),
     )
   assert string.contains(
     border_text(offline),
@@ -172,13 +171,9 @@ pub fn a_disconnected_terminal_names_its_retained_draft_first_test() {
   let interrupting =
     tui_model.Model(
       ..offline,
-      shared: session_model.Shared(
-        ..offline.shared,
-        interrupt: Some(session_model.Interrupt(
-          base.shared.active_strand,
-          None,
-          None,
-        )),
+      shared: shared_set.interrupt(
+        offline.shared,
+        Some(session_model.Interrupt(base.shared.active_strand, None, None)),
       ),
     )
   assert string.contains(
@@ -193,10 +188,7 @@ pub fn a_disconnected_terminal_names_its_retained_draft_first_test() {
   let live =
     tui_model.Model(
       ..interrupting,
-      shared: session_model.Shared(
-        ..interrupting.shared,
-        peer: session_model.Preview,
-      ),
+      shared: shared_set.peer(interrupting.shared, session_model.Preview),
     )
   assert string.contains(border_text(live), "Enter sends held input")
 }
@@ -206,7 +198,7 @@ pub fn switching_agents_restores_the_frozen_reader_without_crossing_streams_test
   let reading =
     tui_model.Model(
       ..reading,
-      shared: session_model.Shared(..reading.shared, strands: [
+      shared: shared_set.strands(reading.shared, [
         protocol.Strand("main", Some("main"), Some("assistant")),
         protocol.Strand("worker", Some("worker"), Some("assistant")),
       ]),

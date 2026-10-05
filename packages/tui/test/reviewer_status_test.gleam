@@ -16,9 +16,9 @@ import gleam/result
 import gleam/string
 import machine/codec
 import machine/operation
-import session_view/model as session_model
 import session_view/protocol
 import session_view/reviewer_status
+import session_view/shared_set
 import session_view/snapshot
 import session_view/snapshot_view
 import tui
@@ -27,6 +27,7 @@ import tui/frame
 import tui/layout_memory
 import tui/model as tui_model
 import tui/render
+import tui/view_set
 import tui/workspace
 
 fn model() {
@@ -134,16 +135,12 @@ pub fn reviewer_rows_remain_visible_above_the_composer_test() {
   let initial = {
     let base = model()
     tui_model.Model(
-      shared: session_model.Shared(
-        ..base.shared,
-        strands: [],
-        reviewer_rows: reviewer_status.observe([], window, view),
-      ),
-      view: tui_model.View(
-        ..base.view,
-        rail: Some(layout_memory.RailHidden),
-        input: textarea.state_from_string("follow-up draft"),
-      ),
+      shared: base.shared
+        |> shared_set.strands([])
+        |> shared_set.reviewer_rows(reviewer_status.observe([], window, view)),
+      view: base.view
+        |> view_set.rail(Some(layout_memory.RailHidden))
+        |> view_set.input(textarea.state_from_string("follow-up draft")),
     )
   }
   let painted = tui.update(backend.Resize(160, 35), initial)
@@ -164,14 +161,15 @@ pub fn the_agent_strip_supersedes_the_reviewer_band_test() {
   let initial = {
     let base = model()
     tui_model.Model(
-      shared: session_model.Shared(
-        ..base.shared,
-        strands: [protocol.Strand("main", Some("main"), None), ..view.strands],
-        reviewer_rows: reviewer_status.observe([], window, view),
-      ),
-      view: tui_model.View(
-        ..base.view,
-        input: textarea.state_from_string("follow-up draft"),
+      shared: base.shared
+        |> shared_set.strands([
+          protocol.Strand("main", Some("main"), None),
+          ..view.strands
+        ])
+        |> shared_set.reviewer_rows(reviewer_status.observe([], window, view)),
+      view: view_set.input(
+        base.view,
+        textarea.state_from_string("follow-up draft"),
       ),
     )
   }
@@ -196,30 +194,28 @@ pub fn reviewer_completion_keeps_the_composer_fixed_test() {
     {
       let base = model()
       tui_model.Model(
-        shared: session_model.Shared(
-          ..base.shared,
-          strands: [
+        shared: base.shared
+          |> shared_set.strands([
             protocol.Strand("advisor", Some("advisor"), Some("assistant")),
-          ],
-          reviewer_rows: live_rows,
-        ),
-        view: tui_model.View(
-          ..base.view,
-          input: textarea.state_from_string("follow-up draft"),
+          ])
+          |> shared_set.reviewer_rows(live_rows),
+        view: view_set.input(
+          base.view,
+          textarea.state_from_string("follow-up draft"),
         ),
       )
     }
     |> tui.update(backend.Resize(80, 24), _)
   let idle =
     tui_model.Model(
-      shared: session_model.Shared(
-        ..live.shared,
-        strands: [protocol.Strand("advisor", Some("advisor"), None)],
-        reviewer_rows: [],
-      ),
-      view: tui_model.View(
-        ..live.view,
-        caches: tui_model.Caches(..live.view.caches, frame_cache: None),
+      shared: live.shared
+        |> shared_set.strands([
+          protocol.Strand("advisor", Some("advisor"), None),
+        ])
+        |> shared_set.reviewer_rows([]),
+      view: view_set.caches(
+        live.view,
+        tui_model.Caches(..live.view.caches, frame_cache: None),
       ),
     )
     |> tui.update(backend.Resize(80, 24), _)

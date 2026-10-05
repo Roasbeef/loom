@@ -12,10 +12,10 @@ import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
-import session_view/model as session_model
 import session_view/notes_view
 import session_view/protocol
 import session_view/session_channel
+import session_view/shared_set
 import session_view/snapshot
 import session_view/snapshot_view
 import tui
@@ -25,6 +25,7 @@ import tui/inbound
 import tui/model as tui_model
 import tui/note_panel
 import tui/render
+import tui/view_set
 import tui/workspace
 import tui_test/gateway
 
@@ -106,10 +107,7 @@ pub fn refreshed_notes_replace_values_and_show_revision_and_excerpt_test() {
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   let first =
     delivered(
-      tui_model.Model(
-        ..base,
-        view: tui_model.View(..base.view, notes_open: True),
-      ),
+      tui_model.Model(..base, view: view_set.notes_open(base.view, True)),
       board(10, "old plan", "complete"),
     )
   assert string.contains(text(first), "old plan")
@@ -155,10 +153,7 @@ pub fn structured_notes_render_paragraphs_and_keep_raw_inspection_test() {
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   let shown =
     delivered(
-      tui_model.Model(
-        ..base,
-        view: tui_model.View(..base.view, notes_open: True),
-      ),
+      tui_model.Model(..base, view: view_set.notes_open(base.view, True)),
       board(20, raw, "complete"),
     )
   let readable = text(shown)
@@ -180,28 +175,19 @@ pub fn stable_key_refresh_reorder_and_foreign_owner_preserve_state_test() {
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   let initial =
     delivered(
-      tui_model.Model(
-        ..base,
-        view: tui_model.View(..base.view, notes_open: True),
-      ),
+      tui_model.Model(..base, view: view_set.notes_open(base.view, True)),
       board_rows("main", 20, 2, [
         #("plan", 20, "first", "complete"),
         #("next", 19, "second", "complete"),
       ]),
     )
     |> fn(model) {
-      tui_model.Model(
-        ..model,
-        view: tui_model.View(..model.view, scroll_offset: 7),
-      )
+      tui_model.Model(..model, view: view_set.scroll_offset(model.view, 7))
     }
   let selected =
     tui.update(backend.KeyPress("]"), initial)
     |> fn(model) {
-      tui_model.Model(
-        ..model,
-        view: tui_model.View(..model.view, note_scroll: 3),
-      )
+      tui_model.Model(..model, view: view_set.note_scroll(model.view, 3))
     }
   assert selected.view.note_selected == Some("next")
   assert selected.view.scroll_offset == 7
@@ -238,7 +224,9 @@ pub fn arrows_browse_standalone_notes_without_moving_the_transcript_test() {
     delivered(
       tui_model.Model(
         ..base,
-        view: tui_model.View(..base.view, notes_open: True, scroll_offset: 7),
+        view: base.view
+          |> view_set.notes_open(True)
+          |> view_set.scroll_offset(7),
       ),
       board_rows("main", 20, 2, [
         #("plan", 20, "first note body", "complete"),
@@ -264,10 +252,7 @@ pub fn note_body_remains_visible_at_supported_native_geometry_test() {
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   let shown =
     delivered(
-      tui_model.Model(
-        ..base,
-        view: tui_model.View(..base.view, notes_open: True),
-      ),
+      tui_model.Model(..base, view: view_set.notes_open(base.view, True)),
       board(20, "visible-note-body", "complete"),
     )
   list.each([#(132, 42), #(80, 24), #(40, 12)], fn(size) {
@@ -313,11 +298,8 @@ pub fn notes_distinguish_read_freshness_from_turn_age_test() {
   let older =
     delivered(
       tui_model.Model(
-        shared: session_model.Shared(
-          ..base.shared,
-          captured: Some(#(cut, view)),
-        ),
-        view: tui_model.View(..base.view, notes_open: True),
+        shared: shared_set.captured(base.shared, Some(#(cut, view))),
+        view: view_set.notes_open(base.view, True),
       ),
       board(20, "Pending: inspect queue", "complete"),
     )
@@ -376,8 +358,8 @@ pub fn historical_notes_are_readable_compact_and_raw_after_detail_expansion_test
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   let compact =
     tui_model.Model(
-      shared: session_model.Shared(..base.shared, records: [record]),
-      view: tui_model.View(..base.view, notes_open: True),
+      shared: shared_set.records(base.shared, [record]),
+      view: view_set.notes_open(base.view, True),
     )
   assert string.contains(text(compact), "Built modules")
   assert !string.contains(text(compact), "{\"done\"")
@@ -485,10 +467,7 @@ pub fn todo_cell_reads_as_a_checklist_in_the_notes_browser_test() {
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   let shown =
     delivered(
-      tui_model.Model(
-        ..base,
-        view: tui_model.View(..base.view, notes_open: True),
-      ),
+      tui_model.Model(..base, view: view_set.notes_open(base.view, True)),
       board_rows("main", 20, 1, [#("todo", 7, value, "complete")]),
     )
   let rendered = text(shown)

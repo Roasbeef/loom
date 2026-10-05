@@ -13,9 +13,9 @@ import gleam/list
 import gleam/option.{None}
 import gleam/string
 import session_view/connection_event
-import session_view/model as session_model
 import session_view/protocol
 import session_view/session_channel
+import session_view/shared_set
 import session_view/snapshot
 import session_view/tool_activity
 import session_view/transcript_line
@@ -23,6 +23,7 @@ import tui
 import tui/connection
 import tui/inbound
 import tui/model as tui_model
+import tui/view_set
 import tui/workspace
 import tui_test/ffi_term
 import tui_test/gateway
@@ -33,12 +34,10 @@ fn model() {
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   tui_model.Model(
     ..base,
-    shared: session_model.Shared(
-      ..base.shared,
-      transcript: [],
-      records: [],
-      notice: "fixture",
-    ),
+    shared: base.shared
+      |> shared_set.transcript([])
+      |> shared_set.records([])
+      |> shared_set.notice("fixture"),
   )
 }
 
@@ -49,15 +48,12 @@ fn received(model, wire) {
 fn checked_layout(model: tui_model.Model, width) {
   let cold =
     tui_model.Model(
-      shared: session_model.Shared(..model.shared, record_cache_valid: False),
-      view: tui_model.View(
-        ..model.view,
-        caches: tui_model.Caches(
-          ..model.view.caches,
-          record_line_cache: dict.new(),
-        ),
-        rendered_revision: -1,
-      ),
+      shared: shared_set.record_cache_valid(model.shared, False),
+      view: model.view
+        |> view_set.caches(
+          tui_model.Caches(..model.view.caches, record_line_cache: dict.new()),
+        )
+        |> view_set.rendered_revision(-1),
     )
     |> fn(value) { tui.update(backend.Resize(width, 40), value) }
   let cached = tui.update(backend.Resize(width, 40), model)
@@ -100,15 +96,15 @@ pub fn cached_history_matches_fresh_rows_after_each_event_test() {
     checked_layout(
       tui_model.Model(
         ..narrow,
-        shared: session_model.Shared(..narrow.shared, details_expanded: True),
+        shared: shared_set.details_expanded(narrow.shared, True),
       ),
       120,
     )
   let other =
     checked_layout(
       tui_model.Model(
-        shared: session_model.Shared(..expanded.shared, active_strand: "other"),
-        view: tui_model.View(..expanded.view, rendered_revision: -1),
+        shared: shared_set.active_strand(expanded.shared, "other"),
+        view: view_set.rendered_revision(expanded.view, -1),
       ),
       120,
     )
@@ -120,8 +116,8 @@ pub fn cached_history_matches_fresh_rows_after_each_event_test() {
   let _ =
     checked_layout(
       tui_model.Model(
-        shared: session_model.Shared(..other.shared, active_strand: "main"),
-        view: tui_model.View(..other.view, rendered_revision: -1),
+        shared: shared_set.active_strand(other.shared, "main"),
+        view: view_set.rendered_revision(other.view, -1),
       ),
       120,
     )
@@ -203,7 +199,7 @@ pub fn compaction_notice_keeps_checkpoint_out_of_transcript_test() {
     checked_layout(
       tui_model.Model(
         ..loaded,
-        shared: session_model.Shared(..loaded.shared, details_expanded: True),
+        shared: shared_set.details_expanded(loaded.shared, True),
       ),
       120,
     )

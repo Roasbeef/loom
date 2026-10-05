@@ -17,9 +17,9 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import session_view/advisor_pending
 import session_view/connection_event
-import session_view/model as session_model
 import session_view/protocol.{type Strand, Strand}
 import session_view/session_channel
+import session_view/shared_set
 import session_view/surfaces
 import session_view/transcript_lines
 import session_view/worktree_view
@@ -70,10 +70,7 @@ fn roster(main: Option(String), advisor: Option(String)) -> List(Strand) {
 fn with_roster(strands: List(Strand)) -> tui_model.Model {
   {
     let base = model()
-    tui_model.Model(
-      ..base,
-      shared: session_model.Shared(..base.shared, strands:),
-    )
+    tui_model.Model(..base, shared: shared_set.strands(base.shared, strands))
   }
 }
 
@@ -159,9 +156,9 @@ pub fn an_observed_queue_is_drawn_beside_the_composer_test() {
     let base = with_roster(roster(None, None))
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        nudges: Some(board(["the migration has no down step"], 1)),
+      shared: shared_set.nudges(
+        base.shared,
+        Some(board(["the migration has no down step"], 1)),
       ),
     )
   }
@@ -177,10 +174,7 @@ pub fn a_running_primary_keeps_newly_observed_advice_visible_test() {
     let base = with_roster(roster(Some("assistant"), None))
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        nudges: Some(board(["no down step"], 1)),
-      ),
+      shared: shared_set.nudges(base.shared, Some(board(["no down step"], 1))),
     )
   }
   let resized = tui.update(backend.Resize(120, 30), running)
@@ -260,7 +254,7 @@ pub fn a_local_submission_counts_as_the_primary_running_test() {
   let submitting =
     tui_model.Model(
       ..idle,
-      shared: session_model.Shared(..idle.shared, submitting: Some("main")),
+      shared: shared_set.submitting(idle.shared, Some("main")),
     )
   assert surfaces.advisor_nudges_action(idle.shared, submitting.shared)
     == surfaces.DropNudges
@@ -311,10 +305,7 @@ pub fn a_delivered_nudges_entry_retires_the_board_test() {
     let base = with_roster(roster(Some("assistant"), None))
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        nudges: Some(board(["no down step"], 1)),
-      ),
+      shared: shared_set.nudges(base.shared, Some(board(["no down step"], 1))),
     )
   }
   let delivered = nudges_record("main", "no down step")
@@ -379,10 +370,7 @@ pub fn a_pushed_delivery_retires_the_board_test() {
     let base = with_roster(roster(Some("assistant"), None))
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        nudges: Some(board(["no down step"], 1)),
-      ),
+      shared: shared_set.nudges(base.shared, Some(board(["no down step"], 1))),
     )
   }
   let frame =
@@ -415,10 +403,7 @@ pub fn pending_bodies_collapse_until_details_are_expanded_test() {
     let base = with_roster(roster(Some("assistant"), None))
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        nudges: Some(board([body], 1)),
-      ),
+      shared: shared_set.nudges(base.shared, Some(board([body], 1))),
     )
   }
 
@@ -431,7 +416,7 @@ pub fn pending_bodies_collapse_until_details_are_expanded_test() {
     painted(
       tui_model.Model(
         ..observed,
-        shared: session_model.Shared(..observed.shared, details_expanded: True),
+        shared: shared_set.details_expanded(observed.shared, True),
       ),
     )
   assert string.contains(expanded, "only detail mode shows")

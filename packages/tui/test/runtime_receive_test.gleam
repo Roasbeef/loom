@@ -22,6 +22,7 @@ import gleam/string
 import session_view/connection_event
 import session_view/model as session_model
 import session_view/session_channel
+import session_view/shared_set
 import session_view/snapshot
 import session_view/transcript_line
 import tui
@@ -36,6 +37,7 @@ import tui/model as tui_model
 import tui/msg
 import tui/runtime
 import tui/tick
+import tui/view_set
 import tui/workspace
 import tui_test/pushed
 import weft
@@ -228,10 +230,7 @@ pub fn adoption_hands_frames_held_after_capture_to_the_adopted_lane_test() {
   let model =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        candidate: attachment.opening(key, None),
-      ),
+      view: view_set.candidate(model.view, attachment.opening(key, None)),
     )
     |> runtime.hold(job.AttachArrived(
       key,
@@ -266,16 +265,14 @@ pub fn a_tick_settles_the_candidate_before_it_drains_the_connection_test() {
   let model =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        running: job_runner.start_attach(
+      view: model.view
+        |> view_set.running(job_runner.start_attach(
           model.view.running,
           key,
           fn() { Error("refused") },
           5000,
-        ),
-        candidate: attachment.opening(key, None),
-      ),
+        ))
+        |> view_set.candidate(attachment.opening(key, None)),
     )
   let settled = tick_until_settled(model, 0, 400)
   let lines = failures(settled)
@@ -318,9 +315,9 @@ fn fresh() -> tui_model.Model {
 fn waiting(model: tui_model.Model) -> tui_model.Model {
   tui_model.Model(
     ..model,
-    shared: session_model.Shared(
-      ..model.shared,
-      pending_submission: Some(session_model.ComposerSubmission),
+    shared: shared_set.pending_submission(
+      model.shared,
+      Some(session_model.ComposerSubmission),
     ),
   )
 }

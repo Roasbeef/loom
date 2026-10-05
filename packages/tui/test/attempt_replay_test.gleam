@@ -29,6 +29,7 @@ import session_view/history_view
 import session_view/model as session_model
 import session_view/protocol
 import session_view/session_channel
+import session_view/shared_set
 import session_view/snapshot
 import session_view/surfaces
 import session_view/transcript_line
@@ -41,6 +42,7 @@ import tui/inbound
 import tui/interaction
 import tui/model as tui_model
 import tui/recording
+import tui/view_set
 import tui/virtual_backend
 import tui/workspace
 
@@ -386,7 +388,7 @@ pub fn attempt_replay_last_unconfirmed_submission_survives_adopting_another_sess
     let base = tui.new_model(inbox, workspace.Context("replay", None))
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, peer: session_model.Replaying),
+      shared: shared_set.peer(base.shared, session_model.Replaying),
     )
   }
   let script =
@@ -460,7 +462,7 @@ pub fn credited_idle_cut_repaints_settled_answer_without_keyboard_input_test() {
       })
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, peer: session_model.Replaying),
+      shared: shared_set.peer(base.shared, session_model.Replaying),
     )
   }
   let script =
@@ -571,7 +573,7 @@ fn replay_run(source: List(attempt.Event)) {
       })
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, peer: session_model.Replaying),
+      shared: shared_set.peer(base.shared, session_model.Replaying),
     )
   }
   let script =
@@ -990,13 +992,13 @@ fn waiting_model(source) {
     let base =
       tui.new_model(connection.new_inbox(), workspace.Context("test", None))
     tui_model.Model(
-      shared: session_model.Shared(
-        ..base.shared,
-        peer: session_model.Replaying,
-        channel: Some(channel),
-        pending_submission: Some(source),
-        attachments: [composer.Attachment("unchanged attachment", 5)],
-      ),
+      shared: base.shared
+        |> shared_set.peer(session_model.Replaying)
+        |> shared_set.channel(Some(channel))
+        |> shared_set.pending_submission(Some(source))
+        |> shared_set.attachments([
+          composer.Attachment("unchanged attachment", 5),
+        ]),
       view: tui_model.View(
         ..base.view,
         // A socketless replay lane keeps the frozen transport clock its
@@ -1088,16 +1090,16 @@ pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() 
   let model =
     tui_model.Model(
       ..model,
-      shared: session_model.Shared(
-        ..model.shared,
-        session: "A",
-        nudges: Some(advisor_pending.Board("main", 1, ["Advice for A"], 1)),
-        nudges_awaiting: Some("old attachment"),
-        nudges_request: Some(42),
-        goal: Some(goal_view.NoGoal(1)),
-        goal_awaiting: Some("old attachment"),
-        goal_request: Some(43),
-      ),
+      shared: model.shared
+        |> shared_set.session("A")
+        |> shared_set.nudges(
+          Some(advisor_pending.Board("main", 1, ["Advice for A"], 1)),
+        )
+        |> shared_set.nudges_awaiting(Some("old attachment"))
+        |> shared_set.nudges_request(Some(42))
+        |> shared_set.goal(Some(goal_view.NoGoal(1)))
+        |> shared_set.goal_awaiting(Some("old attachment"))
+        |> shared_set.goal_request(Some(43)),
     )
   let failed =
     interaction.candidate_outcome(
@@ -1216,12 +1218,10 @@ pub fn explicit_retirement_preserves_original_sent_identity_live_and_recorded_te
     let base =
       tui.new_model(connection.new_inbox(), workspace.Context("A", None))
     tui_model.Model(
-      shared: session_model.Shared(
-        ..base.shared,
-        session: "A",
-        peer: session_model.Replaying,
-        channel: Some(sent),
-      ),
+      shared: base.shared
+        |> shared_set.session("A")
+        |> shared_set.peer(session_model.Replaying)
+        |> shared_set.channel(Some(sent)),
       view: tui_model.View(
         ..base.view,
         // A socketless replay lane keeps the frozen transport clock its
@@ -1711,7 +1711,7 @@ pub fn deferred_history_read_retries_on_tick_after_capture_finishes_test() {
       )
     tui_model.Model(
       ..base,
-      view: tui_model.View(..base.view, transport_time_ms: fn() { 0 }),
+      view: view_set.transport_time_ms(base.view, fn() { 0 }),
     )
   }
   let empty = history_view.empty()
@@ -1727,11 +1727,9 @@ pub fn deferred_history_read_retries_on_tick_after_capture_finishes_test() {
       backend.Tick,
       tui_model.Model(
         ..base,
-        shared: session_model.Shared(
-          ..base.shared,
-          channel: Some(busy),
-          scrollback: history,
-        ),
+        shared: base.shared
+          |> shared_set.channel(Some(busy))
+          |> shared_set.scrollback(history),
       ),
     )
   assert waiting.shared.scrollback.request == history_view.Wanted
@@ -1742,7 +1740,7 @@ pub fn deferred_history_read_retries_on_tick_after_capture_finishes_test() {
       backend.Tick,
       tui_model.Model(
         ..waiting,
-        shared: session_model.Shared(..waiting.shared, channel: Some(ready)),
+        shared: shared_set.channel(waiting.shared, Some(ready)),
       ),
     )
   assert sent.shared.scrollback.request == history_view.Pending(10)
@@ -1759,14 +1757,14 @@ pub fn first_session_binds_the_unassigned_draft_once_test() {
     let base =
       tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
     tui_model.Model(
-      shared: session_model.Shared(..base.shared, session: "", attachments: [
-        composer.Attachment("initial context", 7),
-      ]),
-      view: tui_model.View(
-        ..base.view,
-        input: textarea.state_from_string("retained draft"),
-        submission_mode: tui_model.SteerNow,
-      ),
+      shared: base.shared
+        |> shared_set.session("")
+        |> shared_set.attachments([
+          composer.Attachment("initial context", 7),
+        ]),
+      view: base.view
+        |> view_set.input(textarea.state_from_string("retained draft"))
+        |> view_set.submission_mode(tui_model.SteerNow),
     )
   }
   let first = receive_session(initial, "first")

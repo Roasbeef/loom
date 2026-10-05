@@ -8,6 +8,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import session_view/model as session_model
+import session_view/shared_set
 import tui
 import tui/buffered
 import tui/connection
@@ -18,6 +19,7 @@ import tui/model as tui_model
 import tui/runtime
 import tui/session_control
 import tui/session_selector
+import tui/view_set
 import tui/virtual_backend
 import tui/workspace
 import weft
@@ -81,9 +83,9 @@ fn acknowledge(
   let waiting =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        control_request: Some(tui_model.ControlRequest(
+      view: view_set.control_request(
+        model.view,
+        Some(tui_model.ControlRequest(
           job.awaiting(key),
           Some(Ok(job.SessionRenamed(renamed))),
         )),
@@ -97,15 +99,10 @@ pub fn acknowledged_rename_updates_header_and_picker_without_switching_test() {
   let model = {
     let base = blank()
     tui_model.Model(
-      shared: session_model.Shared(
-        ..base.shared,
-        session: "a",
-        session_label: Some(#("a", "Original")),
-      ),
-      view: tui_model.View(
-        ..base.view,
-        overlay: tui_model.DaemonSelector(picker()),
-      ),
+      shared: base.shared
+        |> shared_set.session("a")
+        |> shared_set.session_label(Some(#("a", "Original"))),
+      view: view_set.overlay(base.view, tui_model.DaemonSelector(picker())),
     )
   }
   let renamed = acknowledge(model, row("a", "Readable title"))
@@ -121,7 +118,7 @@ pub fn acknowledged_rename_updates_header_and_picker_without_switching_test() {
     header(
       tui_model.Model(
         ..renamed,
-        view: tui_model.View(..renamed.view, overlay: tui_model.NoOverlay),
+        view: view_set.overlay(renamed.view, tui_model.NoOverlay),
       ),
     ),
     "Readable title",
@@ -133,11 +130,9 @@ pub fn renaming_another_session_keeps_the_attached_title_test() {
     let base = blank()
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        session: "a",
-        session_label: Some(#("a", "Current")),
-      ),
+      shared: base.shared
+        |> shared_set.session("a")
+        |> shared_set.session_label(Some(#("a", "Current"))),
     )
   }
   let renamed = acknowledge(model, row("b", "Other"))
@@ -152,11 +147,9 @@ pub fn a_title_cannot_follow_a_legacy_identity_switch_test() {
     let base = blank()
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        session: "new-identity",
-        session_label: Some(#("old-identity", "Old title")),
-      ),
+      shared: base.shared
+        |> shared_set.session("new-identity")
+        |> shared_set.session_label(Some(#("old-identity", "Old title"))),
     )
   }
   assert string.contains(header(model), "new-identity")
@@ -174,10 +167,7 @@ fn header(model: tui_model.Model) -> String {
     tui.run_script(
       tui_model.Model(
         ..model,
-        shared: session_model.Shared(
-          ..model.shared,
-          peer: session_model.Replaying,
-        ),
+        shared: shared_set.peer(model.shared, session_model.Replaying),
       ),
       script,
     )
@@ -200,10 +190,7 @@ pub fn paste_is_owned_by_the_rename_editor_not_the_chat_draft_test() {
     let base = blank()
     tui_model.Model(
       ..base,
-      view: tui_model.View(
-        ..base.view,
-        overlay: tui_model.DaemonSelector(editing),
-      ),
+      view: view_set.overlay(base.view, tui_model.DaemonSelector(editing)),
     )
   }
   let pasted = tui.update(backend.Paste("Pasted title"), model)

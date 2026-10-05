@@ -9,13 +9,14 @@ import etui/geometry
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
-import session_view/model as session_model
+import session_view/shared_set
 import session_view/transcript_lines
 import tui
 import tui/connection
 import tui/frame
 import tui/model as tui_model
 import tui/render
+import tui/view_set
 import tui/workspace
 
 fn usage() -> message.Usage {
@@ -39,13 +40,11 @@ fn model() {
   )
   |> fn(base) {
     tui_model.Model(
-      shared: session_model.Shared(
-        ..base.shared,
-        usage: usage(),
-        output_rate_tps: Some(45),
-        notice: "",
-      ),
-      view: tui_model.View(..base.view, cache_outlook: "cache idle 3m"),
+      shared: base.shared
+        |> shared_set.usage(usage())
+        |> shared_set.output_rate_tps(Some(45))
+        |> shared_set.notice(""),
+      view: view_set.cache_outlook(base.view, "cache idle 3m"),
     )
   }
 }
@@ -89,7 +88,7 @@ pub fn the_detailed_footer_never_cuts_a_figure_test() {
     let base = model()
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, details_expanded: True),
+      shared: shared_set.details_expanded(base.shared, True),
     )
   }
   list.each([240, 180, 120, 90, 60], fn(width) {
@@ -112,8 +111,8 @@ pub fn the_rate_shows_when_the_outlook_leaves_room_test() {
   let quiet = {
     let base = model()
     tui_model.Model(
-      shared: session_model.Shared(..base.shared, details_expanded: True),
-      view: tui_model.View(..base.view, cache_outlook: ""),
+      shared: shared_set.details_expanded(base.shared, True),
+      view: view_set.cache_outlook(base.view, ""),
     )
   }
   let text = footer_rows(quiet, 180) |> string.join("\n")
@@ -135,9 +134,9 @@ pub fn the_compact_footer_drops_whole_pieces_test() {
     let base = model()
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        notice: "steer captured; waiting for the running operation to stop",
+      shared: shared_set.notice(
+        base.shared,
+        "steer captured; waiting for the running operation to stop",
       ),
     )
   }

@@ -10,9 +10,9 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import session_view/connection_event
-import session_view/model as session_model
 import session_view/protocol
 import session_view/session_channel
+import session_view/shared_set
 import session_view/worktree_view
 import tui
 import tui/connection
@@ -22,6 +22,7 @@ import tui/layout
 import tui/model as tui_model
 import tui/render
 import tui/submit
+import tui/view_set
 import tui/workspace
 import tui_test/pushed
 
@@ -191,12 +192,12 @@ fn model_with_patch() {
       fn() { 0 },
     )
   tui_model.Model(
-    shared: session_model.Shared(..base.shared, strands: [], worktree: state),
-    view: tui_model.View(
-      ..base.view,
-      diff_view: tui_model.DiffVisible,
-      input: textarea.state_from_string("draft"),
-    ),
+    shared: base.shared
+      |> shared_set.strands([])
+      |> shared_set.worktree(state),
+    view: base.view
+      |> view_set.diff_view(tui_model.DiffVisible)
+      |> view_set.input(textarea.state_from_string("draft")),
   )
   |> fn(model) { tui.update(backend.Resize(100, 30), model) }
 }
@@ -258,10 +259,7 @@ pub fn diff_navigation_labels_status_and_selected_extent_test() {
     |> worktree_view.request("owner")
   let base = model_with_patch()
   let model =
-    tui_model.Model(
-      ..base,
-      shared: session_model.Shared(..base.shared, worktree: observed),
-    )
+    tui_model.Model(..base, shared: shared_set.worktree(base.shared, observed))
     |> key("ctrl+d")
     |> fn(model) { tui.update(backend.Tick, model) }
   let labels =
@@ -323,9 +321,9 @@ pub fn mouse_uses_visible_navigation_offset_and_other_surface_blocks_hit_test() 
   let focused =
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        worktree: worktree_view.State(
+      shared: shared_set.worktree(
+        base.shared,
+        worktree_view.State(
           ..state,
           selected: 6,
           focus: worktree_view.Navigator,
@@ -347,10 +345,7 @@ pub fn mouse_uses_visible_navigation_offset_and_other_surface_blocks_hit_test() 
     as "the top visible row maps through the shared navigation offset"
 
   let covered =
-    tui_model.Model(
-      ..focused,
-      view: tui_model.View(..focused.view, notes_open: True),
-    )
+    tui_model.Model(..focused, view: view_set.notes_open(focused.view, True))
   let ignored =
     tui.update(
       backend.MousePress(
@@ -373,7 +368,7 @@ pub fn patch_page_uses_actual_height_and_preclamps_after_resize_test() {
   let trapped =
     tui_model.Model(
       ..resized,
-      view: tui_model.View(..resized.view, diff_scroll_offset: 10_000),
+      view: view_set.diff_scroll_offset(resized.view, 10_000),
     )
   let paged = key(trapped, "pageup")
   let maximum = int.max(0, paged.view.diff_row_count - height)
@@ -386,7 +381,7 @@ pub fn patch_page_uses_actual_height_and_preclamps_after_resize_test() {
     key(
       tui_model.Model(
         ..composing,
-        view: tui_model.View(..composing.view, diff_scroll_offset: 10_000),
+        view: view_set.diff_scroll_offset(composing.view, 10_000),
       ),
       "ctrl+d",
     )
@@ -430,9 +425,9 @@ pub fn ready_observation_replaces_cached_patch_without_resize_test() {
   let waiting =
     tui_model.Model(
       ..previous,
-      shared: session_model.Shared(
-        ..previous.shared,
-        worktree: worktree_view.State(
+      shared: shared_set.worktree(
+        previous.shared,
+        worktree_view.State(
           ..previous.shared.worktree,
           owner: "",
           awaiting: Some(9),
@@ -500,10 +495,7 @@ pub fn wide_rail_opens_changes_on_request_and_preserves_composer_test() {
       tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
     tui_model.Model(
       ..base,
-      view: tui_model.View(
-        ..base.view,
-        input: textarea.state_from_string("draft"),
-      ),
+      view: view_set.input(base.view, textarea.state_from_string("draft")),
     )
   }
   let wide = tui.update(backend.Resize(160, 35), base)
@@ -594,7 +586,7 @@ fn apply_incoming(
     updates,
     tui_model.Model(
       ..model,
-      shared: session_model.Shared(..model.shared, channel: Some(channel)),
+      shared: shared_set.channel(model.shared, Some(channel)),
     ),
     inbound.apply_channel_update,
   )
@@ -609,7 +601,7 @@ fn issue(model: tui_model.Model, command: String) -> #(tui_model.Model, Int) {
     inbound.apply_channel_update(
       tui_model.Model(
         ..model,
-        shared: session_model.Shared(..model.shared, channel: Some(channel)),
+        shared: shared_set.channel(model.shared, Some(channel)),
       ),
       session_channel.Submission(disposition),
     ),
@@ -622,9 +614,9 @@ pub fn unrelated_correlated_and_pushed_errors_do_not_cancel_a_worktree_observati
   let model =
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        worktree: worktree_view.request(worktree_view.new(), ""),
+      shared: shared_set.worktree(
+        base.shared,
+        worktree_view.request(worktree_view.new(), ""),
       ),
     )
   let #(model, observation_id) = issue(model, protocol.worktree_diff(999))
