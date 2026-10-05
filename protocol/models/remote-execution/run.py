@@ -9,6 +9,10 @@ import re
 from runner import ROOT, check_case, compile_model, record, snapshot_model
 
 PROBES = {
+    "tcProbeBeamCreditStale": "witness: stale handoff refused after same credit reuse and current work completed",
+    "tcProbeBeamCreditPending": "witness: caller loss and drain retained service ask until its actual answer",
+    "tcProbeBeamCreditShared": "witness: two scopes shared four data and two control credits and closure refused admission",
+    "tcProbeBeamCreditLost": "witness: lost run remained retired after actual answer and drain",
     "tcProbeOwnerDischargeHappy": "witness: exact live finish and drain released collected custody and admitted next run",
     "tcProbeOwnerDischargeCrashBeforeStart": "witness: Fresh commit before spawn survived crash and refused admission and old start",
     "tcProbeOwnerDischargeCrashAfterFinal": "witness: final commit before drain remained historical after restart without release",
