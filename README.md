@@ -7,8 +7,9 @@
 
 **A durable, multiplayer coding agent built on the BEAM.**
 
-Loom is a terminal coding agent and an extensible agent runtime written in
-Gleam. Work survives terminal disconnects and daemon restarts. People and
+Loom is a coding agent and an extensible agent runtime written in
+Gleam, offering both a native terminal interface and a web app powered by a
+shared daemon. Work survives terminal disconnects and daemon restarts. People and
 subagents can collaborate within a session or exchange messages across sessions
 through explicit grants. Models can compose tools into typed programs, keep
 actors alive across turns, and coordinate children with durable named steps.
@@ -37,10 +38,12 @@ Programs run concurrently within kernel-enforced execution boundaries.
 | **Language servers** | Semantic definitions, references, hover, diagnostics and rename through jailed language servers, available as tools and typed code-mode calls. Install profiles for Gleam, Go and Rust. |
 | **Extensibility** | Anthropic, OpenAI-compatible Chat Completions, public OpenAI Responses, and Gemini adapters; MCP servers, Markdown skills, and typed Gleam extensions. |
 
-The terminal includes streaming responses, syntax-highlighted code and diffs,
-image attachments, tool activity, and a session picker. A shared daemon keeps
-sessions running independently of the terminal or browser displaying them. Context
-compaction, searchable history, and workspace memory support longer projects.
+Both the terminal and the web view connect to the same shared daemon, so you
+can use either interface or both interchangeably. The terminal includes streaming
+responses, syntax-highlighted code and diffs, image attachments, tool activity,
+and a session picker. The web app provides a workspace home page, live transcripts,
+approval prompts, and an admin surface. Context compaction, searchable history,
+and workspace memory support longer projects.
 
 ## Get started
 
@@ -127,11 +130,13 @@ Read more about [durability](docs/architecture/durability.md),
 
 ## Multiplayer and subagents
 
-Several people can work with the same agent session. Attached terminals share
-the committed conversation and receive live output. Prompts and steering carry
-their author's identity, and presence shows who is connected. The owner grants
-session membership: operators can direct work and resolve approvals; observers
-can follow without changing it.
+Several people can work with the same agent session across terminals and
+browsers. Attached clients share the committed conversation and receive live
+output in real time. Prompts and steering carry their author's identity, and
+presence shows who is connected. The owner can share a session by inviting
+collaborators from the terminal (`loom access`) or directly from the web view.
+Session membership is role-based: operators can direct work and resolve approvals;
+observers can follow without changing state.
 
 Subagents are **strands**: independent agents with their own conversation branch
 and configuration. They can run concurrently, exchange durable messages, and
@@ -152,17 +157,31 @@ details.
 
 ## Web UI
 
-A daemon started with `--ui` (or `[daemon] ui = true`) serves a browser interface
-alongside the terminal. `loom ui` prints a single-use link to your home page, which
-lists sessions by workspace and opens any of them, saved sessions included. Opening
-the home signs the browser in for thirty days, so its bookmark works without `loom ui`.
+Loom pairs its terminal with a web app served by the same daemon. When started
+with `--ui` (or `[daemon] ui = true`), the daemon hosts a browser interface
+accessible locally or through an SSH tunnel. Both interfaces share the same
+underlying session state: prompts entered in the terminal stream to the browser,
+and approvals or steering in the browser reflect in the terminal in real time.
 
-From the home page, the owner can create sessions, stop a running session with
-mid-turn confirmation, rename, archive, or delete saved sessions, and open an admin
-page. The admin page manages access: inviting collaborators, adjusting operator or
-observer roles, revoking access or active sign-ins, and rotating credentials. Any
-member can set their display name. Browser session pages stream live transcripts,
-and operators can prompt, steer, and resolve approvals directly from the browser.
+`loom ui` prints a single-use link to your home page, which lists sessions by
+workspace and opens any of them, saved sessions included. Opening the home signs
+the browser in for thirty days, so its bookmark works without `loom ui`.
+
+![Loom web session view with streaming transcript, tool executions, and advisor commentary](docs/images/web-session.png)
+
+*The web session view showing a live transcript with collapsible tool steps, reasoning blocks, subagent status, and the advisor review rail.*
+
+Inside a session, the web view provides a live transcript with collapsible tool
+executions and diffs, strand inspection, and an advisor commentary rail. Operators
+can steer runs, target specific subagents from the composer, and resolve tool
+approvals.
+
+Sessions can be shared with others by generating single-use observer or operator
+links (`loom ui --session ID`), or by inviting collaborators from the admin page.
+Invitees without `loom` installed can redeem an invitation claim at
+`http://<host>/ui/claim`, enter their token, choose a display name, and land on
+their home page with a browser login. The daemon binds to loopback only; remote
+browsers connect through a secure tunnel such as `ssh -L`.
 
 ```sh
 loom ui                                 # Open your home page (starts the daemon if needed)
@@ -170,14 +189,13 @@ loom ui --session SESSION_ID --operate  # Open a specific session as an operator
 loom access list                        # List who holds access to your sessions
 ```
 
+From the home page, the owner can also create new sessions, stop a running session
+with mid-turn confirmation, rename, archive, or delete saved sessions, and open the
+admin page to manage member roles, revoke credentials or active sign-ins, and rotate keys.
+
 ![Loom web home page listing sessions by workspace with status and actions](docs/images/web-home.png)
 
 *The web home page listing resident and saved sessions by workspace with owner controls.*
-
-Invitees without `loom` installed can redeem an invitation claim in their browser
-at `http://<host>/ui/claim`, enter their token, choose a display name, and land on
-their home page with a browser login. The daemon binds to loopback only; remote
-browsers connect through a secure tunnel such as `ssh -L`.
 
 See [the web view](docs/architecture/web-view.md) for routes, authentication, and
 security details.
@@ -354,7 +372,8 @@ and crash boundaries without relying on timing luck.
 
 ```mermaid
 flowchart TB
-    T["Terminals and collaborators"] <-->|"Authenticated gateway"| D["Shared daemon"]
+    T["Terminals (TUI)"] <-->|"Authenticated gateway"| D["Shared daemon"]
+    W["Web browsers (Web UI)"] <-->|"Loopback / WebSocket"| D
     D --> S["Session: agents and advisor"]
     S <-->|"Commit and recover"| H[("SQLite conversation tree")]
     S --> B["Broker: policy and approvals"]
