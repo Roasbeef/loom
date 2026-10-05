@@ -22,8 +22,11 @@ import executor/remote/service
 import executor/remote/wire
 import executor/remote/workspace_journal as wj
 import executor/remote/workspace_service as ws
+import executor/remote/workspace_transfer as transfer
 import gleam/crypto
+import gleam/dynamic
 import gleam/erlang/process
+import gleam/erlang/reference
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
@@ -37,6 +40,7 @@ import tools/workspace as w
 import tools/workspace_codec as codec
 import tools/workspace_local
 import weft
+import weft/actor
 import weft/poll
 
 // Existing OTP primitives park the concrete service, never a mocked exchange.
@@ -81,9 +85,11 @@ pub fn executor_main() {
   let first = native_service(root, native, 1)
   let second = native_service(root, native, 2)
   let semantic = semantic_service(root)
-  let assert Ok(row) = endpoint.registration(owner, first, Some(semantic))
+  let assert Ok(row) =
+    endpoint.registration(owner, first, Some(semantic), process.self())
     as "concrete scope registration"
-  let assert Ok(other) = endpoint.registration(owner, second, None)
+  let assert Ok(other) =
+    endpoint.registration(owner, second, None, process.self())
     as "second exact scope"
   let assert Ok(config) = endpoint.configure_server([], 1500)
     as "bounded dynamic table"
@@ -95,12 +101,18 @@ pub fn executor_main() {
   assert endpoint.register(server, other) == Ok(Nil)
   int.range(3, 17, Nil, fn(_, epoch) {
     let concrete = native_service(root, native, epoch)
-    let assert Ok(row) = endpoint.registration(owner, concrete, None)
+    let assert Ok(row) =
+      endpoint.registration(owner, concrete, None, process.self())
       as "bounded concrete scope"
     assert endpoint.register(server, row) == Ok(Nil)
   })
   let assert Ok(overflow) =
-    endpoint.registration(owner, native_service(root, native, 17), None)
+    endpoint.registration(
+      owner,
+      native_service(root, native, 17),
+      None,
+      process.self(),
+    )
     as "seventeenth concrete scope"
   assert endpoint.register(server, overflow)
     == Error(endpoint.InvalidConfiguration)
@@ -431,4 +443,421 @@ fn invocation() -> BitArray {
     ))
     as "canonical multichunk input"
   bytes
+}
+
+// Scoped tests observe the private controller only to distinguish actual answer
+// and managed producer retirement. Every assignment still comes from real TLS.
+type ReleaseProbe
+
+@external(erlang, "executor_beam_endpoint_test_ffi", "capture_release")
+fn capture_release(server: process.Pid) -> ReleaseProbe
+
+@external(erlang, "executor_beam_endpoint_test_ffi", "inject_release")
+fn inject_release(
+  probe: ReleaseProbe,
+  server: endpoint.Server,
+) -> Result(Nil, Nil)
+
+@external(erlang, "executor_beam_endpoint_test_ffi", "retire_idle")
+fn retire_idle(server: process.Pid) -> Nil
+
+@external(erlang, "executor_beam_endpoint_test_ffi", "retire_busy")
+fn retire_busy(server: process.Pid) -> Nil
+
+@external(erlang, "executor_beam_endpoint_test_ffi", "answer_waiting")
+fn answer_waiting(server: process.Pid) -> Bool
+
+@external(erlang, "executor_beam_endpoint_test_ffi", "joined_waiting")
+fn joined_waiting(server: process.Pid) -> Bool
+
+type ScopeOwnerMessage {
+  FinishOwner
+}
+
+type RawReservation {
+  Reservation(
+    BitArray,
+    reference.Reference,
+    process.Pid,
+    process.Subject(RawReply),
+  )
+}
+
+type RawReply {
+  Granted(reference.Reference, process.Subject(RawFrame))
+  Consumed(reference.Reference, Int)
+  Returned(reference.Reference, Int, BitArray)
+}
+
+type RawFrame {
+  Input(reference.Reference, Int, BitArray)
+  ReplyConsumed(reference.Reference, Int)
+}
+
+/// Fixed scoped-lifecycle executor role with distinct pools, journals and owners.
+///
+/// ## Examples
+/// `scoped_executor_main()` runs only under the parent TLS test fixture.
+pub fn scoped_executor_main() {
+  let #(root, provisioned) = inputs()
+  let assert Ok(membership) = distribution.start(provisioned.executor_config)
+    as "scoped executor TLS bootstrap"
+  let assert Ok(owner) = distribution.peer(membership, provisioned.owner_name)
+    as "original provisioned owner"
+  let first = scoped_native(root, 1)
+  let second = scoped_native(root, 2)
+  let third = scoped_native(root, 3)
+  let fourth = scoped_native(root, 4)
+  let assert Ok(a) = endpoint.registration(owner, first.1, None, first.2)
+    as "A original local lifetime"
+  let assert Ok(b) = endpoint.registration(owner, second.1, None, second.2)
+    as "B independent original local lifetime"
+  let assert Ok(c) = endpoint.registration(owner, third.1, None, third.2)
+    as "C independent local owner"
+  let assert Ok(d) = endpoint.registration(owner, fourth.1, None, fourth.2)
+    as "D independent local owner"
+  let assert Ok(mismatch) =
+    endpoint.registration(owner, first.1, None, second.2)
+    as "same scope with different concrete lifetime owner"
+  let assert Ok(missing) =
+    endpoint.registration(
+      owner,
+      native_service(root, native(), 5),
+      None,
+      process.self(),
+    )
+    as "not enrolled scope"
+  let assert Ok(config) = endpoint.configure_server([a, b, c, d], 1500)
+    as "initial rows use the same monitored enrollment path"
+  let assert Ok(server) = endpoint.start(config) as "shared node endpoint"
+  assert endpoint.inspect_drain(server, a) == Ok(endpoint.Busy)
+  assert endpoint.inspect_drain(server, mismatch)
+    == Error(endpoint.InvalidConfiguration)
+  assert endpoint.fence(server, missing) == Error(endpoint.InvalidConfiguration)
+  assert endpoint.fence(server, mismatch)
+    == Error(endpoint.InvalidConfiguration)
+  mark(root, "scope-ready")
+  await(root, "scope-hold-a")
+  suspend(service.pid(first.1))
+  mark(root, "scope-a-suspended")
+  await(root, "scope-a-caller-joined")
+  let assert poll.Answered(Nil) =
+    poll.until(2000, 10, fn() {
+      case joined_waiting(endpoint.pid(server)) {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "actual transport AllDelivered precedes A service answer"
+  let original = capture_release(endpoint.pid(server))
+  assert endpoint.inspect(server) == Ok(endpoint.Capacity(4, 3, 2))
+  assert endpoint.fence(server, a) == Ok(Nil)
+  assert endpoint.fence(server, a) == Ok(Nil)
+  assert endpoint.register(server, a) == Error(endpoint.ConflictingRegistration)
+  assert endpoint.inspect_drain(server, a) == Ok(endpoint.Busy)
+  mark(root, "scope-a-fenced")
+  await(root, "scope-sibling-checked")
+  assert endpoint.inspect(server) == Ok(endpoint.Capacity(4, 3, 2))
+  assert endpoint.inspect_drain(server, a) == Ok(endpoint.Busy)
+  resume(service.pid(first.1))
+  scoped_drain(server, a, endpoint.Drained)
+  mark(root, "scope-a-drained")
+  await(root, "scope-b-old-answer-held")
+  let old_b = capture_release(endpoint.pid(server))
+  mark(root, "scope-b-old-release-checked")
+  await(root, "scope-b-old-producer-joined")
+  scoped_capacity(server, endpoint.Capacity(4, 4, 2))
+  mark(root, "scope-b-old-credit-returned")
+  await(root, "scope-b-current-answer-held")
+  let assert poll.Answered(Nil) =
+    poll.until(2000, 10, fn() {
+      case answer_waiting(endpoint.pid(server)) {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "actual B service answer precedes transport AllDelivered"
+  assert endpoint.fence(server, b) == Ok(Nil)
+  assert endpoint.inspect_drain(server, b) == Ok(endpoint.Busy)
+  assert inject_release(original, server) == Ok(Nil)
+  assert inject_release(old_b, server) == Ok(Nil)
+  assert endpoint.inspect(server) == Ok(endpoint.Capacity(4, 3, 2))
+  assert endpoint.inspect_drain(server, b) == Ok(endpoint.Busy)
+  assert endpoint.inspect_drain(server, a) == Ok(endpoint.Drained)
+  mark(root, "scope-b-current-release-checked")
+  await(root, "scope-b-current-producer-joined")
+  scoped_drain(server, b, endpoint.Drained)
+  retire_idle(endpoint.pid(server))
+  scoped_capacity(server, endpoint.Capacity(4, 3, 2))
+  assert endpoint.inspect_drain(server, a) == Ok(endpoint.Drained)
+  assert endpoint.inspect_drain(server, b) == Ok(endpoint.Drained)
+  assert endpoint.inspect_drain(server, c) == Ok(endpoint.Busy)
+  process.send(third.0, FinishOwner)
+  scoped_drain(server, c, endpoint.Drained)
+  mark(root, "scope-idle-loss-checked")
+  await(root, "scope-owner-down-checked")
+  assert endpoint.inspect(server) == Ok(endpoint.Capacity(4, 3, 2))
+  suspend(service.pid(fourth.1))
+  mark(root, "scope-d-suspended")
+  await(root, "scope-d-caller-joined")
+  scoped_capacity(server, endpoint.Capacity(4, 2, 2))
+  let lost = capture_release(endpoint.pid(server))
+  assert endpoint.fence(server, d) == Ok(Nil)
+  assert endpoint.inspect_drain(server, d) == Ok(endpoint.Busy)
+  retire_busy(endpoint.pid(server))
+  scoped_drain(server, d, endpoint.DrainUncertain)
+  assert inject_release(lost, server) == Ok(Nil)
+  assert endpoint.inspect_drain(server, d) == Ok(endpoint.DrainUncertain)
+  assert endpoint.inspect(server) == Ok(endpoint.Capacity(4, 2, 2))
+  assert endpoint.inspect_drain(server, a) == Ok(endpoint.Drained)
+  resume(service.pid(fourth.1))
+  mark(root, "scope-busy-loss-checked")
+  await(root, "scope-done")
+  endpoint.stop(server)
+  mark(root, "scoped-executor-success")
+}
+
+/// Fixed real-peer role tests stale reservations and both answer/join orders.
+///
+/// ## Examples
+/// `scoped_owner_main()` has no production RPC callback or fabricated Peer.
+pub fn scoped_owner_main() {
+  let #(root, provisioned) = inputs()
+  let assert Ok(membership) = distribution.start(provisioned.owner_config)
+    as "scoped owner TLS bootstrap"
+  let assert Ok(peer) = distribution.peer(membership, provisioned.executor_name)
+    as "actual configured executor peer"
+  let config = endpoint.Config(peer, "owner", "executor", scope(1), 1, 3000)
+  let assert Ok(digest) = identity.digest(crypto.hash(crypto.Sha256, <<1>>))
+    as "canonical challenge digest"
+  await(root, "scope-ready")
+  mark(root, "scope-hold-a")
+  await(root, "scope-a-suspended")
+  assert endpoint.exchange(
+      endpoint.Config(..config, within_ms: 200),
+      wire.ChallengeRequest(key(), digest),
+    )
+    == Error(endpoint.Uncertain)
+  mark(root, "scope-a-caller-joined")
+  await(root, "scope-a-fenced")
+  assert endpoint.exchange(
+      endpoint.Config(..config, within_ms: 100),
+      wire.ChallengeRequest(key(), digest),
+    )
+    == Error(endpoint.Uncertain)
+  assert endpoint.exchange(
+      endpoint.Config(..config, within_ms: 100),
+      wire.Hello,
+    )
+    == Error(endpoint.Uncertain)
+  let other = endpoint.Config(..config, scope: scope(2))
+  assert endpoint.exchange(other, wire.Hello) == Ok(wire.Hello)
+  let assert Ok(wire.Challenge(_, _, _, _)) =
+    endpoint.exchange(other, wire.ChallengeRequest(scoped_key(2), digest))
+    as "B uses remaining data capacity while A is fenced and still busy"
+  mark(root, "scope-sibling-checked")
+  await(root, "scope-a-drained")
+  raw_answer_before_join(root, peer, digest, "old")
+  mark(root, "scope-b-old-producer-joined")
+  await(root, "scope-b-old-credit-returned")
+  raw_answer_before_join(root, peer, digest, "current")
+  mark(root, "scope-b-current-producer-joined")
+  await(root, "scope-idle-loss-checked")
+  assert endpoint.exchange(
+      endpoint.Config(..config, scope: scope(3), within_ms: 100),
+      wire.Hello,
+    )
+    == Error(endpoint.Uncertain)
+  assert endpoint.exchange(
+      endpoint.Config(..config, scope: scope(4)),
+      wire.Hello,
+    )
+    == Ok(wire.Hello)
+  mark(root, "scope-owner-down-checked")
+  await(root, "scope-d-suspended")
+  assert endpoint.exchange(
+      endpoint.Config(..config, scope: scope(4), within_ms: 200),
+      wire.ChallengeRequest(scoped_key(4), digest),
+    )
+    == Error(endpoint.Uncertain)
+  mark(root, "scope-d-caller-joined")
+  await(root, "scope-busy-loss-checked")
+  assert endpoint.exchange(
+      endpoint.Config(..config, scope: scope(4), within_ms: 100),
+      wire.Hello,
+    )
+    == Error(endpoint.Uncertain)
+  mark(root, "scope-done")
+  mark(root, "scoped-owner-success")
+}
+
+fn scoped_native(
+  root: String,
+  epoch: Int,
+) -> #(process.Subject(ScopeOwnerMessage), service.Service, process.Pid) {
+  let assert Ok(started) =
+    actor.new_with_initialiser(1000, fn(subject) {
+      // These metadata-only controls need distinct real pools, not launched effects.
+      let assert Ok(pool) =
+        exec.start_pool(1, fn() { Error(exec.PortOpenFailed) })
+        as "independent original native pool"
+      let assert Ok(native) =
+        local.start(local.ExecutorConfig(
+          fn() { exec.checkout(pool, 1000) },
+          fn(helper) { exec.checkin(pool, helper) },
+          fn() { exec.pool_custody(pool, 1000) },
+          fn(ms) { exec.close_pool(pool, ms) },
+          epoch,
+          log.discard(),
+        ))
+        as "scope-local native custody actor"
+      let service = native_service(root, native, epoch)
+      Ok(actor.initialised(Nil) |> actor.returning(#(subject, service)))
+    })
+    |> actor.on_message(fn(_, message) {
+      case message {
+        FinishOwner -> actor.stop()
+      }
+    })
+    |> actor.start
+    as "concrete lifetime owner starts its linked original services"
+  #(started.data.0, started.data.1, started.pid)
+}
+
+fn scoped_key(epoch: Int) -> identity.RequestKey {
+  let #(operation_text, request_text) = identity.key_fields(key())
+  let assert Ok(operation) = ids.parse_op_id(operation_text)
+    as "same original operation"
+  let assert Ok(request) = identity.request_id(request_text)
+    as "same original request"
+  identity.request_key(scope(epoch), operation, request)
+}
+
+fn scoped_drain(
+  server: endpoint.Server,
+  row: endpoint.Registration,
+  expected: endpoint.DrainState,
+) {
+  let assert poll.Answered(Nil) =
+    poll.until(2000, 10, fn() {
+      case endpoint.inspect_drain(server, row) == Ok(expected) {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "exact scoped transport disposition"
+}
+
+fn scoped_capacity(server: endpoint.Server, expected: endpoint.Capacity) {
+  let assert poll.Answered(Nil) =
+    poll.until(2000, 10, fn() {
+      case endpoint.inspect(server) == Ok(expected) {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "actual six-record capacity snapshot"
+}
+
+fn raw_answer_before_join(
+  root: String,
+  peer: distribution.Peer,
+  digest: identity.Digest,
+  round: String,
+) {
+  let assert Ok(Nil) = distribution.connect(peer, 3000)
+    as "explicit TLS connection"
+  let assert Ok(pid) = distribution.endpoint(peer, 3000)
+    as "fixed literal endpoint lookup"
+  let door =
+    process.unsafely_create_subject(
+      pid,
+      dynamic.string("loom.executor.endpoint/1"),
+    )
+  let binding = protocol.Binding("owner", "executor", 1, scope(2))
+  let assert Ok(header) =
+    protocol.header(binding, protocol.Native(protocol.Data))
+    as "canonical data reservation"
+  let reply = process.new_subject()
+  let correlation = reference.new()
+  assert distribution.send(
+      door,
+      Reservation(header, correlation, process.self(), reply),
+    )
+    == distribution.Sent
+  let assert Ok(Granted(ref, incoming)) = process.receive(reply, 3000)
+    as "real TLS credit granted"
+  assert ref == correlation
+  let assert Ok(bytes) =
+    wire.encode(protocol.envelope(
+      binding,
+      wire.Owner,
+      wire.ChallengeRequest(scoped_key(2), digest),
+    ))
+    as "closed actual native request"
+  let assert Ok(#(head, sender)) =
+    transfer.begin_send(transfer.Invocation, bytes)
+    as "bounded original transfer"
+  assert distribution.send(incoming, Input(ref, 0, head)) == distribution.Sent
+  let assert Ok(Consumed(ack, 0)) = process.receive(reply, 3000)
+    as "header acknowledged"
+  assert ack == ref
+  raw_input(sender, incoming, reply, ref, 1)
+  let assert Ok(Returned(answer_ref, 0, answer_header)) =
+    process.receive(reply, 3000)
+    as "actual service answer reached transport"
+  assert answer_ref == ref
+  let assert Ok(receiver) =
+    transfer.begin_receive(transfer.Completion, answer_header)
+    as "bounded canonical reply"
+  mark(root, "scope-b-" <> round <> "-answer-held")
+  await(root, "scope-b-" <> round <> "-release-checked")
+  assert distribution.send(incoming, ReplyConsumed(ref, 0)) == distribution.Sent
+  let returned = raw_output(receiver, incoming, reply, ref, 1)
+  let assert Ok(envelope) = protocol.native(binding, wire.Executor, returned)
+    as "actual original answer decoded"
+  let assert wire.Challenge(_, _, _, _) = envelope.body
+    as "real native service result"
+}
+
+fn raw_input(
+  sender: transfer.Sender,
+  incoming: process.Subject(RawFrame),
+  reply: process.Subject(RawReply),
+  ref: reference.Reference,
+  ordinal: Int,
+) {
+  case transfer.next(sender) {
+    None -> Nil
+    Some(#(bytes, sender)) -> {
+      assert distribution.send(incoming, Input(ref, ordinal, bytes))
+        == distribution.Sent
+      let assert Ok(Consumed(ack, index)) = process.receive(reply, 3000)
+        as "actual input chunk acknowledged"
+      assert ack == ref && index == ordinal
+      raw_input(sender, incoming, reply, ref, ordinal + 1)
+    }
+  }
+}
+
+fn raw_output(
+  receiver: transfer.Receiver,
+  incoming: process.Subject(RawFrame),
+  reply: process.Subject(RawReply),
+  ref: reference.Reference,
+  ordinal: Int,
+) -> BitArray {
+  let assert Ok(Returned(answer_ref, index, bytes)) =
+    process.receive(reply, 3000)
+    as "actual reply chunk"
+  assert answer_ref == ref && index == ordinal
+  let assert Ok(accepted) = transfer.accept(receiver, bytes)
+    as "canonical reply transfer"
+  assert distribution.send(incoming, ReplyConsumed(ref, ordinal))
+    == distribution.Sent
+  case accepted {
+    transfer.Complete(bytes) -> bytes
+    transfer.Receiving(receiver) ->
+      raw_output(receiver, incoming, reply, ref, ordinal + 1)
+  }
 }

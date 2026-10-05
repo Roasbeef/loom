@@ -1250,7 +1250,13 @@ pub fn run_executor(provisioned: String, path: String, mode: Int) -> Nil {
   let owner = distribution.peer(membership, fixture.owner_name) |> required
   let side = executor_component(path, mode)
   let registration =
-    transport.compile_registration(owner, side.whole_service, None) |> required
+    transport.compile_registration(
+      owner,
+      side.whole_service,
+      None,
+      process.self(),
+    )
+    |> required
   let server =
     transport.start(
       transport.configure_server([registration], 30_000) |> required,
