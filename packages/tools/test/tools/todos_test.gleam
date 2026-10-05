@@ -314,6 +314,131 @@ pub fn a_refused_call_is_an_in_band_failure_test() {
   assert string.contains(text_of(outcome), "no task \"nope\"")
 }
 
+// The call GLM-5.3 sent in session 01a10e0f: a `phases` payload and no
+// `op`. The refusal must list the ops and show a call that would work.
+pub fn a_call_without_an_op_is_refused_with_the_ops_and_an_example_test() {
+  let call =
+    args([
+      #(
+        "phases",
+        json.Array([
+          json.Object([
+            #("name", json.String("Survey")),
+            #("items", json.Array([json.String("Read README.md")])),
+          ]),
+        ]),
+      ),
+    ])
+  let outcome = run(None, call)
+  assert outcome.is_error
+  let text = text_of(outcome)
+  assert string.starts_with(
+    text,
+    "invalid arguments: `op` is required; use one of init, start,",
+  )
+  assert string.contains(
+    text,
+    "append, remove, view, e.g. {\"op\":\"init\",\"phases\":",
+  )
+  assert todos.parse(args([])) == todos.parse(call)
+}
+
+fn init_with(phases: List(JsonValue)) -> JsonValue {
+  args([#("op", json.String("init")), #("phases", json.Array(phases))])
+}
+
+fn task_object(text: String) -> JsonValue {
+  json.Object([#("task", json.String(text))])
+}
+
+// Call 4 of session 01a10e0f: a phase with `items` and no `name`, the
+// items sent as objects that also carry a `name`.
+pub fn a_phase_without_a_name_shows_a_correct_phase_test() {
+  let call =
+    init_with([
+      json.Object([
+        #(
+          "items",
+          json.Array([
+            json.Object([
+              #("name", json.String("Survey")),
+              #("task", json.String("Read README.md")),
+            ]),
+          ]),
+        ),
+      ]),
+    ])
+  let assert Error(reason) = todos.parse(call)
+  assert reason
+    == "`items` must be an array of strings, e.g. [\"Write the parser\",\"Add tests\"]; got an array containing an object"
+  let nameless =
+    init_with([
+      json.Object([
+        #("items", json.Array([json.String("Read README.md")])),
+      ]),
+    ])
+  assert todos.parse(nameless)
+    == Error(
+      "a phase needs a `name`, e.g. {\"name\":\"Build\",\"items\":[\"Write the parser\"]}",
+    )
+}
+
+// Calls 3 and 5: tasks sent as `{"task": text}`. The one-field object is
+// read as the text, so the first try lands.
+pub fn items_sent_as_task_objects_are_read_as_their_text_test() {
+  let call =
+    init_with([
+      json.Object([
+        #("name", json.String("Survey")),
+        #(
+          "items",
+          json.Array([task_object("Read README.md"), task_object("Open PR")]),
+        ),
+      ]),
+    ])
+  assert todos.parse(call)
+    == Ok(todos.Init([#("Survey", ["Read README.md", "Open PR"])]))
+}
+
+pub fn items_that_are_not_strings_say_what_was_received_test() {
+  let wrong = fn(items) {
+    todos.parse(args([#("op", json.String("append")), #("items", items)]))
+  }
+  let assert Error(single) = wrong(json.String("one task"))
+  assert string.ends_with(single, "; got a string")
+  let assert Error(titled) =
+    wrong(
+      json.Array([
+        json.Object([
+          #("title", json.String("a")),
+          #("status", json.String("pending")),
+        ]),
+      ]),
+    )
+  assert string.ends_with(titled, "; got an array containing an object")
+  assert !string.contains(titled, "pending")
+}
+
+pub fn every_missing_field_refusal_shows_a_call_for_that_op_test() {
+  assert todos.parse(args([#("op", json.String("start"))]))
+    == Error(
+      "`start` needs a `task`, e.g. {\"op\":\"start\",\"task\":\"Write the parser\"}",
+    )
+  assert todos.parse(args([#("op", json.String("block"))]))
+    == Error(
+      "`block` needs a `task` or a `phase`, e.g. {\"op\":\"block\",\"task\":\"Write the parser\"}",
+    )
+  assert todos.parse(args([#("op", json.String("init"))]))
+    == Error(
+      "`init` needs a non-empty `items` list, e.g. {\"op\":\"init\",\"items\":[\"Write the parser\",\"Add tests\"]}",
+    )
+}
+
+pub fn an_unknown_op_lists_the_known_ops_test() {
+  let assert Error(reason) = todos.parse(args([#("op", json.String("undo"))]))
+  assert string.starts_with(reason, "unknown op \"undo\"; use one of init,")
+}
+
 pub fn the_agency_registers_todo_and_reports_its_refusals_test() {
   let assert Ok(found) =
     agent.tools(refusing_agency())

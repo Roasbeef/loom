@@ -138,7 +138,7 @@ pub fn tool(
 }
 
 const description =
-  "Keep a phased todo list for work with three or more steps, and keep it current as you go. The operator sees it pinned above their input, and it is how they follow your progress. One op per call.\n\n`init` replaces the list: pass `phases` as [{name, items}], or a flat `items` list for a single phase. Refer to a task by its exact text, never by a number. `start` makes one task the active one. `done` or `drop` closes a `task`, a whole `phase`, or everything when you give neither. `block` marks a task or phase you cannot act on (waiting on the operator, another agent, or an outside service), with an optional `reason`; `unblock` reopens it. `append` adds `items` to a `phase`, creating the phase if it is new. `remove` deletes a task, a phase, or everything. `view` shows the list. After every change, the first open task becomes active if none is.\n\nWrite each task as a short label of 5 to 10 words saying what, not how, and name phases with short nouns and no numbering. Mark a task done as soon as it is finished. Send todo calls in the same batch as the work they describe, not alone. When the operator gives you a list of steps or items, put every one on the list instead of a summary. The list is kept with your notes, so it survives compaction; `view` recovers the exact task text."
+  "Keep a phased todo list for work with three or more steps, and keep it current as you go. The operator sees it pinned above their input, and it is how they follow your progress. Every call needs an `op`, and one op per call.\n\n`init` replaces the list: pass `phases` as [{name, items}], or a flat `items` list for a single phase. Refer to a task by its exact text, never by a number. `start` makes one task the active one. `done` or `drop` closes a `task`, a whole `phase`, or everything when you give neither. `block` marks a task or phase you cannot act on (waiting on the operator, another agent, or an outside service), with an optional `reason`; `unblock` reopens it. `append` adds `items` to a `phase`, creating the phase if it is new. `remove` deletes a task, a phase, or everything. `view` shows the list. Examples: {\"op\":\"init\",\"phases\":[{\"name\":\"Build\",\"items\":[\"Write the parser\"]}]}; {\"op\":\"start\",\"task\":\"Write the parser\"}; {\"op\":\"done\",\"task\":\"Write the parser\"}; {\"op\":\"drop\",\"phase\":\"Build\"}; {\"op\":\"block\",\"task\":\"Deploy\",\"reason\":\"waiting on the operator\"}; {\"op\":\"unblock\",\"task\":\"Deploy\"}; {\"op\":\"append\",\"phase\":\"Build\",\"items\":[\"Add tests\"]}; {\"op\":\"remove\",\"task\":\"Add tests\"}; {\"op\":\"view\"}. After every change, the first open task becomes active if none is.\n\nWrite each task as a short label of 5 to 10 words saying what, not how, and name phases with short nouns and no numbering. Mark a task done as soon as it is finished. Send todo calls in the same batch as the work they describe, not alone. When the operator gives you a list of steps or items, put every one on the list instead of a summary. The list is kept with your notes, so it survives compaction; `view` recovers the exact task text."
 
 fn schema() -> JsonValue {
   let phases =
@@ -146,14 +146,23 @@ fn schema() -> JsonValue {
       #("type", json.String("array")),
       #(
         "description",
-        json.String("for `init`: the phases in order, each with its tasks"),
+        json.String(
+          "for `init`: the phases in order, each {name, items} with `name` a "
+          <> "string and `items` an array of task strings",
+        ),
       ),
       #(
         "items",
         tool.object_schema(
           [
             #("name", tool.string_property("a short phase name")),
-            #("items", tool.string_array_property("the phase's tasks")),
+            #(
+              "items",
+              tool.string_array_property(
+                "the phase's tasks, each a plain string such as "
+                <> "\"Write the parser\", not an object",
+              ),
+            ),
           ],
           ["name", "items"],
         ),
@@ -176,7 +185,8 @@ fn schema() -> JsonValue {
       #(
         "items",
         tool.string_array_property(
-          "tasks to add with `append`, or a single-phase `init`",
+          "tasks to add with `append`, or a single-phase `init`: plain strings, "
+          <> "e.g. [\"Write the parser\", \"Add tests\"]",
         ),
       ),
       #(
@@ -656,11 +666,11 @@ fn one_line(text: String) -> String {
 /// assert todos.parse(json.Object([#("op", json.String("view"))])) == Ok(todos.View)
 /// ```
 pub fn parse(args: JsonValue) -> Result(Op, String) {
-  use op <- result.try(tool.required_string(args, "op"))
+  use op <- result.try(required_op(args))
   case op {
     "view" -> Ok(View)
     "init" -> parse_init(args)
-    "start" -> tool.required_string(args, "task") |> result.map(Start)
+    "start" -> required_task(args) |> result.map(Start)
     "done" -> target(args, Everything) |> result.map(Finish)
     "drop" -> target(args, Everything) |> result.map(Drop)
     "remove" -> target(args, Everything) |> result.map(Remove)
@@ -675,9 +685,28 @@ pub fn parse(args: JsonValue) -> Result(Op, String) {
       use items <- result.map(required_items(args, "append"))
       Append(phase: option.unwrap(phase, default_phase), items:)
     }
-    other -> Error("unknown op " <> string.inspect(other))
+    other -> Error("unknown op " <> string.inspect(other) <> "; " <> op_help)
   }
 }
+
+// The `op` is the one argument every call needs, and a model that leaves it
+// out has usually still sent the right payload under the wrong shape (the
+// recorded call carried `phases` and nothing else). The refusal therefore
+// names every op and shows a complete call, so the retry can be right
+// without the model re-reading the schema. The call is not repaired by
+// guessing the op from the other fields: `phases` alone would suggest
+// `init`, but `items` alone fits both `init` and `append`, and a guess that
+// replaces the board is not one to make for the model.
+fn required_op(args: JsonValue) -> Result(String, String) {
+  use op <- result.try(tool.optional_string(args, "op"))
+  case op {
+    Some(op) -> Ok(op)
+    None -> Error("`op` is required; " <> op_help)
+  }
+}
+
+const op_help =
+  "use one of init, start, done, drop, block, unblock, append, remove, view, e.g. {\"op\":\"init\",\"phases\":[{\"name\":\"Build\",\"items\":[\"Write the parser\"]}]}"
 
 fn parse_init(args: JsonValue) -> Result(Op, String) {
   use phases <- result.try(tool.optional_value(args, "phases"))
@@ -689,24 +718,102 @@ fn parse_init(args: JsonValue) -> Result(Op, String) {
       use items <- result.map(required_items(args, "init"))
       Init([#(option.unwrap(phase, default_phase), items)])
     }
-    Some(_) -> Error("`phases` must be an array of {name, items}")
+    Some(_) -> Error("`phases` must be an array of " <> phase_example)
   }
 }
 
+// A phase is `{name, items}`, and each half is checked on its own so the
+// refusal names the half that is wrong. The recorded calls sent a phase
+// with `items` and no `name`, and `items` as objects; both refusals say
+// what the field is and show a phase that would be accepted.
 fn parse_phase(entry: JsonValue) -> Result(#(String, List(String)), String) {
-  use name <- result.try(tool.required_string(entry, "name"))
-  use items <- result.try(tool.optional_string_list(entry, "items"))
-  case items {
-    Some(items) -> Ok(#(name, items))
-    None -> Error("phase " <> string.inspect(name) <> " needs `items`")
+  use name <- result.try(tool.optional_string(entry, "name"))
+  use items <- result.try(task_list(entry))
+  case name, items {
+    Some(name), Some(items) -> Ok(#(name, items))
+    None, _ -> Error("a phase needs a `name`, e.g. " <> phase_example)
+    Some(name), None ->
+      Error(
+        "phase "
+        <> string.inspect(name)
+        <> " needs `items`, e.g. "
+        <> phase_example,
+      )
   }
 }
+
+const phase_example = "{\"name\":\"Build\",\"items\":[\"Write the parser\"]}"
+
+const items_example = "[\"Write the parser\",\"Add tests\"]"
 
 fn required_items(args: JsonValue, op: String) -> Result(List(String), String) {
-  use items <- result.try(tool.optional_string_list(args, "items"))
+  use items <- result.try(task_list(args))
   case items {
     Some([_, ..] as items) -> Ok(items)
-    Some([]) | None -> Error("`" <> op <> "` needs a non-empty `items` list")
+    Some([]) | None ->
+      Error(
+        "`"
+        <> op
+        <> "` needs a non-empty `items` list, e.g. {\"op\":\""
+        <> op
+        <> "\",\"items\":"
+        <> items_example
+        <> "}",
+      )
+  }
+}
+
+// The `items` of a call or of a phase: a list of task texts. Every
+// recorded failure sent each task as `{"task": "..."}`, naming the text
+// with the same word the schema uses for a task elsewhere. That object has
+// one text field and one possible meaning, so it is read as the text; an
+// object with any other shape is refused, since no key is the obvious one.
+fn task_list(owner: JsonValue) -> Result(Option(List(String)), String) {
+  use found <- result.try(tool.optional_value(owner, "items"))
+  case found {
+    None | Some(json.Null) -> Ok(None)
+    Some(json.Array(entries)) ->
+      list.try_map(entries, task_text) |> result.map(Some)
+    Some(other) -> Error(items_shape("got " <> kind(other)))
+  }
+}
+
+fn task_text(entry: JsonValue) -> Result(String, String) {
+  case entry {
+    json.String(text) -> Ok(text)
+    json.Object([#("task", json.String(text))]) -> Ok(text)
+    other -> Error(items_shape("got an array containing " <> kind(other)))
+  }
+}
+
+fn items_shape(received: String) -> String {
+  "`items` must be an array of strings, e.g. "
+  <> items_example
+  <> "; "
+  <> received
+}
+
+// The JSON type, with its article, and never the value: a refusal that
+// echoed the model's payload back would repeat a possibly large argument.
+fn kind(value: JsonValue) -> String {
+  case value {
+    json.Object(_) -> "an object"
+    json.Array(_) -> "an array"
+    json.String(_) -> "a string"
+    json.Int(_) | json.Float(_) -> "a number"
+    json.Bool(_) -> "a boolean"
+    json.Null -> "null"
+  }
+}
+
+fn required_task(args: JsonValue) -> Result(String, String) {
+  use task <- result.try(tool.optional_string(args, "task"))
+  case task {
+    Some(task) -> Ok(task)
+    None ->
+      Error(
+        "`start` needs a `task`, e.g. {\"op\":\"start\",\"task\":\"Write the parser\"}",
+      )
   }
 }
 
@@ -727,7 +834,14 @@ fn target(args: JsonValue, fallback: Target) -> Result(Target, String) {
 fn required_target(args: JsonValue, op: String) -> Result(Target, String) {
   use found <- result.try(target(args, Everything))
   case found {
-    Everything -> Error("`" <> op <> "` needs a `task` or a `phase`")
+    Everything ->
+      Error(
+        "`"
+        <> op
+        <> "` needs a `task` or a `phase`, e.g. {\"op\":\""
+        <> op
+        <> "\",\"task\":\"Write the parser\"}",
+      )
     WholePhase(_) | OneTask(_) -> Ok(found)
   }
 }
