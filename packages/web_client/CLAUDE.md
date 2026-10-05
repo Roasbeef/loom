@@ -20,8 +20,10 @@ renders again just for it:
 - `<loom-follow>` is the transcript's scroll container: the page's frame is
   pinned and only it scrolls. It scrolls itself to a row that lands below
   its view while the reader is at the bottom; once the reader scrolls up it
-  stops and shows a "Jump to latest" button, and scrolling back to the bottom
-  or pressing the button resumes it. When the reader presses the lane's
+  stops and shows a "Jump to latest" button once it is more than
+  `follow_rule.jump_gap` (96px, a row and the button) from the bottom, so the
+  button never covers the row the reader is about to read, and scrolling back
+  to the bottom or pressing the button resumes it. When the reader presses the lane's
   "Load older" button, it keeps the row they were looking at in place while
   the older rows arrive above it.
 - `<loom-composer commands="<json>" returned="<n>">` wraps the operator's

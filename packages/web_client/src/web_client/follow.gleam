@@ -526,8 +526,8 @@ fn view(model: Model) -> Element(Msg) {
       [],
     )
 
-  case model.reader.position, follow_rule.position(model.reader.gap) {
-    Reading, Reading ->
+  case follow_rule.jump(model.reader.position, model.reader.gap) {
+    follow_rule.Offered ->
       element.fragment([
         slot,
         html.div([attribute.class("jump-anchor")], [
@@ -541,6 +541,6 @@ fn view(model: Model) -> Element(Msg) {
           ),
         ]),
       ])
-    Following, _ | Reading, Following -> slot
+    follow_rule.Withheld -> slot
   }
 }
