@@ -198,7 +198,15 @@ pub fn owner(
       |> result.replace_error(Nil)
     })
     |> result.map_error(fn(_nil) {
-      Refused(reason: path <> " is outside the workspace")
+      Refused(
+        reason: path
+        <> " is outside the workspace root "
+        <> workspace
+        <> ", and lsp."
+        <> server.name
+        <> " is rooted inside it, so it can answer only about files there; "
+        <> "a relative path means the workspace",
+      )
     }),
   )
   let top =
@@ -218,8 +226,8 @@ pub fn owner(
       )
     }),
   )
-  use real_root <- result.try(real(top, root))
-  use real_path <- result.try(real(top, lexical))
+  use real_root <- result.try(real(top, root, asked: path))
+  use real_path <- result.try(real(top, lexical, asked: path))
 
   // The containment rule is the whole reason for resolving: the jail binds
   // the root at its own path, so a file whose real location is elsewhere
@@ -243,13 +251,26 @@ pub fn owner(
 // A path with every link resolved, below `workspace`, as the `Unowned`
 // refusal that says which way it failed. Both `owner` checks use it, once
 // for the root and once for the file, so the comparison between them is
-// between real locations on both sides.
-fn real(workspace: String, path: String) -> Result(String, Unowned) {
+// between real locations on both sides. `asked` is the path the model
+// wrote: a failure on the root's walk is still about that path, so the
+// reason names it and the workspace root it left, never an intermediate
+// directory the model did not mention.
+fn real(
+  workspace: String,
+  path: String,
+  asked asked: String,
+) -> Result(String, Unowned) {
   fs.resolve_real(filesystem: fs.real_filesystem(), workspace:, path:)
   |> result.map_error(fn(error) {
     case error {
       fs.EscapesWorkspace(path: _) ->
-        Refused(reason: path <> " resolves outside the workspace")
+        Refused(
+          reason: asked
+          <> " resolves outside the workspace root "
+          <> workspace
+          <> " through a symlink, so no language server rooted there can "
+          <> "answer about it",
+        )
       fs.Unresolvable(path: _, reason:) ->
         Refused(reason: path <> " does not resolve: " <> reason)
       fs.EmptyPath -> Refused(reason: "an empty path names no file")
