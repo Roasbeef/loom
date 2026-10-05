@@ -698,9 +698,13 @@ sessions). Only an operator page does it.
 
 ### The session switcher
 
-Command or Control and K opens a popover over the page that lists the sessions
-the sidebar already offers, filtered by what is typed, and opens one on Enter or a
-click (protocol-change/051, the addendum on the session switcher). It is
+Command or Control and K, or the `Search ⌘K` chip in the bar, opens a popover
+over the page that lists the pages the bar offers (`Home` on a session page,
+`Admin` on the owner's home) and the sessions the sidebar already offers, filtered
+by what is typed, and opens one on Enter or a click (protocol-change/051, the
+addendum on the session switcher). The chip is drawn by `<loom-shell>` on pages
+with a sidebar and carries `data-opens="switcher"`; the switcher's document
+listener hears a click whose composed path holds that marker. It is
 `<loom-switcher>` (`web_client/switcher`, `switcher_rule`), drawn by
 `view/switch.switcher` after `<loom-switch>` as the centre's last child on the
 operator's page and the home, so no admitted path moves. When it opens it reads the
@@ -709,8 +713,19 @@ subtitle as text, and on a choice presses that session's own button, so the daem
 mints the ticket and `<loom-switch>` navigates exactly as for a sidebar press: the
 switcher has no route and sends nothing. Every name is a text node of its own view
 and the filter only compares strings (`switcher_test` runs it under Node with a name
-that holds markup). The one listener is a document `keydown`, removed with the
-element; the popover floats, so it takes `--shadow-float`.
+that holds markup). The one listener serves document `keydown` and `click`,
+removed with the element; the popover floats, so it takes `--shadow-float`.
+
+### The tab title
+
+A session page's served document is titled `Loom`: the shell knows the session
+only by identity, and the identity names nothing. `view/heading` draws a hidden
+`<loom-title>` as the bar's last child (`web_client/title`, `title_rule`), which
+reads the bar's heading text and the frame's `needing` attribute and sets
+`document.title` to `name — Loom`, with `(N) ` in front while N strands wait. The
+name reaches the title only as text assigned on the client; the server's
+document escapes whatever it writes and writes no name. The home and admin shells
+are `Home — Loom` and `Admin — Loom`.
 
 ## Renaming and the subtitle (protocol-change/067)
 
@@ -1391,7 +1406,8 @@ browser goes away, because a runtime outlives its last client.
 | `packages/client/src/client/daemon/ui_http.gleam` | Pure request checks and response headers: route, host, `Sec-Fetch-Site`, origin, cookies. |
 | `packages/web_view/src/web_view/home.gleam`, `view/home_bar.gleam`, `view/home_table.gleam` | The home page's component, top bar and per-workspace lists, whose running rows open a session and, on an operator-ceiling page, whose saved rows resume one (protocol-change/065). The bar draws the name as the account panel's button and a `read-only link` pill for an observer-ceiling page, and a member's rows say their role (`sessions.Entry.role`, filled from `manager.authorized_roles`). |
 | `packages/web_view/src/web_view/actions.gleam` | The home's stop, archive and delete: `Action`, `Answer`, `Reason` with their fixed words, and the row's `Stage` (`Calm`, `Confirming`, `Working`). |
-| `packages/web_client/src/web_client/switcher.gleam`, `switcher_rule.gleam` | `<loom-switcher>`, the keyboard session switcher, and the rule it decides by: the shortcut, the filter and its order, the highlight. |
+| `packages/web_client/src/web_client/switcher.gleam`, `switcher_rule.gleam` | `<loom-switcher>`, the keyboard and chip switcher, and the rule it decides by: the shortcut, the chip's marker, the filter and its order, the highlight. |
+| `packages/web_client/src/web_client/title.gleam`, `title_rule.gleam` | `<loom-title>`, which sets the tab's title from the bar's name and the waiting count, and the rule that words it. |
 | `packages/web_view/src/web_view/view/resume.gleam` | The one rule for a saved row on the sidebar and the home's table: text, a resume button, or "opening" while a resume is out. |
 | `packages/client/src/client/daemon/ui_sessions.gleam` | The ticket and UI-session actor: mint, single-use redeem, lookup, key and nonce comparison, sweep, and the page-minted invitations' allowance (three an hour per credential). |
 | `packages/client/src/client/daemon/ui_socket.gleam` | The page's WebSocket: permit custody, the component chosen by role (observer, member operator, owner), frame filtering by role, the session and home tickets (`Standing`, `ticket_for`, `home_ticket_for`) and the invitation the daemon makes for a page, the home's socket and its row clicks, shutdown. |
