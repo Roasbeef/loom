@@ -36,7 +36,7 @@ packages = [
   { name = "telemetry", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_stdlib"], source = "local", path = "../telemetry" },
   { name = "tom", version = "2.1.0", build_tools = ["gleam"], requirements = ["gleam_stdlib", "gleam_time"], otp_app = "tom", source = "hex", outer_checksum = "DCF04CB7AB35D58CFC598C66EA2E1816D160759802C89B2BA6238780D59BC256" },
   { name = "tools", version = "0.2.0", build_tools = ["gleam"], requirements = ["broker", "core", "gleam_erlang", "gleam_otp", "gleam_regexp", "gleam_stdlib", "lsp", "simplifile"], source = "local", path = "../tools" },
-  { name = "weft", version = "0.4.5", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], otp_app = "weft", source = "hex", outer_checksum = "CDD540819BE4E87D3C19FD4843F02AB1707A979FE909AE85EEF2034C1E48ED6C" },
+  { name = "weft", version = "0.4.5", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], source = "git", repo = "https://github.com/Roasbeef/weft.git", commit = "368d01abcaaff3ef986317a89fe8b98e1e4a2ad6" },
 ]
 
 [requirements]
@@ -57,4 +57,4 @@ simplifile = { version = ">= 2.0.0 and < 3.0.0" }
 sqlight_loom = { version = "== 1.2.1" }
 telemetry = { path = "../telemetry" }
 tools = { path = "../tools" }
-weft = { version = "== 0.4.5" }
+weft = { git = "https://github.com/Roasbeef/weft.git", ref = "368d01abcaaff3ef986317a89fe8b98e1e4a2ad6" }
