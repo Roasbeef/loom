@@ -18,8 +18,8 @@
 //// three together are the shared step's settle (`session_view/step`).
 ////
 //// The reads (`service_*`), the receivers (`receive_jobs`,
-//// `receive_goal`, `receive_advisor_nudges`, `retire_delivered_nudges` and
-//// `refuse_goal`), the `sync_*` edges and the goal commands
+//// `receive_goal`, `receive_advisor_nudges`, `retire_delivered_nudges`,
+//// `retire_nudges_delivered_since_board` and `refuse_goal`), the `sync_*` edges and the goal commands
 //// (`submit_goal_action`, `confirming`) take and return the shared record
 //// alone
 //// (`session_view/model`), so a second host of the session can run them with
@@ -501,26 +501,101 @@ pub fn retire_delivered_nudges(
   shared: Shared(socket, recorder, source, replay_source),
   record: protocol.EntryRecord,
 ) -> Shared(socket, recorder, source, replay_source) {
+  case drains_queue(record) {
+    True -> retire_board(shared)
+    False -> shared
+  }
+}
+
+/// Retires the board when a captured cut carries a delivery the board
+/// predates.
+///
+/// A network terminal is told the primary's branch moved by a `committed`
+/// notice and reads the branch in a capture, so the delivered frame arrives
+/// inside a cut and never as a pushed entry. `retire_delivered_nudges` sees
+/// only the latter, which left a board read before the drain on screen as
+/// "pending, not delivered" beside the row that delivered it. This applies the
+/// same rule to the cut's records, `records` being the primary's branch,
+/// newest first.
+///
+/// One pass, and only while a board is held. The daemon stamps each entry and
+/// the board with its own clock, so the walk stops at the first message older
+/// than the board: an older frame was already drained when the board was read,
+/// and the board does not list it. A frame stamped in the same millisecond as
+/// the board retires it, because a needless re-read costs one request and a
+/// stale board costs the symptom this exists to prevent. Diffing the cut
+/// against the previous records instead would be quadratic in a branch of
+/// thousands of entries.
+///
+/// ## Examples
+///
+/// ```gleam
+/// surfaces.retire_nudges_delivered_since_board(shared, branch.records)
+/// ```
+@internal
+pub fn retire_nudges_delivered_since_board(
+  shared: Shared(socket, recorder, source, replay_source),
+  records: List(protocol.EntryRecord),
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.nudges {
+    None -> shared
+    Some(board) ->
+      case delivery_since(records, board.observed_at_ms) {
+        True -> retire_board(shared)
+        False -> shared
+      }
+  }
+}
+
+// Whether a primary-strand nudges frame stamped at or after `since` heads the
+// records. Newest first, so the first message older than `since` ends the
+// search; entries that are not messages carry no frame and are stepped over.
+fn delivery_since(records: List(protocol.EntryRecord), since: Int) -> Bool {
+  case records {
+    [] -> False
+
+    [record, ..older] ->
+      case record.entry {
+        entry.MessageEntry(ts:, ..) if ts < since -> False
+
+        entry.MessageEntry(..)
+        | entry.CompactionEntry(..)
+        | entry.BranchSummaryEntry(..)
+        | entry.CustomEntry(..) ->
+          drains_queue(record) || delivery_since(older, since)
+      }
+  }
+}
+
+// Whether the record is the delivered frame of the primary's queue.
+fn drains_queue(record: protocol.EntryRecord) -> Bool {
   case record {
     protocol.EntryRecord(strand:, entry: entry.MessageEntry(message: value, ..))
       if strand == advisor_pending.primary_strand
     ->
       case transcript_lines.advisor_payload(value) {
-        Some(transcript_lines.Nudges(..)) ->
-          Shared(
-            ..shared,
-            nudges: None,
-            nudges_refresh: worktree_view.Requested,
-            nudges_awaiting: None,
-          )
-          |> session_model.invalidate_transcript
-          |> session_model.invalidate_frame
-
-        Some(_) | None -> shared
+        Some(transcript_lines.Nudges(..)) -> True
+        Some(_) | None -> False
       }
 
-    protocol.EntryRecord(..) -> shared
+    protocol.EntryRecord(..) -> False
   }
+}
+
+// Clears the held board and asks for a fresh read, so advice queued after
+// the drain stays visible. A read still in flight is disowned and the
+// transcript and frame are marked stale.
+fn retire_board(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  Shared(
+    ..shared,
+    nudges: None,
+    nudges_refresh: worktree_view.Requested,
+    nudges_awaiting: None,
+  )
+  |> session_model.invalidate_transcript
+  |> session_model.invalidate_frame
 }
 
 /// Sends the next exact-key read of summarizer labels the transcript's long
