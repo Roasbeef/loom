@@ -19,6 +19,12 @@
 //// no read. Only then is the row found, active, of kind `Browser` and the
 //// principal the token names.
 ////
+//// A login is also set by a browser claim (`claim`, PR 9): the login's row is
+//// the credential the claim binds, so the invitee has no bearer and nothing to
+//// keep but the login. The row is written in the transaction that spends the
+//// claim, with the same thirty-day expiry `issue` records, and the token is
+//// signed only after that transaction names the principal.
+////
 //// The root key is read when the daemon starts (`root_key`). A missing file is
 //// the owner's whole-daemon revocation: every login row is revoked first and a
 //// new key written after, so a start that stops between the two finds no file
@@ -83,6 +89,19 @@ pub type Resumed {
     issuer: ui_sessions.Issuer,
     /// The login row's digest, which a page the login mints authenticates as.
     digest: access.Digest,
+  )
+}
+
+/// A browser claim that bound: the principal the claim names, as the catalogue
+/// holds it now with the name the invitee chose, the digest of the login row the
+/// claim bound, and the login the response must hand the browser.
+pub type Claimed {
+  Claimed(
+    principal: access.Principal,
+    /// The login row's digest, which the home page the claim opens
+    /// authenticates as.
+    digest: access.Digest,
+    minted: Minted,
   )
 }
 
@@ -168,17 +187,7 @@ fn write(
     access.Observer -> login.Observer
   }
   let signed =
-    login.issue(
-      root,
-      id,
-      login.Minting(
-        principal: grant.principal,
-        ceiling:,
-        expires_at_ms:,
-        key:,
-        nonce_digest: login.nonce_digest(nonce),
-      ),
-    )
+    seal(root, id, grant.principal, ceiling, expires_at_ms, key, nonce)
 
   // The row is keyed by the digest of the identifier, as the kind only a login's
   // lookup asks for.
@@ -201,12 +210,118 @@ fn write(
     field.ident("login", fingerprint),
     ..parent_field(from)
   ])
+  minted(signed, key, nonce, now_ms, expires_at_ms, fingerprint)
+}
+
+// Signs the token for a login: the principal, the ceiling, the end, the key and
+// the digest of the nonce, under the root key, for the identifier. It is pure,
+// so the browser claim can run it after the catalogue has said who the claim
+// names.
+fn seal(
+  root: login.RootKey,
+  id: String,
+  principal: String,
+  ceiling: login.Ceiling,
+  expires_at_ms: Int,
+  key: String,
+  nonce: String,
+) -> String {
+  login.issue(
+    root,
+    id,
+    login.Minting(
+      principal:,
+      ceiling:,
+      expires_at_ms:,
+      key:,
+      nonce_digest: login.nonce_digest(nonce),
+    ),
+  )
+}
+
+// What the response hands the browser for a login that was signed and written.
+fn minted(
+  signed: String,
+  key: String,
+  nonce: String,
+  now_ms: Int,
+  expires_at_ms: Int,
+  fingerprint: String,
+) -> Minted {
   Minted(
     token: signed,
     key:,
     nonce:,
     max_age_s: int.max({ expires_at_ms - now_ms } / 1000, 1),
     issuer: ui_sessions.Issuer(fingerprint:, expires_at_ms:, key:),
+  )
+}
+
+/// Redeems `claim` in the browser: draws a login, binds its row to the claim
+/// with `name` (or the inviter's name when `None`) in the one transaction that
+/// spends the claim, and, once the catalogue has said whom the claim names,
+/// signs the token (protocol-change/065, PR 9). The login is an `Operator` one
+/// ending `login.lifetime_ms` from `now_ms`, and the row records that end as
+/// `issue` does. The claim is spent only when the row is written, so a refused
+/// name or a claim that is void, expired or bound to another credential binds
+/// nothing and draws nothing the caller must forget. The token and its nonce
+/// exist only after the bind, so no refusal has one to leak.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_login.claim(root, registry, claim_digest, Some("Alex"), now_ms)
+/// ```
+pub fn claim(
+  root: login.RootKey,
+  registry: manager.Manager(instance),
+  claim: access.ClaimDigest,
+  name: Option(String),
+  now_ms: Int,
+) -> Result(Claimed, manager.ClaimError) {
+  let entropy = token.production_entropy()
+  let id = login.fresh_id(entropy)
+  let key = login.fresh_key(entropy)
+  let nonce = login.fresh_nonce(entropy)
+  let expires_at_ms = now_ms + login.lifetime_ms
+
+  // The row is keyed by the digest of the identifier, as a login's always is,
+  // and the claim spends in the same transaction that writes it.
+  use digest <- result.try(
+    access.browser_digest(login.row_digest(id))
+    |> result.replace_error(manager.ClaimUnavailable),
+  )
+  use bound <- result.map(manager.claim_login(
+    registry,
+    claim,
+    digest,
+    name,
+    now_ms:,
+    expires_at_ms:,
+  ))
+
+  // Only now does the catalogue say whom the claim names, so the token is
+  // signed for the principal it returned and not for one the request named.
+  let signed =
+    seal(
+      root,
+      id,
+      bound.principal.id,
+      login.Operator,
+      expires_at_ms,
+      key,
+      nonce,
+    )
+  let fingerprint = access.fingerprint(digest)
+  log.info(logger(), "daemon.login_issued", [
+    field.ident("principal_id", bound.principal.id),
+    field.ident("login", fingerprint),
+    field.ident("claimed", "browser"),
+  ])
+  Claimed(
+    principal: bound.principal,
+    digest:,
+    minted: minted(signed, key, nonce, now_ms, expires_at_ms, fingerprint),
   )
 }
 

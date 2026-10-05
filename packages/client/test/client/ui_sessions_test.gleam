@@ -44,6 +44,7 @@ fn table(time: Subject(Clock)) -> ui_sessions.Sessions {
   let assert Ok(sessions) =
     ui_sessions.start(ui_sessions.Settings(
       now: fn() { process.call(time, 1000, Read) },
+      wall: fn() { process.call(time, 1000, Read) },
       entropy: fn(size) { distinct_bytes(counter, size) },
       ticket_ms: 60_000,
       device_ms: 600_000,
@@ -645,6 +646,7 @@ pub fn an_admin_page_never_outlives_the_tables_page_lifetime_test() {
   let assert Ok(sessions) =
     ui_sessions.start(ui_sessions.Settings(
       now: fn() { process.call(time, 1000, Read) },
+      wall: fn() { process.call(time, 1000, Read) },
       entropy: fn(size) { distinct_bytes(counter, size) },
       ticket_ms: 60_000,
       device_ms: 60_000,
@@ -1198,4 +1200,61 @@ pub fn homes_of_every_origin_share_one_cap_test() {
   assert list.all(rest, fn(page) {
     result.is_ok(looked_up(sessions, page.cookie))
   })
+}
+
+// --- the claim's pull request: a login that has ended (protocol-change/065, PR 9) ---
+
+// A ticket minted under a login whose time has run out, a device link opened
+// after its family's last day, is refused as an unknown ticket before it can
+// take a page's place. The owner's homes, a full set of them, all survive the
+// attempt; a ticket whose login is still live evicts the oldest as any other
+// does.
+pub fn a_ticket_of_an_ended_login_evicts_no_page_test() {
+  let time = clock()
+  let sessions = table(time)
+  let ticket = fn(login) {
+    let assert Ok(issued) =
+      ui_sessions.mint_device(
+        sessions,
+        remembered_home("alice"),
+        28_800_000,
+        login,
+      )
+      as "a device ticket is minted"
+    issued.ticket
+  }
+  let held =
+    list.map(list.repeat(Nil, ui_sessions.max_pages), fn(_) {
+      let assert Ok(issued) = ui_sessions.mint(sessions, home_for("alice"))
+        as "a home ticket is minted"
+      let assert Ok(redeemed) =
+        ui_sessions.redeem(sessions, issued.ticket, ui_sessions.HomeExchange)
+        as "the home opens"
+      redeemed.cookie
+    })
+  let ends =
+    ui_sessions.Issuer(..issuer("0123456789abcdef"), expires_at_ms: 5000)
+
+  // Minted while the login lived, redeemed after it ended.
+  let late = ticket(Some(ends))
+  process.send(time, Advance(5000))
+  assert ui_sessions.redeem(sessions, late, ui_sessions.HomeExchange)
+    == Error(ui_sessions.UnknownTicket)
+  assert list.all(held, fn(cookie) { result.is_ok(looked_up(sessions, cookie)) })
+
+  // The refusal spent the ticket and opened nothing.
+  assert ui_sessions.redeem(sessions, late, ui_sessions.HomeExchange)
+    == Error(ui_sessions.UnknownTicket)
+  assert ui_sessions.sizes(sessions) == Ok(#(0, ui_sessions.max_pages))
+
+  // A login with time left redeems, and makes room as any redemption does.
+  let live =
+    ticket(Some(ui_sessions.Issuer(..ends, expires_at_ms: 5000 + 600_000)))
+  let assert Ok(opened) =
+    ui_sessions.redeem(sessions, live, ui_sessions.HomeExchange)
+    as "a ticket of a live login redeems"
+  assert result.is_ok(looked_up(sessions, opened.cookie))
+  let assert [oldest, ..rest] = held
+  assert looked_up(sessions, oldest) == Error(Nil)
+  assert list.all(rest, fn(cookie) { result.is_ok(looked_up(sessions, cookie)) })
 }

@@ -2914,6 +2914,12 @@ fn admin_event() -> decode.Decoder(Bool) {
 // `Workspace` and its origin `Fresh`, which only the tickets a page mints read,
 // and the admin page mints none; the login it was opened from is the one its
 // sign-in rows mark as this browser.
+//
+// `Fresh` is written here and not read from the page, and that is sound only
+// because `admin_ticket_for` mints an admin ticket from nothing but a `Fresh`
+// home (`fresh_home`), and the admin socket mints no tickets of any scope. If an
+// admin page ever minted one, its origin would have to travel on the grant as
+// the home's does.
 fn admin_standing(
   attachment: server.AdminAttachment(instance),
   ceiling: access.Role,

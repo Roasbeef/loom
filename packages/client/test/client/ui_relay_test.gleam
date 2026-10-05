@@ -463,6 +463,7 @@ fn page(
   let assert Ok(tables) =
     ui_sessions.start(ui_sessions.Settings(
       now: fn() { process.call(time, 1000, Read) },
+      wall: fn() { process.call(time, 1000, Read) },
       entropy: token.production_entropy(),
       ticket_ms: 60_000,
       device_ms: 600_000,

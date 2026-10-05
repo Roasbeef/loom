@@ -70,6 +70,12 @@ pub type Route {
   /// `POST /ui/l/<key>/home`: a browser login asks for a home page.
   LoginResume(key: String)
 
+  /// `GET /ui/claim`: the fixed claim form.
+  ClaimPage
+
+  /// `POST /ui/claim`: the browser claim (protocol-change/065, PR 9).
+  ClaimSubmit
+
   /// `GET /ui/admin?ticket=<ticket>`: the admin page's ticket exchange
   /// (protocol-change/065, the fifth pull request).
   AdminExchange(ticket: String)
@@ -114,8 +120,8 @@ pub type Asset {
 /// request from naming a position no row could have.
 pub const max_position = 256
 
-/// Routes a `/ui` request; every route is a `GET` except the login's resume,
-/// which is a `POST`. The session ID is returned as the path gave it; the caller
+/// Routes a `/ui` request; every route is a `GET` except the login's resume and
+/// the claim's submission, which are `POST`s. The session ID is returned as the path gave it; the caller
 /// parses it as a canonical ID before using it. The home's three routes and the
 /// admin page's three name no session (protocol-change/065).
 ///
@@ -152,6 +158,8 @@ pub fn route(request: Request(body)) -> Route {
       HomeSocket(key, query(request, "csrf-token"))
     http.Get, ["ui", "l", key, "home"] -> LoginPage(key)
     http.Post, ["ui", "l", key, "home"] -> LoginResume(key)
+    http.Get, ["ui", "claim"] -> ClaimPage
+    http.Post, ["ui", "claim"] -> ClaimSubmit
 
     http.Get, ["ui", "admin"] ->
       case query(request, "ticket") {
@@ -337,6 +345,35 @@ fn lowercase_hex(value: String) -> Bool {
   list.all(string.to_graphemes(value), fn(digit) {
     string.contains("0123456789abcdef", digit)
   })
+}
+
+/// The claim form's fields, from the body it posted: `token`, and optionally
+/// `name`, each at most once and no other field. An empty `name` is no name, so
+/// the claim keeps the one the inviter chose. The token is returned as sent, for
+/// the caller to check the shape of before anything is looked up, and the name
+/// is returned as sent, for the catalogue's rule to judge.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_http.posted_claim(<<"token=loomclaim_00&name=Alex">>)
+///   == Ok(#("loomclaim_00", Some("Alex")))
+/// ```
+pub fn posted_claim(body: BitArray) -> Result(#(String, Option(String)), Nil) {
+  use text <- result.try(bit_array.to_string(body))
+  use fields <- result.try(uri.parse_query(text))
+  case list.sort(fields, fn(a, b) { string.compare(a.0, b.0) }) {
+    [#("name", name), #("token", token)] -> Ok(#(token, named(name)))
+    [#("token", token)] -> Ok(#(token, None))
+    _ -> Error(Nil)
+  }
+}
+
+fn named(name: String) -> Option(String) {
+  case name {
+    "" -> None
+    given -> Some(given)
+  }
 }
 
 /// Whether a WebSocket upgrade came from this origin: `Origin` is present

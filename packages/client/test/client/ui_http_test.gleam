@@ -390,3 +390,39 @@ pub fn the_admin_pages_routes_are_exact_test() {
   assert ui_http.route(with_ticket("/ui/home")) == ui_http.HomeExchange("t1")
   assert ui_http.route(get("/ui/p/k1/home", [])) == ui_http.HomePage("k1")
 }
+
+// --- the browser claim (protocol-change/065, PR 9) --------------------------
+
+// The claim's two routes are the form and the post to it, and nothing under
+// `/ui/claim` is a route.
+pub fn the_claim_form_is_a_get_and_the_claim_a_post_test() {
+  assert ui_http.route(get("/ui/claim", [])) == ui_http.ClaimPage
+  assert ui_http.route(post("/ui/claim", [])) == ui_http.ClaimSubmit
+  assert ui_http.route(get("/ui/claim/x", [])) == ui_http.Unknown
+  assert ui_http.route(post("/ui/claim/x", [])) == ui_http.Unknown
+  assert ui_http.route(request.set_method(get("/ui/claim", []), http.Put))
+    == ui_http.Unknown
+}
+
+// The posted body is `token` and, optionally, `name`, each once and nothing else.
+// An empty name is no name, a name is passed on as sent, and a form encoding is
+// decoded.
+pub fn the_posted_claim_is_a_token_and_an_optional_name_test() {
+  assert ui_http.posted_claim(<<"token=loomclaim_00":utf8>>)
+    == Ok(#("loomclaim_00", None))
+  assert ui_http.posted_claim(<<"token=loomclaim_00&name=":utf8>>)
+    == Ok(#("loomclaim_00", None))
+  assert ui_http.posted_claim(<<"token=loomclaim_00&name=Alex":utf8>>)
+    == Ok(#("loomclaim_00", Some("Alex")))
+  assert ui_http.posted_claim(<<"name=Alex&token=loomclaim_00":utf8>>)
+    == Ok(#("loomclaim_00", Some("Alex")))
+  assert ui_http.posted_claim(<<"token=a%20b&name=Ana+Mar%C3%ADa":utf8>>)
+    == Ok(#("a b", Some("Ana María")))
+  assert ui_http.posted_claim(<<"name=Alex":utf8>>) == Error(Nil)
+  assert ui_http.posted_claim(<<"":utf8>>) == Error(Nil)
+  assert ui_http.posted_claim(<<"token=a&token=b":utf8>>) == Error(Nil)
+  assert ui_http.posted_claim(<<"token=a&name=b&name=c":utf8>>) == Error(Nil)
+  assert ui_http.posted_claim(<<"token=a&other=1":utf8>>) == Error(Nil)
+  assert ui_http.posted_claim(<<"token=a&name=b&other=1":utf8>>) == Error(Nil)
+  assert ui_http.posted_claim(<<0xff, 0xfe>>) == Error(Nil)
+}
