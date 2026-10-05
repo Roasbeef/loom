@@ -404,17 +404,23 @@ None of these is unfinished work somebody forgot.
 - **The page runs reads for surfaces it does not draw** (notes, context,
   nudges, goal). The owner chose this over per-host read selection.
   Revisit only if a per-page cost is measured.
-- **Epics [#697](https://github.com/Roasbeef/loom/issues/697),
-  [#720](https://github.com/Roasbeef/loom/issues/720) and
-  [#730](https://github.com/Roasbeef/loom/issues/730)** (remote
-  executors and runtime observability) are designs. Open pull requests
-  #756 and #758 begin the first of them (distributed runtime foundations
-  and remote admission custody); they were not reviewed for this edition.
-- **Issue [#672](https://github.com/Roasbeef/loom/issues/672)** is the
-  revamp's design-review thread and is still open. Its rulings are in
-  the design note. Not re-checked whether #504 and #447 (rail and
-  changes pane together, nudge text in compact mode) are answered by the
-  revamp.
+- **Epic [#697](https://github.com/Roasbeef/loom/issues/697)** (remote
+  executors) is a design. Pull requests #756 and #758 began it and were
+  closed without merging, so nothing of it is on `main`.
+- **[#720](https://github.com/Roasbeef/loom/issues/720)** is closed: the
+  inspector is the separate pickglass project, and Loom's side is the owner
+  label of protocol-change/065.
+- **[#730](https://github.com/Roasbeef/loom/issues/730)** (runtime
+  observatory) has its phase 0 proposal in
+  `protocol-change/068-runtime-observatory.md`: one node, no distribution,
+  read operations on the session socket and the owner's control socket.
+  The agent surface is deferred under a rule that it never reveals an
+  escalation; phase 2 waits on #697's node identities.
+- **Issue [#672](https://github.com/Roasbeef/loom/issues/672)** was the
+  revamp's design-review thread and is closed. Its rulings are in
+  the design note. #504 (rail and changes pane together) was closed on the
+  owner's ruling that the Changes tab and the agent strip answer it; #447
+  (full nudge text in compact mode) is still open.
 - **Release blockers** still open: #18, #26, #30, #31, #32. Not
   re-read for this edition.
 
