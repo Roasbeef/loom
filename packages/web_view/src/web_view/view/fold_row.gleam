@@ -110,7 +110,7 @@ pub fn memory(words: Words, body: List(Element(message))) -> Element(message) {
 /// ## Examples
 ///
 /// ```gleam
-/// // fold_row.reasoning(words, [html.text("Check 7 and 13")], [thought_rows])
+/// // fold_row.reasoning(words, [fold_row.preview_span([html.text("Check 7")])], [thought_rows])
 /// ```
 pub fn reasoning(
   words: Words,
@@ -123,7 +123,7 @@ pub fn reasoning(
       attribute.class("thought"),
       attribute.attribute("kind", "settled"),
     ],
-    list.append(spoken(words), previewed(preview)),
+    list.append(spoken(words), preview),
     body,
   )
 }
@@ -159,13 +159,21 @@ pub fn live_reasoning(
 fn previewed(preview: List(Element(message))) -> List(Element(message)) {
   case preview {
     [] -> []
-    [_, ..] -> [
-      html.span(
-        [attribute.class("subject"), attribute.class("preview")],
-        preview,
-      ),
-    ]
+    [_, ..] -> [preview_span(preview)]
   }
+}
+
+/// The span a reasoning row's one-line preview is drawn in. `reasoning` takes
+/// its preview already drawn, as a list holding this span or nothing, so the
+/// caller can memoize it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fold_row.preview_span([html.text("Check 7")])
+/// ```
+pub fn preview_span(children: List(Element(message))) -> Element(message) {
+  html.span([attribute.class("subject"), attribute.class("preview")], children)
 }
 
 /// A row whose line is the report's first line and whose body is the rest, for

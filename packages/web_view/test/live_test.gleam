@@ -518,9 +518,11 @@ pub fn the_live_rows_are_plain_values_test() {
 // far, drawn a paragraph at a time so a new fragment parses only the
 // paragraph still being written. Model text is a text node throughout.
 pub fn a_live_reasoning_row_previews_the_latest_line_and_opens_to_the_text_test() {
-  let lines = ref_lines()
+  // Drawn through the lane's own line drawing, so the hostile markup meets
+  // the real Markdown path.
   let drawn =
-    live.view(
+    lane.view(
+      [],
       [
         live.Thinking(
           "5 lines",
@@ -529,24 +531,60 @@ pub fn a_live_reasoning_row_previews_the_latest_line_and_opens_to_the_text_test(
           None,
         ),
       ],
-      fn(line: Line) {
-        process.send(lines, line.text)
-        html.text(line.text)
-      },
+      lane.Beginning,
+      Nil,
+      lane.NoReplies,
+      lane.no_marks(),
+      "",
     )
     |> element.to_string
   assert string.contains(drawn, "<span class=\"subject preview\">latest <code")
   assert string.contains(drawn, "slot=\"body\"")
   assert string.contains(drawn, "First &lt;b&gt;paragraph&lt;/b&gt;")
   assert !string.contains(drawn, "<b>")
+  assert string.contains(drawn, "<strong>para</strong>")
+}
 
-  // The body is two lines, the settled paragraph and the tail, so the memo
-  // on the first holds while the second grows.
-  assert received_texts(lines)
-    == [
-      "First <b>paragraph</b>\nstill first",
-      "Second **para**\nlatest `line` here",
-    ]
+@external(erlang, "lane_memo_ffi", "first")
+fn first_cache(view: Element(message)) -> cache
+
+@external(erlang, "lane_memo_ffi", "rerender")
+fn rerender_cache(
+  cache: cache,
+  old: Element(message),
+  new: Element(message),
+) -> cache
+
+// A paragraph a blank line has closed is drawn once while the block grows:
+// the next render draws only the paragraph still being written.
+pub fn a_growing_live_body_draws_only_its_last_paragraph_test() {
+  let lines = ref_lines()
+  let draw = fn(line: Line) {
+    process.send(lines, line.text)
+    html.text(line.text)
+  }
+  let render = fn(text) {
+    lane.rows(
+      [],
+      [live.Thinking("n lines", text, None, None)],
+      element.none(),
+      draw,
+      lane.NoReplies,
+      lane.no_marks(),
+      "",
+    )
+  }
+  let one = render("First.\n\nSecond")
+  let cache = first_cache(one)
+  assert received_texts(lines) == ["First.", "Second"]
+
+  let two = render("First.\n\nSecond, longer")
+  let cache = rerender_cache(cache, one, two)
+  assert received_texts(lines) == ["Second, longer"]
+
+  let three = render("First.\n\nSecond, longer")
+  let _ = rerender_cache(cache, two, three)
+  assert received_texts(lines) == []
 }
 
 // The open state is the browser's, so the page marks the live row and the

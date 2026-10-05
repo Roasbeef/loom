@@ -196,22 +196,19 @@ fn latest_line(text: String) -> String {
   |> result.unwrap("")
 }
 
-// The reasoning so far as the lane's Markdown lines, cut at the last blank
-// line. Fragments only ever extend the text, so everything before the last
-// paragraph break is the same `Line` as on the previous render and its memo
-// (`draw`) holds; only the paragraph still being written is parsed again.
+// The reasoning so far, one Markdown line per paragraph, each in the lane's
+// memoized line row (`fold_row.line_row`, whose one dependency is the line).
+// Fragments only extend the text, so a paragraph that a blank line has closed
+// is the same `Line` on the next render and its memo holds; only the last
+// paragraph, still being written, changes and is parsed again.
 fn so_far(
   text: String,
   draw: fn(Line) -> Element(message),
 ) -> List(Element(message)) {
-  let pieces = case string.split(text, "\n\n") |> list.reverse {
-    [] -> []
-    [tail, ..earlier] -> [
-      string.join(list.reverse(earlier), "\n\n"),
-      tail,
-    ]
-  }
-  pieces
-  |> list.filter(fn(piece) { string.trim(piece) != "" })
-  |> list.map(fn(piece) { draw(Line(transcript_line.Reasoning, piece)) })
+  text
+  |> string.split("\n\n")
+  |> list.filter(fn(paragraph) { string.trim(paragraph) != "" })
+  |> list.map(fn(paragraph) {
+    fold_row.line_row(Line(transcript_line.Reasoning, paragraph), draw)
+  })
 }

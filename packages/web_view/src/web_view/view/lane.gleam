@@ -825,9 +825,25 @@ fn reasoning_row(
   }
   fold_row.reasoning(
     step_words.reasoning_of(provenance, count, took),
-    markdown_view.line(text, step_words.result_limit),
+    preview(text),
     list.map(body, fold_row.line_row(_, draw)),
   )
+}
+
+// The one-line preview of a settled block, parsed once. A settled block's text
+// does not change, so the memo's one dependency is the text and a lane render
+// that finds it unchanged does no Markdown work for it. Only the preview is
+// memoized: the body's own line memos are leaves, and a memo around them
+// would drop their cache entries when it hit (see `rows`).
+fn preview(text: String) -> List(Element(message)) {
+  case string.trim(text) {
+    "" -> []
+    _ -> [
+      element.memo([element.ref(text)], fn() {
+        fold_row.preview_span(markdown_view.line(text, step_words.result_limit))
+      }),
+    ]
+  }
 }
 
 // A summarized block's row text is the terminal's header line and the summary

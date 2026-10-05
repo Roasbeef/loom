@@ -361,6 +361,11 @@ pub fn every_speaker_shape_of_a_reasoning_block_closes_to_a_heading_and_a_previe
   )
   assert !string.contains(summary, "Ctrl+G")
   assert count(summary, "<loom-expand") == 1
+
+  // Each is marked as a settled reasoning row, whatever its speaker.
+  assert string.contains(digest, "kind=\"settled\"")
+  assert string.contains(raw, "kind=\"settled\"")
+  assert string.contains(summary, "kind=\"settled\"")
 }
 
 pub fn a_reasoning_row_opens_to_the_whole_text_as_markdown_test() {
