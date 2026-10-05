@@ -18,11 +18,14 @@ records independent review, limits and the unresolved historical-refusal defect.
 The [owner discharge fix](review/distributed-owner-discharge.md) now retains
 unresolved run obligations across worker loss and owner restart. The earlier storage gate passed 193 tests; the current full client gate passes
 2,847 tests, with 15 explicit optional SKIP notices. These skipped paths still
-need their shipped-server or language-server prerequisites for full coverage.
+need Linux `/proc`, shipped-server or language-server prerequisites for full coverage.
 Launch/satellite, remote LSP, registered daemon configuration and the separate-host
 ordinary-tool/code-mode acceptance run remain pending. Main `7a9adf1e` is merged into this branch. The seeded code-mode, client, tools,
-storage and executor package gates passed; the full repository and separate-host
-gates remain pending. Trusted orchestrator clustering over TLS BEAM distribution,
+storage and executor package gates passed. The full repository invocation passed
+the package gates, then failed a Go sandbox test because PATH selected the Codex
+`rg` under `/Applications`. The full Go replay passed with Homebrew `rg`, and
+the remaining full lint passed with zero errors. The original aggregate remains
+a failed run; final repository and separate-host gates remain pending. Trusted orchestrator clustering over TLS BEAM distribution,
 ownership routing, durable cross-node messaging and planned session movement are
 also required remaining issue #697 phases. The [merge review](review/distributed-main-integration.md)
 records optional skips and existing peer-fixture failures.
@@ -47,9 +50,11 @@ Those results do not establish assembled-system acceptance.
 
 The [owner discharge model](review/distributed-owner-discharge-model.md) adds
 eight normal cases, eight exact reachability probes and nine compiling mutation
-witnesses. The current full P gate, including the TLS BEAM credit correspondence model,
-passes 114 cases/probes and 52 mutation controls. Focused independent review
-replayed the new credit cases, probes and mutations.
+witnesses. The current full P gate, including the proposed scoped TLS BEAM credit model,
+passes 126 cases/probes and 56 mutation controls. Independent Astra review
+replayed the scoped cases, probes and four new mutations. The
+[scoped-model review](review/distributed-scoped-drain-model.md) separates these
+bounded results from the runtime lifecycle API, which still awaits approval.
 The model assumes truthful COMMIT/drain events and makes no native-retirement or
 whole-system proof claim.
 
