@@ -1,9 +1,9 @@
 # Retaining complete remote code-mode results
 
-Status: result representation accepted by the owner. Large results use bounded
-previews and durable references to complete values. Storage, retrieval and
-reservation mechanics remain under implementation review; no runtime limit has
-changed yet.
+Status: accepted design after independent review. The owner selected bounded
+previews and durable references to complete reports. Implementation and the
+satellite, restart and retrieval controls below remain required. This note does
+not claim that the capability is already available.
 
 ## Why the satellite limit is insufficient
 
@@ -36,11 +36,11 @@ and introduce a separate bounded final-message codec and reservation profile.
 The owner selected the reference representation; the inline alternative is not
 the implementation path.
 
-The existing text-blob helper supplies useful storage machinery, but does not
-establish the required custody. It retains full structured details alongside the
-text reference, has no pre-effect reservation for the future result, and uses
-staging plus rename without an fsync guarantee. The proposed complete-value
-reference therefore needs these explicit obligations:
+The report belongs in the existing per-session owner SQLite tool row. The
+filesystem text-blob helper retains full structured details alongside its text
+reference, has no pre-effect reservation, and writes by staging and rename.
+Using the owner row avoids a second storage system and a file/database handoff.
+The complete-report reference has four obligations:
 
 - Reserve the full supported value and reference allowance before the effect.
 - Retain and durably bind the complete bytes before acknowledging the final result.
@@ -73,6 +73,135 @@ identity. Any persisted profile and allowance are immutable from first admission
 Named SQL and generated bindings must validate the profile and BLOB length before
 reading the value. Recovering old history cannot grant a larger allowance or
 fresh execution authority.
+
+## What is retained
+
+One bundle contains two canonical MessagePack segments. The first is the
+program's existing Outcome body: either a complete value or a failure message
+and complete details. It contains no authenticated frame header, token or channel
+identity. The second contains independent owner observations: the manifest hash,
+both enforcement stages, and the complete existing bounded capability-call log.
+Keeping these segments distinct prevents a program from supplying its own
+enforcement or call history.
+
+The header is the eight bytes `LOOMRV01`, followed by two big-endian u32 lengths.
+The terminal and metadata bytes follow, without trailing data. SHA-256 covers
+the whole bundle. Binary values, non-string map keys and integer/float tags
+survive; conversion through the existing JSON display renderer would lose them.
+
+| Item | Maximum bytes |
+| --- | ---: |
+| Canonical terminal body | 16,777,216 |
+| Owner metadata | 262,144 |
+| Header | 16 |
+| Complete bundle | 17,039,376 |
+| Final ToolOutcome JSON | 262,144 |
+| Stored digest/profile bookkeeping | 128 |
+| Reserved final allowance before execution | 17,301,648 |
+
+The reference spelling fits within the final JSON allowance. The 128-byte
+bookkeeping allowance covers stored digest/profile fields, not another copy of
+that spelling. The current cap frame limit stays unchanged: its envelope still
+uses part of the 16-MiB frame, so this table does not grant a larger frame.
+
+The report decoder has a separate fixed profile. The terminal body permits at
+most 254 container levels, 65,536 nodes across all siblings, 65,536 array elements
+or 32,768 map entries. Map keys consume nodes. Scalars and total terminal bytes
+must fit the terminal ceiling. A raw scan precedes decoding; a bounded structural
+walk precedes encoding. Canonical readback rejects alternate encodings, duplicate
+keys, invalid UTF-8, nonfinite floats and trailing bytes. The native 256-KiB
+decoder keeps its existing smaller profile.
+
+These node and container limits are new admission constraints beyond the old
+cap frame's byte/depth limits. Launch must apply them when admitting the terminal,
+so a result it accepts cannot later fail a hidden, smaller final-storage profile.
+
+Metadata has depth 16, at most 8,192 nodes, at most 128 entries per container and
+8,192 bytes per string. Its checked types describe the call log, build/node
+reports, reported versus unreported stages, and complete versus degraded
+enforcement. Only program values remain arbitrary structured data. Each stage
+has a 65,536-byte canonical allowance and at most 128 applied/skipped entries
+together. The call log keeps its existing 128-record, 64-byte capability,
+96-byte summary and 48-byte error-code bounds. Its counters and times are
+nonnegative u64 values. The full bounded log costs at most 36,732 canonical
+bytes; both stages, log and manifest fit below 169 KiB. Invalid producer metadata
+fails finalization explicitly; it is never silently cut to claim completion.
+
+## Admission, commit and recovery
+
+Trusted tool assembly selects `OrdinaryFinal` or `CodeModeReportV1` before fresh
+admission. That immutable profile reserves its final allowance under the existing
+configured global quota. A model-supplied name or later result cannot enlarge an
+ordinary reservation. Existing child reservations remain separately charged.
+
+The managed renderer first commits the checked report through the pinned owner
+and original ToolKey. Only after receiving that internal receipt does it create
+a bounded preview/reference ToolOutcome. Final commit independently checks the
+exact reference, identity and profile. The existing runtime ToolOutcome codec
+and ordinary-tool runner contract remain unchanged.
+
+A crash between report commit and final commit leaves report bytes and unknown
+final outcome. Recovery cannot reconstruct the exact missing final message from
+those bytes or rerun the program. Failed retention fences the original run before
+returning any diagnostic; a later generic error result cannot discharge that
+unresolved custody. A no-terminal vet/compile refusal can retain its bounded
+failure message without fabricating a report.
+
+The preview visitor produces at most 4,096 UTF-8 bytes without first rendering
+the entire value as JSON or text. Known metadata gets a bounded truthful summary.
+The complete final message must pass the existing 256-KiB codec. Its original
+call identity is bounded before admission, and arbitrary extra details cannot
+enter this closed final schema.
+
+Owner format 5 adds the immutable profile/allowance, report BLOB and digest.
+Scalar headers and aggregate quotas are checked before loading report bytes.
+Reopen validates one report at a time, including canonical encoding, digest and
+original identity. The custodian validates existing final-reference associations
+through the runtime decoder before publishing its door. An older format is
+refused unchanged; reopening never migrates it into more execution authority.
+The owner connection sets SQLite `synchronous=FULL` and checks its readback,
+alongside WAL. Tests cover that setting and process-crash recovery; they do not
+establish hardware flush or actual power-loss behavior.
+
+Exact session commit and existing run/physical discharge permit collection to
+release unused reservation. They do not permit deleting the report. Collection
+keeps its actual byte charge, digest and original identity with the permanent
+fence. Unknown rows retain their full reservation. The owner database remains a
+durable session companion through close, archive, reopen and compaction for as
+long as a transcript reference may be read. Transcript-only export is not a
+transfer of this companion's contents.
+
+## Reading a saved report
+
+A reference has the fixed form
+`result://<session-uuid>/<result-entry-uuid>/<sha256>/<byte-length>`, at most
+160 bytes. It is a data name, not an OS path or bearer credential.
+The proposed `cap/report.load_result` returns a typed report containing the
+original Outcome, manifest, enforcement stages and call log.
+
+The host installs `report.result_chunk` on the owner side of the authenticated
+capability router. A registered remote workspace does not move this door to its
+executor filesystem. The current session, result entry, digest and length must
+all match. SQL returns only a bounded chunk after checked scalar headers; it
+does not copy the whole report on every request.
+
+One invocation can admit at most 261 chunk reads across all references, each
+with at most 65,536 payload bytes and 512 envelope bytes. Their aggregate encoded
+reply allowance is 17,238,528 bytes. The helper gathers at most one complete
+bundle, concatenates its bounded list once, and runs the report decoder. Existing
+deadlines, call credits and pooled budgets still apply. No read refreshes them.
+Only hosts with this door installed advertise the helper and its working example.
+
+## Formal correspondence
+
+Extend the existing OwnerDischarge P model with immutable profile/allowance and
+one durable report identity, digest and length. Its monitor must observe actual
+reservation, report commit, final-reference commit, exact session readback,
+collection and restart transitions. Retained report alone grants neither a
+final message nor run discharge. Collection preserves its bytes and charge.
+Executable tests bridge the symbolic model to SQL length guards, canonical
+decoding, digest checks and authenticated capability reads; P proves none of
+those implementations or filesystem synchronization by itself.
 
 ## Required evidence
 
