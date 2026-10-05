@@ -37,7 +37,7 @@
 ////   cfbfea662dbdb362857911d078d78262c7f781153a3036256997a6309c428b2f  packages/cap/src/cap/notes.gleam
 ////   856004f80f0e7be10b9ba36221abe3443f126f744ecac3cde407b0fb2c199ea4  packages/cap/src/cap/peer.gleam
 ////   68ea7061715254f5dbbcf0242552d89a788b72d896513223e1055704a99d15ef  packages/cap/src/cap/proc.gleam
-////   17c973c36d2ca3e184f54a7540a90eedf7b6090ffbdc762524a78cf184b98a8f  packages/cap/src/cap/report.gleam
+////   311618ea92d3b03ef506133ab8c2b6d04b8c71665d9b4f5fc5196f075608211e  packages/cap/src/cap/report.gleam
 ////   909bbbc014278c57bb888b3e4c834ba52e405855bd52156a2ff35345283a1274  packages/cap/src/cap/runtime.gleam
 ////   4e046bfdd44b9b7093ed0e787f55aa8792c433537a68e420bd30d0064dbd5cad  packages/cap/src/cap/schedule.gleam
 ////   c4be2e8c194d95ab02bbd6b4d27946152162e335cf5aee7e8bf812e6d52fc8e0  packages/cap/src/cap/search.gleam
@@ -46,7 +46,7 @@
 ////   dade50ada67f4ac667f0b92cb10d0da213cac327897524dbb006e02cf3c90963  packages/cap/src/cap/workflow.gleam
 ////   20e291637a68e2d484bd4a17e9b825c59f2c22f439f00f6482af0d26aafafadd  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): b94c720794a0f57f9c3729e2c21f0bfcf93c2724b571e689d8c0a2045ee4b9b0
+//// Body digest (every line after the marker): 0863126f1bedce2d082f44013c9389a3fe2995c0cb934b7f3277c5c9a2ef65c2
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -1270,7 +1270,7 @@ pub fn with_timeout(Command, Int) -> Command
     "cap/report",
     "### cap/report
 `cap/report` — the structured result a program's `main` returns, plus
-artifact emission.
+artifact emission and complete saved-result reads.
 
 /// A structured value: what an `Outcome` carries, what a blackboard note
 /// holds, and what a child's terminal result comes back as.
@@ -1295,12 +1295,69 @@ pub type Outcome {
   /// The program failed in a controlled way.
   Errored(message: String, details: Value)
 }
+/// A saved-result read preserves validation, policy and channel failures.
+pub type ReadError {
+  /// The supplied text is not a canonical bounded result reference.
+  InvalidReference(reason: String)
+  /// The authenticated owner refused the read with this code and
+  /// explanation.
+  ReadDenied(code: String, message: String)
+  /// The capability channel could not carry the read.
+  ReadUnavailable(reason: String)
+  /// A reply changed the original reference, offset, length or report
+  /// encoding.
+  InvalidReport(reason: String)
+}
 /// Why an artifact could not be emitted.
 pub type ReportError {
   /// The broker refused the emission in-band.
   EmitDenied(code: String, message: String)
   /// The capability channel could not carry the call.
   EmitUnavailable(reason: String)
+}
+/// A bounded redacted call observation, in original admission order.
+pub type SavedCall {
+  /// Records one call without retaining its authority or credentials.
+  SavedCall(cap: String, args: option.Option(String), status: SavedCallStatus, error: option.Option(String), start_ms: Int, duration_ms: Int)
+}
+/// A capability call's original host-observed disposition.
+pub type SavedCallStatus {
+  /// The call succeeded.
+  CallOk
+  /// The call failed or was refused.
+  CallFailed
+  /// The satellite cancelled the call.
+  CallCancelled
+  /// The call remained active when the program settled.
+  CallUnsettled
+}
+/// Complete execution counters and the original bounded itemised call
+/// list.
+pub type SavedCalls {
+  /// Itemisation may cover fewer calls than the complete counters.
+  SavedCalls(started_unix_ms: Int, elapsed_ms: Int, total: Int, failed: Int, cancelled: Int, unsettled: Int, items: List(SavedCall))
+}
+/// The quality reported by the original helper.
+pub type SavedQuality {
+  /// The helper reported complete enforcement.
+  Complete
+  /// The helper reported degraded enforcement.
+  Degraded
+}
+/// A complete saved program result with independently produced host
+/// observations.
+pub type SavedReport {
+  /// The full value and original execution metadata, without transport
+  /// credentials.
+  SavedReport(outcome: Outcome, manifest_hash: String, build: SavedStage, node: SavedStage, calls: SavedCalls)
+}
+/// An enforcement observation preserves absence and the helper's actual
+/// quality.
+pub type SavedStage {
+  /// Applied and skipped layers in their original order.
+  Reported(applied: List(String), skipped: List(String), quality: SavedQuality)
+  /// An absent report is not a claim that the stage was confined.
+  Unreported(reason: String)
 }
 /// A value's boolean, or `Error(Nil)` when it is not one.
 pub fn as_bool(Value) -> Result(Bool, Nil)
@@ -1345,6 +1402,17 @@ pub fn float(Float) -> Value
 pub fn int(Int) -> Value
 /// A list value.
 pub fn list(List(Value)) -> Value
+/// Loads a complete saved result through the authenticated session owner.
+///
+/// The reference names data; it grants no read authority. The host checks
+/// the current session and retained digest before returning aligned
+/// chunks. This helper collects at most 261 chunks, concatenates once,
+/// and validates the full report. The host meters those calls across all
+/// references in this invocation; reading does not renew its deadline,
+/// call credits or pooled byte budget. Known metadata is typed, while the
+/// program's value and details remain Value. Capability:
+/// `report.result_chunk`. Only configured owner hosts serve it.
+pub fn load_result(String) -> Result(SavedReport, ReadError)
 /// The absent value.
 pub fn null() -> Value
 /// An object value: named fields, in the order given.
@@ -3092,7 +3160,7 @@ pub type ProcError {
     "cap/report",
     "### cap/report
 `cap/report` — the structured result a program's `main` returns, plus
-artifact emission.
+artifact emission and complete saved-result reads.
 
 /// A structured value: what an `Outcome` carries, what a blackboard note
 /// holds, and what a child's terminal result comes back as.
@@ -3117,12 +3185,69 @@ pub type Outcome {
   /// The program failed in a controlled way.
   Errored(message: String, details: Value)
 }
+/// A saved-result read preserves validation, policy and channel failures.
+pub type ReadError {
+  /// The supplied text is not a canonical bounded result reference.
+  InvalidReference(reason: String)
+  /// The authenticated owner refused the read with this code and
+  /// explanation.
+  ReadDenied(code: String, message: String)
+  /// The capability channel could not carry the read.
+  ReadUnavailable(reason: String)
+  /// A reply changed the original reference, offset, length or report
+  /// encoding.
+  InvalidReport(reason: String)
+}
 /// Why an artifact could not be emitted.
 pub type ReportError {
   /// The broker refused the emission in-band.
   EmitDenied(code: String, message: String)
   /// The capability channel could not carry the call.
   EmitUnavailable(reason: String)
+}
+/// A bounded redacted call observation, in original admission order.
+pub type SavedCall {
+  /// Records one call without retaining its authority or credentials.
+  SavedCall(cap: String, args: option.Option(String), status: SavedCallStatus, error: option.Option(String), start_ms: Int, duration_ms: Int)
+}
+/// A capability call's original host-observed disposition.
+pub type SavedCallStatus {
+  /// The call succeeded.
+  CallOk
+  /// The call failed or was refused.
+  CallFailed
+  /// The satellite cancelled the call.
+  CallCancelled
+  /// The call remained active when the program settled.
+  CallUnsettled
+}
+/// Complete execution counters and the original bounded itemised call
+/// list.
+pub type SavedCalls {
+  /// Itemisation may cover fewer calls than the complete counters.
+  SavedCalls(started_unix_ms: Int, elapsed_ms: Int, total: Int, failed: Int, cancelled: Int, unsettled: Int, items: List(SavedCall))
+}
+/// The quality reported by the original helper.
+pub type SavedQuality {
+  /// The helper reported complete enforcement.
+  Complete
+  /// The helper reported degraded enforcement.
+  Degraded
+}
+/// A complete saved program result with independently produced host
+/// observations.
+pub type SavedReport {
+  /// The full value and original execution metadata, without transport
+  /// credentials.
+  SavedReport(outcome: Outcome, manifest_hash: String, build: SavedStage, node: SavedStage, calls: SavedCalls)
+}
+/// An enforcement observation preserves absence and the helper's actual
+/// quality.
+pub type SavedStage {
+  /// Applied and skipped layers in their original order.
+  Reported(applied: List(String), skipped: List(String), quality: SavedQuality)
+  /// An absent report is not a claim that the stage was confined.
+  Unreported(reason: String)
 }
 ",
   ),
