@@ -11,12 +11,20 @@
 //// fresh home, "Sign in another device". The link that button makes is shown
 //// once, in a `<loom-copy subject="device">` box that copies it only when it has
 //// the shape the daemon writes (`web_client/copy_rule`), with a "Done" button
-//// that hides it. The page that was opened by a remembered login also draws the
-//// bookmark as text, so the person can keep it.
+//// that hides it, on the same row as its lead; the link and its "Copy link"
+//// button share one row below. The page that was opened by a remembered login
+//// also draws the bookmark, in a `<loom-copy subject="bookmark">` box that
+//// copies it only when it has the shape the daemon writes, so the person can
+//// keep it.
 ////
-//// The region is the centre column's third child, after the sessions, so its
-//// handlers are all beneath `home.signins_path`, and the home's socket admits a
-//// click there for every home. Nothing here comes from a session. The
+//// The region is the account panel, not part of the home's body. It stays the
+//// centre column's third child, after the sessions, so its handlers are all
+//// beneath `home.signins_path` and the home's socket admits a click there for
+//// every home, exactly as before; the stylesheet takes it out of the flow and
+//// hides it until the person's name in the bar opens it
+//// (`view/home_bar.account`, `web_client/popover`). It carries the fixed mark
+//// `data-popover="panel"`, so a press inside it does not close it. The centre
+//// of a home holds the session list and nothing else. Nothing here comes from a session. The
 //// fingerprints, the bookmark and the link are the daemon's own, the words are
 //// fixed, and every one is a text node or an attribute value on a client element
 //// that checks its shape, and never a class, a key, a URL or a handler's message.
@@ -91,30 +99,36 @@ pub fn view(
     element.ref(device),
     element.ref(notice),
   ])
-  html.section([attribute.class("home-signins")], [
-    html.h2([attribute.class("home-heading")], [html.text("Sign-ins")]),
-    html.p([attribute.class("home-signins-lead")], [
-      html.text(
-        "Browsers signed in as you. A sign-in lasts 30 days from when it was made and is not extended by use.",
-      ),
-    ]),
-    bookmark_line(bookmark),
-    case rows {
-      [] ->
-        html.p([attribute.class("home-empty")], [
-          html.text(
-            "No browser is signed in. Run `loom ui` to sign this one in.",
-          ),
-        ])
-      [_, ..] ->
-        html.ul(
-          [attribute.class("home-signin-list")],
-          list.map(rows, row(_, now, this, sign_out)),
-        )
-    },
-    controls(rows, everywhere, device),
-    status(device, notice),
-  ])
+  html.section(
+    [
+      attribute.class("home-signins"),
+      attribute.attribute("data-popover", "panel"),
+    ],
+    [
+      html.h2([attribute.class("home-heading")], [html.text("Sign-ins")]),
+      html.p([attribute.class("home-signins-lead")], [
+        html.text(
+          "Browsers signed in as you. A sign-in lasts 30 days from when it was made and is not extended by use.",
+        ),
+      ]),
+      bookmark_line(bookmark),
+      case rows {
+        [] ->
+          html.p([attribute.class("home-empty")], [
+            html.text(
+              "No browser is signed in. Run `loom ui` to sign this one in.",
+            ),
+          ])
+        [_, ..] ->
+          html.ul(
+            [attribute.class("home-signin-list")],
+            list.map(rows, row(_, now, this, sign_out)),
+          )
+      },
+      controls(rows, everywhere, device),
+      status(device, notice),
+    ],
+  )
 }
 
 // The address the person keeps, as text: the whole of what a visit needs, since
@@ -123,11 +137,25 @@ fn bookmark_line(bookmark: Option(String)) -> Element(message) {
   case bookmark {
     None -> element.none()
     Some(address) ->
-      html.p([attribute.class("home-bookmark")], [
-        html.text("Bookmark this address to come back without "),
-        html.code([], [html.text("loom")]),
-        html.text(": "),
-        html.code([attribute.class("home-bookmark-text")], [html.text(address)]),
+      html.div([attribute.class("home-bookmark")], [
+        html.p([attribute.class("home-bookmark-lead")], [
+          html.text("Bookmark this address to come back without "),
+          html.code([], [html.text("loom")]),
+          html.text("."),
+        ]),
+        element.element(
+          "loom-copy",
+          [
+            attribute.class("home-copy"),
+            attribute.attribute("subject", "bookmark"),
+            attribute.attribute("text", address),
+          ],
+          [
+            html.code([attribute.class("home-bookmark-text")], [
+              html.text(address),
+            ]),
+          ],
+        ),
       ])
   }
 }
@@ -181,13 +209,13 @@ fn row(
 /// ## Examples
 ///
 /// ```gleam
-/// // signins.history(row, now) == "signed in 2h ago · not used since · ends in 29d"
+/// // signins.history(row, now) == "signed in 2h ago · not used yet · ends in 30d"
 /// ```
 pub fn history(signin: Signin, now: Int) -> String {
   let signed = "signed in " <> sessions.ago(now, signin.issued_at_ms)
   let used = case signin.last_resumed_ms {
     Some(at) -> ["last used " <> sessions.ago(now, at)]
-    None -> ["not used since"]
+    None -> ["not used yet"]
   }
   let ends = case signin.expires_at_ms {
     Some(at) -> ["ends in " <> signins.ends_in(now, at)]
@@ -257,14 +285,25 @@ fn status(device: Device(message), notice: Option(String)) -> Element(message) {
   case device {
     Offered(shown: Some(address), done:, ..) ->
       html.div([attribute.class("home-device-link")], [
-        html.p([attribute.class("home-device-lead")], [
-          html.text(
-            "Open this link on the other device within 10 minutes. It signs that device in for the time this sign-in has left, and it works once.",
+        html.div([attribute.class("home-device-head")], [
+          html.p([attribute.class("home-device-lead")], [
+            html.text(
+              "Open this link on the other device within 10 minutes. It signs that device in for the time this sign-in has left, and it works once.",
+            ),
+          ]),
+          html.button(
+            [
+              attribute.type_("button"),
+              attribute.class("home-device-done"),
+              event.on_click(done),
+            ],
+            [html.text("Done")],
           ),
         ]),
         element.element(
           "loom-copy",
           [
+            attribute.class("home-copy"),
             attribute.attribute("subject", "device"),
             attribute.attribute("text", address),
           ],
@@ -273,14 +312,6 @@ fn status(device: Device(message), notice: Option(String)) -> Element(message) {
               html.text(address),
             ]),
           ],
-        ),
-        html.button(
-          [
-            attribute.type_("button"),
-            attribute.class("home-device-done"),
-            event.on_click(done),
-          ],
-          [html.text("Done")],
         ),
       ])
     Offered(refused: Some(words), ..) -> line(words)

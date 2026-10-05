@@ -145,7 +145,15 @@ fn named(entries: List(Entry), session: String) -> String {
   case list.find(entries, fn(entry) { entry.id == session }) {
     Ok(entry) -> sessions.label(entry)
     Error(Nil) ->
-      sessions.label(sessions.Entry(session, "", "", 0, sessions.Saved, None))
+      sessions.label(sessions.Entry(
+        session,
+        "",
+        "",
+        0,
+        sessions.Saved,
+        None,
+        None,
+      ))
   }
 }
 

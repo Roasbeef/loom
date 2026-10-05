@@ -35,6 +35,7 @@ fn entry(id: String) -> Entry {
     created_at: 1000,
     residency: Live,
     subtitle: None,
+    role: None,
   )
 }
 
@@ -154,7 +155,7 @@ pub fn a_row_says_when_it_was_made_last_used_and_ends_test() {
   )
   assert string.contains(
     html,
-    "signed in 10m ago · not used since · ends in 3d · from 1111111111111111",
+    "signed in 10m ago · not used yet · ends in 3d · from 1111111111111111",
   )
 }
 
@@ -390,14 +391,86 @@ pub fn the_refusal_words_are_fixed_test() {
   assert string.contains(signins.reason_words(signins.NotFresh), "loom ui")
 }
 
-// How long until a login ends is counted in whole units, and one that is not
-// after now has ended.
+// How long until a login ends is counted in whole units rounded up, and one
+// that is not after now has ended. A sign-in made a moment ago has thirty days
+// less a moment, which a person told "30 days" reads as `30d`, not `29d`.
 pub fn the_time_left_is_counted_in_whole_units_test() {
   assert signins.ends_in(0, 0) == "ended"
   assert signins.ends_in(10, 5) == "ended"
   assert signins.ends_in(0, 30_000) == "under a minute"
-  assert signins.ends_in(0, 90_000) == "1m"
+  assert signins.ends_in(0, 60_000) == "1m"
+  assert signins.ends_in(0, 90_000) == "2m"
   assert signins.ends_in(0, 7_200_000) == "2h"
+  assert signins.ends_in(0, 7_200_001) == "3h"
+  assert signins.ends_in(0, 3_599_000) == "1h"
+  assert signins.ends_in(0, 2_591_999_000) == "30d"
+  assert signins.ends_in(0, 86_399_000) == "1d"
   assert signins.ends_in(0, 2_592_000_000) == "30d"
   assert signins.ends_in(0, 5_184_000_000) == "60d"
+}
+
+// The account panel is the sign-ins region and nothing else of the home's body:
+// the name in the bar is the button that opens it, wrapped in the element that
+// toggles it in the browser, and the region carries the mark a press inside it
+// is recognised by. The region exists once, at its pinned path, and the
+// stylesheet floats it, so the centre's body is the session list.
+pub fn the_names_button_opens_the_one_marked_region_test() {
+  let html = drawn(opened(start(listing([here(), elsewhere()]))))
+  assert string.contains(html, "<loom-popover wanted=\"closed\">")
+  assert string.contains(html, "data-popover=\"toggle\"")
+  assert string.contains(html, "aria-expanded=\"false\"")
+  assert list.length(string.split(html, "class=\"home-signins\"")) == 2
+  assert list.length(string.split(html, "data-popover=\"panel\"")) == 2
+  assert string.contains(
+    html,
+    "<section class=\"home-signins\" data-popover=\"panel\">",
+  )
+
+  // The name is text inside the button, never an attribute.
+  assert string.contains(
+    html,
+    "Alice<span aria-hidden=\"true\" class=\"home-who-chevron\"",
+  )
+
+  // The name's button holds no Lustre handler, so the bar has none beneath its
+  // third child, and the admin button's path is where it was.
+  assert home.admin_path == "0\t0\t5"
+  let keys = handlers(home.view(opened(start(listing([here()])))))
+  assert list.all(keys, fn(key) { !string.starts_with(key, "0\t0\t2") })
+}
+
+// The panel opens by itself while a device link is on show, so the link is on
+// screen when it arrives.
+pub fn a_shown_link_asks_the_panel_to_open_test() {
+  let address = "http://127.0.0.1:1/ui/home?ticket=" <> string.repeat("ab", 32)
+  let with_device =
+    home.Start(
+      ..start(listing([here()])),
+      device: Some(fn() { signins.Linked(address) }),
+    )
+  let model = opened(with_device)
+  assert string.contains(drawn(model), "<loom-popover wanted=\"closed\">")
+  let shown = drawn(run(model, home.AddingDevice))
+  assert string.contains(shown, "<loom-popover wanted=\"open\">")
+  assert string.contains(shown, "subject=\"device\"")
+  assert string.contains(shown, "class=\"home-device-head\"")
+}
+
+// The bookmark has a copy button of its own, and only a page a login opened
+// draws it.
+pub fn the_bookmark_is_drawn_in_a_copy_box_test() {
+  let bookmark =
+    "http://127.0.0.1:1/ui/l/" <> string.repeat("ab", 16) <> "/home"
+  let html =
+    drawn(opened(
+      home.Start(
+        ..start(listing([here()])),
+        login: Some("1111111111111111"),
+        bookmark: Some(bookmark),
+      ),
+    ))
+  assert string.contains(html, "subject=\"bookmark\"")
+  assert string.contains(html, "text=\"" <> bookmark <> "\"")
+  let without = drawn(opened(start(listing([here()]))))
+  assert !string.contains(without, "subject=\"bookmark\"")
 }

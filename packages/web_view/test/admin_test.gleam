@@ -45,6 +45,7 @@ fn entry(id: String, name: String, residency: sessions.Residency) -> Entry {
     created_at: 100_000,
     residency:,
     subtitle: None,
+    role: None,
   )
 }
 
