@@ -1,0 +1,9 @@
+Tab titles read from the drive (document.title after the page connected):
+session with an approval pending : (1) ws · main — Loom
+same session after Allow         : ws · main — Loom   (the count dropped live)
+session renamed to a hostile name: (1) <b>x</b></title><script>alert(1)</script> "q" — Loom
+                                   one <title>, three scripts (unchanged), no injected element
+session renamed docs sweep       : docs sweep — Loom
+home                             : Home — Loom
+admin                            : Admin — Loom
+claim form and resume page       : Loom
