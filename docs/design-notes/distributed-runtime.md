@@ -89,7 +89,7 @@ On the development box:
 ```toml
 [executor]
 id = "dev-linux"
-listen = "10.0.0.20:7443"
+node = "dev_linux@dev.example"
 identity = "dev-linux-credential"
 accepted_orchestrators = ["personal-loom"]
 
@@ -106,7 +106,7 @@ id = "personal-loom"
 session_store = "/var/lib/loom/sessions"
 
 [executors.dev_linux]
-address = "10.0.0.20:7443"
+node = "dev_linux@dev.example"
 expected_identity = "dev-linux"
 
 [workspaces.loom]
@@ -322,10 +322,19 @@ write simultaneously using different epochs.
 
 ## 5. Remote execution and disconnected machines
 
-Only mutually trusted orchestrators join TLS-protected BEAM distribution.
-Executors use a bounded authenticated framed protocol. An executor identity
-does not grant user authority and does not admit its host to the BEAM cluster.
-The owner rechecks user membership and capability policy at mutation admission.
+Mutually trusted orchestrators and executors join TLS-protected BEAM
+distribution. The owner's explicit transport amendment replaces the original
+framed executor protocol; implementation is in progress. An executor VM is a
+full runtime peer, so compromise of that VM or its OS account can compromise
+connected owners. The executor role and hidden-node configuration do not
+provide isolation from a malicious peer. Model-authored satellites remain
+outside distribution, behind the native sandbox boundary.
+
+Executor enrollment does not grant Raft voting membership or user authority.
+The owner still rechecks user membership and capability policy at mutation
+admission. The [protocol amendment](../../protocol-change/067-remote-workspace-services.md#addendum-trusted-executor-distribution)
+defines certificate pinning, explicit membership, bounded endpoint messages
+and the transport replacement gates.
 
 An execution key binds session, operation, execution ID, executor identity,
 session epoch and workspace epoch. Its digest binds the command, policy and

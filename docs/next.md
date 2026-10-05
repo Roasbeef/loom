@@ -43,6 +43,10 @@ The model assumes truthful COMMIT/drain events and makes no native-retirement or
 whole-system proof claim.
 
 Worker commits enter the integration branch after focused checks and review.
+The owner has now authorized TLS BEAM executors in the same runtime trust
+domain as orchestrators. Replacement of the custom socket transport is in
+progress under the [protocol amendment](../protocol-change/067-remote-workspace-services.md#addendum-trusted-executor-distribution).
+Keep satellites outside distribution and Raft voter membership separate.
 Run full gates at integration milestones and final adversarial review on the
 assembled candidate. Keep architecture docs aligned with the component they
 explain; retain evidence in `docs/review/` instead of accumulating it here.
