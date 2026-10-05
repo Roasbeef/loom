@@ -1259,7 +1259,11 @@ fn admit(
       }),
       rename:,
     )
-  let start =
+
+  // The start takes its standing as an argument because reading it can wait on
+  // the registry for seconds, which only a page whose permit transferred should
+  // pay.
+  let start = fn(standing) {
     component.Start(
       session_id: attachment.session_id,
       // The route read the registration when it resolved the session,
@@ -1271,16 +1275,17 @@ fn admit(
       // The digest, not the path, is what the page's storage is keyed by.
       workspace_digest: digest(attachment.registration.workspace),
       expected:,
-      standing: standing_of(role, attachment),
+      standing:,
       transport:,
     )
+  }
   let started = case transferred {
     Error(reason) -> {
       upgrade_log.closed_early(upgrade_log.Page, "transfer", reason)
       Error(Nil)
     }
     Ok(Nil) ->
-      start_page(role, start)
+      start_page(role, start(standing_of(role, attachment)))
       |> result.map_error(fn(_) {
         upgrade_log.closed_early(
           upgrade_log.Page,

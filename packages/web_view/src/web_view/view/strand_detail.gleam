@@ -45,7 +45,6 @@ import lustre/element/html
 import session_view/agent_view
 import session_view/step_words
 import session_view/strand_card
-import session_view/text_hygiene
 import web_view/markdown_view
 import web_view/view/strip.{type Chip}
 
@@ -143,7 +142,7 @@ fn recent(chip: Chip) -> Element(message) {
         html.p(
           [attribute.class("detail-answer")],
           markdown_view.line(
-            text_hygiene.single_line(step_words.spoken_breaks(answer)),
+            step_words.spoken_breaks(answer),
             step_words.result_limit,
           ),
         )

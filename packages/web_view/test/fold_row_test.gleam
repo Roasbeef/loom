@@ -113,6 +113,24 @@ pub fn a_failed_step_opens_on_a_sentence_and_draws_no_backtick_test() {
   assert !string.contains(kept, "step-error")
 }
 
+// The engine's text is session text: a backtick span that holds markup is a
+// code span of escaped text, and no tag it spells is drawn.
+pub fn hostile_engine_text_in_a_backtick_span_stays_escaped_test() {
+  let html =
+    drawn([
+      work([
+        step(Words("Ran", Mono("make"), None), turns.Failed, [
+          Line(transcript_line.ToolResult, "bad `</code><img onerror=x>` input"),
+        ]),
+      ]),
+    ])
+  assert string.contains(
+    html,
+    "<code class=\"step-error-code\">&lt;/code&gt;&lt;img onerror=x&gt;</code>",
+  )
+  assert !string.contains(html, "<img")
+}
+
 // An unmatched backtick is left as the engine wrote it, so the text is never
 // cut short by a pair that was not one.
 pub fn an_unmatched_backtick_is_left_alone_test() {

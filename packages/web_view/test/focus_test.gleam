@@ -289,7 +289,7 @@ pub fn an_operators_prompt_goes_to_the_focused_strand_test() {
   // The composer names the strand it addresses.
   let drawn = element.to_string(operator_page.view(model))
   assert string.contains(drawn, "to-tag")
-  assert string.contains(drawn, "Message advisor")
+  assert string.contains(drawn, "Message the agent")
 }
 
 pub fn a_prompt_after_focusing_back_goes_to_main_test() {
@@ -348,15 +348,24 @@ pub fn the_composer_follows_the_focused_strands_activity_test() {
   assert component.activity(back) == component.Idle
 }
 
-// A sub-agent's engine identity is `sub:main/<slug>-<digest>`. The composer
-// addresses it by the name its card carries, and the identity stays in the
-// tag's tooltip, escaped, for a reader who needs it.
-pub fn the_composer_names_a_sub_agent_by_its_card_name_test() {
+// A sub-agent's name is chosen by the model, so it is session text: the
+// composer shows it only as the tag's text node, and no attribute (a title, the
+// field's label or its placeholder) holds it. The fixture's child name carries
+// markup characters, which must arrive escaped and only as text.
+pub fn the_composer_names_a_sub_agent_only_as_text_test() {
   let #(model, _) = operating(reviewer_running())
   let #(model, _) = component.focus(model, lane_fixture.child)
   let drawn = element.to_string(operator_page.view(model))
   assert string.contains(drawn, ">&lt;b&gt;review</span>")
-  assert string.contains(drawn, "placeholder=\"Message &lt;b&gt;review\"")
-  assert string.contains(drawn, "title=\"sub:main/&lt;b&gt;review-1a2b3c\"")
-  assert !string.contains(drawn, "placeholder=\"Message sub:")
+  assert string.contains(drawn, "placeholder=\"Message the agent\"")
+  assert string.contains(drawn, "aria-label=\"Message the agent\"")
+
+  // Nothing inside an opening tag holds the name.
+  assert list.all(string.split(drawn, "<"), fn(tag) {
+    case string.split_once(tag, ">") {
+      Ok(#(inside, _)) -> !string.contains(inside, "b&gt;review")
+      Error(Nil) -> True
+    }
+  })
+  assert !string.contains(drawn, "<script")
 }

@@ -626,8 +626,8 @@ fn editor(model: component.Model(socket)) -> Element(Msg(socket)) {
         [
           attribute.name("draft"),
           attribute.rows(3),
-          attribute.aria_label("Message to " <> addressee(model)),
-          attribute.placeholder("Message " <> addressee(model)),
+          attribute.aria_label("Message the agent"),
+          attribute.placeholder("Message the agent"),
         ],
         "",
       ),
@@ -653,7 +653,6 @@ fn addressing(model: component.Model(socket)) -> Element(Msg(socket)) {
     html.span(
       [
         attribute.class("to-tag"),
-        attribute.title(component.strand(model)),
         strip.hue_class(hue(model)),
       ],
       [html.text(addressee(model))],
@@ -664,7 +663,7 @@ fn addressing(model: component.Model(socket)) -> Element(Msg(socket)) {
 // The name the page calls the addressed strand by: the one its card carries
 // (`agent_roster.short_name`), so a sub-agent is `review-readme` and never
 // `sub:main/review-readme-d799cf20a6964d72`. The engine's identity stays in
-// the tag's `title`, an escaped tooltip, for a reader who needs it.
+// nowhere: the name is session text, so it is a text node in the tag and in no attribute.
 fn addressee(model: component.Model(socket)) -> String {
   agent_roster.short_name(component.strand(model))
 }
