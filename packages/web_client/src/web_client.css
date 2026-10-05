@@ -810,6 +810,14 @@
   .ended-document .ended-headline{margin:0 0 8px 0;font-size:16px;overflow-wrap:anywhere;}
   .ended-document .ended-advice{margin:0 0 8px 0;overflow-wrap:anywhere;}
   code.ended-command{display:block;margin:2px 0 4px 0;padding:6px 8px;background:var(--color-bg);border:1px solid var(--color-divider);border-radius:4px;font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
+  /* The Back control (<loom-back>, web_client/back): the admin bar's Home and
+     the spent-ticket document's Go back. It sits in the element's shadow root,
+     which adopts this sheet. */
+  button.ended-back{margin:0;padding:2px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:12px/1.4 var(--font-sans);cursor:pointer;}
+  button.ended-back:hover{background:var(--color-bg-raised);}
+  button.ended-back:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  .ended-document loom-back{display:block;margin-top:12px;}
+  a.ended-link{color:inherit;text-decoration:underline;text-underline-offset:2px;}
   /* The todo panel: the strand's board and the reviewer band, above the
      composer in the operator's dock and above the observer's bar. Its height
      is capped and it scrolls on its own, so a long phase cannot cover the

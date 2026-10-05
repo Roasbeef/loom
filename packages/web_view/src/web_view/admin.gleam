@@ -538,7 +538,7 @@ pub fn view(model: Model) -> Element(Msg) {
       status: status_words(model.status),
       tone: status_tone(model.status),
       notice: ended.admin(ended_ending(model.status)),
-      trailing: element.none(),
+      trailing: back_home(),
     ),
     shell.Unlisted,
     [notice(model.notice), body(model)],
@@ -546,6 +546,15 @@ pub fn view(model: Model) -> Element(Msg) {
     0,
     "",
   )
+}
+
+// The bar's trailing control: Back to the page the owner came from. It is a
+// `<loom-back>`, which calls `history.back()` in the browser and sends this
+// component nothing, so it mints no ticket and the admin page's fifteen
+// minutes are not carried to a home (protocol-change/051, the addendum on
+// navigation). Its label is the element's light text.
+fn back_home() -> Element(Msg) {
+  element.element("loom-back", [], [html.text("Home")])
 }
 
 // The words of the last ask, or the empty node that keeps the body's place.

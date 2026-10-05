@@ -1610,6 +1610,28 @@ pub fn the_assets_are_the_priv_files_under_the_unchanged_policy_test() {
   })
 }
 
+// The tab keeps one nonce per keyed page (protocol-change/051, the addendum on
+// navigation), so Back can return to a page and find its own. Both scripts
+// build the item name from the prefix and the page's key; neither spells the
+// bare, one-per-tab name, which a later page would overwrite. The bundle
+// navigates with `location.assign`, and no component of it replaces the
+// location.
+pub fn the_nonce_is_kept_per_page_and_the_bundle_assigns_the_location_test() {
+  list.each([page.enter_asset, page.page_asset], fn(name) {
+    let assert Ok(path) = page.static_file(name) as "the script has a priv path"
+    let assert Ok(script) = simplifile.read(path) as "the script reads"
+    assert string.contains(script, "\"" <> page.nonce_item <> "\" + ")
+    assert !string.contains(script, "\"loom-page-nonce\"")
+  })
+
+  let assert Ok(path) = page.static_file(page.client_asset)
+    as "the bundle has a priv path"
+  let assert Ok(bundle) = simplifile.read(path) as "the bundle reads"
+  assert string.contains(bundle, "location.assign(")
+  assert !string.contains(bundle, "location.replace(")
+  assert string.contains(bundle, "history.back()")
+}
+
 // Referrer-Policy is load-bearing: the exchange's URL carries the ticket and
 // the page's carries its key, and neither may leave in a Referer.
 pub fn every_document_and_script_withholds_the_referrer_test() {
