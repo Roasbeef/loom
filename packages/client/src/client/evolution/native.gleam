@@ -264,6 +264,7 @@ fn assembled_bus(
   declarations: List(tool.Tool),
   bus: Result(hooks.Bus, actor.StartError),
 ) -> Result(live.Generation, store.Refusal) {
+  let catalogue = config.catalogue
   case bus {
     Error(error) -> {
       process.unlink(pid)
@@ -278,7 +279,7 @@ fn assembled_bus(
         tools: declarations,
         hooks: Some(bus),
         validate: fn() {
-          store.authorized(config.catalogue, selection) |> result.replace(Nil)
+          store.authorized(catalogue, selection) |> result.replace(Nil)
         },
         retire: retirement.sequence(
           retirement.repeat(fn() {
@@ -403,15 +404,14 @@ pub fn node_identity(
 }
 
 fn scoped_memory(door: memory.Door, version: String) -> memory.Door {
+  let remember = door.remember
+  let recall = door.recall
   memory.Door(
     remember: fn(cell, value) {
-      door.remember(
-        memory.Cell(..cell, extension: "evolution-" <> version),
-        value,
-      )
+      remember(memory.Cell(..cell, extension: "evolution-" <> version), value)
     },
     recall: fn(cell) {
-      door.recall(memory.Cell(..cell, extension: "evolution-" <> version))
+      recall(memory.Cell(..cell, extension: "evolution-" <> version))
     },
   )
 }
