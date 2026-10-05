@@ -4054,6 +4054,13 @@ on the wire, and it touches no frozen interface.
 - Each read costs up to twenty-four jailed Git calls inside an eight-second
   deadline. Reads are coalesced to one in four seconds per page, so a session
   with several operator pages runs several.
+- Reads are counted per credential and not per page
+  (`ui_sessions.reserve_worktree_read`, two in four seconds, the rolling
+  allowance invitations use), so many sockets cannot spend the session's helper
+  pool, which the agent's own tools share. A refused read is `Unreadable` and
+  the page tries again after its next tool result.
+- Unlike a tool read, this read leaves no transcript record the owner can
+  audit.
 - The resident instance holds one more closure over the workspace path and the
   broker handle.
 - The tab lags a shell change until the next tool result or page open, and does
