@@ -178,15 +178,42 @@ unchanged. The required regression must pass a missing/conflicting original
 through the actual command endpoint, observe metadata drain and then admit a
 separate valid operation. The passing component gates do not close this defect.
 
+## Native fault controls and full executor gate
+
+The TLS BEAM migration preserves all 23 native controls. Seventeen local tests
+retain their executable bodies; six transport cases now run real owner and
+executor VMs through the production endpoint. All 77 assertions across five
+transport cases remain. The saturation case preserves ten native and outcome
+assertions while replacing fourteen socket-administration assertions with fixed
+credit, bootstrap and joined-role controls. No test was skipped or deleted.
+
+The test fault actor first calls the real native service, then holds, drops or
+rejects its actual answer. A fixed journal observer forwards only Inspect,
+ReadPayload and Release to the original executor journal, preserving the reply
+subject. It neither reopens SQLite nor manufactures evidence. The test-only
+Erlang adapter changes private reply doors; it adds no production replacement API.
+
+The exact three-file focused replay passes all 23 tests with zero skips.
+A fresh Astra review independently checked the complete test-name set, body and
+assertion parity, actual-answer faults, original journal forwarding and bounded
+role cleanup. It found no actionable defect. The root then ran the full
+`make check-executor` gate against the assembled Git-pinned dependency: all 299
+tests pass, zero skips, command exit 0. Its test runner completed in 99.65 seconds.
+The migration does not establish registered host lifecycle or separate-host
+acceptance; old socket tests still cover components awaiting replacement.
+
 ## Remaining acceptance
 
 Independent review of the assembled bootstrap, endpoint, whole-Compile actor,
 owner consumers and native restart fixture found no additional reachable defect.
-It confirmed the known historical native lookup issue described below. The full client gate passes 2,847 tests with fifteen explicit optional SKIP
-notices (shipped-server fixtures and unavailable rust-analyzer). The remaining
-native fault controls and registered daemon assembly are still pending. Executor assembly must still exclude credential files and inherited descriptors from
-satellites, and test actual distribution-disabled execution. The environment
-test alone establishes none of those properties.
+It confirmed the known historical native lookup issue described above. The full
+client gate passes 2,847 tests with fifteen explicit optional SKIP notices
+(shipped-server fixtures and unavailable rust-analyzer). Registered daemon
+assembly remains pending. Scoped shutdown must fence a registration before its
+services stop, preserve sibling capacity, and retain original transport and
+native drain witnesses. Executor assembly must still exclude credential files
+and inherited descriptors from satellites, and test actual distribution-disabled
+execution. The environment test alone establishes none of those properties.
 
 Existing framed-TLS component tests remain evidence for the old adapter only.
 Separate-host ordinary tools, Compile/Launch, owner capabilities and LSP still
