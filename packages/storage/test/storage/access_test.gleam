@@ -492,7 +492,7 @@ pub fn generated_access_queries_match_sqlc_input_test() {
     sql.active_member_credentials("").0,
     sql.claim_memberships("").0,
     sql.principal_listing("").0,
-    sql.principal_active_credential("").0,
+    sql.principal_active_credential("", None).0,
     sql.principal_open_claim("").0,
     sql.principal_memberships("", "").0,
     sql.insert_access_login("", "", None, None).0,
@@ -1487,6 +1487,14 @@ pub fn a_claim_bound_as_a_login_ends_at_its_expiry_test() {
   assert listed.logins == 1
   let assert Ok(ended) = access.signins_page(store, member.id, "", 5001)
   assert ended.entries == []
+
+  // Once the login has ended the principal has no credential to list, as it has
+  // no login to count: an expired claim-bound login is not "active".
+  let assert Ok(after) = access.principals_page(store, "", 5001)
+  let assert Ok(gone) =
+    list.find(after.entries, fn(row) { row.principal.id == member.id })
+  assert gone.credential == access.CredentialNone
+  assert gone.logins == 0
 
   // The replay of a lost reply, with the same digest, answers the same success
   // and writes nothing; another digest is the claim's conflict.

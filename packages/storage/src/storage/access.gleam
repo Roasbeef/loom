@@ -1005,7 +1005,7 @@ fn credential_summary(
 ) -> Result(CredentialSummary, Error) {
   use active <- result.try(catalogue.query(
     store,
-    sql.principal_active_credential(id),
+    sql.principal_active_credential(id, Some(now_ms)),
   ))
   case active {
     [row, ..] -> {

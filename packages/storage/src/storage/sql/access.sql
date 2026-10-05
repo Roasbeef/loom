@@ -63,6 +63,7 @@ SELECT c.digest, k.claimed_at_ms FROM access_credentials AS c
 LEFT JOIN access_claims AS k ON k.credential_digest = c.digest
 WHERE c.principal_id = ? AND c.state = 'active'
   AND (c.kind = 'bearer' OR k.claimed_at_ms IS NOT NULL)
+  AND (c.expires_at_ms IS NULL OR c.expires_at_ms > ?)
 ORDER BY c.digest LIMIT 1;
 
 -- name: PrincipalOpenClaim :many
