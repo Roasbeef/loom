@@ -88,6 +88,9 @@ loopback; do not expose bearer credentials over plaintext remote traffic.
 
 ## Inviting someone, and joining as the invitee
 
+For the same steps in a browser, with the terminal commands beside them, read
+the [guide to working with other people](guide/multiplayer.md).
+
 The owner invites a person to one session. The session must be
 `session_only` first (`loomd access isolate SESSION
 --share-existing-transcript` for an existing one); the
