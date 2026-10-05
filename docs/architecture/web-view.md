@@ -1020,11 +1020,13 @@ claim in a browser. `GET /ui/claim` serves a fixed form (`page.claim_page`: a
 token field, an optional name field and the words that say the inviter's name is
 kept when it is left empty), under `form-action 'self'`, the second document with
 that policy. `POST /ui/claim` (`server.claim_submit`) takes the sender (this
-origin's own page, `none` refused as for the resume), a small declared form, a
-control-class parser permit and the body, and then checks the token's shape
-(`loomclaim_` and 64 lowercase hex, after trimming a paste's spaces) before the
-registry is asked anything, so a bearer, a login or a stray word is refused having
-cost no lookup. `ui_login.claim` draws a login, binds its row to the claim with
+origin's own page, `none` refused as for the resume), a small declared form and
+the body, and then checks the token's shape (`loomclaim_` and 64 lowercase hex,
+after trimming a paste's spaces) before anything is reserved or looked up, so a
+bearer, a login or a stray word is refused having cost no lookup and no place.
+Only a claim-shaped token takes the claim's reservation (`root.acquire_claim`,
+one per claim as `/v2/claim` takes it), so a second post of a claim in flight is
+refused. `ui_login.claim` draws a login, binds its row to the claim with
 the name in the one transaction that spends it (`manager.claim_login`,
 `access.claim_login`), and signs the token afterwards for the principal the
 catalogue names. The invitee holds no bearer: the login is the credential the

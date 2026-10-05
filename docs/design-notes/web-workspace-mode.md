@@ -86,7 +86,7 @@ check anywhere.
 A UI session is a `Grant` (`ui_sessions.gleam:296`) of one session, one
 credential digest, one principal and one ceiling, kept with the digests of
 the page's cookie, key and nonce in one actor. A ticket for it is minted
-only by `UiLink` (`client/daemon/server.gleam:2042`) over the principal's own
+only by `UiLink` (`client/daemon/server.gleam:2051`) over the principal's own
 control connection, after `session_authority`
 (`client/daemon/manager.gleam:936`) finds a membership, and by a page
 switching to another session (`ticket_for` (`ui_socket.gleam:1161`)). The
@@ -730,7 +730,7 @@ and the epoch the page was admitted in:
 1. the page is open and its ceiling is Operator;
 2. `session_authority` finds Owner or Operator authority in the target: an
    observer member is refused with the words "ask an operator to resume
-   it", the check `OpenSession` (`client/daemon/server.gleam:2060`) makes;
+   it", the check `OpenSession` (`client/daemon/server.gleam:2069`) makes;
 3. `open` (`client/daemon/manager.gleam:1031`) is called, which is the same
    registry turn `sessions.open` runs: capacity, `Reserved`, archived, the
    domain slot;
@@ -924,8 +924,11 @@ invitee chooses their name in the UI, so the claim has a browser form.
 
 1. host and `Sec-Fetch-Site` as for the exchange; body at most 1 KiB;
 2. the token must be `loomclaim_` and 64 hex digits, checked before any
-   lookup, and `claim_known` (`client/daemon/manager.gleam:808`) must find
-   it open;
+   lookup; a claim-shaped token takes a reservation for its digest
+   (`root.acquire_claim`, as `/v2/claim` does, so a second post of a claim in
+   flight is refused), and there is no separate `claim_known` step: the bind
+   (step 3) refuses an unknown, void, expired or already-bound claim inside its
+   one transaction;
 3. the daemon draws a login (section 1.4): an identifier, a login key, a
    login nonce, and the token with its six caveats for this principal at
    Operator ceiling; and binds `SHA-256(id)` as a `browser` credential with

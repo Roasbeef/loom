@@ -1558,14 +1558,18 @@ opens is the home PR 8 built.
 **What the route does, in order.** The host is checked by the router. The sender
 must be this origin's own page: `Sec-Fetch-Site` is `same-origin` and nothing
 else (`ui_http.same_origin_post`, PR 8's rule). The form is declared at most 1
-KiB, URL-encoded, with no transfer encoding. A control-class parser permit is
-taken, and a daemon that is not serving refuses `503`. The body is read and must
-be `token` and, optionally, `name`, each once and no other field. The token is
+KiB, URL-encoded, with no transfer encoding. The body is read and must be
+`token` and, optionally, `name`, each once and no other field. The token is
 trimmed of the spaces a paste carries and must then be `loomclaim_` and 64
-lowercase hex characters, and this is checked **before any lookup**, so a bearer,
-a login, the owner's credential, a capitalised or truncated claim or an empty
-field is refused with the registry having done no work. Only then is the claim
-hashed, dropped and redeemed.
+lowercase hex characters, and this is checked **before any lookup and before any
+permit**, so a bearer, a login, the owner's credential, a capitalised or
+truncated claim or an empty field is refused with the registry having done no
+work and the daemon no place taken. Only then is the claim hashed, dropped and
+reserved (`root.acquire_claim`, one reservation per claim as `/v2/claim` takes
+it, so a second post of a claim already in flight is `409` with the busy words,
+and a daemon that is not admitting is `503`), and redeemed. The browser claim
+therefore takes no control-class permit; the route table's earlier line that it
+did is superseded.
 
 **What the redemption is.** `ui_login.claim` draws a login (identifier, key,
 nonce) and calls `manager.claim_login`, which runs `access.claim_login`: the same
@@ -1649,10 +1653,14 @@ them touches the claim. The success carries the policy every document has,
 **The three PR 8 review items.**
 
 - **A ticket whose login has ended is refused before it takes a place.** In
-  `ui_sessions` `Redeem`, a ticket whose `login` is `Some(issuer)` with
-  `issuer.expires_at_ms <= now` is `UnknownTicket` before `with_room` runs, so a
-  device link opened after its family ended neither takes a page's slot nor
-  evicts the owner's oldest home. `server.entered`'s `401` for a login whose row
+  `ui_sessions` `Redeem`, a ticket that sets a login (`Remembered`) and carries
+  `Some(issuer)` with `issuer.expires_at_ms <= wall` is `UnknownTicket` before
+  `with_room` runs, so a device link opened after its family ended neither takes a
+  page's slot nor evicts the owner's oldest home. A `Forgotten` ticket (a switch,
+  the way home, an admin press) also carries the page's login but sets none, and
+  its page keeps working to its own deadline, so it is not held to the login's
+  end; a first draft refused those too, which would have stopped a resumed home
+  from switching after its login's last day. `server.entered`'s `401` for a login whose row
   is refused stays. The table's `now` is the monotonic clock and an issuer's
   expiry is a wall-clock instant, so the comparison needed the wall clock:
   `Settings` gains `wall` (`bootstrap.system_time_ms` in production), the one
@@ -1689,6 +1697,9 @@ bearer: the invitee cannot use `loom` or the terminal's `/v2` from it, and
 | the login row bound without its expiry | `ui_route_test.a_browser_claim_lands_on_an_operator_fresh_home_with_a_login_test` and three others |
 | the ended-login arm of `Redeem` made unreachable | `ui_sessions_test.a_ticket_of_an_ended_login_evicts_no_page_test` |
 | a refusal of a claim served under `form-action 'none'` | `ui_route_test.a_claim_that_cannot_redeem_is_refused_in_fixed_words_test` |
+| `Settings.wall` in `production` made the monotonic `now` | `ui_sessions_test.the_production_table_judges_a_login_by_the_system_clock_test` |
+| the ended-login guard compared with `now` and not `wall` | `ui_sessions_test.a_ticket_of_an_ended_login_evicts_no_page_test` (the test table's wall is a long way from its `now`) |
+| the ended-login guard applied to a `Forgotten` ticket | `ui_sessions_test.a_switch_ticket_of_an_ended_login_still_redeems_test` |
 | the claim's home minted `Resumed` | `ui_route_test.a_browser_claim_lands_on_an_operator_fresh_home_with_a_login_test` |
 
 **Tests.** `ui_route_test` (the form, the redemption and its listing and its
