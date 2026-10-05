@@ -266,3 +266,27 @@ CorruptionReport values and reconstruct through the same constructors. These
 values express identity only; hashing, policy acceptance, broker clearance,
 retention and actual execution remain outside this pure package. System/LSP and
 capability command identity are deliberately absent from this fixed-role slice.
+
+## Complete code-mode reports (protocol 067)
+
+`core/report_value` separates a terminal `Outcome` from its trusted `Metadata`.
+Opaque `CompleteReport` values contain a checked canonical terminal value,
+manifest digest, enforcement observations and bounded call log. The raw scanner
+checks shared byte, node, container and nesting budgets before MessagePack
+allocation. Term constructors apply the same budgets before encoding; JavaScript
+nonfinite floats are refused explicitly. The fixed `LOOMRV01` bundle carries
+independently bounded terminal and metadata segments. The native wire profile
+in `bounded_msgpack` keeps its existing smaller limits.
+
+`ReportRef` names a session, reserved result entry, digest and byte length. Its
+constructor validates canonical shape only. Storage and the authenticated owner
+router must establish existence, association, digest and read authority. No
+reference opens a path or grants a capability by itself. Core performs no hash,
+SQL, process or filesystem operation.
+
+The core gate runs both the Erlang tests and a small Node regression for values
+that BEAM cannot represent. The supplemental JavaScript build retains existing
+unsafe-u64 warnings; it does not establish exact u64 custody on JavaScript's
+Number representation. The Erlang build remains warning-free. The complete
+retention and read path is described in
+[distributed-final-results.md](../../docs/design-notes/distributed-final-results.md).
