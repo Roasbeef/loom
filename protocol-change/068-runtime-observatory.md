@@ -60,7 +60,7 @@ and their bounds, served from inside one `loomd`.
   `{op, step_id, attempt}` for a model request
   (`GenerationEffectPending.attempt`).
 - **The drain ledger** (`runtime/internal/drain_registry`). A strand driver
-  incarnation that reaches its loop has claimed a slot in it. The ledger is
+  incarnation that reaches its loop has a claim in flight to it. The ledger is
   the runtime tree's first child, temporary and significant, so it outlives
   every restartable child and its death ends the session incarnation.
 - **The executor's observation** (`broker/executor_view`): a `Snapshot` built
@@ -163,7 +163,7 @@ Two consequences of how drivers claim, which the types carry:
   the claim from a claimant process after `weft.adopt_leaf`, while the driver
   is already addressable. An `Observe` that arrives first finds no generation
   yet, so the driver reports its generation as `Observed(Int)` and a reply
-  can read `Missing(NotRunning)` for it.
+  can read `Missing(NotYet)` for it.
 - **Some incarnations never claim.** A driver whose reaper scope dies before
   handoff, whose adopt is refused, or that forgoes its claim halts and is
   restarted by the factory without taking a number. Generations therefore
@@ -189,6 +189,8 @@ pub type Gap {
   TimedOut
   /// The process that would answer is not running.
   NotRunning
+  /// The source is running but has not produced the value yet.
+  NotYet
   /// This build cannot observe it.
   Unsupported
   /// The source answered with something the decoder refused.
@@ -219,7 +221,7 @@ pub type Activity {
   /// `RunPhase.Checkpoint`.
   Checkpoint
   /// `Assistant(GenerationReady)`: admission and model resolution, before
-  /// the request is sent.
+  /// the request is sent. The ref carries `next_attempt`.
   Preparing(request: RequestRef)
   /// `Assistant(GenerationEffectPending)`.
   Streaming(request: RequestRef, deadline_ms: Observed(Int))
@@ -251,8 +253,11 @@ which is a separate change.
 `AwaitingApproval` is the one derived variant: an operation in `Tools` with a
 call in `CallEffectPending` whose `{op, step_id, source_index}` equal the
 current `CallScope` of a `Pending` escalation. A parked call is a live tool
-effect, so it stays `CallEffectPending` for as long as the escalation is
-pending. A scope can move between claimants (`client/escalate`), so the join
+effect, so it stays `CallEffectPending` for as long as the park lasts. The
+park ends at its configured window or the call's budget deadline, whichever
+is first, and the call then settles in band while the record may stay
+`Pending`; the join requires both, so it stops reporting the call as awaiting
+approval once the call settles. A scope can move between claimants (`client/escalate`), so the join
 reads the record's current scope, not the one it was raised with.
 
 A `CallView` names the call, its tool name, and its `ToolCallState` as one of
@@ -391,8 +396,10 @@ The rules are fixed and listed in the module:
   `Streaming` is `BlockedOn(ModelRequest)`; `Starting`, `Checkpoint`,
   `Preparing`, `Compacting`, `FailureDrain` and `Navigating` are `Working`.
 - A timed-out `Observe` is `BlockedOn(PredecessorDrain)` when the ledger
-  shows more than one reaper for the strand, and `BlockedOn(UnresponsiveDriver)`
-  otherwise.
+  shows more than one reaper for the strand, or when the strand has no
+  generation yet (a replacement whose claim has not landed is blocked in the
+  same way). It is `BlockedOn(UnresponsiveDriver)` only when the strand has a
+  generation and the ledger shows one reaper.
 - Facts report what was read: the blocking call's worker is alive or not,
   its deadline is N ms away or has passed, the driver is generation G.
 - No rule turns a process exit into an outcome. A dead tool worker does not
@@ -422,9 +429,15 @@ get a surface later, as `cap/observe`, under one rule this proposal fixes
 now: **an agent-facing reply never reveals that an escalation exists, was
 raised, or was decided.** `client/escalate` is built so the model sees the
 same in-band refusal whether policy refused a call or a person did, and
-"must never be able to tell that an approval existed and was set aside". An
-agent surface therefore reports `AwaitingApproval` as `RunningTools`, never
-returns `Approval` as a blocker, and never returns escalation events. It reads
+"must never be able to tell that an approval existed and was set aside". A
+parked call is also recognisable indirectly: it stays pending with no
+executor execution while its worker stays alive, and with the ring its
+`CallStarted` and `CallSettled` times show the park window. An agent surface
+therefore returns only `Activity` and `Verdict`, with `AwaitingApproval`
+reported as `RunningTools`, every call list in it empty, and
+`BlockedOn(Approval)` and `BlockedOn(ToolCall)` both reported as `Working`. It
+returns no per-call views, no process evidence, no escalation events and no per-call
+event times. It reads
 its own session only, takes the session from the launching identity as
 `client/peers.router` does, and has a per-execution admission ceiling.
 
@@ -442,7 +455,7 @@ types rather than by a filter at the edge:
 | Class | Contents | Readers |
 | --- | --- | --- |
 | Identity | ids, strand names, generations, phases, counts, deadlines, ages, tool names, outcome kinds, pids, mailbox lengths, heap sizes | every reader above |
-| Argument text members already see | the escalation preview: a prefix of the call's canonical arguments, which for `bash` is the command. Bounded to 512 bytes as `session_view/approval` bounds it, and drawn only as text, because it is model-controlled. | members of the session (it is already on their wire through `EscalationsGet`) and the owner; never an agent surface |
+| Argument text members already see | the escalation preview: the call's canonical argument JSON (for `bash`, an object holding the command), cut to 512 characters as `session_view/approval` cuts it, and drawn only as text, because it is model-controlled. | members of the session (it is already on their wire through `EscalationsGet`) and the owner; never an agent surface |
 | Never | tool output, transcript text, provider request or response bodies, error text, environment, working directory, policy, tokens, mailbox contents, process dictionaries, actor state, stack traces, and argument text beyond the preview above | no one; no observatory type can hold them |
 
 Outcomes are closed classifications, never text: `ok`, `cancelled`,
