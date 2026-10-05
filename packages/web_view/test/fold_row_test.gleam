@@ -84,10 +84,9 @@ pub fn a_step_is_one_line_with_its_words_and_one_chevron_test() {
 pub fn a_failed_step_opens_on_a_sentence_and_draws_no_backtick_test() {
   let failed =
     step(Words("Edit", Mono("test_calc.py"), None), turns.Failed, [
-      Line(transcript_line.ToolFailure, "fs_edit"),
       Line(
-        transcript_line.ToolResult,
-        "invalid arguments: `from` is required for this hunk op",
+        transcript_line.ToolFailure,
+        "fs_edit\ninvalid arguments: `from` is required for this hunk op",
       ),
     ])
   let html = drawn([work([failed])])

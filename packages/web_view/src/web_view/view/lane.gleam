@@ -740,23 +740,37 @@ fn step_rows(
   rows: List(Line),
   draw: fn(Line) -> Element(message),
 ) -> List(Element(message)) {
-  let refusal =
-    list.filter(rows, fn(row) { row.speaker == transcript_line.ToolResult })
-  case standing, refusal {
-    turns.Failed, [_, ..] -> {
-      let engine = string.join(list.map(refusal, fn(row) { row.text }), "\n")
-      let rest =
-        list.filter(rows, fn(row) {
-          row.speaker != transcript_line.ToolResult
-          && row.speaker != transcript_line.ToolFailure
-        })
-      [
-        fold_row.failure(step_words.failure_sentence(words, engine), engine),
-        ..list.map(rest, fold_row.line_row(_, draw))
-      ]
-    }
-    turns.Failed, [] | turns.Pending, _ | turns.Done, _ ->
+  let #(refusal, rest) =
+    list.partition(rows, fn(row) {
+      row.speaker == transcript_line.ToolResult
+      || row.speaker == transcript_line.ToolFailure
+    })
+  let engine =
+    refusal
+    |> list.map(refused_text)
+    |> string.join("\n")
+    |> string.trim
+  case standing, engine {
+    turns.Failed, "" | turns.Pending, _ | turns.Done, _ ->
       list.map(rows, fold_row.line_row(_, draw))
+    turns.Failed, _ -> [
+      fold_row.failure(step_words.failure_sentence(words, engine), engine),
+      ..list.map(rest, fold_row.line_row(_, draw))
+    ]
+  }
+}
+
+// What the engine said when it refused a call. A failed call's row opens with
+// the call's own summary (`fs_edit`), which the step's line already says, and
+// the refusal follows on the lines after it; a result row is the refusal
+// whole.
+fn refused_text(row: Line) -> String {
+  case row.speaker == transcript_line.ToolFailure {
+    False -> row.text
+    True ->
+      string.split_once(row.text, "\n")
+      |> result.map(fn(parts) { parts.1 })
+      |> result.unwrap("")
   }
 }
 
