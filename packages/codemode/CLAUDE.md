@@ -38,6 +38,14 @@ authority, artifact checks and resource lifecycle. Remote owner acceptance can
 therefore derive the same literal command without constructing a local
 Artifact or resolving executor paths on the owner.
 
+Satellite environment construction excludes `ERL_AFLAGS`, `ERL_FLAGS` and
+`ERL_ZFLAGS`, including duplicates. These variables inject VM arguments outside
+the fixed distribution-disabled command. A trusted TLS BEAM executor must not
+pass its node name, cookie or TLS option path through to a satellite. The same
+filtered environment determines the derived policy's environment allowlist.
+This is one launch boundary; executor assembly must also exclude credential
+files from readable mounts and inherited handles.
+
 These records carry command facts, not clearance. The caller still validates
 remote enrollment, original service input and prepared resources. Satellite
 access accepts a caller-selected wall without reading a clock; local launch
