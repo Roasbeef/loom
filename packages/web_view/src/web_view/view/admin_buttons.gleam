@@ -59,6 +59,13 @@ pub type Presses(message) {
     /// The handler of the invitation form's submit, given the session it
     /// invites into.
     invite: fn(String) -> Attribute(message),
+    /// The message that opens one person's rename form, given the principal's
+    /// identity.
+    edit: fn(String) -> message,
+    /// The message that closes the open rename form.
+    cancel: message,
+    /// The handler of a rename form's submit, given the principal it renames.
+    rename: fn(String) -> Attribute(message),
   )
 }
 

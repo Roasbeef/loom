@@ -10,6 +10,14 @@
 //// sixteen characters of its own, which is enough to compare with what `loom
 //// claim` printed (`web_view/grants`).
 ////
+//// Every row, the owner's included, offers a Rename button (protocol-change/065,
+//// the tenth pull request). Pressing it opens a small form in that row, in the
+//// words and the shape of the home's rename form: the person's current name is a
+//// text node in the form's lead and `<loom-rename>` copies it into the field in
+//// the browser, so the name is never a `value`. One form is open at a time. The
+//// form is the row's last child, empty when closed, so the row's other children
+//// keep their places.
+////
 //// Each member's row offers the changes the owner makes to a person, not to a
 //// session, by what the person holds. A person with an active credential can be
 //// rotated, which voids what it held and makes a new claim, or have its
@@ -17,7 +25,7 @@
 //// claim is open has one button, `Void invitation`, which is the same
 //// revocation worded for what it undoes. A person with neither can be rotated
 //// to issue a new claim. The owner's row offers nothing, since the owner's
-//// access is not the page's to change. The heading counts the people and, when
+//// access is not the page's to change, though its name is. The heading counts the people and, when
 //// any claim is open, how many are invited.
 ////
 //// A row also holds two slots for what the owner has just done to its person:
@@ -47,12 +55,14 @@ import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/element/keyed
+import lustre/event
 import web_view/grants.{type Claim, type Credential, type Logins, type Principal}
 import web_view/sessions
 import web_view/signins.{type Signin}
 import web_view/view/admin_buttons.{type Busy, type Presses}
 import web_view/view/admin_claim
 import web_view/view/notice.{type Spoken}
+import web_view/view/rename
 import web_view/view/signins as signins_view
 
 /// The section that lists every principal, or a line saying there are none
@@ -61,12 +71,12 @@ import web_view/view/signins as signins_view
 /// says whether the catalogue holds more rows than the page lists, `spoken` is
 /// the last thing the page said about an ask, and `claim` is the claim on screen,
 /// if one is. A row draws the line and the claim only when they are about its
-/// principal.
+/// principal. `editing` is the principal whose rename form is open, if one is.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // admin_people.principals(rows, grants.Whole, logins, None, now, None, None, None, presses, admin_buttons.Free)
+/// // admin_people.principals(rows, grants.Whole, logins, None, now, None, None, None, None, presses, admin_buttons.Free)
 /// ```
 pub fn principals(
   rows: List(Principal),
@@ -77,6 +87,7 @@ pub fn principals(
   armed: Option(grants.Action),
   spoken: Option(Spoken),
   claim: Option(Claim),
+  editing: Option(String),
   presses: Presses(message),
   busy: Busy,
 ) -> Element(message) {
@@ -97,6 +108,7 @@ pub fn principals(
               armed,
               spoken,
               claim,
+              editing,
               presses,
               busy,
             ),
@@ -144,6 +156,7 @@ fn person(
   armed: Option(grants.Action),
   spoken: Option(Spoken),
   claim: Option(Claim),
+  editing: Option(String),
   presses: Presses(message),
   busy: Busy,
 ) -> Element(message) {
@@ -157,21 +170,80 @@ fn person(
         html.text(kind_words(row.kind) <> credential_words(row.credential, now)),
       ]),
     ]),
-    case row.kind {
-      grants.OwnerKind -> element.none()
-      grants.MemberKind ->
-        html.div(
-          [attribute.class("admin-actions")],
-          actions(row, armed, presses, busy),
-        )
-    },
+    html.div([attribute.class("admin-actions")], [
+      admin_buttons.plain("Rename", "admin-act", presses.edit(row.id), busy),
+      ..case row.kind {
+        grants.OwnerKind -> []
+        grants.MemberKind -> actions(row, armed, presses, busy)
+      }
+    ]),
     case logins {
       Some(held) -> sign_ins(row, held, this, now, armed, presses, busy)
       None -> element.none()
     },
     notice.at_person(spoken, row.id),
     admin_claim.for_person(claim, row.id, presses.dismiss),
+    rename_form(row, editing, presses, busy),
   ])
+}
+
+// The row's rename form, when it is the one that is open, and the empty node that
+// keeps its place otherwise. The person's name is a text node in the lead and
+// `<loom-rename>` copies it into the field in the browser; the field is
+// uncontrolled and the one submit sends its text under the name `text`. While a
+// request is out the buttons are disabled, though the handler stays, because the
+// component is the layer that ignores a second one.
+fn rename_form(
+  row: Principal,
+  editing: Option(String),
+  presses: Presses(message),
+  busy: Busy,
+) -> Element(message) {
+  case editing {
+    Some(open) if open == row.id -> {
+      let locked = case busy {
+        admin_buttons.Free | admin_buttons.Spent(_) -> []
+        admin_buttons.Occupied -> [attribute.disabled(True)]
+      }
+      html.form(
+        [
+          attribute.class("admin-rename"),
+          attribute.aria_label("Rename this person"),
+          attribute.attribute(rename.scope_marker, ""),
+          presses.rename(row.id),
+        ],
+        [
+          html.p([attribute.class("admin-lead")], [
+            html.text("Rename "),
+            html.span([attribute.attribute(rename.name_marker, "")], [
+              html.text(row.name),
+            ]),
+          ]),
+          html.div([attribute.class("admin-fields")], [
+            rename.field(),
+            html.button(
+              [
+                attribute.type_("submit"),
+                attribute.class("admin-act"),
+                ..locked
+              ],
+              [html.text("Rename")],
+            ),
+            html.button(
+              [
+                attribute.type_("button"),
+                attribute.class("admin-act"),
+                event.on_click(presses.cancel),
+                ..locked
+              ],
+              [html.text("Cancel")],
+            ),
+          ]),
+        ],
+      )
+    }
+    Some(_) | None -> element.none()
+  }
 }
 
 /// A principal's identity drawn as its short form, with the whole in the

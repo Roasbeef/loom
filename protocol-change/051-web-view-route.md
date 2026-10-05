@@ -3851,3 +3851,100 @@ that no waiting notice draws a backtick, and the waiting element in the shell.
 `ui_route_test` pins that both scripts build the item from the prefix and the
 bundle assigns and never replaces the location. `admin_test` pins the bar's
 `<loom-back>`.
+
+## Addendum: the session switcher (2026-10-05)
+
+**Status**: IMPLEMENTED in the change that adds it (round 4 of the web UI
+critique, section 5 item 4). It adds one client element and one document key
+handler. It adds no route, no event on the socket's accepted list and no field on
+the wire.
+
+**What changed.** Command or Control and K opens a popover over the page that
+lists the sessions the page's sidebar already offers, filters them as the person
+types, and opens the highlighted one on Enter or a click. Escape, a press outside
+the panel and the shortcut again close it. The element is `<loom-switcher>`
+(`web_client/switcher`), drawn after `<loom-switch>` as the centre's last child on
+the operator's page and the home, so no admitted path moves.
+
+**It adds no way to the browser's navigation.** The popover reads the sidebar's
+`.session-open` buttons from the page, takes each one's name, workspace and
+subtitle as text, and on a choice presses that session's own button
+(`HTMLElement.click`). The press is an ordinary click on an ordinary handler: the
+daemon is asked for a ticket, checks the page's role and the session's
+membership, mints it, and `<loom-switch>` navigates as it does for the sidebar.
+The switcher holds no address, mints nothing and sends the server nothing. A
+button the server has since removed is not pressed. A page with no sidebar (an
+observer's) has no row, so the list is empty.
+
+**Session text.** A name, a workspace's last segment and a subtitle are catalogue
+and prompt text. The element reads them with `textContent` and draws each as a
+text node of its own view; it never assigns one to markup, to an attribute it
+reads back, or to the document's address, and the filter compares them as
+strings and builds nothing from them (`switcher_rule`, tested under Node with a
+name that holds markup). The query the person types is the field's own `value`.
+
+**The key.** This is the page's first handler for a key outside the composer. It
+is a single `keydown` listener on the document, one for each connection and
+removed when the element leaves the page, and it reads two things: the shortcut,
+which it cancels so the browser's own use of it does not also run, and Escape,
+which it only observes. It handles no key near an approval card: an approval's
+decision is a button the person presses, and the popover opens over the page
+without touching it. While the popover is open the query field has the focus and
+handles the arrows and Enter, and leaves every other key to the browser.
+
+**What was considered.**
+
+- *A server-drawn list.* The sidebar's list is already on the page, so a second
+  draw would be a second source of the same rows and a new event to admit.
+- *Navigating from the element.* A navigation needs a ticket, which only the
+  daemon mints. Pressing the sidebar's own button is the only route that does not
+  copy the ticket mint into a client.
+
+**Cost.** One document listener and one element. The list is read when the
+popover opens, so a session created while it is open appears the next time.
+
+**Tests.** `switcher_test` (the shortcut, the arrows and Enter, an input method's
+composing keys, the filter and its order, a name that holds markup, the
+highlight's wrap), `home_test` (the element is the centre's last child and the
+handlers' paths are as they were).
+
+## Addendum: the home's name form (2026-10-05)
+
+**Status**: PROPOSED, IMPLEMENTED with the web/pr10-principal-rename branch ·
+**Raised by**: 065's tenth pull request (`principals.rename`)
+
+This addendum adds one event to the home socket's accepted list. It adds no route
+and no field on the wire, and it changes no secret, cookie or nonce rule.
+
+### What changed
+
+- **The home's socket admits a `submit` beneath `home.signins_path`.** The account
+  panel the person's name opens is the centre's third child, and it holds the "Your
+  name" form. `ui_socket.home_accepts`, `home_owner_accepts` and `home_admin_accepts`
+  each admit a submit at a path that begins `0\t2\t2\t`, alone or in a batch, and
+  nothing else new: the panel's own path, a sibling that shares its digits, any other
+  event at the form and a batch with one message outside the panel are dropped as they
+  were. The pinned paths (`component.strip_path`, `invite_path`, `older_path`,
+  `sidebar_path`, `home.table_path`, `home.signins_path`, `admin.body_path`) do not
+  move.
+- **The form carries one value.** Its decoder accepts exactly one field named
+  `text`; a repeated, missing or extra field refuses the event. The page names no
+  principal: the daemon renames the principal the page was admitted for.
+
+### What was considered
+
+- **Admit the submit for a page with the capability only.** The socket's admission is
+  chosen when it starts, from the ceiling and the principal; a read-only link draws no
+  form, so there is no handler at the path to receive the event, and the daemon
+  refuses the request from a page with no capability. A fourth admission rule would
+  have named a combination the other two layers already hold.
+
+### Cost
+
+One more region the home socket reads an event from, for every home.
+
+### Verification
+
+`ui_socket_test` pins the admitted and the dropped frames for all three admissions.
+`names_test` pins that the form's handler is one submit beneath the panel and that no
+path outside the panel moved.

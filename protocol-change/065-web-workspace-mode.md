@@ -5,8 +5,9 @@
 browser claimant is never shown a key; creation only in a known workspace;
 operator-ceiling pages open saved sessions), and again on 2026-10-04 for
 the login's security review and two further rulings (the addendum at the
-end); PRs 1 to 7 of the plan are on `main` and PR 5 is amended in the last
-addendum · **Affects**:
+end); PRs 1 to 7 of the plan are on `main`, PR 5 is amended in the last
+addendum, and PR 10 (`principals.rename`) is implemented in the addendum
+that ends this document · **Affects**:
 Part 1.6 client protocol (`ui.link`, `credentials.claim`, `principals.list`,
 four new control commands, new `/ui` routes), the `loom ui`, `loom claim`
 and `loom access` command lines, the catalogue schema (version 5), and four
@@ -1758,3 +1759,177 @@ position, no form on a private selection, the notice's placement, the token in
 one patch and no other), `grants_test` (the refusal's words), `copy_test` (the
 claim address's shape), and `scripts/web_client_css_check.sh` (nothing under
 `.admin-body` is `position:sticky`).
+
+## Addendum: session actions on the home and the admin page's lifetime pill (2026-10-05)
+
+**Status**: IMPLEMENTED in the change that adds it (round 4 of the web UI
+critique, section 5 item 3 and finding F87). It adds one daemon capability to the
+owner's fresh home and one in-daemon value to the admin page. It adds no route,
+no admitted event and no field on the wire.
+
+**The problem.** The daemon stops, archives and deletes sessions for a terminal
+(`sessions.stop`, `sessions.archive`, `sessions.delete`), and the home, which
+lists every session, offered none of them. An owner who wanted a session gone had
+to leave the page.
+
+**What changed.**
+
+- **A row's quiet buttons.** On the owner's fresh home, a running row has `Stop`
+  and a saved row has `Archive` and `Delete`, beside `Rename`, in one group after
+  the row's own button (`view/home_table`, `web_view/actions`). A running row
+  offers no archive or delete, because the registry refuses both for a session a
+  process holds (`AdminBusy`), and a saved row offers no stop.
+- **Delete is two presses.** Delete replaces the row's words with `Delete this
+  session? This cannot be undone.` and a Delete and a Cancel, in the row, as the
+  rename form is drawn. The daemon takes no such step: the confirmation is the
+  page's, and the daemon's checks are the same for a confirmed press and a
+  forged one. Stop and Archive ask at once; an archive is undone from a terminal
+  (`sessions.restore`) and a stop leaves the session on disk.
+- **The daemon decides each press.** `Start.manage` is `Some` only for the
+  owner's page minted to operate and opened by a `loom ui` exchange
+  (`ui_socket.home_manage_capability`, which judges `fresh_home` as the Admin
+  button does), so a home a bookmark resumed, a member's home and a read-only
+  link draw nothing and ignore the messages. `ui_socket.manage_for` re-derives
+  all of it when the press arrives: the page is still open and fresh
+  (`fresh_home`, `owner_operating`), its credential still authenticates as the
+  owner, and the target is a canonical session identity. A stop is
+  `manager.stop_session`, the call the control command makes, followed by a
+  bounded wait (`stop_wait_ms`, five seconds, as a `weft/poll` loop) for the
+  registry to hold the session saved, so the page's next read does not list it as
+  running. An archive is `manager.set_visibility` and a delete is
+  `manager.delete_session`, which authenticate the credential and the epoch again
+  in the registry's own turn.
+- **The runtime never waits.** The request is a weft task (`manage_task`), as the
+  rename and the resume are; its answer is a message (`ActionAnswered`) and the
+  page reads its list again.
+- **A refusal is fixed words.** `NotOwner` covers every standing the page cannot
+  claim and an identity the catalogue does not hold, `Running` is the one
+  actionable reason (`That session is still running. Stop it first.`), and
+  `Unavailable` covers the rest. No text the daemon or the catalogue wrote
+  reaches a browser.
+- **No new admission.** A row's buttons are clicks beneath `home.table_path`,
+  which every home's socket already admits for a row. The capability decides
+  whether a button exists and whether the component acts on a press. No pinned
+  path moved: the buttons are a group after the row's own button, and
+  `home.table_path` and `home.admin_path` are as they were.
+- **`HomeAttachment` gains `sessions_directory`**, the daemon's own directory a
+  delete removes the database family from. No page supplies it.
+- **The admin page's lifetime is a pill.** `admin.Start` gains `ends_at`, the
+  instant the page ends, read once when the socket opens from the live UI
+  session's deadline (the earlier of the home's end and fifteen minutes after the
+  exchange) and carried from the table's monotonic clock to the wall clock the
+  page counts in. The bar shows `ends in 14m` as a quiet pill, the figure drawn
+  by `<loom-elapsed remaining="...">`, which counts the milliseconds down in the
+  browser and anchors again on each new figure. The body's sentence about the
+  page's lifetime is gone; the pill's `title` says to press Admin on the home for
+  another page.
+
+**What was considered.**
+
+- *A browser `confirm()` for Delete.* It is not part of the page's design and
+  cannot be tested without a browser; the row's second step is.
+- *Letting a Delete stop the session first, as the terminal does.* The terminal
+  waits for the stop to drain before it asks for the delete. The page's Delete is
+  offered only on a saved row, so the case never arises on a page that is current,
+  and a page that is stale is refused with `Running` rather than the page
+  stopping a session the owner did not ask it to stop.
+- *Offering the actions on every owner home.* A bookmark is a long-lived
+  credential, and the admin page already refuses it for the same reason: an
+  action that removes a session's history should not be reachable from a link
+  that was saved for convenience.
+
+**Cost.** One capability and one task on the home, one field on the home
+attachment and one on the admin page's start, and a second attribute on
+`<loom-elapsed>`. A drain that outlasts the stop's five seconds answers as a stop
+that was made and shows the session as running until the page's next read.
+
+**Tests.** `home_test` (the buttons that fit each row, the confirmation, one ask
+for each press, the fixed words, a page with no capability, the paths),
+`ui_socket_test` (the capability and that no admission is added),
+`ui_route_test` (each action against a real registry, every refusal, and the
+task), `admin_test` (the pill and the missing sentence), and `elapsed_test` (the
+countdown's words).
+
+## Addendum: renaming, the tenth pull request (2026-10-05)
+
+**Status**: IMPLEMENTED in the change that adds it. It builds the control command
+this document proposed last and optional, and the two web surfaces the design note
+names for it. It adds one control command, one event the home's socket admits and
+no catalogue version: `storage/access.rename` already existed, with the claim's own
+name rule, and had no caller.
+
+**The command.** `principals.rename` is as the proposal wrote it, with these
+details. `principal_id` is optional and `name` and `epoch` are required. A member
+omits `principal_id` and renames itself, and naming itself is the same; a member
+naming another principal is `forbidden`. The owner may name any principal and
+itself. The registry reauthenticates the caller and the epoch in the dispatch that
+writes (`manager.rename_principal`), drops its authority memo before it answers, and
+refuses during a drain, so it is `ControlMutation`. The name is the unjudged text
+on the wire (up to 1024 bytes, blank included, so the catalogue is the one judge),
+trimmed and then held to the rule a claim's chosen name is held to,
+`storage/access.new_name`, in the same function that renames: not blank, at most
+256 bytes, no control, zero-width or direction-changing character. A name that rule
+refuses is `invalid_name`, the code a refused claim name already uses, and stores
+nothing. An unknown principal is `not_found`, a stale epoch `stale_epoch`, a
+malformed frame `bad_request`. The reply names the principal and the name as
+stored. Origins already admitted keep the name they were admitted under
+(`core/message.gleam`); a page or a session admitted afterwards reads the new one.
+There is no `loom access rename` in this change.
+
+**On the home.** The person's name in the bar opens the account panel (the first
+pull request's popover), and the panel gains a "Your name" region as its first
+child: a lead that shows the current name as a text node, a text field in a
+`<loom-rename>` that copies the lead's text into it in the browser, and one submit
+button. The name is never an attribute, and the form is keyed by how many times the
+name changed so a stored name opens a fresh form on it. `Start.rename_self` is `Some`
+for a page minted to operate, whoever its principal is, and `None` for a read-only
+link, which draws nothing in its place. A home a bookmark resumed may rename its
+principal, as it may end that principal's logins: the rename mints nothing, which
+is the line a bookmark may not cross (a device link and the admin page both mint).
+The daemon decides again at the submit
+(`ui_socket.rename_self_for`): the page is open, its ceiling is Operator, the
+credential authenticates as the principal the page was admitted for, and the
+registry's own turn applies the rule above to that principal and no other, so the
+page names nobody. The work runs as a weft task (`rename_self_task`); the page's
+runtime never waits. A refusal is the fixed words of `web_view/names`. Every list
+the home reads also reads the principal's name (`Start.who`), so a name the owner
+changed from the admin page reaches an open home at its next read.
+
+**On the admin page.** Every person's row, the owner's included, has a Rename
+button that opens a small form in that row, in the words and the shape of the
+home's session rename. Its submit is the seventh change the page may ask for
+(`grants.Rename`), made by `ui_socket.rename_for_admin` after the checks every change
+begins with. It grants nothing and costs none of the credential's allowance.
+`invalid_name` is `grants.InvalidName` and an unknown principal `grants.NotFound`.
+
+**The admission.** The one new event the home's socket takes is a `submit` beneath
+`home.signins_path` (`0\t2\t2\t...`), where the form is. It is admitted for every
+home, since a member's home has no other submit; a home that draws no form has no
+handler there, and the daemon refuses the request from any page that holds no
+capability. The panel's own path, a sibling that shares its digits and every other
+event stay dropped, and a batch with one such message is dropped whole. The table's
+forms are still admitted only for the owner's operating home, and the admin
+socket's admission is unchanged because the admin form is beneath
+`admin.body_path`. 051's addendum on the home's name form records the admission in
+that document's format.
+
+**What was considered.**
+
+- **A click that reads the field.** A button whose click event carried the field's
+  value would need a property on every click the server component forwards, which
+  the closed message type avoids. A form's `formData` is the shape the other forms
+  already use.
+- **A second validator.** The daemon's `catalogue.display_name` is the same rule as
+  the claim's, but a function that renames should not rely on a caller judging first.
+  The registry's rename is the only judge, and the page's `invalid_name` is that
+  function's refusal mapped, not a parallel check.
+- **A schema bump.** Nothing is stored beyond the existing `display_name` column.
+
+**Cost.** One control command, one registry message, one admitted event and one
+`Start` read per home refresh (`manager.authenticate`, a single indexed query).
+
+**Tests.** `daemon_protocol_test` (the decoder and its refusals),
+`ui_route_test` (who may name whom over the control socket, the claim rule's
+refusals, a stale epoch, the home's and the admin page's daemon checks),
+`ui_socket_test` (the admission and the capability), `names_test` and
+`admin_test` (both forms, their paths and the refusals' words).

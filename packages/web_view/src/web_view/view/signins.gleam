@@ -17,6 +17,9 @@
 //// copies it only when it has the shape the daemon writes, so the person can
 //// keep it.
 ////
+//// The panel's first region is the "Your name" control (`view/your_name`), which
+//// changes the principal's display name; it is drawn here so it sits in the
+//// panel the person's name opens and its submit is beneath `home.signins_path`.
 //// The region is the account panel, not part of the home's body. It stays the
 //// centre column's third child, after the sessions, so its handlers are all
 //// beneath `home.signins_path` and the home's socket admits a click there for
@@ -75,11 +78,13 @@ pub type Asking {
 /// that row's fingerprint, and `everywhere` is the message of "Sign out
 /// everywhere". `bookmark` is the address the person keeps, when the page was
 /// opened by a remembered login. `notice` is the words of the last press.
+/// `name` is the "Your name" control (`view/your_name`), the panel's first
+/// region, or `element.none()` for a page that cannot rename.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // signins.view(rows, now, None, None, SigningOut, SigningOutAll, Never, None)
+/// // signins.view(rows, now, None, None, SigningOut, SigningOutAll, Never, None, element.none())
 /// ```
 pub fn view(
   rows: List(Signin),
@@ -90,6 +95,7 @@ pub fn view(
   everywhere: message,
   device: Device(message),
   notice: Option(String),
+  name: Element(message),
 ) -> Element(message) {
   use <- element.memo([
     element.ref(rows),
@@ -98,6 +104,7 @@ pub fn view(
     element.ref(bookmark),
     element.ref(device),
     element.ref(notice),
+    element.ref(name),
   ])
   html.section(
     [
@@ -105,6 +112,7 @@ pub fn view(
       attribute.attribute("data-popover", "panel"),
     ],
     [
+      name,
       html.h2([attribute.class("home-heading")], [html.text("Sign-ins")]),
       html.p([attribute.class("home-signins-lead")], [
         html.text(

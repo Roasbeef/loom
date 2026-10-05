@@ -3,7 +3,7 @@
 //// makes to either, drawn inside the frame the home draws and bound to no
 //// session.
 ////
-//// The page reads three things from the daemon and asks it five. A read is the
+//// The page reads three things from the daemon and asks it seven. A read is the
 //// principals the catalogue holds with the credential state of each, the owner's
 //// sessions, and, once the owner has chosen one, that session's members. Every
 //// read is the daemon's own, made as the page's principal with the digest of the
@@ -11,8 +11,12 @@
 //// it may still be served: a read that answers `Closed` says the UI session ended
 //// or the credential no longer authenticates as the owner, and the page draws why
 //// and asks for nothing more. The five asks are an invitation, a role change, a
-//// membership's removal, a credential's revocation and a rotation
-//// (`web_view/grants`).
+//// membership's removal, a credential's revocation, a rotation, the ending of one
+//// sign-in and a person's rename (`web_view/grants`). A person's row has a Rename
+//// button that opens a small form in that row (`Editing`); its submit asks the
+//// daemon to rename that principal (protocol-change/065, the tenth pull request),
+//// the owner's own row included, and the form closes when the daemon says it was
+//// done.
 ////
 //// Neither runs in the component's process. A read is a query the registry
 //// answers, and an ask is a registry command that writes the catalogue, and the
@@ -67,6 +71,7 @@
 
 import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import lustre
@@ -127,6 +132,13 @@ pub type Start {
     /// The fingerprint of the browser login this page was opened from, if it
     /// was, which the owner's own sign-in list marks as "This browser".
     login: Option(String),
+    /// The instant this page ends, in Unix milliseconds on `now`'s clock. The
+    /// daemon takes it from the live UI session when the page opens: the
+    /// earlier of the home's own end and fifteen minutes after the exchange. The
+    /// bar's pill counts down to it (`home_bar.ending`), so no sentence of the
+    /// body has to say when the page ends. It is an in-daemon value and no
+    /// browser supplies it.
+    ends_at: Int,
   )
 }
 
@@ -181,6 +193,10 @@ pub opaque type Model {
     /// milliseconds at which a place frees and the refusal's own words, which the
     /// buttons that grant carry in their `title` until then.
     spent: Option(#(Int, String)),
+    /// The principal whose rename form is open, if one is. Only one is open at a
+    /// time, and an answer that made the change, or a read that no longer lists
+    /// the principal, closes it.
+    editing: Option(String),
   )
 }
 
@@ -221,6 +237,14 @@ pub type Msg {
 
   /// The button that hides the claim on screen was pressed.
   Dismissed
+
+  /// A person's Rename button was pressed: open that row's form. The identity is
+  /// the catalogue's, fixed when the tree was drawn, and the daemon checks it
+  /// again when a name is sent.
+  Editing(principal: String)
+
+  /// The open rename form's Cancel was pressed: close it.
+  EditCancelled
 }
 
 /// The application the daemon's socket starts, one per admin page.
@@ -256,6 +280,7 @@ pub fn new(start: Start) -> Model {
     notice: None,
     claim: None,
     spent: None,
+    editing: None,
   )
 }
 
@@ -367,6 +392,22 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       }
 
     Dismissed -> #(Model(..model, claim: None), effect.none())
+
+    // A rename form opens on a connected page that has no ask out. Opening one
+    // disarms a revocation and clears the last notice, as every other press does.
+    Editing(principal:) ->
+      case model.status, model.waiting {
+        Connected, None -> #(
+          Model(..model, editing: Some(principal), armed: None, notice: None),
+          effect.none(),
+        )
+        Connected, Some(_) | Connecting, _ | Ended(_), _ -> #(
+          model,
+          effect.none(),
+        )
+      }
+
+    EditCancelled -> #(Model(..model, editing: None), effect.none())
   }
 }
 
@@ -386,6 +427,7 @@ fn settled(
         Model(
           ..model,
           notice: Some(Spoken(action, notice.Said(grants.changed_words(action)))),
+          editing: closed_by(model.editing, action),
         ),
         Continue,
       )
@@ -468,6 +510,7 @@ fn answered(model: Model, reading: Reading) -> Model {
         now: model.start.now(),
         chosen: still_chosen(model.chosen, snapshot),
         armed: still_armed(model.armed, snapshot),
+        editing: still_editing(model.editing, snapshot),
       )
     grants.Unread -> model
     grants.Closed(ending:) -> Model(..model, status: Ended(ending:))
@@ -522,7 +565,34 @@ fn still_armed(
       }
     Some(grants.Invite(..))
     | Some(grants.SetRole(..))
+    | Some(grants.Rename(..))
     | Some(grants.Rotate(_)) -> None
+    None -> None
+  }
+}
+
+// The rename form that is open after a change: the one the change was for is
+// closed, since its name has been stored, and any other stays.
+fn closed_by(editing: Option(String), action: Action) -> Option(String) {
+  case action, editing {
+    grants.Rename(principal: renamed, ..), Some(open) if renamed == open -> None
+    _, _ -> editing
+  }
+}
+
+// The open rename form survives a read that still lists its principal, so a
+// refresh does not take back a name the owner is typing, and goes when the
+// principal is no longer listed.
+fn still_editing(
+  editing: Option(String),
+  snapshot: grants.Snapshot,
+) -> Option(String) {
+  case editing {
+    Some(principal) ->
+      case list.any(snapshot.principals, fn(row) { row.id == principal }) {
+        True -> editing
+        False -> None
+      }
     None -> None
   }
 }
@@ -574,12 +644,12 @@ pub fn claim(model: Model) -> Option(Claim) {
 pub fn view(model: Model) -> Element(Msg) {
   shell.view(
     shell.Home,
-    home_bar.view(
+    home_bar.with(
       title: "Admin",
-      name: model.start.name,
       // The owner's own page carries no role pill, as the owner's home does not
-      // (the round-4 ruling on F72).
-      ceiling: "",
+      // (the round-4 ruling on F72). It carries the time it has left instead,
+      // once a read has said what time it is.
+      who: home_bar.ending(model.start.name, remaining(model)),
       status: status_words(model.status),
       tone: status_tone(model.status),
       notice: ended.admin(ended_ending(model.status)),
@@ -593,6 +663,17 @@ pub fn view(model: Model) -> Element(Msg) {
   )
 }
 
+// The milliseconds the page has left as of the last read, which is when `now`
+// was taken, or nothing before the first read. The pill's element counts on
+// from this in the browser, and a later read brings a fresh figure, so the
+// count is anchored again every read.
+fn remaining(model: Model) -> Option(Int) {
+  case model.snapshot {
+    Some(_) -> Some(int.max(0, model.start.ends_at - model.now))
+    None -> None
+  }
+}
+
 // The bar's trailing control: Back to the page the owner came from. It is a
 // `<loom-back>`, which calls `history.back()` in the browser and sends this
 // component nothing, so it mints no ticket and the admin page's fifteen
@@ -602,7 +683,8 @@ fn back_home() -> Element(Msg) {
   element.element("loom-back", [], [html.text("Home")])
 }
 
-// The body: a line that says what the page is and when it ends, then the lists.
+// The body: a line that says what the page is, then the lists. When the page
+// ends is the bar's pill, not a sentence here.
 // Before the first read it holds that line and one that says the page is reading.
 fn body(model: Model) -> Element(Msg) {
   let presses = presses()
@@ -610,11 +692,6 @@ fn body(model: Model) -> Element(Msg) {
   html.div([attribute.class("admin-body")], [
     html.p([attribute.class("admin-lead")], [
       html.text("Who can use this daemon, and what each can do."),
-    ]),
-    html.p([attribute.class("admin-note")], [
-      html.text(
-        "This page ends fifteen minutes after it opened; press Admin on the home page for another.",
-      ),
     ]),
     ..case model.snapshot {
       None -> [
@@ -632,6 +709,7 @@ fn body(model: Model) -> Element(Msg) {
           model.armed,
           model.notice,
           model.claim,
+          model.editing,
           presses,
           busy,
         ),
@@ -669,7 +747,31 @@ fn presses() -> Presses(Msg) {
     choose: Choosing,
     dismiss: Dismissed,
     invite: submitting,
+    edit: Editing,
+    cancel: EditCancelled,
+    rename: renaming,
   )
+}
+
+// A rename form's submit as the message that names the principal the server drew
+// into the tree and carries the one text field the form has. Any other field, a
+// repeated one or a missing one refuses the event, as the invitation form does.
+fn renaming(principal: String) -> attribute.Attribute(Msg) {
+  event.on("submit", renamed(principal)) |> event.prevent_default
+}
+
+fn renamed(principal: String) -> decode.Decoder(Msg) {
+  use listed <- decode.subfield(
+    ["detail", "formData"],
+    admin_sessions.form_data(),
+  )
+  case listed {
+    [#("text", name)] -> decode.success(Asking(grants.Rename(principal, name)))
+
+    // Lustre drops an event whose decoder failed, so the message stood in here
+    // is never delivered.
+    _ -> decode.failure(Asking(grants.Rename(principal, "")), "rename form")
+  }
 }
 
 // The invitation form's submit as the message that names the session the

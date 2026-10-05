@@ -11,7 +11,19 @@ behaviour that changes with nothing the server knows, so the server never
 renders again just for it:
 
 - `<loom-elapsed offset="<ms>">` counts an operation's elapsed time once a
-  second, on from a duration the server measured.
+  second, on from a duration the server measured. With `remaining="<ms>"` it
+  counts the time left down instead (`duration.remaining`: whole minutes rounded
+  up, then seconds), which the admin page's `ends in 14m` pill uses; whichever
+  attribute arrived last sets the direction.
+- `<loom-switcher>` is the session switcher Command or Control and K opens
+  (`switcher_rule`: the shortcut, the filter and its order, the highlight). It
+  reads the sidebar's `.sidebar .session-open` buttons from the page's root
+  (`ffi_dom.root_node`) as text, lists them in a popover it draws in its own
+  shadow root, and presses the chosen row's own sidebar button, so the daemon
+  mints the ticket and `<loom-switch>` navigates. One document `keydown`
+  listener, removed with the element; every name is a text node of its own view.
+  It sends the server nothing (protocol-change/051, the addendum on the session
+  switcher).
 - `<loom-fold>` opens and closes a turn's folded work with no round trip.
 - `<loom-expand>` is a row of a turn's fold: one line with one chevron, and a
   body behind it. The server draws the line and the body as children

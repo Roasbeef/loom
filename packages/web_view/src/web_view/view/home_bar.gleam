@@ -11,7 +11,7 @@
 //// figure.
 ////
 //// The principal is the bar's third child, and `with` draws whatever element
-//// the page gives it there. The admin page gives plain text (`view`). The home
+//// the page gives it there. The admin page gives `ending`. The home
 //// gives `account`: the principal's name as a button inside a `<loom-popover>`,
 //// which opens the account panel (the sign-ins, the bookmark and the device
 //// link) that the home draws as the centre's third child. The panel is far from
@@ -37,40 +37,58 @@
 //// The module takes plain strings, so it needs nothing from `web_view/home`,
 //// which imports it.
 
+import gleam/int
+import gleam/option.{type Option, None, Some}
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
 import web_view/view/heading.{type Tone}
 
-/// The bar for the admin page: the principal's name as text, and the most the
-/// page may do as a quiet pill beside it. `title` is the page's name, `name`
-/// is the principal's display name, `ceiling` the fixed word for what the page
-/// may do, `status` the connection's word with the `tone` that colours it,
-/// `notice` the ended page's notice or `element.none()`, and `trailing` the
-/// owner's control after it or `element.none()`. An empty `ceiling` draws no
-/// pill.
+/// The principal's place in the admin page's bar: the display name as text and,
+/// once the page has read the catalogue, a quiet pill that says how long the
+/// page has left, `ends in 14m`. `remaining` is the milliseconds left when the
+/// server drew it; the pill's number is a `<loom-elapsed remaining="...">`,
+/// which counts it down in the browser and anchors again on every new figure, so
+/// the server never renders for the clock. The title says what to do when the
+/// time is up, since the page has no sentence for it. The name is the owner's
+/// chosen display name, so it is a text node, and the figure is an integer.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // home_bar.view("Admin", "Alice", "operator", "connected", heading.Live, element.none(), element.none())
+/// // home_bar.ending("Alice", Some(840_000))
 /// ```
-pub fn view(
-  title title: String,
-  name name: String,
-  ceiling ceiling: String,
-  status status: String,
-  tone tone: Tone,
-  notice notice: Element(message),
-  trailing trailing: Element(message),
-) -> Element(message) {
-  let who =
-    html.span([attribute.class("home-who")], [
-      html.text(name),
-      badge(ceiling, "The most this page may do"),
-    ])
-  with(title:, who:, status:, tone:, notice:, trailing:)
+pub fn ending(name: String, remaining: Option(Int)) -> Element(message) {
+  html.span([attribute.class("home-who")], [
+    html.text(name),
+    case remaining {
+      None -> element.none()
+      Some(milliseconds) ->
+        html.span(
+          [
+            attribute.class("home-badge"),
+            attribute.class("home-ends"),
+            attribute.title(
+              "This page closes when its time runs out. Press Admin on the home page for another.",
+            ),
+          ],
+          [
+            html.text("ends in "),
+            element.element(
+              "loom-elapsed",
+              [
+                attribute.attribute(
+                  "remaining",
+                  int.to_string(int.max(0, milliseconds)),
+                ),
+              ],
+              [],
+            ),
+          ],
+        )
+    },
+  ])
 }
 
 /// What the server asks of the account panel the name opens.

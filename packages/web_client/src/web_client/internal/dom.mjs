@@ -26,6 +26,12 @@ export function host(root) {
   return root.host;
 }
 
+// The root the element is attached under: the document, or the shadow root of
+// the server component that holds it.
+export function root_node(element) {
+  return element.getRootNode();
+}
+
 export function same(a, b) {
   return a === b;
 }

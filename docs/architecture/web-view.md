@@ -245,7 +245,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:2989`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:3468`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -696,6 +696,22 @@ sessions). Only an operator page does it.
   (`session_isolation_test`); the sidebar is the one region that lists the
   others. The observer's socket drops a click beneath `component.sidebar_path`.
 
+### The session switcher
+
+Command or Control and K opens a popover over the page that lists the sessions
+the sidebar already offers, filtered by what is typed, and opens one on Enter or a
+click (protocol-change/051, the addendum on the session switcher). It is
+`<loom-switcher>` (`web_client/switcher`, `switcher_rule`), drawn by
+`view/switch.switcher` after `<loom-switch>` as the centre's last child on the
+operator's page and the home, so no admitted path moves. When it opens it reads the
+page's `.sidebar .session-open` buttons, takes each one's name, workspace and
+subtitle as text, and on a choice presses that session's own button, so the daemon
+mints the ticket and `<loom-switch>` navigates exactly as for a sidebar press: the
+switcher has no route and sends nothing. Every name is a text node of its own view
+and the filter only compares strings (`switcher_test` runs it under Node with a name
+that holds markup). The one listener is a document `keydown`, removed with the
+element; the popover floats, so it takes `--shadow-float`.
+
 ## Renaming and the subtitle (protocol-change/067)
 
 A session's first prompt names it for the page. The daemon reduces the first
@@ -990,6 +1006,50 @@ child). The admin socket takes `admin_accepts`: a click or a submit beneath
 the near misses, `home_test` and `admin_test` pin where the view puts its
 handlers, and no path an earlier pull request pinned moved.
 
+The page's lifetime is a quiet pill in the bar, `ends in 14m`, and no sentence of
+the body. `admin.Start.ends_at` is the instant the page ends, read once as the
+socket opens from the live UI session's deadline (`open()`, which answers on the
+table's monotonic clock and is carried to the wall clock the reads are counted
+in), so it is an in-daemon value. The pill draws it as
+`home_bar.ending`: the text `ends in ` and a `<loom-elapsed remaining="...">`
+that counts the milliseconds left down in the browser (`duration.remaining`,
+whole minutes rounded up and then seconds) and anchors again on every new figure.
+It is drawn after the first read, which is when the component has a clock
+reading to count from.
+
+### Stopping, archiving and deleting from the home
+
+The home offers the owner the three session operations the daemon already has
+(protocol-change/065, the addendum on session actions). A running row has a quiet
+`Stop`, a saved row `Archive` and `Delete`, in one `home-acts` group after the
+row's own button (`view/home_table.Manage`, `web_view/actions`), so the row's own
+path and the paths the socket admits are as they were: the buttons are clicks
+beneath `home.table_path`, which every home's socket admits for a row. What makes
+a button exist is `Start.manage`, which `ui_socket.home_manage_capability` hands
+to the owner's operating home that a `loom ui` exchange opened (`fresh_home`, as
+for the Admin button), so a member's home, a read-only link and a home a bookmark
+resumed draw nothing and ignore the messages. Stop and Archive ask at once. Delete
+takes a second press in the row: the row's words become `Delete this session? This
+cannot be undone.` with a Delete and a Cancel (`home.Confirming`), and only the
+second press asks.
+
+A press is a message that names the session the server drew into the row. The
+component starts the daemon's task (`ui_socket.manage_task`, a weft run) and
+returns, and the answer is `ActionAnswered`: the page says what happened in fixed
+words (`actions.done_words`, `actions.reason_words`) and reads its list again, so a
+stopped session shows as saved and an archived or deleted one is gone. While one
+request is out every other press asks nothing. `ui_socket.manage_for` decides
+each press from the attachment, again at the click: the home is open and fresh,
+minted to operate, its credential authenticates as the owner, the target is a
+canonical identity. A stop is `manager.stop_session` followed by a bounded
+`weft/poll` wait (`stop_wait_ms`) for the registry to hold the session saved;
+an archive is `manager.set_visibility` and a delete `manager.delete_session`,
+which authenticate the credential and the epoch in the registry's own turn and
+refuse a session a process still holds (`Running`, in the words "That session is
+still running. Stop it first."). `HomeAttachment.sessions_directory` is the
+daemon's own directory a delete removes from. `ui_route_test` drives each action
+against a real registry and every refusal.
+
 ### The browser login and the home's sign-ins
 
 Protocol-change/065's eighth pull request lets a browser come back to its
@@ -1044,6 +1104,26 @@ from one. The Admin button, which only a fresh home may reach, is the same
 rule (`fresh_home`), and the admin page lists each principal's sign-ins with a
 two-step revoke (`grants.Logins`, `grants.RevokeSignin`), made as the owner at the
 click like its other changes.
+
+### Renaming a person
+
+Protocol-change/065's tenth pull request adds `principals.rename`
+(`client-protocol` section 3.26) and two surfaces for it. The home's account panel
+opens with a "Your name" form (`view/your_name`, beneath `home.signins_path`): the
+current name is a text node in the lead, the field sits in a `<loom-rename>` that
+copies it in the browser, and the form is keyed by how many times the name changed.
+`Start.rename_self` is `Some` for a page minted to operate, whoever its principal is,
+and the daemon renames the page's own principal and no other
+(`ui_socket.rename_self_for`, run by `rename_self_task`); a refusal is the fixed
+words of `web_view/names`. `Start.who` reads the principal's name with every list, so
+a name the owner changed reaches an open home. The home's socket admits the form's
+`submit` beneath the panel for every home (`ui_socket.home_event`, 051's addendum on
+the name form). On the admin page every person's row, the owner's too, has a Rename
+button that opens an in-row form (`admin.Editing`, `view/admin_people.rename_form`),
+whose submit is the page's seventh change (`grants.Rename`, `ui_socket.rename_for_admin`):
+it grants nothing and costs no allowance. Both go through `manager.rename_principal`,
+one registry turn that authenticates the caller and the epoch, applies the claim's own
+name rule (`storage/access.rename`) and drops the authority memo.
 
 ### The browser claim
 
@@ -1310,6 +1390,8 @@ browser goes away, because a runtime outlives its last client.
 | `packages/client/src/client/daemon/server.gleam` | `/ui` routing and its check order, `ui.link`, and the `hello` `ui` field. |
 | `packages/client/src/client/daemon/ui_http.gleam` | Pure request checks and response headers: route, host, `Sec-Fetch-Site`, origin, cookies. |
 | `packages/web_view/src/web_view/home.gleam`, `view/home_bar.gleam`, `view/home_table.gleam` | The home page's component, top bar and per-workspace lists, whose running rows open a session and, on an operator-ceiling page, whose saved rows resume one (protocol-change/065). The bar draws the name as the account panel's button and a `read-only link` pill for an observer-ceiling page, and a member's rows say their role (`sessions.Entry.role`, filled from `manager.authorized_roles`). |
+| `packages/web_view/src/web_view/actions.gleam` | The home's stop, archive and delete: `Action`, `Answer`, `Reason` with their fixed words, and the row's `Stage` (`Calm`, `Confirming`, `Working`). |
+| `packages/web_client/src/web_client/switcher.gleam`, `switcher_rule.gleam` | `<loom-switcher>`, the keyboard session switcher, and the rule it decides by: the shortcut, the filter and its order, the highlight. |
 | `packages/web_view/src/web_view/view/resume.gleam` | The one rule for a saved row on the sidebar and the home's table: text, a resume button, or "opening" while a resume is out. |
 | `packages/client/src/client/daemon/ui_sessions.gleam` | The ticket and UI-session actor: mint, single-use redeem, lookup, key and nonce comparison, sweep, and the page-minted invitations' allowance (three an hour per credential). |
 | `packages/client/src/client/daemon/ui_socket.gleam` | The page's WebSocket: permit custody, the component chosen by role (observer, member operator, owner), frame filtering by role, the session and home tickets (`Standing`, `ticket_for`, `home_ticket_for`) and the invitation the daemon makes for a page, the home's socket and its row clicks, shutdown. |

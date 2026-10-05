@@ -17,7 +17,13 @@
 //// rebuilt strip brings a fresh reading, and a changed attribute
 //// re-anchors.
 ////
-//// The element renders only what its one attribute says: a number the
+//// A second attribute, `remaining`, reverses the count: it is the milliseconds
+//// a page has left, anchored on arrival in the same way, and the element draws
+//// `duration.remaining` of what is left, down to `0s`. The admin page's pill
+//// uses it for the fifteen minutes the page lives. Whichever attribute arrived
+//// last sets the direction.
+////
+//// The element renders only what its attributes say: a number the
 //// daemon wrote, never session text. It draws a text node in its own shadow
 //// root, handles no key and takes no focus.
 
@@ -43,13 +49,25 @@ pub type Model {
   Model(reading: Option(Reading), now: Int, timer: Option(ffi_dom.Timer))
 }
 
+/// Which way a reading counts.
+pub type Direction {
+  /// The reading is how long something has run, and grows.
+  Up
+
+  /// The reading is how long something has left, and shrinks.
+  Down
+}
+
 /// One reading from the server, anchored to the browser's clock.
 pub type Reading {
   Reading(
-    /// How long the operation had run, in milliseconds, by the server.
+    /// How long the operation had run, or has left, in milliseconds, by the
+    /// server.
     offset: Int,
     /// The browser's clock when the reading arrived.
     anchor: Int,
+    /// Whether `offset` is elapsed time or time left.
+    direction: Direction,
   )
 }
 
@@ -57,6 +75,9 @@ pub type Reading {
 pub type Msg {
   /// The server set `offset` to this many milliseconds.
   OffsetChanged(offset: Int)
+
+  /// The server set `remaining` to this many milliseconds.
+  RemainingChanged(remaining: Int)
 
   /// The reading arrived, anchored to the browser's clock.
   Anchored(reading: Reading)
@@ -84,6 +105,7 @@ pub type Msg {
 pub fn register() -> Result(Nil, lustre.Error) {
   lustre.component(init, update, view, [
     component.on_attribute_change("offset", offset),
+    component.on_attribute_change("remaining", remaining),
     component.on_connect(Connected),
     component.on_disconnect(Disconnected),
   ])
@@ -97,6 +119,14 @@ fn offset(value: String) -> Result(Msg, Nil) {
   |> string.trim
   |> int.parse
   |> result.map(OffsetChanged)
+}
+
+// A `remaining` that is not a whole number is ignored, as `offset` is.
+fn remaining(value: String) -> Result(Msg, Nil) {
+  value
+  |> string.trim
+  |> int.parse
+  |> result.map(RemainingChanged)
 }
 
 fn init(_: Nil) -> #(Model, Effect(Msg)) {
@@ -115,7 +145,8 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   case message {
     // The reading is anchored inside an effect, where the clock is read,
     // and the anchor doubles as the clock's latest reading.
-    OffsetChanged(offset:) -> #(model, anchor(offset))
+    OffsetChanged(offset:) -> #(model, anchor(offset, Up))
+    RemainingChanged(remaining:) -> #(model, anchor(remaining, Down))
     Anchored(reading:) -> #(
       Model(..model, reading: Some(reading), now: reading.anchor),
       effect.none(),
@@ -130,9 +161,9 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   }
 }
 
-fn anchor(offset: Int) -> Effect(Msg) {
+fn anchor(offset: Int, direction: Direction) -> Effect(Msg) {
   use dispatch <- effect.from
-  dispatch(Anchored(Reading(offset:, anchor: ffi_dom.now())))
+  dispatch(Anchored(Reading(offset:, anchor: ffi_dom.now(), direction:)))
 }
 
 fn read_clock() -> Effect(Msg) {
@@ -159,10 +190,17 @@ fn stop(timer: Option(ffi_dom.Timer)) -> Effect(Msg) {
 
 fn view(model: Model) -> Element(Msg) {
   case model.reading {
-    Some(reading) ->
-      html.text(duration.format(
-        int.max(0, reading.offset + model.now - reading.anchor) / 1000,
-      ))
+    Some(reading) -> {
+      let passed = model.now - reading.anchor
+      case reading.direction {
+        Up ->
+          html.text(duration.format(int.max(0, reading.offset + passed) / 1000))
+        Down ->
+          html.text(duration.remaining(
+            int.max(0, reading.offset - passed) / 1000,
+          ))
+      }
+    }
     None -> element.none()
   }
 }

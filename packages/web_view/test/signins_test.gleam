@@ -70,6 +70,7 @@ fn start(read: fn() -> signins.Listing) -> home.Start {
     now: fn() { now },
     activity: fn(_, _) { Nil },
     rename: None,
+    manage: None,
     create: None,
     signins: read,
     login: None,
@@ -78,6 +79,8 @@ fn start(read: fn() -> signins.Listing) -> home.Start {
     sign_out_all: fn() { signins.Revoked },
     device: None,
     admin: None,
+    who: fn() { None },
+    rename_self: None,
   )
 }
 

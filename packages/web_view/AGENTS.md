@@ -166,8 +166,8 @@ page keys and nonces, and the relay into the session's gateway.
   remembered login, and on a fresh home "Sign in another device", whose link is
   shown once in `<loom-copy subject="device">` and hidden by "Done". The bar
   says nothing beside the name for an operator-ceiling page and `read-only link`
-  for an observer-ceiling one (`home.ceiling_words`); `home_bar.view` (the admin
-  page's) still takes plain words. `sessions.Entry.role` is the principal's
+  for an observer-ceiling one (`home.ceiling_words`); `home_bar.ending` (the admin
+  page's) draws the name and the lifetime pill. `sessions.Entry.role` is the principal's
   membership role in that session (`Operates | Observes`, none for the owner),
   filled by `ui_socket.with_roles` from `manager.authorized_roles`, and a row's
   quiet line ends with it. `sidebar.home` takes the activity answers, so a
@@ -185,9 +185,25 @@ page keys and nonces, and the relay into the session's gateway.
   `view/admin_people`, with the home's `view/signins.history` words and a
   two-step `grants.RevokeSignin`; `admin.Start.login` marks "This browser".
 
+- **Renaming** (protocol-change/065, the tenth addendum). `web_view/names` holds
+  the home's `Answer` (`Renamed(name) | Declined(reason)`), `Reason`
+  (`NotAllowed | InvalidName | Unavailable`), `Control` and the fixed words.
+  `Start` gains `who` (reads the principal's name with each list) and
+  `rename_self` (`Some` for a page minted to operate); `Model` gains `name`,
+  `naming` and `named`, and `Msg` gains `NameRead`, `NameSubmitted` and
+  `NameAnswered`. `view/your_name` draws the "Your name" region as the account
+  panel's first child (a text-node lead, `<loom-rename>`, one submit, keyed by
+  `named`), and `view/signins.view` takes it as its last argument. The submit is
+  beneath `home.signins_path`, which the socket now admits for a submit as well as a
+  click. On the admin page `grants.Action` gains `Rename(principal, name)`,
+  `admin.Model` gains `editing`, `Msg` gains `Editing` and `EditCancelled`, and
+  `view/admin_people` draws a Rename button on every row and, for the open one, an
+  in-row form as the row's last child; `view/admin_buttons.Presses` carries the
+  three new messages. Names are text nodes only.
+
 - **The owner's admin page** (protocol-change/065, the fifth addendum).
   `web_view/admin` is a server component in the home's frame
-  (`shell.view(shell.Home, ..., shell.Unlisted, ...)`, `home_bar.view(title:
+  (`shell.view(shell.Home, ..., shell.Unlisted, ...)`, `home_bar.with(title:
   "Admin", ...)`) with `Start(name, refresh_ms, read, act, now)`. `read(chosen,
   deliver)` and `act(action, deliver)` each start the daemon's task and return at
   once; their answers arrive as `Answered(serial, reading)` and `Acted(answer)`,
@@ -262,6 +278,30 @@ page keys and nonces, and the relay into the session's gateway.
   what the operator's page draws. The observer's page draws no sidebar:
   `ui_socket.listed_for` gives it an empty list without making the read
   (owner, 2026-09-29).
+- **Stopping, archiving and deleting** (protocol-change/065, the addendum on
+  session actions). `web_view/actions` holds `Action` (`Stop | Archive |
+  Delete`), `Answer`, `Reason` (`NotOwner | Running | Unavailable`) with fixed
+  words, and the row's `Stage` (`Calm | Confirming(session) | Working(session,
+  action)`). `home.Start.manage` is `Some` only for the owner's fresh operating
+  home (`ui_socket.home_manage_capability`); a page with `None` draws nothing and
+  ignores `StopRequested`, `ArchiveRequested`, `DeleteRequested`,
+  `DeleteConfirmed`, `DeleteCancelled` and `ActionAnswered`. `home_table.Manage`
+  draws `Stop` on a running row and `Archive`/`Delete` on a saved or blocked one in
+  a `home-acts` group after the row's own button (the paths beneath
+  `home.table_path` are unchanged; the rename button is the group's first child),
+  and Delete's first press replaces the row with the fixed question and a Delete
+  and a Cancel (`home-confirm`). The request is the daemon's task and its answer
+  `ActionAnswered`, which words the notice and reads the list again. `home_test`
+  reads it.
+- **The admin page's pill.** `admin.Start.ends_at` is the instant the page ends
+  (an in-daemon value); `home_bar.ending` draws `ends in <loom-elapsed
+  remaining="...">` after the first read, and the body has no sentence about the
+  page's lifetime. `admin_test` reads it.
+- **The session switcher.** `view/switch.switcher()` draws the attribute-less
+  `<loom-switcher>` after `<loom-switch>` as the centre's last child on the
+  operator's page and the home; it reads the sidebar's buttons in the browser and
+  presses the chosen one's own, so it adds no event and moves no path
+  (protocol-change/051, the addendum on the session switcher).
 - **Switching sessions.** A switch is a navigation to a new page
   (protocol-change/051, the addendum on switching sessions). On the operator's
   page `operator_page.Opening(id)` (a sidebar button, or a peer message's Open

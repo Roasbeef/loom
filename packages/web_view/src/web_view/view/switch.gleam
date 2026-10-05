@@ -39,3 +39,22 @@ pub fn view(address: Option(String)) -> Element(message) {
     [],
   )
 }
+
+/// The session switcher's element (`web_client/switcher`), drawn after
+/// `<loom-switch>` as the centre's last child on the pages that have a sidebar
+/// of openable sessions: the operator's page and the home. It carries no
+/// attribute and no text. In the browser it reads the sidebar's session buttons
+/// as text when Command or Control and K is pressed, lists them in a popover,
+/// and presses the chosen one's own button, so a switch from it is the
+/// sidebar's switch and the daemon mints the ticket as it always does. It draws
+/// nothing until the shortcut opens it, and holds no handler of the server's, so
+/// no admitted path moves with it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // switch.switcher()
+/// ```
+pub fn switcher() -> Element(message) {
+  element.element("loom-switcher", [], [])
+}

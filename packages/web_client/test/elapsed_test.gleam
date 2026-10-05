@@ -20,3 +20,16 @@ pub fn hours_pad_their_minutes_test() {
 pub fn a_negative_duration_shows_as_zero_test() {
   assert duration.format(-3) == "0s"
 }
+
+pub fn time_left_rounds_minutes_up_test() {
+  assert duration.remaining(900) == "15m"
+  assert duration.remaining(14 * 60 + 1) == "15m"
+  assert duration.remaining(840) == "14m"
+  assert duration.remaining(60) == "1m"
+}
+
+pub fn time_left_under_a_minute_is_seconds_test() {
+  assert duration.remaining(59) == "59s"
+  assert duration.remaining(0) == "0s"
+  assert duration.remaining(-4) == "0s"
+}

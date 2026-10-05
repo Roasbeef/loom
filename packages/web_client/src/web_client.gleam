@@ -8,8 +8,9 @@
 //// or where the reader has scrolled. Each such behaviour is one Lustre client component registered as
 //// a custom element, which the server renders like any other tag:
 ////
-//// - `<loom-elapsed since="...">` (`web_client/elapsed`) counts an
-////   operation's elapsed time.
+//// - `<loom-elapsed offset="...">` (`web_client/elapsed`) counts an
+////   operation's elapsed time, and with `remaining="..."` counts a page's
+////   lifetime down.
 //// - `<loom-fold>` (`web_client/fold`) opens and closes a turn's folded
 ////   work.
 //// - `<loom-expand>` (`web_client/expand`) draws a row's line with one
@@ -30,6 +31,9 @@
 //// - `<loom-switch to="...">` (`web_client/switch`) moves the browser to
 ////   another session's page when the server writes a ticket exchange's
 ////   address into its attribute.
+//// - `<loom-switcher>` (`web_client/switcher`) is the session switcher that
+////   Command or Control and K opens: it lists the sessions the sidebar
+////   already draws and presses the chosen one's own sidebar button.
 //// - `<loom-copy subject="token" text="...">` (`web_client/copy`) draws one
 ////   of an invitation's two texts and copies it to the clipboard when the
 ////   owner presses its button.
@@ -64,6 +68,7 @@ import web_client/popover
 import web_client/rename
 import web_client/shell
 import web_client/switch
+import web_client/switcher
 import web_client/waiting
 
 /// Registers every element. The bundle calls this once when the page loads
@@ -90,6 +95,7 @@ pub fn main() -> Nil {
   let _ = rename.register()
   let _ = shell.register()
   let _ = switch.register()
+  let _ = switcher.register()
   let _ = waiting.register()
   Nil
 }

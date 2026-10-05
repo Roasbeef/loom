@@ -924,6 +924,85 @@ pub fn only_an_owners_operating_home_may_create_test() {
   assert ui_socket.home_create_capability(member, access.Observer, ask) == None
 }
 
+// The home's capability to stop, archive and delete is the owner's, on a page
+// minted to operate and opened by a fresh `loom ui` exchange, as the admin
+// page's is: a member's home, a read-only link, a home a bookmark resumed and a
+// page reached for one session have none.
+pub fn only_an_owners_fresh_operating_home_may_manage_sessions_test() {
+  let ask = fn(_action, _session, _deliver) { Nil }
+  let owner = home_principal(access.OwnerPrincipal)
+  let member = home_principal(access.MemberPrincipal)
+  let home = ui_sessions.Workspace
+  let assert Some(_) =
+    ui_socket.home_manage_capability(
+      owner,
+      access.Operator,
+      home,
+      ui_sessions.Fresh,
+      ask,
+    )
+  assert ui_socket.home_manage_capability(
+      owner,
+      access.Observer,
+      home,
+      ui_sessions.Fresh,
+      ask,
+    )
+    == None
+  assert ui_socket.home_manage_capability(
+      owner,
+      access.Operator,
+      home,
+      ui_sessions.Resumed,
+      ask,
+    )
+    == None
+  assert ui_socket.home_manage_capability(
+      owner,
+      access.Operator,
+      ui_sessions.OneSession,
+      ui_sessions.Fresh,
+      ask,
+    )
+    == None
+  assert ui_socket.home_manage_capability(
+      member,
+      access.Operator,
+      home,
+      ui_sessions.Fresh,
+      ask,
+    )
+    == None
+  assert ui_socket.home_manage_capability(
+      member,
+      access.Observer,
+      home,
+      ui_sessions.Fresh,
+      ask,
+    )
+    == None
+}
+
+// A row's Stop, Archive and Delete are clicks beneath the sessions list's own
+// path, so no home's socket admits anything new for them: the owner's and a
+// member's both admit the click, and the component, which holds the capability
+// or does not, is what ignores it. The same buttons beside the sidebar's rows do
+// not exist, and a click at a path that only shares the list's digits is dropped.
+pub fn the_row_actions_need_no_new_admission_test() {
+  let stop = home.table_path <> "\t1\t2\t0\t1\t0"
+  let archive = home.table_path <> "\t1\t2\t0\t1\t1"
+  let delete = home.table_path <> "\t1\t2\t0\t1\t2"
+  let confirm = home.table_path <> "\t1\t2\t0\t0\t1\t0"
+  list.each([stop, archive, delete, confirm], fn(path) {
+    assert ui_socket.home_accepts(click_on(path))
+    assert ui_socket.home_owner_accepts(click_on(path))
+    assert ui_socket.home_admin_accepts(click_on(path))
+  })
+  assert !ui_socket.home_accepts(click_on("0\t2\t1"))
+  assert !ui_socket.home_accepts(click_on("0\t2\t10\t1"))
+  assert !ui_socket.home_accepts(click_on("0\t0\t1\t0"))
+}
+
 // --- the admin page (protocol-change/065, the fifth pull request) -------------
 
 // The home's capability to open the admin page is the owner's, on a page minted
@@ -1152,4 +1231,70 @@ pub fn a_row_says_the_role_the_membership_holds_test() {
   assert ui_socket.with_roles([sessions.Entry(..entry, id: "x")], roles)
     == [sessions.Entry(..entry, id: "x")]
   assert ui_socket.with_roles([entry], []) == [entry]
+}
+
+// Protocol-change/065, the tenth pull request: the home's "Your name" form is
+// beneath the account panel, so every home's socket admits a submit there, alone
+// or in a batch, and only there. The panel's own path, a sibling that shares its
+// digits, the table's and the sidebar's paths for a home that may not submit
+// there, and every other event stay dropped, so the new admission is one region
+// and one event.
+pub fn every_home_socket_admits_a_submit_beneath_the_account_panel_test() {
+  let form = home.signins_path <> "\t0\t1\t0"
+  let batch =
+    "{\"kind\":3,\"messages\":["
+    <> click_on(home.signins_path <> "\t3\t0\t0")
+    <> ","
+    <> submit_on(form)
+    <> "]}"
+  list.each(
+    [
+      ui_socket.home_accepts,
+      ui_socket.home_owner_accepts,
+      ui_socket.home_admin_accepts,
+    ],
+    fn(accepts) {
+      assert accepts(submit_on(form))
+      assert accepts(submit_on(home.signins_path <> "\t1"))
+      assert accepts(batch)
+      list.each(
+        [
+          // The region itself and a sibling that shares its digits.
+          submit_on(home.signins_path),
+          submit_on(home.signins_path <> "0\t1"),
+          submit_on("0\t2\t3"),
+          submit_on("0\t2\t2" <> "0"),
+
+          // Another event at the form.
+          "{\"kind\":1,\"path\":\"0\\t2\\t2\\t0\\t1\\t0\",\"name\":\"keydown\"}",
+          "{\"kind\":1,\"path\":\"0\\t2\\t2\\t0\\t1\\t0\",\"name\":\"input\"}",
+          "{\"kind\":1,\"path\":\"0\\t2\\t2\\t0\\t1\\t0\",\"name\":\"change\"}",
+
+          // A batch with one message outside the panel.
+          "{\"kind\":3,\"messages\":["
+            <> submit_on(form)
+            <> ","
+            <> submit_on("0\t0\t1\t0")
+            <> "]}",
+        ],
+        fn(frame) {
+          assert !accepts(frame)
+        },
+      )
+    },
+  )
+
+  // Beneath the table and the sidebar a member's home still admits no submit.
+  assert !ui_socket.home_accepts(submit_on(home.table_path <> "\t1\t2\t0\t0"))
+  assert !ui_socket.home_accepts(submit_on(home.sidebar_path <> "\t1\t1\t0\t0"))
+}
+
+// The capability to rename oneself is the page's ceiling and nothing else: a
+// page minted to operate has it whoever its principal is, and a read-only link
+// has none.
+pub fn only_an_operating_home_may_rename_itself_test() {
+  let ask = fn(_name, _deliver) { Nil }
+  let assert Some(_) =
+    ui_socket.home_rename_self_capability(access.Operator, ask)
+  assert ui_socket.home_rename_self_capability(access.Observer, ask) == None
 }

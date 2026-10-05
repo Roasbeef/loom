@@ -54,11 +54,13 @@ import storage/domain
 import support/addresses
 import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws
+import web_view/actions
 import web_view/creations
 import web_view/ending
 import web_view/grants
 import web_view/home
 import web_view/invites
+import web_view/names
 import web_view/page
 import web_view/renames
 import web_view/sessions
@@ -6385,6 +6387,7 @@ pub fn the_daemon_refuses_a_standing_that_is_not_the_owners_operating_one_test()
       grants.RevokeMembership(session, held),
       grants.RevokeCredentials(held),
       grants.Rotate(held),
+      grants.Rename(held, "Renamed"),
     ]
     let refused = grants.Declined(grants.NotOwner)
     list.each(every_action, fn(action) {
@@ -7097,5 +7100,518 @@ pub fn two_posts_of_one_claim_redeem_it_once_test() {
         [],
       )
       == ["1"]
+  })
+}
+
+// --- stopping, archiving and deleting from the home (protocol-change/065) ----
+
+// One action asked of the registry as the page's standing, in the open page's
+// daemon lifetime.
+fn manage(
+  ready: root.Ready(String),
+  standing: ui_socket.Standing(String),
+  action: actions.Action,
+  target: String,
+) -> actions.Answer {
+  ui_socket.manage_for(
+    standing,
+    page_open,
+    ready.epoch,
+    ready.sessions_directory,
+    action,
+    target,
+  )
+}
+
+// A stop ends the process and answers once the registry holds the session saved,
+// so the page's next read does not list it as running.
+pub fn an_owners_home_stops_a_running_session_test() {
+  fixture(fn(ready, _, credential) {
+    let session = create_session(ready, "manage-stop", 1201)
+    let owner = owner_standing(ready, credential, access.Operator)
+    assert !is_saved(ready, session)
+    assert manage(ready, owner, actions.Stop, session)
+      == actions.Done(actions.Stop)
+    assert is_saved(ready, session)
+
+    // Stopping a session that is already saved is a stop that was made.
+    assert manage(ready, owner, actions.Stop, session)
+      == actions.Done(actions.Stop)
+  })
+}
+
+// An archive and a delete refuse a session a process still holds, in the
+// reason's words for it, and change nothing. Once the session is stopped an
+// archive hides it from the owner's list and a delete removes it.
+pub fn an_owners_home_archives_and_deletes_only_a_stopped_session_test() {
+  fixture(fn(ready, _, credential) {
+    let kept = create_session(ready, "manage-kept", 1202)
+    let doomed = create_session(ready, "manage-doomed", 1203)
+    let owner = owner_standing(ready, credential, access.Operator)
+    let before = session_count(ready, credential)
+
+    // Running: both are refused and the sessions are still listed.
+    assert manage(ready, owner, actions.Archive, kept)
+      == actions.Declined(actions.Running)
+    assert manage(ready, owner, actions.Delete, doomed)
+      == actions.Declined(actions.Running)
+    assert session_count(ready, credential) == before
+
+    // Saved: the archive hides one, and the delete removes the other.
+    saved(ready, kept)
+    saved(ready, doomed)
+    assert manage(ready, owner, actions.Archive, kept)
+      == actions.Done(actions.Archive)
+    assert session_count(ready, credential) == before - 1
+    assert manage(ready, owner, actions.Delete, doomed)
+      == actions.Done(actions.Delete)
+    assert session_count(ready, credential) == before - 2
+    assert case manager.get(ready.registry, doomed) {
+      Error(_) -> True
+      Ok(_) -> False
+    }
+  })
+}
+
+// Each refusal changes nothing and is the owner-only words: a member, a home a
+// bookmark resumed, a page minted to read, a page that has ended, a stale
+// epoch, a principal the page was not admitted for, and a forged or unknown
+// identity.
+pub fn a_home_action_refuses_and_changes_nothing_test() {
+  fixture(fn(ready, _, credential) {
+    let session = create_session(ready, "manage-held", 1204)
+    let _ = member(ready, "ui-manager", session, access.Operator)
+    let owner = owner_standing(ready, credential, access.Operator)
+    let #(member_standing, _) =
+      standing_of(ready, "ui-manager", access.Operator)
+    let refused = actions.Declined(actions.NotOwner)
+    let ask = fn(standing, open, epoch, action, target) {
+      ui_socket.manage_for(
+        standing,
+        open,
+        epoch,
+        ready.sessions_directory,
+        action,
+        target,
+      )
+    }
+
+    list.each([actions.Stop, actions.Archive, actions.Delete], fn(action) {
+      assert ask(member_standing, page_open, ready.epoch, action, session)
+        == refused
+      assert ask(
+          ui_socket.Standing(..owner, origin: ui_sessions.Resumed),
+          page_open,
+          ready.epoch,
+          action,
+          session,
+        )
+        == refused
+      assert ask(
+          ui_socket.Standing(..owner, reach: ui_sessions.OneSession),
+          page_open,
+          ready.epoch,
+          action,
+          session,
+        )
+        == refused
+      assert ask(
+          ui_socket.Standing(..owner, ceiling: access.Observer),
+          page_open,
+          ready.epoch,
+          action,
+          session,
+        )
+        == refused
+      assert ask(owner, fn() { Error(Nil) }, ready.epoch, action, session)
+        == refused
+      assert ask(
+          ui_socket.Standing(..owner, principal: "someone-else"),
+          page_open,
+          ready.epoch,
+          action,
+          session,
+        )
+        == refused
+      list.each(
+        ["not a session", "", "01900000-0000-7000-8000-000000000000"],
+        fn(target) {
+          assert ask(owner, page_open, ready.epoch, action, target) == refused
+        },
+      )
+    })
+
+    // A stale epoch reaches the registry, which refuses an archive or a delete
+    // in the same words.
+    saved(ready, session)
+    assert ask(owner, page_open, "an-earlier-epoch", actions.Archive, session)
+      == refused
+    assert ask(owner, page_open, "an-earlier-epoch", actions.Delete, session)
+      == refused
+    assert is_saved(ready, session)
+    assert session_count(ready, credential) >= 1
+  })
+}
+
+// The request runs in a task of its own and the answer is handed to the function
+// the page's runtime gave, from that task, whatever it is.
+pub fn the_home_action_runs_in_a_task_and_delivers_its_answer_test() {
+  fixture(fn(ready, _, credential) {
+    let session = create_session(ready, "manage-task", 1205)
+    let owner = owner_standing(ready, credential, access.Operator)
+    let answered = process.new_subject()
+    ui_socket.manage_task(
+      owner,
+      page_open,
+      ready.epoch,
+      ready.sessions_directory,
+      actions.Stop,
+      session,
+      fn(answer) { process.send(answered, #(process.self(), answer)) },
+    )
+    let assert Ok(#(pid, answer)) = process.receive(answered, 10_000)
+      as "the task answers"
+    assert answer == actions.Done(actions.Stop)
+    assert pid != process.self()
+    assert is_saved(ready, session)
+
+    ui_socket.manage_task(
+      owner,
+      page_open,
+      ready.epoch,
+      ready.sessions_directory,
+      actions.Delete,
+      "not a session",
+      fn(answer) { process.send(answered, #(process.self(), answer)) },
+    )
+    let assert Ok(#(_, refusal)) = process.receive(answered, 10_000)
+      as "the task answers a refusal"
+    assert refusal == actions.Declined(actions.NotOwner)
+  })
+}
+
+// `principals.rename` (protocol-change/065, the tenth pull request): a member
+// omits the principal and renames itself, naming itself is the same, a member
+// naming another is `forbidden`, and the owner may name any member and itself.
+// The reply carries the name as stored, trimmed, and the owner's listing shows
+// it at once.
+pub fn principals_rename_follows_who_may_name_whom_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "rename-control", 1401)
+    let mira = member(ready, "rename-mira", session, access.Operator)
+    let _ = member(ready, "rename-noor", session, access.Operator)
+    let renamed = fn(reply, id, name) {
+      assert field(reply, "event") == Ok(json.String("principals.rename"))
+      let assert Ok(body) = field(reply, "body") as "a body"
+      assert field(body, "principal_id") == Ok(json.String(id))
+      assert field(body, "name") == Ok(json.String(name))
+    }
+    let refused = fn(reply, code) {
+      assert field(reply, "event") == Ok(json.String("error"))
+      let assert Ok(body) = field(reply, "body") as "a body"
+      assert field(body, "code") == Ok(json.String(code))
+    }
+    let named = fn(id) {
+      let listed = control(port, credential, "principals.list", [])
+      let assert Ok(body) = field(listed, "body") as "a body"
+      let assert Ok(json.Array(rows)) = field(body, "principals") as "rows"
+      let assert Ok(row) =
+        list.find(rows, fn(row) {
+          field(row, "principal_id") == Ok(json.String(id))
+        })
+        as "the principal is listed"
+      field(row, "name")
+    }
+
+    // A member renames itself, with or without naming itself, and the name is
+    // trimmed.
+    renamed(
+      control(port, mira, "principals.rename", [
+        #("name", json.String("  Mira  ")),
+      ]),
+      "rename-mira",
+      "Mira",
+    )
+    assert named("rename-mira") == Ok(json.String("Mira"))
+    renamed(
+      control(port, mira, "principals.rename", [
+        #("principal_id", json.String("rename-mira")),
+        #("name", json.String("Mira K")),
+      ]),
+      "rename-mira",
+      "Mira K",
+    )
+
+    // A member naming another, or the owner, is forbidden and changes nothing.
+    refused(
+      control(port, mira, "principals.rename", [
+        #("principal_id", json.String("rename-noor")),
+        #("name", json.String("Taken")),
+      ]),
+      "forbidden",
+    )
+    refused(
+      control(port, mira, "principals.rename", [
+        #("principal_id", json.String(ready.owner.id)),
+        #("name", json.String("Taken")),
+      ]),
+      "forbidden",
+    )
+    assert named("rename-noor") == Ok(json.String("rename-noor"))
+
+    // The owner names a member, and itself with or without naming itself.
+    renamed(
+      control(port, credential, "principals.rename", [
+        #("principal_id", json.String("rename-noor")),
+        #("name", json.String("Noor")),
+      ]),
+      "rename-noor",
+      "Noor",
+    )
+    assert named("rename-noor") == Ok(json.String("Noor"))
+    renamed(
+      control(port, credential, "principals.rename", [
+        #("name", json.String("Olive")),
+      ]),
+      ready.owner.id,
+      "Olive",
+    )
+    renamed(
+      control(port, credential, "principals.rename", [
+        #("principal_id", json.String(ready.owner.id)),
+        #("name", json.String("Olive O")),
+      ]),
+      ready.owner.id,
+      "Olive O",
+    )
+    assert named(ready.owner.id) == Ok(json.String("Olive O"))
+
+    // A principal the catalogue does not hold is not found.
+    refused(
+      control(port, credential, "principals.rename", [
+        #("principal_id", json.String("nobody-here")),
+        #("name", json.String("Ghost")),
+      ]),
+      "not_found",
+    )
+  })
+}
+
+// A name the claim-time rule refuses is `invalid_name` and stores nothing:
+// blank, control, zero-width and direction-changing characters and more than 256
+// bytes. A malformed request is `bad_request`, and a stale epoch is
+// `stale_epoch`, before the name is judged.
+pub fn principals_rename_refuses_names_by_the_claim_rule_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "rename-rule", 1402)
+    let ines = member(ready, "rename-ines", session, access.Operator)
+    let code_of = fn(reply) {
+      assert field(reply, "event") == Ok(json.String("error"))
+      let assert Ok(body) = field(reply, "body") as "a body"
+      let assert Ok(json.String(code)) = field(body, "code") as "a code"
+      code
+    }
+    list.each(
+      [
+        "",
+        "   ",
+        "line\nbreak",
+        "bell\u{7}",
+        "reversed \u{202E}name",
+        "zero\u{200B}width",
+        string.repeat("x", 257),
+      ],
+      fn(name) {
+        let reply =
+          control(port, ines, "principals.rename", [
+            #("name", json.String(name)),
+          ])
+        assert code_of(reply) == "invalid_name"
+      },
+    )
+    let listed = control(port, credential, "principals.list", [])
+    let assert Ok(body) = field(listed, "body") as "a body"
+    let assert Ok(json.Array(rows)) = field(body, "principals") as "rows"
+    let assert Ok(row) =
+      list.find(rows, fn(row) {
+        field(row, "principal_id") == Ok(json.String("rename-ines"))
+      })
+      as "the member is listed"
+    assert field(row, "name") == Ok(json.String("rename-ines"))
+
+    // Malformed: no name, a name that is not text, a principal that is not text,
+    // and a frame that carries a megabyte of name.
+    list.each(
+      [
+        [],
+        [#("name", json.Int(7))],
+        [#("name", json.String("Ines")), #("principal_id", json.Int(1))],
+        [#("name", json.String(string.repeat("x", 2048)))],
+      ],
+      fn(fields) {
+        assert code_of(control(port, ines, "principals.rename", fields))
+          == "bad_request"
+      },
+    )
+
+    // A stale epoch is refused, whatever the name.
+    let #(socket, _) = daemon_server_test.connect(port, ines, "/v2/control")
+    let _ = daemon_server_test.frame(socket, within_ms: 1000)
+    let stale =
+      daemon_server_test.send(
+        socket,
+        1,
+        "principals.rename",
+        json.Object([
+          #("epoch", json.String("an-earlier-epoch")),
+          #("name", json.String("Ines")),
+        ]),
+        within_ms: 1000,
+      )
+    let _ = ffi_ws.tcp_close(socket)
+    assert code_of(stale) == "stale_epoch"
+  })
+}
+
+// The home's own rename (protocol-change/065, the tenth pull request): a member
+// operator's page and an owner's page rename their own principal through the
+// registry, the answer is the name as stored, and `name_read` shows it on the
+// next read. The name is trimmed, and a name that is already the page's stores
+// the same one.
+pub fn a_home_page_renames_its_own_principal_test() {
+  fixture(fn(ready, _, credential) {
+    let session = create_session(ready, "rename-self", 1403)
+    let _ = member(ready, "rename-self-member", session, access.Operator)
+    let #(member_standing, _) =
+      standing_of(ready, "rename-self-member", access.Operator)
+    let owner = owner_standing(ready, credential, access.Operator)
+
+    assert ui_socket.name_read(member_standing, page_open)
+      == Some("rename-self-member")
+    assert ui_socket.rename_self_for(
+        member_standing,
+        page_open,
+        ready.epoch,
+        "  Mira  ",
+      )
+      == names.Renamed("Mira")
+    assert ui_socket.name_read(member_standing, page_open) == Some("Mira")
+    assert ui_socket.rename_self_for(
+        member_standing,
+        page_open,
+        ready.epoch,
+        "Mira",
+      )
+      == names.Renamed("Mira")
+
+    assert ui_socket.rename_self_for(owner, page_open, ready.epoch, "Olive")
+      == names.Renamed("Olive")
+    assert ui_socket.name_read(owner, page_open) == Some("Olive")
+  })
+}
+
+// Each refusal stores nothing: a page that ended, a page minted to read, a stale
+// epoch and a credential that is not the page's principal are the page's own
+// words, and a name that breaks the claim-time rule is the name's.
+pub fn a_home_page_rename_refuses_and_stores_nothing_test() {
+  fixture(fn(ready, _, credential) {
+    let session = create_session(ready, "rename-self-refused", 1404)
+    let _ = member(ready, "rename-self-held", session, access.Operator)
+    let #(standing, _) = standing_of(ready, "rename-self-held", access.Operator)
+    let rename = fn(standing, open, epoch, name) {
+      ui_socket.rename_self_for(standing, open, epoch, name)
+    }
+    let refused = names.Declined(names.NotAllowed)
+
+    assert rename(standing, fn() { Error(Nil) }, ready.epoch, "late") == refused
+    assert rename(
+        ui_socket.Standing(..standing, ceiling: access.Observer),
+        page_open,
+        ready.epoch,
+        "watching",
+      )
+      == refused
+    assert rename(standing, page_open, "an-earlier-epoch", "stale") == refused
+    assert rename(
+        ui_socket.Standing(..standing, principal: "someone-else"),
+        page_open,
+        ready.epoch,
+        "swapped",
+      )
+      == refused
+
+    list.each(
+      [
+        "",
+        "   ",
+        "line\nbreak",
+        "bell\u{7}",
+        "reversed \u{202E}name",
+        "zero\u{200B}width",
+        string.repeat("x", 257),
+      ],
+      fn(name) {
+        assert rename(standing, page_open, ready.epoch, name)
+          == names.Declined(names.InvalidName)
+      },
+    )
+
+    // A name that was never read back: the page is open and the credential is
+    // the principal's, and nothing above changed it.
+    assert ui_socket.name_read(standing, page_open) == Some("rename-self-held")
+    assert ui_socket.name_read(standing, fn() { Error(Nil) }) == None
+    assert ui_socket.name_read(
+        ui_socket.Standing(..standing, principal: "someone-else"),
+        page_open,
+      )
+      == None
+    let owner = owner_standing(ready, credential, access.Operator)
+    assert ui_socket.name_read(owner, page_open) != None
+  })
+}
+
+// The admin page's rename (protocol-change/065, the tenth pull request): the
+// owner's page renames a member and itself, the answer carries no claim, and it
+// costs no allowance: more renames than the allowance holds all succeed. A name
+// the rule refuses is `InvalidName` and a principal the catalogue lacks is
+// `NotFound`.
+pub fn the_admin_page_renames_people_without_spending_the_allowance_test() {
+  fixture(fn(ready, _, credential) {
+    let session = create_session(ready, "rename-admin", 1405)
+    let _ = member(ready, "rename-admin-member", session, access.Operator)
+    let #(member_standing, tickets) =
+      standing_of(ready, "rename-admin-member", access.Operator)
+    let owner = owner_standing(ready, credential, access.Operator)
+    let ask = fn(standing, action) {
+      ui_socket.admin_for(
+        standing,
+        tickets,
+        page_open,
+        ready.epoch,
+        Ok("ws://127.0.0.1:1/v2/control"),
+        action,
+      )
+    }
+
+    list.index_map(list.repeat(Nil, ui_sessions.invite_limit + 2), fn(_, index) {
+      let number = index + 1
+      assert ask(
+          owner,
+          grants.Rename("rename-admin-member", "Name " <> int.to_string(number)),
+        )
+        == grants.Changed
+    })
+    assert ui_socket.name_read(member_standing, page_open) == Some("Name 5")
+    assert ask(owner, grants.Rename(ready.owner.id, "  The Owner "))
+      == grants.Changed
+    assert ui_socket.name_read(owner, page_open) == Some("The Owner")
+
+    assert ask(owner, grants.Rename("rename-admin-member", "line\nbreak"))
+      == grants.Declined(grants.InvalidName)
+    assert ask(owner, grants.Rename("rename-admin-member", "   "))
+      == grants.Declined(grants.InvalidName)
+    assert ask(owner, grants.Rename("nobody-here", "Ghost"))
+      == grants.Declined(grants.NotFound)
+    assert ui_socket.name_read(member_standing, page_open) == Some("Name 5")
   })
 }
