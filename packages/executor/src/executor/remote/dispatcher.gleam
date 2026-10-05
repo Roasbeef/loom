@@ -4,7 +4,7 @@
 //// handler. Only after successful actor creation does it publish Begin, and it
 //// has no StartRefusal path after that publication. The worker durably reserves
 //// a logical UUID/link through root's callback, then transfers the typed key to
-//// the guarantor via a permit ask before opening any socket. IDs are never
+//// the guarantor via a permit ask before contacting the authenticated executor peer. IDs are never
 //// derived from seq/token/generation. The immutable already-prepared request
 //// must equal the broker-cleared request and actual operation/step exactly.
 ////
@@ -36,7 +36,7 @@ import broker/exec
 import core/clock
 import core/command
 import core/remote_tool
-import executor/remote/connection
+import executor/remote/beam_endpoint as connection
 import executor/remote/identity
 import executor/remote/native
 import executor/remote/service
@@ -89,7 +89,7 @@ pub type Reserved {
 pub type Config {
   /// No callback is invoked in the broker's serial start handler.
   Config(
-    /// Pinned peer/socket budgets; no logical identity is allocated here.
+    /// Pinned peer/exchange budgets; no logical identity is allocated here.
     connection: connection.Config,
     /// The owner dispatcher incarnation for transient broker handles.
     incarnation: Int,

@@ -1,12 +1,19 @@
-//// Transport-only peers exercise the real pinned TLS and dispatcher engines.
+//// Transport-only peers exercise real TLS BEAM and the production dispatcher.
+//// The first four controls retain the original pure codec/coordinate assertions.
+//// Three fixed two-node scripts use the actual public owner endpoint exchange
+//// with unchanged canonical bytes and intentionally hostile counterpart replies.
 //// They neither admit a Compile service nor grant native launch authority.
-//// The peer requires the full ref on every frame, while native baseline tests
-//// continue exercising the existing production native service independently.
+//// Production Compile admission is covered separately by its joined consumer.
+////
+//// `run_owner` and `run_executor` are fixed test administration entrypoints.
+//// `beam_control` checks both OS process exits and explicit final witnesses;
+//// the test counterpart mirrors only the existing bounded transfer vocabulary.
 
 import broker/dispatch
 import broker/exec
 import broker/framing
 import broker/policy
+import command_route_beam_peer as peer
 import core/clock
 import core/command
 import core/ids
@@ -14,19 +21,23 @@ import core/json
 import core/msgpack as mp
 import core/remote_tool
 import core/workspace
-import executor/remote/connection
+import distribution_fixture as fixture
+import executor/remote/beam_endpoint as endpoint
 import executor/remote/dispatcher
+import executor/remote/distribution
 import executor/remote/identity
+import executor/remote/internal/beam_protocol as protocol
 import executor/remote/native
-import executor/remote/tls
 import executor/remote/wire
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/int
+import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
-import remote_tls_test
+import gleam/time/timestamp
+import simplifile
 import weft
 import weft/poll
 
@@ -397,73 +408,11 @@ type ReplyMode {
   ChangedGeneration
 }
 
-fn settings(
-  local: remote_tls_test.Credentials,
-  peer: remote_tls_test.Credentials,
-) -> tls.Settings {
-  let assert Ok(value) =
-    tls.settings(
-      local.ca,
-      local.certificate,
-      local.key,
-      peer.pin,
-      2000,
-      1000,
-      200,
-    )
-    as "Pinned fixture TLS."
-  value
-}
-
-fn transport() -> #(connection.Config, tls.Listener) {
-  let f = remote_tls_test.fixture()
-  assert tls.start() == Ok(Nil)
-  let assert Ok(listener) =
-    tls.listen(settings(f.server, f.client), tls.Loopback, 0)
-    as "Real loopback listener."
-  let assert Ok(port) = tls.port(listener) as "Ephemeral fixture port."
-  #(
-    connection.Config(
-      settings(f.client, f.server),
-      "localhost",
-      port,
-      3000,
-      "owner",
-      "linux",
-      1,
-      scope(),
-    ),
-    listener,
-  )
-}
-
-fn accept_raw(listener: tls.Listener) -> #(tls.Connection, BitArray) {
-  let assert Ok(socket) = tls.accept(listener)
-    as "Authenticated transport-only peer."
-  let assert Ok(bytes) = tls.receive(socket) as "Ordinary Hello."
-  assert wire.decode(bytes, wire.Owner, "owner", "linux", scope())
-    == Ok(envelope(wire.Owner, wire.Hello))
-  let assert Ok(hello) = wire.encode(envelope(wire.Executor, wire.Hello))
-    as "Native Hello reply."
-  assert tls.send(socket, hello) == Ok(Nil)
-  let assert Ok(bytes) = tls.receive(socket) as "Command frame follows Hello."
-  #(socket, bytes)
-}
-
-fn accept(listener: tls.Listener) -> #(tls.Connection, wire.CommandEnvelope) {
-  let #(socket, bytes) = accept_raw(listener)
-  let assert Ok(command) =
-    wire.decode_command(bytes, wire.Owner, "owner", "linux", scope())
-    as "Real command wrapper decoded."
-  assert wire.command_ref(command) == original()
-  #(socket, command)
-}
-
-fn respond(socket: tls.Connection, body: wire.Body, mode: ReplyMode) {
+fn respond(exchange: peer.Exchange, body: wire.Body, mode: ReplyMode) {
   let native = case mode {
     ChangedGeneration ->
       wire.Envelope(..envelope(wire.Executor, body), generation: 2)
-    _ -> envelope(wire.Executor, body)
+    Exact | ChangedRef | Plain -> envelope(wire.Executor, body)
   }
   let bytes = case mode {
     Plain -> {
@@ -471,34 +420,27 @@ fn respond(socket: tls.Connection, body: wire.Body, mode: ReplyMode) {
       bytes
     }
     Exact | ChangedRef | ChangedGeneration -> {
-      let ref = case mode {
+      let expected = case mode {
         ChangedRef -> ref(string.repeat("e", 64), command.CompileService)
-        _ -> original()
+        Exact | Plain | ChangedGeneration -> original()
       }
-      let assert Ok(value) = wire.command_envelope(ref, native)
+      let assert Ok(value) = wire.command_envelope(expected, native)
         as "Reply coordinates validate."
       let assert Ok(bytes) = wire.encode_command(value) as "Reply framing."
       bytes
     }
   }
-  assert tls.send(socket, bytes) == Ok(Nil)
-  tls.close(socket)
+  peer.respond(exchange, bytes)
 }
 
 pub fn command_exchange_requires_exact_ref_generation_and_wrapper_test() {
-  let #(config, listener) = transport()
+  beam_control(0)
+}
+
+fn command_exchange(config: endpoint.Config) {
   list.each([Exact, ChangedRef, Plain, ChangedGeneration], fn(mode) {
-    let done = process.new_subject()
-    let _ =
-      process.spawn_unlinked(fn() {
-        let #(socket, value) = accept(listener)
-        assert wire.native_envelope(value).body
-          == wire.Query(key(), digest(), 0)
-        respond(socket, wire.Evidence(key(), digest(), 1, 123), mode)
-        process.send(done, Nil)
-      })
     let outcome =
-      connection.exchange_command(
+      endpoint.exchange_command(
         config,
         original(),
         wire.Query(key(), digest(), 0),
@@ -506,11 +448,18 @@ pub fn command_exchange_requires_exact_ref_generation_and_wrapper_test() {
     assert outcome
       == case mode {
         Exact -> Ok(wire.Evidence(key(), digest(), 1, 123))
-        _ -> Error(connection.Uncertain)
+        ChangedRef | Plain | ChangedGeneration -> Error(endpoint.Uncertain)
       }
-    assert process.receive(done, 3000) == Ok(Nil)
   })
-  tls.close_listener(listener)
+}
+
+fn exchange_peer(remote: peer.Peer) {
+  list.each([Exact, ChangedRef, Plain, ChangedGeneration], fn(mode) {
+    let value = peer.accept(remote, original())
+    assert wire.native_envelope(peer.command(value)).body
+      == wire.Query(key(), digest(), 0)
+    respond(value, wire.Evidence(key(), digest(), 1, 123), mode)
+  })
 }
 
 fn owner_request(
@@ -532,9 +481,10 @@ fn owner_request(
 }
 
 pub fn command_dispatcher_retains_route_through_output_stdin_and_receipt_test() {
-  let #(config, listener) = transport()
-  let done = process.new_subject()
-  let submit_seen = process.new_subject()
+  beam_control(1)
+}
+
+fn dispatcher_owner(config: endpoint.Config, root: String) {
   let terminal =
     dispatch.Failed(exec.ProtocolViolation("transport-only terminal"))
   let chunk = dispatch.Chunk(framing.Stdout, <<42>>, 1, False)
@@ -542,47 +492,8 @@ pub fn command_dispatcher_retains_route_through_output_stdin_and_receipt_test() 
     as "Actual native output codec."
   let assert Ok(bytes) = native.encode_terminal(terminal)
     as "Actual native terminal codec."
-  let assert Ok(terminal_digest) = wire.digest(bytes)
-    as "Receipt binds exact terminal."
-  let _ =
-    process.spawn_unlinked(fn() {
-      let #(socket, value) = accept(listener)
-      assert wire.native_envelope(value).body
-        == wire.ChallengeRequest(key(), digest())
-      respond(
-        socket,
-        wire.Challenge(key(), digest(), <<1:size(256)>>, 1000),
-        Exact,
-      )
-      let #(socket, value) = accept(listener)
-      let assert wire.Submit(k, d, p, <<1:size(256)>>, budget) =
-        wire.native_envelope(value).body
-        as "Original immutable Prepared submitted once."
-      assert k == key()
-        && d == digest()
-        && p == prepared()
-        && budget > 0
-        && budget < 30_000
-      let begin_queries = process.new_subject()
-      process.send(submit_seen, begin_queries)
-      assert process.receive(begin_queries, 3000) == Ok(Nil)
-      respond(socket, wire.Evidence(key(), digest(), 1, 123), Exact)
-      let #(socket, value) = accept(listener)
-      assert wire.native_envelope(value).body
-        == wire.Stdin(key(), digest(), 0, <<7>>, dispatch.EndOfInput)
-      respond(socket, wire.Evidence(key(), digest(), 1, 123), Exact)
-      let #(socket, value) = accept(listener)
-      assert wire.native_envelope(value).body == wire.Query(key(), digest(), 0)
-      respond(socket, wire.Output(key(), digest(), 0, output), Exact)
-      let #(socket, value) = accept(listener)
-      assert wire.native_envelope(value).body == wire.Query(key(), digest(), 1)
-      respond(socket, wire.Terminal(key(), digest(), bytes), Exact)
-      let #(socket, value) = accept(listener)
-      assert wire.native_envelope(value).body
-        == wire.DurableReceipt(key(), digest(), terminal_digest)
-      respond(socket, wire.Evidence(key(), digest(), 1, 123), Exact)
-      process.send(done, Nil)
-    })
+
+  // Original owner receipt custody precedes the peer's DurableReceipt ask.
   let received = process.new_subject()
   let events = process.new_subject()
   let chunks = process.new_subject()
@@ -607,63 +518,71 @@ pub fn command_dispatcher_retains_route_through_output_stdin_and_receipt_test() 
   let assert Ok(execution) =
     adapter.start(owner_request(prepared(), events, chunks))
     as "Guarantor owns route before send."
-  let assert Ok(begin_queries) = process.receive(submit_seen, 3000)
-    as "Peer owns its query barrier."
+
+  // Queue stdin while Submit is held, before its response enables polling.
+  peer.await(root, "submit.seen")
   execution.stdin(<<7>>, dispatch.EndOfInput)
-  process.send(begin_queries, Nil)
+  peer.mark(root, "begin.queries")
   assert process.receive(chunks, 3000) == Ok(chunk)
   assert process.receive(received, 3000) == Ok(Nil)
   assert process.receive(events, 3000) == Ok(terminal)
-  assert process.receive(done, 3000) == Ok(Nil)
+  peer.await(root, "executor.finished")
   execution.release()
-  tls.close_listener(listener)
+}
+
+fn dispatcher_peer(remote: peer.Peer, root: String) {
+  let terminal =
+    dispatch.Failed(exec.ProtocolViolation("transport-only terminal"))
+  let chunk = dispatch.Chunk(framing.Stdout, <<42>>, 1, False)
+  let assert Ok(output) = native.encode_output(chunk)
+    as "Actual native output codec."
+  let assert Ok(bytes) = native.encode_terminal(terminal)
+    as "Actual native terminal codec."
+  let assert Ok(terminal_digest) = wire.digest(bytes)
+    as "Receipt binds exact terminal."
+  let value = peer.accept(remote, original())
+  assert wire.native_envelope(peer.command(value)).body
+    == wire.ChallengeRequest(key(), digest())
+  respond(value, wire.Challenge(key(), digest(), <<1:size(256)>>, 1000), Exact)
+  let value = peer.accept(remote, original())
+  let assert wire.Submit(k, d, p, <<1:size(256)>>, budget) =
+    wire.native_envelope(peer.command(value)).body
+    as "Original immutable Prepared submitted once."
+  assert k == key()
+    && d == digest()
+    && p == prepared()
+    && budget > 0
+    && budget < 30_000
+
+  // The barrier preserves the original peer-owned stdin-before-query order.
+  peer.mark(root, "submit.seen")
+  peer.await(root, "begin.queries")
+  respond(value, wire.Evidence(key(), digest(), 1, 123), Exact)
+  let value = peer.accept(remote, original())
+  assert wire.native_envelope(peer.command(value)).body
+    == wire.Stdin(key(), digest(), 0, <<7>>, dispatch.EndOfInput)
+  respond(value, wire.Evidence(key(), digest(), 1, 123), Exact)
+  let value = peer.accept(remote, original())
+  assert wire.native_envelope(peer.command(value)).body
+    == wire.Query(key(), digest(), 0)
+  respond(value, wire.Output(key(), digest(), 0, output), Exact)
+  let value = peer.accept(remote, original())
+  assert wire.native_envelope(peer.command(value)).body
+    == wire.Query(key(), digest(), 1)
+  respond(value, wire.Terminal(key(), digest(), bytes), Exact)
+
+  // Terminal observation alone is not the separately committed owner receipt.
+  let value = peer.accept(remote, original())
+  assert wire.native_envelope(peer.command(value)).body
+    == wire.DurableReceipt(key(), digest(), terminal_digest)
+  respond(value, wire.Evidence(key(), digest(), 1, 123), Exact)
 }
 
 pub fn command_dispatcher_detached_cancel_retains_route_test() {
-  let #(config, listener) = transport()
-  let challenged = process.new_subject()
-  let cancelled = process.new_subject()
-  let cancel_finished = process.new_subject()
-  let done = process.new_subject()
-  let _ =
-    process.spawn_unlinked(fn() {
-      let #(socket, value) = accept(listener)
-      assert wire.native_envelope(value).body
-        == wire.ChallengeRequest(key(), digest())
-      let release_peer = process.new_subject()
-      process.send(challenged, release_peer)
-      let _ =
-        weft.new([
-          fn() {
-            let #(cancel_socket, raw) = accept_raw(listener)
-            let value =
-              wire.decode_command(raw, wire.Owner, "owner", "linux", scope())
-            process.send(cancelled, value)
-            case value {
-              Ok(value) -> {
-                assert wire.command_ref(value) == original()
-                assert wire.native_envelope(value).body
-                  == wire.Cancel(key(), digest())
-                respond(
-                  cancel_socket,
-                  wire.Evidence(key(), digest(), 1, 123),
-                  Exact,
-                )
-                Ok(Nil)
-              }
-              Error(_) -> {
-                tls.close(cancel_socket)
-                Error(Nil)
-              }
-            }
-          },
-        ])
-        |> weft.deadline(3000)
-        |> weft.start_relayed(to: cancel_finished)
-      assert process.receive(release_peer, 3000) == Ok(Nil)
-      tls.close(socket)
-      process.send(done, Nil)
-    })
+  beam_control(2)
+}
+
+fn cancel_owner(config: endpoint.Config, root: String) {
   let events = process.new_subject()
   let chunks = process.new_subject()
   let adapter =
@@ -680,23 +599,179 @@ pub fn command_dispatcher_detached_cancel_retains_route_test() {
   let assert Ok(execution) =
     adapter.start(owner_request(prepared(), events, chunks))
     as "Command reservation."
-  let assert Ok(release_peer) = process.receive(challenged, 3000)
-    as "Peer owns its cancellation barrier."
+  peer.await(root, "challenged")
   execution.cancel()
-  let assert Ok(Ok(cancelled)) = process.receive(cancelled, 3000)
+  peer.await(root, "cancel.replied")
+  let assert Ok(bytes) = simplifile.read_bits(root <> "/cancel.command")
+    as "The peer retains its exact decoded cancellation witness."
+  let assert Ok(cancelled) =
+    wire.decode_command(bytes, wire.Owner, "owner", "linux", scope())
     as "Detached Cancel carries a decoded command route."
   assert wire.command_ref(cancelled) == original()
   assert wire.native_envelope(cancelled).body == wire.Cancel(key(), digest())
   assert process.receive(events, 3000)
     == Ok(dispatch.Failed(exec.ExecutionLost(exec.RemoteOutcomeUncertain)))
 
-  // The decoded route is an early witness. The managed peer outcome also
-  // proves the response succeeded before release can close its client.
-  let assert Ok(weft.PulledOutcome(weft.Completed(_, Nil))) =
-    process.receive(cancel_finished, 3000)
-    as "Cancel peer replied successfully before teardown."
-  process.send(release_peer, Nil)
-  assert process.receive(done, 3000) == Ok(Nil)
+  // The response barrier follows consumption of its last returned chunk.
+  // Original Challenge observation is still held until the owner releases it.
+  peer.mark(root, "release.challenge")
+  peer.await(root, "executor.finished")
   execution.release()
-  tls.close_listener(listener)
+}
+
+fn cancel_peer(remote: peer.Peer, root: String) {
+  let challenge = peer.accept(remote, original())
+  assert wire.native_envelope(peer.command(challenge)).body
+    == wire.ChallengeRequest(key(), digest())
+  peer.mark(root, "challenged")
+  let value = peer.accept(remote, original())
+  assert wire.command_ref(peer.command(value)) == original()
+  assert wire.native_envelope(peer.command(value)).body
+    == wire.Cancel(key(), digest())
+  let assert Ok(bytes) = wire.encode_command(peer.command(value))
+    as "Exact cancelled command bytes."
+  assert simplifile.write_bits(root <> "/cancel.command", bytes) == Ok(Nil)
+  respond(value, wire.Evidence(key(), digest(), 1, 123), Exact)
+  peer.mark(root, "cancel.replied")
+  peer.await(root, "release.challenge")
+}
+
+/// Runs only one fixed owner script after its original actual TLS membership boot.
+///
+/// ## Examples
+///
+/// ```gleam
+/// command_route_test.run_owner(provisioned_file, root, 0)
+/// // -> Nil after exact and hostile full-reference replies are checked.
+/// ```
+pub fn run_owner(provisioned: String, root: String, scenario: Int) -> Nil {
+  let assert Ok(value) = fixture.read_provisioned(provisioned)
+    as "Trusted finite fixture."
+  let assert Ok(membership) = distribution.start(value.owner_config)
+    as "Actual TLS owner boot."
+  let assert Ok(remote) = distribution.peer(membership, value.executor_name)
+    as "Original opaque Peer."
+  peer.await(root, "executor.ready")
+  let config = endpoint.Config(remote, "owner", "linux", scope(), 1, 3000)
+  case scenario {
+    0 -> command_exchange(config)
+    1 -> dispatcher_owner(config, root)
+    2 -> cancel_owner(config, root)
+    _ -> panic as "Only three fixed owner transport scripts exist."
+  }
+  peer.await(root, "executor.finished")
+  peer.mark(root, "owner.finished")
+  io.println("COMMAND_ROUTE_OWNER_COMPLETE")
+}
+
+/// Publishes the fixed transport counterpart, without a concrete effect service.
+///
+/// ## Examples
+///
+/// ```gleam
+/// command_route_test.run_executor(provisioned_file, root, 1)
+/// // -> Nil after the original scripted command route is consumed exactly.
+/// ```
+pub fn run_executor(provisioned: String, root: String, scenario: Int) -> Nil {
+  let assert Ok(value) = fixture.read_provisioned(provisioned)
+    as "Trusted finite fixture."
+  let assert Ok(membership) = distribution.start(value.executor_config)
+    as "Actual TLS executor boot."
+  let assert Ok(owner) = distribution.peer(membership, value.owner_name)
+    as "Original authenticated owner."
+  let remote =
+    peer.publish(owner, protocol.Binding("owner", "linux", 1, scope()))
+  peer.mark(root, "executor.ready")
+  case scenario {
+    0 -> exchange_peer(remote)
+    1 -> dispatcher_peer(remote, root)
+    2 -> cancel_peer(remote, root)
+    _ -> panic as "Only three fixed counterpart scripts exist."
+  }
+  peer.mark(root, "executor.finished")
+
+  // Fixed discovery remains live until the owner retires its original observer.
+  // A remote endpoint death must not race the final consumed reply handoff.
+  peer.await(root, "owner.finished")
+  io.println("COMMAND_ROUTE_EXECUTOR_COMPLETE")
+}
+
+fn beam_control(scenario: Int) -> Nil {
+  let assert Ok(here) = simplifile.current_directory()
+    as "Actual package directory."
+  let #(seconds, nanos) =
+    timestamp.system_time() |> timestamp.to_unix_seconds_and_nanoseconds
+  let root =
+    here
+    <> "/build/command-route-beam-"
+    <> int.to_string(seconds)
+    <> "-"
+    <> int.to_string(nanos)
+  let assert Ok(value) = fixture.provision(root, "command_route")
+    as "Actual private TLS membership credentials."
+  let provisioned = root <> "/fixture.term"
+  assert fixture.write_provisioned(value, provisioned) == Ok(Nil)
+
+  // Both runtimes boot from the original provisioned membership credentials.
+  let owner =
+    node_arguments(
+      value.owner_options,
+      "run_owner",
+      provisioned,
+      root,
+      scenario,
+    )
+  let executor =
+    node_arguments(
+      value.executor_options,
+      "run_executor",
+      provisioned,
+      root,
+      scenario,
+    )
+  let erl = fixture.current_executable()
+  let owner_home = distribution.bootstrap_home(value.owner_config)
+  let executor_home = distribution.bootstrap_home(value.executor_config)
+
+  // Original task outcomes join both OS nodes before credential cleanup.
+  let outcomes =
+    weft.new([
+      fn() { fixture.run_node(erl, owner, here, owner_home) },
+      fn() { fixture.run_node(erl, executor, here, executor_home) },
+    ])
+    |> weft.deadline(90_000)
+    |> weft.start
+  let assert [
+    weft.Completed(_, #(owner_exit, owner_output)),
+    weft.Completed(_, #(executor_exit, executor_output)),
+  ] = outcomes
+    as "Both original independent OS nodes finish under the finite bound."
+
+  // Final witnesses follow every scripted assertion and the original teardown.
+  io.println(owner_output)
+  io.println(executor_output)
+  assert owner_exit == 0 && executor_exit == 0
+  assert string.contains(owner_output, "COMMAND_ROUTE_OWNER_COMPLETE")
+  assert string.contains(executor_output, "COMMAND_ROUTE_EXECUTOR_COMPLETE")
+  assert simplifile.delete(root) == Ok(Nil)
+}
+
+fn node_arguments(
+  options: String,
+  role: String,
+  provisioned: String,
+  root: String,
+  scenario: Int,
+) -> List(String) {
+  let expression =
+    "try command_route_test:"
+    <> role
+    <> "(<<\""
+    <> provisioned
+    <> "\">>,<<\""
+    <> root
+    <> "\">>,"
+    <> int.to_string(scenario)
+    <> "),erlang:halt(0,[{flush,true}]) catch C:R:S->io:format(standard_error,\"fixed route runner failed ~p:~p~n~p~n\",[C,R,S]),erlang:halt(1,[{flush,true}]) end."
+  list.append(fixture.node_arguments(options), ["-noshell", "-eval", expression])
 }
