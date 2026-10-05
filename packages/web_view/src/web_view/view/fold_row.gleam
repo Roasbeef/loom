@@ -27,6 +27,7 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
@@ -138,6 +139,58 @@ pub fn reading(
     [html.span([attribute.class("subject")], line)],
     body,
   )
+}
+
+/// The rows a step opens to. A failed call that has the engine's refusal opens
+/// on one plain sentence and the engine's text beneath it (`failure`), in place
+/// of the call's summary, which the step's own line already says and which
+/// names the tool the way the model spelled it. A failed step with no refusal,
+/// such as a rejected program, whose rows carry their own title and reason,
+/// keeps its rows as they are, and so does a step that is running or done.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fold_row.step_body(turns.Failed, words, rows, draw)
+/// ```
+pub fn step_body(
+  standing: turns.Standing,
+  words: Words,
+  rows: List(Line),
+  draw: fn(Line) -> Element(message),
+) -> List(Element(message)) {
+  let #(refusal, rest) =
+    list.partition(rows, fn(row) {
+      row.speaker == transcript_line.ToolResult
+      || row.speaker == transcript_line.ToolFailure
+    })
+  let engine =
+    refusal
+    |> list.map(refused_text)
+    |> string.join("\n")
+    |> string.trim
+  case standing, engine {
+    turns.Failed, "" | turns.Pending, _ | turns.Done, _ ->
+      list.map(rows, line_row(_, draw))
+    turns.Failed, _ -> [
+      failure(step_words.failure_sentence(words, engine), engine),
+      ..list.map(rest, line_row(_, draw))
+    ]
+  }
+}
+
+// What the engine said when it refused a call. A failed call's row opens with
+// the call's own summary (`fs_edit`), which the step's line already says, and
+// the refusal follows on the lines after it; a result row is the refusal
+// whole.
+fn refused_text(row: Line) -> String {
+  case row.speaker == transcript_line.ToolFailure {
+    False -> row.text
+    True ->
+      string.split_once(row.text, "\n")
+      |> result.map(fn(parts) { parts.1 })
+      |> result.unwrap("")
+  }
 }
 
 /// The open body of a failed step: one plain sentence in the danger colour that
