@@ -786,7 +786,7 @@ pub fn the_home_has_its_own_addresses_test() {
 // and no session.
 pub fn the_home_shell_names_no_session_test() {
   let shell = page.home_shell()
-  assert string.contains(shell, "<title>Loom · Home</title>")
+  assert string.contains(shell, "<title>Home — Loom</title>")
   assert string.contains(shell, "<lustre-server-component>")
   assert string.contains(shell, page.asset_path(page.page_asset))
   assert string.contains(shell, page.asset_path(page.client_asset))

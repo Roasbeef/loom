@@ -33,7 +33,11 @@
 ////   address into its attribute.
 //// - `<loom-switcher>` (`web_client/switcher`) is the session switcher that
 ////   Command or Control and K opens: it lists the sessions the sidebar
-////   already draws and presses the chosen one's own sidebar button.
+////   already draws and presses the chosen one's own sidebar button. The
+////   bar's `Search` chip opens it too.
+//// - `<loom-title>` (`web_client/title`) sets the tab's title to the
+////   session's name, read from the bar's heading, with the count of strands
+////   that wait on the person in front.
 //// - `<loom-copy subject="token" text="...">` (`web_client/copy`) draws one
 ////   of an invitation's two texts and copies it to the clipboard when the
 ////   owner presses its button.
@@ -69,6 +73,7 @@ import web_client/rename
 import web_client/shell
 import web_client/switch
 import web_client/switcher
+import web_client/title
 import web_client/waiting
 
 /// Registers every element. The bundle calls this once when the page loads
@@ -96,6 +101,7 @@ pub fn main() -> Nil {
   let _ = shell.register()
   let _ = switch.register()
   let _ = switcher.register()
+  let _ = title.register()
   let _ = waiting.register()
   Nil
 }

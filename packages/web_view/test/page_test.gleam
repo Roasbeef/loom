@@ -207,7 +207,7 @@ pub fn the_admin_pages_documents_are_the_homes_in_their_own_words_test() {
   assert page.admin_exchange_path("t") == "/ui/admin?ticket=t"
 
   let shell = page.admin_shell()
-  assert string.contains(shell, "<title>Loom · Admin</title>")
+  assert string.contains(shell, "<title>Admin — Loom</title>")
   assert string.contains(shell, "fifteen minutes")
   assert string.contains(shell, "press Admin on the home page")
   assert string.contains(shell, "/ui/assets/web_view_page.js")

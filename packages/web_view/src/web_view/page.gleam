@@ -172,6 +172,12 @@ pub fn admin_exchange_path(ticket: String) -> String {
   prefix <> "/admin?ticket=" <> ticket
 }
 
+/// The title of a session page until the component has connected and
+/// `<loom-title>` has read the session's name from the bar. It is the product's
+/// name alone: the shell knows the session only by its identity, which names
+/// nothing a person could tell tabs apart by.
+pub const session_title = "Loom"
+
 /// The page for one session: a shell holding one server component, and the
 /// script that connects it with the tab's nonce. The component carries no
 /// `route` of its own; the script sets its `csrf-token` and then its
@@ -200,7 +206,7 @@ pub fn admin_exchange_path(ticket: String) -> String {
 /// // page.shell("0198c0de-...")
 /// ```
 pub fn shell(session_id: String) -> String {
-  component_document(session_id, waiting_notice(session_id))
+  component_document(session_title, waiting_notice(session_id))
 }
 
 /// The page for the home: the same shell and scripts as a session's, with
@@ -211,10 +217,10 @@ pub fn shell(session_id: String) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// assert string.contains(page.home_shell(), "Loom · Home")
+/// assert string.contains(page.home_shell(), "Home — Loom")
 /// ```
 pub fn home_shell() -> String {
-  component_document("Home", home_waiting_notice())
+  component_document("Home — Loom", home_waiting_notice())
 }
 
 /// The page for the admin page: the same shell and scripts as the home's, with
@@ -223,18 +229,21 @@ pub fn home_shell() -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// assert string.contains(page.admin_shell(), "Loom · Admin")
+/// assert string.contains(page.admin_shell(), "Admin — Loom")
 /// ```
 pub fn admin_shell() -> String {
-  component_document("Admin", admin_waiting_notice())
+  component_document("Admin — Loom", admin_waiting_notice())
 }
 
 // A shell holding one server component, titled `title` (escaped here) and
 // with `waiting` as the paragraph shown while the component has no socket.
+// The title is fixed words and never a session's identity or name: the home
+// and the admin page name themselves, and a session page says only the product
+// until `<loom-title>` (`web_client/title`) reads the name its bar draws.
 fn component_document(title: String, waiting: String) -> String {
   "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
   <> "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-  <> "<title>Loom · "
+  <> "<title>"
   <> houdini.escape(title)
   <> "</title>"
   <> "<link rel=\"stylesheet\" href=\""
