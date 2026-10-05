@@ -2497,7 +2497,7 @@ pub fn only_actual_vet_and_compile_results_emit_no_terminal_schema_test() {
 fn retained_execution(outcome: codemode.Outcome) -> codemode.Execution {
   codemode.Execution(
     ..ran(outcome),
-    result: codemode.Ran(outcome, string.repeat("a", 64)),
+    result: codemode.Ran(outcome, "sha256-" <> string.repeat("a", 64)),
   )
 }
 
@@ -2593,7 +2593,8 @@ pub fn retained_metadata_preserves_each_status_and_stage_test() {
     codemode.retained_tool(scripted(execution), fn(_, report) {
       let metadata = report_value.report_metadata(report)
       assert report_value.outcome(report) == report_value.Completed(value)
-      assert report_value.manifest_hash(metadata) == string.repeat("a", 64)
+      assert report_value.manifest_hash(metadata)
+        == "sha256-" <> string.repeat("a", 64)
       assert report_value.enforcement(metadata)
         == report_value.Enforcement(
           report_value.Unreported("not observed"),

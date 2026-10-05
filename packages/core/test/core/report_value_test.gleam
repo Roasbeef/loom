@@ -19,7 +19,7 @@ fn empty_log() -> rv.CallLog {
 fn metadata() -> rv.Metadata {
   let assert Ok(metadata) =
     rv.metadata(
-      digest,
+      "sha256-" <> digest,
       rv.Enforcement(
         rv.Unreported("not launched"),
         rv.Reported(["filesystem"], ["network"], rv.Degraded),
@@ -84,7 +84,7 @@ pub fn fidelity_and_typed_metadata_roundtrip_test() {
       rv.Reported(["fs"], ["net"], rv.Complete),
       rv.Unreported("missing"),
     )
-  let assert Ok(meta) = rv.metadata(digest, enforcement, log)
+  let assert Ok(meta) = rv.metadata("sha256-" <> digest, enforcement, log)
     as "All distinctions in the fixture are valid metadata."
   let assert Ok(report) = rv.from_outcome(rv.Completed(value), meta)
     as "The complete outcome is within the report profile."
@@ -94,7 +94,7 @@ pub fn fidelity_and_typed_metadata_roundtrip_test() {
   assert rv.outcome(decoded) == rv.Completed(value)
   assert rv.calls(rv.report_metadata(decoded)) == log
   assert rv.enforcement(rv.report_metadata(decoded)) == enforcement
-  assert rv.manifest_hash(rv.report_metadata(decoded)) == digest
+  assert rv.manifest_hash(rv.report_metadata(decoded)) == "sha256-" <> digest
 }
 
 pub fn controlled_error_roundtrip_test() {
@@ -392,7 +392,7 @@ pub fn bounded_call_metadata_and_counter_relationships_test() {
     )
   let enforcement =
     rv.Enforcement(rv.Unreported(string.repeat("r", 8192)), rv.Unreported(""))
-  assert rv.metadata(digest, enforcement, log) |> result.is_ok
+  assert rv.metadata("sha256-" <> digest, enforcement, log) |> result.is_ok
   list.each(
     [
       rv.CallLog(
@@ -419,7 +419,8 @@ pub fn bounded_call_metadata_and_counter_relationships_test() {
       rv.CallLog(..log, items: [rv.CallRecord(..record, duration_ms: -1)]),
     ],
     fn(log) {
-      assert rv.metadata(digest, enforcement, log) |> result.is_error
+      assert rv.metadata("sha256-" <> digest, enforcement, log)
+        |> result.is_error
     },
   )
   assert rv.metadata(string.repeat("a", 65), enforcement, empty_log())
@@ -427,7 +428,7 @@ pub fn bounded_call_metadata_and_counter_relationships_test() {
   assert rv.metadata(string.repeat("A", 64), enforcement, empty_log())
     |> result.is_error
   assert rv.metadata(
-      digest,
+      "sha256-" <> digest,
       rv.Enforcement(rv.Unreported(string.repeat("r", 8193)), rv.Unreported("")),
       empty_log(),
     )
@@ -440,7 +441,11 @@ pub fn exact_stage_byte_and_combined_entry_limits_test() {
     rv.Reported(list.repeat(layer, 7), [string.repeat("x", 8118)], rv.Complete)
   // Seven maximum strings plus the final string and fixed schema cost 65,536.
   let assert Ok(meta) =
-    rv.metadata(digest, rv.Enforcement(at, rv.Unreported("")), empty_log())
+    rv.metadata(
+      "sha256-" <> digest,
+      rv.Enforcement(at, rv.Unreported("")),
+      empty_log(),
+    )
     as "The stage is exactly at its canonical byte ceiling."
   let assert Ok(report) = rv.from_outcome(rv.Completed(mp.NilValue), meta)
     as "A bounded stage is complete owner metadata."
@@ -448,13 +453,13 @@ pub fn exact_stage_byte_and_combined_entry_limits_test() {
   let excess =
     rv.Reported(list.repeat(layer, 7), [string.repeat("x", 8119)], rv.Complete)
   assert rv.metadata(
-      digest,
+      "sha256-" <> digest,
       rv.Enforcement(excess, rv.Unreported("")),
       empty_log(),
     )
     |> result.is_error
   assert rv.metadata(
-      digest,
+      "sha256-" <> digest,
       rv.Enforcement(
         rv.Reported(list.repeat("", 64), list.repeat("", 64), rv.Complete),
         rv.Unreported(""),
@@ -463,7 +468,7 @@ pub fn exact_stage_byte_and_combined_entry_limits_test() {
     )
     |> result.is_ok
   assert rv.metadata(
-      digest,
+      "sha256-" <> digest,
       rv.Enforcement(
         rv.Reported(list.repeat("", 65), list.repeat("", 64), rv.Complete),
         rv.Unreported(""),
@@ -646,4 +651,34 @@ pub fn independent_metadata_raw_bounds_test() {
     ),
   >>
   assert msgpack_scan.metadata(over) |> result.is_error
+}
+
+// The production compiler emits a prefixed fingerprint; a report URI instead
+// carries a bare digest of the whole stored bundle. Neither name substitutes for
+// the other, and both constructors must preserve their distinct contracts.
+pub fn artifact_fingerprint_is_preserved_without_weakening_reference_digest_test() {
+  let stages = rv.Enforcement(rv.Unreported("build"), rv.Unreported("node"))
+  let fingerprint = "sha256-" <> digest
+  let assert Ok(meta) = rv.metadata(fingerprint, stages, empty_log())
+    as "The actual compiler fingerprint is accepted verbatim."
+  let assert Ok(bundle) = rv.from_outcome(rv.Completed(mp.NilValue), meta)
+    as "The complete report preserves the original observation."
+  let assert Ok(decoded) = rv.decode(rv.bytes(bundle))
+    as "Stored metadata accepts the same canonical fingerprint."
+  assert rv.manifest_hash(rv.report_metadata(decoded)) == fingerprint
+  list.each(
+    [
+      digest,
+      "SHA256-" <> digest,
+      fingerprint <> "0",
+      "sha256-" <> string.repeat("A", 64),
+    ],
+    fn(invalid) {
+      assert rv.metadata(invalid, stages, empty_log()) |> result.is_error
+    },
+  )
+  let session = ids.mint_session(ids.generator(clock.fixed(0), 1)).0
+  let entry = ids.mint_entry(ids.generator(clock.fixed(0), 2)).0
+  assert rv.reference(session, entry, fingerprint, 64) |> result.is_error
+  assert rv.reference(session, entry, digest, 64) |> result.is_ok
 }
