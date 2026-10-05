@@ -814,9 +814,11 @@ pub fn the_child_is_told_what_it_can_call_and_how_its_result_travels_test() {
 
 pub fn a_notice_is_sorted_and_stable_across_calls_test() {
   let facts =
-    agency.ChildFacts(strand: "sub:main/x-0123456789abcdef", tools: [
-      "fs_read", "bash", "agent_send", "bash",
-    ])
+    agency.ChildFacts(
+      parent: "main",
+      strand: "sub:main/x-0123456789abcdef",
+      tools: ["fs_read", "bash", "agent_send", "bash"],
+    )
   let reversed = agency.ChildFacts(..facts, tools: list.reverse(facts.tools))
   assert agency.child_notice(facts, None) == agency.child_notice(reversed, None)
   assert string.contains(
@@ -825,16 +827,19 @@ pub fn a_notice_is_sorted_and_stable_across_calls_test() {
   )
 }
 
-pub fn a_notice_names_the_parent_of_a_nested_strand_test() {
+pub fn a_notice_names_the_caller_as_parent_test() {
+  // The parent is the authenticated caller, taken as given and never
+  // parsed back out of the child's name.
   let notice =
     agency.child_notice(
       agency.ChildFacts(
+        parent: "sub:main/a-0123456789abcdef",
         strand: "sub:sub:main/a-0123456789abcdef/b-fedcba9876543210",
         tools: [],
       ),
       None,
     )
-  assert string.contains(notice, "a subagent of `sub:main/a-0123456789abcdef`")
+  assert string.contains(notice, "a subagent of `sub:main/a-0123456789abcdef`.")
 }
 
 pub fn a_spawn_with_an_unusable_purpose_is_refused_test() {
@@ -1263,11 +1268,22 @@ pub fn the_framing_bytes_match_what_the_hosts_strip_test() {
       ]),
     )
     as "a minimal result schema parses"
-  let contract = agency.result_contract(Some(schema))
+  let contract =
+    agency.child_notice(
+      agency.ChildFacts(
+        parent: "main",
+        strand: "sub:main/x-0123456789abcdef",
+        tools: ["agent_note"],
+      ),
+      Some(schema),
+    )
   assert string.starts_with(
     contract,
-    "\n[result contract, from the harness and not from the sender]\n"
-      <> "Before you finish, record your result with agent_note under the key `",
+    "\n[result contract, from the harness and not from the sender]\n",
+  )
+  assert string.contains(
+    contract,
+    "\nBefore you finish, record your result with agent_note under the key `",
   )
   assert string.ends_with(contract, "\n[end result contract]")
 
@@ -2009,13 +2025,21 @@ pub fn a_spawn_brief_carries_the_callers_strand_origin_test() {
   let plain =
     framed
     <> agency.child_notice(
-      agency.ChildFacts(strand: first.strand, tools: first.tools),
+      agency.ChildFacts(
+        parent: "main",
+        strand: first.strand,
+        tools: first.tools,
+      ),
       None,
     )
   let wanting =
     framed
     <> agency.child_notice(
-      agency.ChildFacts(strand: second.strand, tools: second.tools),
+      agency.ChildFacts(
+        parent: "main",
+        strand: second.strand,
+        tools: second.tools,
+      ),
       Some(a_schema()),
     )
   let held = strand_attributed(harness)
@@ -2082,10 +2106,10 @@ pub fn agent_send_carries_the_callers_strand_origin_downward_and_upward_test() {
   close(harness)
 }
 
-pub fn a_spawn_with_no_schema_behaves_exactly_as_before_test() {
-  // The compatibility floor. No contract cell, nothing appended to the
-  // brief, and a join that reports no verdict at all rather than an
-  // invented empty one.
+pub fn a_spawn_with_no_schema_carries_the_notice_but_no_schema_clause_test() {
+  // No contract cell, no schema clause in the trailer, and a join that
+  // reports no verdict at all rather than an invented empty one. The
+  // trailer itself is always present and tells the child its tools.
   let seen = process.new_subject()
   let harness = start_harness(Watches("done", seen))
   let caller = caller_on("main", "turn-1:tools", 0)
@@ -2101,7 +2125,6 @@ pub fn a_spawn_with_no_schema_behaves_exactly_as_before_test() {
   assert !string.contains(context_text(context), "Before you finish")
   let assert agent.Ready(result:, ..) = joined(harness, caller, child.handle)
   assert result == agent.NoResultAsked
-  assert agency.result_contract(None) == ""
   close(harness)
 }
 
