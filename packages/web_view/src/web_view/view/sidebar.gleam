@@ -22,10 +22,22 @@
 //// and `component.strip_path` name are those of regions after it, so it keeps
 //// its place as `element.none()` when it is not drawn.
 ////
-//// Each workspace is a section with its own label, which the stylesheet draws
-//// as a small eyebrow above the group and separates from the next group by a
-//// hairline. The list's own heading, "Sessions", is in the page for
-//// assistive technology and is not drawn.
+//// Each project is a section with its own label, the project's directory name
+//// (`sessions.titles`) with its whole path as a `title`, which the stylesheet
+//// draws as a small eyebrow above the group and separates from the next group by
+//// a hairline. The list's own heading, "Sessions", is in the page for
+//// assistive technology and is not drawn. A session in a git worktree says
+//// which one in the quiet line under its name, with the worktree's path as that
+//// name's `title`.
+////
+//// The sidebar lists the sessions a process runs. The saved ones sit after the
+//// groups behind a quiet "N saved" line: the same groups, in a panel the
+//// stylesheet hides until `<loom-saved>` (`web_client/saved`) opens it in the
+//// browser. They stay in the document, so the session switcher, which reads the
+//// sidebar's `.session-open` buttons, still lists them while they are folded,
+//// and the session on screen is always listed above, saved or not. The line is
+//// a button with no handler, so the sidebar's pinned path and the paths after
+//// it are where they were.
 ////
 //// Every name is drawn as a text node, and a workspace's whole path as a
 //// `title` attribute that Lustre escapes. The catalogue's fields are written
@@ -61,7 +73,6 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
-import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -240,9 +251,11 @@ fn house() -> Element(message) {
   )
 }
 
-// The column itself: its title, the navigation slot, and one section per
-// group, or nothing when there is no group. The slot is always one child, so
-// the groups sit at the same index on both pages.
+// The column itself: its title, the navigation slot, one section per project
+// that has a running session, and, when any session is saved, the quiet
+// "N saved" line with the saved sessions behind it. The slot is always one
+// child, so the groups sit at the same index on both pages. With no group at
+// all it is nothing.
 fn column(
   groups: List(Group),
   nav: Element(message),
@@ -254,7 +267,12 @@ fn column(
 ) -> Element(message) {
   case groups {
     [] -> element.none()
-    [_, ..] ->
+    [_, ..] -> {
+      // The headings are chosen across every project, saved or not, so a
+      // project reads the same above the fold and below it.
+      let titles = sessions.titles(groups)
+      let #(running, saved) = partition(groups, current)
+      let draw = group(_, titles, current, bars, suffix, open, resume)
       html.aside(
         [
           attribute.class("sidebar"),
@@ -264,23 +282,101 @@ fn column(
         [
           html.h2([attribute.class("sidebar-title")], [html.text("Sessions")]),
           nav,
-          ..list.map(groups, group(_, current, bars, suffix, open, resume))
+          ..list.append(
+            list.map(running, draw),
+            saved_region(saved, list.map(saved, draw)),
+          )
         ],
       )
+    }
+  }
+}
+
+// The groups split into the sessions the sidebar lists and the saved ones it
+// keeps behind its toggle. A saved session that is the page on screen stays in
+// the list, so the person always sees where they are. A project with nothing on
+// one side has no group on it.
+fn partition(
+  groups: List(Group),
+  current: String,
+) -> #(List(Group), List(Group)) {
+  let #(running, saved) =
+    list.map(groups, fn(group) {
+      let #(kept, away) =
+        list.partition(group.entries, fn(entry) {
+          entry.id == current || is_running(entry)
+        })
+      #(
+        sessions.Group(..group, entries: kept),
+        sessions.Group(..group, entries: away),
+      )
+    })
+    |> list.unzip
+
+  #(
+    list.filter(running, fn(group) { group.entries != [] }),
+    list.filter(saved, fn(group) { group.entries != [] }),
+  )
+}
+
+fn is_running(entry: Entry) -> Bool {
+  case entry.residency {
+    Live -> True
+    Saved | Blocked -> False
+  }
+}
+
+// The saved sessions: a quiet line that says how many there are, and under it
+// their groups. Both are always in the document, and the stylesheet hides the
+// groups until `<loom-saved>` reports that the person opened them, so the
+// switcher, which reads the sidebar's buttons, still finds a saved session
+// while it is hidden. The toggle carries the fixed `data-saved` mark and its
+// `aria-expanded`, which the element writes after this draws it closed. The
+// count is a number, the only text here.
+fn saved_region(
+  groups: List(Group),
+  sections: List(Element(message)),
+) -> List(Element(message)) {
+  case groups {
+    [] -> []
+    [_, ..] -> {
+      let total =
+        list.fold(groups, 0, fn(sum, group) { sum + list.length(group.entries) })
+      [
+        html.div([attribute.class("saved-region")], [
+          element.element("loom-saved", [], [
+            html.button(
+              [
+                attribute.type_("button"),
+                attribute.class("saved-toggle"),
+                attribute.attribute("data-saved", "toggle"),
+                attribute.attribute("aria-expanded", "false"),
+                attribute.title("Show or hide the saved sessions"),
+              ],
+              [html.text(int.to_string(total) <> " saved")],
+            ),
+          ]),
+          html.div([attribute.class("saved-panel")], sections),
+        ]),
+      ]
+    }
   }
 }
 
 fn group(
   group: Group,
+  titles: Dict(String, String),
   current: String,
   bars: List(Bar),
   suffix: Suffix,
   open: fn(String) -> message,
   resume: Resume(message),
 ) -> Element(message) {
+  let title = result.unwrap(dict.get(titles, group.project), group.project)
+
   html.section([attribute.class("workspace-group")], [
-    html.h3([attribute.class("workspace"), attribute.title(group.workspace)], [
-      html.text(basename(group.workspace)),
+    html.h3([attribute.class("workspace"), attribute.title(group.project)], [
+      html.text(title),
       html.span([attribute.class("group-count")], [
         html.text(int.to_string(list.length(group.entries))),
       ]),
@@ -300,8 +396,9 @@ fn group(
 // Only the session on screen draws strand bars, between its name and its
 // residency. A session with a subtitle draws it in a quiet line under its name
 // (protocol-change/067), as a text node: the subtitle is a person's own prompt,
-// so it is never an attribute, a class or a title, and a row without one is
-// the two words it always was.
+// so it is never an attribute, a class or a title. A session in a git worktree
+// leads that line with the worktree's name. A row with neither is the two words
+// it always was.
 fn entry(
   entry: Entry,
   current: String,
@@ -320,13 +417,32 @@ fn entry(
     html.span([attribute.class("session-name")], [
       html.text(sessions.label(entry)),
     ])
-  let lead = case entry.subtitle {
-    Some(subtitle) ->
+
+  // The quiet line under the name: the worktree the session runs in, when it
+  // is not the project's own checkout, then the subtitle. The worktree is its
+  // directory name with the whole path as a `title`, which is the host's text
+  // and never a session's. The subtitle is a text node and nothing else.
+  let tree = case sessions.worktree(entry) {
+    Some(directory) -> [
+      html.span(
+        [attribute.class("session-tree"), attribute.title(entry.workspace)],
+        [html.text(directory)],
+      ),
+    ]
+    None -> []
+  }
+  let quiet = case entry.subtitle, tree {
+    Some(subtitle), [] -> [html.text(subtitle)]
+    Some(subtitle), _ -> list.append(tree, [html.text(" · " <> subtitle)])
+    None, _ -> tree
+  }
+  let lead = case quiet {
+    [] -> name
+    [_, ..] ->
       html.span([attribute.class("session-text")], [
         name,
-        html.span([attribute.class("session-subtitle")], [html.text(subtitle)]),
+        html.span([attribute.class("session-subtitle")], quiet),
       ])
-    None -> name
   }
   let residency =
     html.span(
@@ -425,11 +541,4 @@ fn bar(bar: Bar) -> Element(message) {
     Still -> [attribute.class("bar"), strip.hue_class(bar.hue)]
   }
   html.span(classes, [])
-}
-
-fn basename(path: String) -> String {
-  string.split(path, "/")
-  |> list.filter(fn(segment) { segment != "" })
-  |> list.last
-  |> result.unwrap(path)
 }

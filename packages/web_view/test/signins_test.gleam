@@ -36,6 +36,7 @@ fn entry(id: String) -> Entry {
     residency: Live,
     subtitle: None,
     role: None,
+    project: None,
   )
 }
 

@@ -30,8 +30,8 @@ import web_view/sessions.{Entry, Live}
 // The catalogue: two running sessions, named without either marker.
 fn listing() -> List(sessions.Entry) {
   [
-    Entry("first", "first project", "/src/one", 100, Live, None, None),
-    Entry("second", "second project", "/src/two", 200, Live, None, None),
+    Entry("first", "first project", "/src/one", 100, Live, None, None, None),
+    Entry("second", "second project", "/src/two", 200, Live, None, None, None),
   ]
 }
 

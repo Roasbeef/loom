@@ -60,6 +60,7 @@ fn entry(id: String, name: String, residency: sessions.Residency) -> Entry {
     residency:,
     subtitle: None,
     role: None,
+    project: None,
   )
 }
 

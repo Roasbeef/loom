@@ -20,9 +20,9 @@ import web_view/sessions.{Entry, Live, Saved}
 
 fn listing() -> List(sessions.Entry) {
   [
-    Entry("B", "vetting lint", "/src/loom", 300, Live, None, None),
-    Entry("A", "web ui", "/src/loom", 100, Live, None, None),
-    Entry("C", "hex release", "/src/weft", 900, Saved, None, None),
+    Entry("B", "vetting lint", "/src/loom", 300, Live, None, None, None),
+    Entry("A", "web ui", "/src/loom", 100, Live, None, None, None),
+    Entry("C", "hex release", "/src/weft", 900, Saved, None, None, None),
   ]
 }
 
@@ -102,7 +102,16 @@ pub fn an_operator_with_no_listed_sessions_has_no_sidebar_test() {
 // is written from the type, never from a session's or a workspace's text.
 pub fn the_sidebar_attribute_is_a_fixed_word_test() {
   let hostile = [
-    Entry("X", "\" onclick=\"alert(1)", "/src/\"><script>", 1, Live, None, None),
+    Entry(
+      "X",
+      "\" onclick=\"alert(1)",
+      "/src/\"><script>",
+      1,
+      Live,
+      None,
+      None,
+      None,
+    ),
   ]
   let html = element.to_string(operator_page.view(listed(hostile)))
   assert string.contains(html, "sidebar=\"listed\"")
