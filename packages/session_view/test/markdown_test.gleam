@@ -444,6 +444,36 @@ pub fn bare_links_test() {
     ]
 }
 
+// A URL written inside a link's label must not run on into the label's
+// close and the real destination, or the link would go to a wrong address.
+pub fn a_bare_url_in_a_label_does_not_swallow_the_destination_test() {
+  assert markdown.parse("[see https://a.test](https://b.test)")
+    == [
+      Paragraph([Link([Text("see "), Text("https://a.test")], "https://b.test")]),
+    ]
+}
+
+pub fn a_bare_url_stops_before_a_close_paren_test() {
+  assert markdown.parse("(https://a.test) and x")
+    == [
+      Paragraph([
+        Text("("),
+        Link([Text("https://a.test")], "https://a.test"),
+        Text(") and x"),
+      ]),
+    ]
+}
+
+// A link cannot hold a link, in a label's emphasis either.
+pub fn a_link_holds_no_link_test() {
+  assert markdown.parse("[**see https://a.test**](https://b.test)")
+    == [
+      Paragraph([
+        Link([Strong([Text("see "), Text("https://a.test")])], "https://b.test"),
+      ]),
+    ]
+}
+
 pub fn email_autolinks_test() {
   assert markdown.parse("<me@x.test> and me@x.test")
     == [

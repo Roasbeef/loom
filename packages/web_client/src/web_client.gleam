@@ -52,6 +52,9 @@
 ////   the home's account panel from the person's name in the bar.
 //// - `<loom-time at="...">` (`web_client/time`) draws an instant, in Unix
 ////   milliseconds, as the time of day in the browser's own zone.
+//// - `<loom-link>` (`web_client/link`) makes a Markdown link clickable once the
+////   browser has checked its destination, read from the element's own child
+////   text, as an `http` or `https` address.
 //// - `<loom-reveal>` (`web_client/reveal`) scrolls the box it sits in into view
 ////   once, when the box appears.
 ////
@@ -75,6 +78,7 @@ import web_client/elapsed
 import web_client/expand
 import web_client/fold
 import web_client/follow
+import web_client/link
 import web_client/popover
 import web_client/rename
 import web_client/reveal
@@ -108,6 +112,7 @@ pub fn main() -> Nil {
   let _ = expand.register()
   let _ = fold.register()
   let _ = follow.register()
+  let _ = link.register()
   let _ = popover.register()
   let _ = rename.register()
   let _ = reveal.register()

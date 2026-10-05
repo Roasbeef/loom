@@ -527,7 +527,13 @@ approval text, names, file paths. The agent can write all of it.
   as it is. An `on*` attribute from content would be an inline handler.
 - **No `href`, `src` or `action` from content.** A URL or path in the
   transcript is drawn as text. The policy's `script-src 'self'` refuses a
-  `javascript:` URL, and the view must not depend on that.
+  `javascript:` URL, and the view must not depend on that. A Markdown link is
+  the one place a destination becomes clickable, and the server still writes no
+  attribute: it draws `<loom-link>` with the label and the destination as two
+  text children, and the browser element checks the destination (`http` or
+  `https` only, no credentials, bounded length, `web_client/link_rule`) before
+  it draws a real anchor with `target="_blank" rel="noopener noreferrer"` in its
+  own shadow root (protocol-change/051, the addendum on clickable links).
 - **No `attribute.property` from content, and never for `innerHTML` or
   `outerHTML`.** The client runtime applies a property as `node[name] =
   value` **(source)** ([`reconciler.ffi.mjs`][src-reconciler],

@@ -3948,3 +3948,82 @@ One more region the home socket reads an event from, for every home.
 `ui_socket_test` pins the admitted and the dropped frames for all three admissions.
 `names_test` pins that the form's handler is one submit beneath the panel and that no
 path outside the panel moved.
+
+## Addendum: clickable links (2026-10-05)
+
+**Status**: PROPOSED, IMPLEMENTED with the web/clickable-links branch ·
+**Raised by**: the owner ("links aren't clickable, should auto show in new tab")
+
+This addendum changes how a Markdown link in a model's answer is drawn. It adds no
+route, no socket admission, no event and no field on the wire. It does not relax the
+rule that session text is only ever a text node: the server still writes no `href`,
+and the one attribute that carries a destination is written by the browser.
+
+### What changed
+
+- **The server sends a link's destination only as text.** A Markdown link, or a bare
+  URL the parser autolinks, is drawn as
+  `<loom-link><span class="ll-text">label</span><span class="ll-url" hidden>URL</span></loom-link>`
+  (`web_view/markdown_view`). Both children are text nodes of the server's own
+  elements, with fixed classes and the fixed `hidden` attribute. The earlier drawing,
+  the label followed by `(destination)` as text, is gone.
+- **A browser element validates the destination and owns the navigation.**
+  `<loom-link>` (`web_client/link`) reads the text of its `ll-url` child and passes it
+  to `web_client/link_rule.destination`. Only a plain absolute `http:` or `https:`
+  address passes: it must start with the scheme in either letter case, hold no
+  whitespace, control character, invisible separator or backslash, have a non-empty
+  authority with no `@` (so no `user:pass@host`), and be at most 2048 characters. The
+  rule is a text check rather than the `URL` constructor, because the constructor
+  strips whitespace, drops tabs and newlines and reads a backslash as a slash, so a
+  check run on its output would approve text the browser then handles differently.
+  `javascript:`, `data:`, `file:`, `vbscript:`, `mailto:` and a scheme-relative
+  `//host` are refused.
+- **A valid destination becomes a real anchor, drawn by the element.** In its shadow
+  root the element draws `<a href target="_blank" rel="noopener noreferrer"
+  title="URL">` around a slot that projects the server's label, with a small `↗`
+  glyph after it. The new tab gets no `window.opener`. The `title` is the validated
+  destination, so a label that differs from the address can be told apart on hover.
+  The browser supplies focus, Enter, middle click and "copy link address". This sets
+  an attribute on an element the browser component itself drew, from a value the rule
+  approved, and never in the server's markup; the server-side rule stands as written.
+- **A refused destination leaves the label as plain text.** The element draws the slot
+  and, for a destination that is not empty and does not repeat the label, the
+  destination in parentheses as quiet text. There is no anchor and nothing happens on
+  a click.
+  The element watches its own children, so a destination the server patches later is
+  validated again.
+
+### What was considered
+
+- **A `role=link` span with a click and an Enter handler calling `window.open`.** It
+  needs the same validation and two handlers, and loses middle click, Control or
+  Command click, copy-link-address and the status-bar destination, which the anchor
+  gives for free. `rel="noopener noreferrer"` gives the same isolation as the
+  `noopener,noreferrer` feature string.
+- **Writing `href` on the server after the same check.** The check would then run on
+  the daemon with the decision in the markup. That reverses the page's rule that no
+  session text is an attribute, and it would need to be kept identical to what the
+  browser does with the string. Keeping the server's rule absolute and putting the
+  one exception in the browser, after validation, leaves a single place to audit.
+- **Showing the destination as text beside every link.** It was the earlier drawing.
+  It is long and noisy in an answer and does not make the link usable; the hover
+  title shows the same fact where the reader looks for it.
+
+### Cost
+
+A link the browser may open needs the client bundle, so a page whose script did not
+load shows labels with no links. A destination the rule refuses, a relative path such
+as `docs/README.md` being the common case, is drawn after the label as quiet text in
+parentheses with no anchor, unless it is empty or only repeats the label, so the
+reader still sees where the model pointed. That text is a text node the element
+draws from the hidden child's text, cut to 2048 characters. The rule also refuses the
+bidi isolates (U+2066 to U+2069), the invisible characters U+2060 to U+2065, U+00AD
+and U+061C, which could reorder or hide part of the address in the hover title.
+
+### Verification
+
+`link_test` (run under Node) pins what the rule accepts and refuses, including the
+mixed-case `JaVaScRiPt:`, leading whitespace and control characters, `//host`,
+credentials and over-length text. `markdown_view_test` pins the server's markup, that
+a hostile label and destination are escaped text, and that no `href` or `on*`
+attribute appears in it.

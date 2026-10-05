@@ -861,7 +861,17 @@
   .markdown .md-table th{font-weight:600;background:var(--color-bg-raised);}
   .markdown .md-table .md-center{text-align:center;}
   .markdown .md-table .md-right{text-align:right;}
-  .markdown .md-link{color:var(--color-current);text-decoration:underline;}
+  /* A Markdown link is <loom-link> (web_client/link). Its shadow root draws an
+     anchor around the label once the browser has validated the destination,
+     and the sheet is adopted there, so the anchor's rules sit beside the
+     page's. The accent colour, an underline on hover or keyboard focus only,
+     and a small glyph after the label; no shadow. */
+  loom-link{display:inline;}
+  a.link-anchor{color:var(--color-current);text-decoration:none;cursor:pointer;border-radius:2px;}
+  a.link-anchor:hover{text-decoration:underline;}
+  a.link-anchor:focus-visible{text-decoration:underline;outline:2px solid var(--color-current);outline-offset:1px;}
+  .link-refused{color:var(--color-fg-quiet);overflow-wrap:anywhere;}
+  .link-glyph{margin-left:.2em;font-size:.8em;opacity:.7;}
   .markdown .md-link-target,.markdown .md-image{color:var(--color-fg-quiet);overflow-wrap:anywhere;}
   /* A turn's work (web_view/view/lane, view/fold_row): one collapsed line,
      `Worked 22s · 10 steps · 2 files`, with no rule above or below it, and

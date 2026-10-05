@@ -1051,8 +1051,9 @@ page keys and nonces, and the relay into the session's gateway.
   daemon's escalation identity and sequence; cards are keyed by sequence
   (every storage write takes its own), rows by the engine's `transcript.Row` key. Text is only ever
   `html.text`; nothing uses `unsafe_raw_html`. Rendered Markdown keeps the
-  same rule: a link is its label and its destination as text, never an
-  `href`; a Markdown image is text and is never loaded; an ordered list's numbers
+  same rule: a link is `<loom-link>` holding its label and its destination as
+  two text children, never an `href` (the browser element validates the
+  destination and draws the anchor, 051's addendum on clickable links); a Markdown image is text and is never loaded; an ordered list's numbers
   and a fence's language are text; classes come from closed types.
 - **An approval card is drawn from the record alone** (`approval.presentation`),
   in its own region outside the transcript, directly above the composer in
