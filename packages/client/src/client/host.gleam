@@ -60,11 +60,14 @@
 //// row, so when it goes the lease can only expire. Everything else
 //// releases it.
 
+import client/evolution/retirement as cleanup
 import gleam/erlang/process.{
   type Pid, type Subject, Abnormal, ExitMessage, Killed, Normal, PortDown,
   ProcessDown,
 }
 import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 
 /// Why the server is stopping.
@@ -86,7 +89,7 @@ pub type Stop {
 /// Constructor invariants: `pid` is the host process `adopt` spawned, and
 /// `retirement` is a subject that process created and selects on.
 pub opaque type Host {
-  Host(pid: Pid, retirement: Subject(Nil))
+  Host(pid: Pid, retirement: Subject(Retirement))
 }
 
 /// Runs `boot` on a dedicated exit-trapping host process and hands its
@@ -122,6 +125,38 @@ pub fn adopt(
   boot boot: fn(Subject(Stop), Host) -> Result(booted, String),
   fatal fatal: fn(booted) -> List(#(String, Pid)),
   teardown teardown: fn(booted) -> Nil,
+) -> Result(booted, String) {
+  adopt_reported(boot:, fatal:, teardown: fn(booted) {
+    teardown(booted)
+    Ok(Nil)
+  })
+}
+
+/// Adopts a stack whose teardown carries a native retirement witness.
+/// Only the host runs teardown; its caller receives the result before exit.
+///
+/// ## Examples
+///
+/// `host.adopt_reported(boot:, fatal:, teardown: retire_native)`.
+pub fn adopt_reported(
+  boot boot: fn(Subject(Stop), Host) -> Result(booted, String),
+  fatal fatal: fn(booted) -> List(#(String, Pid)),
+  teardown teardown: fn(booted) -> Result(Nil, String),
+) -> Result(booted, String) {
+  adopt_task(boot:, fatal:, teardown: fn(booted) {
+    cleanup.repeat(fn() { teardown(booted) })
+  })
+}
+
+/// Adopts a host whose teardown transfers the exact remaining native task.
+///
+/// ## Examples
+///
+/// `adopt_task(boot:, fatal:, teardown: native_retirement)`.
+pub fn adopt_task(
+  boot boot: fn(Subject(Stop), Host) -> Result(booted, String),
+  fatal fatal: fn(booted) -> List(#(String, Pid)),
+  teardown teardown: fn(booted) -> cleanup.Task,
 ) -> Result(booted, String) {
   let replies = process.new_subject()
   let stops = process.new_subject()
@@ -178,12 +213,52 @@ pub fn retire(host: Host) -> Nil {
   // Monitor before asking, so a host that exits between the two steps is
   // still observed rather than waited on forever.
   let watch = process.monitor(host.pid)
-  process.send(host.retirement, Nil)
+  process.send(host.retirement, Requested(None))
   let _down =
     process.new_selector()
     |> process.select_specific_monitor(watch, fn(down) { down })
     |> process.selector_receive_forever()
   Nil
+}
+
+/// Requests teardown and returns its explicit native cleanup result.
+/// A host death without that result cannot establish helper retirement.
+///
+/// ## Examples
+///
+/// `host.retire_reported(instance.host)`.
+pub fn retire_reported(host: Host) -> Result(Nil, String) {
+  cleanup.perform(retire_task(host))
+  |> result.map_error(fn(failed) { failed.reason })
+}
+
+/// Requests the sole teardown owner and preserves its failed continuation.
+/// Host death without a report is an unavailable witness, never completion.
+///
+/// ## Examples
+///
+/// `cleanup.perform(retire_task(host))` transfers remaining work before exit.
+pub fn retire_task(host: Host) -> cleanup.Task {
+  cleanup.Task(fn() {
+    let replies = process.new_subject()
+    let monitor = process.monitor(host.pid)
+    process.send(host.retirement, Requested(Some(replies)))
+
+    // The result is sent before the host exits. A prior fault can establish
+    // neither the executor witness nor its failure reason for this request.
+    let outcome =
+      process.new_selector()
+      |> process.select(replies)
+      |> process.select_specific_monitor(monitor, fn(_down) {
+        Error(cleanup.Failure(
+          "native retirement result unavailable: instance host exited",
+          retire_task(host),
+        ))
+      })
+      |> process.selector_receive_forever()
+    process.demonitor_process(monitor)
+    outcome
+  })
 }
 
 /// The host process itself, for a test that must observe it.
@@ -226,10 +301,16 @@ pub fn relay_sigterm(
   Nil
 }
 
+// A request carries its acknowledgement endpoint only when the caller needs
+// proof of native cleanup rather than the existing orderly-stop barrier.
+type Retirement {
+  Requested(reply: Option(Subject(Result(Nil, cleanup.Failure))))
+}
+
 // What ends the watch: a death the host observed, or a caller's request.
 type Event {
   Died(child: String, reason: process.ExitReason)
-  Retire
+  Retire(reply: Option(Subject(Result(Nil, cleanup.Failure))))
 }
 
 // Waits for the first fatal death or a retirement request, and tears the
@@ -237,8 +318,8 @@ type Event {
 // starter; everything else the boot linked arrives through the exit trap.
 fn watch(
   watched: List(#(String, Pid)),
-  retirement: Subject(Nil),
-  teardown: fn(booted) -> Nil,
+  retirement: Subject(Retirement),
+  teardown: fn(booted) -> cleanup.Task,
   booted: booted,
   stops: Subject(Stop),
 ) -> Nil {
@@ -260,13 +341,16 @@ fn watch(
       let ExitMessage(pid:, reason:) = exit
       Died(named(by_pid, pid), reason)
     })
-    |> process.select_map(retirement, fn(_request) { Retire })
+    |> process.select_map(retirement, fn(request) {
+      let Requested(reply) = request
+      Retire(reply)
+    })
   await_end(selector, teardown, booted, stops)
 }
 
 fn await_end(
   selector: process.Selector(Event),
-  teardown: fn(booted) -> Nil,
+  teardown: fn(booted) -> cleanup.Task,
   booted: booted,
   stops: Subject(Stop),
 ) -> Nil {
@@ -279,10 +363,16 @@ fn await_end(
     // A caller asked. The deaths the teardown itself causes are never
     // read: the host returns afterwards, and its exit is what the caller
     // in `retire` is waiting on.
-    Retire -> teardown(booted)
+    Retire(reply) -> {
+      let outcome = cleanup.perform(teardown(booted))
+      case reply {
+        None -> Nil
+        Some(endpoint) -> process.send(endpoint, outcome)
+      }
+    }
 
     Died(child:, reason:) -> {
-      teardown(booted)
+      let _outcome = cleanup.perform(teardown(booted))
       process.send(stops, Faulted(child:, reason: describe(reason)))
     }
   }
