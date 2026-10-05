@@ -2121,10 +2121,10 @@ every weft start links its scope to the process that calls it, and this run must
 outlive the page the stop ends, so a weft wrapper would add nothing. The answer
 goes to the page's runtime if it is still there. Every step is bounded by its own
 call timeouts and by the 15 s stop wait and 30 s resume wait, so the worst case is
-about 90 s, and a deadline would only kill a task that was about to answer. The
-admin page does not trust the answer to arrive: a read that finds the session
-shareable ends the page's wait (`admin.still_waiting`), so a task that never
-delivers cannot leave every button disabled.
+about 90 s, and a deadline would only kill a task that was about to answer. Every
+manager call in the task is a `try_call` with a 5 s timeout and the process cannot
+crash, so the answer always lands, and the admin page's `waiting` is cleared only
+by that answer: a refresh that cleared it earlier would drop a `NotResumed`.
 
 **Two presses at once.** Both stop the session, and the second isolation is
 refused because the first one made the change. `shareable.make` re-reads the

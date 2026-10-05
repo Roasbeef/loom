@@ -1571,3 +1571,27 @@ pub fn a_refused_make_shareable_says_what_state_it_left_test() {
   )
   assert string.contains(html, ">Make shareable<")
 }
+
+// A refresh that lands while the task is still resuming the session does not end
+// the page's wait: the answer that arrives after it, a failed resume, is still
+// worded beside the control.
+pub fn a_refresh_during_the_task_does_not_drop_a_failed_resume_test() {
+  let start =
+    admin.Start(
+      ..start_with(process.new_subject(), process.new_subject(), grants.Changed),
+      read: fn(chosen, deliver) {
+        deliver(grants.Read(private_snapshot(chosen, Live)))
+      },
+      act: fn(_action, _deliver) { Nil },
+    )
+  let #(model, _) = opened(start)
+  let model = run(model, admin.Choosing(session))
+  let model = run(model, admin.Arming(make_shareable()))
+  let model = run(model, admin.Asking(make_shareable()))
+  let model = run(model, admin.Ticked)
+  let model = run(model, admin.Acted(grants.Declined(grants.NotResumed)))
+  assert string.contains(
+    drawn(model),
+    "The session is shareable now but did not start again.",
+  )
+}

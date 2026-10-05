@@ -345,5 +345,6 @@ pub fn two_tasks_at_once_both_succeed_test() {
   assert first == Ok(Nil)
   assert second == Ok(Nil)
   assert scope_of(store, record.id) == domain.SessionOnly
+  assert is_resident(registry, record.id)
   finish(registry, store)
 }
