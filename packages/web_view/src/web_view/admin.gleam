@@ -577,7 +577,9 @@ pub fn view(model: Model) -> Element(Msg) {
     home_bar.view(
       title: "Admin",
       name: model.start.name,
-      ceiling: "operator",
+      // The owner's own page carries no role pill, as the owner's home does not
+      // (the round-4 ruling on F72).
+      ceiling: "",
       status: status_words(model.status),
       tone: status_tone(model.status),
       notice: ended.admin(ended_ending(model.status)),

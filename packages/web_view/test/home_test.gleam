@@ -274,7 +274,9 @@ pub fn an_activity_answer_replaces_the_last_test() {
   )
   let model = run(model, home.Observed([#("B", sessions.Idle)]))
   assert !string.contains(drawn(model), "working")
-  assert list.length(string.split(drawn(model), ">idle<")) == 2
+
+  // The sidebar says the same word, so count the list's activity spans only.
+  assert list.length(string.split(drawn(model), "home-activity\">idle<")) == 2
 }
 
 // The activity word is a span of its own, so a needs-you row can tint that word

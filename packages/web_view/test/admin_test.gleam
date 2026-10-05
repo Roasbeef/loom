@@ -211,7 +211,7 @@ pub fn the_page_draws_in_the_homes_frame_test() {
   assert string.contains(html, "sidebar=\"none\"")
   assert string.contains(html, ">Admin<")
   assert string.contains(html, "Olive")
-  assert string.contains(html, ">operator<")
+  assert !string.contains(html, ">operator<")
   assert string.contains(html, "connected")
   assert !string.contains(html, "<aside")
 }
