@@ -63,8 +63,13 @@ The [final-result design](distributed-final-results.md) now has implemented
 complete-report storage, bounded foreground rendering, typed reads and optional
 owner-local routing. The [renderer review](../review/distributed-report-renderer.md)
 records a production fingerprint mismatch found after injected tests passed and
-its correction. Real satellite retrieval is being checked separately; default
-registered-host wiring and companion lifecycle are still pending.
+its correction. The [real-jail gate](../review/distributed-report-live.md) now
+passes actual producer, reader, owner-file protection and cumulative limit checks
+in the integration tree. Default registered-host wiring and companion lifecycle
+are still pending. The [terminal preflight](../review/distributed-terminal-preflight.md)
+and [owner Launch binding](../review/distributed-launch-command.md) are integrated;
+the [consumed Launch channel](distributed-launch-channel.md) is the next runtime
+boundary under implementation and formal modeling.
 Launch/satellite execution, the remote LSP host and registered daemon
 configuration remain required. Acceptance must drive ordinary tools and code
 mode with the owner and executor on separate hosts and no checkout on the
