@@ -354,20 +354,20 @@ fn sign_in(
   presses: Presses(message),
   busy: Busy,
 ) -> Element(message) {
-  let here = this == Some(signin.fingerprint)
+  let whose = signins_view.whose(signin, this)
   html.li([attribute.class("admin-signin")], [
     html.span([attribute.class("admin-text")], [
       html.span([attribute.class("admin-name")], [
-        html.text(case here {
-          True -> "This browser"
-          False -> "Browser"
+        html.text(case whose {
+          signins_view.ThisBrowser -> "This browser"
+          signins_view.AnotherBrowser -> "Browser"
         }),
         html.span([attribute.class("admin-id")], [
           html.text(signin.fingerprint),
         ]),
       ]),
       html.span([attribute.class("admin-sub")], [
-        html.text(signins_view.history(signin, now)),
+        html.text(signins_view.history(signin, now, whose)),
       ]),
     ]),
     html.div([attribute.class("admin-actions")], [

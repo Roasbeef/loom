@@ -17,9 +17,12 @@
 //// a state the action fits are the daemon's: it reads them from the attachment
 //// the router authenticated, again at the moment of the click
 //// (`ui_socket.manage_for`). Delete is the one action with no way back, so the
-//// page takes a second press in the row before it asks (`Stage`), and the
-//// daemon takes no such step: the confirmation is the page's, and the daemon's
-//// checks are the same whether the press was confirmed or forged.
+//// page takes a second press in the row before it asks (`Stage`). Stop takes
+//// the same step on a row that is working or waiting for the person, since it
+//// cancels a turn in flight or drops an approval nobody has seen; on an idle
+//// row it acts at once. The daemon takes no such step: the confirmation is
+//// the page's, and the daemon's checks are the same whether the press was
+//// confirmed or forged.
 ////
 //// The words a page shows for a refusal are fixed here, so no text the daemon
 //// or the catalogue produced reaches a browser.
@@ -72,8 +75,11 @@ pub type Stage {
   /// No row is waiting on the owner or on the daemon.
   Calm
 
-  /// The owner pressed Delete on this row, and the row asks once more.
-  Confirming(session: String)
+  /// The owner pressed Delete on this row, or Stop on a row that is working or
+  /// waiting for them, and the row asks once more. `action` is the one the
+  /// confirmation is for, so a press that confirms a Stop can never act as a
+  /// Delete.
+  Confirming(session: String, action: Action)
 
   /// A request for this row is with the daemon. A press meanwhile asks
   /// nothing, so one press acts at most once.
@@ -109,20 +115,5 @@ pub fn done_words(action: Action) -> String {
     Stop -> "Stopped."
     Archive -> "Archived."
     Delete -> "Deleted."
-  }
-}
-
-/// The words a page shows while the daemon works.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert actions.working_words(actions.Stop) == "Stopping the session."
-/// ```
-pub fn working_words(action: Action) -> String {
-  case action {
-    Stop -> "Stopping the session."
-    Archive -> "Archiving the session."
-    Delete -> "Deleting the session."
   }
 }

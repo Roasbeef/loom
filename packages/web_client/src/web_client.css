@@ -510,6 +510,8 @@
   .home-confirm-actions{display:flex;gap:6px;}
   .home-confirm-actions button{margin:0;padding:4px 12px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:13px/1.4 var(--font-sans);cursor:pointer;}
   .home-confirm-actions button:hover{background:var(--color-bg-raised);}
+  li.home-row.confirming.confirm-stop{background:color-mix(in srgb,var(--color-current) 7%,transparent);border-bottom-color:color-mix(in srgb,var(--color-current) 35%,var(--color-divider));}
+  .home-confirm-actions .home-confirm-go{border-color:color-mix(in srgb,var(--color-current) 55%,transparent);background:color-mix(in srgb,var(--color-current) 14%,transparent);}
   .home-confirm-actions .home-confirm-delete{border-color:color-mix(in srgb,var(--color-danger) 55%,transparent);background:color-mix(in srgb,var(--color-danger) 14%,transparent);color:var(--color-danger-text);}
   .home-confirm-actions button:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
   @media (max-width:640px){
@@ -554,7 +556,28 @@
   loom-rename input{flex:1 1 auto;min-width:0;background:var(--color-bg);color:var(--color-fg);border:1px solid var(--color-divider);border-radius:4px;padding:5px 8px;font:13px/1.4 var(--font-sans);}
   .home-chevron{flex:0 0 auto;color:var(--color-fg-quiet);font-size:16px;line-height:1;}
   .home-open:hover .home-chevron{color:var(--color-fg);}
-  .home-notice{margin:0 0 12px 0;padding:8px 12px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font-size:13px;}
+  /* A note about the last action (round 5, F102): never a box above the list.
+     In a row it is a span ending the quiet line, in a heading it is the shared
+     notice line; a completed one fades and a refused one stays in the danger
+     colour. Nothing here takes room that was not already there, so the list
+     does not move when one appears or goes. */
+  .home-note{color:var(--color-fg);animation:home-note-fade 4s forwards;}
+  .home-note.refused{color:var(--color-danger-text);animation:none;}
+  @keyframes home-note-fade{0%,75%{opacity:1;}100%{opacity:0;}}
+  .home-group-head > .notice-line,.home-group-head > .notice-refusal{flex:0 1 auto;margin:0;}
+  .home-sessions > .notice-line,.home-sessions > .notice-refusal{margin:0 0 12px 0;}
+  /* A row that was pressed and waits on the daemon (round 5, F113): dimmed, a
+     spinner where the chevron was, and no second press. */
+  li.home-row.opening .home-open,li.home-row.opening .home-item{opacity:.6;pointer-events:none;}
+  li.home-row.opening .home-chevron{width:12px;height:12px;box-sizing:border-box;border-width:2px;border-style:solid;border-color:var(--color-divider);border-top-color:var(--color-fg-quiet);border-radius:50%;font-size:0;animation:home-spin .8s linear infinite;}
+  @keyframes home-spin{to{transform:rotate(360deg);}}
+  /* The create form's hint names what a blank field gets, so it goes once the
+     field holds a name (round 5, F117). */
+  .home-create-name:not(:placeholder-shown) ~ .home-create-hint{display:none;}
+  /* The resumed home's one quiet sentence and its copy box (round 5, F101). */
+  .home-resumed{margin:8px 0 0 0;}
+  .home-resumed .home-signin-status:empty{display:none;}
+  .home-resumed-lead{margin:10px 0 6px 0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);overflow-wrap:anywhere;}
   /* The account panel. The sign-ins region is still the centre's third child,
      where the socket admits its clicks, and the stylesheet takes it out of the
      flow: it floats under the bar at the centre's right edge, hidden until the
@@ -641,7 +664,6 @@
   .admin-note{margin:0 0 20px 0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
   .admin-members > .admin-lead{margin:12px 0 0 0;}
   .admin-section > .home-empty{margin:12px 0 0 0;}
-  main.centre > .home-notice{max-width:960px;}
   .admin-section .home-heading .home-count{margin-left:8px;color:var(--color-fg-quiet);font-weight:400;font-variant-numeric:tabular-nums;}
   ul.admin-list{list-style:none;margin:0;padding:0;border-top:1px solid var(--color-divider);}
   li.admin-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;min-height:44px;margin:0;padding:6px 10px;border-bottom:1px solid var(--color-divider);}

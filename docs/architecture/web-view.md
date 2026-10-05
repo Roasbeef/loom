@@ -1062,16 +1062,22 @@ beneath `home.table_path`, which every home's socket admits for a row. What make
 a button exist is `Start.manage`, which `ui_socket.home_manage_capability` hands
 to the owner's operating home that a `loom ui` exchange opened (`fresh_home`, as
 for the Admin button), so a member's home, a read-only link and a home a bookmark
-resumed draw nothing and ignore the messages. Stop and Archive ask at once. Delete
-takes a second press in the row: the row's words become `Delete this session? This
-cannot be undone.` with a Delete and a Cancel (`home.Confirming`), and only the
-second press asks.
+resumed draw nothing and ignore the messages. Archive asks at once, and so does Stop on an
+idle row. Delete takes a second press in the row: the row's words become `Delete
+this session? This cannot be undone.` with a Delete and a Cancel
+(`home.Confirming`), and only the second press asks. Stop takes the same step, as
+`Stop this session mid-turn?` in a neutral tint, on a row the page's own activity
+read has as working or needing the person; a confirmation acts only for the row
+and the action that are confirming, so a forged one does nothing.
 
 A press is a message that names the session the server drew into the row. The
 component starts the daemon's task (`ui_socket.manage_task`, a weft run) and
 returns, and the answer is `ActionAnswered`: the page says what happened in fixed
-words (`actions.done_words`, `actions.reason_words`) and reads its list again, so a
-stopped session shows as saved and an archived or deleted one is gone. While one
+words (`actions.done_words`, `actions.reason_words`), as a `home_table.Note` that
+sits in the row, or in the workspace's heading naming the session once the row is
+gone, and never moves the list (a completed one fades, a refusal stays), and reads
+its list again, so a stopped session shows as saved and an archived or deleted one
+is gone. While one
 request is out every other press asks nothing. `ui_socket.manage_for` decides
 each press from the attachment, again at the click: the home is open and fresh,
 minted to operate, its credential authenticates as the owner, the target is a

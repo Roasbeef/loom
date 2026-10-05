@@ -40,9 +40,10 @@
 //// `Start.open` and `Start.resume` make the daemon check the principal's
 //// membership, and for a resume its role, again before it mints a ticket. The
 //// answer is a ticket's address, which the hidden `<loom-switch>` element
-//// navigates to, or a refusal worded in the page's notice. While one resume is
-//// out the page holds its session and asks for no other, so a second press
-//// asks nothing. Every name and path is a catalogue field, drawn as a text
+//// navigates to, or a refusal worded in a note beside the row. A pressed row,
+//// running or saved, shows `Opening…` from the press until the page leaves
+//// (`Model.opening`, `Model.resuming`), and while one is out the page asks for
+//// no other, so a second press asks nothing. Every name and path is a catalogue field, drawn as a text
 //// node (`view/home_table`, `view/sidebar`). The page names the principal and
 //// the most the page may do in its top bar, so a person who holds two homes
 //// can tell them apart.
@@ -67,12 +68,19 @@
 //// on a running row, Archive and Delete on a saved one (`view/home_table`,
 //// `web_view/actions`). The daemon decides who has `Start.manage` (the owner's
 //// operating page that a `loom ui` exchange opened, as the Admin button is),
-//// and a page without it draws nothing and ignores the messages. Stop and
-//// Archive ask at once; Delete is two presses, the second a Delete in the row's
-//// own confirmation (`Confirming`), and the daemon is asked only after it. The
-//// request is the daemon's own task (`Working`), the answer arrives as
-//// `ActionAnswered`, and the page then reads its list again so the row is gone
-//// or changed. A refusal is the reason's fixed words in the page's notice.
+//// and a page without it draws nothing and ignores the messages. Archive asks at
+//// once. Delete is two presses, the second a Delete in the row's own
+//// confirmation (`Confirming`), and the daemon is asked only after it. Stop is
+//// one press on an idle row and two on a row the page last read as working or
+//// needing the person, whose confirmation is `StopConfirmed`: the page decides
+//// from its own activity read (`Model.activity`) and never from the press, so a
+//// forged press for a busy row only opens the confirmation, and a forged
+//// confirmation for a row that is not confirming is ignored. The request is the
+//// daemon's own task (`Working`), the answer arrives as `ActionAnswered`, and
+//// the page then reads its list again so the row is gone or changed. What the
+//// page says about it is a `Note` beside the row (`view/home_table`): quiet and
+//// fading for a completed action, in the danger colour and staying for a
+//// refusal, and the list never moves.
 ////
 //// The page also lists the browsers signed in as its principal and lets the
 //// person end them (protocol-change/065, the eighth pull request). Each list
@@ -130,13 +138,14 @@
 ////    for the running sessions it listed.
 //// 4. A press is a message `update` handles, one of `Opening`, `Resuming`,
 ////    `Choosing`, `Creating`, `Renaming`, `StopRequested`, `ArchiveRequested`,
-////    `DeleteConfirmed`, `AdminRequested`, `SigningOut`, `SigningOutAll`,
+////    `StopConfirmed`, `DeleteConfirmed`, `AdminRequested`, `SigningOut`, `SigningOutAll`,
 ////    `AddingDevice` or `NameSubmitted`, each of which asks the daemon through
 ////    its own `Start` field and leaves the answer to the effect's message.
 //// 5. `view` draws the groups through `shell_sidebar`, the offers
 ////    (`resume_offer`, `rename_offer`, `manage_offer`, `create_offer`,
 ////    `admin_offer`), the
-////    sign-ins and `press_notice`.
+////    sign-ins; the last press's note is drawn by the table, beside the row it
+////    is about.
 ////
 //// ## Transitions
 ////
@@ -168,11 +177,11 @@ import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import lustre
 import lustre/attribute
 import lustre/effect.{type Effect}
 import lustre/element.{type Element}
-import lustre/element/html
 import lustre/event
 import lustre/server_component
 import web_view/actions
@@ -180,13 +189,16 @@ import web_view/creations.{type Sharing}
 import web_view/ending.{type Ending}
 import web_view/names
 import web_view/renames
-import web_view/sessions.{type Activity, type Entry, type Group, Live}
+import web_view/sessions.{
+  type Activity, type Entry, type Group, Live, NeedsYou, Working,
+}
 import web_view/signins.{type Signin}
 import web_view/view/create.{type Create}
 import web_view/view/ended
 import web_view/view/heading
 import web_view/view/home_bar
-import web_view/view/home_table
+import web_view/view/home_table.{type Note}
+import web_view/view/notice
 import web_view/view/resume.{type Resume}
 import web_view/view/shell
 import web_view/view/sidebar
@@ -452,12 +464,18 @@ pub opaque type Model {
     /// chose, which `<loom-switch>` navigates to. It stays until the next
     /// press replaces it: the ticket is single use and lives 60 seconds.
     departure: Option(String),
-    /// What the page last said about a press, in the daemon's fixed words: that
-    /// it is opening a session, or why it could not.
-    notice: Option(String),
+    /// What the page last said about a press, in the daemon's fixed words, and
+    /// where it goes: a completed action, or why one could not be done. It is
+    /// drawn beside the row or heading it is about and never moves the list.
+    note: Option(Note),
+    /// The running session whose open is out, if one is. It is set when a press
+    /// asks the daemon, so its row can say `Opening…`, and a second press while
+    /// it is set asks nothing. A ticket leaves it set, since the page is about
+    /// to navigate away; only a refusal clears it.
+    opening: Option(String),
     /// The saved session whose resume is out, if one is. It is set when a press
-    /// asks the daemon and cleared by the answer, so a second press while it is
-    /// set asks nothing.
+    /// asks the daemon and, like `opening`, cleared only by a refusal, so a
+    /// second press while it is set asks nothing.
     resuming: Option(String),
     /// Where the person is in making a session: no form, a form open under one
     /// workspace, or that workspace's creation out. Only a page with
@@ -578,12 +596,16 @@ pub type Msg {
   /// is sent.
   DeleteRequested(session: String)
 
+  /// The confirmation's Stop was pressed. It acts only for the row that is
+  /// confirming a stop.
+  StopConfirmed(session: String)
+
   /// The confirmation's Delete was pressed. It acts only for the row that is
-  /// confirming.
+  /// confirming a delete.
   DeleteConfirmed(session: String)
 
   /// The confirmation's Cancel was pressed: the row is as it was.
-  DeleteCancelled
+  ConfirmCancelled
 
   /// The daemon answered a request to stop, archive or delete. It is the
   /// effect's own message, dispatched from the daemon's task, and no handler
@@ -672,7 +694,8 @@ pub fn new(start: Start) -> Model {
     status: Connecting,
     timer: None,
     departure: None,
-    notice: None,
+    note: None,
+    opening: None,
     resuming: None,
     creating: create.Idle,
     edit: NotEditing,
@@ -752,12 +775,16 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 
     // A press asks the daemon in the component's own process. An ended page
     // asks nothing: its principal's access is gone, and the daemon would
-    // refuse.
+    // refuse. Neither does a page that is already opening a session, so the
+    // second press of an impatient person asks nothing.
     Opening(session:) ->
-      case model.status {
-        Ended(_) -> #(model, effect.none())
-        Connecting | Connected -> #(
-          Model(..model, notice: Some("Asking to open it.")),
+      case model.status, model.opening, model.resuming {
+        Ended(_), _, _ | _, Some(_), _ | _, _, Some(_) -> #(
+          model,
+          effect.none(),
+        )
+        Connecting, None, None | Connected, None, None -> #(
+          Model(..model, note: None, opening: Some(session)),
           asking(model.start.open, session),
         )
       }
@@ -768,15 +795,12 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // a page has no handler, so these arms are the second layer.
     Resuming(session:) ->
       case model.start.ceiling, model.status, model.resuming {
-        OperatorCeiling, Connected, None -> #(
-          Model(
-            ..model,
-            notice: Some("Opening that session. It may take a moment."),
-            resuming: Some(session),
-          ),
+        OperatorCeiling, Connected, None if model.opening == None -> #(
+          Model(..model, note: None, resuming: Some(session)),
           resuming(model.start.resume, session),
         )
         OperatorCeiling, Connected, Some(_)
+        | OperatorCeiling, Connected, None
         | OperatorCeiling, Connecting, _
         | OperatorCeiling, Ended(_), _
         | ObserverCeiling, _, _
@@ -790,7 +814,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         Some(_), Connected, create.Idle
         | Some(_), Connected, create.Composing(_)
         -> #(
-          Model(..model, creating: create.Composing(workspace), notice: None),
+          Model(..model, creating: create.Composing(workspace), note: None),
           effect.none(),
         )
         Some(_), Connected, create.Waiting(_)
@@ -838,11 +862,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     Creating(workspace:, name:, sharing:) ->
       case model.start.create, model.status, model.creating {
         Some(ask), Connected, create.Composing(open) if open == workspace -> #(
-          Model(
-            ..model,
-            creating: create.Waiting(workspace),
-            notice: Some("Creating the session. It may take a moment."),
-          ),
+          Model(..model, creating: create.Waiting(workspace), note: None),
           creation(ask, workspace, name, sharing),
         )
         Some(_), _, _ | None, _, _ -> #(model, effect.none())
@@ -854,18 +874,18 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     Created(answer:) ->
       case answer {
         creations.Ticketed(path:) -> #(
-          Model(
-            ..model,
-            departure: Some(path),
-            notice: Some("Opening the new session."),
-            creating: create.Idle,
-          ),
+          Model(..model, departure: Some(path), creating: create.Idle),
           effect.none(),
         )
         creations.Declined(reason:) -> #(
           Model(
             ..model,
-            notice: Some(creations.reason_words(reason)),
+            note: Some(refusal(
+              create.open_for(model.creating)
+                |> option.map(home_table.Workspace)
+                |> option.unwrap(home_table.Page),
+              creations.reason_words(reason),
+            )),
             creating: reopened(model.creating, reason),
           ),
           effect.none(),
@@ -878,7 +898,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     AdminRequested ->
       case model.start.admin, model.status {
         Some(ask), Connected -> #(
-          Model(..model, notice: Some("Opening the admin page.")),
+          Model(..model, note: None),
           opening_admin(ask),
         )
         Some(_), Connecting | Some(_), Ended(_) | None, _ -> #(
@@ -895,7 +915,10 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           effect.none(),
         )
         sessions.Declined(reason:) -> #(
-          Model(..model, notice: Some(sessions.reason_words(reason))),
+          Model(
+            ..model,
+            note: Some(refusal(home_table.Page, sessions.reason_words(reason))),
+          ),
           effect.none(),
         )
       }
@@ -932,75 +955,70 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         )
       }
 
-    // Stop and Archive ask at once, from Calm or while another row is
-    // confirming, which they replace. The identity is the one the row was drawn
-    // with, and the daemon checks it and the page's standing again.
-    StopRequested(session:) -> start_action(model, actions.Stop, session)
+    // Archive asks at once, from Calm or while another row is confirming, which
+    // it replaces. The identity is the one the row was drawn with, and the
+    // daemon checks it and the page's standing again.
     ArchiveRequested(session:) -> start_action(model, actions.Archive, session)
 
+    // Stop asks at once for a row that is not busy. For a row the page last read
+    // as working or waiting for the person, the press only opens the row's
+    // confirmation, and sends nothing. What the page read decides it, and the
+    // press carries nothing but the identity.
+    StopRequested(session:) ->
+      case busy(model, session) {
+        Busy -> confirm_first(model, actions.Stop, session)
+        Quiet -> start_action(model, actions.Stop, session)
+      }
+
     // Delete's first press opens that row's confirmation. It sends nothing.
-    DeleteRequested(session:) ->
-      case model.start.manage, model.status, model.acting {
-        Some(_), Connected, actions.Calm
-        | Some(_), Connected, actions.Confirming(_)
-        -> #(
-          Model(..model, acting: actions.Confirming(session), notice: None),
-          effect.none(),
-        )
-        Some(_), Connected, actions.Working(..)
-        | Some(_), Connecting, _
-        | Some(_), Ended(_), _
-        | None, _, _
-        -> #(model, effect.none())
-      }
+    DeleteRequested(session:) -> confirm_first(model, actions.Delete, session)
 
-    // The second press asks, and only for the row that is confirming, so a press
-    // for any other row, or one with no confirmation open, asks nothing.
-    DeleteConfirmed(session:) ->
-      case model.start.manage, model.status, model.acting {
-        Some(ask), Connected, actions.Confirming(open) if open == session -> #(
-          Model(
-            ..model,
-            acting: actions.Working(session, actions.Delete),
-            notice: Some(actions.working_words(actions.Delete)),
-          ),
-          managing(ask, actions.Delete, session),
-        )
-        Some(_), _, _ | None, _, _ -> #(model, effect.none())
-      }
+    // The second press asks, and only for the row that is confirming that
+    // action, so a press for any other row, for the other action, or with no
+    // confirmation open, asks nothing.
+    StopConfirmed(session:) -> confirmed(model, actions.Stop, session)
+    DeleteConfirmed(session:) -> confirmed(model, actions.Delete, session)
 
-    DeleteCancelled ->
+    ConfirmCancelled ->
       case model.acting {
-        actions.Confirming(_) -> #(
+        actions.Confirming(..) -> #(
           Model(..model, acting: actions.Calm),
           effect.none(),
         )
         actions.Calm | actions.Working(..) -> #(model, effect.none())
       }
 
-    // The answer ends the request, says what happened in the notice, and reads
-    // the list again, so the row is gone or changed in what the page draws. An
-    // answer that arrives when no request is out was not asked for and is
-    // dropped.
+    // The answer ends the request, says what happened in a note beside the row,
+    // and reads the list again, so the row is gone or changed in what the page
+    // draws. An answer that arrives when no request is out was not asked for and
+    // is dropped.
     ActionAnswered(answer:) ->
       case model.acting, answer {
-        actions.Working(..), actions.Done(action:) -> #(
+        actions.Working(session:, ..), actions.Done(action:) -> #(
           Model(
             ..model,
             acting: actions.Calm,
-            notice: Some(actions.done_words(action)),
+            note: Some(beside(
+              model,
+              session,
+              notice.Said(actions.done_words(action)),
+            )),
           ),
           reading(model),
         )
-        actions.Working(..), actions.Declined(reason:) -> #(
+        actions.Working(session:, ..), actions.Declined(reason:) -> #(
           Model(
             ..model,
             acting: actions.Calm,
-            notice: Some(actions.reason_words(reason)),
+            note: Some(beside(
+              model,
+              session,
+              notice.Refused(actions.reason_words(reason)),
+            )),
           ),
           reading(model),
         )
-        actions.Calm, _ | actions.Confirming(_), _ -> #(model, effect.none())
+        actions.Calm, _ | actions.Confirming(..), _ -> #(model, effect.none())
       }
 
     // The answer: a stored name replaces the row's in the page's own state at
@@ -1009,15 +1027,17 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // that arrives when no request is out was not asked for and is dropped.
     RenameAnswered(answer:) ->
       case model.edit, answer {
-        Editing(session, renames.Asking), renames.Renamed(name:) -> #(
-          Model(
-            ..model,
-            edit: NotEditing,
-            notice: Some("Renamed."),
-            groups: renamed(model.groups, session, name),
-          ),
-          effect.none(),
-        )
+        Editing(session, renames.Asking), renames.Renamed(name:) -> {
+          let groups = renamed(model.groups, session, name)
+          let model = Model(..model, edit: NotEditing, groups:)
+          #(
+            Model(
+              ..model,
+              note: Some(beside(model, session, notice.Said("Renamed."))),
+            ),
+            effect.none(),
+          )
+        }
         Editing(session, renames.Asking), renames.Declined(reason:) -> #(
           Model(..model, edit: Editing(session, renames.Refused(reason))),
           effect.none(),
@@ -1159,28 +1179,39 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         )
       }
 
-    // The answer: a ticket becomes the address `<loom-switch>` navigates to,
-    // and a refusal is the page's notice in the reason's fixed words. Either
-    // way no resume is out any longer.
+    // The answer: a ticket becomes the address `<loom-switch>` navigates to, and
+    // the row keeps saying `Opening…` until the page goes, since the browser
+    // needs a moment to follow the ticket. A refusal is a note beside the row,
+    // in the reason's fixed words, and the row is pressable again.
     Linked(answer:) ->
       case answer {
         sessions.Ticketed(path:) -> #(
-          Model(
-            ..model,
-            departure: Some(path),
-            notice: Some("Opening that session."),
-            resuming: None,
-          ),
+          Model(..model, departure: Some(path)),
           effect.none(),
         )
-        sessions.Declined(reason:) -> #(
-          Model(
-            ..model,
-            notice: Some(sessions.reason_words(reason)),
-            resuming: None,
-          ),
-          effect.none(),
-        )
+        sessions.Declined(reason:) -> {
+          let pressed = case model.opening, model.resuming {
+            Some(session), _ | None, Some(session) -> Some(session)
+            None, None -> None
+          }
+          #(
+            Model(
+              ..model,
+              note: Some(case pressed {
+                Some(session) ->
+                  beside(
+                    model,
+                    session,
+                    notice.Refused(sessions.reason_words(reason)),
+                  )
+                None -> refusal(home_table.Page, sessions.reason_words(reason))
+              }),
+              opening: None,
+              resuming: None,
+            ),
+            effect.none(),
+          )
+        }
       }
   }
 }
@@ -1235,13 +1266,9 @@ fn start_action(
 ) -> #(Model, Effect(Msg)) {
   case model.start.manage, model.status, model.acting {
     Some(ask), Connected, actions.Calm
-    | Some(ask), Connected, actions.Confirming(_)
+    | Some(ask), Connected, actions.Confirming(..)
     -> #(
-      Model(
-        ..model,
-        acting: actions.Working(session, action),
-        notice: Some(actions.working_words(action)),
-      ),
+      Model(..model, acting: actions.Working(session, action), note: None),
       managing(ask, action, session),
     )
     Some(_), Connected, actions.Working(..)
@@ -1250,6 +1277,82 @@ fn start_action(
     | None, _, _
     -> #(model, effect.none())
   }
+}
+
+// Whether the page last read a session as busy: working on a turn, or waiting
+// for the person. A session the read has not answered for is not busy, since
+// nothing says it is.
+type Busyness {
+  Busy
+  Quiet
+}
+
+fn busy(model: Model, session: String) -> Busyness {
+  case dict.get(model.activity, session) {
+    Ok(Working) | Ok(NeedsYou) -> Busy
+    Ok(sessions.Idle) | Error(Nil) -> Quiet
+  }
+}
+
+// The first press of an action that asks twice: it opens that row's
+// confirmation and sends nothing. It replaces a confirmation open on another
+// row, and does nothing while a request is out.
+fn confirm_first(
+  model: Model,
+  action: actions.Action,
+  session: String,
+) -> #(Model, Effect(Msg)) {
+  case model.start.manage, model.status, model.acting {
+    Some(_), Connected, actions.Calm
+    | Some(_), Connected, actions.Confirming(..)
+    -> #(
+      Model(..model, acting: actions.Confirming(session, action), note: None),
+      effect.none(),
+    )
+    Some(_), Connected, actions.Working(..)
+    | Some(_), Connecting, _
+    | Some(_), Ended(_), _
+    | None, _, _
+    -> #(model, effect.none())
+  }
+}
+
+// The second press: it asks the daemon, and only for the row that is confirming
+// this action. Any other press asks nothing, which is what makes a forged
+// confirmation harmless.
+fn confirmed(
+  model: Model,
+  action: actions.Action,
+  session: String,
+) -> #(Model, Effect(Msg)) {
+  case model.start.manage, model.status, model.acting {
+    Some(ask), Connected, actions.Confirming(open, asked)
+      if open == session && asked == action
+    -> #(
+      Model(..model, acting: actions.Working(session, action), note: None),
+      managing(ask, action, session),
+    )
+    Some(_), _, _ | None, _, _ -> #(model, effect.none())
+  }
+}
+
+// A note about a session, placed beside its row. The place carries the
+// session's workspace and name as the page has them now, so that the note can
+// still be drawn, naming the session, after the row is gone.
+fn beside(model: Model, session: String, said: notice.Notice) -> Note {
+  let place =
+    list.find_map(model.groups, fn(group) {
+      list.find(group.entries, fn(entry) { entry.id == session })
+      |> result.map(fn(entry) {
+        home_table.Session(session, group.workspace, sessions.label(entry))
+      })
+    })
+  home_table.Note(place: result.unwrap(place, home_table.Page), notice: said)
+}
+
+// A refusal, which stays until the next press, at a place.
+fn refusal(place: home_table.Place, words: String) -> Note {
+  home_table.Note(place:, notice: notice.Refused(words))
 }
 
 // Starts the daemon's task for one action and returns at once; the answer
@@ -1460,7 +1563,7 @@ pub fn view(model: Model) -> Element(Msg) {
     ),
     shell_sidebar(model),
     [
-      press_notice(model.notice),
+      element.none(),
       home_table.view(
         model.groups,
         model.activity,
@@ -1470,6 +1573,8 @@ pub fn view(model: Model) -> Element(Msg) {
         rename_offer(model),
         manage_offer(model),
         create_offer(model),
+        model.opening,
+        model.note,
       ),
       signins_view.view(
         model.signins,
@@ -1539,8 +1644,9 @@ fn manage_offer(model: Model) -> home_table.Manage(Msg) {
         stop: StopRequested,
         archive: ArchiveRequested,
         delete: DeleteRequested,
-        confirm: DeleteConfirmed,
-        cancel: DeleteCancelled,
+        confirm_stop: StopConfirmed,
+        confirm_delete: DeleteConfirmed,
+        cancel: ConfirmCancelled,
         stage: model.acting,
       )
   }
@@ -1598,10 +1704,20 @@ fn named_text() -> decode.Decoder(Msg) {
 }
 
 // What the sign-ins region offers for a device link: the control on a page the
-// daemon handed `Start.device`, and nothing otherwise.
+// daemon handed `Start.device`, and nothing otherwise. The one page that has
+// nothing and ought to say why is the owner's home that a bookmark resumed. The
+// page can tell it from the others by what the daemon handed it: the owner's
+// operating page has `Start.rename`, and a fresh one also has `Start.manage`,
+// which a resumed one lacks (`client/daemon/ui_socket.manage_for`). A member's
+// home and a read-only link have no `Start.rename`, and their rows are the same
+// as before.
 fn device_offer(model: Model) -> signins_view.Device(Msg) {
   case model.start.device {
-    None -> signins_view.Never
+    None ->
+      case model.start.rename, model.start.manage {
+        Some(_), None -> signins_view.Resumed
+        Some(_), Some(_) | None, _ -> signins_view.Never
+      }
     Some(_) ->
       signins_view.Offered(
         press: AddingDevice,
@@ -1642,17 +1758,6 @@ fn shell_sidebar(model: Model) -> shell.Sidebar(Msg) {
         Opening,
         resume_offer(model),
       ))
-  }
-}
-
-// The words of the last press, or the empty node that keeps the table's place.
-fn press_notice(notice: Option(String)) -> Element(Msg) {
-  case notice {
-    None -> element.none()
-    Some(words) ->
-      html.p([attribute.class("home-notice"), attribute.role("status")], [
-        html.text(words),
-      ])
   }
 }
 

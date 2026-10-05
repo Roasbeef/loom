@@ -8,12 +8,13 @@
 //// the order the sidebar draws them. A workspace is a heading with its
 //// shortened path and a count, and each session under it is one list item:
 //// a glyph in the row's hue, the session's name, and under it a quiet line of
-//// words, `resident · working · created 2h ago` for a session a process runs
-//// and `saved · 2h ago` for one on disk. The glyph is decoration; the words
-//// carry every difference, so none rests on a colour. A resident session's
-//// activity word is the daemon's own read (`sessions.Activity`), asked off the
-//// page's runtime and handed over as a state word; a session the read has not
-//// answered for shows only that it is resident.
+//// words, `working · created 2h ago` for a session a process runs and
+//// `saved · 2h ago` for one on disk. The glyph is decoration; the words carry
+//// every difference, so none rests on a colour. A running session's activity
+//// word is the daemon's own read (`sessions.Activity`), asked off the page's
+//// runtime and handed over as a state word, and it stands in for the word
+//// "running", which would only repeat it; a session the read has not answered
+//// for says `running`.
 ////
 //// A running session's row is a button (protocol-change/065, the second pull
 //// request) whose one handler sends the caller's message naming that row's
@@ -21,7 +22,9 @@
 //// hover and draws a chevron at its right edge, so the row reads as one
 //// target. A saved session's row is a button only on a page that may resume it
 //// (`view/resume`, protocol-change/065, the third pull request), and text
-//// otherwise; while a resume is out its row says "opening". The message names
+//// otherwise. A row that was pressed and is waiting on the daemon (an open or a
+//// resume) dims, shows a spinner where its chevron was and says `Opening…`
+//// in place of its words, and a second press asks nothing (`home.update`). The message names
 //// the catalogue's identity, drawn when the tree was, and never a value the
 //// browser sends: the home's socket admits a click only beneath this view's
 //// own path (`home.table_path`), and the daemon checks the principal's
@@ -31,11 +34,22 @@
 //// (`Manage`, protocol-change/065's addendum on session actions): a running
 //// session can be stopped, and a saved one archived or deleted. They are quiet
 //// buttons beside Rename in one `home-acts` group, after the row's own button,
-//// so the row's own path is the same on every page. Stop and Archive ask the
-//// daemon at once. Delete takes a second step in the row: the row's words are
-//// replaced by "Delete this session? This cannot be undone." with Delete and
-//// Cancel, the same in-place pattern as the rename form. While a request for a
-//// row is out its buttons are disabled.
+//// so the row's own path is the same on every page. Archive asks the daemon at
+//// once, and so does Stop on an idle row. Delete takes a second step in the
+//// row: the row's words are replaced by "Delete this session? This cannot be
+//// undone." with Delete and Cancel, the same in-place pattern as the rename
+//// form, and Stop takes the same step, in a neutral tint and the words "Stop
+//// this session mid-turn?", on a row that is working or waiting for the person
+//// (the page decides, from the activity it read: `home.update`). While a
+//// request for a row is out its buttons are disabled.
+////
+//// What the page last said about an action is a `Note`, and it never moves the
+//// list. A completed action is a quiet line that fades (`view/notice`): in the
+//// row it acted on, after the row's own words, or, when the row is gone (an
+//// archived or deleted session), in its workspace's heading line, naming the
+//// session (`docs sweep archived.`). A refusal stays, in the danger colour, in
+//// the same place. A note that belongs to no row or workspace the page draws
+//// is the one line under the page's heading.
 ////
 //// Every name and path is the catalogue's, written by the owner and the host
 //// and never by a session's agent, and is drawn as a text node. A workspace's
@@ -65,6 +79,7 @@ import web_view/sessions.{
 }
 import web_view/view/create.{type Create}
 import web_view/view/heading
+import web_view/view/notice.{type Notice}
 import web_view/view/rename as rename_view
 import web_view/view/resume.{type Resume}
 
@@ -101,19 +116,51 @@ pub type Manage(message) {
 
   /// Each running row has a Stop button, and each saved row an Archive and a
   /// Delete. `stop` and `archive` are the messages those two send given the
-  /// row's identity, `delete` opens the row's confirmation, `confirm` is the
-  /// confirmation's Delete and `cancel` its Cancel. `stage` is where the page
-  /// stands: the one row that is confirming or waiting on the daemon. The
-  /// identities are the catalogue's, drawn into the tree by the server, so a
-  /// browser's event never names a session.
+  /// row's identity, and `delete` opens the row's confirmation. `confirm_stop`
+  /// and `confirm_delete` are the confirmations' own buttons, and `cancel` is
+  /// their Cancel. `stage` is where the page stands: the one row that is
+  /// confirming or waiting on the daemon. The identities are the catalogue's,
+  /// drawn into the tree by the server, so a browser's event never names a
+  /// session.
   Managed(
     stop: fn(String) -> message,
     archive: fn(String) -> message,
     delete: fn(String) -> message,
-    confirm: fn(String) -> message,
+    confirm_stop: fn(String) -> message,
+    confirm_delete: fn(String) -> message,
     cancel: message,
     stage: Stage,
   )
+}
+
+/// Where a note is meant to be drawn.
+pub type Place {
+  /// Beside one session: its row if the page still draws it, else its
+  /// workspace's heading line. `label` is the session's name as the row showed
+  /// it, so the heading's line can name it once the row is gone.
+  Session(id: String, workspace: String, label: String)
+
+  /// Beside a workspace's heading, for what was done to the workspace (a
+  /// refused creation).
+  Workspace(path: String)
+
+  /// Under the page's heading, for what belongs to no row.
+  Page
+}
+
+/// What the page last said about a press: the words, whether they stay, and
+/// where they go. The words are fixed by the page, never a session's, except
+/// `Place`'s label, a catalogue name drawn as a text node.
+pub type Note {
+  Note(place: Place, notice: Notice)
+}
+
+// A note once the page has found where it lands, which depends on what the
+// list holds now.
+type Landing {
+  InRow(session: String, notice: Notice)
+  InHeading(workspace: String, notice: Notice)
+  Under(notice: Notice)
 }
 
 /// The centre column's content: a heading, and one list for each group, or a
@@ -128,7 +175,9 @@ pub type Manage(message) {
 /// the same functions every time, as a constructor is. `rename` is what the page
 /// offers for renaming a row (`Rename`); the row whose form is open is part of
 /// the key, and so is the control's state. `manage` is what the page offers for
-/// acting on a row (`Manage`), and its stage is part of the key. `offer` is what the page offers for
+/// acting on a row (`Manage`), and its stage is part of the key. `opening` is the
+/// session whose open the daemon has not answered, and `note` is what the page
+/// last said (`Note`); both are part of the key. `offer` is what the page offers for
 /// making a session (`view/create`): under each workspace's heading a button, and
 /// below it the form when that workspace's is open. Its state is in the key, so a
 /// group changes when its form opens, closes or starts waiting.
@@ -136,7 +185,7 @@ pub type Manage(message) {
 /// ## Examples
 ///
 /// ```gleam
-/// // home_table.view(home.groups(model), dict.new(), now, Opening, resume.Never, Never, Unmanaged, create.Never)
+/// // home_table.view(home.groups(model), dict.new(), now, Opening, resume.Never, Never, Unmanaged, create.Never, None, None)
 /// ```
 pub fn view(
   groups: List(Group),
@@ -147,6 +196,8 @@ pub fn view(
   rename: Rename(message),
   manage: Manage(message),
   offer: Create(message),
+  opening: Option(String),
+  note: Option(Note),
 ) -> Element(message) {
   use <- element.memo([
     element.ref(groups),
@@ -156,9 +207,16 @@ pub fn view(
     element.ref(open_form(rename)),
     element.ref(stage(manage)),
     element.ref(create.state(offer)),
+    element.ref(opening),
+    element.ref(note),
   ])
+  let landing = landing(groups, note)
   html.section([attribute.class("home-sessions")], [
     html.h2([attribute.class("home-heading")], [html.text("Sessions")]),
+    case landing {
+      Some(Under(notice:)) -> notice.line(notice)
+      Some(InRow(..)) | Some(InHeading(..)) | None -> element.none()
+    },
     ..case groups {
       [] -> [
         html.p([attribute.class("home-empty")], [
@@ -177,6 +235,8 @@ pub fn view(
           rename,
           manage,
           offer,
+          opening,
+          landing,
         ))
     }
   ])
@@ -192,6 +252,8 @@ fn group(
   rename: Rename(message),
   manage: Manage(message),
   offer: Create(message),
+  opening: Option(String),
+  landing: Option(Landing),
 ) -> Element(message) {
   html.section([attribute.class("home-group")], [
     html.div([attribute.class("home-group-head")], [
@@ -204,6 +266,12 @@ fn group(
           ]),
         ],
       ),
+      case landing {
+        Some(InHeading(workspace:, notice:)) if workspace == group.workspace ->
+          notice.line(notice)
+        Some(InHeading(..)) | Some(InRow(..)) | Some(Under(..)) | None ->
+          element.none()
+      },
       create.button(offer, group.workspace),
     ]),
     create.form(offer, group.workspace),
@@ -218,6 +286,8 @@ fn group(
           resume,
           rename,
           manage,
+          opening,
+          landing,
         )
       }),
     ),
@@ -225,40 +295,43 @@ fn group(
 }
 
 // What a row says about its session's process: the class that hues its glyph,
-// the glyph, the word for where the session lives, and the activity word once
-// the daemon has said one. The activity is kept apart from the state because the
-// quiet line draws it in a span of its own, which is the only part of the line
-// a needs-you row tints.
+// the glyph, and the words of where the session lives and what it is doing.
 type Standing {
-  Standing(
-    class: String,
-    glyph: String,
-    state: String,
-    activity: Option(String),
-  )
+  Standing(class: String, glyph: String, state: State)
 }
 
-// A running session is "resident" and, once the daemon has said, what it is
-// doing; a session on disk is "saved", and one whose open is out "opening".
+// A running session says what it is doing once the daemon has said, and
+// "running" until then. The activity word stands in for "running" and does not
+// follow it, since a session that is working is running. A session on disk is
+// "saved", and one whose open the daemon has not answered says "Opening…" and
+// nothing else.
+type State {
+  Running(activity: Option(String))
+  Stored
+  Waking
+}
+
 fn standing(
   entry: Entry,
   activity: Result(Activity, Nil),
   kind: resume.Kind(message),
+  opening: Option(String),
 ) -> Standing {
-  case entry.residency, kind {
-    Live, _ ->
+  case entry.residency, kind, opening {
+    Live, _, Some(pressed) if pressed == entry.id ->
+      Standing("opening", "…", Waking)
+    Live, _, _ ->
       case activity {
         Ok(doing) ->
           Standing(
             activity_class(doing),
             "●",
-            "resident",
-            Some(sessions.activity_words(doing)),
+            Running(Some(sessions.activity_words(doing))),
           )
-        Error(Nil) -> Standing("live", "●", "resident", None)
+        Error(Nil) -> Standing("live", "●", Running(None))
       }
-    Saved, resume.Opening -> Standing("opening", "…", "opening", None)
-    Saved, _ | Blocked, _ -> Standing("saved", "○", "saved", None)
+    Saved, resume.Opening, _ -> Standing("opening", "…", Waking)
+    Saved, _, _ | Blocked, _, _ -> Standing("saved", "○", Stored)
   }
 }
 
@@ -302,9 +375,15 @@ fn row(
   resume: Resume(message),
   rename: Rename(message),
   manage: Manage(message),
+  opening: Option(String),
+  landing: Option(Landing),
 ) -> Element(message) {
   let kind = resume.kind(resume, entry)
-  let standing = standing(entry, activity, kind)
+  let standing = standing(entry, activity, kind, opening)
+  let note = case landing {
+    Some(InRow(session:, notice:)) if session == entry.id -> Some(notice)
+    Some(InRow(..)) | Some(InHeading(..)) | Some(Under(..)) | None -> None
+  }
   let body = [
     html.span([attribute.class("home-glyph"), attribute.aria_hidden(True)], [
       html.text(standing.glyph),
@@ -313,13 +392,22 @@ fn row(
       html.span([attribute.class("home-name")], [
         html.text(sessions.label(entry)),
       ]),
-      html.span([attribute.class("home-sub")], quiet_line(standing, entry, now)),
+      html.span(
+        [attribute.class("home-sub")],
+        quiet_line(standing, entry, now, note),
+      ),
     ]),
   ]
   let item = case entry.residency, kind {
     Live, _ -> pressable("Open this session", open(entry.id), body)
     Saved, resume.Button(press:) ->
       pressable("Resume this session", press, body)
+
+    // A saved row whose resume is out is not a button, but it draws the chevron,
+    // which the stylesheet turns into a spinner, so it reads like a pressed
+    // running row.
+    Saved, resume.Opening ->
+      html.div([attribute.class("home-item")], list.append(body, [chevron()]))
     Saved, _ | Blocked, _ -> html.div([attribute.class("home-item")], body)
   }
   let classes = [attribute.class("home-row"), attribute.class(standing.class)]
@@ -330,12 +418,34 @@ fn row(
       html.li([attribute.class("editing"), ..classes], [
         editing(entry, control, cancel, submit(entry.id)),
       ])
-    _, Managed(stage: actions.Confirming(session:), confirm:, cancel:, ..)
+    _,
+      Managed(
+        stage: actions.Confirming(session:, action:),
+        confirm_stop:,
+        confirm_delete:,
+        cancel:,
+        ..,
+      )
       if session == entry.id
     ->
-      html.li([attribute.class("confirming"), ..classes], [
-        confirming(entry, confirm(entry.id), cancel),
-      ])
+      html.li(
+        [
+          attribute.class("confirming"),
+          attribute.class(confirm_class(action)),
+          ..classes
+        ],
+        [
+          confirming(
+            entry,
+            action,
+            case action {
+              actions.Delete -> confirm_delete(entry.id)
+              actions.Stop | actions.Archive -> confirm_stop(entry.id)
+            },
+            cancel,
+          ),
+        ],
+      )
     _, _ ->
       case acts(entry, rename, manage) {
         [] -> html.li(classes, [item])
@@ -431,26 +541,48 @@ fn act(
   )
 }
 
-// The row's second step before a delete: one question in fixed words, the
-// session's name beneath it as a text node so the person sees which row they are
-// about to delete, a Delete that sends the request and a Cancel that puts the row
-// back.
+// The class that tints a confirmation: toward the danger hue for a delete,
+// which cannot be undone, and neutral for a stop, which can.
+fn confirm_class(action: actions.Action) -> String {
+  case action {
+    actions.Delete -> "confirm-delete"
+    actions.Stop | actions.Archive -> "confirm-stop"
+  }
+}
+
+// The row's second step before an action that cannot be taken back or that
+// cuts a turn short: one question in fixed words, the session's name beneath it
+// as a text node so the person sees which row they are about to act on, a
+// button that sends the request and a Cancel that puts the row back.
 fn confirming(
   entry: Entry,
+  action: actions.Action,
   confirm: message,
   cancel: message,
 ) -> Element(message) {
+  let #(label, lead, button, class) = case action {
+    actions.Delete -> #(
+      "Delete this session",
+      "Delete this session? This cannot be undone.",
+      "Delete",
+      "home-confirm-go home-confirm-delete",
+    )
+    actions.Stop | actions.Archive -> #(
+      "Stop this session",
+      "Stop this session mid-turn?",
+      "Stop",
+      "home-confirm-go",
+    )
+  }
   html.div(
     [
       attribute.class("home-confirm"),
       attribute.role("alertdialog"),
-      attribute.aria_label("Delete this session"),
+      attribute.aria_label(label),
     ],
     [
       html.div([attribute.class("home-confirm-text")], [
-        html.p([attribute.class("home-confirm-lead")], [
-          html.text("Delete this session? This cannot be undone."),
-        ]),
+        html.p([attribute.class("home-confirm-lead")], [html.text(lead)]),
         html.p([attribute.class("home-confirm-name")], [
           html.text(sessions.label(entry)),
         ]),
@@ -459,10 +591,10 @@ fn confirming(
         html.button(
           [
             attribute.type_("button"),
-            attribute.class("home-confirm-delete"),
+            attribute.class(class),
             event.on_click(confirm),
           ],
-          [html.text("Delete")],
+          [html.text(button)],
         ),
         html.button([attribute.type_("button"), event.on_click(cancel)], [
           html.text("Cancel"),
@@ -553,22 +685,43 @@ fn status(control: Control) -> Element(message) {
 // needs the person can tint that one word and leave the subtitle in the quiet
 // colour: a sixty-character prompt in the signal colour reads as an error. The
 // subtitle is a person's own prompt, so it is a text node and nothing else.
+//
+// A row waiting on the daemon says "Opening…" and nothing else. A note for the
+// row, if there is one, ends the line after a middle dot, in the same line so
+// the row's height never changes when it appears or fades.
 fn quiet_line(
   standing: Standing,
   entry: Entry,
   now: Int,
+  note: Option(Notice),
 ) -> List(Element(message)) {
-  let lead = case standing.activity {
-    Some(doing) -> [
-      html.text(standing.state <> " · "),
+  let line = case standing.state {
+    Waking -> [html.text("Opening…")]
+    Running(_) | Stored -> described(standing, entry, now)
+  }
+  case note {
+    Some(notice) -> list.append(line, [inline(notice)])
+    None -> line
+  }
+}
+
+// The standing's words, the person's role, and the subtitle or the age.
+fn described(
+  standing: Standing,
+  entry: Entry,
+  now: Int,
+) -> List(Element(message)) {
+  let lead = case standing.state {
+    Running(Some(doing)) -> [
       html.span([attribute.class("home-activity")], [html.text(doing)]),
     ]
-    None -> [html.text(standing.state)]
+    Running(None) -> [html.text("running")]
+    Stored | Waking -> [html.text("saved")]
   }
 
   // The person's role in this session ends the standing's words, after the
-  // activity: a member reads "resident · idle · observer", and the owner's rows,
-  // which have no role, read as they did.
+  // activity: a member reads "idle · observer", and the owner's rows, which have
+  // no role, read as they did.
   let lead = case entry.role {
     Some(role) ->
       list.append(lead, [html.text(" · " <> sessions.role_words(role))])
@@ -590,6 +743,68 @@ fn quiet_line(
   }
 }
 
+// A note's words as a span ending the row's quiet line, with the middle dot that
+// joins it to the words before it inside the span, so the dot fades with a said
+// note and does not outlast it. A refused note stays in the danger colour
+// (`view/notice`), and neither draws a handler.
+fn inline(notice: Notice) -> Element(message) {
+  case notice {
+    notice.Said(words:) ->
+      html.span([attribute.class("home-note"), attribute.role("status")], [
+        html.text(" · " <> words),
+      ])
+    notice.Refused(words:) ->
+      html.span(
+        [
+          attribute.class("home-note"),
+          attribute.class("refused"),
+          attribute.role("status"),
+        ],
+        [html.text(" · " <> words)],
+      )
+  }
+}
+
+// Where the page's note lands, given what it lists now. A note beside a session
+// goes in that session's row, or in its workspace's heading when the row is gone
+// (an archived or a deleted session), naming the session there. A note beside a
+// workspace goes in its heading. Anything else, or a workspace the page no
+// longer draws, goes under the page's heading.
+fn landing(groups: List(Group), note: Option(Note)) -> Option(Landing) {
+  case note {
+    None -> None
+    Some(Note(place: Page, notice:)) -> Some(Under(notice))
+    Some(Note(place: Workspace(path:), notice:)) ->
+      Some(in_heading(groups, path, notice))
+    Some(Note(place: Session(id:, workspace:, label:), notice:)) -> {
+      let held =
+        list.any(groups, fn(group) {
+          list.any(group.entries, fn(entry) { entry.id == id })
+        })
+      case held {
+        True -> Some(InRow(id, notice))
+        False -> Some(in_heading(groups, workspace, named(label, notice)))
+      }
+    }
+  }
+}
+
+fn in_heading(groups: List(Group), path: String, notice: Notice) -> Landing {
+  case list.any(groups, fn(group) { group.workspace == path }) {
+    True -> InHeading(path, notice)
+    False -> Under(notice)
+  }
+}
+
+// A note's words with the session's name in front, for a place that is not the
+// session's own row: "docs sweep archived." and "docs sweep: <the refusal>".
+fn named(label: String, notice: Notice) -> Notice {
+  case notice {
+    notice.Said(words:) -> notice.Said(label <> " " <> string.lowercase(words))
+    notice.Refused(words:) -> notice.Refused(label <> ": " <> words)
+  }
+}
+
 // The row as one button, which the stylesheet stretches over the whole item,
 // with a chevron at its right edge that says it opens.
 fn pressable(
@@ -604,12 +819,15 @@ fn pressable(
       attribute.title(title),
       event.on_click(press),
     ],
-    list.append(body, [
-      html.span([attribute.class("home-chevron"), attribute.aria_hidden(True)], [
-        html.text("›"),
-      ]),
-    ]),
+    list.append(body, [chevron()]),
   )
+}
+
+// The mark at a row's right edge that says it opens.
+fn chevron() -> Element(message) {
+  html.span([attribute.class("home-chevron"), attribute.aria_hidden(True)], [
+    html.text("›"),
+  ])
 }
 
 // The age as a `<time>` whose `datetime` is the creation minute in UTC and
