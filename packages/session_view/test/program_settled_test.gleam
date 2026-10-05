@@ -30,6 +30,10 @@ fn minted(n: Int) -> ids.EntryId {
 }
 
 fn call_entry() -> entry.Entry {
+  call_entry_with([])
+}
+
+fn call_entry_with(extra: List(#(String, json.JsonValue))) -> entry.Entry {
   entry.MessageEntry(
     minted(1),
     None,
@@ -41,7 +45,7 @@ fn call_entry() -> entry.Entry {
         message.AssistantToolCall(message.ToolCall(
           "c1",
           "code_mode",
-          json.Object([#("program", json.String(program))]),
+          json.Object([#("program", json.String(program)), ..extra]),
           None,
           None,
         )),
@@ -116,9 +120,13 @@ fn details(
 
 // The rows the call's block is drawn as once the result is joined to it.
 fn settled(result: entry.Entry) -> List(Line) {
-  let found = transcript_lines.joined([call_entry(), result])
+  settled_call(call_entry(), result)
+}
+
+fn settled_call(call: entry.Entry, result: entry.Entry) -> List(Line) {
+  let found = transcript_lines.joined([call, result])
   transcript_lines.joined_entry_lines(
-    call_entry(),
+    call,
     None,
     block_summary.new(),
     found,
@@ -251,4 +259,20 @@ pub fn the_expanded_view_shows_the_whole_program_above_the_result_test() {
   assert string.contains(source, "  Ok(refs)\n}")
   let assert [Line(ToolResult, _), Line(ToolDetail, result), ..] = result_rows
   assert string.starts_with(result, "result\n\n```json\n")
+}
+
+// A launch carries a program and succeeds with a handle: the program was
+// admitted, not run, so the call keeps its generic rows.
+pub fn a_successful_launch_draws_no_settled_block_test() {
+  let handle = json.Object([#("handle", json.String("job-1"))])
+  let launch = call_entry_with([#("mode", json.String("launch"))])
+  let rows = settled_call(launch, result_entry(details(handle, [])))
+  assert !list.any(rows, fn(row) { row.speaker == ProgramSettled })
+  assert !list.any(rows, fn(row) { row.speaker == ProgramRunning })
+}
+
+// A text result is shown as text, not as the JSON that escapes it.
+pub fn a_text_result_is_quoted_not_json_escaped_test() {
+  assert transcript_lines.value_preview(json.String("one\ntwo \"q\""))
+    == ["RESULT · \"one two \"q\"\""]
 }

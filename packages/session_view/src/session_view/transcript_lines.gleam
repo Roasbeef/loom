@@ -1838,6 +1838,14 @@ fn program_lines(
     string_field(fields, "program"),
     Nil,
   ))
+
+  // A launch carries a program too, but its result is a handle: the program
+  // was admitted, not run, so neither a running block nor a completed one
+  // would say what happened. It keeps the generic rows.
+  use <- bool.guard(
+    when: string_field(fields, "mode") |> option.unwrap("run") != "run",
+    return: Error(Nil),
+  )
   case outcome {
     None -> Ok([Line(ProgramRunning, running_text(program, fields))])
     Some(message.ToolResultMessage(
@@ -1878,18 +1886,16 @@ fn settled_text(
     Error(Nil) ->
       json.String(content |> list.map(tool_result_text) |> string.join("\n"))
   }
-  let log = call_tree.read(json.Object(details))
-  let count = case log {
-    Some(log) -> " · " <> call_count(log)
-    None -> ""
-  }
-  let foot = case log {
-    Some(log) -> "ran for " <> seconds_text(log.elapsed_ms)
-    None -> ""
-  }
-  let calls = case log {
-    Some(log) -> call_section(log)
-    None -> []
+
+  // The record decides three parts of the block at once, so it is read
+  // once: the count in the title, the foot, and the calls section.
+  let #(count, foot, calls) = case call_tree.read(json.Object(details)) {
+    Some(log) -> #(
+      " · " <> call_count(log),
+      "ran for " <> seconds_text(log.elapsed_ms),
+      call_section(log),
+    )
+    None -> #("", "", [])
   }
   [
     "✓ code_mode · " <> status <> count,
@@ -1946,6 +1952,7 @@ pub fn value_preview(value: json.JsonValue) -> List(String) {
       "RESULT · list · " <> count_text(list.length(items), "item", "items"),
       "  first: " <> value_hint(first),
     ]
+    json.String(text) -> ["RESULT · \"" <> compact(text, 88) <> "\""]
     scalar -> ["RESULT · " <> compact(json.to_string(scalar), 90)]
   }
 }
