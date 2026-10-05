@@ -44,8 +44,12 @@ renders again just for it:
   `kind="settled"` once it has settled: an open live row leaves
   `data-reasoning-open-until` on the document element (a deadline, never
   reached while the row is on the page and `handoff_window_ms` after it leaves)
-  and the settled row that connects takes it and opens (`expand_rule.offers`),
-  so a reader who opened the reasoning keeps it open when it settles.
+  and the settled row that connects takes it and opens (`expand_rule.takes`),
+  so a reader who opened the reasoning keeps it open when it settles. Only a
+  row the server marked `handoff="yes"` (the lane's newest settled reasoning
+  row) takes it; an older row mounted by Load older never does. Known edge: the
+  note names no block, so a page switch within `handoff_window_ms` of an open
+  live row leaving can hand its state to the first marked row of the next page.
 - `<loom-follow>` is the transcript's scroll container: the page's frame is
   pinned and only it scrolls. It scrolls itself to a row that lands below
   its view while the reader is at the bottom; once the reader scrolls up it

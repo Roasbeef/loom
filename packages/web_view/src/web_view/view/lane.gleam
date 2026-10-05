@@ -262,6 +262,7 @@ pub fn rows(
   marks: Marks,
   session: String,
 ) -> Element(message) {
+  let newest = newest_thought(pieces)
   element.element("loom-follow", [attribute.class("follow")], [
     top,
     keyed.div(
@@ -274,7 +275,7 @@ pub fn rows(
             _ ->
               Ok(#(
                 piece_key(piece),
-                timeline_row(piece, draw, replies, marks, session),
+                timeline_row(piece, draw, replies, marks, session, newest),
               ))
           }
         }),
@@ -282,6 +283,42 @@ pub fn rows(
       ),
     ),
   ])
+}
+
+// The row key of the newest settled reasoning row in the lane, or nothing
+// when it holds none. Only that row may take an open live row's state when
+// the live block settles into it (`fold_row.Handoff`): a row that is older,
+// such as one Load older brings in, never is the block the live row became.
+// The key is the engine's identity for the row and is only compared here,
+// never drawn.
+fn newest_thought(pieces: List(turns.Piece)) -> String {
+  pieces
+  |> list.flat_map(fn(piece) {
+    case piece {
+      turns.Plain(block:, ..) -> thought_keys(block)
+      turns.Work(items:, ..) ->
+        list.flat_map(items, fn(item) {
+          case item {
+            turns.Narrated(block:, ..) -> thought_keys(block)
+            turns.Step(..) | turns.Memory(..) -> []
+          }
+        })
+      _ -> []
+    }
+  })
+  |> list.last
+  |> result.unwrap("")
+}
+
+fn thought_keys(block: transcript_lines.Block) -> List(String) {
+  list.filter_map(block.rows, fn(row) {
+    case row.1.speaker {
+      transcript_line.ReasoningDigest
+      | transcript_line.Reasoning
+      | transcript_line.SummarizedReasoning -> Ok(row.0)
+      _ -> Error(Nil)
+    }
+  })
 }
 
 // The live region as the lane's last entry, or no entry while nothing is
@@ -381,6 +418,7 @@ fn timeline_row(
   replies: Replies(message),
   marks: Marks,
   session: String,
+  newest: String,
 ) -> Element(message) {
   let #(hue, target) = belongs_to(piece, marks)
   html.div([attribute.class("tl-row"), strip.hue_class(hue)], [
@@ -389,7 +427,7 @@ fn timeline_row(
       [],
     ),
     html.div([attribute.class("tl-body")], [
-      piece_element(piece, draw, replies, marks, session),
+      piece_element(piece, draw, replies, marks, session, newest),
     ]),
   ])
 }
@@ -459,10 +497,11 @@ fn piece_element(
   replies: Replies(message),
   marks: Marks,
   session: String,
+  newest: String,
 ) -> Element(message) {
   case piece {
     turns.Plain(block:, thoughts:, took:) ->
-      block_element(block, thoughts, took, draw, session)
+      block_element(block, thoughts, took, draw, session, newest)
 
     // A person's message: who sent it on a line of its own, and the words in
     // a bubble beneath. The sender's name is session text, a text node. The
@@ -477,7 +516,7 @@ fn piece_element(
           html.span([attribute.class("who-name")], [html.text(name)]),
           html.text(" · operator"),
         ]),
-        block_element(block, dict.new(), None, draw, session),
+        block_element(block, dict.new(), None, draw, session, newest),
       ])
 
     // A settled turn's work is a `<loom-fold>` (`packages/web_client`),
@@ -498,7 +537,7 @@ fn piece_element(
         ),
         keyed.div(
           [attribute.class("work-items")],
-          work_items(items, draw, session),
+          work_items(items, draw, session, newest),
         ),
       ])
 
@@ -506,7 +545,7 @@ fn piece_element(
     turns.Work(items:, folding: turns.Open, ..) ->
       keyed.div(
         [attribute.class("work open")],
-        work_items(items, draw, session),
+        work_items(items, draw, session, newest),
       )
 
     // A spawn is a line of the strand that made it: the verb the step words
@@ -701,13 +740,14 @@ fn work_items(
   items: List(turns.Item),
   draw: fn(Line) -> Element(message),
   session: String,
+  newest: String,
 ) -> List(#(String, Element(message))) {
   list.map(items, fn(item) {
     let key = case item {
       turns.Narrated(block:, ..) -> block.key
       turns.Step(key:, ..) | turns.Memory(key:, ..) -> key
     }
-    #(key, item_element(item, draw, session))
+    #(key, item_element(item, draw, session, newest))
   })
 }
 
@@ -719,10 +759,11 @@ fn item_element(
   item: turns.Item,
   draw: fn(Line) -> Element(message),
   session: String,
+  newest: String,
 ) -> Element(message) {
   case item {
     turns.Narrated(block:, thoughts:, took:) ->
-      block_element(block, thoughts, took, draw, session)
+      block_element(block, thoughts, took, draw, session, newest)
     turns.Memory(lines:, full:, ..) ->
       fold_row.memory(
         step_words.memory(lines),
@@ -765,16 +806,22 @@ fn block_element(
   took: Option(Int),
   draw: fn(Line) -> Element(message),
   session: String,
+  newest: String,
 ) -> Element(message) {
   let rows =
     list.map(block.rows, fn(row) {
+      let heir = case row.0 == newest {
+        True -> fold_row.Takes
+        False -> fold_row.Declines
+      }
       case row.1.speaker {
         transcript_line.ReasoningDigest -> {
           let held = result.unwrap(dict.get(thoughts, row.0), [])
           case held {
             [first, ..] ->
-              reasoning_row(step_words.Raw, first.text, held, took, draw)
-            [] -> reasoning_row(step_words.Raw, row.1.text, [], took, draw)
+              reasoning_row(step_words.Raw, first.text, held, took, heir, draw)
+            [] ->
+              reasoning_row(step_words.Raw, row.1.text, [], took, heir, draw)
           }
         }
         transcript_line.Reasoning ->
@@ -783,10 +830,11 @@ fn block_element(
             row.1.text,
             more_of(row.1.text),
             took,
+            heir,
             draw,
           )
         transcript_line.SummarizedReasoning ->
-          summary_row(row.1.text, took, draw)
+          summary_row(row.1.text, took, heir, draw)
         _ -> fold_row.line_row(row.1, draw)
       }
     })
@@ -817,6 +865,7 @@ fn reasoning_row(
   text: String,
   body: List(Line),
   took: Option(Int),
+  heir: fold_row.Handoff,
   draw: fn(Line) -> Element(message),
 ) -> Element(message) {
   let count = case body {
@@ -827,6 +876,7 @@ fn reasoning_row(
     step_words.reasoning_of(provenance, count, took),
     preview(text),
     list.map(body, fold_row.line_row(_, draw)),
+    heir,
   )
 }
 
@@ -852,13 +902,21 @@ fn preview(text: String) -> List(Element(message)) {
 fn summary_row(
   text: String,
   took: Option(Int),
+  heir: fold_row.Handoff,
   draw: fn(Line) -> Element(message),
 ) -> Element(message) {
   let summary = case string.split_once(text, "\n") {
     Ok(#(_, summary)) -> summary
     Error(Nil) -> text
   }
-  reasoning_row(step_words.Summarized, summary, more_of(summary), took, draw)
+  reasoning_row(
+    step_words.Summarized,
+    summary,
+    more_of(summary),
+    took,
+    heir,
+    draw,
+  )
 }
 
 // The body of a block whose whole text is the row's text: the text itself

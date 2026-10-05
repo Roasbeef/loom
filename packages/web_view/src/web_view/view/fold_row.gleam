@@ -100,6 +100,17 @@ pub fn memory(words: Words, body: List(Element(message))) -> Element(message) {
   )
 }
 
+/// Whether a settled reasoning row may take the open state of a live row
+/// that has just settled into it. The server marks the newest settled
+/// reasoning row of the lane `Takes` and every other `Declines`.
+pub type Handoff {
+  /// The newest settled reasoning row of the lane.
+  Takes
+
+  /// Any other settled reasoning row.
+  Declines
+}
+
 /// A reasoning block as a row: its words (`Reasoning · 162 lines · 4s`), then
 /// a one-line preview of what the model wrote, with the whole reasoning behind
 /// them. The preview is Markdown cut to one line (`markdown_view.line`), so a
@@ -110,18 +121,23 @@ pub fn memory(words: Words, body: List(Element(message))) -> Element(message) {
 /// ## Examples
 ///
 /// ```gleam
-/// // fold_row.reasoning(words, [fold_row.preview_span([html.text("Check 7")])], [thought_rows])
+/// // fold_row.reasoning(words, [fold_row.preview_span([html.text("Check 7")])], [thought_rows], fold_row.Takes)
 /// ```
 pub fn reasoning(
   words: Words,
   preview: List(Element(message)),
   body: List(Element(message)),
+  heir: Handoff,
 ) -> Element(message) {
   openable(
     [
       attribute.class("step"),
       attribute.class("thought"),
       attribute.attribute("kind", "settled"),
+      attribute.attribute("handoff", case heir {
+        Takes -> "yes"
+        Declines -> "no"
+      }),
     ],
     list.append(spoken(words), preview),
     body,

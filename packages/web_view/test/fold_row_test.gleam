@@ -308,6 +308,34 @@ pub fn a_closed_reasoning_row_previews_the_first_line_cut_as_markdown_test() {
   assert string.contains(html, "kind=\"settled\"")
 }
 
+// Only the newest settled reasoning row of the lane may take an open live
+// row's state, so only it carries `handoff="yes"`; an older row, such as one
+// Load older brings in, says `no`. The mark is a fixed word, never model text.
+pub fn only_the_newest_reasoning_row_is_marked_to_take_the_handoff_test() {
+  let thought = fn(key, text) {
+    turns.Narrated(
+      Block(key, FromSpacer, [
+        #(key <> ":0", Line(transcript_line.ReasoningDigest, text)),
+      ]),
+      dict.new(),
+      None,
+    )
+  }
+  let html =
+    drawn([
+      work([thought("2.0", "older <b>idea</b>"), thought("3.0", "newest idea")]),
+    ])
+  assert count(html, "handoff=\"yes\"") == 1
+  assert count(html, "handoff=\"no\"") == 1
+
+  // The older row comes first in the lane, so its `no` precedes the `yes`.
+  let assert Ok(#(before, after)) = string.split_once(html, "handoff=\"yes\"")
+    as "one row is marked"
+  assert string.contains(before, "handoff=\"no\"")
+  assert !string.contains(after, "handoff=\"no\"")
+  assert !string.contains(html, "<b>")
+}
+
 pub fn every_speaker_shape_of_a_reasoning_block_closes_to_a_heading_and_a_preview_test() {
   let one = fn(speaker, text) {
     drawn([

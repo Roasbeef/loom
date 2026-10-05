@@ -541,7 +541,9 @@ page keys and nonces, and the relay into the session's gateway.
   blank line, so each render's `draw` memo holds for the earlier paragraphs and
   only the one still being written is parsed. The line count is the row's
   `title`, and the headline is text beneath it when one has been pushed. A
-  settled reasoning row is `kind="settled"`; an open live row publishes
+  settled reasoning row is `kind="settled"` and carries `handoff="yes"` only
+  when it is the lane's newest settled reasoning row (`lane.newest_thought`),
+  `handoff="no"` otherwise; an open live row publishes
   `data-reasoning-open-until` on the document element and the settled row that
   arrives takes it and opens (`web_client/expand`). A settled reasoning block of
   every speaker shape (`ReasoningDigest` with or without `thoughts`,

@@ -76,6 +76,52 @@ pub fn offers(deadline: String, now: Int) -> Bool {
   }
 }
 
+/// Whether the server marked a settled reasoning row as the one allowed to
+/// take a live row's open state: the newest settled reasoning row of the lane.
+pub type Mark {
+  /// The server wrote `handoff="yes"`.
+  Marked
+
+  /// Anything else, or no mark.
+  Unmarked
+}
+
+/// The mark a `handoff` attribute names.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert expand_rule.mark("yes") == expand_rule.Marked
+/// ```
+pub fn mark(value: String) -> Mark {
+  case value {
+    "yes" -> Marked
+    _ -> Unmarked
+  }
+}
+
+/// Whether a row takes the published offer: only a marked row does, and only
+/// while the offer has not run out. An unmarked row never takes it, which is
+/// what keeps an older row, mounted while a live row is open, from opening in
+/// its place.
+///
+/// Known edge: the offer is a note on the document, not a named block, so a
+/// page switch within `handoff_window_ms` of an open live row leaving can offer
+/// its state to the first marked row of the next page.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert expand_rule.takes(expand_rule.Marked, "2000", 1000)
+/// assert !expand_rule.takes(expand_rule.Unmarked, "2000", 1000)
+/// ```
+pub fn takes(mark: Mark, deadline: String, now: Int) -> Bool {
+  case mark {
+    Marked -> offers(deadline, now)
+    Unmarked -> False
+  }
+}
+
 /// The state after the reader presses the row.
 ///
 /// ## Examples
