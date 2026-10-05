@@ -1,11 +1,13 @@
 %% This test-only probe injects a captured private local handoff, never network
 %% enrollment or a production RPC callback. Exact state tags fail on layout drift.
 -module(executor_beam_endpoint_test_ffi).
--export([credits/1, capture/1, head/1, inject_idle/2, inject_active/2]).
+-export([credits/1, capture/1, head/1, inject_idle/2, inject_active/2,
+         capture_release/1, inject_release/2, retire_idle/1, retire_busy/1,
+         answer_waiting/1, joined_waiting/1]).
 
 credits(Server) ->
-    {state, _, Data, _, _} = sys:get_state(Server),
-    Data.
+    {state, _, Records, _} = sys:get_state(Server),
+    [Subject || {credit_record, data, Subject, _, available} <- Records].
 
 capture(Subjects) ->
     {ok, [capture_credit(Subject) || Subject <- Subjects]}.
@@ -56,3 +58,48 @@ inject_active(Probe, Subject) ->
 matching(Probe, Subject) ->
     hd([Entry || {Saved, _, _, _} = Entry <- Probe, Saved =:= Subject]).
 send({subject, Pid, Tag}, Value) -> Pid ! {Tag, Value}, ok.
+
+%% These probes observe concrete managed-task custody and inject only the captured
+%% original controller release. They cannot manufacture an answer or join witness.
+capture_release(Server) ->
+    {state, _, Records, _} = sys:get_state(Server),
+    [{Subject, Original} | _] =
+        [{Subject, Original} ||
+            {credit_record, data, Subject, _, {assigned, Original}} <- Records],
+    {Subject, Original}.
+
+inject_release({Subject, Original}, {server, Door, Server}) ->
+    send(Door, {released, Subject, Original}),
+    _ = sys:get_state(Server),
+    {ok, nil}.
+
+retire_idle(Server) ->
+    {state, _, Records, _} = sys:get_state(Server),
+    [Subject | _] =
+        [Subject || {credit_record, data, Subject, _, available} <- Records],
+    send(Subject, close_credit),
+    nil.
+
+retire_busy(Server) ->
+    {state, _, Records, _} = sys:get_state(Server),
+    [Subject | _] =
+        [Subject || {credit_record, data, Subject, _, {assigned, _}} <- Records],
+    send(Subject, close_credit),
+    nil.
+
+answer_waiting(Server) ->
+    custody_matches(Server, fun(State) ->
+        element(11, State) =/= none andalso element(13, State) =:= no_ask
+    end).
+
+joined_waiting(Server) ->
+    custody_matches(Server, fun(State) ->
+        element(11, State) =:= none andalso element(13, State) =/= no_ask
+    end).
+
+custody_matches(Server, Predicate) ->
+    {state, _, Records, _} = sys:get_state(Server),
+    lists:any(fun({credit_record, _, {subject, Pid, _}, _, {assigned, _}}) ->
+                      Predicate(sys:get_state(Pid));
+                 (_) -> false
+              end, Records).
