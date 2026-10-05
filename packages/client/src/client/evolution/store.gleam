@@ -34,6 +34,7 @@ import simplifile
 import storage/sqlite
 import storage/storage
 import tools/fs
+import weft/poll
 
 /// A native host's catalogue capability.
 pub type Authority {
@@ -441,6 +442,43 @@ pub fn select_request(
   reason: String,
   request_id: String,
 ) -> Result(record.Selection, Refusal) {
+  select_request_admitted(
+    store,
+    id,
+    evidence_id,
+    scope,
+    name,
+    expected,
+    principal,
+    reason,
+    request_id,
+    fn() { Ok(Nil) },
+  )
+}
+
+/// Checks native transition admission immediately before a new selection CAS.
+///
+/// Lease acquisition may wait behind another catalogue borrower. The callback
+/// rechecks an absolute deadline after that wait; an existing exact receipt is
+/// recovered first, because expiry cannot undo an already committed selection.
+///
+/// ## Examples
+///
+/// `select_request_admitted(store,id,evidence,scope,name,expected,owner,reason,token,admit)`
+/// commits once after native admission or recovers the original receipt.
+@internal
+pub fn select_request_admitted(
+  store: Store,
+  id: record.CandidateId,
+  evidence_id: record.EvidenceId,
+  scope: record.Scope,
+  name: String,
+  expected: Option(record.Selection),
+  principal: String,
+  reason: String,
+  request_id: String,
+  admit: fn() -> Result(Nil, Refusal),
+) -> Result(record.Selection, Refusal) {
   use Nil <- result.try(owner(store, scope, principal))
   use Nil <- result.try(bound(request_id, 256, "operator request id"))
   use Nil <- result.try(bound(reason, 4096, "operator reason"))
@@ -474,6 +512,7 @@ pub fn select_request(
           reason,
           request_id,
           signature,
+          admit,
         )
     }
   })
@@ -609,6 +648,7 @@ fn select_new(
   reason: String,
   request_id: String,
   signature: String,
+  admit: fn() -> Result(Nil, Refusal),
 ) -> Result(record.Selection, Refusal) {
   use candidate <- result.try(candidate_in(store, opened, id))
   use evidence <- result.try(evidence_in(opened, evidence_id))
@@ -642,13 +682,14 @@ fn select_new(
   ))
 
   // Approval and selection seqs are checked together before any event is written.
-  use Nil <- result.try(commit(
+  use Nil <- result.try(commit_admitted(
     opened,
     [set(key, encode_selection(selection)), ..receipt_writes],
     [expect(key, prior), expect(approved_key, approved), ..receipt_expected],
     "selected",
     reason <> ": " <> encode_selection(selection),
     store.clock,
+    admit,
   ))
   Ok(selection)
 }
@@ -817,16 +858,7 @@ fn with_session(
   store: Store,
   work: fn(session.Session) -> Result(a, Refusal),
 ) -> Result(a, Refusal) {
-  let #(at, _) = clock.read(store.clock)
-  use #(opened, retire) <- result.try(
-    session.open_sqlite_owned(
-      path: store.root <> "/evolution.db",
-      owner: "evolution-" <> int.to_string(at),
-      lease_ttl_ms: 30_000,
-      clock: store.clock,
-    )
-    |> result.map_error(open_error),
-  )
+  use #(opened, retire) <- result.try(borrow(store))
   let outcome = work(opened)
 
   // Close alone releases no ownership proof; RETIRE must answer before return.
@@ -840,6 +872,38 @@ fn with_session(
           |> result.replace_error("SQLite retirement remains unconfirmed")
         }),
       ))
+  }
+}
+
+// Every catalogue capability for a canonical path contends on the same fenced
+// SQLite lease. Only a refused open is repeated: work and retirement each run
+// once after custody is acquired, including an acquisition at the wall deadline.
+fn borrow(store: Store) {
+  let path = store.root <> "/evolution.db"
+  let clock = store.clock
+  let #(at, _) = clock.read(clock)
+  let owner = "evolution-" <> int.to_string(at)
+  case
+    poll.until(within: 1000, every: 10, attempt: fn() {
+      case
+        session.open_sqlite_owned_waiting(
+          path:,
+          owner:,
+          lease_ttl_ms: 30_000,
+          clock:,
+          busy_timeout_ms: 10,
+        )
+      {
+        Ok(owned) -> poll.Done(owned)
+        Error(session.SqliteOpenFailed(sqlite.AdmissionBusy))
+        | Error(session.SqliteOpenFailed(sqlite.LeaseHeld(_, _))) -> poll.Retry
+        Error(error) -> poll.Fail(open_error(error))
+      }
+    })
+  {
+    poll.Answered(owned) -> Ok(owned)
+    poll.Failed(error) -> Error(error)
+    poll.Expired -> Error(Busy)
   }
 }
 
@@ -1325,6 +1389,18 @@ fn commit(
   text: String,
   clock: Clock,
 ) -> Result(Nil, Refusal) {
+  commit_admitted(opened, writes, expected, event, text, clock, fn() { Ok(Nil) })
+}
+
+fn commit_admitted(
+  opened: session.Session,
+  writes: List(tx.Write),
+  expected: List(tx.SeqExpectation),
+  event: String,
+  text: String,
+  clock: Clock,
+  admit: fn() -> Result(Nil, Refusal),
+) -> Result(Nil, Refusal) {
   use event_cell <- result.try(cell(opened, "event_count"))
   use count <- result.try(case event_cell {
     None -> Ok(0)
@@ -1349,6 +1425,10 @@ fn commit(
       custom_type: "evolution/" <> event,
       data: Some(value.String(text)),
     )
+
+  // Lease admission and the audit census can wait. The native transition's
+  // absolute deadline is checked after both, immediately before a new CAS.
+  use Nil <- result.try(admit())
   storage.commit(
     opened.store,
     tx.Tx(
@@ -1489,7 +1569,8 @@ fn bound(text: String, limit: Int, what: String) -> Result(Nil, Refusal) {
 
 fn open_error(error: session.OpenError) -> Refusal {
   case error {
-    session.SqliteOpenFailed(sqlite.LeaseHeld(_, _)) -> Busy
+    session.SqliteOpenFailed(sqlite.AdmissionBusy)
+    | session.SqliteOpenFailed(sqlite.LeaseHeld(_, _)) -> Busy
     session.SqliteOpenFailed(sqlite.CorruptSession(_)) ->
       Corrupt("catalogue database corrupt")
     session.SqliteOpenFailed(sqlite.UnsupportedVersion(_, _)) -> Changed

@@ -3408,7 +3408,8 @@ pub fn storage_open_refusal(error: session.OpenError) -> String {
       "another writer holds this session's lease until epoch ms "
       <> int.to_string(expires_at_ms)
 
-    session.SqliteOpenFailed(sqlite.CorruptSession(..))
+    session.SqliteOpenFailed(sqlite.AdmissionBusy)
+    | session.SqliteOpenFailed(sqlite.CorruptSession(..))
     | session.SqliteOpenFailed(sqlite.UnsupportedVersion(..))
     | session.SqliteOpenFailed(sqlite.OpenFailed(..))
     | session.MemoryOpenFailed(..) ->

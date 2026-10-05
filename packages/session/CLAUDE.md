@@ -48,6 +48,10 @@ the rewrite exists for. WP-C plus WP-C-full.
   close-and-retire capability. The custodian retains that capability until
   every writer, reader and external effect has drained; a failed close
   never becomes permission to retire the connection actor.
+  The internal `open_sqlite_owned_waiting` adapter changes only the native
+  SQLite busy timeout for short foreground borrowers. It shares the same
+  admission, startup-link and acknowledged retirement construction; ordinary
+  session constructors retain their existing defaults.
 - `session/session.open_sqlite_custody` also returns a startup-link transfer
   capability. The initializer publishes retirement before invoking transfer,
   so its later death cannot kill the connection behind the custodian's handle.

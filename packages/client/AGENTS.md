@@ -9,6 +9,11 @@ operator authority, current build/seam/evaluator identity, approval sequence and
 revocation sequence all participate in admission. Authored fact writes cannot
 reach this authority. `candidate` captures sources through the caller's jailed
 capability path, and `evaluate` attaches actual author-check observations.
+Canonical catalogue borrowers contend on the existing fenced SQLite lease.
+`store` waits only for typed pre-open lock-busy or held-lease refusal, using bounded `weft/poll`
+and a short native busy timeout. It never replays admitted work or retirement.
+Native selection admission rechecks expiry before CAS and recovers an existing
+exact receipt before applying that check.
 
 `live` serializes the complete promoted hook/tool fold with activation. `hook`
 stages a privately compiled jailed generation and publishes it after native

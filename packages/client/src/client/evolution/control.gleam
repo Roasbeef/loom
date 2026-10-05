@@ -335,6 +335,27 @@ fn select_pending(
         False -> Error("Bounds: deadline_ms must be 1..120000")
       })
       let #(now, _) = clock.read(clock)
+      let expires_at = now + waiting
+      let commit = fn() {
+        store.select_request_admitted(
+          catalogue,
+          candidate_id,
+          evidence,
+          scope,
+          name,
+          expected,
+          principal,
+          reason,
+          request_id,
+          fn() {
+            let #(at, _) = clock.read(clock)
+            case at < expires_at {
+              True -> Ok(Nil)
+              False -> Error(store.Busy)
+            }
+          },
+        )
+      }
       let next =
         record.Selection(
           candidate.id,
@@ -355,7 +376,7 @@ fn select_pending(
         )
       queue.enqueue(
         transitions,
-        live.Transition(request_id, now + waiting, next, commit),
+        live.Transition(request_id, expires_at, next, commit),
         signature,
       )
       |> result.map(queue_value)

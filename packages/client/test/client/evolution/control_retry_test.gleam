@@ -38,6 +38,8 @@ fn replay(candidate: record.Candidate) {
   let assert Ok(catalogue) =
     store.open(
       "build/test_db/evolution-retry-"
+        <> int.to_string(ffi_os.system_time_ms())
+        <> "-"
         <> int.to_string(ffi_os.unique_positive_integer()),
       store.Owner,
       candidate.identity,

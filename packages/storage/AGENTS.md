@@ -212,6 +212,10 @@ with these forks: they define the same modules.
   lease TTL, busy timeout; the segmented branch-index window type.
   `OpenError.UnsupportedVersion(found, supported)` is the fail-closed
   answer to a file this build cannot read.
+  `AdmissionBusy` preserves SQLite's native busy code only for a refused
+  `BEGIN IMMEDIATE` before ownership. It permits bounded admission waiting
+  without guessing error text. Busy failures after lease claim, migration,
+  commit or close retain their original failure and custody meaning.
 - `storage/sqlite.transfer_startup(handle)` unlinks the original SQLite actor
   only after cleanup publication is acknowledged, and returns that actor's PID.
   A failed builder cannot discard the published actor's lease-release proof.

@@ -263,6 +263,15 @@ pub fn failed_close_is_not_reported_as_success_on_retry_test() {
     as "the lock holder must open the same database"
   let assert Ok(Nil) = sqlight.exec("BEGIN IMMEDIATE", on: blocker)
     as "the lock must prevent the writer's lease deletion"
+
+  // This refused BEGIN has neither read nor claimed the existing writer lease.
+  // Its native lock refusal is distinct from failures after acquiring custody.
+  let assert Error(sqlite.AdmissionBusy) =
+    sqlite.open(
+      sqlite.config(path:, owner: "admission-probe") |> sqlite.busy_timeout(10),
+      clock.fixed(at: 10_000),
+    )
+    as "native write-lock contention is a typed pre-ownership refusal"
   let assert Error(failure) = storage.close(store)
     as "close must report that its lease deletion failed"
 
@@ -397,8 +406,9 @@ pub fn racing_creates_write_one_catalog_row_test() {
             }
             // Losing the lease race or timing out on the write lock are the
             // in-band answers contention is allowed to produce.
-            Error(sqlite.LeaseHeld(..)) | Error(sqlite.OpenFailed(..)) ->
-              RacerRefused
+            Error(sqlite.AdmissionBusy)
+            | Error(sqlite.LeaseHeld(..))
+            | Error(sqlite.OpenFailed(..)) -> RacerRefused
             Error(sqlite.CorruptSession(..))
             | Error(sqlite.UnsupportedVersion(..)) -> RacerCorrupt
           }
