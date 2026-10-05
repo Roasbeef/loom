@@ -489,6 +489,36 @@ pub fn a_reply_is_kept_as_the_answer_and_a_read_refusal_is_not_test() {
   assert refused.answer == "conflict: busy"
 }
 
+// The decided-approvals read a page makes on opening is no command of the
+// operator's. An older daemon refuses it as unknown and an over-budget
+// session as failed, and the record keeps its notice and its transcript:
+// a refusal that reached the shared error path would put a failure row and a
+// notice in front of a reader on every page open.
+pub fn a_refused_decided_read_changes_nothing_the_reader_sees_test() {
+  let before = attached()
+  list.each(
+    [
+      #("unsupported", "unknown command: escalations_decided"),
+      #("snapshot_failed", "bounded snapshot read refused"),
+    ],
+    fn(refusal) {
+      let after =
+        applied(
+          before,
+          session_channel.RequestRefused(
+            "escalations_decided",
+            4,
+            refusal.0,
+            refusal.1,
+          ),
+        )
+      assert after.notice == before.notice
+      assert after.transcript == before.transcript
+      assert after.answer == before.answer
+    },
+  )
+}
+
 // A prompt the daemon hands back is the prompt's last copy, so forgetting the
 // surfaces a host has none for leaves it in the record for the host to take.
 pub fn forgetting_surfaces_keeps_a_returned_prompt_test() {

@@ -632,7 +632,7 @@ fn mirror_decided_read(
 ) -> #(tui_model.Model, Decided) {
   case asked, model.shared.channel {
     Owed, Some(lane) ->
-      case session_channel.decided(lane, now: 0) {
+      case session_channel.decided(lane, now: model.shared.stamp.transport_ms) {
         Ok(lane) -> #(
           tui_model.Model(
             ..model,

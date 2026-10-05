@@ -998,6 +998,49 @@ pub fn a_page_reads_the_decided_approvals_once_when_it_opens_test() {
     == []
 }
 
+// A refused decided-approvals read is nobody's command outcome: an older
+// daemon refuses it as unknown and an over-budget session as failed, and the
+// page keeps the decisions it saw live without a row or a notice.
+pub fn a_refused_decided_read_leaves_the_transcript_and_notice_alone_test() {
+  let wire = process.new_subject()
+  let model =
+    page_fixture.run(component.new(page_fixture.start()), component.update, [
+      component.Opened(wire),
+      component.Arrived(page_fixture.transfer("operator", [])),
+    ])
+  let #(asked, read) = refuse_until_decided(model, wire, 8)
+  let refused =
+    page_fixture.run(asked, component.update, [
+      component.Arrived([page_fixture.refusal(page_fixture.request_id(read))]),
+    ])
+  assert component.lines(refused) == component.lines(asked)
+  assert component.notice(refused) == component.notice(asked)
+}
+
+// Refuses the page's other reads, one round at a time, and stops with the
+// decided-approvals read outstanding, returning its frame.
+fn refuse_until_decided(model, wire, rounds: Int) {
+  let reads =
+    list.filter(page_fixture.sent(wire), fn(frame) {
+      !string.contains(frame, "\"cmd\":\"snapshot")
+      && !string.contains(frame, "\"cmd\":\"subscribe\"")
+    })
+  let decided = list.find(reads, string.contains(_, "\"escalations_decided\""))
+  case decided, rounds {
+    Ok(read), _ -> #(model, read)
+    Error(Nil), 0 -> panic as "the page never asked for the decided approvals"
+    Error(Nil), _ ->
+      page_fixture.run(model, component.update, [
+        component.Arrived(
+          list.map(reads, fn(frame) {
+            page_fixture.refusal(page_fixture.request_id(frame))
+          }),
+        ),
+      ])
+      |> refuse_until_decided(wire, rounds - 1)
+  }
+}
+
 // Refuses each read the page writes, one round at a time, until the wire
 // holds none, and returns every frame the page wrote.
 fn refuse_every_read(model, wire, written: List(String), rounds: Int) {
