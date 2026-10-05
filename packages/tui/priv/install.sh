@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Install complete releases beside existing trees, then publish their links.
-# A live process can load files long after boot, so published trees are never
-# replaced, renamed, or pruned. Reinstalling the same version gets a new tree.
-# Usage: [PREFIX=$HOME/.local] [LOOM_CLIENT=bundled|slim] scripts/install.sh
+# A live process can load files long after boot, so a published tree is never
+# replaced or renamed. Reinstalling the same version gets a new tree. Once the
+# links are repointed, prune_old_trees removes superseded trees that no link
+# selects and no live process uses.
+# Usage: [PREFIX=$HOME/.local] [LOOM_CLIENT=bundled|slim] [LOOM_KEEP_OLD_TREES=1]
+#   scripts/install.sh
 set -euo pipefail
 ROOT="${LOOM_INSTALL_SOURCE:?install.sh needs LOOM_INSTALL_SOURCE}"
 ROOT="$(CDPATH= cd -- "$ROOT" && pwd -P)"
@@ -92,6 +95,72 @@ write_wrapper loomd server loomd
 write_wrapper loom "$CLIENT_STEM" loom
 write_wrapper loom-profile "$CLIENT_STEM" loom-profile
 
+# Collect what live processes use into $INUSE: every command line from ps, and
+# every open file or working directory path from lsof when it is installed. The
+# check is substring matching on the physical tree path, which the launchers
+# always use. Returns non-zero when the evidence cannot be gathered, and the
+# caller then deletes nothing: a missing answer must not read as "unused".
+collect_in_use() {
+  ps -axo command > "$INUSE" 2>/dev/null || return 1
+  [ -s "$INUSE" ] || return 1
+  command -v lsof >/dev/null 2>&1 || return 0
+  # lsof exits 1 when it could not inspect some other user's process, which is
+  # normal. Anything above 1 means it did not work.
+  local status=0
+  lsof -nP -w -F n >> "$INUSE" 2>/dev/null || status=$?
+  [ "$status" -le 1 ] || return 1
+  return 0
+}
+
+# Remove superseded release trees under $LIB for the stems this install
+# repointed. Kept: the tree every link selects, the tree each repointed link
+# selected before this install, and any tree a live process uses. Only real
+# directories named exactly <stem>.<8 alphanumerics> qualify, so symlinks,
+# legacy-backup.*, update.lock, and unrelated entries are never touched. This
+# assumes no other install runs on the prefix at the same time: loom update
+# serializes on update.lock, but a bare make install does not, and a tree being
+# copied by a concurrent install looks unused until its link is switched.
+prune_old_trees() {
+  if [ "${LOOM_KEEP_OLD_TREES:-}" = 1 ]; then
+    printf '%s\n' 'LOOM_KEEP_OLD_TREES=1: old release trees kept.'
+    return 0
+  fi
+  INUSE="$LINKS/in-use.txt"
+  if ! collect_in_use; then
+    printf '%s\n' 'Could not inspect running processes; no old release trees pruned.'
+    return 0
+  fi
+  local LC_COLLATE=C stem prev dir name keep link kib removed=0 freed=0
+  for stem in server "$CLIENT_STEM"; do
+    prev="$PREV_CLIENT"
+    [ "$stem" != server ] || prev="$PREV_SERVER"
+    for dir in "$LIB/$stem".*; do
+      name="${dir##*/}"
+      [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+      [[ "$name" =~ ^$stem\.[A-Za-z0-9]{8}$ ]] || continue
+      keep=
+      for link in server client tui; do
+        if [ -L "$LIB/$link" ] && [ "$(readlink "$LIB/$link")" = "$dir" ]; then keep=1; fi
+      done
+      [ "$prev" != "$dir" ] || keep=1
+      [ -z "$keep" ] || continue
+      if grep -qF -- "$dir" "$INUSE"; then
+        printf 'kept (in use): %s\n' "$dir"
+        continue
+      fi
+      kib="$(du -sk "$dir" 2>/dev/null | cut -f1)"
+      if rm -rf "$dir"; then
+        printf 'removed: %s\n' "$dir"
+        removed=$((removed + 1))
+        freed=$((freed + ${kib:-0}))
+      else
+        printf 'could not remove: %s\n' "$dir"
+      fi
+    done
+  done
+  printf 'pruned %d old release trees, %d KiB freed\n' "$removed" "$freed"
+}
+
 # GNU mv needs -T and BSD mv needs -h to replace a directory symlink rather
 # than moving the new link into its target. Both source and destination live
 # on the same filesystem. Each switch exposes a complete old or new tree.
@@ -102,6 +171,10 @@ switch_link() {
     mv -h -f "$staged" "$LIB/$stem"
   fi
 }
+# The trees the links select before this install are the one-step rollback and
+# the likeliest to still be running, so pruning below keeps them.
+PREV_SERVER="$(readlink "$LIB/server" 2>/dev/null || true)"
+PREV_CLIENT="$(readlink "$LIB/$CLIENT_STEM" 2>/dev/null || true)"
 switch_link "$SERVER_TREE" server
 switch_link "$CLIENT_TREE" "$CLIENT_STEM"
 # Rename complete scripts rather than truncating a launcher another process
@@ -111,7 +184,7 @@ for launcher in loomd loom loom-profile; do
 done
 printf 'installed:\n  %s\n  %s\n  %s\n' "$BIN/loom" "$BIN/loomd" "$BIN/loom-profile"
 printf 'release trees:\n  %s\n  %s\n' "$SERVER_TREE" "$CLIENT_TREE"
-printf '%s\n' 'Old trees are retained. See docs/updating.md for restart and manual cleanup.'
+prune_old_trees
 case ":$PATH:" in
   *":$BIN:"*) ;;
   *) printf 'Add %s to PATH, or invoke the launchers there directly.\n' "$BIN" ;;
