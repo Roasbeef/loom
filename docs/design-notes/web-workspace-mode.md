@@ -85,7 +85,7 @@ check anywhere.
 A UI session is a `Grant` (`ui_sessions.gleam:269`) of one session, one
 credential digest, one principal and one ceiling, kept with the digests of
 the page's cookie, key and nonce in one actor. A ticket for it is minted
-only by `UiLink` (`client/daemon/server.gleam:1639`) over the principal's own
+only by `UiLink` (`client/daemon/server.gleam:1650`) over the principal's own
 control connection, after `session_authority`
 (`client/daemon/manager.gleam:936`) finds a membership, and by a page
 switching to another session (`ticket_for` (`ui_socket.gleam:1105`)). The
@@ -111,7 +111,7 @@ sidebar, by ruling (051, the addendum on the session sidebar): an observer
 link is the one a person hands to someone who may only watch one session.
 
 A credential is a 32-byte bearer whose SHA-256 the catalogue keeps
-(`bootstrap_owner` (`storage/access.gleam:425`)); every check anywhere takes
+(`bootstrap_owner` (`storage/access.gleam:416`)); every check anywhere takes
 a digest. Nothing in the tree signs or verifies a token: `gleam_crypto`
 1.6.0 is a dependency of `host` already and provides `hmac` and
 `secure_compare`, which section 1.4 uses, so the macaroon needs no new
@@ -729,7 +729,7 @@ and the epoch the page was admitted in:
 1. the page is open and its ceiling is Operator;
 2. `session_authority` finds Owner or Operator authority in the target: an
    observer member is refused with the words "ask an operator to resume
-   it", the check `OpenSession` (`client/daemon/server.gleam:1657`) makes;
+   it", the check `OpenSession` (`client/daemon/server.gleam:1668`) makes;
 3. `open` (`client/daemon/manager.gleam:1035`) is called, which is the same
    registry turn `sessions.open` runs: capacity, `Reserved`, archived, the
    domain slot;
@@ -884,7 +884,7 @@ grant Owner.
 A principal has a stable ID and a display name (`Principal`
 (`storage/access.gleam:202`)), set by the inviter (`loomd access invite
 SESSION PRINCIPAL ROLE NAME`, and `Guest <digits>` from the page). The
-catalogue can rename one (`rename` (`storage/access.gleam:1045`)) and no control
+catalogue can rename one (`rename` (`storage/access.gleam:1036`)) and no control
 command exposes it (053, Open). A claim binds a credential to the principal
 (`claim` (`client/daemon/manager.gleam:659`)) and carried no name before this change. The name
 reaches everyone through the roster: the gateway stamps each connection and

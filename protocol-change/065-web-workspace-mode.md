@@ -1321,6 +1321,19 @@ claim: it now returns the login's row, so the claim is `ConflictingClaim`, binds
 nothing and stays open. `revoke_member_credentials` (rotation and revocation) and
 the digest-reuse checks already ask both kinds, and are unchanged.
 
+**A device link always sets a login.** An exchange whose ticket was minted under
+a login (a device link) that cannot set its own, because the parent's time has
+run out or the row is refused, is refused with the fixed `401` and opens no
+page. Opening it without one would leave a page with no login and no parent, and
+its own device link would then be thirty fresh days past the family's end. The
+only `issue` caller is `server.remembered`, so this is the one place the rule is
+held; a ticket with no issuing login (a person's own `loom ui`) still opens a
+page without one when the daemon cannot set it.
+
+A device link's exchange page runs under the issuing page's credential, so
+revoking the child login does not end that page before its eight hours; "the
+pages a login minted" means the pages its bookmark resumed.
+
 **What a stolen page is worth.** A stolen fresh home mints a device link, which
 the thief redeems into a login at the page's ceiling for the time the issuing
 login has left, three an hour under the allowance, each listed with its parent;
@@ -1362,6 +1375,7 @@ carried through every chain; `ui_socket.Standing.origin` is what they will check
 | the resume document served with `form-action 'none'` | `ui_route_test.the_bookmark_resumes_a_home_without_loom_test` |
 | a switch ticket minted `Remembered` | `ui_route_test.session_links_and_switch_tickets_set_no_login_test` |
 | the kind dropped from the `authenticate` query | `storage/access_test.a_credential_authenticates_only_as_the_kind_it_was_made_as_test` |
+| `ParentEnded` (and any failed issue under a parent) mapped to no login, so a device link opens a page without one | `ui_route_test.a_device_link_from_an_ended_login_opens_no_page_test` |
 | the 64-hex shape check removed from `credential` | `daemon_server_test.a_bearer_that_is_not_64_lowercase_hex_is_refused_before_any_lookup_test` |
 | `principal_active_credential` without its kind | `storage/access_test.a_login_is_counted_beside_the_bearer_and_never_in_its_place_test` |
 | `bind`'s check counting bearers only | `storage/access_test.a_browser_row_blocks_a_claim_of_either_kind_test` |
