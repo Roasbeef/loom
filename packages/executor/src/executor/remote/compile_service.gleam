@@ -1177,13 +1177,20 @@ fn control(config: Config, task: Control) -> Result(ControlAnswer, Error) {
     Route(envelope, reply) -> {
       // Historical lookup stays inside a managed bounded metadata task. Passing
       // the original final reply endpoint does not discharge listener custody.
+      // An exact identity refusal is definite; only its joined metadata task
+      // releases the slot. Journal or reply uncertainty still fences admission.
       use context <- result.try(
         native.command_context(
           config.native,
           config.resources,
           wire.command_ref(envelope),
         )
-        |> result.replace_error(Uncertain),
+        |> result.map_error(fn(error) {
+          case error {
+            native.Invalid -> Invalid
+            native.Capacity | native.Expired | native.Uncertain -> Uncertain
+          }
+        }),
       )
       native.send_command_exchange(config.native, context, envelope, reply)
       Ok(Forwarded)
@@ -1529,9 +1536,8 @@ fn control_definite(
   case task, outcome {
     _, Ok(_) -> True
     Read(_, _), Error(Custody(journal.Missing))
-    | Route(_, _), Error(Custody(journal.Missing))
     | Read(_, _), Error(Custody(journal.Conflict))
-    | Route(_, _), Error(Custody(journal.Conflict))
+    | Route(_, _), Error(Invalid)
     -> True
     _, Error(_) -> False
   }
@@ -1558,6 +1564,7 @@ fn send_control(
       process.send(reply, Error(Uncertain))
     Native(reply), Error(Capacity) ->
       process.send(reply, Error(native.Capacity))
+    Native(reply), Error(Invalid) -> process.send(reply, Error(native.Invalid))
     Native(reply), Error(_) -> process.send(reply, Error(native.Uncertain))
     Native(_), Ok(_) | NoReply, _ -> Nil
   }

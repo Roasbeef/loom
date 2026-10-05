@@ -477,6 +477,8 @@ pub fn live_command_context(
 /// Reads exact bounded original data without reconstructing preparation custody.
 /// Historical contexts can control an exact retained native association only.
 /// They cannot create a challenge or submit, even when a native key is unseen.
+/// Missing or conflicting original identity is a definite refusal; journal or
+/// reply uncertainty remains uncertain and grants no new command authority.
 ///
 /// ## Examples
 ///
@@ -491,7 +493,23 @@ pub fn command_context(
 ) -> Result(CommandContext, Error) {
   use original <- result.try(
     resource_journal.retained_input(resources, command.service(ref))
-    |> result.replace_error(Uncertain),
+    |> result.map_error(fn(error) {
+      case error {
+        resource_journal.Missing | resource_journal.Conflict -> Invalid
+        resource_journal.InvalidLimits
+        | resource_journal.InvalidPath
+        | resource_journal.AlreadyExists
+        | resource_journal.BindingMismatch
+        | resource_journal.InvalidInput
+        | resource_journal.Capacity
+        | resource_journal.Corrupt
+        | resource_journal.Uncertain
+        | resource_journal.Sealed
+        | resource_journal.Closed
+        | resource_journal.UnsupportedRole
+        | resource_journal.StartFailed -> Uncertain
+      }
+    }),
   )
   use Nil <- result.try(validate_command(
     service.config,
