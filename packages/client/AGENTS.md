@@ -5838,6 +5838,12 @@ report-profile failure retains unresolved custody even if no report was committe
 An actual vet/compile producer may return the closed no-terminal refusal; schema
 validation does not establish the producer's identity by itself.
 
+`remote/code_reports` binds the retained shell to the original managed execution
+and pinned custodian. Its retainer checks operation, step and source index before
+calling the owner. This adapter does not select remote physical services or
+install report retrieval; the configured compiler/launcher and owner router
+remain separate assembly responsibilities.
+
 ## Remote owner custody
 
 `remote/custodian` owns the separate per-session request and final-report
