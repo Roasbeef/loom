@@ -1126,3 +1126,20 @@ records tests and the OwnerDischarge model extension. Report commit, final owner
 acknowledgement, channel consumption ACK, child receipt, producer drain, native
 retirement and exact session commit remain separate facts. No one of them
 substitutes for the others.
+
+### Retained foreground renderer assembly
+
+The foreground tool may be assembled with `tools/codemode.retained_tool` and
+an owner retention callback. Assembly MUST select CodeModeReportV1 before fresh
+admission and bind the callback to the original pinned custodian and ToolKey.
+The callback commits a checked CompleteReport before returning its ReportRef.
+Rendering MUST NOT create a reference or a no-terminal refusal after retention
+failure. Only the actual trusted VetRejected or CompileFailed branch may emit
+the closed no-terminal schema; schema tags in program data grant no such status.
+
+This constructor refuses an asynchronous host configuration. Background jobs
+have distinct custody and retain their existing contract; the new foreground
+constructor does not silently reinterpret them. The original runtime ToolOutcome
+and CodeMode execution signatures remain unchanged. `client/remote/code_reports`
+provides the original-key adapter, while physical service selection and owner
+read routing remain separate required assembly steps.
