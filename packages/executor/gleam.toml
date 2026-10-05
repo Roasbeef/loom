@@ -19,7 +19,7 @@ codemode = { path = "../codemode" }
 broker = { path = "../broker" }
 tools = { path = "../tools" }
 telemetry = { path = "../telemetry" }
-weft = "== 0.4.5"
+weft = { git = "https://github.com/Roasbeef/weft.git", ref = "368d01abcaaff3ef986317a89fe8b98e1e4a2ad6" }
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
