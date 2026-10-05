@@ -31,7 +31,14 @@
 //// `cancel_service` fences them in one transaction. `collection_ready` defers
 //// deletion even with no offer, until physical recovery custody is transferred.
 //// `discharge` releases run custody only after exact live outcome and drain.
-//// `initialize` uses `pragma` only for format metadata, never data queries.
+//// `admit_fresh_with_profile` reserves report custody before any effect.
+//// `retain_report` commits checked bytes before `finish_with_reference`.
+//// `validate_report_rows` checks one original report at a time before open.
+//// `validate_finals` checks runtime associations before actor publication.
+//// `read_report_chunk` exposes only committed immutable aligned slices.
+//// `check_tool_header` bounds profile, reservation and every payload projection.
+//// `initialize` uses `pragma` only for configuration metadata, never data queries.
+//// `profile_name` gives the immutable final profile its persisted schema tag.
 
 import core/command
 import core/entry.{MessageEntry}
@@ -40,6 +47,7 @@ import core/json
 import core/message.{type AgentMessage}
 import core/register
 import core/remote_tool.{type ChildOrigin, type ToolKey}
+import core/report_value
 import gleam/bit_array
 import gleam/bool
 import gleam/dict
@@ -111,7 +119,42 @@ pub opaque type CommandOfferPayload {
 
 /// A serialized handle for one session's custody database.
 pub opaque type Store {
-  Store(connection: sqlight.Connection, session: SessionId, limits: Limits)
+  Store(
+    connection: sqlight.Connection,
+    session: SessionId,
+    limits: Limits,
+    reports: ReportHash,
+  )
+}
+
+/// Trusted assembly selects the immutable final quota before any effect.
+pub type FinalProfile {
+  /// Ordinary tools retain their configured existing opaque final allowance.
+  OrdinaryFinal
+
+  /// Complete code-mode reports reserve the complete bundle and bounded final.
+  CodeModeReportV1
+}
+
+/// The exact report, bounded final message and stored profile bookkeeping charge.
+pub const report_final_allowance = 17_301_648
+
+/// One checked aligned report slice; the reference never grants read authority.
+pub type ReportChunk {
+  /// A slice checked against the original stored digest, length and identity.
+  ReportChunk(
+    /// Original session, result entry, canonical digest and complete byte length.
+    reference: report_value.ReportRef,
+    /// Checked aligned offset into this immutable bundle.
+    offset: Int,
+    /// At most 65,536 bytes, with the final slice possibly shorter.
+    bytes: BitArray,
+  )
+}
+
+type ReportHash {
+  OrdinaryStore
+  ReportsEnabled(sha256: fn(BitArray) -> BitArray)
 }
 
 /// A refusal always leaves previous durable evidence intact.
@@ -316,13 +359,37 @@ pub fn open(
   session: SessionId,
   limits: Limits,
 ) -> Result(Store, Error) {
+  open_store(path, session, limits, OrdinaryStore)
+}
+
+/// Opens the same owner format with trusted SHA-256 supplied by host assembly.
+/// Every existing report is checked before a serialized handle is returned.
+///
+/// ## Examples
+///
+/// `open_with_reports(path, session, limits, bootstrap.sha256)` adds no host dependency.
+pub fn open_with_reports(
+  path: String,
+  session: SessionId,
+  limits: Limits,
+  sha256: fn(BitArray) -> BitArray,
+) -> Result(Store, Error) {
+  open_store(path, session, limits, ReportsEnabled(sha256))
+}
+
+fn open_store(
+  path: String,
+  session: SessionId,
+  limits: Limits,
+  reports: ReportHash,
+) -> Result(Store, Error) {
   use Nil <- result.try(
     sqlite_policy.refusing_unopenable_path(path) |> result.map_error(Invalid),
   )
   use connection <- result.try(
     sqlight.open(path) |> result.map_error(database_error),
   )
-  let store = Store(connection:, session:, limits:)
+  let store = Store(connection:, session:, limits:, reports:)
   case initialize(store) {
     Ok(Nil) -> Ok(store)
     Error(error) -> {
@@ -358,7 +425,8 @@ pub fn admit(
   arguments: Payload,
   request: Payload,
 ) -> Result(Nil, Error) {
-  admit_once(store, key, arguments, request) |> result.replace(Nil)
+  admit_once(store, key, arguments, request, OrdinaryFinal)
+  |> result.replace(Nil)
 }
 
 fn admit_once(
@@ -366,6 +434,7 @@ fn admit_once(
   key: ToolKey,
   arguments: Payload,
   request: Payload,
+  profile: FinalProfile,
 ) -> Result(Admission, Error) {
   use Nil <- result.try(same_session(store, remote_tool.session(key)))
   use Nil <- result.try(check_payload(store, arguments))
@@ -380,8 +449,9 @@ fn admit_once(
           + string.byte_size(remote_tool.address(key))
           + bit_array.byte_size(arguments.bytes)
           + bit_array.byte_size(request.bytes)
-          + store.limits.payload
+          + final_allowance(store, profile)
           + 128
+        use Nil <- result.try(report_enabled(store, profile))
         use Nil <- result.try(reserve(store, 1, 0, reserved))
         statement(
           store,
@@ -391,6 +461,8 @@ fn admit_once(
             ids.entry_id_to_string(remote_tool.result_entry(key)),
             arguments.bytes,
             request.bytes,
+            profile_name(profile),
+            final_allowance(store, profile),
             reserved,
           ),
         )
@@ -398,6 +470,11 @@ fn admit_once(
       }
       Some(#("frozen", _row)) -> Error(Frozen)
       Some(#("retained", row)) -> {
+        use retained_profile <- result.try(final_profile(store, key))
+        use <- bool.guard(
+          when: retained_profile != profile,
+          return: Error(Conflict),
+        )
         use Nil <- result.try(equal(row.arguments, arguments.bytes))
         equal(row.request, request.bytes) |> result.replace(Retained)
       }
@@ -419,7 +496,23 @@ pub fn admit_fresh(
   arguments: Payload,
   request: Payload,
 ) -> Result(Admission, Error) {
-  admit_once(store, key, arguments, request)
+  admit_fresh_with_profile(store, key, arguments, request, OrdinaryFinal)
+}
+
+/// Reserves the trusted immutable profile before Fresh can start a worker.
+/// Retained retries must match the original profile and cannot rerun effects.
+///
+/// ## Examples
+///
+/// `admit_fresh_with_profile(store, key, args, request, CodeModeReportV1)` reserves 17,301,648 final bytes.
+pub fn admit_fresh_with_profile(
+  store: Store,
+  key: ToolKey,
+  arguments: Payload,
+  request: Payload,
+  profile: FinalProfile,
+) -> Result(Admission, Error) {
+  admit_once(store, key, arguments, request, profile)
 }
 
 /// Reads complete evidence; it never reconstructs an outcome from children.
@@ -495,10 +588,29 @@ pub fn finish(
   key: ToolKey,
   outcome: Payload,
 ) -> Result(Nil, Error) {
+  use profile <- result.try(final_profile(store, key))
+  use <- bool.guard(when: profile != OrdinaryFinal, return: Error(Conflict))
+  finish_with_reference(store, key, outcome, None)
+}
+
+/// Commits final bytes only after matching the already committed original report.
+/// A missing report never authorizes a fabricated complete-result reference.
+///
+/// ## Examples
+///
+/// `finish_with_reference(store, key, final, Some(reference))` checks prior report custody.
+pub fn finish_with_reference(
+  store: Store,
+  key: ToolKey,
+  outcome: Payload,
+  reference: Option(report_value.ReportRef),
+) -> Result(Nil, Error) {
   use Nil <- result.try(same_session(store, remote_tool.session(key)))
-  use Nil <- result.try(check_payload(store, outcome))
+  use Nil <- result.try(check_final_payload(store, key, outcome))
   transaction(store, fn() {
     use #(_state, row) <- result.try(retained_tool(store, key))
+    use retained <- result.try(report_reference(store, key))
+    use <- bool.guard(when: retained != reference, return: Error(Conflict))
     case row.outcome {
       Some(existing) -> equal(existing, outcome.bytes)
       None ->
@@ -537,7 +649,7 @@ pub fn discharge(
   outcome: Payload,
 ) -> Result(Nil, Error) {
   use Nil <- result.try(same_session(store, remote_tool.session(key)))
-  use Nil <- result.try(check_payload(store, outcome))
+  use Nil <- result.try(check_final_payload(store, key, outcome))
   transaction(store, fn() {
     use #(_state, row) <- result.try(retained_tool(store, key))
     use retained <- result.try(option.to_result(row.outcome, Missing))
@@ -1713,7 +1825,7 @@ fn initialize(store: Store) -> Result(Nil, Error) {
   use application <- result.try(pragma(store, "PRAGMA application_id"))
   use version <- result.try(pragma(store, "PRAGMA user_version"))
   use Nil <- result.try(case application, version {
-    1_281_253_199, 4 -> Ok(Nil)
+    1_281_253_199, 5 -> Ok(Nil)
     0, 0 -> {
       use tables <- result.try(pragma(store, "PRAGMA schema_version"))
       use <- bool.guard(
@@ -1734,7 +1846,7 @@ fn initialize(store: Store) -> Result(Nil, Error) {
         ))
         execute(
           store,
-          "PRAGMA application_id=1281253199; PRAGMA user_version=4",
+          "PRAGMA application_id=1281253199; PRAGMA user_version=5",
         )
       })
     }
@@ -1753,8 +1865,18 @@ fn initialize(store: Store) -> Result(Nil, Error) {
     return: Error(Conflict),
   )
   use Nil <- result.try(reserve(store, 0, 0, 0))
-  sqlite_policy.configure_database(store.connection, options)
-  |> result.map_error(database_error)
+  use Nil <- result.try(
+    sqlite_policy.configure_database(store.connection, options)
+    |> result.map_error(database_error),
+  )
+  use Nil <- result.try(execute(store, "PRAGMA synchronous=FULL"))
+  use sync <- result.try(pragma(store, "PRAGMA synchronous"))
+  use <- bool.guard(
+    when: sync != 2,
+    return: Error(Invalid("owner requires synchronous FULL")),
+  )
+  use Nil <- result.try(validate_header_rows(store, "", store.limits.tools))
+  validate_report_rows(store, "", store.limits.tools)
 }
 
 // The budget is checked before header or payload reads. Final and terminal
@@ -1797,39 +1919,15 @@ fn tool_row(
   case headers {
     [] -> Ok(None)
     [header] -> {
-      use Nil <- result.try(header_size(header.identity_bytes, 8192))
-      use Nil <- result.try(header_size(
-        header.argument_bytes,
-        store.limits.payload,
+      use Nil <- result.try(check_tool_header(
+        store,
+        remote_tool.address(key),
+        header,
       ))
-      use Nil <- result.try(header_size(
-        header.request_bytes,
-        store.limits.payload,
+      use Nil <- result.try(equal_string(
+        header.result_entry,
+        ids.entry_id_to_string(remote_tool.result_entry(key)),
       ))
-      use Nil <- result.try(header_size(
-        header.outcome_bytes,
-        store.limits.payload,
-      ))
-      use Nil <- result.try(check_state(header.state))
-      use _ <- result.try(decode_run_custody(header.run_custody))
-
-      // A terminal write consumes the allowance reserved at admission. Check
-      // that unused allowance too, before a receipt can acknowledge new bytes.
-      let actual =
-        header.identity_bytes
-        + string.byte_size(remote_tool.address(key))
-        + 128
-        + case header.state {
-          "frozen" -> 0
-          _ ->
-            header.argument_bytes + header.request_bytes + store.limits.payload
-        }
-      use <- bool.guard(
-        when: header.reserved_bytes < actual,
-        return: Error(Invalid(
-          "owner tool reservation is smaller than retained bytes",
-        )),
-      )
       use row <- result.try(
         one(query(
           store,
@@ -1841,6 +1939,523 @@ fn tool_row(
     }
     [_, _, ..] -> Error(Invalid("duplicate owner tool identity"))
   }
+}
+
+/// Checks final bytes under the already selected profile without expanding it.
+///
+/// ## Examples
+///
+/// `final_payload(limits, CodeModeReportV1, bytes)` retains the 256-KiB final ceiling.
+pub fn final_payload(
+  limits: Limits,
+  profile: FinalProfile,
+  bytes: BitArray,
+) -> Result(Payload, Error) {
+  case profile {
+    OrdinaryFinal -> payload(limits, bytes)
+    CodeModeReportV1 -> {
+      use <- bool.guard(
+        when: bit_array.bit_size(bytes) % 8 != 0
+          || bit_array.byte_size(bytes) > 262_144,
+        return: Error(Capacity),
+      )
+      Ok(Payload(bytes))
+    }
+  }
+}
+
+/// Reads the immutable final profile after scalar quota/header validation.
+///
+/// ## Examples
+///
+/// `final_profile(store, key)` never upgrades an original ordinary reservation.
+pub fn final_profile(
+  store: Store,
+  key: ToolKey,
+) -> Result(FinalProfile, Error) {
+  use header <- result.try(checked_tool_header(store, key))
+  decode_profile(header.final_profile)
+}
+
+/// Commits the canonical complete bundle before returning its original reference.
+/// Exact repeated bytes are readback; a changed report cannot replace history.
+///
+/// ## Examples
+///
+/// `retain_report(store, original_key, checked_report)` supplies no final-outcome authority.
+pub fn retain_report(
+  store: Store,
+  key: ToolKey,
+  report: report_value.CompleteReport,
+) -> Result(report_value.ReportRef, Error) {
+  use Nil <- result.try(same_session(store, remote_tool.session(key)))
+  let bytes = report_value.bytes(report)
+  use _ <- result.try(
+    report_value.decode(bytes)
+    |> result.replace_error(Invalid("invalid complete report")),
+  )
+  use digest <- result.try(report_digest(store, bytes))
+  transaction(store, fn() {
+    use #(_state, row) <- result.try(retained_tool(store, key))
+    use header <- result.try(checked_tool_header(store, key))
+    use <- bool.guard(
+      when: header.final_profile != "code_mode_report_v1",
+      return: Error(Conflict),
+    )
+
+    // A lost COMMIT reply may retry only these exact already committed bytes.
+    // An unrelated final or a changed report never opens another write window.
+    use Nil <- result.try(case header.report_bytes {
+      0 -> {
+        use <- bool.guard(when: row.outcome != None, return: Error(Conflict))
+        statement(
+          store,
+          sql.retain_owner_report(
+            Some(bytes),
+            Some(digest),
+            remote_tool.address(key),
+          ),
+        )
+      }
+      _ -> {
+        use retained <- result.try(report_bytes_at(
+          store,
+          remote_tool.address(key),
+        ))
+        use Nil <- result.try(equal(retained, bytes))
+        equal_string(header.report_digest, digest)
+      }
+    })
+    reference_for(store, key, digest, bit_array.byte_size(bytes))
+  })
+}
+
+/// Reads the original committed report relation without loading its BLOB.
+/// A report-only row remains AwaitingFinal and cannot reconstruct final authority.
+///
+/// ## Examples
+///
+/// `report_reference(store, key)` can return history before a final is committed.
+pub fn report_reference(
+  store: Store,
+  key: ToolKey,
+) -> Result(Option(report_value.ReportRef), Error) {
+  use header <- result.try(checked_tool_header(store, key))
+  case header.report_bytes {
+    0 -> Ok(None)
+    _ ->
+      reference_for(store, key, header.report_digest, header.report_bytes)
+      |> result.map(Some)
+  }
+}
+
+/// Reads bounded original request bytes for the final call-identity startup pass.
+/// It never admits missing custody or reconstructs a finalized message.
+///
+/// ## Examples
+///
+/// `original_request(store, key)` retains the original provider call envelope.
+pub fn original_request(store: Store, key: ToolKey) -> Result(Payload, Error) {
+  use #(_state, row) <- result.try(required_tool(store, key))
+  Ok(Payload(row.request))
+}
+
+/// Reads the already committed terminal for final error-polarity validation.
+/// This full bounded read is for commit/startup validation, never chunk serving.
+///
+/// ## Examples
+///
+/// `report_outcome(store, key)` returns no terminal when report custody is absent.
+pub fn report_outcome(
+  store: Store,
+  key: ToolKey,
+) -> Result(Option(report_value.Outcome), Error) {
+  use header <- result.try(checked_tool_header(store, key))
+  case header.report_bytes {
+    0 -> Ok(None)
+    _ -> {
+      use bytes <- result.try(report_bytes_at(store, remote_tool.address(key)))
+      use report <- result.try(
+        report_value.decode(bytes)
+        |> result.replace_error(Invalid("invalid complete report")),
+      )
+      Ok(Some(report_value.outcome(report)))
+    }
+  }
+}
+
+/// Reads one committed report chunk after checking session and original identity.
+/// Offsets must be aligned, nonnegative and strictly inside the immutable bundle.
+///
+/// ## Examples
+///
+/// `read_report_chunk(store, reference, 0)` returns at most 65,536 bytes.
+pub fn read_report_chunk(
+  store: Store,
+  reference: report_value.ReportRef,
+  offset: Int,
+) -> Result(ReportChunk, Error) {
+  use Nil <- result.try(same_session(store, report_value.ref_session(reference)))
+  use <- bool.guard(
+    when: offset < 0
+      || offset % 65_536 != 0
+      || offset >= report_value.ref_byte_length(reference),
+    return: Error(Invalid("invalid report chunk offset")),
+  )
+  use Nil <- result.try(reserve(store, 0, 0, 0))
+  use identity <- result.try(
+    one(query(
+      store,
+      sql.owner_report_identity(
+        ids.entry_id_to_string(report_value.ref_result_entry(reference)),
+      ),
+    )),
+  )
+  use key <- result.try(decode_identity(
+    store,
+    identity.address,
+    identity.identity,
+  ))
+  use retained <- result.try(report_reference(store, key))
+  use <- bool.guard(when: retained != Some(reference), return: Error(Conflict))
+  use chunk <- result.try(
+    one(query(
+      store,
+      sql.owner_report_chunk(
+        offset,
+        remote_tool.address(key),
+        report_value.ref_byte_length(reference),
+        Some(report_value.ref_digest(reference)),
+      ),
+    )),
+  )
+  let remaining = report_value.ref_byte_length(reference) - offset
+  let expected = case remaining > 65_536 {
+    True -> 65_536
+    False -> remaining
+  }
+  use <- bool.guard(
+    when: bit_array.byte_size(chunk.chunk) != expected,
+    return: Error(Invalid("truncated report chunk")),
+  )
+  Ok(ReportChunk(reference, offset, chunk.chunk))
+}
+
+/// Checks every retained final association through the caller's runtime decoder.
+/// This finite pass must succeed before an owner actor publishes its door.
+///
+/// ## Examples
+///
+/// `validate_finals(store, validate)` never synthesizes a missing final from a report.
+pub fn validate_finals(
+  store: Store,
+  validate: fn(ToolKey, FinalProfile, Option(report_value.ReportRef), Payload) ->
+    Result(Nil, String),
+) -> Result(Nil, Error) {
+  validate_final_rows(store, "", store.limits.tools, validate)
+}
+
+fn validate_final_rows(
+  store: Store,
+  after: String,
+  remaining: Int,
+  validate: fn(ToolKey, FinalProfile, Option(report_value.ReportRef), Payload) ->
+    Result(Nil, String),
+) -> Result(Nil, Error) {
+  use addresses <- result.try(query(store, sql.owner_tool_next(after)))
+  case addresses {
+    [] -> Ok(Nil)
+    [row] if remaining > 0 && row.address != "" -> {
+      use key <- result.try(key_at(store, row.address))
+      use evidence <- result.try(lookup(store, key))
+      use Nil <- result.try(case evidence {
+        FinalOutcome(payload) -> {
+          use profile <- result.try(final_profile(store, key))
+          use reference <- result.try(report_reference(store, key))
+          validate(key, profile, reference, payload)
+          |> result.map_error(Invalid)
+        }
+        AwaitingFinal(..) | Collected -> Ok(Nil)
+      })
+      validate_final_rows(store, row.address, remaining - 1, validate)
+    }
+    _ -> Error(Invalid("invalid final row census"))
+  }
+}
+
+fn validate_report_rows(
+  store: Store,
+  after: String,
+  remaining: Int,
+) -> Result(Nil, Error) {
+  use addresses <- result.try(query(store, sql.owner_tool_next(after)))
+  case addresses {
+    [] -> Ok(Nil)
+    [row] if remaining > 0 && row.address != "" -> {
+      use key <- result.try(key_at(store, row.address))
+      use header <- result.try(checked_tool_header(store, key))
+      use Nil <- result.try(case header.report_bytes {
+        0 -> Ok(Nil)
+        _ -> {
+          use bytes <- result.try(report_bytes_at(store, row.address))
+          use _ <- result.try(
+            report_value.decode(bytes)
+            |> result.replace_error(Invalid("invalid canonical retained report")),
+          )
+          use digest <- result.try(report_digest(store, bytes))
+          equal_string(header.report_digest, digest)
+        }
+      })
+      validate_report_rows(store, row.address, remaining - 1)
+    }
+    _ -> Error(Invalid("invalid report row census"))
+  }
+}
+
+fn validate_header_rows(
+  store: Store,
+  after: String,
+  remaining: Int,
+) -> Result(Nil, Error) {
+  use addresses <- result.try(query(store, sql.owner_tool_next(after)))
+  case addresses {
+    [] -> Ok(Nil)
+    [row] if remaining > 0 && row.address != "" -> {
+      use header <- result.try(
+        one(query(store, sql.owner_tool_header(row.address))),
+      )
+      use Nil <- result.try(check_tool_header(store, row.address, header))
+      validate_header_rows(store, row.address, remaining - 1)
+    }
+    _ -> Error(Invalid("invalid owner scalar row census"))
+  }
+}
+
+fn key_at(store: Store, address: String) -> Result(ToolKey, Error) {
+  use Nil <- result.try(reserve(store, 0, 0, 0))
+  use header <- result.try(one(query(store, sql.owner_tool_header(address))))
+  use Nil <- result.try(check_tool_header(store, address, header))
+  use row <- result.try(one(query(store, sql.owner_tool_identity(address))))
+  decode_identity(store, address, row.identity)
+}
+
+fn decode_identity(
+  store: Store,
+  address: String,
+  bytes: BitArray,
+) -> Result(ToolKey, Error) {
+  use text <- result.try(
+    bit_array.to_string(bytes)
+    |> result.replace_error(Invalid("invalid tool identity UTF-8")),
+  )
+  use value <- result.try(
+    json.parse(text)
+    |> result.replace_error(Invalid("invalid tool identity JSON")),
+  )
+  use fields <- result.try(
+    json.parse(address)
+    |> result.replace_error(Invalid("invalid tool address JSON")),
+  )
+  case value, fields {
+    json.Array([
+      json.String(stored_address),
+      json.String(digest),
+      json.String(entry),
+    ]),
+      json.Array([
+        json.String(session),
+        json.String(operation),
+        json.String(step),
+        json.Int(index),
+      ])
+    -> {
+      use session <- result.try(
+        ids.parse_session_id(session)
+        |> result.replace_error(Invalid("invalid tool session")),
+      )
+      use operation <- result.try(
+        ids.parse_op_id(operation)
+        |> result.replace_error(Invalid("invalid tool operation")),
+      )
+      use entry <- result.try(
+        ids.parse_entry_id(entry)
+        |> result.replace_error(Invalid("invalid tool result entry")),
+      )
+      use key <- result.try(
+        remote_tool.key(session, operation, step, index, digest, entry)
+        |> result.map_error(Invalid),
+      )
+      use Nil <- result.try(same_session(store, session))
+      use Nil <- result.try(equal_string(stored_address, address))
+      use Nil <- result.try(equal_string(remote_tool.address(key), address))
+      use Nil <- result.try(equal(identity_bytes(key), bytes))
+      Ok(key)
+    }
+    _, _ -> Error(Invalid("invalid complete tool identity"))
+  }
+}
+
+fn checked_tool_header(
+  store: Store,
+  key: ToolKey,
+) -> Result(sql.OwnerToolHeader, Error) {
+  use Nil <- result.try(same_session(store, remote_tool.session(key)))
+  use Nil <- result.try(reserve(store, 0, 0, 0))
+  use headers <- result.try(query(
+    store,
+    sql.owner_tool_header(remote_tool.address(key)),
+  ))
+  use header <- result.try(case headers {
+    [] -> Error(Missing)
+    [header] -> Ok(header)
+    [_, _, ..] -> Error(Invalid("duplicate owner tool identity"))
+  })
+  use Nil <- result.try(check_tool_header(
+    store,
+    remote_tool.address(key),
+    header,
+  ))
+  use Nil <- result.try(equal_string(
+    header.result_entry,
+    ids.entry_id_to_string(remote_tool.result_entry(key)),
+  ))
+  use identity <- result.try(
+    one(query(store, sql.owner_tool_identity(remote_tool.address(key)))),
+  )
+  use Nil <- result.try(equal(identity.identity, identity_bytes(key)))
+  Ok(header)
+}
+
+fn check_tool_header(
+  store: Store,
+  address: String,
+  header: sql.OwnerToolHeader,
+) -> Result(Nil, Error) {
+  use Nil <- result.try(header_size(header.identity_bytes, 8192))
+  use Nil <- result.try(header_size(header.argument_bytes, store.limits.payload))
+  use Nil <- result.try(header_size(header.request_bytes, store.limits.payload))
+  use profile <- result.try(decode_profile(header.final_profile))
+  use <- bool.guard(
+    when: header.final_allowance != final_allowance(store, profile),
+    return: Error(Invalid("changed owner final allowance")),
+  )
+  let final_ceiling = case profile {
+    OrdinaryFinal -> store.limits.payload
+    CodeModeReportV1 -> 262_144
+  }
+  use Nil <- result.try(header_size(header.outcome_bytes, final_ceiling))
+  use Nil <- result.try(header_size(
+    header.report_bytes,
+    report_value.max_bundle_bytes,
+  ))
+  use Nil <- result.try(check_state(header.state))
+  use _ <- result.try(decode_run_custody(header.run_custody))
+  use _ <- result.try(
+    ids.parse_entry_id(header.result_entry)
+    |> result.replace_error(Invalid("invalid tool result entry")),
+  )
+
+  // Null report and null digest form one absence state. A present report must
+  // fit its original profile and fixed digest before any BLOB is selected.
+  use Nil <- result.try(
+    case header.report_bytes, header.report_digest, profile {
+      0, "", _ -> Ok(Nil)
+      size, digest, CodeModeReportV1 if size >= 18 ->
+        command.digest(digest) |> result.map_error(Invalid)
+      _, _, _ -> Error(Invalid("invalid report profile or digest"))
+    },
+  )
+  let final_charge = case header.state {
+    "frozen" ->
+      case header.report_bytes {
+        0 -> 0
+        _ -> header.report_bytes + 128
+      }
+    _ -> header.argument_bytes + header.request_bytes + header.final_allowance
+  }
+  let minimum =
+    header.identity_bytes + string.byte_size(address) + 128 + final_charge
+  use <- bool.guard(
+    when: header.reserved_bytes < minimum,
+    return: Error(Invalid(
+      "owner tool reservation is smaller than retained bytes",
+    )),
+  )
+  Ok(Nil)
+}
+
+fn report_bytes_at(store: Store, address: String) -> Result(BitArray, Error) {
+  use row <- result.try(one(query(store, sql.owner_report_value(address))))
+  option.to_result(row.report, Missing)
+}
+
+fn report_digest(store: Store, bytes: BitArray) -> Result(String, Error) {
+  case store.reports {
+    OrdinaryStore -> Error(Invalid("owner report hashing is not configured"))
+    ReportsEnabled(sha256) -> {
+      let digest = sha256(bytes)
+      use <- bool.guard(
+        when: bit_array.byte_size(digest) != 32
+          || bit_array.bit_size(digest) != 256,
+        return: Error(Invalid("invalid host SHA-256 result")),
+      )
+      Ok(digest |> bit_array.base16_encode |> string.lowercase)
+    }
+  }
+}
+
+fn reference_for(
+  store: Store,
+  key: ToolKey,
+  digest: String,
+  length: Int,
+) -> Result(report_value.ReportRef, Error) {
+  report_value.reference(
+    store.session,
+    remote_tool.result_entry(key),
+    digest,
+    length,
+  )
+  |> result.replace_error(Invalid("invalid report reference"))
+}
+
+fn report_enabled(store: Store, profile: FinalProfile) -> Result(Nil, Error) {
+  case store.reports, profile {
+    OrdinaryStore, CodeModeReportV1 ->
+      Error(Invalid("owner report hashing is not configured"))
+    _, _ -> Ok(Nil)
+  }
+}
+
+fn decode_profile(name: String) -> Result(FinalProfile, Error) {
+  case name {
+    "ordinary" -> Ok(OrdinaryFinal)
+    "code_mode_report_v1" -> Ok(CodeModeReportV1)
+    _ -> Error(Invalid("invalid final profile"))
+  }
+}
+
+fn profile_name(profile: FinalProfile) -> String {
+  case profile {
+    OrdinaryFinal -> "ordinary"
+    CodeModeReportV1 -> "code_mode_report_v1"
+  }
+}
+
+fn final_allowance(store: Store, profile: FinalProfile) -> Int {
+  case profile {
+    OrdinaryFinal -> store.limits.payload
+    CodeModeReportV1 -> report_final_allowance
+  }
+}
+
+fn check_final_payload(
+  store: Store,
+  key: ToolKey,
+  payload: Payload,
+) -> Result(Nil, Error) {
+  use profile <- result.try(final_profile(store, key))
+  final_payload(store.limits, profile, payload.bytes) |> result.replace(Nil)
 }
 
 fn required_tool(

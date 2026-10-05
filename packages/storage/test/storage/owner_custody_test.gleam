@@ -282,14 +282,12 @@ pub fn oversized_corrupt_blobs_are_refused_before_materialization_test() {
     )
     == Ok(Nil)
   assert sqlight.close(db) == Ok(Nil)
-  let assert Ok(store) =
-    custody.open(path, remote_tool.session(key), ceilings())
-    as "metadata opens without materializing tool blobs"
-  assert custody.lookup(store, key)
+
+  // Format-5 startup checks all scalar headers before any payload read.
+  assert custody.open(path, remote_tool.session(key), ceilings())
     == Error(custody.Invalid(
       "owner payload exceeds bound before materialization",
     ))
-  assert custody.close(store) == Ok(Nil)
 }
 
 pub fn oversized_corrupt_child_terminal_is_refused_before_value_decoder_test() {
@@ -343,12 +341,11 @@ pub fn underreserved_corrupt_rows_are_refused_before_payload_fetch_test() {
   assert sqlight.exec("UPDATE owner_custody_tools SET reserved_bytes = 0", db)
     == Ok(Nil)
   assert sqlight.close(db) == Ok(Nil)
-  let assert Ok(store) =
+
+  // The same underreservation now refuses at startup before publication.
+  let assert Error(custody.Invalid(_)) =
     custody.open(path, remote_tool.session(key), ceilings())
-    as "metadata opens independently of row payloads"
-  let assert Error(custody.Invalid(_)) = custody.lookup(store, key)
     as "header accounting refuses before the value query"
-  assert custody.close(store) == Ok(Nil)
 }
 
 fn finalized_message() -> message.AgentMessage {
@@ -547,14 +544,12 @@ pub fn corrupt_sqlite_text_payload_is_refused_at_header_before_decoder_test() {
     )
     == Ok(Nil)
   assert sqlight.close(db) == Ok(Nil)
-  let assert Ok(store) =
-    custody.open(path, remote_tool.session(key), ceilings())
-    as "metadata opens"
-  assert custody.lookup(store, key)
+
+  // Format-5 startup checks all scalar headers before any payload read.
+  assert custody.open(path, remote_tool.session(key), ceilings())
     == Error(custody.Invalid(
       "owner payload exceeds bound before materialization",
     ))
-  assert custody.close(store) == Ok(Nil)
 }
 
 pub fn session_binding_and_persisted_quotas_cannot_change_on_reopen_test() {
@@ -608,14 +603,19 @@ pub fn generated_owner_queries_match_named_sql_source_test() {
     sql.owner_custody_budget().0,
     named(sql.owner_tool_header("").0, ["address"]),
     named(sql.owner_tool_value("", 0).0, ["address", "payload_limit"]),
-    named(sql.insert_owner_tool("", empty, "", empty, empty, 0).0, [
-      "address",
-      "identity",
-      "result_entry",
-      "arguments",
-      "request",
-      "reserved_bytes",
-    ]),
+    named(
+      sql.insert_owner_tool("", empty, "", empty, empty, "ordinary", 0, 0).0,
+      [
+        "address",
+        "identity",
+        "result_entry",
+        "arguments",
+        "request",
+        "final_profile",
+        "final_allowance",
+        "reserved_bytes",
+      ],
+    ),
     named(sql.finish_owner_tool(None, "").0, ["outcome", "address"]),
     named(sql.freeze_owner_tool("").0, ["address"]),
     named(sql.owner_child_header("").0, ["origin"]),

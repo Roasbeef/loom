@@ -57,12 +57,26 @@ pub type Invocation {
 /// // tool_custody.wrap(surface, tool_custody.Managed(session, scope, owner))
 /// ```
 pub fn wrap(surface: effects.ToolSurface, mode: Mode) -> effects.ToolSurface {
+  wrap_with_profile(surface, mode, owner_custody.OrdinaryFinal)
+}
+
+/// Pins the final profile in trusted surface assembly before the first invocation.
+/// Provider names and arguments cannot enlarge an ordinary reservation.
+///
+/// ## Examples
+///
+/// `wrap_with_profile(surface, mode, owner_custody.CodeModeReportV1)` is an assembly choice.
+pub fn wrap_with_profile(
+  surface: effects.ToolSurface,
+  mode: Mode,
+  profile: owner_custody.FinalProfile,
+) -> effects.ToolSurface {
   case mode {
     Local -> surface
     Managed(session, scope, owner) ->
       effects.ToolSurface(
         ..surface,
-        run: fn(run) { invoke(owner, session, scope, run) },
+        run: fn(run) { invoke(owner, session, scope, run, profile) },
         recover: fn(run, _complete) { recover(owner, session, scope, run) },
       )
   }
@@ -119,15 +133,17 @@ fn invoke(
   session: ids.SessionId,
   scope: BitArray,
   run: effects.ToolRun,
+  profile: owner_custody.FinalProfile,
 ) -> effects.ToolOutcome {
   let outcome = {
     use invocation <- result.try(invocation(session, scope, run))
-    custodian.execute(
+    custodian.execute_with_profile(
       owner,
       invocation.key,
       invocation.arguments,
       invocation.request,
       run,
+      profile,
     )
     |> result.replace_error("managed remote outcome unknown; evidence retained")
   }

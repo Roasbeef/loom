@@ -14,6 +14,10 @@ CREATE TABLE owner_custody_tools (
   arguments BLOB NOT NULL,
   request BLOB NOT NULL,
   outcome BLOB,
+  final_profile TEXT NOT NULL CHECK(final_profile IN ('ordinary', 'code_mode_report_v1')),
+  final_allowance INTEGER NOT NULL CHECK(final_allowance > 0),
+  report BLOB,
+  report_digest TEXT,
   run_custody TEXT NOT NULL CHECK(run_custody IN ('unreleased', 'released')),
   state TEXT NOT NULL CHECK(state IN ('retained', 'frozen')),
   reserved_bytes INTEGER NOT NULL CHECK(reserved_bytes >= 0)
