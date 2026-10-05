@@ -1,1802 +1,498 @@
 # Current handoff
 
-## Distributed runtime implementation (issue #697)
-
-Delivery now uses one draft integration PR against `main`, on
-`codex/distributed-runtime-integration`. The [integration reading guide](design-notes/distributed-runtime-integration.md)
-maps the components, the remaining assembly and the acceptance criteria.
-Earlier component PR references below preserve review history; new worker
-commits enter the integration branch after focused checks and independent review.
-
-The live-association P model and native original-deadline cap are now integrated.
-The [model review](review/distributed-live-association-model.md) records the exact
-bounded runs and implementation limits. The [deadline review](review/distributed-native-command-admission.md#follow-up-original-whole-compile-deadline)
-records the retained Authority checks and compiling mutation. The whole Compile
-owner must capture that original cap once; registered separate-host acceptance
-is still pending.
-
-The latest component implements native Compile admission under the original
-preparation claim. Its independent review found no actionable defect, and the
-integrated executor gate passed 241 tests with no skips. The
-[native-command review](review/distributed-native-command-admission.md) separates
-that evidence from the pending whole Compile service, server forwarding, owner
-consumer and separate-host acceptance. Owner command binding passed independent review, twelve focused controls and
-the full storage gate. Its integrated client gate exited zero with 2767 reported
-passes and 15 optional skips. The updated P live-association model passed its
-safety, reachability and mutation gates; the review record retains the bounded
-proof limits. Atomic initial Compile admission and cancellation are implemented
-and passed independent review. The integrated executor gate passed 259 tests
-with no skips; the [first-admission review](review/distributed-compile-first-admission.md)
-records the SQLite races, commit failures and mutations. Whole Compile assembly
-is next, with the original elapsed deadline and exact terminal evidence retained
-through preparation, native admission and finalization.
-
-The [user journeys and ownership design](design-notes/distributed-runtime.md)
-and [API and delivery plan](design-notes/distributed-runtime-api.md) separate
-existing multiplayer access from remote execution and later clustered
-ownership. Workspaces stay on registered executors; session SQLite stays with
-the owning orchestrator. The first remote adapter uses typed workspace
-operations, without a shared POSIX filesystem. Khepri remains a candidate for
-small cluster metadata after a compatibility spike; no wrapper dependency has
-been selected.
-
-The first implementation wave adds validated remote identities and a bounded
-pure admission reducer under `packages/executor/src/executor/remote/`.
-[Protocol 066](../protocol-change/066-distributed-runtime-foundations.md)
-records the host obligations: serialize and persist before acknowledgement or
-launch, preserve uncertain launch intent, and retain replay evidence until
-native retirement and durable owner receipt are established. A request refused
-before launch has its own phase and cannot be confused with authorized work.
-The shipped local executor is unchanged; these modules do not enable remote
-execution. Foundation PR [#756](https://github.com/Roasbeef/loom/pull/756)
-precedes durable-journal PR [#758](https://github.com/Roasbeef/loom/pull/758)
-in the `gh stack` chain. The latter stores bounded admission history in
-SQLite, serializes independent opens and never replays a recovered launch
-effect. It stores digests; the adapter still owes exact command/result
-payloads and native-process reconciliation.
-
-The [PlusCal ownership model](../protocol/models/distributed-authority/README.md)
-and [P execution model](../protocol/models/remote-execution/README.md) have
-separate bounded runners, reachability controls and mutations. Run both local
-runners: the existing generic `make model-check` discovers P projects but does
-not run TLC or the stricter model-local mutation gates. A model pass is not a
-proof of a durable adapter, TLS transport or kernel cleanup. The
-[Lean admission proof](../protocol/models/admission-proof/README.md) now
-proves twelve reducer properties. Its executable bridge checks 684 bounded
-cases against the actual Gleam reducer, and its reauthorization mutation is
-rejected. This is not an end-to-end refinement proof; the runner and review
-record state the finite bridge's limits.
-
-[Protocol 067](../protocol-change/067-remote-workspace-services.md) records
-the next integration boundary. Physical compilation moves as a whole, before
-source preparation accesses disk. The satellite capability router and the
-single budget authority stay on the owner. Semantic workspace operations and
-the complete LSP host run beside the executor checkout. A remote artifact
-must never be interpreted as an owner-local pathname.
-
-The service stack adds authenticated TLS, semantic workspace contracts, whole
-physical compiler/LSP-host interfaces and bounded session-wire output. PRs
-[#762](https://github.com/Roasbeef/loom/pull/762),
-[#767](https://github.com/Roasbeef/loom/pull/767) and
-[#769](https://github.com/Roasbeef/loom/pull/769) follow the journal. These
-interfaces still need production remote assembly. The TLS primitive passed
-21 real-network tests; native DNS has a documented OTP resolver limit, so
-connection establishment also runs in a bounded supervised task.
-
-The next committed component is [owner custody](architecture/remote-custody.md).
-It uses a separate bounded SQLite journal and generated Parrot/sqlc queries.
-An atomic Fresh admission grants execution once; retained rows never do.
-The supervised custodian commits exact ToolOutcome bytes before replying.
-Original child identities carry cancellation fences and ordered binary
-receipts. Runtime recovery distinguishes unmanaged local work, exact remote
-results, pending observation and unknown remote outcomes. An already-aborted
-operation cannot begin another pending recovery wait.
-
-Component validation passed 151 core tests, 143 storage tests, 187 runtime
-tests and nine client owner-binding tests. Two cancellation regressions fail
-against the previous runtime implementation. The owner test kills a real
-supervised custodian, observes its replacement and verifies retained evidence
-without body re-execution. Independent Astra reviews found no remaining
-functional defect in these reviewed components. These results are not the
-full product gate or remote end-to-end acceptance.
-
-The native executor component in PR [#775](https://github.com/Roasbeef/loom/pull/775)
-now joins exact payload custody, pinned TLS, administrative registration checks
-and the existing sandbox helper. Its 105 tests pass both sequentially and with
-four-way parallel scheduling. A reverted output-sink lifetime mutation fails
-the 33-command process census while the other 22 native tests pass. The
-[review record](review/distributed-native-service.md) describes corrected stdin,
-cancellation and process-lifetime failures.
-
-The executor-local semantic workspace host in
-PR [#776](https://github.com/Roasbeef/loom/pull/776) passed 18 host tests and
-99 existing filesystem regressions, with no actionable independent review
-finding. The owner dispatch binding and real joined owner-journal/TLS/helper fixture now
-pass original-identity retry, custody restart and registration/policy/scope
-refusal checks. Test-only registration-bypass and skipped-receipt mutations
-fail the intended runtime assertions. The final independent review found no
-actionable issue; [the record](review/distributed-owner-dispatch.md) separates
-this one-emulator proof from product recovery and two-host acceptance.
-The bounded semantic codec, explicit native-host lifetime, workspace custody
-and chunk transfer are now published in PRs #781, #782 and #783. The metadata
-formal model is in #779. The workspace-exchange slice in
-[PR #785](https://github.com/Roasbeef/loom/pull/785) joins an owner reservation,
-real TLS, an executor filesystem effect and durable receipt before ACK. Its
-one-VM fixture passed lost-reply, duplicate-submission, custodian reopen,
-chunked readback and scope-refusal checks. Skipping the owner receipt commit
-fails the intended journal-readback assertion. This is not two-host acceptance.
-
-Independent review found that socket deadlines could recycle listener credits
-while service messages remained queued, in both workspace and native endpoints.
-Fixed Temporary listener credits now retain pending service custody beyond
-socket death and retire on uncertain downstream journal replies. The final
-executor gate passes 157 tests; the client remote suite passes 46. Real TLS
-regressions and old-listener/restart mutations distinguish the corrected bound.
-The owner consumer also bounds storage waits with one managed deadline and
-retains original identity after expiry or observer loss. See the
-[exchange review](review/distributed-workspace-exchange.md) for exact limits.
-The semantic filesystem constructors now share native argument validation and
-result projections while refusing owner-local fallback. Their independent
-review found no actionable findings, and the full tools gate passes 663 tests.
-An intentional local fallback compiled but failed the no-owner-filesystem
-regression. See the [consumer review](review/distributed-workspace-tools.md).
-None of these components is enabled by the shipped daemon yet. Bind every workspace consumer
-to the selected executor, then run the two-host acceptance fixture: the owner
-must have no copy of the target checkout, while ordinary file tools, Bash,
-code mode and LSP all operate there. Test lost replies and restarts without
-replaying a mutation, cancellation, and witnessed native cleanup.
-
-The workspace-selection slice now persists typed bindings in catalogue schema
-version 5, using named Parrot/sqlc queries. Local SQL keys and shared-domain IDs
-retain their previous spelling. Registered sessions retain both authority
-epochs; exact creation retries revalidate those original epochs before any
-current administrative resolution. Tool contexts separate local workspace
-access from independent owner blob storage, and every local-only effect
-refuses registered access before resolution or clearance.
-
-Registered metadata requires a bounded `registered_workspace_v1` feature
-assertion. Independent review caught rename/archive/restore mutating before a
-legacy client could decode the reply; the check now precedes mutation after
-authorization and epoch validation. Operation reads apply the same reply check.
-Resident transcript attachment does not renew executor authority. Shipped
-registered session startup and registered browser attachment remain unavailable.
-The [selection review](review/distributed-workspace-selection.md) records the
-correction, four compiling mutation controls, component gates and limits.
-
-Core, storage, tools, executor, client and conformance component gates pass;
-the final client run has 2,747 tests and conformance has 96. Root's final lint,
-doc and prelude checks pass, and SQL regeneration reproduces the bindings
-exactly. The Linux PR #786 run found two timing-sensitive test assumptions and
-an outdated dependency expectation/manifest. The fresh full Linux signoff
-described below passes after those repairs. Managed provenance is now carried
-through compiler, satellite and nested native capability clearance. Retained
-command offers, executor resources and consumption-credit channels still
-precede production remote assembly and the separate-host product gate.
-
-Managed compiler and satellite provenance now reaches the real broker
-Dispatcher through the original ToolKey, with distinct native command roles.
-The client managed entry validates original operation/step/source index before
-preparation. Independent review closed two test/documentation nits; package
-gates pass 354 code-mode, 2,749 client and 158 core tests. The compiling
-origin-drop mutation fails the three intended production-path assertions. See
-[the provenance review](review/distributed-command-provenance.md).
-
-The clean Linux run at `88117f7b873a` exposed a poisoned-journal test race.
-After the reviewed repair, the fresh containerized Linux signoff at
-`4b8b57e934bd` passed all six lanes, release verification and the skip census
-in 1,277 seconds. The command exited zero; no undeclared test was skipped.
-This verifies the stack through managed command provenance, before the nested
-capability slice below. SQL-backed exact service and command-offer custody and
-registered physical assembly remain ahead of separate-host product acceptance.
-
-Admitted nested native capabilities now preserve the original ToolKey and
-per-capability ordinal in both satellite host modes. Derivation follows routing
-and both admission ceilings, so refused calls consume no child ordinal. The
-full code-mode suite passed 360 tests; root independently passed six focused
-controls, the 2,749-test client gate, lint and documentation checks. Fifteen
-existing client setup skips remain explicit. The independent review found no
-actionable findings, and a compiling origin-drop mutation failed four intended
-Dispatcher assertions. See the [capability provenance review](review/distributed-capability-provenance.md).
-This still precedes remote command custody and physical service assembly.
-
-The existing remote MessagePack preflight now lives in pure core code so the
-forthcoming broker command codec can reuse it without an executor dependency.
-Its limits and executor wire behavior are unchanged. Independent core/executor
-gates passed 167 and 159 tests; the extraction review found no actionable
-findings, and bypassing preflight failed six intended boundary controls. See
-the [bounded-wire review](review/distributed-bounded-wire.md).
-
-Exact Compile/Launch service and command-offer custody is now implemented with
-named Parrot/sqlc queries. Format 3 validates and migrates format-2 journals;
-review caught and fixed a valid UUID-less collected-cancellation fence that the
-first predicate refused. Offers allocate no native UUID. Atomic native
-reservation retains the original complete request, and cancellation preserves
-late native evidence. Collection refuses any physical service or offer until
-its recovery duties can be transferred. Root's combined gates passed 170 core,
-166 storage and 2,754 client tests, plus lint and documentation checks. See the
-[command-custody review](review/distributed-command-custody.md). Command template
-validation, enrollment/resources and whole physical assembly remain ahead.
-
-The broker command codec now preserves bounded canonical proposal bytes with
-full policy and identity checks. Its 13 focused controls and independent
-421-test broker gate pass, with two existing Darwin `/proc` witness skips.
-Preflight and field-drop mutations fail the intended controls; independent
-review found no actionable defect. See the
-[command-codec review](review/distributed-command-codec.md). Enrollment and
-owner-side closed command templates still precede physical assembly.
-
-Enrollment and shared native command construction now preserve the executor
-facts the owner needs before clearance. The enrollment codec bounds and
-compares the complete snapshot, isolates workspace/build/channel regions,
-and derives paths from the original service identity. Local compiler and
-satellite wrappers use the same pure command builders that remote validation
-will use. Independent review found no actionable defect. Root's component
-gates and the combined integration run passed. The combined run has 435 broker,
-160 executor and 360 code-mode tests. Two existing Darwin `/proc` witness
-skips remain in broker; the final seeded code-mode run
-has no prerequisite skips. See the [command-facts review](review/distributed-command-facts.md).
-
-Protocol 067 now records preparation before final wall selection. Durable
-resource issuance and live listener ownership are separate obligations;
-remaining original time determines the native allowance after preparation.
-The next implementation work is the concrete Compile/Launch input codec,
-the executor resource journal using named Parrot/sqlc queries, live resource
-ownership, and exact expected-command validation. Production assembly and
-separate-host acceptance remain open.
-
-The product P and Channel PlusCal models now cover exact command offers,
-resource/launch uncertainty, separate native/outer receipts and final-consumer
-credit in both directions. Independent review found and repaired two vacuous
-reachability claims: the mixed-fault driver now reaches actual Launch work,
-and the late-consumption witness now consumes after timeout under the original
-credit. Root independently reran all 36 P cases, fourteen mutations and 47 TLC
-cases successfully. The [product model review](review/distributed-product-model.md)
-records bounds and remaining implementation obligations. Existing Lean proofs
-remain separate; none of these checks establishes shipped remote behavior.
-
-The Khepri compatibility experiment exercised three OTP 29 nodes with Khepri
-0.19.3 and Ra 3.2.0. Contested conditional updates, majority/minority fencing,
-monotone epochs, timeout followed by a committed receipt, and persistent
-restart worked in the fixture. Adoption remains gated: a consistency read
-exceeded its supplied timeout, and a transaction could return an outer Ok
-containing a timeout while later committing. Do not classify outer Ok as
-Applied, expose an unbounded read, or select a wrapper dependency from that
-partial result. Snapshot/upgrade and the compiled Gleam transaction bridge
-still need validation.
-
-Linux signoff at journal commit `0cc11097d912` passed the release/helper/code-mode
-checks and clean skip census. It predates these service and recovery changes;
-it does not establish their signoff.
-
-The owner's completion criterion is working end-to-end behavior. Foundation
-PRs alone do not finish this task. Executor pools, trusted-cluster ownership
-and routing, durable cross-node messaging and planned session movement remain
-in scope after the first remote-workspace phase. Automatic failover and
-workspace snapshot migration remain deferred. Phone/laptop screen switching
-continues to use existing multiplayer.
-
-## Executor service (issue #696)
-
-Issue #696 is built as a stack of six phase branches, each a PR on the one
-below it:
-
-| Phase | Branch | PR |
-|---|---|---|
-| fixes | `broker/busy-checkin` (busy helper re-lent) | [#698](https://github.com/Roasbeef/loom/pull/698) |
-| fixes | `sandbox/stdin-off-frame-loop` (Go stdin stall; off `main`, independent) | [#699](https://github.com/Roasbeef/loom/pull/699) |
-| S0 | `executor/s0-design`, on #698 | [#700](https://github.com/Roasbeef/loom/pull/700) |
-| S1 | `executor/s1-service` | [#701](https://github.com/Roasbeef/loom/pull/701) |
-| S2 | `executor/s2-hardening` | [#704](https://github.com/Roasbeef/loom/pull/704) |
-| S3 | `executor/s3-ops` | [#705](https://github.com/Roasbeef/loom/pull/705) |
-| S4 | `executor/s4-standalone` | [#706](https://github.com/Roasbeef/loom/pull/706) |
-| S5 | `executor/s5-go-decision` | [#707](https://github.com/Roasbeef/loom/pull/707) |
-
-Merge them bottom up. The design is `docs/architecture/executor.md`, and the
-decisions are ADR-017 (the seam, plus addenda for the S1 build and the
-default flip) and ADR-018 (the Go helper keeps its code). The witnessed-kill
-evidence rule is an addendum inside protocol-change/014. Correction comments
-are on #696.
-
-- **What runs now.** Every session's effect plane runs the executor service,
-  `broker/executor`: a weft state machine per session over that session's
-  pool. It is the only process that sends a helper `Run`, `Stdin` or
-  `CancelExec`, and it settles each execution exactly once through
-  Live/Granted rows. The per-execution relay (`broker/relay` over the pure
-  `broker/execution` core) watches the helper actor too, so a dead helper
-  settles at once as `ExecutionLost`. The one-shot build and check planes run
-  on it as well. `broker/direct` is deleted. `broker.start(BrokerConfig)`
-  stays for the callers that hold a pool's seams and no session (the tests
-  of every package that runs a tool, and the M3 demo): it starts a service
-  over `checkout` and `checkin`, with no custody query and no pool to close.
-- **Lifecycle rules a change must keep.**
-  - A deliberate kill retains the port and is judged by exposure: no jail,
-    a settled jail, or a live jail. A live jail retires only under bwrap,
-    and a kill whose exit never comes loses the proof after five seconds.
-  - A `Run` whose caller is gone is refused.
-  - Stdin frames take fresh ids, so a helper's stdin error cannot settle the
-    execution.
-  - The relay's own cancel is an ask to the service.
-  - `executor.close(draining:, helpers:)` always gives the pool its full
-    native-exit budget.
-  - A write that fails to a helper's port waits for the exit status that may be
-    queued behind it (`PendingExit(Unprompted(..))`, bounded by the same
-    five-second witness window) and does not record the proof lost at once. A
-    port delivers `{exit_status, S}` and then closes, so a helper that died by
-    itself and met a write had its status dropped, which held its pool slot for
-    the life of the pool and blocked the writer lease (protocol-change/014,
-    addendum of 2026-10-03).
-  - The snapshot's custody is read in the observer's process. The service
-    answers an `executor_view.Observation` of its own rows and books, and the
-    caller joins the pool's custody to it (`executor_view.completed`), so a slow
-    pool delays the observer and no settlement. The halves are not one instant.
-  - A stale relay cancel cannot reach the next execution on a reused helper,
-    and `cancel_fence_test` shows it: through the link the service builds
-    (`executor.relay_link`, internal) the cancel is dropped with its row, and a
-    control link that cancels the helper directly cancels the next execution.
-    The stale cancel is injected, since a real relay never produces one.
-- **Observability.** `executor.snapshot` is bounded and secret-free
-  (`executor_view`). It also writes one telemetry line per settlement. There
-  is no operator command: every daemon route is the client protocol, and
-  what protocol-change/062 would need is written on the executor page.
-- **Standalone.** `packages/executor` boots the service without the harness,
-  prints a version census, runs one jailed `true` and drains
-  (`make executor-smoke`). It has no socket and no wire. `dispatch.Dispatcher`
-  is the adapter #697 implements, and `census.skew` has no production caller
-  until #697 pairs two sides; only a test calls it.
-- **The Go decision (S5).** No Go moved. A generated tag contract was
-  prototyped, measured at about 750 lines against zero observed drift, and
-  reverted (ADR-018). `enforcement_tags_test` pins the broker's tags to the
-  Go jail sources, and `exec.skip_prefix` is the one Gleam constant for
-  `skip:`. The pin proves a tag is spelled somewhere in the jail sources,
-  not at each emit site, so the fixtures and real-helper tests are what catch
-  emission. ADR-018 lists the four events that reopen the question.
-- **Measure with** `make bench-exec`, the opt-in real-helper benchmark. The S0
-  baselines are on the executor page.
-
-- **Testing the service.** `executor_property_test` draws seeded plans (starts,
-  broker and caller cancels, caller death, helper crash, a close in flight) and
-  holds every plan to exactly-one-settlement, an empty inventory with dead
-  relays, a bounded pool census, a clean close for a quiet plan and a stored
-  second verdict; `LOOM_EXECUTOR_PROPERTY_SEEDS` sizes it and
-  `LOOM_EXECUTOR_PROPERTY_ONLY` replays a seed. `leak_census_test` draws its
-  hundred endings from a seed as well. The simulation runner sends each tool
-  call through the executor over fake helpers before applying the fault
-  schedule, with two checks, `effects/no-orphan` and `effects/one-settlement`
-  (`docs/architecture/simulation.md`, "The effect plane"). Each check was shown
-  failing by mutation (the commit messages name them).
-- **A kill's cgroup directory (#702).** `loom-exec` now sweeps, at the start of
-  server mode, the `exec-<id>-<pid>` directories in its delegated base whose
-  execution process has gone and whose cgroup is unpopulated (`cgroup.Sweep`).
-  The pid test is not in the issue's proposal and is what keeps a sweeping
-  helper from removing a cgroup another helper has made and not yet entered.
-  Only a Linux host with a delegated `LOOM_CGROUP_BASE` runs the real-cgroup test
-  (`TestSweepRemovesARealCgroup`); the fake-base tests run everywhere.
-
-**Left open, in order of value.**
-1. [#703](https://github.com/Roasbeef/loom/issues/703): `OutputIsWire` leases
-   (the LSP jail) stream uncapped, so their mailbox is bounded only by the
-   consumer.
-2. `stop_one_shot`'s `stop_pool` fallback stays on purpose. The follow-up brief
-   called it dead because `executor.close` already sends `StopPool`, but
-   `stop_pool` also sends `ForgetPool`, which reaps a pool whose proof arrives
-   after a timed-out close. `stop_helpers` (the session path) has no such
-   fallback, so a late proof there leaves the pool to its owner's death.
-3. The simulation schedule has no fault aimed at a helper, and the plane's
-   helpers are fake: what a real helper does to a payload under a mid-execution
-   fault is still the jailed end-to-end suite's.
-4. Idle retirement (#283) is still unbuilt; the service only must not block
-   it.
-
-## LSP dependency preparation work (2026-10-03)
-
-The preparation branch adds protocol 064's opt-in Gleam recipe: a fixed,
-60-second network-capable downloader job followed by the existing offline
-server lease. It verifies dependency records and invalidates reuse after
-workspace-local dependency configuration or inventory changes. Existing
-installed profiles gain no authority until explicitly updated. The companion
-Gleam profile update must follow the harness release that accepts the key.
-Validation and review status are recorded in the PR, not inferred from this
-handoff. The previous LSP SQL work is merged in #693.
-
-## Sliced strand.wait windows (PR #719, merged `59549a99c`)
-
-A code-mode orchestration program naming a join window larger than the
-harness's per-call ceiling used to observe the join "complete" after
-30 s with every long-running handle `Pending`: the agency clamps each
-`strand.wait` to `max_wait_ms` (30 s) by design, and the satellite stub
-forwarded the program's `within_ms` verbatim as one capability call, so
-the named deadline and the observed behaviour silently disagreed —
-the review fan-out that reported `needs_attention` with no findings was
-this, not a model failure.
-
-`cap/strand.wait` now slices: it re-issues the join on still-pending
-handles in requests of at most `max_wait_slice_ms` (30 s) until they
-settle or the program's `within_ms` is spent, accumulating `waited_ms`
-across slices and taking the host's per-slice report at face value (zero
-is reachable only from a zero-window probe and is accurate there). The
-harness clamp is untouched; `strand.map` still stops admission at the
-first unresolved child. Mismatched-handle answers now surface as
-`StrandResultMalformed` rather than `StrandsUnavailable`, and each join
-failure kind is pinned to its variant by test. An independent GLM 5.3
-review returned approve-with-comments; its four findings (slice-bound
-coupling, the variant, dead code in `join_batch`, the
-`execution.receive` cousin) are all addressed in the merged commits.
-
-**Ruled:** [protocol-change/062](../protocol-change/062-strand-wait-slicing.md)
-was accepted by the owner on 2026-10-02 after the merge (implemented in
-#719 on the owner's authorization). It records the residual cost (a
-never-settling child now blocks up to the program's own deadline) and
-why raising `max_wait_ms` was rejected.
-
-**Flake note:** issue #513 (runtime `interleave_test` tools case) has a
-second recorded occurrence — run `37072703564`, job 111057019796, on an
-unrelated PR — same supervisor-killed shape under parallel lane load;
-[the recurrence is logged on the issue](https://github.com/Roasbeef/loom/issues/513#issuecomment-5962830928).
-The lane passed on the final CI run, consistent with the timing-flake
-diagnosis; a single pass is corroboration, not proof.
-
-## SQL LSP observation branch
-
-On October 2, `codex/lsp-sql` is rebased onto `ee8c5e341` for
-[PR #693](https://github.com/Roasbeef/loom/pull/693). The implementation follows
-[protocol 062](../protocol-change/062-lsp-sql-observations.md) and the new
-[saved-source contract](../protocol-change/063-saved-code-mode-programs.md).
-The [usage guide](lsp-sql.md), [design examples](design-notes/lsp-sql.md) and
-[architecture](architecture/lsp-sql.md) explain explicit collection and
-satellite-local SQL. Source integration does not update a running daemon.
-
-Semantic access goes through `cap/lsp` and `cap/lsp_sql` in code mode.
-All seven legacy top-level constructors, schemas, argument decoders and
-execution wrappers are removed, along with sixteen obsolete surface tests.
-Shared rename landing, anchored previews and automatic write diagnostics remain;
-ten shared regressions retain stale-file, partial-write, settlement and
-observer-retention checks.
-Installed profile hints follow the admitted capability into the description
-and `cap://lsp`. Saved session pins are not rewritten.
-
-A run or background launch accepts exactly one of inline `program` and
-`program_path`. File source uses canonical native read authorization before the
-ordinary vet, compile and jail pipeline. Approval retries retain loaded source;
-a later invocation reloads it. Handle interactions perform no source reads.
-`loom-default-15` directs agents to save tested programs with purpose/input notes,
-reuse them by path and collect fresh observations. Reuse saves neither authority
-nor semantic facts.
-
-Before the memory integration rebase, the independent full `make check` exited
-zero against the published graph and normal seed, using stock Gleam 1.19.0-rc2. It passed 2,666 client tests, 1,052
-TUI tests, 93 conformance tests, 172 capability tests and 340 code-mode tests,
-along with the other package gates. All six real jailed LSP fixtures ran
-without prerequisite skips. The Gleam SQL fixture loads a saved file; Go uses
-inline source. Both prove joins, counts, anti-joins, typed-decoder errors,
-SQL refusal and unchanged provenance. This replaces the earlier experimental
-seed evidence. Mixing compiler versions invalidates seed-byte comparisons.
-
-Current full format, lint, prelude and documentation gates exit zero. R13 flow
-spines, R14 checked transition tables, R15 state types before functions and R16
-qualified domain calls are enforced on this rebased tree. R17/R18 remain
-censuses; no prose was padded to suppress them. The usage guide links these
-rules. The final Astra high source review of
-`a3dc25359..ea4b2359b` found no actionable defect and independently passed
-170 focused tests. It grants source signoff; the same reviewer also approved
-the published dependency integration.
-
-The supporting [esqlite PR #1](https://github.com/Roasbeef/esqlite/pull/1) and
-[sqlight PR #1](https://github.com/Roasbeef/sqlight/pull/1) are merged. Hex now
-carries `esqlite_loom` 0.9.1 and `sqlight_loom` 1.2.1, with source tags on their
-merged trees. The native 0.9.1 payload passed forty-seven cold tests before
-publication. The native library remains inside the addressed satellite artifact.
-
-The direct `cap` pin, all four companion updates and eight compiler-generated
-package manifests select the genuine releases. The generated offline seed lock
-adds only the native package and `cap`'s dependency edge; its checksum matches
-Hex. A fresh normal seed builds with stock Gleam 1.19.0-rc2 and Rebar, without
-the temporary wrapper. Prelude regeneration was byte-identical. The earlier
-hosted jail lane failed both SQL fixtures with `SqlUnavailable` while the old
-seed lacked this dependency; ninety-one other tests passed. No assertion was
-weakened and that failure is not treated as a flake.
-
-The architectural freeze test now pins exactly `cap_ffi.erl` and
-`loom_cap_lsp_sql.erl`, the reviewed satellite bridges. A third foreign source
-still fails. Its fourteen focused regressions passed, and Astra approved the
-exact-list update.
-
-Hosted stock-compiler packaging exposed Rebar's absolute `pc` plugin link in
-the native seed. Seed preparation now copies only that known in-seed plugin
-before the relocated offline probe; archive link restrictions remain unchanged.
-The relocation regression removes the original root and preserves plugin modes
-and native-library bytes. External targets and nested links are refused. All
-51 script tests and four archive regressions passed, and Astra approved this
-packaging delta. The fresh seed rebuilt normally; real fixture and distribution
-gates must still pass on the corrected head.
-
-Merge criteria: current-head hosted checks and the repository's full Linux
-signoff. The owner authorized removing draft status and merging green. The local
-aggregate run skipped shipped-server fixtures without their opt-in server and
-the Rust manager probe without a working analyzer. The Linux signoff provisions
-its own dependencies, runs the shipped fixtures and enforces its skip census.
-Existing macOS kernel degradation is reported rather than weakened.
-
-The Linux signoff exposed a missing serial-test declaration for
-`cap@lsp_sql_test`: its fixture installs the same VM-global capability channel
-as the other capability tests. The parallel package run reproduced all four
-failures locally because EUnit also runs a parallel module's individual tests
-concurrently. The module now uses the existing serial group, preserving every
-assertion while preventing its four fixtures from replacing each other's channel.
-The same parallel package command then passed all 172 tests.
-
-The hosted Linux fan-in also caught an undeclared SQL Go fixture skip: its
-ordinary conformance bucket did not install `gopls`. That bucket now installs
-the same pinned 0.23.0 server as the existing jail and macOS jobs. The fixture
-runs instead of gaining a waiver; the strict skip census remains unchanged.
-
-The integration rebase preserves main's reduced caller-side LSP manager and
-transport-start ownership. SQL collection now reads its workspace and timing
-from that handle. The retired-tool memory regression follows the live
-write-diagnostics observer, retaining the sibling-capture assertion rather
-than discarding coverage. Astra found no actionable integration defect.
-The `acc648436` tree passed the full local gate, all six Linux signoff lanes,
-release/update verification and the strict skip census. The next integration
-preserves merged strand-wait slicing and its accepted protocol record, with
-the prelude regenerated from both capability surfaces. This rebased head
-requires fresh local, hosted and Linux signoff results.
-
-## October 2 daemon memory pass
-
-The pre-removal `codex/memory-lsp-query-handle` measurement reduced the seven
-direct LSP tools' flat copy cost from 2,205,760 to 184,920 bytes using the installed daemon's
-configuration in an isolated probe VM. Each tool owns only its callback;
-the caller-side manager excludes transport-start custody. The manager actor
-and keeper still own startup. See
-[the live evidence and validation](review/daemon-memory-2026-10-02.md).
-
-The installed build remains `a3dc2535`; there is no installed RSS reduction
-claim. Targeted collections reclaimed 57.712 MiB of allocation across six
-owners, while the service supervisor's restart inputs remained. The second
-process named `loomd` is a `web_search` satellite. The two roughly 92 MiB
-terminal clients lack profiling nodes; attribute their BEAM owners after a
-client launch with `--profile`. The next memory exit criterion is a matched
-installed baseline/candidate run with the same workload and observation cuts.
-
-The CPU extension reuses Darwin descendant-tracker scratch under the ledger
-lock: the 1,200-row indexing benchmark falls from 46,672 bytes and six
-allocations to zero, with median time 9.9% lower. Kernel reads, 20 ms cadence
-and birth-checked delivery remain. `loom observer` / `loomd observer` now
-attach to a profiled daemon, with `--pid` for a profiled client and `--erl` for
-a local Observer/wx installation. See `docs/distribution.md` for navigation.
-Installed CPU savings and function-level attribution of the busy unprofiled
-terminal remain measurement work, not established results.
-
-## Local orientation in large modules (issue #593)
-
-Branch `lint/local-orientation` ([PR #679](https://github.com/Roasbeef/loom/pull/679))
-carries all six of issue #593's suggestions: the style guide section, the
-content, and the gates.
-`docs/gleam-style.md` Part II, "Orientation in large modules", is the rule
-of record; `packages/lint/CLAUDE.md` says how each check decides.
-
-- **Gates (error tier).** R13 `flow-spine`: every hand-written module of a
-  thousand lines or more opens with a `//// ## Flow` spine, and every
-  backticked name in any spine must be a function the module defines (or
-  `alias.fn` on an import). A spine may instead be a ```` ```text ````
-  diagram, read by shape: a word with an interior underscore or written as
-  a call must resolve. R14 `transition-table`: a
-  `<!-- transitions: module.Type -->` table's rows must be exactly the
-  type's constructors. R15 `state-first`: a module with a step function
-  (`update`, `step`, `transition`, `handle_message`, `handle`) defines the
-  types its signature names above its first function. R16
-  `qualified-domain-call`: no unqualified import of a Loom function.
-- **Censuses (warn forever).** R17 `flow-order` (zero at the default 50%)
-  and R18 `unnamed-helper` (859: short one-caller helpers the module doc
-  never names). Never pad a module doc with helper names to quiet R18.
-- **Content.** 99 modules gained spines, 47 late state types moved up, two
-  imports were qualified, and fifteen transition tables are checked against
-  their types: `session_channel.Phase`, `broker/exec.Phase`,
-  `broker/escalation.Phase`, `codemode/satellite.Phase`, `client/jobs.Phase`,
-  `client/provider_relay.Phase`, the `Phase` of `client/daemon/root`,
-  `ui_socket` and `session_socket`, and the language-server stack's six
-  (`client/lsp/manager.Phase` and `KeeperPhase`, both `lsp/client.Phase`
-  tables, `client/lsp/jail.Phase`, `lsp/framing.Buffer`).
-  `client/daemon/manager.Phase` and `runtime/strand_runtime` were judged
-  too thin for one (two states; no single phase type).
-- **The style was applied to what landed during review.** Main's
-  language-server stack, revamp groundwork, memory and resource retention,
-  code-mode cues, MCP concise types and JSON-RPC codec were brought into
-  line: spines for new modules past a thousand lines, stale spine names
-  fixed, the six language-server tables marked for R14, and the 61 short
-  one-caller helpers those changes introduced reviewed under rule 4 (five
-  pure forwarders inlined, 56 kept as domain operations, function values or
-  multi-call helpers). A spine's wire fields are quoted literals, and a
-  module with no functions carries a description, not a Flow section.
-- **When new code lands without the style.** The gates catch a missing
-  spine past a thousand lines, a stale spine name, a table out of step with
-  its type, a late state type and an unqualified Loom import. They do not
-  catch an unmarked table or a helper that names no domain operation; a
-  table written by hand needs its `<!-- transitions: module.Type -->`
-  marker, and R18's census is the reading list for the second.
-- **What a change now costs.** Renaming a function a spine names, adding a
-  constructor to a tabled type, or defining a state type below the code
-  that handles it fails `make lint`. Writing a wire field in a spine needs a
-  quoted literal (`"message_stop"`), because a bare backticked lowercase
-  name is read as a function.
-- **Left open.** The `session_channel` table agrees with the P model under
-  `protocol/models/terminal-attachment` wherever the model has a cell; the
-  model has no resume path, lookup or history intents, or server refusals,
-  so those cells are unchecked against it. A mechanical check of the table
-  against the model's states is the follow-up the issue names. Prose
-  citations (`file.gleam:N`) were re-pinned through the diff after the
-  sweep; a large module-doc edit will shift them again, and doc-check gates
-  only the symbol-checked ones.
-
-The October 1 resource and typed-MCP follow-ups are separate changes with
-separate evidence. [PR #689](https://github.com/Roasbeef/loom/pull/689) was rebased
-onto main `7d37ec86`; its final resource head is `4a6e4fad`. The owner authorized
-merge once that exact head is ready. Fresh hosted CI and local signoff are being
-checked; the earlier green results in the review report belong to their named
-heads. The running normal daemon was not upgraded by these follow-ups.
-
-## Memory and CPU follow-ups
-
-The [resource report](review/daemon-resource-usage-2026-10-01.md) covers context
-metadata, peer-router, gateway membership and restart-callback projections, plus
-Darwin tracker allocation reductions. A matched bare-session fixture measured
-1.521 MiB less idle BEAM memory and 5,776 KiB less RSS than main `31db7c68`.
-Darwin's sleeping execution fixture allocated about 14 percent fewer bytes and
-96 percent fewer objects; CPU windows overlapped. These bounded observations do
-not establish savings for an installed normal session. Earlier installed-daemon
-cuts and the live Jev result remain historical evidence in that report.
-
-A local rebase gate exposed two fixture failures. The operator-page connection
-timeout passed five focused repetitions. The job-stop/reopen failure had a
-concrete ordering defect: the test treated cancellation acknowledgement as a
-completed durable write and observed Lost before notification handling finished.
-Existing actor poll/list barriers fix that fixture. A forced schedule fails the
-old fixture and passes the ordered one. The scanner fixture also waits for
-asynchronous rearming and checks the exact logical deadline, preventing an
-unrelated driver timer from satisfying its retry bound. Production source and
-deadlines remain unchanged. Final checks must belong to `4a6e4fad`, not its older green CI heads.
-
-The [directory follow-up, PR #691](https://github.com/Roasbeef/loom/pull/691),
-projects a restartable writer address for mutation and Storage for readback.
-Its [review report](review/directory-fact-retention-2026-10-01.md) records constant
-1,385-flat-word administration overhead as unrelated executor payload grows.
-Package gates, independent review, full local signoff at the named pre-rebase
-head, and a fresh-runtime retirement witness passed. Its rebased hosted head is
-`b06b3a29`. These term measurements do not predict installed RSS. The additive
-internal fact interfaces were approved by the owner; public signatures and wire
-contracts remain unchanged.
-
-## Concise typed MCP
-
-The [concise MCP report](review/mcp-concise-types-2026-10-01.md) explains the
-replacement for exposed node-path names and branch wrapper records. Semantic
-names have module-wide collision allocation, and required distinct literal tags
-belong to constructors such as `ChoiceQuestion` and `ScoreQuestion`. Decoders
-still require exact tags and closed objects. For the same four Jev schemas, full
-API prose shrank 48.35 percent in bytes; this is not a tokenizer measurement.
-
-The MCP gate, independent review, full local signoff at `ac0c26ca`, and the
-installed-server HTTP fixture passed. After rebase, release `239db772` also
-passed all three Jev channel regressions and the real isolated daemon fixture:
-generated API discovery, jailed mixed batch, exactly one HTTP request, expected
-durable result, credential confinement, and authenticated shutdown exiting zero.
-MacOS filesystem/network enforcement ran; resource-limit and process-lifecycle
-gaps remained explicit. The fixture used dummy credentials and no live Jev call.
-[The Jev walkthrough](jev-mcp.md) contains the complete tested program.
-
-Jevelin's installed self-contained launcher is still the open
-[installer PR #1](https://github.com/Roasbeef/jevelin-mcp/pull/1) at `307b7e4d`.
-It bundles its own ERTS and boot files. Newly assembled Loom session runtimes
-regenerate MCP modules automatically; resident sessions keep their assembled
-surface, and saved programs using older generated names need updating. Resources,
-prompts, and Loom HTTP transport configuration remain separate scope.
-
-Next: verify and merge #689 at its exact final head, then retarget its follow-ups
-to main and verify their final hosted checks. Installation and a matched normal-
-daemon measurement remain separate from source proof. Keep actual process heaps,
-allocator carriers, flat-size retention evidence, and OS RSS distinct; do not
-force collection in ordinary-runtime comparisons.
-
-## Code-mode prompt cues
-
-The prompt change is rebased onto `5fbcda3ad` on October 1, 2026. It adds executable
-alternatives to the five direct workspace-tool descriptions only when the
-default code-mode seam admits and services the call. `loom-default-13` asks
-for immediate planned batching, API discovery before unfamiliar calls, and
-explicit completeness and truncation checks. The third-probe fallback remains.
-Compile failures retain diagnostics and state that execution never began.
-
-The comparison is recorded in [the prompt review](review/code-mode-prompt-cues.md).
-This change retains the complete capability types, discovery and recipes.
-Calling instrumentation remains in [PR #673](https://github.com/Roasbeef/loom/pull/673);
-the reduced-roster experiment remains in [PR #433](https://github.com/Roasbeef/loom/pull/433).
-Neither is implemented by these prompt cues. The next evaluation should compare
-model call choices and compile failures on the same workspace tasks; source
-size alone cannot establish improved batching behavior.
-
-The validation below predates this prompt change and belongs to its named
-heads. The new review record carries this branch's own gate results.
-
-## Concurrent watcher and language-server reliability (PR #687)
-
-The reliability work is based on `f84842d17bc3230c2a796f136d222b5179b5be28`,
-checked on October 1, 2026. Main's hosted
-[run 36922134008](https://github.com/Roasbeef/loom/actions/runs/36922134008)
-is green at that exact base. This branch's local results belong to the
-reliability changes, rather than to main or a running installation.
-
-## Watcher and language-server reliability
-
-[Protocol 061](../protocol-change/061-watch-and-lsp-reliability.md) records
-the accepted changes. A session-lifetime watcher survives abort of the model
-operation that started it. Remembered wall-zero consent authorizes only the
-same strand, tool and canonical arguments; another action still needs its
-own authority. Finite jobs retain their previous abort semantics, and
-explicit owner kill and session close still stop session jobs.
-
-A language-server lease can read the session-authorized portion of the
-workspace, including sibling path dependencies. Package writes, protected
-paths, network-off and server-named answer admission keep their existing
-boundaries. Retained error-level window messages make empty semantic replies
-and diagnostics report `Unavailable`. A diagnostics deadline and an empty
-hover or rename object cannot erase that failure.
-
-`loom-default-11` explicitly asks agents to prefer offered LSP tools for
-definitions, references, types and file symbols, and use `cap/lsp` for batches.
-It also distinguishes unsupported features from setup failures and advises
-against repeating failed probes without new evidence. Existing sessions keep
-their pinned prompt. Code-mode guidance keeps warnings as errors and gives
-concrete import and repair advice.
-
-The complete affected-change gate exited zero in 495 seconds on the final
-executable tree `0372d301b`, with a fresh helper, shipment and offline seed.
-The [review record](review/watch-and-lsp-reliability.md) records its package
-counts, review regressions and actual jailed code-mode/LSP proofs.
-The running user daemon was not upgraded by this work. Hosted verification
-and installation remain outstanding.
-
-## Corrections to the earlier records
-
-The earlier watcher paragraph described protocol 058 as branch work awaiting
-landing. PR #671 merged at `7b1c662cfd4e9f6fe8d4b63dc8a40e5a54e3a55d`. The new
-work repairs consent and custody defects in that behavior; it does not add a
-second lifetime API. The older terminal priority still said to land #583;
-that PR merged at `8b3455493bbcb11f6788e908664e260fdb4a36db`.
-
-The records below retain their original dated heads and evidence. Their
-tracker state and broader remaining-work claims were not re-audited by this
-reliability pass and must not be treated as current verification.
-
-## Next actions for PR #683
-
-1. Publish and verify the reliability PR against its exact head. Exit: the
-   affected gates, hosted CI and required Linux signoff pass, with the
-   review findings closed. PR #683 independently changes code-mode prompt
-   guidance; preserve both sets of instructions during integration.
-2. After landing and updating the daemon, check real watcher survival across
-   stop/resume, reusable exact-action consent and a positive semantic query
-   in a sibling-dependent Gleam project. Exit: the watcher remains running
-   and a real `cap/lsp` call returns semantic content without repeated
-   approvals for the same action. A new session gets the revised prompt.
-3. Recheck the tracker before resuming the older terminal, Trace and remote
-   access priorities. Their design choices remain separate from this fix.
-
-## Rulings to preserve
-
-Each of these is settled. Re-open one only with new evidence, and record the
-reopening where the ruling lives.
-
-Exact-action consent cannot become general unlimited wall authority. Session
-job attribution and broker custody have different identities. LSP sibling
-reads derive from existing authority, while writes and answer admission stay
-package-scoped. [Protocol 061](../protocol-change/061-watch-and-lsp-reliability.md)
-and the ADR-015/016 addenda record these boundaries.
-
-## How to verify this work
-
-Use `make check-affected BASE=f84842d17bc3230c2a796f136d222b5179b5be28`, followed
-by the required signoff. Focused reproductions use `bash scripts/test.sh lsp`,
-`bash scripts/test.sh client --match client@lsp@jail_test` and
-`bash scripts/test.sh conformance --match conformance@lsp_e2e_test`. Build the
-helper and offline code-mode seed first; a prerequisite skip is not proof.
-Read each gate's own exit code. See [execution](execution.md) for the remaining
-verification rules.
-
-## Earlier baseline records
-
-## MCP handoff baseline
-
-The MCP handoff was refreshed against `f875811be` on October 1, 2026.
-The previous edition described extraction validation as pending before
-merge. [PR #669](https://github.com/Roasbeef/loom/pull/669) has now merged
-at `1b2a1748deb4bafe59b4f12312d167eae1525c0b`.
-
-The [Jev MCP walkthrough](jev-mcp.md) records a successful real-daemon
-integration at the merged extraction tree `5aad549bd`. A scripted local
-model discovered the generated API through `cap://mcp/jev`, submitted a
-Choice query to code mode, and received the Jev fixture's answer. The
-hermetic build, satellite, MCP process and HTTP adapter all ran. A fresh
-credited snapshot retained the completed tool result and final assistant
-response; authenticated daemon shutdown exited zero. That earlier run used a dummy credential and a local HTTP fixture. Live
-Jev authentication and inference now pass through both installed Loom and
-the typed-generation shipment, using the installed self-contained Jevelin
-bundle at `18ab557`. The service identifies itself as `jev-1.13.0` and
-returns `logs` with confidence 1.0 and usage 324/31. Each isolated daemon
-retains the completed result and exits zero after authenticated cleanup;
-the credential remains outside model requests and configuration. Evidence
-is in `build/jev-live-20261001-150405` and
-`build/jev-live-20261001-151059`. A fresh session in the normal running
-daemon also passes the live query; `build/jev-live-20261001-151240` records
-its completed durable result and cleanup to saved state, preserving the
-daemon and existing sessions. The enabled Stop hook added one model turn.
-
-The normal daemon needs a newly assembled session to discover an installed
-MCP server; existing resident sessions keep their previous generated modules.
-Keep the key in daemon environment configuration or its command-backed
-secret store. Resources, prompts and Loom HTTP
-transport configuration remain separate scope.
-
-The validation history below belongs to the exact heads and runs it names.
-It is not a new full-gate or hosted-CI claim for this documentation baseline.
-
-## Typed MCP generation (issue #449)
-
-The follow-up to extraction adds recursive structural schema planning and
-matching generated declarations. Required inputs can be nested records,
-lists, enums, named booleans, nullable values and supported disjoint unions.
-Optional inputs use tool-specific `Options` records and omission constants.
-Unknown shapes remain explicit `report.Value` fields, so typed siblings and
-required names survive fallback. An advertised `outputSchema` now produces
-a typed return with a total decoder inside the satellite.
-
-The fixed codec lives in `cap/internal/mcp_codec`; generated functions still
-call the internal per-server capability seam. `ResultSchemaMismatch` retains
-its path and original tool result. Structural shape, enum, literal and
-closed-object checks belong to this decoder. Numeric bounds and general
-JSON Schema refinements remain server admission checks. This work changes
-no frozen capability envelope and grants no additional server authority.
-
-The earlier claim that MCP describes only inputs is corrected in the
-[MCP architecture](architecture/mcp.md). Its GitHub triage example still
-uses raw result readers because that fixture advertises no output schemas;
-the input options now use generated types. The [Jev guide](jev-mcp.md)
-distinguishes the earlier #669 integration proof from the typed program.
-
-The exact typed Choice program passed through a fresh production daemon on
-October 1, 2026: `fs_read` discovery, jailed compilation, satellite execution,
-Jevelin MCP, one HTTP fixture request, typed output decoding and a durable
-structured outcome. The run exited zero; `build/typed-reviewed-jev-daemon-e2e.log` retains its output; evidence is retained in `build/jev-e2e-20261001-144704`.
-The dummy credential stayed confined and authenticated cleanup exited zero.
-The program in the guide matches the tested source byte for byte.
-The focused native client suite passed eight cases covering nested options
-and null presence, typed output, retained mismatch text/path, and compiler
-rejection of malformed enum/options/nested input before any tool call. The
-complete GitHub-shaped facade compiles in the jail, and the documented
-structured example runs unchanged. A schema-valid nested union result also
-survives a rendering fallback without an ambiguous decoder failure.
-
-The independent review reproduced three issues: constructor names whose
-semantic fragments imitated ordinals, a union discriminator lost during
-nested fallback, and an unused payload hidden by module-alias references.
-`832f17a2` fixes them with trusted ordinal prefixes, rendered-shape
-exclusivity checks and encoder-owned payload usage. The scoped independent
-recheck compiled all three original reproductions without warnings and
-decoded the valid union result unchanged. The final MCP suite passes all
-117 tests with zero lint errors. Generated display suffixes are capped at
-64 ASCII characters without changing wire literals or declaration identity.
-
-The complete local `make check` passed at the earlier `cb2effa5` head, with
-zero lint errors. Its own exit code is recorded in
-`build/typed-full-check-status.json`; that gate does not prove later review
-fixes. The current real code-mode suite passed all 26 tests, with the
-Linux-only process-retirement case feature-skipped on macOS.
-
-macOS Seatbelt filesystem/network enforcement was active; resource and
-lifecycle enforcement remained degraded. Live Jev authentication and
-inference now pass in the separate runs recorded above. Full-gate and hosted-CI claims still belong to
-the exact final head and runs recorded with its pull request; the historical
-results below do not prove the new generator. The affected full client gate
-passed all 2,614 tests after the review fixes. The subsequent official Go SDK
-v1.7.0 capture regression also passes in the real jail; its provenance pins
-the actual SDK-generated nullable input/output schemas.
-
-## Extraction rebase history
-
-The MCP extraction is rebased onto `origin/main` at
-`275efc42e7909c3c3ec481b7466c3484f381eb80`, including the typed capability
-surface from PR #670. Recovery refs retain the previously tested `a569e1f68`
-and `a102a3523` heads. The import conflict retains both main's typed-operation
-module and the extracted SDK client; the package documentation retains both
-main's typed schedule projections and the MCP boundary. Main's capability
-sources, generated prelude and protocol 057 remain unchanged by extraction.
-
-The independent GPT-6.1 Sol review at high reasoning found no high or medium
-findings at `14dc4545d`; its stale ownership comment was corrected without
-changing executable code. The preceding published head `a102a3523` passed
-complete hosted Linux/macOS CI in [run 36795638550](https://github.com/Roasbeef/loom/actions/runs/36795638550)
-and a fresh containerized Linux signoff, including all six lanes, release
-updates and a clean skip census. Its full local gate passed with 2,401 client
-tests and zero lint errors. These results belong to that head; validation of
-the latest rebase is recorded on PR #669 before merge.
-
-## Standalone MCP extraction
-
-Generic JSON/JSON-RPC, framing, client actors and native process custody
-live in [Gleam MCP](https://github.com/Roasbeef/gleam-mcp). Both direct
-consumers and the conformance closure pin
-`686955fc0461630bf64a4dc8eb51565dc7ca1ac9`. Its full Linux/macOS CI passed
-[run 36765278006](https://github.com/Roasbeef/gleam-mcp/actions/runs/36765278006):
-232 unit tests, including every required Draft 2020-12 vector; 139 linter
-tests; five tooling checks; and 39 native stdio/HTTP/TLS checks. Independent
-review findings were fixed and rechecked before publication.
-
-The direct Mist dependency matches the SDK at
-`28b43178ff57bfb619c64b8c3544831646d5fdb9`; all affected locks resolve Glisten
-to `3eb785919be0736da0a20732a56275dce0132327`. Glisten registers its connection
-factory before its listener and acceptors start. Mist registers its SSE
-factory before Glisten starts. Reverse shutdown stops admission before
-retiring those factories. Mist's framing and startup fixes passed
-[CI](https://github.com/Roasbeef/mist/actions/runs/36764236673) and remain
-open in [PR #2](https://github.com/Roasbeef/mist/pull/2) and
-[PR #3](https://github.com/Roasbeef/mist/pull/3).
-
-[Glisten PR #1](https://github.com/Roasbeef/glisten/pull/1) merged into
-`compat/v9.0.1` at `1e53a4d9befb3fe6fb6f9cee2d9b13ba621a2e67`. Consumers
-retain the tested `3eb7859` commit rather than moving to that merge commit.
-The upstream startup-order report is
-[rawhat/glisten#55](https://github.com/rawhat/glisten/issues/55).
-
-The SDK adds released MCP `2026-07-28`, typed tool definitions, HTTP, explicit
-multi-round-trip continuations and owned subscriptions. Loom continues to
-use its initialized stdio profile and supplies its own client identity,
-server isolation and result reduction. Optional resource and prompt APIs
-are tracked in [SDK issue #1](https://github.com/Roasbeef/gleam-mcp/issues/1).
-
-`packages/mcp` retains four pure adapters: code generation, schema planning,
-name sanitization and MessagePack interchange. Frozen core and capability
-interfaces are unchanged. `client/mcp` reduces lossless non-text content
-only when constructing the existing capability result. The generic suites
-moved with their implementation; local adapter and actual-server fixtures
-remain here. Current main's other dependencies, including weft 0.4.5 and
-its shared UI packages, were preserved during rebase.
-
-The fresh offline seed and focused `make check-mcp` passed at `7b8cd39f9`,
-each with its own zero exit status. The full local `make check` also exited
-zero through the public SDK/Mist/Glisten pins with that fresh seed and the
-CI-matching patched Gleam 1.19.0-rc2 compiler. All packages, native tests,
-static gates and lint passed; lint reported zero errors and 943 warnings.
-Published extraction head `6de0188aaea01ede036082d0d5c19ce0d06dd5af`
-passed the required Linux gate and macOS advisory package check in
-[run 36767905423](https://github.com/Roasbeef/loom/actions/runs/36767905423).
-A fresh public Linux checkout built its helper and seed, then passed 102
-adapter tests, 29 native client MCP tests and both actual MCP/configured-server
-code-mode exchanges with no skips. An independent rerun of both E2Es passed
-at that same head. These results belong to `6de0188`, rather than being
-reassigned to the subsequent fixture correction.
-
-The first macOS e2e attempt timed out observing the shipped multiplayer tool's
-return to idle after its final answer was visible. The original shipped-bootstrap
-target passed locally, followed by five fresh runs of the original multiplayer
-module. The hosted rerun also passed bootstrap. The first timeout remains
-intermittent with no established source cause; no deadline or assertion changed.
-
-The macOS rerun then failed `worktree_diff_test.gleam:95` with GitFailed(128),
-matching [exact base main `01f14ef8`](https://github.com/Roasbeef/loom/actions/runs/36694588061/job/109820029705).
-The earlier assumption that repository layout alone explained this failure was
-incomplete. A normal local clone still passed under Apple Git 2.39; changing
-only the Git version to 2.55 reproduced the failure. Both independent runs
-used the original source and helper: fourteen tests passed under 2.39, while
-2.55 failed one with `fatal: error reading '<checkout>/.git'`.
-
-The uninitialized fixture was beneath the source checkout, so it did not
-satisfy its outside-Git premise. Seatbelt correctly denied reads of ancestor
-repository metadata, and Git 2.55 treats that discovery denial as fatal.
-Correction `b69de8672` constructs private fixtures under `/var/tmp`, following
-the existing shipped-jobs convention and avoiding Linux's `/tmp` scratch mount.
-All fourteen assertions pass on the changed source under Git 2.55 with no skips.
-The full client gate also passed under Git 2.55: 2,398 tests, formatting and
-warning-free compilation. The documentation check exited zero.
-The sandbox grants, production error classification and test deadlines remain
-unchanged. Independent review found no additional affected assertion.
-Published correction head `314c3071c` passed its required Linux gate. Its actual
-Linux jail ran all fourteen observations under Git 2.55 with eleven enforcement
-layers active and zero skips, and its terminal-observation skip census was clean.
-
-That head's macOS run passed multiplayer, then failed the shipped-confinement
-turn at `daemon_shipped_confinement_test.gleam:353` before reaching the corrected
-Git fixture. The interval between the token tool-use and final-text provider
-announcements was 7.887702 seconds; the final announcement preceded the original
-eight-second UI timeout by only 32.902 ms. That interval includes transport,
-durable transitions, tool execution and the next provider request, so it cannot
-be attributed to shell execution from the uploaded evidence. Five fresh local
-runs of the original confinement fixture passed. Neither this timeout nor the
-earlier multiplayer timeout has an established source cause.
-
-Diagnostic commit `759ab088d` uses the existing terminal recorder in those two
-fixtures, with unique session/role paths. Their assertions and deadlines remain
-identical. `LOOM_TEST_TIMING=1` adds a second stock OTP handler only to the private
-shipped daemon launcher; it retains UTC event timestamps and existing debug
-provider/tool dispatch and settlement events without changing the JSON handler.
-Terminal recordings are unconditional in the two fixtures; the extra daemon
-handler is opt-in. Its 8,192-character limit applies per event, not to the file.
-The actual local confinement and multiplayer suites passed with this handler,
-and their generated logs and raw frames were inspected. Independent review
-approved the unchanged cleanup, grants and assertions. The complete local
-client gate also passed all 2,398 tests, formatting and warning-free compilation;
-the documentation check exited zero.
-
-CI commit `a0300e896` enables this evidence for shipped bootstrap and uploads the
-private effect logs and terminal recordings. The original hard macOS terminal
-observations run before bootstrap so its failure cannot hide their result; the
-zero-skip census and failing fan-in are unchanged. Pre-rebase head
-`a569e1f681fae2098979ff79bd327fc30e43ebde` passed both aggregate gates in
-[run 36779051580](https://github.com/Roasbeef/loom/actions/runs/36779051580).
-Its timing artifacts were inspected. Both intermittent timeout causes remain
-unconfirmed; a green run does not prove their correction. The rebased head
-requires its own hosted verification.
-
-[Jevelin MCP](https://github.com/Roasbeef/jevelin-mcp) consumes the SDK and
-existing Jevelin library directly. Published application head
-`fb5b434bde8d48736c835d44a4a176efb17d007d` passed Linux/macOS CI in
-[run 36766066616](https://github.com/Roasbeef/jevelin-mcp/actions/runs/36766066616).
-Its four shared typed definitions retain original label/rubric/batch
-decoders. An independent Linux build passed the full application gate through
-the public dependencies, then fifty fresh runs of the original HTTP peer.
-Those runs retained all assertions, including 150 bearer refusals and fifty
-Origin refusals. The inherited startup blocker is closed by the published
-factory-order fixes above. That application-head validation used fixtures.
-The installed-release live inference proof at the start of this handoff
-supersedes the earlier statement that authenticated Jev requests were untested.
-
-[PR #669](https://github.com/Roasbeef/loom/pull/669) records the current
-validation boundary and review status. Continue to require the full gate,
-real native MCP process and configured-server code-mode exchanges when
-updating this dependency. Remote MCP admission policy remains separate
-from the reusable library's HTTP implementation.
-
-## Existing work on main
-
-The preceding main handoff is preserved below. Its references and validation
-are attached to the heads it names, rather than reassigned to this extraction.
-
-
-This handoff is baselined against `998be7a64` (`main` after #666, the last
-pull request that closed [#569](https://github.com/Roasbeef/loom/issues/569))
-on 2026-09-30. Tracker state was read with `gh` the same day. Every claim
-below was checked against that tree or that tracker; a claim that could not be
-checked says so.
-
-## Persistent web-view startup
-
-`[daemon] ui = true` enables the web view when ordinary `loom` starts a
-new daemon from the selected catalogue. Omission keeps it disabled, and
-`loomd --ui` enables it even when the file says false. Startup captures
-UI and connection limits from one read before preparing the root; session
-catalogues and later file edits cannot change a running listener. Restart
-an existing daemon to apply the setting. `loom ui --session ID --open`
-still requests a browser link; `loom --ui` remains its older spelling.
-
-## Herdr integration corrections (this branch)
-
-The `tui/herdr` adapter was audited against upstream herdrdev/herdr
-(v0.9.1 locally, v0.9.3 upstream) and four real bugs were fixed. The
-previous wire format was schema-valid but claimed an identity Herdr
-cannot honor: it reported under the reserved `herdr:loom` source, and
-its docs claimed session restore keyed off the announced session id —
-but Herdr's `agent_session_id` restore path is gated by a hard-coded
-allowlist of its own integrations (`is_official_agent_source` in
-upstream `src/agent_resume.rs`), in every version through 0.9.3, so
-resume never worked and the announce was dead weight. The adapter now:
-
-- reports under the third-party source `loom:terminal` (the `herdr:`
-  prefix is reserved for Herdr's own integrations, per their
-  add-herdr-support guide)
-- carries `resume_argv` `["loom", "--session", <id>]` on every state
-  report — the actual third-party resume mechanism, honoured by Herdr
-  0.9.2+ and safely ignored by older servers
-- queues `pane.release_agent` on quit as the last effect of the step,
-  a bounded synchronous exchange the runtime performs before the loop
-  exits, so the pane clears before the VM halts instead of waiting for
-  Herdr's idle-shell safety net
-- names the pending approval in a blocked report's `message` (tool +
-  preview, with a count when several queue up), and the message is part
-  of the change comparison, so a second approval while blocked
-  republishes
-
-What was already correct and is pinned by tests: the env gate, NDJSON
-framing, one-request-per-connection exchanges, the `PaneAgentState`
-enum, the wall-clock sequence seed, and change-detection. Herdr 0.9.1
-→ 0.9.3 upgrade is safe for existing panes (no breaking change beyond
-the removed pane-graphics API, which Loom never used) and is what
-activates `resume_argv`.
-
-## What the previous edition got wrong
-
-The previous edition was pinned to `3088ee3ce`, before the last three lanes of
-#569 landed. It is stale in these ways.
-
-- It called #569 open and listed its remaining items as work. All of them
-  merged in #665 and #666, and #569 was closed on 2026-09-30 with a comment
-  that says so.
-- It said the page cannot show settled strands or images, and that 053 phases
-  2 and 3 and the invite control were not built. They are built (below).
-- It ordered the Trace tab and remote access after the terminal revamp with
-  the revamp waiting on #569. The revamp is now first, and #656 and #654 follow
-  it.
-- It said a streamed code block re-sends the whole block each batch and that
-  an unsettled generation leaks its start time. Both are fixed (#658).
-
-The statements about the step extraction (ADR-014's blockers, the shared step)
-were checked again and still hold.
+## Distributed runtime integration (unmerged)
+
+[PR #819](https://github.com/Roasbeef/loom/pull/819) is the single draft review
+for issue #697. It replaces the 37 component PRs while preserving their commits
+and review records. The [integration guide](design-notes/distributed-runtime-integration.md)
+maps the design, architecture and remaining acceptance criteria.
+
+Native execution, owner custody, semantic workspace operations and physical
+compilation components are implemented and individually reviewed. Whole Compile
+ownership, command forwarding and the owner consumer are being assembled.
+Launch/satellite, remote LSP, registered daemon configuration and the separate-host
+ordinary-tool/code-mode acceptance run remain pending. Main `7a9adf1e` is merged into this branch. The seeded code-mode, client, tools,
+storage and executor package gates passed; the full repository and separate-host
+gates remain pending. The [merge review](review/distributed-main-integration.md)
+records optional skips and existing peer-fixture failures.
+
+The combined-main executor gate passed 274 tests with no skips, including the
+[Compile observation adapter](review/distributed-compile-observation.md). The
+native original-deadline follow-up passed its 20 focused controls, and the exact
+final P live-association source passed all 90 bounded cases/probes at 100 schedules. See the [deadline review](review/distributed-native-command-admission.md)
+and [model review](review/distributed-live-association-model.md) for limits.
+Those results do not establish assembled-system acceptance.
+
+Worker commits enter the integration branch after focused checks and review.
+Run full gates at integration milestones and final adversarial review on the
+assembled candidate. Keep architecture docs aligned with the component they
+explain; retain evidence in `docs/review/` instead of accumulating it here.
+
+The following handoff comes from current main and describes work already on that
+branch. Its stated baselines and verification limits remain attached to those
+claims.
+
+This file is the handoff: where the tree stands against the work in
+flight, what to do next, which rulings are already made, and what is
+deliberately left open. It is rewritten at the end of a body of work and
+never appended to. A section of it that is dated, or that names a head
+that no longer exists, is a sign it was carried forward and not
+re-checked.
+
+This edition is baselined against `556e419af` (`main` after #768) on
+2026-10-04, and it follows the terminal revamp ([#655](https://github.com/Roasbeef/loom/issues/655),
+landed by #760). Every claim below was checked against that tree or
+against GitHub on that day. Where a claim could not be checked, it says
+so. The previous edition was about 1,400 lines of dated validation
+records, one per body of work, and most of them described pull requests
+that have since merged; this edition drops those records, and each
+body of work's own pull request, review document and architecture page
+carries its evidence.
+
+Hosted CI does not gate `main`. The `signoff/linux` status posted by
+`scripts/signoff.sh` does, and #760 and #761 both landed on a green one
+(1410 s and 1336 s, skip census clean). The hosted runs on `main` for
+the 2026-10-04 merges were not green when read: those for #745 and #760
+were cancelled by later pushes, and those for #753 and #761 were queued
+or pending. That is the state of the hosted record, not a failure of
+the code, and it was not re-run.
 
 ## Where the tree is
 
-**Part 1 of #569 is done, and so is the issue.** The session's half of the
-client step lives in `packages/session_view`, which depends on `core`,
-`machine` and `gleam_stdlib` alone, held there by lint R6. It holds the lane
-(`session_channel`), the decoders, snapshot adoption, the projection and the
-line builders, and the shared step: the session record
-`model.Shared(socket, recorder, source, replay_source)`, the folds of pushed
-events and lane updates (`event_fold`, `lane_fold`), the operator's commands
-(`commands`), the side-surface reads (`surfaces`), the settle, and
-`step.update`.
+| Body of work | Where it stands |
+|---|---|
+| Terminal revamp ([#655](https://github.com/Roasbeef/loom/issues/655)) | Landed as #760 (`2625d2251`): all sixteen layers of stack #718. Open edges and follow-ups below. |
+| protocol-change 059, strand message origin | Accepted 2026-10-03, reader and writer both on `main`. No release has been cut since `v0.2.0` (2026-09-14), so the next release carries both. |
+| protocol-change 060, code-mode call record | Accepted. The record, the terminal's rows and the web Trace tab's rows are built. The live feed for a running program is not ([#765](https://github.com/Roasbeef/loom/issues/765)). |
+| Web view | Four-tab panel (Strands, Changes, Trace, Session), a visual system, a home page that opens running and saved sessions, a Home button on pages it opened, an invitee-chosen name. PRs 1, 2, 3 and 6 of workspace mode's ten are built. |
+| Executor service ([#696](https://github.com/Roasbeef/loom/issues/696)) | Closed. Landed as #727 and #732; `broker/direct` is gone. |
+| Language servers | Stack merged (#680), SQL observations (#693), dependency preparation (#728). |
+| Flake fixes | #746 and #747 merged through #761. #513 is still open. |
 
-The two hosts run it in different shapes.
+### The terminal revamp
 
-- **The terminal** (`packages/tui`) holds `Model(shared, view)`, with
-  `TerminalShared` binding the four handle parameters. It calls the shared
-  units one at a time, applies the surface facts each records between the
-  drain's updates, and does not call `step.update`. Its socket wakes its
-  loop, and `terminal_poll_timeout` follows the lane's deadline with a
-  one-second idle ceiling, because a resize needs a poll.
-- **The web view** (`packages/web_view`) holds `component.Model(shared,
-  view)`. `update` reads the transport's clock once, hands the step a
-  message (`Arrived` files, `Ticked` drains and ticks, `Acted` runs a
-  command) and derives what it draws from the record the step left. A burst
-  of at most 64 frames is one message, and so one render, and one timer is
-  armed for the lane's `next_due`. `session_view/step_test` holds
-  `step.update` to the order of the terminal's tick.
+#760 is a queue pull request. Its head, `22a0a7362`, is the top of stack
+#718 and carries every layer, which is why `signoff/linux` on that one
+commit covers all of them. The layers, bottom to top, were #708 (the
+design note), #709 (session picker), #710 (workspace and the
+seven-agents strip), #711 (full-frame render helper, failed count,
+folded polls), #712 (identity line, rounded input frame, approval
+block), #713 (message headings, one-row turns, call and result rows),
+#714 (code-mode blocks), #715 (the 060 call record), #716 (call counts
+and call lists), #717 (image placeholder rows), #729 (drawn images),
+#731 (per-workspace layout memory), #733 (the docked rail), #734 (the
+rail's tabs), #735 (the narrow-terminal sheet) and #739 (the 059
+writer). #708 shows as merged; the other fifteen were closed with a link
+to #760.
 
-The lane's pushing refresh is 5,000 ms, and the gateway pushes the roster to
-a subscriber (protocol-change/054). [Delivery](architecture/delivery.md)
-explains the ordering and ownership, and [the client
-architecture](architecture/client.md#the-client-engine-and-its-hosts) is the
-map.
+What a reader needs to know about the result, with the module that
+holds it:
 
-**The page today (concept A2, [the web design
-note](design-notes/web-design.md)).** `loomd --ui` serves an observer's page
-and an operator's page for one session. Both draw:
+- **Layout.** At 120 columns or wider the rail docks beside the
+  transcript with four tabs, Strands, Changes, Trace and Session
+  (`tui/rail`, `rail.narrowest`). It is docked by default from 160. Below
+  120 the same four tabs are a sheet that replaces the transcript and
+  leaves the input frame, strip and footer in place (`layout.sheet_shown`).
+  The 100-to-119-column 34-cell rail no longer exists.
+- **Layout memory.** `<state-dir>/tui/layout.json`, keyed by a digest of
+  the workspace path (`tui/layout_memory`, `tui/layout_save`). It records
+  the rail and the tab, only when the operator chose one, and keeps 64
+  workspaces. A missing, oversized, foreign or malformed file is an empty
+  memory, so it cannot stop a launch.
+- **Images.** Placeholder rows read dimensions from the image header
+  (`session_view/image_header`). Drawn images use kitty graphics with
+  Unicode placeholders and OSC 1337 for iTerm2, through etui, which is
+  pinned at `4d5e466` in `packages/tui` and `packages/client`. The
+  `o` key opens an image externally without new FFI.
+- **Trace.** `session_view/trace_view` is one module used by both hosts.
+  The web view calls `fold`, the terminal calls `newest`, and 060 call
+  rows appear in both.
+- **059 release N+1.** The Agency writes `StrandOrigin` on briefs and on
+  `agent_send` messages (`client/agency`). `docs/updating.md` carries the
+  rule that every older client must be stopped before that release is
+  selected.
 
-- **Three collapsible columns** inside `<loom-shell>`: a sessions sidebar
-  (operator pages only), the transcript and dock in the centre, and a
-  right-hand panel. Buttons at the ends of the top bar hide each side
-  column, and a hidden column is inert and out of the tab order.
-- **A tabbed panel** with Strands, Changes and Session. Strands holds the
-  strand cards and the detail of the strand in focus, and lists settled
-  strands after the live ones as a collapsed group (#659). Changes lists the
-  files the session's own edits changed, keyed by path, and is always
-  present. Session shows the goal, jobs, viewers (operator pages only) and
-  estimated cost. There is no Trace tab (#656). In the Strands pane, under
-  the strand cards, the advisor's settled commentary is a read-only section:
-  the request labels and full bodies, newest three then a count
-  (2026-10-02); the lane keeps one hairline per review where the full amber
-  blocks were. Under the panes, on every
-  tab, the advisor's pending nudges are a read-only card (2026-10-02: it
-  moved out of the dock, which also lost its Stop button and Set goal form —
-  stopping is the terminal's Escape and a goal is pinned by typing `/goal ...`).
-- **Strand focus.** A card, a chip of the agent strip or a timeline row
-  focuses a strand, and the transcript, breadcrumb, composer target and
-  approval cards follow it. The transcript is a timeline with a dot in the
-  hue of each piece's strand. A settled strand can be focused, and the roster
-  then lists it.
-- **Rows and streams.** The agent strip with cache rings and miss notices,
-  turns with folded work, sub-agent, advisor and peer rows, rendered
-  Markdown, expandable rows, the todo panel with the reviewer band, live
-  reasoning and answer streams, and the newest 150 rows with paging back to
-  300 (`Load older`). A streamed fenced code block is drawn as keyed line
-  spans, so a batch patches the lines that changed and not the whole block.
-  The generation clock restarts per request and on a change of strand, so an
-  unsettled generation no longer leaks its start into the next elapsed
-  reading (#658). The memory context the daemon attaches to a prompt is shown
-  collapsed under it. Advisor nudges are shown read-only.
-- **Images** (#661). A transcript row shows the images its message carries,
-  served from a same-origin image route that reads under the page's cookie
-  (`ui_sessions.images`), so the content security policy does not loosen. The
-  operator's composer attaches images with a prompt. An operator's page
-  socket takes a 12 MiB frame, and the `PageOperator` connection class is
-  charged 64 MiB, which covers the five copies of that frame the submit's
-  decode chain holds at once (`ui_socket`, `root.operator_peak`).
-- **Keyboard.** `<loom-shell>` listens on the document for three keys
-  (`shell_rule.intent`): Command or Control with B toggles the sidebar, with
-  Alt as well it toggles the panel, and Escape returns to `main`. A key is
-  ignored while composing, when already handled, when held down, and inside
-  an approval card. Escape also does nothing in the composer. None of them
-  sends a decision.
-- **Saved layout and theme.** Whether each side column is open and which tab
-  shows are kept in the browser's storage per workspace, under a key built
-  from a digest the daemon computes, and the theme (system, light, dark) is
-  kept per browser. The storage is two calls, `storage_read` and
-  `storage_write` in `web_client/internal/dom.mjs`, reached through
-  `web_client/internal/ffi_dom`; `layout_rule` does the rest and reads any
-  stored string totally. Nothing derived from a session is stored, and the
-  server never learns the layout.
-- **The operator's composer** completes slash commands, sends on Command or
-  Control with Enter, takes a returned prompt back into the editor, and
-  runs any session command a draft names except `/add-dir` and
-  `/add-write-dir` (protocol-change/051, the newest addenda).
-- **Session switching** (operator pages). A sidebar row for a running
-  session other than the one on screen, or an Open button on a peer message
-  that names one, asks the daemon for a ticket. `ui_socket` mints it into
-  the ticket table with the page's own principal and ceiling, and
-  `<loom-switch>` navigates the browser to the exchange address after
-  `switch_rule` checks its shape, with `location.replace` so the tab keeps one
-  history entry per page and Back does not land on a page whose nonce is gone
-  (#658). A ticket whose source page has already ended is refused as
-  unknown, so a switch never revives a page past its deadline. A principal
-  may hold up to four pages per session (`ending.max_pages`), and a page
-  ended by that cap or by a restart says so.
-- **Share and invite** (owner's operator page, #663). An "invite to this
-  session" control offers an observer button and an operator button. It makes
-  the invitation `loomd access invite` makes, with a claim that lives one hour
-  (`invites.claim_ttl_ms`), and shows the command and token once in copy
-  boxes. A credential may mint three invitations an hour
-  (`ui_sessions.reserve_invite`). The page checks the principal and the
-  capability again when the click arrives (`ui_socket.invite_for`). The
-  protocol-change/051 addendum on inviting from the session page says what a
-  stolen owner page is worth.
+The call record, the design and the as-built notes for slices 14 and 15
+are in `design-notes/terminal-design.md`. Option (d) of #569, moving the
+terminal onto `step.update`, was not taken and is not a prerequisite of
+anything built (`review/terminal-option-d-2026-09-30.md`). Slice 16,
+strand focus from the timeline, was not built.
 
-**Access tooling.** 053 phases 1 to 3 are merged; phase 4 is not. `loom access`
-lists principals and memberships and shows one (`host/access`, the grammar
-`loomd access` shares), served by `principals.list` and
-`principals.memberships` on the client protocol. The terminal's `/access`
-overlay (`tui/access_overlay`) shows the same checks `loom access list` and
-`show` print (`membership_lines`), and on a rotation shows the `loom access`
-line to run in a shell.
+### The web view
 
-The page still cannot show per-call timing, a skills catalogue for slash
-commands, or the composer target menu of the design note's section 3.3 (not
-built, no owner ruling).
+The panel has four tabs, not three: #742 added Trace, which lists the
+`code_mode` programs a session ran and each program's calls, and #751 filled in the rest of the panel. #740 gave the page a
+visual system, #741 reworked the top bar and sidebar, #748 and #749
+rebuilt the transcript rows, the dock, the composer and the approval
+card, and #725 and #726 moved advisor commentary and nudges out of the
+lane and dock into the panel. `loomd --ui`, or `[daemon] ui = true`
+(#690), serves it.
 
-The toolchain is Gleam 1.19.0-rc2 (`.github/workflows/ci.yml`). `make
-check-affected BASE=origin/main` runs only the gates a change can affect; a
-change to the daemon's package also needs `make signoff`.
+Workspace mode ([design note](design-notes/web-workspace-mode.md),
+[protocol-change/065](../protocol-change/065-web-workspace-mode.md)) is
+ten pull requests in the note's section 7, and four have landed: PR 1,
+the read-only home page (#743, `loom ui` with no `--session`); PR 2,
+navigation (#752, merged through #757: a running session's row on the
+home opens it, and a session page opened from the home has a Home
+button); PR 3, opening a saved session (#768: a saved row on an
+operator-ceiling home or session page is a button, and the daemon runs the
+control command's own authority check, opens the session and waits up to
+30 seconds for it to be resident); and PR 6, the claim name (#750,
+`loom claim --name`). Not built: PR 4 (creating a session), PR 5
+(`sessions.members` and the admin page), PR 7 (credential kinds), PR 8
+(the browser login), PR 9 (the browser claim) and PR 10
+(`principals.rename`, optional). 065's status line says only that "PR 1
+of the plan is on `main`". That is stale, since PRs 2, 3 and 6 are on
+`main` too, and the next change to 065 should correct it.
 
-## Caller-owned messaging inspection and fair delivery
+#757 also carried the owner's two rulings of 2026-10-04 on the login's
+security review (#754, folded into 065 and the design note): the admin
+page and device links are minted only from a `Fresh` home, one opened by
+`loom ui` or a claim, never from a `Resumed` home reached by the
+thirty-day login or a page's Home control. #755 fixed the Trace and
+Changes tabs skipping a call made beside visible prose.
 
-The messaging work landed in #667 at `01f14ef8f` on 2026-09-30. The upstream
-web and issue #569 priorities below retain their order; their original
-handoff baseline above is separate from this messaging update.
+### The executor service
 
-The default code-mode host now exposes caller-owned pending and transcript
-inspection through `cap/peer`, existing recipient admission receipt history,
-and linked sender receipt lookup. The router supplies session and strand
-identity; `peer.roster` still means authorized outgoing remote links. A queued
-steer is eligible after the current complete tool batch and before the next
-provider request. This removes repeated-tool starvation without preemption.
+The previous edition described #696 as a stack of six phase branches to
+merge bottom up. They merged differently: #698 and #699 merged on
+2026-10-02, #727 landed the service stack as one queue pull request
+(with #700), and #732 finished the follow-ups. #701 and #704 through
+#707 were closed without merging; #727 is what landed. `broker/direct` is deleted
+and every session's effect plane runs `broker/executor`. The design is
+`architecture/executor.md`, the decisions are ADR-017 and ADR-018, and
+the witnessed-kill rules are the addenda inside protocol-change/014.
+Read those before touching the lifecycle; the invariants live there and
+no longer in this file. Open: [#703](https://github.com/Roasbeef/loom/issues/703)
+(`OutputIsWire` leases stream with no output cap), [#283](https://github.com/Roasbeef/loom/issues/283)
+(idle retirement, which the service only has to not block), and the
+epic [#697](https://github.com/Roasbeef/loom/issues/697) for remote
+executors. `make executor-smoke` and `make bench-exec` exist.
 
-Inspection is read-only. Admission is not a read receipt. No new local
-post-abort retention or acknowledgement was added. Receipt cursors order hash
-keys, so pollers rescan and reconcile identities rather than treating them as
-arrival watermarks. Protocol 056 records the decision; the independent review
-and focused gate evidence are in
-[the messaging review](review/message-inspection-and-steering.md).
+### The runtime projection cache
 
-The six ownership/pagination/abort tests, seventy-two production code-mode
-wiring tests, cap marshalling, model-visible discovery, and real jailed
-cap-channel proof passed. The next-request runtime regression checks exact
-local and remote bodies after a blocked tool completes. The parent's full
-`make check` at `c52038cd2` exited zero, including 2359 client tests, 990 TUI
-tests and zero lint errors. The next-request regression fails against the old
-policy; the page-seek regression fails against the old SQL. The final PR head
-`00229385e` passed the fresh-container Linux signoff, including all six lanes,
-release verification and the skip census, before #667 merged. Hosted macOS
-has a separately
-confirmed baseline `worktree_diff_test` ancestor-read failure; do not describe
-that CI as fully green or change messaging scope to work around it.
+#724 keeps the strand's pure default projection beside the leaf-keyed scan
+cache, so planning over an unchanged leaf reuses the projected messages
+instead of rebuilding them; a live profile had found the same leaf rebuilt
+15 times in three seconds. Appends, forks, rewinds, compaction and a cold
+restart invalidate it through the scan cache's existing rules, and
+request-local transforms stay outside it. The same pull request projects
+the reaper before building the provider worker closure, which had captured
+the whole driver. The live profile is
+[daemon-profile-2026-10-02](review/daemon-profile-2026-10-02.md). The
+runtime package gate runs `scripts/projection_cache_bench.escript ...
+--expect-cached`, which checks both the cache-hit reductions and what the
+provider worker closure captures, so restoring either old behaviour fails it.
+A matched installed-daemon comparison is still item 8 below.
 
-## Typed capability follow-up
+### What the previous edition got wrong
 
-The owner's follow-up covers `cap/peer`, `cap/workflow`, `cap/execution`,
-`cap/strand`, `cap/job` and `cap/schedule`. [Protocol 057](../protocol-change/057-typed-capability-results.md)
-records the approved source API migration, and [the migration guide](capability-types.md)
-names the public records, variants, identity parsers and cursor constructors.
-Peer pages and receipts are decoded inside the satellite; workflow and
-execution preserve channel error categories. Child and job identities and
-independent cursors are validated before they become usable handles. Schedule
-creation and listing expose granted cadence projected from the host's timing
-record, while keeping `when` for display.
+- It named the terminal revamp as the first item of work, to begin with
+  a decision about option (d). The revamp is done, and option (d) was
+  measured and deferred.
+- It said the web page has no Trace tab and three panel tabs. It has
+  four, and the Trace tab exists. What is still missing is timing bars,
+  which stay under [#656](https://github.com/Roasbeef/loom/issues/656).
+- It told the next session to "land or close PR #583". #583 merged on
+  2026-10-01, and the same edition's own corrections section said so.
+- It described #679, #683, #687, #689, #691, #693 and #719 as pull
+  requests awaiting verification or merge. All seven merged between
+  2026-10-01 and 2026-10-03.
+- It listed the executor branches as work to merge. See above.
+- It cited "protocol 062" for two different documents. `protocol-change/`
+  holds duplicate numbers for 056, 057, 062 and 065 (see the working
+  notes), so cite a protocol change by number and name.
+- protocol-change/065 says its four rulings are recorded in this file.
+  They were not. They are summarised under "Rulings already made" and
+  live in 065 and its design note.
+- The claim that the daemon's installed build was `a3dc2535` and had no
+  RSS saving could not be re-checked from the tree. It is dropped; check
+  `loomd` on the running machine before quoting it.
 
-The wire shapes remain unchanged except for the additive schedule cadence
-field. Sender-owned payloads and custom metadata remain open values. Authority,
-delivery priority, admission semantics and retention remain those of #667.
-The generated capability prelude prefers each module's own public identity
-aliases, so peer-only host programs need no child-strand import.
+## What to do next
 
-The follow-up on `cap/typed-surface` is rebased onto `01f14ef8f`. The full
-`make check` at `01844b49a` exited zero, including 126 cap tests, 2,399 client
-tests, 1,032 terminal tests and zero lint errors. Real jailed proofs cover
-peer inspection with exact bodies in both host modes, schedule admission,
-listing and cancellation, resident actor input, cross-session grants and
-workflow recovery. The independent review's custom metadata collision and
-lost body assertion findings were fixed and rechecked. Negative checks kill
-both defects, invalid-ID admission, negative-cursor clamping and the original
-alias renderer. Capability mutations need a rebuilt code-mode seed; the final
-full gate used a restored seed. Hosted CI and Linux signoff on the new PR
-remain separate from this local verification.
+Check open pull requests and branches first, and continue an existing
+lane rather than starting a second one. The order below is a
+recommendation, not an owner ruling, except where a ruling is cited.
 
-## Language-server support (issue #25)
+1. **Try the revamp on real terminals.** Drive `bin/loom` in Ghostty,
+   iTerm2 and WezTerm, in its own window, at 200x50, 120x40 and 80x24,
+   with an image row and a resize across 120 columns. Exit: the kitty
+   placeholder path is shown to work, or to fall back cleanly, on a real
+   Ghostty; the XTVERSION assumption in the first open edge below is
+   confirmed or fixed in etui; and what was seen is recorded beside the
+   frames in the design note. **Cut list:** no new layer, no strand
+   focus from the timeline, no redesign.
+2. **Cut a release before main drifts further.** Nothing has been cut
+   since `v0.2.0`, and `main` now writes the strand origin, so an
+   older client that reaches a session written by a build from `main`
+   fails the whole session on its first strand-origin entry. Exit: a release whose notes carry
+   the 059 stop-every-older-client instruction from `docs/updating.md`,
+   built and verified by `make release-smoke`. The user cuts releases.
+3. **The four revamp follow-ups, in this order.**
+   [#766](https://github.com/Roasbeef/loom/issues/766) first: the Trace
+   tab is re-derived on every paint, which is a cost the terminal pays
+   forever and is a small change. Then
+   [#764](https://github.com/Roasbeef/loom/issues/764) (a peer session
+   shows as `session 01a07d74` outside the picker; naming it needs a
+   fetch the client does not make today), then
+   [#763](https://github.com/Roasbeef/loom/issues/763) (harness notices
+   are written as user messages with no origin, so they draw as operator
+   turns; telling them apart needs a wire marker, which is a
+   `protocol-change/NNN.md`, and the client must not match the `[loom] `
+   text), and
+   [#765](https://github.com/Roasbeef/loom/issues/765) last, because the
+   live call feed is protocol-change/060's optional slice 5 and needs
+   the owner's decision before work. Exit for each: its own issue's
+   acceptance, with the frame in `packages/tui/test/frame_scene.gleam`
+   updated where a row changes.
+4. **Timing bars in the Trace tab, [#656](https://github.com/Roasbeef/loom/issues/656).**
+   The 060 record carries per-call offsets, and neither host draws them.
+   Exit: the web tab draws bars from the offsets with the status class
+   taken from the closed `CallStatus`, and the terminal's Trace tab
+   states duration on slow and failed calls only if that is what the
+   design note says. Fix the stale module comment in
+   `web_view/view/trace.gleam` in the same change; it still says no
+   capability call is recorded.
+5. **The rest of web workspace mode.** Section 7 of
+   `design-notes/web-workspace-mode.md`: PR 4 (creating a session)
+   continues the chain PRs 1 to 3 began; PR 5 (the
+   admin page) needs PR 1; PR 7 (credential kinds) is independent and
+   lands before PR 8 (the browser login), which needs PRs 1 and 7; PR 9
+   (the browser claim) needs PRs 6 and 8; PR 10 needs PR 5.
+   Exit per PR: the invariants its section lists, a Fable review, and a
+   browser drive against a drive daemon. **Cut list:** the observer page
+   keeps its no-sidebar behaviour, and nothing here adds TLS.
+6. **Remote access, [#654](https://github.com/Roasbeef/loom/issues/654).**
+   [protocol-change/052](../protocol-change/052-web-view-remote-origin.md)
+   is still PROPOSED. The owner accepts or amends it before work starts.
+   It means the page behind a TLS reverse proxy with a `Host` allowlist
+   and no TLS code in `loomd`. Before it, measure the server-side
+   re-render and diff cost per batch per viewer.
+7. **Executor follow-ups.** #703, then #283.
+8. **A matched installed memory measurement, [#454](https://github.com/Roasbeef/loom/issues/454).**
+   Same workload, same observation cuts, installed baseline against
+   candidate; keep process heaps, allocator carriers and OS RSS
+   separate. Unchanged from the previous edition and not re-checked.
+9. **Two items carried unverified.** Waking etui on SIGWINCH before the
+   terminal's one-second idle ceiling is raised, and measuring actual
+   provider token counts before choosing tool search
+   (`design-notes/tool-search-and-code-mode.md`). Neither has an issue,
+   and neither was re-checked against the tree for this edition.
 
-The LSP stack merged through [#680](https://github.com/Roasbeef/loom/pull/680),
-including #514, #516 and #521, on 2026-10-01. The
-[user setup guide](language-servers.md) now covers the three v0.1.0 profiles,
-server installation, offline dependencies, host checks and session activation.
-This documentation pass was based on `f875811be` and adds no runtime behavior.
+## Rulings already made
 
-Loom's own agent can ask a language server about the code it is editing. The
-ruling is [ADR-015](adr/015-language-servers-as-jailed-leases.md) and the
-account is [the LSP architecture doc](architecture/lsp.md). Read both before
-touching any of it; the ADR's "Measured" table and its corrections are what
-the code is built against.
+Each of these is settled. Re-open one only with new evidence, and
+record the reopening where the ruling lives.
 
-`packages/lsp` carries its own JSON-RPC envelope (`lsp/jsonrpc`) and channel
-transport seam (`lsp/transport`) over `core/json` and no longer depends on
-`gleam_mcp` (#678, ADR-015's last addendum). That is why the `tools` and
-`codemode` manifests do not carry `mist`, `glisten` or `gun`. A third
-JSON-RPC consumer would be the reason to share one codec through a split of
-`gleam_mcp`; until then the two copies stay separate.
+### Settled during the terminal revamp
 
-A session whose `loom.toml` carries an `[lsp.<name>]` table gets:
+**`/summary` is the full-screen summary at every width.** Session is
+reached by its digit, `4`, and no `/session` command exists.
+`design-notes/terminal-design.md`, slice 14.
 
-- seven tools, `lsp_definition`, `lsp_references`, `lsp_hover`, `lsp_symbols`,
-  `lsp_calls`, `lsp_diagnostics` and `lsp_rename`. They address symbols by
-  name (optionally qualified, `util.Greet`, and narrowed by a path and a
-  1-based line), never by position, and answer with anchored sites a model can
-  feed straight into `fs_edit`.
-- settled diagnostics appended to `fs_write` and `fs_edit` results for files
-  the running server owns.
-- `cap/lsp` in code mode, admitted only when a server is configured, so a
-  session without one pays nothing in its cached prefix.
-- a rename that previews by default and applies through the hashline landing
-  path, refusing the whole rename when any file on disk no longer matches what
-  the server saw.
+**The strip under the input stays visible on Trace and Session.** The
+digits choose a tab while the rail has the keyboard. Same place.
 
-The server runs as an ordinary jailed exec under the session's own enforcement
-demand, after a probe proves that demand is met, one per session, with a lazy
-restart. A server starts only for a configured `[lsp.<name>]` table or an
-installed profile extension; an unconfigured workspace with no installed
-profile starts nothing.
+**The 34-cell rail for 100 to 119 columns was removed in favour of the
+sheet.** The sheet is not a preference: opening it records no choice and
+a launch never opens it. Slice 15.
 
-Validated on a cgroup-v1 container, so under `BestEffort`: the scripted-model
-acceptance in `conformance/lsp_e2e_test.gleam` against a jailed `gleam lsp`
-(rename across three files, concurrent-write rejection, an `fs_edit` using a
-references anchor) and a `gopls` variant. Not validated there: the enforced
-path under `PlatformEnforcement` (the probe refuses on that host, correctly),
-and macOS. The Linux signoff on a host with a delegated cgroup v2 base is where
-those run.
+**Growing past 120 columns closes the sheet and keeps its tab without
+auto-docking.** A notice says so (`sheet closed · Shift+Tab docks the
+rail on ...`, in `tui/submit`). Narrowing with the rail docked opens
+nothing over the transcript being read.
 
-Language support ships as profile extensions in separate repositories
-([ADR-016](adr/016-language-profiles.md) and its 2026-09-30 addendum). Loom
-keeps the mechanism: the protocol client, the profile schema and decoder, the
-profile extension tier, `loomd ext check`, readiness, `cache_env` and the jail.
-The three first-party profiles are
-[loom-lsp-gleam](https://github.com/Roasbeef/loom-lsp-gleam),
-[loom-lsp-go](https://github.com/Roasbeef/loom-lsp-go) and
-[loom-lsp-rust](https://github.com/Roasbeef/loom-lsp-rust), each tagged v0.1.0
-with its own CI that builds Loom and runs `loomd ext check`. Install one with
-`loomd ext install https://github.com/Roasbeef/loom-lsp-go --rev v0.1.0`. A new
-language is a profile, a fixture, `[[check]]`s and a passing `loomd ext check`,
-with no change to Loom. Loom's own tests that still run real servers do so to
-test the mechanism: the `gleam lsp` and `gopls` sessions in
-`conformance/lsp_e2e_test` and the manager's rust-analyzer fixture.
+**Layout memory records only real choices.** Changes is never
+remembered, because it opens an observation a launch has not made.
 
-Rulings the next change must preserve:
+**059 ships its reader and writer in the same next release.** The
+two-release rollout the proposal described did not happen, so every
+older client must be stopped before that release is selected.
+`docs/updating.md`; protocol-change/059, "Decision".
 
-- **Positions never leave `packages/lsp`.** The model and every surface speak
-  `lsp/query.Site`; `lsp/text` is the only converter, against the exact text a
-  position was computed on. A site's text is the line as hashline sees it (a
-  CRLF line keeps its `\r`), so its anchor is the one `fs_read` prints.
-- **Gate every request on advertised capabilities.** `gleam lsp` never answers
-  a request it did not advertise.
-- **Edits land only through hashline.** The server never writes;
-  `workspace/applyEdit` is declined and resource operations are refused.
-- **The harness never reads a path a server merely names.** The jail bounds
-  what a server reads, not what it names. `client/lsp/resolve.admit` admits a
-  server-named path only under the server's root and outside every protected
-  entry; anything else is shown with no text and never opened.
-- **Enforcement is proven before a server starts,** because the helper reports
-  enforcement only when an execution exits.
+**A merge on a busy main may use a narrow re-gate** (owner, 2026-10-04):
+when `main` moves without conflicts after a green signoff, run the
+affected gate against the new base and merge. `docs/execution.md` §5.
 
-A weft ordering race the LSP end-to-end exposed, fixed in weft 0.4.5.
-`make check` failed the LSP rename end-to-end once, on a machine loaded by two
-parallel cold builds. The cause was in weft: a scope monitors an owner, but the
-permit that starts the owner reaches it through another process chain and can
-overtake the monitor signal, because BEAM orders signals only per sender and
-receiver pair. An owner that exited normally in that window was judged
-`noproc`, weft read that as `weft_drain_proof_lost`, and the session failed
-closed. The scripted provider's owner exits about 100 µs after begin, which is
-why this test found the window first; real httpc owners were exposed too, only
-rarely.
+### Web workspace mode
 
-weft 0.4.5 (Roasbeef/weft#14) puts a delivery barrier between the monitor and
-the permit on both owner arms, `adopt_owners` and `adopt_published`. The
-barrier is `process_info/2`, not `erlang:is_process_alive/1`: on OTP 29 the
-latter leaves the overtaking rate unchanged, measured, although its
-documentation promises the same ordering. Against weft itself, under CPU load,
-8 or more of 7.68M adoptions settled as `DrainProofLost(Noproc)` before the fix
-and none after. Every package pins `weft == 0.4.5`.
+Owner rulings of 2026-10-03, recorded in
+[protocol-change/065](../protocol-change/065-web-workspace-mode.md) and
+its design note: a browser may hold a thirty-day login that is itself a
+macaroon-style credential; a browser claimant is never shown a key;
+sessions are created only in a workspace the owner already has sessions
+in; and an operator-ceiling page opens a saved session through the
+control command's own checks. Those amend four earlier rulings: "daemon
+control stays terminal-only" admits creation from an owner's operator
+home, "operator surfaces do not open saved sessions" admits that
+page (implemented by #768, under the new wording "a listing is never
+permission to open a saved session; the control command's own checks are":
+the principal's role in the target, Owner or Operator, is what grants it,
+and an observer-ceiling page or an observer member is refused), "053 phase 4 waits for use" is superseded by the admin page in
+065, and the observer-sidebar ruling holds for one-session pages only.
+The owner's two further rulings of 2026-10-04, the `Fresh` home origin
+for the admin page and device links, are in the addendum at the end of
+065. 065 is a draft; these amendments take effect with its pull requests,
+not before.
 
-Remaining language-server work:
+### Carried forward from earlier editions
 
-1. The daemon custody retirement path stops the manager with the service tree,
-   racing the broker stop that follows. A graceful ordered stop needs a custody
-   part in `internal/instance_owner`.
-2. The helper writes stdin while holding the mutex `Cancel` needs (ADR-015 §1,
-   known hazard), so a wedged server blocks cancel until the broker's
-   three-second helper kill. Worth fixing in the helper.
-3. Count extension hosts against the per-session lease cap.
-4. A second server per session. A Go and a Gleam project side by side evict
-   each other today.
-5. Follow-ups from the design discussion that are the owner's call: move #26
-   (DAP) out of release-blocker in favour of a satellite-local trace
-   capability; bounded read-only BEAM introspection for the agent (#454);
-   structured session-trace queries beside `history_search` (#236); write the
-   upstreaming stance down.
+These were checked to still hold in the tree where a symbol is named.
 
-The root `CLAUDE.md` paragraph on `gleam lsp` is about the editor tooling a
-developer drives this repo with, which is separate from everything above:
-Claude Code still has no Gleam server configured. A project-local plugin with
-an `.lsp.json` (`gleam lsp`, `.gleam`) would give local CLI sessions
-go-to-definition and post-edit diagnostics; cloud sessions do not start
-language servers.
+**Hosts do not poll for traffic.** A frame is reduced when it arrives.
+A host sleeps until `session_channel.next_due`. A fixed-cadence tick
+added to find traffic is a review finding; a new message source that
+wakes nothing belongs in `tick.wakes_itself` or gets its own wake.
 
-## Next actions, in order
+**Session logic has one home, `session_view`.** What a frame means, when
+to catch up, which lines a capture becomes and what an operator's input
+becomes on the wire are its. A host owns its runtime and its view.
 
-Terminal CPU work merged in #664 at `a54effa07` and is locally verified
-against installed `3088ee3ce`: counting strip rows during layout and painting
-known-width
-padding directly reduced frame reductions by 37.6% and scroll reductions
-by 40.8% at 200×50, with identical styled-cell witnesses. Full `make check`
-passed; the changed client has not been installed or measured live. See
-[the measured report](review/tui-render-cpu-2026-09-29.md) for the fixture,
-limits and next live check. The changed client still needs the live CPU and scrolling check.
-
-**Check open pull requests and branches first.** A branch may exist and a pull
-request may have opened since this baseline. Continue an existing lane rather
-than starting a second one.
-
-The owner's order (2026-09-30) is the terminal revamp, then the Trace tab and
-remote access.
-
-1. **The terminal revamp, [#655](https://github.com/Roasbeef/loom/issues/655).**
-   It takes the web design (A2) as its reference and begins with a design note
-   and screenshots for the owner's sign-off, as the web pass did. Decide first
-   whether it takes option (d): moving the terminal onto `step.update` with a
-   pure `fn(view, facts) -> view` callback the sequencer calls after each
-   piece, so both hosts run one sequence. Exit for that decision: a written
-   estimate of the three costs the step-extraction note names (callbacks
-   through the step, reordering risk that the replay identity checks catch,
-   and the Erlang inliner on long settle chains), measured with
-   `scripts/tui_perf.sh` and `erlc +time` before any code. The small composer
-   notice bug, which reads "prompt_content admitted" after a send, is listed on
-   #655 and can go in with it.
-2. **The Trace tab, [#656](https://github.com/Roasbeef/loom/issues/656).**
-   Two steps. First the untimed list of the latest `code_mode` program's
-   calls, drawn from what the page already receives. Then per-call timing: a
-   `protocol-change/NNN.md` for per-call start and end fields on the wire,
-   bars in the tab, and optionally in the terminal.
-3. **Remote access, [#654](https://github.com/Roasbeef/loom/issues/654).**
-   [protocol-change/052](../protocol-change/052-web-view-remote-origin.md) is
-   still a proposal, and the owner accepts or amends it before work starts. It
-   means the page behind a TLS reverse proxy on the daemon's host for remote
-   teammates, with a `Host` allowlist and no TLS code in `loomd`. It does not
-   mean TLS in the daemon. Before it, measure the server-side re-render and
-   diff cost per batch per viewer, and add the mailbox and patch-rate
-   metrics the step extraction deferred to 052.
-4. **Terminal state.** Land or close PR #583 (#399, #524).
-5. **Wake etui on SIGWINCH** before raising the terminal's one-second idle
-   ceiling. Exit: resize repaints without waiting for a poll, and a quiet
-   terminal wakes only for work its lane or runtime owes.
-6. **Measure actual provider token counts** and representative workloads
-   before choosing tool search. Exit: measured prompt size, cache-prefix
-   behavior and discovery cost, rather than the character estimate in
-   [the design note](design-notes/tool-search-and-code-mode.md).
-
-Known small follow-ups, none of which has its own issue:
-
-- The composer notice above.
-- A settled strand's row shows no end time, because the roster carries none.
-  It needs a wire field, so a `protocol-change/NNN.md`.
-- `loom access` takes its global flags before the subcommand.
-
-## How work lands here
-
-[docs/execution.md](execution.md) is the method: briefing, verification and
-landing. In practice a batch of ready pull requests lands like this.
-
-1. Make a queue branch, `queue/<name>`, from `main` and merge each pull
-   request into it with `--no-ff`.
-2. Run `make check-affected BASE=origin/main` and `make doc-check` on it,
-   and check the page by hand in a browser against a drive daemon for any
-   web change.
-3. Push the queue branch and run one Linux signoff on it (`make
-   signoff-remote`, about 13 minutes, one at a time, since concurrent runs
-   share caches and produce false reds). A flake never blocks a merge: rerun,
-   and give the flake its own fix pull request.
-4. On green, open a queue pull request and merge it with `gh pr merge
-   --admin`, because `main` rejects direct pushes. The constituent pull
-   requests close as merged.
-
-## Rulings to preserve
-
-**Hosts do not poll for traffic.** A frame is reduced when it arrives: the
-terminal's socket wakes its loop, and the web view's selector is the wake.
-A host sleeps until `session_channel.next_due` and wakes on its own only
-for what no wake announces. A fixed-cadence tick added to find traffic is
-a review finding; a new source of messages that wakes nothing belongs in
-`tick.wakes_itself` or gets a wake of its own.
-
-**Session logic has one home.** What a frame means, when to catch up,
-which lines a capture becomes and what an operator's input becomes on the
-wire are `session_view`'s. A host owns its runtime and its view and
-nothing else; session logic found in `web_view`, or duplicated in `tui`, is
-a review finding. The page compares what each projection was built from, and
-not `render_revision`, which moves for stream fragments and tool tails the
-page does not draw (question 3 of the step-extraction note).
-
-**Commands, not a shared key vocabulary** (owner, 2026-09-27). Keys stay in
-the terminal, and both hosts hand the session the same closed
-`msg.Command`. The web view maps its DOM events to it. ADR-014's second
-blocker is amended accordingly.
+**Commands, not a shared key vocabulary** (owner, 2026-09-27). Keys
+stay in the terminal; both hosts hand the session the same closed
+`msg.Command`.
 
 **Daemon control, reconnect and the attachment jobs stay terminal-only**
-(owner, 2026-09-27). A session sidebar mounts one component per session.
+(owner, 2026-09-27), as amended above for 065.
 
-**The host keeps the loop over a drain's updates** (owner, 2026-09-28,
-question 11). One update is the shared unit, and the recorded facts are
-applied between updates.
-
-**`step.update` is the entry for a host with no surfaces of its own** (owner,
-2026-09-28, question 12, option (a)). The terminal keeps calling the shared
-units, and a `session_view` test holds the two orders together. A change to
-the terminal's tick order changes `update` and `step_test` too.
+**The host keeps the loop over a drain's updates, and `step.update` is
+the entry for a host with no surfaces of its own** (owner, 2026-09-28,
+questions 11 and 12). A change to the terminal's tick order changes
+`update` and `step_test` too.
 
 **The page runs every session command but adding a directory** (owner,
-2026-09-29). `/add-dir` and `/add-write-dir` name a path on the daemon's
-host and are refused on the page. A `command.Surface` command is refused
-with a notice and never sent as a prompt.
+2026-09-29). A `command.Surface` command is refused with a notice and
+never sent as a prompt.
 
-**Effects are values and name their handles.** A step or a lane returns
-what it decided; the host performs it, in decision order, against the
-handle each effect names, never a handle looked up at perform time. The
-web host performs the step's effects inside one `effect.from`, because
-Lustre's `effect.batch` does not order them.
+**Effects are values and name their handles.** The web host performs a
+step's effects inside one `effect.from`, because Lustre's `effect.batch`
+does not order them.
 
 **The buffer bound is the host's.** Admission never drops a frame for
-capacity, a host reads no more from a mailbox than a buffer has room for,
-and admission files a frame only into the inbox whose subject it names, so
-nothing from a replaced inbox reaches a reducer after an adoption.
-Event-driven delivery changes when a host reduces, not these.
+capacity.
 
-**A page is never more than an operator.** The role is the smallest of the
-membership, the ceiling the link was minted with, and Operator. A page
-never offers allow for the session, its approval cards sit above the
-composer and are drawn from the record alone, nothing from the session
-becomes markup, and the page nonce is never rendered into a document.
+**A page is never more than an operator.** The role is the smallest of
+the membership, the ceiling the link was minted with, and Operator. A
+page never offers allow for the session, and nothing from the session
+becomes markup.
 
-**Authority and communication are separate.** A peer link grants neither
-child custody nor filesystem access. A peer receipt proves durable
-admission, not that a model read the message. `busy_only` never wakes an
-idle target; `may_wake` is a separate owner choice.
+**The page invite keeps both buttons** (owner, 2026-09-30), bounded at
+three invitations an hour per credential. **The operator page frame is
+12 MiB and `PageOperator` reserves 64 MiB** (owner, 2026-09-30); a
+change to one changes the other.
 
-**A virtual read is a capability call.** `cap://` and `job://` are served
-through the capability router, not mounted, and prompt guidance must match
-the installed router and generated prelude.
+**Authority and communication are separate.** A peer link grants
+neither child custody nor filesystem access, and a peer receipt proves
+durable admission, not that a model read the message. `busy_only` never
+wakes an idle target.
 
-**053 phase 4 waits for use** (owner, 2026-09-30). The admin page is built
-only after the owner has used the terminal's `/access` overlay and says it
-leaves a need.
+**A virtual read is a capability call.** `cap://` and `job://` go
+through the capability router and are not mounted.
 
-**The page invite keeps both buttons** (owner, 2026-09-30). The observer and
-the operator button both stay. The risk is accepted: a stolen owner page can
-mint an operator invitation, bounded by three an hour for the credential, and
-each invitation is a durable membership the owner can revoke.
+**Language servers** ([ADR-015](adr/015-language-servers-as-jailed-leases.md),
+[ADR-016](adr/016-language-profiles.md)): positions never leave
+`packages/lsp`; gate every request on advertised capabilities; edits
+land only through hashline and `workspace/applyEdit` is declined; the
+harness never reads a path a server merely names; enforcement is proven
+before a server starts. A wedged server can still hold the helper's
+stdin mutex that `Cancel` needs until the broker's three-second kill
+(ADR-015 section 1); that is known and unfixed.
 
-**The operator page frame is 12 MiB, and `PageOperator` reserves 64 MiB**
-(owner, 2026-09-30). The reservation covers the five copies of a frame the
-submit's decode chain holds at once. A change to the frame limit changes the
-reservation with it.
+**Exact-action consent cannot become general wall authority,** and
+session job attribution and broker custody have different identities
+([protocol-change/061](../protocol-change/061-watch-and-lsp-reliability.md)).
 
-**Operator surfaces do not open saved sessions.** The CLI and the terminal
-use the membership- and epoch-checked control protocol, and a
-listing is never permission to activate a saved target.
+**`strand.wait` slices past the host clamp, and the clamp stays**
+([protocol-change/062-strand-wait-slicing](../protocol-change/062-strand-wait-slicing.md)).
+A never-settling child now blocks up to the program's own deadline;
+raising `max_wait_ms` was rejected.
 
-## Deliberately open and carried forward
+**Style gates** (issue #593): R13 to R16 fail the build. Never pad a
+module doc with helper names to quiet R18.
 
-- **The page runs reads for surfaces it does not draw.** After a first
-  capture it reads notes, context, advisor nudges and the goal, four round
-  trips that hold the lane's command slot, and it reads the context again
-  when an operation ends. The owner chose this over choosing which reads a
-  host has a surface for. Revisit it if a per-page cost is measured.
-- **The page loads no skills catalogue**, so a skill's slash command is
-  refused as unknown there. Reading the catalogue is a follow-up.
-- **The 053 admin page** (phase 4) is built only on the owner's confirmation,
-  after use of the `/access` overlay.
-- **The composer target menu** of the design note's section 3.3 is not built
-  and has no owner ruling.
-- **`conformance` declares `prompt` as a dependency and imports nothing
-  from it.** Remove it, with the manifest updates that follow.
-- The test fixture `pushed.attached()` is a replaying peer with a lane, a
-  state the shipped client never reaches.
+## Deliberately open
 
-## Background watcher lifetime work
+None of these is unfinished work somebody forgot.
 
-The background-watch-lifecycle branch is based on `01f14ef8f` after #667.
-Protocol-change/058 adds an explicitly approved session lifetime for Bash and
-code-mode background jobs, retaining finite defaults. It also fixes cancellation
-grace measured from a stale timestamp before a quiet receive. The installed
-`loom-herdr-update` session still runs its earlier release and finite jobs;
-this branch does not upgrade that daemon or replay its watcher commands.
-Local validation and independent review are recorded in the PR, with hosted
-signoff required before landing.
+- **The Ghostty XTVERSION prefix.** etui believes kitty placeholders
+  only when XTVERSION names kitty or Ghostty, and assumes Ghostty's
+  reply starts with `ghostty`. It has not been tried on a real Ghostty.
+  The etui `examples/image` prints the reply to check. Undesigned risk,
+  not unbuilt work; item 1 above retires it.
+- **The demo shows mostly empty states in the rail's tabs.**
+  `bin/loom --demo` seeds an image row (`tui/demo_image`) but no goal,
+  jobs, calls or strands for the Strands, Trace and Session tabs.
+  Unbuilt; cheap, and no issue.
+- **Strand focus from the timeline** (slice 16 of the terminal design,
+  question 4). Waits for the owner.
+- **The 060 live feed** ([#765](https://github.com/Roasbeef/loom/issues/765)).
+  A running block shows no calls until its result arrives. Needs a
+  decision, since it adds a durable or wire shape.
+- **053 phase 4, the admin page,** is now 065's PR 5 and waits on the
+  chain above.
+- **The composer target menu** of the web design note's section 3.3 and
+  the page's skills catalogue are not built, with no owner ruling.
+- **The page runs reads for surfaces it does not draw** (notes, context,
+  nudges, goal). The owner chose this over per-host read selection.
+  Revisit only if a per-page cost is measured.
+- **Epics [#697](https://github.com/Roasbeef/loom/issues/697),
+  [#720](https://github.com/Roasbeef/loom/issues/720) and
+  [#730](https://github.com/Roasbeef/loom/issues/730)** (remote
+  executors and runtime observability) are designs. Open pull requests
+  #756 and #758 begin the first of them (distributed runtime foundations
+  and remote admission custody); they were not reviewed for this edition.
+- **Issue [#672](https://github.com/Roasbeef/loom/issues/672)** is the
+  revamp's design-review thread and is still open. Its rulings are in
+  the design note. Not re-checked whether #504 and #447 (rail and
+  changes pane together, nudge text in compact mode) are answered by the
+  revamp.
+- **Release blockers** still open: #18, #26, #30, #31, #32. Not
+  re-read for this edition.
 
-## Earlier collaboration follow-ups
+## Working notes
 
-The collaboration stack landed through #510 at `645b8faf`; protocols 048
-and 049 own its wire. [Async collaboration](architecture/async-collaboration.md)
-and [messaging](architecture/messaging.md) explain it. Saved-session
-outboxes, cross-machine transport, durable actor recovery, and the
-outgoing-link limit race remain carried-forward follow-ups. The coordinator
-example for following up with already launched children also remains open.
-Protocol 054 still needs its previously requested live quiet-web drive to
-confirm attachment reaches `Pushing` and rendering follows the pushed rate.
-This edition did not re-test the reachability of these items or close them.
+**Landing a `gh stack`.** `gh stack merge` needs `signoff/linux` on every
+layer head, and only the top is signed off. Land through a queue pull
+request whose head is the signed-off top, then close the other stacked
+pull requests with a link to it. This is how #760 landed.
+`docs/execution.md` §5 has the steps.
 
-## Held-input and goal reading guide follow-up
+**Protocol-change numbering has collisions.** 056, 057, 062 and 065 each
+exist twice. Cite number and name, and take the next free number when
+adding one. The root `CLAUDE.md` still says there are thirteen
+protocol changes; there are 71 files.
 
-The #583 follow-up is baselined to merged `8b3455493`. The
-[delivery guide](architecture/delivery.md#reading-the-held-input-and-goal-paths-in-gleam)
-now traces durable goal publication, held queue projection, read debt and
-request ownership through the shared lane and both hosts. Its web goal row
-corrects the older delivery claim that the page renders no goal panel.
-The carried-forward `session_view/model` "will bind" item was already fixed
-in that merged baseline; the module says the web view binds the handles now.
+**Toolchain.** Gleam 1.19.0-rc2 (`.github/workflows/ci.yml`), pinned
+because it carries the path-dependency fix.
 
-The follow-up changes comments, declaration order and documentation only.
-An independent review and a comparison of all 996 production declarations
-across the 14 changed modules found no executable or public-interface change.
-Focused session-view, events and terminal suites passed, as did the client
-build, format, lint, prelude and documentation checks. The follow-up PR records
-the final affected gate and Linux signoff against its published head. Existing
-behavior tests remain the evidence for the underlying #583 invariants; a
-reading guide creates no new runtime guarantee. All unrelated next-work
-priorities and open boundaries above remain as recorded in this edition.
+## How to verify
 
-## Earlier edition's validation boundary
+`make check` is the full gate, and `make check-affected BASE=origin/main`
+runs only the gates a change can affect. Run `make fmt`, `make doc-check`
+and `make lint` before every push; `make check` does not include
+`make doc-check`. A change to the client, the daemon or shipped
+fixtures also needs `make signoff` or
+`LOOM_SIGNOFF_HOST=<ssh alias> make signoff-remote`, one at a time.
+`make executor-smoke`, `make release-smoke` and `make selftest` cover the
+executor, the release and the sandbox layers.
 
-The earlier edition changed documents only. `make doc-check` was its proof:
-coverage, the `AGENTS.md` mirrors and every file:line citation in the
-documents it checks. No code was built or run for it. The description of the
-page was checked by reading the source at `998be7a64` (the `web_client`
-element modules and their rules, `web_view/view/*`, `component.gleam`,
-`ending.gleam`) and the tracker, not by driving a browser. Where the tracker
-and the code disagreed, the code was taken.
+**Read a gate's own exit code.** Piping `make` into `tail` reports
+`tail`'s status and has produced a false green here twice.
 
-The resource receipt slice now defines exact Compile/Launch location data under
-pinned enrollment. It preserves full keys and producing parent identity while
-allowing distinct physical steps. The bounded canonical codec does not grant
-resource liveness or recreation permission. Root's independent full code-mode
-gate passes 373 tests without skips, and the Astra high review has no actionable
-findings. See [the receipt review](review/distributed-resource-receipts.md).
-Durable preparation custody and the physical service assembly remain pending.
+**A local macOS run is not the authority for two skips.** The MCP
+server death test needs `/proc`, and the LSP manager test needs
+`rust-analyzer`. `signoff/linux` provisions both.
 
-The physical-preparation P extension now passes independent strict safety and
-mutation runs: 31 normal cases, 40 witnessed probes and 27 compiled mutations.
-Astra identified two mutations that only fabricated monitor evidence; both now
-exercise the real transitions and the focused follow-up is clean. The re-clear
-case proves forbidden re-entry, not successful second clearance. See
-[the model review](review/distributed-preparation-model.md) for bounded claims,
-exact gates and the unchanged native/PlusCal/Lean scope. Production assembly and
-two-host acceptance remain outstanding.
+**A new `dispatch.install` caller needs a `scripts/serial-tests` line,**
+because capability channels are VM-global.
 
-The concrete service-input codec now joins the resource receipts. It retains
-complete policy and ordered source bodies, re-vets against the actual trusted
-policy, and requires full retained Compile/parent equality for Launch. Independent
-integration validation passes 387 code-mode tests without skips. The review's two
-missing parent-substitution cases are covered. See
-[the input review](review/distributed-service-input.md). Hash authentication,
-physical command construction, durable outcome custody and two-host acceptance
-remain outstanding; serialized input alone grants no authority.
+**Never put a worktree under `/tmp`.** Code mode refuses a cap socket
+there, since the jail replaces `/tmp`.
 
-The physical preparation journal now persists exact canonical input and reserves
-complete Ready capacity through named Parrot/sqlc queries. Only the first committed
-claim permits preparation; recovered state grants no replay. Historical receipts
-survive uncertainty and cleanup. The independent 176-test executor gate and both
-compiling mutation controls pass. The review's row-masked byte test is corrected;
-[the journal review](review/distributed-preparation-journal.md) records that change
-and the SQL generator's false-success fix. Final outcome capacity and physical
-resource ownership still need production assembly.
+**A capability change needs a rebuilt code-mode seed.** The seed is
+offline. Run `make codemode-seed` in any fresh worktree before a code-mode
+drive, and check the log for `codemode.ready`.
 
-The compiler's fixed source preparation, offline seed preparation and finalization
-are now shared internal steps. The existing local path uses them around unchanged
-clearance/collection. Finalization rejects cancelled zero exits before producing
-an artifact; a genuine BEAM fixture and compiling mutation pin this behavior.
-Independent seeded verification passes 381 tests, and review found no actionable
-issue. See [the physical compile review](review/distributed-physical-compile.md).
-The executor service still needs to join these steps to live preparation custody
-and exact admitted native evidence.
-
-The closed Compile completion codec now preserves the original service identity,
-exact native evidence, enforcement report and executor-owned artifact. Its
-independent 175-test executor gate and review passed. Integrated verification
-passes 395 code-mode tests and 191 executor tests without reported skips; see
-[the completion review](review/distributed-compile-completion.md). The next slice
-extends the existing resource journal to reserve and retain complete outcomes,
-then connects actual native admission and physical execution. A missing native
-record after Ready remains uncertain and cannot authorize a retry.
-
-The owner-derived Compile and Launch command expectations now join the physical
-steps and completion codec. Exact matching covers ordered command data, full
-identity and region mappings; selected walls must fit original ceilings.
-Independent review is clean and the integrated code-mode gate passes 408 tests
-without reported skips against the refreshed private seed. See
-[the command expectation review](review/distributed-expected-commands.md).
-Live wall selection and actual native association remain assembly obligations.
-
-Compile completions now have a closed 256-KiB content kind in the existing
-64-KiB chunk transport. Original workspace tags and bounds remain unchanged.
-Independent validation passes all 194 executor tests, and the review's scanner
-fixture correction passes all nine focused tests. See
-[the transfer review](review/distributed-compile-transfer.md). Semantic validation,
-physical service routing and durable receipt remain separate assembly duties.
-
-The Compile custody P extension now distinguishes retained terminal bytes from
-committed native evidence, and models Before-native settlement with a late-Ready
-fence. Independent review is clean. Root's strict gates pass 35 normal cases,
-44 exact witness probes and 30 compiling mutations with matched controls; see
-[the custody model review](review/distributed-compile-custody-model.md). These
-bounded results do not establish SQLite atomicity or production refinement.
-Physical Compile/Launch assembly and separate-host acceptance remain open.
-
-The resource journal now retains exact native association and outer Compile
-completion evidence, with capacity reserved before preparation. Independent review
-found two test coverage gaps; both are corrected and the stronger guard test
-detects its compiling mutation. Root's full component gate passed 202 executor
-tests before that test-only correction, and all 28 focused journal tests passed
-afterward. The combined integration gate then passed 206 executor tests and 409
-code-mode tests without reported skips. The [review record](review/distributed-compile-outcome-custody.md) and
-[architecture guide](architecture/remote-compilation.md) distinguish historical
-evidence from live execution permission. Live command routing and atomic ordering
-against cancellation remain the next assembly step.
-
-Linux signoff passed all six lanes, release verification and the skip census at
-`0b6ea760a61316c31cc5af9e74fa0244db537492` in 1,362 seconds. That head precedes
-the Compile custody model and outcome journal; it is not signoff for those later
-changes. The run used dry-run mode and posted no commit status.
-
-The owner now resolves complete historical command offers through the existing
-native-origin index. Cancelled history remains readable without granting live
-reservation. Astra found a reservation-type projection gap; both header queries
-now reject malformed types before body transfer. Root's corrected full storage
-and focused client gates passed 176 and six tests with unchanged source hashes.
-See the [lookup review](review/distributed-command-lookup.md) and the indexed
-lookup section of the [custody guide](architecture/remote-custody.md). Production
-command routing and live Compile service assembly remain in progress.
-
-Live resource association now requires the original preparation Claim, actual
-native Request/Authority/Admit evidence and a final Open/Ready/Unassociated
-transaction. Only its first successful commit returns a native launch permit.
-Astra found one example-format issue, corrected without changing production
-syntax. Root independently passed all 218 executor tests; three compiling guard
-mutations fail their intended assertions. The
-[live-admission review](review/distributed-live-compile-admission.md) records the
-limits. Native service wiring must still place this permit before launch intent.
-
-Physical command reservations now retain their complete CommandRef through every
-owner exchange, including detached cancellation. The connection rejects changed
-references, generations and plain native replies. Astra identified a test peer
-whose late assertion could be lost; its managed result is now awaited before
-teardown. Root's corrected focused gate passed seven controls and the combined
-executor gate passed 225 tests. The [routing review](review/distributed-physical-command-routing.md)
-also records an existing host-close assertion race and its test-only correction.
-The [compilation guide](architecture/remote-compilation.md) explains the two
-identities. The native server still refuses command wrappers pending live
-admission assembly; this is owner routing, not separate-host acceptance.
+`docs/execution.md` has the rest: briefing, monitoring, the verification
+standard and the hazards that have cost real time.
