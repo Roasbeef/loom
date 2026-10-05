@@ -1219,7 +1219,10 @@ boundaries and the split's measurements under Invariants.
   exact, prefix, substring, and initials matching is presentation state only;
   a selection returns the catalogue name for `set_config`.
 - `tui/markdown` walks `session_view/markdown`'s closed tree, the one the
-  web view also draws, and emits etui spans directly. The parser is linear
+  web view also draws, and emits etui spans directly. `render_detail` is
+  `render` for a tool's detail rows (`ToolDetail`): the harness's fences
+  name a language only so the source is highlighted, so the label row an
+  answer's code block opens with is dropped. The parser is linear
   in its input and bounds the tree's depth; mork, which this module walked
   before, took time exponential in a run of unclosed `[` and hung the
   terminal, since the live tail parses an answer again on every delta. `render(markdown, width)` takes the width the rows will

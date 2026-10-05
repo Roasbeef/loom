@@ -176,6 +176,44 @@ pub fn render_sanitized(safe: String, width: Int) -> List(span.Line) {
   |> list.flat_map(render_block(_, width))
 }
 
+/// `render` for the Markdown a tool's detail rows are written in, which
+/// draws a fenced block's language as its highlighting and never as a row.
+///
+/// The harness fences the JSON result, the call list and the program it
+/// shows under Ctrl+G with `json`, `text` and `gleam`, so the viewer can
+/// highlight the source. An answer's code block keeps its language label,
+/// since there the model chose the language and the reader may want it; in
+/// a detail row the label would be the only line in the block that is not
+/// part of the thing being shown.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let rows = markdown.render_detail("```json\n1\n```", 80)
+/// assert list.length(rows) == list.length(markdown.render("```\n1\n```", 80))
+/// ```
+@internal
+pub fn render_detail(markdown: String, width: Int) -> List(span.Line) {
+  text_hygiene.multiline(markdown)
+  |> tree.parse
+  |> list.flat_map(fn(block) {
+    let rows = render_block(block, width)
+    case block {
+      tree.CodeBlock(language: Some(_), ..) -> list.drop(rows, 1)
+      tree.CodeBlock(language: None, ..)
+      | tree.Heading(..)
+      | tree.Paragraph(..)
+      | tree.Quote(..)
+      | tree.Alert(..)
+      | tree.BulletList(..)
+      | tree.OrderedList(..)
+      | tree.Table(..)
+      | tree.Footnote(..)
+      | tree.Rule -> rows
+    }
+  })
+}
+
 /// Wraps flowing Markdown, hard-wrapping code and leaving fixed rows alone.
 ///
 /// Etui's word wrapper discards leading separators and collapses runs of

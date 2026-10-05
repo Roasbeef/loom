@@ -1112,7 +1112,7 @@ fn speaker_rows(line: Line, width: Int, strand: String) -> List(span.Line) {
       |> list.append([span.line_plain("")])
 
     ToolDetail ->
-      markdown.render(line.text, width - string.length(mark))
+      markdown.render_detail(line.text, width - string.length(mark))
       |> prefix_rendered_lines(mark, mark_style)
     System | ToolGroup | ToolCall | ToolResult | ToolFailure | Failure ->
       body

@@ -595,6 +595,19 @@ pub fn numbered_patch_wraps_at_cells_and_retains_source_coordinate_test() {
   assert rows |> list.map(line_text) |> list.contains("12 ▎ 界界界")
 }
 
+// A tool's detail fences its JSON, call list and program so they can be
+// highlighted. The language is never a row of the block, while an answer's
+// code block still opens with its label.
+pub fn a_detail_block_draws_no_language_row_test() {
+  let fenced = "result\n\n```json\n{\"ok\": true}\n```"
+  let detail = markdown.render_detail(fenced, 40) |> list.map(line_text)
+  let answer = markdown.render(fenced, 40) |> list.map(line_text)
+  assert !list.any(detail, string.contains(_, "json"))
+  assert list.any(answer, string.contains(_, "json"))
+  assert list.length(detail) == list.length(answer) - 1
+  assert list.any(detail, string.contains(_, "{\"ok\": true}"))
+}
+
 pub fn a_number_gutter_cannot_hide_source_in_a_narrow_pane_test() {
   let rows =
     markdown.diff("@@ -100 +100 @@\n-old\n+new")
