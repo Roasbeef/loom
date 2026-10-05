@@ -270,7 +270,7 @@ pub fn advice(ending: Ending, session_id: String) -> String {
 // The advice as the live notice says it.
 fn sentence(advice: Advice) -> String {
   case advice.command {
-    Some(command) -> advice.lead <> " Run `" <> command <> "` for a fresh link."
+    Some(command) -> advice.lead <> " Run " <> command <> " for a fresh link."
     None -> advice.lead
   }
 }
@@ -406,7 +406,7 @@ pub fn admin_advice(ending: Ending) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// assert string.contains(ending.home_advice(ending.LinkExpired), "`loom ui`")
+/// assert string.contains(ending.home_advice(ending.LinkExpired), "loom ui")
 /// ```
 pub fn home_advice(ending: Ending) -> String {
   sentence(home_advised(ending))

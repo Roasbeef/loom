@@ -297,3 +297,65 @@ pub fn the_claim_forms_policy_is_the_resume_pages_test() {
   assert string.replace(own, "form-action 'self'", "form-action 'none'")
     == page.content_security_policy("127.0.0.1:4000")
 }
+
+// --- navigation (protocol-change/051, the addendum on navigation) -----------
+
+// A spent ticket reached by Back or a reload is the "link expired" document
+// with a Back control, and the document names no ticket. The other endings
+// have no page to go back to.
+pub fn a_spent_ticket_document_offers_a_way_back_test() {
+  list.each(
+    [
+      page.refusal(ending.LinkExpired, "0192ab"),
+      page.home_refusal(ending.LinkExpired),
+      page.admin_refusal(ending.LinkExpired),
+    ],
+    fn(document) {
+      assert string.contains(document, "<loom-back>Go back</loom-back>")
+      assert string.contains(document, "loom-copy")
+      assert !string.contains(document, "ticket=")
+    },
+  )
+  assert !string.contains(page.home_refusal(ending.PageEnded), "loom-back")
+}
+
+// A browser whose sign-in ended may hold no `loom`, so its document names the
+// claim form as a link to the one fixed address.
+pub fn the_refused_sign_in_names_the_claim_form_test() {
+  let document = page.login_refused()
+  assert string.contains(
+    document,
+    "<a class=\"ended-link\" href=\"/ui/claim\">",
+  )
+  assert string.contains(document, "ask the person who invited you")
+  assert !string.contains(document, "loom-back")
+}
+
+// No page draws a backtick: the waiting notices say the command plainly.
+pub fn no_waiting_notice_draws_a_backtick_test() {
+  list.each(
+    [
+      page.waiting_notice("0192ab"),
+      page.home_waiting_notice(),
+      page.admin_waiting_notice(),
+      page.login_unknown_notice(),
+      ending.advice(ending.LinkExpired, "0192ab"),
+      ending.home_advice(ending.PageEnded),
+      ending.admin_advice(ending.PageEnded),
+    ],
+    fn(words) {
+      assert !string.contains(words, "`")
+    },
+  )
+}
+
+// The paragraph the shell shows while it has no socket sits inside
+// `<loom-waiting>`, which replaces it after five seconds.
+pub fn the_shell_wraps_its_waiting_paragraph_in_the_waiting_element_test() {
+  list.each([page.shell("S"), page.home_shell(), page.admin_shell()], fn(shell) {
+    assert string.contains(
+      shell,
+      "<lustre-server-component><loom-waiting><p class=\"page-note\">",
+    )
+  })
+}

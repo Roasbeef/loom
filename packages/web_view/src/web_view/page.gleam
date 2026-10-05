@@ -188,6 +188,12 @@ pub fn admin_exchange_path(ticket: String) -> String {
 /// say why it is empty. It needs no script and no attribute the session
 /// controls (protocol-change/051, the addendum on an ended page).
 ///
+/// The paragraph sits inside `<loom-waiting>` (`web_client/waiting`), which
+/// shows it and, after five seconds with no socket, replaces it with the ended
+/// document's shape drawn from fixed words. A page that connects hides all of
+/// it with the rest of the light DOM, so the element costs a connected page
+/// nothing.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -241,9 +247,9 @@ fn component_document(title: String, waiting: String) -> String {
   <> asset_path(client_asset)
   <> "\"></script>"
   <> "</head><body>"
-  <> "<lustre-server-component><p class=\"page-note\">"
+  <> "<lustre-server-component><loom-waiting><p class=\"page-note\">"
   <> houdini.escape(waiting)
-  <> "</p></lustre-server-component>"
+  <> "</p></loom-waiting></lustre-server-component>"
   <> "<script src=\""
   <> asset_path(page_asset)
   <> "\"></script>"
@@ -267,9 +273,9 @@ pub fn waiting_notice(session_id: String) -> String {
   "This page is not connected to the session. The daemon may still be "
   <> "starting, the session may not be open (open it again), this page may "
   <> "have ended, or this tab may have lost its key for the page. Reload it. "
-  <> "If it stays like this, run `loom ui --session "
+  <> "If it stays like this, run loom ui --session "
   <> session_id
-  <> "` for a fresh link."
+  <> " for a fresh link."
 }
 
 /// The document a browser gets when it asks for a page that cannot be
@@ -300,7 +306,7 @@ pub fn refusal(reason: Ending, session_id: String) -> String {
     True -> advice
     False -> ending.Advice(..advice, command: None)
   }
-  ended_document(ending.headline(reason), advice)
+  ended_document(ending.headline(reason), advice, way_for(reason))
 }
 
 // Whether `identity` has the shape `<loom-copy>` accepts in a `loom ui
@@ -320,12 +326,12 @@ fn copyable_identity(identity: String) -> Bool {
 /// ## Examples
 ///
 /// ```gleam
-/// assert string.contains(page.home_waiting_notice(), "run `loom ui`")
+/// assert string.contains(page.home_waiting_notice(), "run loom ui")
 /// ```
 pub fn home_waiting_notice() -> String {
   "This page is not connected to the daemon. The daemon may still be "
   <> "starting, this page may have ended, or this tab may have lost its key "
-  <> "for the page. Reload it. If it stays like this, run `loom ui` for a "
+  <> "for the page. Reload it. If it stays like this, run loom ui for a "
   <> "fresh link."
 }
 
@@ -342,7 +348,7 @@ pub fn admin_waiting_notice() -> String {
   "This page is not connected to the daemon. The daemon may still be "
   <> "starting, this page may have ended (an admin page lasts fifteen "
   <> "minutes), or this tab may have lost its key for the page. Reload it. "
-  <> "If it stays like this, run `loom ui` and press Admin on the home page "
+  <> "If it stays like this, run loom ui and press Admin on the home page "
   <> "for a fresh one."
 }
 
@@ -355,7 +361,11 @@ pub fn admin_waiting_notice() -> String {
 /// // page.admin_refusal(ending.PageEnded)
 /// ```
 pub fn admin_refusal(reason: Ending) -> String {
-  ended_document(ending.admin_headline(reason), ending.admin_advised(reason))
+  ended_document(
+    ending.admin_headline(reason),
+    ending.admin_advised(reason),
+    way_for(reason),
+  )
 }
 
 /// `refusal` for a home page: the same document with the home's advice, which
@@ -367,7 +377,31 @@ pub fn admin_refusal(reason: Ending) -> String {
 /// // page.home_refusal(ending.PageEnded)
 /// ```
 pub fn home_refusal(reason: Ending) -> String {
-  ended_document(ending.home_headline(reason), ending.home_advised(reason))
+  ended_document(
+    ending.home_headline(reason),
+    ending.home_advised(reason),
+    way_for(reason),
+  )
+}
+
+// What an ended document offers besides the command. A spent ticket reached
+// by Back or a reload is a link the person already used, so the page they used
+// it for may still be a step away in the history: the document draws a Back
+// control that only moves the browser (`<loom-back>`, `web_client/back`) and
+// mints nothing. A browser whose sign-in ended may hold no `loom` at all, so
+// its document also names the claim form, the way back in for a person who was
+// invited. Every other ending has neither.
+type Way {
+  GoBack
+  ClaimLink
+  NoWay
+}
+
+fn way_for(reason: Ending) -> Way {
+  case reason {
+    ending.LinkExpired -> GoBack
+    _ -> NoWay
+  }
 }
 
 // The document a refused request is answered with: the brand, a headline, the
@@ -376,7 +410,7 @@ pub fn home_refusal(reason: Ending) -> String {
 // shows until the client bundle registers the element and which is all a
 // browser without scripts sees. The only script is the page's own client
 // bundle, from this origin, so the policy is the one every `/ui` response has.
-fn ended_document(headline: String, advice: ending.Advice) -> String {
+fn ended_document(headline: String, advice: ending.Advice, way: Way) -> String {
   "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
   <> "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
   <> "<title>Loom</title>"
@@ -392,18 +426,40 @@ fn ended_document(headline: String, advice: ending.Advice) -> String {
   <> "</p><p class=\"ended-advice\">"
   <> houdini.escape(advice.lead)
   <> "</p>"
-  <> fresh_link_box(advice.command)
+  <> fresh_link_box(advice.command, way)
+  <> way_control(way)
   <> "</section></main></body></html>\n"
+}
+
+// What `way` adds after the command's box, or nothing. The Back control's
+// light content is the word it shows until the client bundle registers it. The
+// claim link is a fixed same-origin address.
+fn way_control(way: Way) -> String {
+  case way {
+    GoBack -> "<loom-back>Go back</loom-back>"
+    ClaimLink ->
+      "<p class=\"ended-advice\">Otherwise ask the person who invited you "
+      <> "for a new invitation and accept it <a class=\"ended-link\" href=\""
+      <> claim_path
+      <> "\">here</a>.</p>"
+    NoWay -> ""
+  }
 }
 
 // The command that mints a fresh link and a button that copies it, or nothing
 // for an ending a fresh link would not help.
-fn fresh_link_box(command: Option(String)) -> String {
+fn fresh_link_box(command: Option(String), way: Way) -> String {
   case command {
     None -> ""
     Some(command) -> {
       let escaped = houdini.escape(command)
-      "<p class=\"ended-advice\">Run this in a terminal for a fresh link.</p>"
+      let words = case way {
+        ClaimLink -> "If you use loom, run this in a terminal for a fresh link."
+        GoBack | NoWay -> "Run this in a terminal for a fresh link."
+      }
+      "<p class=\"ended-advice\">"
+      <> words
+      <> "</p>"
       <> "<loom-copy subject=\"link\" text=\""
       <> escaped
       <> "\"><code class=\"ended-command\">"
@@ -461,12 +517,12 @@ pub fn login_page() -> String {
 /// assert string.contains(page.login_unknown_notice(), "loom ui")
 /// ```
 pub fn login_unknown_notice() -> String {
-  "This browser has no sign-in for this address. Run `loom ui` in a terminal "
+  "This browser has no sign-in for this address. Run loom ui in a terminal "
   <> "to sign in, or open a device link from a browser that is signed in."
 }
 
 fn login_script_notice() -> String {
-  "Signing in needs scripts. Run `loom ui` in a terminal and open the link "
+  "Signing in needs scripts. Run loom ui in a terminal and open the link "
   <> "it prints."
 }
 
@@ -488,6 +544,7 @@ pub fn login_refused() -> String {
         <> "browser.",
       command: Some("loom ui"),
     ),
+    ClaimLink,
   )
 }
 
@@ -620,10 +677,11 @@ fn claim_keep_notice() -> String {
 
 /// The page the ticket exchange answers with. Its body names the keyed page
 /// to move to and the tab's nonce, as data attributes; its script, which
-/// runs at the end of the body, keeps the nonce in `sessionStorage` and
-/// replaces the location with the keyed page. That navigation is
-/// same-origin, so it carries the new `SameSite=Strict` cookie, and the
-/// replace keeps the ticket's URL out of the history.
+/// runs at the end of the body, keeps the nonce in `sessionStorage` under the
+/// keyed page's own item (`nonce_item` and the key in `next`) and replaces the
+/// location with the keyed page. That navigation is same-origin, so it carries
+/// the new `SameSite=Strict` cookie, and the replace keeps the ticket's URL
+/// out of the history, so Back never lands on a spent ticket.
 ///
 /// ## Examples
 ///
@@ -684,10 +742,12 @@ fn enter_document(next: String, nonce: String, login: String) -> String {
 /// daemon's route tests check that the served scripts carry it.
 pub const login_nonce_item = "loom.login."
 
-/// The `sessionStorage` item the nonce is kept under. The two scripts in
-/// `assets/` spell the same name; the daemon's route tests check that the
-/// served scripts carry it.
-pub const nonce_item = "loom-page-nonce"
+/// The `sessionStorage` item prefix a page's nonce is kept under: the item is
+/// this and the page's key, so each keyed page the tab has visited keeps its
+/// own nonce and Back can return to it (protocol-change/051, the addendum on
+/// navigation). The two scripts in `assets/` spell the same prefix; the
+/// daemon's route tests check that the served scripts carry it.
+pub const nonce_item = "loom-page-nonce."
 
 /// The content security policy for every `/ui` response, for a request
 /// whose `Host` header is `host`.

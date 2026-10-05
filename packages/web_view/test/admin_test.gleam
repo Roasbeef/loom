@@ -770,3 +770,10 @@ pub fn the_two_pages_pin_their_paths_apart_test() {
     home.admin_path,
   ))
 }
+
+// The bar's trailing child is Back, a `<loom-back>` that mints nothing: the
+// page draws no handler for it, so the daemon is never asked for a ticket.
+pub fn the_bar_ends_with_a_back_control_that_sends_nothing_test() {
+  let html = drawn(admin.new(start()))
+  assert string.contains(html, "<loom-back>Home</loom-back>")
+}

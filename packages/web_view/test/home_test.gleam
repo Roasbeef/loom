@@ -675,7 +675,7 @@ pub fn a_closed_page_draws_its_ending_and_reads_no_more_test() {
   let html = drawn(model)
   assert string.contains(html, ">disconnected<")
   assert string.contains(html, "Your access was revoked or changed.")
-  assert string.contains(html, "Run `loom ui` for a fresh link.")
+  assert string.contains(html, "Run loom ui for a fresh link.")
   assert !string.contains(html, "--session")
   assert string.contains(html, "hex release")
 
@@ -725,7 +725,7 @@ pub fn the_home_shell_names_no_session_test() {
   assert string.contains(shell, "<lustre-server-component>")
   assert string.contains(shell, page.asset_path(page.page_asset))
   assert string.contains(shell, page.asset_path(page.client_asset))
-  assert string.contains(shell, "run `loom ui` for a fresh link")
+  assert string.contains(shell, "run loom ui for a fresh link")
   assert !string.contains(shell, "--session")
 }
 
@@ -746,7 +746,7 @@ pub fn a_refused_home_names_no_session_test() {
 pub fn every_ending_has_home_words_test() {
   list.each(ending.all(), fn(reason) {
     assert ending.home_headline(reason) != ""
-    assert string.contains(ending.home_advice(reason), "`loom ui`")
+    assert string.contains(ending.home_advice(reason), "loom ui")
     assert !string.contains(ending.home_headline(reason), "session")
   })
   assert ending.home_headline(ending.AccessRevoked)

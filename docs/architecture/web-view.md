@@ -224,7 +224,7 @@ sequenceDiagram
    addendum on several pages). It mints three secrets for the new page: the `loom_ui` cookie, the page key, and the page nonce. The
    response is a small same-origin page whose body carries the keyed path
    and the nonce as data attributes, and whose script
-   (`web_view_enter.js`) stores the nonce in `sessionStorage` and calls
+   (`web_view_enter.js`) stores the nonce in `sessionStorage` under `loom-page-nonce.<key>` and calls
    `location.replace` on the keyed path. A `303` redirect was not used: a
    `SameSite=Strict` cookie is not sent on a redirect that started from
    another site, so a link clicked on a cross-site page would land on a
@@ -690,7 +690,7 @@ sessions). Only an operator page does it.
   page writes into the `to` attribute of the hidden `<loom-switch>`, the
   centre's last child. The element accepts only
   `/ui/sessions/<identity>?ticket=<64 hex digits>` (`switch_rule.target`) and
-  calls `location.replace`, so the old page leaves no history entry. The exchange, the keyed page and the nonce are the
+  calls `location.assign`, so each keyed page is a history entry and Back returns to it (its nonce is kept per page key). The exchange, the keyed page and the nonce are the
   ones `loom ui` already uses, and the page left behind is not ended.
 - **What holds.** A page for one session holds no text of another
   (`session_isolation_test`); the sidebar is the one region that lists the

@@ -55,8 +55,12 @@ renders again just for it:
   from a home), and so does the home, and each writes `to`
   once the daemon has minted a ticket; `switch_rule.target` accepts exactly
   those three address shapes and nothing else, and the element then calls
-  `location.replace` (one export in `dom.mjs`), so the old page leaves no
-  history entry for Back to reopen without a nonce. It renders nothing, takes no
+  `location.assign` (one export in `dom.mjs`), so each keyed page is a history
+  entry and Back returns to it with its own nonce (051, the addendum on
+  navigation). `<loom-back>Home</loom-back>` calls `history.back()` and mints
+  nothing (the admin bar's trailing child, and the spent-ticket document's
+  Go back); `<loom-waiting>` wraps the shell's waiting paragraph and after five
+  seconds draws the ended document's shape. It renders nothing, takes no
   focus and listens for no event (protocol-change/051, the addendum on
   switching sessions).
 - `<loom-copy subject="command|token|link|device" text="...">` (`device` is the

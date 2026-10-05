@@ -33,6 +33,11 @@
 //// - `<loom-copy subject="token" text="...">` (`web_client/copy`) draws one
 ////   of an invitation's two texts and copies it to the clipboard when the
 ////   owner presses its button.
+//// - `<loom-back>Home</loom-back>` (`web_client/back`) is a button that goes
+////   one step back in the tab's history and mints nothing.
+//// - `<loom-waiting>` (`web_client/waiting`) wraps the shell's waiting
+////   paragraph and, after five seconds with no socket, draws the ended
+////   document's shape in its place.
 ////
 //// Every element keeps the page's rules (protocol-change/051): it renders
 //// only what its own attributes say, and those hold daemon identities or
@@ -46,6 +51,7 @@
 //// policy (`script-src 'self'`).
 
 import web_client/attach
+import web_client/back
 import web_client/composer
 import web_client/copy
 import web_client/elapsed
@@ -54,6 +60,7 @@ import web_client/fold
 import web_client/follow
 import web_client/shell
 import web_client/switch
+import web_client/waiting
 
 /// Registers every element. The bundle calls this once when the page loads
 /// it; an element already registered is left as it is.
@@ -66,6 +73,7 @@ import web_client/switch
 pub fn main() -> Nil {
   // The operator's composer: its editor and its image attachments.
   let _ = attach.register()
+  let _ = back.register()
   let _ = composer.register()
   let _ = copy.register()
 
@@ -76,5 +84,6 @@ pub fn main() -> Nil {
   let _ = follow.register()
   let _ = shell.register()
   let _ = switch.register()
+  let _ = waiting.register()
   Nil
 }

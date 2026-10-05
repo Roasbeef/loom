@@ -19,13 +19,14 @@
 //// ticket is single use and lives 60 seconds, so a value the page left in the
 //// attribute after the navigation is spent.
 ////
-//// The navigation replaces the page's history entry instead of adding one.
-//// The old page's nonce is overwritten by the new page's in the tab's
-//// `sessionStorage`, so Back to the old page's address would open a page
-//// with no valid nonce and show only its waiting notice. With the entry
-//// replaced, Back leaves the session pages for whatever the tab held before
-//// them, and the operator returns to an earlier session by choosing it in
-//// the sidebar, which mints a fresh ticket.
+//// The navigation adds a history entry (`location.assign`), so each keyed
+//// page is one entry and Back returns to the page it left. A page's nonce is
+//// kept in the tab's `sessionStorage` under its own key
+//// (`web_view/page.nonce_item`), so the page Back returns to finds its nonce
+//// and reconnects; a page whose grant ended still ends. The ticket's own URL
+//// is not left in the history: the exchange page replaces itself with the
+//// keyed page, so Back never lands on a spent ticket (protocol-change/051, the
+//// addendum on navigation).
 
 import gleam/result
 import lustre
@@ -79,7 +80,7 @@ fn update(model: Nil, message: Msg) -> #(Nil, Effect(Msg)) {
 
 fn navigate(address: String) -> Effect(Msg) {
   use _ <- effect.from
-  ffi_dom.replace_location(address)
+  ffi_dom.assign_location(address)
 }
 
 fn view(_: Nil) -> Element(Msg) {
