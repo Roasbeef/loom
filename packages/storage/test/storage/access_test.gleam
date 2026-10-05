@@ -497,7 +497,6 @@ pub fn generated_access_queries_match_sqlc_input_test() {
     sql.principal_memberships("", "").0,
     sql.insert_access_login("", "", None, None).0,
     sql.insert_access_login_from("", "", None, None, None).0,
-    sql.insert_access_claimed_login("", "", None).0,
     sql.principal_logins("", None, "").0,
     sql.principal_login_count("", None).0,
     sql.principal_login_by_fingerprint("", "").0,
@@ -1345,7 +1344,15 @@ pub fn a_credential_authenticates_only_as_the_kind_it_was_made_as_test() {
   let #(file, store, session, member) = claim_fixture("kind-claim", 960)
   let expected =
     access.Claimed(member, [access.Membership(session.id, access.Observer)])
-  assert access.claim(store, claim_of("1"), browser("b"), None, 10, same)
+  assert access.claim_login(
+      store,
+      claim_of("1"),
+      browser("b"),
+      None,
+      10,
+      5000,
+      same,
+    )
     == Ok(expected)
   assert access.authenticate(store, browser("b")) == Ok(member)
 
@@ -1389,7 +1396,15 @@ pub fn a_browser_row_blocks_a_claim_of_either_kind_test() {
   let assert Ok(store) = catalogue.open(file) as "catalogue reopens"
   assert access.claim(store, claim_of("1"), digest("b"), None, 10, same)
     == Error(access.ConflictingClaim)
-  assert access.claim(store, claim_of("1"), browser("c"), None, 10, same)
+  assert access.claim_login(
+      store,
+      claim_of("1"),
+      browser("c"),
+      None,
+      10,
+      5000,
+      same,
+    )
     == Error(access.ConflictingClaim)
 
   // Nothing was bound, and the claim is still open.
@@ -1403,7 +1418,97 @@ pub fn a_bearer_row_blocks_a_browser_claim_test() {
   assert catalogue.close(store) == Ok(Nil)
   insert_credential(file, "0", member.id, "bearer")
   let assert Ok(store) = catalogue.open(file) as "catalogue reopens"
-  assert access.claim(store, claim_of("1"), browser("c"), None, 10, same)
+  assert access.claim_login(
+      store,
+      claim_of("1"),
+      browser("c"),
+      None,
+      10,
+      5000,
+      same,
+    )
+    == Error(access.ConflictingClaim)
+  assert credential_rows(file, member.id) == ["active"]
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+// A claim bound as a login records when the login ends, as `issue_login`
+// does, so the principal's sign-ins list it with its expiry and it stops
+// listing once that instant passes. A bearer claim presenting a browser digest,
+// and a browser claim presenting a bearer, bind nothing.
+pub fn a_claim_bound_as_a_login_ends_at_its_expiry_test() {
+  let #(file, store, session, member) = claim_fixture("claim-login-ends", 965)
+  let expected =
+    access.Claimed(member, [access.Membership(session.id, access.Observer)])
+  assert access.claim(store, claim_of("1"), browser("b"), None, 10, same)
+    == Error(
+      access.ClaimStore(catalogue.Invalid(
+        "a bearer claim presents a bearer digest",
+      )),
+    )
+  assert access.claim_login(
+      store,
+      claim_of("1"),
+      digest("b"),
+      None,
+      10,
+      5000,
+      same,
+    )
+    == Error(
+      access.ClaimStore(catalogue.Invalid(
+        "a browser claim presents a browser digest",
+      )),
+    )
+  assert credential_rows(file, member.id) == []
+  assert claim_state(file, "1") == [#("open", None)]
+
+  assert access.claim_login(
+      store,
+      claim_of("1"),
+      browser("b"),
+      None,
+      10,
+      5000,
+      same,
+    )
+    == Ok(expected)
+  let assert Ok(live) = access.signins_page(store, member.id, "", 4999)
+  assert live.entries
+    == [access.Signin(string.repeat("b", 16), 10, None, Some(5000), None)]
+
+  // The listing shows the claim redeemed, as the credential the claim made, and
+  // counts the one login.
+  let assert Ok(listing) = access.principals_page(store, "", 20)
+  let assert Ok(listed) =
+    list.find(listing.entries, fn(row) { row.principal.id == member.id })
+  assert listed.credential
+    == access.CredentialActive(string.repeat("b", 16), Some(10))
+  assert listed.logins == 1
+  let assert Ok(ended) = access.signins_page(store, member.id, "", 5001)
+  assert ended.entries == []
+
+  // The replay of a lost reply, with the same digest, answers the same success
+  // and writes nothing; another digest is the claim's conflict.
+  assert access.claim_login(
+      store,
+      claim_of("1"),
+      browser("b"),
+      None,
+      20,
+      9000,
+      same,
+    )
+    == Ok(expected)
+  assert access.claim_login(
+      store,
+      claim_of("1"),
+      browser("c"),
+      None,
+      20,
+      9000,
+      same,
+    )
     == Error(access.ConflictingClaim)
   assert credential_rows(file, member.id) == ["active"]
   assert catalogue.close(store) == Ok(Nil)
@@ -1684,9 +1789,18 @@ pub fn a_claim_bound_as_a_login_records_when_it_began_test() {
   let #(_file, store, session, member) = claim_fixture("claim-login", 966)
   let expected =
     access.Claimed(member, [access.Membership(session.id, access.Observer)])
-  assert access.claim(store, claim_of("1"), browser("b"), None, 77, same)
+  assert access.claim_login(
+      store,
+      claim_of("1"),
+      browser("b"),
+      None,
+      77,
+      900,
+      same,
+    )
     == Ok(expected)
   let assert Ok(page) = access.signins_page(store, member.id, "", 78)
   assert list.map(page.entries, fn(row) { row.issued_at_ms }) == [77]
+  assert list.map(page.entries, fn(row) { row.expires_at_ms }) == [Some(900)]
   assert catalogue.close(store) == Ok(Nil)
 }

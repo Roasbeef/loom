@@ -302,7 +302,8 @@ pub fn principal_active_credential(principal_id principal_id: String) {
   let sql =
     "SELECT c.digest, k.claimed_at_ms FROM access_credentials AS c
 LEFT JOIN access_claims AS k ON k.credential_digest = c.digest
-WHERE c.principal_id = ? AND c.state = 'active' AND c.kind = 'bearer'
+WHERE c.principal_id = ? AND c.state = 'active'
+  AND (c.kind = 'bearer' OR k.claimed_at_ms IS NOT NULL)
 ORDER BY c.digest LIMIT 1"
   #(sql, [dev.ParamString(principal_id)], principal_active_credential_decoder())
 }
@@ -393,21 +394,6 @@ VALUES (?, ?, 'active', 'browser', ?, ?, ?)"
     dev.ParamNullable(option.map(issued_at_ms, fn(v) { dev.ParamInt(v) })),
     dev.ParamNullable(option.map(expires_at_ms, fn(v) { dev.ParamInt(v) })),
     dev.ParamNullable(option.map(issued_by, fn(v) { dev.ParamString(v) })),
-  ])
-}
-
-pub fn insert_access_claimed_login(
-  digest digest: String,
-  principal_id principal_id: String,
-  issued_at_ms issued_at_ms: Option(Int),
-) {
-  let sql =
-    "INSERT INTO access_credentials(digest, principal_id, state, kind, issued_at_ms)
-VALUES (?, ?, 'active', 'browser', ?)"
-  #(sql, [
-    dev.ParamString(digest),
-    dev.ParamString(principal_id),
-    dev.ParamNullable(option.map(issued_at_ms, fn(v) { dev.ParamInt(v) })),
   ])
 }
 
