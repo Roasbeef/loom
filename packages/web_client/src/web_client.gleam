@@ -33,6 +33,8 @@
 //// - `<loom-copy subject="token" text="...">` (`web_client/copy`) draws one
 ////   of an invitation's two texts and copies it to the clipboard when the
 ////   owner presses its button.
+//// - `<loom-popover wanted="open">` (`web_client/popover`) opens and closes
+////   the home's account panel from the person's name in the bar.
 ////
 //// Every element keeps the page's rules (protocol-change/051): it renders
 //// only what its own attributes say, and those hold daemon identities or
@@ -52,6 +54,7 @@ import web_client/elapsed
 import web_client/expand
 import web_client/fold
 import web_client/follow
+import web_client/popover
 import web_client/shell
 import web_client/switch
 
@@ -74,6 +77,7 @@ pub fn main() -> Nil {
   let _ = expand.register()
   let _ = fold.register()
   let _ = follow.register()
+  let _ = popover.register()
   let _ = shell.register()
   let _ = switch.register()
   Nil

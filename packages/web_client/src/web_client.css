@@ -405,6 +405,7 @@
   .residency .glyph{margin-right:4px;}
   .residency.live .glyph{color:var(--color-current);}
   .residency.opening{color:var(--color-current);}
+  .residency.needs-you,.residency.needs-you .glyph{color:var(--color-signal-text);}
   /* The app's navigation slot above the first workspace group. It is empty
      until the app has pages to link to. */
   .sidebar .nav{display:flex;flex-direction:column;gap:2px;margin:0 0 12px 0;}
@@ -494,9 +495,27 @@
   .home-chevron{flex:0 0 auto;color:var(--color-fg-quiet);font-size:16px;line-height:1;}
   .home-open:hover .home-chevron{color:var(--color-fg);}
   .home-notice{margin:0 0 12px 0;padding:8px 12px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font-size:13px;}
-  main.centre > .home-signins{flex:0 0 auto;max-width:960px;max-height:45%;margin-top:16px;padding:16px 0 8px 0;border-top:1px solid var(--color-divider);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
-  .home-signins-lead,.home-bookmark{margin:0 0 10px 0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);overflow-wrap:anywhere;}
-  .home-bookmark-text{padding:1px 6px;border:1px solid var(--color-divider);border-radius:4px;background:var(--color-bg-raised);color:var(--color-fg);font:12px/1.4 var(--font-mono);}
+  /* The account panel. The sign-ins region is still the centre's third child,
+     where the socket admits its clicks, and the stylesheet takes it out of the
+     flow: it floats under the bar at the centre's right edge, hidden until the
+     name's button has opened it. <loom-popover> publishes the custom state
+     `open`, which the frame reads with :has(). It is the one element besides
+     the drawer and the completion list that takes the float shadow. */
+  main.centre:has(> .home-signins){position:relative;}
+  main.centre > .home-signins{display:none;position:absolute;z-index:30;top:8px;right:16px;left:auto;width:min(440px,calc(100% - 32px));max-width:none;max-height:calc(100% - 16px);margin:0;padding:14px 16px 10px 16px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);box-shadow:var(--shadow-float);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
+  loom-shell:has(loom-popover:state(open)) main.centre > .home-signins{display:block;}
+  .session-head .home-who-button{display:inline-flex;align-items:center;gap:4px;margin:0;padding:2px 8px;border:1px solid transparent;border-radius:6px;background:transparent;color:inherit;font:inherit;cursor:pointer;}
+  .session-head .home-who-button:hover,.session-head .home-who-button[aria-expanded="true"]{border-color:var(--color-divider);background:var(--color-bg-raised);}
+  .session-head .home-who-button:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  .home-who-chevron{color:var(--color-fg-quiet);font-size:11px;line-height:1;}
+  loom-popover{display:contents;}
+  .home-signins .home-heading{margin:0 0 6px 0;}
+  .home-signins-lead,.home-bookmark-lead{margin:0 0 10px 0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  .home-bookmark{margin:0 0 12px 0;}
+  .home-bookmark-lead{margin:0 0 6px 0;}
+  loom-copy.home-copy{display:flex;align-items:center;gap:8px;}
+  :host(.home-copy) code.share-text{flex:1 1 auto;min-width:0;margin:0;}
+  :host(.home-copy) button.share-copy{flex:0 0 auto;}
   ul.home-signin-list{list-style:none;margin:0 0 10px 0;padding:0;border-top:1px solid var(--color-divider);}
   li.home-signin{display:flex;align-items:center;gap:12px;min-height:44px;box-sizing:border-box;margin:0;padding:6px 10px;border-bottom:1px solid var(--color-divider);}
   li.home-signin.this{background:color-mix(in srgb,var(--color-current) 9%,transparent);border-bottom-color:color-mix(in srgb,var(--color-current) 35%,var(--color-divider));}
@@ -509,8 +528,9 @@
   .home-signin-device:disabled{opacity:.5;cursor:default;}
   .home-signin-actions{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 8px 0;}
   .home-signin-status{margin:0;min-height:1.4em;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);overflow-wrap:anywhere;}
-  .home-device-link{display:flex;flex-direction:column;align-items:flex-start;gap:8px;margin:8px 0 0 0;padding:12px;border:1px solid color-mix(in srgb,var(--color-current) 35%,var(--color-divider));border-radius:8px;background:color-mix(in srgb,var(--color-current) 7%,transparent);}
-  .home-device-lead{margin:0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);}
+  .home-device-link{display:flex;flex-direction:column;align-items:stretch;gap:8px;margin:8px 0 0 0;padding:12px;border:1px solid color-mix(in srgb,var(--color-current) 35%,var(--color-divider));border-radius:8px;background:color-mix(in srgb,var(--color-current) 7%,transparent);}
+  .home-device-head{display:flex;align-items:flex-start;gap:12px;}
+  .home-device-lead{flex:1 1 auto;min-width:0;margin:0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);}
   code.home-device-text{display:block;padding:6px 8px;border:1px solid var(--color-divider);border-radius:4px;background:var(--color-bg);font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
   .ended-document [hidden]{display:none;}
 
