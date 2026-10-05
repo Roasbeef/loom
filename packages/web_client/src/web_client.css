@@ -841,6 +841,14 @@
   .markdown .md-code{margin:0 0 .6em 0;border:1px solid var(--color-divider);border-radius:6px; background:var(--color-code);min-width:0;}
   .markdown .md-code-lang{display:block;padding:4px 10px 0;color:var(--color-fg-quiet);font:11px/1.4 var(--font-mono);}
   .markdown .md-code pre{margin:0;padding:6px 10px;overflow-x:auto;white-space:pre;font:13px/1.4 var(--font-mono);color:var(--color-fg);}
+  .md-code .tok-kw{color:var(--color-current);font-weight:600;}
+  .md-code .tok-type{color:var(--color-strand-2-text);}
+  .md-code .tok-str,.md-code .tok-num{color:var(--color-signal-text);}
+  .md-code .tok-com{color:var(--color-fg-quiet);font-style:italic;}
+  .md-code .tok-punct{color:var(--color-fg-quiet);}
+  .md-code .tok-meta{color:var(--color-fg-quiet);font-weight:600;}
+  .md-code .tok-add{color:var(--color-added-text);background:var(--color-added-bg);}
+  .md-code .tok-del{color:var(--color-danger-text);background:var(--color-removed-bg);}
   .markdown .md-quote{margin:0 0 .6em 0;padding-left:10px;border-left:2px solid var(--color-current);color:var(--color-fg-quiet);}
   .markdown .md-list{margin:0 0 .6em 0;padding:0;list-style:none;}
   .markdown .md-item{display:flex;gap:.5em;min-width:0;}

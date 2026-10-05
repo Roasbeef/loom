@@ -81,7 +81,7 @@ fn regions(marker: String) -> List(#(String, String)) {
     #("peer message", marker <> "-peer"),
     #("todo line", marker <> " task"),
     #("changes tab", marker <> "/edited.gleam"),
-    #("trace tab", marker <> " program"),
+    #("trace tab", marker <> "_program"),
   ]
 }
 

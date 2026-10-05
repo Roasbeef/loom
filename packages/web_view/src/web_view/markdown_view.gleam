@@ -14,7 +14,9 @@
 ////   wrote, and a `javascript:` destination is only characters.
 //// - An ordered list's numbers are text in each item rather than a `start`
 ////   attribute, so the number the model wrote never reaches an attribute.
-//// - A code fence's language is a text label, never a class.
+//// - A code fence's language is a text label, never a class. It also picks
+////   the scanner that colours the fence (`code_view`), which draws token
+////   classes from a closed type and every token's text as a text node.
 ////
 //// The tree is bounded in depth by the parser (`markdown.max_depth`,
 //// `markdown.max_emphasis`), so the recursion here is too.
@@ -28,6 +30,7 @@ import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 import session_view/markdown.{type Block, type Inline}
+import web_view/code_view
 
 /// The elements for a parsed Markdown tree, one per top-level block.
 ///
@@ -231,7 +234,7 @@ fn block_element(block: Block) -> Element(message) {
             html.span([attribute.class("md-code-lang")], [html.text(language)])
           None -> element.none()
         },
-        html.pre([], [code_lines(text)]),
+        html.pre([], [code_view.block(language, text)]),
       ])
 
     markdown.Quote(blocks:) ->
@@ -292,28 +295,6 @@ fn block_element(block: Block) -> Element(message) {
 
     markdown.Rule -> html.hr([attribute.class("md-rule")])
   }
-}
-
-// A fence's body as one span per line. A streamed block grows at its tail,
-// and a single text node would be sent whole on every batch, which over a
-// long block is quadratic. Lustre diffs unkeyed children by position, so the
-// lines that did not change are skipped, the one still being written is
-// patched, and the new ones are inserted as one trailing addition. Every
-// span but the last carries its own newline, so the text a reader copies is
-// the fence's text unchanged.
-fn code_lines(text: String) -> Element(message) {
-  let lines = string.split(text, "\n")
-  let last = list.length(lines) - 1
-  html.code(
-    [],
-    list.index_map(lines, fn(line, index) {
-      let shown = case index == last {
-        True -> line
-        False -> line <> "\n"
-      }
-      html.span([], [html.text(shown)])
-    }),
-  )
 }
 
 fn alert_title(kind: markdown.AlertKind) -> String {

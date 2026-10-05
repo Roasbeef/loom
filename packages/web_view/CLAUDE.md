@@ -726,6 +726,15 @@ page keys and nonces, and the relay into the session's gateway.
   not counted by `strip.count` (the title and the tab's badge speak of live
   strands). Focusing one makes it the active strand, which the roster lists
   with the live cards, so it leaves the group until the reader goes back.
+- `code_view.block(language, text)`: a code fence's body as one `span` per
+  line, each token a `span` whose class (`tok-kw`, `tok-type`, `tok-str`,
+  `tok-num`, `tok-com`, `tok-punct`, `tok-add`, `tok-del`, `tok-meta`) is a
+  literal chosen by a `case` over `session_view/code_tokens.CodeKind`. The
+  token's text is a text node and the fence's language tag only selects the
+  scanner. A `code_mode` program is a fenced `gleam` block, so the lane's
+  program body and an answer's fence share it; a line the scanner has no
+  class for is one text node. The rows are memoized per line, so a streamed
+  delta scans only the line being written.
 - `markdown_view.blocks(tree)`: the elements for an answer's Markdown,
   drawn from `session_view/markdown`'s tree, the tree the terminal's
   `tui/markdown` also draws. `view/lane` uses it for the speakers the
