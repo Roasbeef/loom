@@ -545,8 +545,8 @@ arrow first so a reader scanning the gutter sees traffic, and the detail's
 carries the source, target, body and `State`
 (`session_view/agent_messages.gleam:29`: pending, failed, accepted, started),
 projected from the sender's `agent_send` invocation and its result
-(`agent_send`, `tools/agent.gleam:1865`; the steered delivery at
-`steered_outcome`, `tools/agent.gleam:1938`). That state is receipt on the
+(`agent_send`, `tools/agent.gleam:1887`; the steered delivery at
+`steered_outcome`, `tools/agent.gleam:1960`). That state is receipt on the
 sender's side and never proof that the recipient read the message, and the
 row says `accepted`, not `read`.
 
@@ -738,7 +738,7 @@ No single key sends a decision.
 | Strand detail: cache | the cache outlook words | yes | `outlook_label` (`session_view/cache_miss.gleam:435`), today in `cache_outlook` (`tui/model.gleam:472`) |
 | Nudge count on the advisor row | pending nudges | yes | `Board` (`session_view/advisor_pending.gleam:51`), `nudges` (`session_view/model.gleam:224`) |
 | Changes tab | worktree observation, navigator, patch | yes | `State` (`session_view/worktree_view.gleam:98`), `layout` (`tui/diff_panel.gleam:33`), with `fold` (`session_view/changes_view.gleam:210`) as the labelled fallback |
-| Trace tab, code-mode box | program, result, status | yes | `code_mode_program` (`session_view/transcript_lines.gleam:3493`), `execution_value` (`tools/codemode.gleam:1491`) |
+| Trace tab, code-mode box | program, result, status | yes | `code_mode_program` (`session_view/transcript_lines.gleam:3493`), `execution_value` (`tools/codemode.gleam:1498`) |
 | Trace tab, code-mode box | the capability call list | no | protocol change (section 9.1, with #656) |
 | Session tab: goal | the goal board | yes | `row` (`session_view/goal_view.gleam:553`), `goal` (`session_view/model.gleam:236`) |
 | Session tab: jobs | the live jobs board | yes | `jobs` (`session_view/session_summary.gleam:99`), `lines` (`session_view/live_jobs.gleam:107`) |
