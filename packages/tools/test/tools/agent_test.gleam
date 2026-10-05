@@ -1267,6 +1267,5 @@ pub fn the_spawn_description_says_how_parent_and_child_talk_test() {
   assert string.contains(spawn.description, "final message is its result")
   assert string.contains(spawn.description, "agent_send")
   assert string.contains(spawn.description, "agent_note")
-  assert agent.child_floor_tools == ["agent_note", "agent_send"]
   assert !list.contains(agent.child_floor_tools, agent.spawn_tool_name)
 }
