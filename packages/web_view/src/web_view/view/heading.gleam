@@ -29,9 +29,12 @@
 //// The status is a pill whose colour and dot follow a `Tone` the component
 //// chooses from the connection, so the words and the colour cannot disagree.
 ////
-//// The ended page's notice is the bar's last child, so a page with no
+//// The ended page's notice is the bar's last child but one, so a page with no
 //// session says why without moving any region after it. The stylesheet
-//// wraps it onto a row of its own beneath the figures.
+//// wraps it onto a row of its own beneath the figures. The last child is the
+//// hidden `<loom-title>`, which sets the tab's title from the name drawn here
+//// (`web_client/title`): the document the server serves can say only `Loom`,
+//// because the session's name is not known to the shell.
 ////
 //// The heading takes plain values rather than the component's `Label` and
 //// `Status`, because `web_view/component` imports this module to lay the
@@ -155,8 +158,17 @@ pub fn view(
         ]),
       ),
       notice,
+      tab_title(),
     ],
   )
+}
+
+// The element that writes the tab's title (`web_client/title`): hidden, empty
+// and attribute-free, the bar's last child so no child before it moves. It
+// reads the name this bar draws as text and the frame's count; the server
+// writes no name into it.
+fn tab_title() -> Element(message) {
+  element.element("loom-title", [attribute.attribute("hidden", "")], [])
 }
 
 /// The "Home" button of a page opened from the home: one handler, whose

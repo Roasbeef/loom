@@ -107,3 +107,32 @@ pub fn a_workspace_is_named_by_its_last_segment_test() {
   assert switcher_rule.workspace_label("/") == "/"
   assert switcher_rule.workspace_label("") == ""
 }
+
+// The pages the bar offers (the way home, the admin page) list ahead of the
+// sessions the sidebar draws, they match a typed name, and their row says what
+// the page is for and nothing about a workspace or a saved state.
+pub fn a_page_of_the_app_lists_first_and_says_what_it_is_for_test() {
+  let home = Row("Home", "", "Your sessions", switcher_rule.Place)
+  let listed = switcher_rule.matching([home, ..rows()], "")
+  assert list.map(listed, fn(match) { match.index }) == [0, 1, 2, 3]
+  assert switcher_rule.detail(home) == "Your sessions"
+  assert list.map(switcher_rule.matching([home, ..rows()], "ho"), fn(match) {
+      match.index
+    })
+    == [0]
+}
+
+pub fn a_session_row_names_its_workspace_subtitle_and_saved_state_test() {
+  assert switcher_rule.detail(Row("a", "loom", "Fix the test", Running))
+    == "loom · Fix the test"
+  assert switcher_rule.detail(Row("a", "loom", "", Saved)) == "loom · saved"
+  assert switcher_rule.detail(Row("a", "", "", Running)) == ""
+}
+
+// The chip lives in another element's shadow tree, so a click opens the
+// switcher only when an element on its path carries the marker.
+pub fn only_the_marked_chip_summons_the_switcher_test() {
+  assert switcher_rule.summons(Ok(switcher_rule.summon_value))
+  assert !switcher_rule.summons(Ok("something-else"))
+  assert !switcher_rule.summons(Error(Nil))
+}

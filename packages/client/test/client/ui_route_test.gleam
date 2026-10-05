@@ -2479,7 +2479,7 @@ pub fn a_home_ticket_becomes_a_keyed_home_once_test() {
     // The page is the home's shell, which names no session.
     let opened = open_page(port, page)
     assert opened.status == 200
-    assert string.contains(opened.body, "Loom · Home")
+    assert string.contains(opened.body, "Home — Loom")
     assert !string.contains(opened.body, page.nonce)
     assert !string.contains(opened.body, session)
     assert referrer_policy(opened) == Ok("no-referrer")
@@ -4660,7 +4660,7 @@ pub fn the_bookmark_resumes_a_home_without_loom_test() {
     assert !string.contains(resumed.body, "data-login")
     let shown = open_page(port, home)
     assert shown.status == 200
-    assert string.contains(shown.body, "Loom · Home")
+    assert string.contains(shown.body, "Home — Loom")
 
     // The page is the login's: it is a resumed home, at the login's ceiling,
     // and the login it belongs to is the one that resumed it.
@@ -5755,7 +5755,7 @@ pub fn an_owners_home_opens_an_admin_page_once_test() {
     // The page is the admin shell, which names no session and carries no nonce.
     let opened = open_page(port, page)
     assert opened.status == 200
-    assert string.contains(opened.body, "Loom · Admin")
+    assert string.contains(opened.body, "Admin — Loom")
     assert !string.contains(opened.body, page.nonce)
     assert referrer_policy(opened) == Ok("no-referrer")
 

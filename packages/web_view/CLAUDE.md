@@ -301,7 +301,17 @@ page keys and nonces, and the relay into the session's gateway.
   `<loom-switcher>` after `<loom-switch>` as the centre's last child on the
   operator's page and the home; it reads the sidebar's buttons in the browser and
   presses the chosen one's own, so it adds no event and moves no path
-  (protocol-change/051, the addendum on the session switcher).
+  (protocol-change/051, the addendum on the session switcher). The `Search ⌘K`
+  chip that opens it is drawn by `<loom-shell>`, not the server.
+- **Document titles.** `page.shell` is titled `Loom` (`page.session_title`); the
+  home and admin shells are `Home — Loom` and `Admin — Loom`. A session's name is
+  never in the served title: `view/heading` draws a hidden `<loom-title>` as the
+  bar's last child, which sets the tab title from the heading's text on the
+  client (`page_test`, `heading_test` with a hostile name).
+- **Entry documents.** `.ended-document` sits `margin-top:min(20vh,160px)` down
+  the window (`scripts/web_client_css_check.sh`), `Accept` is the filled primary,
+  and the resume page's help is the refused sign-in's two sentences: `loom ui` in
+  a copy box, then a new invitation accepted at `/ui/claim`.
 - **Switching sessions.** A switch is a navigation to a new page
   (protocol-change/051, the addendum on switching sessions). On the operator's
   page `operator_page.Opening(id)` (a sidebar button, or a peer message's Open

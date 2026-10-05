@@ -1,25 +1,32 @@
-//// `<loom-switcher>`: a session switcher opened from the keyboard with Command
-//// or Control and K, listing the sessions the page already has.
+//// `<loom-switcher>`: a switcher opened from the keyboard with Command or
+//// Control and K, or from the `Search` chip in the bar, listing the pages and
+//// the sessions the page already has.
 ////
 //// Both pages draw a sidebar of the sessions the principal may open, each as
 //// a button whose one handler asks the daemon for a ticket
-//// (`view/sidebar`). The switcher does not ask the server anything new. When
-//// it opens it reads those buttons from the page, takes each one's name,
-//// workspace and subtitle as text, lists them in a popover that the typed
-//// query filters (`switcher_rule`), and on Enter or a click presses the
-//// chosen row's own sidebar button. The press is an ordinary click on an
-//// ordinary handler, so the ticket is minted, checked and spent exactly as
-//// the sidebar's is, and the switcher has no route of its own to the browser's
-//// navigation.
+//// (`view/sidebar`), and a session page opened from the home draws a `Home`
+//// button in its bar, as the owner's home draws `Admin`. The switcher does not
+//// ask the server anything new. When it opens it reads those buttons from the
+//// page, takes each one's name, workspace and subtitle as text, lists the pages
+//// first and then the sessions in a popover that the typed query filters
+//// (`switcher_rule`), and on Enter or a click presses the chosen row's own
+//// button. The press is an ordinary click on an ordinary handler, so the
+//// ticket is minted, checked and spent exactly as the sidebar's is, and the
+//// switcher has no route of its own to the browser's navigation.
+////
+//// The chip is drawn by `<loom-shell>`, in its own shadow tree, so the
+//// switcher cannot hold a handler on it. The one document listener it keeps is
+//// for `keydown` and `click`: a click whose path holds an element marked
+//// `data-opens="switcher"` (`switcher_rule.summons`) opens the popover as the
+//// shortcut does.
 ////
 //// The element sends the server nothing and reads from it nothing but the
 //// text that is already in the page. Every name it draws is a text node of its
 //// own view: it never assigns a name to markup, an attribute it reads back or
 //// the document's address (protocol-change/051, the addendum on the session
-//// switcher). The one document listener it keeps is for `keydown`, one per
-//// connection, removed when the element leaves the page. While the popover is
-//// open the query field has the focus, and Escape or a press outside the
-//// panel closes it.
+//// switcher). The listener is one per connection, removed when the element
+//// leaves the page. While the popover is open the query field has the focus,
+//// and Escape or a press outside the panel closes it.
 
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -66,6 +73,10 @@ pub type Model {
 pub type Msg {
   /// The shortcut was pressed.
   Toggled
+
+  /// The bar's `Search` chip was pressed. It only opens: the popover covers
+  /// the page, so a second press of the chip cannot happen while it shows.
+  Summoned
 
   /// Escape was pressed.
   Escaped
@@ -148,7 +159,8 @@ pub fn init_model() -> Model {
 /// ```
 pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   case message, model.state {
-    Toggled, Hidden -> #(model, scanning())
+    Toggled, Hidden | Summoned, Hidden -> #(model, scanning())
+    Summoned, Showing(..) -> #(model, effect.none())
     Toggled, Showing(..) | Escaped, Showing(..) | Dismissed, Showing(..) -> #(
       Model(..model, state: Hidden),
       effect.none(),
@@ -231,17 +243,49 @@ fn listed(entries: List(Entry), query: String) -> List(switcher_rule.Match) {
   switcher_rule.matching(list.map(entries, fn(entry) { entry.row }), query)
 }
 
-// Reads the sidebar's openable rows from the page that holds this element:
-// the root its host is attached under, which is the server component's. A row
-// is a button the server drew, and the name, workspace and subtitle are the
-// text it carries, read as text and nothing else.
+// Reads the openable rows from the page that holds this element: the root its
+// host is attached under, which is the server component's. A row is a button
+// the server drew, and the name, workspace and subtitle are the text it
+// carries, read as text and nothing else. The page's own buttons in the bar
+// come first (the way home on a session page, the admin page on the owner's
+// home), then the sidebar's sessions in the order it draws them.
 fn scanning() -> Effect(Msg) {
   use dispatch, root <- effect.after_paint
   let page = ffi_dom.root_node(ffi_dom.host(ffi_dom.as_element(root)))
-  ffi_dom.query_selector_all(page, ".sidebar .session-open")
-  |> list.filter_map(entry_of)
-  |> Scanned
-  |> dispatch
+  let places =
+    list.append(
+      places_of(page, ".session-head .home-link", "Your sessions"),
+      places_of(page, ".session-head .home-admin", "People and invitations"),
+    )
+  let sessions =
+    ffi_dom.query_selector_all(page, ".sidebar .session-open")
+    |> list.filter_map(entry_of)
+  dispatch(Scanned(list.append(places, sessions)))
+}
+
+// The buttons the bar draws for one of the app's own pages. What the page is
+// for is the switcher's fixed words, since the button carries only its name.
+fn places_of(
+  page: ffi_dom.Element,
+  selector: String,
+  purpose: String,
+) -> List(Entry) {
+  ffi_dom.query_selector_all(page, selector)
+  |> list.filter_map(fn(button) {
+    case string.trim(ffi_dom.text_content(button)) {
+      "" -> Error(Nil)
+      name ->
+        Ok(Entry(
+          row: switcher_rule.Row(
+            name:,
+            workspace: "",
+            subtitle: purpose,
+            kind: switcher_rule.Place,
+          ),
+          button:,
+        ))
+    }
+  })
 }
 
 fn entry_of(button: ffi_dom.Element) -> Result(Entry, Nil) {
@@ -308,23 +352,59 @@ fn revealing() -> Effect(Msg) {
   result.unwrap(scrolled, or: Nil)
 }
 
-// Listens for `keydown` on the document, which hears the shortcut wherever the
-// focus is, the page's shadow trees included. The shortcut is cancelled so the
-// browser's own use of it does not also run; Escape is only observed.
+// Listens for `keydown` and `click` on the document, which hears the shortcut
+// wherever the focus is, the page's shadow trees included, and a press on the
+// bar's chip. One handler serves both events, so one value removes it from
+// each. The shortcut is cancelled so the browser's own use of it does not also
+// run; Escape is only observed, and a click is never cancelled.
 fn listen() -> Effect(Msg) {
   use dispatch, _ <- effect.after_paint
-  let listener =
-    ffi_dom.add_listener(ffi_dom.get_document(), "keydown", fn(event) {
-      case pressed(event) {
-        Ok(Toggled) -> {
-          ffi_dom.prevent_default(event)
-          dispatch(Toggled)
-        }
-        Ok(message) -> dispatch(message)
-        Error(Nil) -> Nil
+  let document = ffi_dom.get_document()
+  let handle = fn(event) {
+    case heard(event) {
+      Ok(Toggled) -> {
+        ffi_dom.prevent_default(event)
+        dispatch(Toggled)
       }
-    })
+      Ok(message) -> dispatch(message)
+      Error(Nil) -> Nil
+    }
+  }
+  let listener = ffi_dom.add_listener(document, "keydown", handle)
+
+  // The binding hands back the handler it was given, so the value returned
+  // for `keydown` is also the one registered for `click`.
+  let _ = ffi_dom.add_listener(document, "click", handle)
   dispatch(Listening(listener))
+}
+
+// The message a document event is: a click is the chip's press or nothing,
+// and any other event is a key press.
+fn heard(event: Dynamic) -> Result(Msg, Nil) {
+  let kind =
+    decode.run(event, decode.field("type", decode.string, decode.success))
+  case kind {
+    Ok("click") -> chip_pressed(event)
+    Ok(_) | Error(_) -> pressed(event)
+  }
+}
+
+// A click is the switcher's when some element on its path carries the chip's
+// marker. The path crosses shadow roots, so the chip inside the frame's own
+// tree is on it.
+fn chip_pressed(event: Dynamic) -> Result(Msg, Nil) {
+  let marked =
+    ffi_dom.composed_path(event)
+    |> list.any(fn(node) {
+      switcher_rule.summons(ffi_dom.attribute(
+        node,
+        switcher_rule.summon_attribute,
+      ))
+    })
+  case marked {
+    True -> Ok(Summoned)
+    False -> Error(Nil)
+  }
 }
 
 // The message a document key press is, or nothing for a key the switcher does
@@ -355,7 +435,9 @@ fn stop(listener: Option(Listener)) -> Effect(Msg) {
     None -> effect.none()
     Some(listener) -> {
       use _ <- effect.from
-      ffi_dom.remove_listener(ffi_dom.get_document(), "keydown", listener)
+      let document = ffi_dom.get_document()
+      ffi_dom.remove_listener(document, "keydown", listener)
+      ffi_dom.remove_listener(document, "click", listener)
     }
   }
 }
@@ -384,8 +466,8 @@ fn view(model: Model) -> Element(Msg) {
                 attribute.type_("text"),
                 attribute.role("combobox"),
                 attribute.aria_expanded(True),
-                attribute.aria_label("Find a session"),
-                attribute.placeholder("Find a session"),
+                attribute.aria_label("Find a session or page"),
+                attribute.placeholder("Find a session or page"),
                 attribute.attribute("autocomplete", "off"),
                 attribute.attribute("spellcheck", "false"),
                 attribute.value(query),
@@ -399,7 +481,7 @@ fn view(model: Model) -> Element(Msg) {
                     [
                       attribute.class("switcher-list"),
                       attribute.role("listbox"),
-                      attribute.aria_label("Sessions"),
+                      attribute.aria_label("Sessions and pages"),
                     ],
                     list.index_map(rows, fn(match, place) {
                       row(match, place == selected)
@@ -439,24 +521,10 @@ fn row(match: switcher_rule.Match, current: Bool) -> Element(Msg) {
     [
       html.span([attribute.class("switcher-name")], [html.text(row.name)]),
       html.span([attribute.class("switcher-detail")], [
-        html.text(detail(row)),
+        html.text(switcher_rule.detail(row)),
       ]),
     ],
   )
-}
-
-// The quiet words after a row's name: where it runs, what it began as, and
-// that it is only saved.
-fn detail(row: Row) -> String {
-  let parts = [
-    row.workspace,
-    row.subtitle,
-    case row.kind {
-      switcher_rule.Saved -> "saved"
-      switcher_rule.Running -> ""
-    },
-  ]
-  list.filter(parts, fn(part) { part != "" }) |> string.join(" · ")
 }
 
 // A key pressed in the field. The arrows and Enter are the list's and are
