@@ -18,8 +18,10 @@
 package selftest
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -56,6 +58,9 @@ func Run(w io.Writer, selfExe string) bool {
 	fmt.Fprintf(w, "loom-exec self-test\n")
 	fmt.Fprintf(w, "  features: %s\n", strings.Join(feat.List(), ", "))
 	if !platformGate(w, feat.Platform) {
+		return false
+	}
+	if !probeRootGate(w, probeDir) {
 		return false
 	}
 
@@ -122,6 +127,46 @@ func platformGate(w io.Writer, p jail.PlatformSupport) bool {
 	}
 	fmt.Fprintf(w, "\n%s\n", unsupportedPlatformReport(p))
 	return false
+}
+
+// probeRootGate decides whether the probes can start at all, writing a
+// NOT RUN report in their place when the probe root cannot be created
+// because the host refuses the write.
+//
+// The self-test run from inside a Loom session finds the scratch parent
+// (/private/tmp on macOS) unwritable by design, and macOS would refuse a
+// nested Seatbelt profile besides, so every probe would fail with the same
+// mkdir error and the run would read as a broken jail. Only a permission
+// refusal is treated this way: any other failure to make the directory is
+// left to the probes, which report it as the failure it is. mkdir is
+// injected so the branch is testable without a jailed host.
+func probeRootGate(w io.Writer, mkdir func() (string, error)) bool {
+	dir, err := mkdir()
+	if err == nil {
+		os.RemoveAll(dir)
+		return true
+	}
+	if !errors.Is(err, fs.ErrPermission) {
+		return true
+	}
+	fmt.Fprintf(w, "\n%s\n", probeRootRefusedReport(err))
+	return false
+}
+
+// probeRootRefusedReport is what the self-test prints instead of probes
+// when the probe root is unwritable, in the shape of the unsupported
+// platform report: nothing was attempted, and the run is not a pass.
+func probeRootRefusedReport(err error) string {
+	return fmt.Sprintf(
+		"  NOT RUN   every probe (probe root unwritable, probably "+
+			"because this process is already inside a sandbox: %v)\n\n"+
+			"==== enforcement summary ====\n"+
+			"enforced (0):\n"+
+			"nothing was attempted: run the self-test from an unjailed shell\n\n"+
+			"RESULT: NOT RUN (not a pass; no confinement was applied or "+
+			"probed)",
+		err,
+	)
 }
 
 // unsupportedPlatformReport is what the self-test prints instead of
