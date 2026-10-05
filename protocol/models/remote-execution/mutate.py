@@ -9,6 +9,12 @@ from runner import ROOT, check_case, compile_model, record, snapshot_model
 
 # These alter actual state/effect decisions, leaving monitor code unchanged.
 MUTATIONS = {
+    'beam-stale-handoff': ('PSrc/BeamCredits.p', 'p.action == CreditHandoff && slot.run != p.run', 'false', 'tcBeamCreditStale', 'stale handoff admitted against a reused credit'),
+    'beam-release-pending': ('PSrc/BeamCredits.p', ' && !slots[index].pending', '', 'tcBeamCreditPending', 'queued service ask released without actual answer'),
+    'beam-release-before-drain': ('PSrc/BeamCredits.p', '!slots[index].network && ', '', 'tcBeamCreditStale', 'credit released before transport AllDelivered'),
+    'beam-revive-lost-credit': ('PSrc/BeamCredits.p', ' && !slots[index].retired', '', 'tcBeamCreditLost', 'lost run restored retired credit'),
+    'beam-reopen-ingress': ('PSrc/BeamCredits.p', 'if (!open) {', 'if (false) {', 'tcBeamCreditShared', 'credit granted after ingress closed'),
+    'beam-fifth-data-credit': ('PSrc/BeamCredits.p', 'i = 0; end = 4;', 'i = 0; end = 5;', 'tcBeamCreditShared', 'scope multiplied the shared credit bound'),
     'owner-marker-before-start': ('PSrc/OwnerDischarge.p', 'rows[p.key] = (custody = RunUnreleased, collection = RunRetained, outcome = 0);', 'rows[p.key] = (custody = RunReleased, collection = RunRetained, outcome = 0);', 'tcOwnerDischargeHappy', 'Fresh COMMIT omitted unreleased custody'),
     'owner-release-before-drain': ('PSrc/OwnerDischarge.p', ('if (live[pin.key] != RunFinalCommitted || !(pin.key in drained)) { return; }', '      reply(p.pin.key, RunFinalStored);'), ('if (live[pin.key] != RunFinalCommitted) { return; }', '      discharge(p.pin, RunCommitOk);\n      reply(p.pin.key, RunFinalStored);'), 'tcOwnerDischargeHappy', 'owner custody released before AllDelivered'),
     'owner-startup-reset': ('PSrc/OwnerDischarge.p', 'if (hasUnreleased()) { admission = RunRecoveryOnly; }', 'if (hasUnreleased()) { admission = RunAdmitting; }', 'tcOwnerDischargeCrashBeforeStart', 'owner startup reopened unreleased admission'),
