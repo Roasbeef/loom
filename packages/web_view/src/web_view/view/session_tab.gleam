@@ -17,7 +17,8 @@
 //// wrapper and the controls section are `display:contents`, so each group
 //// and control is placed on its own. This module draws the groups and the
 //// stylesheet places them; a test pins each group's class and the pane's
-//// child count.
+//// child count. `reading-flow:flex-visual` on the pane makes keyboard focus
+//// follow the visual order in browsers that support it.
 ////
 //// The rows are `session_view`'s wherever it words them
 //// (`session_summary`, `goal_view.row`), so the terminal can draw the same

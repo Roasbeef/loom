@@ -883,8 +883,9 @@
      (component.invite_path, session_controls_path, rename_path). So the pane
      is a column and `order` places each piece. The rows wrapper and the
      controls section are `display:contents`, which makes their groups and
-     rows the column's own items. */
-  .pane-session{display:flex;flex-direction:column;}
+     rows the column's own items. `reading-flow:flex-visual` makes keyboard
+     focus follow that order; a browser without it ignores the line. */
+  .pane-session{display:flex;flex-direction:column;reading-flow:flex-visual;}
   .pane-session > .panel-title{order:0;margin-bottom:6px;}
   .pane-session > section.session-rename{order:1;display:flex;flex-wrap:wrap;align-items:center;gap:2px 12px;margin:0 0 6px 0;padding:0;border-top:0;}
   .session-rows{display:contents;}

@@ -623,3 +623,28 @@ pub fn an_opened_turn_seen_in_a_capture_starts_the_generation_clock_test() {
     )
   })
 }
+
+// A capture that takes the strand out of `assistant` ends the generation's
+// clock, and one that brings it back with nothing streaming starts a new one
+// from that sight. No phase event reaches the page, so `component.clocked` is
+// the only thing that does this for a capture.
+pub fn a_capture_that_leaves_and_returns_to_assistant_restarts_the_clock_test() {
+  let #(model, clock) = timed([lane_fixture.phased(running(), "assistant")])
+  let model = at(model, clock, 5000)
+  list.each(pages(model), fn(view) {
+    assert string.contains(region(view), "offset=\"5000\"")
+  })
+
+  let model = component.apply(model, [lane_fixture.asked(None)])
+  list.each(pages(model), fn(view) {
+    assert region(view) == ""
+  })
+
+  let model = at(model, clock, 9000)
+  let model =
+    component.apply(model, [lane_fixture.phased(running(), "assistant")])
+  let model = at(model, clock, 10_000)
+  list.each(pages(model), fn(view) {
+    assert string.contains(region(view), "offset=\"1000\"")
+  })
+}
