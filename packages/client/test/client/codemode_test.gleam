@@ -39,6 +39,7 @@ import codemode/notes
 import codemode/orchestration
 import codemode/satellite
 import codemode/search as search_router
+import codemode/tool_gate
 import codemode/vet
 import codemode/vet/policy as vet_policy
 import core/clock.{type Clock}
@@ -1148,6 +1149,23 @@ fn is_vet_rejected(result: codemode_tool.ExecResult) -> Bool {
 
 // --- the lineage rule, over a live runtime ---------------------------------
 
+pub fn every_seam_selection_carries_the_strand_tool_check_test() {
+  // The tool list gates workspace-only programs too, so the check comes
+  // from the Agency whichever seams are served, and a host with no
+  // messaging plane has none to consult.
+  let broker_actor = idle_broker()
+  let base = config_for(broker_actor)
+  assert option.is_none(base.strand_tools)
+  list.each(
+    [codemode.WorkspaceOnly, codemode.OrchestrationOnly, codemode.BothSeams],
+    fn(seams) {
+      let served = codemode.serving(base, seams, over: none_agency())
+      assert option.is_some(served.strand_tools)
+    },
+  )
+  broker.stop(broker_actor)
+}
+
 pub fn a_spawn_reaches_the_real_agency_test() {
   // The happy path first, because every refusal below would hold just as
   // well for a seam that refused everything.
@@ -1301,12 +1319,19 @@ fn orchestrated(
       cwd: "/work",
       ordinal: 0,
     )
-  case router(request) {
+  // The host runs the strand's tool check in the call's worker before it
+  // serves the plan; this does the same two steps in the same order.
+  case tool_gate.precheck(live.seam.holds, from, 0)(request) {
     Error(denial) -> framing.CapErr(code: denial.code, message: denial.message)
-    Ok(satellite.ServedHere(serve:)) | Ok(satellite.ScopedService(serve:)) ->
-      serve()
-    Ok(satellite.ClearedCall(..)) ->
-      panic as "an orchestration call is never a jailed clearance"
+    Ok(Nil) ->
+      case router(request) {
+        Error(denial) ->
+          framing.CapErr(code: denial.code, message: denial.message)
+        Ok(satellite.ServedHere(serve:))
+        | Ok(satellite.ScopedService(serve:)) -> serve()
+        Ok(satellite.ClearedCall(..)) ->
+          panic as "an orchestration call is never a jailed clearance"
+      }
   }
 }
 

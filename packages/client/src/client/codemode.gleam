@@ -231,6 +231,7 @@ import codemode/orchestration
 import codemode/satellite
 import codemode/search as search_router
 import codemode/seed
+import codemode/tool_gate
 import codemode/vet
 import codemode/vet/policy as vet_policy
 import codemode/workspace
@@ -248,7 +249,7 @@ import gleam/string
 import lsp/observation
 import lsp/query
 import simplifile
-import tools/agent.{type Agency}
+import tools/agent.{type Agency, type Caller, type Refusal}
 import tools/blob
 import tools/call_record
 import tools/codemode as codemode_tool
@@ -315,6 +316,13 @@ pub type Config {
     /// the vetting allowlist *and* the capability router together; see
     /// the module doc for why that is one field.
     surface: Surface,
+    /// Whether a strand holds a tool in its active list, which the host
+    /// asks per call so a program is held to the tool list its strand is
+    /// (`codemode/tool_gate`). `serving` fills it from the Agency, for
+    /// every seam selection. `None` is a host with no messaging plane, and
+    /// it means no strand tool list is consulted, as there is no durable
+    /// configuration to consult.
+    strand_tools: Option(fn(Caller, String) -> Result(Nil, Refusal)),
     /// An optional fixed execution deadline captured at async admission.
     fixed_deadline: Option(Int),
     /// Adds a harness-bound capability router for this execution only.
@@ -566,6 +574,7 @@ pub fn serving(config: Config, seams: Seams, over agency: Agency) -> Config {
   let spawn_ceiling = orchestration.default_spawn_ceiling
   Config(
     ..config,
+    strand_tools: Some(agency.holds),
     notes: Some(notes.Door(put: agency.note, scan: agency.notes)),
     surface: case seams {
       WorkspaceOnly -> Workspace
@@ -939,6 +948,7 @@ pub fn default_config(
     toolchain_path: toolchain_path(toolchain),
     host_mounts: toolchain_mounts(toolchain),
     surface: Workspace,
+    strand_tools: None,
     fixed_deadline: None,
     wrap_router: fn(_request, router) { router },
     notes: None,
@@ -2476,6 +2486,14 @@ pub fn exec_config(
       write_token_file: satellite.private_token_writer(root <> "/token"),
       unlink_token_file: satellite.unlink_token_file,
       router: config.wrap_router(request, surface_router(config, request)),
+      // The strand's tool list, asked in the call's worker. Bound to the
+      // dispatching strand and call index, never to anything the program
+      // names.
+      precheck: case config.strand_tools {
+        Some(holds) ->
+          tool_gate.precheck(holds, request.strand, request.source_index)
+        None -> satellite.no_precheck
+      },
       ceilings: surface_ceilings(config, request),
       call_timeout_ms: config.call_timeout_ms,
     ),

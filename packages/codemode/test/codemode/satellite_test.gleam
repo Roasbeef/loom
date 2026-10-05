@@ -79,6 +79,7 @@ fn config(dir: String) -> satellite.SatelliteConfig {
     clock: clock.fixed(at: t),
     write_token_file: satellite.private_token_writer(dir),
     unlink_token_file: satellite.unlink_token_file,
+    precheck: satellite.no_precheck,
     router: satellite.default_router,
     ceilings: [],
     call_timeout_ms: 3000,
@@ -618,6 +619,91 @@ fn cancel_peer(ctx: PeerCtx) -> Nil {
       #(msgpack.StringValue("cancel_code"), msgpack.BoolValue(cancel_code)),
     ]),
   )
+}
+
+// --- the precheck runs in the worker, before the plan ----------------------
+
+pub fn a_refused_precheck_settles_the_call_before_the_plan_runs_test() {
+  // The precheck is the host's one question before a call is served or
+  // cleared. A refusal must reach the program in-band and the plan's
+  // `serve` must never run, because a refused call is not a call that
+  // happened to be slow.
+  let dir = fresh_dir("precheck-refused")
+  let broker = start_broker(echoing())
+  let ran = process.new_subject()
+  let cfg =
+    satellite.SatelliteConfig(
+      ..config(dir),
+      router: serving_router(ran),
+      precheck: fn(_request) {
+        Error(satellite.CapDenial(code: "tool_not_held", message: "no"))
+      },
+    )
+  let outcome =
+    satellite.run(
+      artifact(),
+      run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
+      broker,
+      cfg,
+      satellite_peer.launcher(stalled_call_peer),
+    ).outcome
+  let assert Ok(satellite.Completed(value)) = outcome
+  assert value == msgpack.StringValue("tool_not_held")
+  assert process.receive(ran, 100) == Error(Nil)
+  broker.stop(broker)
+}
+
+pub fn an_admitting_precheck_leaves_the_plan_to_run_test() {
+  let dir = fresh_dir("precheck-admitted")
+  let broker = start_broker(echoing())
+  let ran = process.new_subject()
+  let cfg =
+    satellite.SatelliteConfig(..config(dir), router: serving_router(ran))
+  let outcome =
+    satellite.run(
+      artifact(),
+      run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
+      broker,
+      cfg,
+      satellite_peer.launcher(served_call_peer),
+    ).outcome
+  let assert Ok(satellite.Completed(value)) = outcome
+  assert value == msgpack.StringValue("served")
+  assert process.receive(ran, 1000) == Ok(Nil)
+  broker.stop(broker)
+}
+
+// A router whose one capability answers at once and says it ran.
+fn serving_router(
+  ran: Subject(Nil),
+) -> fn(satellite.CapRequest) -> Result(satellite.CapPlan, satellite.CapDenial) {
+  fn(request: satellite.CapRequest) {
+    case request.cap {
+      "strand.wait" ->
+        Ok(
+          satellite.ServedHere(serve: fn() {
+            process.send(ran, Nil)
+            framing.CapOk(value: msgpack.StringValue("served"))
+          }),
+        )
+      _other -> satellite.default_router(request)
+    }
+  }
+}
+
+fn served_call_peer(ctx: PeerCtx) -> Nil {
+  satellite_peer.send_cap_call(
+    ctx,
+    ctx.token,
+    1,
+    "strand.wait",
+    msgpack.MapValue([]),
+  )
+  let answer = case satellite_peer.collect_results(ctx, 1, 3000) {
+    [#(1, framing.CapOk(value: msgpack.StringValue(text)))] -> text
+    _other -> "no result"
+  }
+  satellite_peer.send_outcome(ctx, msgpack.StringValue(answer))
 }
 
 // --- a timed-out served call is reaped ------------------------------------
