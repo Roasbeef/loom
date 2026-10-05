@@ -28,7 +28,7 @@ web_view = { path = "../web_view" }
 lustre = "== 5.7.1"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
-weft = "== 0.4.5"
+weft = { git = "https://github.com/Roasbeef/weft.git", ref = "368d01abcaaff3ef986317a89fe8b98e1e4a2ad6" }
 gleam_http = ">= 4.0.0 and < 5.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 mist = { git = "https://github.com/Roasbeef/mist.git", ref = "28b43178ff57bfb619c64b8c3544831646d5fdb9" }
