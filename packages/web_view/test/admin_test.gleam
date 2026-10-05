@@ -116,6 +116,10 @@ fn snapshot(chosen: Option(String)) -> grants.Snapshot {
       Some(_) | None -> None
     },
     logins: [],
+    summaries: [
+      grants.Summary(session, 3, grants.Whole, creations.Shareable),
+      grants.Summary(other_session, 1, grants.Whole, creations.Private),
+    ],
   )
 }
 
@@ -325,6 +329,7 @@ pub fn a_name_is_only_ever_a_text_node_test() {
               scope: creations.Shareable,
             )),
             logins: [],
+            summaries: [],
           ),
         ),
       )
@@ -442,9 +447,15 @@ pub fn a_refusal_is_worded_in_fixed_words_test() {
     opened(start_with(reads, process.new_subject(), grants.Declined(too_many())))
   let model = run(model, admin.Asking(grants.Rotate("cara")))
   let html = drawn(model)
-  assert string.contains(html, grants.reason_words(too_many()))
   assert string.contains(html, "3 grants in the last hour")
-  assert string.contains(html, "free at 22:41 UTC")
+
+  // The instant travels as a number the browser words in its own zone, with the
+  // UTC time as the element's title and its light text; the server guesses no zone.
+  assert string.contains(
+    html,
+    "<loom-time at=\"1790030460000\" title=\"22:41 UTC\">22:41 UTC</loom-time>",
+  )
+  assert string.contains(html, grants.throttle_tail)
   assert !string.contains(html, "loomclaim_")
   assert process.receive(reads, 0) == Ok(None)
   assert process.receive(reads, 0) == Ok(None)
@@ -540,7 +551,9 @@ pub fn a_claim_is_shown_once_and_dropped_when_hidden_test() {
   assert string.contains(html, "Open this address and paste the token:")
   assert string.contains(html, "Or, with loom installed")
   assert string.contains(html, "Invitation ready")
-  assert string.contains(html, "Role: operator. Principal: guest-1a2b3c4d.")
+  assert string.contains(html, "Principal: guest-1a2b3c4d.")
+  assert !string.contains(html, "Role: operator")
+  assert string.contains(html, "<loom-reveal></loom-reveal>")
   assert string.contains(html, "valid for 60 minutes")
   assert string.contains(html, "outside Loom")
   assert string.contains(html, "Hide the token")
@@ -787,8 +800,11 @@ pub fn no_identity_reaches_an_attribute_test() {
   assert !string.contains(html, "id=\"bob")
 
   // The only keys are the people's catalogue identities, one for each row of the
-  // list, and no name or session is one.
-  assert count(html, "key=\"") == 5
+  // list, and the invitation's two fixed words (a form numbered by how many
+  // invitations were made, and its notice); no name or session is one.
+  assert count(html, "key=\"") == 7
+  assert string.contains(html, "key=\"invite-0\"")
+  assert string.contains(html, "key=\"notice\"")
   assert !string.contains(html, "key=\"Bob")
   assert !string.contains(html, session <> "\"")
   assert !string.contains(html, "href")
@@ -1257,4 +1273,79 @@ pub fn a_hostile_name_is_text_in_the_rename_form_test() {
   let html = drawn(run(model, admin.Editing("bob")))
   assert !string.contains(html, hostile)
   assert string.contains(html, "&lt;script&gt;alert(1)&lt;/script&gt;")
+}
+
+// Each session's row says who holds it and whether it may be shared, after its
+// path, from the summary the read made, and a session the read made none for has
+// the path alone.
+pub fn a_session_row_says_its_people_and_scope_test() {
+  let #(model, _) = opened(start())
+  let html = drawn(model)
+  assert string.contains(html, " · 3 people · shareable")
+  assert string.contains(html, " · 1 person · private")
+
+  let bare =
+    admin.Start(..start(), read: fn(chosen, deliver) {
+      deliver(grants.Read(grants.Snapshot(..snapshot(chosen), summaries: [])))
+    })
+  let #(model, _) = opened(bare)
+  assert !string.contains(drawn(model), " people")
+  assert !string.contains(drawn(model), " person")
+}
+
+// The words are fixed, and a count that is only a page of the members is a lower
+// bound.
+pub fn the_summary_words_are_fixed_test() {
+  let words = fn(people, more, scope) {
+    grants.summary_words(grants.Summary("s", people, more, scope))
+  }
+  assert words(1, grants.Whole, creations.Private) == "1 person · private"
+  assert words(2, grants.Whole, creations.Shareable) == "2 people · shareable"
+  assert words(101, grants.Truncated, creations.Shareable)
+    == "101+ people · shareable"
+}
+
+// The invitation form is a new form once an invitation was made, so its name
+// field is empty again; a read leaves the same form. The key is in the form's
+// event path, so the path moves with the count, and the page's body path does
+// not move.
+pub fn an_invitation_opens_a_fresh_form_test() {
+  let claim =
+    grants.Claim(
+      principal: "guest-1a2b3c4d",
+      purpose: grants.Invited(invites.Observer),
+      page: "http://127.0.0.1:4000/ui/claim",
+      command: "loom claim --addr ws://127.0.0.1:4000/v2/control",
+      token:,
+      expires_in_ms: 3_600_000,
+    )
+  let #(model, _) =
+    opened(start_with(
+      process.new_subject(),
+      process.new_subject(),
+      grants.Claimed(claim),
+    ))
+  let model = run(model, admin.Choosing(session))
+  let submit = fn(model) {
+    list.filter(handlers(admin.view(model)), string.ends_with(_, "\nsubmit"))
+  }
+  let before = submit(model)
+  assert list.length(before) == 1
+
+  let refreshed = run(model, admin.Ticked)
+  assert submit(refreshed) == before
+
+  let invited =
+    run(model, admin.Asking(grants.Invite(session, invites.Observer, "Priya")))
+  assert list.length(submit(invited)) == 1
+  assert submit(invited) != before
+  assert list.all(submit(invited), string.starts_with(
+    _,
+    admin.body_path <> "\t",
+  ))
+
+  // A second invitation is a second fresh form.
+  let again =
+    run(invited, admin.Asking(grants.Invite(session, invites.Observer, "Ana")))
+  assert submit(again) != submit(invited)
 }

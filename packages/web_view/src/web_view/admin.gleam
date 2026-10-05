@@ -189,6 +189,10 @@ pub opaque type Model {
     notice: Option(Spoken),
     /// The claim an ask made, until the owner hides it.
     claim: Option(Claim),
+    /// How many invitations this page has made. It keys the invitation form, so
+    /// an invitation that was made opens a fresh form with its name field empty,
+    /// and a read, a refusal or any other change leaves the form as it is.
+    invited: Int,
     /// The last refusal of a grant for want of allowance: the Unix time in
     /// milliseconds at which a place frees and the refusal's own words, which the
     /// buttons that grant carry in their `title` until then.
@@ -279,6 +283,7 @@ pub fn new(start: Start) -> Model {
     armed: None,
     notice: None,
     claim: None,
+    invited: 0,
     spent: None,
     editing: None,
   )
@@ -421,7 +426,15 @@ fn settled(
 ) -> #(Model, Effect(Msg)) {
   case answer {
     grants.Claimed(claim:) ->
-      reading(Model(..model, claim: Some(claim), notice: None), Continue)
+      reading(
+        Model(
+          ..model,
+          claim: Some(claim),
+          notice: None,
+          invited: invitations(model.invited, claim.purpose),
+        ),
+        Continue,
+      )
     grants.Changed ->
       reading(
         Model(
@@ -435,14 +448,34 @@ fn settled(
       reading(
         Model(
           ..model,
-          notice: Some(Spoken(
-            action,
-            notice.Refused(grants.reason_words(reason)),
-          )),
+          notice: Some(Spoken(action, refusal(reason))),
           spent: spent_by(reason, model.spent),
         ),
         Continue,
       )
+  }
+}
+
+// The count of invitations after a claim: an invitation makes a fresh form, a
+// rotation leaves the form alone.
+fn invitations(invited: Int, purpose: grants.Purpose) -> Int {
+  case purpose {
+    grants.Invited(..) -> invited + 1
+    grants.Rotated -> invited
+  }
+}
+
+// What the page says about a refusal. An allowance that is spent says when a
+// place frees as an instant the browser words in its own zone; every other
+// reason is its fixed words.
+fn refusal(reason: grants.Reason) -> notice.Notice {
+  case reason {
+    grants.TooMany(used:, free_at_ms:) -> notice.Throttled(used:, free_at_ms:)
+    grants.NotOwner
+    | grants.NotIsolated
+    | grants.NotFound
+    | grants.InvalidName
+    | grants.Unavailable -> notice.Refused(grants.reason_words(reason))
   }
 }
 
@@ -717,9 +750,11 @@ fn body(model: Model) -> Element(Msg) {
           snapshot.sessions,
           model.chosen,
           snapshot.selection,
+          snapshot.summaries,
           model.armed,
           model.notice,
           model.claim,
+          model.invited,
           presses,
           busy,
         ),

@@ -29,7 +29,7 @@
 import gleam/int
 import gleam/option.{type Option}
 import gleam/string
-import web_view/creations.{type Sharing}
+import web_view/creations.{type Sharing, Private, Shareable}
 import web_view/ending.{type Ending}
 import web_view/invites.{type Role}
 import web_view/sessions.{type Entry}
@@ -142,6 +142,26 @@ pub type Logins {
   )
 }
 
+/// What one session's row in the Sessions list says about it
+/// (protocol-change/065, the addendum on the admin page's session rows): how
+/// many people hold it and whether it may be shared. It is the same two facts
+/// the selection reports for the one session the owner chose, read for every
+/// listed session so the list says them before anything is pressed.
+pub type Summary {
+  Summary(
+    /// The session's canonical identity, which pairs the summary with its row.
+    session: String,
+    /// How many people hold the session, the owner counted, so a session nobody
+    /// was invited to is one person.
+    people: Int,
+    /// Whether `people` is all of them: a session with more members than a
+    /// listing page holds is `Truncated`, and its count is a lower bound.
+    more: More,
+    /// Whether the session may be shared.
+    scope: Sharing,
+  )
+}
+
 /// The most sign-ins the admin page lists for one principal. A principal with
 /// more says so and leaves the rest to `loom access signins`.
 pub const signins_shown = 10
@@ -161,6 +181,9 @@ pub type Snapshot {
     selection: Option(Selection),
     /// The sign-ins of each principal that holds any, in the principals' order.
     logins: List(Logins),
+    /// One summary for each of `sessions` the registry answered for, in no
+    /// particular order. A session without one is drawn without the line.
+    summaries: List(Summary),
   )
 }
 
@@ -311,10 +334,7 @@ pub fn reason_words(reason: Reason) -> String {
   case reason {
     NotOwner -> "Only the owner can administer from a page."
     TooMany(used:, free_at_ms:) ->
-      int.to_string(used)
-      <> " grants in the last hour is the most a credential may make. The next is free at "
-      <> clock_words(free_at_ms)
-      <> ". Until then, use loomd access from a terminal."
+      throttle_lead(used) <> utc_clock(free_at_ms) <> throttle_tail
     NotIsolated -> invites.reason_words(invites.NotIsolated)
     NotFound -> "That session or person is no longer there. The page reloads."
     InvalidName ->
@@ -323,11 +343,64 @@ pub fn reason_words(reason: Reason) -> String {
   }
 }
 
-// A Unix time in milliseconds as the UTC time of day to the minute, rounded up so a time is never shown before it comes, `HH:MM UTC`.
-// The page cannot know the owner's zone, so it names the one it counts in.
-fn clock_words(milliseconds: Int) -> String {
+/// The words of the allowance refusal up to the time a place frees: the count
+/// and the sentence that names the next. A page that draws the time in the
+/// browser's zone (`<loom-time>`) puts its element between this and
+/// `throttle_tail`; `reason_words` puts the UTC time there.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert grants.throttle_lead(3)
+///   == "3 grants in the last hour is the most a credential may make. The next is free at "
+/// ```
+pub fn throttle_lead(used: Int) -> String {
+  int.to_string(used)
+  <> " grants in the last hour is the most a credential may make. The next is free at "
+}
+
+/// The words of the allowance refusal after the time a place frees.
+pub const throttle_tail = ". Until then, use loomd access from a terminal."
+
+/// A Unix time in milliseconds as the UTC time of day to the minute, rounded up
+/// so a time is never shown before it comes, `HH:MM UTC`. The browser draws the
+/// same instant in its own zone (`<loom-time>`) and carries this in the
+/// element's `title` and as its text where the element is not registered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert grants.utc_clock(1_790_030_460_000) == "22:41 UTC"
+/// ```
+pub fn utc_clock(milliseconds: Int) -> String {
   let minutes = { int.max(milliseconds, 0) + 59_999 } / 60_000 % 1440
   pad(minutes / 60) <> ":" <> pad(minutes % 60) <> " UTC"
+}
+
+/// The line a session's row adds to its path: how many people hold it and
+/// whether it may be shared, in fixed words.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert grants.summary_words(grants.Summary("s", 2, grants.Whole, creations.Private))
+///   == "2 people · private"
+/// ```
+pub fn summary_words(summary: Summary) -> String {
+  let count = case summary.more {
+    Whole -> int.to_string(summary.people)
+    Truncated -> int.to_string(summary.people) <> "+"
+  }
+  let people = case summary.people, summary.more {
+    1, Whole -> count <> " person"
+    _, _ -> count <> " people"
+  }
+  people
+  <> " · "
+  <> case summary.scope {
+    Shareable -> "shareable"
+    Private -> "private"
+  }
 }
 
 fn pad(number: Int) -> String {

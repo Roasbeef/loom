@@ -25,6 +25,16 @@
 //// page did not offer. The session is not a field: it is the session the form
 //// was drawn under, carried by the message the server drew.
 ////
+//// A session's row says who holds it and whether it may be shared, after its
+//// path (`grants.summary_words`), from the summaries the read made for every
+//// listed session, so the list answers before anything is pressed. A session the
+//// registry did not answer for has no line.
+////
+//// The invitation form is keyed by how many invitations the page has made, so
+//// the invitation that was just made opens a fresh form: the name field is empty
+//// and the role is back to observer. A read, a refusal or a change to a member
+//// leaves the form, and whatever is typed in it, as it was.
+////
 //// The section ends with a slot for the claim an invitation made, under the form
 //// that made it (`view/admin_claim`). A notice about a change (`view/notice`) is
 //// drawn under the members' heading, or beside the form for an invitation. Each
@@ -37,14 +47,16 @@
 //// literals.
 
 import gleam/dynamic/decode
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/element/keyed
 import lustre/event
 import web_view/creations.{Private, Shareable}
-import web_view/grants.{type Claim, type Holder, type Selection}
+import web_view/grants.{type Claim, type Holder, type Selection, type Summary}
 import web_view/invites.{type Role}
 import web_view/sessions.{type Entry}
 import web_view/view/admin_buttons.{type Busy, type Presses}
@@ -61,18 +73,24 @@ import web_view/view/notice.{type Spoken}
 /// `spoken` is the last thing the page said about an ask and `claim` the claim on
 /// screen, if one is; each is drawn only where it belongs.
 ///
+/// `summaries` says each session's people and scope under its path, and `invited`
+/// is how many invitations the page has made, which keys the invitation form so
+/// each one opens it empty.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // admin_sessions.view(entries, Some(id), selection, None, None, None, presses, admin_buttons.Free)
+/// // admin_sessions.view(entries, Some(id), selection, [], None, None, None, 0, presses, admin_buttons.Free)
 /// ```
 pub fn view(
   entries: List(Entry),
   chosen: Option(String),
   selection: Option(Selection),
+  summaries: List(Summary),
   armed: Option(grants.Action),
   spoken: Option(Spoken),
   claim: Option(Claim),
+  invited: Int,
   presses: Presses(message),
   busy: Busy,
 ) -> Element(message) {
@@ -88,10 +106,12 @@ pub fn view(
         [_, ..] ->
           html.ul(
             [attribute.class("admin-list")],
-            list.map(entries, fn(entry) { pick(entry, chosen, presses) }),
+            list.map(entries, fn(entry) {
+              pick(entry, chosen, summaries, presses)
+            }),
           )
       },
-      members(entries, chosen, selection, armed, spoken, presses, busy),
+      members(entries, chosen, selection, armed, spoken, invited, presses, busy),
       admin_claim.for_session(claim, presses.dismiss),
     ],
   )
@@ -102,6 +122,7 @@ pub fn view(
 fn pick(
   entry: Entry,
   chosen: Option(String),
+  summaries: List(Summary),
   presses: Presses(message),
 ) -> Element(message) {
   let current = case chosen {
@@ -121,11 +142,22 @@ fn pick(
           html.text(sessions.label(entry)),
         ]),
         html.span([attribute.class("admin-sub")], [
-          html.text(heading.shorten_path(entry.workspace)),
+          html.text(
+            heading.shorten_path(entry.workspace) <> summary(entry, summaries),
+          ),
         ]),
       ],
     ),
   ])
+}
+
+// The words after a session's path: its people and scope when the registry
+// answered for it, and nothing when it did not.
+fn summary(entry: Entry, summaries: List(Summary)) -> String {
+  case list.find(summaries, fn(held) { held.session == entry.id }) {
+    Ok(held) -> " · " <> grants.summary_words(held)
+    Error(Nil) -> ""
+  }
 }
 
 // The chosen session's members and its invitation form, or the line that says
@@ -136,6 +168,7 @@ fn members(
   selection: Option(Selection),
   armed: Option(grants.Action),
   spoken: Option(Spoken),
+  invited: Int,
   presses: Presses(message),
   busy: Busy,
 ) -> Element(message) {
@@ -157,7 +190,7 @@ fn members(
         notice.at_members(spoken),
         holders(selection, label, armed, presses, busy),
         truncation(selection.more),
-        sharing(selection, label, spoken, presses, busy),
+        sharing(selection, label, spoken, invited, presses, busy),
       ])
     }
   }
@@ -170,14 +203,18 @@ fn sharing(
   selection: Selection,
   label: String,
   spoken: Option(Spoken),
+  invited: Int,
   presses: Presses(message),
   busy: Busy,
 ) -> Element(message) {
   case selection.scope {
     Shareable ->
-      html.div([attribute.class("admin-invitation")], [
-        invitation(selection.session, label, presses, busy),
-        notice.at_invitation(spoken),
+      keyed.div([attribute.class("admin-invitation")], [
+        #(
+          "invite-" <> int.to_string(invited),
+          invitation(selection.session, label, presses, busy),
+        ),
+        #("notice", html.div([], [notice.at_invitation(spoken)])),
       ])
     Private ->
       html.p([attribute.class("admin-lead")], [

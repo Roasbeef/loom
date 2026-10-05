@@ -3537,13 +3537,16 @@ fn admin_snapshot(
     |> result.map_error(authentication_failure),
   )
   use selection <- result.try(chosen_members(attachment, chosen))
-  use logins <- result.map(admin_logins(attachment, people.entries))
+  use logins <- result.try(admin_logins(attachment, people.entries))
+  let listed = list.take(views, sessions.listed_limit)
+  use summaries <- result.map(admin_summaries(attachment, listed))
   grants.Snapshot(
     principals: owner_first(list.map(people.entries, listed_principal)),
     more_principals: more_of(people.remainder),
-    sessions: list.map(list.take(views, sessions.listed_limit), listed_entry),
+    sessions: list.map(listed, listed_entry),
     selection:,
     logins:,
+    summaries:,
   )
 }
 
@@ -3581,6 +3584,46 @@ fn admin_logins(
             listed_signin,
           ),
         ))
+      Error(error) -> Error(admin_failure(error))
+    }
+  })
+}
+
+// One summary for each listed session: how many people hold it and whether it
+// may be shared, read with the same registry call that reads the chosen
+// session's members, as the page's owner (protocol-change/065, the addendum on
+// the admin page's session rows). A session the catalogue no longer holds when
+// the read reaches it is left out, so its row has no line; any other failure
+// of the registry is the registry failing to answer, as it is for the chosen
+// session. The count is the owner and the members one page lists, with the page
+// saying whether that is all of them.
+fn admin_summaries(
+  attachment: server.AdminAttachment(instance),
+  views: List(manager.View),
+) -> Result(List(grants.Summary), Failure) {
+  list.try_fold(views, [], fn(kept, view) {
+    let session = view.registration.id
+    case
+      manager.session_member_page(
+        attachment.registry,
+        attachment.digest,
+        session,
+        after: "",
+      )
+    {
+      Ok(members) -> {
+        let selected = selection_of(session, members)
+        Ok([
+          grants.Summary(
+            session:,
+            people: 1 + list.length(selected.holders),
+            more: selected.more,
+            scope: selected.scope,
+          ),
+          ..kept
+        ])
+      }
+      Error(manager.AdminMetadata(catalogue.Missing)) -> Ok(kept)
       Error(error) -> Error(admin_failure(error))
     }
   })

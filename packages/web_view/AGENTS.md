@@ -215,10 +215,17 @@ page keys and nonces, and the relay into the session's gateway.
   session, the last notice (a `notice.Spoken`: the action with its `Said` or
   `Refused` words, which decide where the line is drawn) and the claim an ask
   made (`claim`) until `Dismissed`. The claim is drawn beside the action that
-  made it, never sticky: under the invitation form (`admin_claim.for_session`) or
+  made it, never sticky (it opens with an empty `<loom-reveal>` that scrolls the
+  box into view once): under the invitation form (`admin_claim.for_session`) or
   under the rotated person's row (`for_person`), each one fixed child of its
   parent so no path moves. The centre's first child is an empty place, so the
-  body stays at `admin.body_path`. After a `TooMany` refusal the model keeps when a place frees
+  body stays at `admin.body_path`. The invitation form is keyed by `Model.invited`
+  (how many invitations were made), so each one opens it with an empty name field;
+  `Snapshot.summaries` (`grants.Summary`: people, `more`, scope, read for every
+  listed session by `ui_socket.admin_summaries`) is the line after each session's
+  path (`grants.summary_words`). A `TooMany` refusal is `notice.Throttled`, whose
+  time is a `<loom-time at=ms>` the browser words in its own zone, UTC in its
+  `title` and light text. After a `TooMany` refusal the model keeps when a place frees
   (`Model.spent`), and until then `admin_buttons.Busy` is `Spent(words)`: the
   buttons that grant (`admin_buttons.granting`: Rotate, Make operator, Create
   invitation) carry the refusal's words in their `title` and still send, since
