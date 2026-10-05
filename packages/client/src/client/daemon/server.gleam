@@ -849,30 +849,61 @@ fn claim_page(request) {
 }
 
 // The browser claim, a `POST` from the claim form (protocol-change/065, PR 9).
-// The checks run in 065's order: the host was checked by the router, then this
+// The checks run cheapest first: the host was checked by the router, then this
 // origin's own page as the sender (the claim's one secret is typed by a person,
 // so no other page may post it on their behalf and a program that says nothing
-// of its origin is refused too), the form's declared size and type, a
-// control-class parser permit, which a daemon that is not serving refuses, and
-// then the body. The answer to a refusal that a person can correct is the form
-// again with fixed words above it, which needs the policy that lets the form
-// post, so this handler secures its own answers.
+// of its origin is refused too), the form's declared size and type, then the
+// body, which is at most 1 KiB, and the token's shape. Only a value that is a
+// claim token takes a reservation, one per claim as `/v2/claim` takes it, so a
+// second post for a claim already in flight is refused and nothing a stranger
+// can post without a claim-shaped value costs the daemon a place. The answer to
+// a refusal that a person can correct is the form again with fixed words above
+// it, which needs the policy that lets the form post, so this handler secures
+// its own answers.
 fn claim_submit(config: Config(instance), ui: Ui(instance), request, host) {
   case ui_http.same_origin_post(request), ui_http.form_declared(request) {
     False, _ -> ui_http.secured(plain(403, "forbidden sender"), host)
     True, False -> ui_http.secured(plain(400, "bad request"), host)
     True, True ->
-      case
-        upgrade_log.timed(upgrade_log.Page, "acquire", fn() {
-          root.acquire(config.daemon, root.Control, within: 1000)
-        })
-      {
-        Error(reason) -> {
+      case mist.read_body(request, max_body_limit: ui_http.max_form_bytes) {
+        Error(_) -> ui_http.secured(plain(400, "bad request"), host)
+        Ok(body) ->
+          case ui_http.posted_claim(body.body) {
+            Error(Nil) -> ui_http.secured(plain(400, "bad request"), host)
+            Ok(#(typed, name)) ->
+              reserve_claim(config, ui, host, string.trim(typed), name)
+          }
+      }
+  }
+}
+
+// The token's shape is checked before anything is looked up or reserved, so a
+// bearer, a login or a stray word typed into the field is refused having asked
+// the daemon nothing. A token that has the shape is hashed here and dropped:
+// only its hash goes further, and nothing the person typed is written to a log
+// or drawn back.
+fn reserve_claim(
+  config: Config(instance),
+  ui: Ui(instance),
+  host,
+  typed: String,
+  name: Option(String),
+) {
+  let hashed = case claim.validate_token(typed) {
+    Ok(Nil) -> access.claim_digest(claim.digest(typed))
+    Error(_) -> Error(catalogue.Invalid("not a claim token"))
+  }
+  case hashed {
+    Error(_) -> claim_refused(host, 400, page.NotAClaim)
+    Ok(presented) ->
+      case root.acquire_claim(config.daemon, presented, within: 1000) {
+        Error(root.ClaimInFlight) -> claim_refused(host, 409, page.ClaimBusy)
+        Error(root.NotAdmitted(reason)) -> {
           upgrade_log.refused(upgrade_log.Page, "acquire", reason)
           ui_http.secured(plain(503, "daemon not ready"), host)
         }
         Ok(permit) -> {
-          let answer = claimed_page(config, ui, request, host)
+          let answer = redeem_claim(config, ui, host, presented, name)
           root.release(config.daemon, permit)
           answer
         }
@@ -880,38 +911,16 @@ fn claim_submit(config: Config(instance), ui: Ui(instance), request, host) {
   }
 }
 
-fn claimed_page(config: Config(instance), ui: Ui(instance), request, host) {
-  case mist.read_body(request, max_body_limit: ui_http.max_form_bytes) {
-    Error(_) -> ui_http.secured(plain(400, "bad request"), host)
-    Ok(body) ->
-      case ui_http.posted_claim(body.body) {
-        Error(Nil) -> ui_http.secured(plain(400, "bad request"), host)
-        Ok(#(typed, name)) ->
-          redeem_claim(config, ui, host, string.trim(typed), name)
-      }
-  }
-}
-
-// The token's shape is checked before anything is looked up, so a bearer, a
-// login or a stray word typed into the field is refused having asked the
-// catalogue nothing. A token that has the shape is hashed here and dropped:
-// only its digest goes further, and nothing the person typed is written to a
-// log or drawn back.
 fn redeem_claim(
   config: Config(instance),
   ui: Ui(instance),
   host,
-  typed: String,
+  presented: access.ClaimDigest,
   name: Option(String),
 ) {
-  let digest = case claim.validate_token(typed) {
-    Ok(Nil) -> access.claim_digest(claim.digest(typed))
-    Error(_) -> Error(catalogue.Invalid("not a claim token"))
-  }
-  case digest, ready(config, upgrade_log.Page) {
-    Error(_), _ -> claim_refused(host, 400, page.NotAClaim)
-    Ok(_), Error(_) -> ui_http.secured(plain(503, "daemon not ready"), host)
-    Ok(presented), Ok(state) ->
+  case ready(config, upgrade_log.Page) {
+    Error(_) -> ui_http.secured(plain(503, "daemon not ready"), host)
+    Ok(state) ->
       case
         ui_login.claim(
           ui.root_key,

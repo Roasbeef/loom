@@ -6971,3 +6971,34 @@ pub fn the_browser_claim_keeps_only_digests_under_the_state_root_test() {
       == ["browser"]
   })
 }
+
+// Two browsers posting one claim at once redeem it once: the claim is reserved
+// for the one in flight, and the other is refused either as busy (the first still
+// holds the reservation) or as used (it had already finished). Never two logins
+// for one claim, and the catalogue holds one.
+pub fn two_posts_of_one_claim_redeem_it_once_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_shared_session(ready, "browser-claim-race", 1304)
+    let token = invitation(port, credential, session, "racer", "observer")
+    let answers = process.new_subject()
+    let post = fn(name) {
+      process.spawn(fn() {
+        process.send(answers, redeemed_in_browser(port, token, name).status)
+      })
+    }
+    let _ = post("One")
+    let _ = post("Two")
+    let assert Ok(first) = process.receive(answers, 10_000)
+      as "the first post answers"
+    let assert Ok(second) = process.receive(answers, 10_000)
+      as "the second post answers"
+    assert list.sort([first, second], int.compare) == [200, 409]
+    assert claim_rows(ready.state_root, token) == ["claimed"]
+    assert catalogue_rows(
+        ready.state_root,
+        "SELECT CAST(COUNT(*) AS TEXT) FROM access_credentials WHERE principal_id = 'racer'",
+        [],
+      )
+      == ["1"]
+  })
+}

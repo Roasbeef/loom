@@ -516,7 +516,8 @@ pub type ClaimNotice {
   /// bound nothing and is still open.
   NameRefused
 
-  /// The daemon could not answer. The claim may be open.
+  /// The daemon could not answer, or another redemption of the same claim is
+  /// in progress. The claim may be open.
   ClaimBusy
 }
 
