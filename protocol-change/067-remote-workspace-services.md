@@ -1023,3 +1023,95 @@ The [lifetime design](../docs/design-notes/distributed-scope-lifetime.md) and
 [bounded model review](../docs/review/distributed-scoped-drain-model.md) record the
 rationale, failure traces and proof limits. Actual TLS peers must connect those
 modeled events to concrete queued asks, producer joins and native outcomes.
+
+
+## Addendum: complete code-mode reports
+
+**Decision: the owner accepted bounded previews with durable complete-value
+references. The following mechanics passed independent design review;
+implementation and executable correspondence remain required.** Managed
+code-mode results retain a complete canonical report in their original owner
+SQLite tool row. Ordinary tools keep their existing final codec and allowance.
+
+The report MUST separate the program's Outcome body from owner-produced metadata.
+The Outcome preserves the existing success value or error message/details,
+including binary values and non-string map keys. It contains no capability token
+or authenticated channel envelope. Typed metadata retains the manifest hash,
+build/node enforcement and complete existing bounded call log. Program content
+MUST NOT supply those owner observations.
+
+The version-1 bundle is `LOOMRV01`, two big-endian u32 segment lengths, then
+canonical terminal and metadata bytes, with no trailing data. Terminal bytes are
+bounded at 16,777,216, metadata at 262,144, and the whole bundle at 17,039,376.
+SHA-256 binds all bundle bytes. The original cap frame limit remains unchanged;
+its enclosing frame still consumes part of that ceiling.
+
+Before fresh admission, trusted assembly MUST pin `CodeModeReportV1` and reserve
+17,301,648 final bytes under the existing global owner quota: the complete bundle,
+262,144 final JSON bytes and 128 stored digest/profile bookkeeping bytes. The
+reference URI itself is part of final JSON. Original request, identity and child
+allowances remain separately charged. No later result or retry can enlarge the
+profile. Original call ID/name together MUST fit an 8-KiB encoded allowance before
+admission, and the final timestamp is a nonnegative u64. Arbitrary extra details
+cannot enter this closed final schema. Ordinary profile admission remains
+unchanged.
+
+Terminal admission and final retention MUST use the same separate fixed report
+profile: depth 254, 65,536 total nodes including map keys, at most 65,536 array
+elements or 32,768 map entries, and scalar/aggregate bytes within the terminal
+ceiling. These are new shape constraints beyond the earlier cap frame byte/depth
+limits. Raw scanning precedes decoding; structural bounds precede encoding.
+Canonical equality, UTF-8, finite numbers, unique keys and complete consumption
+are required. The smaller native MessagePack profile MUST NOT be widened.
+
+Metadata has depth 16, at most 8,192 nodes, 128 entries per container and
+8,192-byte strings. Each enforcement stage has at most 128 applied/skipped
+entries together and 65,536 canonical bytes. The call log keeps its existing
+128-record and bounded field contract, with nonnegative u64 counters/times.
+Its schema is typed; only the program's value/details remain arbitrary values.
+Invalid producer metadata cannot be silently truncated into successful custody.
+
+The original pinned owner first commits the complete report and returns an
+internal reference. The renderer then creates a preview of at most 4,096 UTF-8
+bytes without rendering the full value as JSON. Final commit MUST independently
+validate the exact original identity, profile and report reference before
+acknowledging the final ToolOutcome. A crash between these two commits leaves
+unknown final outcome with retained report history, never reconstructed final
+authority or permission to rerun the program. Retention failure MUST keep the
+original run unresolved; a later generic diagnostic cannot discharge it.
+
+Owner format 5 stores the profile, allowance, report and digest. Scalar headers
+and quota checks precede large BLOB reads. Reopen validates each report's complete
+canonical bytes, digest and original binding, then the custodian validates its
+final-reference association before publishing admission. Format-4 files are
+refused unchanged. The owner connection sets and reads back
+`PRAGMA synchronous=FULL` alongside WAL; process-crash tests do not establish
+physical power-loss behavior.
+
+Exact session readback plus the existing run/physical discharge prerequisites
+allow collection to release unused reservation. Collection MUST retain the
+report, digest, identity and actual byte charge with the permanent fence. Unknown
+rows retain their full allowance. The owner database remains a durable session
+companion for the lifetime of transcript references, including close, archive,
+reopen and compaction. Transcript-only export does not transfer its contents.
+
+The fixed reference is
+`result://<session-uuid>/<result-entry-uuid>/<sha256>/<byte-length>`, bounded at
+160 bytes. It is not a filesystem path or read credential. The proposed
+`cap/report.load_result` uses an authenticated owner-local `report.result_chunk`
+door, including with registered remote workspaces. Session, original entry,
+digest and length MUST agree before a bounded SQL chunk read. Known metadata
+returns through closed public types rather than arbitrary value maps.
+
+At most 261 chunk calls may be admitted across all references in one invocation.
+Each response carries at most 65,536 payload and 512 envelope bytes, for at most
+17,238,528 aggregate serialized reply bytes. Existing deadlines, credits and
+pooled budgets remain authoritative and are never refreshed by retrieval. The
+helper concatenates its bounded chunk list once and performs bounded decoding.
+Only hosts with the real owner door installed may advertise this capability.
+
+The [complete-report design](../docs/design-notes/distributed-final-results.md)
+records tests and the OwnerDischarge model extension. Report commit, final owner
+acknowledgement, channel consumption ACK, child receipt, producer drain, native
+retirement and exact session commit remain separate facts. No one of them
+substitutes for the others.
