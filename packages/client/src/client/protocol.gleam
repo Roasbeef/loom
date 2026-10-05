@@ -1120,6 +1120,9 @@ fn decode_command_body(
         | "revoke"
         | "select"
         | "rollback"
+        | "core_status"
+        | "core_upgrade"
+        | "core_downgrade"
         | "admit_tasks"
         | "mark_outcome" -> Ok(Nil)
         other -> Error("unsupported evolution action: " <> other)

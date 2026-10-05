@@ -56,7 +56,7 @@ pub type Failure {
 
 /// The complete discoverable operator surface.
 pub const usage =
-  "usage: loomd evolution [--state-dir PATH] ACTION SESSION [--args FILE]\n       [--candidate-id ID] [--evidence-id ID] [--request-id ID]\n\nActions: catalogue, inspect, evidence, status, approve, revoke, select, rollback, admit_tasks, mark_outcome.\n\nArguments are a JSON object of at most 48 KiB. SESSION must already be resident. Authentication uses the private daemon owner credential; arguments cannot supply an authority or principal. Mutations require the fields advertised by their native control, including the expected selection and an exact request_id for select/rollback.\n\nOutput is one JSON value. Exit 0 means the response was acknowledged; status=queued means accepted, not completed. Use status with the exact request_id to recover a missing selection acknowledgement. Exit 2 means invalid arguments, 3 means not sent or refused, and 4 means unknown outcome.\n\nExamples:\n  loomd evolution catalogue SESSION\n  loomd evolution inspect SESSION --candidate-id SHA256\n  loomd evolution evidence SESSION --evidence-id SHA256\n  loomd evolution approve SESSION --args approval.json\n  loomd evolution select SESSION --args selection.json\n  loomd evolution status SESSION --request-id publish-1"
+  "usage: loomd evolution [--state-dir PATH] ACTION SESSION [--args FILE]\n       [--candidate-id ID] [--evidence-id ID] [--request-id ID]\n\nActions: catalogue, inspect, evidence, status, approve, revoke, select, rollback, admit_tasks, mark_outcome, core_status, core_upgrade, core_downgrade.\n\nArguments are a JSON object of at most 48 KiB. SESSION must already be resident. Authentication uses the private daemon owner credential; arguments cannot supply an authority or principal. Mutations require the fields advertised by their native control, including the expected selection and an exact request_id for select/rollback.\n\nOutput is one JSON value. Exit 0 means the response was acknowledged; status=queued means accepted, not completed. Use status with the exact request_id to recover a missing selection acknowledgement; use core_status for core_upgrade/core_downgrade receipts. Exit 2 means invalid arguments, 3 means not sent or refused, and 4 means unknown outcome.\n\nExamples:\n  loomd evolution catalogue SESSION\n  loomd evolution inspect SESSION --candidate-id SHA256\n  loomd evolution evidence SESSION --evidence-id SHA256\n  loomd evolution approve SESSION --args approval.json\n  loomd evolution select SESSION --args selection.json\n  loomd evolution status SESSION --request-id publish-1\n  loomd evolution core_status SESSION\n  loomd evolution core_upgrade SESSION --args upgrade.json\n  loomd evolution core_status SESSION --request-id scratch-upgrade-1"
 
 /// Runs one authenticated operation and prints its original JSON result.
 ///
@@ -97,7 +97,8 @@ pub fn parse(arguments: List(String)) -> Result(Command, Failure) {
       list.contains(
         [
           "catalogue", "inspect", "evidence", "status", "approve", "revoke",
-          "select", "rollback", "admit_tasks", "mark_outcome",
+          "select", "rollback", "admit_tasks", "mark_outcome", "core_status",
+          "core_upgrade", "core_downgrade",
         ],
         action,
       )

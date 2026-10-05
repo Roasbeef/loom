@@ -136,6 +136,7 @@ import client/session_git
 import client/skill_tool
 import client/system_prompt
 import client/tool_holder
+import client/upgrade/control as upgrade_control
 import client/wiring
 import client/worktree_diff
 import core/clock.{type Clock}
@@ -3678,6 +3679,8 @@ fn assemble_in(
   // supervisor further down — though the knot here is only ordering,
   // since the store closes over no runtime at all.
   let scratch_name = address.new_address(namespace)
+  let upgrade_name = address.new_address(namespace)
+  let core_control = upgrade_control.seam(upgrade_name)
 
   // The scheduling plane is decided once, here, and reached two ways:
   // the `schedule_*` tools and the `schedule.*` code-mode capabilities.
@@ -4482,6 +4485,9 @@ fn assemble_in(
     // vanished value, so an emptied store costs a running program a
     // cache miss it was already written to handle.
     |> sup.add(scratch.supervised(scratch_name, scratch.default_bounds()))
+    // Accepted upgrades belong to this session service, so a disconnected CLI
+    // cannot strand the scratch actor while its callbacks are suspended.
+    |> sup.add(upgrade_control.supervised(upgrade_name, scratch_name))
     // The satellite registry is in this tier because a restart costs
     // exactly what a satellite crash costs, which extensions are already
     // written to meet: every host it held is `Gone` to its next caller,
@@ -4589,7 +4595,7 @@ fn assemble_in(
             |> hub.with_registry(tool_registry)
             |> hub.with_extension_refusals(extension_refusals)
             |> hub.with_skills(skills)
-            |> with_evolution_control(evolution_wiring)
+            |> with_evolution_control(evolution_wiring, core_control)
             |> hub.with_code_mode_issue(code_mode_issue)
             // The operator's abort reaches the effect plane here, and
             // this is the only place it can: the runtime stops the
@@ -8036,11 +8042,25 @@ fn evolution_catalogue(
 fn with_evolution_control(
   options: hub.Options,
   wiring: Option(EvolutionWiring),
+  core: evolution_control.Seam,
 ) -> hub.Options {
-  case wiring {
-    None -> options
-    Some(wiring) -> hub.with_evolution(options, wiring.control)
-  }
+  // Core release authority is available independently of authored candidates.
+  // Retain only the two command capabilities in the gateway's service closure.
+  let extensions = option.map(wiring, fn(wiring) { wiring.control })
+  hub.with_evolution(
+    options,
+    evolution_control.Seam(command: fn(authority, principal, action, args) {
+      case action {
+        "core_status" | "core_upgrade" | "core_downgrade" ->
+          core.command(authority, principal, action, args)
+        _ ->
+          case extensions {
+            Some(control) -> control.command(authority, principal, action, args)
+            None -> Error("runtime evolution is unavailable for this session")
+          }
+      }
+    }),
+  )
 }
 
 fn evolution_program_outcome(

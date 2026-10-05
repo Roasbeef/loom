@@ -699,17 +699,22 @@ pub fn evolution_observer_reads_but_never_mutates_test() {
     )
   let #(handle, _, _) =
     authenticated(harness, access.Participant(access.Observer), process.self())
-  gateway.connection_text(
-    handle,
-    protocol.encode_command(protocol.CommandEnvelope(
-      772,
-      protocol.Evolution("approve", json.Object([])),
-    )),
+  list.each(
+    ["approve", "core_upgrade", "core_downgrade", "core_status"],
+    fn(action) {
+      gateway.connection_text(
+        handle,
+        protocol.encode_command(protocol.CommandEnvelope(
+          772,
+          protocol.Evolution(action, json.Object([])),
+        )),
+      )
+      let assert protocol.ErrorEvent(code: "forbidden", ..) =
+        next_reply(harness, 772, 8).event
+        as "observer requests never reach owner-only component controls"
+      assert process.receive(calls, within: 1) == Error(Nil)
+    },
   )
-  let assert protocol.ErrorEvent(code: "forbidden", ..) =
-    next_reply(harness, 772, 8).event
-    as "an observer approval never reaches the native catalogue"
-  assert process.receive(calls, within: 1) == Error(Nil)
 
   gateway.connection_text(
     handle,
