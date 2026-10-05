@@ -24,29 +24,29 @@
 //// Generated from these inputs; `--check` recomputes each digest and
 //// names the file that moved:
 ////
-////   de5a54182163d7e4cae0147ee33d2e656bce67cb88a351bd2569342769b3c644  packages/cap/src/cap/actor.gleam
+////   2b425752c259520016e01882443af8a98dc30fff962f3235f417104f463afe63  packages/cap/src/cap/actor.gleam
 ////   c983a1d854d70c42e45e8d609bf12e6b909af10344a65a6fbc3f2cd5e4d24efa  packages/cap/src/cap/execution.gleam
-////   17119de5a23f5b9a19fa25ed70d56921ae4588ff097408e124d31bc81b70c365  packages/cap/src/cap/fs.gleam
-////   13169b82fc24ff5aa14320f25b35c1ff500faf769fa0283cc78adc78d4b634fd  packages/cap/src/cap/git.gleam
-////   dc1de7c9d376c1224193be85eb0ccbbf980dde14ab12532d8c718c570dfe62db  packages/cap/src/cap/job.gleam
-////   100c99a10bdf7c898a32de79b01ca4d3cb1664c23c0db29a158b2a3862ecec18  packages/cap/src/cap/kv.gleam
-////   cef1b32af6ae85af5d83f90a81ae7813694d5c32ca9cec6a0eab59f3852cec14  packages/cap/src/cap/lsp.gleam
-////   71492113c3a2f3dcc0ff5ca4d01036fd21aae4bb0ab5241db23fff61d9f42243  packages/cap/src/cap/lsp_sql.gleam
-////   98e88492562b1a4cfb829581b6fee9c6040a956994f8d10cbb2ae2ed6bac0e6c  packages/cap/src/cap/mcp.gleam
-////   5d130bfe00a9ea5275c03dce003e6238d497e389d261fb7d6a0e78f83dbde2b3  packages/cap/src/cap/net.gleam
-////   cfbfea662dbdb362857911d078d78262c7f781153a3036256997a6309c428b2f  packages/cap/src/cap/notes.gleam
+////   cbd6841dc7f937beccf4e648b94e80c904099c90feecbdd7abef8fb8ede6015f  packages/cap/src/cap/fs.gleam
+////   862cacde4152ef13b16e817de8ff0d3d73d4e5f53b751b2346e5e47cf89f2c54  packages/cap/src/cap/git.gleam
+////   ec90749a5cecf84dd9562ca2ffbf5b970af787dcb0a2301e8d48183b44311f2b  packages/cap/src/cap/job.gleam
+////   17a9601d4841ac8c598885f4e4d64ed61c44bf358f0a3d4fded9a788154a382b  packages/cap/src/cap/kv.gleam
+////   c57b727c05e2557be1775c47351c11aa98cbcba37b7d2f6c5c78de53895d2ecd  packages/cap/src/cap/lsp.gleam
+////   c14dc2ff4a7dcb5f5a5d6a19f43988fb101655d8c61b030b2df11bebc4adbbe8  packages/cap/src/cap/lsp_sql.gleam
+////   a90f1b65b4b7a59c6fd0ac655210963b094e4a527c648b9291c54df082fc0f88  packages/cap/src/cap/mcp.gleam
+////   bdb1c89dbfa22358935bf092c103d7bc4defa2e71e48748592d7b4f6e9d8f164  packages/cap/src/cap/net.gleam
+////   9eec4c79212a6fb20f448392a8281ee55ca4add85b7da59d4bf1138ddd29d129  packages/cap/src/cap/notes.gleam
 ////   856004f80f0e7be10b9ba36221abe3443f126f744ecac3cde407b0fb2c199ea4  packages/cap/src/cap/peer.gleam
-////   68ea7061715254f5dbbcf0242552d89a788b72d896513223e1055704a99d15ef  packages/cap/src/cap/proc.gleam
-////   17c973c36d2ca3e184f54a7540a90eedf7b6090ffbdc762524a78cf184b98a8f  packages/cap/src/cap/report.gleam
+////   65722a205812d78ae90cfb0f93e804bb2d3da1be02500c88f4607d824964c320  packages/cap/src/cap/proc.gleam
+////   007692391de90b5df269341bf5f6d6393de56c6a95ad2d7cbc4159491f42a976  packages/cap/src/cap/report.gleam
 ////   909bbbc014278c57bb888b3e4c834ba52e405855bd52156a2ff35345283a1274  packages/cap/src/cap/runtime.gleam
-////   4e046bfdd44b9b7093ed0e787f55aa8792c433537a68e420bd30d0064dbd5cad  packages/cap/src/cap/schedule.gleam
-////   c4be2e8c194d95ab02bbd6b4d27946152162e335cf5aee7e8bf812e6d52fc8e0  packages/cap/src/cap/search.gleam
+////   3156b1ffaca196b1fec58975df71e52158b8ee298b2f1b36a4cbe9df72de3f64  packages/cap/src/cap/schedule.gleam
+////   df1e81353fbcfef3ec434f48869e35070f1ab79d0cc1354f922fd46ccc652a00  packages/cap/src/cap/search.gleam
 ////   982b0d1630132ae6c19e3308d16a5cbe92917715a6fbc696954c858da4f845a3  packages/cap/src/cap/strand.gleam
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   dade50ada67f4ac667f0b92cb10d0da213cac327897524dbb006e02cf3c90963  packages/cap/src/cap/workflow.gleam
 ////   20e291637a68e2d484bd4a17e9b825c59f2c22f439f00f6482af0d26aafafadd  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): b94c720794a0f57f9c3729e2c21f0bfcf93c2724b571e689d8c0a2045ee4b9b0
+//// Body digest (every line after the marker): 1b1fb34c87bb86a233d7c565bef2c2ea8c76e8cbbebba69370accb383cd72d1a
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -103,6 +103,8 @@ pub const default_mailbox_limit: Int
 pub fn call(Address(a, b), fn(Reply(c)) -> b, timeout: Int) -> Result(c, ActorError)
 /// Continue with a (possibly updated) state — the usual handler return.
 pub fn continue(a) -> Next(a)
+/// A one-line rendering of an `ActorError`.
+pub fn error_text(ActorError) -> String
 /// Reads the actor's current state. Ordered after any messages already
 /// admitted from this process.
 pub fn get(Address(a, b), timeout: Int) -> Result(a, ActorError)
@@ -284,6 +286,8 @@ pub type Replacement {
 ///
 /// Capability: `fs.edit`.
 pub fn edit(String, List(Replacement)) -> Result(Nil, FsError)
+/// A one-line rendering of an `FsError`.
+pub fn error_text(FsError) -> String
 /// Lists a directory's entries.
 ///
 /// Capability: `fs.list`.
@@ -333,6 +337,8 @@ pub fn commit(String) -> Result(String, GitError)
 pub fn current_branch() -> Result(String, GitError)
 /// The unified diff of the working tree (optionally staged).
 pub fn diff(staged: Bool) -> Result(String, GitError)
+/// A one-line rendering of a `GitError`.
+pub fn error_text(GitError) -> String
 /// The most recent commits, newest first, at most `limit`.
 pub fn log(limit: Int) -> Result(List(Commit), GitError)
 /// The working-tree status as porcelain entries.
@@ -471,6 +477,8 @@ pub type Stream(a) {
 }
 /// The cursors one poll's answer leaves behind, to hand to the next.
 pub fn after(Job) -> Cursors
+/// A one-line rendering of a `JobError`.
+pub fn error_text(JobError) -> String
 /// The cursors that read a job's whole retained tail: the first poll's.
 pub fn from_start() -> Cursors
 /// Whether a job in this state is one to come back to.
@@ -581,6 +589,8 @@ pub type KvError {
 ///
 /// Capability: `kv.delete`.
 pub fn delete(String) -> Result(Nil, KvError)
+/// A one-line rendering of a `KvError`.
+pub fn error_text(KvError) -> String
 /// Reads a key. `Ok(None)` when the key is absent or was evicted — the
 /// case every caller must handle.
 ///
@@ -595,8 +605,8 @@ pub fn set(String, BitArray) -> Result(Nil, KvError)
   #(
     "cap/lsp",
     "### cap/lsp
-`cap/lsp` — semantic questions about the workspace's code, answered by the
-language server the session runs for it (ADR-015).
+`cap/lsp` — live language-server queries; use it for one symbol's callers,
+hover or definition, and `cap/lsp_sql` for joins across several symbols.
 
 /// One edge of a call hierarchy.
 pub type Call {
@@ -655,7 +665,9 @@ pub type LspError {
   /// The server does not offer `request` (for example call hierarchy), so
   /// it was never sent.
   Unsupported(server: String, request: String)
-  /// The symbol was not found where the query said to look.
+  /// The symbol was not found where the query said to look. A bare name
+  /// (`AcceptForScheme`) may need its qualified form (`package.Name`, or
+  /// `Receiver.Method` for a method) before the server finds it.
   NotFound(symbol: String)
   /// More than one distinct definition matched. Narrow the query with
   /// `in` or `at_line` using one of these.
@@ -757,6 +769,9 @@ pub fn definition(Query) -> Result(Found(Site), LspError)
 ///
 /// Capability: `lsp.diagnostics`.
 pub fn diagnostics(option.Option(String)) -> Result(Diagnostics, LspError)
+/// A one-line rendering of an `LspError`, for a program building a report
+/// out of what went wrong rather than branching on it.
+pub fn error_text(LspError) -> String
 /// Type information and documentation for the queried symbol, as the
 /// server renders it (usually markdown).
 ///
@@ -794,7 +809,8 @@ pub fn symbol(String) -> Query
   #(
     "cap/lsp_sql",
     "### cap/lsp_sql
-A finite LSP observation with SQL evaluated inside this satellite only.
+One immutable LSP capture queried with SQL; use it for joins across two or
+more symbols, counts, overlaps and anti-joins.
 
 /// A satellite-local decoder for one projected row.
 pub type RowDecoder(a) = fn(List(Cell)) -> Result(a, String)
@@ -886,9 +902,18 @@ pub type QueryResult(a) {
   QueryResult(columns: List(String), rows: List(a), observation: Metadata)
 }
 /// A reference seed with an explicit file and optional one-based line.
+///
+/// The language server resolves `symbol` by name within `path`. A bare
+/// method name such as `AcceptForScheme` may not resolve: servers often
+/// want the qualified spelling, `package.Name` for package-level items or
+/// `Receiver.Method` for methods, and a miss comes back as
+/// `QueryFailed(\"symbol not found: ...\")` from `collect`.
 pub type Target {
   Target(symbol: String, path: String, line: option.Option(Int))
 }
+/// A query cell as text: `NULL` for `Null`, the printed number for
+/// `Integer` and `Real`, and the text itself for `Text`.
+pub fn cell_text(Cell) -> String
 /// Captures one complete bounded observation, spending one capture
 /// admission.
 ///
@@ -896,6 +921,9 @@ pub type Target {
 /// is complete or refused: no truncation can turn an anti-join into a
 /// false claim.
 pub fn collect(Plan) -> Result(Observation, Error)
+/// A one-line rendering of a capture `Error`, for a program building a
+/// report out of what went wrong.
+pub fn error_text(Error) -> String
 /// Returns the declared scope and checked observation interval.
 pub fn metadata(Observation) -> Metadata
 /// Executes one bounded read-only SQLite statement over the captured
@@ -908,7 +936,26 @@ pub fn metadata(Observation) -> Metadata
 /// second execution deadline, one-million-operation bound, thirty-two
 /// columns and a one-MiB output cap. Bound parameters are Cells; blobs
 /// are unavailable in this vocabulary.
+///
+/// The tables are listed by `schema()`; `\"references\"` is an SQL keyword,
+/// so quote it. Joining `targets` to `\"references\"` on `target_id = id`
+/// pairs each requested target with its references, and a LEFT JOIN with
+/// `WHERE r.target_id IS NULL` proves a requested target has none.
 pub fn query(Observation, String, List(Cell), fn(List(Cell)) -> Result(a, String)) -> Result(QueryResult(a), QueryError)
+/// A one-line rendering of a `QueryError`, for a program building a
+/// report out of what went wrong.
+pub fn query_error_text(QueryError) -> String
+/// The fixed tables and columns every query runs against, one table per
+/// line, so a program can print them instead of probing `sqlite_master`,
+/// which the read-only authorizer refuses.
+///
+/// Only these four tables exist: documents(path, digest, version),
+/// symbols(id, parent_id, name, kind, detail, path, line, column, text,
+/// anchor), targets(id, symbol, asked_path, asked_line, path, line,
+/// column, text, anchor) and \"references\"(target_id, path, line, column,
+/// text, anchor). A requested target is one row of targets, and
+/// \"references\".target_id points at targets.id.
+pub fn schema() -> String
 ",
   ),
   #(
@@ -962,6 +1009,8 @@ pub type McpError {
 pub type ToolResult {
   ToolResult(content: List(Content), structured: option.Option(report.Value))
 }
+/// A one-line rendering of an `McpError`.
+pub fn error_text(McpError) -> String
 /// A result's text content: every `Text` block, joined with newlines —
 /// the common read for a tool whose answer is prose.
 pub fn text(ToolResult) -> String
@@ -990,6 +1039,8 @@ pub type Request {
 pub type Response {
   Response(status: Int, headers: List(#(String, String)), body: BitArray)
 }
+/// A one-line rendering of a `NetError`.
+pub fn error_text(NetError) -> String
 /// Fetches a URL with a GET request.
 ///
 /// Capability: `net.request`. Denied by default; see the module docs.
@@ -1013,6 +1064,8 @@ pub type NotesError {
   /// The host could not be reached or answered with an invalid value.
   NotesUnavailable(reason: String)
 }
+/// A one-line rendering of a `NotesError`.
+pub fn error_text(NotesError) -> String
 /// Reads one exact shared key, relative to agent/. A missing key returns
 /// None; a stored JSON null returns Some(report.null()). Capability:
 /// notes.get. The execution allows at most 64 calls.
@@ -1250,6 +1303,8 @@ pub type ProcError {
 }
 /// Begins a command from its argv. The first element is the executable.
 pub fn command(List(String)) -> Command
+/// A one-line rendering of a `ProcError`.
+pub fn error_text(ProcError) -> String
 /// Sets the working directory for the command.
 pub fn in_dir(Command, String) -> Command
 /// Runs the command and returns its output.
@@ -1334,6 +1389,8 @@ pub fn emit(name: String, content_type: String, bytes: BitArray) -> Result(Artif
 /// contents. Binary values, non-text keys, duplicate keys, and excessive
 /// nesting fail.
 pub fn encode_json(Value) -> Result(String, String)
+/// A one-line rendering of a `ReportError`.
+pub fn error_text(ReportError) -> String
 /// An `Errored` outcome from a message alone, with nil details.
 pub fn failure(String) -> Outcome
 /// One field of an object value, or `Error(Nil)` when the value is not an
@@ -1654,6 +1711,8 @@ pub fn cron_on(String, String, String, Wake, String) -> Result(Created, Schedule
 ///
 /// Capability: `schedule.create`.
 pub fn cron_within(String, String, Bounds, Wake, String) -> Result(Created, ScheduleError)
+/// A one-line rendering of a `ScheduleError`.
+pub fn error_text(ScheduleError) -> String
 /// Schedules `body` to fire on this strand every `seconds` seconds, until
 /// the schedule expires on its own.
 ///
@@ -1816,6 +1875,8 @@ pub const default_max_matches: Int
 /// when the caller does not say. Pass `prune: []` to walk everything.
 /// `tools/search` holds the same list and is the enforcer.
 pub const default_prune: List(String)
+/// A one-line rendering of a `SearchError`.
+pub fn error_text(SearchError) -> String
 /// Walks `root` and returns the entries whose path matches the query's
 /// pattern, ordered by path. Symlinks are reported and never descended.
 ///
@@ -2589,8 +2650,8 @@ pub type KvError {
   #(
     "cap/lsp",
     "### cap/lsp
-`cap/lsp` — semantic questions about the workspace's code, answered by the
-language server the session runs for it (ADR-015).
+`cap/lsp` — live language-server queries; use it for one symbol's callers,
+hover or definition, and `cap/lsp_sql` for joins across several symbols.
 
 /// One edge of a call hierarchy.
 pub type Call {
@@ -2649,7 +2710,9 @@ pub type LspError {
   /// The server does not offer `request` (for example call hierarchy), so
   /// it was never sent.
   Unsupported(server: String, request: String)
-  /// The symbol was not found where the query said to look.
+  /// The symbol was not found where the query said to look. A bare name
+  /// (`AcceptForScheme`) may need its qualified form (`package.Name`, or
+  /// `Receiver.Method` for a method) before the server finds it.
   NotFound(symbol: String)
   /// More than one distinct definition matched. Narrow the query with
   /// `in` or `at_line` using one of these.
@@ -2733,7 +2796,8 @@ pub type Symbol {
   #(
     "cap/lsp_sql",
     "### cap/lsp_sql
-A finite LSP observation with SQL evaluated inside this satellite only.
+One immutable LSP capture queried with SQL; use it for joins across two or
+more symbols, counts, overlaps and anti-joins.
 
 /// A satellite-local decoder for one projected row.
 pub type RowDecoder(a) = fn(List(Cell)) -> Result(a, String)
@@ -2825,6 +2889,12 @@ pub type QueryResult(a) {
   QueryResult(columns: List(String), rows: List(a), observation: Metadata)
 }
 /// A reference seed with an explicit file and optional one-based line.
+///
+/// The language server resolves `symbol` by name within `path`. A bare
+/// method name such as `AcceptForScheme` may not resolve: servers often
+/// want the qualified spelling, `package.Name` for package-level items or
+/// `Receiver.Method` for methods, and a miss comes back as
+/// `QueryFailed(\"symbol not found: ...\")` from `collect`.
 pub type Target {
   Target(symbol: String, path: String, line: option.Option(Int))
 }

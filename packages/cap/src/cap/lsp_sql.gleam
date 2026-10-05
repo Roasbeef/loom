@@ -1,3 +1,6 @@
+//// One immutable LSP capture queried with SQL; use it for joins across two or
+//// more symbols, counts, overlaps and anti-joins.
+////
 //// A finite LSP observation with SQL evaluated inside this satellite only.
 ////
 //// Collection names one configured server, one root, explicit outline files
@@ -19,14 +22,22 @@ import cap/internal/dispatch
 import cap/internal/ffi_lsp_sql
 import cap/internal/wire
 import core/msgpack as m
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 
 /// A reference seed with an explicit file and optional one-based line.
+///
+/// The language server resolves `symbol` by name within `path`. A bare method
+/// name such as `AcceptForScheme` may not resolve: servers often want the
+/// qualified spelling, `package.Name` for package-level items or
+/// `Receiver.Method` for methods, and a miss comes back as
+/// `QueryFailed("symbol not found: ...")` from `collect`.
 pub type Target {
   Target(
-    /// The symbol spelling to resolve.
+    /// The symbol spelling to resolve, qualified when the server needs it.
     symbol: String,
     /// The workspace file in which to resolve it.
     path: String,
@@ -252,6 +263,11 @@ pub fn metadata(observation: Observation) -> Metadata {
 /// one-million-operation bound, thirty-two columns and a one-MiB output cap.
 /// Bound parameters are Cells; blobs are unavailable in this vocabulary.
 ///
+/// The tables are listed by `schema()`; `"references"` is an SQL keyword, so
+/// quote it. Joining `targets` to `"references"` on `target_id = id` pairs each
+/// requested target with its references, and a LEFT JOIN with `WHERE
+/// r.target_id IS NULL` proves a requested target has none.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -261,6 +277,23 @@ pub fn metadata(observation: Observation) -> Metadata {
 ///     _ -> Error("expected one integer count")
 ///   }
 /// })
+/// ```
+///
+/// Join each requested target to its references:
+///
+/// ```sql
+/// SELECT t.symbol, r.path, r.line, r.text
+/// FROM targets t JOIN "references" r ON r.target_id = t.id
+/// ORDER BY t.symbol, r.path, r.line
+/// ```
+///
+/// The anti-join that proves a requested target has no references in this
+/// observation:
+///
+/// ```sql
+/// SELECT t.symbol FROM targets t
+/// LEFT JOIN "references" r ON r.target_id = t.id
+/// WHERE r.target_id IS NULL
 /// ```
 pub fn query(
   observation: Observation,
@@ -414,12 +447,25 @@ fn decode(value: m.MsgPackValue) -> Result(Observation, String) {
   Ok(Observation(metadata:, documents:, symbols:, targets:, references:))
 }
 
+// The native boundary names a refused table only in SQLite's own words, so a
+// model that wrote `sqlite_master` or guessed `facts` learned nothing about
+// what exists. The two refusals an unknown table produces are given the table
+// list here, in the one place that already knows the schema.
 fn native_error(error: #(String, String)) -> QueryError {
   let #(code, reason) = error
   case code {
+    "read_only_denied" if reason == "read_only_denied" ->
+      ReadOnlyDenied(
+        "an unapproved table or function was named; " <> table_hint,
+      )
     "read_only_denied" -> ReadOnlyDenied(reason)
     "multiple_statements" -> MultipleStatements
-    "invalid_argument" | "sql_error" -> InvalidQuery(reason)
+    "sql_error" ->
+      case string.contains(reason, "no such table") {
+        True -> InvalidQuery(reason <> "; " <> table_hint)
+        False -> InvalidQuery(reason)
+      }
+    "invalid_argument" -> InvalidQuery(reason)
     "row_limit" -> QueryLimitExceeded(Rows, reason)
     "column_limit" -> QueryLimitExceeded(Columns, reason)
     "byte_limit" -> QueryLimitExceeded(Bytes, reason)
@@ -431,5 +477,128 @@ fn native_error(error: #(String, String)) -> QueryError {
     "unsupported_build" | "sqlite_failed" -> SqlUnavailable(reason)
     "cancelled" -> QueryCancelled
     _unknown -> SqlRefused(code, reason)
+  }
+}
+
+/// A one-line rendering of a capture `Error`, for a program building a report out of what went wrong.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert lsp_sql.error_text(lsp_sql.QueryFailed("symbol not found: main")) == "query failed: symbol not found: main"
+/// ```
+///
+pub fn error_text(error: Error) -> String {
+  case error {
+    InvalidScope(reason:) -> "invalid scope: " <> reason
+    Changed(reason:) -> "observation changed: " <> reason
+    LimitExceeded(reason:) -> "capture limit exceeded: " <> reason
+    DeadlineExceeded -> "capture deadline exceeded"
+    CaptureCeilingReached ->
+      "capture ceiling reached: at most four captures per invocation"
+    QueryFailed(reason:) -> "query failed: " <> reason
+    Denied(code:, message:) -> "denied (" <> code <> "): " <> message
+    Unavailable(reason:) -> "unavailable: " <> reason
+  }
+}
+
+/// A one-line rendering of a `QueryError`, for a program building a report out of what went wrong.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert lsp_sql.query_error_text(lsp_sql.DecodeFailed(2, "expected text")) == "row 2 did not decode: expected text"
+/// ```
+///
+pub fn query_error_text(error: QueryError) -> String {
+  case error {
+    ReadOnlyDenied(reason:) -> "read-only denied: " <> reason
+    MultipleStatements -> "more than one statement was submitted"
+    InvalidQuery(reason:) -> "invalid query: " <> reason
+    QueryLimitExceeded(limit:, reason:) ->
+      "query limit exceeded (" <> limit_text(limit) <> "): " <> reason
+    UnsupportedValue(reason:) -> "unsupported value: " <> reason
+    SqlUnavailable(reason:) -> "sql unavailable: " <> reason
+    QueryCancelled -> "query cancelled"
+    SqlRefused(code:, message:) -> "refused (" <> code <> "): " <> message
+    DecodeFailed(row:, reason:) ->
+      "row " <> int.to_string(row) <> " did not decode: " <> reason
+  }
+}
+
+// The one definition of the schema. `schema()` renders it and the table hint
+// in a refusal quotes its names. `schema`'s doc repeats it as prose, because
+// the prelude generator keeps only the paragraphs before a doc's first
+// heading and a fenced block would not survive. A cap test runs every listed
+// column against the native boundary, and a tools test checks that the
+// generated surface carries each line of `schema()`, so neither this list nor
+// that prose can drift from the tables the bridge creates.
+const tables = [
+  #("documents", ["path", "digest", "version"]),
+  #("symbols", [
+    "id", "parent_id", "name", "kind", "detail", "path", "line", "column",
+    "text", "anchor",
+  ]),
+  #("targets", [
+    "id", "symbol", "asked_path", "asked_line", "path", "line", "column", "text",
+    "anchor",
+  ]),
+  #("\"references\"", ["target_id", "path", "line", "column", "text", "anchor"]),
+]
+
+const table_hint =
+  "the tables are documents, symbols, targets, \"references\" (see lsp_sql.schema())"
+
+/// The fixed tables and columns every query runs against, one table per
+/// line, so a program can print them instead of probing `sqlite_master`, which
+/// the read-only authorizer refuses.
+///
+/// Only these four tables exist: documents(path, digest, version),
+/// symbols(id, parent_id, name, kind, detail, path, line, column, text,
+/// anchor), targets(id, symbol, asked_path, asked_line, path, line, column,
+/// text, anchor) and "references"(target_id, path, line, column, text,
+/// anchor). A requested target is one row of targets, and
+/// "references".target_id points at targets.id.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.starts_with(lsp_sql.schema(), "documents(path, digest, version)")
+/// ```
+///
+pub fn schema() -> String {
+  tables
+  |> list.map(fn(table) { table.0 <> "(" <> string.join(table.1, ", ") <> ")" })
+  |> string.join("\n")
+}
+
+/// A query cell as text: `NULL` for `Null`, the printed number for
+/// `Integer` and `Real`, and the text itself for `Text`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert lsp_sql.cell_text(lsp_sql.Null) == "NULL"
+/// assert lsp_sql.cell_text(lsp_sql.Integer(7)) == "7"
+/// assert lsp_sql.cell_text(lsp_sql.Text("main")) == "main"
+/// ```
+///
+pub fn cell_text(cell: Cell) -> String {
+  case cell {
+    Null -> "NULL"
+    Integer(value:) -> int.to_string(value)
+    Real(value:) -> string.inspect(value)
+    Text(value:) -> value
+  }
+}
+
+fn limit_text(limit: QueryLimit) -> String {
+  case limit {
+    Rows -> "rows"
+    Columns -> "columns"
+    Bytes -> "bytes"
+    Memory -> "memory"
+    Instructions -> "instructions"
+    Time -> "time"
   }
 }

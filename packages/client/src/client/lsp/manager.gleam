@@ -1854,6 +1854,7 @@ fn in_outline(
       server.module_case,
       root: session.identity.root,
       path: owned.path,
+      methods: resolve.method_names(server),
     )
     |> list.map(fn(entry) { refine(content, entry.1, symbol.identifier) })
     |> list.unique
@@ -3504,6 +3505,7 @@ fn resolve_observed_target(
       server.module_case,
       root: collection.session.identity.root,
       path: file.path,
+      methods: resolve.method_names(server),
     )
     |> list.map(fn(entry) { refine(file.content, entry.1, symbol.identifier) })
     |> list.unique

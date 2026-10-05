@@ -44,6 +44,7 @@ import gleam/string
 import simplifile
 import support/rig.{type Prerequisites, type Rig}
 import tools/call_record
+import tools/codemode_recipes
 import tools/tool
 
 // What the jailed `/bin/echo` prints, and therefore what the program's
@@ -217,6 +218,20 @@ pub fn a_type_error_comes_back_in_band_test_() -> EunitTest {
       Error(reason) ->
         io.println_error("SKIP a_type_error_comes_back_in_band: " <> reason)
       Ok(prerequisites) -> run_type_error(prerequisites)
+    }
+  })
+}
+
+/// A program whose only fault is an unused import is rebuilt once without
+/// it, by the real compiler in the real jail, and then runs.
+pub fn an_unused_import_is_removed_and_the_program_runs_test_() -> EunitTest {
+  jailed(fn() {
+    case rig.prerequisites() {
+      Error(reason) ->
+        io.println_error(
+          "SKIP an_unused_import_is_removed_and_the_program_runs: " <> reason,
+        )
+      Ok(prerequisites) -> run_unused_import(prerequisites)
     }
   })
 }
@@ -615,6 +630,69 @@ fn run_type_error(prerequisites: Prerequisites) -> Nil {
     execution.outcome
     as "a type error must come back in band"
   assert string.contains(diagnostics, "Type mismatch")
+  rig.stop(live)
+}
+
+fn run_unused_import(prerequisites: Prerequisites) -> Nil {
+  let live = rig.start(name: "unused-import", prerequisites:, pool_size: 2)
+  let source =
+    "import cap/report\n"
+    <> "import gleam/int\n"
+    <> "import gleam/list.{length, map}\n"
+    <> "\n"
+    <> "pub fn main() -> report.Outcome {\n"
+    <> "  case length([\"ran\"]) {\n"
+    <> "    1 -> report.text(\"ran\")\n"
+    <> "    _ -> report.text(\"unexpected\")\n"
+    <> "  }\n"
+    <> "}\n"
+  let execution =
+    codemode.execute(source, exec_config(live, prerequisites, "unused-import"))
+  let assert codemode.Ran(source: ran_source, artifact:, outcome:) =
+    execution.outcome
+    as "the unused import must be removed and the program must run"
+
+  // What ran is the program without the unused module and the unused
+  // member, and the artifact's address is over what was built from it.
+  assert ran_source
+    == "import cap/report\nimport gleam/list.{length}\n\npub fn main() -> report.Outcome {\n  case length([\"ran\"]) {\n    1 -> report.text(\"ran\")\n    _ -> report.text(\"unexpected\")\n  }\n}\n"
+  assert string.starts_with(artifact.manifest_hash, "sha256-")
+  assert outcome == satellite.Completed(value: msgpack.StringValue("ran"))
+  assert execution.edits
+    == [
+      "removed unused import gleam/int (line 2)",
+      "removed unused import gleam/list.{map} (line 3)",
+    ]
+  rig.stop(live)
+}
+
+/// The `cap/lsp_sql` recipe the description shows must compile against the
+/// real prelude. It is not run to a result: there is no language server
+/// here, so the program's own `collect` fails and it returns that failure,
+/// which is a `Ran` outcome all the same.
+pub fn the_lsp_sql_recipe_compiles_test_() -> EunitTest {
+  jailed(fn() {
+    case rig.prerequisites() {
+      Error(reason) ->
+        io.println_error("SKIP the_lsp_sql_recipe_compiles: " <> reason)
+      Ok(prerequisites) -> run_lsp_sql_recipe(prerequisites)
+    }
+  })
+}
+
+fn run_lsp_sql_recipe(prerequisites: Prerequisites) -> Nil {
+  let live = rig.start(name: "lsp-sql-recipe", prerequisites:, pool_size: 2)
+  let execution =
+    codemode.execute(
+      codemode_recipes.lsp_sql_skeleton(),
+      codemode.ExecConfig(
+        ..exec_config(live, prerequisites, "lsp-sql-recipe"),
+        vet_policy: vet_policy.default() |> vet_policy.allow("cap/lsp_sql"),
+      ),
+    )
+  let assert codemode.Ran(..) = execution.outcome
+    as "the documented lsp_sql recipe must vet, compile and run"
+  assert execution.edits == []
   rig.stop(live)
 }
 

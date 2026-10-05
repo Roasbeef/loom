@@ -823,3 +823,22 @@ fn map_error(error: CallError) -> JobError {
       }
   }
 }
+
+/// A one-line rendering of a `JobError`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert job.error_text(job.JobNotFound("j1")) == "job not found: j1"
+/// ```
+///
+pub fn error_text(error: JobError) -> String {
+  case error {
+    JobCeilingReached(message:) -> "job ceiling reached: " <> message
+    JobNotFound(message:) -> "job not found: " <> message
+    JobRefused(message:) -> "job refused: " <> message
+    JobDenied(code:, message:) -> code <> ": " <> message
+    JobResultMalformed(reason:) -> "malformed job result: " <> reason
+    JobUnavailable(reason:) -> "job unavailable: " <> reason
+  }
+}

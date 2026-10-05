@@ -1,5 +1,8 @@
-//// `cap/lsp` — semantic questions about the workspace's code, answered by
-//// the language server the session runs for it (ADR-015).
+//// `cap/lsp` — live language-server queries; use it for one symbol's callers,
+//// hover or definition, and `cap/lsp_sql` for joins across several symbols.
+////
+//// Semantic questions about the workspace's code, answered by the language
+//// server the session runs for it (ADR-015).
 ////
 //// # Why a program asks by symbol, never by position
 ////
@@ -91,8 +94,11 @@ import cap/internal/channel.{type CallError, Denied, Unreachable}
 import cap/internal/dispatch
 import cap/internal/wire
 import core/msgpack.{type MsgPackValue}
+import gleam/int
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 
 // --- constants: the bound and the wire codes -----------------------------------
 
@@ -388,7 +394,9 @@ pub type LspError {
   /// so it was never sent.
   Unsupported(server: String, request: String)
 
-  /// The symbol was not found where the query said to look.
+  /// The symbol was not found where the query said to look. A bare name
+  /// (`AcceptForScheme`) may need its qualified form (`package.Name`, or
+  /// `Receiver.Method` for a method) before the server finds it.
   NotFound(symbol: String)
 
   /// More than one distinct definition matched. Narrow the query with
@@ -875,5 +883,37 @@ fn map_error(error: CallError) -> LspError {
 
         _ -> LspDenied(code:, message:)
       }
+  }
+}
+
+/// A one-line rendering of an `LspError`, for a program building a report out of what went wrong rather than branching on it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert lsp.error_text(lsp.NotFound("util.Greet")) == "symbol not found: util.Greet"
+/// ```
+///
+pub fn error_text(error: LspError) -> String {
+  case error {
+    NoServer(reason:) -> "no language server: " <> reason
+    Unsupported(server:, request:) ->
+      "server " <> server <> " does not support " <> request
+    NotFound(symbol:) ->
+      case string.contains(symbol, ".") {
+        True -> "symbol not found: " <> symbol
+        False ->
+          "symbol not found: "
+          <> symbol
+          <> "; the name is unqualified, and the server may want the "
+          <> "qualified form (package.Name, or Receiver.Method for a method)"
+      }
+    Ambiguous(candidates:) ->
+      "ambiguous symbol: "
+      <> int.to_string(list.length(candidates))
+      <> " definitions match; narrow the query with lsp.in or lsp.at_line"
+    Refused(message:) -> "server refused: " <> message
+    LspDenied(code:, message:) -> "denied (" <> code <> "): " <> message
+    LspUnavailable(reason:) -> "lsp unavailable: " <> reason
   }
 }
