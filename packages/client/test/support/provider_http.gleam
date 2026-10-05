@@ -643,6 +643,21 @@ fn tool_result(block: json.JsonValue) -> Result(Latest, String) {
         }
         _, _ -> Error("tool result requires one exact text block")
       }
+    json.String(id), json.Bool(True), json.Array([content]) if id != "" ->
+      case field(content, "type"), field(content, "text") {
+        json.String("text"), json.String(text) -> {
+          use <- bool.guard(
+            when: !bounded(id) || !bounded(text),
+            return: Error("tool result exceeds fixture limit"),
+          )
+
+          // The script still refuses this result and never advances. Exact
+          // bounded fixture text exposes the native error behind HTTP 400.
+          Error("tool result failed: " <> id <> "\n" <> text)
+        }
+        _, _ ->
+          Error("tool result requires an ID and one successful content block")
+      }
     _, _, _ ->
       Error("tool result requires an ID and one successful content block")
   }
