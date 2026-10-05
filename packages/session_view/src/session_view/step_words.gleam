@@ -239,6 +239,74 @@ pub fn returned(outcome: String) -> String {
   }
 }
 
+/// A report whose line breaks arrived as the two characters `\n` read with
+/// real ones.
+///
+/// A model that double-escapes its report writes `# calc \n Tiny calculator.`
+/// on one line, and a host that draws it as it came shows the backslash. The
+/// repair applies only to text that has no line break of its own, so a report
+/// that is already laid out in lines, and may legitimately quote `\n` in a
+/// program, is left as it is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert step_words.spoken_breaks("# calc \\n Tiny") == "# calc \n Tiny"
+/// assert step_words.spoken_breaks("a\nb \\n c") == "a\nb \\n c"
+/// ```
+pub fn spoken_breaks(text: String) -> String {
+  case string.contains(text, "\n") {
+    True -> text
+    False -> string.replace(text, "\\n", "\n")
+  }
+}
+
+/// The plain sentence a failed step opens on, before the engine's own text.
+///
+/// The engine words its refusals for the model: `invalid arguments: `from` is
+/// required for this hunk op`. A reader following the work wants to know which
+/// step was refused and why, in words that name no tool. A refusal of the
+/// arguments is `The edit was rejected: "from" is required for this hunk op.`,
+/// with the backticks turned into quotation marks, and any other failure is
+/// only that the step failed, since the engine's text beneath it says the rest.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let words = Words("Edit", Mono("calc.py"), None)
+/// assert step_words.failure_sentence(words, "invalid arguments: `from` is required")
+///   == "The edit was rejected: \"from\" is required."
+/// assert step_words.failure_sentence(words, "no such file") == "The edit failed."
+/// ```
+pub fn failure_sentence(words: Words, engine: String) -> String {
+  let step = step_noun(words.verb)
+  case string.trim(engine) {
+    "invalid arguments: " <> reason ->
+      step
+      <> " was rejected: "
+      <> string.replace(text_hygiene.single_line(reason), "`", "\"")
+      <> "."
+    _ -> step <> " failed."
+  }
+}
+
+// The step as a sentence's subject: the verb's own noun for a tool the table
+// knows, and a neutral phrase for any other.
+fn step_noun(verb: String) -> String {
+  case verb {
+    "Edit" -> "The edit"
+    "Read" -> "The read"
+    "Ran" -> "The command"
+    "Wrote" -> "The write"
+    "Searched" -> "The search"
+    "Spawned" -> "The sub-agent spawn"
+    "Messaged" -> "The message"
+    "Todo" -> "The todo update"
+    "code_mode" -> "The program"
+    _ -> "This step"
+  }
+}
+
 /// The most characters a collapsed result line keeps before its ellipsis.
 pub const result_limit = 140
 

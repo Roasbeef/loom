@@ -259,7 +259,10 @@ for a host with no surfaces.
   is tagged `Mono` (a path or command), `Prose` (a name or purpose), `Figure`
   (a count or a time) or `Unnamed`, which only says which face a host uses;
   every subject is session text and is drawn as a text node. A tool the table
-  does not list keeps its own name. `memory`, `reasoning`, `worked`,
+  does not list keeps its own name. `failure_sentence(words, engine)` is the
+  one plain sentence a failed step opens on (`The edit was rejected: "from" is
+  required for this hunk op.`) and `spoken_breaks(report)` reads the two
+  characters `\n` of a double-escaped report as line breaks. `memory`, `reasoning`, `worked`,
   `returned` and `duration` word the rows that are not tool calls, `text`
   flattens any `Words` to one line, and `first_call(program)` names the first
   capability a `code_mode` program calls (`fs.read calc.py`) by reading its
