@@ -16,11 +16,10 @@
 //// other section. Each place is one child of its parent that is
 //// `element.none()` while no claim belongs there, so a claim appearing, or the
 //// children around it changing, never moves another child's path, and the
-//// differ never has a reason to resend the token. A person row's slot is
-//// indexed, and so would move if a row were inserted before it while the box
-//// is open; that needs a principal added from outside the page in the minutes
-//// the box is on screen, and the cost is one more frame to the owner's own
-//// socket, which is the only one that ever holds the token.
+//// differ never has a reason to resend the token. The People list is keyed by
+//// the principal's identity (`view/admin_people`), so a row inserted ahead of the
+//// rotated person moves that row with its box, and the patch for a move carries
+//// no content.
 ////
 //// The box leads with the browser claim address, which a person without `loom`
 //// must use, then the token with its copy button, then the `loom claim`

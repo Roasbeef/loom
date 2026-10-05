@@ -35,7 +35,10 @@
 //// well. An identity is the catalogue's and is a text node too, shortened to its
 //// prefix and eight characters with the whole in the `title`
 //// (`grants.short_identity`); nothing here is a class or a key made from
-//// either. The classes are complete literals.
+//// either, except as the key of its row: the list is keyed by the catalogue's
+//// identity, which is not peer text, so a row that moves, because another
+//// principal was listed ahead of it, moves with its claim box and no content is
+//// resent. The classes are complete literals.
 
 import gleam/int
 import gleam/list
@@ -43,6 +46,7 @@ import gleam/option.{type Option, None, Some}
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/element/keyed
 import web_view/grants.{type Claim, type Credential, type Logins, type Principal}
 import web_view/sessions
 import web_view/signins.{type Signin}
@@ -80,19 +84,22 @@ pub fn principals(
     [attribute.class("admin-section"), attribute.aria_label("Principals")],
     [
       heading(rows),
-      html.ul(
+      keyed.ul(
         [attribute.class("admin-list")],
         list.map(rows, fn(row) {
-          person(
-            row,
-            logins_of(logins, row.id),
-            this,
-            now,
-            armed,
-            spoken,
-            claim,
-            presses,
-            busy,
+          #(
+            row.id,
+            person(
+              row,
+              logins_of(logins, row.id),
+              this,
+              now,
+              armed,
+              spoken,
+              claim,
+              presses,
+              busy,
+            ),
           )
         }),
       ),

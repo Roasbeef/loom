@@ -775,14 +775,19 @@ pub fn a_principals_sign_ins_are_listed_with_a_two_step_revoke_test() {
 }
 
 // The page's own words stay out of the page's attributes: no handler's path
-// holds a name, and no class is made from one.
+// holds a name, and no class is made from one. The people's rows are keyed by the
+// catalogue's identity and by nothing else.
 pub fn no_identity_reaches_an_attribute_test() {
   let #(model, _) = opened(start())
   let model = run(model, admin.Choosing(session))
   let html = drawn(model)
   assert !string.contains(html, "class=\"bob")
   assert !string.contains(html, "id=\"bob")
-  assert !string.contains(html, "key=\"")
+
+  // The only keys are the people's catalogue identities, one for each row of the
+  // list, and no name or session is one.
+  assert count(html, "key=\"") == 5
+  assert !string.contains(html, "key=\"Bob")
   assert !string.contains(html, session <> "\"")
   assert !string.contains(html, "href")
 }
@@ -997,6 +1002,7 @@ pub fn the_token_is_in_one_patch_and_no_other_test() {
   ])
   let refreshed = run(shown_model, admin.Ticked)
   let #(patch, cache) = patch_text(cache, shown, admin.view(refreshed))
+  assert string.contains(patch, "Aaron") as "the refresh landed"
   assert !string.contains(patch, "loomclaim_")
 
   // Hiding it is a patch that removes it and carries no token either.
@@ -1039,4 +1045,54 @@ pub fn the_buttons_that_grant_carry_the_refusal_while_the_allowance_is_spent_tes
   let passed = run(passed, admin.Choosing(session))
   let passed = run(passed, admin.Asking(grants.Rotate("dan")))
   assert !string.contains(drawn(passed), "title=\"3 grants")
+}
+
+// A rotation's claim is the last child of the person's row. A refresh that lists
+// a new principal ahead of that person moves the row, and the patch that moves it
+// must not carry the token again: the list is keyed by identity, so the row moves
+// with its box and no content is sent.
+pub fn a_rotation_claim_is_not_resent_when_a_row_is_inserted_ahead_test() {
+  let claim =
+    grants.Claim(
+      principal: "bob",
+      purpose: grants.Rotated,
+      page: "http://127.0.0.1:4000/ui/claim",
+      command: "loom claim --addr ws://127.0.0.1:4000/v2/control",
+      token:,
+      expires_in_ms: 3_600_000,
+    )
+  let feed = process.new_subject()
+  let start =
+    admin.Start(
+      ..start_with(
+        process.new_subject(),
+        process.new_subject(),
+        grants.Claimed(claim),
+      ),
+      read: fn(chosen, deliver) {
+        let rows = case process.receive(feed, 0) {
+          Ok(rows) -> rows
+          Error(Nil) -> people()
+        }
+        deliver(grants.Read(
+          grants.Snapshot(..snapshot(chosen), principals: rows),
+        ))
+      },
+    )
+  let #(model, _) = opened(start)
+  let before = admin.view(model)
+  let cache = first(before)
+  let shown_model = run(model, admin.Asking(grants.Rotate("bob")))
+  let shown = admin.view(shown_model)
+  let #(patch, cache) = patch_text(cache, before, shown)
+  assert count(patch, token) == 1
+
+  process.send(feed, [
+    grants.Principal("aaron", "Aaron", grants.MemberKind, grants.NoCredential),
+    ..people()
+  ])
+  let refreshed = run(shown_model, admin.Ticked)
+  let #(patch, _) = patch_text(cache, shown, admin.view(refreshed))
+  assert string.contains(patch, "Aaron") as "the refresh landed"
+  assert !string.contains(patch, "loomclaim_")
 }

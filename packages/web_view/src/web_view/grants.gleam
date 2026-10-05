@@ -316,10 +316,10 @@ pub fn reason_words(reason: Reason) -> String {
   }
 }
 
-// A Unix time in milliseconds as the UTC time of day to the minute, `HH:MM UTC`.
+// A Unix time in milliseconds as the UTC time of day to the minute, rounded up so a time is never shown before it comes, `HH:MM UTC`.
 // The page cannot know the owner's zone, so it names the one it counts in.
 fn clock_words(milliseconds: Int) -> String {
-  let minutes = int.max(milliseconds, 0) / 60_000 % 1440
+  let minutes = { int.max(milliseconds, 0) + 59_999 } / 60_000 % 1440
   pad(minutes / 60) <> ":" <> pad(minutes % 60) <> " UTC"
 }
 

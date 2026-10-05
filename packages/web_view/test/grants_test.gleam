@@ -67,6 +67,22 @@ pub fn the_allowance_refusal_names_the_count_and_the_reset_time_test() {
     ))
   assert string.contains(later, "free at 23:41 UTC")
 
+  // A time inside a minute rounds up, so it is never shown before it comes.
+  assert string.contains(
+    grants.reason_words(grants.TooMany(
+      used: 3,
+      free_at_ms: 1_790_030_460_000 + 1,
+    )),
+    "free at 22:42 UTC",
+  )
+  assert string.contains(
+    grants.reason_words(grants.TooMany(
+      used: 3,
+      free_at_ms: 1_790_030_460_000 - 1,
+    )),
+    "free at 22:41 UTC",
+  )
+
   // Midnight pads both fields, and a time before the epoch is the epoch.
   assert string.contains(
     grants.reason_words(grants.TooMany(
