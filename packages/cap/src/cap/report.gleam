@@ -88,6 +88,56 @@ pub fn text(summary: String) -> Outcome {
 }
 
 /// A `Completed` outcome carrying a structured value.
+///
+/// ## A complete program
+///
+/// A skeleton that compiles under `--warnings-as-errors`. `main` returns
+/// `report.Outcome` and every branch of the top-level `case` returns one:
+/// `report.failure(...)` for an error and `report.value(report.string(...))`
+/// for the answer (`report.string` builds a `Value`, not an `Outcome`). Import
+/// `None` and `Some` only when both are used, join with `string.join`
+/// (`gleam/list` has no join), and render errors with the modules' own
+/// `error_text` functions.
+///
+/// ```gleam
+/// import cap/lsp_sql
+/// import cap/report
+/// import gleam/option.{None, Some}
+/// import gleam/string
+///
+/// pub fn main() -> report.Outcome {
+///   let file = "auth/multi_authenticator.go"
+///   let plan =
+///     lsp_sql.Plan("gopls", ".", [file], [
+///       lsp_sql.Target("MultiAuthenticator.AcceptForScheme", file, None),
+///       lsp_sql.Target("AcceptForScheme", file, Some(69)),
+///     ])
+///   case lsp_sql.collect(plan) {
+///     Error(error) -> report.failure(lsp_sql.error_text(error))
+///     Ok(observation) ->
+///       case
+///         lsp_sql.query(
+///           observation,
+///           "SELECT t.symbol, count(r.target_id) FROM targets t "
+///             <> "LEFT JOIN \"references\" r ON r.target_id = t.id GROUP BY t.id",
+///           [],
+///           fn(row) {
+///             case row {
+///               [symbol, count] ->
+///                 Ok(lsp_sql.cell_text(symbol) <> ": " <> lsp_sql.cell_text(count))
+///               _ -> Error("expected two columns")
+///             }
+///           },
+///         )
+///       {
+///         Error(error) -> report.failure(lsp_sql.query_error_text(error))
+///         Ok(answer) ->
+///           report.value(report.string(string.join(answer.rows, "\n")))
+///       }
+///   }
+/// }
+/// ```
+///
 pub fn value(payload: MsgPackValue) -> Outcome {
   Completed(value: payload)
 }

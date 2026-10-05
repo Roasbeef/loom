@@ -1,3 +1,6 @@
+//// One immutable LSP capture queried with SQL; use it for joins across two or
+//// more symbols, counts, overlaps and anti-joins.
+////
 //// A finite LSP observation with SQL evaluated inside this satellite only.
 ////
 //// Collection names one configured server, one root, explicit outline files

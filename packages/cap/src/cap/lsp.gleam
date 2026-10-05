@@ -1,5 +1,8 @@
-//// `cap/lsp` — semantic questions about the workspace's code, answered by
-//// the language server the session runs for it (ADR-015).
+//// `cap/lsp` — live language-server queries; use it for one symbol's callers,
+//// hover or definition, and `cap/lsp_sql` for joins across several symbols.
+////
+//// Semantic questions about the workspace's code, answered by the language
+//// server the session runs for it (ADR-015).
 ////
 //// # Why a program asks by symbol, never by position
 ////
