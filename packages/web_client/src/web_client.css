@@ -405,6 +405,7 @@
   .residency .glyph{margin-right:4px;}
   .residency.live .glyph{color:var(--color-current);}
   .residency.opening{color:var(--color-current);}
+  .residency.needs-you,.residency.needs-you .glyph{color:var(--color-signal-text);}
   /* The app's navigation slot above the first workspace group. It is empty
      until the app has pages to link to. */
   .sidebar .nav{display:flex;flex-direction:column;gap:2px;margin:0 0 12px 0;}
@@ -457,8 +458,11 @@
   .home-create-name{width:100%;box-sizing:border-box;padding:6px 10px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg);color:var(--color-fg);font:14px/1.5 var(--font-sans);}
   .home-create-name:focus-visible{outline:none;border-color:var(--color-fg-quiet);}
   .home-create-name:disabled{opacity:.6;}
-  label.home-create-share{display:flex;align-items:flex-start;gap:8px;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);cursor:pointer;}
-  label.home-create-share input{flex:0 0 auto;margin:2px 0 0 0;}
+  label.home-create-share{display:flex;align-items:flex-start;gap:8px;cursor:pointer;}
+  label.home-create-share input{flex:0 0 auto;margin:3px 0 0 0;}
+  .home-create-share-text{display:flex;flex-direction:column;gap:1px;min-width:0;}
+  .home-create-share-name{color:var(--color-fg);font:14px/1.4 var(--font-sans);}
+  .home-create-share-hint{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
   .home-create-hint{margin:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
   .home-create-actions{display:flex;gap:8px;}
   .home-create-actions button{margin:0;padding:4px 12px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:13px/1.4 var(--font-sans);cursor:pointer;}
@@ -478,7 +482,7 @@
   .home-text{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px;}
   .home-name{font:500 14px/1.4 var(--font-sans);overflow-wrap:anywhere;}
   .home-sub{font:12px/1.4 var(--font-sans);color:var(--color-fg-quiet);overflow-wrap:anywhere;}
-  .home-row.needs-you .home-sub{color:var(--color-signal-text);}
+  .home-row.needs-you .home-activity{color:var(--color-signal-text);}
   /* The owner's rename button sits after the row's own button and is placed
      over its right side, beside the chevron, so the row's own path and its
      whole-row target are the same on every page. */
@@ -490,13 +494,32 @@
   form.home-rename-form{display:flex;flex-direction:column;gap:6px;padding:8px 10px;}
   .home-rename-lead{margin:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
   .home-rename-fields{display:flex;flex-wrap:wrap;gap:6px;}
-  .home-rename-fields input{flex:1 1 14em;min-width:0;background:var(--color-bg);color:var(--color-fg);border:1px solid var(--color-divider);border-radius:4px;padding:5px 8px;font:13px/1.4 var(--font-sans);}
+  loom-rename{display:flex;flex:1 1 14em;min-width:0;}
+  loom-rename input{flex:1 1 auto;min-width:0;background:var(--color-bg);color:var(--color-fg);border:1px solid var(--color-divider);border-radius:4px;padding:5px 8px;font:13px/1.4 var(--font-sans);}
   .home-chevron{flex:0 0 auto;color:var(--color-fg-quiet);font-size:16px;line-height:1;}
   .home-open:hover .home-chevron{color:var(--color-fg);}
   .home-notice{margin:0 0 12px 0;padding:8px 12px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font-size:13px;}
-  main.centre > .home-signins{flex:0 0 auto;max-width:960px;max-height:45%;margin-top:16px;padding:16px 0 8px 0;border-top:1px solid var(--color-divider);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
-  .home-signins-lead,.home-bookmark{margin:0 0 10px 0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);overflow-wrap:anywhere;}
-  .home-bookmark-text{padding:1px 6px;border:1px solid var(--color-divider);border-radius:4px;background:var(--color-bg-raised);color:var(--color-fg);font:12px/1.4 var(--font-mono);}
+  /* The account panel. The sign-ins region is still the centre's third child,
+     where the socket admits its clicks, and the stylesheet takes it out of the
+     flow: it floats under the bar at the centre's right edge, hidden until the
+     name's button has opened it. <loom-popover> publishes the custom state
+     `open`, which the frame reads with :has(). It is the one element besides
+     the drawer and the completion list that takes the float shadow. */
+  main.centre:has(> .home-signins){position:relative;}
+  main.centre > .home-signins{display:none;position:absolute;z-index:30;top:8px;right:16px;left:auto;width:min(440px,calc(100% - 32px));max-width:none;max-height:calc(100% - 16px);margin:0;padding:14px 16px 10px 16px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);box-shadow:var(--shadow-float);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
+  loom-shell:has(loom-popover:state(open)) main.centre > .home-signins{display:block;}
+  .session-head .home-who-button{display:inline-flex;align-items:center;gap:4px;margin:0;padding:2px 8px;border:1px solid transparent;border-radius:6px;background:transparent;color:inherit;font:inherit;cursor:pointer;}
+  .session-head .home-who-button:hover,.session-head .home-who-button[aria-expanded="true"]{border-color:var(--color-divider);background:var(--color-bg-raised);}
+  .session-head .home-who-button:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  .home-who-chevron{color:var(--color-fg-quiet);font-size:11px;line-height:1;}
+  loom-popover{display:contents;}
+  .home-signins .home-heading{margin:0 0 6px 0;}
+  .home-signins-lead,.home-bookmark-lead{margin:0 0 10px 0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  .home-bookmark{margin:0 0 12px 0;}
+  .home-bookmark-lead{margin:0 0 6px 0;}
+  loom-copy.home-copy{display:flex;align-items:center;gap:8px;}
+  :host(.home-copy) code.share-text{flex:1 1 auto;min-width:0;margin:0;}
+  :host(.home-copy) button.share-copy{flex:0 0 auto;}
   ul.home-signin-list{list-style:none;margin:0 0 10px 0;padding:0;border-top:1px solid var(--color-divider);}
   li.home-signin{display:flex;align-items:center;gap:12px;min-height:44px;box-sizing:border-box;margin:0;padding:6px 10px;border-bottom:1px solid var(--color-divider);}
   li.home-signin.this{background:color-mix(in srgb,var(--color-current) 9%,transparent);border-bottom-color:color-mix(in srgb,var(--color-current) 35%,var(--color-divider));}
@@ -509,8 +532,9 @@
   .home-signin-device:disabled{opacity:.5;cursor:default;}
   .home-signin-actions{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 8px 0;}
   .home-signin-status{margin:0;min-height:1.4em;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);overflow-wrap:anywhere;}
-  .home-device-link{display:flex;flex-direction:column;align-items:flex-start;gap:8px;margin:8px 0 0 0;padding:12px;border:1px solid color-mix(in srgb,var(--color-current) 35%,var(--color-divider));border-radius:8px;background:color-mix(in srgb,var(--color-current) 7%,transparent);}
-  .home-device-lead{margin:0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);}
+  .home-device-link{display:flex;flex-direction:column;align-items:stretch;gap:8px;margin:8px 0 0 0;padding:12px;border:1px solid color-mix(in srgb,var(--color-current) 35%,var(--color-divider));border-radius:8px;background:color-mix(in srgb,var(--color-current) 7%,transparent);}
+  .home-device-head{display:flex;align-items:flex-start;gap:12px;}
+  .home-device-lead{flex:1 1 auto;min-width:0;margin:0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);}
   code.home-device-text{display:block;padding:6px 8px;border:1px solid var(--color-divider);border-radius:4px;background:var(--color-bg);font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
   .ended-document [hidden]{display:none;}
 
@@ -540,7 +564,9 @@
   .session-head .home-admin:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
   main.centre > .admin-body{flex:1 1 0;min-height:0;max-width:960px;padding-bottom:24px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
   .admin-section + .admin-section{margin-top:24px;}
-  .admin-body > .admin-lead{margin:0 0 20px 0;}
+  .admin-body > .admin-lead{margin:0 0 4px 0;}
+  .admin-note{margin:0 0 20px 0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  .admin-members > .admin-lead{margin:12px 0 0 0;}
   .admin-section > .home-empty{margin:12px 0 0 0;}
   main.centre > .home-notice{max-width:960px;}
   .admin-section .home-heading .home-count{margin-left:8px;color:var(--color-fg-quiet);font-weight:400;font-variant-numeric:tabular-nums;}
@@ -569,6 +595,7 @@
   ul.admin-signin-list{list-style:none;margin:0;padding:0;border-top:1px solid var(--color-divider);}
   li.admin-signin{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;min-height:40px;margin:0;padding:4px 0;border-bottom:1px solid var(--color-divider);}
   .admin-subheading{margin:0 0 8px 0;font:600 14px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  .admin-subheading .home-count{margin-left:8px;color:var(--color-fg-quiet);font-weight:400;font-variant-numeric:tabular-nums;}
   form.admin-invite{display:flex;flex-direction:column;gap:8px;margin:12px 0 0 0;padding:12px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);}
   .admin-lead{margin:0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);overflow-wrap:anywhere;}
   .admin-fields{display:flex;flex-wrap:wrap;gap:6px;}
@@ -576,11 +603,22 @@
   .admin-fields input{flex:1 1 14em;}
   .admin-fields input:focus-visible,.admin-fields select:focus-visible{outline:none;border-color:var(--color-fg-quiet);}
   .admin-fields :disabled{opacity:.6;}
-  /* The claim just made, shown once at the head of the body in the Session
-     pane's own boxes (`<loom-copy>`), as a tinted panel with a hairline. */
-  .admin-body section.share{position:sticky;top:0;z-index:2;max-height:calc(100vh - 72px);overflow-y:auto;margin:0 0 20px 0;padding:12px;border:1px solid color-mix(in srgb,var(--color-signal) 40%,var(--color-divider));border-radius:8px;background:color-mix(in srgb,var(--color-signal) 8%,var(--color-bg-raised));}
+  /* The claim just made, shown once beside the action that made it (under the
+     invitation form, or under the person's row) in the Session pane's own boxes
+     (`<loom-copy>`), as a tinted panel with a hairline. It scrolls with the
+     page and covers nothing. */
+  .admin-body section.share{margin:12px 0 0 0;padding:12px;border:1px solid color-mix(in srgb,var(--color-signal) 40%,var(--color-divider));border-radius:8px;background:color-mix(in srgb,var(--color-signal) 8%,var(--color-bg-raised));}
   .admin-body button.share-done{margin:4px 0 0 0;padding:2px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:12px/1.4 var(--font-sans);cursor:pointer;}
   .admin-body button.share-done:hover{background:var(--color-bg-raised);}
+  .admin-row > section.share{flex:1 1 100%;min-width:0;box-sizing:border-box;margin:4px 0 6px 0;}
+  /* What the page says about the last thing the owner did, as a line beside
+     what was acted on (`view/notice`). A change that was made is quiet and
+     fades after four seconds, as the composer footer's notice does; a refusal
+     stays, in the danger colour with a tinted hairline. */
+  .notice-line,.notice-refusal{margin:8px 0 0 0;font:13px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  .notice-line{color:var(--color-fg-quiet);animation:loom-fade 4s forwards;}
+  .notice-refusal{padding:6px 10px;border:1px solid color-mix(in srgb,var(--color-danger) 40%,var(--color-divider));border-radius:6px;background:color-mix(in srgb,var(--color-danger) 8%,transparent);color:var(--color-danger-text);}
+  .admin-row > .notice-line,.admin-row > .notice-refusal{flex:1 1 100%;min-width:0;box-sizing:border-box;margin:2px 0 4px 0;}
   /* The way back to the home, on a session page opened from one: a quiet
      button after the brand, tinted on hover like a list row. */
   .session-head .home-link{margin:0;padding:2px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:12px/1.4 var(--font-sans);cursor:pointer;}
@@ -810,6 +848,14 @@
   .ended-document .ended-headline{margin:0 0 8px 0;font-size:16px;overflow-wrap:anywhere;}
   .ended-document .ended-advice{margin:0 0 8px 0;overflow-wrap:anywhere;}
   code.ended-command{display:block;margin:2px 0 4px 0;padding:6px 8px;background:var(--color-bg);border:1px solid var(--color-divider);border-radius:4px;font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
+  /* The Back control (<loom-back>, web_client/back): the admin bar's Home and
+     the spent-ticket document's Go back. It sits in the element's shadow root,
+     which adopts this sheet. */
+  button.ended-back{margin:0;padding:2px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:12px/1.4 var(--font-sans);cursor:pointer;}
+  button.ended-back:hover{background:var(--color-bg-raised);}
+  button.ended-back:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  .ended-document loom-back{display:block;margin-top:12px;}
+  a.ended-link{color:inherit;text-decoration:underline;text-underline-offset:2px;}
   /* The todo panel: the strand's board and the reviewer band, above the
      composer in the operator's dock and above the observer's bar. Its height
      is capped and it scrolls on its own, so a long phase cannot cover the
@@ -840,6 +886,12 @@
      runs the whole way across. */
   .diff{display:grid;grid-template-columns:minmax(max-content,1fr);margin:4px 0;border:1px solid var(--color-divider);border-radius:6px;overflow-x:auto;background:var(--color-bg);}
   .diff-row{display:flex;min-height:1.5em;white-space:pre;color:var(--color-fg);font:12px/1.5 var(--font-mono);}
+  /* The gutter (the two line numbers and the sign) is one cell that stays at
+     the box's left edge while a long line scrolls, on the row's own opaque
+     background so the code passes under it and not through it. */
+  .diff-gutter{position:sticky;left:0;z-index:1;display:flex;flex:0 0 auto;background:var(--color-bg);}
+  .diff-added .diff-gutter{background:var(--color-added-bg);}
+  .diff-removed .diff-gutter{background:var(--color-removed-bg);}
   .diff-num{flex:0 0 auto;background:var(--color-bg-sunk);min-width:3.5ch;padding:0 6px;text-align:right;color:var(--color-fg-quiet);user-select:none;}
   .diff-sign{flex:0 0 auto;width:2ch;text-align:center;user-select:none;}
   .diff-text{flex:1 0 auto;padding:0 8px 0 2px;}
@@ -869,12 +921,42 @@
   .trace-subtitle{margin:0 0 6px 0;font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);}
   ul.trace-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;}
   .trace-cut,.trace-note{margin:8px 0 0 0;font:12px/1.4 var(--font-sans);color:var(--color-fg-quiet);}
-  /* The Session pane (web_view/view/session_tab): the goal, the live jobs,
-     on an operator's page the attached viewers, and the estimated cost. */
-  .session-list{margin:4px 0 0 0;display:grid;grid-template-columns:max-content minmax(0,1fr);gap:2px 12px;}
-  .session-term{color:var(--color-fg-quiet);}
-  .session-value{margin:0;min-width:0;overflow-wrap:anywhere;}
-  .session-value p,.session-value ul{margin:0;}
+  /* The Session pane (web_view/view/session_tab): groups that each lead with
+     an eyebrow, read in this order: Session (the name with Rename, then the
+     workspace), People (viewers, then the invitation buttons), Goal (the goal,
+     then its buttons), Fork, Jobs, Cost. The pane's children cannot be in
+     that order, because the socket admits events beneath their paths
+     (component.invite_path, session_controls_path, rename_path). So the pane
+     is a column and `order` places each piece. The rows wrapper and the
+     controls section are `display:contents`, which makes their groups and
+     rows the column's own items. `reading-flow:flex-visual` makes keyboard
+     focus follow that order; a browser without it ignores the line. */
+  .pane-session{display:flex;flex-direction:column;reading-flow:flex-visual;}
+  .pane-session > .panel-title{order:0;margin-bottom:6px;}
+  .pane-session > section.session-rename{order:1;display:flex;flex-wrap:wrap;align-items:center;gap:2px 12px;margin:0 0 6px 0;padding:0;border-top:0;}
+  .session-rows{display:contents;}
+  .session-group{min-width:0;margin:0 0 14px 0;}
+  .session-group-workspace{order:2;}
+  .session-group-people{order:3;margin-bottom:8px;}
+  .pane-session > section.share{order:4;margin:0 0 14px 0;padding:0;border-top:0;}
+  .session-group-goal{order:5;margin-bottom:8px;}
+  .pane-session > section.controls:not(.session-rename){display:contents;}
+  .pane-session > section.controls:not(.session-rename) .control-row{order:6;margin:0 0 14px 0;}
+  .pane-session > section.controls:not(.session-rename) .control-forms{order:7;margin:0 0 14px 0;}
+  .session-group-jobs{order:8;}
+  .session-group-cost{order:9;margin-bottom:0;}
+  .session-eyebrow{margin:0 0 4px 0;font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);}
+  .pane-session > section.controls:not(.session-rename) details.control-form > summary{font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);}
+  /* The Goal group says there is no goal, so the controls' hint saying the
+     same is dropped; a pinned goal's buttons stand alone beneath its words. */
+  .pane-session > section.controls:not(.session-rename) span.control-goal{display:none;}
+  .session-rename .control-goal-text{flex:0 1 auto;color:var(--color-fg);font:13px/1.4 var(--font-sans);}
+  .session-rename .control-forms{margin-top:0;}
+  .session-rename details.control-form{flex:0 1 auto;}
+  .session-rename .rename-status{flex:1 0 100%;margin:0;}
+  .session-rename .rename-status:empty{display:none;}
+  .session-group p,.session-group ul{margin:0;}
+  .session-workspace{color:var(--color-fg-quiet);font:12px/1.5 var(--font-mono);overflow-wrap:anywhere;}
   ul.session-jobs,ul.session-viewers{list-style:none;padding:0;}
   .session-quiet{color:var(--color-fg-quiet);}
   /* The owner's invitation control at the foot of the Session pane
@@ -1064,6 +1146,10 @@
     .region-panel.closed{width:auto;height:0;overflow:hidden;transition:none;}
     .panel-body{flex:0 0 auto;}
     aside.panel{width:auto;height:auto;max-height:132px;padding:8px 16px;}
+    /* Only the Strands pane is a row of cards sized for 132px. The Changes,
+       Session and Trace panes hold prose and tables, so they take up to
+       45vh and scroll inside it. */
+    loom-shell:not(:state(tab-strands)) aside.panel{max-height:45vh;}
     aside.panel > section.nudges{display:none;}
     .pane-strands .panel-title,.pane-strands > section.commentary{display:none;}
     nav.agent-strip{overflow-x:auto;scrollbar-width:thin;}

@@ -2668,8 +2668,9 @@ accepted that for operator pages.
   unaffected and is reclaimed at its own deadline. *Addendum:* `<loom-switch>`
   first used `location.assign`, which kept the left page's entry in the history,
   and Back to it showed the waiting paragraph and did not reconnect, because its
-  nonce was gone. It now calls `location.replace`, so no entry names a page
-  whose nonce is spent, and Back leaves the session pages. The sidebar row of
+  nonce was gone. It then called `location.replace`, so no entry named a page
+  whose nonce was spent, and Back left the session pages. The addendum on
+  navigation (2026-10-04) keys the nonce by page and returns to `assign`. The sidebar row of
   the earlier session opens it through a fresh ticket. No rule about tickets,
   deadlines or the operator-only switch changed.
 - A saved session is text in the sidebar, marked "saved", so a person who wants
@@ -3772,3 +3773,81 @@ drawn live without a focus change, and the strand view's new rows.
 `commentary_test` shows the closed `details`, the summary line and the Markdown
 body with markup still escaped. The drive screenshots under
 `docs/design-notes/web-design/drive-b5/` show the rendered panel.
+
+## Addendum: navigation, the per-page nonce and Back (2026-10-04)
+
+**Status**: PROPOSED, IMPLEMENTED with the web/b12-navigation branch ·
+**Raised by**: the web UI critique, round 4 (F86, F91, F92)
+
+This addendum reverses one rule of the addendum on switching sessions: that
+`<loom-switch>` navigates with `location.replace` so that no history entry names
+a page whose nonce was overwritten. It adds no route, no event on the socket's
+accepted list and no field on the wire.
+
+### What changed
+
+- **The nonce is kept per page.** The tab's `sessionStorage` item is
+  `loom-page-nonce.<page key>` (`page.nonce_item` is the prefix), written by the
+  exchange page's script for the keyed page it moves to and read by the page's
+  own script for the key in its own path. A page the tab left keeps its nonce,
+  so Back to it reconnects. The nonce is still delivered once, in the
+  exchange's body, and the keyed page's HTML never carries it.
+- **`<loom-switch>` navigates with `location.assign`.** Each keyed page is one
+  history entry. The exchange page still replaces itself with the keyed page, so
+  the ticket's URL is not left in the history. The admin page's bar gains a
+  `Home` control, a fixed `<loom-back>` that calls `history.back()`.
+- **A spent ticket is a calm page.** A ticket URL that is requested again (a
+  reload, an entry from before this change, or an exchange whose script was
+  blocked) is answered as before, `401` with the fixed "link expired or already
+  used" document, which now carries a Go back control and the `loom ui` copy
+  box. It never reaches the engine and says nothing the request carried.
+- **The words.** The not-signed-in document names `/ui/claim` as a fixed link
+  for a person with no `loom`; no waiting or ended notice draws a backtick; and
+  a page with no socket for five seconds draws the ended document's shape
+  (`<loom-waiting>`) from fixed words.
+
+### Why Back is now safe
+
+Tickets are still single use and live 60 seconds, and a reused ticket URL
+mints nothing: the daemon spends the ticket on the first exchange and answers
+every later request with the refusal document. Back to a keyed page is an
+ordinary `GET` of that page, which the daemon serves only to the holder of its
+cookie, and the page connects only with its own nonce. A page whose UI session
+ended answers as it did before, `PageEnded`. The `Home` control mints no
+ticket, so the admin page's fifteen-minute deadline cannot be carried to a home
+(the reason the earlier ruling left the admin page with no Home control). Nothing
+a person could not do by navigating the same tab is newly possible.
+
+### Where a secret is in a URL
+
+Three URLs carry a ticket: `/ui/sessions/<id>?ticket=`, `/ui/home?ticket=` and
+`/ui/admin?ticket=`, and the device link, which is the second with a ticket
+minted for another browser. None stays in the history of the tab that opens it,
+because the exchange page replaces its own entry. If one does (a blocked
+script), Back lands on it and it renders the spent-link document above, since
+the ticket was consumed. The keyed address `/ui/p/<key>/...` carries the page
+key, which is useless without the cookie and the nonce, and `Referrer-Policy`
+keeps both from leaving the origin. The bookmark `/ui/l/<key>/home` carries the
+login key and resumes only with the login nonce in `localStorage`. No nonce is
+in any URL.
+
+### What was considered
+
+- **Keep `location.replace` and show a calm page on Back.** It leaves every
+  page a dead end and the admin page with no way home.
+- **Store the nonce in the keyed page's HTML.** Anyone holding the cookie and
+  the key can fetch that HTML; the nonce exists to be something they cannot.
+
+### Cost
+
+- One `sessionStorage` item per visited page key, held until the tab closes.
+- A person who goes Back to a page that ended sees its ended notice, where
+  before they left the app.
+
+### Verification
+
+`page_test` pins the spent-ticket document's Back control and the claim link,
+that no waiting notice draws a backtick, and the waiting element in the shell.
+`ui_route_test` pins that both scripts build the item from the prefix and the
+bundle assigns and never replaces the location. `admin_test` pins the bar's
+`<loom-back>`.

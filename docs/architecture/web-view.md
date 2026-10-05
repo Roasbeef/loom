@@ -224,7 +224,7 @@ sequenceDiagram
    addendum on several pages). It mints three secrets for the new page: the `loom_ui` cookie, the page key, and the page nonce. The
    response is a small same-origin page whose body carries the keyed path
    and the nonce as data attributes, and whose script
-   (`web_view_enter.js`) stores the nonce in `sessionStorage` and calls
+   (`web_view_enter.js`) stores the nonce in `sessionStorage` under `loom-page-nonce.<key>` and calls
    `location.replace` on the keyed path. A `303` redirect was not used: a
    `SameSite=Strict` cookie is not sent on a redirect that started from
    another site, so a link clicked on a cross-site page would land on a
@@ -245,7 +245,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:2982`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:2989`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -690,7 +690,7 @@ sessions). Only an operator page does it.
   page writes into the `to` attribute of the hidden `<loom-switch>`, the
   centre's last child. The element accepts only
   `/ui/sessions/<identity>?ticket=<64 hex digits>` (`switch_rule.target`) and
-  calls `location.replace`, so the old page leaves no history entry. The exchange, the keyed page and the nonce are the
+  calls `location.assign`, so each keyed page is a history entry and Back returns to it (its nonce is kept per page key). The exchange, the keyed page and the nonce are the
   ones `loom ui` already uses, and the page left behind is not ended.
 - **What holds.** A page for one session holds no text of another
   (`session_isolation_test`); the sidebar is the one region that lists the
@@ -710,6 +710,15 @@ else. `ui_socket.rename_for` re-derives the page's standing at the click and
 makes the registry's owner-checked rename, from a task linked to the page's
 runtime, so the runtime never waits on the registry. A member's page and an
 observer's page are handed no capability and their sockets drop the event.
+
+Both forms open with the field holding the current name, which the server cannot
+write: a name is never an attribute. The field sits in a `<loom-rename>` element
+(`web_client/rename`, `rename_rule.copy`) and the form's lead draws the name as a
+text node in a span marked `data-loom-name`, inside a container marked
+`data-loom-renames`. When the form appears the element copies that text node into
+the field if the field is empty, cut to the field's 256 characters, and focuses
+it. The markers are fixed and valueless and the element wraps only the input, so
+the form's handler paths do not move and the server's HTML has no `value`.
 
 ## Inviting from the session page
 
@@ -923,13 +932,19 @@ change is followed by a read so the page shows what the catalogue now holds. A
 read is the principals with their credential state (`manager.principal_page`),
 the owner's sessions (`authorized_page`) and, once the owner has chosen one, its
 members (`manager.session_member_page`, the `sessions.members` read). The page
-draws three lists in `view/admin_people` and `view/admin_sessions`: the people
-(owner first), the invitations waiting to be claimed, and the sessions with a
-chosen one's members. Each member of a session has a button that raises or lowers
-the role and a two-step button that removes the member; each person has a Rotate
-button and a two-step button that revokes access; a form invites a new person into
-the chosen session with a name and a role (`admin_sessions.fields` is the one
-rule for what the form may hold). The two-step shape (`view/admin_buttons`) is a
+draws two lists in `view/admin_people` and `view/admin_sessions`: the people
+(owner first, each once, with `People · 5 · 1 invited` for the heading and an open
+claim drawn in its person's row) and the sessions with a chosen one's members.
+Each member of a session has a button that raises or lowers the role and a
+two-step button that removes the member. A person's buttons follow what they hold:
+Rotate and a two-step Revoke access for an active credential, one two-step `Void
+invitation` for an open claim, Rotate alone for none. Identities are drawn as a
+prefix and eight characters with the whole in a `title`
+(`grants.short_identity`). A form invites a new person into the chosen session
+with a name and a role (`admin_sessions.fields` is the one rule for what the form
+may hold); a session whose members read reports the `workspace_private` scope
+(`grants.Selection.scope`, the `scope` field of `sessions.members`) draws one
+sentence in its place, since the registry would refuse the invitation. The two-step shape (`view/admin_buttons`) is a
 guard against a mis-click: the first press shows what will happen in words that
 name the person and the second sends it. While a change is out every button is
 drawn disabled.
@@ -937,8 +952,20 @@ drawn disabled.
 The one secret the page holds is a claim. An invitation or a rotation returns the
 token to the page that asked; the component holds it until the owner presses "Hide
 the token" and draws it once in the session page's copy boxes
-(`view/admin_claim`, `<loom-copy>`), sticky at the head of the body so it stays on
-screen while the owner scrolls. The catalogue keeps only a claim's digest, so no
+(`view/admin_claim`, `<loom-copy>`), beside the action that made it: under the
+invitation form for an invitation (`admin_claim.for_session`) and under the
+person's row for a rotation (`for_person`). Nothing on the page is sticky, and
+`scripts/web_client_css_check.sh` refuses a `position:sticky` rule under
+`.admin-body`. The box leads with the browser claim address (`share.handover`:
+`http://` and the page's host, `/ui/claim`, a `<loom-copy subject="claim-address">`),
+then the token, then the `loom claim` command for a person who has `loom`. Each
+claim place is one child of its parent, `element.none()` when no claim belongs
+there, so a claim appearing never moves another path and the differ never has a
+reason to resend the token (`admin_test` diffs the real patches and finds the
+token in the one that shows it). A notice is a line beside what was acted on
+(`view/notice`: `Said` fades, `Refused` stays), and a refused fourth grant names
+the count and the UTC time a place frees (`ui_sessions.reserve_invite` answers the
+wall-clock instant). The catalogue keeps only a claim's digest, so no
 read carries one, and no frame of the admin socket carries `loomclaim_` except the
 one that shows the owner a claim they just made. `ui_route_test` scans the real
 socket's frames for it and `admin_test` pins the display's life.
@@ -999,8 +1026,13 @@ of the context that minted it, and the page keeps it (`ui_sessions.login_of`);
 every ticket a page mints carries the page's `Origin` and login too, so a chain
 from the bookmark stays `Resumed` and keeps its login, and a device link inherits
 the issuing login's expiry. The home reads the principal's own logins with its
-sessions (`Start.signins`, `ui_socket.signins_read`) and draws them below the
-table (`view/signins`, beneath `home.signins_path`): "This browser" marks the
+sessions (`Start.signins`, `ui_socket.signins_read`) and draws them in the
+account panel (`view/signins`, beneath `home.signins_path`, which has not moved:
+the region is still the centre's third child, and the stylesheet floats it under
+the bar). The person's name in the bar is the button that opens it, inside a
+`<loom-popover>` that toggles it in the browser with no server state
+(`view/home_bar.account`); the panel opens by itself while a device link is on
+show. The centre of a home is the session list and nothing else. "This browser" marks the
 page's own, "Sign out" and "Sign out everywhere" end the principal's logins
 (`manager.revoke_login`, `revoke_logins`; the registry drops its frame memo, so
 every page the login minted ends at its next request), and a fresh home alone has
@@ -1264,7 +1296,7 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/view/todo_panel.gleam` | The todo panel: the followed strand's board as one line (`Todo · n of m done · <active task>`, a `<loom-fold>` summary; a board with every task closed is not drawn) which opens to the phase that holds the active task expanded and the others folded into one row, the terminal's status glyphs, `n/m done`, and the reviewer band beneath it, drawn from plain values (`component.plan` reads the shared record's `todo_boards` and `reviewer_status.lines`). It is the operator's dock's first child and sits above the observer's bar; its height is capped and it scrolls on its own. |
 | `packages/web_view/src/web_view/view/trace.gleam` | The Trace pane: the session's `code_mode` programs (`session_view/trace_view`), the newest with its state, result excerpt and a collapsed budget line, the earlier ones as rows, the panel's fourth pane after Session. It lists programs, the newest with the rows of its call record, and says a program with no record lists none; every string is a text node and it holds no handler. |
 | `packages/web_view/src/web_view/view/changes.gleam` | The Changes pane: the files the session's own `fs_edit` results and `fs_write` calls named (a write is one hunk of added lines, `written · N lines`) and their diffs (`session_view/changes_view`), the panel's second pane on both pages, bounded and drawn as text nodes with a class from a closed row kind. It reads no worktree. |
-| `packages/web_view/src/web_view/view/session_tab.gleam` | The Session pane: the goal, the followed strand's live jobs (the read-only `live_jobs` read the component makes on a tick, first ten seconds after opening and then at most every 10 s), on an operator's page only the attached viewers, and the estimated cost, as text nodes in the panel's third pane. |
+| `packages/web_view/src/web_view/view/session_tab.gleam` | The Session pane, as groups under eyebrow headings (Session, People, Goal, Fork, Jobs, Cost; the stylesheet orders them, the children keep their pinned paths): the workspace, the goal, the followed strand's live jobs (the read-only `live_jobs` read the component makes on a tick, first ten seconds after opening and then at most every 10 s), on an operator's page only the attached viewers, and the estimated cost, as text nodes in the panel's third pane. |
 | `packages/web_view/src/web_view/invites.gleam` | The invitation an owner's page may mint: `Role` (observer or operator, never an owner), `Invitation`, `Reason` with its fixed words, `Answer`, the control's `Share` state and `claim_ttl_ms` (one hour). |
 | `packages/web_view/src/web_view/view/share.gleam` | The invitation control in the Session pane: two buttons, or the invitation with a `<loom-copy>` box for the command and for the token. Drawn on an owner's page only; the messages its buttons send are values handed in. |
 | `packages/web_view/src/web_view/view/nudges.gleam` | The advisor's pending nudges, read-only, every body received as a text node and the count the server left out. It is drawn under the strand panel's panes on both pages and has no handler. |
@@ -1277,7 +1309,7 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/page.gleam` | The shell, the exchange page, the two scripts, the stylesheet, the keyed paths and the content security policy. |
 | `packages/client/src/client/daemon/server.gleam` | `/ui` routing and its check order, `ui.link`, and the `hello` `ui` field. |
 | `packages/client/src/client/daemon/ui_http.gleam` | Pure request checks and response headers: route, host, `Sec-Fetch-Site`, origin, cookies. |
-| `packages/web_view/src/web_view/home.gleam`, `view/home_bar.gleam`, `view/home_table.gleam` | The home page's component, top bar and per-workspace lists, whose running rows open a session and, on an operator-ceiling page, whose saved rows resume one (protocol-change/065). |
+| `packages/web_view/src/web_view/home.gleam`, `view/home_bar.gleam`, `view/home_table.gleam` | The home page's component, top bar and per-workspace lists, whose running rows open a session and, on an operator-ceiling page, whose saved rows resume one (protocol-change/065). The bar draws the name as the account panel's button and a `read-only link` pill for an observer-ceiling page, and a member's rows say their role (`sessions.Entry.role`, filled from `manager.authorized_roles`). |
 | `packages/web_view/src/web_view/view/resume.gleam` | The one rule for a saved row on the sidebar and the home's table: text, a resume button, or "opening" while a resume is out. |
 | `packages/client/src/client/daemon/ui_sessions.gleam` | The ticket and UI-session actor: mint, single-use redeem, lookup, key and nonce comparison, sweep, and the page-minted invitations' allowance (three an hour per credential). |
 | `packages/client/src/client/daemon/ui_socket.gleam` | The page's WebSocket: permit custody, the component chosen by role (observer, member operator, owner), frame filtering by role, the session and home tickets (`Standing`, `ticket_for`, `home_ticket_for`) and the invitation the daemon makes for a page, the home's socket and its row clicks, shutdown. |

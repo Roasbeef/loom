@@ -98,7 +98,8 @@ pub type Status {
     effort: Option(String),
     /// The context estimate, `ctx ~41%`.
     context: String,
-    /// The session's estimated cost, `1.86`, without its currency.
+    /// The session's estimated cost as a figure, `$1.86`, or `—` when none was
+    /// priced (`transcript_lines.cost_figure`).
     cost: String,
     /// How many agents need the operator.
     needs: Int,
@@ -416,8 +417,8 @@ fn bottom_left(status: Status, width: Int) -> List(#(String, style.Style)) {
     Some(_), True | None, _ -> status.model
   }
   let cost = case width < roomy {
-    True -> "$" <> status.cost
-    False -> "est $" <> status.cost
+    True -> status.cost
+    False -> "est " <> status.cost
   }
   [
     #(

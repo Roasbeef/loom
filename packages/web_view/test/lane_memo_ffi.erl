@@ -4,7 +4,7 @@
 %% with lustre/vdom/diff:diff/3. Both modules are internal to Lustre, so the
 %% test calls them from Erlang instead of importing them.
 -module(lane_memo_ffi).
--export([first/1, rerender/3, patched/3, wire_bytes/1]).
+-export([first/1, rerender/3, patched/3, patch_text/3, wire_bytes/1]).
 
 first(View) -> 'lustre@vdom@cache':from_node(View).
 
@@ -26,3 +26,11 @@ patched(Cache, Old, New) ->
 wire_bytes(Message) ->
     Json = 'lustre@server_component':client_message_to_json(Message),
     byte_size(iolist_to_binary(gleam@json:to_string(Json))).
+
+%% The patch the runtime would broadcast for a re-render, as JSON text, and the
+%% cache that carries on, for a test that looks for a secret in a patch.
+%% Returns {Text, Cache}.
+patch_text(Cache, Old, New) ->
+    {diff, Patch, Next} = 'lustre@vdom@diff':diff(Cache, Old, New),
+    Json = 'lustre@vdom@patch':to_json(Patch, 'lustre@vdom@cache':memos(Next)),
+    {iolist_to_binary(gleam@json:to_string(Json)), Next}.

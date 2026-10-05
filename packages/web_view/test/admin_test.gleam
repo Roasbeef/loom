@@ -1,15 +1,14 @@
 //// The owner's admin page (protocol-change/065, the fifth pull request): the
-//// people the catalogue holds, the invitations waiting to be claimed, and the
-//// sessions with their members, drawn in the home's frame, and the five changes
-//// the owner makes from it.
+//// people the catalogue holds, each once, and the sessions with their members,
+//// drawn in the home's frame, and the changes the owner makes from it.
 ////
 //// These tests pin what the page lists and says, that every name is escaped
 //// text and nothing a peer wrote is an attribute, that every handler is a click
 //// or a submit beneath the one region the daemon's socket admits, that an ask is
 //// made once and its buttons are disabled meanwhile, that a revocation is two
-//// presses, that a claim is on screen once and until it is hidden, that a read
-//// that was overtaken is dropped, and how a page that can no longer be served
-//// ends.
+//// presses, that a claim is on screen once, beside the action that made it, and
+//// until it is hidden, that a read that was overtaken is dropped, and how a page
+//// that can no longer be served ends.
 
 import gleam/erlang/process.{type Subject}
 import gleam/list
@@ -18,6 +17,7 @@ import gleam/string
 import lustre/effect
 import lustre/element.{type Element}
 import web_view/admin
+import web_view/creations
 import web_view/ending
 import web_view/grants
 import web_view/home
@@ -28,6 +28,20 @@ import web_view/view/admin_sessions
 
 @external(erlang, "page_events_ffi", "handlers")
 fn handlers(view: Element(message)) -> List(String)
+
+type Cache
+
+@external(erlang, "lane_memo_ffi", "first")
+fn first(view: Element(message)) -> Cache
+
+// The patch the server runtime would broadcast for a re-render, as JSON text,
+// and the cache that carries on.
+@external(erlang, "lane_memo_ffi", "patch_text")
+fn patch_text(
+  cache: Cache,
+  old: Element(message),
+  new: Element(message),
+) -> #(String, Cache)
 
 // A claim token, which is `loomclaim_` and 64 hexadecimal digits.
 const token =
@@ -45,6 +59,7 @@ fn entry(id: String, name: String, residency: sessions.Residency) -> Entry {
     created_at: 100_000,
     residency:,
     subtitle: None,
+    role: None,
   )
 }
 
@@ -92,7 +107,12 @@ fn snapshot(chosen: Option(String)) -> grants.Snapshot {
     ],
     selection: case chosen {
       Some(id) if id == session ->
-        Some(grants.Selection(session:, holders: holders(), more: grants.Whole))
+        Some(grants.Selection(
+          session:,
+          holders: holders(),
+          more: grants.Whole,
+          scope: creations.Shareable,
+        ))
       Some(_) | None -> None
     },
     logins: [],
@@ -191,23 +211,27 @@ pub fn the_page_draws_in_the_homes_frame_test() {
   assert string.contains(html, "sidebar=\"none\"")
   assert string.contains(html, ">Admin<")
   assert string.contains(html, "Olive")
-  assert string.contains(html, ">operator<")
+  assert !string.contains(html, ">operator<")
   assert string.contains(html, "connected")
   assert !string.contains(html, "<aside")
 }
 
-// The three sections, in order, with each person's credential in words: the
+// The two sections, in order, with each person's credential in words: the
 // owner, an active member with when they joined, an open claim with the time it
-// has left, an expired one and none. The waiting list holds only the open claim.
-pub fn the_people_and_the_pending_invitations_are_listed_test() {
+// has left, an expired one and none. A person whose claim is open is one row of
+// the people list, with the count of invited in the heading, and there is no
+// second list of them (round 4, F84).
+pub fn the_people_are_listed_once_with_their_invitations_in_their_rows_test() {
   let #(model, _) = opened(start())
   let html = drawn(model)
+  assert !string.contains(html, "Pending invitations")
+  assert !string.contains(html, "No invitation is waiting")
   let assert [_, people_and_after] = string.split(html, ">People<")
-  let assert [people_section, rest] =
-    string.split(people_and_after, ">Pending invitations<")
-  let assert [pending_section, sessions_section] =
-    string.split(rest, ">Sessions<")
+  let assert [people_section, sessions_section] =
+    string.split(people_and_after, ">Sessions<")
 
+  assert string.contains(people_section, ">5<")
+  assert string.contains(people_section, "· 1 invited")
   assert string.contains(people_section, "Olive Owner")
   assert string.contains(
     people_section,
@@ -221,31 +245,56 @@ pub fn the_people_and_the_pending_invitations_are_listed_test() {
   assert string.contains(people_section, "invitation expired")
   assert string.contains(people_section, "no credential")
   assert count(people_section, "<li") == 5
-
-  assert string.contains(pending_section, "Cara")
-  assert string.contains(pending_section, "claim open, 50 min left")
-  assert !string.contains(pending_section, "Bob")
-  assert !string.contains(pending_section, "Dan")
-  assert count(pending_section, "<li") == 1
+  assert count(html, ">Cara<") == 1
 
   assert string.contains(sessions_section, "review auth")
   assert string.contains(sessions_section, "notes")
   assert string.contains(sessions_section, "Choose a session")
 }
 
-// The owner's row offers no action, a member's offers two, and the pending
-// list's offers one, each with the identity the server drew into the message
-// and none in the page.
-pub fn each_person_is_offered_the_changes_made_to_a_person_test() {
+// The owner's row offers no action. A member's actions follow what the member
+// holds: an active credential can be rotated or revoked, an open claim can only
+// be voided, and a member with neither can be given a new claim.
+pub fn each_person_is_offered_the_changes_that_fit_what_they_hold_test() {
   let #(model, _) = opened(start())
   let html = drawn(model)
 
-  // Four members in the people list, each with Rotate and Revoke access, and the
-  // one waiting invitation again in the pending list, worded as voiding it.
-  assert count(html, ">Rotate<") == 4
-  assert count(html, ">Revoke access<") == 4
+  // Bob is active, Cara's claim is open, Dan's expired and Eve has none.
+  assert count(html, ">Rotate<") == 3
+  assert count(html, ">Revoke access<") == 1
   assert count(html, ">Void invitation<") == 1
-  assert !string.contains(html, "owner\"")
+}
+
+// An identity is drawn as its prefix and eight characters with the whole in the
+// `title`, so a long owner identity does not fill the row (round 4, F85).
+pub fn a_long_identity_is_drawn_short_with_the_whole_in_its_title_test() {
+  let long =
+    "owner-2056528fe1be0db0f7105a24da3aac4dcf722898c6655129c0eabc6231181a05"
+  let start =
+    admin.Start(..start(), read: fn(_, deliver) {
+      deliver(grants.Read(
+        grants.Snapshot(..snapshot(None), principals: [
+          grants.Principal(
+            long,
+            "Owner",
+            grants.OwnerKind,
+            grants.Active("aaaaaaaaaaaaaaaa", None),
+          ),
+          grants.Principal(
+            "guest-956fb176",
+            "Priya",
+            grants.MemberKind,
+            grants.Active("bbbbbbbbbbbbbbbb", None),
+          ),
+        ]),
+      ))
+    })
+  let #(model, _) = opened(start)
+  let html = drawn(model)
+  assert string.contains(html, ">owner-2056528f<")
+  assert string.contains(html, "title=\"" <> long <> "\"")
+  assert !string.contains(html, ">" <> long <> "<")
+  assert string.contains(html, ">guest-956fb176<")
 }
 
 // Names are the peers': drawn as text nodes, escaped, and never an attribute, a
@@ -272,6 +321,7 @@ pub fn a_name_is_only_ever_a_text_node_test() {
               session:,
               holders: [grants.Holder("evil", hostile, invites.Observer)],
               more: grants.Whole,
+              scope: creations.Shareable,
             )),
             logins: [],
           ),
@@ -289,7 +339,7 @@ pub fn a_name_is_only_ever_a_text_node_test() {
   assert string.contains(html, "&amp;")
 
   // The name is in the armed button's words, as text.
-  assert string.contains(html, "Revoke &lt;img")
+  assert string.contains(html, "Void &lt;img")
 }
 
 // Choosing a session reads its members at once and draws them with the role
@@ -377,19 +427,23 @@ pub fn an_ask_is_made_once_and_its_buttons_wait_for_it_test() {
   let _ = model
 }
 
+// The refusal of an allowance that is spent: three grants, and the Unix time
+// 1_790_030_460_000 ms, which is 22:41 UTC.
+fn too_many() -> grants.Reason {
+  grants.TooMany(used: 3, free_at_ms: 1_790_030_460_000)
+}
+
 // A refusal is worded in the reason's fixed words and nothing else, and the page
 // reads again so it stops drawing what is gone.
 pub fn a_refusal_is_worded_in_fixed_words_test() {
   let reads = process.new_subject()
   let #(model, _) =
-    opened(start_with(
-      reads,
-      process.new_subject(),
-      grants.Declined(grants.TooMany),
-    ))
+    opened(start_with(reads, process.new_subject(), grants.Declined(too_many())))
   let model = run(model, admin.Asking(grants.Rotate("cara")))
   let html = drawn(model)
-  assert string.contains(html, grants.reason_words(grants.TooMany))
+  assert string.contains(html, grants.reason_words(too_many()))
+  assert string.contains(html, "3 grants in the last hour")
+  assert string.contains(html, "free at 22:41 UTC")
   assert !string.contains(html, "loomclaim_")
   assert process.receive(reads, 0) == Ok(None)
   assert process.receive(reads, 0) == Ok(None)
@@ -460,6 +514,7 @@ pub fn a_claim_is_shown_once_and_dropped_when_hidden_test() {
     grants.Claim(
       principal: "guest-1a2b3c4d",
       purpose: grants.Invited(invites.Operator),
+      page: "http://127.0.0.1:4000/ui/claim",
       command: "loom claim --addr ws://127.0.0.1:4000/v2/control",
       token:,
       expires_in_ms: 3_600_000,
@@ -479,6 +534,10 @@ pub fn a_claim_is_shown_once_and_dropped_when_hidden_test() {
   assert string.contains(html, "text=\"" <> token <> "\"")
   assert string.contains(html, "subject=\"token\"")
   assert string.contains(html, "subject=\"command\"")
+  assert string.contains(html, "subject=\"claim-address\"")
+  assert string.contains(html, "text=\"http://127.0.0.1:4000/ui/claim\"")
+  assert string.contains(html, "Open this address and paste the token:")
+  assert string.contains(html, "Or, with loom installed")
   assert string.contains(html, "Invitation ready")
   assert string.contains(html, "Role: operator. Principal: guest-1a2b3c4d.")
   assert string.contains(html, "valid for 60 minutes")
@@ -503,6 +562,7 @@ pub fn a_rotation_is_worded_as_one_and_a_read_carries_no_claim_test() {
     grants.Claim(
       principal: "bob",
       purpose: grants.Rotated,
+      page: "http://127.0.0.1:4000/ui/claim",
       command: "loom claim --addr ws://127.0.0.1:4000/v2/control",
       token:,
       expires_in_ms: 3_600_000,
@@ -607,6 +667,7 @@ pub fn every_handler_is_beneath_the_body_test() {
     grants.Claim(
       principal: "guest-1a2b3c4d",
       purpose: grants.Invited(invites.Observer),
+      page: "http://127.0.0.1:4000/ui/claim",
       command: "loom claim --addr ws://127.0.0.1:4000/v2/control",
       token:,
       expires_in_ms: 3_600_000,
@@ -715,14 +776,19 @@ pub fn a_principals_sign_ins_are_listed_with_a_two_step_revoke_test() {
 }
 
 // The page's own words stay out of the page's attributes: no handler's path
-// holds a name, and no class is made from one.
+// holds a name, and no class is made from one. The people's rows are keyed by the
+// catalogue's identity and by nothing else.
 pub fn no_identity_reaches_an_attribute_test() {
   let #(model, _) = opened(start())
   let model = run(model, admin.Choosing(session))
   let html = drawn(model)
   assert !string.contains(html, "class=\"bob")
   assert !string.contains(html, "id=\"bob")
-  assert !string.contains(html, "key=\"")
+
+  // The only keys are the people's catalogue identities, one for each row of the
+  // list, and no name or session is one.
+  assert count(html, "key=\"") == 5
+  assert !string.contains(html, "key=\"Bob")
   assert !string.contains(html, session <> "\"")
   assert !string.contains(html, "href")
 }
@@ -769,4 +835,272 @@ pub fn the_two_pages_pin_their_paths_apart_test() {
     _,
     home.admin_path,
   ))
+}
+
+// The bar's trailing child is Back, a `<loom-back>` that mints nothing: the
+// page draws no handler for it, so the daemon is never asked for a ticket.
+pub fn the_bar_ends_with_a_back_control_that_sends_nothing_test() {
+  let html = drawn(admin.new(start()))
+  assert string.contains(html, "<loom-back>Home</loom-back>")
+}
+
+// An invitation's claim is drawn in the Sessions section, under the form that
+// made it, and a rotation's under the row of the person it rotated. Neither
+// moves to the top of the page, and neither is drawn where it does not belong.
+pub fn a_claim_is_drawn_beside_the_action_that_made_it_test() {
+  let invited =
+    grants.Claim(
+      principal: "guest-1a2b3c4d",
+      purpose: grants.Invited(invites.Observer),
+      page: "http://127.0.0.1:4000/ui/claim",
+      command: "loom claim --addr ws://127.0.0.1:4000/v2/control",
+      token:,
+      expires_in_ms: 3_600_000,
+    )
+  let #(model, _) =
+    opened(start_with(
+      process.new_subject(),
+      process.new_subject(),
+      grants.Claimed(invited),
+    ))
+  let model = run(model, admin.Choosing(session))
+  let model =
+    run(model, admin.Asking(grants.Invite(session, invites.Observer, "")))
+  let html = drawn(model)
+  let assert [people, sessions] = string.split(html, ">Sessions<")
+  assert !string.contains(people, token)
+  let assert [before_form, after_form] =
+    string.split(sessions, "aria-label=\"Invite to this session\"")
+  assert !string.contains(before_form, token)
+  assert string.contains(after_form, token)
+  assert string.contains(after_form, ">Hide the token<")
+
+  // A rotation's claim is in the row of the person, before the next row.
+  let rotated =
+    grants.Claim(..invited, principal: "bob", purpose: grants.Rotated)
+  let #(model, _) =
+    opened(start_with(
+      process.new_subject(),
+      process.new_subject(),
+      grants.Claimed(rotated),
+    ))
+  let model = run(model, admin.Asking(grants.Rotate("bob")))
+  let html = drawn(model)
+  let assert [before_bob, from_bob] = string.split(html, ">Bob<")
+  assert !string.contains(before_bob, token)
+  let assert [bobs_row, later_rows] = string.split(from_bob, ">Cara<")
+  assert string.contains(bobs_row, token)
+  assert !string.contains(later_rows, token)
+  assert count(html, token) == 1
+}
+
+// Nothing on the page is sticky or covers a list, and a private session draws no
+// form: the sentence that says why is drawn in its place (round 4, F88).
+pub fn a_private_session_draws_no_invitation_form_test() {
+  let private =
+    admin.Start(..start(), read: fn(chosen, deliver) {
+      deliver(grants.Read(
+        grants.Snapshot(
+          ..snapshot(chosen),
+          selection: option.map(snapshot(chosen).selection, fn(held) {
+            grants.Selection(..held, scope: creations.Private)
+          }),
+        ),
+      ))
+    })
+  let #(model, _) = opened(private)
+  let model = run(model, admin.Choosing(session))
+  let html = drawn(model)
+  assert string.contains(html, "Members of review auth")
+  assert string.contains(html, "Private session: it shares the workspace")
+  assert !string.contains(html, "name=\"role\"")
+  assert !string.contains(html, "Create invitation")
+  assert !list.any(handlers(admin.view(model)), string.ends_with(_, "\nsubmit"))
+  assert !string.contains(html, "sticky")
+
+  // A shareable session draws the form.
+  let #(shared, _) = opened(start())
+  let shared = run(shared, admin.Choosing(session))
+  assert string.contains(drawn(shared), "Create invitation")
+  assert !string.contains(drawn(shared), "Private session")
+}
+
+// A change that was made is a quiet line under the section acted on, a refusal is
+// the danger line beside its control, and neither is a box at the top of the page,
+// where the centre's first child is nothing (round 4, F78).
+pub fn a_notice_is_a_line_beside_what_was_acted_on_test() {
+  let #(model, _) = opened(start())
+  let model = run(model, admin.Choosing(session))
+  let model =
+    run(model, admin.Asking(grants.SetRole(session, "bob", invites.Operator)))
+  let model = run(model, admin.Acted(grants.Changed))
+  let html = drawn(model)
+  assert !string.contains(html, "home-notice")
+  assert string.contains(
+    html,
+    "<p class=\"notice-line\" role=\"status\">Role changed.</p>",
+  )
+  let assert [_, members] = string.split(html, "Members of review auth")
+  assert string.contains(members, "Role changed.")
+
+  let #(refused, _) =
+    opened(start_with(
+      process.new_subject(),
+      process.new_subject(),
+      grants.Declined(too_many()),
+    ))
+  let refused = run(refused, admin.Choosing(session))
+  let refused =
+    run(refused, admin.Asking(grants.Invite(session, invites.Observer, "")))
+  let html = drawn(refused)
+  assert string.contains(html, "notice-refusal")
+  assert !string.contains(html, "notice-line")
+  let assert [before_form, after_form] =
+    string.split(html, "aria-label=\"Invite to this session\"")
+  assert !string.contains(before_form, "notice-refusal")
+  assert string.contains(after_form, "3 grants in the last hour")
+}
+
+// The token is in the frame that shows it and in no later frame: the patch that
+// draws the claim carries it once, and neither a refresh that finds the people
+// changed nor the page's own re-render after it carries it again.
+pub fn the_token_is_in_one_patch_and_no_other_test() {
+  let claim =
+    grants.Claim(
+      principal: "guest-1a2b3c4d",
+      purpose: grants.Invited(invites.Observer),
+      page: "http://127.0.0.1:4000/ui/claim",
+      command: "loom claim --addr ws://127.0.0.1:4000/v2/control",
+      token:,
+      expires_in_ms: 3_600_000,
+    )
+  let feed = process.new_subject()
+  let start =
+    admin.Start(
+      ..start_with(
+        process.new_subject(),
+        process.new_subject(),
+        grants.Claimed(claim),
+      ),
+      read: fn(chosen, deliver) {
+        let rows = case process.receive(feed, 0) {
+          Ok(rows) -> rows
+          Error(Nil) -> people()
+        }
+        deliver(grants.Read(
+          grants.Snapshot(..snapshot(chosen), principals: rows),
+        ))
+      },
+    )
+  let #(model, _) = opened(start)
+  let model = run(model, admin.Choosing(session))
+  let before = admin.view(model)
+  let cache = first(before)
+  let shown_model =
+    run(model, admin.Asking(grants.Invite(session, invites.Observer, "")))
+  let shown = admin.view(shown_model)
+  let #(patch, cache) = patch_text(cache, before, shown)
+  assert count(patch, token) == 1
+
+  // A refresh whose read lists one more person ahead of the others is a
+  // different tree around the same claim.
+  process.send(feed, [
+    grants.Principal("aaron", "Aaron", grants.MemberKind, grants.NoCredential),
+    ..people()
+  ])
+  let refreshed = run(shown_model, admin.Ticked)
+  let #(patch, cache) = patch_text(cache, shown, admin.view(refreshed))
+  assert string.contains(patch, "Aaron") as "the refresh landed"
+  assert !string.contains(patch, "loomclaim_")
+
+  // Hiding it is a patch that removes it and carries no token either.
+  let hidden = run(refreshed, admin.Dismissed)
+  let #(patch, _) = patch_text(cache, admin.view(refreshed), admin.view(hidden))
+  assert !string.contains(patch, "loomclaim_")
+}
+
+// After the daemon refuses a grant for want of allowance, the buttons that
+// would grant carry the refusal's words in their `title` until the time a place
+// frees, so the owner reads when the next is free before pressing, and the
+// buttons that only reduce access carry nothing. Once the time has passed they
+// carry nothing (round 4, F89).
+pub fn the_buttons_that_grant_carry_the_refusal_while_the_allowance_is_spent_test() {
+  let words = grants.reason_words(too_many())
+  let #(model, _) =
+    opened(start_with(
+      process.new_subject(),
+      process.new_subject(),
+      grants.Declined(too_many()),
+    ))
+  let model = run(model, admin.Choosing(session))
+  assert !string.contains(drawn(model), "title=\"" <> words <> "\"")
+  let model = run(model, admin.Asking(grants.Rotate("dan")))
+  let html = drawn(model)
+
+  // Rotate (three people), Make operator (Bob) and Create invitation carry it;
+  // Revoke access, Remove, Make observer and Void invitation do not.
+  assert count(html, "title=\"" <> words <> "\"") == 5
+  assert count(html, ">Rotate<") == 3
+  assert count(html, ">Revoke access<") == 1
+
+  // A refusal whose time has passed marks nothing.
+  let #(passed, _) =
+    opened(start_with(
+      process.new_subject(),
+      process.new_subject(),
+      grants.Declined(grants.TooMany(used: 3, free_at_ms: 1000)),
+    ))
+  let passed = run(passed, admin.Choosing(session))
+  let passed = run(passed, admin.Asking(grants.Rotate("dan")))
+  assert !string.contains(drawn(passed), "title=\"3 grants")
+}
+
+// A rotation's claim is the last child of the person's row. A refresh that lists
+// a new principal ahead of that person moves the row, and the patch that moves it
+// must not carry the token again: the list is keyed by identity, so the row moves
+// with its box and no content is sent.
+pub fn a_rotation_claim_is_not_resent_when_a_row_is_inserted_ahead_test() {
+  let claim =
+    grants.Claim(
+      principal: "bob",
+      purpose: grants.Rotated,
+      page: "http://127.0.0.1:4000/ui/claim",
+      command: "loom claim --addr ws://127.0.0.1:4000/v2/control",
+      token:,
+      expires_in_ms: 3_600_000,
+    )
+  let feed = process.new_subject()
+  let start =
+    admin.Start(
+      ..start_with(
+        process.new_subject(),
+        process.new_subject(),
+        grants.Claimed(claim),
+      ),
+      read: fn(chosen, deliver) {
+        let rows = case process.receive(feed, 0) {
+          Ok(rows) -> rows
+          Error(Nil) -> people()
+        }
+        deliver(grants.Read(
+          grants.Snapshot(..snapshot(chosen), principals: rows),
+        ))
+      },
+    )
+  let #(model, _) = opened(start)
+  let before = admin.view(model)
+  let cache = first(before)
+  let shown_model = run(model, admin.Asking(grants.Rotate("bob")))
+  let shown = admin.view(shown_model)
+  let #(patch, cache) = patch_text(cache, before, shown)
+  assert count(patch, token) == 1
+
+  process.send(feed, [
+    grants.Principal("aaron", "Aaron", grants.MemberKind, grants.NoCredential),
+    ..people()
+  ])
+  let refreshed = run(shown_model, admin.Ticked)
+  let #(patch, _) = patch_text(cache, shown, admin.view(refreshed))
+  assert string.contains(patch, "Aaron") as "the refresh landed"
+  assert !string.contains(patch, "loomclaim_")
 }

@@ -20,7 +20,13 @@
 ////
 //// The session's current name is drawn as a text node in the region's lead,
 //// and never as the field's `value` or `placeholder`, because those are
-//// attributes and a name is text the page does not put in one. The words of a
+//// attributes and a name is text the page does not put in one. A field that
+//// opens empty makes a one-letter fix cost the whole name, so the field sits in
+//// a `<loom-rename>` element (`web_client/rename`) that copies the lead's text
+//// into it in the browser, when the form is drawn. The server's markup carries
+//// two fixed, valueless markers for that and nothing taken from the name:
+//// `scope_marker` on the container that holds both the lead and the field, and
+//// `name_marker` on the element whose text node is the name. The words of a
 //// refusal are fixed (`web_view/renames`). The module takes the submit handler
 //// as a value, because `web_view/operator_page` owns the message type and
 //// imports this module.
@@ -32,6 +38,51 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/element/keyed
 import web_view/renames.{type Control}
+
+/// The fixed, valueless attribute that marks the container holding both the
+/// name's text node and the rename field. `<loom-rename>` looks for the name
+/// inside the nearest ancestor that carries it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert rename.scope_marker == "data-loom-renames"
+/// ```
+pub const scope_marker = "data-loom-renames"
+
+/// The fixed, valueless attribute that marks the element whose text node is
+/// the session's current name, the text `<loom-rename>` copies.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert rename.name_marker == "data-loom-name"
+/// ```
+pub const name_marker = "data-loom-name"
+
+/// The rename text field in its `<loom-rename>` wrapper. The field carries no
+/// `value` and no `placeholder` drawn from the name; the wrapper copies the
+/// current name into it in the browser when it appears. The wrapper is the
+/// field's only parent, so no sibling's position moves and the form's handler
+/// paths are as they were.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // rename.field()
+/// ```
+pub fn field() -> Element(message) {
+  element.element("loom-rename", [], [
+    html.input([
+      attribute.type_("text"),
+      attribute.name("text"),
+      attribute.aria_label("New name"),
+      attribute.placeholder("New name"),
+      attribute.attribute("maxlength", "256"),
+      attribute.attribute("autocomplete", "off"),
+    ]),
+  ])
+}
 
 /// The control for the page's `control` state: nothing for a page that cannot
 /// rename, and the form, its status line and the session's current name for any
@@ -55,12 +106,12 @@ pub fn view(
       html.section(
         [
           attribute.class("controls"),
+          attribute.class("session-rename"),
           attribute.aria_label("Rename this session"),
+          attribute.attribute(scope_marker, ""),
         ],
         [
-          html.p([attribute.class("control-goal-text")], [
-            html.text(lead(current)),
-          ]),
+          lead(current),
           keyed.div([attribute.class("control-forms")], [
             #("rename-" <> int.to_string(renamed), form(control, submit)),
           ]),
@@ -72,11 +123,14 @@ pub fn view(
 
 // The lead's words. The name is a text node: a catalogue field, drawn as text
 // and never as an attribute.
-fn lead(current: Option(String)) -> String {
-  case current {
-    Some(name) -> "Name: " <> name
-    None -> "This session has no name yet."
-  }
+fn lead(current: Option(String)) -> Element(message) {
+  html.p([attribute.class("control-goal-text")], case current {
+    Some(name) -> [
+      html.text("Name: "),
+      html.span([attribute.attribute(name_marker, "")], [html.text(name)]),
+    ]
+    None -> [html.text("This session has no name yet.")]
+  })
 }
 
 // The disclosure and its form. While a request is with the daemon the button is
@@ -96,14 +150,7 @@ fn form(control: Control, submit: Attribute(message)) -> Element(message) {
         submit,
       ],
       [
-        html.input([
-          attribute.type_("text"),
-          attribute.name("text"),
-          attribute.aria_label("New name"),
-          attribute.placeholder("New name"),
-          attribute.attribute("maxlength", "256"),
-          attribute.attribute("autocomplete", "off"),
-        ]),
+        field(),
         html.button([attribute.type_("submit"), ..asking], [html.text("Rename")]),
       ],
     ),

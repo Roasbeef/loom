@@ -49,6 +49,45 @@ pub fn position(gap: Int) -> Position {
 /// or keyboard keeps the scrolls that follow it the reader's.
 pub const touch_window = 500
 
+/// How far from the bottom the reader must be before the "Jump to latest"
+/// button is worth drawing. The button floats over the bottom of the view, and
+/// a reader who is only a row above the bottom would have it cover the row they
+/// are about to read, to offer a jump of one row. The distance is the lane's
+/// 16 pixels of bottom padding, one row of text with its spacing (about 40
+/// pixels) and the button with its inset (about 40 pixels). The padding is not
+/// made larger instead: it would change the transcript's size when the button
+/// appears, which the follower reads as the layout moving.
+pub const jump_gap = 96
+
+/// Whether the "Jump to latest" button is drawn.
+pub type Jump {
+  /// The reader is away from the bottom by enough that the button covers no
+  /// row they are near.
+  Offered
+
+  /// The reader is following, or is within `jump_gap` of the bottom.
+  Withheld
+}
+
+/// The button's state for a reader's position and gap. A reader whose
+/// position is `Reading` but whose gap is within `jump_gap` is still reading,
+/// and a row that lands leaves the transcript where it is; only the button is
+/// withheld.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert follow_rule.jump(follow_rule.Reading, 600) == follow_rule.Offered
+/// assert follow_rule.jump(follow_rule.Reading, 60) == follow_rule.Withheld
+/// assert follow_rule.jump(follow_rule.Following, 600) == follow_rule.Withheld
+/// ```
+pub fn jump(position: Position, gap: Int) -> Jump {
+  case position, gap > jump_gap {
+    Reading, True -> Offered
+    Reading, False | Following, _ -> Withheld
+  }
+}
+
 /// What moved the transcript, as far as a scroll event can tell.
 pub type Origin {
   /// The reader's wheel, finger, pointer or a key touched the transcript within

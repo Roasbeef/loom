@@ -65,7 +65,8 @@
 //// The page also lists the browsers signed in as its principal and lets the
 //// person end them (protocol-change/065, the eighth pull request). Each list
 //// that is read starts a read of the principal's sign-ins (`Start.signins`), an
-//// answer from the same registry, which the page draws below the sessions as
+//// answer from the same registry, which the page draws in the account panel
+//// (the person's name in the bar opens it; `view/home_bar`, `view/signins`) as
 //// one row for each login: a fingerprint, when it was made, when it was last
 //// used and when it ends, with the one this page belongs to marked
 //// (`Start.login`). A row's "Sign out" and the "Sign out everywhere" button ask
@@ -75,8 +76,11 @@
 //// exchange opened (a fresh home) is also handed `Start.device`, which asks the
 //// daemon for a link that signs in another device and shows it once; a home the
 //// bookmark resumed has none and draws no control, and the daemon refuses the
-//// request from one. A page opened by a remembered login draws the bookmark as
-//// text (`Start.bookmark`). The sign-in rows' messages name a fingerprint the
+//// request from one. While a link is on show the panel opens by itself, so the
+//// link is on screen. A page opened by a remembered login draws the bookmark,
+//// with a copy button, in the same panel (`Start.bookmark`). The panel is the
+//// centre's third child, where it always was, and the stylesheet floats it under
+//// the bar, so the centre's body is the session list and nothing else. The sign-in rows' messages name a fingerprint the
 //// server drew into the tree, so the browser's event names only the path it
 //// fired at and never a login, and the daemon answers only for the principal's
 //// own.
@@ -178,7 +182,8 @@ pub const sidebar_path = "0\t1"
 /// session.
 pub const table_path = "0\t2\t1"
 
-/// The Lustre event path of the sign-ins region on the home page: the centre
+/// The Lustre event path of the sign-ins region on the home page, which is the
+/// account panel the person's name in the bar opens: the centre
 /// column's third child, after the sessions. Every handler beneath it is one of
 /// the page's own sign-in controls: a row's "Sign out", "Sign out everywhere",
 /// and on a fresh home "Sign in another device" and its "Done". The home's
@@ -1136,13 +1141,16 @@ pub fn status(model: Model) -> Status {
 
 /// The page: the frame a session's page draws, with the principal's sessions
 /// in the sidebar and as lists in the centre, and no strand panel. Its top
-/// bar names the page, the principal and the most the page may do, and carries
-/// the notice of a page that ended.
+/// bar names the page and the principal (a button that opens the account panel),
+/// says so when the page is a read-only link, and carries the notice of a page
+/// that ended.
 ///
 /// The centre's children are, in order, the notice of the last press (an
 /// empty node when there is none, so the list keeps its path), the lists
-/// (`table_path`), and the hidden `<loom-switch>` element, last so that no
-/// admitted path moves with it.
+/// (`table_path`), the account panel (`signins_path`), which the stylesheet
+/// floats under the bar and shows only while the name's button has it open, and
+/// the hidden `<loom-switch>` element, last so that no admitted path moves with
+/// it.
 ///
 /// ## Examples
 ///
@@ -1152,10 +1160,13 @@ pub fn status(model: Model) -> Status {
 pub fn view(model: Model) -> Element(Msg) {
   shell.view(
     shell.Home,
-    home_bar.view(
+    home_bar.with(
       title: "Home",
-      name: model.start.name,
-      ceiling: ceiling_words(model.start.ceiling),
+      who: home_bar.account(
+        model.start.name,
+        ceiling_words(model.start.ceiling),
+        account_panel(model),
+      ),
       status: status_words(model.status),
       tone: status_tone(model.status),
       notice: ended.home(ended_ending(model.status)),
@@ -1292,7 +1303,12 @@ fn shell_sidebar(model: Model) -> shell.Sidebar(Msg) {
   case model.groups {
     [] -> shell.Unlisted
     [_, ..] as groups ->
-      shell.Listed(sidebar.home(groups, Opening, resume_offer(model)))
+      shell.Listed(sidebar.home(
+        groups,
+        model.activity,
+        Opening,
+        resume_offer(model),
+      ))
   }
 }
 
@@ -1307,10 +1323,23 @@ fn press_notice(notice: Option(String)) -> Element(Msg) {
   }
 }
 
+// What the bar says of the page's ceiling: nothing for an operating page, which
+// may do all its principal may and is the normal case, and "read-only link" for
+// the one a person hands to someone who may only watch. The ceiling is a cap and
+// not a role, so it is never worded as one: the person's role is on each row.
 fn ceiling_words(ceiling: Ceiling) -> String {
   case ceiling {
-    OperatorCeiling -> "operator"
-    ObserverCeiling -> "read-only"
+    OperatorCeiling -> ""
+    ObserverCeiling -> "read-only link"
+  }
+}
+
+// The account panel opens by itself while a device link is on show, so the link
+// is on screen when it arrives, and is the person's to open otherwise.
+fn account_panel(model: Model) -> home_bar.Panel {
+  case model.link {
+    ShownLink(_) -> home_bar.Open
+    NoLink | AskingLink | RefusedLink(_) -> home_bar.Closed
   }
 }
 

@@ -409,3 +409,16 @@ pub fn a_row_that_left_the_page_releases_the_hold_test() {
   assert follow_rule.keeping(follow_rule.Detached, 80.0)
     == follow_rule.Restored(by: 0.0)
 }
+
+// The button is for a reader who is away from the bottom by more than a row:
+// a reader one row up is still reading, and is not offered a jump over the
+// row they are about to read.
+pub fn the_jump_button_is_withheld_within_a_row_of_the_bottom_test() {
+  assert follow_rule.jump(Reading, follow_rule.jump_gap + 1)
+    == follow_rule.Offered
+  assert follow_rule.jump(Reading, follow_rule.jump_gap) == follow_rule.Withheld
+  assert follow_rule.jump(Reading, follow_rule.slack + 1)
+    == follow_rule.Withheld
+  assert follow_rule.jump(Following, 600) == follow_rule.Withheld
+  assert follow_rule.jump_gap > follow_rule.slack
+}

@@ -11,6 +11,12 @@
 //// and counts against the credential's allowance; lowering one and removing a
 //// member only reduce access and cost nothing.
 ////
+//// A session that is private, one that shares its notes and history with its
+//// workspace, cannot be shared, and the registry refuses an invitation into it
+//// (`NotIsolated`). The read of its members reports the scope it was created
+//// with (`grants.Selection.scope`), so the page draws no form for it and says
+//// why in one sentence, rather than drawing a form that can only be refused.
+////
 //// The invitation form has two fields and no others: a name, which is the
 //// owner's suggestion and which the invitee may replace when they claim, and a
 //// role, observer or operator. `fields` is the one place that says what a
@@ -18,6 +24,12 @@
 //// a role that is not one of the two words, so the daemon never sees a role the
 //// page did not offer. The session is not a field: it is the session the form
 //// was drawn under, carried by the message the server drew.
+////
+//// The section ends with a slot for the claim an invitation made, under the form
+//// that made it (`view/admin_claim`). A notice about a change (`view/notice`) is
+//// drawn under the members' heading, or beside the form for an invitation. Each
+//// is one child of its parent whether or not it is drawn, so no other child's
+//// path moves.
 ////
 //// Every name is a peer's and a session's name is the owner's; each is a text
 //// node, in a label's words as well. A session's identity is the catalogue's and
@@ -31,27 +43,36 @@ import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
-import web_view/grants.{type Holder, type Selection}
+import web_view/creations.{Private, Shareable}
+import web_view/grants.{type Claim, type Holder, type Selection}
 import web_view/invites.{type Role}
 import web_view/sessions.{type Entry}
 import web_view/view/admin_buttons.{type Busy, type Presses}
+import web_view/view/admin_claim
+import web_view/view/admin_people
 import web_view/view/heading
+import web_view/view/notice.{type Spoken}
 
 /// The section: the sessions to choose from and, below them, the chosen
 /// session's members and its invitation form. `chosen` is the session the owner
 /// pressed and `selection` is what the last read found for it, which is
 /// nothing when the catalogue holds no such session any longer.
 ///
+/// `spoken` is the last thing the page said about an ask and `claim` the claim on
+/// screen, if one is; each is drawn only where it belongs.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // admin_sessions.view(entries, Some(id), selection, None, presses, admin_buttons.Free)
+/// // admin_sessions.view(entries, Some(id), selection, None, None, None, presses, admin_buttons.Free)
 /// ```
 pub fn view(
   entries: List(Entry),
   chosen: Option(String),
   selection: Option(Selection),
   armed: Option(grants.Action),
+  spoken: Option(Spoken),
+  claim: Option(Claim),
   presses: Presses(message),
   busy: Busy,
 ) -> Element(message) {
@@ -70,7 +91,8 @@ pub fn view(
             list.map(entries, fn(entry) { pick(entry, chosen, presses) }),
           )
       },
-      members(entries, chosen, selection, armed, presses, busy),
+      members(entries, chosen, selection, armed, spoken, presses, busy),
+      admin_claim.for_session(claim, presses.dismiss),
     ],
   )
 }
@@ -113,6 +135,7 @@ fn members(
   chosen: Option(String),
   selection: Option(Selection),
   armed: Option(grants.Action),
+  spoken: Option(Spoken),
   presses: Presses(message),
   busy: Busy,
 ) -> Element(message) {
@@ -131,11 +154,37 @@ fn members(
         html.h3([attribute.class("admin-subheading")], [
           html.text("Members of " <> label),
         ]),
+        notice.at_members(spoken),
         holders(selection, label, armed, presses, busy),
         truncation(selection.more),
-        invitation(selection.session, label, presses, busy),
+        sharing(selection, label, spoken, presses, busy),
       ])
     }
+  }
+}
+
+// The invitation form and the notice beside it for a session that may be shared,
+// and the sentence that says why there is none for one that may not. Both are
+// one child of the members' block, so the claim's slot after it never moves.
+fn sharing(
+  selection: Selection,
+  label: String,
+  spoken: Option(Spoken),
+  presses: Presses(message),
+  busy: Busy,
+) -> Element(message) {
+  case selection.scope {
+    Shareable ->
+      html.div([attribute.class("admin-invitation")], [
+        invitation(selection.session, label, presses, busy),
+        notice.at_invitation(spoken),
+      ])
+    Private ->
+      html.p([attribute.class("admin-lead")], [
+        html.text(
+          "Private session: it shares the workspace's notes and history, so it cannot be shared. Sessions created with Shareable can be.",
+        ),
+      ])
   }
 }
 
@@ -145,7 +194,15 @@ fn named(entries: List(Entry), session: String) -> String {
   case list.find(entries, fn(entry) { entry.id == session }) {
     Ok(entry) -> sessions.label(entry)
     Error(Nil) ->
-      sessions.label(sessions.Entry(session, "", "", 0, sessions.Saved, None))
+      sessions.label(sessions.Entry(
+        session,
+        "",
+        "",
+        0,
+        sessions.Saved,
+        None,
+        None,
+      ))
   }
 }
 
@@ -186,7 +243,7 @@ fn holder(
     html.div([attribute.class("admin-text")], [
       html.span([attribute.class("admin-name")], [
         html.text(row.name),
-        html.span([attribute.class("admin-id")], [html.text(row.principal)]),
+        admin_people.identity(row.principal),
       ]),
       html.span([attribute.class("admin-sub")], [
         html.text(invites.role_word(row.role)),
@@ -215,7 +272,7 @@ fn role_button(
 ) -> Element(message) {
   case row.role {
     invites.Observer ->
-      admin_buttons.plain(
+      admin_buttons.granting(
         "Make operator",
         "admin-act",
         presses.ask(grants.SetRole(session, row.principal, invites.Operator)),
@@ -255,8 +312,12 @@ fn invitation(
   busy: Busy,
 ) -> Element(message) {
   let locked = case busy {
-    admin_buttons.Free -> []
+    admin_buttons.Free | admin_buttons.Spent(_) -> []
     admin_buttons.Occupied -> [attribute.disabled(True)]
+  }
+  let granting = case busy {
+    admin_buttons.Spent(words:) -> [attribute.title(words)]
+    admin_buttons.Free | admin_buttons.Occupied -> []
   }
   html.form(
     [
@@ -293,7 +354,11 @@ fn invitation(
           ],
         ),
         html.button(
-          [attribute.type_("submit"), attribute.class("admin-act"), ..locked],
+          [
+            attribute.type_("submit"),
+            attribute.class("admin-act"),
+            ..list.append(granting, locked)
+          ],
           [html.text("Create invitation")],
         ),
       ]),

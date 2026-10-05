@@ -20,8 +20,10 @@ renders again just for it:
 - `<loom-follow>` is the transcript's scroll container: the page's frame is
   pinned and only it scrolls. It scrolls itself to a row that lands below
   its view while the reader is at the bottom; once the reader scrolls up it
-  stops and shows a "Jump to latest" button, and scrolling back to the bottom
-  or pressing the button resumes it. When the reader presses the lane's
+  stops and shows a "Jump to latest" button once it is more than
+  `follow_rule.jump_gap` (96px, a row and the button) from the bottom, so the
+  button never covers the row the reader is about to read, and scrolling back
+  to the bottom or pressing the button resumes it. When the reader presses the lane's
   "Load older" button, it keeps the row they were looking at in place while
   the older rows arrive above it.
 - `<loom-composer commands="<json>" returned="<n>">` wraps the operator's
@@ -47,6 +49,14 @@ renders again just for it:
   from the bytes. A paste holding image files attaches them and is cancelled,
   and its listener on the form is removed when the element leaves. The chips
   are the person's own file names as text nodes, and the element draws no image.
+- `<loom-rename>` wraps the rename form's text field (the home row's form and
+  the Session pane's). The server cannot give the field a `value`, because a
+  session's name is only ever a text node (protocol-change/051), so when the
+  element connects it reads the text of the `[data-loom-name]` element inside the
+  nearest `[data-loom-renames]` container and writes it into the field, if the
+  field is empty (`rename_rule.copy`, cut to the field's 256 characters), then
+  focuses it. It takes no attribute, draws only the default slot and sends the
+  server nothing.
 - `<loom-switch to="/ui/sessions/<id>?ticket=<t>">` moves the browser to
   another session's page, as `to="/ui/home?ticket=<t>"` to the home, or, as
   `to="/ui/admin?ticket=<t>"`, from the owner's home to the admin page
@@ -55,13 +65,32 @@ renders again just for it:
   from a home), and so does the home, and each writes `to`
   once the daemon has minted a ticket; `switch_rule.target` accepts exactly
   those three address shapes and nothing else, and the element then calls
-  `location.replace` (one export in `dom.mjs`), so the old page leaves no
-  history entry for Back to reopen without a nonce. It renders nothing, takes no
+  `location.assign` (one export in `dom.mjs`), so each keyed page is a history
+  entry and Back returns to it with its own nonce (051, the addendum on
+  navigation). `<loom-back>Home</loom-back>` calls `history.back()` and mints
+  nothing (the admin bar's trailing child, and the spent-ticket document's
+  Go back); `<loom-waiting>` wraps the shell's waiting paragraph and after five
+  seconds draws the ended document's shape. It renders nothing, takes no
   focus and listens for no event (protocol-change/051, the addendum on
   switching sessions).
-- `<loom-copy subject="command|token|link|device" text="...">` (`device` is the
+- `<loom-popover wanted="open">` wraps the home's name button (the light child,
+  drawn through one slot) and toggles the account panel in the browser: it keeps
+  one fact, open or closed (`popover_rule.State`), publishes it as the custom
+  state `open` on itself (the stylesheet shows the panel under
+  `loom-shell:has(loom-popover:state(open))`) and as the button's
+  `aria-expanded`. Document listeners for `click` and `keydown` read only the
+  fixed `data-popover` marks (`toggle`, `panel`) of the nodes a click passed
+  through (`popover_rule.after_click`): the toggle flips, the panel keeps, any
+  other press and Escape close. The server's only input is `wanted="open"`, which
+  opens it while a device link is on show; any other word is no message. It
+  sends the server nothing and adds no socket admission.
+- `<loom-copy subject="command|token|link|device|claim-address|bookmark" text="...">`
+  (`bookmark` is a remembered login's home address, `http://`, a loopback host,
+  `/ui/l/`, 32 lowercase hex digits and `/home`, and nothing else) (`device` is the
   home's device-link address, protocol-change/065, PR 8: `http://`, a loopback
-  host, `/ui/home?ticket=` and 64 lowercase hex digits, and nothing else) draws one of an
+  host, `/ui/home?ticket=` and 64 lowercase hex digits, and nothing else;
+  `claim-address` is the browser claim address, `http://`, a loopback host and
+  `/ui/claim` with nothing after it) draws one of an
   invitation's two texts, or the ended page's `loom ui` command for a fresh
   link (`link`, protocol-change/065, the addendum on the home list), in a
   `code` element in its shadow root, with a button
@@ -208,7 +237,7 @@ time builds anything.
   `Reading` more than `slack` pixels from the bottom, one button, "Jump to
   latest" (`Jumped`), whose wrapper has no height and sticks to the
   scroller's bottom edge.
-- `copy_rule.Subject` (`Command` | `Token`), `Copying` (`Idle` | `Copied` |
+- `copy_rule.Subject` (`Command` | `Token` | `Link` | `Device` | `ClaimPage`), `Copying` (`Idle` | `Copied` |
   `Failed`), `subject`, `text`, `after` and `words`, and `copy.Model(subject,
   held, copying)` with `copy.Msg` (`Subjected`, `Texted`, `Pressed`,
   `Written`): the element keeps the raw `text` and checks it against the

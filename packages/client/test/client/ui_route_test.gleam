@@ -742,9 +742,11 @@ fn administered(
         session -> Some(session)
       }
       let logins = header("x-admin-logins") != ""
+      let scope = header("x-admin-scope") != ""
       stub(
         279,
         case ui_socket.admin_reading(attachment, open, chosen, fn(_) { Nil }) {
+          grants.Read(snapshot) if scope -> scope_summary(snapshot)
           grants.Read(snapshot) if logins -> logins_summary(snapshot)
           grants.Read(snapshot) -> summary(snapshot)
           grants.Unread -> "unread"
@@ -792,15 +794,30 @@ fn administered(
                   grants.Rotated -> "rotated"
                 },
                 int.to_string(claim.expires_in_ms),
+                claim.page,
               ],
               "\n",
             ),
           )
         Ok(grants.Changed) -> stub(294, "changed")
+        Ok(grants.Declined(grants.TooMany(..))) -> stub(293, "TooMany")
         Ok(grants.Declined(reason)) -> stub(293, string.inspect(reason))
         Error(Nil) -> stub(298, "the task never answered")
       }
     }
+  }
+}
+
+// What a read found for the chosen session's scope, as `shareable`, `private` or
+// `none` when no session was found.
+fn scope_summary(snapshot: grants.Snapshot) -> String {
+  case snapshot.selection {
+    None -> "none"
+    Some(selection) ->
+      case selection.scope {
+        creations.Shareable -> "shareable"
+        creations.Private -> "private"
+      }
   }
 }
 
@@ -903,6 +920,7 @@ fn inviting(
               invitation.principal,
               invites.role_word(invitation.role),
               int.to_string(invitation.expires_in_ms),
+              invitation.page,
             ],
             "\n",
           ),
@@ -1608,6 +1626,28 @@ pub fn the_assets_are_the_priv_files_under_the_unchanged_policy_test() {
       assert string.contains(answer.body, "\"" <> page.nonce_item <> "\"")
     })
   })
+}
+
+// The tab keeps one nonce per keyed page (protocol-change/051, the addendum on
+// navigation), so Back can return to a page and find its own. Both scripts
+// build the item name from the prefix and the page's key; neither spells the
+// bare, one-per-tab name, which a later page would overwrite. The bundle
+// navigates with `location.assign`, and no component of it replaces the
+// location.
+pub fn the_nonce_is_kept_per_page_and_the_bundle_assigns_the_location_test() {
+  list.each([page.enter_asset, page.page_asset], fn(name) {
+    let assert Ok(path) = page.static_file(name) as "the script has a priv path"
+    let assert Ok(script) = simplifile.read(path) as "the script reads"
+    assert string.contains(script, "\"" <> page.nonce_item <> "\" + ")
+    assert !string.contains(script, "\"loom-page-nonce\"")
+  })
+
+  let assert Ok(path) = page.static_file(page.client_asset)
+    as "the bundle has a priv path"
+  let assert Ok(bundle) = simplifile.read(path) as "the bundle reads"
+  assert string.contains(bundle, "location.assign(")
+  assert !string.contains(bundle, "location.replace(")
+  assert string.contains(bundle, "history.back()")
 }
 
 // Referrer-Policy is load-bearing: the exchange's URL carries the ticket and
@@ -3018,16 +3058,17 @@ type Minted {
     principal: String,
     role: String,
     expires_in_ms: Int,
+    page: String,
   )
 }
 
 fn minted(answer: Answer) -> Minted {
   assert answer.status == 292
-  let assert [command, token, principal, role, expires] =
+  let assert [command, token, principal, role, expires, page] =
     string.split(answer.body, "\n")
-    as "an invitation is five lines"
+    as "an invitation is six lines"
   let assert Ok(expires_in_ms) = int.parse(expires) as "a lifetime"
-  Minted(command:, token:, principal:, role:, expires_in_ms:)
+  Minted(command:, token:, principal:, role:, expires_in_ms:, page:)
 }
 
 // The page's socket as an invitation asks for one, for the role named.
@@ -3118,6 +3159,9 @@ pub fn an_owners_operator_page_invites_into_its_own_session_test() {
       <> int.to_string(port)
       <> "/v2/control"
     assert !string.contains(answer.command, "loomclaim_")
+    assert answer.page
+      == "http://127.0.0.1:" <> int.to_string(port) <> "/ui/claim"
+    assert !string.contains(answer.page, "loomclaim_")
 
     // The membership is this session's alone, at the role asked for.
     assert role_in(ready.state_root, answer.principal, session) == ["observer"]
@@ -5960,6 +6004,11 @@ pub fn the_admin_page_reads_and_each_change_shows_at_the_next_read_test() {
       == "loom claim --addr ws://127.0.0.1:"
       <> int.to_string(port)
       <> "/v2/control"
+
+    // A person without `loom` claims in a browser, at the address the page was
+    // reached at.
+    assert invited.page
+      == "http://127.0.0.1:" <> int.to_string(port) <> "/ui/claim"
     let #(people, _, selection) = admin_read(port, page, session)
     assert string.contains(people, invited.principal <> ":member:claim_open")
 
@@ -6024,6 +6073,44 @@ pub fn the_admin_page_reads_and_each_change_shows_at_the_next_read_test() {
     let #(people, _, _) = admin_read(port, page, session)
     assert string.contains(people, invited.principal <> ":member:none")
     assert members(ready.state_root) == [invited.principal]
+  })
+}
+
+// The admin page's read of a session's members says whether the session may be
+// shared: a session created for sharing reads `shareable`, and one that shares
+// its notes and history with its workspace reads `private`, which is what lets
+// the page draw no invitation form for it (round 4, F88).
+pub fn the_admin_read_says_whether_the_chosen_session_may_be_shared_test() {
+  fixture_with(Granting, fn(ready, port, credential) {
+    let shared = create_shared_session(ready, "admin-scope-shared", 1230)
+    let assert Ok(created) =
+      manager.create_scoped(
+        ready.registry,
+        manager.Creation(
+          "admin-scope-private",
+          ready.state_root,
+          "admin-scope-private",
+          "",
+        ),
+        directory: ready.sessions_directory,
+        generator: ids.generator(clock.fixed(0), 1231),
+        scope: domain.WorkspacePrivate,
+        configuration: "",
+      )
+      as "the private session is created"
+    let page = admin_page(port, credential)
+    let scope = fn(chosen) {
+      let answer =
+        home_socket(port, page, [
+          #("x-admin-chosen", chosen),
+          #("x-admin-scope", "1"),
+        ])
+      assert answer.status == 279
+      answer.body
+    }
+    assert scope(shared) == "shareable"
+    assert scope(created.registration.id) == "private"
+    assert scope("") == "none"
   })
 }
 
@@ -6328,7 +6415,17 @@ pub fn the_daemon_refuses_a_standing_that_is_not_the_owners_operating_one_test()
       let assert grants.Claimed(_) = ask(owner, invite) as "an invitation"
       Nil
     })
-    assert ask(owner, invite) == grants.Declined(grants.TooMany)
+    let before = bootstrap.system_time_ms()
+    let assert grants.Declined(grants.TooMany(used:, free_at_ms:)) =
+      ask(owner, invite)
+      as "the fourth grant is refused with the count and the reset"
+    assert used == ui_sessions.invite_limit
+
+    // The next place frees when the first grant leaves the hour: no earlier than
+    // an hour after the first, and no later than an hour after now.
+    assert free_at_ms > before
+    assert free_at_ms
+      <= bootstrap.system_time_ms() + ui_sessions.invite_window_ms
   })
 }
 

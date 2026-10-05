@@ -32,7 +32,15 @@ fn entry(
   created_at: Int,
   residency: sessions.Residency,
 ) -> Entry {
-  Entry(id:, name:, workspace:, created_at:, residency:, subtitle: None)
+  Entry(
+    id:,
+    name:,
+    workspace:,
+    created_at:,
+    residency:,
+    subtitle: None,
+    role: None,
+  )
 }
 
 // Three workspaces. `A`, the session on screen, is in `/src/loom` with a

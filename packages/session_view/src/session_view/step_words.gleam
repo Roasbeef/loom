@@ -54,6 +54,11 @@ import session_view/tool_activity
 /// longer one ends in `…`; the step's expansion holds the whole call.
 pub const subject_limit = 96
 
+/// The most characters of a shell command a step's summary keeps. A longer
+/// command is cut back to the end of its last whole word and ends in `…`;
+/// the step's open body holds the whole command as its first line.
+pub const command_limit = 80
+
 /// The most characters of a path a step keeps. A longer path keeps its end,
 /// which is the part that tells two files apart.
 pub const path_limit = 80
@@ -116,7 +121,7 @@ pub fn of_call(call: tool_activity.Call) -> Words {
   let arguments = call.invocation.arguments
   case name {
     "bash" ->
-      named("Ran", Mono, text_field(arguments, "command"), first_line)
+      named("Ran", Mono, text_field(arguments, "command"), command)
       |> or_name(name, arguments)
     "fs_read" | "read" ->
       named("Read", Mono, text_field(arguments, "path"), path)
@@ -662,12 +667,28 @@ fn text_field(value: JsonValue, name: String) -> Option(String) {
   }
 }
 
-fn first_line(text: String) -> String {
-  let line = case string.split_once(string.trim(text), "\n") {
-    Ok(#(first, _)) -> first <> " …"
-    Error(Nil) -> string.trim(text)
+// A shell command as a summary keeps it: its first line, cut at a word
+// boundary so the result, ellipsis included, is at most `command_limit`
+// characters, with a following line marked by a
+// trailing ellipsis. The cut keeps the leading words, which name the program.
+fn command(text: String) -> String {
+  let #(line, more) = case string.split_once(string.trim(text), "\n") {
+    Ok(#(first, _)) -> #(text_hygiene.single_line(first), True)
+    Error(Nil) -> #(text_hygiene.single_line(string.trim(text)), False)
   }
-  clip(line)
+  case string.length(line) > command_limit {
+    True ->
+      at_word(
+        string.slice(line, 0, command_limit - 1),
+        string.slice(line, command_limit - 1, 1),
+      )
+      <> "…"
+    False ->
+      case more {
+        True -> line <> " …"
+        False -> line
+      }
+  }
 }
 
 fn clip(text: String) -> String {

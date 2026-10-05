@@ -505,6 +505,10 @@ type Message(instance) {
     String,
     Subject(Result(#(Int, List(View)), Error)),
   )
+  AuthorizedRoles(
+    access.Digest,
+    Subject(Result(List(#(String, access.Role)), Error)),
+  )
   Authenticate(access.Digest, Subject(Result(access.Principal, Error)))
   SessionAuthority(
     access.Digest,
@@ -555,7 +559,7 @@ type Message(instance) {
     access.Digest,
     String,
     String,
-    Subject(Result(access.SessionMemberPage, AdminError)),
+    Subject(Result(Members, AdminError)),
   )
   Delete(
     access.Digest,
@@ -1127,7 +1131,26 @@ pub fn membership_page(
   |> result.unwrap(Error(AdminUnavailable))
 }
 
-/// Lists one session's members, owner-only (protocol-change/065, `sessions.members`).
+/// One session's members and the scope it was created with, as
+/// `session_member_page` answers them.
+///
+/// The scope is what the catalogue's domain record holds for the session, and
+/// it decides whether the session may be shared at all (`require_shared`), so
+/// the owner's page can tell a private session from one an invitation may name
+/// before the owner presses anything (protocol-change/065, the addendum on
+/// `scope`).
+pub type Members {
+  Members(
+    /// `SessionOnly` for a session that may be shared, `WorkspacePrivate` for
+    /// one that shares its notes and history with its workspace.
+    scope: domain.Scope,
+    /// One page of the session's members in principal order.
+    page: access.SessionMemberPage,
+  )
+}
+
+/// Lists one session's members and its scope, owner-only
+/// (protocol-change/065, `sessions.members`).
 ///
 /// The caller is reauthenticated in the registry's own dispatch, as every
 /// administration is. An unknown session is `AdminMetadata(Missing)`.
@@ -1143,7 +1166,7 @@ pub fn session_member_page(
   caller: access.Digest,
   session_id: String,
   after after: String,
-) -> Result(access.SessionMemberPage, AdminError) {
+) -> Result(Members, AdminError) {
   call.try_call(manager.commands, waiting: 5000, sending: SessionMemberPage(
     caller,
     session_id,
@@ -1591,6 +1614,32 @@ pub fn authorized_page(
   |> result.unwrap(Error(Unavailable))
 }
 
+/// Lists the role the credential's principal holds in each session of its
+/// first page of memberships, as `authorized_page` lists the sessions.
+///
+/// The credential is authenticated again on this call. The owner holds no
+/// membership rows, so its answer is empty: the owner owns every session and a
+/// role would say nothing. A member's answer is its memberships in session-ID
+/// order, at most `access.listing_limit`, the same bound and order as the
+/// first page `authorized_page` reads, so a row of that page has its role here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.authorized_roles(registry, digest)
+/// ```
+@internal
+pub fn authorized_roles(
+  manager: Manager(instance),
+  digest: access.Digest,
+) -> Result(List(#(String, access.Role)), Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: AuthorizedRoles(
+    digest,
+    _,
+  ))
+  |> result.unwrap(Error(Unavailable))
+}
+
 /// Counts live reservations without scanning the durable catalogue.
 ///
 /// ## Examples
@@ -1863,8 +1912,19 @@ fn handle(
     SessionMemberPage(caller, id, after, reply) -> {
       let outcome = {
         use Nil <- result.try(authenticated_owner(book, caller))
-        access.session_members_page(book.catalogue, id, after)
-        |> result.map_error(AdminMetadata)
+
+        // The members are read first, so a malformed cursor or an unknown
+        // session is refused as it always was, and the scope is read only for a
+        // session that exists.
+        use page <- result.try(
+          access.session_members_page(book.catalogue, id, after)
+          |> result.map_error(AdminMetadata),
+        )
+        use selected <- result.map(
+          domain.for_session(book.catalogue, id)
+          |> result.map_error(AdminMetadata),
+        )
+        Members(selected.scope, page)
       }
       process.send(reply, outcome)
       sm.keep(book)
@@ -2046,6 +2106,23 @@ fn handle(
         }
       }
       process.send(reply, viewed_page(book, outcome))
+      sm.keep(book)
+    }
+    AuthorizedRoles(digest, reply) -> {
+      let outcome = {
+        use principal <- result.try(principal_of(book, digest))
+        case principal.kind {
+          access.OwnerPrincipal -> Ok([])
+          access.MemberPrincipal ->
+            access.memberships_page(book.catalogue, principal.id, "")
+            |> result.map(fn(page) {
+              list.map(page.entries, fn(entry) {
+                #(entry.session_id, entry.role)
+              })
+            })
+        }
+      }
+      process.send(reply, result.map_error(outcome, Catalogue))
       sm.keep(book)
     }
     Authenticate(digest, reply) -> {

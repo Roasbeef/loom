@@ -429,7 +429,7 @@ type Message {
   Reserve(
     allowance: Allowance,
     credential: String,
-    reply: Subject(Result(Nil, Nil)),
+    reply: Subject(Result(Nil, Int)),
   )
   Release(credential: String)
   Sweep
@@ -619,25 +619,30 @@ pub fn mint_resumed(
 /// for `invite_limit` in the last `invite_window_ms`. The count is made and
 /// taken in one message, so two pages asking at once cannot both take the last
 /// place. A caller whose invitation then failed gives the place back with
-/// `release_invite`, so a refusal that minted nothing costs nothing. A reply
-/// that times out is reported as a refusal although the actor may still have
-/// counted the place, which frees within the hour.
+/// `release_invite`, so a refusal that minted nothing costs nothing.
+///
+/// A refusal answers the wall-clock Unix time in milliseconds at which a place
+/// frees, so the page can say when the next grant is possible. A reply that
+/// times out is reported as a refusal that frees `invite_window_ms` from the
+/// wall clock's reading, the latest it could be, although the actor may still
+/// have counted the place.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// // ui_sessions.reserve_invite(sessions, digest) == Ok(Nil)
+/// // ui_sessions.reserve_invite(sessions, digest) == Error(1_790_003_600_000)
 /// ```
 pub fn reserve_invite(
   sessions: Sessions,
   credential: access.Digest,
-) -> Result(Nil, Nil) {
+) -> Result(Nil, Int) {
   call.try_call(sessions.subject, waiting: 1000, sending: Reserve(
     Invitations,
     access.fingerprint(credential),
     _,
   ))
-  |> result.unwrap(Error(Nil))
+  |> result.unwrap(Error(bootstrap.system_time_ms() + invite_window_ms))
 }
 
 /// Reserves one of the credential's session creations, or refuses when it has
@@ -662,7 +667,8 @@ pub fn reserve_creation(
     access.fingerprint(credential),
     _,
   ))
-  |> result.unwrap(Error(Nil))
+  |> result.unwrap(Error(0))
+  |> result.replace_error(Nil)
 }
 
 /// Gives back the credential's newest reserved invitation, for an invitation
@@ -1099,8 +1105,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       let recent =
         recent_instants(state.invites, credential, now, invite_window_ms)
       case list.drop(recent, invite_limit - 1) {
-        [_, ..] -> {
-          process.send(reply, Error(Nil))
+        [held, ..] -> {
+          process.send(
+            reply,
+            Error(frees_at(state.settings, held + invite_window_ms)),
+          )
           actor.continue(state)
         }
         [] -> {
@@ -1119,8 +1128,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       let recent =
         recent_instants(state.creations, credential, now, creation_window_ms)
       case list.drop(recent, creation_limit - 1) {
-        [_, ..] -> {
-          process.send(reply, Error(Nil))
+        [held, ..] -> {
+          process.send(
+            reply,
+            Error(frees_at(state.settings, held + creation_window_ms)),
+          )
           actor.continue(state)
         }
         [] -> {
@@ -1188,6 +1200,14 @@ fn lifetime(settings: Settings, scope: Scope) -> Int {
 
 // The instants of a credential's invitations or creations that are still inside
 // the window, newest first. A table is read with its own window.
+// The wall-clock Unix time, in milliseconds, of an instant on the actor's
+// monotonic clock. The two clocks cannot be compared, so the instant is carried
+// over as how far it is from the monotonic clock now, added to the wall clock
+// now.
+fn frees_at(settings: Settings, instant: Int) -> Int {
+  settings.wall() + { instant - settings.now() }
+}
+
 fn recent_instants(
   table: Dict(String, List(Int)),
   credential: String,

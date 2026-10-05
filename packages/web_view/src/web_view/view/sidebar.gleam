@@ -56,6 +56,7 @@
 //// The module takes `sessions.Group`s and the current identity, and imports
 //// nothing from `web_view/component`, which imports it.
 
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
@@ -68,9 +69,24 @@ import lustre/element/svg
 import lustre/event
 import session_view/agent_view
 import session_view/turns
-import web_view/sessions.{type Entry, type Group, Blocked, Live, Saved}
+import web_view/sessions.{
+  type Activity, type Entry, type Group, Blocked, Live, NeedsYou, Saved,
+}
 import web_view/view/resume.{type Resume}
 import web_view/view/strip
+
+/// What a running session's row says after its glyph.
+type Suffix {
+  /// "resident", which is all a session page knows: it makes no activity read
+  /// (protocol-change/050), so a second word would be a guess.
+  Resident
+
+  /// The home's answer to the activity read, by session identity: "needs you",
+  /// "working" or "idle" for a session the read named, and nothing for one it
+  /// has not yet, so a row never says "resident" in one column and "working" in
+  /// another.
+  Doing(Dict(String, Activity))
+}
 
 /// One live strand's bar on the current row: its hue and whether it is
 /// working. It is reduced from the strip's chip, so the sidebar's memo is
@@ -156,7 +172,7 @@ pub fn view(
     element.ref(bars),
     element.ref(resume.pending(resume)),
   ])
-  column(groups, element.none(), current, bars, open, resume)
+  column(groups, element.none(), current, bars, Resident, open, resume)
 }
 
 /// The sidebar the home page draws (protocol-change/065): the same groups, with
@@ -167,21 +183,28 @@ pub fn view(
 /// beneath the sidebar's own path (`home.sidebar_path`), which is the one place
 /// the home's socket admits a click on this column.
 ///
+/// A running session's row says what the page's `activity` read answered for it
+/// ("needs you" in the signal hue, "working", "idle"), the word the home's list
+/// says for the same session, and nothing while no answer has arrived. A saved
+/// row says "saved", as it always did.
+///
 /// With no group it is `element.none()`, as `view` is. `open` and the
 /// resume's `press` are not part of the memo's key, as in `view`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // sidebar.home(home.groups(model), Opening, resume.Never)
+/// // sidebar.home(home.groups(model), dict.new(), Opening, resume.Never)
 /// ```
 pub fn home(
   groups: List(Group),
+  activity: Dict(String, Activity),
   open: fn(String) -> message,
   resume: Resume(message),
 ) -> Element(message) {
   use <- element.memo([
     element.ref(groups),
+    element.ref(activity),
     element.ref(resume.pending(resume)),
   ])
   let lead =
@@ -192,7 +215,7 @@ pub fn home(
       ],
       [house(), html.text("Home")],
     )
-  column(groups, lead, "", [], open, resume)
+  column(groups, lead, "", [], Doing(activity), open, resume)
 }
 
 // The house glyph of the "Home" entry: a fixed outline, decoration only, drawn
@@ -223,6 +246,7 @@ fn column(
   nav: Element(message),
   current: String,
   bars: List(Bar),
+  suffix: Suffix,
   open: fn(String) -> message,
   resume: Resume(message),
 ) -> Element(message) {
@@ -238,7 +262,7 @@ fn column(
         [
           html.h2([attribute.class("sidebar-title")], [html.text("Sessions")]),
           nav,
-          ..list.map(groups, group(_, current, bars, open, resume))
+          ..list.map(groups, group(_, current, bars, suffix, open, resume))
         ],
       )
   }
@@ -248,6 +272,7 @@ fn group(
   group: Group,
   current: String,
   bars: List(Bar),
+  suffix: Suffix,
   open: fn(String) -> message,
   resume: Resume(message),
 ) -> Element(message) {
@@ -260,7 +285,7 @@ fn group(
     ]),
     html.ul(
       [attribute.class("sessions")],
-      list.map(group.entries, entry(_, current, bars, open, resume)),
+      list.map(group.entries, entry(_, current, bars, suffix, open, resume)),
     ),
   ])
 }
@@ -279,14 +304,15 @@ fn entry(
   entry: Entry,
   current: String,
   bars: List(Bar),
+  suffix: Suffix,
   open: fn(String) -> message,
   resume: Resume(message),
 ) -> Element(message) {
   let kind = resume.kind(resume, entry)
   let residency = case entry.residency, kind {
-    Live, _ -> #("live", "●", "resident")
-    Saved, resume.Opening -> #("opening", "…", "opening")
-    Saved, _ | Blocked, _ -> #("saved", "○", "saved")
+    Live, _ -> running(entry, suffix)
+    Saved, resume.Opening -> #(["opening"], "…", "opening")
+    Saved, _ | Blocked, _ -> #(["saved"], "○", "saved")
   }
   let name =
     html.span([attribute.class("session-name")], [
@@ -301,12 +327,15 @@ fn entry(
     None -> name
   }
   let residency =
-    html.span([attribute.class("residency"), attribute.class(residency.0)], [
-      html.span([attribute.class("glyph"), attribute.aria_hidden(True)], [
-        html.text(residency.1),
-      ]),
-      html.text(residency.2),
-    ])
+    html.span(
+      [attribute.class("residency"), ..list.map(residency.0, attribute.class)],
+      [
+        html.span([attribute.class("glyph"), attribute.aria_hidden(True)], [
+          html.text(residency.1),
+        ]),
+        html.text(residency.2),
+      ],
+    )
   let words = [lead, residency]
 
   case entry.id == current, entry.residency {
@@ -347,6 +376,24 @@ fn entry(
           ])
         resume.Text | resume.Opening ->
           html.li([attribute.class("session")], words)
+      }
+  }
+}
+
+// A running session's classes, glyph and word. On the home the word is the
+// activity read's answer, and a session the read has not named has none.
+fn running(entry: Entry, suffix: Suffix) -> #(List(String), String, String) {
+  case suffix {
+    Resident -> #(["live"], "●", "resident")
+    Doing(activity) ->
+      case dict.get(activity, entry.id) {
+        Ok(NeedsYou) -> #(
+          ["live", "needs-you"],
+          "●",
+          sessions.activity_words(NeedsYou),
+        )
+        Ok(doing) -> #(["live"], "●", sessions.activity_words(doing))
+        Error(Nil) -> #(["live"], "●", "")
       }
   }
 }

@@ -32,6 +32,7 @@ fn invitation(role: invites.Role) -> invites.Invitation {
   invites.Invitation(
     principal: "guest-1a2b3c4d",
     role:,
+    page: "http://127.0.0.1:4000/ui/claim",
     command: "loom claim --addr ws://127.0.0.1:4000/v2/control",
     token:,
     expires_in_ms: invites.claim_ttl_ms,
@@ -121,7 +122,7 @@ pub fn an_owners_page_draws_the_control_test() {
     string.split_once(html, "<section aria-label=\"Session\"")
   assert string.contains(session, "Invite to this session")
   let assert Ok(#(before, _)) = string.split_once(session, "class=\"share\"")
-  assert string.contains(before, "Est. cost")
+  assert string.contains(before, "Cost")
 }
 
 // The path constant names the control: its two buttons are the only handlers

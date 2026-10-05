@@ -243,7 +243,10 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   roles share with the session page's invitation control: `reserve_invite` and `release_invite`, keyed by the
   credential's fingerprint and not by any page, at most `invite_limit` (three)
   in any `invite_window_ms` (an hour, the claim's own lifetime), counted and
-  taken in one message.
+  taken in one message. A refusal answers the wall-clock Unix time at which a place
+  frees (`Error(free_at_ms)`, the `invite_limit`-th newest reservation's instant
+  plus the window, carried from the monotonic clock to the wall clock), which the
+  admin page words as the count and the UTC time (`grants.TooMany`).
 - `daemon/ui_login`: the daemon's half of the browser login (protocol-change/065,
   PR 8). `root_key(state_root, registry)` reads `browser.key` through
   `host/login.probe_root` or, when it is missing, revokes every login row

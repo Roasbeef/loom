@@ -594,6 +594,15 @@ pub fn credential_and_session_authority_reads_do_not_open_sessions_test() {
     manager.authorized_page(registry, owner_digest, after: "")
     as "the owner can list every registration"
   assert list.length(owner_page) == 2
+
+  // The role the home's rows say is the membership's: a member's answer names
+  // the sessions it holds and its role in each, and the owner, who owns every
+  // session, has none to name.
+  assert manager.authorized_roles(registry, member_digest)
+    == Ok([#(first.id, access.Observer)])
+  assert manager.authorized_roles(registry, owner_digest) == Ok([])
+  assert manager.authorized_roles(registry, string_digest("c"))
+    == Error(manager.Catalogue(catalogue.Missing))
   assert manager.summary(registry)
     == Ok(manager.Summary(
       admission: manager.Accepting,
@@ -1782,4 +1791,10 @@ pub fn the_registry_seeds_the_subtitle_once_and_the_wire_carries_it_test() {
     == [option.Some("Plan the")]
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
+}
+
+fn string_digest(letter: String) -> access.Digest {
+  let assert Ok(digest) = access.credential_digest(string.repeat(letter, 64))
+    as "fixture uses a valid digest representation"
+  digest
 }

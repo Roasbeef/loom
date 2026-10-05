@@ -83,7 +83,12 @@ page keys and nonces, and the relay into the session's gateway.
   button after each row's own button when `Start.rename` is `Some`, and one open
   form in place of a row (`home_table.Rename`, `home.Edit`); a submit asks only
   for the row whose form is open. Neither control puts the current name in an
-  attribute.
+  attribute: the field is drawn by `rename.field()` inside a `<loom-rename>`
+  (`web_client`), which copies the lead's text node (`rename.name_marker`, within
+  `rename.scope_marker`) into the empty field in the browser. A home row's quiet
+  line draws the activity word in its own `home-activity` span, the only part a
+  needs-you row tints, and the create form's Shareable label is one word with a
+  hint line beneath it.
 - **Strand focus.** `component.focus(model, strand)` (`FocusRequested`) is
   `step.focus`, the shared step's change of strand, plus what only this host
   holds: the history read owed for the strand being left is dropped
@@ -151,11 +156,23 @@ page keys and nonces, and the relay into the session's gateway.
   of each `Reason`. `Start` gains `signins`, `login` (the fingerprint of the login
   this page belongs to), `bookmark`, `sign_out`, `sign_out_all` and `device`
   (`Some` only for a fresh home). `view/signins` draws the region as the centre's
-  third child, beneath `home.signins_path` (`0\t2\t2`): a row for each login ("This
-  browser" for the page's own) with "Sign out", "Sign out everywhere", the
-  bookmark as text for a remembered login, and on a fresh home "Sign in another
-  device", whose link is shown once in `<loom-copy subject="device">` and hidden
-  by "Done". The list is read with each sessions read (and again after a
+  third child, beneath `home.signins_path` (`0\t2\t2`), which is the account
+  panel: it carries `data-popover="panel"`, the stylesheet floats it under the bar
+  and hides it, and the bar's name (`home_bar.account`: a button marked
+  `data-popover="toggle"` inside `<loom-popover wanted=...>`, whose `wanted` is
+  `open` while a device link is on show) opens it with no server state. The panel
+  holds a row for each login ("This browser" for the page's own) with "Sign out",
+  "Sign out everywhere", the bookmark in `<loom-copy subject="bookmark">` for a
+  remembered login, and on a fresh home "Sign in another device", whose link is
+  shown once in `<loom-copy subject="device">` and hidden by "Done". The bar
+  says nothing beside the name for an operator-ceiling page and `read-only link`
+  for an observer-ceiling one (`home.ceiling_words`); `home_bar.view` (the admin
+  page's) still takes plain words. `sessions.Entry.role` is the principal's
+  membership role in that session (`Operates | Observes`, none for the owner),
+  filled by `ui_socket.with_roles` from `manager.authorized_roles`, and a row's
+  quiet line ends with it. `sidebar.home` takes the activity answers, so a
+  running row's sidebar word is the list's (`needs you` in the signal hue).
+  `ends_in` rounds up, so a fresh sign-in reads `ends in 30d`. The list is read with each sessions read (and again after a
   sign-out); a press names the fingerprint the server drew. `page` also holds
   the resume page (`login_page`, `login_refused`), the exchange page that carries
   the login's key and nonce (`enter_remembered`), `login_prefix`,
@@ -179,17 +196,34 @@ page keys and nonces, and the relay into the session's gateway.
   overtaken is dropped, and also the page's check that it may still be served
   (`Closed` ends it, `Unread` keeps the snapshot). The model holds one ask at a
   time (`waiting`), the armed revocation (`armed`, at most one), the chosen
-  session, the last notice and the claim an ask made (`claim`) until `Dismissed`.
+  session, the last notice (a `notice.Spoken`: the action with its `Said` or
+  `Refused` words, which decide where the line is drawn) and the claim an ask
+  made (`claim`) until `Dismissed`. The claim is drawn beside the action that
+  made it, never sticky: under the invitation form (`admin_claim.for_session`) or
+  under the rotated person's row (`for_person`), each one fixed child of its
+  parent so no path moves. The centre's first child is an empty place, so the
+  body stays at `admin.body_path`. After a `TooMany` refusal the model keeps when a place frees
+  (`Model.spent`), and until then `admin_buttons.Busy` is `Spent(words)`: the
+  buttons that grant (`admin_buttons.granting`: Rotate, Make operator, Create
+  invitation) carry the refusal's words in their `title` and still send, since
+  the daemon decides.
   `Choosing(id)` reads that session's members; `Asking(action)` asks;
   `Arming(action)`/`Disarming` are a revocation's two presses. `web_view/grants`
   is the vocabulary: `Principal`, `Credential`, `Holder`, `Snapshot`, `Reading`,
   the five `Action`s (`Invite`, `SetRole`, `RevokeMembership`, `RevokeCredentials`,
-  `Rotate`), `Claim`, `Answer` (`Claimed | Changed | Declined`) and `Reason` with
-  `reason_words` and `changed_words`. The views are `view/admin_people` (the
-  people and the pending invitations), `view/admin_sessions` (the session
-  chooser, a chosen session's members and the invitation form, whose `fields` is
-  the one rule for what it may hold), `view/admin_claim` (the claim, once, in
-  `share.field`'s copy boxes) and `view/admin_buttons` (`Busy`, `Presses`, the
+  `Rotate`), `Claim` (with `page`, the browser claim address), `Answer`
+  (`Claimed | Changed | Declined`) and `Reason` with `reason_words` and
+  `changed_words`; `TooMany(used, free_at_ms)` words the count and the UTC time
+  the allowance frees, and `Selection.scope` (`creations.Sharing`) is the `scope`
+  of the members read. `grants.short_identity` draws an identity as its prefix and
+  eight characters. The views are `view/admin_people` (each person once, an open
+  claim in its row, buttons by what the person holds), `view/admin_sessions` (the
+  session chooser, a chosen session's members and the invitation form, whose
+  `fields` is the one rule for what it may hold, or one sentence for a private
+  session), `view/admin_claim` (the claim, once, via `share.handover`: the browser
+  address, the token, then the `loom claim` command), `view/notice` (`Said` and
+  `Refused` lines, placed beside what was acted on; the home adopts it later) and
+  `view/admin_buttons` (`Busy`, `Presses`, the
   two-step `guarded` button). The body (`admin.body_path`, `"0\t2\t1"`) is the
   one region the socket admits an event beneath. The home's `Start.admin`
   (`Some` only for the owner's fresh operating home) draws `home_bar.admin`, the
@@ -408,7 +442,7 @@ page keys and nonces, and the relay into the session's gateway.
   `view/diff` draws each as its own row: the old and new numbers in a quiet
   gutter, the sign, and the text in a span, all text nodes. Added lines are
   green with a green `+`, removed red with a red `−`, a hunk header sits in a
-  quiet band. The box scrolls sideways and never wraps. A diff is cut at
+  quiet band. The two numbers and the sign are one `.diff-gutter` cell that is `position:sticky;left:0` on its row's own background, so the box scrolls sideways under a fixed gutter and never wraps. A diff is cut at
   `diff_view.max_lines` with `n more lines not shown`.
 - **Prompts, spawns, results and reviews.** A person's message is
   `turns.Prompt`: `lane` draws its sender as a line of its own (`<span
@@ -436,7 +470,7 @@ page keys and nonces, and the relay into the session's gateway.
   row before anything streams: while the followed strand's phase is `assistant`
   or `streaming` and no stream is held, `component.live` returns it alone,
   `Thinking · <loom-elapsed offset>` (the browser counts the reading on, so no
-  server timer; before the generation clock starts it says `Thinking` alone), and the first fragment replaces it with `Reasoning` or the
+  server timer; before the generation clock starts it says `Thinking` alone; `component.clocked` starts the clock the first time the page sees the `assistant` phase in a capture, since the phase event that starts it is the terminal's, and ends it when another phase comes with no stream drawn), and the first fragment replaces it with `Reasoning` or the
   answer. The region is a row of the
   timeline with its own dot, which pulses while the region exists. `live.Answer(line)` is the answer so far,
   drawn by the lane's own assistant line. A tool call being composed is not
@@ -559,14 +593,21 @@ page keys and nonces, and the relay into the session's gateway.
   it is the heading and one line saying so, so the pane is always drawn and
   the panes after it never move. It reads no worktree: the daemon serves
   worktree bytes to an Owner binding only.
-- `session_tab.view(goal, cost, jobs, viewers, share)` draws the Session pane,
-  the panel's third. Its children are the title, a memoized list of rows and
-  `share`, the invitation control's place, in that order so the control's path
-  never moves. The rows are the goal (the terminal's own row, `goal_view.row`, or
-  `none`), the followed strand's live jobs, where the page shows them the
-  attached viewers (`session_view/session_summary`, one line per principal:
-  `Owner · owner, operator · 3 pages · you`) and the estimated cost, the
-  figure alone since the row's label says estimate. Schedules are not a row: the shared record keeps a schedule
+- `session_tab.view(goal, cost, jobs, viewers, workspace, share, controls, rename)`
+  draws the Session pane, the panel's third. Its children are the title, a
+  memoized `div.session-rows` of groups, `share`, `controls` and `rename`, in
+  that order so the three controls' paths never move (`invite_path`,
+  `session_controls_path`, `rename_path`). The groups read Session (the name
+  with its Rename control, then the workspace), People (the viewers, then the
+  invitation buttons), Goal (the terminal's own row, `goal_view.row`, or `none`,
+  then its buttons), Fork, Jobs and Cost, each under an eyebrow heading and with
+  no rules. The DOM order is not that order: the stylesheet makes the pane a
+  flex column, the rows wrapper and the controls section `display:contents`, and
+  gives each piece an `order` (`.pane-session`). The viewers are
+  `session_view/session_summary` (one line per principal: `Owner · owner,
+  operator · 3 pages · you`) and the cost is the figure with `estimated`, or a
+  dash alone for an unpriced session. The page holds no creation time, so none
+  is drawn. Schedules are not a row: the shared record keeps a schedule
   listing only as transcript lines the page does not draw. The component asks
   for the jobs on a `Ticked` when the page opened or last asked
   `jobs_refresh_ms` (10 s) ago and no answer is outstanding. The clock starts

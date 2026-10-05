@@ -458,6 +458,7 @@ pub fn a_listed_entry_names_the_session_and_nothing_private_test() {
       created_at: 1_790_000_000_000,
       residency: sessions.Saved,
       subtitle: option.None,
+      role: option.None,
     )
   assert !string.contains(string.inspect(entry), "secret.sqlite")
   assert !string.contains(string.inspect(entry), "request-key")
@@ -499,6 +500,7 @@ pub fn only_an_operators_page_is_listed_sessions_test() {
       created_at: 1,
       residency: sessions.Live,
       subtitle: option.None,
+      role: option.None,
     )
   let asked = process.new_subject()
   let read = fn() {
@@ -1120,4 +1122,34 @@ pub fn the_admin_pages_event_paths_are_pinned_test() {
   assert !string.starts_with(home.admin_path, home.sidebar_path)
   assert component.home_path == "0\t0\t1"
   assert !ui_socket.home_owner_accepts(click_on(home.admin_path))
+}
+
+// The address a person without `loom` opens to claim in a browser is made from
+// the command's own address: the same host and port, `http`, and `/ui/claim`. It
+// carries no token and no path of the control socket.
+pub fn the_browser_claim_address_is_made_from_the_commands_address_test() {
+  assert ui_socket.browser_claim_address("ws://127.0.0.1:4000/v2/control")
+    == "http://127.0.0.1:4000/ui/claim"
+  assert ui_socket.browser_claim_address("ws://[::1]:53599/v2/control")
+    == "http://[::1]:53599/ui/claim"
+}
+
+// The role a row says comes from the daemon's membership rows and from nothing a
+// page sends: it is matched by session identity, a session with no row keeps
+// none (the owner's case), and a role is the membership's own.
+pub fn a_row_says_the_role_the_membership_holds_test() {
+  let entry = ui_socket.listed_entry(view(manager.Saved))
+  assert entry.role == None
+
+  let roles = [#("0192-abcd", access.Observer), #("other", access.Operator)]
+  assert ui_socket.with_roles([entry], roles)
+    == [sessions.Entry(..entry, role: Some(sessions.Observes))]
+  assert ui_socket.with_roles([sessions.Entry(..entry, id: "other")], roles)
+    == [sessions.Entry(..entry, id: "other", role: Some(sessions.Operates))]
+
+  // A session with no membership row, and the owner's empty answer, leave the
+  // row without a role.
+  assert ui_socket.with_roles([sessions.Entry(..entry, id: "x")], roles)
+    == [sessions.Entry(..entry, id: "x")]
+  assert ui_socket.with_roles([entry], []) == [entry]
 }

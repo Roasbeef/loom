@@ -3,8 +3,10 @@
 // opens the socket with the nonce in its query. The runtime reads the token
 // when `route` is set, so the order is load-bearing. A tab with no nonce
 // opens nothing; the shell's own paragraph, which shows while the component
-// has no session, says to run `loom ui` again (`web_view/page.waiting_notice`).
-// The item name is `web_view/page.nonce_item`.
+// has no session, says to run loom ui again (`web_view/page.waiting_notice`).
+// The item is `web_view/page.nonce_item` and this page's key, which the script
+// takes from its own address, so each page the tab has visited keeps its own
+// nonce and Back returns to one that still connects.
 //
 // It also applies the reader's saved theme, before the first paint. The
 // shell reads the same item when it connects (`web_client/layout_rule`), but
@@ -28,8 +30,12 @@
 (function () {
   var view = document.querySelector("lustre-server-component");
   if (!view) { return; }
+  var keyed = /^\/ui\/p\/([A-Za-z0-9_-]+)\//.exec(location.pathname);
+  if (!keyed) { return; }
   var nonce = null;
-  try { nonce = sessionStorage.getItem("loom-page-nonce"); } catch (e) { nonce = null; }
+  try {
+    nonce = sessionStorage.getItem("loom-page-nonce." + keyed[1]);
+  } catch (e) { nonce = null; }
   if (!nonce) { return; }
   view.setAttribute("csrf-token", nonce);
   view.setAttribute("route", location.pathname + "/ws");

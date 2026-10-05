@@ -4,7 +4,9 @@
 // nonce in sessionStorage, which no page on another loopback port can read,
 // and replaces the location with the keyed page, so the ticket's URL stays
 // out of the history. A `next` that is not a keyed page path is not
-// followed. The item name is `web_view/page.nonce_item`.
+// followed. The item is `web_view/page.nonce_item` and the page's key, one per
+// keyed page, so a page the tab left can be returned to with Back and finds
+// its own nonce (protocol-change/051, the addendum on navigation).
 //
 // An exchange that also set a browser login (protocol-change/065) names the
 // login's key and nonce as well. The nonce is kept in localStorage, under
@@ -19,8 +21,11 @@
   var nonce = body.getAttribute("data-nonce") || "";
   var loginKey = body.getAttribute("data-login-key") || "";
   var loginNonce = body.getAttribute("data-login-nonce") || "";
-  if (next.indexOf("/ui/p/") !== 0 || nonce === "") { return; }
-  try { sessionStorage.setItem("loom-page-nonce", nonce); } catch (e) { return; }
+  var keyed = /^\/ui\/p\/([A-Za-z0-9_-]+)\//.exec(next);
+  if (!keyed || nonce === "") { return; }
+  try {
+    sessionStorage.setItem("loom-page-nonce." + keyed[1], nonce);
+  } catch (e) { return; }
   if (/^[0-9a-f]{32}$/.test(loginKey) && /^[0-9a-f]{64}$/.test(loginNonce)) {
     try {
       localStorage.setItem("loom.login." + loginKey, loginNonce);

@@ -269,10 +269,21 @@ export function read_data_url(file, done) {
   reader.readAsDataURL(file);
 }
 
-// One navigation that replaces the current history entry. The address was
-// checked in Gleam before it got here.
-export function replace_location(address) {
-  window.location.replace(address);
+// One navigation that adds a history entry, so Back returns to the page it
+// left. The address was checked in Gleam before it got here.
+export function assign_location(address) {
+  window.location.assign(address);
+}
+
+// One step back in the tab's history. It takes no address, so it can reach no
+// page the tab has not already visited.
+export function history_back() {
+  window.history.back();
+}
+
+// A timer that calls `done` once after `milliseconds`.
+export function after(milliseconds, done) {
+  window.setTimeout(done, milliseconds);
 }
 
 // One clipboard write, with the outcome handed to `done` as a Result. The

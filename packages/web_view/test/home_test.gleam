@@ -36,7 +36,15 @@ fn entry(
   created_at: Int,
   residency: sessions.Residency,
 ) -> Entry {
-  Entry(id:, name:, workspace:, created_at:, residency:, subtitle: None)
+  Entry(
+    id:,
+    name:,
+    workspace:,
+    created_at:,
+    residency:,
+    subtitle: None,
+    role: None,
+  )
 }
 
 // The instant the page reads the clock at: two hours and a few minutes after
@@ -234,8 +242,14 @@ pub fn a_running_row_says_what_it_is_doing_test() {
   // never for a saved one.
   assert process.receive(asked, 0) == Ok(["B", "A"])
   let html = drawn(model)
-  assert string.contains(html, "resident · working · created ")
-  assert string.contains(html, "resident · needs you · created ")
+  assert string.contains(
+    html,
+    "resident · <span class=\"home-activity\">working</span> · created ",
+  )
+  assert string.contains(
+    html,
+    "resident · <span class=\"home-activity\">needs you</span> · created ",
+  )
   assert string.contains(html, "home-row working")
   assert string.contains(html, "home-row needs-you")
   assert !string.contains(html, "idle")
@@ -254,10 +268,40 @@ pub fn an_activity_answer_replaces_the_last_test() {
   let #(model, _) = opened(start())
   let model =
     run(model, home.Observed([#("B", sessions.Working), #("A", sessions.Idle)]))
-  assert string.contains(drawn(model), "resident · idle · created ")
+  assert string.contains(
+    drawn(model),
+    "resident · <span class=\"home-activity\">idle</span> · created ",
+  )
   let model = run(model, home.Observed([#("B", sessions.Idle)]))
   assert !string.contains(drawn(model), "working")
-  assert list.length(string.split(drawn(model), "resident · idle")) == 2
+
+  // The sidebar says the same word, so count the list's activity spans only.
+  assert list.length(string.split(drawn(model), "home-activity\">idle<")) == 2
+}
+
+// The activity word is a span of its own, so a needs-you row can tint that word
+// and leave the rest of the quiet line, which holds the session's first prompt,
+// in the quiet colour. The subtitle sits outside the span.
+pub fn the_activity_word_is_its_own_span_test() {
+  let subtitled =
+    list.map(listing(), fn(row) {
+      case row.id {
+        "A" -> Entry(..row, subtitle: Some("Fix the flaky retry test"))
+        _ -> row
+      }
+    })
+  let #(model, _) =
+    opened(start_with(home.OperatorCeiling, fn() { home.Listed(subtitled) }))
+  let model = run(model, home.Observed([#("A", sessions.NeedsYou)]))
+  let html = drawn(model)
+  assert string.contains(
+    html,
+    "<span class=\"home-subtitle\">Fix the flaky retry test</span> · resident · <span class=\"home-activity\">needs you</span>",
+  )
+  assert list.length(string.split(html, "home-activity")) == 2
+
+  // A saved row has no activity and so no span.
+  assert !string.contains(html, "saved · <span class=\"home-activity")
 }
 
 // The daemon's own bound is the page's: no more running sessions than
@@ -391,7 +435,7 @@ pub fn an_observer_homes_only_running_rows_carry_a_press_test() {
     )
     == 2
   let html = element.to_string(home.view(observer))
-  assert list.length(string.split(html, "<button")) == 5
+  assert list.length(string.split(html, "<button")) == 6
   assert !string.contains(html, "<a ")
   assert !string.contains(html, "<form")
   assert !string.contains(html, "href")
@@ -420,7 +464,7 @@ pub fn an_operator_home_presses_saved_rows_too_test() {
   assert list.length(keys) == 8
   assert list.all(keys, beneath_the_two_regions)
   let html = element.to_string(home.view(operator))
-  assert list.length(string.split(html, "<button")) == 9
+  assert list.length(string.split(html, "<button")) == 10
   assert string.contains(html, "title=\"Resume this session\"")
   assert string.contains(html, "stuck")
 
@@ -601,11 +645,17 @@ pub fn the_bar_names_the_principal_and_the_ceiling_test() {
   let html = drawn(operator)
   assert string.contains(html, "<h1>Home</h1>")
   assert string.contains(html, ">Alice<")
-  assert string.contains(html, ">operator<")
   assert string.contains(html, ">connected<")
+
+  // An operating page may do all its principal may, which is the normal case,
+  // so the bar says nothing beside the name.
+  assert !string.contains(html, "home-badge")
+  assert !string.contains(html, ">operator<")
   let #(observer, _) =
     opened(start_with(home.ObserverCeiling, fn() { home.Listed([]) }))
-  assert string.contains(drawn(observer), ">read-only<")
+  let watching = drawn(observer)
+  assert string.contains(watching, ">read-only link<")
+  assert string.contains(watching, "title=\"This link can only watch\"")
 }
 
 // The timer is armed when the page opens and again after each read, so the
@@ -675,7 +725,7 @@ pub fn a_closed_page_draws_its_ending_and_reads_no_more_test() {
   let html = drawn(model)
   assert string.contains(html, ">disconnected<")
   assert string.contains(html, "Your access was revoked or changed.")
-  assert string.contains(html, "Run `loom ui` for a fresh link.")
+  assert string.contains(html, "Run loom ui for a fresh link.")
   assert !string.contains(html, "--session")
   assert string.contains(html, "hex release")
 
@@ -725,7 +775,7 @@ pub fn the_home_shell_names_no_session_test() {
   assert string.contains(shell, "<lustre-server-component>")
   assert string.contains(shell, page.asset_path(page.page_asset))
   assert string.contains(shell, page.asset_path(page.client_asset))
-  assert string.contains(shell, "run `loom ui` for a fresh link")
+  assert string.contains(shell, "run loom ui for a fresh link")
   assert !string.contains(shell, "--session")
 }
 
@@ -746,7 +796,7 @@ pub fn a_refused_home_names_no_session_test() {
 pub fn every_ending_has_home_words_test() {
   list.each(ending.all(), fn(reason) {
     assert ending.home_headline(reason) != ""
-    assert string.contains(ending.home_advice(reason), "`loom ui`")
+    assert string.contains(ending.home_advice(reason), "loom ui")
     assert !string.contains(ending.home_headline(reason), "session")
   })
   assert ending.home_headline(ending.AccessRevoked)
@@ -848,9 +898,15 @@ pub fn pressing_rename_opens_that_rows_form_test() {
   let model = run(owner, home.EditRequested("B"))
   let html = drawn(model)
   assert string.contains(html, "home-rename-form")
-  assert string.contains(html, "Rename vetting lint")
+  assert string.contains(
+    html,
+    "Rename <span data-loom-name>vetting lint</span>",
+  )
+  assert string.contains(html, "data-loom-renames")
+  assert string.contains(html, "<loom-rename><input")
   assert string.contains(html, "name=\"text\"")
   assert !string.contains(html, "value=\"vetting lint")
+  assert !string.contains(html, " value=")
   assert !string.contains(html, "placeholder=\"vetting lint")
   assert list.length(string.split(html, "<form")) == 2
 
@@ -867,8 +923,11 @@ pub fn pressing_rename_opens_that_rows_form_test() {
   let model = run(model, home.EditRequested("A"))
   let html = drawn(model)
   assert list.length(string.split(html, "<form")) == 2
-  assert string.contains(html, "Rename web ui")
-  assert !string.contains(html, "Rename vetting lint")
+  assert string.contains(html, "Rename <span data-loom-name>web ui</span>")
+  assert !string.contains(
+    html,
+    "Rename <span data-loom-name>vetting lint</span>",
+  )
 
   let model = run(model, home.EditCancelled)
   assert !string.contains(drawn(model), "<form")
@@ -921,7 +980,10 @@ pub fn a_second_or_forged_submit_asks_nothing_test() {
   // The form cannot be closed or moved while the request is out.
   let model = run(model, home.EditCancelled)
   let model = run(model, home.EditRequested("A"))
-  assert string.contains(drawn(model), "Rename vetting lint")
+  assert string.contains(
+    drawn(model),
+    "Rename <span data-loom-name>vetting lint</span>",
+  )
 }
 
 // A page the daemon handed no capability ignores every rename message: it draws
@@ -1332,4 +1394,76 @@ pub fn a_page_without_the_capability_ignores_the_admin_press_test() {
     )
   assert process.receive(asked, 0) == Error(Nil)
   assert !string.contains(drawn(ended), "Opening the admin page.")
+}
+
+// An unnamed session's label is a fallback built from its identity, not a name.
+// Its lead is drawn without the marker `<loom-rename>` copies from, so the field
+// opens empty and Enter cannot save the fallback as the name.
+pub fn an_unnamed_rows_form_has_no_name_to_copy_test() {
+  let ask = fn(_session, _name, _deliver) { Nil }
+  let #(owner, _) = opened(home.Start(..start(), rename: Some(ask)))
+  let html = drawn(run(owner, home.EditRequested("D")))
+  assert string.contains(html, "home-rename-form")
+  assert string.contains(html, "Rename Session D")
+  assert !string.contains(html, "data-loom-name")
+}
+
+// Each row's quiet line carries the person's role in that session after the
+// state word, for a member. The owner's rows, which have no role, read as they
+// did. The role is the membership's, so the words are the two fixed ones.
+pub fn a_members_rows_say_the_role_they_hold_test() {
+  let rows = [
+    Entry(
+      ..entry("B", "vetting lint", "/src/loom", 300_000, Live),
+      role: Some(sessions.Observes),
+    ),
+    Entry(
+      ..entry("A", "web ui", "/src/loom", 100_000, Live),
+      role: Some(sessions.Operates),
+    ),
+    entry("C", "hex release", "/src/weft", 1_790_000_000_000, Saved),
+  ]
+  let #(model, _) =
+    opened(start_with(home.OperatorCeiling, fn() { home.Listed(rows) }))
+  let html = drawn(model)
+  assert string.contains(html, "resident · observer")
+  assert string.contains(html, "resident · operator")
+  assert list.length(string.split(html, "· observer")) == 2
+  assert list.length(string.split(html, "· operator")) == 2
+  let #(owner, _) = opened(start())
+  let owned = drawn(owner)
+  assert !string.contains(owned, "observer")
+  assert !string.contains(owned, "· operator")
+}
+
+// The sidebar says what the list says: a running row's word is the activity
+// read's answer, "needs you" in the signal hue, and nothing until the read has
+// answered. The words "saved" stay.
+pub fn the_sidebar_says_the_activity_word_the_list_says_test() {
+  let #(model, _) =
+    opened(
+      home.Start(..start(), activity: fn(_, deliver) {
+        deliver([#("B", sessions.Working), #("A", sessions.NeedsYou)])
+      }),
+    )
+  let html = drawn(model)
+  assert string.contains(
+    html,
+    "<span aria-hidden=\"true\" class=\"glyph\">●</span>working</span>",
+  )
+  assert string.contains(
+    html,
+    "<span aria-hidden=\"true\" class=\"glyph\">●</span>needs you</span>",
+  )
+  assert string.contains(html, "residency live needs-you")
+
+  // Before the answer, a running row's suffix is empty rather than "resident".
+  let before =
+    drawn(run(home.new(start()), home.Answered(home.Listed(listing()))))
+  assert string.contains(
+    before,
+    "<span aria-hidden=\"true\" class=\"glyph\">●</span></span>",
+  )
+  assert !string.contains(before, ">●</span>resident")
+  assert string.contains(before, ">○</span>saved")
 }

@@ -404,6 +404,10 @@ pub fn members_list_the_principals_of_one_session_test() {
       )
     assert field(frame, "event") == json.String("sessions.members")
     assert field(field(frame, "body"), "session_id") == json.String(first)
+
+    // The scope the session was created with rides along, so a page can tell a
+    // session that may be shared from one that may not before anyone presses.
+    assert field(field(frame, "body"), "scope") == json.String("session_only")
     let text = json.to_string(frame)
     assert !string.contains(text, "loomclaim_")
     assert !string.contains(text, "fingerprint")

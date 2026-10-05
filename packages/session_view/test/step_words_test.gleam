@@ -256,6 +256,24 @@ pub fn a_program_that_calls_nothing_is_just_code_mode_test() {
   assert words("code_mode", []) == Words("code_mode", Unnamed, None)
 }
 
+// A shell command is cut at a word boundary so the summary, ellipsis
+// included, is at most `command_limit` characters; a short one is whole.
+pub fn a_long_command_is_cut_at_a_word_test() {
+  let long =
+    "cd /Users/roasbeef/loom-drives/crit4/ws && python3 -m unittest test_calc -v 2>&1 | tail -5"
+  let assert Words("Ran", Mono(shown), None) =
+    words("bash", [#("command", text(long))])
+  assert string.length(shown) <= step_words.command_limit
+  assert string.ends_with(shown, "…")
+  assert string.starts_with(shown, "cd /Users/roasbeef/loom-drives/crit4/ws &&")
+  assert !string.ends_with(shown, " …")
+
+  let unbroken = string.repeat("a", 500)
+  let assert Words("Ran", Mono(cut), None) =
+    words("bash", [#("command", text(unbroken))])
+  assert string.length(cut) == step_words.command_limit
+}
+
 // The words are session text: a tool name, or a module or function name in a
 // program, can be any length the model writes, so a step's line is bounded.
 pub fn a_huge_tool_or_function_name_is_clipped_test() {

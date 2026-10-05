@@ -33,6 +33,10 @@
 #      card are 430px of 900, so the script reports that share and does not
 #      gate it.
 #
+#   5. At 800x900 the Changes, Trace and Session tabs take up to 45vh and
+#      scroll inside it, and the Strands tab keeps its 132px row of cards
+#      (F95). The round-4 critique saw the Trace tab clipped at 132px.
+#
 # The measurements are bounding boxes read through every shadow root, since
 # the panel and the drawer are in `<loom-shell>`'s tree and the strip and the
 # transcript are in the server component's.
@@ -70,11 +74,13 @@ read -r -d '' probe <<'JS' || true
   const drawer = find(document, ".region-sidebar");
   const scrim = find(document, ".drawer-scrim");
   const approvals = find(document, "section.approvals");
+  const body = find(document, "aside.panel");
   return JSON.stringify({
     panel: box(panel),
     strip: box(strip),
     follow: box(follow),
     approvals: approvals ? box(approvals) : null,
+    body: body ? { ...box(body), scroll: body.scrollHeight, max: getComputedStyle(body).maxHeight } : null,
     drawer: drawer ? { ...box(drawer), display: getComputedStyle(drawer).display } : null,
     scrim: scrim ? box(scrim) : null,
     share: follow ? Math.round((follow.getBoundingClientRect().height / window.innerHeight) * 1000) / 10 : 0,
@@ -128,6 +134,37 @@ agent-browser press Control+Alt+b >/dev/null
 settle
 m=$(measure)
 check "the panel toggle shows them again" "m['panel']['height'] > 1 and m['strip']['height'] > 0" "$m"
+
+# F95. Below 980px the Strands tab is a row of cards 132px tall at most; any
+# other tab takes up to 45vh (405px at 900) and scrolls inside it. The tab is
+# chosen through the page, since its buttons are in a shadow root.
+pick_tab() {
+  agent-browser eval "(() => {
+    const walk = (root) => {
+      for (const b of root.querySelectorAll('button')) {
+        if (b.textContent.trim() === '$1') { b.click(); return true; }
+      }
+      for (const el of root.querySelectorAll('*')) {
+        if (el.shadowRoot && walk(el.shadowRoot)) return true;
+      }
+      return false;
+    };
+    return walk(document);
+  })()" >/dev/null
+  settle
+}
+pick_tab Trace
+m=$(measure)
+check "the Trace tab takes up to 45vh and scrolls inside it (F95)" \
+	"m['body'] and float(m['body']['max'].replace('px','')) == 405 and m['body']['height'] <= 406" "$m"
+pick_tab Session
+m=$(measure)
+check "the Session tab takes up to 45vh too (F95)" \
+	"m['body'] and float(m['body']['max'].replace('px','')) == 405 and m['body']['height'] <= 406" "$m"
+pick_tab Strands
+m=$(measure)
+check "the Strands tab keeps the 132px row of cards (F95)" \
+	"m['body'] and float(m['body']['max'].replace('px','')) == 132 and m['body']['height'] <= 133" "$m"
 
 # F71. The strip, the tab bar, the top bar, the composer and one approval card
 # take 430px of 900 between them, so the transcript cannot be 55% of the

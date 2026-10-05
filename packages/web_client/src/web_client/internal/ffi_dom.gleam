@@ -673,22 +673,44 @@ pub fn set_attribute(element: Element, name: String, value: String) -> Nil
 @external(javascript, "./dom.mjs", "remove_attribute")
 pub fn remove_attribute(element: Element, name: String) -> Nil
 
-/// Moves the browser to a new address (`location.replace`), which unloads
-/// the page and takes its place in the history rather than adding an entry.
-/// A page is bound to its own nonce, and the nonce is per tab and replaced
-/// by the next page's, so an entry left behind for the old page could only
-/// be reached by Back and would show its "waiting" notice. `<loom-switch>`
-/// calls it, and only with an address `web_client/switch_rule.target`
-/// accepted, so no script of the page navigates to a value the rule has not
-/// checked.
+/// Moves the browser to a new address (`location.assign`), which unloads the
+/// page and adds a history entry for it. A page's nonce is kept under its own
+/// key, so Back to the page left behind finds the nonce it needs and
+/// reconnects. The ticket's own URL does not stay in the history: the exchange
+/// page replaces itself with the keyed page. `<loom-switch>` calls it, and only
+/// with an address `web_client/switch_rule.target` accepted, so no script of
+/// the page navigates to a value the rule has not checked.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // ffi_dom.replace_location("/ui/sessions/0198...?ticket=ab12...")
+/// // ffi_dom.assign_location("/ui/sessions/0198...?ticket=ab12...")
 /// ```
-@external(javascript, "./dom.mjs", "replace_location")
-pub fn replace_location(address: String) -> Nil
+@external(javascript, "./dom.mjs", "assign_location")
+pub fn assign_location(address: String) -> Nil
+
+/// Goes one step back in the tab's history (`history.back`). It takes no
+/// address and mints no ticket, so it can only reach a page the tab already
+/// visited. `<loom-back>` calls it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.history_back()
+/// ```
+@external(javascript, "./dom.mjs", "history_back")
+pub fn history_back() -> Nil
+
+/// Calls `done` once after `milliseconds` (`setTimeout`). `<loom-waiting>`
+/// uses it to wait for the socket.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.after(5000, fn() { dispatch(Waited) })
+/// ```
+@external(javascript, "./dom.mjs", "after")
+pub fn after(milliseconds: Int, done: fn() -> Nil) -> Nil
 
 /// Writes `text` to the system clipboard (`navigator.clipboard.writeText`) and
 /// hands the outcome to `done` when the browser answers. The write is refused
