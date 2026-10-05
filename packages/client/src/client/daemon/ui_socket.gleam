@@ -2489,8 +2489,9 @@ pub fn worktree_task(
 /// the instance's own, over its own workspace and base commit, and takes
 /// nothing from the page. A credential's reads are counted together across its
 /// pages (`ui_sessions.reserve_worktree_read`), so many sockets cannot spend
-/// the session's helper pool on Git calls; a refused read is `Unreadable` and
-/// the observation does not run. Its failure text is never forwarded: it can carry a
+/// the session's helper pool on Git calls; a refused read is `Throttled`, which
+/// tells the page nothing about the workspace or its standing, and the
+/// observation does not run. Its failure text is never forwarded: it can carry a
 /// repository's own words, so the page is told only `Unreadable`.
 ///
 /// ## Examples
@@ -2512,7 +2513,7 @@ pub fn worktree_answer(
         access.Owner | access.Participant(access.Operator) ->
           case reserve() {
             Ok(Nil) -> worktree_read(observe())
-            Error(Nil) -> worktrees.Unreadable
+            Error(Nil) -> worktrees.Throttled
           }
         access.Participant(access.Observer) -> worktrees.Declined
       }

@@ -71,6 +71,13 @@ pub type Read {
   /// The daemon could not make the observation, or its answer was not one the
   /// page accepts.
   Unreadable
+
+  /// The daemon's allowance for this credential's reads was spent, which is no
+  /// statement about the workspace or the page's standing. The page keeps what
+  /// it last drew and asks again after the usual interval, so a credential
+  /// with several tabs open does not see a tab flip between the diff and a
+  /// fallback.
+  Throttled
 }
 
 /// Whether a read is with the daemon. At most one is, so a slow observation

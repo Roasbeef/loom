@@ -1166,6 +1166,18 @@ pub fn update(
     // The observation is the page's own state and changes nothing the lane
     // holds. The next read waits for a newer tool result, so this asks for
     // nothing.
+    //
+    // A throttled read keeps the last answer on the page and forgets which
+    // tool result it covered, so the next ask comes after the usual interval.
+    // Any other answer, a refusal included, replaces what is drawn.
+    Worktreed(read: worktrees.Throttled) -> #(
+      Model(
+        ..model,
+        view: View(..model.view, asking: worktrees.Idle, worktree_seen: -1),
+      ),
+      effect.none(),
+    )
+
     Worktreed(read:) -> #(
       Model(
         ..model,

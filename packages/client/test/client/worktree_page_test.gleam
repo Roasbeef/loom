@@ -317,7 +317,7 @@ pub fn a_third_read_inside_the_window_is_refused_without_running_test() {
 
   assert board_of(read()).files != []
   assert board_of(read()).files != []
-  assert read() == worktrees.Unreadable
+  assert read() == worktrees.Throttled
   assert process.receive(ran, 0) == Ok(Nil)
   assert process.receive(ran, 0) == Ok(Nil)
   assert process.receive(ran, 0) == Error(Nil)

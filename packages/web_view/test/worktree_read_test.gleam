@@ -304,6 +304,36 @@ pub fn a_lost_read_is_asked_again_test() {
   assert asked(asks) == 1
 }
 
+// A read the allowance refused is not a statement about the workspace, so it
+// leaves the drawn diff in place, and the page asks again after the usual
+// interval. An authority refusal, by contrast, replaces the diff.
+pub fn a_throttled_read_keeps_the_drawn_diff_and_asks_again_test() {
+  let clock = page_fixture.clock()
+  let asks = process.new_subject()
+  let model =
+    page(clock, asks)
+    |> component.apply([lane_fixture.edited([#("a.gleam", edit)])])
+    |> tick
+  assert asked(asks) == 1
+
+  let model =
+    page_fixture.run(model, component.update, [
+      component.Worktreed(
+        worktrees.Seen(board("head", [text_file("shell.txt", edit)], 0)),
+      ),
+      component.Worktreed(worktrees.Throttled),
+    ])
+  let html = element.to_string(component.view(model))
+  assert string.contains(html, "shell.txt")
+  assert string.contains(html, "git diff against HEAD")
+  assert !string.contains(html, "could not be read")
+  assert !string.contains(html, "may not read")
+
+  page_fixture.set(clock, worktrees.refresh_ms)
+  let _ = tick(model)
+  assert asked(asks) == 1
+}
+
 // An observer's transport has no capability, so the page never asks and the
 // tab lists the agent's own edits whatever message arrives.
 pub fn a_page_without_the_capability_asks_nothing_test() {

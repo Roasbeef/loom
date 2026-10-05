@@ -118,7 +118,8 @@ pub fn view(
           <> "the edits the agent made.",
         ),
       )
-    worktrees.Withheld | worktrees.Unread -> edits(board, window, None)
+    worktrees.Withheld | worktrees.Unread | worktrees.Throttled ->
+      edits(board, window, None)
   }
 }
 
