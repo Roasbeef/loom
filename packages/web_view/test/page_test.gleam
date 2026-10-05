@@ -6,6 +6,7 @@
 //// the priv files, under this policy, is `client/ui_route_test`'s claim.
 
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/string
 import web_view/ending
 import web_view/page
@@ -221,4 +222,78 @@ pub fn the_admin_pages_documents_are_the_homes_in_their_own_words_test() {
   )
   assert !string.contains(refused, "--session")
   assert !string.contains(refused, "eight hours")
+}
+
+// --- the browser claim (protocol-change/065, PR 9) --------------------------
+
+// The claim form is a fixed document: one form that posts to the claim's own
+// address, a token field and an optional name field with the words that say the
+// inviter's name is the default, no script and no inline style, and nothing from
+// a request.
+pub fn the_claim_form_is_fixed_and_posts_to_the_claim_address_test() {
+  let document = page.claim_page(None)
+  assert page.claim_path == "/ui/claim"
+  assert string.contains(
+    document,
+    "<form class=\"claim-form\" method=\"post\" action=\"/ui/claim\">",
+  )
+  assert string.contains(document, "name=\"token\"")
+  assert string.contains(document, "name=\"name\"")
+  assert string.contains(document, "maxlength=\"256\"")
+  assert string.contains(
+    document,
+    "Leave empty to keep the name the inviter chose.",
+  )
+  assert string.contains(document, "type=\"submit\"")
+  assert !string.contains(document, "<script")
+  assert !string.contains(document, "<style")
+  assert !string.contains(document, "onclick")
+  assert !string.contains(document, "claim-notice")
+  assert page.claim_page(None) == document
+}
+
+// A refusal is the same form with one fixed paragraph over it, and each reason
+// has words of its own that name what to do. None of them is an alert on the
+// form that has no refusal.
+pub fn each_refusal_of_a_claim_has_its_own_words_over_the_form_test() {
+  let notices = [
+    page.NotAClaim,
+    page.ClaimUnknown,
+    page.ClaimExpired,
+    page.ClaimUsed,
+    page.NameRefused,
+    page.ClaimBusy,
+  ]
+  let words = list.map(notices, page.claim_notice)
+  assert list.length(list.unique(words)) == 6
+  assert string.contains(page.claim_notice(page.NotAClaim), "loomclaim_")
+  assert string.contains(page.claim_notice(page.ClaimExpired), "expired")
+  assert string.contains(page.claim_notice(page.ClaimUsed), "already been used")
+  assert string.contains(
+    page.claim_notice(page.NameRefused),
+    "Nothing was claimed",
+  )
+  list.each(notices, fn(notice) {
+    let document = page.claim_page(Some(notice))
+    assert string.contains(
+      document,
+      "<p class=\"claim-notice\" role=\"alert\">"
+        <> page.claim_notice(notice)
+        <> "</p>",
+    )
+    assert string.contains(document, "name=\"token\"")
+    assert string.contains(document, "action=\"/ui/claim\"")
+  })
+}
+
+// The claim form is one of the two documents whose policy lets a form submit to
+// this origin, and the policy it is served under is the resume page's: the only
+// difference from every other document's is that one directive.
+pub fn the_claim_forms_policy_is_the_resume_pages_test() {
+  let own = page.content_security_policy_for("127.0.0.1:4000", page.OwnForms)
+  assert string.contains(own, "form-action 'self'")
+  assert string.contains(own, "script-src 'self'")
+  assert string.contains(own, "default-src 'none'")
+  assert string.replace(own, "form-action 'self'", "form-action 'none'")
+    == page.content_security_policy("127.0.0.1:4000")
 }

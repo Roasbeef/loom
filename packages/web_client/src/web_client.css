@@ -514,6 +514,21 @@
   code.home-device-text{display:block;padding:6px 8px;border:1px solid var(--color-divider);border-radius:4px;background:var(--color-bg);font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
   .ended-document [hidden]{display:none;}
 
+  /* The claim form (web_view/page.claim_page, protocol-change/065, PR 9): the
+     ended document's frame with two fields and one button. A refusal's notice
+     is a danger-tinted band with a hairline border, as the ended notice is. */
+  .claim-title{margin:0 0 8px 0;font:600 16px/1.4 var(--font-sans);}
+  .claim-notice{margin:0 0 12px 0;padding:8px 12px;border:1px solid var(--color-danger);border-radius:6px;background:color-mix(in srgb,var(--color-danger) 8%,transparent);color:var(--color-danger-text);font:13px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  form.claim-form{display:flex;flex-direction:column;gap:12px;margin:12px 0;}
+  .claim-field{display:flex;flex-direction:column;gap:4px;}
+  .claim-label{font:600 13px/1.4 var(--font-sans);}
+  .claim-input{width:100%;box-sizing:border-box;padding:6px 10px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg);color:var(--color-fg);font:14px/1.5 var(--font-mono);}
+  .claim-input[name="name"]{font-family:var(--font-sans);}
+  .claim-input:focus-visible{outline:none;border-color:var(--color-fg-quiet);}
+  .claim-hint{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  .claim-submit{align-self:flex-start;margin:0;padding:6px 16px;border:1px solid var(--color-current);border-radius:6px;background:color-mix(in srgb,var(--color-current) 14%,transparent);color:inherit;font:600 13px/1.4 var(--font-sans);cursor:pointer;}
+  .claim-submit:hover{background:color-mix(in srgb,var(--color-current) 22%,transparent);}
+
   /* The owner's admin page (web_view/admin, protocol-change/065, the fifth pull
      request): the home's frame with its own centre, and the "Admin" button the
      owner's home draws in the bar. The body is one scroll container, as the
