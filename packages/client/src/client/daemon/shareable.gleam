@@ -28,7 +28,7 @@
 //// | refusal | where it stopped | the session is left |
 //// | --- | --- | --- |
 //// | `NotOwner`, `NotFound`, `Unavailable` | before anything changed | exactly as it was |
-//// | `NotStopped` | the stop did not finish in `stop_wait_ms` | stopping or stopped, private; the stop completes on its own and a second press carries on |
+//// | `NotStopped` | the stop did not finish in `stop_wait_ms` | the stop was issued and still completes; private, and once saved a second press moves it and leaves it saved |
 //// | `NotMoved` | isolation was refused, for example a session another page resumed in the meantime | private, and running again when it ran before |
 //// | `Stranded` | isolation was refused and the session could not be resumed either | stopped and private; resume it from the home page |
 //// | `NotResumed` | isolation succeeded and the resume did not | stopped and shareable; resume it from the home page |
@@ -127,10 +127,31 @@ pub fn make(
     domain.WorkspacePrivate -> {
       use found <- result.try(stopped(registry, id))
       case manager.isolate(registry, digest, epoch, id, state_root) {
-        Error(_) -> Error(restored(registry, id, found))
         Ok(_) -> resumed(registry, id, found)
+        Error(_) ->
+          case isolated(registry, id) {
+            Ok(Nil) -> resumed(registry, id, found)
+            Error(Nil) -> Error(restored(registry, id, found))
+          }
       }
     }
+  }
+}
+
+// Whether the session is session-only now. Two presses at once both stop the
+// session, and the second isolation is refused because the first one made it:
+// that is the change this task was asked for, not a failure to move.
+fn isolated(
+  registry: manager.Manager(instance),
+  id: String,
+) -> Result(Nil, Nil) {
+  case manager.session_domain(registry, id) {
+    Ok(held) ->
+      case held.scope {
+        domain.SessionOnly -> Ok(Nil)
+        domain.WorkspacePrivate -> Error(Nil)
+      }
+    Error(_) -> Error(Nil)
   }
 }
 

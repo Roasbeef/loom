@@ -318,3 +318,32 @@ pub fn a_refusal_that_cannot_restore_the_session_is_stranded_test() {
   await(registry, record.id, manager.Saved)
   finish(registry, store)
 }
+
+// Two presses at once both stop the session, and the second isolation is refused
+// because the first one made the change. Both tasks answer as done, and the
+// session ends session-only and running; neither reports a failure to move.
+pub fn two_tasks_at_once_both_succeed_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let record = private(store, 1308)
+  let #(owner, _) = people(store)
+  let registry = started(store, fn(_, record, _) { Ok(record.id) })
+  running(registry, record.id)
+  let answers = process.new_subject()
+  list.each([1, 2], fn(_) {
+    let _ =
+      process.spawn_unlinked(fn() {
+        process.send(
+          answers,
+          shareable.make(registry, owner, epoch, "/new-state", record.id),
+        )
+      })
+  })
+  let assert Ok(first) = process.receive(answers, 10_000)
+    as "the first task answers"
+  let assert Ok(second) = process.receive(answers, 10_000)
+    as "the second task answers"
+  assert first == Ok(Nil)
+  assert second == Ok(Nil)
+  assert scope_of(store, record.id) == domain.SessionOnly
+  finish(registry, store)
+}
