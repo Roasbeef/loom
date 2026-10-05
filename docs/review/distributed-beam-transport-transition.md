@@ -202,6 +202,42 @@ tests pass, zero skips, command exit 0. Its test runner completed in 99.65 secon
 The migration does not establish registered host lifecycle or separate-host
 acceptance; old socket tests still cover components awaiting replacement.
 
+## Workspace effects and pending caller loss
+
+Commit `b573053cd` moves the workspace E2E fixture onto independent owner and
+executor OS processes using real TLS BEAM membership and endpoint exchange.
+The integration-tree `scripts/e2e_remote_workspace.sh` passes with command exit 0;
+its runtime wrapper completed in 8.74 seconds after warning-free client build.
+The parent requires both role exits, the original completion stdout and explicit
+owner/executor completion markers.
+
+The fixture suspends the concrete semantic service, observes the exact canonical
+Submit and original child UUID in its mailbox, then waits for the endpoint's own
+caller deadline and join. The same full message and assigned credit must remain
+before service resume. A narrow test-only binding to stock `process_info/2`
+supplies that observation. It adds no production hook or custom Erlang code.
+This covers actual pending caller loss; it does not claim a literal TLS packet
+was dropped.
+
+All fifteen retained custody/effect helpers are byte-identical. The original
+38 assertions retain explicit counterparts, including payloads above 256 KiB,
+physical write before durable completion, Unknown during the write barrier,
+retry without overwriting a later editor change, exact owner receipt before ACK,
+SQLite custodian reopen, complete large Read and wrong-scope refusal.
+The custodian reopen is not an owner OS-process restart.
+
+Astra's first review found that the initial migration canceled an observer only
+after its exchange had returned. The corrected queued-Submit control closes that
+gap. Independent final replay passes in 9.359 seconds. The receipt mutation fails
+at the original `persist_before_ack` comparison: the actual SQLite receipt is
+None instead of Some(result). Its later executor barrier timeout is a consequence,
+not the mutation witness. No outstanding actionable finding remains.
+
+The fixture verifies semantic closure, journal sealing and actual native
+ScopeRetirement followed by native Normal DOWN before journal release. This
+covers its empty native pool, not the proposed production host-close correction.
+Registered daemon and separate-host acceptance remain open.
+
 ## Repository milestone gate
 
 The assembled milestone `make check` invocation passed every Gleam and
