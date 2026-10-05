@@ -9,9 +9,12 @@
 ////
 //// - No attribute takes its value from session text. Classes come from a
 ////   `case` over a closed type: a heading's level, a cell's alignment.
-//// - A link is drawn as its label followed by its destination in plain
-////   text. There is no `<a href>`: the page follows nothing the agent
-////   wrote, and a `javascript:` destination is only characters.
+//// - A link is `<loom-link>` holding its label and its destination as
+////   text, in `ll-text` and hidden `ll-url` spans. There is no `<a href>`
+////   here: the server writes no attribute from session text, and the
+////   browser element checks the destination (`http` or `https` only) before
+////   it makes the label clickable, so a `javascript:` destination stays
+////   plain text (protocol-change/051, the addendum on clickable links).
 //// - An ordered list's numbers are text in each item rather than a `start`
 ////   attribute, so the number the model wrote never reaches an attribute.
 //// - A code fence's language is a text label, never a class.
@@ -398,28 +401,16 @@ fn inline_element(inline: Inline) -> Element(message) {
   }
 }
 
-// The label, styled as a link, then the destination as text, in one
-// unstyled span so the two stay one inline node and the underline does not
-// reach the destination. An autolink's label is its destination, or its
-// destination without the `http://` or `mailto:` the parser put in front of
-// a bare `www.` link or an address, and an empty destination says nothing,
-// so none of those repeats it.
+// A link is `<loom-link>` with two text-only children: the label, and the
+// destination as hidden text. No attribute carries either (051), so the page
+// follows nothing until the browser element has validated the destination
+// and made the label clickable (`web_client/link_rule`). A destination it
+// refuses leaves the label as plain text.
 fn link(label: List(Inline), destination: String) -> Element(message) {
-  let shown = markdown.plain(label)
-  let repeats =
-    destination == ""
-    || destination == shown
-    || destination == "http://" <> shown
-    || destination == "mailto:" <> shown
-  let target = case repeats {
-    True -> element.none()
-    False ->
-      html.span([attribute.class("md-link-target")], [
-        html.text(" (" <> destination <> ")"),
-      ])
-  }
-  html.span([], [
-    html.span([attribute.class("md-link")], list.map(label, inline_element)),
-    target,
+  element.element("loom-link", [], [
+    html.span([attribute.class("ll-text")], list.map(label, inline_element)),
+    html.span([attribute.class("ll-url"), attribute.attribute("hidden", "")], [
+      html.text(destination),
+    ]),
   ])
 }

@@ -139,15 +139,15 @@ pub fn alerts_tasks_footnotes_and_references_test() {
   )
   assert string.contains(
     html,
-    "<span><span class=\"md-link\">docs</span><span class=\"md-link-target\"> (https://x.test/docs)</span></span>",
+    "<loom-link><span class=\"ll-text\">docs</span><span class=\"ll-url\" hidden>https://x.test/docs</span></loom-link>",
   )
   assert string.contains(
     html,
-    "<span><span class=\"md-link\">www.x.test</span></span>",
+    "<loom-link><span class=\"ll-text\">www.x.test</span><span class=\"ll-url\" hidden>http://www.x.test</span></loom-link>",
   )
   assert string.contains(
     html,
-    "<span><span class=\"md-link\">me@x.test</span></span>",
+    "<loom-link><span class=\"ll-text\">me@x.test</span><span class=\"ll-url\" hidden>mailto:me@x.test</span></loom-link>",
   )
   assert string.contains(html, "<span class=\"md-link-target\">[1]</span>")
   assert string.contains(
@@ -168,7 +168,7 @@ pub fn a_reference_destination_stays_text_test() {
   assert !string.contains(html, "href")
   assert !string.contains(html, " onclick=\"")
   assert !string.contains(html, " onmouseover=\"")
-  assert string.contains(html, "(javascript:alert(1))")
+  assert string.contains(html, ">javascript:alert(1)</span>")
   assert string.contains(html, "[&quot;onclick=a]")
 }
 
@@ -186,7 +186,7 @@ pub fn html_in_an_answer_is_text_test() {
   assert string.contains(html, "<strong>&lt;b&gt;x&lt;/b&gt;</strong>")
 }
 
-pub fn a_link_is_its_label_and_its_destination_as_text_test() {
+pub fn a_link_is_its_label_and_its_destination_as_hidden_text_test() {
   let html =
     page([
       "[click](javascript:alert(1)) and [docs](https://example.com) and <https://example.com/a> and ![pic](http://x/y.png)",
@@ -197,16 +197,32 @@ pub fn a_link_is_its_label_and_its_destination_as_text_test() {
   assert !string.contains(html, "src=")
   assert string.contains(
     html,
-    "<span><span class=\"md-link\">click</span><span class=\"md-link-target\"> (javascript:alert(1))</span></span>",
+    "<loom-link><span class=\"ll-text\">click</span><span class=\"ll-url\" hidden>javascript:alert(1)</span></loom-link>",
   )
   assert string.contains(
     html,
-    "<span><span class=\"md-link\">https://example.com/a</span></span> and",
+    "<loom-link><span class=\"ll-text\">https://example.com/a</span><span class=\"ll-url\" hidden>https://example.com/a</span></loom-link> and",
   )
   assert string.contains(
     html,
     "<span class=\"md-image\">[image: pic · http://x/y.png]</span>",
   )
+}
+
+// A hostile label and destination are escaped text in the two spans: the
+// element gains no `href` and no event attribute, and the only attributes in
+// the link's markup are the fixed classes and `hidden`.
+pub fn a_hostile_link_gains_no_attribute_test() {
+  let html =
+    page([
+      "[\"><img src=x onerror=alert(1)>](https://x.test/\" onmouseover=\"alert(1) onclick=\"b)",
+    ])
+  assert !string.contains(html, "href")
+  assert !string.contains(html, "<img")
+  assert !string.contains(html, " onmouseover=\"")
+  assert !string.contains(html, " onclick=\"")
+  assert string.contains(html, "<loom-link><span class=\"ll-text\">")
+  assert string.contains(html, "&lt;img src=x onerror=alert(1)&gt;")
 }
 
 // Every quote, angle bracket and attribute-shaped run the source holds ends
