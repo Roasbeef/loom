@@ -510,6 +510,8 @@
   .home-confirm-actions{display:flex;gap:6px;}
   .home-confirm-actions button{margin:0;padding:4px 12px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:13px/1.4 var(--font-sans);cursor:pointer;}
   .home-confirm-actions button:hover{background:var(--color-bg-raised);}
+  li.home-row.confirming.confirm-stop{background:color-mix(in srgb,var(--color-current) 7%,transparent);border-bottom-color:color-mix(in srgb,var(--color-current) 35%,var(--color-divider));}
+  .home-confirm-actions .home-confirm-go{border-color:color-mix(in srgb,var(--color-current) 55%,transparent);background:color-mix(in srgb,var(--color-current) 14%,transparent);}
   .home-confirm-actions .home-confirm-delete{border-color:color-mix(in srgb,var(--color-danger) 55%,transparent);background:color-mix(in srgb,var(--color-danger) 14%,transparent);color:var(--color-danger-text);}
   .home-confirm-actions button:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
   @media (max-width:640px){
@@ -525,6 +527,16 @@
      field above a list of the page's sessions. The highlighted row is a tint with
      a tinted hairline, as the completion list's is. */
   loom-switcher{display:contents;}
+  loom-title{display:none;}
+  /* The bar's `Search` chip (drawn by <loom-shell>, recognised by
+     <loom-switcher>): a quiet bordered button with the shortcut's hint, to the
+     left of the Theme button. The hint hides on a narrow bar, as the toggles'
+     do, and the chip stays for a touch screen. */
+  .bar-search{flex:0 0 auto;align-self:center;display:inline-flex;align-items:center;gap:8px;margin:0 6px 0 0;padding:3px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);cursor:pointer;}
+  .bar-search:hover{background:var(--color-bg-sunk);color:var(--color-fg);}
+  .bar-search:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  .bar-search-hint{margin:0;color:var(--color-fg-quiet);font:11px/1.4 var(--font-sans);}
+  @media (max-width:979px){.bar-search-hint{display:none;}}
   .switcher-backdrop{position:fixed;inset:0;z-index:60;display:flex;align-items:flex-start;justify-content:center;box-sizing:border-box;padding:12vh 16px 16px 16px;background:rgba(0,0,0,.3);}
   .switcher{display:flex;flex-direction:column;width:min(560px,100%);max-height:min(70vh,520px);border:1px solid var(--color-divider);border-radius:12px;background:var(--color-bg-raised);box-shadow:var(--shadow-float);overflow:hidden;}
   .switcher-input{box-sizing:border-box;width:100%;margin:0;padding:12px 14px;border:0;border-bottom:1px solid var(--color-divider);background:transparent;color:var(--color-fg);font:15px/1.4 var(--font-sans);outline:none;}
@@ -544,7 +556,28 @@
   loom-rename input{flex:1 1 auto;min-width:0;background:var(--color-bg);color:var(--color-fg);border:1px solid var(--color-divider);border-radius:4px;padding:5px 8px;font:13px/1.4 var(--font-sans);}
   .home-chevron{flex:0 0 auto;color:var(--color-fg-quiet);font-size:16px;line-height:1;}
   .home-open:hover .home-chevron{color:var(--color-fg);}
-  .home-notice{margin:0 0 12px 0;padding:8px 12px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font-size:13px;}
+  /* A note about the last action (round 5, F102): never a box above the list.
+     In a row it is a span ending the quiet line, in a heading it is the shared
+     notice line; a completed one fades and a refused one stays in the danger
+     colour. Nothing here takes room that was not already there, so the list
+     does not move when one appears or goes. */
+  .home-note{color:var(--color-fg);animation:home-note-fade 4s forwards;}
+  .home-note.refused{color:var(--color-danger-text);animation:none;}
+  @keyframes home-note-fade{0%,75%{opacity:1;}100%{opacity:0;}}
+  .home-group-head > .notice-line,.home-group-head > .notice-refusal{flex:0 1 auto;margin:0;}
+  .home-sessions > .notice-line,.home-sessions > .notice-refusal{margin:0 0 12px 0;}
+  /* A row that was pressed and waits on the daemon (round 5, F113): dimmed, a
+     spinner where the chevron was, and no second press. */
+  li.home-row.opening .home-open,li.home-row.opening .home-item{opacity:.6;pointer-events:none;}
+  li.home-row.opening .home-chevron{width:12px;height:12px;box-sizing:border-box;border-width:2px;border-style:solid;border-color:var(--color-divider);border-top-color:var(--color-fg-quiet);border-radius:50%;font-size:0;animation:home-spin .8s linear infinite;}
+  @keyframes home-spin{to{transform:rotate(360deg);}}
+  /* The create form's hint names what a blank field gets, so it goes once the
+     field holds a name (round 5, F117). */
+  .home-create-name:not(:placeholder-shown) ~ .home-create-hint{display:none;}
+  /* The resumed home's one quiet sentence and its copy box (round 5, F101). */
+  .home-resumed{margin:8px 0 0 0;}
+  .home-resumed .home-signin-status:empty{display:none;}
+  .home-resumed-lead{margin:10px 0 6px 0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);overflow-wrap:anywhere;}
   /* The account panel. The sign-ins region is still the centre's third child,
      where the socket admits its clicks, and the stylesheet takes it out of the
      flow: it floats under the bar at the centre's right edge, hidden until the
@@ -612,8 +645,9 @@
   .claim-input[name="name"]{font-family:var(--font-sans);}
   .claim-input:focus-visible{outline:none;border-color:var(--color-fg-quiet);}
   .claim-hint{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
-  .claim-submit{align-self:flex-start;margin:0;padding:6px 16px;border:1px solid var(--color-current);border-radius:6px;background:color-mix(in srgb,var(--color-current) 14%,transparent);color:inherit;font:600 13px/1.4 var(--font-sans);cursor:pointer;}
-  .claim-submit:hover{background:color-mix(in srgb,var(--color-current) 22%,transparent);}
+  .claim-submit{align-self:flex-start;margin:0;padding:6px 16px;border:1px solid var(--color-primary-button);border-radius:6px;background:var(--color-primary-button);color:var(--color-bg);font:600 13px/1.4 var(--font-sans);cursor:pointer;}
+  .claim-submit:hover{background:color-mix(in srgb,var(--color-primary-button) 88%,var(--color-bg));}
+  .claim-submit:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
 
   /* The owner's admin page (web_view/admin, protocol-change/065, the fifth pull
      request): the home's frame with its own centre, and the "Admin" button the
@@ -630,7 +664,6 @@
   .admin-note{margin:0 0 20px 0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
   .admin-members > .admin-lead{margin:12px 0 0 0;}
   .admin-section > .home-empty{margin:12px 0 0 0;}
-  main.centre > .home-notice{max-width:960px;}
   .admin-section .home-heading .home-count{margin-left:8px;color:var(--color-fg-quiet);font-weight:400;font-variant-numeric:tabular-nums;}
   ul.admin-list{list-style:none;margin:0;padding:0;border-top:1px solid var(--color-divider);}
   li.admin-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;min-height:44px;margin:0;padding:6px 10px;border-bottom:1px solid var(--color-divider);}
@@ -868,6 +901,14 @@
   .result-line{margin:0;color:var(--color-fg);font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;}
   .step.reading .subject{color:var(--color-fg);}
   .result-line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  /* A one-line Markdown preview (markdown_view.line): the finished row's line
+     and a strand's latest answer keep their code spans. A failed step's open
+     body leads with one sentence in the danger colour and the engine's own
+     text under it in the code face. */
+  .result-line .md-code-span,.reading .md-code-span,.detail-answer .md-code-span,.step-error-code{font:.92em/1 var(--font-mono);padding:.05em .3em;border-radius:4px;background:var(--color-code);color:var(--color-fg);}
+  .step-error{display:flex;flex-direction:column;gap:2px;margin:2px 0 4px 0;min-width:0;}
+  .step-error-sentence{margin:0;color:var(--color-danger-text);font:13px/1.5 var(--font-sans);}
+  .step-error-engine{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--color-fg-quiet);font:12px/1.5 var(--font-mono);}
   article.nudge,article.peer-card,article.sibling-card{background:var(--color-bg-raised);border-radius:10px;padding:9px 12px;min-width:0;}
   article.nudge{border:1px solid var(--color-advisor);}
   article.sibling-card{border:1px solid var(--color-divider);}
@@ -904,8 +945,8 @@
   .ended-notice p{margin:0;overflow-wrap:anywhere;}
   .ended-headline{color:var(--color-danger-text);font-weight:600;}
   .ended-advice{margin-top:2px;}
-  .ended-page{display:flex;justify-content:center;padding:48px 16px;}
-  .ended-document{box-sizing:border-box;width:100%;max-width:560px;padding:20px 24px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);font:14px/1.5 var(--font-sans);}
+  .ended-page{display:flex;justify-content:center;padding:0 16px 48px;}
+  .ended-document{box-sizing:border-box;width:100%;max-width:560px;margin-top:min(20vh,160px);padding:20px 24px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);font:14px/1.5 var(--font-sans);}
   .ended-brand{margin:0 0 12px 0;font:600 14px/1.4 var(--font-sans);letter-spacing:.02em;}
   .ended-document .ended-headline{margin:0 0 8px 0;font-size:16px;overflow-wrap:anywhere;}
   .ended-document .ended-advice{margin:0 0 8px 0;overflow-wrap:anywhere;}
@@ -983,6 +1024,8 @@
   .trace-subtitle{margin:0 0 6px 0;font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);}
   ul.trace-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;}
   .trace-cut,.trace-note{margin:8px 0 0 0;font:12px/1.4 var(--font-sans);color:var(--color-fg-quiet);}
+  .trace-row{flex-wrap:wrap;}
+  .trace-why{flex:1 1 100%;margin:0;font:12px/1.5 var(--font-sans);color:var(--color-fg-quiet);overflow-wrap:anywhere;}
   /* The Session pane (web_view/view/session_tab): groups that each lead with
      an eyebrow, read in this order: Session (the name with Rename, then the
      workspace), People (viewers, then the invitation buttons), Goal (the goal,
@@ -1039,6 +1082,10 @@
   loom-copy{display:block;}
   code.share-text{display:block;margin:2px 0 4px 0;padding:6px 8px;background:var(--color-bg);border:1px solid var(--color-divider);border-radius:4px;font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;user-select:all;}
   button.share-copy{font-size:12px;}
+  code.share-text{flex:1 1 auto;min-width:0;}
+  button.share-copy{flex:0 0 auto;}
+  .admin-body loom-copy{display:flex;align-items:center;gap:8px;}
+  .admin-body loom-reveal{display:none;}
   .todo-total{margin-left:auto;color:var(--color-fg-quiet);font-variant-numeric:tabular-nums;}
   ul.todo-tasks{list-style:none;margin:0;padding:0;}
   li.todo-task{position:relative;padding-left:8px;}

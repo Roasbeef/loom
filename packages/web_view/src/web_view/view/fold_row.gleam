@@ -27,6 +27,8 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
+import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -118,21 +120,115 @@ pub fn reasoning(
   )
 }
 
-/// A row whose line is plain text and whose body is the rest, for a result
-/// that runs longer than its first line: the line is what a reader scans and
-/// the body is what they open.
+/// A row whose line is the report's first line and whose body is the rest, for
+/// a result that runs longer than its first line: the line is what a reader
+/// scans and the body is what they open. The line is given as elements (a
+/// Markdown line from `markdown_view.line`), so it keeps its bold and code.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // fold_row.reading("README draft ready", [report_body])
+/// // fold_row.reading([html.text("README draft ready")], [report_body])
 /// ```
-pub fn reading(line: String, body: List(Element(message))) -> Element(message) {
+pub fn reading(
+  line: List(Element(message)),
+  body: List(Element(message)),
+) -> Element(message) {
   openable(
     [attribute.class("step"), attribute.class("reading")],
-    [html.span([attribute.class("subject")], [html.text(line)])],
+    [html.span([attribute.class("subject")], line)],
     body,
   )
+}
+
+/// The rows a step opens to. A failed call that has the engine's refusal opens
+/// on one plain sentence and the engine's text beneath it (`failure`), in place
+/// of the call's summary, which the step's own line already says and which
+/// names the tool the way the model spelled it. A failed step with no refusal,
+/// such as a rejected program, whose rows carry their own title and reason,
+/// keeps its rows as they are, and so does a step that is running or done.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fold_row.step_body(turns.Failed, words, rows, draw)
+/// ```
+pub fn step_body(
+  standing: turns.Standing,
+  words: Words,
+  rows: List(Line),
+  draw: fn(Line) -> Element(message),
+) -> List(Element(message)) {
+  let #(refusal, rest) =
+    list.partition(rows, fn(row) {
+      row.speaker == transcript_line.ToolResult
+      || row.speaker == transcript_line.ToolFailure
+    })
+  let engine =
+    refusal
+    |> list.map(refused_text)
+    |> string.join("\n")
+    |> string.trim
+  case standing, engine {
+    turns.Failed, "" | turns.Pending, _ | turns.Done, _ ->
+      list.map(rows, line_row(_, draw))
+    turns.Failed, _ -> [
+      failure(step_words.failure_sentence(words, engine), engine),
+      ..list.map(rest, line_row(_, draw))
+    ]
+  }
+}
+
+// What the engine said when it refused a call. A failed call's row opens with
+// the call's own summary (`fs_edit`), which the step's line already says, and
+// the refusal follows on the lines after it; a result row is the refusal
+// whole.
+fn refused_text(row: Line) -> String {
+  case row.speaker == transcript_line.ToolFailure {
+    False -> row.text
+    True ->
+      string.split_once(row.text, "\n")
+      |> result.map(fn(parts) { parts.1 })
+      |> result.unwrap("")
+  }
+}
+
+/// The open body of a failed step: one plain sentence in the danger colour that
+/// says what was refused, and under it the engine's own text in the code face.
+///
+/// The sentence is `step_words.failure_sentence`, so it names the step and not
+/// the tool. The engine's text is the model's to read, so it is drawn as it was
+/// written except that a backtick pair is a code span and no backtick is on
+/// screen. An odd number of backticks leaves the text exactly as written.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fold_row.failure("The edit was rejected.", "invalid arguments: `from` is required")
+/// ```
+pub fn failure(sentence: String, engine: String) -> Element(message) {
+  html.div([attribute.class("step-error")], [
+    html.p([attribute.class("step-error-sentence")], [html.text(sentence)]),
+    html.pre([attribute.class("step-error-engine")], ticked(engine)),
+  ])
+}
+
+// Text with its backtick pairs as code spans. The pieces between backticks
+// alternate text and code, so a text with an even number of pieces has an
+// unmatched backtick and is kept whole.
+fn ticked(text: String) -> List(Element(message)) {
+  let pieces = string.split(text, "`")
+  case list.length(pieces) % 2 {
+    0 -> [html.text(text)]
+    _ ->
+      list.index_map(pieces, fn(piece, index) {
+        case index % 2 {
+          0 -> html.text(piece)
+          _ ->
+            html.code([attribute.class("step-error-code")], [html.text(piece)])
+        }
+      })
+  }
 }
 
 // A row's line, and its body behind one chevron when it has one. The element

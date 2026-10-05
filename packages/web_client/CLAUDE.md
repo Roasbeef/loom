@@ -20,10 +20,21 @@ renders again just for it:
   reads the sidebar's `.sidebar .session-open` buttons from the page's root
   (`ffi_dom.root_node`) as text, lists them in a popover it draws in its own
   shadow root, and presses the chosen row's own sidebar button, so the daemon
-  mints the ticket and `<loom-switch>` navigates. One document `keydown`
-  listener, removed with the element; every name is a text node of its own view.
-  It sends the server nothing (protocol-change/051, the addendum on the session
-  switcher).
+  mints the ticket and `<loom-switch>` navigates. It also reads the bar's
+  `.session-head .home-link` and `.home-admin` buttons and lists them first, as
+  `Place` rows (`Home`, `Admin`). One document listener for `keydown` and
+  `click`, removed with the element: a click whose composed path holds an
+  element marked `data-opens="switcher"` (`switcher_rule.summons`) opens it, which
+  is how the `Search ⌘K` chip `<loom-shell>` draws in the bar (`shell_rule.has_search`,
+  on pages with a sidebar) reaches it across a shadow tree. Every name is a text
+  node of its own view. It sends the server nothing (protocol-change/051, the
+  addendum on the session switcher).
+- `<loom-title>` (`title_rule`) is a hidden, attribute-free element
+  `view/heading` draws as the session bar's last child. It reads the bar's `h1`
+  text and the frame's `needing` attribute and sets `document.title` to
+  `name — Loom`, or `(N) name — Loom` while N strands wait, through a mutation
+  observer on both (`ffi_dom.observe_text`, `observe_attribute`, `set_title`). The
+  server's document says only `Loom` until then, never the identity.
 - `<loom-fold>` opens and closes a turn's folded work with no round trip.
 - `<loom-expand>` is a row of a turn's fold: one line with one chevron, and a
   body behind it. The server draws the line and the body as children
@@ -85,6 +96,15 @@ renders again just for it:
   seconds draws the ended document's shape. It renders nothing, takes no
   focus and listens for no event (protocol-change/051, the addendum on
   switching sessions).
+- `<loom-time at="<ms>">` draws an instant as the time of day in the browser's own
+  zone (`time_rule.clock`: round up to the minute, then the browser's UTC offset
+  from `ffi_dom.timezone_offset_minutes`). The admin page's grant refusal uses it
+  for when the next place frees; the server writes the UTC time as its `title` and
+  light text, so the zone is the browser's and never a server guess.
+- `<loom-reveal>` is an empty element that, when connected, calls
+  `scrollIntoView({block: "nearest"})` on its nearest `section` after the first
+  paint. The admin claim box opens with one, so a claim made below the fold is on
+  screen. It takes no attribute and sends the server nothing.
 - `<loom-popover wanted="open">` wraps the home's name button (the light child,
   drawn through one slot) and toggles the account panel in the browser: it keeps
   one fact, open or closed (`popover_rule.State`), publishes it as the custom

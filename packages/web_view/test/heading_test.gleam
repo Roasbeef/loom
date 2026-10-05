@@ -127,3 +127,20 @@ pub fn a_figure_with_no_value_is_not_drawn_test() {
 
   assert string.contains(bar, "<span class=\"figures\"></span>")
 }
+
+// The tab's title is set by `<loom-title>` from the name the bar draws. The
+// element is the bar's last child, hidden, empty and with no attribute that
+// could carry a name, so a hostile session name reaches the page only as the
+// heading's escaped text and its inert `title` attribute.
+pub fn the_bar_ends_with_an_empty_title_element_test() {
+  let hostile = "</title><script>alert(1)</script>"
+  let bar = drawn(Some(hostile), None, heading.Live, "est $0.04")
+
+  assert string.ends_with(bar, "<loom-title hidden></loom-title></header>")
+  assert !string.contains(bar, "<script>")
+  assert !string.contains(bar, "</title><")
+  assert string.contains(
+    bar,
+    "&lt;/title&gt;&lt;script&gt;alert(1)&lt;/script&gt;",
+  )
+}

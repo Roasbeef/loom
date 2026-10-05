@@ -1933,3 +1933,128 @@ that document's format.
 refusals, a stale epoch, the home's and the admin page's daemon checks),
 `ui_socket_test` (the admission and the capability), `names_test` and
 `admin_test` (both forms, their paths and the refusals' words).
+
+## Addendum: the admin page's polish, round 5 batch B20 (2026-10-05)
+
+**Status**: IMPLEMENTED in the change that adds it (round 5 of the web UI
+critique, findings F112, F116 and F118). It adds one in-daemon field to the admin
+page's snapshot and two client elements, and no frame, route, admitted event or
+catalogue version.
+
+**`summaries` on the admin snapshot.** `grants.Snapshot` gains `summaries`, one
+`Summary(session, people, more, scope)` for each listed session the registry
+answered for. The daemon reads each with the call that already reads the chosen
+session's members and scope (`manager.session_member_page`, owner-only, refused
+`forbidden` to anyone else), so the field is the same two facts `sessions.members`
+already gives, made for every listed session instead of the chosen one. `people`
+counts the owner, who holds no membership rows, and the members one listing page
+holds, and `more` says whether that is all of them. A session the catalogue no
+longer holds when the read reaches it has no summary and its row has no line. It is
+an in-daemon value, not a wire frame: nothing a browser sends or receives
+changes, the page's decoders have nothing new to decode, and `admin.body_path`
+stays `"0\t2\t1"`.
+
+**`<loom-time at=ms>`.** The refusal of a fourth grant in an hour used to say `The
+next is free at 13:02 UTC.` The page now writes the instant as the element's `at`
+attribute, a number the daemon made, and the browser draws it as the time of day in
+its own zone. The UTC time stays as the element's `title` and its light text, which
+a browser without the element still shows. The server never guesses a zone. The
+words around the time are the same fixed words.
+
+**`<loom-reveal>`.** An empty element, the first child of a claim's box, that
+scrolls its nearest `section` into view by the least that shows it, once, when it
+is inserted. The claim stays a single patch (`admin_test` pins that), and a later
+read that leaves the box in place scrolls nothing.
+
+**What else moves, with no wire change.** The invitation form is keyed by the
+count of invitations the page has made, so a made invitation opens a fresh form
+with an empty name field. The claim box for an invitation no longer states a role,
+since the member's row shows the current one.
+
+**Cost.** One registry call for each listed session on each admin read, which is
+the interval's thirty seconds and each press; a read is one indexed query and the
+list is at most `sessions.listed_limit`.
+
+**Tests.** `admin_test` (the summary line, the fresh form's path, the keys, the
+box with no role and its reveal, the time element), `grants_test` (the halves of
+the refusal), `time_test` in `web_client` (the zone arithmetic and the attribute's
+shape).
+
+## Addendum: the home's notes, a Stop that asks when busy, and the sign-in words (2026-10-05)
+
+**Status**: IMPLEMENTED in the change that adds it (round 5 of the web UI
+critique, batch B19, findings F101, F102, F108, F110, F111, F113 and F117). It
+adds no route, no admitted event and no field on the wire. One part of F111, the
+`read-only` label on a sign-in row, is not done, for the reason under *What was
+considered*.
+
+**The problem.** The home still drew a completed action as a full-width box above
+the list that moved the list and never went away, said `resident` beside every
+row, acted on `Stop` at once for a session in the middle of a turn, gave no sign
+that a pressed row was opening, said `not used yet` of the browser in use, and
+said nothing about why a bookmark-resumed home has no Admin button or session
+actions.
+
+**What changed.**
+
+- **Notes, not a notice.** What the page last said is a `home_table.Note`: a
+  `view/notice` `Said` (quiet, fades after four seconds) or `Refused` (stays, in
+  the danger colour), and where it goes. A note about a session is the last words
+  of its row's quiet line; when the row is gone (an archived or deleted session)
+  it is in the workspace's heading line and names the session (`docs sweep
+  archived.`); a note for a refused creation is in the workspace's heading line;
+  anything else is one line under the page's heading. Nothing takes room the list
+  did not already have. The words are the page's fixed ones, and the session's name
+  is a text node. The progress words (`Stopping the session.`, `Creating the
+  session...`) are gone: the row's buttons or the form are disabled meanwhile.
+- **Stop asks when the row is busy.** `StopRequested` opens the row's
+  confirmation, in a neutral tint, when the page's own activity read
+  (`Model.activity`) has the row as `working` or `needs you`, and acts at once
+  otherwise. `actions.Stage.Confirming` carries the action, and there are two
+  confirmations, `StopConfirmed` and `DeleteConfirmed`; each acts only for the
+  row and the action that are confirming, so a forged confirmation for a row that
+  is not in that state does nothing. The state is the server model's alone. The
+  daemon's checks in `ui_socket.manage_for` are unchanged and are the same for a
+  confirmed press and a forged one.
+- **`Opening...`.** A pressed row, running or saved, shows a spinner where its
+  chevron was, dims, and says `Opening...` in place of its words from the press
+  until the page leaves (`Model.opening`, `Model.resuming`); a ticket does not
+  clear them, only a refusal does, and a second press asks nothing.
+- **Words.** `resident` is dropped beside an activity word (`idle`, `working`,
+  `needs you`) and is `running` where no activity is known, on the home's rows and
+  on a session page's sidebar. A sign-in row for the browser in use omits when it
+  was last used; another row says when or `not used yet`; a login a device link
+  made says `device link` in place of the issuing login's fingerprint. The create
+  form's hint is hidden once the field holds a name.
+- **The resumed home says why.** The owner's home that a bookmark resumed, which
+  the page tells from the others by having `Start.rename` and no `Start.manage`,
+  ends its sign-in region with `This page was opened from a bookmark. Run loom ui
+  for a page that can manage sessions and people.` and a copy box for `loom ui`
+  (`copy_rule.Link`). The rule that such a home has no Admin button, device link or
+  session actions stands.
+
+**What was considered.**
+
+- **A `ceiling` field on the sign-in listing.** The critique asked for a
+  `read-only` label on a row whose login was made by `loom ui --observe`, as one
+  additive field on the listing. A login's ceiling is a caveat in the token the
+  browser holds (`host/login.gleam`); the catalogue row has no ceiling and the
+  daemon keeps no copy of a token. The field would need a new column on
+  `access_credentials`, a catalogue migration and a change to `issue_login`, which
+  is storage work and not an additive field on a read. It is not done here. The
+  home's own read-only state is already drawn as the bar's `read-only link` pill.
+- **Confirming a stop when the activity is unknown.** A row the read has not
+  named yet is stopped at once. The ruling is that Stop asks on a working or
+  needs-you row, and nothing says an unnamed row is either.
+- **A timer to clear a note.** The fade is the stylesheet's, as the session
+  page's footer is, so the server keeps no timer; the note leaves at the next
+  press.
+
+**Cost.** None on the wire. The home keeps one note and one opening session in
+its model.
+
+**Tests.** `home_test` (the busy and idle stops, the forged confirmations, a note
+in its row and in the heading, a refusal beside its row, `Opening...` and the
+ignored second press, `running` and the activity words, the resumed sentence),
+`signins_test` (the use clause, the device-link words), `sidebar_test`, and
+`admin_test` (the shared sign-in words).

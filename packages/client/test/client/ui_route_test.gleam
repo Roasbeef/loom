@@ -745,9 +745,11 @@ fn administered(
       }
       let logins = header("x-admin-logins") != ""
       let scope = header("x-admin-scope") != ""
+      let summaries = header("x-admin-summaries") != ""
       stub(
         279,
         case ui_socket.admin_reading(attachment, open, chosen, fn(_) { Nil }) {
+          grants.Read(snapshot) if summaries -> row_summaries(snapshot)
           grants.Read(snapshot) if scope -> scope_summary(snapshot)
           grants.Read(snapshot) if logins -> logins_summary(snapshot)
           grants.Read(snapshot) -> summary(snapshot)
@@ -808,6 +810,24 @@ fn administered(
       }
     }
   }
+}
+
+// What a read found for each listed session's row, one line each as
+// `session:people:words`, in the catalogue's order.
+fn row_summaries(snapshot: grants.Snapshot) -> String {
+  string.join(
+    list.filter_map(snapshot.sessions, fn(entry) {
+      list.find(snapshot.summaries, fn(held) { held.session == entry.id })
+      |> result.map(fn(held) {
+        entry.id
+        <> ":"
+        <> int.to_string(held.people)
+        <> ":"
+        <> grants.summary_words(held)
+      })
+    }),
+    "\n",
+  )
 }
 
 // What a read found for the chosen session's scope, as `shareable`, `private` or
@@ -2479,7 +2499,7 @@ pub fn a_home_ticket_becomes_a_keyed_home_once_test() {
     // The page is the home's shell, which names no session.
     let opened = open_page(port, page)
     assert opened.status == 200
-    assert string.contains(opened.body, "Loom · Home")
+    assert string.contains(opened.body, "Home — Loom")
     assert !string.contains(opened.body, page.nonce)
     assert !string.contains(opened.body, session)
     assert referrer_policy(opened) == Ok("no-referrer")
@@ -4660,7 +4680,7 @@ pub fn the_bookmark_resumes_a_home_without_loom_test() {
     assert !string.contains(resumed.body, "data-login")
     let shown = open_page(port, home)
     assert shown.status == 200
-    assert string.contains(shown.body, "Loom · Home")
+    assert string.contains(shown.body, "Home — Loom")
 
     // The page is the login's: it is a resumed home, at the login's ceiling,
     // and the login it belongs to is the one that resumed it.
@@ -5755,7 +5775,7 @@ pub fn an_owners_home_opens_an_admin_page_once_test() {
     // The page is the admin shell, which names no session and carries no nonce.
     let opened = open_page(port, page)
     assert opened.status == 200
-    assert string.contains(opened.body, "Loom · Admin")
+    assert string.contains(opened.body, "Admin — Loom")
     assert !string.contains(opened.body, page.nonce)
     assert referrer_policy(opened) == Ok("no-referrer")
 
@@ -6113,6 +6133,44 @@ pub fn the_admin_read_says_whether_the_chosen_session_may_be_shared_test() {
     assert scope(shared) == "shareable"
     assert scope(created.registration.id) == "private"
     assert scope("") == "none"
+  })
+}
+
+// The admin page's read summarises every listed session for its row: the owner
+// counts as a person, an invitation adds one, and the words say the scope the
+// session was created with (round 5, F118).
+pub fn the_admin_read_summarises_each_listed_session_test() {
+  fixture_with(Granting, fn(ready, port, credential) {
+    let shared = create_shared_session(ready, "admin-rows-shared", 1240)
+    let assert Ok(created) =
+      manager.create_scoped(
+        ready.registry,
+        manager.Creation(
+          "admin-rows-private",
+          ready.state_root,
+          "admin-rows-private",
+          "",
+        ),
+        directory: ready.sessions_directory,
+        generator: ids.generator(clock.fixed(0), 1241),
+        scope: domain.WorkspacePrivate,
+        configuration: "",
+      )
+      as "the private session is created"
+    let page = admin_page(port, credential)
+    let rows = fn() {
+      let answer = home_socket(port, page, [#("x-admin-summaries", "1")])
+      assert answer.status == 279
+      string.split(answer.body, "\n")
+    }
+    assert list.contains(rows(), shared <> ":1:1 person · shareable")
+    assert list.contains(
+      rows(),
+      created.registration.id <> ":1:1 person · private",
+    )
+    let _ =
+      minted(admin_do(port, page, "invite", [#("x-admin-session", shared)]))
+    assert list.contains(rows(), shared <> ":2:2 people · shareable")
   })
 }
 

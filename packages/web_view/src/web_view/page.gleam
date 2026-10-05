@@ -172,6 +172,12 @@ pub fn admin_exchange_path(ticket: String) -> String {
   prefix <> "/admin?ticket=" <> ticket
 }
 
+/// The title of a session page until the component has connected and
+/// `<loom-title>` has read the session's name from the bar. It is the product's
+/// name alone: the shell knows the session only by its identity, which names
+/// nothing a person could tell tabs apart by.
+pub const session_title = "Loom"
+
 /// The page for one session: a shell holding one server component, and the
 /// script that connects it with the tab's nonce. The component carries no
 /// `route` of its own; the script sets its `csrf-token` and then its
@@ -200,7 +206,7 @@ pub fn admin_exchange_path(ticket: String) -> String {
 /// // page.shell("0198c0de-...")
 /// ```
 pub fn shell(session_id: String) -> String {
-  component_document(session_id, waiting_notice(session_id))
+  component_document(session_title, waiting_notice(session_id))
 }
 
 /// The page for the home: the same shell and scripts as a session's, with
@@ -211,10 +217,10 @@ pub fn shell(session_id: String) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// assert string.contains(page.home_shell(), "Loom · Home")
+/// assert string.contains(page.home_shell(), "Home — Loom")
 /// ```
 pub fn home_shell() -> String {
-  component_document("Home", home_waiting_notice())
+  component_document("Home — Loom", home_waiting_notice())
 }
 
 /// The page for the admin page: the same shell and scripts as the home's, with
@@ -223,18 +229,21 @@ pub fn home_shell() -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// assert string.contains(page.admin_shell(), "Loom · Admin")
+/// assert string.contains(page.admin_shell(), "Admin — Loom")
 /// ```
 pub fn admin_shell() -> String {
-  component_document("Admin", admin_waiting_notice())
+  component_document("Admin — Loom", admin_waiting_notice())
 }
 
 // A shell holding one server component, titled `title` (escaped here) and
 // with `waiting` as the paragraph shown while the component has no socket.
+// The title is fixed words and never a session's identity or name: the home
+// and the admin page name themselves, and a session page says only the product
+// until `<loom-title>` (`web_client/title`) reads the name its bar draws.
 fn component_document(title: String, waiting: String) -> String {
   "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
   <> "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-  <> "<title>Loom · "
+  <> "<title>"
   <> houdini.escape(title)
   <> "</title>"
   <> "<link rel=\"stylesheet\" href=\""
@@ -439,9 +448,11 @@ fn way_control(way: Way) -> String {
     GoBack -> "<loom-back>Go back</loom-back>"
     ClaimLink ->
       "<p class=\"ended-advice\">Otherwise ask the person who invited you "
-      <> "for a new invitation and accept it <a class=\"ended-link\" href=\""
+      <> "for a new invitation and accept it at <a class=\"ended-link\" href=\""
       <> claim_path
-      <> "\">here</a>.</p>"
+      <> "\">"
+      <> claim_path
+      <> "</a>.</p>"
     NoWay -> ""
   }
 }
@@ -490,13 +501,16 @@ pub fn login_page() -> String {
   <> "<title>Loom</title>"
   <> "<link rel=\"stylesheet\" href=\""
   <> asset_path(stylesheet_asset)
-  <> "\"></head><body><main class=\"ended-page\">"
+  <> "\"><script type=\"module\" src=\""
+  <> asset_path(client_asset)
+  <> "\"></script></head><body><main class=\"ended-page\">"
   <> "<section class=\"ended-document\" role=\"status\">"
   <> "<p class=\"ended-brand\">Loom</p>"
   <> "<p class=\"ended-headline\" id=\"login-status\">Signing in.</p>"
-  <> "<p class=\"ended-advice\" id=\"login-help\" hidden>"
-  <> houdini.escape(login_unknown_notice())
-  <> "</p>"
+  <> "<div id=\"login-help\" hidden>"
+  <> fresh_link_box(Some("loom ui"), ClaimLink)
+  <> way_control(ClaimLink)
+  <> "</div>"
   <> "<form id=\"login-form\" method=\"post\" action=\"\" hidden>"
   <> "<input type=\"hidden\" name=\"nonce\" value=\"\"></form>"
   <> "<noscript><p class=\"ended-advice\">"
@@ -508,17 +522,24 @@ pub fn login_page() -> String {
 }
 
 /// What the resume page says when this browser holds no nonce for the login:
-/// a new profile, cleared storage or a private window. The way back in is a
-/// terminal, or a device link another signed-in browser made.
+/// a new profile, cleared storage or a private window. The way back in is
+/// `loom ui` for a person who has it, and for one who does not, a new
+/// invitation accepted at the claim form. The document draws the first
+/// sentence with the command in a copy box and the second with the address as
+/// a link, from the same pieces the refused sign-in's document uses; this is
+/// the same words as one string.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// assert string.contains(page.login_unknown_notice(), "loom ui")
+/// assert string.contains(page.login_unknown_notice(), "/ui/claim")
 /// ```
 pub fn login_unknown_notice() -> String {
-  "This browser has no sign-in for this address. Run loom ui in a terminal "
-  <> "to sign in, or open a device link from a browser that is signed in."
+  "If you use loom, run loom ui in a terminal for a fresh link. Otherwise "
+  <> "ask the person who invited you for a new invitation and accept it at "
+  <> claim_path
+  <> "."
 }
 
 fn login_script_notice() -> String {

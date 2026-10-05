@@ -76,6 +76,19 @@ export function set_scroll_top(element, top) {
   element.scrollTop = top;
 }
 
+// Brings the element into view by the least scrolling that shows all of it, at
+// once, so a box that is already on screen does not move.
+export function scroll_into_view(element) {
+  element.scrollIntoView({ block: "nearest", behavior: "instant" });
+}
+
+// The browser's offset from UTC at an instant, in minutes, positive west of
+// Greenwich (`getTimezoneOffset`). It is the one thing about a zone Gleam
+// cannot read, and the arithmetic over it is `web_client/time_rule`.
+export function timezone_offset_minutes(milliseconds) {
+  return new Date(milliseconds).getTimezoneOffset();
+}
+
 export function scroll_by(element, dy) {
   element.scrollBy(0, dy);
 }
@@ -314,4 +327,25 @@ export function media_query(query) {
 
 export function media_matches(query) {
   return query.matches;
+}
+
+// Writes the document's title as text. Assigning `document.title` never parses
+// markup, so a name that holds angle brackets is shown as those characters.
+export function set_title(text) {
+  document.title = text;
+}
+
+// Has the observer watch the text under an element, to any depth, change or
+// come and go.
+export function observe_text(observer, element) {
+  observer.observe(element, {
+    childList: true,
+    characterData: true,
+    subtree: true,
+  });
+}
+
+// Has the observer watch one attribute of an element and nothing else.
+export function observe_attribute(observer, element, name) {
+  observer.observe(element, { attributes: true, attributeFilter: [name] });
 }

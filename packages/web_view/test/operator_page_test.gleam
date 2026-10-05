@@ -766,7 +766,7 @@ pub fn the_composer_is_a_to_line_an_editor_and_a_footer_test() {
     "main",
     "class=\"editor\"",
     "<textarea",
-    "placeholder=\"Message main\"",
+    "placeholder=\"Message the agent\"",
     "class=\"composer-actions\"",
     "<loom-attach",
     "class=\"hint\"",

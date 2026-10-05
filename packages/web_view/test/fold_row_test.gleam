@@ -78,6 +78,98 @@ pub fn a_step_is_one_line_with_its_words_and_one_chevron_test() {
   assert !string.contains(html, "step-state")
 }
 
+// A failed call opens on one plain sentence in place of the tool's name, with
+// the engine's text under it, and a backtick pair in that text is a code span
+// so that no backtick is drawn.
+pub fn a_failed_step_opens_on_a_sentence_and_draws_no_backtick_test() {
+  let failed =
+    step(Words("Edit", Mono("test_calc.py"), None), turns.Failed, [
+      Line(
+        transcript_line.ToolFailure,
+        "fs_edit\ninvalid arguments: `from` is required for this hunk op",
+      ),
+    ])
+  let html = drawn([work([failed])])
+
+  assert string.contains(
+    html,
+    "<p class=\"step-error-sentence\">The edit was rejected: &quot;from&quot; is required for this hunk op.</p>",
+  )
+  assert string.contains(
+    html,
+    "<code class=\"step-error-code\">from</code> is required for this hunk op",
+  )
+  assert !string.contains(html, "`")
+  assert !string.contains(html, "class=\"line tool-failure\"")
+
+  // A failed step with no refusal row keeps its own rows, as a rejected
+  // program's carry their own reason.
+  let program =
+    step(Words("code_mode", Unnamed, None), turns.Failed, [
+      Line(transcript_line.ProgramFailure, "× code_mode · refused by vetting"),
+    ])
+  let kept = drawn([work([program])])
+  assert string.contains(kept, "refused by vetting")
+  assert !string.contains(kept, "step-error")
+}
+
+// The engine's text is session text: a backtick span that holds markup is a
+// code span of escaped text, and no tag it spells is drawn.
+pub fn hostile_engine_text_in_a_backtick_span_stays_escaped_test() {
+  let html =
+    drawn([
+      work([
+        step(Words("Ran", Mono("make"), None), turns.Failed, [
+          Line(transcript_line.ToolResult, "bad `</code><img onerror=x>` input"),
+        ]),
+      ]),
+    ])
+  assert string.contains(
+    html,
+    "<code class=\"step-error-code\">&lt;/code&gt;&lt;img onerror=x&gt;</code>",
+  )
+  assert !string.contains(html, "<img")
+}
+
+// An unmatched backtick is left as the engine wrote it, so the text is never
+// cut short by a pair that was not one.
+pub fn an_unmatched_backtick_is_left_alone_test() {
+  let html =
+    drawn([
+      work([
+        step(Words("Ran", Mono("make"), None), turns.Failed, [
+          Line(transcript_line.ToolResult, "it said `oops"),
+        ]),
+      ]),
+    ])
+  assert string.contains(html, "it said `oops")
+  assert !string.contains(html, "step-error-code")
+}
+
+// A sub-agent's finished row shows its report's first line as Markdown, bold
+// and code kept and no asterisks, and a report whose breaks arrived as the two
+// characters `\n` is two lines behind the chevron, not a backslash on screen.
+pub fn a_reports_line_renders_markdown_and_never_a_literal_break_test() {
+  let html =
+    drawn([
+      turns.Returned(
+        "6.0/0/0",
+        "sub:main/review-readme-d799cf20a6964d72",
+        "completed",
+        "**Current content:** `# calc` \\n Tiny calculator.",
+        turns.Sub(0),
+      ),
+    ])
+  assert string.contains(
+    html,
+    "<span class=\"subject\"><strong>Current content:</strong> <code class=\"md-code-span\"># calc</code></span>",
+  )
+  assert string.contains(html, "<loom-expand")
+  assert string.contains(html, "Tiny calculator.")
+  assert !string.contains(html, "**")
+  assert !string.contains(html, "\\n")
+}
+
 pub fn a_step_with_nothing_behind_it_is_its_line_alone_test() {
   let html =
     drawn([
@@ -211,9 +303,13 @@ pub fn a_prompt_names_its_sender_above_a_bubble_test() {
     "<pre class=\"line user\">add a subtract function</pre>",
   )
 
-  // A sender who is not the reader has a name and no role.
+  // The role is the same word whether or not the host holds an attachment for
+  // the sender, so a message reads alike on every page and in every turn.
   let other = drawn([prompt(None)])
-  assert string.contains(other, "<span class=\"who-name\">Owner</span></p>")
+  assert string.contains(
+    other,
+    "<span class=\"who-name\">Owner</span> · operator</p>",
+  )
 }
 
 pub fn a_spawn_and_a_one_line_result_are_lines_not_cards_test() {
@@ -427,7 +523,7 @@ pub fn a_reports_first_line_keeps_text_that_only_looks_like_a_marker_test() {
   )
   assert string.contains(
     head("**bold** start\nmore"),
-    "<span class=\"subject\">**bold** start</span>",
+    "<span class=\"subject\"><strong>bold</strong> start</span>",
   )
   assert string.contains(
     head("- a list item\nmore"),

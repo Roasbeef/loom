@@ -29,7 +29,12 @@ page keys and nonces, and the relay into the session's gateway.
   in `client/daemon/ui_socket`, or an empty string; the frame writes it as
   the `workspace` attribute and `<loom-shell>` keys the reader's layout by it),
   the `snapshot.Expected` attachment every cut
-  must match, and a `Transport(socket)`. The heading shows the name (or
+  must match, a `Standing` (`reader`: `DaemonOwner` or `Participant`, so an
+  observer-ceiling page the owner opened can be told to run `loom ui`; and
+  `sharing`, the catalogue's scope for an owner's page, so a private session
+  draws `invites.Unshareable`'s one sentence and no invitation button; the
+  daemon reads it with the members read the admin page makes, no new frame;
+  `component.unplaced` for fixtures), and a `Transport(socket)`. The heading shows the name (or
   `Session` and the ID's first eight characters) with the whole ID in a
   `title`, and the workspace's last segment with the whole path in a
   `title`.
@@ -112,16 +117,21 @@ page keys and nonces, and the relay into the session's gateway.
   `view/home_bar`, `sidebar.home(groups, open, resume)` (a "Home" entry, then the rows),
   `view/home_table` (a list per workspace: a heading with the shortened path
   and a count, and one item per session with a glyph, the name, and a quiet
-  line of `resident · working · created 2h ago` or `saved · 2h ago`; the UTC
+  line of `working · created 2h ago` (`running` until the activity read answers; the
+  word `resident` is not drawn) or `saved · 2h ago`; the UTC
   minute is the `time`'s `title`; `home_bar` draws the session bar's `pill`
   and `Tone`) and no panel; the stylesheet hides the panel column for the
   frame class `loom-home`. `view/switch.view(address)` draws the hidden
   `<loom-switch>` for both this page and the session page. The one input is a running session's row, in the
   table and in the sidebar: `home.Opening(id)` asks `Start.open` (in the
   component's process) for a ticket, and `Linked(answer)` becomes the `to`
-  attribute of the centre's last child, a hidden `<loom-switch>`, or the
-  `home-notice` before the table (an empty node when none, so the table keeps
-  its path). `home.table_path` and `home.sidebar_path` are the two regions the
+  attribute of the centre's last child, a hidden `<loom-switch>`, or a refusal
+  `home_table.Note` beside the row. The centre's first child is an empty node, so
+  the table keeps its path; what the page says about a press is a `Note`
+  (`view/notice` `Said` fades, `Refused` stays) drawn in the row it is about, in
+  its workspace's heading when the row is gone, or under `Sessions`, and it
+  never moves the list. `Model.opening` (a running row's open) and
+  `Model.resuming` set the row's `Opening…` state and ignore a second press. `home.table_path` and `home.sidebar_path` are the two regions the
   daemon's socket admits a click beneath. A saved row is a button only on an
   `OperatorCeiling` page (`view/resume`): `home.Resuming(id)` calls
   `Start.resume(id, deliver)`, which starts the daemon's task and returns, sets
@@ -143,7 +153,7 @@ page keys and nonces, and the relay into the session's gateway.
   at once, the daemon asks the sessions in a task of its own, and the answer is
   `Observed(rows)`, one `sessions.Activity` (`NeedsYou | Working | Idle`) per
   session that answered, which the rows draw as words and a glyph hue; a row
-  with none says only `resident`. `Start.now` is the clock the ages count from,
+  with none says only `running`. `Start.now` is the clock the ages count from,
   read once per list. `ending.Advice` (`lead`, `command`) is the ending's
   advice split, `advised`/`home_advised`; `advice` is it said as a sentence.
   `ending.home_headline` and
@@ -215,10 +225,17 @@ page keys and nonces, and the relay into the session's gateway.
   session, the last notice (a `notice.Spoken`: the action with its `Said` or
   `Refused` words, which decide where the line is drawn) and the claim an ask
   made (`claim`) until `Dismissed`. The claim is drawn beside the action that
-  made it, never sticky: under the invitation form (`admin_claim.for_session`) or
+  made it, never sticky (it opens with an empty `<loom-reveal>` that scrolls the
+  box into view once): under the invitation form (`admin_claim.for_session`) or
   under the rotated person's row (`for_person`), each one fixed child of its
   parent so no path moves. The centre's first child is an empty place, so the
-  body stays at `admin.body_path`. After a `TooMany` refusal the model keeps when a place frees
+  body stays at `admin.body_path`. The invitation form is keyed by `Model.invited`
+  (how many invitations were made), so each one opens it with an empty name field;
+  `Snapshot.summaries` (`grants.Summary`: people, `more`, scope, read for every
+  listed session by `ui_socket.admin_summaries`) is the line after each session's
+  path (`grants.summary_words`). A `TooMany` refusal is `notice.Throttled`, whose
+  time is a `<loom-time at=ms>` the browser words in its own zone, UTC in its
+  `title` and light text. After a `TooMany` refusal the model keeps when a place frees
   (`Model.spent`), and until then `admin_buttons.Busy` is `Spent(words)`: the
   buttons that grant (`admin_buttons.granting`: Rotate, Make operator, Create
   invitation) carry the refusal's words in their `title` and still send, since
@@ -281,16 +298,19 @@ page keys and nonces, and the relay into the session's gateway.
 - **Stopping, archiving and deleting** (protocol-change/065, the addendum on
   session actions). `web_view/actions` holds `Action` (`Stop | Archive |
   Delete`), `Answer`, `Reason` (`NotOwner | Running | Unavailable`) with fixed
-  words, and the row's `Stage` (`Calm | Confirming(session) | Working(session,
+  words, and the row's `Stage` (`Calm | Confirming(session, action) | Working(session,
   action)`). `home.Start.manage` is `Some` only for the owner's fresh operating
   home (`ui_socket.home_manage_capability`); a page with `None` draws nothing and
   ignores `StopRequested`, `ArchiveRequested`, `DeleteRequested`,
-  `DeleteConfirmed`, `DeleteCancelled` and `ActionAnswered`. `home_table.Manage`
+  `StopConfirmed`, `DeleteConfirmed`, `ConfirmCancelled` and `ActionAnswered`. `home_table.Manage`
   draws `Stop` on a running row and `Archive`/`Delete` on a saved or blocked one in
   a `home-acts` group after the row's own button (the paths beneath
   `home.table_path` are unchanged; the rename button is the group's first child),
   and Delete's first press replaces the row with the fixed question and a Delete
-  and a Cancel (`home-confirm`). The request is the daemon's task and its answer
+  and a Cancel (`home-confirm`). Stop does the same (`Stop this session
+  mid-turn?`, neutral tint) when the page's own activity read has the row as
+  working or needing the person, and acts at once otherwise; a confirmation
+  acts only for the row and action that are confirming. The request is the daemon's task and its answer
   `ActionAnswered`, which words the notice and reads the list again. `home_test`
   reads it.
 - **The admin page's pill.** `admin.Start.ends_at` is the instant the page ends
@@ -301,7 +321,17 @@ page keys and nonces, and the relay into the session's gateway.
   `<loom-switcher>` after `<loom-switch>` as the centre's last child on the
   operator's page and the home; it reads the sidebar's buttons in the browser and
   presses the chosen one's own, so it adds no event and moves no path
-  (protocol-change/051, the addendum on the session switcher).
+  (protocol-change/051, the addendum on the session switcher). The `Search ⌘K`
+  chip that opens it is drawn by `<loom-shell>`, not the server.
+- **Document titles.** `page.shell` is titled `Loom` (`page.session_title`); the
+  home and admin shells are `Home — Loom` and `Admin — Loom`. A session's name is
+  never in the served title: `view/heading` draws a hidden `<loom-title>` as the
+  bar's last child, which sets the tab title from the heading's text on the
+  client (`page_test`, `heading_test` with a hostile name).
+- **Entry documents.** `.ended-document` sits `margin-top:min(20vh,160px)` down
+  the window (`scripts/web_client_css_check.sh`), `Accept` is the filled primary,
+  and the resume page's help is the refused sign-in's two sentences: `loom ui` in
+  a copy box, then a new invitation accepted at `/ui/claim`.
 - **Switching sessions.** A switch is a navigation to a new page
   (protocol-change/051, the addendum on switching sessions). On the operator's
   page `operator_page.Opening(id)` (a sidebar button, or a peer message's Open

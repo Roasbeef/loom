@@ -206,6 +206,30 @@ pub fn scroll_top(element: Element) -> Float
 @external(javascript, "./dom.mjs", "set_scroll_top")
 pub fn set_scroll_top(element: Element, top: Float) -> Nil
 
+/// Scrolls every scrolling ancestor of the element by the least that shows all
+/// of it (`scrollIntoView({block: "nearest"})`), and does nothing when it is
+/// already in view.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.scroll_into_view(section)
+/// ```
+@external(javascript, "./dom.mjs", "scroll_into_view")
+pub fn scroll_into_view(element: Element) -> Nil
+
+/// The browser's offset from UTC at the instant `milliseconds`, in minutes and
+/// positive west of Greenwich (`getTimezoneOffset`), so a zone's daylight rule
+/// is the browser's and not a table of ours.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.timezone_offset_minutes(1_790_030_460_000)
+/// ```
+@external(javascript, "./dom.mjs", "timezone_offset_minutes")
+pub fn timezone_offset_minutes(milliseconds: Int) -> Int
+
 /// Scrolls the element by `dy` pixels vertically, at once (`scrollBy(0, dy)`).
 ///
 /// ## Examples
@@ -332,6 +356,45 @@ pub fn observe(observer: Observer, element: Element) -> Nil
 /// ```
 @external(javascript, "./dom.mjs", "mutation_observer")
 pub fn mutation_observer(callback: fn() -> Nil) -> Observer
+
+/// Has a mutation observer watch the text under an element, to any depth, for
+/// a change or for nodes coming and going (`MutationObserver.observe` with
+/// `characterData`, `childList` and `subtree`). `<loom-title>` watches the
+/// session's name in the bar with it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.observe_text(changes, heading)
+/// ```
+@external(javascript, "./dom.mjs", "observe_text")
+pub fn observe_text(observer: Observer, element: Element) -> Nil
+
+/// Has a mutation observer watch one attribute of an element and nothing else
+/// (`MutationObserver.observe` with `attributeFilter`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.observe_attribute(changes, frame, "needing")
+/// ```
+@external(javascript, "./dom.mjs", "observe_attribute")
+pub fn observe_attribute(
+  observer: Observer,
+  element: Element,
+  name: String,
+) -> Nil
+
+/// Writes the document's title (`document.title`). The value is text and is
+/// never parsed as markup, so it needs no escaping here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.set_title("docs sweep — Loom")
+/// ```
+@external(javascript, "./dom.mjs", "set_title")
+pub fn set_title(text: String) -> Nil
 
 /// Has a mutation observer watch an element's direct children come and go
 /// (`MutationObserver.observe` with `childList`).

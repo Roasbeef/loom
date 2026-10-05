@@ -1259,7 +1259,11 @@ fn admit(
       }),
       rename:,
     )
-  let start =
+
+  // The start takes its standing as an argument because reading it can wait on
+  // the registry for seconds, which only a page whose permit transferred should
+  // pay.
+  let start = fn(standing) {
     component.Start(
       session_id: attachment.session_id,
       // The route read the registration when it resolved the session,
@@ -1271,15 +1275,17 @@ fn admit(
       // The digest, not the path, is what the page's storage is keyed by.
       workspace_digest: digest(attachment.registration.workspace),
       expected:,
+      standing:,
       transport:,
     )
+  }
   let started = case transferred {
     Error(reason) -> {
       upgrade_log.closed_early(upgrade_log.Page, "transfer", reason)
       Error(Nil)
     }
     Ok(Nil) ->
-      start_page(role, start)
+      start_page(role, start(standing_of(role, attachment)))
       |> result.map_error(fn(_) {
         upgrade_log.closed_early(
           upgrade_log.Page,
@@ -1302,6 +1308,45 @@ fn admit(
       serving(page, signals)
     }
   }
+}
+
+// What the page is told about its principal and session beyond the capture:
+// whether the principal is the daemon's owner, and, for a page that may invite,
+// whether the session was created to be shared. The scope is the catalogue's
+// domain record, read through the owner-only members read the admin page makes
+// (`chosen_members`), so a page for a private session can say so before the
+// owner presses a button and no new frame exists. A page that cannot invite
+// reads nothing, and a read that fails leaves the scope unknown, which draws
+// the buttons as before: the daemon refuses an invitation to a private session
+// whether or not the page knew.
+fn standing_of(
+  role: Role,
+  attachment: server.Attachment(instance),
+) -> component.Standing {
+  let reader = case attachment.principal.kind {
+    access.OwnerPrincipal -> component.DaemonOwner
+    access.MemberPrincipal -> component.Participant
+  }
+  let sharing = case role {
+    Owning ->
+      case
+        manager.session_member_page(
+          attachment.registry,
+          attachment.digest,
+          attachment.session_id,
+          after: "",
+        )
+      {
+        Ok(members) ->
+          Some(case members.scope {
+            domain.SessionOnly -> creations.Shareable
+            domain.WorkspacePrivate -> creations.Private
+          })
+        Error(_) -> None
+      }
+    Observing | Operating -> None
+  }
+  component.Standing(reader:, sharing:)
 }
 
 // A started page as the socket serves it: its browser frames go to the
@@ -3537,13 +3582,16 @@ fn admin_snapshot(
     |> result.map_error(authentication_failure),
   )
   use selection <- result.try(chosen_members(attachment, chosen))
-  use logins <- result.map(admin_logins(attachment, people.entries))
+  use logins <- result.try(admin_logins(attachment, people.entries))
+  let listed = list.take(views, sessions.listed_limit)
+  use summaries <- result.map(admin_summaries(attachment, listed))
   grants.Snapshot(
     principals: owner_first(list.map(people.entries, listed_principal)),
     more_principals: more_of(people.remainder),
-    sessions: list.map(list.take(views, sessions.listed_limit), listed_entry),
+    sessions: list.map(listed, listed_entry),
     selection:,
     logins:,
+    summaries:,
   )
 }
 
@@ -3554,8 +3602,9 @@ const admin_logins_principals = 20
 // The sign-ins of each principal that holds any, the first few of at most
 // `admin_logins_principals` of them, each read as the page's owner with the
 // registry's own `signins` (which authenticates the credential and names the
-// principal again). A principal whose read the registry did not answer is left
-// out, so a slow answer shows the count and no rows rather than ending the page.
+// principal again). A principal whose read fails fails the snapshot: the
+// registry's refusal ends the page or leaves the last snapshot, as `admin_failure`
+// words it, and no principal is shown without its rows.
 fn admin_logins(
   attachment: server.AdminAttachment(instance),
   rows: List(access.Listing),
@@ -3581,6 +3630,46 @@ fn admin_logins(
             listed_signin,
           ),
         ))
+      Error(error) -> Error(admin_failure(error))
+    }
+  })
+}
+
+// One summary for each listed session: how many people hold it and whether it
+// may be shared, read with the same registry call that reads the chosen
+// session's members, as the page's owner (protocol-change/065, the addendum on
+// the admin page's session rows). A session the catalogue no longer holds when
+// the read reaches it is left out, so its row has no line; any other failure
+// of the registry is the registry failing to answer, as it is for the chosen
+// session. The count is the owner and the members one page lists, with the page
+// saying whether that is all of them.
+fn admin_summaries(
+  attachment: server.AdminAttachment(instance),
+  views: List(manager.View),
+) -> Result(List(grants.Summary), Failure) {
+  list.try_fold(views, [], fn(kept, view) {
+    let session = view.registration.id
+    case
+      manager.session_member_page(
+        attachment.registry,
+        attachment.digest,
+        session,
+        after: "",
+      )
+    {
+      Ok(members) -> {
+        let selected = selection_of(session, members)
+        Ok([
+          grants.Summary(
+            session:,
+            people: 1 + list.length(selected.holders),
+            more: selected.more,
+            scope: selected.scope,
+          ),
+          ..kept
+        ])
+      }
+      Error(manager.AdminMetadata(catalogue.Missing)) -> Ok(kept)
       Error(error) -> Error(admin_failure(error))
     }
   })
@@ -3716,7 +3805,11 @@ fn page_role(role: access.Role) -> invites.Role {
 /// The run is a weft run with one task, linked to the calling process, which is
 /// the page's runtime, as `resume_task`'s is: a page that goes away cancels it.
 /// Every step of the reading is bounded by its own call timeouts, so the task
-/// always answers within seconds and needs no deadline of its own. Its last act
+/// always answers, though not within seconds: a reading makes one registry call
+/// for each listed session (up to `sessions.listed_limit`), each bounded by its
+/// own call timeout, so the bound is that timeout times the sessions listed. It
+/// needs no deadline of its own, and the page runs one reading at a time
+/// (`web_view/admin`), so a slow registry is never asked for two at once. Its last act
 /// is `deliver`, so a page that stays open is always answered.
 ///
 /// ## Examples

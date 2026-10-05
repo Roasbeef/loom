@@ -29,6 +29,7 @@
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
@@ -189,8 +190,46 @@ fn row(program: Program) -> Element(message) {
   html.li([attribute.class("trace-row")], [
     html.span([attribute.class("trace-label")], [html.text(program.label)]),
     state_chip(program.state),
+    why(program),
   ])
 }
+
+// The reason an earlier program did not run, in one line under its row: the
+// first line of what `trace_view` kept as its detail, which for a refusal is
+// the vetting rule that was broken. A state that is only a word (`rejected by
+// vetting`) says what happened and not why, and the newest program alone
+// showed the reason, so a refusal that was fixed and run again left no reason
+// anywhere. A program that ran, or is running, has nothing to explain.
+fn why(program: Program) -> Element(message) {
+  case program.state, program.detail {
+    Rejected, Some(detail)
+    | CompileFailed, Some(detail)
+    | RunFailed, Some(detail)
+    ->
+      case first_line(detail) {
+        "" -> element.none()
+        line -> html.p([attribute.class("trace-why")], [html.text(line)])
+      }
+    _, _ -> element.none()
+  }
+}
+
+// The first line with words, cut to a row's worth with an ellipsis.
+fn first_line(detail: String) -> String {
+  let line =
+    detail
+    |> string.split("\n")
+    |> list.map(string.trim)
+    |> list.find(fn(line) { line != "" })
+    |> result.unwrap("")
+  case string.length(line) > why_limit {
+    True -> string.slice(line, 0, why_limit - 1) <> "…"
+    False -> line
+  }
+}
+
+// The most characters of a reason an earlier row keeps.
+const why_limit = 120
 
 // A state as a chip: its words as text, its class a literal from the closed
 // type.

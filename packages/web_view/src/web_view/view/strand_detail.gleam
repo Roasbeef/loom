@@ -20,7 +20,8 @@
 //// `session_view/cache_miss`, which allows only what the rows proved, so the
 //// view claims no more about the cache than the card's ring does. Under
 //// `Recent` are the tools the strand ran, or its latest answer's first line
-//// while it ran none. The
+//// while it ran none, drawn as the lane draws it: its Markdown cut to one row,
+//// with bold and code kept and no `\n` characters (`markdown_view.line`). The
 //// elapsed time is counted by the browser from the duration the roster
 //// measured (`<loom-elapsed>`), so the server never renders again only to
 //// move a clock. There is no cost row: the session keeps its cost as a total
@@ -42,7 +43,9 @@ import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 import session_view/agent_view
+import session_view/step_words
 import session_view/strand_card
+import web_view/markdown_view
 import web_view/view/strip.{type Chip}
 
 /// The strand's own view for `chip`.
@@ -136,7 +139,13 @@ fn recent(chip: Chip) -> Element(message) {
     html.h3([attribute.class("panel-title")], [html.text("Recent")]),
     case chip.recent, chip.answer {
       [], Some(answer) ->
-        html.p([attribute.class("detail-answer")], [html.text(answer)])
+        html.p(
+          [attribute.class("detail-answer")],
+          markdown_view.line(
+            step_words.spoken_breaks(answer),
+            step_words.result_limit,
+          ),
+        )
       [], None ->
         html.p([attribute.class("pane-empty")], [html.text("No tools yet.")])
       tools, _ ->

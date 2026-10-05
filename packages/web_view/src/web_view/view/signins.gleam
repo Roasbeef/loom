@@ -4,8 +4,10 @@
 //// (protocol-change/065, the eighth pull request).
 ////
 //// A row says which browser it is ("This browser" for the login this page
-//// belongs to), when it was signed in, when it last came back and when it ends,
-//// in words, and carries one button, "Sign out", whose message names the row's
+//// belongs to), when it was signed in, how it was (a login a device link made
+//// says `device link`), when it last came back and when it ends, in words. The
+//// browser in use leaves out when it last came back, because it is in use as
+//// the page draws, and a row carries one button, "Sign out", whose message names the row's
 //// fingerprint as the server drew it into the tree, so the browser's event names
 //// only the path it fired at. Below the rows are "Sign out everywhere" and, on a
 //// fresh home, "Sign in another device". The link that button makes is shown
@@ -16,6 +18,12 @@
 //// also draws the bookmark, in a `<loom-copy subject="bookmark">` box that
 //// copies it only when it has the shape the daemon writes, so the person can
 //// keep it.
+////
+//// The owner's home that a bookmark resumed has no device-link control, and the
+//// page draws no Admin button or session actions either (protocol-change/065,
+//// rulings 14 and 15). That is deliberate, and a person who finds the controls
+//// missing should be told why and how to get them, so the region ends with one
+//// quiet sentence and a copy box for `loom ui` (`Resumed`).
 ////
 //// The panel's first region is the "Your name" control (`view/your_name`), which
 //// changes the principal's display name; it is drawn here so it sits in the
@@ -45,9 +53,14 @@ import web_view/signins.{type Signin}
 
 /// What the region offers for a device link.
 pub type Device(message) {
-  /// No control is drawn: the page was opened by the bookmark, or the daemon
-  /// handed it no capability. The daemon refuses a forged request too.
+  /// No control is drawn: the page is a member's or a read-only link, or the
+  /// daemon handed it no capability. The daemon refuses a forged request too.
   Never
+
+  /// No control is drawn, because this is the owner's home and a bookmark
+  /// resumed it, and the region says so and says how to get a page that can
+  /// manage sessions and people.
+  Resumed
 
   /// A "Sign in another device" button, and, when `shown` holds a link, the box
   /// that shows it once with `done` as its button's message. `press` is the
@@ -176,24 +189,24 @@ fn row(
   this: Option(String),
   sign_out: fn(String) -> message,
 ) -> Element(message) {
-  let here = this == Some(signin.fingerprint)
-  let name = case here {
-    True -> "This browser"
-    False -> "Another browser"
+  let whose = whose(signin, this)
+  let name = case whose {
+    ThisBrowser -> "This browser"
+    AnotherBrowser -> "Another browser"
   }
   html.li(
     [
       attribute.class("home-signin"),
-      attribute.class(case here {
-        True -> "this"
-        False -> "other"
+      attribute.class(case whose {
+        ThisBrowser -> "this"
+        AnotherBrowser -> "other"
       }),
     ],
     [
       html.span([attribute.class("home-signin-text")], [
         html.span([attribute.class("home-signin-name")], [html.text(name)]),
         html.span([attribute.class("home-signin-sub")], [
-          html.text(history(signin, now)),
+          html.text(history(signin, now, whose)),
         ]),
       ]),
       html.button(
@@ -209,31 +222,60 @@ fn row(
   )
 }
 
-// The words under a name: when it was signed in, when it last came back, when it
-// ends and, for a login a device link made, the fingerprint of the one it came
-// from, in the daemon's own digits. Each is a quiet phrase joined by a middle
-// dot.
+/// Whose login a row is: the browser the page is open in, or another.
+pub type Whose {
+  /// The login this page belongs to.
+  ThisBrowser
+
+  /// Any other of the principal's logins.
+  AnotherBrowser
+}
+
+/// Whose login `signin` is, given the fingerprint of the one the page belongs
+/// to, if it belongs to one.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // signins.history(row, now) == "signed in 2h ago · not used yet · ends in 30d"
+/// assert signins.whose(row, Some(row.fingerprint)) == signins.ThisBrowser
 /// ```
-pub fn history(signin: Signin, now: Int) -> String {
+pub fn whose(signin: Signin, this: Option(String)) -> Whose {
+  case this == Some(signin.fingerprint) {
+    True -> ThisBrowser
+    False -> AnotherBrowser
+  }
+}
+
+/// The words under a name: when it was signed in, how it was when it was a
+/// device link, when it last came back, and when it ends. Each is a quiet phrase
+/// joined by a middle dot. The browser in use leaves out the use clause, since
+/// "not used yet" is false of the browser the person is using, and every other
+/// row says when it last came back or that it has not.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // signins.history(row, now, signins.AnotherBrowser)
+/// //   == "signed in 2h ago · not used yet · ends in 30d"
+/// // signins.history(row, now, signins.ThisBrowser)
+/// //   == "signed in just now · ends in 30d"
+/// ```
+pub fn history(signin: Signin, now: Int, whose: Whose) -> String {
   let signed = "signed in " <> sessions.ago(now, signin.issued_at_ms)
-  let used = case signin.last_resumed_ms {
-    Some(at) -> ["last used " <> sessions.ago(now, at)]
-    None -> ["not used yet"]
+  let via = case signin.issued_by {
+    Some(_) -> ["device link"]
+    None -> []
+  }
+  let used = case whose, signin.last_resumed_ms {
+    ThisBrowser, _ -> []
+    AnotherBrowser, Some(at) -> ["last used " <> sessions.ago(now, at)]
+    AnotherBrowser, None -> ["not used yet"]
   }
   let ends = case signin.expires_at_ms {
     Some(at) -> ["ends in " <> signins.ends_in(now, at)]
     None -> []
   }
-  let from = case signin.issued_by {
-    Some(parent) -> ["from " <> parent]
-    None -> []
-  }
-  join([[signed], used, ends, from])
+  join([[signed], via, used, ends])
 }
 
 fn join(parts: List(List(String))) -> String {
@@ -264,6 +306,7 @@ fn controls(
     case device {
       Never -> element.none()
       Offered(press:, asking:, ..) -> device_button(press, asking)
+      Resumed -> element.none()
     },
   ])
 }
@@ -323,11 +366,34 @@ fn status(device: Device(message), notice: Option(String)) -> Element(message) {
         ),
       ])
     Offered(refused: Some(words), ..) -> line(words)
-    Offered(..) | Never ->
-      case notice {
-        Some(words) -> line(words)
-        None -> html.p([attribute.class("home-signin-status")], [])
-      }
+    Offered(..) | Never -> quiet_status(notice)
+    Resumed ->
+      html.div([attribute.class("home-resumed")], [
+        quiet_status(notice),
+        html.p([attribute.class("home-resumed-lead")], [
+          html.text(
+            "This page was opened from a bookmark. Run loom ui for a page that can manage sessions and people.",
+          ),
+        ]),
+        element.element(
+          "loom-copy",
+          [
+            attribute.class("home-copy"),
+            attribute.attribute("subject", "link"),
+            attribute.attribute("text", "loom ui"),
+          ],
+          [],
+        ),
+      ])
+  }
+}
+
+// The press's words, or the empty line that keeps the region's children where
+// they are.
+fn quiet_status(notice: Option(String)) -> Element(message) {
+  case notice {
+    Some(words) -> line(words)
+    None -> html.p([attribute.class("home-signin-status")], [])
   }
 }
 

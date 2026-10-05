@@ -299,10 +299,11 @@ pub fn settled_work_folds_under_one_closed_divider_test() {
   ])
 }
 
-// The records name who sent a prompt and not in what capacity, so the role
-// beside the name is the author's, from the attachments the page can see, and
-// never the reader's own. Alice sends from an operator page; an observer's
-// page, held by the same principal, must not call her an observer.
+// The records name who sent a prompt and not in what capacity, and only a
+// person who may operate sends one, so the role beside the name is always
+// `operator`: never the reader's own, and never a word that depends on which
+// attachments happen to be open. Alice sends from an operator page; an
+// observer's page, held by the same principal, must not call her an observer.
 pub fn a_prompt_carries_its_authors_role_never_the_readers_test() {
   let alice = message.Origin("alice", "Alice")
   let operating = snapshot_view.Peer("c1", alice, snapshot.Operator)
@@ -335,7 +336,9 @@ pub fn a_prompt_carries_its_authors_role_never_the_readers_test() {
   )
   assert !string.contains(observed, "observer</p>")
 
-  // The page cannot know a role no attachment holds, and draws the name.
+  // The same message reads the same when no attachment of hers is open, since
+  // the word does not come from the attachments: whoever sends a prompt may
+  // operate, so the line does not change as people attach and leave.
   let unknown =
     html(
       page([
@@ -343,12 +346,17 @@ pub fn a_prompt_carries_its_authors_role_never_the_readers_test() {
         |> lane_fixture.viewed_as(snapshot.Observer),
       ]),
     )
-  assert string.contains(unknown, "<span class=\"who-name\">Alice</span></p>")
+  assert string.contains(
+    unknown,
+    "<span class=\"who-name\">Alice</span> · operator</p>",
+  )
   assert !string.contains(unknown, "· observer")
 
   let theirs = html(settled())
-  assert string.contains(theirs, "<span class=\"who-name\">Alice</span></p>")
-  assert !string.contains(theirs, "operator</p>")
+  assert string.contains(
+    theirs,
+    "<span class=\"who-name\">Alice</span> · operator</p>",
+  )
 }
 
 pub fn a_running_turn_is_drawn_open_test() {

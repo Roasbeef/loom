@@ -245,7 +245,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:3468`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:3508`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -698,9 +698,13 @@ sessions). Only an operator page does it.
 
 ### The session switcher
 
-Command or Control and K opens a popover over the page that lists the sessions
-the sidebar already offers, filtered by what is typed, and opens one on Enter or a
-click (protocol-change/051, the addendum on the session switcher). It is
+Command or Control and K, or the `Search ⌘K` chip in the bar, opens a popover
+over the page that lists the pages the bar offers (`Home` on a session page,
+`Admin` on the owner's home) and the sessions the sidebar already offers, filtered
+by what is typed, and opens one on Enter or a click (protocol-change/051, the
+addendum on the session switcher). The chip is drawn by `<loom-shell>` on pages
+with a sidebar and carries `data-opens="switcher"`; the switcher's document
+listener hears a click whose composed path holds that marker. It is
 `<loom-switcher>` (`web_client/switcher`, `switcher_rule`), drawn by
 `view/switch.switcher` after `<loom-switch>` as the centre's last child on the
 operator's page and the home, so no admitted path moves. When it opens it reads the
@@ -709,8 +713,19 @@ subtitle as text, and on a choice presses that session's own button, so the daem
 mints the ticket and `<loom-switch>` navigates exactly as for a sidebar press: the
 switcher has no route and sends nothing. Every name is a text node of its own view
 and the filter only compares strings (`switcher_test` runs it under Node with a name
-that holds markup). The one listener is a document `keydown`, removed with the
-element; the popover floats, so it takes `--shadow-float`.
+that holds markup). The one listener serves document `keydown` and `click`,
+removed with the element; the popover floats, so it takes `--shadow-float`.
+
+### The tab title
+
+A session page's served document is titled `Loom`: the shell knows the session
+only by identity, and the identity names nothing. `view/heading` draws a hidden
+`<loom-title>` as the bar's last child (`web_client/title`, `title_rule`), which
+reads the bar's heading text and the frame's `needing` attribute and sets
+`document.title` to `name — Loom`, with `(N) ` in front while N strands wait. The
+name reaches the title only as text assigned on the client; the server's
+document escapes whatever it writes and writes no name. The home and admin shells
+are `Home — Loom` and `Admin — Loom`.
 
 ## Renaming and the subtitle (protocol-change/067)
 
@@ -749,6 +764,15 @@ from the session page). It is the last child of the Session pane, at
   without it. The socket admits a click at or beneath the path only for an
   owner (`owner_accepts`), `invite_for` reads the principal again, and
   `manager.administer` authenticates the credential as the owner a last time.
+- **A private session.** The invitation control starts as `invites.Unshareable`
+  on an owner's page whose `Start.standing.sharing` is `Private` (the daemon
+  reads the scope with `manager.session_member_page` in
+  `ui_socket.standing_of`, the read the admin page makes; no frame is added).
+  `view/share` then draws the admin page's sentence in the control's place and
+  no button, and `component.invite` ignores a press, so the refusal that tells
+  a browser user to run `loomd` cannot be reached. A scope that could not be
+  read leaves the buttons, which the daemon still refuses correctly. Making a
+  private session shareable is not offered from the page.
 - **The request.** Two buttons, observer and operator, send
   `operator_page.Inviting(role)`; a third, "Hide the token", sends
   `Dismissing`. `component.invite` moves the control from `Ready` to `Asking`,
@@ -829,9 +853,10 @@ each other, in one tab, each page a new UI session.
   to operate (next section). The component asks
   `Start.open`, in its own process, and the answer returns as `Linked`: a
   ticket becomes the `to` attribute of the hidden `<loom-switch>` (the centre's
-  last child), a refusal is the page's `home-notice` in `sessions.reason_words`.
-  The notice's place before the table is an empty node when there is none, so
-  the table keeps its path.
+  last child), a refusal is a `home_table.Note` (`Refused`) beside the row, in
+  `sessions.reason_words`. The empty node at the centre's first child remains
+  as the path pin, so the table stays at `home.table_path`. Rows are keyed by
+  session identity, so a handler's path names its session and not a position.
 - **The socket admits exactly that.** `ui_socket.home_accepts` takes a `click`,
   alone or batched, at a path beneath `home.table_path` or `home.sidebar_path`
   and nothing else, where it admitted no frame before. A frame can choose among
@@ -1017,6 +1042,16 @@ whole minutes rounded up and then seconds) and anchors again on every new figure
 It is drawn after the first read, which is when the component has a clock
 reading to count from.
 
+Three details of round 5 (B20). A claim's box opens with an empty `<loom-reveal>`,
+which scrolls the box into view once when it is inserted, and each secret shares a
+row with its copy button. The invitation form is keyed by how many invitations the
+page has made, so an invitation opens a fresh form with its name empty, and the
+box no longer states a role, since the member's row does. The refusal of a spent
+allowance draws the time a place frees in a `<loom-time at=ms>`, which the browser
+words in its own zone with the UTC time in the element's `title`. Each session's
+row says its people and scope after its path, from `Snapshot.summaries`, one
+`session_member_page` call for each listed session.
+
 ### Stopping, archiving and deleting from the home
 
 The home offers the owner the three session operations the daemon already has
@@ -1028,16 +1063,22 @@ beneath `home.table_path`, which every home's socket admits for a row. What make
 a button exist is `Start.manage`, which `ui_socket.home_manage_capability` hands
 to the owner's operating home that a `loom ui` exchange opened (`fresh_home`, as
 for the Admin button), so a member's home, a read-only link and a home a bookmark
-resumed draw nothing and ignore the messages. Stop and Archive ask at once. Delete
-takes a second press in the row: the row's words become `Delete this session? This
-cannot be undone.` with a Delete and a Cancel (`home.Confirming`), and only the
-second press asks.
+resumed draw nothing and ignore the messages. Archive asks at once, and so does Stop on an
+idle row. Delete takes a second press in the row: the row's words become `Delete
+this session? This cannot be undone.` with a Delete and a Cancel
+(`home.Confirming`), and only the second press asks. Stop takes the same step, as
+`Stop this session mid-turn?` in a neutral tint, on a row the page's own activity
+read has as working or needing the person; a confirmation acts only for the row
+and the action that are confirming, so a forged one does nothing.
 
 A press is a message that names the session the server drew into the row. The
 component starts the daemon's task (`ui_socket.manage_task`, a weft run) and
 returns, and the answer is `ActionAnswered`: the page says what happened in fixed
-words (`actions.done_words`, `actions.reason_words`) and reads its list again, so a
-stopped session shows as saved and an archived or deleted one is gone. While one
+words (`actions.done_words`, `actions.reason_words`), as a `home_table.Note` that
+sits in the row, or in the workspace's heading naming the session once the row is
+gone, and never moves the list (a completed one fades, a refusal stays), and reads
+its list again, so a stopped session shows as saved and an archived or deleted one
+is gone. While one
 request is out every other press asks nothing. `ui_socket.manage_for` decides
 each press from the attachment, again at the click: the home is open and fresh,
 minted to operate, its credential authenticates as the owner, the target is a
@@ -1384,14 +1425,15 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/view/controls.gleam` | The operator's session controls: the goal row with its buttons and the Fork form (`session`, in the Session pane), and the dock's one goal line while a goal runs or is held (`dock`). It takes the messages its buttons send and the form's submit handler as values. |
 | `packages/web_view/src/web_view/view/expansion.gleam` | The budget an expanded row is cut to (300 lines, 8,000 characters) and the line that says a row was cut. |
 | `packages/web_view/src/web_view/view/lane.gleam` | The transcript lane: the line above its oldest row (`Top`, the "Load older" button), the keyed pieces as timeline rows with a dot in the strand's hue, the tags and dots that carry a marker for a listed strand (`Marks`), folded work, the cards, no row for the advisor's commentary (the panel's section is its record), and each transcript line and card body in its own leaf memo. |
-| `packages/web_view/src/web_view/markdown_view.gleam` | The elements for an answer's Markdown, drawn from `session_view/markdown`'s tree: fixed tags, classes from closed types, every string a text node. |
+| `packages/web_view/src/web_view/markdown_view.gleam` | The elements for an answer's Markdown, drawn from `session_view/markdown`'s tree: fixed tags, classes from closed types, every string a text node; `line` is the one-row preview (bold and code kept, cut on the parsed spans) a finished sub-agent row and a strand's latest answer use. |
 | `packages/web_view/src/web_view/operator_page.gleam` | The operator's application: `Submitted`, `Decided`, `Controlled` and `Replying`, the uncontrolled composer and its total form decoder, the control forms' decoder, the approval cards. |
 | `packages/web_view/src/web_view/page.gleam` | The shell, the exchange page, the two scripts, the stylesheet, the keyed paths and the content security policy. |
 | `packages/client/src/client/daemon/server.gleam` | `/ui` routing and its check order, `ui.link`, and the `hello` `ui` field. |
 | `packages/client/src/client/daemon/ui_http.gleam` | Pure request checks and response headers: route, host, `Sec-Fetch-Site`, origin, cookies. |
 | `packages/web_view/src/web_view/home.gleam`, `view/home_bar.gleam`, `view/home_table.gleam` | The home page's component, top bar and per-workspace lists, whose running rows open a session and, on an operator-ceiling page, whose saved rows resume one (protocol-change/065). The bar draws the name as the account panel's button and a `read-only link` pill for an observer-ceiling page, and a member's rows say their role (`sessions.Entry.role`, filled from `manager.authorized_roles`). |
 | `packages/web_view/src/web_view/actions.gleam` | The home's stop, archive and delete: `Action`, `Answer`, `Reason` with their fixed words, and the row's `Stage` (`Calm`, `Confirming`, `Working`). |
-| `packages/web_client/src/web_client/switcher.gleam`, `switcher_rule.gleam` | `<loom-switcher>`, the keyboard session switcher, and the rule it decides by: the shortcut, the filter and its order, the highlight. |
+| `packages/web_client/src/web_client/switcher.gleam`, `switcher_rule.gleam` | `<loom-switcher>`, the keyboard and chip switcher, and the rule it decides by: the shortcut, the chip's marker, the filter and its order, the highlight. |
+| `packages/web_client/src/web_client/title.gleam`, `title_rule.gleam` | `<loom-title>`, which sets the tab's title from the bar's name and the waiting count, and the rule that words it. |
 | `packages/web_view/src/web_view/view/resume.gleam` | The one rule for a saved row on the sidebar and the home's table: text, a resume button, or "opening" while a resume is out. |
 | `packages/client/src/client/daemon/ui_sessions.gleam` | The ticket and UI-session actor: mint, single-use redeem, lookup, key and nonce comparison, sweep, and the page-minted invitations' allowance (three an hour per credential). |
 | `packages/client/src/client/daemon/ui_socket.gleam` | The page's WebSocket: permit custody, the component chosen by role (observer, member operator, owner), frame filtering by role, the session and home tickets (`Standing`, `ticket_for`, `home_ticket_for`) and the invitation the daemon makes for a page, the home's socket and its row clicks, shutdown. |

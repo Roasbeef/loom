@@ -178,6 +178,7 @@ import session_view/transcript_line.{
 import session_view/transcript_lines
 import session_view/turns
 import session_view/worktree_view
+import web_view/creations
 import web_view/ending.{type Ending}
 import web_view/image as web_image
 import web_view/invites
@@ -375,10 +376,43 @@ pub type Start(socket) {
     /// another session, epoch or incarnation fails the lane rather than
     /// being drawn.
     expected: snapshot.Expected,
+    /// What the daemon knows about the page's principal and session that the
+    /// capture does not carry.
+    standing: Standing,
     /// The host's transport.
     transport: Transport(socket),
   )
 }
+
+/// What the host knows when it starts a page, beyond what the lane's capture
+/// says: whether the page's principal is the daemon's owner, and whether the
+/// session may be shared. Neither is session text, and the page draws only
+/// fixed words from them.
+pub type Standing {
+  Standing(
+    /// Who the page's principal is to the daemon. An observer-ceiling page
+    /// opened by the owner is still the owner's, and its footer says so.
+    reader: Reader,
+    /// Whether the session was created to be shared, read from the catalogue
+    /// for an owner's page and `None` where the page draws no invitation
+    /// control or the host could not read it. A session known to be private
+    /// draws no invitation buttons (`invites.Unshareable`).
+    sharing: Option(creations.Sharing),
+  )
+}
+
+/// Who the page's principal is to the daemon.
+pub type Reader {
+  /// The daemon's owner.
+  DaemonOwner
+
+  /// Anyone else: a member the owner invited.
+  Participant
+}
+
+/// A standing that says nothing: a member, and a session whose sharing was not
+/// read. Fixtures and hosts with no catalogue start from it.
+pub const unplaced = Standing(reader: Participant, sharing: None)
 
 /// What the daemon's catalogue says about a session, for the page's
 /// heading. Neither field comes from the session's transcript: the name is
@@ -633,6 +667,7 @@ type View(socket) {
     label: Option(Label),
     workspace_digest: String,
     expected: snapshot.Expected,
+    reader: Reader,
     transport: Transport(socket),
     /// How many rows the page holds. This is the page's own view state.
     paging: Paging,
@@ -861,6 +896,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       label: start.label,
       workspace_digest: start.workspace_digest,
       expected: start.expected,
+      reader: start.standing.reader,
       transport: start.transport,
       paging: Tail,
       earlier: Reached,
@@ -883,9 +919,10 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       listed_at: None,
       departure: None,
       resuming: None,
-      share: case start.transport.invite {
-        Some(_) -> invites.Ready
-        None -> invites.Withheld
+      share: case start.transport.invite, start.standing.sharing {
+        Some(_), Some(creations.Private) -> invites.Unshareable
+        Some(_), Some(creations.Shareable) | Some(_), None -> invites.Ready
+        None, _ -> invites.Withheld
       },
       renaming: case start.transport.rename {
         Some(_) -> renames.Ready
@@ -2533,6 +2570,7 @@ pub fn invite(
     Some(_), invites.Asking
     | Some(_), invites.Showing(..)
     | Some(_), invites.Withheld
+    | Some(_), invites.Unshareable
     | None, _
     -> #(model, effect.none())
   }
@@ -2562,6 +2600,7 @@ fn invited(model: Model(socket), answer: invites.Answer) -> Model(socket) {
     invites.Asking, invites.Declined(reason:) ->
       Model(..model, view: View(..model.view, share: invites.Refused(reason)))
     invites.Withheld, _
+    | invites.Unshareable, _
     | invites.Ready, _
     | invites.Showing(..), _
     | invites.Refused(..), _
@@ -2582,7 +2621,8 @@ pub fn dismiss_invitation(model: Model(socket)) -> Model(socket) {
   case model.view.share {
     invites.Showing(..) | invites.Refused(..) ->
       Model(..model, view: View(..model.view, share: invites.Ready))
-    invites.Withheld | invites.Ready | invites.Asking -> model
+    invites.Withheld | invites.Unshareable | invites.Ready | invites.Asking ->
+      model
   }
 }
 
@@ -3428,7 +3468,16 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
 fn observer_words(model: Model(socket)) -> String {
   case notice(model) {
     Warned(text) | Said(text) -> text
-    Quiet -> "You can follow this session. Ask the owner for operator access."
+
+    // The owner who opened a read-only link has no one to ask: the same
+    // command mints a page that can send.
+    Quiet ->
+      case model.view.reader {
+        DaemonOwner ->
+          "This link is read-only. Run loom ui for a page that can send."
+        Participant ->
+          "You can follow this session. Ask the owner for operator access."
+      }
   }
 }
 
