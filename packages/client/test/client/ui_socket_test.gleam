@@ -47,6 +47,7 @@ fn start() -> component.Start(ui_relay.Relay) {
       invite: None,
       home: None,
       rename: None,
+      shareable: None,
     ),
   )
 }
@@ -676,6 +677,15 @@ pub fn only_an_owning_page_is_handed_the_capability_test() {
   assert ui_socket.invite_capability(ui_socket.Observing, ask) == None
   assert ui_socket.invite_capability(ui_socket.Operating, ask) == None
   let assert Some(_) = ui_socket.invite_capability(ui_socket.Owning, ask)
+}
+
+// Making a session shareable has the invitation control's rule: an owner's page
+// is handed it, and a member's page and a read-only page are not.
+pub fn only_an_owning_page_is_handed_make_shareable_test() {
+  let ask = fn(_deliver) { Nil }
+  assert ui_socket.shareable_capability(ui_socket.Observing, ask) == None
+  assert ui_socket.shareable_capability(ui_socket.Operating, ask) == None
+  let assert Some(_) = ui_socket.shareable_capability(ui_socket.Owning, ask)
 }
 
 // A page whose transport hands it the capability to go home that

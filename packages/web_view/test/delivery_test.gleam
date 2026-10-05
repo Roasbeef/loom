@@ -76,6 +76,7 @@ fn started() -> Page {
       invite: None,
       home: None,
       rename: None,
+      shareable: None,
     )
   let start =
     component.Start(

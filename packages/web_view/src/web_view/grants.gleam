@@ -202,7 +202,7 @@ pub type Reading {
   Closed(ending: Ending)
 }
 
-/// The seven changes the page may ask for. Every identity in one is the
+/// The eight changes the page may ask for. Every identity in one is the
 /// catalogue's, drawn into the tree by the server, and the text of a name is
 /// the browser's and nothing else is: a frame cannot name a session or a
 /// principal the page did not draw. The daemon checks each again, from the
@@ -240,6 +240,12 @@ pub type Action {
   /// typed, unjudged: the daemon trims it and applies the rule a claim's chosen
   /// name is held to. It grants nothing and costs no allowance.
   Rename(principal: String, name: String)
+
+  /// Make a private session shareable: stop it, move it to its own history and
+  /// resume it, as one task in the daemon (protocol-change/065, the addendum on
+  /// making a session shareable). The session is the one the server drew into the
+  /// tree. It gives no one access, so it costs no allowance.
+  MakeShareable(session: String)
 }
 
 /// What a claim was made for, which the page words.
@@ -311,6 +317,21 @@ pub type Reason {
   /// drew a row that was removed since.
   NotFound
 
+  /// The session did not finish stopping in time, so nothing was moved. It is
+  /// stopping or stopped and still private, and a second press carries on.
+  NotStopped
+
+  /// The session could not be moved to its own history. It is private, and
+  /// running again if it was running.
+  NotMoved
+
+  /// The session could not be moved and could not be resumed either. It is
+  /// stopped and private.
+  Stranded
+
+  /// The session is shareable now and did not resume. It is stopped.
+  NotResumed
+
   /// The suggested name, or the name a rename was asked for, is empty after
   /// trimming, longer than 256 bytes, or holds a control, zero-width or
   /// direction-changing character.
@@ -337,6 +358,14 @@ pub fn reason_words(reason: Reason) -> String {
       throttle_lead(used) <> utc_clock(free_at_ms) <> throttle_tail
     NotIsolated -> invites.reason_words(invites.NotIsolated)
     NotFound -> "That session or person is no longer there. The page reloads."
+    NotStopped ->
+      "The session did not finish stopping, so nothing changed. It is still private. Try again in a moment."
+    NotMoved ->
+      "The session could not be made shareable and is still private. Try again."
+    Stranded ->
+      "The session could not be made shareable, and it is stopped. Resume it from the home page, then try again."
+    NotResumed ->
+      "The session is shareable now but did not start again. Resume it from the home page."
     InvalidName ->
       "Use a name of up to 256 bytes with no control or invisible characters."
     Unavailable -> "The daemon could not make that change. Try again."
@@ -451,6 +480,7 @@ pub fn changed_words(action: Action) -> String {
     RevokeCredentials(..) -> "Credentials revoked."
     RevokeSignin(..) -> "Sign-in ended."
     Rename(..) -> "Renamed."
+    MakeShareable(..) -> "This session is shareable now."
     Invite(..) | Rotate(..) -> "Done."
   }
 }

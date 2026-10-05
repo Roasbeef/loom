@@ -171,6 +171,10 @@ pub type AdminAttachment(instance) {
     permit: root.Permit,
     /// The registry the page's reads and changes go to.
     registry: manager.Manager(instance),
+    /// The daemon's own state directory, which an isolated session's fresh
+    /// stores are minted under (`manager.isolate`). It is the daemon's value and
+    /// never a page's.
+    state_root: String,
     /// The browser login the page was opened from, when it was, which the page
     /// marks in the owner's own sign-ins. A page a `loom ui` exchange opened
     /// has none.
@@ -275,6 +279,10 @@ pub type Attachment(instance) {
     /// cost a round trip per frame, and a timeout on that round trip once
     /// dropped the incarnation stop a poisoned reader depends on.
     registry: manager.Manager(instance),
+    /// The daemon's own state directory, which making the session shareable
+    /// isolates it under (`client/daemon/shareable`). It is the daemon's value
+    /// and never a page's.
+    state_root: String,
     /// The session's catalogue registration, read while the route resolved
     /// the session. The web view's heading takes its name and workspace
     /// from here, so a page needs no second read of the catalogue.
@@ -608,6 +616,7 @@ fn admin_upgrade(
             digest: grant.credential,
             permit:,
             registry: state.registry,
+            state_root: state.state_root,
             login:,
           ),
           open,
@@ -1542,6 +1551,7 @@ fn resident_upgrade(
                 digest:,
                 permit:,
                 registry: state.registry,
+                state_root: state.state_root,
                 registration:,
               ),
             )

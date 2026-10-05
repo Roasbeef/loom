@@ -126,6 +126,21 @@ pub type Msg(socket) {
   /// the daemon's, read again when the request runs (protocol-change/067). The
   /// control is drawn only on an owner's page.
   Renaming(name: String)
+
+  /// The "Make shareable" button of a private session: the owner asks to be
+  /// asked. The page replaces the button with a question and changes nothing
+  /// else, so nothing the browser can send before the confirm touches the
+  /// session. It is drawn only on an owner's page.
+  AskingShareable
+
+  /// The question's Cancel: the button comes back.
+  CancellingShareable
+
+  /// The question's confirm: the owner asks the daemon to stop the session, move
+  /// it to its own history and resume it. The page sends it to the daemon only
+  /// from the question (`component.make_shareable`), and the daemon decides again
+  /// whether the page's principal is the owner.
+  MakingShareable
 }
 
 /// The Lustre application for one session's operator page.
@@ -173,6 +188,9 @@ pub fn update(
     Resuming(session:) -> component.resume(model, session)
     Inviting(role:) -> component.invite(model, role)
     Dismissing -> #(component.dismiss_invitation(model), effect.none())
+    AskingShareable -> #(component.arm_shareable(model), effect.none())
+    CancellingShareable -> #(component.disarm_shareable(model), effect.none())
+    MakingShareable -> component.make_shareable(model)
     Renaming(name:) -> component.renaming(model, name)
   }
 
@@ -266,10 +284,14 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
       Some(component.viewers(model)),
       share.view(
         component.share(model),
+        component.moving(model),
         share.Presses(
           observer: Inviting(invites.Observer),
           operator: Inviting(invites.Operator),
           done: Dismissing,
+          make: AskingShareable,
+          confirm: MakingShareable,
+          cancel: CancellingShareable,
         ),
       ),
       controls.session(bar(model)),

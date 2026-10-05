@@ -161,6 +161,7 @@ import broker/token
 import client/daemon/manager
 import client/daemon/root
 import client/daemon/server
+import client/daemon/shareable
 import client/daemon/ui_http
 import client/daemon/ui_login
 import client/daemon/ui_relay
@@ -498,6 +499,13 @@ pub fn upgrade(
         deliver,
       )
     })
+
+  // The capability to make the session shareable is an owner's as well, and
+  // its task outlives the page it was asked from (`shareable_task`).
+  let shareable =
+    shareable_capability(role, fn(deliver) {
+      shareable_task(attachment, open, deliver)
+    })
   websocket(request, limit, settled, fn(signals) {
     admit(
       daemon,
@@ -508,6 +516,7 @@ pub fn upgrade(
       register,
       invite,
       rename,
+      shareable,
       seen,
       expected,
       signals,
@@ -1224,6 +1233,7 @@ fn admit(
   register: fn(ui_sessions.Images) -> Nil,
   invite: Option(fn(invites.Role) -> invites.Answer),
   rename: Option(fn(String, fn(renames.Answer) -> Nil) -> Nil),
+  shareable: Option(fn(fn(grants.Answer) -> Nil) -> Nil),
   seen: server.PageGrant,
   expected: snapshot.Expected,
   signals: process.Subject(Signal),
@@ -1258,6 +1268,7 @@ fn admit(
         home_ticket_for(standing, tickets, open)
       }),
       rename:,
+      shareable:,
     )
 
   // The start takes its standing as an argument because reading it can wait on
@@ -2617,6 +2628,104 @@ fn reason_of(refusal: Refusal) -> invites.Reason {
   }
 }
 
+/// The capability to make the page's session shareable that a page of `role` is
+/// handed: `ask` for an owner's page and none for any other, which is the whole
+/// of who may draw and use the control (protocol-change/065, the addendum on
+/// making a session shareable). It is the invitation control's rule, because the
+/// two controls sit in one region and the second is the first's way out of a
+/// private session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.shareable_capability(ui_socket.Operating, ask) == None
+/// ```
+@internal
+pub fn shareable_capability(
+  role: Role,
+  ask: fn(fn(grants.Answer) -> Nil) -> Nil,
+) -> Option(fn(fn(grants.Answer) -> Nil) -> Nil) {
+  case role {
+    Owning -> Some(ask)
+    Observing | Operating -> None
+  }
+}
+
+/// Stops, isolates and resumes the asking page's own session for its owner, or
+/// gives the reason it did not (protocol-change/065, the addendum on making a
+/// session shareable). It blocks the calling process for the stop and the
+/// resume, so a page never calls it directly: `shareable_task` runs it.
+///
+/// Each step is the daemon's and is made afresh, with the digest of the
+/// credential the page was admitted under, and nothing is taken from the page:
+/// the session is the attachment's.
+///
+/// 0. The asking page must still be open and must hold the owner's authority in
+///    its session: an observer-ceiling page, a member's page and a page that
+///    has ended are `NotOwner`, so a page learns nothing else about its
+///    standing.
+/// 1. `shareable.make` authenticates the credential as the daemon's owner
+///    before it stops anything, stops the session, isolates it under the
+///    registry's own owner-and-epoch check, and resumes it. Its module says in
+///    what state each refusal leaves the session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.shareable_for(attachment, open)
+/// ```
+@internal
+pub fn shareable_for(
+  attachment: server.Attachment(instance),
+  open: fn() -> Result(Int, Nil),
+) -> grants.Answer {
+  let outcome = {
+    use _ <- result.try(open() |> result.replace_error(grants.NotOwner))
+    use _ <- result.try(case role_of(attachment) {
+      Owning -> Ok(Nil)
+      Observing | Operating -> Error(grants.NotOwner)
+    })
+    shareable.make(
+      attachment.registry,
+      attachment.digest,
+      attachment.epoch,
+      attachment.state_root,
+      attachment.session_id,
+    )
+    |> result.replace(grants.Changed)
+    |> result.map_error(shareable_reason)
+  }
+  case outcome {
+    Ok(answer) -> answer
+    Error(reason) -> grants.Declined(reason)
+  }
+}
+
+/// Starts `shareable_for` in a run no page owns and returns at once, so the
+/// page's runtime is free while the session stops and starts; `deliver` is
+/// called, from that run, with the answer.
+///
+/// The page is the one thing the task must outlive. Stopping the session ends
+/// the page's relay and then its socket, as any stop does, and the page draws the
+/// session-stopped notice it always has; a run linked to the page would end with
+/// it, between the stop and the isolation. `deliver` then goes to a runtime that
+/// is gone, which is harmless, and the owner reloads the page, whose own link
+/// still works once the session has resumed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.shareable_task(attachment, open, deliver)
+/// ```
+@internal
+pub fn shareable_task(
+  attachment: server.Attachment(instance),
+  open: fn() -> Result(Int, Nil),
+  deliver: fn(grants.Answer) -> Nil,
+) -> Nil {
+  detached(fn() { shareable_for(attachment, open) }, deliver)
+}
+
 /// The capability to rename the page's session that a page of `role` is
 /// handed: `ask` for an owner's page and none for any other, which is the whole
 /// of who may draw and use the rename control (protocol-change/067).
@@ -3494,7 +3603,16 @@ fn admit_admin(
         })
       },
       act: fn(action, deliver) {
-        admin_task(standing, tickets, open, epoch, address, action, deliver)
+        admin_task(
+          standing,
+          tickets,
+          open,
+          epoch,
+          attachment.state_root,
+          address,
+          action,
+          deliver,
+        )
       },
       now: bootstrap.system_time_ms,
       login: option.map(attachment.login, fn(issuer) { issuer.fingerprint }),
@@ -3867,6 +3985,11 @@ pub fn admin_read_task(
 ///    an allowance back; an unknown outcome (the registry did not answer) keeps
 ///    it spent, since the change may have been made.
 ///
+/// Making a session shareable is none of these: it grants no one anything, so it
+/// costs no allowance, and it is not one registry turn but three
+/// (`client/daemon/shareable`), which is why it has a detached run of its own
+/// (`admin_task`).
+///
 /// An invitation's principal identity is the daemon's, `guest-` and eight
 /// hexadecimal digits, and its name is the suggested one when it passes the
 /// catalogue's display-name rule. A claim exists in this function's result and
@@ -3876,7 +3999,7 @@ pub fn admin_read_task(
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.admin_for(standing, tickets, open, epoch, Ok(address), grants.Rotate("alice"))
+/// // ui_socket.admin_for(standing, tickets, open, epoch, state_root, Ok(address), grants.Rotate("alice"))
 /// ```
 @internal
 pub fn admin_for(
@@ -3884,6 +4007,7 @@ pub fn admin_for(
   tickets: ui_sessions.Sessions,
   open: fn() -> Result(Int, Nil),
   epoch: String,
+  state_root: String,
   address: Result(String, Nil),
   action: grants.Action,
 ) -> grants.Answer {
@@ -3915,6 +4039,8 @@ pub fn admin_for(
         rotate_for_admin(standing, tickets, epoch, address, principal)
       grants.Rename(principal:, name:) ->
         rename_for_admin(standing, epoch, principal, name)
+      grants.MakeShareable(session:) ->
+        shareable_for_admin(standing, epoch, state_root, session)
     }
   }
   case outcome {
@@ -3932,6 +4058,39 @@ fn administering(
   owner_operating(standing, open)
   |> result.replace(Nil)
   |> result.replace_error(grants.NotOwner)
+}
+
+// A private session made shareable: stopped, isolated and resumed by
+// `shareable.make`, which authenticates the owner again before it stops anything
+// and whose isolation the registry authenticates a third time. The session is
+// the page's own pick, drawn from the catalogue, and must still be a canonical
+// identity. It costs no allowance, since it gives no one a seat.
+fn shareable_for_admin(
+  standing: Standing(instance),
+  epoch: String,
+  state_root: String,
+  session: String,
+) -> Result(grants.Answer, grants.Reason) {
+  use _ <- result.try(
+    ids.parse_session_id(session) |> result.replace_error(grants.NotFound),
+  )
+  shareable.make(standing.registry, standing.digest, epoch, state_root, session)
+  |> result.replace(grants.Changed)
+  |> result.map_error(shareable_reason)
+}
+
+// The fixed reason a page words for a refusal of the task. Each is the module's
+// own, and the page's words for it say what state the session is left in.
+fn shareable_reason(refusal: shareable.Refusal) -> grants.Reason {
+  case refusal {
+    shareable.NotOwner -> grants.NotOwner
+    shareable.NotFound -> grants.NotFound
+    shareable.Unavailable -> grants.Unavailable
+    shareable.NotStopped -> grants.NotStopped
+    shareable.NotMoved -> grants.NotMoved
+    shareable.Stranded -> grants.Stranded
+    shareable.NotResumed -> grants.NotResumed
+  }
 }
 
 // One sign-in of the named principal ended, which only reduces access and costs
@@ -4181,10 +4340,14 @@ fn refusal_reason(refusal: Refusal) -> grants.Reason {
 /// task always answers within seconds and needs no deadline of its own. Its last
 /// act is `deliver`, so a page that stays open is always answered.
 ///
+/// Making a session shareable is the one change that is not linked to the page
+/// (`detached`), and it answers within about a minute, not seconds: it waits for
+/// a drain and for a resume.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.admin_task(standing, tickets, open, epoch, Ok(address), grants.Rotate("alice"), deliver)
+/// // ui_socket.admin_task(standing, tickets, open, epoch, state_root, Ok(address), grants.Rotate("alice"), deliver)
 /// ```
 @internal
 pub fn admin_task(
@@ -4192,18 +4355,60 @@ pub fn admin_task(
   tickets: ui_sessions.Sessions,
   open: fn() -> Result(Int, Nil),
   epoch: String,
+  state_root: String,
   address: Result(String, Nil),
   action: grants.Action,
   deliver: fn(grants.Answer) -> Nil,
 ) -> Nil {
+  let answer = fn() {
+    admin_for(standing, tickets, open, epoch, state_root, address, action)
+  }
+  case action {
+    grants.MakeShareable(..) -> detached(answer, deliver)
+    grants.Invite(..)
+    | grants.SetRole(..)
+    | grants.RevokeMembership(..)
+    | grants.RevokeCredentials(..)
+    | grants.Rotate(..)
+    | grants.RevokeSignin(..)
+    | grants.Rename(..) -> {
+      let _ =
+        weft.new([
+          fn() {
+            deliver(answer())
+            Ok(Nil)
+          },
+        ])
+        |> weft.start_witnessed
+      Nil
+    }
+  }
+}
+
+// Runs `ask` in a weft run that no page owns, and delivers its answer. A
+// stopped session ends every page open on it, and a run linked to a page's
+// runtime ends with the page, so the stop that begins this task would cancel it
+// after the stop and before the isolation, leaving the session stopped and
+// private. The run is therefore started from a process of its own, which is
+// linked to nothing and ends with the run; every step it makes is bounded by
+// its own call timeouts, so it always ends. `deliver` goes to a runtime that may
+// be gone, which a send to a dead process ignores.
+fn detached(
+  ask: fn() -> grants.Answer,
+  deliver: fn(grants.Answer) -> Nil,
+) -> Nil {
   let _ =
-    weft.new([
-      fn() {
-        deliver(admin_for(standing, tickets, open, epoch, address, action))
-        Ok(Nil)
-      },
-    ])
-    |> weft.start_witnessed
+    process.spawn_unlinked(fn() {
+      let _ =
+        weft.new([
+          fn() {
+            deliver(ask())
+            Ok(Nil)
+          },
+        ])
+        |> weft.start
+      Nil
+    })
   Nil
 }
 

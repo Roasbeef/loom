@@ -106,7 +106,11 @@ type Upgrade {
   /// capability is answered 294 for a member operator's and 295 for an
   /// observer's. `x-invite-force` asks the daemon anyway, as a page whose
   /// capability was wrongly handed out would, and `x-switch-ended` asks as
-  /// a page that has ended.
+  /// a page that has ended. A request that names `x-shareable` asks as the
+  /// session page's "Make shareable" confirm does instead
+  /// (`ui_socket.shareable_for`): 296 when the session was made shareable, or
+  /// 297 and the reason, or 294 and 295 for a page with no capability, and
+  /// `x-invite-force` asks the daemon anyway.
   Inviting
 
   /// The upgrades do what `Inviting` does for a session's page, and also what the
@@ -780,6 +784,7 @@ fn administered(
         tickets,
         open,
         attachment.epoch,
+        attachment.state_root,
         ui_socket.claim_address(request),
         action,
         fn(answer) { process.send(answers, answer) },
@@ -909,6 +914,50 @@ fn summary(snapshot: grants.Snapshot) -> String {
 // The page's upgrade as an invitation asks for one: what `ui_socket.upgrade`
 // does with the role it admitted, without the Lustre component in the way.
 fn inviting(
+  tickets,
+  request,
+  attachment: server.Attachment(String),
+  open: fn() -> Result(Int, Nil),
+) {
+  case req.get_header(request, "x-shareable") {
+    Ok(_) -> shareabling(request, attachment, open)
+    Error(Nil) -> inviting_in(tickets, request, attachment, open)
+  }
+}
+
+// The page's upgrade as the "Make shareable" confirm asks for it: the daemon's
+// own function, behind the capability the socket would hand an owner's page and
+// nobody else's, or called anyway when `x-invite-force` names a page whose
+// capability was wrongly handed out.
+fn shareabling(
+  request,
+  attachment: server.Attachment(String),
+  open: fn() -> Result(Int, Nil),
+) {
+  let open = case req.get_header(request, "x-switch-ended") {
+    Ok(_) -> fn() { Error(Nil) }
+    Error(Nil) -> open
+  }
+  let ask = fn() {
+    case ui_socket.shareable_for(attachment, open) {
+      grants.Changed -> stub(296, "changed")
+      grants.Declined(reason) -> stub(297, string.inspect(reason))
+      grants.Claimed(..) -> stub(297, "a claim")
+    }
+  }
+  let capability =
+    ui_socket.shareable_capability(ui_socket.role_of(attachment), fn(_) { Nil })
+  case capability, req.get_header(request, "x-invite-force") {
+    Some(_), _ | None, Ok(_) -> ask()
+    None, Error(Nil) ->
+      case ui_socket.role_of(attachment) {
+        ui_socket.Operating | ui_socket.Owning -> stub(294, "no capability")
+        ui_socket.Observing -> stub(295, "no capability")
+      }
+  }
+}
+
+fn inviting_in(
   tickets,
   request,
   attachment: server.Attachment(String),
@@ -6432,6 +6481,7 @@ pub fn the_daemon_refuses_a_standing_that_is_not_the_owners_operating_one_test()
         tickets,
         page_open,
         ready.epoch,
+        ready.state_root,
         address,
         action,
       )
@@ -6446,6 +6496,7 @@ pub fn the_daemon_refuses_a_standing_that_is_not_the_owners_operating_one_test()
       grants.RevokeCredentials(held),
       grants.Rotate(held),
       grants.Rename(held, "Renamed"),
+      grants.MakeShareable(session),
     ]
     let refused = grants.Declined(grants.NotOwner)
     list.each(every_action, fn(action) {
@@ -6458,6 +6509,7 @@ pub fn the_daemon_refuses_a_standing_that_is_not_the_owners_operating_one_test()
           tickets,
           fn() { Error(Nil) },
           ready.epoch,
+          ready.state_root,
           address,
           action,
         )
@@ -6504,6 +6556,7 @@ pub fn a_stale_epoch_changes_nothing_test() {
           tickets,
           page_open,
           "an-earlier-daemon",
+          ready.state_root,
           Ok("ws://127.0.0.1:1/v2/control"),
           invite,
         )
@@ -6526,6 +6579,7 @@ pub fn the_admin_change_runs_off_the_callers_process_test() {
       tickets,
       page_open,
       ready.epoch,
+      ready.state_root,
       Ok("ws://127.0.0.1:1/v2/control"),
       grants.Invite(session, invites.Observer, ""),
       fn(answer) { process.send(answers, #(answer, process.self())) },
@@ -7646,6 +7700,7 @@ pub fn the_admin_page_renames_people_without_spending_the_allowance_test() {
         tickets,
         page_open,
         ready.epoch,
+        ready.state_root,
         Ok("ws://127.0.0.1:1/v2/control"),
         action,
       )
@@ -7671,5 +7726,111 @@ pub fn the_admin_page_renames_people_without_spending_the_allowance_test() {
     assert ask(owner, grants.Rename("nobody-here", "Ghost"))
       == grants.Declined(grants.NotFound)
     assert ui_socket.name_read(member_standing, page_open) == Some("Name 5")
+  })
+}
+
+// The page's socket as the "Make shareable" confirm asks for it.
+fn shareable_with(
+  port: Int,
+  entered: Entered,
+  more: List(#(String, String)),
+) -> Answer {
+  get(port, entered.page <> "/ws?csrf-token=" <> entered.nonce, [
+    host(port),
+    #("cookie", "loom_ui=" <> entered.cookie),
+    #("origin", "http://127.0.0.1:" <> int.to_string(port)),
+    #("x-shareable", "1"),
+    ..more
+  ])
+}
+
+// The scope the catalogue holds for a session.
+fn scope_in(state_root: String, session: String) -> List(String) {
+  catalogue_rows(
+    state_root,
+    "SELECT d.scope FROM catalogue_domains d JOIN catalogue_domain_sessions s ON s.domain_id = d.domain_id WHERE s.session_id = ?",
+    [sqlight.text(session)],
+  )
+}
+
+// Whether the registry holds a process for the session.
+fn running_now(ready: root.Ready(String), session: String) -> Bool {
+  result.is_ok(manager.resolve(ready.registry, session))
+}
+
+// Only an owner's operator page is handed the capability: an owner who asked for
+// an observer's page, a member operator and a member observer get none.
+pub fn only_an_owners_operator_page_is_offered_make_shareable_test() {
+  fixture_with(Inviting, fn(ready, port, credential) {
+    let session = create_session(ready, "shareable-offer", 1501)
+    let operator = member(ready, "shareable-op", session, access.Operator)
+    let watcher = member(ready, "shareable-watch", session, access.Observer)
+
+    let owner_watching = enter(port, link(port, credential, session))
+    assert shareable_with(port, owner_watching, []).status == 295
+    let operating = enter(port, operate(port, operator, session))
+    assert shareable_with(port, operating, []).status == 294
+    let watching = enter(port, operate(port, watcher, session))
+    assert shareable_with(port, watching, []).status == 295
+
+    // None of them touched the session.
+    assert scope_in(ready.state_root, session) == ["workspace_private"]
+    assert running_now(ready, session)
+  })
+}
+
+// The daemon refuses again if the capability reached a page it was not meant
+// for, by the principal and the page's own standing and never by the page: a
+// member operator, an owner's read-only page and a page that has ended each get
+// `NotOwner`, and the session is neither stopped nor changed.
+pub fn the_daemon_refuses_a_forced_make_shareable_test() {
+  fixture_with(Inviting, fn(ready, port, credential) {
+    let session = create_session(ready, "shareable-forced", 1502)
+    let operator =
+      member(ready, "shareable-forced-op", session, access.Operator)
+    let force = [#("x-invite-force", "1")]
+
+    let operating = enter(port, operate(port, operator, session))
+    let refused = shareable_with(port, operating, force)
+    assert refused.status == 297
+    assert refused.body == "NotOwner"
+
+    let owner_watching = enter(port, link(port, credential, session))
+    assert shareable_with(port, owner_watching, force).body == "NotOwner"
+
+    let owning = enter(port, operate(port, credential, session))
+    let ended = [#("x-switch-ended", "1"), ..force]
+    assert shareable_with(port, owning, ended).body == "NotOwner"
+
+    assert scope_in(ready.state_root, session) == ["workspace_private"]
+    assert running_now(ready, session)
+  })
+}
+
+// The whole task against the real registry: a running private session is stopped,
+// isolated and resumed, the owner's invitation into it was refused before and is
+// made after, and asking again changes nothing.
+pub fn an_owner_makes_a_running_private_session_shareable_test() {
+  fixture_with(Inviting, fn(ready, port, credential) {
+    let session = create_session(ready, "shareable-run", 1503)
+    let page = enter(port, operate(port, credential, session))
+    assert invite(port, page, "observer").body == "NotIsolated"
+    assert scope_in(ready.state_root, session) == ["workspace_private"]
+
+    let answer = shareable_with(port, page, [])
+    assert answer.status == 296
+    assert scope_in(ready.state_root, session) == ["session_only"]
+
+    // The session was started again, so the page's next request finds it.
+    let assert poll.Answered(Nil) =
+      poll.until(within: 5000, every: 10, attempt: fn() {
+        case running_now(ready, session) {
+          True -> poll.Done(Nil)
+          False -> poll.Retry
+        }
+      })
+    let again = enter(port, operate(port, credential, session))
+    assert invite(port, again, "observer").status == 292
+    assert shareable_with(port, again, []).status == 296
   })
 }

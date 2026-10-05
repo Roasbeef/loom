@@ -1073,7 +1073,17 @@
   .share-lead{margin:0 0 6px 0;color:var(--color-fg-quiet);overflow-wrap:anywhere;}
   .share-actions{display:flex;flex-wrap:wrap;gap:6px 8px;}
   button.share-operate{border-color:var(--color-signal);color:var(--color-signal-text);}
-  button.share-observe:disabled,button.share-operate:disabled{opacity:.45;cursor:default;}
+  button.share-observe:disabled,button.share-operate:disabled,button.share-make:disabled{opacity:.45;cursor:default;}
+  /* The make-shareable control (web_view/view/share, web_view/shareables): the
+     question replaces the button in place, so it is a tinted block and not a
+     card, and the confirm is the one tinted button. */
+  .share-ask{margin:0 0 6px 0;padding:8px 10px;border:1px solid color-mix(in srgb,var(--color-signal) 35%,var(--color-divider));border-radius:6px;background:color-mix(in srgb,var(--color-signal) 7%,transparent);}
+  .share-ask .share-lead{margin:0 0 8px 0;color:var(--color-fg);}
+  button.share-make{border-color:var(--color-signal);color:var(--color-signal-text);}
+  .admin-ask{display:flex;flex-direction:column;gap:8px;margin:0;padding:8px 10px;border:1px solid color-mix(in srgb,var(--color-signal) 35%,var(--color-divider));border-radius:6px;background:color-mix(in srgb,var(--color-signal) 7%,transparent);}
+  .admin-ask .admin-lead{color:var(--color-fg);}
+  button.admin-go{border-color:var(--color-signal);color:var(--color-signal-text);}
+  .admin-private{display:flex;flex-direction:column;gap:8px;align-items:flex-start;}
   .share-status{margin:6px 0 0 0;min-height:1.4em;color:var(--color-danger-text);}
   .rename-status{margin:6px 0 0 0;min-height:1.4em;color:var(--color-fg-quiet);font-size:12px;}
   .rename-status.refused{color:var(--color-danger-text);}

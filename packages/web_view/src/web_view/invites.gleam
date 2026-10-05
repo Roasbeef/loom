@@ -100,7 +100,9 @@ pub type Share {
   /// its notes and history with its workspace, so the daemon would refuse any
   /// invitation to it (`NotIsolated`). The control draws one sentence that says
   /// so and no button, so a refusal worded for a terminal cannot be reached.
-  /// Making a session shareable is not offered from the page.
+  /// The owner's page offers a button in the same place that makes the session
+  /// shareable (`web_view/shareables`), and the state becomes `Ready` when it
+  /// has.
   Unshareable
 
   /// The control is drawn and waits for the owner to press a button.

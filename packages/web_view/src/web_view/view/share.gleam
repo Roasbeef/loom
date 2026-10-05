@@ -8,6 +8,14 @@
 //// Nothing else about the invitation is chosen here or on the page: not the
 //// principal, the session, the lifetime or the name.
 ////
+//// A private session cannot be shared, so the control draws one sentence in the
+//// buttons' place and, for the owner, a `Make shareable` button beneath it
+//// (protocol-change/065, the addendum on making a session shareable). The
+//// button asks its question in place, with a confirm and a Cancel, and the
+//// question's state is `web_view/shareables.Move`, which only the page's server
+//// model holds. The region keeps its path, with one handler in it, or two while
+//// the question is open, and none while the task runs.
+////
 //// After the daemon has minted an invitation the control shows it once, in
 //// place of the buttons: the address an invitee without `loom` opens to claim
 //// in a browser, the claim token, and, second, the command an invitee with
@@ -41,7 +49,9 @@ import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
+import web_view/grants
 import web_view/invites.{type Invitation, type Share}
+import web_view/shareables.{type Move}
 
 /// The messages the control's buttons send.
 pub type Presses(message) {
@@ -52,22 +62,34 @@ pub type Presses(message) {
     operator: message,
     /// The button that hides an invitation once the owner has copied it.
     done: message,
+    /// The "Make shareable" button of a private session, which asks its
+    /// question.
+    make: message,
+    /// The question's confirm, which starts the task.
+    confirm: message,
+    /// The question's Cancel.
+    cancel: message,
   )
 }
 
 /// The control for the page's `share` state: nothing for a page that cannot
 /// invite, the buttons while the control is ready or asking or refused, and
-/// the invitation while it is showing.
+/// the invitation while it is showing. A private session draws its sentence and,
+/// for the owner, the button that makes it shareable, in the state `moving` says.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // share.view(invites.Ready, share.Presses(Inviting(Observer), Inviting(Operator), Dismissed))
+/// // share.view(invites.Ready, shareables.Withheld, presses)
 /// ```
-pub fn view(share: Share, presses: Presses(message)) -> Element(message) {
+pub fn view(
+  share: Share,
+  moving: Move,
+  presses: Presses(message),
+) -> Element(message) {
   case share {
     invites.Withheld -> element.none()
-    invites.Unshareable -> private()
+    invites.Unshareable -> private(moving, presses)
     invites.Showing(invitation:) -> showing(invitation, presses)
     invites.Ready | invites.Asking | invites.Refused(..) ->
       buttons(presses, share)
@@ -79,9 +101,11 @@ pub fn view(share: Share, presses: Presses(message)) -> Element(message) {
 pub const private_words =
   "Private session: it shares the workspace's notes and history, so it cannot be shared. Sessions created with Shareable can be."
 
-// The control for a private session: its heading and the sentence, with no
-// button and no handler, in the region's place so no path moves.
-fn private() -> Element(message) {
+// The control for a private session: its heading and the sentence, and for the
+// owner the button that makes it shareable, in the region's place so no path
+// moves. The status line is always drawn, as the buttons' is, so the region's
+// children keep their places.
+fn private(moving: Move, presses: Presses(message)) -> Element(message) {
   html.section(
     [attribute.class("share"), attribute.aria_label("Invite to this session")],
     [
@@ -89,8 +113,87 @@ fn private() -> Element(message) {
         html.text("Invite to this session"),
       ]),
       html.p([attribute.class("share-lead")], [html.text(private_words)]),
+      moving_control(moving, presses),
+      moving_status(moving),
     ],
   )
+}
+
+// What the owner may do about a private session, by what the control is doing.
+// While the task runs the button is gone and the sentence says what is
+// happening and that this page ends with the stop; the session's own page
+// reloads once it has resumed.
+fn moving_control(moving: Move, presses: Presses(message)) -> Element(message) {
+  case moving {
+    shareables.Withheld -> element.none()
+    shareables.Idle | shareables.Refused(..) ->
+      html.div([attribute.class("share-actions")], [
+        html.button(
+          [
+            attribute.type_("button"),
+            attribute.class("share-make"),
+            event.on_click(presses.make),
+          ],
+          [html.text("Make shareable")],
+        ),
+      ])
+    shareables.Confirming ->
+      html.div([attribute.class("share-ask")], [
+        html.p([attribute.class("share-lead"), attribute.role("alert")], [
+          html.text(
+            "Make this session shareable? It will stop, move to its own history, and resume. People you invite will be able to read what it already holds.",
+          ),
+        ]),
+        html.div([attribute.class("share-actions")], [
+          html.button(
+            [
+              attribute.type_("button"),
+              attribute.class("share-make"),
+              event.on_click(presses.confirm),
+            ],
+            [html.text("Make shareable")],
+          ),
+          html.button(
+            [
+              attribute.type_("button"),
+              attribute.class("share-cancel"),
+              event.on_click(presses.cancel),
+            ],
+            [html.text("Cancel")],
+          ),
+        ]),
+      ])
+    shareables.Making ->
+      html.div([attribute.class("share-actions")], [
+        html.button(
+          [
+            attribute.type_("button"),
+            attribute.class("share-make"),
+            attribute.disabled(True),
+          ],
+          [html.text("Making shareable")],
+        ),
+      ])
+  }
+}
+
+// The line under the control: what is happening while the task runs, the
+// refusal in the reason's fixed words, or the empty line.
+fn moving_status(moving: Move) -> Element(message) {
+  case moving {
+    shareables.Making ->
+      html.p([attribute.class("share-lead"), attribute.role("status")], [
+        html.text(
+          "Making this session shareable: stopping it, moving it to its own history and resuming it. This page ends while it restarts; reload it in a moment.",
+        ),
+      ])
+    shareables.Refused(reason:) ->
+      html.p([attribute.class("share-status"), attribute.role("status")], [
+        html.text(grants.reason_words(reason)),
+      ])
+    shareables.Withheld | shareables.Idle | shareables.Confirming ->
+      html.p([attribute.class("share-status"), attribute.role("status")], [])
+  }
 }
 
 // The two buttons and a status line. The line is always drawn, empty unless
