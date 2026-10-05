@@ -10,6 +10,7 @@
 //// dispatches only to handlers the rendered tree carries.
 
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleam/string
@@ -23,6 +24,7 @@ import session_view/operator
 import session_view/transcript_line.{type Line, Assistant, Line}
 import web_view/component
 import web_view/operator_page
+import web_view/view/lane
 
 // An observer's page holding the forked capture: `main`, the reviewer and the
 // advisor each have a transcript of their own.
@@ -211,6 +213,22 @@ pub fn a_strands_loaded_history_survives_a_round_trip_test() {
   let back = focused(away, "main")
   assert component.paging(back) == component.Paged
   assert list.length(component.rows(back)) == loaded
+}
+
+// The key `<loom-follow>` keeps the reader's place under is a number the
+// lane draws, never the strand's name, which a peer may have chosen.
+pub fn the_lane_draws_a_numeric_strand_key_and_not_the_name_test() {
+  let #(model, _) = observing([])
+  let main = html(model)
+  let advisor = html(focused(model, "advisor"))
+  let key = fn(name) {
+    "data-strand-key=\"" <> int.to_string(lane.strand_key(name)) <> "\""
+  }
+  assert string.contains(main, key("main"))
+  assert string.contains(advisor, key("advisor"))
+  assert lane.strand_key("main") != lane.strand_key("advisor")
+  assert !string.contains(advisor, "data-strand-key=\"advisor\"")
+  assert !string.contains(advisor, "data-strand-key=\"main\"")
 }
 
 // An observer's focus writes no command. It may ask for a read, the strand's

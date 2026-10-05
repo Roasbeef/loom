@@ -245,26 +245,57 @@ pub fn rows(
   marks: Marks,
   session: String,
 ) -> Element(message) {
-  element.element("loom-follow", [attribute.class("follow")], [
-    top,
-    keyed.div(
-      [attribute.class("transcript lane"), attribute.role("log")],
-      list.append(
-        list.filter_map(pieces, fn(piece) {
-          case piece {
-            // The advisor's reviews are the panel's, never a row of the lane.
-            turns.Commentary(..) -> Error(Nil)
-            _ ->
-              Ok(#(
-                piece_key(piece),
-                timeline_row(piece, draw, replies, marks, session),
-              ))
-          }
-        }),
-        live_entry(live, draw, marks),
+  element.element(
+    "loom-follow",
+    [
+      attribute.class("follow"),
+      attribute.data(strand_key_marker, int.to_string(strand_key(marks.active))),
+    ],
+    [
+      top,
+      keyed.div(
+        [attribute.class("transcript lane"), attribute.role("log")],
+        list.append(
+          list.filter_map(pieces, fn(piece) {
+            case piece {
+              // The advisor's reviews are the panel's, never a row of the lane.
+              turns.Commentary(..) -> Error(Nil)
+              _ ->
+                Ok(#(
+                  piece_key(piece),
+                  timeline_row(piece, draw, replies, marks, session),
+                ))
+            }
+          }),
+          live_entry(live, draw, marks),
+        ),
       ),
-    ),
-  ])
+    ],
+  )
+}
+
+/// The suffix of the attribute `<loom-follow>` reads the strand's key from
+/// (`data-strand-key`).
+pub const strand_key_marker = "strand-key"
+
+/// A number for the strand `name`, which `<loom-follow>` keeps the reader's
+/// place under. It is a digest, so the attribute carries a number and none of
+/// the name's text, which a peer may have chosen (protocol-change/051, the
+/// addendum on the strand key). It is a polynomial hash of the name's
+/// codepoints, modulo a prime below 2^30, so it is the same on every render
+/// and in every run, and two strands of one page share a key only by a
+/// collision in a space of a billion.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert lane.strand_key("main") == lane.strand_key("main")
+/// ```
+pub fn strand_key(name: String) -> Int {
+  string.to_utf_codepoints(name)
+  |> list.fold(7, fn(digest, codepoint) {
+    { digest * 31 + string.utf_codepoint_to_int(codepoint) } % 1_000_000_007
+  })
 }
 
 // The live region as the lane's last entry, or no entry while nothing is

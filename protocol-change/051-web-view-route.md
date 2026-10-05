@@ -3948,3 +3948,40 @@ One more region the home socket reads an event from, for every home.
 `ui_socket_test` pins the admitted and the dropped frames for all three admissions.
 `names_test` pins that the form's handler is one submit beneath the panel and that no
 path outside the panel moved.
+
+## Addendum: the strand key on the transcript (2026-10-05)
+
+**Status**: PROPOSED, IMPLEMENTED with the web/strand-history branch ·
+**Raised by**: the report that switching strands loses the reader's place
+
+This addendum adds one attribute to the transcript element. It adds no route, no
+event and no field on the wire, and it changes no admission rule.
+
+### What changed
+
+- **`<loom-follow>` carries `data-strand-key`.** The lane draws it from the strand on
+  screen (`lane.strand_key`), a decimal integer digest of the strand's name. The
+  element keeps the reader's scroll place in memory under that number, for the life
+  of the element, and puts a strand back where the reader left it. It stores
+  nothing outside the element.
+- **The key is not text.** A strand's name can be chosen by a peer, so it never
+  reaches an attribute, class or key (the headline rule). The integer digest carries
+  none of the name's characters, and the element decodes it totally (a value that is
+  not a whole number is ignored).
+
+### What was considered
+
+- **The strip position as the key.** It is already a number, but it shifts when a
+  strand settles, so a place saved under it could be restored to another strand.
+- **Keeping the place on the server.** Scrolling is the browser's, and a render per
+  scroll is what the lane avoids.
+
+### Cost
+
+One more attribute on one element, and a hash collision between two strands of one
+page, which would share a place, in a space of a billion.
+
+### Verification
+
+`focus_test` pins that the lane draws the digest and never the name; `follow_test`
+pins the save and restore rule, including a strand left at the bottom.

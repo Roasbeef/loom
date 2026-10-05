@@ -449,7 +449,10 @@ page keys and nonces, and the relay into the session's gateway.
   `lane.view(pieces, live, top, load, replies, marks)` draws the transcript
   lane, memoized per line, followed by the live region, with the line above its oldest row: a "Load older" button sending
   `load` and carrying the fixed `data-loom-older` marker while older rows
-  exist, and words otherwise.
+  exist, and words otherwise. The `<loom-follow>` around it carries
+  `data-strand-key`, `lane.strand_key(marks.active)`, an integer digest of the
+  strand's name (never the name), under which the element keeps the reader's
+  scroll place per strand (protocol-change/051, the addendum on the strand key).
 - **The timeline and the marker controls.** Each piece of the lane is a
   `div.tl-row` holding a `span.dot` (decoration, `aria-hidden`, in the hue of
   the strand the piece belongs to, on a line down the left edge) and the
