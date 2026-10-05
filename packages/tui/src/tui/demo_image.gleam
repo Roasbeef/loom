@@ -15,8 +15,9 @@ import core/json
 import core/message
 import gleam/list
 import gleam/option.{None}
-import session_view/model.{Shared} as _
+import session_view/model as _
 import session_view/protocol
+import session_view/shared_set
 import tui/inbound
 import tui/model.{type Model, Model}
 
@@ -30,9 +31,9 @@ import tui/model.{type Model, Model}
 pub fn seed(model: Model) -> Model {
   Model(
     ..model,
-    shared: Shared(
-      ..model.shared,
-      records: list.map(entries(), fn(value) {
+    shared: shared_set.records(
+      model.shared,
+      list.map(entries(), fn(value) {
         protocol.EntryRecord(strand: "main", entry: value)
       }),
     ),

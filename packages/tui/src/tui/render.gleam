@@ -108,8 +108,8 @@ import tui/message_rows
 import tui/model.{
   type Model, AccessManager, AgentInspector, ApprovalInspector, DaemonSelector,
   FrameCache, GoalInspector, Model, ModelSelector, NoOverlay, PeerLinkManager,
-  View,
 } as tui_model
+
 import tui/model_selector
 import tui/note_panel
 import tui/peer_links
@@ -122,6 +122,7 @@ import tui/session_selector
 import tui/summary_panel
 import tui/theme
 import tui/todo_panel
+import tui/view_set
 import tui/workspace
 
 // The frame on screen is whatever `refresh_frame_cache` last decided to
@@ -290,7 +291,7 @@ pub fn render_frame(
       render_command_palette(
         rendered,
         body_area,
-        Model(..model, view: View(..model.view, overlay: NoOverlay)),
+        Model(..model, view: view_set.overlay(model.view, NoOverlay)),
       )
     _ -> rendered
   }

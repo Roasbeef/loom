@@ -46,8 +46,9 @@ import gleam/string
 import session_view/advisor_history
 import session_view/composer
 import session_view/image_header
-import session_view/model.{Shared} as session_model
+import session_view/model as session_model
 import session_view/notes_view
+import session_view/shared_set
 import session_view/tool_activity
 import session_view/transcript_line.{
   type Line, type Speaker, type Stream, Assistant, Failure, ImageRow, Line,
@@ -68,6 +69,7 @@ import tui/model.{type Model, Caches, Model, View} as tui_model
 import tui/render
 import tui/side_surfaces
 import tui/transcript_anchor
+import tui/view_set
 
 /// Terminal polling still produces idle ticks so the websocket inbox can be
 /// drained, but those ticks must not compare or wrap the durable transcript.
@@ -203,23 +205,27 @@ pub fn refresh_render_cache(before: Model, after: Model) -> Model {
       Model(
         ..cached,
         view: View(
-          ..cached.view,
+          ..{
+            cached.view
+            |> view_set.rendered_revision(cached.shared.render_revision)
+            |> view_set.rendered_row_count(rendered_row_count)
+            |> view_set.caches(
+              Caches(..cached.view.caches, rendered_rows:, live_tail:),
+            )
+            |> view_set.revealed_rows(revealed_rows)
+            |> view_set.scroll_offset(case side_surfaces.notes_surface(after) {
+              True -> after.view.scroll_offset
+              False ->
+                bounded_scroll_offset(
+                  anchored,
+                  rendered_row_count,
+                  layout.transcript_viewport_height(after),
+                )
+            })
+          },
           restored_workspace: None,
-          rendered_revision: cached.shared.render_revision,
-          rendered_row_count:,
-          caches: Caches(..cached.view.caches, rendered_rows:, live_tail:),
-          revealed_rows:,
           rendered_anchors:,
           rendered_gutters:,
-          scroll_offset: case side_surfaces.notes_surface(after) {
-            True -> after.view.scroll_offset
-            False ->
-              bounded_scroll_offset(
-                anchored,
-                rendered_row_count,
-                layout.transcript_viewport_height(after),
-              )
-          },
         ),
       )
     }
@@ -240,12 +246,16 @@ fn refresh_diff_cache(before: Model, after: Model) -> Model {
       Model(
         ..after,
         view: View(
-          ..after.view,
-          caches: Caches(
-            ..after.view.caches,
-            diff_rows: [],
-            diff_line_cache: dict.new(),
-          ),
+          ..{
+            after.view
+            |> view_set.caches(
+              Caches(
+                ..after.view.caches,
+                diff_rows: [],
+                diff_line_cache: dict.new(),
+              ),
+            )
+          },
           diff_row_count: 0,
           diff_worktree_source: #(None, 0),
         ),
@@ -277,21 +287,25 @@ fn refresh_diff_cache(before: Model, after: Model) -> Model {
           Model(
             ..after,
             view: View(
-              ..after.view,
-              caches: Caches(
-                ..after.view.caches,
-                diff_rows: rows,
-                diff_line_cache: line_cache,
-              ),
+              ..{
+                after.view
+                |> view_set.caches(
+                  Caches(
+                    ..after.view.caches,
+                    diff_rows: rows,
+                    diff_line_cache: line_cache,
+                  ),
+                )
+                |> view_set.diff_scroll_offset(anchored_scroll_offset(
+                  after.view.diff_scroll_offset,
+                  before.view.diff_row_count,
+                  count,
+                ))
+              },
               diff_row_count: count,
               diff_worktree_source: #(
                 after.shared.worktree.board,
                 after.shared.worktree.selected,
-              ),
-              diff_scroll_offset: anchored_scroll_offset(
-                after.view.diff_scroll_offset,
-                before.view.diff_row_count,
-                count,
               ),
             ),
           )
@@ -301,9 +315,9 @@ fn refresh_diff_cache(before: Model, after: Model) -> Model {
   }
   Model(
     ..cached,
-    view: View(
-      ..cached.view,
-      diff_scroll_offset: bounded_scroll_offset(
+    view: view_set.diff_scroll_offset(
+      cached.view,
+      bounded_scroll_offset(
         cached.view.diff_scroll_offset,
         cached.view.diff_row_count,
         layout.diff_patch_height(cached),
@@ -411,22 +425,24 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
           model.view.height,
         )
       Model(
-        shared: Shared(
-          ..model.shared,
-          compact_call_cache:,
-          compact_entry_cache:,
-          pending_records: [],
-          record_cache_valid: True,
-        ),
+        shared: model.shared
+          |> shared_set.compact_call_cache(compact_call_cache)
+          |> shared_set.compact_entry_cache(compact_entry_cache)
+          |> shared_set.pending_records([])
+          |> shared_set.record_cache_valid(True),
         view: View(
-          ..model.view,
-          caches: Caches(
-            ..model.view.caches,
-            record_rows:,
-            record_line_cache:,
-            record_cache_epoch: model.shared.record_cache_epoch,
-          ),
-          record_gutters:,
+          ..{
+            model.view
+            |> view_set.caches(
+              Caches(
+                ..model.view.caches,
+                record_rows:,
+                record_line_cache:,
+                record_cache_epoch: model.shared.record_cache_epoch,
+              ),
+            )
+            |> view_set.record_gutters(record_gutters)
+          },
           record_cache_width: width,
           record_cache_height: image_box.picture_rows(model.view.height),
           record_cache_strand: model.shared.active_strand,
@@ -460,27 +476,34 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
       // hints for the rows already on screen, which this path never rebuilds;
       // the release of retired text belongs to the full rebuild.
       Model(
-        shared: Shared(
-          ..model.shared,
-          compact_call_cache: dict.merge(model.shared.compact_call_cache, calls),
-          compact_entry_cache: dict.merge(
+        shared: model.shared
+          |> shared_set.compact_call_cache(dict.merge(
+            model.shared.compact_call_cache,
+            calls,
+          ))
+          |> shared_set.compact_entry_cache(dict.merge(
             model.shared.compact_entry_cache,
             narratives,
-          ),
-          pending_records: [],
-        ),
-        view: View(
-          ..model.view,
-          caches: Caches(
-            ..model.view.caches,
-            record_rows: list.append(newest_rows, model.view.caches.record_rows),
-            record_line_cache: dict.merge(
-              model.view.caches.record_line_cache,
-              appended,
+          ))
+          |> shared_set.pending_records([]),
+        view: model.view
+          |> view_set.caches(
+            Caches(
+              ..model.view.caches,
+              record_rows: list.append(
+                newest_rows,
+                model.view.caches.record_rows,
+              ),
+              record_line_cache: dict.merge(
+                model.view.caches.record_line_cache,
+                appended,
+              ),
             ),
-          ),
-          record_gutters: list.append(newest_gutters, model.view.record_gutters),
-        ),
+          )
+          |> view_set.record_gutters(list.append(
+            newest_gutters,
+            model.view.record_gutters,
+          )),
       )
     }
   }

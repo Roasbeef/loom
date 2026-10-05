@@ -62,6 +62,7 @@ import session_view/pasted_image
 import session_view/protocol.{ModelInfo, Strand}
 import session_view/queue_request
 import session_view/session_channel
+import session_view/shared_set
 import session_view/snapshot_view
 import session_view/surfaces
 import session_view/worktree_view
@@ -102,6 +103,7 @@ import tui/session_selector
 import tui/side_surfaces
 import tui/submit
 import tui/summary_panel
+import tui/view_set
 
 /// The rename overlay owns pasted text just as it owns character keys. It
 /// must never leave a pasted title in the hidden conversation composer.
@@ -195,12 +197,10 @@ fn paste_unlocked(
             )
           Model(
             ..model,
-            view: View(
-              ..model.view,
-              input:,
-              history_index: 0,
-              history_draft: text_area.value(input),
-            ),
+            view: model.view
+              |> view_set.input(input)
+              |> view_set.history_index(0)
+              |> view_set.history_draft(text_area.value(input)),
           )
         }
         composer.Compact(attachment) -> add_attachment(model, attachment)
@@ -214,7 +214,12 @@ fn add_attachment(model: Model, attachment: composer.Attachment) -> Model {
     Ok(attachments) -> {
       let notice =
         composer.summary(attachments) |> option.unwrap("pasted content")
-      Model(..model, shared: Shared(..model.shared, attachments:, notice:))
+      Model(
+        ..model,
+        shared: model.shared
+          |> shared_set.attachments(attachments)
+          |> shared_set.notice(notice),
+      )
     }
   }
 }
@@ -279,7 +284,7 @@ pub fn advance_candidate(
 /// ```
 @internal
 pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
-  let model = Model(..model, view: View(..model.view, candidate: candidate))
+  let model = Model(..model, view: view_set.candidate(model.view, candidate))
   case outcome {
     None -> model
     Some(attachment.Failed(reason)) ->
@@ -341,9 +346,9 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
       let model =
         Model(
           ..model,
-          shared: Shared(
-            ..model.shared,
-            scrollback: history_view.cancel(model.shared.scrollback),
+          shared: shared_set.scrollback(
+            model.shared,
+            history_view.cancel(model.shared.scrollback),
           ),
         )
 
@@ -414,25 +419,27 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
             },
           ),
           view: View(
-            ..model.view,
-            workspace: workspace,
-            note_selected: None,
-            prompted_approvals: [],
-            overlay: NoOverlay,
+            ..{
+              model.view
+              |> view_set.workspace(workspace)
+              |> view_set.note_selected(None)
+              |> view_set.prompted_approvals([])
+              |> view_set.overlay(NoOverlay)
+              |> view_set.cache_outlook("")
+              |> view_set.scroll_offset(case model.shared.scrollback.mode {
+                history_view.Reading -> model.view.scroll_offset
+                history_view.Live -> 0
+              })
+              |> view_set.strip_focus(
+                case model.shared.session == cut.attachment.expected.session {
+                  True -> model.view.strip_focus
+                  False -> agent_strip.Composing
+                },
+              )
+            },
             creation_key: case creation_key {
               Some(key) if model.view.creation_key == Some(key) -> None
               Some(_) | None -> model.view.creation_key
-            },
-            cache_outlook: "",
-            scroll_offset: case model.shared.scrollback.mode {
-              history_view.Reading -> model.view.scroll_offset
-              history_view.Live -> 0
-            },
-            strip_focus: case
-              model.shared.session == cut.attachment.expected.session
-            {
-              True -> model.view.strip_focus
-              False -> agent_strip.Composing
             },
           ),
         )
@@ -463,7 +470,7 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
           |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
       }
       let adopted =
-        Model(..adopted, view: View(..adopted.view, reconnect: ReconnectIdle))
+        Model(..adopted, view: view_set.reconnect(adopted.view, ReconnectIdle))
       case cancelled {
         Some(notice) -> tui_model.append_system(adopted, notice)
         None -> adopted
@@ -535,11 +542,11 @@ fn update_normal_key(key: keys.Key, model: Model) -> Model {
         ApprovalInspector(panel) ->
           case approval_panel.update(key, panel) {
             approval_panel.Close ->
-              Model(..model, view: View(..model.view, overlay: NoOverlay))
+              Model(..model, view: view_set.overlay(model.view, NoOverlay))
             approval_panel.Continue(next) ->
               Model(
                 ..model,
-                view: View(..model.view, overlay: ApprovalInspector(next)),
+                view: view_set.overlay(model.view, ApprovalInspector(next)),
               )
             approval_panel.Decide(record, choice) ->
               inbound.decide_captured_approval(model, record, choice)
@@ -564,15 +571,13 @@ fn update_goal_inspector(
   {
     focused_goal_panel.Close ->
       Model(
-        shared: Shared(..model.shared, notice: "goal inspector closed"),
-        view: View(
-          ..model.view,
-          overlay: NoOverlay,
-          repaint_phase: !model.view.repaint_phase,
-        ),
+        shared: shared_set.notice(model.shared, "goal inspector closed"),
+        view: model.view
+          |> view_set.overlay(NoOverlay)
+          |> view_set.toggle_repaint,
       )
     focused_goal_panel.Continue(next) ->
-      Model(..model, view: View(..model.view, overlay: GoalInspector(next)))
+      Model(..model, view: view_set.overlay(model.view, GoalInspector(next)))
     focused_goal_panel.Refresh -> side_surfaces.request_goal_status(model)
     focused_goal_panel.Pause ->
       tui_model.run_shared(model, surfaces.submit_goal_action(
@@ -594,11 +599,11 @@ fn update_daemon_selector(
 ) -> Model {
   case session_selector.update(key, selector) {
     session_selector.Continue(next) ->
-      Model(..model, view: View(..model.view, overlay: DaemonSelector(next)))
+      Model(..model, view: view_set.overlay(model.view, DaemonSelector(next)))
     session_selector.Close ->
       Model(
-        shared: Shared(..model.shared, notice: "session selection cancelled"),
-        view: View(..model.view, overlay: NoOverlay),
+        shared: shared_set.notice(model.shared, "session selection cancelled"),
+        view: view_set.overlay(model.view, NoOverlay),
       )
     session_selector.Choose(row) ->
       session_control.begin_open(model, row.session_id)
@@ -609,9 +614,9 @@ fn update_daemon_selector(
         _ ->
           Model(
             ..model,
-            shared: Shared(
-              ..model.shared,
-              notice: "open the saved session before linking it",
+            shared: shared_set.notice(
+              model.shared,
+              "open the saved session before linking it",
             ),
           )
       }
@@ -650,15 +655,13 @@ fn update_model_selector(
 ) -> Model {
   case model_selector.update(key, selector) {
     model_selector.Continue(next) ->
-      Model(..model, view: View(..model.view, overlay: ModelSelector(next)))
+      Model(..model, view: view_set.overlay(model.view, ModelSelector(next)))
     model_selector.Close ->
       Model(
-        shared: Shared(..model.shared, notice: "model selection cancelled"),
-        view: View(
-          ..model.view,
-          overlay: NoOverlay,
-          repaint_phase: !model.view.repaint_phase,
-        ),
+        shared: shared_set.notice(model.shared, "model selection cancelled"),
+        view: model.view
+          |> view_set.overlay(NoOverlay)
+          |> view_set.toggle_repaint,
       )
 
     // The selector closes before the session's half runs. The notice it
@@ -667,12 +670,10 @@ fn update_model_selector(
     model_selector.Choose(name) -> {
       let closed =
         Model(
-          shared: Shared(..model.shared, notice: "model: " <> name),
-          view: View(
-            ..model.view,
-            overlay: NoOverlay,
-            repaint_phase: !model.view.repaint_phase,
-          ),
+          shared: shared_set.notice(model.shared, "model: " <> name),
+          view: model.view
+            |> view_set.overlay(NoOverlay)
+            |> view_set.toggle_repaint,
         )
       inbound.run_settled(closed, commands.act(_, msg.SelectModel(name)))
     }
@@ -695,60 +696,48 @@ fn update_agent_inspector(
     keys.Tab ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          overlay: AgentInspector(agents.cycle_filter(
-            inspector,
-            rows,
-            agents.Next,
-          )),
+        view: view_set.overlay(
+          model.view,
+          AgentInspector(agents.cycle_filter(inspector, rows, agents.Next)),
         ),
       )
     keys.BackTab ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          overlay: AgentInspector(agents.cycle_filter(
-            inspector,
-            rows,
-            agents.Previous,
-          )),
+        view: view_set.overlay(
+          model.view,
+          AgentInspector(agents.cycle_filter(inspector, rows, agents.Previous)),
         ),
       )
     keys.Char("w") ->
       Model(
-        shared: Shared(
-          ..model.shared,
-          worktree: worktree_view.State(
+        shared: shared_set.worktree(
+          model.shared,
+          worktree_view.State(
             ..model.shared.worktree,
             focus: worktree_view.Composer,
           ),
         ),
-        view: View(
-          ..model.view,
-          help_open: False,
-          notes_open: False,
-          overlay: AgentInspector(
+        view: model.view
+          |> view_set.help_open(False)
+          |> view_set.notes_open(False)
+          |> view_set.overlay(AgentInspector(
             agents.Inspector(..inspector, focus: agents.Composing),
-          ),
-        ),
+          )),
       )
     keys.Escape | keys.F(2) | keys.Ctrl("o") ->
       Model(
-        shared: Shared(..model.shared, notice: "agents closed"),
-        view: View(
-          ..model.view,
-          overlay: NoOverlay,
-          repaint_phase: !model.view.repaint_phase,
-        ),
+        shared: shared_set.notice(model.shared, "agents closed"),
+        view: model.view
+          |> view_set.overlay(NoOverlay)
+          |> view_set.toggle_repaint,
       )
     keys.Up ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          overlay: AgentInspector(
+        view: view_set.overlay(
+          model.view,
+          AgentInspector(
             agents.navigate(inspector, rows, agents.Previous)
             |> inbound.select_inspector_message(model.shared.agent_messages),
           ),
@@ -757,9 +746,9 @@ fn update_agent_inspector(
     keys.Down ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          overlay: AgentInspector(
+        view: view_set.overlay(
+          model.view,
+          AgentInspector(
             agents.navigate(inspector, rows, agents.Next)
             |> inbound.select_inspector_message(model.shared.agent_messages),
           ),
@@ -785,9 +774,9 @@ fn update_agent_inspector(
     keys.Char("n") ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          overlay: AgentInspector(
+        view: view_set.overlay(
+          model.view,
+          AgentInspector(
             agents.next_attention(inspector, rows)
             |> inbound.select_inspector_message(model.shared.agent_messages),
           ),
@@ -798,9 +787,9 @@ fn update_agent_inspector(
       let maximum = message_max_scroll(model, inspector)
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          overlay: AgentInspector(
+        view: view_set.overlay(
+          model.view,
+          AgentInspector(
             agents.Inspector(
               ..inspector,
               scroll: int.max(
@@ -816,9 +805,9 @@ fn update_agent_inspector(
       let maximum = message_max_scroll(model, inspector)
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          overlay: AgentInspector(
+        view: view_set.overlay(
+          model.view,
+          AgentInspector(
             agents.Inspector(
               ..inspector,
               scroll: int.min(
@@ -834,9 +823,9 @@ fn update_agent_inspector(
       let maximum = inbound.note_max_scroll(model)
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          note_scroll: int.max(
+        view: view_set.note_scroll(
+          model.view,
+          int.max(
             0,
             int.min(model.view.note_scroll, maximum) - note_page_step(model),
           ),
@@ -846,9 +835,9 @@ fn update_agent_inspector(
     keys.PageDown if inspector.detail == agents.Notes ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          note_scroll: int.min(
+        view: view_set.note_scroll(
+          model.view,
+          int.min(
             inbound.note_max_scroll(model),
             int.min(model.view.note_scroll, inbound.note_max_scroll(model))
               + note_page_step(model),
@@ -858,9 +847,9 @@ fn update_agent_inspector(
     keys.PageUp ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          overlay: AgentInspector(
+        view: view_set.overlay(
+          model.view,
+          AgentInspector(
             agents.Inspector(
               ..inspector,
               scroll: int.max(0, inspector.scroll - 5),
@@ -871,9 +860,9 @@ fn update_agent_inspector(
     keys.PageDown ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          overlay: AgentInspector(
+        view: view_set.overlay(
+          model.view,
+          AgentInspector(
             agents.Inspector(..inspector, scroll: inspector.scroll + 5),
           ),
         ),
@@ -889,9 +878,9 @@ fn update_agent_inspector(
         False ->
           Model(
             ..model,
-            shared: Shared(
-              ..model.shared,
-              notice: "Selected agent is unavailable; recipient unchanged",
+            shared: shared_set.notice(
+              model.shared,
+              "Selected agent is unavailable; recipient unchanged",
             ),
           )
       }
@@ -904,12 +893,10 @@ fn update_agent_inspector(
       side_surfaces.refresh_notes(
         Model(
           ..changed,
-          view: View(
-            ..changed.view,
-            note_selected: None,
-            note_scroll: 0,
-            note_mode: note_panel.Readable,
-          ),
+          view: changed.view
+            |> view_set.note_selected(None)
+            |> view_set.note_scroll(0)
+            |> view_set.note_mode(note_panel.Readable),
         ),
       )
     _ -> changed
@@ -939,7 +926,12 @@ fn toggle_note_mode(model: Model) -> Model {
     note_panel.Readable -> note_panel.Raw
     note_panel.Raw -> note_panel.Readable
   }
-  Model(..model, view: View(..model.view, note_mode: mode, note_scroll: 0))
+  Model(
+    ..model,
+    view: model.view
+      |> view_set.note_mode(mode)
+      |> view_set.note_scroll(0),
+  )
   |> tui_model.invalidate_transcript
 }
 
@@ -992,9 +984,9 @@ fn select_agent_message(
     agent_messages.for_strand(model.shared.agent_messages, inspector.selected)
   Model(
     ..model,
-    view: View(
-      ..model.view,
-      overlay: AgentInspector(
+    view: view_set.overlay(
+      model.view,
+      AgentInspector(
         agents.Inspector(
           ..inspector,
           message: agent_message_panel.move(messages, inspector.message, amount),
@@ -1017,9 +1009,9 @@ fn open_agent_message_sender(
     None ->
       Model(
         ..model,
-        shared: Shared(
-          ..model.shared,
-          notice: "No observed message is selected",
+        shared: shared_set.notice(
+          model.shared,
+          "No observed message is selected",
         ),
       )
     Some(item) ->
@@ -1028,9 +1020,9 @@ fn open_agent_message_sender(
         False ->
           Model(
             ..model,
-            shared: Shared(
-              ..model.shared,
-              notice: "Message sender is unavailable; recipient unchanged",
+            shared: shared_set.notice(
+              model.shared,
+              "Message sender is unavailable; recipient unchanged",
             ),
           )
       }
@@ -1048,18 +1040,16 @@ fn update_workspace_composer(
     keys.Escape | keys.F(2) | keys.Ctrl("o") ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          overlay: AgentInspector(
-            agents.Inspector(..inspector, focus: agents.Browsing),
-          ),
+        view: view_set.overlay(
+          model.view,
+          AgentInspector(agents.Inspector(..inspector, focus: agents.Browsing)),
         ),
       )
     _ -> {
       let next =
         update_main_key(
           key,
-          Model(..model, view: View(..model.view, overlay: NoOverlay)),
+          Model(..model, view: view_set.overlay(model.view, NoOverlay)),
         )
 
       // Commands transfer keyboard ownership to their visible destination.
@@ -1077,7 +1067,7 @@ fn update_workspace_composer(
         NoOverlay, True ->
           Model(
             ..next,
-            view: View(..next.view, overlay: AgentInspector(inspector)),
+            view: view_set.overlay(next.view, AgentInspector(inspector)),
           )
         _, _ -> next
       }
@@ -1101,20 +1091,17 @@ fn inspect_agent_approval(model: Model, strand: String) -> Model {
     Ok(review) ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          overlay: ApprovalInspector(inbound.captured_approval_panel(
-            model,
-            review,
-          )),
+        view: view_set.overlay(
+          model.view,
+          ApprovalInspector(inbound.captured_approval_panel(model, review)),
         ),
       )
     Error(Nil) ->
       Model(
         ..model,
-        shared: Shared(
-          ..model.shared,
-          notice: "No current approval for this agent",
+        shared: shared_set.notice(
+          model.shared,
+          "No current approval for this agent",
         ),
       )
   }
@@ -1146,7 +1133,7 @@ fn update_main_key(key: keys.Key, model: Model) -> Model {
         key,
         Model(
           ..model,
-          view: View(..model.view, rail_focus: tui_model.FocusComposer),
+          view: view_set.rail_focus(model.view, tui_model.FocusComposer),
         ),
       )
 
@@ -1166,7 +1153,7 @@ fn composer_takes(key: keys.Key, model: Model) -> Model {
       let returned =
         Model(
           ..model,
-          view: View(..model.view, rail_focus: tui_model.FocusComposer),
+          view: view_set.rail_focus(model.view, tui_model.FocusComposer),
         )
       case key {
         keys.Escape -> returned
@@ -1213,7 +1200,7 @@ fn update_tab_key(key: keys.Key, model: Model) -> Model {
         False ->
           Model(
             ..model,
-            view: View(..model.view, rail_focus: tui_model.FocusComposer),
+            view: view_set.rail_focus(model.view, tui_model.FocusComposer),
           )
       }
     Error(Nil), _ ->
@@ -1221,7 +1208,7 @@ fn update_tab_key(key: keys.Key, model: Model) -> Model {
         key,
         Model(
           ..model,
-          view: View(..model.view, rail_focus: tui_model.FocusComposer),
+          view: view_set.rail_focus(model.view, tui_model.FocusComposer),
         ),
       )
   }
@@ -1264,7 +1251,7 @@ fn tab_of_key(key: keys.Key) -> Result(rail.Tab, Nil) {
 fn keep_tab_keyboard(model: Model, tab: rail.Tab) -> Model {
   case tab {
     rail.Trace | rail.Session | rail.Changes ->
-      Model(..model, view: View(..model.view, rail_focus: tui_model.FocusTab))
+      Model(..model, view: view_set.rail_focus(model.view, tui_model.FocusTab))
       |> fn(held) {
         tui_model.store_strip(held, agent_strip.leave(tui_model.strip(held)))
       }
@@ -1382,9 +1369,9 @@ fn update_main_key_composing(key: keys.Key, model: Model) -> Model {
     True, _, keys.Ctrl("d") ->
       Model(
         ..model,
-        shared: Shared(
-          ..model.shared,
-          worktree: worktree_view.State(
+        shared: shared_set.worktree(
+          model.shared,
+          worktree_view.State(
             ..model.shared.worktree,
             focus: case model.shared.worktree.focus {
               worktree_view.Composer -> worktree_view.Navigator
@@ -1407,19 +1394,17 @@ fn update_palette_key(key: keys.Key, model: Model) -> Model {
   case suggestions, command_palette_escape(key), key {
     [_, ..], True, _ ->
       Model(
-        shared: Shared(..model.shared, notice: "commands closed"),
-        view: View(
-          ..model.view,
-          input: text_area.state_new(),
-          command_selected: 0,
-        ),
+        shared: shared_set.notice(model.shared, "commands closed"),
+        view: model.view
+          |> view_set.input(text_area.state_new())
+          |> view_set.command_selected(0),
       )
     [_, ..], False, keys.Up ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          command_selected: command.move_selection(
+        view: view_set.command_selected(
+          model.view,
+          command.move_selection(
             model.view.command_selected,
             list.length(suggestions),
             False,
@@ -1429,9 +1414,9 @@ fn update_palette_key(key: keys.Key, model: Model) -> Model {
     [_, ..], False, keys.Down ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          command_selected: command.move_selection(
+        view: view_set.command_selected(
+          model.view,
+          command.move_selection(
             model.view.command_selected,
             list.length(suggestions),
             True,
@@ -1443,11 +1428,9 @@ fn update_palette_key(key: keys.Key, model: Model) -> Model {
         Some(value) ->
           Model(
             ..model,
-            view: View(
-              ..model.view,
-              input: text_area.state_from_string(value),
-              command_selected: 0,
-            ),
+            view: model.view
+              |> view_set.input(text_area.state_from_string(value))
+              |> view_set.command_selected(0),
           )
         None -> model
       }
@@ -1462,11 +1445,9 @@ fn update_palette_key(key: keys.Key, model: Model) -> Model {
           let completed =
             Model(
               ..model,
-              view: View(
-                ..model.view,
-                input: text_area.state_from_string(value),
-                command_selected: 0,
-              ),
+              view: model.view
+                |> view_set.input(text_area.state_from_string(value))
+                |> view_set.command_selected(0),
             )
           case string.ends_with(value, " ") {
             True -> completed
@@ -1509,7 +1490,7 @@ fn down_from_composer(model: Model) -> Model {
     // The rail shows Trace or Session, which have no list to enter, so Down
     // gives the keyboard to the tab, where the digits choose a tab.
     0, False, Some(rail.Trace) | 0, False, Some(rail.Session) ->
-      Model(..model, view: View(..model.view, rail_focus: tui_model.FocusTab))
+      Model(..model, view: view_set.rail_focus(model.view, tui_model.FocusTab))
     _, _, _ -> submit.navigate_history(model, False)
   }
 }
@@ -1526,19 +1507,17 @@ fn update_main_key_without_palette(key: keys.Key, model: Model) -> Model {
     // with it, and never interrupts the strand behind it.
     keys.Escape, True, _ ->
       Model(
-        shared: Shared(..model.shared, notice: "sheet closed"),
-        view: View(..model.view, diff_view: DiffHidden),
+        shared: shared_set.notice(model.shared, "sheet closed"),
+        view: view_set.diff_view(model.view, DiffHidden),
       )
       |> submit.close_sheet
 
     keys.Escape, False, DiffVisible ->
       Model(
-        shared: Shared(..model.shared, notice: "changes closed"),
-        view: View(
-          ..model.view,
-          diff_view: DiffHidden,
-          repaint_phase: !model.view.repaint_phase,
-        ),
+        shared: shared_set.notice(model.shared, "changes closed"),
+        view: model.view
+          |> view_set.diff_view(DiffHidden)
+          |> view_set.toggle_repaint,
       )
     _, _, _ -> update_conversation_key(key, model)
   }
@@ -1566,9 +1545,9 @@ fn update_conversation_key(key: keys.Key, model: Model) -> Model {
       let maximum = inbound.note_max_scroll(model)
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          note_scroll: int.max(
+        view: view_set.note_scroll(
+          model.view,
+          int.max(
             0,
             int.min(model.view.note_scroll, maximum) - note_page_step(model),
           ),
@@ -1578,9 +1557,9 @@ fn update_conversation_key(key: keys.Key, model: Model) -> Model {
     keys.PageDown, False, True ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          note_scroll: int.min(
+        view: view_set.note_scroll(
+          model.view,
+          int.min(
             inbound.note_max_scroll(model),
             int.min(model.view.note_scroll, inbound.note_max_scroll(model))
               + note_page_step(model),
@@ -1591,31 +1570,25 @@ fn update_conversation_key(key: keys.Key, model: Model) -> Model {
     keys.PageDown, _, _ -> scroll_reading_panel(model, Newer, 10)
     keys.Escape, True, _ ->
       Model(
-        shared: Shared(..model.shared, notice: "help closed"),
-        view: View(
-          ..model.view,
-          help_open: False,
-          scroll_offset: 0,
-          repaint_phase: !model.view.repaint_phase,
-        ),
+        shared: shared_set.notice(model.shared, "help closed"),
+        view: model.view
+          |> view_set.help_open(False)
+          |> view_set.scroll_offset(0)
+          |> view_set.toggle_repaint,
       )
     keys.Escape, False, True ->
       Model(
-        shared: Shared(
-          ..model.shared,
-          note_board: None,
-          notes_requested: None,
-          notice: "agent notes closed",
-        ),
-        view: View(
-          ..model.view,
-          notes_open: False,
-          note_selected: None,
-          note_mode: note_panel.Readable,
-          note_scroll: 0,
-          scroll_offset: 0,
-          repaint_phase: !model.view.repaint_phase,
-        ),
+        shared: model.shared
+          |> shared_set.note_board(None)
+          |> shared_set.notes_requested(None)
+          |> shared_set.notice("agent notes closed"),
+        view: model.view
+          |> view_set.notes_open(False)
+          |> view_set.note_selected(None)
+          |> view_set.note_mode(note_panel.Readable)
+          |> view_set.note_scroll(0)
+          |> view_set.scroll_offset(0)
+          |> view_set.toggle_repaint,
       )
     keys.Escape, False, False -> submit.interrupt_active(model)
     keys.Tab, False, False -> submit.toggle_submission_mode(model)
@@ -1629,25 +1602,23 @@ fn update_conversation_key(key: keys.Key, model: Model) -> Model {
           let attachments = composer.drop_last(model.shared.attachments)
           Model(
             ..model,
-            shared: Shared(
-              ..model.shared,
-              attachments:,
-              notice: composer.summary(attachments)
+            shared: model.shared
+              |> shared_set.attachments(attachments)
+              |> shared_set.notice(
+                composer.summary(attachments)
                 |> option.unwrap("paste removed"),
-            ),
+              ),
           )
         }
         _, _ -> {
           let input = text_area.backspace(model.view.input)
           Model(
             ..model,
-            view: View(
-              ..model.view,
-              input:,
-              history_index: 0,
-              history_draft: text_area.value(input),
-              command_selected: 0,
-            ),
+            view: model.view
+              |> view_set.input(input)
+              |> view_set.history_index(0)
+              |> view_set.history_draft(text_area.value(input))
+              |> view_set.command_selected(0),
           )
         }
       }
@@ -1662,26 +1633,26 @@ fn update_conversation_key(key: keys.Key, model: Model) -> Model {
         _, _ ->
           Model(
             ..model,
-            view: View(
-              ..model.view,
-              input: text_area.move_cursor_left(model.view.input),
+            view: view_set.input(
+              model.view,
+              text_area.move_cursor_left(model.view.input),
             ),
           )
       }
     keys.Right, False, False ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          input: text_area.move_cursor_right(model.view.input),
+        view: view_set.input(
+          model.view,
+          text_area.move_cursor_right(model.view.input),
         ),
       )
     keys.Home, False, False ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          input: text_area.move_to_line_start(model.view.input),
+        view: view_set.input(
+          model.view,
+          text_area.move_to_line_start(model.view.input),
         ),
       )
     keys.End, False, False ->
@@ -1693,9 +1664,9 @@ fn update_conversation_key(key: keys.Key, model: Model) -> Model {
         False ->
           Model(
             ..model,
-            view: View(
-              ..model.view,
-              input: text_area.move_to_line_end(model.view.input),
+            view: view_set.input(
+              model.view,
+              text_area.move_to_line_end(model.view.input),
             ),
           )
       }
@@ -1705,13 +1676,17 @@ fn update_conversation_key(key: keys.Key, model: Model) -> Model {
       let editor = text_area.textarea_new() |> text_area.with_max_lines(1)
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          input: text_area.insert_char(editor, model.view.input, character),
-          history_index: 0,
-          history_draft: text_area.value(model.view.input) <> character,
-          command_selected: 0,
-        ),
+        view: model.view
+          |> view_set.input(text_area.insert_char(
+            editor,
+            model.view.input,
+            character,
+          ))
+          |> view_set.history_index(0)
+          |> view_set.history_draft(
+            text_area.value(model.view.input) <> character,
+          )
+          |> view_set.command_selected(0),
       )
     }
     _, _, _ -> model
@@ -1730,7 +1705,7 @@ fn update_key_over_selection(key: keys.Key, model: Model) -> Model {
       let cleared = clear_selection(model)
       Model(
         ..cleared,
-        shared: Shared(..cleared.shared, notice: "selection cleared"),
+        shared: shared_set.notice(cleared.shared, "selection cleared"),
       )
     }
     Some(_), keys.Ctrl("g") -> update_key(key, model)
@@ -1763,12 +1738,10 @@ pub fn update_ready_key(key: keys.Key, model: Model) -> Model {
 pub fn clear_selection(model: Model) -> Model {
   Model(
     ..model,
-    view: View(
-      ..model.view,
-      selection: None,
-      selection_gutters: [],
-      caches: Caches(..model.view.caches, selection_frame: None),
-    ),
+    view: model.view
+      |> view_set.selection(None)
+      |> view_set.selection_gutters([])
+      |> view_set.caches(Caches(..model.view.caches, selection_frame: None)),
   )
 }
 
@@ -1797,10 +1770,10 @@ pub fn begin_selection(model: Model, at: geometry.Position) -> Model {
     Some(selected) -> {
       let cleared = clear_selection(model)
       Model(
-        shared: Shared(..cleared.shared, notice: "queued input selected"),
-        view: View(
-          ..cleared.view,
-          queue_editor: queue_editor.State(
+        shared: shared_set.notice(cleared.shared, "queued input selected"),
+        view: view_set.queue_editor(
+          cleared.view,
+          queue_editor.State(
             ..model.view.queue_editor,
             surface: queue_editor.Inspector,
             selected:,
@@ -1813,33 +1786,35 @@ pub fn begin_selection(model: Model, at: geometry.Position) -> Model {
       case layout.diff_navigation_hit(model, at) {
         Some(selected) ->
           Model(
-            shared: Shared(
-              ..model.shared,
-              worktree: worktree_view.State(
+            shared: shared_set.worktree(
+              model.shared,
+              worktree_view.State(
                 ..model.shared.worktree,
                 selected:,
                 focus: worktree_view.Navigator,
               ),
             ),
-            view: View(
-              ..model.view,
-              selection: None,
-              selection_gutters: [],
-              caches: Caches(..model.view.caches, selection_frame: None),
-              diff_scroll_offset: 0,
-            ),
+            view: model.view
+              |> view_set.selection(None)
+              |> view_set.selection_gutters([])
+              |> view_set.caches(
+                Caches(..model.view.caches, selection_frame: None),
+              )
+              |> view_set.diff_scroll_offset(0),
           )
           |> tui_model.invalidate_transcript
         None -> {
           let #(shown, selection_gutters) = selection_display(model)
           Model(
             ..model,
-            view: View(
-              ..model.view,
-              selection: Some(selection.start(layout.hit_area(model, at), at)),
-              selection_gutters:,
-              caches: Caches(..model.view.caches, selection_frame: Some(shown)),
-            ),
+            view: model.view
+              |> view_set.selection(
+                Some(selection.start(layout.hit_area(model, at), at)),
+              )
+              |> view_set.selection_gutters(selection_gutters)
+              |> view_set.caches(
+                Caches(..model.view.caches, selection_frame: Some(shown)),
+              ),
           )
         }
       }
@@ -1854,9 +1829,9 @@ pub fn extend_selection(model: Model, at: geometry.Position) -> Model {
     Some(selected) ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          selection: Some(selection.extend(selected, at)),
+        view: view_set.selection(
+          model.view,
+          Some(selection.extend(selected, at)),
         ),
       )
     None -> model
@@ -1877,12 +1852,12 @@ pub fn finish_selection(model: Model, at: geometry.Position) -> Model {
         True ->
           Model(
             ..model,
-            view: View(
-              ..model.view,
-              selection: None,
-              selection_gutters: [],
-              caches: Caches(..model.view.caches, selection_frame: None),
-            ),
+            view: model.view
+              |> view_set.selection(None)
+              |> view_set.selection_gutters([])
+              |> view_set.caches(
+                Caches(..model.view.caches, selection_frame: None),
+              ),
           )
         False -> {
           let shown =
@@ -1901,13 +1876,11 @@ pub fn finish_selection(model: Model, at: geometry.Position) -> Model {
           {
             let copied = write_clipboard(model, text)
             Model(
-              shared: Shared(
-                ..copied.shared,
-                notice: selection.copied_notice(
-                  list.length(selection.rows(selected)),
-                ),
+              shared: shared_set.notice(
+                copied.shared,
+                selection.copied_notice(list.length(selection.rows(selected))),
               ),
-              view: View(..copied.view, selection: Some(selected)),
+              view: view_set.selection(copied.view, Some(selected)),
             )
           }
         }
@@ -2042,11 +2015,11 @@ fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
       // The notice standing is left as it was rather than cleared, so the
       // status band keeps its height and the viewport does not move under
       // the reader as they enter scrollback.
-      shared: Shared(..model.shared, notice: case offset == 0 && !older {
+      shared: shared_set.notice(model.shared, case offset == 0 && !older {
         True -> "following output"
         False -> model.shared.notice
       }),
-      view: View(..model.view, scroll_offset: offset),
+      view: view_set.scroll_offset(model.view, offset),
     )
   case model.view.help_open || model.view.notes_open, model.shared.captured {
     True, _ | _, None -> model
@@ -2055,7 +2028,7 @@ fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
         True -> {
           let history = history_view.resume(model.shared.scrollback)
           inbound.apply_cut(
-            Model(..model, shared: Shared(..model.shared, scrollback: history)),
+            Model(..model, shared: shared_set.scrollback(model.shared, history)),
             cut,
             view,
           )
@@ -2075,7 +2048,7 @@ fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
             False -> history
           }
           inbound.service_history(
-            Model(..model, shared: Shared(..model.shared, scrollback: history)),
+            Model(..model, shared: shared_set.scrollback(model.shared, history)),
           )
         }
       }
@@ -2115,9 +2088,9 @@ pub fn request_history_for_view(model: Model) -> Model {
     Some(#(_, view)) ->
       Model(
         ..model,
-        shared: Shared(
-          ..model.shared,
-          scrollback: history_view.older(
+        shared: shared_set.scrollback(
+          model.shared,
+          history_view.older(
             model.shared.scrollback,
             history_view.branch(model.shared.scrollback, view).unloaded,
           ),
@@ -2207,8 +2180,8 @@ fn scroll_diff(model: Model, direction: ScrollDirection, rows: Int) -> Model {
       layout.diff_patch_height(model),
     )
   Model(
-    shared: Shared(..model.shared, notice: "scrolling captured changes"),
-    view: View(..model.view, diff_scroll_offset: offset),
+    shared: shared_set.notice(model.shared, "scrolling captured changes"),
+    view: view_set.diff_scroll_offset(model.view, offset),
   )
 }
 
@@ -2344,46 +2317,40 @@ fn update_queue_key(key: keys.Key, model: Model) -> Model {
     keys.Ctrl("c"), _ -> submit.quit(model)
     keys.Escape, queue_editor.Editor ->
       Model(
-        shared: Shared(
-          ..model.shared,
-          queue_request: queue_request.State(
+        shared: shared_set.queue_request(
+          model.shared,
+          queue_request.State(
             ..model.shared.queue_request,
             fetch: None,
             awaiting: None,
           ),
         ),
-        view: View(
-          ..model.view,
-          queue_editor: queue_editor.State(
-            ..state,
-            surface: queue_editor.Inspector,
-          ),
+        view: view_set.queue_editor(
+          model.view,
+          queue_editor.State(..state, surface: queue_editor.Inspector),
         ),
       )
     keys.Escape, queue_editor.Inspector ->
       Model(
-        shared: Shared(
-          ..model.shared,
-          queue_request: queue_request.State(
+        shared: shared_set.queue_request(
+          model.shared,
+          queue_request.State(
             ..model.shared.queue_request,
             fetch: None,
             awaiting: None,
           ),
         ),
-        view: View(
-          ..model.view,
-          queue_editor: queue_editor.State(
-            ..state,
-            surface: queue_editor.Closed,
-          ),
+        view: view_set.queue_editor(
+          model.view,
+          queue_editor.State(..state, surface: queue_editor.Closed),
         ),
       )
     keys.Up, queue_editor.Inspector ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          queue_editor: queue_editor.State(
+        view: view_set.queue_editor(
+          model.view,
+          queue_editor.State(
             ..state,
             selected: int.max(0, state.selected - 1),
             preview_scroll: 0,
@@ -2393,9 +2360,9 @@ fn update_queue_key(key: keys.Key, model: Model) -> Model {
     keys.Down, queue_editor.Inspector ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          queue_editor: queue_editor.State(
+        view: view_set.queue_editor(
+          model.view,
+          queue_editor.State(
             ..state,
             selected: int.min(
               int.max(0, list.length(layout.queue_rows(model)) - 1),
@@ -2411,9 +2378,9 @@ fn update_queue_key(key: keys.Key, model: Model) -> Model {
         queue_panel.max_scroll(layout.queue_rows(model), state.selected, area)
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          queue_editor: queue_editor.State(
+        view: view_set.queue_editor(
+          model.view,
+          queue_editor.State(
             ..state,
             preview_scroll: int.max(
               0,
@@ -2430,9 +2397,9 @@ fn update_queue_key(key: keys.Key, model: Model) -> Model {
         queue_panel.max_scroll(layout.queue_rows(model), state.selected, area)
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          queue_editor: queue_editor.State(
+        view: view_set.queue_editor(
+          model.view,
+          queue_editor.State(
             ..state,
             preview_scroll: int.min(
               maximum,
@@ -2457,10 +2424,10 @@ fn resume_queue_draft(model: Model) -> Model {
   case model.view.queue_editor.draft {
     Some(_) ->
       Model(
-        shared: Shared(..model.shared, queue_request: queue_request.new()),
-        view: View(
-          ..model.view,
-          queue_editor: queue_editor.State(
+        shared: shared_set.queue_request(model.shared, queue_request.new()),
+        view: view_set.queue_editor(
+          model.view,
+          queue_editor.State(
             ..model.view.queue_editor,
             surface: queue_editor.Editor,
             message: "Retained draft resumed · Ctrl+s saves · Esc returns to inspection",
@@ -2470,9 +2437,9 @@ fn resume_queue_draft(model: Model) -> Model {
     None ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          queue_editor: queue_editor.State(
+        view: view_set.queue_editor(
+          model.view,
+          queue_editor.State(
             ..model.view.queue_editor,
             message: "No retained queue draft to resume",
           ),
@@ -2496,9 +2463,9 @@ fn select_queue_input(model: Model) -> Model {
         True, _ ->
           Model(
             ..model,
-            view: View(
-              ..model.view,
-              queue_editor: queue_editor.State(
+            view: view_set.queue_editor(
+              model.view,
+              queue_editor.State(
                 ..state,
                 message: "Retained draft belongs to another input · e resumes it; browsing remains available",
               ),
@@ -2514,17 +2481,17 @@ fn select_queue_input(model: Model) -> Model {
             )
           tui_model.run_shared(
             Model(
-              shared: Shared(
-                ..model.shared,
-                queue_request: queue_request.State(
+              shared: shared_set.queue_request(
+                model.shared,
+                queue_request.State(
                   fetch: Some(fetch),
                   awaiting: None,
                   request_id: None,
                 ),
               ),
-              view: View(
-                ..model.view,
-                queue_editor: queue_editor.State(
+              view: view_set.queue_editor(
+                model.view,
+                queue_editor.State(
                   ..state,
                   message: "Waiting for the full queued input…",
                 ),
@@ -2536,9 +2503,9 @@ fn select_queue_input(model: Model) -> Model {
         False, snapshot_view.ReadOnly ->
           Model(
             ..model,
-            view: View(
-              ..model.view,
-              queue_editor: queue_editor.State(
+            view: view_set.queue_editor(
+              model.view,
+              queue_editor.State(
                 ..state,
                 message: "This queued input is read-only for this attachment",
               ),
@@ -2578,9 +2545,9 @@ fn reconcile_queue_draft(model: Model) -> Model {
         draft.namespace != session_model.queue_namespace(model.shared),
         Model(
           ..model,
-          view: View(
-            ..model.view,
-            queue_editor: queue_editor.State(
+          view: view_set.queue_editor(
+            model.view,
+            queue_editor.State(
               ..state,
               message: "Queue namespace changed; this retained draft cannot be rebound",
             ),
@@ -2596,16 +2563,16 @@ fn reconcile_queue_draft(model: Model) -> Model {
         )
       tui_model.run_shared(
         Model(
-          shared: Shared(
-            ..model.shared,
-            queue_request: queue_request.State(
+          shared: shared_set.queue_request(
+            model.shared,
+            queue_request.State(
               ..model.shared.queue_request,
               fetch: Some(fetch),
             ),
           ),
-          view: View(
-            ..model.view,
-            queue_editor: queue_editor.State(
+          view: view_set.queue_editor(
+            model.view,
+            queue_editor.State(
               ..state,
               message: "Explicitly reconciling with the current queue…",
             ),
@@ -2629,13 +2596,13 @@ fn save_queue_draft(model: Model) -> Model {
         True ->
           tui_model.send_frame(
             Model(
-              shared: Shared(
-                ..model.shared,
-                pending_submission: Some(OverlaySubmission),
+              shared: shared_set.pending_submission(
+                model.shared,
+                Some(OverlaySubmission),
               ),
-              view: View(
-                ..model.view,
-                queue_editor: queue_editor.State(
+              view: view_set.queue_editor(
+                model.view,
+                queue_editor.State(
                   ..model.view.queue_editor,
                   draft: Some(
                     queue_editor.Draft(..draft, delivery: queue_editor.Saving),
@@ -2653,9 +2620,9 @@ fn save_queue_draft(model: Model) -> Model {
         False ->
           Model(
             ..model,
-            view: View(
-              ..model.view,
-              queue_editor: queue_editor.State(
+            view: view_set.queue_editor(
+              model.view,
+              queue_editor.State(
                 ..model.view.queue_editor,
                 message: "Attachment changed or command lane is busy; draft retained",
               ),
@@ -2675,9 +2642,9 @@ fn edit_queue_text(
     Some(draft) if draft.delivery == queue_editor.Editable ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          queue_editor: queue_editor.State(
+        view: view_set.queue_editor(
+          model.view,
+          queue_editor.State(
             ..model.view.queue_editor,
             draft: Some(queue_editor.Draft(..draft, input: edit(draft.input))),
           ),
@@ -2730,9 +2697,9 @@ fn update_diff_key(key: keys.Key, model: Model) -> Model {
     keys.Enter ->
       Model(
         ..model,
-        shared: Shared(
-          ..model.shared,
-          worktree: worktree_view.State(
+        shared: shared_set.worktree(
+          model.shared,
+          worktree_view.State(
             ..model.shared.worktree,
             focus: worktree_view.Composer,
           ),
@@ -2741,14 +2708,14 @@ fn update_diff_key(key: keys.Key, model: Model) -> Model {
     keys.Char("r") -> inbound.refresh_worktree(model)
     keys.Escape ->
       Model(
-        shared: Shared(
-          ..model.shared,
-          worktree: worktree_view.State(
+        shared: shared_set.worktree(
+          model.shared,
+          worktree_view.State(
             ..model.shared.worktree,
             focus: worktree_view.Composer,
           ),
         ),
-        view: View(..model.view, diff_view: DiffHidden),
+        view: view_set.diff_view(model.view, DiffHidden),
       )
     keys.PageUp -> scroll_diff(model, Older, layout.diff_patch_height(model))
     keys.PageDown -> scroll_diff(model, Newer, layout.diff_patch_height(model))
@@ -2764,11 +2731,11 @@ fn select_diff_file(model: Model, delta: Int) -> Model {
       list.length(worktree_view.labels(model.shared.worktree)) - 1,
     )
   Model(
-    shared: Shared(
-      ..model.shared,
-      worktree: worktree_view.State(..model.shared.worktree, selected:),
+    shared: shared_set.worktree(
+      model.shared,
+      worktree_view.State(..model.shared.worktree, selected:),
     ),
-    view: View(..model.view, diff_scroll_offset: 0),
+    view: view_set.diff_scroll_offset(model.view, 0),
   )
   |> tui_model.invalidate_transcript
 }
@@ -2788,66 +2755,63 @@ fn update_summary_key(key: keys.Key, model: Model) -> Model {
     keys.Escape ->
       Model(
         ..model,
-        view: View(..model.view, summary_surface: queue_editor.Closed),
+        view: view_set.summary_surface(model.view, queue_editor.Closed),
       )
     keys.Char("r") ->
       tui_model.run_shared(
         Model(
-          shared: Shared(..model.shared, jobs_refresh: worktree_view.Requested),
-          view: View(..model.view, summary_scroll: 0),
+          shared: shared_set.jobs_refresh(model.shared, worktree_view.Requested),
+          view: view_set.summary_scroll(model.view, 0),
         ),
         surfaces.service_jobs_read,
       )
     keys.Char("1") ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          summary_tab: summary_panel.Completion,
-          summary_scroll: 0,
-        ),
+        view: model.view
+          |> view_set.summary_tab(summary_panel.Completion)
+          |> view_set.summary_scroll(0),
       )
     keys.Char("2") ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          summary_tab: summary_panel.Usage,
-          summary_scroll: 0,
-        ),
+        view: model.view
+          |> view_set.summary_tab(summary_panel.Usage)
+          |> view_set.summary_scroll(0),
       )
     keys.Char("3") ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          summary_tab: summary_panel.Jobs,
-          summary_scroll: 0,
-        ),
+        view: model.view
+          |> view_set.summary_tab(summary_panel.Jobs)
+          |> view_set.summary_scroll(0),
       )
     keys.Char("[") -> select_summary_job(model, -1)
     keys.Char("]") -> select_summary_job(model, 1)
     keys.Up ->
       Model(
         ..model,
-        view: View(..model.view, summary_scroll: int.max(0, current - 1)),
+        view: view_set.summary_scroll(model.view, int.max(0, current - 1)),
       )
     keys.Down ->
       Model(
         ..model,
-        view: View(..model.view, summary_scroll: int.min(maximum, current + 1)),
+        view: view_set.summary_scroll(model.view, int.min(maximum, current + 1)),
       )
     keys.PageUp ->
       Model(
         ..model,
-        view: View(..model.view, summary_scroll: int.max(0, current - viewport)),
+        view: view_set.summary_scroll(
+          model.view,
+          int.max(0, current - viewport),
+        ),
       )
     keys.PageDown ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          summary_scroll: int.min(maximum, current + viewport),
+        view: view_set.summary_scroll(
+          model.view,
+          int.min(maximum, current + viewport),
         ),
       )
     _ -> model
@@ -2861,15 +2825,13 @@ fn select_summary_job(model: Model, delta: Int) -> Model {
     ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          summary_job_selected: int.clamp(
+        view: model.view
+          |> view_set.summary_job_selected(int.clamp(
             model.view.summary_job_selected + delta,
             0,
             int.max(0, list.length(board.jobs) - 1),
-          ),
-          summary_scroll: 0,
-        ),
+          ))
+          |> view_set.summary_scroll(0),
       )
     summary_panel.Completion, _
     | summary_panel.Usage, _
@@ -2887,21 +2849,18 @@ fn update_context_key(key: keys.Key, model: Model) -> Model {
     keys.Escape ->
       Model(
         ..model,
-        shared: Shared(
-          ..model.shared,
-          context: context_view.State(..state, surface: context_view.Hidden),
+        shared: shared_set.context(
+          model.shared,
+          context_view.State(..state, surface: context_view.Hidden),
         ),
       )
     keys.Char("r") ->
       tui_model.run_shared(
         Model(
           ..model,
-          shared: Shared(
-            ..model.shared,
-            context: context_view.State(
-              ..context_view.invalidate(state),
-              scroll: 0,
-            ),
+          shared: shared_set.context(
+            model.shared,
+            context_view.State(..context_view.invalidate(state), scroll: 0),
           ),
         ),
         surfaces.service_context_read,
@@ -2909,16 +2868,12 @@ fn update_context_key(key: keys.Key, model: Model) -> Model {
     keys.Char("a") ->
       Model(
         ..model,
-        shared: Shared(
-          ..model.shared,
-          context: context_view.State(
-            ..state,
-            scroll: 0,
-            surface: case state.surface {
-              context_view.All -> context_view.Overview
-              context_view.Overview | context_view.Hidden -> context_view.All
-            },
-          ),
+        shared: shared_set.context(
+          model.shared,
+          context_view.State(..state, scroll: 0, surface: case state.surface {
+            context_view.All -> context_view.Overview
+            context_view.Overview | context_view.Hidden -> context_view.All
+          }),
         ),
       )
     keys.Up -> scroll_context(model, -1)
@@ -2940,9 +2895,9 @@ fn scroll_context(model: Model, delta: Int) -> Model {
   let current = int.min(model.shared.context.scroll, maximum)
   Model(
     ..model,
-    shared: Shared(
-      ..model.shared,
-      context: context_view.State(
+    shared: shared_set.context(
+      model.shared,
+      context_view.State(
         ..model.shared.context,
         scroll: int.clamp(current + delta, 0, maximum),
       ),

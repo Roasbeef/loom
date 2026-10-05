@@ -46,7 +46,7 @@ import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import session_view/attempt
-import session_view/model.{Shared}
+import session_view/shared_set
 import tui/access_overlay
 import tui/agents
 import tui/attachment
@@ -67,6 +67,7 @@ import tui/model.{
 import tui/peer_links
 import tui/recording
 import tui/session_selector
+import tui/view_set
 import tui/workspace
 import weft
 
@@ -100,7 +101,10 @@ pub fn drain_reconnect(model: Model) -> Model {
           apply_reconnect_reply(
             Model(
               ..model,
-              view: View(..model.view, reconnect: ReconnectAttempting(awaiting)),
+              view: view_set.reconnect(
+                model.view,
+                ReconnectAttempting(awaiting),
+              ),
             ),
             reply,
           )
@@ -123,7 +127,7 @@ fn apply_reconnect_reply(
     // entry per daemon death, and the reconnect is offered once per death.
     weft.PulledOutcome(weft.Completed(value: host, ..)) -> {
       let model =
-        Model(..model, view: View(..model.view, reconnect: ReconnectSpent))
+        Model(..model, view: view_set.reconnect(model.view, ReconnectSpent))
       let model = tui_model.adopt_daemon(model, host)
       reattach_after_reconnect(model)
     }
@@ -151,9 +155,9 @@ fn reattach_after_reconnect(model: Model) -> Model {
     "" ->
       Model(
         ..model,
-        shared: Shared(
-          ..model.shared,
-          notice: "daemon reconnected; no session was attached",
+        shared: shared_set.notice(
+          model.shared,
+          "daemon reconnected; no session was attached",
         ),
       )
     session ->
@@ -161,7 +165,10 @@ fn reattach_after_reconnect(model: Model) -> Model {
         begin_open(
           Model(
             ..model,
-            shared: Shared(..model.shared, notice: "reattaching to " <> session),
+            shared: shared_set.notice(
+              model.shared,
+              "reattaching to " <> session,
+            ),
           ),
           session,
         ),
@@ -175,7 +182,7 @@ fn reattach_after_reconnect(model: Model) -> Model {
 // than a loop; `/sessions` remains the explicit way back.
 fn reconnect_failed(model: Model, reason: String) -> Model {
   tui_model.append_error(
-    Model(..model, view: View(..model.view, reconnect: ReconnectSpent)),
+    Model(..model, view: view_set.reconnect(model.view, ReconnectSpent)),
     "reconnect failed: " <> reason <> "; press /sessions to reconnect",
   )
 }
@@ -202,19 +209,17 @@ pub fn begin_open(model: Model, session: String) -> Model {
           job.Attach(job.OpenSession(host.control, session), attach_timeout_ms),
         )
       Model(
-        shared: Shared(..model.shared, notice: "opening session " <> session),
-        view: View(
-          ..model.view,
-          overlay: NoOverlay,
-          next_attempt: model.view.next_attempt + 1,
-          candidate: attachment.opening(
+        shared: shared_set.notice(model.shared, "opening session " <> session),
+        view: model.view
+          |> view_set.overlay(NoOverlay)
+          |> view_set.next_attempt(model.view.next_attempt + 1)
+          |> view_set.candidate(attachment.opening(
             key,
             recording.trace(
               model.shared.recorder,
               attempt.Id(model.view.next_attempt),
             ),
-          ),
-        ),
+          )),
       )
     }
   }
@@ -263,9 +268,9 @@ pub fn load_catalogue_collection(
         )
       Model(
         ..model,
-        shared: Shared(
-          ..model.shared,
-          notice: "loading authorized session metadata",
+        shared: shared_set.notice(
+          model.shared,
+          "loading authorized session metadata",
         ),
       )
     }
@@ -284,9 +289,9 @@ fn start_control(
     tui_model.start_job(model, job.Control(host.control, request))
   Model(
     ..model,
-    view: View(
-      ..model.view,
-      control_request: Some(ControlRequest(job.awaiting(key), None)),
+    view: view_set.control_request(
+      model.view,
+      Some(ControlRequest(job.awaiting(key), None)),
     ),
   )
 }
@@ -304,7 +309,10 @@ pub fn begin_rename(model: Model, session: String, name: String) -> Model {
       tui_model.append_error(model, "daemon control is disconnected")
     None, Some(host) -> {
       let model = start_control(model, host, job.Rename(session, name))
-      Model(..model, shared: Shared(..model.shared, notice: "renaming session"))
+      Model(
+        ..model,
+        shared: shared_set.notice(model.shared, "renaming session"),
+      )
     }
   }
 }
@@ -333,7 +341,7 @@ pub fn begin_removal(
       let model = start_control(model, host, job.Remove(session, removal))
       Model(
         ..model,
-        shared: Shared(..model.shared, notice: case removal {
+        shared: shared_set.notice(model.shared, case removal {
           job.Archive -> "stopping and archiving session " <> session
           job.Restore -> "restoring session " <> session
           job.PermanentlyDelete ->
@@ -381,7 +389,7 @@ fn apply_control_reply(
 ) -> Model {
   case reply {
     weft.NotYet ->
-      Model(..model, view: View(..model.view, control_request: Some(run)))
+      Model(..model, view: view_set.control_request(model.view, Some(run)))
     weft.PulledOutcome(weft.Completed(value:, ..)) ->
       staged(model, run, Ok(value))
     weft.PulledOutcome(weft.Failed(error:, ..)) ->
@@ -395,12 +403,12 @@ fn apply_control_reply(
       staged(model, run, Error("control request did not complete"))
     weft.RunLost(reason) ->
       tui_model.append_error(
-        Model(..model, view: View(..model.view, control_request: None)),
+        Model(..model, view: view_set.control_request(model.view, None)),
         string.inspect(reason),
       )
     weft.AllDelivered ->
       finish_control(
-        Model(..model, view: View(..model.view, control_request: None)),
+        Model(..model, view: view_set.control_request(model.view, None)),
         run.result,
       )
   }
@@ -414,9 +422,9 @@ fn staged(
 ) -> Model {
   Model(
     ..model,
-    view: View(
-      ..model.view,
-      control_request: Some(ControlRequest(..run, result: Some(result))),
+    view: view_set.control_request(
+      model.view,
+      Some(ControlRequest(..run, result: Some(result))),
     ),
   )
 }
@@ -440,35 +448,33 @@ fn finish_control(model: Model, result) {
         _ -> selector
       }
       Model(
-        shared: Shared(..model.shared, notice: case collection {
+        shared: shared_set.notice(model.shared, case collection {
           session_selector.Active ->
             "Enter opens · d archives · a shows archived sessions"
           session_selector.Archived ->
             "Enter restores · d permanently deletes · a shows active sessions"
         }),
-        view: View(
-          ..model.view,
-          overlay: DaemonSelector(selector),
-          activity_poll: case model.view.activity_poll {
+        view: model.view
+          |> view_set.overlay(DaemonSelector(selector))
+          |> view_set.activity_poll(case model.view.activity_poll {
             ActivityAsking(..) -> model.view.activity_poll
             ActivityDue | ActivityResting(..) -> ActivityDue
-          },
-        ),
+          }),
       )
       |> tui_model.invalidate_frame
     }
 
     Some(Ok(SessionRenamed(row))) ->
       Model(
-        shared: Shared(
-          ..model.shared,
-          session_label: case row.session_id == model.shared.session {
-            True -> Some(#(row.session_id, row.name))
-            False -> model.shared.session_label
-          },
-          notice: "renamed session to " <> row.name,
-        ),
-        view: View(..model.view, overlay: case model.view.overlay {
+        shared: model.shared
+          |> shared_set.session_label(
+            case row.session_id == model.shared.session {
+              True -> Some(#(row.session_id, row.name))
+              False -> model.shared.session_label
+            },
+          )
+          |> shared_set.notice("renamed session to " <> row.name),
+        view: view_set.overlay(model.view, case model.view.overlay {
           DaemonSelector(selector) ->
             DaemonSelector(session_selector.renamed(selector, row))
           NoOverlay
@@ -513,8 +519,8 @@ fn finish_control(model: Model, result) {
 // row never opens it, and no metadata acknowledgement retargets attachment.
 fn catalogue_removed(model: Model, id: String, description: String) -> Model {
   Model(
-    shared: Shared(..model.shared, notice: description <> id),
-    view: View(..model.view, overlay: case model.view.overlay {
+    shared: shared_set.notice(model.shared, description <> id),
+    view: view_set.overlay(model.view, case model.view.overlay {
       DaemonSelector(selector) ->
         DaemonSelector(session_selector.without(selector, id))
       NoOverlay
@@ -558,7 +564,7 @@ pub fn create_session(model: Model) -> Model {
       let #(model, key) = tui_model.start_job(model, job.Configure(options))
       Model(
         ..model,
-        view: View(..model.view, configuring: Some(job.awaiting(key))),
+        view: view_set.configuring(model.view, Some(job.awaiting(key))),
       )
     }
   }
@@ -593,7 +599,7 @@ pub fn drain_configuration(model: Model) -> Model {
           apply_configuration_reply(
             Model(
               ..model,
-              view: View(..model.view, configuring: Some(awaiting)),
+              view: view_set.configuring(model.view, Some(awaiting)),
             ),
             reply,
           )
@@ -605,7 +611,7 @@ fn apply_configuration_reply(
   model: Model,
   reply: job.ConfigurationReply,
 ) -> Model {
-  let finished = Model(..model, view: View(..model.view, configuring: None))
+  let finished = Model(..model, view: view_set.configuring(model.view, None))
   case reply {
     weft.NotYet -> model
 
@@ -679,23 +685,23 @@ fn create_session_configured(model: Model, config: String) -> Model {
       let #(model, job_key) =
         tui_model.start_job(model, job.Attach(route, attach_timeout_ms))
       Model(
-        shared: Shared(
-          ..model.shared,
-          next_id: model.shared.next_id + 1,
-          notice: "creating a new session",
-        ),
+        shared: model.shared
+          |> shared_set.next_id(model.shared.next_id + 1)
+          |> shared_set.notice("creating a new session"),
         view: View(
-          ..model.view,
+          ..{
+            model.view
+            |> view_set.overlay(NoOverlay)
+            |> view_set.next_attempt(model.view.next_attempt + 1)
+            |> view_set.candidate(attachment.opening(
+              job_key,
+              recording.trace(
+                model.shared.recorder,
+                attempt.Id(model.view.next_attempt),
+              ),
+            ))
+          },
           creation_key: Some(key),
-          overlay: NoOverlay,
-          next_attempt: model.view.next_attempt + 1,
-          candidate: attachment.opening(
-            job_key,
-            recording.trace(
-              model.shared.recorder,
-              attempt.Id(model.view.next_attempt),
-            ),
-          ),
         ),
       )
     }
@@ -728,15 +734,15 @@ pub fn flag_value(
 pub fn update_peer_link_manager(key, model, state) {
   case peer_links.update(key, state) {
     peer_links.Continue(next) ->
-      Model(..model, view: View(..model.view, overlay: PeerLinkManager(next)))
+      Model(..model, view: view_set.overlay(model.view, PeerLinkManager(next)))
       |> tui_model.invalidate_frame
     peer_links.Close ->
       Model(
-        shared: Shared(
-          ..model.shared,
-          notice: "peer links closed; composer draft retained",
+        shared: shared_set.notice(
+          model.shared,
+          "peer links closed; composer draft retained",
         ),
-        view: View(..model.view, overlay: case state.return_to {
+        view: view_set.overlay(model.view, case state.return_to {
           peer_links.Conversation -> NoOverlay
           peer_links.Agents(inspector) -> AgentInspector(inspector)
           peer_links.Sessions(selector) -> DaemonSelector(selector)
@@ -828,11 +834,11 @@ fn begin_peer_workspace_state(model: Model, state: peer_links.State) {
           job.LoadPeerWorkspace(state.source_session, state.source_strand),
         )
       Model(
-        shared: Shared(
-          ..model.shared,
-          notice: "loading owner-authorized peer grants",
+        shared: shared_set.notice(
+          model.shared,
+          "loading owner-authorized peer grants",
         ),
-        view: View(..model.view, overlay: PeerLinkManager(state)),
+        view: view_set.overlay(model.view, PeerLinkManager(state)),
       )
       |> tui_model.invalidate_frame
     }
@@ -857,7 +863,7 @@ fn begin_peer_inspection(
         start_control(model, host, job.InspectPeers(session, strand, after))
       Model(
         ..model,
-        shared: Shared(..model.shared, notice: case after {
+        shared: shared_set.notice(model.shared, case after {
           None -> "refreshing peer grants"
           Some(_) -> "loading next peer page"
         }),
@@ -878,7 +884,7 @@ fn begin_peer_sessions(model: Model, after: String, revision: Int) {
         start_control(model, host, job.LoadPeerSessions(after, revision))
       Model(
         ..model,
-        shared: Shared(..model.shared, notice: "loading more target sessions"),
+        shared: shared_set.notice(model.shared, "loading more target sessions"),
       )
     }
   }
@@ -919,9 +925,9 @@ fn run_peer_mutation(model: Model, command: control_protocol.Command) {
       let model = start_control(model, host, job.MutatePeers(command))
       Model(
         ..model,
-        shared: Shared(
-          ..model.shared,
-          notice: "sending one directional peer operation",
+        shared: shared_set.notice(
+          model.shared,
+          "sending one directional peer operation",
         ),
       )
     }
@@ -945,9 +951,9 @@ fn finish_peer_workspace(
         Ok(inspection) ->
           Model(
             ..model,
-            view: View(
-              ..model.view,
-              overlay: PeerLinkManager(peer_links.loaded(
+            view: view_set.overlay(
+              model.view,
+              PeerLinkManager(peer_links.loaded(
                 peer_links.catalogue(state, page),
                 page.sessions,
                 inspection.inspection,
@@ -959,9 +965,9 @@ fn finish_peer_workspace(
         Error(reason) ->
           Model(
             ..model,
-            view: View(
-              ..model.view,
-              overlay: PeerLinkManager(peer_links.failed(state, reason)),
+            view: view_set.overlay(
+              model.view,
+              PeerLinkManager(peer_links.failed(state, reason)),
             ),
           )
           |> tui_model.invalidate_frame
@@ -981,9 +987,9 @@ fn finish_peer_sessions(model: Model, page: control_protocol.Page) {
     PeerLinkManager(state) ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          overlay: PeerLinkManager(case state.session_revision {
+        view: view_set.overlay(
+          model.view,
+          PeerLinkManager(case state.session_revision {
             Some(revision) if revision == page.revision ->
               peer_links.append_sessions(state, page)
             _ -> peer_links.failed(state, "target session catalogue changed")
@@ -1012,9 +1018,9 @@ fn finish_peer_inspection(
         Ok(page) ->
           Model(
             ..model,
-            view: View(
-              ..model.view,
-              overlay: PeerLinkManager(case after {
+            view: view_set.overlay(
+              model.view,
+              PeerLinkManager(case after {
                 None ->
                   peer_links.loaded(
                     state,
@@ -1030,9 +1036,9 @@ fn finish_peer_inspection(
         Error(reason) ->
           Model(
             ..model,
-            view: View(
-              ..model.view,
-              overlay: PeerLinkManager(peer_links.failed(state, reason)),
+            view: view_set.overlay(
+              model.view,
+              PeerLinkManager(peer_links.failed(state, reason)),
             ),
           )
           |> tui_model.invalidate_frame
@@ -1054,7 +1060,7 @@ fn finish_peer_operation(model: Model, document: json.JsonValue) {
       begin_peer_inspection(
         Model(
           ..model,
-          view: View(..model.view, overlay: PeerLinkManager(notice)),
+          view: view_set.overlay(model.view, PeerLinkManager(notice)),
         ),
         state.source_session,
         state.source_strand,
@@ -1076,18 +1082,18 @@ fn finish_control_failure(model: Model, reason: String) {
     PeerLinkManager(state) ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          overlay: PeerLinkManager(peer_links.failed(state, reason)),
+        view: view_set.overlay(
+          model.view,
+          PeerLinkManager(peer_links.failed(state, reason)),
         ),
       )
       |> tui_model.invalidate_frame
     AccessManager(state) ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          overlay: AccessManager(access_overlay.failed(state, reason)),
+        view: view_set.overlay(
+          model.view,
+          AccessManager(access_overlay.failed(state, reason)),
         ),
       )
       |> tui_model.invalidate_frame
@@ -1126,7 +1132,7 @@ pub fn begin_access(model: Model) -> Model {
         )
       Model(
         ..model,
-        view: View(..model.view, overlay: AccessManager(access_overlay.new())),
+        view: view_set.overlay(model.view, AccessManager(access_overlay.new())),
       )
       |> tui_model.invalidate_frame
     }
@@ -1145,8 +1151,8 @@ pub fn update_access_overlay(key, model: Model, state: access_overlay.State) {
     access_overlay.Continue(next) -> show_access(model, next)
     access_overlay.Close ->
       Model(
-        shared: Shared(..model.shared, notice: "access overlay closed"),
-        view: View(..model.view, overlay: NoOverlay),
+        shared: shared_set.notice(model.shared, "access overlay closed"),
+        view: view_set.overlay(model.view, NoOverlay),
       )
       |> tui_model.invalidate_frame
     access_overlay.ReadPrincipals(next, after) ->
@@ -1184,7 +1190,7 @@ fn access_command(change: access_overlay.Change) -> control_protocol.Command {
 }
 
 fn show_access(model: Model, state: access_overlay.State) -> Model {
-  Model(..model, view: View(..model.view, overlay: AccessManager(state)))
+  Model(..model, view: view_set.overlay(model.view, AccessManager(state)))
   |> tui_model.invalidate_frame
 }
 
@@ -1351,9 +1357,9 @@ fn start_activity(model: Model, host: job.Daemon, ids: List(String)) -> Model {
   // `drain_activity` when no picker is open to take it. A quit cancels it.
   Model(
     ..model,
-    view: View(
-      ..model.view,
-      activity_poll: ActivityAsking(job.awaiting(key), ids),
+    view: view_set.activity_poll(
+      model.view,
+      ActivityAsking(job.awaiting(key), ids),
     ),
   )
 }
@@ -1384,9 +1390,9 @@ pub fn drain_activity(model: Model) -> Model {
           apply_activity_reply(
             Model(
               ..model,
-              view: View(
-                ..model.view,
-                activity_poll: ActivityAsking(awaiting, asked),
+              view: view_set.activity_poll(
+                model.view,
+                ActivityAsking(awaiting, asked),
               ),
             ),
             asked,
@@ -1407,11 +1413,9 @@ fn apply_activity_reply(
     weft.AllDelivered | weft.RunLost(_) ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          activity_poll: ActivityResting(
-            model.shared.stamp.now_ms + activity_interval_ms,
-          ),
+        view: view_set.activity_poll(
+          model.view,
+          ActivityResting(model.shared.stamp.now_ms + activity_interval_ms),
         ),
       )
     weft.NotYet | weft.PulledOutcome(_) -> model
@@ -1427,13 +1431,9 @@ fn observe_activity(
     DaemonSelector(selector) ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          overlay: DaemonSelector(session_selector.observe(
-            selector,
-            asked,
-            rows,
-          )),
+        view: view_set.overlay(
+          model.view,
+          DaemonSelector(session_selector.observe(selector, asked, rows)),
         ),
       )
       |> tui_model.invalidate_frame
