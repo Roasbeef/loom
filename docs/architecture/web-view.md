@@ -240,12 +240,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:261`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:286`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:2365`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:2681`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -899,6 +899,54 @@ other's fields (`text` for a rename, `name` and `shareable` for a creation), so 
 submit reaches one handler and one message. `ui_route_test`, `ui_socket_test`, `ui_sessions_test` and
 `home_test` read each refusal and the admission.
 
+### The browser login and the home's sign-ins
+
+Protocol-change/065's eighth pull request lets a browser come back to its
+home a month after `loom ui`, with no `loom`. `loom ui` with no `--session`
+(and without `--no-remember`) mints a `Remembered` home ticket; its exchange,
+in `server.entered`, also sets a login: a token whose chain is an HMAC from the
+daemon's root key (`<state-dir>/browser.key`, read once at `--ui` start by
+`ui_login.root_key`), whose caveats say whose it is, its ceiling, its reach,
+its expiry (thirty days, fixed), its login key and the digest of a nonce, and
+whose only record on the daemon is one catalogue row of kind `browser`, keyed by
+the digest of the token's public identifier. The token is a second cookie,
+`loom_login`, scoped to `Path=/ui/l/<key>` and living to the token's expiry; the
+exchange page carries the key and a nonce, which `web_view_enter.js` keeps in
+`localStorage` under `loom.login.<key>`. `host/login` is the pure part (grammar,
+chain, intersection), and the identifier authenticates nothing: every
+credential lookup names the kind its digest was made as (`storage/access`), and
+a wire path can only make a bearer.
+
+The bookmark `/ui/l/<key>/home` is a `GET` that serves a fixed page
+(`page.login_page`), whose script (`web_view_resume.js`) posts the stored nonce
+to the same path under `form-action 'self'`, the one document with that policy.
+`POST /ui/l/<key>/home` (`server.login_resume`) checks the sender is this
+origin's own page, a small declared form, a control-class parser permit and the
+body; then `ui_login.resume` opens each of up to four `loom_login` values in
+turn (parse, chain, caveats, the path's key, the nonce, the clock) and only for
+the first that holds asks the registry whether its row is active, a login, and
+the token's principal. The answer is the exchange page of a new home, a
+`Resumed` one, whose ticket is minted and redeemed in the same request. A login
+narrowed to one session (`s`) mints that session's page instead, never a home.
+Every refusal is one `401` document that echoes nothing.
+
+Pages know their login. A ticket carries the `Issuer` (fingerprint, expiry, key)
+of the context that minted it, and the page keeps it (`ui_sessions.login_of`);
+every ticket a page mints carries the page's `Origin` and login too, so a chain
+from the bookmark stays `Resumed` and keeps its login, and a device link inherits
+the issuing login's expiry. The home reads the principal's own logins with its
+sessions (`Start.signins`, `ui_socket.signins_read`) and draws them below the
+table (`view/signins`, beneath `home.signins_path`): "This browser" marks the
+page's own, "Sign out" and "Sign out everywhere" end the principal's logins
+(`manager.revoke_login`, `revoke_logins`; the registry drops its frame memo, so
+every page the login minted ends at its next request), and a fresh home alone has
+"Sign in another device", a ten-minute `Remembered` ticket
+(`ui_socket.device_link_for`) that costs one place of the grant allowance an
+invitation shares and is shown once in a `<loom-copy subject="device">` box. A
+resumed home is handed no device capability and the daemon refuses the request
+from one. The admin page and its Admin button, which only a fresh home may
+reach, are protocol-change/065's fifth pull request and not built here.
+
 ## Expanding a row
 
 The terminal's `Ctrl+g` expands every row at once; the page lets the reader
@@ -986,7 +1034,11 @@ keeps a page from acting.
 | Loopback `Host` | DNS rebinding: an attacker's page reaches the listener under its own host name and gets `403`. | `ui_http.loopback_host` |
 | Single-use ticket | A replayed or forwarded link. 60 s, redeemed once inside one actor, digest stored, minted only for a member. | `ui_sessions.mint`, `ui_sessions.redeem` |
 | `Sec-Fetch-Site` | Another site, or another loopback port, driving the exchange or navigating to the keyed page. Only `none` and `same-origin` pass. | `ui_http.navigation_allowed` |
-| Cookie attributes | Script reading the cookie (`HttpOnly`) and cross-site requests sending it (`SameSite=Strict`). No `Max-Age`; the UI session lives 8 hours. | `ui_http.set_cookie` |
+| Cookie attributes | Script reading the cookie (`HttpOnly`) and cross-site requests sending it (`SameSite=Strict`). No `Max-Age`; the UI session lives 8 hours. The login cookie has the same attributes and a `Max-Age` to its token's expiry. | `ui_http.set_cookie`, `ui_http.set_login_cookie` |
+| Login chain | A forged, altered or narrowed-past token. Verified from the root key before the catalogue is asked; every comparison is constant time. | `host/login`, `ui_login.resume` |
+| Login nonce, key and sender | A cookie planted by another port or copied alone. The nonce stays in `localStorage` and is posted by the daemon's own page; the key is in the path; `Sec-Fetch-Site: same-origin` is required. | `web_view_resume.js`, `ui_http.same_origin_post`, `ui_login.resume` |
+| Credential kind | A login's public identifier presented as a bearer. Every lookup names the kind its digest was made as, and a presented bearer is exactly 64 lowercase hex. | `storage/access`, `server.credential` |
+| Fresh and resumed | A stolen bookmark making a second credential. Only a `Fresh` home mints a device link, and a chain carries its origin. | `ui_socket.device_link_for`, `ui_sessions.Origin` |
 | Page key | The cookie reaching other ports. Its `Path=/ui/p/<key>` means a browser sends it only to a path holding the key. The unkeyed page route is `404`. | `ui_http.route`, `page_grant` |
 | Page nonce | A server on another port that learned the key. The nonce is delivered once, in the exchange body, and kept in `sessionStorage`, which is scoped by port. The socket compares its digest in constant time. | `page.enter`, `ui_sessions.admits` |
 | `Origin` on upgrade | A page on another origin, including another loopback port, opening the socket. It must equal `http://` and the request's `Host`. | `ui_http.origin_matches` |
