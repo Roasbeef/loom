@@ -14,8 +14,8 @@ through explicit grants. Models can compose tools into typed programs, keep
 actors alive across turns, and coordinate children with durable named steps.
 Programs run concurrently within kernel-enforced execution boundaries.
 
-[Get started](#get-started) · [Code mode](#code-mode) ·
-[Multiplayer](#multiplayer-and-subagents) ·
+[Get started](#get-started) · [Multiplayer](#multiplayer-and-subagents) ·
+[Web UI](#web-ui) · [Code mode](#code-mode) ·
 [Async collaboration](#async-collaboration) · [Advisor mode](#advisor-mode) ·
 [Language servers](#language-servers) ·
 [Architecture](docs/loom-design.md) ·
@@ -27,6 +27,7 @@ Programs run concurrently within kernel-enforced execution boundaries.
 |---|---|
 | **Durable sessions** | SQLite-backed conversation trees, recorded tool intents and results, resumable work, and forks that preserve the original history. |
 | **Multiplayer** | Several terminals and collaborators in one session, with attributed prompts, presence, shared approvals, and operator/observer roles. |
+| **Web UI** | A browser home page that lists and opens sessions, session creation and admin controls for the owner, and a thirty-day browser login — served from the same loopback daemon, no extra install. |
 | **Code mode** | Gleam programs that compose tools, run concurrently, and retain actors across turns in a background execution. |
 | **Agent collaboration** | Granted peer messaging across strands and resident sessions, plus named workflow steps that reuse durable child results. |
 | **BEAM concurrency** | Lightweight processes and OTP supervision for agents, streams, and tool execution, with independent lifecycles and explicit cancellation. |
@@ -38,14 +39,13 @@ Programs run concurrently within kernel-enforced execution boundaries.
 
 The terminal includes streaming responses, syntax-highlighted code and diffs,
 image attachments, tool activity, and a session picker. A shared daemon keeps
-sessions running independently of the terminal displaying them. Context
+sessions running independently of the terminal or browser displaying them. Context
 compaction, searchable history, and workspace memory support longer projects.
 
 ## Get started
 
-Build from source on Linux or macOS. You'll need the
-Gleam 1.19.0,
-**Erlang/OTP 29+**, **Go 1.26+**, `rebar3`, and native build tools (a C compiler, `make`, and
+Build from source on Linux or macOS. You'll need
+**Gleam 1.19.0**, **Erlang/OTP 29+**, **Go 1.26+**, `rebar3`, and native build tools (a C compiler, `make`, and
 `strip`). Linux sandboxing also requires bubblewrap, user namespaces, and
 delegated cgroup v2 resources; see the [sandbox guide](packages/sandbox/README.md)
 and [Docker guide](docs/docker.md) for host setup.
@@ -149,6 +149,38 @@ use a secure tunnel or TLS proxy to the loopback-bound daemon.
 See [multiplayer](docs/architecture/multiplayer.md) and
 [session management](docs/architecture/sessions.md) for access and lifecycle
 details.
+
+## Web UI
+
+A daemon started with `--ui` (or `[daemon] ui = true`) serves a browser interface
+alongside the terminal. `loom ui` prints a single-use link to your home page, which
+lists sessions by workspace and opens any of them, saved sessions included. Opening
+the home signs the browser in for thirty days, so its bookmark works without `loom ui`.
+
+From the home page, the owner can create sessions, stop a running session with
+mid-turn confirmation, rename, archive, or delete saved sessions, and open an admin
+page. The admin page manages access: inviting collaborators, adjusting operator or
+observer roles, revoking access or active sign-ins, and rotating credentials. Any
+member can set their display name. Browser session pages stream live transcripts,
+and operators can prompt, steer, and resolve approvals directly from the browser.
+
+```sh
+loom ui                                 # Open your home page (starts the daemon if needed)
+loom ui --session SESSION_ID --operate  # Open a specific session as an operator
+loom access list                        # List who holds access to your sessions
+```
+
+![Loom web home page listing sessions by workspace with status and actions](docs/images/web-home.png)
+
+*The web home page listing resident and saved sessions by workspace with owner controls.*
+
+Invitees without `loom` installed can redeem an invitation claim in their browser
+at `http://<host>/ui/claim`, enter their token, choose a display name, and land on
+their home page with a browser login. The daemon binds to loopback only; remote
+browsers connect through a secure tunnel such as `ssh -L`.
+
+See [the web view](docs/architecture/web-view.md) for routes, authentication, and
+security details.
 
 ## Async collaboration
 
@@ -446,7 +478,7 @@ See the [MCP guide](docs/architecture/mcp.md) and
 [extension guide](docs/architecture/extensions.md) for configuration and the
 extension lifecycle.
 
-### Language servers
+### Language server profiles
 
 The agent can ask a language server where a symbol is defined, who uses it,
 and what a rename would touch, and sees compiler diagnostics after its edits.
