@@ -64,6 +64,7 @@ pub fn a_push_to_an_idle_lane_is_reduced_on_arrival_test() {
     simulate.message(simulation(), component.Opened(wire()))
     |> arrive(page_fixture.transfer("observer", []))
     |> arrive(page_fixture.first_reads_refused())
+    |> arrive(page_fixture.decided_read_refused())
   assert !in_flight(following)
 
   let pushed =
@@ -388,6 +389,7 @@ pub fn a_goal_write_is_read_on_arrival_by_the_web_lane_test() {
     simulate.message(simulation(), component.Opened(wire()))
     |> arrive(page_fixture.transfer("observer", []))
     |> arrive(page_fixture.first_reads_refused())
+    |> arrive(page_fixture.decided_read_refused())
   assert !in_flight(following) as "all capture-triggered reads have settled"
   let invalidated =
     simulate.message(
@@ -405,7 +407,7 @@ pub fn a_goal_write_is_read_on_arrival_by_the_web_lane_test() {
       invalidated,
       component.Arrived([
         connection_event.Incoming(
-          "{\"v\":2,\"reply_to\":8,\"event\":\"snapshot\",\"body\":{\"mode\":\"goal\",\"board\":{\"status\":\"none\",\"observed_at_ms\":0}}}",
+          "{\"v\":2,\"reply_to\":9,\"event\":\"snapshot\",\"body\":{\"mode\":\"goal\",\"board\":{\"status\":\"none\",\"observed_at_ms\":0}}}",
         ),
       ]),
     )
