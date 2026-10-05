@@ -51,3 +51,32 @@ The review report digest is
 `393db4650414c6fcc586df166e15f82407d6a3bda95075b9201f76720c0be2b3`.
 The [report design](../design-notes/distributed-final-results.md) records the
 remaining assembly obligations and exact custody budget.
+
+## Actual compiler fingerprint correction
+
+A later trace to the production compiler exposed a mismatch missed by the
+injected fixtures and initial review. `build.fingerprint_directory` returns the
+`tools/blob.ref_for` spelling: `sha256-` plus 64 lowercase hexadecimal digits.
+Metadata originally accepted only bare hex, so real successful compilation
+could not be retained. The separate metadata validator now preserves that exact
+compiler fingerprint. Result URI content digests retain their original bare-hex
+contract; no compatibility form was added solely for unreleased test fixtures.
+
+A real jailed execution reproduced the failure before correction: the renderer
+could not retain its report and the owner rejected a final without prior report
+custody. This is a distinct regression witness, not a compiler failure. The
+corrected live producer/reader replay is still in progress.
+
+Root's corrected gates pass 186 core tests plus 72 JavaScript finite-value
+checks, 182 cap tests, 202 storage tests and 707 tools tests. The focused client
+replay passes 101 tests with no skips. Independent review rechecked the codec,
+renderer, custody and reader against the corrected metadata and found no second
+routine producer-format mismatch. Explicit metadata bounds still refuse excessive
+observations rather than truncate them.
+
+The updated independent report digest is
+`71558120e9371b49275aa66c2dbe62d0af1225c21b58ffce019a1d99918cecac`.
+The first parallel Make invocation collided while rebuilding shared TUI shipment
+prerequisites; a subsequent serial invocation exposed one stale JavaScript test
+fixture. Both failed runs are retained in evidence. After correcting that fixture,
+the complete serial package command returned zero.

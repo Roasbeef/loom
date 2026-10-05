@@ -29,7 +29,7 @@ pub fn chunks_preserve_value_and_typed_observations_test() {
   let assert Ok(saved) = report.load_result(reference)
     as "Both slices form one valid report."
   assert saved.outcome == report.Completed(value)
-  assert saved.manifest_hash == digest
+  assert saved.manifest_hash == "sha256-" <> digest
   assert saved.build
     == report.Reported(["filesystem"], ["network"], report.Complete)
   assert saved.node == report.Unreported("missing")
@@ -174,7 +174,7 @@ fn chunk(reference: String, offset: Int, bytes: BitArray) -> mp.MsgPackValue {
 fn fixture(outcome: rv.Outcome) -> #(String, BitArray) {
   let assert Ok(metadata) =
     rv.metadata(
-      digest,
+      "sha256-" <> digest,
       rv.Enforcement(
         rv.Reported(["filesystem"], ["network"], rv.Complete),
         rv.Unreported("missing"),
