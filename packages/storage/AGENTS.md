@@ -561,6 +561,23 @@ with these forks: they define the same modules.
   generation counter.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
 
+## Complete code-mode report custody
+
+`owner_custody.FinalProfile` is immutable pre-effect admission data. Ordinary
+wrappers keep `OrdinaryFinal`; trusted code-mode assembly selects
+`CodeModeReportV1` and reserves the full report and final allowance. Format 5
+adds canonical complete-report bytes and their host SHA-256 identity. A report
+COMMIT precedes final-reference COMMIT; report-only history cannot authorize a
+replacement run or manufacture a final.
+
+`open_with_reports` validates scalar headers and quota before reading one BLOB
+at a time. Format 4 is refused unchanged before new-column access. Startup
+checks WAL and synchronous FULL readback. The ordinary row projection excludes
+report BLOBs; named queries in `src/storage/sql/owner_reports.sql` select aligned
+chunks of at most 65,536 bytes after exact session, result-entry, digest, length
+and profile checks. Collection preserves the complete report and actual charge.
+No SQL string is assembled in production; generated bindings remain Parrot/sqlc.
+
 ## Owner remote custody (protocol 067)
 
 `storage/owner_custody` owns a separate per-session SQLite format, leaving
@@ -590,7 +607,7 @@ its opaque `CommittedResult` authorizes `collect`, which freezes immutable
 identity and UUID fences permanently. Broker release grants no collection
 authority. Frozen rows continue to consume bounded capacity.
 
-The owner journal is format version 4. Previous unshipped formats are refused:
+The owner journal is format version 5. Previous unshipped formats are refused:
 they lack a run discharge proof and cannot safely be migrated to `Released`.
 `admit_fresh` atomically returns `Fresh` with `run_custody = 'unreleased'`
 only when the reservation was inserted; `Retained` is never dispatch permission.
