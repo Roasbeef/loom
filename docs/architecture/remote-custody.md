@@ -169,8 +169,20 @@ custody prerequisites. It retains the report and its actual byte charge while
 releasing unused allowance. The companion must follow the session through
 archive, restore and compaction; transcript export alone transfers no report
 custody. The [report design](../design-notes/distributed-final-results.md) specifies
-these lifecycle and authenticated router obligations. Production reader routing
-and the complete satellite acceptance run remain integration work.
+these lifecycle obligations. `client/codemode.over_reports` now installs the
+owner-local reader, model-visible serviced capability and 261-admission ceiling
+from one authenticated owner/session pair. It applies to Workspace and
+Orchestration; Extension and Resident do not inherit session report authority.
+The router handles known malformed requests before workspace fallback and reads
+through ScopedService under the original invocation deadline and cancellation.
+A result URI alone grants no authority.
+
+Every reply fits 66,048 bytes including its complete CapResult and framing
+prefix. The per-invocation ceiling covers all references together, giving at most
+17,238,528 serialized reply bytes. Default registered-host installation, session
+companion lifecycle and complete remote satellite acceptance remain integration
+work. The [router review](../review/distributed-report-router.md) separates the
+component and configuration evidence from those obligations.
 
 ## Physical service and command custody
 

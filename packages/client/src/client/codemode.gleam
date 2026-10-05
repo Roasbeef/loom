@@ -214,6 +214,8 @@ import client/internal/ffi_os
 import client/jobseam
 import client/jobtools
 import client/mcp as mcp_wiring
+import client/remote/custodian
+import client/remote/report_router
 import client/scheduleseam
 import client/scratch
 import codemode/artifact
@@ -264,6 +266,17 @@ import tools/tool
 /// the node holds one for its whole life, so anything less starves the
 /// program's first capability call. `launch` enforces the same floor.
 pub const minimum_outstanding = 2
+
+/// Owner-local report authority, installed independently of workspace services.
+pub type ReportReader {
+  /// Both identity and custodian come from authenticated session assembly.
+  ReportReader(
+    /// The session-owned history door; the URI grants no authority.
+    owner: custodian.Handle,
+    /// The exact authenticated session selected for this execution.
+    session: ids.SessionId,
+  )
+}
 
 /// Everything the production seam needs beyond one request.
 ///
@@ -325,6 +338,8 @@ pub type Config {
     /// The shared blackboard data door, installed independently of agent
     /// orchestration. None removes its imports, signatures, and routing.
     notes: Option(notes.Door),
+    /// The authenticated report reader; None removes its route and ceiling.
+    reports: Option(ReportReader),
     /// Where the session keeps its content-addressed blobs, and
     /// therefore where a `report.emit` artifact lands.
     ///
@@ -629,6 +644,18 @@ pub fn over_lsp(config: Config, door: Option(query.Door)) -> Config {
   Config(..config, lsp: door)
 }
 
+/// Installs the report route, capability advertisement and shared admission cap.
+/// All three read this single choice; a workspace never supplies report authority.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.over_reports(config, Some(codemode.ReportReader(owner, session)))
+/// ```
+pub fn over_reports(config: Config, reader: Option(ReportReader)) -> Config {
+  Config(..config, reports: reader)
+}
+
 /// Adds finite capture beside an installed native LSP door.
 ///
 /// ## Examples
@@ -833,6 +860,10 @@ pub fn seam_caps_on(config: Config, seam: vet_policy.Seam) -> List(String) {
     _, _ -> seam_caps(seam)
   }
   let caps = list.append(base, mcp_wiring.serviced_caps(seam_mcp(config, seam)))
+  let caps = case reports_on(config, seam) {
+    None -> caps
+    Some(_) -> list.append(caps, [report_router.capability])
+  }
   let noted = case notes_on(config, seam) {
     None -> caps
     Some(_) -> list.append(caps, notes.serviced_caps)
@@ -944,6 +975,7 @@ pub fn default_config(
     fixed_deadline: None,
     wrap_router: fn(_request, router) { router },
     notes: None,
+    reports: None,
     blob_root: workspace <> "/" <> blob_directory,
     scratch: scratch.none(),
     // No scheduling plane by default, the same posture `scratch.none()`
@@ -2598,10 +2630,18 @@ fn surface_router(
       }
     }
   }
-  case notes_on(config, vetting_seam(request.seam)) {
+  let router = case notes_on(config, vetting_seam(request.seam)) {
     None -> router
     Some(door) ->
       notes.routing(door, request.strand, request.source_index, over: router)
+  }
+
+  // Historical report authority belongs to the authenticated owner even when
+  // the current workspace and every physical effect live on another executor.
+  case reports_on(config, vetting_seam(request.seam)) {
+    None -> router
+    Some(ReportReader(owner, session)) ->
+      report_router.routing(owner, session, over: router)
   }
 }
 
@@ -3538,6 +3578,10 @@ fn surface_ceilings(
           |> list.filter(fn(ceiling) { ceiling.cap != artifact.emit_cap }),
       )
   }
+  let ceilings = case reports_on(config, vetting_seam(request.seam)) {
+    None -> ceilings
+    Some(_) -> list.append(ceilings, report_router.ceilings())
+  }
   let ceilings = case notes_on(config, vetting_seam(request.seam)) {
     None -> ceilings
     Some(_) -> list.append(ceilings, notes.ceilings())
@@ -3776,6 +3820,15 @@ fn directory_of(path: String) -> String {
 fn lsp_on(config: Config, seam: vet_policy.Seam) -> Option(query.Door) {
   case seam {
     vet_policy.WorkspaceSeam | vet_policy.OrchestrationSeam -> config.lsp
+    vet_policy.ExtensionSeam | vet_policy.ResidentSeam -> None
+  }
+}
+
+// Historical reports belong to the authenticated model session. Extensions
+// and resident hooks do not inherit that session authority.
+fn reports_on(config: Config, seam: vet_policy.Seam) -> Option(ReportReader) {
+  case seam {
+    vet_policy.WorkspaceSeam | vet_policy.OrchestrationSeam -> config.reports
     vet_policy.ExtensionSeam | vet_policy.ResidentSeam -> None
   }
 }
