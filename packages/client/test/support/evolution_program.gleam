@@ -1,6 +1,6 @@
 //// A model-authored executable skill exercises JSON input and a real cap process.
 //// The retained source has no entrypoint until the native current-caller adapter
-//// supplies fresh JSON. Its author check and both invocations execute the broker's
+//// supplies fresh JSON. Its author check and every invocation execute the broker's
 //// real jailed process path rather than returning a precomputed fixture result.
 
 import core/json
@@ -97,5 +97,51 @@ pub fn source_with_protected(path: String, public_path: String) -> String {
   <> "    Error(proc.ProcDenied(code, reason)) -> report.text(\"protected native refusal: \" <> code <> \" \" <> reason)\n"
   <> "    Error(proc.SpawnFailed(reason)) -> report.text(\"protected spawn refusal: \" <> reason)\n"
   <> "    Error(proc.ProcUnavailable(reason)) -> report.failure(\"protected probe unavailable: \" <> reason)\n"
+  <> "  }\n}\n"
+}
+
+/// Adds a target whose accessibility changes only with the calling session.
+/// The same retained source proves readable bytes in the author and an exact
+/// named OS denial with no bytes in a second caller. Both first execute a public
+/// control, so neither a broken process runner nor a generic refusal can pass.
+///
+/// ## Examples
+///
+/// `source_with_caller_policy(native_secret, public, caller_secret)` compares callers.
+pub fn source_with_caller_policy(
+  protected: String,
+  public: String,
+  caller_target: String,
+) -> String {
+  let target = json.to_string(json.String(caller_target))
+  let public_literal = json.to_string(json.String(public))
+  string.replace(
+    source_with_protected(protected, public),
+    "    Ok(say) -> native_echo(say)",
+    "    Ok(\"probe-caller-policy\") -> caller_policy_read()\n"
+      <> "    Ok(say) -> native_echo(say)",
+  )
+  <> "\nfn caller_policy_read() -> report.Outcome {\n"
+  <> "  case proc.run(proc.command([\"/bin/cat\", "
+  <> public_literal
+  <> "])) {\n"
+  <> "    Ok(output) if output.exit_code == 0 && output.stdout == \"public readable control\\n\" -> caller_policy_target()\n"
+  <> "    Ok(_) -> report.failure(\"caller public control did not read its expected bytes\")\n"
+  <> "    Error(_) -> report.failure(\"caller public control did not execute\")\n"
+  <> "  }\n}\n\nfn caller_policy_target() -> report.Outcome {\n"
+  <> "  let path = "
+  <> target
+  <> "\n\n"
+  <> "  case proc.run(proc.command([\"/bin/cat\", path])) {\n"
+  <> "    Ok(output) if output.exit_code == 0 && output.stdout == \"caller policy readable bytes\\n\" -> report.text(output.stdout)\n"
+  <> "    Ok(output) -> {\n"
+  <> "      let named_denial = string.contains(output.stderr, path <> \": Permission denied\")\n"
+  <> "        || string.contains(output.stderr, path <> \": Operation not permitted\")\n"
+  <> "        || string.contains(output.stderr, path <> \": No such file or directory\")\n"
+  <> "      case output.exit_code == 1 && output.stdout == \"\" && named_denial {\n"
+  <> "        True -> report.text(\"caller policy target hidden\")\n"
+  <> "        False -> report.failure(\"caller policy target had an unexpected result\")\n"
+  <> "      }\n    }\n"
+  <> "    Error(_) -> report.failure(\"caller policy target did not reach the OS read\")\n"
   <> "  }\n}\n"
 }
