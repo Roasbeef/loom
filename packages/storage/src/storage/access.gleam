@@ -679,6 +679,72 @@ pub fn claim(
   now_ms: Int,
   equal: fn(String, String) -> Bool,
 ) -> Result(Claimed, ClaimRefusal) {
+  case presented.kind {
+    Bearer -> claim_as(store, claim, AsBearer(presented), name, now_ms, equal)
+    Browser ->
+      Error(ClaimStore(Invalid("a bearer claim presents a bearer digest")))
+  }
+}
+
+/// `claim` for the browser claim (protocol-change/065, PR 9): the credential
+/// the claim binds is a login, written as `issue_login` writes one, ending at
+/// `expires_at_ms`. A login row with no expiry would be listed as live forever,
+/// so a claim bound as a login has no way to omit it. Every other rule is
+/// `claim`'s: a refused name binds nothing and leaves the claim open, and an
+/// exact replay of the bound login answers the principal as it stands.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.claim_login(store, claim, login, None, now_ms, now_ms + thirty_days, equal)
+/// ```
+@internal
+pub fn claim_login(
+  store: Catalogue,
+  claim: ClaimDigest,
+  presented: Digest,
+  name: Option(String),
+  now_ms: Int,
+  expires_at_ms: Int,
+  equal: fn(String, String) -> Bool,
+) -> Result(Claimed, ClaimRefusal) {
+  case presented.kind {
+    Browser ->
+      claim_as(
+        store,
+        claim,
+        AsLogin(presented, expires_at_ms),
+        name,
+        now_ms,
+        equal,
+      )
+    Bearer ->
+      Error(ClaimStore(Invalid("a browser claim presents a browser digest")))
+  }
+}
+
+// The credential a claim binds and, for a login, when it ends. Making the
+// expiry part of the login's variant is what keeps a claim from writing a login
+// row that never expires.
+type Presented {
+  AsBearer(Digest)
+  AsLogin(Digest, expires_at_ms: Int)
+}
+
+fn presented_digest(presented: Presented) -> Digest {
+  case presented {
+    AsBearer(digest) | AsLogin(digest, _) -> digest
+  }
+}
+
+fn claim_as(
+  store: Catalogue,
+  claim: ClaimDigest,
+  presented: Presented,
+  name: Option(String),
+  now_ms: Int,
+  equal: fn(String, String) -> Bool,
+) -> Result(Claimed, ClaimRefusal) {
   let outcome =
     catalogue.atomic(store, fn() {
       // A refusal commits an empty transaction, since every refusal precedes
@@ -701,7 +767,7 @@ pub fn claim(
 fn redeem(
   store: Catalogue,
   claim: ClaimDigest,
-  presented: Digest,
+  presented: Presented,
   name: Option(String),
   now_ms: Int,
   equal: fn(String, String) -> Bool,
@@ -718,13 +784,14 @@ fn redeem(
     // again. The credential bound before is the only one that repeats the
     // success, and only while it still authenticates.
     ClaimedBy(bound) -> {
-      use found <- result.try(case credential(store, bound, presented.kind) {
+      let wanted = presented_digest(presented)
+      use found <- result.try(case credential(store, bound, wanted.kind) {
         // The row exists, since the claim references it, so only a bound
         // credential of the other kind is absent from this lookup.
         Error(Missing) -> Error(ConflictingClaim)
         other -> stored(other)
       })
-      case found.state, equal(bound.value, presented.value) {
+      case found.state, equal(bound.value, wanted.value) {
         Revoked, _ -> Error(UnknownClaim)
         Active, True -> claimed(store, row.principal_id)
         Active, False -> Error(ConflictingClaim)
@@ -738,11 +805,12 @@ fn redeem(
 fn bind(
   store: Catalogue,
   row: ClaimRow,
-  presented: Digest,
+  credential: Presented,
   name: Option(String),
   now_ms: Int,
   equal: fn(String, String) -> Bool,
 ) -> Result(Claimed, ClaimRefusal) {
+  let presented = presented_digest(credential)
   use <- bool.guard(
     when: now_ms >= row.expires_at_ms,
     return: Error(ExpiredClaim),
@@ -772,18 +840,19 @@ fn bind(
   // A login's row records when it began, as `issue_login` writes it.
   use Nil <- result.try(
     stored(
-      catalogue.statement(store, case presented.kind {
-        Bearer ->
+      catalogue.statement(store, case credential {
+        AsBearer(_) ->
           sql.insert_access_credential(
             presented.value,
             row.principal_id,
             kind_name(Bearer),
           )
-        Browser ->
-          sql.insert_access_claimed_login(
+        AsLogin(_, expires_at_ms) ->
+          sql.insert_access_login(
             presented.value,
             row.principal_id,
             Some(now_ms),
+            Some(expires_at_ms),
           )
       }),
     ),
@@ -925,6 +994,10 @@ pub fn principals_page(
   })
 }
 
+// A principal's credential is its active bearer. A login that a claim bound is
+// the credential that claim made (the browser claim has no bearer), so it is
+// listed here too, with the instant the claim was redeemed, and counted beside
+// as one of the principal's logins. Any other login is only counted.
 fn credential_summary(
   store: Catalogue,
   id: String,
@@ -932,7 +1005,7 @@ fn credential_summary(
 ) -> Result(CredentialSummary, Error) {
   use active <- result.try(catalogue.query(
     store,
-    sql.principal_active_credential(id),
+    sql.principal_active_credential(id, Some(now_ms)),
   ))
   case active {
     [row, ..] -> {

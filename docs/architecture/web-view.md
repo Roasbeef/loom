@@ -245,7 +245,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:2976`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:2982`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -1012,6 +1012,37 @@ from one. The Admin button, which only a fresh home may reach, is the same
 rule (`fresh_home`), and the admin page lists each principal's sign-ins with a
 two-step revoke (`grants.Logins`, `grants.RevokeSignin`), made as the owner at the
 click like its other changes.
+
+### The browser claim
+
+Protocol-change/065's ninth pull request lets an invitee with no `loom` redeem a
+claim in a browser. `GET /ui/claim` serves a fixed form (`page.claim_page`: a
+token field, an optional name field and the words that say the inviter's name is
+kept when it is left empty), under `form-action 'self'`, the second document with
+that policy. `POST /ui/claim` (`server.claim_submit`) takes the sender (this
+origin's own page, `none` refused as for the resume), a small declared form and
+the body, and then checks the token's shape (`loomclaim_` and 64 lowercase hex,
+after trimming a paste's spaces) before anything is reserved or looked up, so a
+bearer, a login or a stray word is refused having cost no lookup and no place.
+Only a claim-shaped token takes the claim's reservation (`root.acquire_claim`,
+one per claim as `/v2/claim` takes it), so a second post of a claim in flight is
+refused. `ui_login.claim` draws a login, binds its row to the claim with
+the name in the one transaction that spends it (`manager.claim_login`,
+`access.claim_login`), and signs the token afterwards for the principal the
+catalogue names. The invitee holds no bearer: the login is the credential the
+claim made, listed by `principals.list` as the principal's credential with the
+claim's instant and counted in `logins`.
+
+The answer is the exchange page of a new `Fresh` `Operator` home, minted and
+redeemed in the same request, whose page is the browser of the login (attached as
+a remembered exchange's is), and `server.enter_response` sets the page cookie, the
+login cookie and the login's key and nonce in the body. A refusal that a person
+can correct is the form again with one fixed paragraph over it (`page.ClaimNotice`:
+not a claim, unknown or withdrawn, expired, already used, a name the catalogue
+refuses, the daemon busy), under the form's policy and with no cookie; a name that
+is refused binds nothing and leaves the claim open. A lost reply cannot be
+replayed, since the login drawn for it is gone: the owner rotates, which voids the
+login with the rest.
 
 ## Expanding a row
 

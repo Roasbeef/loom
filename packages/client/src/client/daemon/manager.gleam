@@ -431,6 +431,17 @@ type Message(instance) {
     Subject(Result(access.Claimed, ClaimError)),
   )
 
+  /// The browser claim: `Claim` for a `Browser` digest, with the instant the
+  /// login it binds ends.
+  ClaimLogin(
+    access.ClaimDigest,
+    access.Digest,
+    Option(String),
+    Int,
+    Int,
+    Subject(Result(access.Claimed, ClaimError)),
+  )
+
   /// The `/v2/claim` upgrade's filter: the claim exists and is not void.
   ClaimKnown(access.ClaimDigest, Subject(Result(Nil, Error)))
 
@@ -753,6 +764,36 @@ pub fn claim(
     credential,
     name,
     now_ms,
+    _,
+  ))
+  |> result.unwrap(Error(ClaimUnavailable))
+}
+
+/// Redeems a claim for a browser login (protocol-change/065, PR 9): `claim` with
+/// a `Browser` digest, which the catalogue writes as a login row ending at
+/// `expires_at_ms`, so the sign-in lists with its expiry as every other does.
+/// The name, the clock and the unknown outcome are `claim`'s.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.claim_login(registry, claim, login, None, now_ms:, expires_at_ms:)
+/// ```
+@internal
+pub fn claim_login(
+  manager: Manager(instance),
+  claim: access.ClaimDigest,
+  credential: access.Digest,
+  name: Option(String),
+  now_ms now_ms: Int,
+  expires_at_ms expires_at_ms: Int,
+) -> Result(access.Claimed, ClaimError) {
+  call.try_call(manager.commands, waiting: 5000, sending: ClaimLogin(
+    claim,
+    credential,
+    name,
+    now_ms,
+    expires_at_ms,
     _,
   ))
   |> result.unwrap(Error(ClaimUnavailable))
@@ -1859,6 +1900,29 @@ fn handle(
             credential,
             name,
             now_ms,
+            same_digest,
+          )
+          |> result.map_error(ClaimRefused)
+        ShuttingDown -> Error(ClaimUnavailable)
+      }
+      let book = Book(..book, authority: dict.new())
+      process.send(reply, outcome)
+      sm.keep(book)
+    }
+
+    // The browser claim binds a login in place of a bearer, and records when
+    // it ends, in the same transaction (protocol-change/065, PR 9). It drops
+    // the memo for the reason `Claim` does.
+    ClaimLogin(claim, credential, name, now_ms, expires_at_ms, reply) -> {
+      let outcome = case phase {
+        Ready ->
+          access.claim_login(
+            book.catalogue,
+            claim,
+            credential,
+            name,
+            now_ms,
+            expires_at_ms,
             same_digest,
           )
           |> result.map_error(ClaimRefused)

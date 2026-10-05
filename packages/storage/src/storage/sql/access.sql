@@ -61,7 +61,9 @@ SELECT principal_id, display_name, kind FROM access_principals WHERE principal_i
 -- name: PrincipalActiveCredential :many
 SELECT c.digest, k.claimed_at_ms FROM access_credentials AS c
 LEFT JOIN access_claims AS k ON k.credential_digest = c.digest
-WHERE c.principal_id = ? AND c.state = 'active' AND c.kind = 'bearer'
+WHERE c.principal_id = ? AND c.state = 'active'
+  AND (c.kind = 'bearer' OR k.claimed_at_ms IS NOT NULL)
+  AND (c.expires_at_ms IS NULL OR c.expires_at_ms > ?)
 ORDER BY c.digest LIMIT 1;
 
 -- name: PrincipalOpenClaim :many
@@ -85,10 +87,6 @@ VALUES (?, ?, 'active', 'browser', ?, ?);
 -- name: InsertAccessLoginFrom :exec
 INSERT INTO access_credentials(digest, principal_id, state, kind, issued_at_ms, expires_at_ms, issued_by)
 VALUES (?, ?, 'active', 'browser', ?, ?, ?);
-
--- name: InsertAccessClaimedLogin :exec
-INSERT INTO access_credentials(digest, principal_id, state, kind, issued_at_ms)
-VALUES (?, ?, 'active', 'browser', ?);
 
 -- name: PrincipalLogins :many
 SELECT digest, issued_at_ms, last_resumed_ms, expires_at_ms, issued_by FROM access_credentials

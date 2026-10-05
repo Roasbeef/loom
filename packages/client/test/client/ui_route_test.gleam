@@ -40,6 +40,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import gleam/uri
 import host/bootstrap
 import host/claim
 import host/login
@@ -168,6 +169,7 @@ fn fixture_lasting(
   let assert Ok(sessions) =
     ui_sessions.start(ui_sessions.Settings(
       now: bootstrap.monotonic_time_ms,
+      wall: bootstrap.system_time_ms,
       entropy: token.production_entropy(),
       ticket_ms: ui_sessions.ticket_ms,
       device_ms: ui_sessions.device_ms,
@@ -392,6 +394,10 @@ fn with_page(answer, seen: server.PageGrant) {
   |> response.set_header("x-page-origin", case seen.grant.origin {
     ui_sessions.Fresh -> "fresh"
     ui_sessions.Resumed -> "resumed"
+  })
+  |> response.set_header("x-page-ceiling", case seen.grant.ceiling {
+    access.Operator -> "operator"
+    access.Observer -> "observer"
   })
   |> response.set_header("x-page-login", case seen.login {
     Some(issuer) -> issuer.fingerprint
@@ -2304,6 +2310,7 @@ pub fn the_way_home_is_checked_against_the_registry_test() {
     let assert Ok(tickets) =
       ui_sessions.start(ui_sessions.Settings(
         now: bootstrap.monotonic_time_ms,
+        wall: bootstrap.system_time_ms,
         entropy: token.production_entropy(),
         ticket_ms: ui_sessions.ticket_ms,
         device_ms: ui_sessions.device_ms,
@@ -3338,6 +3345,7 @@ fn standing_of(
   let assert Ok(tickets) =
     ui_sessions.start(ui_sessions.Settings(
       now: bootstrap.monotonic_time_ms,
+      wall: bootstrap.system_time_ms,
       entropy: token.production_entropy(),
       ticket_ms: ui_sessions.ticket_ms,
       device_ms: ui_sessions.device_ms,
@@ -3864,6 +3872,7 @@ fn creator_standing(
   let assert Ok(tickets) =
     ui_sessions.start(ui_sessions.Settings(
       now: bootstrap.monotonic_time_ms,
+      wall: bootstrap.system_time_ms,
       entropy: token.production_entropy(),
       ticket_ms: ui_sessions.ticket_ms,
       device_ms: ui_sessions.device_ms,
@@ -6507,5 +6516,489 @@ pub fn the_admin_page_lists_each_principals_sign_ins_and_ends_one_test() {
     let after = read()
     assert string.contains(after, "ui-admin-signins:1:" <> fingerprint(other))
     assert !string.contains(after, fingerprint(theirs))
+  })
+}
+
+// --- the browser claim (protocol-change/065, PR 9) ------------------------------
+
+// An invitation as the owner's control command makes one: a member of
+// `session` at `role` with an open claim, whose token the reply carries.
+fn invitation(
+  port: Int,
+  credential: String,
+  session: String,
+  principal: String,
+  role: String,
+) -> String {
+  let reply =
+    control(port, credential, "sessions.invite", [
+      #("session_id", json.String(session)),
+      #("principal_id", json.String(principal)),
+      #("name", json.String("Invited " <> principal)),
+      #("role", json.String(role)),
+    ])
+  assert field(reply, "event") == Ok(json.String("sessions.invite"))
+  let assert Ok(body) = field(reply, "body") as "the invitation has a body"
+  let assert Ok(json.String(token)) = field(body, "claim")
+    as "the invitation carries a claim"
+  token
+}
+
+// The claim form's body as a browser encodes it.
+fn claim_form(token: String, name: String) -> String {
+  "token=" <> uri.percent_encode(token) <> "&name=" <> uri.percent_encode(name)
+}
+
+// The claim, as the claim form posts it: this origin's `Sec-Fetch-Site`, the
+// form's type and length. `more` overrides or adds a header.
+fn claim_post(
+  port: Int,
+  body: String,
+  more: List(#(String, String)),
+) -> Answer {
+  let defaults = [
+    host(port),
+    #("sec-fetch-site", "same-origin"),
+    #("content-type", "application/x-www-form-urlencoded"),
+    #("content-length", int.to_string(string.byte_size(body))),
+  ]
+  send_request(port, "POST", "/ui/claim", list.append(defaults, more), body)
+}
+
+fn redeemed_in_browser(port: Int, token: String, name: String) -> Answer {
+  claim_post(port, claim_form(token, name), [])
+}
+
+// A refusal of a claim is the form again with the reason's fixed words over it:
+// the status, the notice, the policy that lets the form post, no cookie, and
+// nothing the request carried.
+fn claim_refused(
+  answer: Answer,
+  status: Int,
+  notice: page.ClaimNotice,
+  token: String,
+) -> Nil {
+  assert answer.status == status
+  assert string.contains(
+    answer.body,
+    "<p class=\"claim-notice\" role=\"alert\">"
+      <> page.claim_notice(notice)
+      <> "</p>",
+  )
+  assert string.contains(answer.body, "name=\"token\"")
+
+  // A value shorter than the claim's prefix, which the fixed words themselves
+  // name, is too short to tell an echo from them.
+  assert string.length(token) <= string.length("loomclaim_")
+    || !string.contains(answer.body, token)
+  assert set_cookies(answer) == []
+  assert string.contains(policy_header(answer), "form-action 'self'")
+  Nil
+}
+
+fn policy_header(answer: Answer) -> String {
+  let assert Ok(policy) =
+    list.key_find(answer.headers, "content-security-policy")
+    as "every answer carries the policy"
+  policy
+}
+
+// The states of the claim's row, as the catalogue holds it, read straight from
+// the file.
+fn claim_rows(state_root: String, token: String) -> List(String) {
+  catalogue_rows(
+    state_root,
+    "SELECT state FROM access_claims WHERE digest = ?",
+    [
+      sqlight.text(claim.digest(token)),
+    ],
+  )
+}
+
+// The form is a fixed document: two fields, no script of its own, no value from
+// the request, under the one policy that lets a form post to this origin. It is
+// a navigation, from outside any page or from this origin.
+pub fn the_claim_form_is_one_fixed_document_test() {
+  fixture(fn(_, port, _) {
+    let path = "/ui/claim"
+    let open = fn(site) {
+      get(port, path, [host(port), #("sec-fetch-site", site)])
+    }
+    let first = open("none")
+    assert first.status == 200
+    assert first.body == page.claim_page(None)
+    assert string.contains(first.body, "name=\"token\"")
+    assert string.contains(first.body, "name=\"name\"")
+    assert string.contains(first.body, page.claim_name_hint())
+    assert !string.contains(first.body, "<script")
+    assert string.contains(policy_header(first), "form-action 'self'")
+    assert referrer_policy(first) == Ok("no-referrer")
+    assert open("same-origin").body == first.body
+
+    // Another site, another port and a program that says nothing are refused,
+    // and so is a host that is not this daemon's.
+    assert open("same-site").status == 403
+    assert open("cross-site").status == 403
+    assert get(port, path, [host(port)]).status == 403
+    assert get(port, path, [
+        #("host", "evil.example"),
+        #("sec-fetch-site", "none"),
+      ]).status
+      == 403
+
+    // A query on the address is not read: a token in a URL would sit in history.
+    assert get(port, path <> "?token=" <> string.repeat("a", 74), [
+        host(port),
+        #("sec-fetch-site", "none"),
+      ]).body
+      == first.body
+  })
+}
+
+// The claim redeems in a browser with no `loom`: the response sets a page and a
+// login, the page is an operator `Fresh` home that is the browser of the login,
+// the login's row ends in thirty days, the name the person chose is the
+// principal's, and the owner's listing shows the claim redeemed and one login.
+pub fn a_browser_claim_lands_on_an_operator_fresh_home_with_a_login_test() {
+  fixture_with(Signing, fn(ready, port, credential) {
+    let session = create_shared_session(ready, "browser-claim", 1300)
+    let token = invitation(port, credential, session, "claimant", "observer")
+    let before = bootstrap.system_time_ms()
+    let answer = redeemed_in_browser(port, token, "  Alex  ")
+    let signed = signed_in(answer)
+    assert string.contains(policy_header(answer), "form-action 'none'")
+    assert signed.max_age <= 2_592_000
+    assert signed.max_age >= 2_592_000 - 60
+
+    // The page is a home, fresh, at operator ceiling, and it is the browser of
+    // the login the claim bound.
+    let fingerprint = string.slice(login.row_digest(id_of(signed.token)), 0, 16)
+    assert string.contains(signed.page.page, "/home")
+    assert open_page(port, signed.page).status == 200
+    let home = home_socket(port, signed.page, [])
+    assert home.status == 281
+    assert list.key_find(home.headers, "x-page-origin") == Ok("fresh")
+    assert list.key_find(home.headers, "x-page-ceiling") == Ok("operator")
+    assert list.key_find(home.headers, "x-page-login") == Ok(fingerprint)
+
+    // The login's row records its end, as a login the exchange sets does.
+    let assert [row] = string.split(home.body, "\n")
+    let assert [listed, issued, resumed, expires, parent] =
+      string.split(row, "|")
+    assert listed == fingerprint
+    let assert Ok(began) = int.parse(issued) as "an instant"
+    assert began >= before
+    assert resumed == "None"
+    assert expires == "Some(" <> int.to_string(began + login.lifetime_ms) <> ")"
+    assert parent == "None"
+
+    // The owner's listing shows the name chosen, the claim redeemed and the one
+    // login.
+    let reply = control(port, credential, "principals.list", [])
+    let assert Ok(body) = field(reply, "body") as "a body"
+    let assert Ok(json.Array(rows)) = field(body, "principals") as "the rows"
+    let assert Ok(claimant) =
+      list.find(rows, fn(row) {
+        field(row, "principal_id") == Ok(json.String("claimant"))
+      })
+    assert field(claimant, "name") == Ok(json.String("Alex"))
+    assert field(claimant, "logins") == Ok(json.Int(1))
+    let assert Ok(credential_state) = field(claimant, "credential")
+      as "a credential state"
+    assert field(credential_state, "state") == Ok(json.String("active"))
+    assert field(credential_state, "fingerprint")
+      == Ok(json.String(fingerprint))
+    assert field(credential_state, "claimed_at_ms") == Ok(json.Int(began))
+
+    // The bookmark resumes without `loom`, and the claim is spent.
+    assert resume_as(port, signed).status == 200
+    claim_refused(
+      redeemed_in_browser(port, token, "Again"),
+      409,
+      page.ClaimUsed,
+      token,
+    )
+    assert claim_rows(ready.state_root, token) == ["claimed"]
+  })
+}
+
+// Each way a claim cannot redeem is a refusal in its own fixed words: a spent
+// claim, one bound to a bearer through `/v2/claim`, one the owner replaced, one
+// nobody issued, one that has expired, and a name the catalogue will not take,
+// which binds nothing and leaves the claim open for another try. None of them
+// sets a cookie or repeats the token.
+pub fn a_claim_that_cannot_redeem_is_refused_in_fixed_words_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_shared_session(ready, "browser-claim-refusals", 1301)
+
+    // Spent: a second redemption of one that bound.
+    let spent = invitation(port, credential, session, "spent", "observer")
+    assert redeemed_in_browser(port, spent, "").status == 200
+    claim_refused(
+      redeemed_in_browser(port, spent, ""),
+      409,
+      page.ClaimUsed,
+      spent,
+    )
+
+    // Bound to a bearer by the terminal's own route.
+    let other = invitation(port, credential, session, "other", "observer")
+    let bearer = claim.random_credential()
+    let wire = daemon_claim_test.redeem(port, other, claim.digest(bearer))
+    assert field(wire, "event") == Ok(json.String("credentials.claim"))
+    claim_refused(
+      redeemed_in_browser(port, other, ""),
+      409,
+      page.ClaimUsed,
+      other,
+    )
+
+    // Void: the owner rotated the member, which ends its open claim. One that
+    // was never issued is the same words.
+    let voided = invitation(port, credential, session, "voided", "observer")
+    let rotated =
+      control(port, credential, "credentials.rotate", [
+        #("principal_id", json.String("voided")),
+      ])
+    assert field(rotated, "event") == Ok(json.String("credentials.rotate"))
+    claim_refused(
+      redeemed_in_browser(port, voided, ""),
+      404,
+      page.ClaimUnknown,
+      voided,
+    )
+    let never = claim.mint_token(token.production_entropy())
+    claim_refused(
+      redeemed_in_browser(port, never, ""),
+      404,
+      page.ClaimUnknown,
+      never,
+    )
+
+    // Expired: the claim's time ran out before it was used.
+    let late = invitation(port, credential, session, "late", "observer")
+    let assert Ok(db) = sqlight.open(ready.state_root <> "/catalogue.db")
+      as "the catalogue opens"
+    assert sqlight.exec(
+        "UPDATE access_claims SET expires_at_ms = 1 WHERE digest = '"
+          <> claim.digest(late)
+          <> "'",
+        on: db,
+      )
+      == Ok(Nil)
+    assert sqlight.close(db) == Ok(Nil)
+    claim_refused(
+      redeemed_in_browser(port, late, ""),
+      410,
+      page.ClaimExpired,
+      late,
+    )
+
+    // A name the catalogue refuses binds nothing and leaves the claim open, so
+    // another name redeems it.
+    let named = invitation(port, credential, session, "named", "observer")
+    claim_refused(
+      redeemed_in_browser(port, named, string.repeat("n", 257)),
+      400,
+      page.NameRefused,
+      named,
+    )
+    claim_refused(
+      redeemed_in_browser(port, named, "  "),
+      400,
+      page.NameRefused,
+      named,
+    )
+    claim_refused(
+      redeemed_in_browser(port, named, "a\u{1}b"),
+      400,
+      page.NameRefused,
+      named,
+    )
+    assert claim_rows(ready.state_root, named) == ["open"]
+    assert redeemed_in_browser(port, named, "Second try").status == 200
+    assert claim_rows(ready.state_root, named) == ["claimed"]
+  })
+}
+
+// A cross-site post is refused before the claim is touched, and so is every
+// request that does not declare itself this origin's own form: the claim is
+// still open afterwards and redeems from the form. A bearer, a login and any
+// other value that is not a claim token are refused before the registry does
+// any work.
+pub fn a_cross_site_claim_and_a_value_that_is_no_claim_ask_nothing_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_shared_session(ready, "browser-claim-senders", 1302)
+    let token = invitation(port, credential, session, "careful", "observer")
+    let body = claim_form(token, "Sam")
+    let sent_from = fn(site) {
+      claim_post(port, body, [#("sec-fetch-site", site)]).status
+    }
+    assert sent_from("same-site") == 403
+    assert sent_from("cross-site") == 403
+    assert sent_from("none") == 403
+    assert send_request(
+        port,
+        "POST",
+        "/ui/claim",
+        [
+          host(port),
+          #("content-type", "application/x-www-form-urlencoded"),
+          #("content-length", int.to_string(string.byte_size(body))),
+        ],
+        body,
+      ).status
+      == 403
+    assert claim_post(port, body, [#("host", "evil.example")]).status == 403
+    assert claim_rows(ready.state_root, token) == ["open"]
+
+    // The form is a small URL-encoded body of the fields and no others.
+    let post = fn(headers, text) { claim_post(port, text, headers).status }
+    assert post([#("content-type", "text/plain")], body) == 400
+    assert send_request(
+        port,
+        "POST",
+        "/ui/claim",
+        [
+          host(port),
+          #("sec-fetch-site", "same-origin"),
+          #("content-type", "application/x-www-form-urlencoded"),
+        ],
+        body,
+      ).status
+      == 400
+    assert post([], claim_form(token, string.repeat("a", 1100))) == 400
+    assert post([], body <> "&other=1") == 400
+    assert post([], "token=" <> token <> "&token=" <> token) == 400
+    assert post([], "name=Sam") == 400
+    assert claim_rows(ready.state_root, token) == ["open"]
+
+    // Not a claim: a bearer, the owner's credential, a login, a claim with a
+    // capital or too few hex characters, the claim's prefix alone. Each is the
+    // notice for a value that is not a claim, with the registry untouched.
+    let registry = manager.pid(ready.registry)
+    let before = reductions_of(registry)
+    let tail = string.drop_start(token, string.length("loomclaim_"))
+    list.each(
+      [
+        credential,
+        claim.random_credential(),
+        sha256_text(token),
+        "loomb1:" <> tail,
+        "loomclaim_" <> string.uppercase(tail),
+        "loomclaim_" <> string.drop_end(tail, 1),
+        token <> "0",
+        "loomclaim_",
+        "",
+      ],
+      fn(typed) {
+        claim_refused(
+          redeemed_in_browser(port, typed, "Sam"),
+          400,
+          page.NotAClaim,
+          typed,
+        )
+      },
+    )
+    assert reductions_of(registry) == before
+
+    // A genuine claim is looked up, which the registry's work shows, and the
+    // surrounding spaces a paste carries are not part of it.
+    let signed =
+      signed_in(claim_post(port, claim_form(" " <> token <> "\n", "Sam"), []))
+    assert string.length(signed.token) > 0
+    assert reductions_of(registry) > before
+    assert claim_rows(ready.state_root, token) == ["claimed"]
+  })
+}
+
+// The claim token, the login's three secrets and the page's are in no file
+// under the state root and in no log line: the catalogue holds the claim's and
+// the login's digests, and the owner's bearer is in `owner.token` only.
+pub fn the_browser_claim_keeps_only_digests_under_the_state_root_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_shared_session(ready, "browser-claim-scan", 1303)
+    let token = invitation(port, credential, session, "scanned", "observer")
+    log_capture_start()
+    let signed = signed_in(redeemed_in_browser(port, token, "Quinn"))
+    claim_refused(
+      redeemed_in_browser(port, token, "Quinn"),
+      409,
+      page.ClaimUsed,
+      token,
+    )
+    let lines = log_capture_stop()
+    let secrets = [
+      token,
+      signed.token,
+      signed.nonce,
+      signed.key,
+      id_of(signed.token),
+      signed.page.cookie,
+      signed.page.nonce,
+    ]
+
+    // The log says a login was issued for a claim, by fingerprint.
+    let joined = string.join(lines, "\n")
+    list.each(secrets, fn(secret) {
+      assert !string.contains(joined, secret)
+    })
+    assert string.contains(joined, "daemon.login_issued")
+    assert string.contains(
+      joined,
+      string.slice(login.row_digest(id_of(signed.token)), 0, 16),
+    )
+
+    // No file under the state root holds one either. The scan has to reach the
+    // catalogue, where the digests are, or it would pass over an empty list.
+    let assert Ok(files) = simplifile.get_files(ready.state_root)
+      as "the state root is readable"
+    assert list.any(files, fn(file) { string.ends_with(file, "/catalogue.db") })
+    list.each(files, fn(file) {
+      let assert Ok(bytes) = simplifile.read_bits(file) as "a state file reads"
+      list.each(secrets, fn(secret) {
+        assert !holds(bytes, bit_array.from_string(secret))
+      })
+    })
+
+    // The digests are there: the claim's, bound, and the login row's.
+    assert claim_rows(ready.state_root, token) == ["claimed"]
+    assert catalogue_rows(
+        ready.state_root,
+        "SELECT kind FROM access_credentials WHERE digest = ?",
+        [sqlight.text(login.row_digest(id_of(signed.token)))],
+      )
+      == ["browser"]
+  })
+}
+
+// Two browsers posting one claim at once redeem it once: the claim is reserved
+// for the one in flight, and the other is refused either as busy (the first still
+// holds the reservation) or as used (it had already finished). Never two logins
+// for one claim, and the catalogue holds one.
+pub fn two_posts_of_one_claim_redeem_it_once_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_shared_session(ready, "browser-claim-race", 1304)
+    let token = invitation(port, credential, session, "racer", "observer")
+    let answers = process.new_subject()
+    let post = fn(name) {
+      process.spawn(fn() {
+        process.send(answers, redeemed_in_browser(port, token, name).status)
+      })
+    }
+    let _ = post("One")
+    let _ = post("Two")
+    let assert Ok(first) = process.receive(answers, 10_000)
+      as "the first post answers"
+    let assert Ok(second) = process.receive(answers, 10_000)
+      as "the second post answers"
+    assert list.sort([first, second], int.compare) == [200, 409]
+    assert claim_rows(ready.state_root, token) == ["claimed"]
+    assert catalogue_rows(
+        ready.state_root,
+        "SELECT CAST(COUNT(*) AS TEXT) FROM access_credentials WHERE principal_id = 'racer'",
+        [],
+      )
+      == ["1"]
   })
 }

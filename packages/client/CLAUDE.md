@@ -264,8 +264,28 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   redeemed in the same request (`Resumed`, `Forgotten`); a login narrowed to a
   session mints a `Session` page of that session (`OneSession`) and never a home.
   `GET /ui/l/<key>/home` is `page.login_page`, served under `form-action 'self'`.
+  `claim(root, registry, claim_digest, name, now)` is the browser claim's side
+  (PR 9): it draws a login, binds its row to the claim with `manager.claim_login`
+  (an `Operator` login ending thirty days out, the name in the same transaction),
+  and only then signs the token for the principal the catalogue names. The route
+  is `server.claim_submit`: `same_origin_post`, `form_declared`, the body
+  (`ui_http.posted_claim`), the token's shape (`host/claim.validate_token` on the
+  trimmed value, before any lookup or permit), `root.acquire_claim` (one
+  reservation per claim, as `/v2/claim`; a second post in flight is 409),
+  `ui_login.claim`, then a `Home`
+  ticket (`Fresh`, `Operator`, `Workspace`, `Forgotten`) minted and redeemed in
+  the request, the login attached to the page, and `server.enter_response` (the
+  half of `entered` that writes the cookies and body) sets it. A refusal is the
+  claim form again under `form-action 'self'` with one fixed paragraph
+  (`page.ClaimNotice`); the success is under `form-action 'none'`.
+  `ui_sessions.Settings.wall` is the wall clock a ticket's login expiry is
+  compared with, since `now` is monotonic: a `Remembered` ticket whose login has
+  ended is `UnknownTicket` before it makes room; a `Forgotten` one is not held to
+  it.
 - `daemon/ui_http`: pure checks. `route` also routes the admin page's three
-  (`AdminExchange` at `/ui/admin?ticket=`, `AdminPage`, `AdminSocket`). `route` (the exchange at
+  (`AdminExchange` at `/ui/admin?ticket=`, `AdminPage`, `AdminSocket`) and the
+  claim's two (`ClaimPage`, `ClaimSubmit` at `/ui/claim`); `posted_claim` reads
+  the form's `token` and optional `name`, each once and no other field. `route` (the exchange at
   `/ui/sessions/<id>?ticket=`, the page at `/ui/p/<key>/sessions/<id>`,
   its socket at `.../ws` with the `csrf-token` query, and five assets),
   `loopback_host`, `exchange_allowed` and `navigation_allowed`

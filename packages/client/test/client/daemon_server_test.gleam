@@ -1881,7 +1881,15 @@ pub fn a_browser_row_authenticates_on_no_v2_route_test() {
     let assert Ok(login) = access.browser_digest(sha256_hex(identifier))
       as "the login's digest is valid"
     let assert Ok(_) =
-      access.claim(store, claim, login, None, 1, fn(a, b) { a == b })
+      access.claim_login(
+        store,
+        claim,
+        login,
+        None,
+        1,
+        4_000_000_000_000,
+        fn(a, b) { a == b },
+      )
       as "the browser row is bound"
     assert access.authenticate(store, login) == Ok(member)
     assert catalogue.close(store) == Ok(Nil)

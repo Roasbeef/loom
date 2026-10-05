@@ -491,6 +491,133 @@ pub fn login_refused() -> String {
   )
 }
 
+/// Where the claim form lives and posts: `GET` draws it and `POST` redeems.
+pub const claim_path = "/ui/claim"
+
+/// Why a claim the form posted was refused. Each is a fixed paragraph over the
+/// form, drawn again so the person can try another token or name, and none
+/// repeats anything the request carried.
+pub type ClaimNotice {
+  /// The token was not `loomclaim_` and 64 lowercase hexadecimal digits, which
+  /// is also what a bearer or a login looks like: it was refused before the
+  /// catalogue was asked anything.
+  NotAClaim
+
+  /// No such claim, or the owner withdrew it.
+  ClaimUnknown
+
+  /// The claim was open and its time ran out.
+  ClaimExpired
+
+  /// The claim is spent, or its member already holds a credential.
+  ClaimUsed
+
+  /// The name is blank, too long or holds a control character. The claim
+  /// bound nothing and is still open.
+  NameRefused
+
+  /// The daemon could not answer, or another redemption of the same claim is
+  /// in progress. The claim may be open.
+  ClaimBusy
+}
+
+/// The claim form: a fixed document with two fields, the token and an optional
+/// name, that posts to `claim_path`, and no script. It is the one document, with
+/// the resume page, served under a policy that lets a form submit to this origin
+/// (`OwnForms`). The words under the name field are the inviter's name being
+/// the default. A refusal draws the same form with `notice` above it
+/// (protocol-change/065, PR 9).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(page.claim_page(None), "name=\"token\"")
+/// ```
+pub fn claim_page(notice: Option(ClaimNotice)) -> String {
+  let refusal = case notice {
+    Some(why) ->
+      "<p class=\"claim-notice\" role=\"alert\">"
+      <> houdini.escape(claim_notice(why))
+      <> "</p>"
+    None -> ""
+  }
+  "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
+  <> "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+  <> "<title>Loom</title>"
+  <> "<link rel=\"stylesheet\" href=\""
+  <> asset_path(stylesheet_asset)
+  <> "\"></head><body><main class=\"ended-page\">"
+  <> "<section class=\"ended-document\">"
+  <> "<p class=\"ended-brand\">Loom</p>"
+  <> "<p class=\"claim-title\">Accept your invitation</p>"
+  <> "<p class=\"ended-advice\">Paste the claim token you were sent, and "
+  <> "choose the name others will see.</p>"
+  <> refusal
+  <> "<form class=\"claim-form\" method=\"post\" action=\""
+  <> claim_path
+  <> "\">"
+  <> "<label class=\"claim-field\"><span class=\"claim-label\">Claim token"
+  <> "</span><input class=\"claim-input\" type=\"text\" name=\"token\" "
+  <> "autocomplete=\"off\" autocapitalize=\"off\" spellcheck=\"false\" "
+  <> "required></label>"
+  <> "<label class=\"claim-field\"><span class=\"claim-label\">Your name"
+  <> "</span><input class=\"claim-input\" type=\"text\" name=\"name\" "
+  <> "autocomplete=\"off\" maxlength=\"256\"><span class=\"claim-hint\">"
+  <> houdini.escape(claim_name_hint())
+  <> "</span></label>"
+  <> "<button class=\"claim-submit\" type=\"submit\">Accept</button></form>"
+  <> "<p class=\"ended-advice\">"
+  <> houdini.escape(claim_keep_notice())
+  <> "</p>"
+  <> "</section></main></body></html>\n"
+}
+
+/// What the form says under the name field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(page.claim_name_hint(), "inviter chose")
+/// ```
+pub fn claim_name_hint() -> String {
+  "Leave empty to keep the name the inviter chose."
+}
+
+/// The words a refused claim is answered with, one fixed paragraph for each
+/// reason. None of them can tell a person who holds a claim anything they could
+/// not learn from the claim.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(page.claim_notice(page.ClaimExpired), "expired")
+/// ```
+pub fn claim_notice(notice: ClaimNotice) -> String {
+  case notice {
+    NotAClaim ->
+      "That is not a claim token. A claim token starts with loomclaim_."
+    ClaimUnknown ->
+      "This claim is not valid. It was never issued here, or the owner "
+      <> "withdrew it. Ask the owner for a new invitation."
+    ClaimExpired ->
+      "This claim has expired. Ask the owner for a new invitation."
+    ClaimUsed ->
+      "This claim has already been used. If that was not you, tell the "
+      <> "owner, who can issue a new claim."
+    NameRefused ->
+      "That name cannot be used. A name is not blank, is at most 256 bytes "
+      <> "and holds no control characters. Nothing was claimed; try again."
+    ClaimBusy ->
+      "The daemon could not take the claim just now. Nothing was lost; try "
+      <> "again in a moment."
+  }
+}
+
+fn claim_keep_notice() -> String {
+  "Accepting signs this browser in for thirty days. There is nothing else to "
+  <> "keep, and a claim works once."
+}
+
 /// The page the ticket exchange answers with. Its body names the keyed page
 /// to move to and the tab's nonce, as data attributes; its script, which
 /// runs at the end of the body, keeps the nonce in `sessionStorage` and

@@ -112,9 +112,15 @@ with these forks: they define the same modules.
   transaction only, so a refused name leaves the claim open and a replay never
   renames.
   `claim_known` is the `/v2/claim` upgrade's filter (exists and not void), and
-  `fingerprint` is a digest's first 16 hex characters. The claim's kind is the
-  presented digest's: a `Browser` digest binds a login row, recording when it
-  began.
+  `fingerprint` is a digest's first 16 hex characters. `claim` takes a `Bearer`
+  digest only; `claim_login(store, claim, digest, name, now_ms, expires_at_ms,
+  equal)` is the browser claim's (protocol-change/065, PR 9) and takes a
+  `Browser` one, writing the login row as `issue_login` does with its instant
+  and its end, so a claim bound as a login always has an expiry. Both run the
+  same `redeem`, whose replay of a lost reply is recognised only for the kind
+  it bound. A claim-bound login is also the principal's credential:
+  `principal_active_credential` lists it with the instant the claim was
+  redeemed, beside the `logins` count.
 - `storage/access.{Signin, SigninPage, Stamp}` and `issue_login`,
   `signins_page`, `revoke_login`, `revoke_logins`, `revoke_all_logins` and
   `resumed` are the browser login's rows (protocol-change/065, PR 8).

@@ -380,6 +380,11 @@ pub type Settings {
   Settings(
     /// A millisecond reading that only moves forward.
     now: fn() -> Int,
+    /// The wall clock in Unix milliseconds, which a login's expiry is written
+    /// in. It is a second clock because `now` is the monotonic one, whose zero is
+    /// arbitrary: the two cannot be compared, and a ticket's login ends on the
+    /// wall's time.
+    wall: fn() -> Int,
     /// `n` random bytes.
     entropy: fn(Int) -> BitArray,
     /// A ticket's lifetime.
@@ -472,6 +477,7 @@ type State {
 pub fn production(now: fn() -> Int) -> Settings {
   Settings(
     now:,
+    wall: bootstrap.system_time_ms,
     entropy: token.production_entropy(),
     ticket_ms:,
     device_ms:,
@@ -925,6 +931,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       let key = digest(ticket)
       let found = live(state.tickets, key, now)
       let tickets = dict.delete(state.tickets, key)
+      let wall = state.settings.wall()
 
       // Whether a live ticket belongs at this exchange. A guard cannot call a
       // function, so the answer is made before the arms that read it.
@@ -947,6 +954,24 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         // deadline, so it is refused as an unknown ticket before it can make
         // room by displacing one of the principal's live pages.
         Ok(Ticket(until: Some(bound), ..)) if bound <= now -> {
+          process.send(reply, Error(UnknownTicket))
+          actor.continue(State(..state, tickets:))
+        }
+
+        // A ticket that sets a login, a device link, minted under a login that
+        // has since ended would open a page with no login behind it. It is
+        // refused before it can take a page's place, so the owner's existing
+        // homes survive the attempt. A `Forgotten` ticket (a switch, the way
+        // home, an admin press) sets no login, and the page it opens keeps
+        // working to its own deadline, so it is not held to the login's end.
+        // The row-refused case is still the exchange's own (`server.entered`).
+        Ok(Ticket(
+          grant: Grant(remember: Remembered, ..),
+          login: Some(issuer),
+          ..,
+        ))
+          if issuer.expires_at_ms <= wall
+        -> {
           process.send(reply, Error(UnknownTicket))
           actor.continue(State(..state, tickets:))
         }

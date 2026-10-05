@@ -333,6 +333,13 @@ fn web_view(config: Config(instance), ui: Ui(instance), request) {
         ui_http.LoginPage(key) ->
           ui_http.secured_for(login_page(request, key), host, page.OwnForms)
 
+        // The claim form is the second document that holds a form, so it is
+        // served under the same policy. Its answers are secured by the handler,
+        // which knows which of them draws the form again.
+        ui_http.ClaimPage ->
+          ui_http.secured_for(claim_page(request), host, page.OwnForms)
+        ui_http.ClaimSubmit -> claim_submit(config, ui, request, host)
+
         ui_http.AdminSocket(key, nonce) ->
           admin_socket(config, ui, request, host, key, nonce)
         route -> ui_http.secured(web_document(config, ui, request, route), host)
@@ -617,6 +624,8 @@ fn web_document(
     | ui_http.Socket(..)
     | ui_http.HomeSocket(..)
     | ui_http.LoginPage(..)
+    | ui_http.ClaimPage
+    | ui_http.ClaimSubmit
     | ui_http.AdminSocket(..) -> plain(404, "unknown endpoint")
 
     ui_http.Asset(asset) -> {
@@ -829,6 +838,174 @@ fn document_refused() {
   document(401, "text/html; charset=utf-8", page.login_refused())
 }
 
+// The fixed claim form, for a person who opens the address. It is a navigation
+// from outside any page or from this origin, as the resume page is, and it
+// holds nothing the request said.
+fn claim_page(request) {
+  case ui_http.navigation_allowed(request) {
+    False -> plain(403, "forbidden navigation")
+    True -> document(200, "text/html; charset=utf-8", page.claim_page(None))
+  }
+}
+
+// The browser claim, a `POST` from the claim form (protocol-change/065, PR 9).
+// The checks run cheapest first: the host was checked by the router, then this
+// origin's own page as the sender (the claim's one secret is typed by a person,
+// so no other page may post it on their behalf and a program that says nothing
+// of its origin is refused too), the form's declared size and type, then the
+// body, which is at most 1 KiB, and the token's shape. Only a value that is a
+// claim token takes a reservation, one per claim as `/v2/claim` takes it, so a
+// second post for a claim already in flight is refused and nothing a stranger
+// can post without a claim-shaped value costs the daemon a place. The answer to
+// a refusal that a person can correct is the form again with fixed words above
+// it, which needs the policy that lets the form post, so this handler secures
+// its own answers.
+fn claim_submit(config: Config(instance), ui: Ui(instance), request, host) {
+  case ui_http.same_origin_post(request), ui_http.form_declared(request) {
+    False, _ -> ui_http.secured(plain(403, "forbidden sender"), host)
+    True, False -> ui_http.secured(plain(400, "bad request"), host)
+    True, True ->
+      case mist.read_body(request, max_body_limit: ui_http.max_form_bytes) {
+        Error(_) -> ui_http.secured(plain(400, "bad request"), host)
+        Ok(body) ->
+          case ui_http.posted_claim(body.body) {
+            Error(Nil) -> ui_http.secured(plain(400, "bad request"), host)
+            Ok(#(typed, name)) ->
+              reserve_claim(config, ui, host, string.trim(typed), name)
+          }
+      }
+  }
+}
+
+// The token's shape is checked before anything is looked up or reserved, so a
+// bearer, a login or a stray word typed into the field is refused having asked
+// the daemon nothing. A token that has the shape is hashed here and dropped:
+// only its hash goes further, and nothing the person typed is written to a log
+// or drawn back.
+fn reserve_claim(
+  config: Config(instance),
+  ui: Ui(instance),
+  host,
+  typed: String,
+  name: Option(String),
+) {
+  let hashed = case claim.validate_token(typed) {
+    Ok(Nil) -> access.claim_digest(claim.digest(typed))
+    Error(_) -> Error(catalogue.Invalid("not a claim token"))
+  }
+  case hashed {
+    Error(_) -> claim_refused(host, 400, page.NotAClaim)
+    Ok(presented) ->
+      case root.acquire_claim(config.daemon, presented, within: 1000) {
+        Error(root.ClaimInFlight) -> claim_refused(host, 409, page.ClaimBusy)
+        Error(root.NotAdmitted(reason)) -> {
+          upgrade_log.refused(upgrade_log.Page, "acquire", reason)
+          ui_http.secured(plain(503, "daemon not ready"), host)
+        }
+        Ok(permit) -> {
+          let answer = redeem_claim(config, ui, host, presented, name)
+          root.release(config.daemon, permit)
+          answer
+        }
+      }
+  }
+}
+
+fn redeem_claim(
+  config: Config(instance),
+  ui: Ui(instance),
+  host,
+  presented: access.ClaimDigest,
+  name: Option(String),
+) {
+  case ready(config, upgrade_log.Page) {
+    Error(_) -> ui_http.secured(plain(503, "daemon not ready"), host)
+    Ok(state) ->
+      case
+        ui_login.claim(
+          ui.root_key,
+          state.registry,
+          presented,
+          name,
+          bootstrap.system_time_ms(),
+        )
+      {
+        Error(refusal) -> claim_unbound(host, refusal)
+        Ok(bound) -> claim_opened(ui, host, bound)
+      }
+  }
+}
+
+// What a claim that bound opens: a `Home` page of the principal at `Operator`
+// ceiling, `Fresh` since the person was handed the claim a moment ago, and the
+// login the claim bound, attached to the page it opened so the home marks "this
+// browser". The ticket is minted and redeemed in this one request and is never
+// seen by the browser. A claim that bound and then found the table gone is
+// spent with a login nobody holds; the owner rotates, as for a lost reply.
+fn claim_opened(ui: Ui(instance), host, bound: ui_login.Claimed) {
+  let grant =
+    ui_sessions.Grant(
+      scope: ui_sessions.Home,
+      credential: bound.digest,
+      principal: bound.principal.id,
+      ceiling: access.Operator,
+      reach: ui_sessions.Workspace,
+      origin: ui_sessions.Fresh,
+      remember: ui_sessions.Forgotten,
+    )
+  let redeemed = {
+    use issued <- result.try(
+      ui_sessions.mint(ui.sessions, grant) |> result.replace_error(Nil),
+    )
+    ui_sessions.redeem(ui.sessions, issued.ticket, ui_sessions.HomeExchange)
+    |> result.replace_error(Nil)
+  }
+  case redeemed {
+    Error(Nil) -> ui_http.secured(plain(503, "daemon not ready"), host)
+    Ok(redeemed) -> {
+      ui_sessions.attach_login(
+        ui.sessions,
+        redeemed.cookie,
+        bound.minted.issuer,
+      )
+      ui_http.secured(
+        enter_response(
+          redeemed,
+          page.home_path(redeemed.key),
+          Ok(option.Some(bound.minted)),
+        ),
+        host,
+      )
+    }
+  }
+}
+
+// A claim that bound nothing, in the words for its reason. Each is the form
+// again so the person can correct it.
+fn claim_unbound(host, refusal: manager.ClaimError) {
+  case refusal {
+    manager.ClaimRefused(access.UnknownClaim) ->
+      claim_refused(host, 404, page.ClaimUnknown)
+    manager.ClaimRefused(access.ExpiredClaim) ->
+      claim_refused(host, 410, page.ClaimExpired)
+    manager.ClaimRefused(access.ConflictingClaim) ->
+      claim_refused(host, 409, page.ClaimUsed)
+    manager.ClaimRefused(access.InvalidClaimName) ->
+      claim_refused(host, 400, page.NameRefused)
+    manager.ClaimRefused(access.ClaimStore(_)) | manager.ClaimUnavailable ->
+      claim_refused(host, 503, page.ClaimBusy)
+  }
+}
+
+fn claim_refused(host, status: Int, notice: page.ClaimNotice) {
+  document(
+    status,
+    "text/html; charset=utf-8",
+    page.claim_page(option.Some(notice)),
+  )
+  |> ui_http.secured_for(host, page.OwnForms)
+}
+
 // What a verified login mints. A login narrowed to one session mints a page of
 // that session and never a home, because a home's asks (its sign-ins, "sign out
 // everywhere", a device link) are the principal's and not the session's; any
@@ -844,16 +1021,18 @@ fn resume_exchange(
     login.Observer -> access.Observer
     login.Operator -> access.Operator
   }
-  let #(scope, reach, exchange) = case resumed.allowance.session {
+  let #(scope, reach, exchange, address) = case resumed.allowance.session {
     option.Some(id) -> #(
       ui_sessions.Session(id),
       ui_sessions.OneSession,
       ui_sessions.SessionExchange(id),
+      page.session_path(_, id),
     )
     option.None -> #(
       ui_sessions.Home,
       ui_sessions.Workspace,
       ui_sessions.HomeExchange,
+      page.home_path,
     )
   }
   let grant =
@@ -876,15 +1055,7 @@ fn resume_exchange(
   }
   case redeemed {
     Error(Nil) -> plain(503, "daemon not ready")
-    Ok(redeemed) ->
-      case scope {
-        ui_sessions.Home ->
-          entered(config, ui, redeemed, page.home_path(redeemed.key))
-        ui_sessions.Session(id) ->
-          entered(config, ui, redeemed, page.session_path(redeemed.key, id))
-        ui_sessions.Admin ->
-          entered(config, ui, redeemed, page.admin_path(redeemed.key))
-      }
+    Ok(redeemed) -> entered(config, ui, redeemed, address(redeemed.key))
   }
 }
 
@@ -901,16 +1072,27 @@ fn entered(
   redeemed: ui_sessions.Redeemed,
   next: String,
 ) {
-  let page_cookie = ui_http.set_cookie(redeemed.cookie, redeemed.key)
   let minted = case redeemed.grant.remember {
     ui_sessions.Remembered -> remembered(config, ui, redeemed)
     ui_sessions.Forgotten -> Ok(option.None)
   }
+  enter_response(redeemed, next, minted)
+}
+
+// The response itself, from the redeemed ticket and the login to set with it,
+// if any. A device link exists to set a login, so one whose login cannot be set
+// (`Error`) opens no page at all. Opening it without would leave a page with no
+// login and no parent, whose own device link would then start a family of
+// thirty fresh days past the one the link came from. The browser claim reaches
+// here with the login its claim bound, so it too sets its login in the one place
+// a login is set.
+fn enter_response(
+  redeemed: ui_sessions.Redeemed,
+  next: String,
+  minted: Result(Option(ui_login.Minted), Nil),
+) {
+  let page_cookie = ui_http.set_cookie(redeemed.cookie, redeemed.key)
   case minted {
-    // A device link exists to set a login, so one whose login cannot be set
-    // opens no page at all. Opening it without would leave a page with no
-    // login and no parent, whose own device link would then start a family of
-    // thirty fresh days past the one the link came from.
     Error(Nil) -> refused_home(401, ending.LinkExpired)
     Ok(option.None) ->
       document(
