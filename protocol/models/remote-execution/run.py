@@ -9,6 +9,16 @@ import re
 from runner import ROOT, check_case, compile_model, record, snapshot_model
 
 PROBES = {
+    'tcProbeReportHappy': 'witness: exact report final session commit and drain preserved bytes and charge after collection and reboot',
+    'tcProbeReportLostReply': 'witness: lost report COMMIT reply retained full unknown custody without final reconstruction or replay',
+    'tcProbeReportQuota': 'witness: full preeffect quota retained admitted maximum reports and collection kept their byte charge',
+    "tcProbeReportRefusalVet": "reach report refusal vet",
+    "tcProbeReportRefusalCompile": "reach report refusal compile",
+    "tcProbeReportRefusalMissing": "reach report refusal missing",
+    "tcProbeReportRefusalForged": "reach report refusal forged",
+    'tcProbeReportFailedCommit': 'witness: refused report storage stayed unresolved through later diagnostic drain and restart',
+    'tcProbeReportWrongProfile': 'witness: refused report storage stayed unresolved through later diagnostic drain and restart',
+    'tcProbeReportOversize': 'witness: refused report storage stayed unresolved through later diagnostic drain and restart',
     "tcProbeBeamScopeIdle": "witness: idle credit death reduced capacity without scope obligation and busy death retained original uncertainty",
     "tcProbeBeamScopeOwner": "witness: applied owner DOWN fenced idle and busy rows while prior assignment stayed uncertain and sibling progressed",
     "tcProbeBeamScopeFence": "witness: scoped fence refused original traffic while sibling progressed and late handoff stayed stale",
