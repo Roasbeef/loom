@@ -1,5 +1,18 @@
 # runtime
 
+## Native evolution fact ownership
+
+The `evolution/` FactCustom prefix and existing `client/` and `prompt/`
+reserved prefixes protect
+native catalogue/audit, independently admitted tasks and outcome ownership.
+Model-visible fact writes cannot create, replace or delete them. Native hosts
+use the existing conditional reserved-fact transaction API. The runtime treats
+the payloads as opaque data; source identity, operator authority, generation
+fences and prompt criteria remain client responsibilities. No storage schema
+or handwritten SQL is added. See
+[the evolution architecture](../../docs/architecture/evolution.md).
+
+
 ## Atomic remembered approvals
 
 `api.approve_escalation_with_fact_at` commits a captured approval and one

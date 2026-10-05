@@ -104,3 +104,29 @@ lever: a port becomes mechanical for the subset where it is meaningful.
 - A client-side extension surface, when ruled, adds a `[client]` table to
   the manifest and a body that runs in the TUI; until then the table is
   an unknown key and refuses the manifest.
+
+
+## Addendum: governed authored evolution (2026-10-04)
+
+Issue #807 supersedes #30–#32 and keeps their author/test/approve/activate/rollback
+workflow. Authored executable skills and tool/hook extensions remain jailed at
+every stage. No model-influenced module loads into the harness VM. The earlier
+L3 loader description is superseded for this workflow; tier H remains reserved
+for a concrete separately reviewed need. Pi compatibility (#100) is outside
+this release goal.
+
+Protocol 067 defines immutable source/evidence identities, fenced central
+selection, a separate idempotent session adoption audit and bounded native
+worker custody. The provider's generic evolution tools advertise and invoke an
+exact candidate/generation rather than replacing native registrations. Whole
+promoted hook folds capture that same generation. Unconfirmed native retirement
+blocks publication and further allocation. Rollback rebuilds approved source;
+it preserves the conversation and resets ephemeral extension state.
+
+Executable skills are selected per workspace and re-vetted/recompiled with fresh
+input under the current caller. Exact-model prompt profiles use the same
+catalogue and evidence lifecycle, paired independent coding fixtures and immutable
+new-session pins. Actual resolved provider attempts choose their matching overlay.
+Core changes and new trusted capability backends continue through reviewed PRs
+and releases. [The evolution architecture](../architecture/evolution.md) records
+the as-built surfaces, resource ceilings and deliberate evaluation limits.

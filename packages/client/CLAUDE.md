@@ -1,5 +1,49 @@
 # client
 
+## Governed evolution
+
+`client/evolution/record` defines source-only candidates, content-addressed
+evidence and complete generation-fenced selections. `store` owns a separate
+native catalogue through existing generated storage transactions; caller scope,
+operator authority, current build/seam/evaluator identity, approval sequence and
+revocation sequence all participate in admission. Authored fact writes cannot
+reach this authority. `candidate` captures sources through the caller's jailed
+capability path, and `evaluate` attaches actual author-check observations.
+
+`live` serializes the complete promoted hook/tool fold with activation. `hook`
+stages a privately compiled jailed generation and publishes it after native
+retirement of the predecessor. `native` retains failed cleanup capabilities;
+`retirement.Task` carries only the remaining native obligation, so successful
+pool close is not replayed when directory deletion needs another attempt.
+a report, actor exit or deadline is not a worker-exit witness. `control` admits
+bounded queued transitions, while `queue` uses managed tasks and reconstructs
+committed receipts from the durable selection before reporting failure.
+`instance_owner` holds Evolution custody through session retirement. Legacy
+`host.adopt_task` transfers one physical teardown to the host;
+`retire_task` transfers an acknowledged failure's remaining task before HostDown.
+Missing native reports remain unconfirmed.
+
+The model sees stable `evolution_propose`, `evolution_test`,
+`evolution_inspect`, `evolution_catalogue`, `evolution_invoke` and
+`evolution_trace` doors. Native
+operator commands arrive through authenticated `protocol.Evolution` bindings;
+payload fields cannot choose authority or principal. Observers can read only.
+`loomd evolution` and the `loom evolution` forwarder reuse authenticated daemon
+discovery and the resident session websocket; they never open a session.
+`page` fragments large canonical inspections, preserving complete source and
+evidence bytes within the existing control frame.
+
+`prompt` captures exact provider/model/API overlays and `system_prompt` pins
+selected bytes at session assembly. `tasks` retains independently admitted
+fixture and expected-file bytes. `rollout` and `rollout_host` run fresh ordinary
+coding runtimes with native aggregate guards and actual composition digests;
+unknown billing reservations remain debited across both comparison arms.
+`fixture` scores files only after witnessed retirement. `trace` retains bounded,
+scrubbed native branch observations and operator outcomes. Read
+[the evolution architecture](../../docs/architecture/evolution.md) and
+[protocol-change 068](../../protocol-change/068-runtime-evolution.md).
+
+
 ## LSP query handle ownership
 
 `lsp/manager.Manager` retains reachability, workspace/server identity,

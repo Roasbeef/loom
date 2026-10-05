@@ -1,5 +1,17 @@
 # codemode
 
+## Governed candidate admission
+
+`vet/candidate_package` admits the separately retained author-test namespace
+without making it available to the published implementation. Source layout,
+dependencies, imports, foreign interfaces and entry points still pass the
+selected existing seam. Governed programs are reconstructed from immutable
+source and fresh input, then use the same production pipeline. The client owns
+private build paths and native retirement; this package never loads authored
+code into its own VM. See
+[the evolution architecture](../../docs/architecture/evolution.md).
+
+
 ## Purpose
 
 Code mode: a model writes a *program*, not a tool call, and the program

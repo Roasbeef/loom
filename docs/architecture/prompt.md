@@ -21,6 +21,23 @@ documents own the details this one links to:
 [client](client.md#skill-discovery-and-activation) with
 [skills](../skills.md) for the operator's view of skills.
 
+## Exact-model evolution overlays
+
+The governed evolution surface is separate from prompt packs and instruction
+playbooks. An approved `prompt.json` captures an exact provider/model/API,
+system suffix, task prefix and tool-description prose. A new session retains the
+selected immutable profile map beside its pinned prompt. Resuming that session
+reuses the retained map, even after the global selection changes or rolls back.
+
+The provider gateway applies that map after the actual attempt target resolves,
+including fallback, vision and child routing. Each attempt starts from the same
+base request, so profiles never accumulate across retries. Only prose changes:
+tool names, schemas, execution policy and generated capability signatures keep
+their native owners. Actual attempt provenance includes a composition digest.
+Independent evaluation uses fresh production runtimes and operator-admitted
+file criteria, scored after witnessed retirement. A model's success claim is
+not a scoring criterion. See [evolution](evolution.md) and protocol-change 068.
+
 ## What one request carries
 
 On the Anthropic Messages API a request renders in the order `tools`, then
@@ -195,7 +212,7 @@ the result into the session store so that every later boot of the same
 session sends exactly the bytes the first one did.
 
 A boot chooses its prompt from three sources, in this order
-(`assemble`, `client/system_prompt.gleam:468`):
+(`assemble`, `client/system_prompt.gleam:512`):
 
 1. `LOOM_SYSTEM_PROMPT`, a literal prompt that bypasses the pack entirely.
    A value that is empty or whitespace counts as unset.
@@ -260,7 +277,7 @@ complaint.
 ## Project instructions
 
 The `repository_guidance` section carries the session's instruction files.
-`discover` (`client/system_prompt.gleam:853`) fills three slots, in the
+`discover` (`client/system_prompt.gleam:897`) fills three slots, in the
 order they render:
 
 1. The operator's standing file: `AGENTS.md` under `~/.agents/`, then under

@@ -1,5 +1,18 @@
 # tools
 
+## Stable evolution doors
+
+`tools/evolution.Door` is a native-filled set of callbacks for proposal, author
+checks or independent prompt evaluation, catalogue discovery, invocation and
+bounded trace retrieval. The registered names are stable; selected tool schemas
+and implementation identities arrive through the catalogue rather than a
+mutable native registry. Proposal and testing convey no approval authority.
+Every invocation passes fresh JSON through the native current-scope and
+selection fence, then uses the caller's current capability context. Authored
+code cannot grant itself native credentials or model outcome marks. See
+[the evolution architecture](../../docs/architecture/evolution.md).
+
+
 ## LSP observer callback ownership
 
 The retired top-level LSP constructors are removed. `lsp.diagnostics_observer`

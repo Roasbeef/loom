@@ -985,7 +985,7 @@ the 2026-09-19 section guessed at, and shows they are two modules rather than
 one:
 
 - **`client/internal/instance_owner`**, six of them. The data is the three-field
-  `Book` (`packages/client/src/client/internal/instance_owner.gleam:96`) and its
+  `Book` (`packages/client/src/client/internal/instance_owner.gleam:104`) and its
   whole size is `cleanups`, a `map/7` keyed by the seven `Part` variants
   (`instance_owner.gleam:30`). One of the seven cleanup closures, a
   `client/serve` function, is 12.834 to 12.848 MiB of the 12.836 to 12.850 MiB

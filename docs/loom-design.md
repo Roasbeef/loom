@@ -17,7 +17,7 @@ And it adds what none of them have, because none of them run on the BEAM:
 
 - **Native actor-model orchestration**: sessions as supervision trees, strands as processes, subagents as cheap spawns, crash recovery by supervisor + durable state rather than defensive coding.
 - **Code mode with real concurrency**: agent-written Gleam programs that fan out, race, pipeline, and hold stateful actors — on a runtime built for it.
-- **A staged self-improvement loop**: the agent writes Gleam, compiles it, proves it in a sandbox, and — behind an explicit trust gate — hot-loads `.beam` modules into its own extension zone without restarting.
+- **A staged self-improvement loop**: the agent writes Gleam, compiles it, proves it in a sandbox, and — behind an explicit trust gate — activates its new tool and hook behavior in jailed satellites without restarting the session.
 
 Design priorities, in order: **security & isolation, correctness, robustness, performance, capability.**
 
@@ -33,7 +33,7 @@ Design priorities, in order: **security & isolation, correctness, robustness, pe
 | Supervision trees | Crash recovery is *structural*. A dying tool executor is restarted by its supervisor; durable operation state says where to resume. |
 | Fault isolation | A panicking decoder in one strand cannot corrupt another strand's heap. Per-process GC; no global pauses. |
 | `gen_statem` heritage | pi's operation state machine is literally the shape of this OTP behaviour. |
-| Hot code loading | The self-improvement loop is a native VM feature. |
+| Live process replacement | Approved jailed generations can be replaced while the conversation and trusted orchestration survive. |
 | Distribution | Trusted harness nodes can cluster; location transparency makes remote executors a driver, not an architecture change (§5.6). |
 
 ### 1.2 What Gleam adds on top
@@ -80,7 +80,7 @@ Design priorities, in order: **security & isolation, correctness, robustness, pe
 │                                                                    │
 │  ProviderGateway         typed LLM provider clients + routing      │
 │  ClientGateway           websocket/SSE surface for thin clients    │
-│  ExtensionZone           hot-loadable vetted agent-written modules │
+│  Evolution controller    approved jailed generations and rollback  │
 └────────────────────────────────────────────────────────────────────┘
           │ kernel-enforced boundary (Landlock/Seatbelt/bwrap)
           ▼
@@ -191,7 +191,7 @@ Subagents are strands: same code, own cursor into the shared tree, own model con
 
 ### 4.5 Hooks and extensions
 
-Hook points (`before_run`, `before_request`, `before_tool`, `after_tool`, `transform_context`, `before_run_end`, structural decisions) are behaviour-shaped callbacks. First-party hooks are ordinary Gleam. Agent-written hooks live in the ExtensionZone (§7) under supervised, time-boxed, killable wrappers — a misbehaving extension is killed and reported in-band, never able to wedge a strand.
+Hook points (`before_run`, `before_request`, `before_tool`, `after_tool`, `transform_context`, `before_run_end`, structural decisions) are behaviour-shaped callbacks. First-party hooks are ordinary Gleam. Agent-written hooks live in jailed satellites (§7) under supervised, time-boxed, killable wrappers — a misbehaving extension is killed and reported in-band, never able to wedge a strand.
 
 ### 4.6 Inter-agent communication: durable payloads, ephemeral doorbells
 
@@ -349,39 +349,48 @@ Semantics pinned: `parallel_map` preserves input order regardless of completion 
 
 **Persistent actors** (Tier 2): in a background satellite, actors persist across model turns — the model builds itself a stateful service mid-session (spawn an indexer in call 1, query it in calls 2–10). Nothing MCP-shaped can express this. Satellite state is *ephemeral by design*: anything worth keeping exits via `report` artifacts or a `cap/kv` scratch store; programs must tolerate a vanished actor.
 
-**Tier 3 is the punchline**: an L3 extension (§7) is literally an OTP actor — a supervised process implementing a typed behaviour. The agent prototypes a stateful helper as a jailed actor, proves it, and promotion turns the same actor-shaped code into a durable, supervised citizen of the harness. Same programming model at every trust level.
+**Promotion retains the jail boundary**: an approved extension (§7) is a supervised satellite implementing typed tool and hook behaviours. The agent prototypes its source, tests it in the jail and obtains approval for its exact evidence. Promotion selects that version for the running session; it does not move authored code into the harness VM.
 
 Deliberately **not** exposed in code mode: links/monitors with custom trap-exit logic or self-defined supervision strategies. Policy is fixed (all-for-one under the program root); crashes propagate up; the program fails as a unit; the strand sees a structured error. Exotic OTP surface is for L3, where a human approved it.
 
 ---
 
-## 7. Self-improvement: the staged trust pipeline
+## 7. Governed self-extension
 
-Hot loading makes runtime self-improvement native — and it is the most dangerous feature here. The design is a **promotion ladder**, each rung enforced by the harness:
+The runtime can improve its tools, hooks, executable skills and model-specific
+prompts while retaining the conversation. The workflow is observe → author →
+test → evaluate → approve → activate → measure → retain or roll back.
+Issue #807 consolidates #30–#32. Protocol 067 and ADR-007's 2026-10-04 addendum
+supersede the earlier harness-resident L3 loader proposal for authored code.
 
-```
-L0  code-mode program     ephemeral, satellite-jailed, dies with the call
-L1  session skill         L0 saved as a durable, named, reusable entry;
-                          executes at L0 privileges
-L2  extension candidate   compiled against the extension API (wider but still
-                          capability-stubbed prelude); runs its test suite +
-                          property tests in the sandbox; results attached
-L3  installed extension   after explicit user approval (or signed org policy):
-                          hot-loaded into the harness ExtensionZone
-L4  core change           a PR to Loom itself; ordinary review + release;
-                          never runtime-loaded
-```
+| Artifact | Reuse and activation |
+| --- | --- |
+| Executable skill | Retain immutable source, provenance, tests and a fresh-input contract. Owner selects a workspace version; each call re-vets and recompiles under the current caller. |
+| Tool or hook | Run source and author tests in the extension jail. An operator approves exact evidence; the running session adopts one callable/schema/policy generation. Whole promoted invocation folds capture that version. |
+| Exact-model profile | Compare fixed independent coding tasks against a baseline in isolated production runtimes. Owner selects an exact provider/model/API slot; new sessions pin the map and actual provider attempts apply matching prose overlays. |
 
-Hard rules:
+Candidates and evidence are content-addressed. Approval is bound to those exact
+bytes and native build/seam/evaluator identities. A central fenced selection CAS
+is authoritative; the session's adoption audit is separate and idempotent.
+Recovery finishes that audit before publication. Rollback selects previously
+approved source under a new generation, preserves the session and resets ephemeral
+extension state. It does not undo external effects or migrate durable state.
 
-- **L3 is the only rung touching the harness VM**, and the ExtensionZone is confined: typed behaviours (tools, hooks, projections), supervised time-boxed wrappers, harness-controlled module names. Vetting runs on **source** (same `@external`/import lint against the extension allowlist) and the harness compiles the source itself — **we never load a `.beam` we didn't compile.**
-- **Nothing self-promotes.** The agent proposes; L2→L3 requires a human decision (or pre-declared policy), recorded durably.
-- **Every rung is revocable and observable**: versions, unload/rollback (`code:purge` + reload previous), durable load/unload events.
-- **The trusted computing base is not runtime-extensible.** Storage, state machine, broker, sandbox drivers never change at runtime. Self-improvement grows the tool and hook surface only. This line is what makes the idea shippable.
+Rule Zero remains absolute: model-influenced code never runs in the harness VM.
+Storage, the operation machine, broker and sandbox drivers evolve through reviewed
+core PRs and releases. A novel capability backend is a core change, even when an
+agent proposes it. Runtime extension composes the existing brokered vocabulary.
 
-Payoff: the agent hits a workflow gap, writes the tool, proves it against tests in a jail, and — with one approval — the *running session* gains it. With hindsight-memory skills at L1, capability compounds per-user without a release cycle.
+Native retirement is part of activation, not an asynchronous cleanup hint. One
+active and one staging/retiring generation bound resources. If retirement is
+unconfirmed, custody remains held and another allocation is refused. Stable
+catalogue/invocation tools advertise the exact candidate ID, generation and schema;
+stale tokens fail instead of reaching a replacement implementation.
 
----
+[The evolution architecture](architecture/evolution.md) records production tools,
+operator controls, immutable records, evaluation ceilings and the release fixture.
+Scripted lifecycle tests cannot establish model quality. Noise handling, holdout
+quality and optimization search require independently scored live model evidence.
 
 ## 8. Context & conversation intelligence
 
@@ -422,7 +431,7 @@ Because a session is one file plus a tree booted from it, the UI is **always a t
 
    **M4.5 — the orchestration seam** sits here rather than after M5: `cap/strand` and its own allowlist, structured spawn results, and an explicit ceiling on spawn admissions per execution. It depends on M4 and on nothing later, and the spec's Part 4 argues the half-number rather than a renumbering.
 6. **M5 — Semantic tools.** LSP, DAP, role routing, TTSR, hindsight memory. ClientGateway + TUI thin client.
-7. **M6 — Self-improvement.** Skill store (L1), extension API + test-in-jail (L2), approval + hot-load + rollback (L3).
+7. **M6 — Self-improvement.** Skill store (L1), extension API + test-in-jail (L2), approval + live jailed activation + rollback (L3), plus exact-model prompt profiles and independent rollout evidence (#807).
 8. **M7 — Hardening & scale.** Remote executor pools, Windows sandbox, microVM tier, control-plane clustering, multi-tenant serving, precise rewrite tooling, record/replay evals.
 
 ## 12. Open questions

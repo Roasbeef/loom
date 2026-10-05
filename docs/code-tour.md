@@ -1469,7 +1469,7 @@ by a total tar reader that refuses links, devices, absolute paths, `..`
 and anything outside a printable path alphabet.
 
 Then the tree is *pruned*, and this is the step that reads oddly until
-you see what it prevents. `installed_subset` (`vet/package.gleam:201`)
+you see what it prevents. `installed_subset` (`vet/package.gleam:277`)
 keeps `src/**/*.gleam`, `schema/**`, `skills/**`, `extension.toml`,
 `gleam.toml`, `README*` and `LICENSE*` and drops everything else — the
 tests, the `.gitignore`, the CI workflow, `build/`. A repository is not

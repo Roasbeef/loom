@@ -58,7 +58,7 @@ repository,
 | 1 | `packages/ext`, the extension seam, the manifest, the install pipeline, install records, discovery, `loom ext` | **Built** (#177, #178, #179, #182) |
 | 2 | Boot registration, jailed dispatch of an extension tool, `net.request` served by the broker under the manifest's policy | **Built** (#196) |
 | 3 | A persistent satellite, `hook_call`/`hook_result`, the hook bus | **Built**: the satellite host, the frame pair (`protocol-change/012-hook-call.md`, ACCEPTED), the typed hook vocabulary, the bus, the runtime slots, and the manifest and record halves, with the bus's invoker wired onto the session's hosts |
-| 4 | Tier H: the harness-resident loader, the artifact import check, rollback | Freeze proven (#204); loader deferred (#32). #33's two mechanisms are gated tests over the package graph, both prelude source trees and both vetting seams, recorded in `docs/review/extension-zone.md`. The loader is deferred because no surveyed extension needs in-VM residency |
+| 4 | Governed self-extension: immutable source, author checks, native approval, live activation and rollback | Implemented under #807 and protocol-change 068; validation is recorded in the implementation PR. #30–#32 are superseded. The existing TCB freeze tests (#204) remain gates. |
 | 5 | LSP and DAP as extensions | Named, not commissioned (#26) |
 | P | The profile tier: language-server profiles shipped as data (ADR-016 §§3–4) | **Built**: `tier = "profile"`, an install that neither vets nor compiles, record format 3, the load's profile comparison, the session's precedence over `loom.toml`, the `[[check]]` runner and `loom ext check` (ADR-016 §5), and, in separate repositories, the first-party profiles `loom-lsp-gleam`, `loom-lsp-go` and `loom-lsp-rust` (ADR-016, addendum) |
 
@@ -81,14 +81,21 @@ invocation of the extension's compiled source with the call's arguments.
 The capability channel is the only way out, and the broker judges every
 effect per invocation exactly as it does for a code-mode program.
 
-**Tier H, the harness-resident body**, is design §7's L3. It would be
-hot-loaded under a harness-controlled module name, confined to the typed
-behaviours, loaded only after an approval recorded durably, and used only
-for a hook that must read harness state synchronously. It is phase 4, and
-nothing planned needs it. A manifest naming tier H is refused today with
-an error naming the tier; it is not installed and silently ignored. That
-distinction is what `an_unknown_tier_is_refused_test`
-(`client/test/client/extension_test.gleam:56`) pins.
+**The historical tier-H proposal** would have loaded authored modules into
+the harness. ADR-007's 2026-10-04 addendum and #807 replace that proposal with
+approved jailed generations. A manifest naming tier H still refuses with an
+error naming the tier; it never installs a resident body. The unknown-tier
+regression continues to enforce that boundary.
+
+The [governed evolution controller](evolution.md) captures candidates from a
+jailed snapshot, retains only source and native provenance, runs actual author
+checks, and admits activation only through native approval. Its stable generic
+tool door advertises the selected candidate's complete schema and passes fresh
+arguments to the approved implementation. It serializes the whole hook and tool
+fold with activation. Rollback recompiles the selected previous source and
+publishes it only after old native workers have retired. The controller's
+catalogue is independent of a session's conversation store; that conversation
+survives replacement.
 
 **The profile tier** (ADR-016 §3) holds data and nothing that runs: one or
 more `[lsp.<name>]` language profiles, the same tables an operator writes
@@ -480,7 +487,7 @@ not *what an archive may contain*. We learned the difference when the
 first attempt to install a real repository was refused for having a test
 and a `.gitignore`, which every Gleam repository has.
 
-`package.installed_subset` (`vet/package.gleam:201`) is the single place
+`package.installed_subset` (`vet/package.gleam:277`) is the single place
 that decides. It keeps `src/**/*.gleam`, `schema/**`, `skills/**`,
 `extension.toml`, `gleam.toml`, `README*` and `LICENSE*`. It prunes the
 rest: `test/`, `.gitignore`, `.github/`, `docs/`, `build/`, and Gleam's own
@@ -730,7 +737,7 @@ the exclusive channel slot in one place, and it means this module could
 not read a token if it tried. `serve` (`ext/runtime.gleam:148`) is the
 same call with an empty event table, which is what an artifact declaring
 no `[[hook]]` gets. The generated entry writes whichever of the two the
-manifest asked for (`entry_source` at `extension/install.gleam:689`).
+manifest asked for (`entry_source` at `extension/install.gleam:727`).
 
 `answer` does exactly two things: it dispatches on what the harness asked
 for, and it returns a value or an in-band code. There is no third step,
@@ -1484,14 +1491,11 @@ because provider ownership is TCB, and none of pi's UI moments, because
 those belong to the client, and the client is a separate process over a
 frozen gateway.
 
-**Phase 4, split: the freeze is proven, the loader is deferred.** The
-loader (#32) would compile a harness-resident body from vetted source
-under a harness-controlled module name. It would check the compiled
-artifact's *import table* before loading it, run it under a supervised,
-time-boxed wrapper, and roll back to the previous artifact when a load or
-a first call fails. It is **deferred**: a survey of the pi extension
-corpus found none that needs in-VM residency, so building the one code
-path §7's hard rule was written against would buy nothing.
+**Phase 4 now means governed jailed evolution.** #807 replaces #30–#32;
+protocol-change 068 records the native approval, selection, publication and
+cleanup boundaries. The old resident loader is outside that scope. The
+historical artifact-import analysis below remains useful background for the
+freeze tests, rather than a plan to load authored code into this VM.
 
 The freeze (#33) is not deferred. Both mechanisms it asks for are gated
 tests in `client/test/client/extension/freeze_test.gleam`.
@@ -1508,8 +1512,7 @@ tests in `client/test/client/extension/freeze_test.gleam`.
 
 `ResidentSeam` is the seam a resident body *would* be vetted against:
 `ext`, `ext/hook`, and the jailed seam's standard library with every
-`cap/*` module removed. It is declared before a loader exists so that #32
-starts from a frozen allowlist. `docs/review/extension-zone.md` is the
+`cap/*` module removed. It remains an unused historical admission seam; #807 does not activate it. `docs/review/extension-zone.md` is the
 review record. It carries the measurement a loader would rest on: the
 beam import table admits `erlang`, `maps` and `lists`, which no Gleam
 allowlist names, so the artifact check must work per MFA
@@ -1538,7 +1541,7 @@ whose door serves `cap/lsp` and automatic post-edit diagnostics (ADR-015,
 | `codemode/satellite.gleam` | Both shapes of node: `run` for one execution, and the persistent `Host` (`codemode/satellite.gleam:2117`) with `start`, `invoke` (`codemode/satellite.gleam:2178`) and `stop`. |
 | `client/extension/hosts.gleam` | The session's host registry: `HookFailure` (`extension/hosts.gleam:90`), `invoke` (`extension/hosts.gleam:354`), `invoke_event` (`extension/hosts.gleam:446`), and the reaping on the way out. |
 | `codemode/vet/policy.gleam` | The four seams. The fourth, `resident` (`vet/policy.gleam:459`), is frozen for a tier that does not exist. `extension_cap_modules` (`vet/policy.gleam:607`) and `extension_stdlib_modules` (`vet/policy.gleam:626`) widen the effect-only workspace subset, so extensions do not gain child custody. |
-| `codemode/vet/package.gleam` | Vetting a *package*: `installed_subset` (`vet/package.gleam:201`), the native-file refusal, the `gleam.toml` dependency gate, and the sibling-import widening. |
+| `codemode/vet/package.gleam` | Vetting a *package*: `installed_subset` (`vet/package.gleam:277`), the native-file refusal, the `gleam.toml` dependency gate, and the sibling-import widening. |
 | `client/extension/source.gleam` | The grammar of what an operator may type: `parse` (`extension/source.gleam:84`), the refused schemes, and the codeload archive URL. |
 | `client/extension/archive.gleam` | The total tar.gz reader, the directory walker, and the tree digest: `extract` (`extension/archive.gleam:269`), `from_directory`, `digest` (`extension/archive.gleam:356`). |
 | `client/extension/manifest.gleam` | The total `extension.toml` decoder: `decode` (`extension/manifest.gleam:342`), the closed key lists, the name grammars, the `[[hook]]` event names, and `no_net()`. |
