@@ -177,7 +177,8 @@ pub fn needs_seed(
 
 /// The one-line summary of a `todo` call for the compact transcript. The
 /// pinned panel already shows the whole board, so the transcript says only
-/// what this call changed.
+/// what this call changed. A call with no `op` changed nothing, because the
+/// tool refuses it, and reads `todo · invalid arguments`.
 ///
 /// ## Examples
 ///
@@ -201,14 +202,21 @@ pub fn call_summary(arguments: JsonValue) -> String {
       | json.Null -> None
     }
   }
-  let op = option.unwrap(field("op"), "?")
   let target = case field("task"), field("phase") {
     Some(task), _ -> " " <> string.inspect(task)
     None, Some(phase) -> " phase " <> string.inspect(phase)
     None, None -> ""
   }
-  "todo · " <> op <> target
+  case field("op") {
+    Some(op) -> "todo · " <> op <> target
+    None -> "todo · " <> invalid_call
+  }
 }
+
+/// What a transcript row says for a `todo` call that carries no `op`. The
+/// tool refuses such a call whatever else it holds, so the row can say so
+/// before the result arrives.
+pub const invalid_call = "invalid arguments"
 
 /// The progress a successful `todo` result reports, for the end of its
 /// transcript row.

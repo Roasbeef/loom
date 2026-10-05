@@ -161,6 +161,10 @@ pub fn a_todo_step_reads_in_a_readers_words_test() {
   assert step_words.text(words("todo", [#("op", text("done"))]))
     == "Todo · done"
 
+  // The call that carried `phases` and no `op` is one the tool refuses.
+  assert step_words.text(words("todo", [#("phases", json.Array([]))]))
+    == "Todo · invalid arguments"
+
   let odd =
     step_words.text(words("todo", [#("op", text(string.repeat("y", 90)))]))
   assert string.length(odd) == string.length("Todo · ") + 60

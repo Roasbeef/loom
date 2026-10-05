@@ -48,6 +48,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import session_view/text_hygiene
+import session_view/todo_board
 import session_view/tool_activity
 
 /// The most characters of a command, a purpose or a pattern a step keeps. A
@@ -513,8 +514,9 @@ fn keyed(key: Option(String)) -> Subject {
 // `Todo · done: Add modulo` for a task finished. The call's `op` is the
 // tool's own vocabulary (`init`, `drop`), which is for the model, so each op
 // is a word a person would use, and the task is the model's text cut to
-// `task_limit` characters. A call whose `op` is missing or not one the tool
-// knows keeps the op's own word, since the words are only the reader's gloss.
+// `task_limit` characters. A call with no `op` is one the tool refuses,
+// so it reads `Todo · invalid arguments`; an `op` the tool does not know keeps
+// the op's own word, since the words are only the reader's gloss.
 fn todo_words(arguments: JsonValue) -> Words {
   let op = option.unwrap(text_field(arguments, "op"), "")
   let target = todo_target(arguments)
@@ -529,7 +531,7 @@ fn todo_words(arguments: JsonValue) -> Words {
     "block" -> said("blocked")
     "unblock" -> said("unblocked")
     "view" -> Words("Todo", Figure("viewed"), None)
-    "" -> Words("Todo", Unnamed, None)
+    "" -> Words("Todo", Figure(todo_board.invalid_call), None)
     other -> Words("Todo", Figure(clip_to(other, todo_task_limit)), None)
   }
 }
