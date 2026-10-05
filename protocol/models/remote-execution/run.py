@@ -9,6 +9,15 @@ import re
 from runner import ROOT, check_case, compile_model, record, snapshot_model
 
 PROBES = {
+    "tcProbeOwnerDischargeHappy": "witness: exact live finish and drain released collected custody and admitted next run",
+    "tcProbeOwnerDischargeCrashBeforeStart": "witness: Fresh commit before spawn survived crash and refused admission and old start",
+    "tcProbeOwnerDischargeCrashAfterFinal": "witness: final commit before drain remained historical after restart without release",
+    "tcProbeOwnerDischargeWorkerLost": "witness: held downstream survived worker loss restart late receipt and pinned refusal",
+    "tcProbeOwnerDischargeFatalSticky": "witness: consumer fatal stayed sticky after exact final drain and restart",
+    "tcProbeOwnerDischargeFinalCommitFailed": "witness: failed final COMMIT retained unreleased custody across drain and restart",
+    "tcProbeOwnerDischargeDischargeCommitFailed": "witness: failed discharge COMMIT retained slot and fenced restart admission",
+    "tcProbeOwnerDischargeFreshCommitFailed": "witness: failed Fresh COMMIT spawned no worker and genuine later admission completed",
+
     "tcProbeLiveOrder": "witness: original live association permit preceded actual native Intent and start",
     "tcProbeLiveFenceBefore": "witness: resource fence before live association refused permit and duplicate controls",
     "tcProbeLiveFenceAfter": "witness: association before fence retained exact native cancellation route",
