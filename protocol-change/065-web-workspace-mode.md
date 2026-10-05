@@ -2104,7 +2104,7 @@ from the home page, which the refusal's words say.
 | refusal | where it stopped | the session is left | words |
 | --- | --- | --- | --- |
 | `NotOwner`, `NotFound`, `Unavailable` | before anything changed | exactly as it was | the page's existing words |
-| `NotStopped` | the stop did not finish in 15 s, or the registry would not stop it | stopping or stopped, private; the stop completes on its own and a second press carries on | `The session did not finish stopping, so nothing changed. It is still private. Try again in a moment.` |
+| `NotStopped` | the stop did not finish in 15 s, or the registry would not stop it | the stop was issued and still completes; private, and once saved a second press moves it and leaves it saved | `The session is still stopping, so it was not moved and is still private. Once it is saved, press again; it will be moved and left saved.` |
 | `NotMoved` | isolation was refused (for example another page resumed the session in the meantime) | private, and running again when it ran before | `The session could not be made shareable and is still private. Try again.` |
 | `Stranded` | isolation was refused and the session could not be resumed either | stopped and private | `The session could not be made shareable, and it is stopped. Resume it from the home page, then try again.` |
 | `NotResumed` | isolation succeeded and the resume did not | stopped and shareable | `The session is shareable now but did not start again. Resume it from the home page.` |
@@ -2116,30 +2116,57 @@ from the home page, which the refusal's words say.
 weft run linked to a page's runtime ends with the page. A task started the way
 `resume_task` and `manage_task` start theirs would be cancelled between the stop
 and the isolation, leaving the session stopped and private. `ui_socket.detached`
-therefore starts the run from a process linked to nothing (`process.spawn_unlinked`
-over a one-task `weft.start`, the shape `client/agency`'s reaper has), and the
-answer goes to the page's runtime if it is still there. Every step is bounded by
-its own call timeouts, so the task ends within about a minute and needs no
-deadline of its own.
+therefore runs the task in a plain `process.spawn_unlinked`. No weft shape fits:
+every weft start links its scope to the process that calls it, and this run must
+outlive the page the stop ends, so a weft wrapper would add nothing. The answer
+goes to the page's runtime if it is still there. Every step is bounded by its own
+call timeouts and by the 15 s stop wait and 30 s resume wait, so the worst case is
+about 90 s, and a deadline would only kill a task that was about to answer. The
+admin page does not trust the answer to arrive: a read that finds the session
+shareable ends the page's wait (`admin.still_waiting`), so a task that never
+delivers cannot leave every button disabled.
+
+**Two presses at once.** Both stop the session, and the second isolation is
+refused because the first one made the change. `shareable.make` re-reads the
+session's scope when isolation is refused and takes the success arm when it is
+already session-only, so neither press reports a failure to move.
 
 **Authority.** Re-derived in the daemon, never read from a page.
 
 - The admin page asks through `admin_for`, behind `administering` (the page is
   open, minted to operate, and its credential authenticates as the principal it
   was admitted for, who is the owner). The page is already the owner's.
-- The session page's capability is `shareable_capability(role, ask)`, `Some` for
-  `Owning` and `None` for `Operating` and `Observing`, as the invitation control's
-  is. `shareable_for` checks again that the page is open and that
-  `role_of(attachment)` is `Owning`: a member operator, an owner's read-only page
-  and a page that has ended are `NotOwner` whatever frame reached the daemon. The
-  event path is the invitation control's (`component.invite_path`), which the
-  owner's socket alone admits (`owner_accepts`).
+- The session page's capability is `shareable_capability(role, origin, ask)`,
+  `Some` for `Owning` on a page a `loom ui` exchange opened and `None` for
+  `Operating`, `Observing` and any page a bookmark opened (`mints_access`).
+  `shareable_for` checks again that the page's origin may mint access, that the
+  page is open and that `role_of(attachment)` is `Owning`: a member operator, an
+  owner's read-only page, a bookmark's page and a page that has ended are
+  `NotOwner` whatever frame reached the daemon, and nothing is stopped. The event
+  path is the invitation control's (`component.invite_path`), which the owner's
+  socket alone admits (`owner_accepts`).
 - `shareable.make` authenticates the owner a third time before the stop.
 
-A stolen operator-ceiling owner page can now stop one of the owner's sessions and
-restart it under a new history, which it could already do through `Stop`
-(session actions on the home) and an open. It cannot do it for a session it was
-not minted for on a session page, and a read-only page cannot do it at all.
+**A bookmark cannot mint access.** Making a session shareable and creating an
+invitation both give other people a way in, so both are fresh-page only, like the
+admin page and device links (the eighth pull request): a page a `loom ui`
+exchange, a claim or a device link opened may, and a page a browser login's
+bookmark opened, or one such a page's home opened, may not. This amends the
+invitation control (051, the addendum on inviting from the session page), which
+was offered to any owner's operator page. `invite_capability`,
+`shareable_capability`, `invite_for` and `shareable_for` all take the page's
+origin (`seen.grant.origin`) and refuse a `Resumed` one, with `NotOwner`. The
+Session tab of such a page draws no button of either control and says `This page
+was opened from a bookmark, so it cannot invite people or make a session
+shareable. Run loom ui for a page that can.` (`invites.Bookmarked`, and
+`BookmarkedPrivate`, which keeps the private session's own sentence), worded like
+the resumed home's. `component.Standing.opening` carries which it is, read by
+`ui_socket.standing_of` from the grant and never from the page.
+
+A stolen operator-ceiling owner page from a fresh `loom ui` link can now stop one
+of the owner's sessions and restart it under a new history, and so can invite, as
+it already could invite. A bookmark's page can do neither, and a read-only page
+cannot do either at all.
 
 **Where the daemon's state root comes from.** The isolated session's fresh stores
 are minted under the daemon's own state directory. `server.AdminAttachment` and
@@ -2186,7 +2213,8 @@ shows the new scope.
 **A running turn.** The owner's ruling is stop, isolate and resume as one task, so
 a session in the middle of a turn is stopped as part of it, and the confirm is the
 guard: the question names that the session will stop. A session whose stop does
-not complete in 15 s is `NotStopped` and keeps stopping.
+not complete in 15 s is `NotStopped`: the stop was issued and still completes, and
+once the session is saved a second press moves it and leaves it saved.
 
 **What was considered.**
 
@@ -2219,7 +2247,7 @@ session and an already shareable one; a stale epoch restoring a running session;
 capability by role, the forced asks of a member operator, an owner's read-only page
 and an ended page, the whole task through a real session and an invitation refused
 before and made after, and `MakeShareable` in the admin page's table of
-refused standings), `ui_socket_test` (the capability), `make_shareable_test` (the
+refused standings), `ui_socket_test` (the capability, and none for a bookmark), `make_shareable_test` (the
 session page's states, the confirm guard, the refusal, an unasked answer),
 `admin_test` (the question, the guard, the saved variant, the running words, the
 refusal) and `grants_test`.

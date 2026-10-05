@@ -474,14 +474,19 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   socket admits neither. `start_page` takes the `Role`.
   An owner's page can also make its private session shareable
   (protocol-change/065, the addendum on making a session shareable):
-  `shareable_capability(role, ask)` is `Some` for `Owning` only and
-  `shareable_for(attachment, open)` re-checks that the page is open and `Owning`
+  `shareable_capability(role, origin, ask)` is `Some` for `Owning` on a page a
+  `loom ui` exchange opened, and `shareable_for(attachment, origin, open)`
+  re-checks the origin, that the page is open and `Owning`
   before `client/daemon/shareable.make` stops, isolates (`manager.isolate`) and
   resumes the session, refusing as the module's table says. The admin page asks
   the same task through `admin_for` (`grants.MakeShareable`), which takes the
   daemon's `state_root` (carried on `server.AdminAttachment` and
-  `server.Attachment`). Both run in `detached`, a weft run started from an
-  unlinked process, because the stop ends the page a linked run would die with.
+  `server.Attachment`). Both run in `detached`, a plain `spawn_unlinked` (no weft
+  shape fits an unlinked run), because the stop ends the page a linked run would
+  die with. A bookmark cannot mint access: `invite_capability`,
+  `shareable_capability`, `invite_for` and `shareable_for` all refuse a page a
+  bookmark opened (`mints_access`), and its Session tab draws a sentence
+  (`invites.Bookmarked`) in place of the controls.
   `rename_for(standing, open, epoch, target, name)` is the owner page's rename
   (protocol-change/067): the page open, the ceiling operating, the credential
   authenticating as the page's principal and that principal the owner, `target`

@@ -34,7 +34,9 @@ page keys and nonces, and the relay into the session's gateway.
   `sharing`, the catalogue's scope for an owner's page, so a private session
   draws `invites.Unshareable`'s one sentence and no invitation button; the
   daemon reads it with the members read the admin page makes, no new frame;
-  `component.unplaced` for fixtures), and a `Transport(socket)`. The heading shows the name (or
+  and `opening`, `FromBookmark` for an owner's page a bookmark opened, which is
+  handed neither invitation nor make-shareable capability and draws
+  `invites.Bookmarked`'s sentence; `component.unplaced` for fixtures), and a `Transport(socket)`. The heading shows the name (or
   `Session` and the ID's first eight characters) with the whole ID in a
   `title`, and the workspace's last segment with the whole path in a
   `title`.
