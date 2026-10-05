@@ -1630,23 +1630,31 @@ pub fn the_confirmation_names_its_row_as_text_test() {
   assert !string.contains(html, "<img src=x onerror")
 }
 
-// A blocked row (an unreconciled creation, or a recovery that stopped) draws no
-// action on the owner's fresh home: the registry would refuse an archive or a
-// delete as busy and a stop has nothing to end, and the page would say the
-// session is running when it is not.
-pub fn a_blocked_row_draws_no_action_test() {
+// A blocked row (an unreconciled creation, or a recovery that stopped) says
+// "needs attention" with a fixed title, never "saved", and draws Archive and
+// Delete on the owner's fresh home and nothing else: a stop has nothing to end.
+// A home with no manage capability draws it as text.
+pub fn a_blocked_row_draws_archive_and_delete_test() {
   let ask = fn(_action, _session, _deliver) { Nil }
+  let listed = fn() {
+    home.Listed([entry("X", "stuck", "/src/weft", 1, Blocked)])
+  }
   let #(owner, _) =
-    opened(
-      home.Start(..start(), manage: Some(ask), sessions: fn() {
-        home.Listed([entry("X", "stuck", "/src/weft", 1, Blocked)])
-      }),
-    )
+    opened(home.Start(..start(), manage: Some(ask), sessions: listed))
   let html = drawn(owner)
   assert string.contains(html, "stuck")
+  assert string.contains(html, "needs attention")
+  assert string.contains(html, "title=\"This session was never finished")
   assert !string.contains(html, ">Stop<")
+  assert list.length(string.split(html, ">Archive<")) == 2
+  assert list.length(string.split(html, ">Delete<")) == 2
+
+  let #(plain, _) = opened(home.Start(..start(), sessions: listed))
+  let html = drawn(plain)
+  assert string.contains(html, "needs attention")
   assert !string.contains(html, ">Archive<")
   assert !string.contains(html, ">Delete<")
+  assert !string.contains(html, "home-act")
 }
 
 // --- Stop asks first on a busy row (round 5, F110) ---------------------------
