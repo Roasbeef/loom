@@ -33,7 +33,7 @@ packages = [
   { name = "session_view", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_stdlib", "machine"], source = "local", path = "../session_view" },
   { name = "simplifile", version = "2.7.0", build_tools = ["gleam"], requirements = ["filepath", "gleam_stdlib"], otp_app = "simplifile", source = "hex", outer_checksum = "A2727627B063E87351934C7F7F008F2D1FDB16F6DE0B8C79F9E46459CFC9C164" },
   { name = "stratus", version = "3.0.0", build_tools = ["gleam"], requirements = ["exception", "gleam_crypto", "gleam_erlang", "gleam_http", "gleam_otp", "gleam_stdlib", "gramps", "logging"], otp_app = "stratus", source = "hex", outer_checksum = "21C93D657E4E7964E36EACDE83609459F259289DF403B5FEBD3C60612594BE24" },
-  { name = "weft", version = "0.4.5", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], otp_app = "weft", source = "hex", outer_checksum = "CDD540819BE4E87D3C19FD4843F02AB1707A979FE909AE85EEF2034C1E48ED6C" },
+  { name = "weft", version = "0.4.5", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], source = "git", repo = "https://github.com/Roasbeef/weft.git", commit = "f076c0661518ce9432cc6ff874b1ece71edbd9b7" },
   { name = "yamerl", version = "0.10.0", build_tools = ["rebar3"], requirements = [], otp_app = "yamerl", source = "hex", outer_checksum = "346ADB2963F1051DC837A2364E4ACF6EB7D80097C0F53CBDC3046EC8EC4B4E6E" },
 ]
 
@@ -53,4 +53,4 @@ host = { path = "../host" }
 machine = { path = "../machine" }
 session_view = { path = "../session_view" }
 simplifile = { version = ">= 2.0.0 and < 3.0.0" }
-weft = { version = "== 0.4.5" }
+weft = { git = "https://github.com/Roasbeef/weft.git", ref = "f076c0661518ce9432cc6ff874b1ece71edbd9b7" }
