@@ -355,15 +355,12 @@ fn chip_element(
   let line = chip.line
   html.li(chip_attributes(chip, followed), [
     html.button(
-      list.append(
-        [
-          attribute.type_("button"),
-          attribute.class("chip-hit"),
-          attribute.data(card_marker, int.to_string(position)),
-          ..press_attributes(chip.line.id, followed, focus)
-        ],
-        title(line),
-      ),
+      [
+        attribute.type_("button"),
+        attribute.class("chip-hit"),
+        attribute.data(card_marker, int.to_string(position)),
+        ..press_attributes(chip.line.id, followed, focus)
+      ],
       [
         ring(chip, Card),
         html.span([attribute.class("chip-text")], [
@@ -390,16 +387,6 @@ pub fn status(line: agent_roster.Line) -> Element(message) {
     ]),
     html.text(strand_card.status_line(line)),
   ])
-}
-
-// The card's tooltip, only when it says more than the line does.
-fn title(line: agent_roster.Line) -> List(attribute.Attribute(message)) {
-  let whole = strand_card.status_title(line)
-
-  case whole == strand_card.status_line(line) {
-    True -> []
-    False -> [attribute.title(whole)]
-  }
 }
 
 // The chip of the strand the page shows is marked as the current one by its
