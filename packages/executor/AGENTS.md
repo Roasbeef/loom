@@ -28,6 +28,48 @@ A standalone executor has no caller until the distributed-runtime epic
 transport is a `Dispatcher` whose `start` forwards a `Dispatch` to a peer.
 No second type names it.
 
+## Trusted TLS BEAM transport
+
+`remote/distribution.Config` describes finite administrative node names, exact
+certificate pins and private credential paths. `start` admits a fresh TLS-only
+OTP VM before endpoint publication. Its opaque `Membership` owns the installed
+finite node table; `peer` resolves an opaque `Peer` from that table without
+connecting. The erlexec child starts with its private cookie directory as HOME;
+boot arguments restore the operator's OS HOME after OTP captures its init home.
+The private cookie is checked before a listener starts. A successful membership
+exposes the canonical certificate, key, CA, cookie and TLS-options paths through
+`protected_membership_paths`; embedding sandbox registration must protect them.
+Membership itself does not establish that sandbox assembly performed this step.
+
+`remote/beam_endpoint.Registration` binds that original owner Peer to concrete
+native, optional semantic-workspace and optional whole-Compile service handles.
+Only trusted local `register` adds a binding. One literal node-wide rendezvous
+owns at most sixteen lifetime registrations, sharing four data and two control
+credits across all scopes. `remote/internal/beam_protocol` selects a closed
+native, workspace, Compile or original-command route with the unchanged full
+scope, generation and canonical payload. No peer supplies a closure or MFA.
+
+Each credit has stable service-reply Subjects. Its managed transport task sends
+one chunk and waits for consumption before sending another. Caller death ends
+transport observation, but a service ask already queued keeps its credit until
+an actual service answer and the transport's `weft.AllDelivered` witness both
+arrive. A lost service or run retires that credit; endpoint restart alone cannot
+reclaim native custody. The embedding subtree must be Temporary and separately
+prove native quiescence before replacing a generation against retained journals.
+There is no in-place generation update or registration removal.
+
+`remote/dispatcher` now uses this BEAM endpoint. The old socket modules and their
+fixtures remain during migration; they are not an additional supported deployment
+transport. Package gates remain incomplete until all affected fixtures migrate.
+See the [transition record](../../docs/review/distributed-beam-transport-transition.md)
+for exact tested and open boundaries. Shipped daemon assembly, separate-host
+routing and actual satellite credential exclusion remain open.
+
+An admitted executor is a fully trusted distributed runtime member. TLS and
+closed application messages do not contain a compromised member. Executor
+membership does not make it a Raft voter, and model-authored satellites must
+remain outside distribution.
+
 ## Closed native command routing
 
 `remote/wire.CommandEnvelope` carries exactly one full `core/command.CommandRef`
@@ -43,11 +85,12 @@ correspondence, not durable ownership of the native UUID or Prepared digest.
 Authenticated server assembly must prove the complete retained association before
 forwarding every key-bearing control or returning another native request's bytes.
 
-`remote/connection.exchange_command(config, ref, body)` shares pinned TLS, ordinary
-Hello, cumulative exchange budget and socket closure with `exchange`. Command
-replies must carry the exact full ref and generation. Plain replies and changed
-refs are uncertain. The current server reader deliberately accepts only native
-requests; this owner transport component does not enable command admission.
+`remote/beam_endpoint.exchange_command(config, ref, body)` uses the closed
+command route over authenticated distribution. Its request header retains the
+original owner, full scope and generation. Replies must carry the exact full ref
+and generation; plain replies and changed refs are uncertain. The endpoint
+forwards the unchanged command envelope to the concrete native service, which
+checks the retained resource association before accepting key-bearing controls.
 
 `remote/dispatcher.CommandReserved(key:, prepared:, ref:)` retains the complete
 service command route beside the original native UUID and immutable Prepared.
@@ -58,8 +101,7 @@ native ChildOrigin must equal the original Dispatch context, and physical
 correspondence is validated before the guarantor permits the first send. No
 retry creates another identity, clearance, grant or deadline.
 
-`command_route_test` uses fixed transport-only peers over the real pinned TLS
-primitive to check all routed bodies and both dispatcher paths. Those peers do
+`command_route_test` uses fixed transport-only peers over real TLS BEAM to check all routed bodies and both dispatcher paths. Those peers do
 not admit a service or launch native work. Existing native fixtures exercise the
 production native server separately; production Compile assembly remains open.
 
@@ -663,3 +705,76 @@ boundary supplies no original Compile admission clock itself, cross-actor atomic
 spawn/cancel promise or whole-service assembly. The real continuation still owns
 original admission and at-most-once use. See [remote custody](../../docs/architecture/remote-custody.md)
 for those separate ownership and recovery duties.
+
+
+## Whole Compile actor
+
+`remote/compile_service.configure` pins exact resource/native endpoints, complete
+administrative scope and an opaque trusted CompilationContract. It accepts one to
+four original continuations and the same independent bound for metadata tasks.
+The opaque Service retains that exact native endpoint; `native_service` exposes
+its identity without an ask so enclosing listener assembly can reject another
+same-scope endpoint. `enrolled` exposes the original checked resource enrollment
+for canonical listener input/Ready decoding, without a separately supplied snapshot.
+Both start and temporary supervised construction preserve those original values.
+Source admission uses the actual effective policy and generated catalogue before
+journal admission or effects; peer seam/policy records never select authority.
+`resource_journal.pid` is metadata-only endpoint identity for this monitor. Its
+death establishes neither allocation liveness nor cleanup/native retirement.
+
+The closed local `Caller`, `Operation` and `Reply` door independently compares
+owner role, labels, generation and full scope. Header-only 32-byte tickets expire
+at 1000 milliseconds, with at most 32 unused tickets. Original Submit consumes its
+ticket and records full Input plus one native-clock deadline before managed
+admission. Atomic `admit_preparation` is the sole fresh Claim. The worker must pass
+the actor-owned BeginPreparation handoff before exclusive UUID mkdir, workspace
+and seed preparation, then commit_ready. Historical Reserved never restarts work.
+The original Claim and permit are copyable values; trusted assembly owes one use.
+
+The actor remains responsive while journal asks wait. Query, ACK, cancellation
+and historical command lookup use bounded managed metadata tasks. A live route
+uses its actor-owned Claim and unchanged whole-service cap. Both routes hand the
+listener's original final reply subject directly to the existing native engine;
+a metadata report/forwarding handoff does not discharge that native exchange.
+This module owns no listener, ingress credits or alternate native admission.
+Successful answers and definite resource-journal Missing/Conflict refusals
+release metadata capacity after the actual final drain. Ambiguous errors and
+lost reports retain it and fence admission through one shared classification.
+The native command-context lookup still maps its missing/conflicting historical
+lookup to uncertainty; its separately proposed correction remains pending approval.
+
+The original continuation polls `compile_observation.observe` only until its
+unchanged cap. Missing association or uncommitted terminal is Pending; errors end
+the run and fence admission. Its sole finalization call consumes actual retained
+terminal evidence and physical products, then commit_compile precedes successful
+outer observation. Query/recovery only reads committed result/receipt evidence.
+Known failure before Ready settles Before through the original Preparing claim;
+after Ready, absent association cannot establish safe nonexecution.
+
+Cancel first admits metadata capacity in the same actor turn that stops the
+original phase. Capacity refusal preserves its original held Claim and live route.
+An admitted Cancel commits a full-input fence before inspecting actual native association,
+following exact native Cancel and cancelling the continuation. Uncertain asks,
+endpoint death and lost drain proofs permanently fence fresh admission and retain
+unresolved capacity. A committed fence plus confirmed managed cancellation can
+join normally; a failed/ambiguous fence cannot. One exclusive seal/fence barrier
+remains available during close even when metadata slots are occupied. Close joins
+this component, retains both journals and proves neither resource cleanup nor
+native retirement. Temporary supervision never reconstructs claims after death.
+An untrappable kill cannot promise that its shutdown hook wrote a durable fence.
+
+`compile_service_test` uses real journal actors, exact source/seed preparation,
+actual original Broker clearance, native helper/compiler terminal and independent
+artifact fingerprints. Its stopped-handoff control pauses the original worker
+with the trusted fixture clock after Claim COMMIT, holds a real SQLite fence lock,
+and proves cancellation prevents mkdir before the fence reply. This actor-local
+fixture does not claim ordinary-tool or registered separate-host acceptance.
+
+The actor preserves weft's existing linked relay ownership instead of trapping
+abnormal relay exits and attempting another lifecycle ledger. Loss of that relay
+terminates the temporary Compile endpoint; the enclosing listener must retire
+unresolved credits. The endpoint-kill test observes the actual original worker's
+death and an independent journal reopen returning history without a Claim.
+Broker fixture peers are monitored through their actual Dispatcher owner identity
+and joined after explicit native settlement. Cancellation signals are released
+after final managed reports; no completed run leaves an idle signal behind.

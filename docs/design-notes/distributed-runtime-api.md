@@ -186,6 +186,14 @@ not another parallel rewrite of their modules. C1 does not gate the first
 single-orchestrator remote executor. Automatic failover and workspace snapshot
 migration remain separate later designs.
 
+E5 permits one orchestrator to manage registered executors and place independent
+sessions on their respective workspaces. A single session that runs a GPU step
+and then consumes its output on a Mac needs an additional target and artifact
+contract, tracked in [#825](https://github.com/Roasbeef/loom/issues/825). That
+contract must name the exact secondary workspace and input manifest before
+execution, preserve the admitted target across recovery, and transfer bounded,
+verified artifacts. Multiple connected nodes alone do not provide those semantics.
+
 Protocol proposals must cover the remote dispatcher/wire, workspace identity
 and operations, capability forwarding, client routing/command reconciliation,
 and clustered ownership transitions. Reuse existing interfaces where their
