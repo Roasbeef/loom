@@ -5656,7 +5656,12 @@ server the same private HOME and XDG cache for cross-platform Gleam cache lookup
 `lsp/dependency_state.fingerprint` gates workspace-local real paths against
 protected entries and the session’s existing readable or writable roots,
 follows at most 64 package configurations, and retains
-128 KiB at most per metadata file. The query caller sends only a digest in
+128 KiB at most per metadata file. The generated package inventory hashes
+canonical table/string values, preserving package membership, versions and git
+commits while ignoring the key order Gleam rewrites from maps. Unsupported
+inventory values or more than three table levels refuse reuse. Manifest and
+project configuration changes still use their complete source digests.
+The query caller sends only a digest in
 `manager.Acquire`; the actor compares it with the successful keeper start's
 `Started.stamp`. A change uses the existing eviction path, reruns setup, and
 reopens held documents. This snapshot tracks dependency preparation inputs,
