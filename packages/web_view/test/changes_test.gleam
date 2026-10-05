@@ -142,15 +142,15 @@ pub fn rows_carry_a_class_from_their_kind_and_their_text_test() {
   )
   assert string.contains(
     html,
-    "<div class=\"diff-row diff-context\"><span class=\"diff-num\">1</span><span class=\"diff-num\">1</span><span class=\"diff-sign\"> </span><span class=\"diff-text\">same</span></div>",
+    "<div class=\"diff-row diff-context\"><span class=\"diff-gutter\"><span class=\"diff-num\">1</span><span class=\"diff-num\">1</span><span class=\"diff-sign\"> </span></span><span class=\"diff-text\">same</span></div>",
   )
   assert string.contains(
     html,
-    "<div class=\"diff-row diff-removed\"><span class=\"diff-num\">2</span><span class=\"diff-num\"></span><span class=\"diff-sign\">−</span><span class=\"diff-text\">old</span></div>",
+    "<div class=\"diff-row diff-removed\"><span class=\"diff-gutter\"><span class=\"diff-num\">2</span><span class=\"diff-num\"></span><span class=\"diff-sign\">−</span></span><span class=\"diff-text\">old</span></div>",
   )
   assert string.contains(
     html,
-    "<div class=\"diff-row diff-added\"><span class=\"diff-num\"></span><span class=\"diff-num\">2</span><span class=\"diff-sign\">+</span><span class=\"diff-text\">new</span></div>",
+    "<div class=\"diff-row diff-added\"><span class=\"diff-gutter\"><span class=\"diff-num\"></span><span class=\"diff-num\">2</span><span class=\"diff-sign\">+</span></span><span class=\"diff-text\">new</span></div>",
   )
 }
 

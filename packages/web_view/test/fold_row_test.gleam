@@ -372,11 +372,11 @@ pub fn an_opened_edit_draws_its_diff_a_line_at_a_time_in_colour_test() {
   )
   assert string.contains(
     html,
-    "<div class=\"diff-row diff-removed\"><span class=\"diff-num\">5</span><span class=\"diff-num\"></span><span class=\"diff-sign\">−</span><span class=\"diff-text\">old</span></div>",
+    "<div class=\"diff-row diff-removed\"><span class=\"diff-gutter\"><span class=\"diff-num\">5</span><span class=\"diff-num\"></span><span class=\"diff-sign\">−</span></span><span class=\"diff-text\">old</span></div>",
   )
   assert string.contains(
     html,
-    "<div class=\"diff-row diff-added\"><span class=\"diff-num\"></span><span class=\"diff-num\">5</span><span class=\"diff-sign\">+</span><span class=\"diff-text\">new</span></div>",
+    "<div class=\"diff-row diff-added\"><span class=\"diff-gutter\"><span class=\"diff-num\"></span><span class=\"diff-num\">5</span><span class=\"diff-sign\">+</span></span><span class=\"diff-text\">new</span></div>",
   )
   assert string.contains(html, "diff-row diff-note")
 
