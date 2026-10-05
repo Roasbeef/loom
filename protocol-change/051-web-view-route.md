@@ -3948,3 +3948,32 @@ One more region the home socket reads an event from, for every home.
 `ui_socket_test` pins the admitted and the dropped frames for all three admissions.
 `names_test` pins that the form's handler is one submit beneath the panel and that no
 path outside the panel moved.
+
+## Addendum: the tab icon (2026-10-05)
+
+The web view's pages carry the Loom mark as their tab icon.
+
+### What changed
+
+- **One more fixed asset.** `GET /ui/assets/favicon.svg` is served like the other
+  assets: read once at startup from `web_view`'s `priv/static`, answered with
+  `image/svg+xml`, `nosniff` and the unchanged policy. The name is added to the closed
+  list in `ui_http.route`; any other name under `/ui/assets` is still a 404. Host and
+  `Sec-Fetch` checks are the other assets', and no socket admission changes.
+- **Every document links it.** Each `<head>` carries
+  `<link rel="icon" type="image/svg+xml" href="/ui/assets/favicon.svg">`, a fixed
+  literal built from `page.asset_path`, never from a request. The existing
+  `img-src 'self'` already allows it.
+- **`/favicon.ico` stays closed.** It lies outside `/ui`, so it is a 404 like any
+  other path there. A browser asks for it only when a page names no icon.
+
+### Cost
+
+One more file in the asset set, and a daemon whose release lost it refuses to start
+with `web view asset favicon.svg is unreadable`, as it does for the others.
+
+### Verification
+
+`ui_http_test` pins the route and that `/favicon.ico` is `Unknown`. `ui_route_test`
+serves the asset and compares it with the priv file, with its content type and the
+policy. `page_test` pins the link in every document.
