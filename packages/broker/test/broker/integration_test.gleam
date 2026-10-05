@@ -38,19 +38,6 @@ fn helper_config() -> Result(exec.SpawnConfig, String) {
   }
 }
 
-// The kill-custody tests below find the helper's OS pid, and the processes
-// under it, by reading `/proc` through `support/bench_host`, and only Linux
-// has one. Elsewhere they skip with that reason rather than fail on the
-// missing directory, which would read as a broken ruling instead of an
-// unreadable host.
-fn proc_helper_config() -> Result(exec.SpawnConfig, String) {
-  case ffi_os.os_name() {
-    "linux" -> helper_config()
-    other ->
-      Error("the kill evidence is read from /proc, which " <> other <> " lacks")
-  }
-}
-
 // Every test in this suite runs the helper `make sandbox` built, at the
 // path the Makefile names, and none compiles one itself. Each test used to
 // run its own `go build`, so a parallel run started several at once, beside
@@ -660,7 +647,7 @@ pub fn real_helper_stdin_error_does_not_settle_execution_test() {
 }
 
 // The marker in the payload's argv, which is how a leftover is recognised in
-// `/proc`. Nothing else on this host sleeps for this long.
+// native process metadata. Nothing else on this host sleeps for this long.
 const kill_marker = "300.75"
 
 // A helper that cannot act on a cancel is killed by the broker, and that kill
@@ -674,8 +661,10 @@ const kill_marker = "300.75"
 // SIGKILLed helper under bwrap takes its jail with it, so the retained port's
 // `exit_status` is enough evidence. If the marked payload survived the kill,
 // the ruling would be wrong and the slot would have to stay unconfirmed.
+// Darwin has no such kernel guarantee: its existing non-bwrap arm instead
+// proves the conservative refusal and retained custody, never jail teardown.
 pub fn real_helper_witnessed_kill_retires_a_stopped_helper_test() {
-  case proc_helper_config() {
+  case helper_config() {
     Error(reason) ->
       io.println_error("SKIP real_helper_witnessed_kill: " <> reason)
     Ok(shared) -> {
@@ -683,6 +672,7 @@ pub fn real_helper_witnessed_kill_retires_a_stopped_helper_test() {
       // useful interval for it.
       let config = exec.SpawnConfig(..shared, cancel_grace_ms: 500)
       let baseline = host.helper_os_pids()
+      let original_ports = host.port_os_pids()
       let assert Ok(pool) =
         exec.start_pool(size: 1, spawn: fn() { exec.prepare_helper(config) })
         as "native pool starts"
@@ -690,6 +680,11 @@ pub fn real_helper_witnessed_kill_retires_a_stopped_helper_test() {
         as "native helper lent"
       let assert exec.StatusReady(features) = exec.status(helper, waiting: 1000)
       let jailed = list.contains(features, "bwrap")
+      let assert [victim] =
+        list.filter(host.port_os_pids(), fn(pid) {
+          !list.contains(original_ports, pid)
+        })
+        as "the original helper owns exactly one new native port"
 
       let events = process.new_subject()
       let req =
@@ -708,8 +703,7 @@ pub fn real_helper_witnessed_kill_retires_a_stopped_helper_test() {
 
       // The port's OS pid must be the helper and not the shell that opened
       // fd 3 for it, or the SIGKILL below would not be addressed to it.
-      let assert Ok(victim) = host.busy_helper_os_pid(exclude: baseline)
-        as "exactly one new helper is running an execution"
+      assert host.busy_helper_os_pid(exclude: baseline) == Ok(victim)
       let assert [#(_, "loom-exec", _), ..] = host.proc_tree(victim)
         as "the port's pid is the exec'd helper itself"
       host.signal(victim, "STOP")
@@ -761,6 +755,14 @@ pub fn real_helper_witnessed_kill_retires_a_stopped_helper_test() {
         False -> {
           assert exec.close_pool(pool, waiting: 5000)
             == Error(exec.RetirementExit(137))
+          let assert Ok(custody) = exec.pool_custody(pool, waiting: 1000)
+            as "the original owner's unconfirmed custody remains inspectable"
+          let assert [view] = custody.helpers as "the original slot is retained"
+          assert view.pid == exec.pid(helper)
+          assert view.custody
+            == exec.CleanupUnconfirmed(exec.RetirementExit(137))
+          assert exec.checkout(pool, waiting: 1000)
+            == Error(exec.PoolUnavailable)
         }
       }
     }
@@ -782,30 +784,39 @@ const ordering_slack_ns = 100_000_000
 // payload wrote after that instant, plus the slack, may exist. A line later
 // than that would mean the jail outlived the verdict and the slot must stay
 // unconfirmed. The measured lag is printed so a reader can see the margin.
+// Darwin runs the existing non-bwrap refusal arm. Its writer records activity
+// because BSD date has no nanosecond format; those bytes make no timing or
+// descendant-death claim, and RetirementExit(137) must retain custody.
 pub fn real_helper_kill_verdict_precedes_no_late_payload_write_test() {
-  case proc_helper_config() {
+  case helper_config() {
     Error(reason) ->
       io.println_error("SKIP real_helper_kill_ordering: " <> reason)
     Ok(shared) -> {
       let config = exec.SpawnConfig(..shared, cancel_grace_ms: 500)
       let baseline = host.helper_os_pids()
+      let original_ports = host.port_os_pids()
       let assert Ok(helper) = exec.spawn_helper(config)
         as "native helper spawns"
       let assert exec.StatusReady(features) = exec.status(helper, waiting: 1000)
+      let assert [victim] =
+        list.filter(host.port_os_pids(), fn(pid) {
+          !list.contains(original_ports, pid)
+        })
+        as "the original helper owns exactly one new native port"
       let assert Ok(here) = simplifile.current_directory()
       let log = here <> "/build/integration/work/ordering-" <> unique_name()
       let _ = simplifile.delete(log)
+      let writing = case ffi_os.os_name() {
+        "darwin" ->
+          "trap '' TERM; while :; do echo active >> "
+          <> log
+          <> "; sleep 0.02; done"
+        _linux_or_unsupported ->
+          "trap '' TERM; while :; do date +%s%N >> " <> log <> "; done"
+      }
 
       let events = process.new_subject()
-      let req =
-        request(
-          [
-            "/bin/sh",
-            "-c",
-            "trap '' TERM; while :; do date +%s%N >> " <> log <> "; done",
-          ],
-          1024,
-        )
+      let req = request(["/bin/sh", "-c", writing], 1024)
       assert exec.run(helper, req, events:, waiting: 3000) == Ok(Nil)
       let assert poll.Answered(Nil) =
         poll.until(within: 3000, every: 20, attempt: fn() {
@@ -818,10 +829,9 @@ pub fn real_helper_kill_verdict_precedes_no_late_payload_write_test() {
             Error(_) -> poll.Retry
           }
         })
-        as "the payload is writing its clock inside the jail"
+        as "the payload is writing inside the jail"
 
-      let assert Ok(victim) = host.busy_helper_os_pid(exclude: baseline)
-        as "exactly one new helper is running an execution"
+      assert host.busy_helper_os_pid(exclude: baseline) == Ok(victim)
       host.signal(victim, "STOP")
       exec.cancel(helper)
       assert process.receive(events, 5000)
@@ -830,19 +840,19 @@ pub fn real_helper_kill_verdict_precedes_no_late_payload_write_test() {
       let verdict = exec.close(helper, waiting: 5000)
       let witnessed = host.system_time_ns()
       process.sleep(500)
-      let assert Ok(text) = simplifile.read(log) as "the payload's clock log"
+      let assert Ok(text) = simplifile.read(log) as "the payload's write log"
       let latest =
         string.split(text, "\n")
         |> list.filter_map(int.parse)
         |> list.fold(0, int.max)
       let lag = latest - witnessed
-      io.println_error(
-        "kill_ordering: latest payload write "
-        <> int.to_string(lag / 1000)
-        <> " us after the verdict (negative is before)",
-      )
       case list.contains(features, "bwrap") {
         True -> {
+          io.println_error(
+            "kill_ordering: latest payload write "
+            <> int.to_string(lag / 1000)
+            <> " us after the verdict (negative is before)",
+          )
           assert verdict == Ok(Nil)
           assert latest > 0
           assert lag <= ordering_slack_ns
