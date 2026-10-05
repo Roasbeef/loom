@@ -30,7 +30,7 @@
 ////   13169b82fc24ff5aa14320f25b35c1ff500faf769fa0283cc78adc78d4b634fd  packages/cap/src/cap/git.gleam
 ////   dc1de7c9d376c1224193be85eb0ccbbf980dde14ab12532d8c718c570dfe62db  packages/cap/src/cap/job.gleam
 ////   100c99a10bdf7c898a32de79b01ca4d3cb1664c23c0db29a158b2a3862ecec18  packages/cap/src/cap/kv.gleam
-////   cef1b32af6ae85af5d83f90a81ae7813694d5c32ca9cec6a0eab59f3852cec14  packages/cap/src/cap/lsp.gleam
+////   3b23bf74eecbb8af45fedcc3956ef567aee0348cee41127b82bbd8afb1a1291a  packages/cap/src/cap/lsp.gleam
 ////   71492113c3a2f3dcc0ff5ca4d01036fd21aae4bb0ab5241db23fff61d9f42243  packages/cap/src/cap/lsp_sql.gleam
 ////   98e88492562b1a4cfb829581b6fee9c6040a956994f8d10cbb2ae2ed6bac0e6c  packages/cap/src/cap/mcp.gleam
 ////   5d130bfe00a9ea5275c03dce003e6238d497e389d261fb7d6a0e78f83dbde2b3  packages/cap/src/cap/net.gleam
@@ -46,7 +46,7 @@
 ////   dade50ada67f4ac667f0b92cb10d0da213cac327897524dbb006e02cf3c90963  packages/cap/src/cap/workflow.gleam
 ////   20e291637a68e2d484bd4a17e9b825c59f2c22f439f00f6482af0d26aafafadd  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): b94c720794a0f57f9c3729e2c21f0bfcf93c2724b571e689d8c0a2045ee4b9b0
+//// Body digest (every line after the marker): 002424dcd0857c96f77f0d89a40ff0bbc7d9e1683d222b22e4b9ba0a6dfb4743
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -650,13 +650,23 @@ pub type LineChange {
 /// can act on, which is why none of them is a bare string.
 pub type LspError {
   /// No configured server owns the path, the path's real location is
-  /// outside the server's root, or the server could not start.
+  /// outside the server's root, or the server could not start. A path
+  /// outside the session's workspace is always this, never an answer from
+  /// the workspace's own tree: `reason` names the path and the root, and
+  /// a relative path means the workspace.
   NoServer(reason: String)
   /// The server does not offer `request` (for example call hierarchy), so
   /// it was never sent.
   Unsupported(server: String, request: String)
   /// The symbol was not found where the query said to look.
-  NotFound(symbol: String)
+  ///
+  /// A query with no `path` searches one server's project root, and
+  /// `searched` names it (\"the go server rooted at /work/app\"). An empty
+  /// answer from that search says nothing about any other tree, such as a
+  /// sibling clone of the same project, so read `searched` before taking
+  /// the answer for the code you meant. It is `None` when the query named
+  /// a file, because the path already says where the harness looked.
+  NotFound(symbol: String, searched: option.Option(String))
   /// More than one distinct definition matched. Narrow the query with
   /// `in` or `at_line` using one of these.
   Ambiguous(candidates: List(Site))
@@ -684,10 +694,15 @@ pub type PlannedFile {
 ///
 /// With `path` and `line`, the first occurrence of the identifier on that
 /// line is meant. With `path` alone, the file's outline is searched by
-/// name. With neither, the whole project is searched, and more than one
-/// distinct definition is `Ambiguous` rather than a guess. A `line`
-/// without a `path` narrows nothing and is refused as `LspDenied` with
-/// code `invalid_argument`, as is a line below 1.
+/// name. With neither, the session's project is searched, and more than
+/// one distinct definition is `Ambiguous` rather than a guess. That
+/// search can only answer about the tree the session's server is rooted
+/// in; a `path` outside the workspace is refused as `NoServer` rather
+/// than answered from that tree, and a `NotFound` from the search names
+/// the root it covered.
+///
+/// A `line` without a `path` narrows nothing and is refused as
+/// `LspDenied` with code `invalid_argument`, as is a line below 1.
 pub type Query {
   Query(symbol: String, path: option.Option(String), line: option.Option(Int))
 }
@@ -2644,13 +2659,23 @@ pub type LineChange {
 /// can act on, which is why none of them is a bare string.
 pub type LspError {
   /// No configured server owns the path, the path's real location is
-  /// outside the server's root, or the server could not start.
+  /// outside the server's root, or the server could not start. A path
+  /// outside the session's workspace is always this, never an answer from
+  /// the workspace's own tree: `reason` names the path and the root, and
+  /// a relative path means the workspace.
   NoServer(reason: String)
   /// The server does not offer `request` (for example call hierarchy), so
   /// it was never sent.
   Unsupported(server: String, request: String)
   /// The symbol was not found where the query said to look.
-  NotFound(symbol: String)
+  ///
+  /// A query with no `path` searches one server's project root, and
+  /// `searched` names it (\"the go server rooted at /work/app\"). An empty
+  /// answer from that search says nothing about any other tree, such as a
+  /// sibling clone of the same project, so read `searched` before taking
+  /// the answer for the code you meant. It is `None` when the query named
+  /// a file, because the path already says where the harness looked.
+  NotFound(symbol: String, searched: option.Option(String))
   /// More than one distinct definition matched. Narrow the query with
   /// `in` or `at_line` using one of these.
   Ambiguous(candidates: List(Site))
@@ -2678,10 +2703,15 @@ pub type PlannedFile {
 ///
 /// With `path` and `line`, the first occurrence of the identifier on that
 /// line is meant. With `path` alone, the file's outline is searched by
-/// name. With neither, the whole project is searched, and more than one
-/// distinct definition is `Ambiguous` rather than a guess. A `line`
-/// without a `path` narrows nothing and is refused as `LspDenied` with
-/// code `invalid_argument`, as is a line below 1.
+/// name. With neither, the session's project is searched, and more than
+/// one distinct definition is `Ambiguous` rather than a guess. That
+/// search can only answer about the tree the session's server is rooted
+/// in; a `path` outside the workspace is refused as `NoServer` rather
+/// than answered from that tree, and a `NotFound` from the search names
+/// the root it covered.
+///
+/// A `line` without a `path` narrows nothing and is refused as
+/// `LspDenied` with code `invalid_argument`, as is a line below 1.
 pub type Query {
   Query(symbol: String, path: option.Option(String), line: option.Option(Int))
 }
