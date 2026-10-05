@@ -3234,7 +3234,9 @@ fn admit_admin(
   // monotonic clock, whose zero is arbitrary, so it is carried to the wall clock
   // the page's reads are counted in as how far it is from the monotonic clock
   // now, added to the wall clock now (`ui_sessions` does the same for an
-  // allowance). A page that is not open at this instant has no deadline to show,
+  // allowance). That is correct because `daemon/main` injects the same
+  // `bootstrap.monotonic_time_ms` as the table's `now`, and the arithmetic is
+  // `ui_sessions.frees_at`'s. A page that is not open at this instant has no deadline to show,
   // and its first read ends it.
   let wall = bootstrap.system_time_ms()
   let ends_at = case open() {

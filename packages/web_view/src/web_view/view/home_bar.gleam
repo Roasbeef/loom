@@ -11,7 +11,7 @@
 //// figure.
 ////
 //// The principal is the bar's third child, and `with` draws whatever element
-//// the page gives it there. The admin page gives plain text (`view`). The home
+//// the page gives it there. The admin page gives `ending`. The home
 //// gives `account`: the principal's name as a button inside a `<loom-popover>`,
 //// which opens the account panel (the sign-ins, the bookmark and the device
 //// link) that the home draws as the centre's third child. The panel is far from
@@ -44,36 +44,6 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
 import web_view/view/heading.{type Tone}
-
-/// The bar for the admin page: the principal's name as text, and the most the
-/// page may do as a quiet pill beside it. `title` is the page's name, `name`
-/// is the principal's display name, `ceiling` the fixed word for what the page
-/// may do, `status` the connection's word with the `tone` that colours it,
-/// `notice` the ended page's notice or `element.none()`, and `trailing` the
-/// owner's control after it or `element.none()`. An empty `ceiling` draws no
-/// pill.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // home_bar.view("Admin", "Alice", "operator", "connected", heading.Live, element.none(), element.none())
-/// ```
-pub fn view(
-  title title: String,
-  name name: String,
-  ceiling ceiling: String,
-  status status: String,
-  tone tone: Tone,
-  notice notice: Element(message),
-  trailing trailing: Element(message),
-) -> Element(message) {
-  let who =
-    html.span([attribute.class("home-who")], [
-      html.text(name),
-      badge(ceiling, "The most this page may do"),
-    ])
-  with(title:, who:, status:, tone:, notice:, trailing:)
-}
 
 /// The principal's place in the admin page's bar: the display name as text and,
 /// once the page has read the catalogue, a quiet pill that says how long the

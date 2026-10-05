@@ -384,9 +384,14 @@ fn acts(
     Managed(stop:, ..), Live -> [
       act("home-act", "Stop this session", "Stop", stop(entry.id), working),
     ]
-    Managed(archive:, delete:, ..), Saved
-    | Managed(archive:, delete:, ..), Blocked
-    -> [
+
+    // A blocked row gets no action. The registry still holds a slot for it
+    // (an unreconciled creation or a recovery that stopped), so an archive or a
+    // delete is refused as busy, a stop has nothing to end, and the page would
+    // say "still running" for a session that is not. It needs the owner at a
+    // terminal (`sessions.Blocked`).
+    Managed(..), Blocked -> []
+    Managed(archive:, delete:, ..), Saved -> [
       act(
         "home-act",
         "Archive this session: hide it and keep its history",

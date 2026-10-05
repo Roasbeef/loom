@@ -166,8 +166,8 @@ page keys and nonces, and the relay into the session's gateway.
   remembered login, and on a fresh home "Sign in another device", whose link is
   shown once in `<loom-copy subject="device">` and hidden by "Done". The bar
   says nothing beside the name for an operator-ceiling page and `read-only link`
-  for an observer-ceiling one (`home.ceiling_words`); `home_bar.view` (the admin
-  page's) still takes plain words. `sessions.Entry.role` is the principal's
+  for an observer-ceiling one (`home.ceiling_words`); `home_bar.ending` (the admin
+  page's) draws the name and the lifetime pill. `sessions.Entry.role` is the principal's
   membership role in that session (`Operates | Observes`, none for the owner),
   filled by `ui_socket.with_roles` from `manager.authorized_roles`, and a row's
   quiet line ends with it. `sidebar.home` takes the activity answers, so a
@@ -187,7 +187,7 @@ page keys and nonces, and the relay into the session's gateway.
 
 - **The owner's admin page** (protocol-change/065, the fifth addendum).
   `web_view/admin` is a server component in the home's frame
-  (`shell.view(shell.Home, ..., shell.Unlisted, ...)`, `home_bar.view(title:
+  (`shell.view(shell.Home, ..., shell.Unlisted, ...)`, `home_bar.with(title:
   "Admin", ...)`) with `Start(name, refresh_ms, read, act, now)`. `read(chosen,
   deliver)` and `act(action, deliver)` each start the daemon's task and return at
   once; their answers arrive as `Answered(serial, reading)` and `Acted(answer)`,

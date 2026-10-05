@@ -1621,3 +1621,22 @@ pub fn the_confirmation_names_its_row_as_text_test() {
   )
   assert !string.contains(html, "<img src=x onerror")
 }
+
+// A blocked row (an unreconciled creation, or a recovery that stopped) draws no
+// action on the owner's fresh home: the registry would refuse an archive or a
+// delete as busy and a stop has nothing to end, and the page would say the
+// session is running when it is not.
+pub fn a_blocked_row_draws_no_action_test() {
+  let ask = fn(_action, _session, _deliver) { Nil }
+  let #(owner, _) =
+    opened(
+      home.Start(..start(), manage: Some(ask), sessions: fn() {
+        home.Listed([entry("X", "stuck", "/src/weft", 1, Blocked)])
+      }),
+    )
+  let html = drawn(owner)
+  assert string.contains(html, "stuck")
+  assert !string.contains(html, ">Stop<")
+  assert !string.contains(html, ">Archive<")
+  assert !string.contains(html, ">Delete<")
+}
