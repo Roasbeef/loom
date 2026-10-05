@@ -6,11 +6,13 @@ native Rebar build metadata. The compiler below remains the reproducible
 release toolchain; its deterministic-cache patch is not a prerequisite for
 `make update`.
 
-The pinned release is **Gleam 1.19.0-rc2**, a release candidate (tag commit
-`79c0cdd334365612e8712ab5a5c37cf4c461dd81`). When 1.19.0 ships, the pin in
+The pinned release is **Gleam 1.19.0**, the final release (tag commit
+`904f81cc85f3bdc03fc3d0a6695055ce7ce4a64c`). Both maintained patches apply
+to it: `deterministic-cache.patch` needed only its CHANGELOG hunk
+re-seated (the code hunks applied cleanly), and
+`native-git-dependencies.patch` applied unchanged. The pin in
 `.github/workflows/ci.yml`, `nightly.yml`, `release.yml` and both Docker
-recipes becomes `1.19.0`; if both patches still apply to the final tag, that
-is the whole change. The tag already contains
+recipes is therefore the whole change. The tag carries
 `860f8224ddb7e1ecb7f983fb622ede12466225e5` (gleam-lang/gleam#6246, the
 path-dependency freshness fix for issue #248), which 1.18.1 builds took as a
 cherry-picked commit, so no upstream commit is cherry-picked any more.
@@ -19,8 +21,11 @@ cherry-picked commit, so no upstream commit is cherry-picked any more.
 
 `deterministic-cache.patch` is the source change from compiler commit
 `3a9f1f2dfad4c9eae9e46cf43f00355889fb7542`, the 1.18.1 patch (formerly
-`4c7a9605be04dbcd8bdcad76c29a5a789cdf9311`) rebased onto the 1.19.0-rc2 tag.
-The patch is maintained here; it has not been submitted or accepted upstream.
+`4c7a9605be04dbcd8bdcad76c29a5a789cdf9311`) rebased onto the v1.19.0 tag;
+the only hunk that did not apply to the final tag was the CHANGELOG entry
+whose context (`## 1.19.0-rc2`) had moved, so it was re-seated above
+`## 1.19.0 - 2026-10-05`. The patch is maintained here; it has not been
+submitted or accepted upstream.
 
 The compiler serializes randomized maps and sets into module caches, source
 line mappings, diagnostic names and the local package manifest. Imported type
@@ -59,27 +64,32 @@ The fixtures have no downloaded dependencies. They were written to reach the
 standard-library inlining path, which 1.19 no longer has; they still exercise
 labelled fields, labelled arguments and the reference index. Each cold-build
 series uses fixed source bytes, paths and modification times. On macOS
-(aarch64) with OTP 29.0.5, twelve cold builds per fixture gave:
+(aarch64) with OTP 29.0.5, twelve cold builds per fixture against the final
+v1.19.0 tag gave:
 
 | Compiler | `parameters` | `labels` |
 | --- | --- | --- |
-| stock 1.19.0-rc2 | 12 distinct hashes | 12 distinct hashes |
-| patched 1.19.0-rc2 | 1 | 1 |
+| stock 1.19.0 | 11 distinct hashes | 12 distinct hashes |
+| patched 1.19.0 | 1 | 1 |
 
-Stock 1.18.1 and upstream main at `3b046ec5a7417dfd83dbd4a9cc46f7d4aed62cf1`
-had each produced twelve distinct hashes in twelve builds as well. On a
-real package the difference covers every module: six cold builds of
-`packages/core` (50 `.cache` files, its own modules and its Hex
-dependencies) gave six distinct digests for each of the 50 files with stock
-1.19.0-rc2, and one per file with the patched compiler.
-On 1.19.0-rc2 the patched compiler passed 3,567 compiler-core, 128 CLI and
-3 `src-span` tests (1.18.1: 3,498 compiler-core and 123 CLI).
+Stock 1.18.1, upstream main at `3b046ec5a7417dfd83dbd4a9cc46f7d4aed62cf1`,
+and the 1.19.0-rc2 tag had each produced twelve distinct hashes in twelve
+builds as well. On a real package the difference covers every module:
+six cold builds of `packages/core` (50 `.cache` files, its own modules and
+its Hex dependencies) gave six distinct digests for each of the 50 files
+with the stock rc2 compiler, and one per file with the patched compiler.
+
+The stock-versus-patched comparison was re-run on the final v1.19.0 tag
+(2026-10-05, macOS aarch64, OTP 29.0.5): stock still fails the fixture and
+the patched compiler still passes, so the patch is carried forward. The
+patched compiler also passed its upstream test suites on the final tag
+(compiler-core, CLI, src-span, cargo test exit 0).
 
 Before the 1.18.1 pin was committed, two clean Linux builds of Loom
 `21da91d8992cdc02e50ec6d6631beee88b47d236` with the patched compiler produced
 identical complete server, bundled-client and slim-client archives, manifests
 and checksum files, and passed the release smoke tests. That comparison has
-not been repeated on 1.19.0-rc2. The release-candidate workflow verifies
+not been repeated on 1.19.0. The release workflow verifies
 complete artifacts on two separate hosted runners; neither the compiler
 fixture nor a same-host comparison substitutes for that result.
 
@@ -104,7 +114,8 @@ and the repository metadata.
 
 On 1.19.0-rc2 the patch needed two adjustments: a new upstream licence test
 sits where its config test was appended, and `Error::FileIo` now carries a
-`cause: FileIoCause` instead of `err: Option<String>`. Stock 1.19.0-rc2 still
+`cause: FileIoCause` instead of `err: Option<String>`; the patch applied to
+the final v1.19.0 tag unchanged (`git apply --check` clean). Stock 1.19.0 still
 fails `check_native_git.py` (the package is recorded with
 `build_tools = ["gleam"]`), so the patch is still required for that path.
 
@@ -119,7 +130,7 @@ the release tag, then apply every local patch in filename order. To
 reproduce that release toolchain locally:
 
 ```sh
-git clone --branch v1.19.0-rc2 https://github.com/gleam-lang/gleam.git /path/to/gleam-source
+git clone --branch v1.19.0 https://github.com/gleam-lang/gleam.git /path/to/gleam-source
 for patch in "$PWD"/scripts/toolchain/gleam/*.patch; do
   git -C /path/to/gleam-source apply "$patch"
 done

@@ -431,8 +431,11 @@ exist twice. Cite number and name, and take the next free number when
 adding one. The root `CLAUDE.md` still says there are thirteen
 protocol changes; there are 71 files.
 
-**Toolchain.** Gleam 1.19.0-rc2 (`.github/workflows/ci.yml`), pinned
-because it carries the path-dependency fix.
+**Toolchain.** Gleam 1.19.0 final (`.github/workflows/ci.yml`), pinned
+because it carries the path-dependency fix; both maintained patches
+(deterministic caches, native Git dependencies) apply to the final tag
+and their fixtures pass. The cache patch is still needed: stock 1.19.0
+still produces distinct cache hashes across cold builds.
 
 ## How to verify
 

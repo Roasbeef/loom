@@ -99,7 +99,7 @@
 # unreleased formatter would fail every contributor's `make fmt-check` on
 # the released compiler they run locally. The action still accepts a
 # `gleam-patches` list of upstream commits to cherry-pick onto the tag;
-# none is needed on 1.19.0-rc2, so no job passes one.
+# none is needed on 1.19.0, so no job passes one.
 #
 #   the macOS gate    the same package gate on the second platform §0.3
 #                     demands, plus the Seatbelt self-test and both
@@ -216,13 +216,15 @@ concurrency:
 env:
   # Exact, never floating. The rationale for each number, and where it
   # came from, is in .github/actions/setup-toolchain/action.yml.
-  GLEAM_VERSION: "1.19.0-rc2"
-  # 1.19.0-rc2 is a release candidate. It is pinned because it already
-  # contains gleam-lang/gleam#6246 (the path-dependency fingerprint fix
-  # for issue #248), which 1.18.1 needed as a cherry-picked commit, and
-  # because the maintained patches in scripts/toolchain/gleam have been
-  # rebased onto it. When 1.19.0 ships, this line becomes "1.19.0",
-  # provided those patches still apply to the final tag.
+  GLEAM_VERSION: "1.19.0"
+  # 1.19.0 is the final release (tag commit 904f81cc). It is pinned
+  # because it carries gleam-lang/gleam#6246 (the path-dependency
+  # fingerprint fix for issue #248), which 1.18.1 needed as a
+  # cherry-picked commit, and because the maintained patches in
+  # scripts/toolchain/gleam have been rebased onto it; the
+  # deterministic-cache patch needed only its CHANGELOG hunk re-seated on
+  # the final tag, and the fixture still holds (one distinct hash in
+  # twelve cold builds, stock still twelve).
   OTP_VERSION: "29.0.5"
   REBAR3_VERSION: "3.27.0"
   GO_VERSION: "1.26.3"
