@@ -202,3 +202,25 @@ fn ordinary_path(path: String) -> Result(Nil, FsError) {
     False -> Ok(Nil)
   }
 }
+
+/// A one-line rendering of an `FsError`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert fs.error_text(fs.NotFound("a.txt")) == "not found: a.txt"
+/// ```
+///
+pub fn error_text(error: FsError) -> String {
+  case error {
+    NotFound(path:) -> "not found: " <> path
+    PermissionDenied(path:) -> "permission denied: " <> path
+    WrongKind(path:, message:) ->
+      "wrong kind of file at " <> path <> ": " <> message
+    StaleContent(path:, message:) ->
+      "stale content at " <> path <> ": " <> message
+    InvalidArgument(message:) -> "invalid argument: " <> message
+    FsFailed(code:, message:) -> code <> ": " <> message
+    FsUnavailable(reason:) -> "fs unavailable: " <> reason
+  }
+}

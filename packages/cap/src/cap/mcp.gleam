@@ -95,3 +95,25 @@ pub type McpError {
     result: ToolResult,
   )
 }
+
+/// A one-line rendering of an `McpError`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert mcp.error_text(mcp.ServerUnavailable("down")) == "server unavailable: down"
+/// ```
+///
+pub fn error_text(error: McpError) -> String {
+  case error {
+    ToolFailed(message:, content: _) -> "tool failed: " <> message
+    ServerUnavailable(reason:) -> "server unavailable: " <> reason
+    McpDenied(code:, message:) -> code <> ": " <> message
+    ResultMalformed(reason:) -> "malformed result: " <> reason
+    ResultSchemaMismatch(error:, result: _) ->
+      "result did not match the expected schema at "
+      <> string.join(error.path, ".")
+      <> ": "
+      <> error.reason
+  }
+}

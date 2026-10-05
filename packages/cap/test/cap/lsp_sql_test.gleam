@@ -10,6 +10,7 @@ import core/msgpack as m
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 
 fn batch() -> m.MsgPackValue {
   wire.args([
@@ -131,5 +132,44 @@ pub fn capture_errors_are_typed_and_unknown_policy_is_preserved_test() {
     assert lsp_sql.collect(lsp_sql.Plan("gleam", "/work", [], []))
       == Error(pair.1)
   })
+  dispatch.reset()
+}
+
+// The schema text is what a program prints instead of probing sqlite_master,
+// so every table and column it lists is run through the native boundary. A
+// column the bridge does not create makes the query fail here.
+pub fn schema_lists_exactly_the_tables_the_native_boundary_creates_test() {
+  dispatch.install(channel.Channel(call: fn(_, _, _) { Ok(batch()) }))
+  let assert Ok(observation) =
+    lsp_sql.collect(lsp_sql.Plan("gleam", "/work", [], []))
+  list.each(string.split(lsp_sql.schema(), "\n"), fn(line) {
+    let assert [table, rest] = string.split(line, "(")
+    let columns = string.drop_end(rest, 1)
+    let assert Ok(answer) =
+      lsp_sql.query(
+        observation,
+        "SELECT " <> columns <> " FROM " <> table,
+        [],
+        fn(_row) { Ok(Nil) },
+      )
+    assert list.length(answer.columns)
+      == list.length(string.split(columns, ","))
+  })
+  dispatch.reset()
+}
+
+pub fn unknown_tables_are_refused_with_the_table_list_test() {
+  dispatch.install(channel.Channel(call: fn(_, _, _) { Ok(batch()) }))
+  let assert Ok(observation) =
+    lsp_sql.collect(lsp_sql.Plan("gleam", "/work", [], []))
+  let ask = fn(sql) {
+    lsp_sql.query(observation, sql, [], fn(_row) { Ok(Nil) })
+  }
+  let assert Error(lsp_sql.InvalidQuery(unknown)) = ask("SELECT * FROM facts")
+  assert string.contains(unknown, "no such table: facts")
+  assert string.contains(unknown, "documents, symbols, targets, \"references\"")
+  let assert Error(lsp_sql.ReadOnlyDenied(denied)) =
+    ask("SELECT name FROM sqlite_master")
+  assert string.contains(denied, "documents, symbols, targets, \"references\"")
   dispatch.reset()
 }

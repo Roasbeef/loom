@@ -569,3 +569,23 @@ fn map_error(error: CallError, path: String) -> SearchError {
       }
   }
 }
+
+/// A one-line rendering of a `SearchError`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert search.error_text(search.NotFound("src")) == "not found: src"
+/// ```
+///
+pub fn error_text(error: SearchError) -> String {
+  case error {
+    NotFound(path:) -> "not found: " <> path
+    PermissionDenied(path:) -> "permission denied: " <> path
+    WrongKind(path:, message:) ->
+      "wrong kind of file at " <> path <> ": " <> message
+    InvalidArgument(message:) -> "invalid argument: " <> message
+    SearchFailed(code:, message:) -> code <> ": " <> message
+    SearchUnavailable(reason:) -> "search unavailable: " <> reason
+  }
+}

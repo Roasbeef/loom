@@ -102,3 +102,18 @@ fn map_error(error: CallError) -> NotesError {
     Unreachable(reason:) -> NotesUnavailable(reason:)
   }
 }
+
+/// A one-line rendering of a `NotesError`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert notes.error_text(notes.NotesUnavailable("no channel")) == "notes unavailable: no channel"
+/// ```
+///
+pub fn error_text(error: NotesError) -> String {
+  case error {
+    NotesDenied(code:, message:) -> code <> ": " <> message
+    NotesUnavailable(reason:) -> "notes unavailable: " <> reason
+  }
+}

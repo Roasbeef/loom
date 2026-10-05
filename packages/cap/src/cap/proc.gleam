@@ -152,3 +152,19 @@ fn map_error(error: CallError) -> ProcError {
       }
   }
 }
+
+/// A one-line rendering of a `ProcError`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert proc.error_text(proc.SpawnFailed("no such file")) == "spawn failed: no such file"
+/// ```
+///
+pub fn error_text(error: ProcError) -> String {
+  case error {
+    ProcDenied(code:, message:) -> code <> ": " <> message
+    SpawnFailed(message:) -> "spawn failed: " <> message
+    ProcUnavailable(reason:) -> "proc unavailable: " <> reason
+  }
+}
