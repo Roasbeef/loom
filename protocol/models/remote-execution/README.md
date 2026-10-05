@@ -647,3 +647,57 @@ failed their intended assertion after an unmodified control passed. Evidence is
 cover the credit extension only; the previously recorded full model gate belongs
 to its earlier source snapshot. Independent Sol review reproduced all of these focused checks and found no
 confirmed model-to-code defect within the stated limits.
+
+### Proposed scoped lifetime correspondence
+
+The scoped extension specifies the proposed local lifecycle in the
+[scope lifetime note](../../../docs/design-notes/distributed-scope-lifetime.md).
+Its endpoint API and native close-state correction await owner approval. These
+new transitions have no executable runtime bridge yet. They do not establish
+native retirement, journal release or successful production host shutdown.
+
+The model retains six authoritative credit slots and sixteen fixed scope rows.
+Every row starts Active and can become permanently Fenced; no command removes,
+rebinds or revives it. Scalar scope/run IDs stand for exact administrative row
+identity and original correlation. The model assumes those associations were
+validated; it does not verify registration constructors or concrete owner PIDs.
+A slot whose run is zero and whose retired flag is set represents Unusable(None).
+A retired slot retaining its original run/scope represents
+Unusable(Some(original assignment)). Neither state can restore capacity.
+
+| Proposed transition | Checked property |
+| --- | --- |
+| `CreditFenceScope` | Applied fencing refuses this scope before another shared credit is consumed; siblings remain eligible. |
+| `CreditOwnerDown` | The applied owner-monitor notification fences the same row, including when no credit is assigned. A reservation may already have won before that notification is applied. |
+| `CreditSnapshot` | Active rows are Busy. Fenced rows are Uncertain if an unusable slot retains their original assignment, Busy if an assignment remains, and otherwise Drained. |
+| `CreditServiceDown` | Loss supplies neither an actual answer nor a joined producer; the scoped original assignment stays uncertain. |
+| `CreditCreditDown` | Idle death reduces capacity without inventing a scope obligation. Busy death retains the original assignment and uncertainty. |
+| Exact completion observations | Stale answer/drain correlation cannot alter a reused slot or discharge its current assignment. |
+
+The independent monitor remembers applied fences, original run-to-scope
+associations, current assignments, actual answer/drain observations and sticky
+retirement. It checks a Drained snapshot against that history, rather than
+trusting the implementation's slot flags. Drained is a scoped transport/service-ask
+fact only. No free-credit count, caller timeout, owner DOWN or service DOWN can
+substitute for it. Native and Compile/workspace continuation lifetimes remain
+separate obligations.
+
+Six directed cases and exact reachability probes extend the original four
+credit cases without replacing them:
+
+| Case | Concrete bounded history |
+| --- | --- |
+| `tcBeamScopeFence` | A held original run, scoped refusal, sibling progress, joined unhanded-off run, delayed stale handoff, permanent repeated fence, and valid/invalid scope-table boundaries. |
+| `tcBeamScopePending` | Caller loss and both answer-before-drain/drain-before-answer orders; each intermediate snapshot stays Busy, then the original scope drains while a sibling remains active. |
+| `tcBeamScopeLost` | Service DOWN, later actual answer and drain, persistent scoped uncertainty, and independent sibling drain. |
+| `tcBeamScopeStale` | Old answer/drain arrives after reuse by a fenced sibling; its current assignment remains Busy until exact completion. |
+| `tcBeamScopeIdle` | A previously completed scope stays Drained after its idle credit dies; busy credit death retains a different scope's original uncertainty. |
+| `tcBeamScopeOwner` | Idle owner DOWN fences its row; busy owner DOWN fences a previously assigned row, which remains uncertain after credit death, while another scope uses the remaining capacity. |
+
+Four new compiled mutations remove the scoped gate, treat DOWN as drain,
+forget retired scoped disposition, or accept a stale completion. Existing
+credit cases, probes and six mutations remain registered. The standard model
+runner discovers the added cases; every probe requires its exact final marker,
+and every mutation requires an unmodified passing control and its intended
+independent-monitor assertion. Focused results for this extension are recorded
+separately from the older full-model gate above.

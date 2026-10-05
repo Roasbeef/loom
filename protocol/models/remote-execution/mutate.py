@@ -9,6 +9,10 @@ from runner import ROOT, check_case, compile_model, record, snapshot_model
 
 # These alter actual state/effect decisions, leaving monitor code unchanged.
 MUTATIONS = {
+    'beam-scope-no-gate': ('PSrc/BeamCredits.p', 'if (scopes[p.scope] == CreditScopeFenced)', 'if (false)', 'tcBeamScopeFence', 'credit granted after its scope fence'),
+    'beam-scope-down-as-drain': ('PSrc/BeamCredits.p', '// DOWN loses observation; it supplies neither answer nor producer drain.\n        slot.retired = true; slots[p.slot] = slot;\n        announce mCreditRetired, p.run;', '// Mutant incorrectly treats DOWN as answer and successful drain.\n        slot.network = false; slot.pending = false; slots[p.slot] = slot; maybeRelease(p.slot);', 'tcBeamScopeLost', 'credit released before transport AllDelivered'),
+    'beam-scope-forget-retired': ('PSrc/BeamCredits.p', 'if (slots[i].scope == scope && slots[i].retired) { drain = CreditUncertain; break; }', '', 'tcBeamScopeLost', 'scope reported drained after retired credit'),
+    'beam-scope-stale-completion': ('PSrc/BeamCredits.p', '(p.action == CreditAnswer || p.action == CreditDrain) && slot.run != p.run', 'false', 'tcBeamScopeStale', 'stale completion changed current assignment'),
     'beam-stale-handoff': ('PSrc/BeamCredits.p', 'p.action == CreditHandoff && slot.run != p.run', 'false', 'tcBeamCreditStale', 'stale handoff admitted against a reused credit'),
     'beam-release-pending': ('PSrc/BeamCredits.p', ' && !slots[index].pending', '', 'tcBeamCreditPending', 'queued service ask released without actual answer'),
     'beam-release-before-drain': ('PSrc/BeamCredits.p', '!slots[index].network && ', '', 'tcBeamCreditStale', 'credit released before transport AllDelivered'),
