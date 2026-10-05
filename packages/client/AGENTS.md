@@ -476,6 +476,21 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   capability only for the owner on an operating page
   (`home_rename_capability`), with `home_owner_accepts` admitting a submit
   beneath `home.table_path` for that page alone.
+- **Stopping, archiving and deleting from the home** (protocol-change/065, the
+  addendum on session actions). `home_manage_capability` hands `ask` to the
+  owner's operating home that a `loom ui` exchange opened (`fresh_home`, as the
+  Admin button), and `manage_for` re-derives it at the press: the page is fresh
+  and open, minted to operate, its credential authenticates as the owner
+  (`owner_operating`), the target is a canonical identity. A stop is
+  `manager.stop_session` then a `weft/poll` wait of `stop_wait_ms` for the
+  registry to hold the session saved; an archive is `manager.set_visibility` and
+  a delete `manager.delete_session` (owner and epoch checked again in the
+  registry's turn; `AdminBusy` is `actions.Running`). Every other refusal is
+  `NotOwner` or `Unavailable`. `manage_task` runs it in a weft run, as
+  `rename_task` does. `HomeAttachment.sessions_directory` is what a delete
+  removes from. No admission is added: the buttons' clicks are beneath
+  `home.table_path`. `admin.Start.ends_at` is read once in `admit_admin` from
+  `open()` (the table's monotonic clock) and carried to the wall clock.
 - **A session's subtitle.** The hub reports the first accepted human prompt on
   the main strand through `Options.first_prompt` (`gateway.with_first_prompt`,
   filled from `serve.Settings.first_prompt`, which `daemon/main` sets):

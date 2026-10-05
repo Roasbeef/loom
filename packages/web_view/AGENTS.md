@@ -262,6 +262,30 @@ page keys and nonces, and the relay into the session's gateway.
   what the operator's page draws. The observer's page draws no sidebar:
   `ui_socket.listed_for` gives it an empty list without making the read
   (owner, 2026-09-29).
+- **Stopping, archiving and deleting** (protocol-change/065, the addendum on
+  session actions). `web_view/actions` holds `Action` (`Stop | Archive |
+  Delete`), `Answer`, `Reason` (`NotOwner | Running | Unavailable`) with fixed
+  words, and the row's `Stage` (`Calm | Confirming(session) | Working(session,
+  action)`). `home.Start.manage` is `Some` only for the owner's fresh operating
+  home (`ui_socket.home_manage_capability`); a page with `None` draws nothing and
+  ignores `StopRequested`, `ArchiveRequested`, `DeleteRequested`,
+  `DeleteConfirmed`, `DeleteCancelled` and `ActionAnswered`. `home_table.Manage`
+  draws `Stop` on a running row and `Archive`/`Delete` on a saved or blocked one in
+  a `home-acts` group after the row's own button (the paths beneath
+  `home.table_path` are unchanged; the rename button is the group's first child),
+  and Delete's first press replaces the row with the fixed question and a Delete
+  and a Cancel (`home-confirm`). The request is the daemon's task and its answer
+  `ActionAnswered`, which words the notice and reads the list again. `home_test`
+  reads it.
+- **The admin page's pill.** `admin.Start.ends_at` is the instant the page ends
+  (an in-daemon value); `home_bar.ending` draws `ends in <loom-elapsed
+  remaining="...">` after the first read, and the body has no sentence about the
+  page's lifetime. `admin_test` reads it.
+- **The session switcher.** `view/switch.switcher()` draws the attribute-less
+  `<loom-switcher>` after `<loom-switch>` as the centre's last child on the
+  operator's page and the home; it reads the sidebar's buttons in the browser and
+  presses the chosen one's own, so it adds no event and moves no path
+  (protocol-change/051, the addendum on the session switcher).
 - **Switching sessions.** A switch is a navigation to a new page
   (protocol-change/051, the addendum on switching sessions). On the operator's
   page `operator_page.Opening(id)` (a sidebar button, or a peer message's Open

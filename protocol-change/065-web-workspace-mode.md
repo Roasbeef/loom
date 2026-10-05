@@ -1758,3 +1758,93 @@ position, no form on a private selection, the notice's placement, the token in
 one patch and no other), `grants_test` (the refusal's words), `copy_test` (the
 claim address's shape), and `scripts/web_client_css_check.sh` (nothing under
 `.admin-body` is `position:sticky`).
+
+## Addendum: session actions on the home and the admin page's lifetime pill (2026-10-05)
+
+**Status**: IMPLEMENTED in the change that adds it (round 4 of the web UI
+critique, section 5 item 3 and finding F87). It adds one daemon capability to the
+owner's fresh home and one in-daemon value to the admin page. It adds no route,
+no admitted event and no field on the wire.
+
+**The problem.** The daemon stops, archives and deletes sessions for a terminal
+(`sessions.stop`, `sessions.archive`, `sessions.delete`), and the home, which
+lists every session, offered none of them. An owner who wanted a session gone had
+to leave the page.
+
+**What changed.**
+
+- **A row's quiet buttons.** On the owner's fresh home, a running row has `Stop`
+  and a saved row has `Archive` and `Delete`, beside `Rename`, in one group after
+  the row's own button (`view/home_table`, `web_view/actions`). A running row
+  offers no archive or delete, because the registry refuses both for a session a
+  process holds (`AdminBusy`), and a saved row offers no stop.
+- **Delete is two presses.** Delete replaces the row's words with `Delete this
+  session? This cannot be undone.` and a Delete and a Cancel, in the row, as the
+  rename form is drawn. The daemon takes no such step: the confirmation is the
+  page's, and the daemon's checks are the same for a confirmed press and a
+  forged one. Stop and Archive ask at once; an archive is undone from a terminal
+  (`sessions.restore`) and a stop leaves the session on disk.
+- **The daemon decides each press.** `Start.manage` is `Some` only for the
+  owner's page minted to operate and opened by a `loom ui` exchange
+  (`ui_socket.home_manage_capability`, which judges `fresh_home` as the Admin
+  button does), so a home a bookmark resumed, a member's home and a read-only
+  link draw nothing and ignore the messages. `ui_socket.manage_for` re-derives
+  all of it when the press arrives: the page is still open and fresh
+  (`fresh_home`, `owner_operating`), its credential still authenticates as the
+  owner, and the target is a canonical session identity. A stop is
+  `manager.stop_session`, the call the control command makes, followed by a
+  bounded wait (`stop_wait_ms`, five seconds, as a `weft/poll` loop) for the
+  registry to hold the session saved, so the page's next read does not list it as
+  running. An archive is `manager.set_visibility` and a delete is
+  `manager.delete_session`, which authenticate the credential and the epoch again
+  in the registry's own turn.
+- **The runtime never waits.** The request is a weft task (`manage_task`), as the
+  rename and the resume are; its answer is a message (`ActionAnswered`) and the
+  page reads its list again.
+- **A refusal is fixed words.** `NotOwner` covers every standing the page cannot
+  claim and an identity the catalogue does not hold, `Running` is the one
+  actionable reason (`That session is still running. Stop it first.`), and
+  `Unavailable` covers the rest. No text the daemon or the catalogue wrote
+  reaches a browser.
+- **No new admission.** A row's buttons are clicks beneath `home.table_path`,
+  which every home's socket already admits for a row. The capability decides
+  whether a button exists and whether the component acts on a press. No pinned
+  path moved: the buttons are a group after the row's own button, and
+  `home.table_path` and `home.admin_path` are as they were.
+- **`HomeAttachment` gains `sessions_directory`**, the daemon's own directory a
+  delete removes the database family from. No page supplies it.
+- **The admin page's lifetime is a pill.** `admin.Start` gains `ends_at`, the
+  instant the page ends, read once when the socket opens from the live UI
+  session's deadline (the earlier of the home's end and fifteen minutes after the
+  exchange) and carried from the table's monotonic clock to the wall clock the
+  page counts in. The bar shows `ends in 14m` as a quiet pill, the figure drawn
+  by `<loom-elapsed remaining="...">`, which counts the milliseconds down in the
+  browser and anchors again on each new figure. The body's sentence about the
+  page's lifetime is gone; the pill's `title` says to press Admin on the home for
+  another page.
+
+**What was considered.**
+
+- *A browser `confirm()` for Delete.* It is not part of the page's design and
+  cannot be tested without a browser; the row's second step is.
+- *Letting a Delete stop the session first, as the terminal does.* The terminal
+  waits for the stop to drain before it asks for the delete. The page's Delete is
+  offered only on a saved row, so the case never arises on a page that is current,
+  and a page that is stale is refused with `Running` rather than the page
+  stopping a session the owner did not ask it to stop.
+- *Offering the actions on every owner home.* A bookmark is a long-lived
+  credential, and the admin page already refuses it for the same reason: an
+  action that removes a session's history should not be reachable from a link
+  that was saved for convenience.
+
+**Cost.** One capability and one task on the home, one field on the home
+attachment and one on the admin page's start, and a second attribute on
+`<loom-elapsed>`. A drain that outlasts the stop's five seconds answers as a stop
+that was made and shows the session as running until the page's next read.
+
+**Tests.** `home_test` (the buttons that fit each row, the confirmation, one ask
+for each press, the fixed words, a page with no capability, the paths),
+`ui_socket_test` (the capability and that no admission is added),
+`ui_route_test` (each action against a real registry, every refusal, and the
+task), `admin_test` (the pill and the missing sentence), and `elapsed_test` (the
+countdown's words).
