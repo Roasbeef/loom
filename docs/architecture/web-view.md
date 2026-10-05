@@ -1032,6 +1032,16 @@ whole minutes rounded up and then seconds) and anchors again on every new figure
 It is drawn after the first read, which is when the component has a clock
 reading to count from.
 
+Three details of round 5 (B20). A claim's box opens with an empty `<loom-reveal>`,
+which scrolls the box into view once when it is inserted, and each secret shares a
+row with its copy button. The invitation form is keyed by how many invitations the
+page has made, so an invitation opens a fresh form with its name empty, and the
+box no longer states a role, since the member's row does. The refusal of a spent
+allowance draws the time a place frees in a `<loom-time at=ms>`, which the browser
+words in its own zone with the UTC time in the element's `title`. Each session's
+row says its people and scope after its path, from `Snapshot.summaries`, one
+`session_member_page` call for each listed session.
+
 ### Stopping, archiving and deleting from the home
 
 The home offers the owner the three session operations the daemon already has

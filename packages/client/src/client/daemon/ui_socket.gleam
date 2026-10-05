@@ -3537,13 +3537,16 @@ fn admin_snapshot(
     |> result.map_error(authentication_failure),
   )
   use selection <- result.try(chosen_members(attachment, chosen))
-  use logins <- result.map(admin_logins(attachment, people.entries))
+  use logins <- result.try(admin_logins(attachment, people.entries))
+  let listed = list.take(views, sessions.listed_limit)
+  use summaries <- result.map(admin_summaries(attachment, listed))
   grants.Snapshot(
     principals: owner_first(list.map(people.entries, listed_principal)),
     more_principals: more_of(people.remainder),
-    sessions: list.map(list.take(views, sessions.listed_limit), listed_entry),
+    sessions: list.map(listed, listed_entry),
     selection:,
     logins:,
+    summaries:,
   )
 }
 
@@ -3554,8 +3557,9 @@ const admin_logins_principals = 20
 // The sign-ins of each principal that holds any, the first few of at most
 // `admin_logins_principals` of them, each read as the page's owner with the
 // registry's own `signins` (which authenticates the credential and names the
-// principal again). A principal whose read the registry did not answer is left
-// out, so a slow answer shows the count and no rows rather than ending the page.
+// principal again). A principal whose read fails fails the snapshot: the
+// registry's refusal ends the page or leaves the last snapshot, as `admin_failure`
+// words it, and no principal is shown without its rows.
 fn admin_logins(
   attachment: server.AdminAttachment(instance),
   rows: List(access.Listing),
@@ -3581,6 +3585,46 @@ fn admin_logins(
             listed_signin,
           ),
         ))
+      Error(error) -> Error(admin_failure(error))
+    }
+  })
+}
+
+// One summary for each listed session: how many people hold it and whether it
+// may be shared, read with the same registry call that reads the chosen
+// session's members, as the page's owner (protocol-change/065, the addendum on
+// the admin page's session rows). A session the catalogue no longer holds when
+// the read reaches it is left out, so its row has no line; any other failure
+// of the registry is the registry failing to answer, as it is for the chosen
+// session. The count is the owner and the members one page lists, with the page
+// saying whether that is all of them.
+fn admin_summaries(
+  attachment: server.AdminAttachment(instance),
+  views: List(manager.View),
+) -> Result(List(grants.Summary), Failure) {
+  list.try_fold(views, [], fn(kept, view) {
+    let session = view.registration.id
+    case
+      manager.session_member_page(
+        attachment.registry,
+        attachment.digest,
+        session,
+        after: "",
+      )
+    {
+      Ok(members) -> {
+        let selected = selection_of(session, members)
+        Ok([
+          grants.Summary(
+            session:,
+            people: 1 + list.length(selected.holders),
+            more: selected.more,
+            scope: selected.scope,
+          ),
+          ..kept
+        ])
+      }
+      Error(manager.AdminMetadata(catalogue.Missing)) -> Ok(kept)
       Error(error) -> Error(admin_failure(error))
     }
   })
@@ -3716,7 +3760,11 @@ fn page_role(role: access.Role) -> invites.Role {
 /// The run is a weft run with one task, linked to the calling process, which is
 /// the page's runtime, as `resume_task`'s is: a page that goes away cancels it.
 /// Every step of the reading is bounded by its own call timeouts, so the task
-/// always answers within seconds and needs no deadline of its own. Its last act
+/// always answers, though not within seconds: a reading makes one registry call
+/// for each listed session (up to `sessions.listed_limit`), each bounded by its
+/// own call timeout, so the bound is that timeout times the sessions listed. It
+/// needs no deadline of its own, and the page runs one reading at a time
+/// (`web_view/admin`), so a slow registry is never asked for two at once. Its last act
 /// is `deliver`, so a page that stays open is always answered.
 ///
 /// ## Examples

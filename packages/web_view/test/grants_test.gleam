@@ -54,7 +54,9 @@ pub fn each_change_that_is_made_is_worded_test() {
 }
 
 // The refusal of a spent allowance names how many grants were made and when the
-// next is free, in UTC, to the minute, and it changes with both.
+// next is free, in UTC, to the minute, and it changes with both. The page draws
+// the instant as an element the browser words in its own zone; these are the
+// words that fill it, its title and the refusal in a button's tooltip.
 pub fn the_allowance_refusal_names_the_count_and_the_reset_time_test() {
   let words =
     grants.reason_words(grants.TooMany(used: 3, free_at_ms: 1_790_030_460_000))
@@ -107,4 +109,15 @@ pub fn an_identity_is_shortened_to_eight_characters_after_its_prefix_test() {
   assert grants.short_identity("guest-956fb176") == "guest-956fb176"
   assert grants.short_identity("bob") == "bob"
   assert grants.short_identity("0123456789abcdef") == "01234567"
+}
+
+// The words in two halves are the whole refusal with the UTC time between them,
+// so a page that puts the browser's time there says the same sentence.
+pub fn the_halves_of_the_refusal_join_around_the_time_test() {
+  let reason = grants.TooMany(used: 3, free_at_ms: 1_790_030_460_000)
+  assert grants.throttle_lead(3)
+    <> grants.utc_clock(1_790_030_460_000)
+    <> grants.throttle_tail
+    == grants.reason_words(reason)
+  assert grants.utc_clock(1_790_030_460_000) == "22:41 UTC"
 }

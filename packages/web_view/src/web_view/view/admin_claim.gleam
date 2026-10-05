@@ -21,6 +21,12 @@
 //// rotated person moves that row with its box, and the patch for a move carries
 //// no content.
 ////
+//// The box is drawn with an empty `<loom-reveal>` as its first child
+//// (`packages/web_client`), which scrolls the box into view when it is
+//// inserted, so a claim made below the page's scroll position is on screen
+//// without the owner looking for it. Each secret shares a row with its copy
+//// button (`.admin-body loom-copy` in the stylesheet).
+////
 //// The box leads with the browser claim address, which a person without `loom`
 //// must use, then the token with its copy button, then the `loom claim`
 //// command as the second way (`view/share.handover`). Each is in a
@@ -38,6 +44,7 @@ import gleam/option.{type Option, None, Some}
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/element/keyed
 import lustre/event
 import web_view/grants.{type Claim}
 import web_view/invites
@@ -45,18 +52,27 @@ import web_view/view/share
 
 /// The slot under the invitation form: the display when the claim on screen is
 /// an invitation's, and the empty node otherwise. `dismiss` is the message the
-/// button that hides it sends.
+/// button that hides it sends. The box is keyed by `invited`, how many invitations
+/// the page has made, so the next invitation builds a new box, and with it a new
+/// `<loom-reveal>`, rather than patching the old one in place, which would scroll
+/// nothing. The key is a count the page wrote and never peer text.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // admin_claim.for_session(Some(claim), Dismissed)
-/// // admin_claim.for_session(None, Dismissed)
+/// // admin_claim.for_session(Some(claim), 1, Dismissed)
+/// // admin_claim.for_session(None, 0, Dismissed)
 /// ```
-pub fn for_session(claim: Option(Claim), dismiss: message) -> Element(message) {
+pub fn for_session(
+  claim: Option(Claim),
+  invited: Int,
+  dismiss: message,
+) -> Element(message) {
   case claim {
     Some(grants.Claim(purpose: grants.Invited(..), ..) as claim) ->
-      shown(claim, dismiss)
+      keyed.fragment([
+        #("claim-" <> int.to_string(invited), shown(claim, dismiss)),
+      ])
     Some(grants.Claim(purpose: grants.Rotated, ..)) | None -> element.none()
   }
 }
@@ -93,6 +109,8 @@ fn shown(claim: Claim, dismiss: message) -> Element(message) {
     ],
     list.flatten([
       [
+        // The first child scrolls the box into view when it is inserted, once.
+        element.element("loom-reveal", [], []),
         html.h3([attribute.class("share-title")], [html.text(title(claim))]),
         html.p([attribute.class("share-lead")], [
           html.text(
@@ -137,15 +155,12 @@ fn title(claim: Claim) -> String {
 }
 
 // The sentence that says who the claim is for and why, with the principal's
-// identity as text.
+// identity as text. An invitation names no role: the member's row above it says
+// the role, and says the current one after the owner changes it, which a line
+// written when the invitation was made would not.
 fn purpose(claim: Claim) -> String {
   case claim.purpose {
-    grants.Invited(role:) ->
-      "Role: "
-      <> invites.role_word(role)
-      <> ". Principal: "
-      <> claim.principal
-      <> "."
+    grants.Invited(..) -> "Principal: " <> claim.principal <> "."
     grants.Rotated ->
       "Principal: "
       <> claim.principal

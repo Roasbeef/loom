@@ -206,6 +206,30 @@ pub fn scroll_top(element: Element) -> Float
 @external(javascript, "./dom.mjs", "set_scroll_top")
 pub fn set_scroll_top(element: Element, top: Float) -> Nil
 
+/// Scrolls every scrolling ancestor of the element by the least that shows all
+/// of it (`scrollIntoView({block: "nearest"})`), and does nothing when it is
+/// already in view.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.scroll_into_view(section)
+/// ```
+@external(javascript, "./dom.mjs", "scroll_into_view")
+pub fn scroll_into_view(element: Element) -> Nil
+
+/// The browser's offset from UTC at the instant `milliseconds`, in minutes and
+/// positive west of Greenwich (`getTimezoneOffset`), so a zone's daylight rule
+/// is the browser's and not a table of ours.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.timezone_offset_minutes(1_790_030_460_000)
+/// ```
+@external(javascript, "./dom.mjs", "timezone_offset_minutes")
+pub fn timezone_offset_minutes(milliseconds: Int) -> Int
+
 /// Scrolls the element by `dy` pixels vertically, at once (`scrollBy(0, dy)`).
 ///
 /// ## Examples

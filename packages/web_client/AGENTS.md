@@ -96,6 +96,15 @@ renders again just for it:
   seconds draws the ended document's shape. It renders nothing, takes no
   focus and listens for no event (protocol-change/051, the addendum on
   switching sessions).
+- `<loom-time at="<ms>">` draws an instant as the time of day in the browser's own
+  zone (`time_rule.clock`: round up to the minute, then the browser's UTC offset
+  from `ffi_dom.timezone_offset_minutes`). The admin page's grant refusal uses it
+  for when the next place frees; the server writes the UTC time as its `title` and
+  light text, so the zone is the browser's and never a server guess.
+- `<loom-reveal>` is an empty element that, when connected, calls
+  `scrollIntoView({block: "nearest"})` on its nearest `section` after the first
+  paint. The admin claim box opens with one, so a claim made below the fold is on
+  screen. It takes no attribute and sends the server nothing.
 - `<loom-popover wanted="open">` wraps the home's name button (the light child,
   drawn through one slot) and toggles the account panel in the browser: it keeps
   one fact, open or closed (`popover_rule.State`), publishes it as the custom

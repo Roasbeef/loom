@@ -116,6 +116,10 @@ fn snapshot(chosen: Option(String)) -> grants.Snapshot {
       Some(_) | None -> None
     },
     logins: [],
+    summaries: [
+      grants.Summary(session, 3, grants.Whole, creations.Shareable),
+      grants.Summary(other_session, 1, grants.Whole, creations.Private),
+    ],
   )
 }
 
@@ -325,6 +329,7 @@ pub fn a_name_is_only_ever_a_text_node_test() {
               scope: creations.Shareable,
             )),
             logins: [],
+            summaries: [],
           ),
         ),
       )
@@ -442,9 +447,15 @@ pub fn a_refusal_is_worded_in_fixed_words_test() {
     opened(start_with(reads, process.new_subject(), grants.Declined(too_many())))
   let model = run(model, admin.Asking(grants.Rotate("cara")))
   let html = drawn(model)
-  assert string.contains(html, grants.reason_words(too_many()))
   assert string.contains(html, "3 grants in the last hour")
-  assert string.contains(html, "free at 22:41 UTC")
+
+  // The instant travels as a number the browser words in its own zone, with the
+  // UTC time as the element's title and its light text; the server guesses no zone.
+  assert string.contains(
+    html,
+    "<loom-time at=\"1790030460000\" title=\"22:41 UTC\">22:41 UTC</loom-time>",
+  )
+  assert string.contains(html, grants.throttle_tail)
   assert !string.contains(html, "loomclaim_")
   assert process.receive(reads, 0) == Ok(None)
   assert process.receive(reads, 0) == Ok(None)
@@ -540,7 +551,9 @@ pub fn a_claim_is_shown_once_and_dropped_when_hidden_test() {
   assert string.contains(html, "Open this address and paste the token:")
   assert string.contains(html, "Or, with loom installed")
   assert string.contains(html, "Invitation ready")
-  assert string.contains(html, "Role: operator. Principal: guest-1a2b3c4d.")
+  assert string.contains(html, "Principal: guest-1a2b3c4d.")
+  assert !string.contains(html, "Role: operator")
+  assert string.contains(html, "<loom-reveal></loom-reveal>")
   assert string.contains(html, "valid for 60 minutes")
   assert string.contains(html, "outside Loom")
   assert string.contains(html, "Hide the token")
@@ -582,24 +595,56 @@ pub fn a_rotation_is_worded_as_one_and_a_read_carries_no_claim_test() {
   assert string.contains(html, "Their earlier credentials no longer work.")
 }
 
+// One read runs at a time. A tick while one is out only arms the timer again, a
+// press asks for one more read (a flag, not a queue), and that read starts when
+// the answer lands, however many presses and ticks came in between.
+pub fn only_one_read_runs_at_a_time_test() {
+  let reads = process.new_subject()
+  let start =
+    admin.Start(..start(), read: fn(chosen, _) { process.send(reads, chosen) })
+  let timer = process.new_subject()
+  let model = run(admin.new(start), admin.TimerReady(timer))
+  assert process.receive(reads, 0) == Ok(None)
+
+  // Ticks and presses while the first read is out start nothing.
+  let model = run(model, admin.Ticked)
+  let model = run(model, admin.Ticked)
+  let model = run(model, admin.Choosing(session))
+  let model = run(model, admin.Choosing(session))
+  assert process.receive(reads, 0) == Error(Nil)
+
+  // The answer lands: the one wanted read starts, under the chosen session, once.
+  let model = run(model, admin.Answered(1, grants.Read(snapshot(None))))
+  assert process.receive(reads, 0) == Ok(Some(session))
+  assert process.receive(reads, 0) == Error(Nil)
+
+  // The first read found no members, because it was asked before the press. They
+  // are not drawn under the new choice, and the choice is kept.
+  assert !string.contains(drawn(model), "Members of review auth")
+
+  // With nothing wanted, an answer starts nothing, and the next tick reads.
+  let model =
+    run(model, admin.Answered(2, grants.Read(snapshot(Some(session)))))
+  assert string.contains(drawn(model), "Members of review auth")
+  assert process.receive(reads, 0) == Error(Nil)
+  let model = run(model, admin.Ticked)
+  assert process.receive(reads, 0) == Ok(Some(session))
+  let _ = model
+}
+
 // A read that was overtaken is dropped: the page keeps the answer to the latest
-// read it asked for, whatever order the answers arrive in.
+// read it asked for, whatever its number.
 pub fn an_overtaken_read_is_dropped_test() {
   let start = admin.Start(..start(), read: fn(_, _) { Nil })
   let timer = process.new_subject()
   let model = run(admin.new(start), admin.TimerReady(timer))
-  let model = run(model, admin.Choosing(session))
-
-  // Two reads are out, numbered one and two. The second answers first with the
-  // members, and the first answers late with none.
-  let model =
-    run(model, admin.Answered(2, grants.Read(snapshot(Some(session)))))
-  assert string.contains(drawn(model), "Members of review auth")
   let model = run(model, admin.Answered(1, grants.Read(snapshot(None))))
-  assert string.contains(drawn(model), "Members of review auth")
+  let model = run(model, admin.Ticked)
 
-  // Neither an unread nor a closed answer from an older read changes anything.
+  // Read two is out. A late answer numbered one changes nothing.
   let model = run(model, admin.Answered(1, grants.Closed(ending.AccessRevoked)))
+  assert admin.status(model) == admin.Connected
+  let model = run(model, admin.Answered(2, grants.Read(snapshot(None))))
   assert admin.status(model) == admin.Connected
 }
 
@@ -787,8 +832,11 @@ pub fn no_identity_reaches_an_attribute_test() {
   assert !string.contains(html, "id=\"bob")
 
   // The only keys are the people's catalogue identities, one for each row of the
-  // list, and no name or session is one.
-  assert count(html, "key=\"") == 5
+  // list, and the invitation's two fixed words (a form numbered by how many
+  // invitations were made, and its notice); no name or session is one.
+  assert count(html, "key=\"") == 7
+  assert string.contains(html, "key=\"invite-0\"")
+  assert string.contains(html, "key=\"notice\"")
   assert !string.contains(html, "key=\"Bob")
   assert !string.contains(html, session <> "\"")
   assert !string.contains(html, "href")
@@ -1257,4 +1305,115 @@ pub fn a_hostile_name_is_text_in_the_rename_form_test() {
   let html = drawn(run(model, admin.Editing("bob")))
   assert !string.contains(html, hostile)
   assert string.contains(html, "&lt;script&gt;alert(1)&lt;/script&gt;")
+}
+
+// Each session's row says who holds it and whether it may be shared, after its
+// path, from the summary the read made, and a session the read made none for has
+// the path alone.
+pub fn a_session_row_says_its_people_and_scope_test() {
+  let #(model, _) = opened(start())
+  let html = drawn(model)
+  assert string.contains(html, " · 3 people · shareable")
+  assert string.contains(html, " · 1 person · private")
+
+  let bare =
+    admin.Start(..start(), read: fn(chosen, deliver) {
+      deliver(grants.Read(grants.Snapshot(..snapshot(chosen), summaries: [])))
+    })
+  let #(model, _) = opened(bare)
+  assert !string.contains(drawn(model), " people")
+  assert !string.contains(drawn(model), " person")
+}
+
+// The words are fixed, and a count that is only a page of the members is a lower
+// bound.
+pub fn the_summary_words_are_fixed_test() {
+  let words = fn(people, more, scope) {
+    grants.summary_words(grants.Summary("s", people, more, scope))
+  }
+  assert words(1, grants.Whole, creations.Private) == "1 person · private"
+  assert words(2, grants.Whole, creations.Shareable) == "2 people · shareable"
+  assert words(101, grants.Truncated, creations.Shareable)
+    == "101+ people · shareable"
+}
+
+// The invitation form is a new form once an invitation was made, so its name
+// field is empty again; a read leaves the same form. The key is in the form's
+// event path, so the path moves with the count, and the page's body path does
+// not move.
+pub fn an_invitation_opens_a_fresh_form_test() {
+  let claim =
+    grants.Claim(
+      principal: "guest-1a2b3c4d",
+      purpose: grants.Invited(invites.Observer),
+      page: "http://127.0.0.1:4000/ui/claim",
+      command: "loom claim --addr ws://127.0.0.1:4000/v2/control",
+      token:,
+      expires_in_ms: 3_600_000,
+    )
+  let #(model, _) =
+    opened(start_with(
+      process.new_subject(),
+      process.new_subject(),
+      grants.Claimed(claim),
+    ))
+  let model = run(model, admin.Choosing(session))
+  let submit = fn(model) {
+    list.filter(handlers(admin.view(model)), string.ends_with(_, "\nsubmit"))
+  }
+  let before = submit(model)
+  assert list.length(before) == 1
+
+  let refreshed = run(model, admin.Ticked)
+  assert submit(refreshed) == before
+
+  let invited =
+    run(model, admin.Asking(grants.Invite(session, invites.Observer, "Priya")))
+  assert list.length(submit(invited)) == 1
+  assert submit(invited) != before
+  assert list.all(submit(invited), string.starts_with(
+    _,
+    admin.body_path <> "\t",
+  ))
+
+  // A second invitation is a second fresh form.
+  let again =
+    run(invited, admin.Asking(grants.Invite(session, invites.Observer, "Ana")))
+  assert submit(again) != submit(invited)
+}
+
+// The claim box is keyed by how many invitations were made, so a second
+// invitation builds a new box and its `<loom-reveal>` runs again.
+pub fn a_second_invitation_builds_a_new_claim_box_test() {
+  let claim =
+    grants.Claim(
+      principal: "guest-1a2b3c4d",
+      purpose: grants.Invited(invites.Observer),
+      page: "http://127.0.0.1:4000/ui/claim",
+      command: "loom claim --addr ws://127.0.0.1:4000/v2/control",
+      token:,
+      expires_in_ms: 3_600_000,
+    )
+  let #(model, _) =
+    opened(start_with(
+      process.new_subject(),
+      process.new_subject(),
+      grants.Claimed(claim),
+    ))
+  let model = run(model, admin.Choosing(session))
+  let first =
+    run(model, admin.Asking(grants.Invite(session, invites.Observer, "A")))
+  assert string.contains(drawn(first), "key=\"claim-1\"")
+
+  // The claim adds one key to the seven the page has, and no name or identity is
+  // a key.
+  assert count(drawn(first), "key=\"") == 8
+  assert !string.contains(drawn(first), "key=\"guest")
+  let second =
+    run(first, admin.Asking(grants.Invite(session, invites.Observer, "B")))
+  assert string.contains(drawn(second), "key=\"claim-2\"")
+  assert !string.contains(drawn(second), "key=\"claim-1\"")
+
+  // A refresh keeps the box, and so its key, where it was.
+  assert string.contains(drawn(run(second, admin.Ticked)), "key=\"claim-2\"")
 }

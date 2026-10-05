@@ -18,6 +18,8 @@
 ////
 //// A notice's words are fixed by the page (`web_view/grants.changed_words` and
 //// `reason_words`), so they are never a peer's, and they are a text node. The
+//// one instant a notice names, when a spent allowance frees a place, is a number
+//// the daemon wrote in a `<loom-time>`, so the browser words it in its own zone. The
 //// classes are complete literals. A notice draws no handler.
 ////
 //// ## Placement
@@ -30,6 +32,7 @@
 //// elsewhere, so the slot it occupies is always one child of its parent and
 //// the children after it keep their paths.
 
+import gleam/int
 import gleam/option.{type Option, None, Some}
 import lustre/attribute
 import lustre/element.{type Element}
@@ -44,6 +47,13 @@ pub type Notice {
   /// A change that was refused. It stays until the next action, in the danger
   /// colour.
   Refused(words: String)
+
+  /// A grant refused for want of allowance: how many grants the credential has
+  /// made in the window and the Unix time in milliseconds at which a place frees.
+  /// It is drawn as a refusal, with the time in a `<loom-time>` so the browser
+  /// words it in the owner's own zone (protocol-change/065, the addendum on the
+  /// admin page's polish).
+  Throttled(used: Int, free_at_ms: Int)
 }
 
 /// A notice and the action it is about, which says where on the admin page it
@@ -69,7 +79,30 @@ pub fn line(notice: Notice) -> Element(message) {
       html.p([attribute.class("notice-refusal"), attribute.role("status")], [
         html.text(words),
       ])
+    Throttled(used:, free_at_ms:) ->
+      html.p([attribute.class("notice-refusal"), attribute.role("status")], [
+        html.text(grants.throttle_lead(used)),
+        free_at(free_at_ms),
+        html.text(grants.throttle_tail),
+      ])
   }
+}
+
+/// The time a place frees, as a `<loom-time>`. The instant is a number the
+/// daemon wrote and travels as the element's `at` attribute, which the browser
+/// draws in its own zone. The UTC time is the element's `title` and its light
+/// text, which a browser that has not registered the element still shows, so the
+/// words read the same either way. The server never guesses a zone.
+fn free_at(milliseconds: Int) -> Element(message) {
+  let utc = grants.utc_clock(milliseconds)
+  element.element(
+    "loom-time",
+    [
+      attribute.attribute("at", int.to_string(milliseconds)),
+      attribute.title(utc),
+    ],
+    [html.text(utc)],
+  )
 }
 
 /// The line for a notice that may be absent: the line, or the empty node that

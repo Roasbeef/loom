@@ -48,6 +48,10 @@
 ////   document's shape in its place.
 //// - `<loom-popover wanted="open">` (`web_client/popover`) opens and closes
 ////   the home's account panel from the person's name in the bar.
+//// - `<loom-time at="...">` (`web_client/time`) draws an instant, in Unix
+////   milliseconds, as the time of day in the browser's own zone.
+//// - `<loom-reveal>` (`web_client/reveal`) scrolls the box it sits in into view
+////   once, when the box appears.
 ////
 //// Every element keeps the page's rules (protocol-change/051): it renders
 //// only what its own attributes say, and those hold daemon identities or
@@ -70,9 +74,11 @@ import web_client/fold
 import web_client/follow
 import web_client/popover
 import web_client/rename
+import web_client/reveal
 import web_client/shell
 import web_client/switch
 import web_client/switcher
+import web_client/time
 import web_client/title
 import web_client/waiting
 
@@ -98,9 +104,11 @@ pub fn main() -> Nil {
   let _ = follow.register()
   let _ = popover.register()
   let _ = rename.register()
+  let _ = reveal.register()
   let _ = shell.register()
   let _ = switch.register()
   let _ = switcher.register()
+  let _ = time.register()
   let _ = title.register()
   let _ = waiting.register()
   Nil
