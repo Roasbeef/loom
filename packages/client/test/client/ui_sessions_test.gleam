@@ -8,6 +8,7 @@
 import client/daemon/ui_sessions
 import gleam/erlang/process.{type Subject}
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
@@ -45,6 +46,7 @@ fn table(time: Subject(Clock)) -> ui_sessions.Sessions {
       now: fn() { process.call(time, 1000, Read) },
       entropy: fn(size) { distinct_bytes(counter, size) },
       ticket_ms: 60_000,
+      device_ms: 600_000,
       session_ms: 28_800_000,
     ))
     as "the table starts"
@@ -88,6 +90,8 @@ fn grant_for(principal: String, session: String) -> ui_sessions.Grant {
     principal,
     access.Observer,
     ui_sessions.OneSession,
+    ui_sessions.Fresh,
+    ui_sessions.Forgotten,
   )
 }
 
@@ -116,11 +120,11 @@ pub fn a_ticket_is_redeemed_once_test() {
   let sessions = table(clock())
   let ticket = mint(sessions, "s1")
   let assert Ok(redeemed) =
-    ui_sessions.redeem(sessions, ticket, ui_sessions.Session("s1"))
+    ui_sessions.redeem(sessions, ticket, ui_sessions.SessionExchange("s1"))
     as "the first redemption succeeds"
   assert redeemed.grant == grant("s1")
   assert looked_up(sessions, redeemed.cookie) == Ok(grant("s1"))
-  assert ui_sessions.redeem(sessions, ticket, ui_sessions.Session("s1"))
+  assert ui_sessions.redeem(sessions, ticket, ui_sessions.SessionExchange("s1"))
     == Error(ui_sessions.UnknownTicket)
 }
 
@@ -136,7 +140,7 @@ pub fn two_redemptions_at_once_succeed_once_test() {
     process.spawn(fn() {
       process.send(
         results,
-        ui_sessions.redeem(sessions, ticket, ui_sessions.Session("s1")),
+        ui_sessions.redeem(sessions, ticket, ui_sessions.SessionExchange("s1")),
       )
     })
   })
@@ -158,7 +162,7 @@ pub fn a_ticket_expires_after_a_minute_test() {
   let sessions = table(time)
   let ticket = mint(sessions, "s1")
   process.send(time, Advance(60_000))
-  assert ui_sessions.redeem(sessions, ticket, ui_sessions.Session("s1"))
+  assert ui_sessions.redeem(sessions, ticket, ui_sessions.SessionExchange("s1"))
     == Error(ui_sessions.UnknownTicket)
 }
 
@@ -169,7 +173,7 @@ pub fn a_ui_session_expires_after_eight_hours_test() {
     ui_sessions.redeem(
       sessions,
       mint(sessions, "s1"),
-      ui_sessions.Session("s1"),
+      ui_sessions.SessionExchange("s1"),
     )
     as "the ticket is redeemed"
   process.send(time, Advance(28_800_000 - 1))
@@ -188,7 +192,11 @@ pub fn a_switched_page_ends_no_later_than_the_page_it_left_test() {
   let assert Ok(issued) = ui_sessions.mint_before(sessions, grant("s2"), 5000)
     as "a switch ticket is minted"
   let assert Ok(redeemed) =
-    ui_sessions.redeem(sessions, issued.ticket, ui_sessions.Session("s2"))
+    ui_sessions.redeem(
+      sessions,
+      issued.ticket,
+      ui_sessions.SessionExchange("s2"),
+    )
     as "the ticket is redeemed"
   process.send(time, Advance(3999))
   assert looked_up(sessions, redeemed.cookie) == Ok(grant("s2"))
@@ -200,7 +208,7 @@ pub fn a_switched_page_ends_no_later_than_the_page_it_left_test() {
     ui_sessions.mint_before(sessions, grant("s3"), 9_000_000_000)
     as "a switch ticket is minted"
   let assert Ok(page) =
-    ui_sessions.redeem(sessions, far.ticket, ui_sessions.Session("s3"))
+    ui_sessions.redeem(sessions, far.ticket, ui_sessions.SessionExchange("s3"))
     as "the ticket is redeemed"
   process.send(time, Advance(28_800_000 - 1))
   assert looked_up(sessions, page.cookie) == Ok(grant("s3"))
@@ -220,7 +228,7 @@ pub fn a_switch_ticket_outliving_its_source_opens_no_page_test() {
         ui_sessions.redeem(
           sessions,
           mint(sessions, "s4"),
-          ui_sessions.Session("s4"),
+          ui_sessions.SessionExchange("s4"),
         )
         as "the ticket is redeemed"
       redeemed
@@ -228,7 +236,11 @@ pub fn a_switch_ticket_outliving_its_source_opens_no_page_test() {
   let assert Ok(issued) = ui_sessions.mint_before(sessions, grant("s4"), 30_000)
     as "a switch ticket is minted"
   process.send(time, Advance(30_000))
-  assert ui_sessions.redeem(sessions, issued.ticket, ui_sessions.Session("s4"))
+  assert ui_sessions.redeem(
+      sessions,
+      issued.ticket,
+      ui_sessions.SessionExchange("s4"),
+    )
     == Error(ui_sessions.UnknownTicket)
   list.each(held, fn(page) {
     assert looked_up(sessions, page.cookie) == Ok(grant("s4"))
@@ -239,7 +251,11 @@ fn redeem(sessions, principal: String, session: String) {
   let assert Ok(issued) =
     ui_sessions.mint(sessions, grant_for(principal, session))
     as "a ticket is minted"
-  ui_sessions.redeem(sessions, issued.ticket, ui_sessions.Session(session))
+  ui_sessions.redeem(
+    sessions,
+    issued.ticket,
+    ui_sessions.SessionExchange(session),
+  )
 }
 
 // Protocol-change/051, the addendum on several pages: a redemption adds a
@@ -351,14 +367,14 @@ pub fn a_page_admits_only_its_own_key_and_nonce_test() {
     ui_sessions.redeem(
       sessions,
       mint(sessions, "s1"),
-      ui_sessions.Session("s1"),
+      ui_sessions.SessionExchange("s1"),
     )
     as "the first ticket is redeemed"
   let assert Ok(two) =
     ui_sessions.redeem(
       sessions,
       mint(sessions, "s2"),
-      ui_sessions.Session("s2"),
+      ui_sessions.SessionExchange("s2"),
     )
     as "the second ticket is redeemed"
   let assert Ok(page) = ui_sessions.lookup(sessions, one.cookie)
@@ -380,7 +396,7 @@ pub fn the_sweep_reclaims_what_expired_test() {
     ui_sessions.redeem(
       sessions,
       mint(sessions, "s2"),
-      ui_sessions.Session("s2"),
+      ui_sessions.SessionExchange("s2"),
     )
     as "a ticket is redeemed"
   assert ui_sessions.sizes(sessions) == Ok(#(1, 1))
@@ -400,12 +416,16 @@ pub fn a_refused_redemption_keeps_the_browsers_ui_session_test() {
     ui_sessions.redeem(
       sessions,
       mint(sessions, "s1"),
-      ui_sessions.Session("s1"),
+      ui_sessions.SessionExchange("s1"),
     )
     as "the browser holds a UI session"
 
   // A spent ticket presented with the cookie signs nothing out.
-  assert ui_sessions.redeem(sessions, "not-a-ticket", ui_sessions.Session("s1"))
+  assert ui_sessions.redeem(
+      sessions,
+      "not-a-ticket",
+      ui_sessions.SessionExchange("s1"),
+    )
     == Error(ui_sessions.UnknownTicket)
   assert looked_up(sessions, held.cookie) == Ok(grant("s1"))
 }
@@ -416,7 +436,7 @@ pub fn a_ticket_for_another_session_is_spent_and_inserts_nothing_test() {
     ui_sessions.redeem(
       sessions,
       mint(sessions, "s1"),
-      ui_sessions.Session("s1"),
+      ui_sessions.SessionExchange("s1"),
     )
     as "the browser holds a UI session"
   let other = mint(sessions, "s2")
@@ -424,11 +444,11 @@ pub fn a_ticket_for_another_session_is_spent_and_inserts_nothing_test() {
 
   // Presented on the first session's path, the second session's ticket is
   // refused and spent; no UI session is added and the held one is kept.
-  assert ui_sessions.redeem(sessions, other, ui_sessions.Session("s1"))
+  assert ui_sessions.redeem(sessions, other, ui_sessions.SessionExchange("s1"))
     == Error(ui_sessions.OtherScope)
   assert ui_sessions.sizes(sessions) == Ok(#(0, 1))
   assert looked_up(sessions, held.cookie) == Ok(grant("s1"))
-  assert ui_sessions.redeem(sessions, other, ui_sessions.Session("s2"))
+  assert ui_sessions.redeem(sessions, other, ui_sessions.SessionExchange("s2"))
     == Error(ui_sessions.UnknownTicket)
 }
 
@@ -448,7 +468,7 @@ pub fn a_home_ticket_redeems_at_the_home_test() {
     ui_sessions.redeem(
       sessions,
       home_ticket(sessions, "alice"),
-      ui_sessions.Home,
+      ui_sessions.HomeExchange,
     )
     as "the home ticket is redeemed"
   assert redeemed.grant == home_for("alice")
@@ -465,24 +485,28 @@ pub fn a_ticket_of_the_other_scope_is_spent_and_inserts_nothing_test() {
     ui_sessions.redeem(
       sessions,
       home_ticket(sessions, "alice"),
-      ui_sessions.Home,
+      ui_sessions.HomeExchange,
     )
     as "the browser holds a home page"
   let session_ticket = mint(sessions, "s1")
   let home = home_ticket(sessions, "alice")
   assert ui_sessions.sizes(sessions) == Ok(#(2, 1))
 
-  assert ui_sessions.redeem(sessions, session_ticket, ui_sessions.Home)
+  assert ui_sessions.redeem(sessions, session_ticket, ui_sessions.HomeExchange)
     == Error(ui_sessions.OtherScope)
-  assert ui_sessions.redeem(sessions, home, ui_sessions.Session("s1"))
+  assert ui_sessions.redeem(sessions, home, ui_sessions.SessionExchange("s1"))
     == Error(ui_sessions.OtherScope)
   assert ui_sessions.sizes(sessions) == Ok(#(0, 1))
   assert looked_up(sessions, held.cookie) == Ok(home_for("alice"))
 
   // Both tickets are spent, so a second try at the right exchange fails too.
-  assert ui_sessions.redeem(sessions, session_ticket, ui_sessions.Session("s1"))
+  assert ui_sessions.redeem(
+      sessions,
+      session_ticket,
+      ui_sessions.SessionExchange("s1"),
+    )
     == Error(ui_sessions.UnknownTicket)
-  assert ui_sessions.redeem(sessions, home, ui_sessions.Home)
+  assert ui_sessions.redeem(sessions, home, ui_sessions.HomeExchange)
     == Error(ui_sessions.UnknownTicket)
 }
 
@@ -494,7 +518,11 @@ pub fn the_page_cap_is_counted_per_scope_test() {
   let assert Ok(session_page) = redeem(sessions, "alice", "s1")
     as "a session page"
   let assert Ok(other_principal) =
-    ui_sessions.redeem(sessions, home_ticket(sessions, "bob"), ui_sessions.Home)
+    ui_sessions.redeem(
+      sessions,
+      home_ticket(sessions, "bob"),
+      ui_sessions.HomeExchange,
+    )
     as "another principal's home"
   let homes =
     list.repeat(Nil, ui_sessions.max_pages)
@@ -503,7 +531,7 @@ pub fn the_page_cap_is_counted_per_scope_test() {
         ui_sessions.redeem(
           sessions,
           home_ticket(sessions, "alice"),
-          ui_sessions.Home,
+          ui_sessions.HomeExchange,
         )
         as "a home under the cap"
       redeemed.cookie
@@ -512,7 +540,7 @@ pub fn the_page_cap_is_counted_per_scope_test() {
     ui_sessions.redeem(
       sessions,
       home_ticket(sessions, "alice"),
-      ui_sessions.Home,
+      ui_sessions.HomeExchange,
     )
     as "the fifth home"
   let assert [oldest, ..rest] = homes
@@ -554,7 +582,7 @@ fn live_page(sessions, session) -> ui_sessions.Redeemed {
     ui_sessions.redeem(
       sessions,
       mint(sessions, session),
-      ui_sessions.Session(session),
+      ui_sessions.SessionExchange(session),
     )
     as "a page is live"
   redeemed
@@ -784,4 +812,173 @@ pub fn the_sweep_drops_aged_creations_test() {
   process.send(time, Advance(ui_sessions.creation_window_ms + 1))
   ui_sessions.sweep(sessions)
   assert ui_sessions.reserve_creation(sessions, owner) == Ok(Nil)
+}
+
+// --- the browser login (protocol-change/065, PR 8) --------------------------
+
+// A home grant that asks for a login, as `loom ui` mints one.
+fn remembered_home(principal: String) -> ui_sessions.Grant {
+  ui_sessions.Grant(..home_for(principal), remember: ui_sessions.Remembered)
+}
+
+fn issuer(fingerprint: String) -> ui_sessions.Issuer {
+  ui_sessions.Issuer(
+    fingerprint:,
+    expires_at_ms: 2_592_000_000,
+    key: string.repeat("a", 32),
+  )
+}
+
+// A device link's ticket lives ten minutes, not sixty seconds, and redeems
+// once. At the instant its ten minutes end it is refused as any expired ticket
+// is.
+pub fn a_device_ticket_lives_ten_minutes_and_redeems_once_test() {
+  let time = clock()
+  let sessions = table(time)
+  let assert Ok(issued) =
+    ui_sessions.mint_device(
+      sessions,
+      remembered_home("alice"),
+      28_800_000,
+      None,
+    )
+    as "a device ticket is minted"
+  assert issued.expires_in_ms == 600_000
+  assert ui_sessions.device_ms == 600_000
+
+  // A page ticket outlives none of this: it is gone in a minute.
+  let assert Ok(brief) = ui_sessions.mint(sessions, remembered_home("alice"))
+    as "a page ticket is minted"
+  assert brief.expires_in_ms == 60_000
+  process.send(time, Advance(60_000))
+  assert ui_sessions.redeem(sessions, brief.ticket, ui_sessions.HomeExchange)
+    == Error(ui_sessions.UnknownTicket)
+
+  // The device ticket is honoured to the last millisecond before ten minutes,
+  // once.
+  process.send(time, Advance(600_000 - 60_000 - 1))
+  let assert Ok(redeemed) =
+    ui_sessions.redeem(sessions, issued.ticket, ui_sessions.HomeExchange)
+    as "the device ticket redeems inside its ten minutes"
+  assert redeemed.grant.remember == ui_sessions.Remembered
+  assert ui_sessions.redeem(sessions, issued.ticket, ui_sessions.HomeExchange)
+    == Error(ui_sessions.UnknownTicket)
+
+  // Another is refused from the instant its ten minutes end.
+  let assert Ok(late) =
+    ui_sessions.mint_device(
+      sessions,
+      remembered_home("alice"),
+      28_800_000,
+      None,
+    )
+    as "a second device ticket is minted"
+  process.send(time, Advance(600_000))
+  assert ui_sessions.redeem(sessions, late.ticket, ui_sessions.HomeExchange)
+    == Error(ui_sessions.UnknownTicket)
+}
+
+// A ticket carries the login of the page that minted it, so the page it opens
+// belongs to the same login and a chain of switches neither loses it nor starts
+// another: the redemption hands the caller the login, and the page knows it.
+pub fn a_ticket_carries_the_login_of_its_minter_test() {
+  let sessions = table(clock())
+  let login = issuer("0123456789abcdef")
+  let assert Ok(issued) =
+    ui_sessions.mint_in(sessions, home_for("alice"), 28_800_000, Some(login))
+    as "a switch ticket is minted"
+  let assert Ok(redeemed) =
+    ui_sessions.redeem(sessions, issued.ticket, ui_sessions.HomeExchange)
+    as "the ticket redeems"
+  assert redeemed.login == Some(login)
+  assert ui_sessions.login_of(sessions, redeemed.cookie) == Some(login)
+
+  // A ticket with no login opens a page with none.
+  let assert Ok(plain) = ui_sessions.mint(sessions, home_for("alice"))
+    as "a plain ticket is minted"
+  let assert Ok(plain_page) =
+    ui_sessions.redeem(sessions, plain.ticket, ui_sessions.HomeExchange)
+    as "the plain ticket redeems"
+  assert plain_page.login == None
+  assert ui_sessions.login_of(sessions, plain_page.cookie) == None
+}
+
+// A page a remembered exchange opened is the browser of the login that exchange
+// sets, which is attached once the login's row exists, and only once: a second
+// attachment cannot change which login a page is. A cookie that names no live
+// page records nothing.
+pub fn a_remembered_exchange_attaches_its_login_once_test() {
+  let sessions = table(clock())
+  let assert Ok(issued) = ui_sessions.mint(sessions, remembered_home("alice"))
+    as "a remembered ticket is minted"
+  let assert Ok(redeemed) =
+    ui_sessions.redeem(sessions, issued.ticket, ui_sessions.HomeExchange)
+    as "the ticket redeems"
+  assert redeemed.login == None
+  assert ui_sessions.login_of(sessions, redeemed.cookie) == None
+
+  let first = issuer("1111111111111111")
+  ui_sessions.attach_login(sessions, redeemed.cookie, first)
+  assert ui_sessions.login_of(sessions, redeemed.cookie) == Some(first)
+  ui_sessions.attach_login(
+    sessions,
+    redeemed.cookie,
+    issuer("2222222222222222"),
+  )
+  assert ui_sessions.login_of(sessions, redeemed.cookie) == Some(first)
+
+  // Attaching does not change what the page grants, so a socket that holds the
+  // grant it was admitted under still matches.
+  assert looked_up(sessions, redeemed.cookie) == Ok(remembered_home("alice"))
+  ui_sessions.attach_login(sessions, "no such cookie", first)
+  assert ui_sessions.login_of(sessions, "no such cookie") == None
+}
+
+// A page a resumed login minted is the browser of that login and is a resumed
+// page, whatever its ticket's lifetime says.
+pub fn a_resumed_page_is_the_browser_of_its_login_test() {
+  let sessions = table(clock())
+  let login = issuer("0123456789abcdef")
+  let grant =
+    ui_sessions.Grant(..home_for("alice"), origin: ui_sessions.Resumed)
+  let assert Ok(issued) = ui_sessions.mint_resumed(sessions, grant, login)
+    as "a resume's ticket is minted"
+  assert issued.expires_in_ms == 60_000
+  let assert Ok(redeemed) =
+    ui_sessions.redeem(sessions, issued.ticket, ui_sessions.HomeExchange)
+    as "the ticket redeems"
+  assert redeemed.grant.origin == ui_sessions.Resumed
+  assert ui_sessions.login_of(sessions, redeemed.cookie) == Some(login)
+  assert looked_up(sessions, redeemed.cookie) == Ok(grant)
+}
+
+// A principal's homes are one scope whatever origin reached them: a fifth home
+// ends the oldest, a resumed one among them.
+pub fn homes_of_every_origin_share_one_cap_test() {
+  let sessions = table(clock())
+  let resumed =
+    ui_sessions.Grant(..home_for("alice"), origin: ui_sessions.Resumed)
+  let ticket = fn(grant) {
+    let assert Ok(issued) = ui_sessions.mint(sessions, grant)
+      as "a ticket is minted"
+    let assert Ok(redeemed) =
+      ui_sessions.redeem(sessions, issued.ticket, ui_sessions.HomeExchange)
+      as "the ticket redeems"
+    redeemed
+  }
+  let oldest = ticket(resumed)
+  let rest = [
+    ticket(home_for("alice")),
+    ticket(resumed),
+    ticket(home_for("alice")),
+  ]
+  assert list.all(rest, fn(page) {
+    result.is_ok(looked_up(sessions, page.cookie))
+  })
+  assert result.is_ok(looked_up(sessions, oldest.cookie))
+  let _fifth = ticket(resumed)
+  assert looked_up(sessions, oldest.cookie) == Error(Nil)
+  assert list.all(rest, fn(page) {
+    result.is_ok(looked_up(sessions, page.cookie))
+  })
 }

@@ -433,6 +433,57 @@ type Message(instance) {
 
   /// The `/v2/claim` upgrade's filter: the claim exists and is not void.
   ClaimKnown(access.ClaimDigest, Subject(Result(Nil, Error)))
+
+  /// Writes a browser login's row: the principal, the digest of the token's
+  /// identifier, when it began, when it ends and the login it came from. It is
+  /// the daemon's own act at an exchange, so it carries no credential.
+  IssueLogin(
+    String,
+    access.Digest,
+    Int,
+    Int,
+    Option(String),
+    Subject(Result(Nil, Error)),
+  )
+
+  /// A login's resume: the row is active, is a login, and names this
+  /// principal. Records the resume at most once an hour.
+  ResumeLogin(
+    access.Digest,
+    String,
+    Int,
+    Subject(Result(access.Principal, Error)),
+  )
+
+  /// Revokes every active login, which a start that drew a new root key does.
+  RevokeAllLogins(Subject(Result(Int, Error)))
+
+  /// A principal's sign-in listing, read as the caller or, for the owner, as
+  /// another principal.
+  Signins(
+    access.Digest,
+    Option(String),
+    String,
+    Int,
+    Subject(Result(#(String, access.SigninPage), AdminError)),
+  )
+
+  /// One sign-in revoked, as its principal or as the owner.
+  RevokeLogin(
+    access.Digest,
+    String,
+    Option(String),
+    String,
+    Subject(Result(#(String, access.Digest), AdminError)),
+  )
+
+  /// Every sign-in of one principal revoked, as that principal or the owner.
+  RevokeLogins(
+    access.Digest,
+    String,
+    Option(String),
+    Subject(Result(#(String, Int), AdminError)),
+  )
   Census(Subject(Summary))
 
   /// Answers the subject a session's domain currently settles on. Fixtures
@@ -716,6 +767,164 @@ pub fn claim_known(
 ) -> Result(Nil, Error) {
   call.try_call(manager.commands, waiting: 5000, sending: ClaimKnown(claim, _))
   |> result.unwrap(Error(Unavailable))
+}
+
+/// Records a browser login's row in one serialized dispatch: `principal_id`,
+/// the `Browser` digest of the token's identifier, the instants it began and
+/// ends (Unix milliseconds) and, for a device link's login, the fingerprint of
+/// the login it came from. The daemon calls it at the exchange that sets the
+/// login; the caller has already decided the principal may hold one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.issue_login(registry, "alice", digest, now, now + thirty_days, None)
+/// ```
+@internal
+pub fn issue_login(
+  manager: Manager(instance),
+  principal_id: String,
+  digest: access.Digest,
+  issued_at_ms: Int,
+  expires_at_ms: Int,
+  issued_by: Option(String),
+) -> Result(Nil, Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: IssueLogin(
+    principal_id,
+    digest,
+    issued_at_ms,
+    expires_at_ms,
+    issued_by,
+    _,
+  ))
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// Resumes a login: the row for `digest` must be an active login of
+/// `principal_id`, and then the principal is answered and the row's last
+/// resume is recorded when it is older than an hour. Any other row, a revoked
+/// one or an unknown one is `Catalogue(Missing)`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.resume_login(registry, digest, "alice", now_ms)
+/// ```
+@internal
+pub fn resume_login(
+  manager: Manager(instance),
+  digest: access.Digest,
+  principal_id: String,
+  now_ms: Int,
+) -> Result(access.Principal, Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: ResumeLogin(
+    digest,
+    principal_id,
+    now_ms,
+    _,
+  ))
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// Revokes every active browser login of every principal, answering how many.
+/// A daemon start that drew a new root key calls it, because no token the old
+/// key signed can verify again and the listings would otherwise show them live.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.revoke_all_logins(registry)
+/// ```
+@internal
+pub fn revoke_all_logins(manager: Manager(instance)) -> Result(Int, Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: RevokeAllLogins)
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// Lists sign-ins, the browser logins of a principal: the caller's own when
+/// `target` is `None`, and any principal's when the caller is the owner. A
+/// member naming another principal is `AdminForbidden`. The caller is
+/// reauthenticated in the registry's own dispatch, as every administration is,
+/// so a credential revoked a moment ago reads nothing. `now_ms` is the instant
+/// a login's expiry is judged against. The answer names the principal whose
+/// sign-ins these are.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.signins(registry, caller, None, after: "", now_ms: now)
+/// ```
+@internal
+pub fn signins(
+  manager: Manager(instance),
+  caller: access.Digest,
+  target: Option(String),
+  after after: String,
+  now_ms now_ms: Int,
+) -> Result(#(String, access.SigninPage), AdminError) {
+  call.try_call(manager.commands, waiting: 5000, sending: Signins(
+    caller,
+    target,
+    after,
+    now_ms,
+    _,
+  ))
+  |> result.unwrap(Error(AdminUnavailable))
+}
+
+/// Revokes one sign-in, named by its fingerprint: the caller's own when
+/// `target` is `None`, and any principal's when the caller is the owner. The
+/// caller and the epoch are checked in the same dispatch as the write, and the
+/// frame memo is dropped before the reply, so every page the login minted ends
+/// at its next frame. The answer is the principal and the login's digest, which
+/// the caller logs the fingerprint of.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.revoke_login(registry, caller, epoch, None, "9c1e0f2ab3d4e5f6")
+/// ```
+@internal
+pub fn revoke_login(
+  manager: Manager(instance),
+  caller: access.Digest,
+  epoch: String,
+  target: Option(String),
+  fingerprint: String,
+) -> Result(#(String, access.Digest), AdminError) {
+  call.try_call(manager.commands, waiting: 5000, sending: RevokeLogin(
+    caller,
+    epoch,
+    target,
+    fingerprint,
+    _,
+  ))
+  |> result.unwrap(Error(AdminUnavailable))
+}
+
+/// Revokes every sign-in of one principal ("sign out everywhere"), under the
+/// same rules as `revoke_login`, and answers the principal and how many were
+/// active.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.revoke_logins(registry, caller, epoch, None)
+/// ```
+@internal
+pub fn revoke_logins(
+  manager: Manager(instance),
+  caller: access.Digest,
+  epoch: String,
+  target: Option(String),
+) -> Result(#(String, Int), AdminError) {
+  call.try_call(manager.commands, waiting: 5000, sending: RevokeLogins(
+    caller,
+    epoch,
+    target,
+    _,
+  ))
+  |> result.unwrap(Error(AdminUnavailable))
 }
 
 /// Renames metadata after reauthenticating owner and epoch in one dispatch.
@@ -1625,6 +1834,85 @@ fn handle(
       )
       sm.keep(book)
     }
+
+    // The login messages. A write drops the frame memo whatever the outcome
+    // and before the reply leaves, as `Administer` does, so a revoked login's
+    // pages are refused at their next frame and never answered from a memo that
+    // predates the revocation.
+    IssueLogin(principal_id, digest, issued_at_ms, expires_at_ms, from, reply) -> {
+      let outcome =
+        access.issue_login(
+          book.catalogue,
+          principal_id,
+          digest,
+          issued_at_ms,
+          expires_at_ms,
+          from,
+        )
+        |> result.map_error(Catalogue)
+      let book = Book(..book, authority: dict.new())
+      process.send(reply, outcome)
+      sm.keep(book)
+    }
+    ResumeLogin(digest, principal_id, now_ms, reply) -> {
+      let outcome = {
+        use principal <- result.try(
+          principal_of(book, digest) |> result.map_error(Catalogue),
+        )
+        use Nil <- result.try(case principal.id == principal_id {
+          True -> Ok(Nil)
+          False -> Error(Catalogue(catalogue.Missing))
+        })
+        use _stamp <- result.map(
+          access.resumed(book.catalogue, digest, now_ms)
+          |> result.map_error(Catalogue),
+        )
+        principal
+      }
+      process.send(reply, outcome)
+      sm.keep(book)
+    }
+    RevokeAllLogins(reply) -> {
+      let outcome =
+        access.revoke_all_logins(book.catalogue) |> result.map_error(Catalogue)
+      let book = Book(..book, authority: dict.new())
+      process.send(reply, outcome)
+      sm.keep(book)
+    }
+    Signins(caller, target, after, now_ms, reply) -> {
+      let outcome = {
+        use principal_id <- result.try(sign_in_subject(book, caller, target))
+        access.signins_page(book.catalogue, principal_id, after, now_ms)
+        |> result.map(fn(page) { #(principal_id, page) })
+        |> result.map_error(AdminMetadata)
+      }
+      process.send(reply, outcome)
+      sm.keep(book)
+    }
+    RevokeLogin(caller, epoch, target, fingerprint, reply) -> {
+      let outcome = {
+        use Nil <- result.try(current_epoch(phase, book, epoch))
+        use principal_id <- result.try(sign_in_subject(book, caller, target))
+        access.revoke_login(book.catalogue, principal_id, fingerprint)
+        |> result.map(fn(digest) { #(principal_id, digest) })
+        |> result.map_error(AdminMetadata)
+      }
+      let book = Book(..book, authority: dict.new())
+      process.send(reply, outcome)
+      sm.keep(book)
+    }
+    RevokeLogins(caller, epoch, target, reply) -> {
+      let outcome = {
+        use Nil <- result.try(current_epoch(phase, book, epoch))
+        use principal_id <- result.try(sign_in_subject(book, caller, target))
+        access.revoke_logins(book.catalogue, principal_id)
+        |> result.map(fn(count) { #(principal_id, count) })
+        |> result.map_error(AdminMetadata)
+      }
+      let book = Book(..book, authority: dict.new())
+      process.send(reply, outcome)
+      sm.keep(book)
+    }
     Census(reply) -> {
       process.send(reply, census(phase, book))
       sm.keep(book)
@@ -1866,6 +2154,45 @@ fn authenticated_owner(book: Book(instance), digest) {
   case principal.kind {
     access.OwnerPrincipal -> Ok(Nil)
     access.MemberPrincipal -> Error(AdminForbidden)
+  }
+}
+
+// Whose sign-ins a caller may read or revoke: its own, or any principal's when
+// the caller is the owner. The caller is authenticated first, as the kind its
+// digest was made as, so a revoked login reads and revokes nothing.
+fn sign_in_subject(
+  book: Book(instance),
+  caller: access.Digest,
+  target: Option(String),
+) -> Result(String, AdminError) {
+  use principal <- result.try(
+    principal_of(book, caller) |> result.replace_error(AdminForbidden),
+  )
+  case target {
+    option.None -> Ok(principal.id)
+    option.Some(id) if id == principal.id -> Ok(id)
+    option.Some(id) ->
+      case principal.kind {
+        access.OwnerPrincipal -> Ok(id)
+        access.MemberPrincipal -> Error(AdminForbidden)
+      }
+  }
+}
+
+// A write is refused while the daemon is stopping and when it names another
+// daemon lifetime, as every administration is.
+fn current_epoch(
+  phase,
+  book: Book(instance),
+  epoch,
+) -> Result(Nil, AdminError) {
+  use Nil <- result.try(case phase {
+    Ready -> Ok(Nil)
+    ShuttingDown -> Error(AdminUnavailable)
+  })
+  case epoch == book.epoch {
+    True -> Ok(Nil)
+    False -> Error(AdminStaleEpoch)
   }
 }
 

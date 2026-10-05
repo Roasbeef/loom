@@ -414,6 +414,8 @@ fn page_grant(session: String) -> ui_sessions.Grant {
     "alice",
     access.Observer,
     ui_sessions.OneSession,
+    ui_sessions.Fresh,
+    ui_sessions.Forgotten,
   )
 }
 
@@ -463,13 +465,18 @@ fn page(
       now: fn() { process.call(time, 1000, Read) },
       entropy: token.production_entropy(),
       ticket_ms: 60_000,
+      device_ms: 600_000,
       session_ms: 28_800_000,
     ))
     as "the table starts"
   let grant = page_grant(session)
   let assert Ok(issued) = ui_sessions.mint(tables, grant) as "a ticket"
   let assert Ok(redeemed) =
-    ui_sessions.redeem(tables, issued.ticket, ui_sessions.Session(session))
+    ui_sessions.redeem(
+      tables,
+      issued.ticket,
+      ui_sessions.SessionExchange(session),
+    )
     as "the ticket is redeemed"
   let ended = process.new_subject()
   let open = ui_sessions.still_open(tables, redeemed.cookie, grant)
@@ -513,7 +520,11 @@ pub fn a_newer_link_leaves_an_open_page_open_test() {
   let assert Ok(issued) = ui_sessions.mint(tables, page_grant(session))
     as "a second ticket"
   let assert Ok(second) =
-    ui_sessions.redeem(tables, issued.ticket, ui_sessions.Session(session))
+    ui_sessions.redeem(
+      tables,
+      issued.ticket,
+      ui_sessions.SessionExchange(session),
+    )
     as "the second ticket opens a second page"
   assert second.cookie != cookie
   ui_relay.transmit(relay, subscribe(harness, 1))
@@ -539,7 +550,11 @@ pub fn a_displaced_page_ends_as_an_ended_page_test() {
     let assert Ok(issued) = ui_sessions.mint(tables, page_grant(session))
       as "a ticket"
     let assert Ok(_) =
-      ui_sessions.redeem(tables, issued.ticket, ui_sessions.Session(session))
+      ui_sessions.redeem(
+        tables,
+        issued.ticket,
+        ui_sessions.SessionExchange(session),
+      )
       as "a page under the bound"
   })
   ui_relay.transmit(relay, subscribe(harness, 1))
@@ -548,7 +563,11 @@ pub fn a_displaced_page_ends_as_an_ended_page_test() {
   let assert Ok(issued) = ui_sessions.mint(tables, page_grant(session))
     as "the displacing ticket"
   let assert Ok(_) =
-    ui_sessions.redeem(tables, issued.ticket, ui_sessions.Session(session))
+    ui_sessions.redeem(
+      tables,
+      issued.ticket,
+      ui_sessions.SessionExchange(session),
+    )
     as "the displacing page"
   ui_relay.transmit(relay, subscribe(harness, 2))
   let assert Ok(reason) = process.receive(ended, 5000)

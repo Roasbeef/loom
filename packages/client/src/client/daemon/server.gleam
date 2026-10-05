@@ -45,6 +45,7 @@ import client/daemon/protocol
 import client/daemon/root
 import client/daemon/ui_assets
 import client/daemon/ui_http
+import client/daemon/ui_login
 import client/daemon/ui_relay
 import client/daemon/ui_sessions
 import client/daemon/upgrade_log
@@ -65,6 +66,7 @@ import gleam/string
 import host/bootstrap
 import host/build_identity
 import host/claim
+import host/login
 import mist
 import session_view/transcript_image
 import storage/access
@@ -103,34 +105,57 @@ pub type Ui(instance) {
     /// The page's stylesheet and scripts and Lustre's client runtime, read
     /// once when the daemon started.
     assets: ui_assets.Assets,
+    /// The root key every browser login is signed under and verified from
+    /// (protocol-change/065, PR 8), read or drawn when the daemon started. It
+    /// is held here and nowhere else: no token, log line or reply carries it.
+    root_key: login.RootKey,
     /// Upgrades a checked page request to the component's socket; like
     /// `session_upgrade`, it transfers the attachment's permit. The third
     /// argument answers the page's deadline while its UI session is still
     /// live, which the socket checks with every authorization and carries onto
     /// a ticket it mints for a switch; the fourth records how the page's images
     /// are read, under the page's cookie (`ui_sessions.register_images`); the
-    /// fifth is the page's ceiling, which the relay caps every authorization
-    /// with; the sixth is the page's reach, which the socket carries onto every
-    /// ticket the page mints and which decides whether the page may go home.
+    /// fifth is what the daemon knows of the page that opened the socket: its
+    /// ceiling, which the relay caps every authorization with, its reach, which
+    /// the socket carries onto every ticket the page mints and which decides
+    /// whether the page may go home, its origin and its login.
     upgrade: fn(
       Request(mist.Connection),
       Attachment(instance),
       fn() -> Result(Int, Nil),
       fn(ui_sessions.Images) -> Nil,
-      access.Role,
-      ui_sessions.Reach,
+      PageGrant,
     ) -> Response(mist.ResponseData),
     /// Upgrades a checked home request to the home component's socket
     /// (protocol-change/065). It takes the same custody of the attachment's
     /// permit, and its third and fourth arguments are the page's deadline
-    /// check, ceiling and reach, as for `upgrade`.
+    /// check and what the daemon knows of the page, as for `upgrade`.
     home: fn(
       Request(mist.Connection),
       HomeAttachment(instance),
       fn() -> Result(Int, Nil),
-      access.Role,
-      ui_sessions.Reach,
+      PageGrant,
     ) -> Response(mist.ResponseData),
+  )
+}
+
+/// What the daemon knows of the page that opened a socket, which the socket
+/// carries onto every ticket and every ask the page makes (protocol-change/065).
+/// The daemon wrote all of it when it minted the page's ticket, and the page
+/// says none of it of itself.
+pub type PageGrant {
+  PageGrant(
+    /// What the page's UI session grants: its credential, principal, ceiling,
+    /// reach and origin.
+    grant: ui_sessions.Grant,
+    /// The browser login the page is the browser of, when it is one: the one
+    /// its exchange set, the one that resumed it, or the one the page that
+    /// minted its ticket belonged to.
+    login: Option(ui_sessions.Issuer),
+    /// This daemon's web address as the browser reached it, `http://` and the
+    /// request's loopback host, which a device link and the bookmark are drawn
+    /// under. It is the validated `Host` and not anything the page said.
+    address: String,
   )
 }
 
@@ -261,6 +286,13 @@ fn web_view(config: Config(instance), ui: Ui(instance), request) {
           web_socket(config, ui, request, host, key, id, nonce)
         ui_http.HomeSocket(key, nonce) ->
           home_socket(config, ui, request, host, key, nonce)
+
+        // The resume page holds the one form a login's visit posts, so it is
+        // served under the policy that lets that form submit to this origin.
+        // Every other document, the answer to the post included, keeps
+        // `form-action 'none'`.
+        ui_http.LoginPage(key) ->
+          ui_http.secured_for(login_page(request, key), host, page.OwnForms)
         route -> ui_http.secured(web_document(config, ui, request, route), host)
       }
   }
@@ -314,6 +346,12 @@ fn web_socket(
     Ok(#(state, grant, cookie)) -> {
       let open = ui_sessions.open_until(ui.sessions, cookie, grant)
       let register = ui_sessions.register_images(ui.sessions, cookie, _)
+      let seen =
+        PageGrant(
+          grant:,
+          login: ui_sessions.login_of(ui.sessions, cookie),
+          address: "http://" <> host,
+        )
       resident_upgrade(
         config,
         request,
@@ -322,14 +360,7 @@ fn web_socket(
         id,
         PageRole(grant.ceiling),
         fn(request, attachment) {
-          ui.upgrade(
-            request,
-            attachment,
-            open,
-            register,
-            grant.ceiling,
-            grant.reach,
-          )
+          ui.upgrade(request, attachment, open, register, seen)
         },
       )
     }
@@ -379,7 +410,11 @@ fn home_socket(
         request,
         state,
         principal,
-        grant,
+        PageGrant(
+          grant:,
+          login: ui_sessions.login_of(ui.sessions, cookie),
+          address: "http://" <> host,
+        ),
         ui_sessions.open_until(ui.sessions, cookie, grant),
       )
   }
@@ -394,9 +429,10 @@ fn home_upgrade(
   request,
   state: root.Ready(instance),
   principal: access.Principal,
-  grant: ui_sessions.Grant,
+  seen: PageGrant,
   open: fn() -> Result(Int, Nil),
 ) {
+  let grant = seen.grant
   case
     upgrade_log.timed(upgrade_log.Page, "acquire", fn() {
       root.acquire(config.daemon, root.Observer, within: 1000)
@@ -429,8 +465,7 @@ fn home_upgrade(
             },
           ),
           open,
-          grant.ceiling,
-          grant.reach,
+          seen,
         )
       root.release(config.daemon, permit)
       response
@@ -445,8 +480,10 @@ fn web_document(
   route: ui_http.Route,
 ) {
   case route {
-    ui_http.Unknown | ui_http.Socket(..) | ui_http.HomeSocket(..) ->
-      plain(404, "unknown endpoint")
+    ui_http.Unknown
+    | ui_http.Socket(..)
+    | ui_http.HomeSocket(..)
+    | ui_http.LoginPage(..) -> plain(404, "unknown endpoint")
     ui_http.Asset(asset) -> {
       let #(content_type, body) = ui_assets.body(ui.assets, asset)
       document(200, content_type, body)
@@ -486,14 +523,18 @@ fn web_document(
         False -> plain(403, "forbidden exchange")
         True ->
           case
-            ui_sessions.redeem(ui.sessions, ticket, ui_sessions.Session(id))
+            ui_sessions.redeem(
+              ui.sessions,
+              ticket,
+              ui_sessions.SessionExchange(id),
+            )
           {
             Error(ui_sessions.UnknownTicket) ->
               refused_page(401, ending.LinkExpired, id)
             Error(ui_sessions.OtherScope) ->
               plain(403, "ticket names another session")
             Ok(redeemed) ->
-              entered(redeemed, page.session_path(redeemed.key, id))
+              entered(config, ui, redeemed, page.session_path(redeemed.key, id))
           }
       }
 
@@ -517,25 +558,233 @@ fn web_document(
       case ui_http.exchange_allowed(request) {
         False -> plain(403, "forbidden exchange")
         True ->
-          case ui_sessions.redeem(ui.sessions, ticket, ui_sessions.Home) {
+          case
+            ui_sessions.redeem(ui.sessions, ticket, ui_sessions.HomeExchange)
+          {
             Error(ui_sessions.UnknownTicket) ->
               refused_home(401, ending.LinkExpired)
             Error(ui_sessions.OtherScope) ->
               plain(403, "ticket names another page")
-            Ok(redeemed) -> entered(redeemed, page.home_path(redeemed.key))
+            Ok(redeemed) ->
+              entered(config, ui, redeemed, page.home_path(redeemed.key))
+          }
+      }
+
+    // A browser's visit to its bookmark: the verification, and then a home page
+    // the login mints (protocol-change/065, PR 8).
+    ui_http.LoginResume(key) -> login_resume(config, ui, request, key)
+  }
+}
+
+// The fixed resume page, for a visit to the bookmark. It is a navigation from
+// outside any page or from this origin, as every keyed page is, and its key is
+// the shape a login key has, so no other path under `/ui/l` is a page.
+fn login_page(request, key: String) {
+  case ui_http.navigation_allowed(request), login_key(key) {
+    False, _ -> plain(403, "forbidden navigation")
+    True, False -> plain(404, "unknown endpoint")
+    True, True -> document(200, "text/html; charset=utf-8", page.login_page())
+  }
+}
+
+// A login key is 32 lowercase hexadecimal digits, which is what the token's `k`
+// caveat holds, so a path under `/ui/l` that is not one is no login's.
+fn login_key(key: String) -> Bool {
+  login.is_key(key)
+}
+
+// The resume, a `POST` to the bookmark. The checks run in the order 065 gives:
+// the host was checked by the router, then this origin's own page as the sender,
+// the form's declared size and type, a control-class parser permit (which a
+// daemon that is not serving refuses), the body, and the login itself, which is
+// verified from the cookies and the posted nonce before the catalogue is asked
+// anything. Every refusal of the login is the same `401` with a fixed document
+// that echoes nothing.
+fn login_resume(config: Config(instance), ui: Ui(instance), request, key) {
+  case
+    ui_http.same_origin_post(request),
+    login_key(key),
+    ui_http.form_declared(request)
+  {
+    False, _, _ -> plain(403, "forbidden sender")
+    True, False, _ -> plain(404, "unknown endpoint")
+    True, True, False -> plain(400, "bad request")
+    True, True, True ->
+      case
+        upgrade_log.timed(upgrade_log.Page, "acquire", fn() {
+          root.acquire(config.daemon, root.Control, within: 1000)
+        })
+      {
+        Error(reason) -> {
+          upgrade_log.refused(upgrade_log.Page, "acquire", reason)
+          plain(503, "daemon not ready")
+        }
+        Ok(permit) -> {
+          let answer = resumed_page(config, ui, request, key)
+          root.release(config.daemon, permit)
+          answer
+        }
+      }
+  }
+}
+
+fn resumed_page(config: Config(instance), ui: Ui(instance), request, key) {
+  case mist.read_body(request, max_body_limit: ui_http.max_form_bytes) {
+    Error(_) -> plain(400, "bad request")
+    Ok(body) ->
+      case ui_http.posted_nonce(body.body), ready(config, upgrade_log.Page) {
+        Error(Nil), _ -> plain(400, "bad request")
+        Ok(_), Error(_) -> plain(503, "daemon not ready")
+        Ok(nonce), Ok(state) ->
+          case
+            ui_login.resume(
+              ui.root_key,
+              state.registry,
+              ui_http.login_cookies(request),
+              key,
+              nonce,
+              bootstrap.system_time_ms(),
+            )
+          {
+            Error(Nil) -> document_refused()
+            Ok(resumed) -> resume_exchange(config, ui, resumed)
           }
       }
   }
 }
 
+// The answer to a login that did not open, which is the same whatever the
+// reason: a forged token, an altered one, a wrong key or nonce, an expired or
+// revoked or unknown row.
+fn document_refused() {
+  document(401, "text/html; charset=utf-8", page.login_refused())
+}
+
+// What a verified login mints. A login narrowed to one session mints a page of
+// that session and never a home, because a home's asks (its sign-ins, "sign out
+// everywhere", a device link) are the principal's and not the session's; any
+// other login mints a home, as a `Resumed` one. The page opens at the login's
+// ceiling and is an ordinary eight-hour page: the ticket is minted and redeemed
+// in this one request and is never seen by the browser.
+fn resume_exchange(
+  config: Config(instance),
+  ui: Ui(instance),
+  resumed: ui_login.Resumed,
+) {
+  let ceiling = case resumed.allowance.ceiling {
+    login.Observer -> access.Observer
+    login.Operator -> access.Operator
+  }
+  let #(scope, reach, exchange) = case resumed.allowance.session {
+    option.Some(id) -> #(
+      ui_sessions.Session(id),
+      ui_sessions.OneSession,
+      ui_sessions.SessionExchange(id),
+    )
+    option.None -> #(
+      ui_sessions.Home,
+      ui_sessions.Workspace,
+      ui_sessions.HomeExchange,
+    )
+  }
+  let grant =
+    ui_sessions.Grant(
+      scope:,
+      credential: resumed.digest,
+      principal: resumed.principal.id,
+      ceiling:,
+      reach:,
+      origin: ui_sessions.Resumed,
+      remember: ui_sessions.Forgotten,
+    )
+  let redeemed = {
+    use issued <- result.try(
+      ui_sessions.mint_resumed(ui.sessions, grant, resumed.issuer)
+      |> result.replace_error(Nil),
+    )
+    ui_sessions.redeem(ui.sessions, issued.ticket, exchange)
+    |> result.replace_error(Nil)
+  }
+  case redeemed {
+    Error(Nil) -> plain(503, "daemon not ready")
+    Ok(redeemed) ->
+      case scope {
+        ui_sessions.Home ->
+          entered(config, ui, redeemed, page.home_path(redeemed.key))
+        ui_sessions.Session(id) ->
+          entered(config, ui, redeemed, page.session_path(redeemed.key, id))
+      }
+  }
+}
+
 // The exchange page for a redeemed ticket: the keyed address to move to and
-// the page's nonce in the body, and the cookie scoped to the page's key.
-fn entered(redeemed: ui_sessions.Redeemed, next: String) {
-  document(200, "text/html; charset=utf-8", page.enter(next, redeemed.nonce))
-  |> response.set_header(
-    "set-cookie",
-    ui_http.set_cookie(redeemed.cookie, redeemed.key),
-  )
+// the page's nonce in the body, and the cookie scoped to the page's key. An
+// exchange whose ticket was `Remembered` also sets a browser login, in the same
+// response: its token is a second cookie, scoped to the login's own key, and its
+// nonce is a second value in the body, which the enter script keeps. This is
+// the one function that builds a redeemed ticket's response, so it is the one
+// place a login is set (protocol-change/065, PR 8).
+fn entered(
+  config: Config(instance),
+  ui: Ui(instance),
+  redeemed: ui_sessions.Redeemed,
+  next: String,
+) {
+  let page_cookie = ui_http.set_cookie(redeemed.cookie, redeemed.key)
+  let minted = case redeemed.grant.remember {
+    ui_sessions.Remembered -> remembered(config, ui, redeemed)
+    ui_sessions.Forgotten -> option.None
+  }
+  case minted {
+    option.None ->
+      document(
+        200,
+        "text/html; charset=utf-8",
+        page.enter(next, redeemed.nonce),
+      )
+      |> response.set_header("set-cookie", page_cookie)
+    option.Some(login) ->
+      document(
+        200,
+        "text/html; charset=utf-8",
+        page.enter_remembered(next, redeemed.nonce, login.key, login.nonce),
+      )
+      |> response.set_header(
+        "set-cookie",
+        ui_http.set_login_cookie(login.token, login.key, login.max_age_s),
+      )
+      |> response.prepend_header("set-cookie", page_cookie)
+  }
+}
+
+// The login a remembered exchange sets, written to the catalogue and attached to
+// the page the exchange opened. A daemon that is not ready, or a row that was
+// refused, sets none: the page still opens, as one a person declined a login
+// for, and the person can run `loom ui` again.
+fn remembered(
+  config: Config(instance),
+  ui: Ui(instance),
+  redeemed: ui_sessions.Redeemed,
+) -> Option(ui_login.Minted) {
+  case ready(config, upgrade_log.Page) {
+    Error(_) -> option.None
+    Ok(state) ->
+      case
+        ui_login.issue(
+          ui.root_key,
+          state.registry,
+          redeemed.grant,
+          redeemed.login,
+          bootstrap.system_time_ms(),
+        )
+      {
+        Error(_) -> option.None
+        Ok(minted) -> {
+          ui_sessions.attach_login(ui.sessions, redeemed.cookie, minted.issuer)
+          option.Some(minted)
+        }
+      }
+  }
 }
 
 // The cookie's UI session, re-authorized from scratch: it must be live, be
@@ -1385,6 +1634,8 @@ fn control(
             | protocol.Status
             | protocol.ListPrincipals(_)
             | protocol.PrincipalMemberships(..)
+            | protocol.CredentialSignins(..)
+            | protocol.RevokeLogin(..)
             | protocol.UiLink(..)
             | protocol.ListSessions(..)
             | protocol.SessionActivity(..)
@@ -1425,6 +1676,7 @@ fn control_use(command: protocol.Command) {
     protocol.Status
     | protocol.ListPrincipals(_)
     | protocol.PrincipalMemberships(..)
+    | protocol.CredentialSignins(..)
     | protocol.UiLink(..)
     | protocol.InspectPeers(..)
     | protocol.ListSessions(..)
@@ -1446,6 +1698,7 @@ fn control_use(command: protocol.Command) {
     | protocol.RevokeMembership(..)
     | protocol.RotateCredential(..)
     | protocol.RevokeCredentials(..)
+    | protocol.RevokeLogin(..)
     | protocol.CreateSession(..)
     | protocol.OpenSession(..)
     | protocol.StopSession(..)
@@ -1762,6 +2015,57 @@ fn dispatch_class(
         )),
       ))
     }
+
+    // A principal's browser logins (protocol-change/065, PR 8). A member reads its
+    // own; the owner may name any principal. The registry reauthenticates the
+    // caller and applies that rule in its own dispatch, and a member naming
+    // another principal is `forbidden`. A row is a fingerprint and times, never a
+    // token.
+    protocol.CredentialSignins(target, after) -> {
+      use #(id, page) <- result.try(
+        manager.signins(
+          state.registry,
+          digest,
+          target,
+          after:,
+          now_ms: bootstrap.system_time_ms(),
+        )
+        |> result.map_error(admin_error_code),
+      )
+      let rows =
+        list.map(page.entries, fn(row) { #(row.fingerprint, signin_json(row)) })
+      use #(bounded, more) <- result.try(bounded_rows(rows, page.remainder))
+      Ok(#(
+        "credentials.signins",
+        json.Object(list.append(
+          [
+            #("principal_id", json.String(id)),
+            #("signins", json.Array(list.map(bounded, pair.second))),
+          ],
+          next_field(bounded, more),
+        )),
+      ))
+    }
+    protocol.RevokeLogin(target, fingerprint, supplied) -> {
+      use #(id, revoked) <- result.map(
+        manager.revoke_login(
+          state.registry,
+          digest,
+          supplied,
+          target,
+          fingerprint,
+        )
+        |> result.map_error(admin_error_code),
+      )
+      ui_login.revoked(id, revoked)
+      #(
+        "credentials.revoke_login",
+        json.Object([
+          #("principal_id", json.String(id)),
+          #("fingerprint", json.String(fingerprint)),
+        ]),
+      )
+    }
     protocol.PrincipalMemberships(id, after) -> {
       use Nil <- result.try(owner(principal))
       use page <- result.try(
@@ -1811,7 +2115,7 @@ fn dispatch_class(
     // the credential asking, so every later check of the page re-checks it.
     // Its reach is `OneSession`: the page it opens draws nothing that names
     // another session unless the page's own role already did.
-    protocol.UiLink(Some(id), page: ceiling) -> {
+    protocol.UiLink(Some(id), page: ceiling, remember: _) -> {
       use ui <- result.try(option.to_result(config.ui, "unavailable"))
       use _ <- result.try(authorized(state, digest, id))
       use issued <- result.map(mint_link(
@@ -1822,6 +2126,8 @@ fn dispatch_class(
           principal: principal.id,
           ceiling:,
           reach: ui_sessions.OneSession,
+          origin: ui_sessions.Fresh,
+          remember: ui_sessions.Forgotten,
         ),
       ))
       link_reply(page.exchange_path(id, issued.ticket), issued)
@@ -1832,8 +2138,16 @@ fn dispatch_class(
     // credential that authenticated this control connection is the whole of
     // what the ticket records, and what the home lists is read with that
     // digest on every refresh, so it is what the principal may see then.
-    protocol.UiLink(None, page: ceiling) -> {
+    protocol.UiLink(None, page: ceiling, remember:) -> {
       use ui <- result.try(option.to_result(config.ui, "unavailable"))
+
+      // The exchange sets a browser login unless the launcher declined it, so
+      // the next visit needs no `loom ui`. The ticket is `Fresh`: someone who
+      // holds a credential asked for it a moment ago.
+      let remember = case remember {
+        option.Some(protocol.Forget) -> ui_sessions.Forgotten
+        option.Some(protocol.Remember) | option.None -> ui_sessions.Remembered
+      }
       use issued <- result.map(mint_link(
         ui,
         ui_sessions.Grant(
@@ -1842,6 +2156,8 @@ fn dispatch_class(
           principal: principal.id,
           ceiling:,
           reach: ui_sessions.Workspace,
+          origin: ui_sessions.Fresh,
+          remember:,
         ),
       ))
       link_reply(page.home_exchange_path(issued.ticket), issued)
@@ -2238,7 +2554,34 @@ fn listing_json(row: access.Listing) -> JsonValue {
     #("name", json.String(row.principal.display_name)),
     #("kind", json.String(kind)),
     #("credential", credential_json(row.credential)),
+    #("logins", json.Int(row.logins)),
   ])
+}
+
+// One browser login as its principal's sign-in list shows it. The fingerprint
+// identifies the login and authenticates nothing; the token is in the browser and
+// on no row.
+fn signin_json(row: access.Signin) -> JsonValue {
+  json.Object(
+    list.flatten([
+      [
+        #("fingerprint", json.String(row.fingerprint)),
+        #("issued_at_ms", json.Int(row.issued_at_ms)),
+      ],
+      case row.last_resumed_ms {
+        Some(at) -> [#("last_resumed_ms", json.Int(at))]
+        None -> []
+      },
+      case row.expires_at_ms {
+        Some(at) -> [#("expires_at_ms", json.Int(at))]
+        None -> []
+      },
+      case row.issued_by {
+        Some(parent) -> [#("issued_by", json.String(parent))]
+        None -> []
+      },
+    ]),
+  )
 }
 
 fn credential_json(summary: access.CredentialSummary) -> JsonValue {

@@ -39,6 +39,35 @@
 //// credential and not by any page, so that opening another page, or switching
 //// from page to page, does not reset the count a stolen page is held to.
 ////
+//// A page and a ticket also know which browser login they belong to
+//// (protocol-change/065, PR 8). A ticket that is `Remembered` sets a login when
+//// it is exchanged, and every ticket carries the login of the context that
+//// minted it (`Issuer`), so a device link inherits the issuing login's expiry
+//// and a chain of tickets from one page cannot launder it. The table holds only
+//// the login's fingerprint, expiry and key, never a token or a nonce. A grant
+//// records how its page was reached (`Origin`): `Fresh` for a `loom ui`
+//// exchange, a claim or a device link, and `Resumed` for one the login minted.
+//// Only a fresh home may start an admin page or a device link, and a ticket a
+//// page mints carries the minting page's origin, so a chain from a resumed home
+//// stays resumed.
+////
+//// ## Flow
+////
+//// `start` → `mint` → `redeem` → `attach_login` → `lookup` → `still_open`
+////
+//// 1. `start` runs the actor, whose one mailbox `handle` reads.
+//// 2. `mint`, `mint_before`, `mint_in`, `mint_device` and `mint_resumed` file a
+////    ticket for a grant, and differ only in the deadline and the login the
+////    ticket carries.
+//// 3. `redeem` removes the ticket and, for a live one at its own exchange,
+////    adds the page whose three secrets it hands back.
+//// 4. `attach_login` records the login a remembered exchange set, once its row
+////    exists.
+//// 5. `lookup` finds a live page by its cookie, and `still_open` and
+////    `open_until` are the check a page's socket repeats with every frame.
+//// 6. `reserve_invite`, `reserve_creation` and `release_invite` keep the
+////    credential's allowances in the same mailbox.
+////
 //// Each table is a per-key deadline table inside this one actor, which
 //// `docs/weft.md` ("Per-key deadline tables stay") allows. Every read checks
 //// the deadline itself, so an expired ticket or session is refused the
@@ -66,6 +95,11 @@ import weft/actor
 
 /// How long a ticket can be redeemed, in milliseconds.
 pub const ticket_ms = 60_000
+
+/// How long a device link's ticket can be redeemed, in milliseconds: ten
+/// minutes, so a person has time to carry the link to another device
+/// (protocol-change/065). A ticket for a page lives `ticket_ms`.
+pub const device_ms = 600_000
 
 /// How long a UI session lives from its exchange, in milliseconds: eight
 /// hours, a working day. A page left open for a day's work keeps working,
@@ -164,6 +198,60 @@ pub type Scope {
   Home
 }
 
+/// How a page was reached (protocol-change/065). The daemon writes it when it
+/// mints a ticket, and a page never says it of itself. A page carries it onto
+/// every ticket it mints, so a chain of switches from a resumed page stays
+/// resumed, and a session's page knows it as the home it came from did.
+pub type Origin {
+  /// A `loom ui` exchange, a claim, or a device link: someone who held a
+  /// credential or a link a moment ago opened it. Only a fresh home starts an
+  /// admin page or a device link.
+  Fresh
+
+  /// A page the browser login minted when its bookmark was visited, or one
+  /// reached from such a page. It lists and opens sessions and nothing more: a
+  /// stolen bookmark cannot start the owner's admin page or make a second
+  /// credential.
+  Resumed
+}
+
+/// Whether exchanging a ticket sets a browser login as well as the page.
+pub type Remember {
+  /// The exchange sets the login cookie and delivers the login nonce: a `loom
+  /// ui` home ticket without `--no-remember`, a device link, or a claim.
+  Remembered
+
+  /// The exchange sets the page only. A ticket a page mints for a switch or the
+  /// way home is always this.
+  Forgotten
+}
+
+/// The browser login a page or a ticket belongs to, as the table knows it: the
+/// login's fingerprint, which identifies it and authenticates nothing, the
+/// instant its token expires, in Unix milliseconds, and its login key, the path
+/// of the bookmark the person keeps. A device link inherits the expiry, so no
+/// family of logins outlives the one it began from. The key opens nothing
+/// without the cookie and the nonce, which the table never holds.
+pub type Issuer {
+  Issuer(fingerprint: String, expires_at_ms: Int, key: String)
+}
+
+/// How long a ticket lives.
+type Life {
+  Brief
+  Device
+}
+
+/// Which exchange a ticket is presented at. A ticket is honoured only at the
+/// exchange of its own scope, whatever origin a home ticket carries.
+pub type Exchange {
+  /// `/ui/sessions/<id>`.
+  SessionExchange(id: String)
+
+  /// `/ui/home`.
+  HomeExchange
+}
+
 /// Which pages a link was minted for, which decides whether the page it
 /// opens draws a way back to the home (protocol-change/065). The daemon
 /// writes it when it mints and a page never says it of itself.
@@ -195,6 +283,12 @@ pub type Grant {
     ceiling: access.Role,
     /// What the link was minted for. Only the page's view reads it.
     reach: Reach,
+    /// How the page was reached. Only a `Fresh` home may start an admin page or
+    /// a device link, and every ticket a page mints carries its own.
+    origin: Origin,
+    /// Whether exchanging the ticket sets a browser login. Only an exchange
+    /// reads it: the page it opens ignores it.
+    remember: Remember,
   )
 }
 
@@ -208,6 +302,10 @@ pub opaque type Page {
     /// The order pages were opened in, which is how the oldest is found
     /// when two share a millisecond.
     serial: Int,
+    /// The login this page is the browser of: the one its exchange set, the one
+    /// that resumed it, or the one the page that minted its ticket belonged to.
+    /// Empty for a page opened with no login in play.
+    login: Option(Issuer),
   )
 }
 
@@ -224,7 +322,16 @@ pub type Issued {
 /// A redeemed ticket: the new UI session's three secrets, in plaintext for
 /// the one response that hands them to the browser, and what it grants.
 pub type Redeemed {
-  Redeemed(cookie: String, key: String, nonce: String, grant: Grant)
+  Redeemed(
+    cookie: String,
+    key: String,
+    nonce: String,
+    grant: Grant,
+    /// The login the ticket was minted in, if there was one. A `Remembered`
+    /// exchange makes its new login inherit this one's expiry and name it as
+    /// its parent.
+    login: Option(Issuer),
+  )
 }
 
 /// Why a ticket was not redeemed.
@@ -250,6 +357,8 @@ pub type Settings {
     entropy: fn(Int) -> BitArray,
     /// A ticket's lifetime.
     ticket_ms: Int,
+    /// A device link's ticket's lifetime.
+    device_ms: Int,
     /// A UI session's lifetime.
     session_ms: Int,
   )
@@ -267,12 +376,20 @@ pub opaque type Sessions {
 }
 
 type Message {
-  Mint(grant: Grant, until: Option(Int), reply: Subject(Issued))
+  Mint(
+    grant: Grant,
+    until: Option(Int),
+    login: Option(Issuer),
+    life: Life,
+    reply: Subject(Issued),
+  )
   Redeem(
     ticket: String,
-    scope: Scope,
+    exchange: Exchange,
     reply: Subject(Result(Redeemed, Refusal)),
   )
+  Attach(cookie: String, login: Issuer)
+  LoginOf(cookie: String, reply: Subject(Option(Issuer)))
   Lookup(cookie: String, reply: Subject(Result(#(Page, Int), Nil)))
   Register(cookie: String, images: Images)
   Read(cookie: String, reply: Subject(Result(Images, Nil)))
@@ -286,10 +403,10 @@ type Message {
   Sweep
 }
 
-// A live ticket's grant, and the deadline the page it becomes may not pass
-// when another page minted it.
+// A live ticket's grant, the deadline the page it becomes may not pass when
+// another page minted it, and the login it was minted in.
 type Ticket {
-  Ticket(grant: Grant, until: Option(Int))
+  Ticket(grant: Grant, until: Option(Int), login: Option(Issuer))
 }
 
 // One live ticket or UI session and the instant it stops being honoured.
@@ -326,7 +443,13 @@ type State {
 /// // ui_sessions.start(ui_sessions.production(clock))
 /// ```
 pub fn production(now: fn() -> Int) -> Settings {
-  Settings(now:, entropy: token.production_entropy(), ticket_ms:, session_ms:)
+  Settings(
+    now:,
+    entropy: token.production_entropy(),
+    ticket_ms:,
+    device_ms:,
+    session_ms:,
+  )
 }
 
 /// Starts the actor, linked to the caller, sweeping every `sweep_ms`.
@@ -365,10 +488,26 @@ pub fn start(settings: Settings) -> Result(Sessions, String) {
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_sessions.mint(sessions, Grant(Home, digest, principal, role, Workspace))
+/// // ui_sessions.mint(sessions, grant)
 /// ```
 pub fn mint(sessions: Sessions, grant: Grant) -> Result(Issued, Nil) {
-  call.try_call(sessions.subject, waiting: 1000, sending: Mint(grant, None, _))
+  ask_mint(sessions, grant, None, None, Brief)
+}
+
+fn ask_mint(
+  sessions: Sessions,
+  grant: Grant,
+  until: Option(Int),
+  login: Option(Issuer),
+  life: Life,
+) -> Result(Issued, Nil) {
+  call.try_call(sessions.subject, waiting: 1000, sending: Mint(
+    grant,
+    until,
+    login,
+    life,
+    _,
+  ))
   |> result.replace_error(Nil)
 }
 
@@ -387,12 +526,60 @@ pub fn mint_before(
   grant: Grant,
   until: Int,
 ) -> Result(Issued, Nil) {
-  call.try_call(sessions.subject, waiting: 1000, sending: Mint(
-    grant,
-    Some(until),
-    _,
-  ))
-  |> result.replace_error(Nil)
+  ask_mint(sessions, grant, Some(until), None, Brief)
+}
+
+/// `mint_before` for a page that belongs to a login: the ticket carries
+/// `login`, so the page it opens belongs to the same login and a chain of
+/// switches can neither lose it nor start another.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_sessions.mint_in(sessions, grant, until, page_login)
+/// ```
+pub fn mint_in(
+  sessions: Sessions,
+  grant: Grant,
+  until: Int,
+  login: Option(Issuer),
+) -> Result(Issued, Nil) {
+  ask_mint(sessions, grant, Some(until), login, Brief)
+}
+
+/// Mints a device link's ticket: a ticket that lives `device_ms` and not
+/// `ticket_ms`, with the page it becomes ending no later than `until`, and
+/// carrying `login`, whose expiry the login its exchange sets inherits.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_sessions.mint_device(sessions, grant, until, page_login)
+/// ```
+pub fn mint_device(
+  sessions: Sessions,
+  grant: Grant,
+  until: Int,
+  login: Option(Issuer),
+) -> Result(Issued, Nil) {
+  ask_mint(sessions, grant, Some(until), login, Device)
+}
+
+/// Mints a ticket on behalf of a browser login that has just verified: the
+/// ticket carries the login, so the page its exchange opens is that login's
+/// browser, and it is `Forgotten` so the exchange sets no further login.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_sessions.mint_resumed(sessions, grant, login)
+/// ```
+pub fn mint_resumed(
+  sessions: Sessions,
+  grant: Grant,
+  login: Issuer,
+) -> Result(Issued, Nil) {
+  ask_mint(sessions, grant, None, Some(login), Brief)
 }
 
 /// Reserves one of the credential's invitations, or refuses when it has asked
@@ -467,19 +654,46 @@ pub fn release_invite(sessions: Sessions, credential: access.Digest) -> Nil {
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_sessions.redeem(sessions, ticket, ui_sessions.Session(session_id))
+/// // ui_sessions.redeem(sessions, ticket, ui_sessions.SessionExchange(session_id))
 /// ```
 pub fn redeem(
   sessions: Sessions,
   ticket: String,
-  scope: Scope,
+  exchange: Exchange,
 ) -> Result(Redeemed, Refusal) {
   call.try_call(sessions.subject, waiting: 1000, sending: Redeem(
     ticket,
-    scope,
+    exchange,
     _,
   ))
   |> result.unwrap(Error(UnknownTicket))
+}
+
+/// Records that the page behind `cookie` is the browser of `login`, which a
+/// `Remembered` exchange does once the login's row is written. A cookie that
+/// names no live page records nothing. The page's grant is untouched, so a
+/// socket already holding it still matches.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_sessions.attach_login(sessions, redeemed.cookie, issuer)
+/// ```
+pub fn attach_login(sessions: Sessions, cookie: String, login: Issuer) -> Nil {
+  process.send(sessions.subject, Attach(cookie, login))
+}
+
+/// The login the page behind `cookie` is the browser of, when it has one and
+/// the page is live.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_sessions.login_of(sessions, cookie)
+/// ```
+pub fn login_of(sessions: Sessions, cookie: String) -> Option(Issuer) {
+  call.try_call(sessions.subject, waiting: 1000, sending: LoginOf(cookie, _))
+  |> result.unwrap(None)
 }
 
 /// The live UI session a cookie names.
@@ -651,14 +865,15 @@ pub fn sweep(sessions: Sessions) -> Nil {
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   let now = state.settings.now()
   case message {
-    Mint(grant:, until:, reply:) -> {
+    Mint(grant:, until:, login:, life:, reply:) -> {
       let ticket = secret(state.settings)
+      let lasts = case life {
+        Brief -> state.settings.ticket_ms
+        Device -> state.settings.device_ms
+      }
       let entry =
-        Entry(
-          value: Ticket(grant, until),
-          expires_at: now + state.settings.ticket_ms,
-        )
-      process.send(reply, Issued(ticket, state.settings.ticket_ms))
+        Entry(value: Ticket(grant, until, login), expires_at: now + lasts)
+      process.send(reply, Issued(ticket, lasts))
       actor.continue(
         State(
           ..state,
@@ -672,16 +887,23 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     // scope becomes a new UI session. Making room and inserting in one
     // turn keeps the bound exact: two redemptions at the fourth place reach
     // this actor one after the other, and the second sees the first's page.
-    Redeem(ticket:, scope:, reply:) -> {
+    Redeem(ticket:, exchange:, reply:) -> {
       let key = digest(ticket)
       let found = live(state.tickets, key, now)
       let tickets = dict.delete(state.tickets, key)
+
+      // Whether a live ticket belongs at this exchange. A guard cannot call a
+      // function, so the answer is made before the arms that read it.
+      let belongs = case found {
+        Ok(Ticket(grant:, ..)) -> at_exchange(grant.scope, exchange)
+        Error(Nil) -> True
+      }
       case found {
         Error(Nil) -> {
           process.send(reply, Error(UnknownTicket))
           actor.continue(State(..state, tickets:))
         }
-        Ok(Ticket(grant:, ..)) if grant.scope != scope -> {
+        Ok(_) if !belongs -> {
           process.send(reply, Error(OtherScope))
           actor.continue(State(..state, tickets:))
         }
@@ -695,7 +917,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           actor.continue(State(..state, tickets:))
         }
 
-        Ok(Ticket(grant:, until:)) -> {
+        Ok(Ticket(grant:, until:, login:)) -> {
           let lasts = state.settings.session_ms
           let ends = case until {
             Some(bound) -> int.min(bound, now + lasts)
@@ -704,6 +926,14 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           let cookie = secret(state.settings)
           let key = secret(state.settings)
           let nonce = secret(state.settings)
+
+          // A page opened by a `Remembered` exchange gets its login from
+          // `attach_login`, once the login's row exists; any other page is the
+          // browser of the login its ticket was minted in.
+          let page_login = case grant.remember {
+            Remembered -> None
+            Forgotten -> login
+          }
           let entry =
             Entry(
               value: Page(
@@ -711,10 +941,14 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
                 key: digest(key),
                 nonce: digest(nonce),
                 serial: state.opened,
+                login: page_login,
               ),
               expires_at: ends,
             )
-          process.send(reply, Ok(Redeemed(cookie:, key:, nonce:, grant:)))
+          process.send(
+            reply,
+            Ok(Redeemed(cookie:, key:, nonce:, grant:, login:)),
+          )
           actor.continue(
             State(
               ..state,
@@ -731,6 +965,35 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 
     Lookup(cookie:, reply:) -> {
       process.send(reply, live_until(state.sessions, digest(cookie), now))
+      actor.continue(state)
+    }
+
+    // A login is attached only to a page that is live now, and only once: the
+    // exchange that made the page is the one that attaches, and a second
+    // attachment would let a later message change which login a page is.
+    Attach(cookie:, login:) -> {
+      let key = digest(cookie)
+      case live_until(state.sessions, key, now) {
+        Ok(#(Page(login: None, ..) as page, ends)) ->
+          actor.continue(
+            State(
+              ..state,
+              sessions: dict.insert(
+                state.sessions,
+                key,
+                Entry(value: Page(..page, login: Some(login)), expires_at: ends),
+              ),
+            ),
+          )
+        Ok(_) | Error(Nil) -> actor.continue(state)
+      }
+    }
+    LoginOf(cookie:, reply:) -> {
+      let found = case live(state.sessions, digest(cookie), now) {
+        Ok(page) -> page.login
+        Error(Nil) -> None
+      }
+      process.send(reply, found)
       actor.continue(state)
     }
 
@@ -892,6 +1155,16 @@ fn with_room(
   // A surplus of zero or less takes nothing, so below the bound this drops
   // no page.
   dict.drop(sessions, list.map(list.take(held, surplus), pair.first))
+}
+
+// Whether a ticket of `scope` is honoured at `exchange`: the session's own
+// ticket at its exchange and a home's at the home's, and no other pairing.
+fn at_exchange(scope: Scope, exchange: Exchange) -> Bool {
+  case scope, exchange {
+    Session(id), SessionExchange(wanted) -> id == wanted
+    Home, HomeExchange -> True
+    Session(_), HomeExchange | Home, SessionExchange(_) -> False
+  }
 }
 
 // An entry is honoured strictly before its deadline, and the check is made

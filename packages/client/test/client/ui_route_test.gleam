@@ -19,6 +19,7 @@ import client/daemon/manager
 import client/daemon/root
 import client/daemon/server
 import client/daemon/ui_assets
+import client/daemon/ui_login
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
 import client/daemon_claim_test
@@ -40,6 +41,7 @@ import gleam/result
 import gleam/string
 import host/bootstrap
 import host/claim
+import host/login
 import mist
 import session_view/transcript_image
 import simplifile
@@ -57,6 +59,7 @@ import web_view/invites
 import web_view/page
 import web_view/renames
 import web_view/sessions
+import web_view/signins
 import weft
 import weft/poll
 
@@ -80,6 +83,15 @@ type Upgrade {
   /// answers with the outcome: 290 and the ticket's address, or 291 and the
   /// reason.
   Switching
+
+  /// The home's upgrade runs the page's own sign-in asks with the standing the
+  /// daemon built from the grant (protocol-change/065, PR 8): `x-signins` lists,
+  /// `x-sign-out` and `x-sign-out-all` end logins, and `x-device-link` asks for a
+  /// link, through the capability the socket would be handed, or, with
+  /// `x-device-force`, the daemon's own check as a forged request would reach it.
+  /// Every answer says the origin, login and address the router read from the
+  /// page's grant.
+  Signing
 
   /// The upgrade does what the page socket does for an invitation: it reads
   /// the role the router admitted (`ui_socket.role_of`) and, for an owner's
@@ -146,9 +158,15 @@ fn fixture_lasting(
       now: bootstrap.monotonic_time_ms,
       entropy: token.production_entropy(),
       ticket_ms: ui_sessions.ticket_ms,
+      device_ms: ui_sessions.device_ms,
       session_ms:,
     ))
     as "the web view's tables start"
+
+  // The login's root key is read or drawn as the daemon's own start does, so a
+  // test that forges a token reads the same key back from the state directory.
+  let assert Ok(root_key) = ui_login.root_key(ready.state_root, ready.registry)
+    as "the login's root key is ready"
   let assert Ok(assets) = ui_assets.load()
     as "the web view's assets are in web_view's and lustre's priv"
   let config =
@@ -161,19 +179,21 @@ fn fixture_lasting(
       ui: Some(server.Ui(
         sessions:,
         assets:,
-        upgrade: fn(request, attachment, open, register, ceiling, reach) {
+        root_key:,
+        upgrade: fn(request, attachment, open, register, seen) {
+          let reach = seen.grant.reach
           case serving {
             // The router hands the page's upgrade the capped role and the
             // grant's reach. The stub reports what it was given.
-            Stubbed -> reported(capped(attachment), reach)
+            Stubbed | Signing ->
+              with_page(reported(capped(attachment), reach), seen)
 
             Pictured -> {
               register(held)
               reported(capped(attachment), reach)
             }
 
-            Switching ->
-              switching(sessions, request, attachment, ceiling, reach, open)
+            Switching -> switching(sessions, request, attachment, seen, open)
 
             Inviting -> inviting(sessions, request, attachment, open)
 
@@ -189,12 +209,12 @@ fn fixture_lasting(
                 sessions,
                 open,
                 register,
-                ceiling,
-                reach,
+                seen,
               )
           }
         },
-        home: fn(request, attachment, open, ceiling, reach) {
+        home: fn(request, attachment, open, seen) {
+          let ceiling = seen.grant.ceiling
           case serving {
             // The home's own socket, as the daemon serves it. A request that
             // carries `x-revoke-between` names a credential revoked after the
@@ -212,8 +232,7 @@ fn fixture_lasting(
                 attachment,
                 sessions,
                 open,
-                ceiling,
-                reach,
+                seen,
               )
             }
 
@@ -229,8 +248,7 @@ fn fixture_lasting(
                     sessions,
                     request,
                     attachment,
-                    ceiling,
-                    reach,
+                    seen,
                     open,
                     target,
                   )
@@ -239,17 +257,25 @@ fn fixture_lasting(
                     sessions,
                     request,
                     attachment,
-                    ceiling,
-                    reach,
+                    seen,
                     open,
                     workspace,
                   )
                 Error(Nil), Error(Nil) ->
-                  homed(ready.state_root, request, attachment, open, ceiling)
+                  with_page(
+                    homed(ready.state_root, request, attachment, open, ceiling),
+                    seen,
+                  )
               }
 
+            Signing ->
+              signing_from_home(sessions, request, attachment, seen, open)
+
             Stubbed | Pictured | Inviting ->
-              homed(ready.state_root, request, attachment, open, ceiling)
+              with_page(
+                homed(ready.state_root, request, attachment, open, ceiling),
+                seen,
+              )
           }
         },
       )),
@@ -273,6 +299,22 @@ fn fixture_lasting(
   let assert [weft.Completed(0, _)] = outcomes
     as "the fixture body ran to completion inside its own deadline"
   Nil
+}
+
+// An answer that also says what the router read from the page's grant besides
+// its reach: the origin it was reached by, the login it belongs to and the
+// address it was reached at (protocol-change/065, PR 8).
+fn with_page(answer, seen: server.PageGrant) {
+  answer
+  |> response.set_header("x-page-origin", case seen.grant.origin {
+    ui_sessions.Fresh -> "fresh"
+    ui_sessions.Resumed -> "resumed"
+  })
+  |> response.set_header("x-page-login", case seen.login {
+    Some(issuer) -> issuer.fingerprint
+    None -> "none"
+  })
+  |> response.set_header("x-page-address", seen.address)
 }
 
 // An answer that also says which reach the router read from the page's grant,
@@ -311,10 +353,10 @@ fn switching(
   tickets,
   request,
   attachment: server.Attachment(String),
-  ceiling,
-  reach: ui_sessions.Reach,
+  seen: server.PageGrant,
   open: fn() -> Result(Int, Nil),
 ) {
+  let reach = seen.grant.reach
   let role = case attachment.authority {
     access.Participant(access.Observer) -> ui_socket.Observing
     access.Participant(access.Operator) | access.Owner -> ui_socket.Operating
@@ -328,7 +370,7 @@ fn switching(
     Ok(until) -> [#("x-page-deadline", int.to_string(until))]
     Error(Nil) -> []
   }
-  let standing = ui_socket.page_standing(attachment, ceiling, reach)
+  let standing = ui_socket.page_standing(attachment, seen)
   let answer = case
     req.get_header(request, "x-resume"),
     req.get_header(request, "x-go-home")
@@ -357,9 +399,11 @@ fn switching(
         sessions.Declined(reason) -> stub(291, string.inspect(reason))
       }
   }
-  list.fold(deadline, reported(answer, reach), fn(answer, header) {
-    response.set_header(answer, header.0, header.1)
-  })
+  list.fold(
+    deadline,
+    with_page(reported(answer, reach), seen),
+    fn(answer, header) { response.set_header(answer, header.0, header.1) },
+  )
 }
 
 // A resume as a page asks for one, with the page socket's own gate for its role
@@ -405,11 +449,11 @@ fn opening_from_home(
   tickets,
   request,
   attachment: server.HomeAttachment(String),
-  ceiling,
-  reach: ui_sessions.Reach,
+  seen: server.PageGrant,
   open: fn() -> Result(Int, Nil),
   target: String,
 ) {
+  let reach = seen.grant.reach
   let open = case req.get_header(request, "x-switch-ended") {
     Ok(_) -> fn() { Error(Nil) }
     Error(Nil) -> open
@@ -418,7 +462,7 @@ fn opening_from_home(
     Ok(until) -> [#("x-page-deadline", int.to_string(until))]
     Error(Nil) -> []
   }
-  let standing = ui_socket.home_standing(attachment, ceiling, reach)
+  let standing = ui_socket.home_standing(attachment, seen)
   let answer = case req.get_header(request, "x-resume") {
     Ok(mode) ->
       resumed(ui_socket.Operating, standing, tickets, open, target, mode)
@@ -445,16 +489,17 @@ fn creating_from_home(
   tickets,
   request,
   attachment: server.HomeAttachment(String),
-  ceiling,
-  reach: ui_sessions.Reach,
+  seen: server.PageGrant,
   open: fn() -> Result(Int, Nil),
   workspace: String,
 ) {
+  let ceiling = seen.grant.ceiling
+  let reach = seen.grant.reach
   let open = case req.get_header(request, "x-switch-ended") {
     Ok(_) -> fn() { Error(Nil) }
     Error(Nil) -> open
   }
-  let standing = ui_socket.home_standing(attachment, ceiling, reach)
+  let standing = ui_socket.home_standing(attachment, seen)
   let name = result.unwrap(req.get_header(request, "x-create-name"), "")
   let sharing = case req.get_header(request, "x-create-sharing") {
     Ok("shareable") -> creations.Shareable
@@ -584,6 +629,82 @@ fn homed(
   stub(280, string.join([attachment.principal.id, who, ..reads], "\n"))
 }
 
+// The home's upgrade as the sign-in controls ask: the daemon's own functions
+// with the standing built from the page's grant, for the asks the request's
+// headers name. A listing is 281 and one line for each login; a sign-out is 282
+// or 283 and the reason; a link is 284 and the whole address, or 283 and the
+// reason, or 289 for a page the socket would hand no capability.
+fn signing_from_home(
+  tickets,
+  request,
+  attachment: server.HomeAttachment(String),
+  seen: server.PageGrant,
+  open: fn() -> Result(Int, Nil),
+) {
+  let standing = ui_socket.home_standing(attachment, seen)
+  let answer = case
+    req.get_header(request, "x-sign-out"),
+    req.get_header(request, "x-sign-out-all"),
+    req.get_header(request, "x-device-link"),
+    req.get_header(request, "x-signins")
+  {
+    Ok(fingerprint), _, _, _ ->
+      case
+        ui_socket.sign_out_for(standing, attachment.epoch, open, fingerprint)
+      {
+        signins.Revoked -> stub(282, "revoked")
+        signins.Linked(_) -> stub(283, "unexpected")
+        signins.Declined(reason) -> stub(283, string.inspect(reason))
+      }
+    Error(Nil), Ok(_), _, _ ->
+      case ui_socket.sign_out_all_for(standing, attachment.epoch, open) {
+        signins.Revoked -> stub(282, "revoked")
+        signins.Linked(_) -> stub(283, "unexpected")
+        signins.Declined(reason) -> stub(283, string.inspect(reason))
+      }
+    Error(Nil), Error(Nil), Ok(_), _ -> {
+      let ask = fn() {
+        ui_socket.device_link_for(standing, tickets, open, seen.address)
+      }
+      let capability = ui_socket.device_capability(seen.grant.origin, ask)
+      let forced = result.is_ok(req.get_header(request, "x-device-force"))
+      case capability, forced {
+        None, False -> stub(289, "no capability")
+        Some(_), _ | None, True ->
+          case ask() {
+            signins.Linked(address) -> stub(284, address)
+            signins.Revoked -> stub(283, "unexpected")
+            signins.Declined(reason) -> stub(283, string.inspect(reason))
+          }
+      }
+    }
+    Error(Nil), Error(Nil), Error(Nil), _ ->
+      case ui_socket.signins_read(standing, open) {
+        signins.Listed(rows) ->
+          stub(
+            281,
+            string.join(
+              list.map(rows, fn(row) {
+                string.join(
+                  [
+                    row.fingerprint,
+                    int.to_string(row.issued_at_ms),
+                    string.inspect(row.last_resumed_ms),
+                    string.inspect(row.expires_at_ms),
+                    string.inspect(row.issued_by),
+                  ],
+                  "|",
+                )
+              }),
+              "\n",
+            ),
+          )
+        signins.Unread -> stub(281, "unread")
+      }
+  }
+  with_page(answer, seen)
+}
+
 // Revokes the credential `token` names, as the owner's administration would.
 fn revoke(state_root: String, token: String) -> Nil {
   let assert Ok(digest) =
@@ -620,6 +741,19 @@ type Answer {
 // A raw GET, so a test can send any Host, Origin, Sec-Fetch-Site or cookie
 // a browser or an attacker might.
 fn get(port: Int, path: String, headers: List(#(String, String))) -> Answer {
+  send_request(port, "GET", path, headers, "")
+}
+
+// A raw request with a method and a body, which `get` is the bodyless case of.
+// The caller writes every header, `Content-Length` included, so a test can send
+// the sizes and types a form, a script or an attacker might.
+fn send_request(
+  port: Int,
+  method: String,
+  path: String,
+  headers: List(#(String, String)),
+  body: String,
+) -> Answer {
   let assert Ok(socket) =
     ffi_daemon_socket.connect(
       #(127, 0, 0, 1),
@@ -631,7 +765,13 @@ fn get(port: Int, path: String, headers: List(#(String, String))) -> Answer {
   let lines =
     list.map(headers, fn(header) { header.0 <> ": " <> header.1 <> "\r\n" })
   let request =
-    "GET " <> path <> " HTTP/1.1\r\n" <> string.concat(lines) <> "\r\n"
+    method
+    <> " "
+    <> path
+    <> " HTTP/1.1\r\n"
+    <> string.concat(lines)
+    <> "\r\n"
+    <> body
   assert ffi_daemon_socket.send(socket, bit_array.from_string(request))
     == Ok(Nil)
   let head = read_head(socket, "")
@@ -1831,6 +1971,7 @@ pub fn the_way_home_is_checked_against_the_registry_test() {
         now: bootstrap.monotonic_time_ms,
         entropy: token.production_entropy(),
         ticket_ms: ui_sessions.ticket_ms,
+        device_ms: ui_sessions.device_ms,
         session_ms: ui_sessions.session_ms,
       ))
       as "the web view's tables start"
@@ -1849,6 +1990,8 @@ pub fn the_way_home_is_checked_against_the_registry_test() {
         principal: "ui-home-revoked",
         ceiling: access.Operator,
         reach: ui_sessions.Workspace,
+        origin: ui_sessions.Fresh,
+        login: None,
       )
     let open = fn() { Ok(bootstrap.monotonic_time_ms() + 60_000) }
 
@@ -2862,6 +3005,7 @@ fn standing_of(
       now: bootstrap.monotonic_time_ms,
       entropy: token.production_entropy(),
       ticket_ms: ui_sessions.ticket_ms,
+      device_ms: ui_sessions.device_ms,
       session_ms: ui_sessions.session_ms,
     ))
     as "the web view's tables start"
@@ -2884,6 +3028,8 @@ fn standing_of(
       principal: name,
       ceiling:,
       reach: ui_sessions.Workspace,
+      origin: ui_sessions.Fresh,
+      login: None,
     ),
     tickets,
   )
@@ -3183,6 +3329,8 @@ fn owner_standing(
     principal: ready.owner.id,
     ceiling:,
     reach: ui_sessions.Workspace,
+    origin: ui_sessions.Fresh,
+    login: None,
   )
 }
 
@@ -3383,6 +3531,7 @@ fn creator_standing(
       now: bootstrap.monotonic_time_ms,
       entropy: token.production_entropy(),
       ticket_ms: ui_sessions.ticket_ms,
+      device_ms: ui_sessions.device_ms,
       session_ms: ui_sessions.session_ms,
     ))
     as "the web view's tables start"
@@ -3393,6 +3542,8 @@ fn creator_standing(
       principal: ready.owner.id,
       ceiling:,
       reach: ui_sessions.Workspace,
+      origin: ui_sessions.Fresh,
+      login: None,
     ),
     tickets,
   )
@@ -3755,5 +3906,1282 @@ pub fn the_creation_runs_off_the_callers_process_test() {
       as "the task answers once the session is resident"
     assert string.starts_with(path, "/ui/sessions/")
     assert task != process.self()
+  })
+}
+
+// --- the browser login (protocol-change/065, PR 8) -----------------------------
+
+@external(erlang, "client_test_ffi", "reductions_of")
+fn reductions_of(pid: process.Pid) -> Int
+
+@external(erlang, "client_test_ffi", "log_capture_start")
+fn log_capture_start() -> Nil
+
+@external(erlang, "client_test_ffi", "log_capture_stop")
+fn log_capture_stop() -> List(String)
+
+// What a remembered exchange handed one browser: the page it opened, the
+// login's token (the cookie's value), its key, the nonce the page kept, and the
+// cookie's lifetime in seconds.
+type Signed {
+  Signed(
+    page: Entered,
+    token: String,
+    key: String,
+    nonce: String,
+    max_age: Int,
+    cookies: List(String),
+  )
+}
+
+// Every `Set-Cookie` of a response, in the order the daemon wrote them.
+fn set_cookies(answer: Answer) -> List(String) {
+  list.filter_map(answer.headers, fn(header) {
+    case header.0 {
+      "set-cookie" -> Ok(header.1)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+// An exchange that set a login, read the way the browser's enter script reads
+// it: the cookie from the headers, the key and nonce from the body.
+fn signed_in(answer: Answer) -> Signed {
+  let page = entered(answer)
+  let cookies = set_cookies(answer)
+  let assert [cookie] =
+    list.filter(cookies, fn(set) { string.starts_with(set, "loom_login=") })
+    as "the exchange set one login cookie"
+  let assert Ok(#(pair, attributes)) = string.split_once(cookie, "; ")
+    as "attributes follow the token"
+  let assert Ok(#(_, max_age)) = string.split_once(attributes, "Max-Age=")
+    as "the login cookie has a lifetime"
+  let assert Ok(seconds) = int.parse(max_age) as "the lifetime is a number"
+  Signed(
+    page:,
+    token: string.drop_start(pair, string.length("loom_login=")),
+    key: attribute(answer.body, "data-login-key"),
+    nonce: attribute(answer.body, "data-login-nonce"),
+    max_age: seconds,
+    cookies:,
+  )
+}
+
+// `loom ui`: a home ticket the daemon mints with the login unless declined,
+// exchanged by a browser.
+fn sign_in(port: Int, credential: String) -> Signed {
+  signed_in(exchange(port, operator_home(port, credential)))
+}
+
+// A home ticket the launcher asked not to remember (`loom ui --no-remember`).
+fn forgotten_home(port: Int, credential: String) -> String {
+  home_link(port, credential, [
+    #("page", json.String("operator")),
+    #("remember", json.Bool(False)),
+  ])
+}
+
+// The resume, as the resume page's own form posts it: this origin's
+// `Sec-Fetch-Site`, the form's type and length, the cookie header the browser
+// sends, and the nonce in the body.
+fn resume(
+  port: Int,
+  key: String,
+  cookie: String,
+  nonce: String,
+  more: List(#(String, String)),
+) -> Answer {
+  let body = "nonce=" <> nonce
+  let defaults = [
+    host(port),
+    #("sec-fetch-site", "same-origin"),
+    #("content-type", "application/x-www-form-urlencoded"),
+    #("content-length", int.to_string(string.byte_size(body))),
+    #("cookie", cookie),
+  ]
+  send_request(
+    port,
+    "POST",
+    "/ui/l/" <> key <> "/home",
+    list.append(defaults, more),
+    body,
+  )
+}
+
+fn resume_as(port: Int, signed: Signed) -> Answer {
+  resume(port, signed.key, "loom_login=" <> signed.token, signed.nonce, [])
+}
+
+// The root key the daemon signs logins under, read from the state directory the
+// way a restart reads it.
+fn root_key(ready: root.Ready(String)) -> login.RootKey {
+  let assert Ok(login.Present(key)) = login.probe_root(ready.state_root)
+    as "the daemon wrote its login key"
+  key
+}
+
+fn id_of(token: String) -> String {
+  let assert Ok(parsed) = login.parse(token) as "the token parses"
+  login.id(parsed)
+}
+
+fn parsed(token: String) -> login.Parsed {
+  let assert Ok(found) = login.parse(token) as "the token parses"
+  found
+}
+
+// The six caveats a login is minted with, for a token a test signs itself.
+fn six(
+  principal: String,
+  key: String,
+  nonce: String,
+  expires_at_ms: Int,
+) -> List(login.Caveat) {
+  [
+    login.Caveat("p", principal),
+    login.Caveat("c", "operator"),
+    login.Caveat("r", "workspace"),
+    login.Caveat("e", int.to_string(expires_at_ms)),
+    login.Caveat("k", key),
+    login.Caveat("n", login.nonce_digest(nonce)),
+  ]
+}
+
+// A refusal of a login is the same `401` document whatever the reason, with no
+// cookie and nothing the request carried.
+fn refused_login(answer: Answer, signed: Signed) -> Nil {
+  assert answer.status == 401
+  assert string.contains(answer.body, "loom ui")
+  assert set_cookies(answer) == []
+  assert !string.contains(answer.body, signed.token)
+  assert !string.contains(answer.body, signed.key)
+  assert !string.contains(answer.body, signed.nonce)
+  Nil
+}
+
+// One control command as `credential` sends it, with the daemon's epoch in
+// the body when the command is fenced.
+fn control(
+  port: Int,
+  credential: String,
+  command: String,
+  fields: List(#(String, json.JsonValue)),
+) -> json.JsonValue {
+  let #(socket, _) = daemon_server_test.connect(port, credential, "/v2/control")
+  let hello = daemon_server_test.frame(socket, within_ms: 1000)
+  let assert Ok(hello_body) = field(hello, "body") as "the hello has a body"
+  let assert Ok(json.String(epoch)) = field(hello_body, "epoch")
+    as "the hello names the epoch"
+  let reply =
+    daemon_server_test.send(
+      socket,
+      1,
+      command,
+      json.Object([#("epoch", json.String(epoch)), ..fields]),
+      within_ms: 1000,
+    )
+  let _ = ffi_ws.tcp_close(socket)
+  reply
+}
+
+// The fingerprints the credential's principal lists as its sign-ins.
+fn listed_signins(port: Int, credential: String) -> List(json.JsonValue) {
+  let reply = control(port, credential, "credentials.signins", [])
+  assert field(reply, "event") == Ok(json.String("credentials.signins"))
+  let assert Ok(body) = field(reply, "body") as "a body"
+  let assert Ok(json.Array(rows)) = field(body, "signins") as "the rows"
+  rows
+}
+
+fn fingerprints(rows: List(json.JsonValue)) -> List(String) {
+  list.map(rows, fn(row) {
+    let assert Ok(json.String(fingerprint)) = field(row, "fingerprint")
+      as "a fingerprint"
+    fingerprint
+  })
+}
+
+fn sha256_text(text: String) -> String {
+  text
+  |> bit_array.from_string
+  |> bootstrap.sha256
+  |> bit_array.base16_encode
+  |> string.lowercase
+}
+
+// An exchange of `loom ui` sets a login whose cookie has exactly the attributes
+// 065 gives it, carries the key and nonce in the body, and leaves one row; the
+// page's own cookie keeps no `Max-Age`, since only the login lasts a month.
+pub fn a_remembered_exchange_sets_the_login_beside_the_page_test() {
+  fixture(fn(ready, port, credential) {
+    let answer = exchange(port, operator_home(port, credential))
+    let signed = signed_in(answer)
+
+    // Two cookies, the page's first. The page's has no lifetime and the login's
+    // is thirty days, the same instant the token's expiry names.
+    let assert [page_cookie, login_cookie] = signed.cookies
+    assert string.starts_with(page_cookie, "loom_ui=")
+    assert !string.contains(page_cookie, "Max-Age")
+    assert string.ends_with(
+      login_cookie,
+      "; HttpOnly; SameSite=Strict; Path=/ui/l/"
+        <> signed.key
+        <> "; Max-Age="
+        <> int.to_string(signed.max_age),
+    )
+    assert signed.max_age <= 2_592_000
+    assert signed.max_age >= 2_591_990
+
+    // The token is what the grammar says, signed by this daemon's key and for
+    // this principal, and the body delivers the nonce once.
+    assert string.byte_size(signed.token) <= login.max_token_bytes
+    let now = bootstrap.system_time_ms()
+    let assert Ok(opened) =
+      login.open(
+        root_key(ready),
+        signed.token,
+        now_ms: now,
+        key: signed.key,
+        nonce: signed.nonce,
+      )
+      as "the daemon's own key opens the token"
+    assert opened.allowance.principal == ready.owner.id
+    assert opened.allowance.ceiling == login.Operator
+    assert string.byte_size(signed.nonce) == 64
+    assert string.byte_size(signed.key) == 32
+    assert signed.max_age * 1000 <= opened.allowance.expires_at_ms - now + 1000
+
+    // The principal has one sign-in now, and it is this one: the row is keyed
+    // by the digest of the identifier.
+    let rows = listed_signins(port, credential)
+    assert fingerprints(rows)
+      == [string.slice(login.row_digest(opened.id), 0, 16)]
+  })
+}
+
+// `loom ui --no-remember` opens the page and sets nothing: one cookie, no key
+// or nonce in the body, no row.
+pub fn no_remember_sets_no_login_test() {
+  fixture(fn(_, port, credential) {
+    let answer = exchange(port, forgotten_home(port, credential))
+    let page = entered(answer)
+    assert list.length(set_cookies(answer)) == 1
+    assert !string.contains(answer.body, "data-login")
+    assert string.starts_with(page.page, "/ui/p/")
+    assert listed_signins(port, credential) == []
+  })
+}
+
+// A link for one session is not a home, and neither is a ticket a page mints:
+// no exchange but a home's, from `loom ui`, a claim or a device link, sets a
+// login. The launcher cannot ask a session link to remember either.
+pub fn session_links_and_switch_tickets_set_no_login_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let session = create_session(ready, "no-login", 970)
+    let answer = exchange(port, operate(port, credential, session))
+    assert list.length(set_cookies(answer)) == 1
+    assert !string.contains(answer.body, "data-login")
+
+    // A home page's row press asks for a ticket, and exchanging it sets no
+    // login either.
+    let home = enter(port, operator_home(port, credential))
+    let pressed = press_row(port, home, session)
+    assert pressed.status == 290
+    let switched = exchange(port, pressed.body)
+    assert switched.status == 200
+    assert list.length(set_cookies(switched)) == 1
+    assert !string.contains(switched.body, "data-login")
+
+    // The way home from a session page is a ticket too, and a forgotten one.
+    let #(socket, _) =
+      daemon_server_test.connect(port, credential, "/v2/control")
+    let _hello = daemon_server_test.frame(socket, within_ms: 1000)
+    let reply =
+      daemon_server_test.send(
+        socket,
+        1,
+        "ui.link",
+        json.Object([
+          #("session_id", json.String(session)),
+          #("remember", json.Bool(True)),
+        ]),
+        within_ms: 1000,
+      )
+    let _ = ffi_ws.tcp_close(socket)
+    assert field(reply, "event") == Ok(json.String("error"))
+  })
+}
+
+// The bookmark: a new browser with no page and no tab, only the cookie and the
+// nonce its storage kept, is served the resume page, posts its nonce and lands
+// on a home page. No `loom`, no ticket.
+pub fn the_bookmark_resumes_a_home_without_loom_test() {
+  fixture(fn(_, port, credential) {
+    let signed = sign_in(port, credential)
+    let bookmark = "/ui/l/" <> signed.key <> "/home"
+
+    // The resume page is a fixed document with one form, served under the one
+    // policy that lets a form submit to this origin; every other document keeps
+    // `form-action 'none'`.
+    let resume_page =
+      get(port, bookmark, [host(port), #("sec-fetch-site", "none")])
+    assert resume_page.status == 200
+    assert string.contains(resume_page.body, "name=\"nonce\"")
+    assert string.contains(resume_page.body, "method=\"post\"")
+    assert !string.contains(resume_page.body, signed.token)
+    assert !string.contains(resume_page.body, signed.key)
+    let assert Ok(policy) =
+      list.key_find(resume_page.headers, "content-security-policy")
+    assert string.contains(policy, "form-action 'self'")
+    assert referrer_policy(resume_page) == Ok("no-referrer")
+    let other = open_page(port, signed.page)
+    let assert Ok(other_policy) =
+      list.key_find(other.headers, "content-security-policy")
+    assert string.contains(other_policy, "form-action 'none'")
+
+    // The resume page's script and the enter script both spell the storage
+    // item the nonce lives under.
+    let script = get(port, "/ui/assets/web_view_resume.js", [host(port)])
+    assert script.status == 200
+    assert string.contains(script.body, page.login_nonce_item)
+    let enter_script = get(port, "/ui/assets/web_view_enter.js", [host(port)])
+    assert string.contains(enter_script.body, page.login_nonce_item)
+
+    // Posting the nonce with the cookie mints a home page.
+    let resumed = resume_as(port, signed)
+    assert resumed.status == 200
+    let home = entered(resumed)
+    assert string.ends_with(home.page, "/home")
+    assert home.nonce != signed.page.nonce
+    assert home.cookie != signed.page.cookie
+
+    // It mints a page and not another login: the resume sets one cookie.
+    assert list.length(set_cookies(resumed)) == 1
+    assert !string.contains(resumed.body, "data-login")
+    let shown = open_page(port, home)
+    assert shown.status == 200
+    assert string.contains(shown.body, "Loom · Home")
+
+    // The page is the login's: it is a resumed home, at the login's ceiling,
+    // and the login it belongs to is the one that resumed it.
+    let upgraded = home_socket(port, home, [])
+    assert upgraded.status == 280
+    assert list.key_find(upgraded.headers, "x-page-origin") == Ok("resumed")
+    let assert Ok(fingerprint) = list.key_find(upgraded.headers, "x-page-login")
+    assert fingerprints(listed_signins(port, credential)) == [fingerprint]
+    let assert [_, "operator", ..] = string.split(upgraded.body, "\n")
+
+    // The first page, which a `loom ui` exchange opened, is a fresh home.
+    let first = home_socket(port, signed.page, [])
+    assert list.key_find(first.headers, "x-page-origin") == Ok("fresh")
+    assert list.key_find(first.headers, "x-page-login") == Ok(fingerprint)
+  })
+}
+
+// The resume page and the resume are held to their sender and their size.
+pub fn the_resume_is_a_same_origin_form_of_one_small_field_test() {
+  fixture(fn(_, port, credential) {
+    let signed = sign_in(port, credential)
+    let path = "/ui/l/" <> signed.key <> "/home"
+    let cookie = "loom_login=" <> signed.token
+
+    // The page is a navigation, from outside any page or from this origin.
+    let from_elsewhere = fn(site) {
+      get(port, path, [host(port), #("sec-fetch-site", site)]).status
+    }
+    assert from_elsewhere("none") == 200
+    assert from_elsewhere("same-origin") == 200
+    assert from_elsewhere("same-site") == 403
+    assert from_elsewhere("cross-site") == 403
+    assert get(port, path, [host(port)]).status == 403
+    assert get(port, "/ui/l/short/home", [
+        host(port),
+        #("sec-fetch-site", "none"),
+      ]).status
+      == 404
+    assert get(port, path, [
+        #("host", "evil.example"),
+        #("sec-fetch-site", "none"),
+      ]).status
+      == 403
+
+    // The post is this origin's own page and nothing else, `none` included.
+    let sent_from = fn(site) {
+      resume(port, signed.key, cookie, signed.nonce, [#("sec-fetch-site", site)]).status
+    }
+    assert sent_from("same-origin") == 200
+    assert sent_from("same-site") == 403
+    assert sent_from("cross-site") == 403
+    assert sent_from("none") == 403
+    assert send_request(
+        port,
+        "POST",
+        path,
+        [
+          host(port),
+          #("content-type", "application/x-www-form-urlencoded"),
+          #("content-length", "70"),
+          #("cookie", cookie),
+        ],
+        "nonce=" <> signed.nonce,
+      ).status
+      == 403
+
+    // The form is one field of the declared size and type.
+    let post = fn(headers, body) {
+      send_request(
+        port,
+        "POST",
+        path,
+        list.append(
+          [host(port), #("sec-fetch-site", "same-origin"), #("cookie", cookie)],
+          headers,
+        ),
+        body,
+      ).status
+    }
+    let form = [#("content-type", "application/x-www-form-urlencoded")]
+    let sized = fn(body) {
+      list.append(form, [
+        #("content-length", int.to_string(string.byte_size(body))),
+      ])
+    }
+    let good = "nonce=" <> signed.nonce
+    assert post(sized(good), good) == 200
+    assert post(
+        [#("content-type", "text/plain"), #("content-length", "70")],
+        good,
+      )
+      == 400
+    assert post(form, good) == 400
+    let big = string.repeat("a", 2000)
+    assert post(sized(big), big) == 400
+    let extra = good <> "&other=1"
+    assert post(sized(extra), extra) == 400
+    let short = "nonce=00"
+    assert post(sized(short), short) == 400
+    let upper = "nonce=" <> string.uppercase(signed.nonce)
+    assert post(sized(upper), upper) == 400
+    let other = "other=" <> signed.nonce
+    assert post(sized(other), other) == 400
+  })
+}
+
+// Everything that is not a login that opens is refused as one: a forged
+// signature, a caveat removed, an unknown caveat, capitals, the wrong key in the
+// path, the wrong nonce, an expired login, a row that was never made, a row of
+// another principal and a row that was revoked. Each is the same `401` with no
+// cookie and nothing echoed, and none of the first seven makes the registry do
+// any work: the chain and the caveats are checked before the catalogue is asked.
+pub fn every_token_that_does_not_open_is_refused_alike_test() {
+  fixture(fn(ready, port, credential) {
+    let signed = sign_in(port, credential)
+    let id = id_of(signed.token)
+    let root = root_key(ready)
+    let owner = ready.owner.id
+    let soon = bootstrap.system_time_ms() + 600_000
+    let good = six(owner, signed.key, signed.nonce, soon)
+    let attempt = fn(token) {
+      resume(port, signed.key, "loom_login=" <> token, signed.nonce, [])
+    }
+    let registry = manager.pid(ready.registry)
+
+    // Pure refusals: none of them reaches the registry.
+    let before = reductions_of(registry)
+    refused_login(
+      attempt(string.replace(signed.token, owner, "owner-other")),
+      signed,
+    )
+    refused_login(attempt(login.sign(root_key_other(), id, good)), signed)
+    refused_login(attempt(login.sign(root, id, list.take(good, 5))), signed)
+    refused_login(
+      attempt(login.sign(root, id, list.append(good, [login.Caveat("x", "1")]))),
+      signed,
+    )
+    refused_login(
+      attempt(string.replace(signed.token, id, string.uppercase(id))),
+      signed,
+    )
+    refused_login(attempt(signed.token <> "00"), signed)
+    refused_login(attempt(""), signed)
+    refused_login(attempt(string.repeat("a", 400)), signed)
+
+    // The wrong key in the path and the wrong nonce in the body, and an expiry
+    // in the past, are caveats the request fails.
+    refused_login(
+      resume(
+        port,
+        string.repeat("0", 32),
+        "loom_login=" <> signed.token,
+        signed.nonce,
+        [],
+      ),
+      signed,
+    )
+    refused_login(
+      resume(
+        port,
+        signed.key,
+        "loom_login=" <> signed.token,
+        string.repeat("0", 64),
+        [],
+      ),
+      signed,
+    )
+    refused_login(
+      attempt(login.sign(root, id, six(owner, signed.key, signed.nonce, 1000))),
+      signed,
+    )
+    refused_login(resume(port, signed.key, "", signed.nonce, []), signed)
+    assert reductions_of(registry) == before
+
+    // A genuine chain is looked up. A row that was never made, a row of
+    // another principal and a revoked row are each refused after that.
+    let unknown =
+      login.sign(root, login.fresh_id(token.production_entropy()), good)
+    refused_login(attempt(unknown), signed)
+    assert reductions_of(registry) > before
+    refused_login(
+      attempt(login.sign(
+        root,
+        id,
+        six("someone-else", signed.key, signed.nonce, soon),
+      )),
+      signed,
+    )
+    let fingerprint = string.slice(login.row_digest(id), 0, 16)
+    let revoked =
+      control(port, credential, "credentials.revoke_login", [
+        #("fingerprint", json.String(fingerprint)),
+      ])
+    assert field(revoked, "event")
+      == Ok(json.String("credentials.revoke_login"))
+    refused_login(resume_as(port, signed), signed)
+  })
+}
+
+fn root_key_other() -> login.RootKey {
+  login.draw_root(token.production_entropy())
+}
+
+// A cookie another page planted under a longer path is sent first, and must not
+// deny the person their own: the first value that opens is the login. Four
+// values are tried and no more, so a request stuffed with cookies costs four
+// chain checks at most.
+pub fn a_planted_login_cookie_does_not_deny_the_real_one_test() {
+  fixture(fn(ready, port, credential) {
+    let signed = sign_in(port, credential)
+    let root = root_key(ready)
+    let planted = fn(n) {
+      // A genuine token for another login, under another key: it opens nothing
+      // at this path, as the cookie of an attacker's own login would not.
+      login.sign(
+        root,
+        login.fresh_id(token.production_entropy()),
+        six(
+          "someone-else",
+          login.fresh_key(token.production_entropy()),
+          "00",
+          1,
+        )
+          |> list.take(n),
+      )
+    }
+    let real = "loom_login=" <> signed.token
+    let with = fn(values: List(String)) {
+      resume(
+        port,
+        signed.key,
+        string.join(
+          list.map(values, fn(value) { "loom_login=" <> value }),
+          "; ",
+        ),
+        signed.nonce,
+        [],
+      )
+    }
+    assert with([signed.token]).status == 200
+    assert with(["garbage", signed.token]).status == 200
+    assert with([planted(6), "garbage", signed.token]).status == 200
+    assert with(["a", "b", "c", signed.token]).status == 200
+
+    // A fifth value is not read.
+    refused_login(with(["a", "b", "c", "d", signed.token]), signed)
+
+    // The real cookie among others of another name is found as well.
+    let mixed =
+      resume(
+        port,
+        signed.key,
+        "loom_ui=x; " <> real <> "; other=y",
+        signed.nonce,
+        [],
+      )
+    assert mixed.status == 200
+  })
+}
+
+// A token narrowed by a caveat the daemon appends verifies, and is held to the
+// narrower value: a ceiling, an earlier expiry, one session. A wider repeat is
+// ignored, two sessions allow nothing, and a login narrowed to a session mints
+// a page of that session and never a home.
+pub fn a_narrowed_token_is_held_to_the_narrower_value_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "narrowed", 971)
+    let signed = sign_in(port, credential)
+    let wide = parsed(signed.token)
+    let cookie = fn(token) { "loom_login=" <> token }
+    let resume_with = fn(token) {
+      resume(port, signed.key, cookie(token), signed.nonce, [])
+    }
+
+    // The ceiling: an observer's token mints an observer's home, and a wider
+    // repeat appended afterwards does not widen it.
+    let observer = login.append(wide, login.Caveat("c", "observer"))
+    let narrowed = resume_with(observer)
+    assert narrowed.status == 200
+    let assert [_, who, ..] =
+      string.split(home_socket(port, entered(narrowed), []).body, "\n")
+    assert who == "observer"
+    let widened = login.append(parsed(observer), login.Caveat("c", "operator"))
+    let again = resume_with(widened)
+    assert again.status == 200
+    let assert [_, still, ..] =
+      string.split(home_socket(port, entered(again), []).body, "\n")
+    assert still == "observer"
+
+    // The expiry: an earlier instant appended holds until it comes, and a later
+    // one appended after it does not extend it.
+    let instant = bootstrap.system_time_ms() + 1500
+    let early = login.append(wide, login.Caveat("e", int.to_string(instant)))
+    let extended =
+      login.append(parsed(early), login.Caveat("e", "9999999999999"))
+    assert resume_with(extended).status == 200
+    process.sleep(1600)
+    refused_login(resume_with(extended), signed)
+    refused_login(resume_with(early), signed)
+
+    // One session: a page of that session, opened at the login's ceiling and
+    // with the reach of a link for one session, and no home.
+    let one = login.append(wide, login.Caveat("s", session))
+    let opened = resume_with(one)
+    assert opened.status == 200
+    let page = entered(opened)
+    assert string.ends_with(page.page, "/sessions/" <> session)
+    assert !string.contains(opened.body, "/home")
+    assert list.length(set_cookies(opened)) == 1
+    let socket = open_socket(port, page, page.nonce)
+    assert list.key_find(socket.headers, "x-page-reach") == Ok("one_session")
+    assert list.key_find(socket.headers, "x-page-origin") == Ok("resumed")
+
+    // Two different sessions allow nothing.
+    let other = "0198c0de-0000-7000-8000-00000000ffff"
+    let two = login.append(parsed(one), login.Caveat("s", other))
+    refused_login(resume_with(two), signed)
+  })
+}
+
+// Revoking one sign-in ends the pages that login minted at their next request
+// and leaves the principal's other sign-ins, its bearer and the page a `loom ui`
+// exchange opened. The owner may revoke any principal's; a member only its own.
+pub fn revoking_one_sign_in_ends_its_pages_and_leaves_the_others_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "revoking", 972)
+    let first = sign_in(port, credential)
+    let second = sign_in(port, credential)
+    let page = entered(resume_as(port, first))
+    assert home_socket(port, page, []).status == 280
+    assert open_page(port, page).status == 200
+
+    let revoked =
+      control(port, credential, "credentials.revoke_login", [
+        #(
+          "fingerprint",
+          json.String(string.slice(login.row_digest(id_of(first.token)), 0, 16)),
+        ),
+      ])
+    assert field(revoked, "event")
+      == Ok(json.String("credentials.revoke_login"))
+
+    // The page the revoked login minted is over: its keyed page and its socket
+    // are refused, and the login resumes nothing.
+    assert open_page(port, page).status == 401
+    assert home_socket(port, page, []).status == 401
+    refused_login(resume_as(port, first), first)
+
+    // Everything else stands: the other sign-in, the bearer, and the page the
+    // exchange opened, which is bound to the bearer and not to the login.
+    assert resume_as(port, second).status == 200
+    assert open_page(port, first.page).status == 200
+    assert fingerprints(listed_signins(port, credential))
+      == [string.slice(login.row_digest(id_of(second.token)), 0, 16)]
+
+    // A member lists and revokes its own, never another's, and the owner may
+    // name any principal.
+    let shared = member(ready, "ui-login-member", session, access.Operator)
+    let own = sign_in_as(port, shared)
+    let own_fingerprint =
+      string.slice(login.row_digest(id_of(own.token)), 0, 16)
+    assert fingerprints(listed_signins(port, shared)) == [own_fingerprint]
+    let naming_owner =
+      control(port, shared, "credentials.signins", [
+        #("principal_id", json.String(ready.owner.id)),
+      ])
+    assert field(naming_owner, "event") == Ok(json.String("error"))
+    let revoking_owner =
+      control(port, shared, "credentials.revoke_login", [
+        #("principal_id", json.String(ready.owner.id)),
+        #(
+          "fingerprint",
+          json.String(string.slice(login.row_digest(id_of(second.token)), 0, 16)),
+        ),
+      ])
+    assert field(revoking_owner, "event") == Ok(json.String("error"))
+    assert resume_as(port, second).status == 200
+    let seen =
+      control(port, credential, "credentials.signins", [
+        #("principal_id", json.String("ui-login-member")),
+      ])
+    let assert Ok(seen_body) = field(seen, "body") as "a body"
+    let assert Ok(json.Array(seen_rows)) = field(seen_body, "signins") as "rows"
+    assert fingerprints(seen_rows) == [own_fingerprint]
+    let by_owner =
+      control(port, credential, "credentials.revoke_login", [
+        #("principal_id", json.String("ui-login-member")),
+        #("fingerprint", json.String(own_fingerprint)),
+      ])
+    assert field(by_owner, "event")
+      == Ok(json.String("credentials.revoke_login"))
+    refused_login(resume_as(port, own), own)
+
+    // A fingerprint that names no sign-in of the principal is refused.
+    let missing =
+      control(port, credential, "credentials.revoke_login", [
+        #("fingerprint", json.String(own_fingerprint)),
+      ])
+    assert field(missing, "event") == Ok(json.String("error"))
+    let malformed =
+      control(port, credential, "credentials.revoke_login", [
+        #("fingerprint", json.String("not-a-fingerprint")),
+      ])
+    assert field(malformed, "event") == Ok(json.String("error"))
+  })
+}
+
+// A member's `loom ui`, as the member's own credential asks for it.
+fn sign_in_as(port: Int, member_credential: String) -> Signed {
+  signed_in(exchange(port, operator_home(port, member_credential)))
+}
+
+// `credentials.revoke` and `credentials.rotate` end every login of the member
+// with its bearer, since each revokes every active credential.
+pub fn revoke_credentials_and_rotate_end_every_login_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "ends-all", 973)
+    let revoked = member(ready, "ui-login-revoked", session, access.Operator)
+    let rotated = member(ready, "ui-login-rotated", session, access.Operator)
+    let revoked_login = sign_in_as(port, revoked)
+    let rotated_login = sign_in_as(port, rotated)
+    assert resume_as(port, revoked_login).status == 200
+    assert resume_as(port, rotated_login).status == 200
+
+    let answer =
+      control(port, credential, "credentials.revoke", [
+        #("principal_id", json.String("ui-login-revoked")),
+      ])
+    assert field(answer, "event") == Ok(json.String("credentials.revoke"))
+    refused_login(resume_as(port, revoked_login), revoked_login)
+    assert resume_as(port, rotated_login).status == 200
+
+    let replacement = sha256_text("a replacement credential")
+    let answer =
+      control(port, credential, "credentials.rotate", [
+        #("principal_id", json.String("ui-login-rotated")),
+        #("credential_digest", json.String(replacement)),
+      ])
+    assert field(answer, "event") == Ok(json.String("credentials.rotate"))
+    refused_login(resume_as(port, rotated_login), rotated_login)
+  })
+}
+
+// 065's attack: the identifier is in the cookie, so anyone who sees the cookie
+// knows it, and its digest is the row's key. Presented as a bearer, the bare
+// identifier, the whole token and the digest of the identifier are each `401`
+// on the control socket and on a session socket.
+pub fn a_login_authenticates_on_no_v2_route_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "no-v2", 974)
+    let signed = sign_in(port, credential)
+    let id = id_of(signed.token)
+    list.each(
+      [id, signed.token, login.row_digest(id), sha256_text(id)],
+      fn(presented) {
+        let #(socket, response) =
+          daemon_server_test.connect(port, presented, "/v2/control")
+        assert string.contains(response, "401")
+        let _ = ffi_ws.tcp_close(socket)
+        let #(socket, response) =
+          daemon_server_test.connect(
+            port,
+            presented,
+            "/v2/sessions/" <> session <> "/ws",
+          )
+        assert string.contains(response, "401")
+        let _ = ffi_ws.tcp_close(socket)
+        Nil
+      },
+    )
+
+    // The owner's bearer is unaffected.
+    let #(socket, response) =
+      daemon_server_test.connect(port, credential, "/v2/control")
+    assert string.contains(response, "101")
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+// Only a fresh home makes a device link, and the link signs in another device
+// for the time the issuing login has left: the new login inherits the
+// expiry, is listed beside it naming it as its parent, redeems once, and costs
+// one place of the credential's grant allowance of three an hour.
+pub fn a_fresh_home_signs_in_another_device_for_the_time_the_login_has_left_test() {
+  fixture_with(Signing, fn(_, port, credential) {
+    let first = sign_in(port, credential)
+    let ask = fn(page: Entered) {
+      home_socket(port, page, [#("x-device-link", "1")])
+    }
+    let link = ask(first.page)
+    assert link.status == 284
+    assert list.key_find(link.headers, "x-page-origin") == Ok("fresh")
+    let prefix =
+      "http://127.0.0.1:" <> int.to_string(port) <> "/ui/home?ticket="
+    assert string.starts_with(link.body, prefix)
+    assert string.byte_size(link.body) == string.byte_size(prefix) + 64
+
+    // The device opens it: a home page and a login whose lifetime is the
+    // issuing login's, and not a fresh thirty days.
+    let path =
+      string.drop_start(
+        link.body,
+        string.length("http://127.0.0.1:" <> int.to_string(port)),
+      )
+    let device = signed_in(exchange(port, path))
+    assert int.absolute_value(device.max_age - first.max_age) <= 5
+    assert device.key != first.key
+    assert exchange(port, path).status == 401
+
+    // Both are listed, and the new one names its parent.
+    let rows = listed_signins(port, credential)
+    assert list.length(rows) == 2
+    let parent = string.slice(login.row_digest(id_of(first.token)), 0, 16)
+    let child = string.slice(login.row_digest(id_of(device.token)), 0, 16)
+    let assert Ok(row) =
+      list.find(rows, fn(row) {
+        field(row, "fingerprint") == Ok(json.String(child))
+      })
+    assert field(row, "issued_by") == Ok(json.String(parent))
+
+    // The device's page belongs to the new login and is a fresh home, so it may
+    // make a link of its own, which inherits the same expiry and names it.
+    let seen = home_socket(port, device.page, [])
+    assert list.key_find(seen.headers, "x-page-login") == Ok(child)
+    assert list.key_find(seen.headers, "x-page-origin") == Ok("fresh")
+    let second_path =
+      string.drop_start(
+        ask(device.page).body,
+        string.length("http://127.0.0.1:" <> int.to_string(port)),
+      )
+    let grandchild = signed_in(exchange(port, second_path))
+    assert int.absolute_value(grandchild.max_age - first.max_age) <= 5
+
+    // The third link is the last of the hour; the fourth is refused.
+    assert ask(first.page).status == 284
+    let refused = ask(first.page)
+    assert refused.status == 283
+    assert string.contains(refused.body, "TooMany")
+  })
+}
+
+// A page that no login belongs to (`loom ui --no-remember`) makes a link whose
+// login has thirty days of its own and no parent. A link from an observer's home
+// is an observer's.
+pub fn a_page_with_no_login_makes_a_device_link_of_thirty_days_test() {
+  fixture_with(Signing, fn(ready, port, credential) {
+    let page = enter(port, forgotten_home(port, credential))
+    let seen = home_socket(port, page, [])
+    assert list.key_find(seen.headers, "x-page-login") == Ok("none")
+    let link = home_socket(port, page, [#("x-device-link", "1")])
+    assert link.status == 284
+    let path =
+      string.drop_start(
+        link.body,
+        string.length("http://127.0.0.1:" <> int.to_string(port)),
+      )
+    let device = signed_in(exchange(port, path))
+    assert device.max_age >= 2_591_990
+    assert device.max_age <= 2_592_000
+    let assert [row] = listed_signins(port, credential)
+    assert field(row, "issued_by") == Error(Nil)
+
+    // The observer's home, as `loom ui --observe` opens it.
+    let watching = enter(port, home_link(port, credential, []))
+    let watch_link = home_socket(port, watching, [#("x-device-link", "1")])
+    assert watch_link.status == 284
+    let watch_path =
+      string.drop_start(
+        watch_link.body,
+        string.length("http://127.0.0.1:" <> int.to_string(port)),
+      )
+    let watcher = signed_in(exchange(port, watch_path))
+    let assert Ok(opened) =
+      login.open(
+        root_key(ready),
+        watcher.token,
+        now_ms: bootstrap.system_time_ms(),
+        key: watcher.key,
+        nonce: watcher.nonce,
+      )
+    assert opened.allowance.ceiling == login.Observer
+  })
+}
+
+// A home the bookmark resumed draws no device-link control, and the daemon
+// refuses the request from one that was forged, minting nothing and costing no
+// place of the allowance.
+pub fn a_resumed_home_makes_no_device_link_test() {
+  fixture_with(Signing, fn(_, port, credential) {
+    let signed = sign_in(port, credential)
+    let resumed = entered(resume_as(port, signed))
+    let asked = home_socket(port, resumed, [#("x-device-link", "1")])
+    assert asked.status == 289
+    assert list.key_find(asked.headers, "x-page-origin") == Ok("resumed")
+
+    let forced =
+      home_socket(port, resumed, [
+        #("x-device-link", "1"),
+        #("x-device-force", "1"),
+      ])
+    assert forced.status == 283
+    assert string.contains(forced.body, "NotFresh")
+
+    // Nothing was minted and no place was taken: a fresh page still has all
+    // three.
+    let fresh = fn() {
+      home_socket(port, signed.page, [#("x-device-link", "1")]).status
+    }
+    assert [fresh(), fresh(), fresh()] == [284, 284, 284]
+  })
+}
+
+// The page's own sign-in asks are the daemon's, made as the principal the page
+// was admitted for: the list is the principal's own, a sign-out finds the login
+// among the principal's and no one else's, and "sign out everywhere" ends every
+// one of them and no other principal's.
+pub fn the_pages_sign_in_asks_reach_only_the_principals_own_logins_test() {
+  fixture_with(Signing, fn(ready, port, credential) {
+    let session = create_session(ready, "sign-out", 975)
+    let shared = member(ready, "ui-signout-member", session, access.Operator)
+    let first = sign_in(port, credential)
+    let second = sign_in(port, credential)
+    let theirs = sign_in_as(port, shared)
+    let their_fingerprint =
+      string.slice(login.row_digest(id_of(theirs.token)), 0, 16)
+    let first_fingerprint =
+      string.slice(login.row_digest(id_of(first.token)), 0, 16)
+    let second_fingerprint =
+      string.slice(login.row_digest(id_of(second.token)), 0, 16)
+
+    // The list is the principal's own, never the member's.
+    let listing = home_socket(port, first.page, [#("x-signins", "1")])
+    assert listing.status == 281
+    assert list.key_find(listing.headers, "x-page-login")
+      == Ok(first_fingerprint)
+    let listed =
+      list.map(string.split(listing.body, "\n"), fn(line) {
+        let assert [fingerprint, ..] = string.split(line, "|")
+        fingerprint
+      })
+    assert list.sort(listed, string.compare)
+      == list.sort([first_fingerprint, second_fingerprint], string.compare)
+
+    // A sign-out of another principal's login, of an unknown fingerprint and of
+    // text that is not one is `NotFound`, and ends nothing.
+    let out = fn(fingerprint) {
+      home_socket(port, first.page, [#("x-sign-out", fingerprint)])
+    }
+    let refused = out(their_fingerprint)
+    assert refused.status == 283
+    assert string.contains(refused.body, "NotFound")
+    assert string.contains(out(string.repeat("0", 16)).body, "NotFound")
+    assert string.contains(out("zz").body, "NotFound")
+    assert resume_as(port, theirs).status == 200
+
+    // Its own is ended, and the login resumes nothing afterwards.
+    assert out(second_fingerprint).status == 282
+    refused_login(resume_as(port, second), second)
+    assert resume_as(port, first).status == 200
+
+    // Everywhere ends the rest of the principal's and the member's stands.
+    let everywhere = home_socket(port, first.page, [#("x-sign-out-all", "1")])
+    assert everywhere.status == 282
+    refused_login(resume_as(port, first), first)
+    assert resume_as(port, theirs).status == 200
+    assert fingerprints(listed_signins(port, credential)) == []
+  })
+}
+
+// The token, its nonce, its key and its identifier appear in no file under the
+// state root, and in no line the daemon logs; the log names the login by its
+// fingerprint, the principal and, for a device link, its parent.
+pub fn the_token_is_in_no_file_and_no_log_line_test() {
+  fixture_with(Signing, fn(ready, port, credential) {
+    log_capture_start()
+    let first = sign_in(port, credential)
+    let resumed = entered(resume_as(port, first))
+    let link = home_socket(port, first.page, [#("x-device-link", "1")])
+    let path =
+      string.drop_start(
+        link.body,
+        string.length("http://127.0.0.1:" <> int.to_string(port)),
+      )
+    let device = signed_in(exchange(port, path))
+    refused_login(
+      resume(
+        port,
+        first.key,
+        "loom_login=" <> first.token,
+        string.repeat("0", 64),
+        [],
+      ),
+      first,
+    )
+    let fingerprint = string.slice(login.row_digest(id_of(device.token)), 0, 16)
+    let ended = home_socket(port, first.page, [#("x-sign-out", fingerprint)])
+    assert ended.status == 282
+    let lines = log_capture_stop()
+
+    // The secrets: each token, its nonce, its key and identifier, the cookies
+    // and the bearer that asked for the page.
+    let secrets =
+      list.flat_map([first, device], fn(login_set) {
+        [
+          login_set.token,
+          login_set.nonce,
+          login_set.key,
+          id_of(login_set.token),
+          login_set.page.cookie,
+          login_set.page.nonce,
+        ]
+      })
+      |> list.append([resumed.cookie, resumed.nonce])
+    let root_text = case simplifile.read(ready.state_root <> "/browser.key") {
+      Ok(text) -> text
+      Error(_) -> ""
+    }
+    assert string.byte_size(root_text) == 64
+
+    // No log line holds any of them or the root key.
+    let joined = string.join(lines, "\n")
+    list.each([root_text, credential, ..secrets], fn(secret) {
+      assert !string.contains(joined, secret)
+    })
+
+    // The log says what happened, by fingerprint and without a secret.
+    let parent = string.slice(login.row_digest(id_of(first.token)), 0, 16)
+    assert string.contains(joined, "daemon.login_issued")
+    assert string.contains(joined, "daemon.login_resumed")
+    assert string.contains(joined, "daemon.login_revoked")
+    assert string.contains(joined, parent)
+    assert string.contains(joined, fingerprint)
+    assert string.contains(joined, "issued_by")
+
+    // No file under the state root holds one either. The root key is in its own
+    // file and nowhere else. The owner's bearer is in `owner.token`, which is
+    // why it is not among the secrets a file is searched for.
+    let assert Ok(files) = simplifile.get_files(ready.state_root)
+      as "the state root is readable"
+    list.each(files, fn(file) {
+      let assert Ok(bytes) = simplifile.read_bits(file) as "a state file reads"
+      list.each(secrets, fn(secret) {
+        assert !holds(bytes, bit_array.from_string(secret))
+      })
+      case string.ends_with(file, "/browser.key") {
+        True -> Nil
+        False -> {
+          assert !holds(bytes, bit_array.from_string(root_text))
+          Nil
+        }
+      }
+    })
+    Nil
+  })
+}
+
+// The root key's three start cases (protocol-change/065): a readable key is the
+// key; a file that is present and wrong refuses start and is never regenerated;
+// and a missing file draws a new key and, before it writes it, revokes every
+// login the lost key had verified, with one line saying how many.
+pub fn the_root_key_cases_at_start_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "root-key", 977)
+    let shared = member(ready, "ui-rootkey-member", session, access.Operator)
+    let path = ready.state_root <> "/browser.key"
+    let _ = sign_in(port, credential)
+    let _ = sign_in(port, credential)
+    let _ = sign_in_as(port, shared)
+    let active = fn() {
+      list.length(listed_signins(port, credential))
+      + list.length(listed_signins(port, shared))
+    }
+    assert active() == 3
+
+    // A readable key is kept, and nothing is revoked.
+    let assert Ok(kept) = simplifile.read(path) as "the key was written"
+    assert string.byte_size(kept) == 64
+    let assert Ok(_) = ui_login.root_key(ready.state_root, ready.registry)
+    assert active() == 3
+    assert simplifile.read(path) == Ok(kept)
+
+    // Present and wrong: shorter, not hex, group-readable. Each refuses start,
+    // none is replaced, and nothing is revoked.
+    list.each(
+      [
+        string.repeat("ab", 31),
+        string.repeat("zz", 32),
+        string.repeat("AB", 32),
+      ],
+      fn(contents) {
+        let assert Ok(Nil) = bootstrap.atomic_write_private(path, contents)
+        let assert Error(_) =
+          ui_login.root_key(ready.state_root, ready.registry)
+        assert simplifile.read(path) == Ok(contents)
+        assert active() == 3
+      },
+    )
+    let assert Ok(Nil) = bootstrap.atomic_write_private(path, kept)
+    let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o644)
+    let assert Error(_) = ui_login.root_key(ready.state_root, ready.registry)
+    assert active() == 3
+    let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o600)
+
+    // Missing: a new key is drawn, every login is revoked, and the count is
+    // logged once.
+    let assert Ok(Nil) = simplifile.delete(path)
+    log_capture_start()
+    let assert Ok(_) = ui_login.root_key(ready.state_root, ready.registry)
+    let lines = log_capture_stop()
+    assert active() == 0
+    let assert Ok(fresh) = simplifile.read(path) as "a new key was written"
+    assert fresh != kept
+    assert string.byte_size(fresh) == 64
+    let counted =
+      list.filter(lines, fn(line) {
+        string.contains(line, "daemon.logins_revoked")
+      })
+    assert list.length(counted) == 1
+    let assert [line] = counted
+    assert string.contains(line, "3")
+  })
+}
+
+// Every ticket a page mints carries the page's origin and login (protocol-change/065,
+// PR 8): a switch from a resumed home opens a resumed session page, the way home
+// from it a resumed home, and each belongs to the login that resumed the first.
+// So a chain from the bookmark can never become a fresh home, which is what an
+// admin page and a device link are minted from, and never loses the login whose
+// expiry a device link inherits. Nothing a page mints sets a login.
+pub fn a_chain_from_a_resumed_home_stays_resumed_and_keeps_its_login_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let session = create_session(ready, "resumed-chain", 979)
+    let signed = sign_in(port, credential)
+    let fingerprint = string.slice(login.row_digest(id_of(signed.token)), 0, 16)
+    let home = entered(resume_as(port, signed))
+
+    // The home, to a session page of the same reach and origin.
+    let pressed = press_row(port, home, session)
+    assert pressed.status == 290
+    let switched = exchange(port, pressed.body)
+    assert list.length(set_cookies(switched)) == 1
+    assert !string.contains(switched.body, "data-login")
+    let page = entered(switched)
+    let at_session = ask(port, page, session)
+    assert list.key_find(at_session.headers, "x-page-origin") == Ok("resumed")
+    assert list.key_find(at_session.headers, "x-page-login") == Ok(fingerprint)
+    assert list.key_find(at_session.headers, "x-page-reach") == Ok("workspace")
+
+    // And back home from it.
+    let back = press_home(port, page, [])
+    assert back.status == 288
+    let there = exchange(port, back.body)
+    assert list.length(set_cookies(there)) == 1
+    let again = entered(there)
+    let at_home = home_socket(port, again, [])
+    assert list.key_find(at_home.headers, "x-page-origin") == Ok("resumed")
+    assert list.key_find(at_home.headers, "x-page-login") == Ok(fingerprint)
+
+    // A fresh home's chain stays fresh and keeps the login its exchange set.
+    let fresh = sign_in(port, credential)
+    let fresh_fingerprint =
+      string.slice(login.row_digest(id_of(fresh.token)), 0, 16)
+    let from_fresh = press_row(port, fresh.page, session)
+    let fresh_page = entered(exchange(port, from_fresh.body))
+    let at_fresh = ask(port, fresh_page, session)
+    assert list.key_find(at_fresh.headers, "x-page-origin") == Ok("fresh")
+    assert list.key_find(at_fresh.headers, "x-page-login")
+      == Ok(fresh_fingerprint)
+  })
+}
+
+// The ceiling the exchange was minted at is the login's: an observer's `loom ui
+// --observe` sets an observer's login, and the home it resumes is read-only.
+pub fn an_observers_login_mints_an_observers_home_test() {
+  fixture(fn(ready, port, credential) {
+    let observer = signed_in(exchange(port, home_link(port, credential, [])))
+    let assert Ok(opened) =
+      login.open(
+        root_key(ready),
+        observer.token,
+        now_ms: bootstrap.system_time_ms(),
+        key: observer.key,
+        nonce: observer.nonce,
+      )
+    assert opened.allowance.ceiling == login.Observer
+    let resumed = entered(resume_as(port, observer))
+    let assert [_, who, ..] =
+      string.split(home_socket(port, resumed, []).body, "\n")
+    assert who == "observer"
+  })
+}
+
+// `principals.list` reports each principal's logins beside its credential: the
+// credential is still the bearer's state, and a login is counted and never shown
+// in its place.
+pub fn the_principal_listing_counts_logins_beside_the_credential_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "listing", 980)
+    let shared = member(ready, "ui-listing-member", session, access.Operator)
+    let _ = sign_in(port, credential)
+    let _ = sign_in(port, credential)
+    let _ = sign_in_as(port, shared)
+    let reply = control(port, credential, "principals.list", [])
+    assert field(reply, "event") == Ok(json.String("principals.list"))
+    let assert Ok(body) = field(reply, "body") as "a body"
+    let assert Ok(json.Array(rows)) = field(body, "principals") as "the rows"
+    let logins = fn(id) {
+      let assert Ok(row) =
+        list.find(rows, fn(row) {
+          field(row, "principal_id") == Ok(json.String(id))
+        })
+      let assert Ok(json.Int(count)) = field(row, "logins") as "a count"
+      let assert Ok(credential_state) = field(row, "credential")
+        as "a credential state"
+      #(count, credential_state)
+    }
+    let #(owner_logins, _) = logins(ready.owner.id)
+    let #(member_logins, member_credential) = logins("ui-listing-member")
+    assert owner_logins == 2
+    assert member_logins == 1
+    assert field(member_credential, "state") == Ok(json.String("active"))
   })
 }

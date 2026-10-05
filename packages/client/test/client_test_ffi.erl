@@ -8,7 +8,8 @@
 
 -export([ws_roundtrip/4, which/1, run/3, gzip/1,
          origin_start/0, origin_stop/1, origin_seen/1, monitored_by/1,
-         owner_label_of/1]).
+         owner_label_of/1, reductions_of/1, log_capture_start/0,
+         log_capture_stop/0, log/2]).
 
 -include_lib("public_key/include/public_key.hrl").
 
@@ -349,3 +350,43 @@ origin_send(Socket, Status, Body) ->
             <<"content-length: ">>, integer_to_binary(byte_size(Body)),
             <<"\r\n">>, <<"connection: close\r\n\r\n">>],
     ssl:send(Socket, [Head, Body]).
+
+%% The reductions a process has run: a number that moves only when the process
+%% does work. A test reads it before and after a request to learn whether the
+%% request made the registry do any.
+reductions_of(Pid) ->
+    case erlang:process_info(Pid, reductions) of
+        {reductions, Count} -> Count;
+        undefined -> 0
+    end.
+
+%% Captures every daemon log line written until `log_capture_stop/0`, so a test
+%% can look through what the daemon said for a value it must never say. The
+%% daemon's logger writes one report whose `loom` key holds the rendered line
+%% (`telemetry_ffi:log/2`); this handler keeps those lines and nothing else. The
+%% primary level is lowered to `info` for the capture, which is what the daemon
+%% runs at, and put back by the stop.
+log_capture_start() ->
+    Previous = maps:get(level, logger:get_primary_config()),
+    persistent_term:put({?MODULE, previous_level}, Previous),
+    _ = logger:set_primary_config(level, info),
+    _ = ets:new(loom_log_capture, [named_table, public, ordered_set]),
+    ok = logger:add_handler(loom_log_capture, ?MODULE, #{level => info}),
+    nil.
+
+%% The lines captured since `log_capture_start/0`, oldest first.
+log_capture_stop() ->
+    _ = logger:remove_handler(loom_log_capture),
+    Lines = [Line || {_, Line} <- ets:tab2list(loom_log_capture)],
+    ets:delete(loom_log_capture),
+    _ = logger:set_primary_config(level,
+                                  persistent_term:get({?MODULE, previous_level},
+                                                      notice)),
+    Lines.
+
+%% The logger handler callback.
+log(#{msg := {report, #{loom := Line}}}, _Config) ->
+    ets:insert(loom_log_capture, {erlang:unique_integer([monotonic]),
+                                  iolist_to_binary([Line])});
+log(_Event, _Config) ->
+    ok.
