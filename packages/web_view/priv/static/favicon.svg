@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 240 240" role="img" aria-labelledby="title">
+  <title id="title">Loom</title>
+  <style>
+    .weft { fill: #1c2225; }
+    @media (prefers-color-scheme: light) { .weft { fill: #1c2225; } }
+    @media (prefers-color-scheme: dark) { .weft { fill: #f7f4ed; } }
+  </style>
+  <defs>
+    <mask id="warp-gaps" maskUnits="userSpaceOnUse" x="0" y="0" width="240" height="240">
+      <rect width="240" height="240" fill="white"/>
+      <path d="M 96 80 H 142 V 124 H 96 Z M 46 136 H 92 V 180 H 46 Z M 146 136 H 192 V 180 H 146 Z" fill="black"/>
+    </mask>
+    <mask id="weft-gaps" maskUnits="userSpaceOnUse" x="0" y="0" width="240" height="240">
+      <rect width="240" height="240" fill="white"/>
+      <path d="M 46 80 H 92 V 124 H 46 Z M 146 80 H 192 V 124 H 146 Z M 96 136 H 142 V 180 H 96 Z" fill="black"/>
+    </mask>
+  </defs>
+  <g fill="#ffbd44" mask="url(#warp-gaps)">
+    <rect x="49" y="44" width="40" height="172" rx="20"/>
+    <rect x="99" y="16" width="40" height="188" rx="20"/>
+    <rect x="149" y="44" width="40" height="172" rx="20"/>
+  </g>
+  <g class="weft" mask="url(#weft-gaps)">
+    <rect x="18" y="83" width="202" height="38" rx="19"/>
+    <rect x="18" y="139" width="202" height="38" rx="19"/>
+  </g>
+</svg>
