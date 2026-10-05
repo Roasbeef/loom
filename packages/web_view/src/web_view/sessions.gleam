@@ -43,6 +43,14 @@ import gleam/string
 /// identity, and the list says nothing of the rest.
 pub const listed_limit = 100
 
+/// The most running sessions one activity read names. It is the daemon's own
+/// bound on `sessions.activity` (protocol-change/050): each answer is one
+/// row of at most 2,400 bytes under one 2,000 ms deadline, and the reply holds
+/// 24. A principal with more running sessions than this sees the activity of
+/// the first ones in the order the page draws them, and the rest show only
+/// that they are resident.
+pub const activity_limit = 24
+
 /// Whether a session has a running process behind it, which is the one live
 /// fact the catalogue read carries.
 pub type Residency {

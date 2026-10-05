@@ -318,7 +318,7 @@ pub fn the_activity_read_is_bounded_and_skips_a_page_with_nothing_running_test()
   let asked = process.new_subject()
   let ask = fn(ids, _) { process.send(asked, ids) }
   let many =
-    list.repeat(Nil, home.activity_limit + 6)
+    list.repeat(Nil, sessions.activity_limit + 6)
     |> list.index_map(fn(_, index) {
       let n = index + 1
       entry(string.inspect(n), "s", "/src/x", 1000 * n, Live)
@@ -331,8 +331,8 @@ pub fn the_activity_read_is_bounded_and_skips_a_page_with_nothing_running_test()
       ),
     )
   let assert Ok(ids) = process.receive(asked, 0)
-  assert list.length(ids) == home.activity_limit
-  assert list.first(ids) == Ok(string.inspect(home.activity_limit + 6))
+  assert list.length(ids) == sessions.activity_limit
+  assert list.first(ids) == Ok(string.inspect(sessions.activity_limit + 6))
 
   let _ =
     opened(

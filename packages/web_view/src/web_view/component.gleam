@@ -465,7 +465,7 @@ pub type Transport(socket) {
     /// Asks the daemon what the named running sessions are doing, for the
     /// sidebar's words and dots: the same read the home makes
     /// (`home.Start.activity`, protocol-change/050), for at most
-    /// `home.activity_limit` identities the page's own list holds, and the
+    /// `sessions.activity_limit` identities the page's own list holds, and the
     /// daemon keeps only those the page's credential holds. It returns at
     /// once: the daemon asks from a task of its own and `deliver` is called
     /// from there with one state for each session that answered, so the page's
@@ -1262,7 +1262,7 @@ fn observing(
   let running =
     list.flat_map(groups, fn(group) { group.entries })
     |> list.filter(fn(entry) { entry.residency == sessions.Live })
-    |> list.take(24)
+    |> list.take(sessions.activity_limit)
     |> list.map(fn(entry) { entry.id })
   case running {
     [] -> effect.none()
