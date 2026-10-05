@@ -495,6 +495,17 @@ type Message(instance) {
     Option(String),
     Subject(Result(#(String, Int), AdminError)),
   )
+
+  /// One principal's display name changed, as that principal or the owner
+  /// (protocol-change/065, PR 10). The name is the unjudged text the caller
+  /// typed; the catalogue trims and checks it in the transaction that writes.
+  RenamePrincipal(
+    access.Digest,
+    String,
+    Option(String),
+    String,
+    Subject(Result(access.Principal, AdminError)),
+  )
   Census(Subject(Summary))
 
   /// Answers the subject a session's domain currently settles on. Fixtures
@@ -973,6 +984,41 @@ pub fn revoke_logins(
     caller,
     epoch,
     target,
+    _,
+  ))
+  |> result.unwrap(Error(AdminUnavailable))
+}
+
+/// Changes one principal's display name: the caller's own when `target` is
+/// `None` or names the caller, and any principal's when the caller is the
+/// owner (protocol-change/065, PR 10). A member naming another principal is
+/// `AdminForbidden`. The caller and the epoch are checked in the same dispatch
+/// as the write, the name is judged by the rule a claim's chosen name is
+/// (`storage/access.rename`), and the authority memo is dropped before the
+/// reply so no later frame reads the old name. A refused name is
+/// `AdminMetadata(catalogue.Invalid(_))` and writes nothing. The answer is the
+/// principal as renamed. An origin already admitted keeps the name it was
+/// admitted under (`core/message`), since the name is read again only when a
+/// page or a session is admitted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.rename_principal(registry, caller, epoch, None, "Alex")
+/// ```
+@internal
+pub fn rename_principal(
+  manager: Manager(instance),
+  caller: access.Digest,
+  epoch: String,
+  target: Option(String),
+  name: String,
+) -> Result(access.Principal, AdminError) {
+  call.try_call(manager.commands, waiting: 5000, sending: RenamePrincipal(
+    caller,
+    epoch,
+    target,
+    name,
     _,
   ))
   |> result.unwrap(Error(AdminUnavailable))
@@ -2046,7 +2092,7 @@ fn handle(
     }
     Signins(caller, target, after, now_ms, reply) -> {
       let outcome = {
-        use principal_id <- result.try(sign_in_subject(book, caller, target))
+        use principal_id <- result.try(acting_on(book, caller, target))
         access.signins_page(book.catalogue, principal_id, after, now_ms)
         |> result.map(fn(page) { #(principal_id, page) })
         |> result.map_error(AdminMetadata)
@@ -2057,7 +2103,7 @@ fn handle(
     RevokeLogin(caller, epoch, target, fingerprint, reply) -> {
       let outcome = {
         use Nil <- result.try(current_epoch(phase, book, epoch))
-        use principal_id <- result.try(sign_in_subject(book, caller, target))
+        use principal_id <- result.try(acting_on(book, caller, target))
         access.revoke_login(book.catalogue, principal_id, fingerprint)
         |> result.map(fn(digest) { #(principal_id, digest) })
         |> result.map_error(AdminMetadata)
@@ -2069,9 +2115,20 @@ fn handle(
     RevokeLogins(caller, epoch, target, reply) -> {
       let outcome = {
         use Nil <- result.try(current_epoch(phase, book, epoch))
-        use principal_id <- result.try(sign_in_subject(book, caller, target))
+        use principal_id <- result.try(acting_on(book, caller, target))
         access.revoke_logins(book.catalogue, principal_id)
         |> result.map(fn(count) { #(principal_id, count) })
+        |> result.map_error(AdminMetadata)
+      }
+      let book = Book(..book, authority: dict.new())
+      process.send(reply, outcome)
+      sm.keep(book)
+    }
+    RenamePrincipal(caller, epoch, target, name, reply) -> {
+      let outcome = {
+        use Nil <- result.try(current_epoch(phase, book, epoch))
+        use principal_id <- result.try(acting_on(book, caller, target))
+        access.rename(book.catalogue, principal_id, name)
         |> result.map_error(AdminMetadata)
       }
       let book = Book(..book, authority: dict.new())
@@ -2339,10 +2396,10 @@ fn authenticated_owner(book: Book(instance), digest) {
   }
 }
 
-// Whose sign-ins a caller may read or revoke: its own, or any principal's when
-// the caller is the owner. The caller is authenticated first, as the kind its
+// Whose sign-ins a caller may read or revoke, or whose name it may change: its
+// own, or any principal's when the caller is the owner. The caller is authenticated first, as the kind its
 // digest was made as, so a revoked login reads and revokes nothing.
-fn sign_in_subject(
+fn acting_on(
   book: Book(instance),
   caller: access.Digest,
   target: Option(String),

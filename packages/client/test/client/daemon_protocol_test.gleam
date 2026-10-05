@@ -471,3 +471,77 @@ pub fn peer_send_decodes_bounded_identity_and_payload_test() {
     })
   })
 }
+
+// `principals.rename` (protocol-change/065, the tenth pull request) decodes a
+// name of any text up to 1024 bytes, blank included, so the catalogue's rule is
+// the only one that judges it, and an optional principal. Every malformed shape
+// is refused before the daemon acts, and no wire field can carry a different
+// command's meaning.
+pub fn principal_rename_decodes_a_name_and_an_optional_principal_test() {
+  assert protocol.decode(
+      envelope(1, "principals.rename", [
+        #("name", json.String("Mira")),
+        #("epoch", json.String("e1")),
+      ]),
+    )
+    == Ok(protocol.Request(1, protocol.RenamePrincipal(None, "Mira", "e1")))
+  assert protocol.decode(
+      envelope(2, "principals.rename", [
+        #("principal_id", json.String("guest-1a2b3c4d")),
+        #("name", json.String("  Mira K  ")),
+        #("epoch", json.String("e1")),
+      ]),
+    )
+    == Ok(protocol.Request(
+      2,
+      protocol.RenamePrincipal(Some("guest-1a2b3c4d"), "  Mira K  ", "e1"),
+    ))
+
+  // A blank or control-bearing name is decoded as it is: refusing it is the
+  // catalogue's, so the refusal is `invalid_name` and not `bad_request`.
+  list.each(["", "   ", "line\nbreak", string.repeat("x", 1024)], fn(name) {
+    assert protocol.decode(
+        envelope(3, "principals.rename", [
+          #("name", json.String(name)),
+          #("epoch", json.String("e1")),
+        ]),
+      )
+      == Ok(protocol.Request(3, protocol.RenamePrincipal(None, name, "e1")))
+  })
+}
+
+pub fn principal_rename_refuses_malformed_requests_test() {
+  let epoch = #("epoch", json.String("e1"))
+  list.each(
+    [
+      // No name, a name that is not text, a name past the frame's bound.
+      [epoch],
+      [#("name", json.Null), epoch],
+      [#("name", json.Int(1)), epoch],
+      [#("name", json.Array([])), epoch],
+      [#("name", json.String(string.repeat("x", 1025))), epoch],
+
+      // A principal that is not text, empty or past its bound.
+      [#("name", json.String("Mira")), #("principal_id", json.Int(1)), epoch],
+      [
+        #("name", json.String("Mira")),
+        #("principal_id", json.String("")),
+        epoch,
+      ],
+      [
+        #("name", json.String("Mira")),
+        #("principal_id", json.String(string.repeat("x", 129))),
+        epoch,
+      ],
+
+      // No epoch, or one that is not text.
+      [#("name", json.String("Mira"))],
+      [#("name", json.String("Mira")), #("epoch", json.Int(1))],
+    ],
+    fn(fields) {
+      assert result.is_error(
+        protocol.decode(envelope(4, "principals.rename", fields)),
+      )
+    },
+  )
+}

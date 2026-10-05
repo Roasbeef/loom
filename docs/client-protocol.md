@@ -536,7 +536,7 @@ Source: (`client/daemon/server.gleam:839-860`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:2621`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:2647`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -1077,7 +1077,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:797`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:825`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -1263,6 +1263,34 @@ lowercase hexadecimal characters is `bad_request`. It carries the daemon
 credentials or rotating a member ends every login of that member too.
 
 Errors: `forbidden`, `not_found`, `bad_request`, `stale_epoch`, `unavailable`.
+
+### 3.26 `principals.rename`
+
+A principal's display name ([protocol-change/065](../protocol-change/065-web-workspace-mode.md),
+the tenth pull request). A member omits `principal_id` and renames itself, and
+naming itself is the same; a member naming another principal is `forbidden`. The
+owner may name any principal, itself included. The caller's credential and the
+`epoch` are authenticated in the registry's own turn, so a credential revoked a
+moment ago renames nothing, and the command is refused during a drain.
+
+```json
+{"v":2,"id":17,"cmd":"principals.rename","body":{"principal_id":"guest-1a2b3c4d","name":"Mira","epoch":"..."}}
+{"v":2,"reply_to":17,"event":"principals.rename","body":{"principal_id":"guest-1a2b3c4d","name":"Mira"}}
+```
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `principal_id` | string | optional | The principal to rename, at most 128 bytes. Absent means the caller. |
+| `name` | string | required | The new display name, at most 1024 bytes on the wire. It is trimmed and then held to the rule a claim's chosen name is held to: not blank, at most 256 bytes, no control, zero-width or direction-changing character. |
+| `epoch` | string | required | The daemon epoch, as every mutation carries. |
+
+The reply carries the name as stored, which is the trimmed text. A name the rule
+refuses is `invalid_name` and stores nothing; an unknown principal is `not_found`.
+Sessions and pages already admitted keep the name they were admitted under, and the
+next admission reads the new one.
+
+Errors: `forbidden`, `invalid_name`, `not_found`, `bad_request`, `stale_epoch`,
+`unavailable`.
 
 ---
 
@@ -3453,7 +3481,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:426`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:437`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
    `protocol-change/053` adds a third route, `/v2/claim`, with its one
