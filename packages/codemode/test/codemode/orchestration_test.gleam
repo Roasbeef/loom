@@ -605,6 +605,7 @@ pub fn every_agency_refusal_keeps_its_name_test() {
       received: json.Object([]),
       mismatch: agent.FieldMissing(name: "ok", expects: agent.BooleanField),
     ),
+    agent.ToolNotHeld(tool: "agent_send"),
     agent.PlaneFailed(reason: "down"),
   ]
   assert list.all(cases, fn(refusal) {
@@ -642,6 +643,7 @@ fn expected_code(refusal: agent.Refusal) -> String {
     agent.NameAlreadyMinted(..) -> "name_already_minted"
     agent.ParentRunEnded(..) -> "parent_run_ended"
     agent.ResultSchemaUnmet(..) -> "result_schema_unmet"
+    agent.ToolNotHeld(..) -> "tool_not_held"
     agent.PlaneFailed(..) -> "plane_failed"
   }
 }
@@ -1026,15 +1028,31 @@ pub fn the_check_asks_at_every_call_not_at_install_test() {
       ..fake_agency.admitting(recorder(), fake_agency.always_completed),
       holds: fn(_caller, _tool) {
         case process.receive(grants, 0) {
-          Ok(Nil) -> True
-          Error(Nil) -> False
+          Ok(Nil) -> Ok(Nil)
+          Error(Nil) -> Error(agent.ToolNotHeld(tool: "agent_roster"))
         }
       },
     )
-  let route = orchestration.router(seam(agency))
-  let assert Ok(_first) = route(request("strand.roster", map([]), 0))
-  let assert Error(denial) = route(request("strand.roster", map([]), 1))
-  assert denial.code == "tool_not_held"
+  let assert framing.CapOk(..) = serviced(agency, "strand.roster", map([]), 0)
+    as "the queued grant must serve the first call"
+  let assert framing.CapErr(code:, ..) =
+    serviced(agency, "strand.roster", map([]), 1)
+    as "the second call must be refused"
+  assert code == "tool_not_held"
+}
+
+pub fn a_fault_in_the_question_is_not_reported_as_policy_test() {
+  // A holder that is down is "try again", under its own code, and the
+  // Agency is still not called.
+  let seen = recorder()
+  let agency =
+    agent.Agency(
+      ..fake_agency.admitting(seen, fake_agency.always_completed),
+      holds: fn(_caller, _tool) { Error(agent.AgencyUnavailable) },
+    )
+  let #(code, _message) = refused_by(agency, "strand.roster", map([]))
+  assert code == "strands_unavailable"
+  assert fake_agency.drain(seen) == []
 }
 
 pub fn the_check_is_asked_as_the_dispatching_strand_test() {
@@ -1045,11 +1063,10 @@ pub fn the_check_is_asked_as_the_dispatching_strand_test() {
       ..fake_agency.admitting(recorder(), fake_agency.always_completed),
       holds: fn(caller: agent.Caller, _tool) {
         process.send(asked, caller.strand)
-        True
+        Ok(Nil)
       },
     )
-  let _plan =
-    orchestration.router(seam(agency))(request("strand.roster", map([]), 0))
+  let _outcome = serviced(agency, "strand.roster", map([]), 0)
   assert process.receive(asked, 0) == Ok("main")
 }
 

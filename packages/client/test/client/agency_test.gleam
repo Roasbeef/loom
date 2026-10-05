@@ -738,15 +738,18 @@ pub fn the_agency_reports_which_tools_a_strand_holds_test() {
       agent.SpawnRequest(..a_spawn("narrow"), tools: Some(["fs_read"])),
     )
     as "narrowing must be accepted"
-  assert harness.seam.holds(caller, "agent_spawn")
-  assert !harness.seam.holds(caller, "agent_send")
+  assert harness.seam.holds(caller, "agent_spawn") == Ok(Nil)
+  assert harness.seam.holds(caller, "agent_send")
+    == Error(agent.ToolNotHeld(tool: "agent_send"))
     as "a tool the parent was never given is not held"
   let child = caller_on(spawned.strand, "turn-1:holds", 1)
-  assert harness.seam.holds(child, "fs_read")
-  assert !harness.seam.holds(child, "agent_spawn")
+  assert harness.seam.holds(child, "fs_read") == Ok(Nil)
+  assert harness.seam.holds(child, "agent_spawn")
+    == Error(agent.ToolNotHeld(tool: "agent_spawn"))
     as "narrowing the child withdraws the tool from it"
-  assert !harness.seam.holds(caller_on("ghost", "turn-1:holds", 2), "fs_read")
-    as "a strand with no configuration holds nothing"
+  assert harness.seam.holds(caller_on("ghost", "turn-1:holds", 2), "fs_read")
+    == Error(agent.NotAddressable(strand: "ghost"))
+    as "a strand with no configuration is not addressable, and proceeds nowhere"
   close(harness)
 }
 

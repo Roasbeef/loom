@@ -1211,13 +1211,13 @@ pub fn a_send_without_agent_send_is_refused_by_the_router_test() {
 
 pub fn a_call_as_an_unknown_strand_fails_closed_test() {
   // The caller identity comes from the dispatching `Ctx`, never from the
-  // program — and a name the session does not know holds no tool at all,
-  // so it is refused rather than treated as a root with no constraints.
+  // program — and a name the session does not know is refused rather than
+  // treated as a root with no constraints.
   let live = start_runtime()
   let #(code, message) =
     refused(live, "sub:main/nobody-9-9", "strand.spawn", spawn_args("review"))
-  assert code == "tool_not_held"
-  assert string.contains(message, "agent_spawn")
+  assert code == "not_addressable"
+  assert string.contains(message, "sub:main/nobody-9-9")
 }
 
 pub fn a_send_outside_the_lineage_is_refused_by_name_test() {
@@ -1366,7 +1366,7 @@ fn none_agency() -> agent.Agency {
     roster: fn(_caller) { Error(agent.AgencyUnavailable) },
     max_wait_ms: 30_000,
     model_names: [],
-    holds: fn(_caller, _tool) { True },
+    holds: fn(_caller, _tool) { Ok(Nil) },
   )
 }
 

@@ -14,7 +14,7 @@
 //// contract, and every refusal name are the tools', and this module's job
 //// is to carry a call across the wire and carry the answer back.
 ////
-//// One check does precede the Agency: a capability is refused when the
+//// One check does precede the Agency, inside the serving worker: a capability is refused when the
 //// calling strand's active tool list lacks the `agent_*` tool that does
 //// the same thing (`authorizing_tool`). The Agency's own rules bound what
 //// a strand may reach, but the tool list is how a parent decides what a
@@ -23,19 +23,22 @@
 ////
 //// ## Flow
 ////
-//// Inbound: `router` → `check_held` → one `*_plan` function → the Agency
-//// → `answered` or `refused`
+//// Inbound: `router` → `planned` → one `*_plan` function → `held_first` →
+//// `check_held` → the Agency → `answered` or `refused`
 ////
-//// 1. `router` receives one decoded capability frame and first asks
-////    `check_held` whether the calling strand holds the tool
-////    `authorizing_tool` names for that capability. A strand that does not
-////    is refused with the in-band code "tool_not_held" before any argument
-////    is read.
-//// 2. Otherwise `router` dispatches on the capability name to
-////    `spawn_plan`, `wait_plan`, `send_plan`, `note_plan`, `notes_plan` or
-////    `roster_plan`. Each decodes its arguments totally and builds a
-////    `Caller` with `caller_of`.
-//// 3. The plan it returns runs the Agency closure. `answered` carries the
+//// 1. `router` receives one decoded capability frame inside the satellite
+////    actor and does only cheap work: `planned` dispatches on the
+////    capability name to `spawn_plan`, `wait_plan`, `send_plan`,
+////    `note_plan`, `notes_plan` or `roster_plan`. Each decodes its
+////    arguments totally and builds a `Caller` with `caller_of`.
+//// 2. `held_first` wraps the plan that comes back, so the check runs in the
+////    worker that serves it and not in the actor. When the worker runs the
+////    plan, `check_held` first asks whether the calling strand holds the
+////    tool `authorizing_tool` names for that capability. A tool that is
+////    genuinely absent is refused with the in-band code "tool_not_held"; a
+////    holder that is down or a store that cannot be read is refused under
+////    its own code. Either way the Agency is not called.
+//// 3. Otherwise the plan runs the Agency closure. `answered` carries the
 ////    reply back, and `refused` carries an Agency refusal back under the
 ////    name `refusal_code` gives it.
 ////
@@ -241,15 +244,6 @@ pub const notes_ceiling = 64
 /// below.
 pub const spawn_ceiling_code = "spawn_ceiling"
 
-/// The in-band code a capability refused for want of its `agent_*` tool
-/// travels under.
-///
-/// `cap/strand.map_error` has no variant for it and decodes it to
-/// `StrandRefused` with the code verbatim, which is the vocabulary's
-/// provision for a name it has not learned. A program that wants to branch
-/// on it matches the code; one that only reports reads the message.
-pub const tool_not_held_code = "tool_not_held"
-
 /// The in-band code every other ceiling refusal travels under.
 ///
 /// One code and one decoded variant for the three, not three of each. A
@@ -365,29 +359,36 @@ pub fn ceilings(
 ///
 pub fn router(seam: Orchestration) -> CapRouter {
   fn(request: CapRequest) {
-    use Nil <- result.try(check_held(seam, request))
+    planned(seam, request) |> result.map(held_first(seam, request, _))
+  }
+}
 
-    // Gleam patterns cannot name a constant, so the arms below are string
-    // literals while `serviced_caps` holds the constants — two lists that
-    // could drift. `orchestration_test` walks `serviced_caps` and asserts
-    // each one routes, which is what keeps them the same list.
-    case request.cap {
-      "strand.spawn" -> spawn_plan(seam, request)
-      "strand.wait" -> wait_plan(seam, request)
-      "strand.send" -> send_plan(seam, request)
-      "strand.note" -> note_plan(seam, request)
-      "strand.notes" -> notes_plan(seam, request)
-      "strand.roster" -> roster_plan(seam, request)
-      "report.emit" -> artifact.plan(seam.emit, request)
-      other ->
-        Error(CapDenial(
-          code: "unsupported_cap",
-          message: "capability "
-            <> other
-            <> " is not handled by the child-operation router, which services "
-            <> string.join(serviced_caps, ", "),
-        ))
-    }
+// Decodes one frame into the plan that serves it.
+//
+// Gleam patterns cannot name a constant, so the arms below are string
+// literals while `serviced_caps` holds the constants — two lists that
+// could drift. `orchestration_test` walks `serviced_caps` and asserts
+// each one routes, which is what keeps them the same list.
+fn planned(
+  seam: Orchestration,
+  request: CapRequest,
+) -> Result(CapPlan, CapDenial) {
+  case request.cap {
+    "strand.spawn" -> spawn_plan(seam, request)
+    "strand.wait" -> wait_plan(seam, request)
+    "strand.send" -> send_plan(seam, request)
+    "strand.note" -> note_plan(seam, request)
+    "strand.notes" -> notes_plan(seam, request)
+    "strand.roster" -> roster_plan(seam, request)
+    "report.emit" -> artifact.plan(seam.emit, request)
+    other ->
+      Error(CapDenial(
+        code: "unsupported_cap",
+        message: "capability "
+          <> other
+          <> " is not handled by the child-operation router, which services "
+          <> string.join(serviced_caps, ", "),
+      ))
   }
 }
 
@@ -414,40 +415,70 @@ fn authorizing_tool(cap: String) -> Option(String) {
     "strand.note" -> Some("agent_note")
     "strand.notes" -> Some("agent_notes")
     "strand.roster" -> Some("agent_roster")
-    "report.emit" -> None
     _ -> None
   }
 }
 
+// Wraps a served plan so the tool check runs in the worker that serves it.
+//
+// `router` runs inside the satellite actor's handler, which does only cheap
+// checks before anything is spawned. The check is a holder call plus a
+// store read, and a slow holder would serialise the execution's whole cap
+// channel and, on a timeout, take the actor and the execution down instead
+// of one call. So `router` still only decodes, and the wrapped `serve`
+// asks first and answers a refusal in-band before the Agency is touched.
+// Only `ServedHere` plans are wrapped: this router returns no other
+// variant for a gated capability, and the others pass through unchanged.
+fn held_first(
+  seam: Orchestration,
+  request: CapRequest,
+  plan: CapPlan,
+) -> CapPlan {
+  case plan {
+    ServedHere(serve:) ->
+      ServedHere(fn() {
+        case check_held(seam, request) {
+          Ok(Nil) -> serve()
+          Error(outcome) -> outcome
+        }
+      })
+    satellite.ClearedCall(..) -> plan
+    satellite.ScopedService(..) -> plan
+  }
+}
+
 // Refuses a capability whose authorizing tool the calling strand does not
-// hold, before any argument is decoded and before the Agency is asked
-// anything.
+// hold, before the Agency is asked anything.
 //
 // The question goes to the Agency on every call instead of being answered
 // once when the router is built. The active set is durable configuration
 // that a `set_config` can change while a program is blocked in a `wait`, and
 // a snapshot taken at install would keep granting what the operator just
-// withdrew. The refusal is the in-band `tool_not_held`, which the `cap`
-// side reads as a refusal carrying the code verbatim; the message names the
-// capability and the tool so a program (and the model reading its output)
-// can tell a withheld tool from a rejected argument.
+// withdrew. A tool genuinely missing is the in-band `tool_not_held`, which
+// the `cap` side reads as a refusal carrying the code verbatim; its message
+// names the capability and the tool so a program (and the model reading its
+// output) can tell a withheld tool from a rejected argument. Any other
+// refusal from the question (a holder that is down, an unreadable store)
+// keeps its own code, so a transient fault does not read as policy, and
+// still stops the call.
 fn check_held(
   seam: Orchestration,
   request: CapRequest,
-) -> Result(Nil, CapDenial) {
+) -> Result(Nil, CapOutcome) {
   case authorizing_tool(request.cap) {
     None -> Ok(Nil)
     Some(tool) ->
       case seam.agency.holds(caller_of(seam, request), tool) {
-        True -> Ok(Nil)
-        False ->
-          Error(CapDenial(
-            code: tool_not_held_code,
+        Ok(Nil) -> Ok(Nil)
+        Error(agent.ToolNotHeld(tool:)) ->
+          Error(framing.CapErr(
+            code: refusal_code(agent.ToolNotHeld(tool:)),
             message: request.cap
               <> " needs "
               <> tool
               <> ", which this strand does not hold",
           ))
+        Error(refusal) -> Error(refused(refusal))
       }
   }
 }
@@ -1034,6 +1065,12 @@ pub fn refusal_code(refusal: Refusal) -> String {
     agent.UnknownTool(..) -> "unknown_tool"
     agent.InvalidArgument(..) -> "invalid_argument"
     agent.NameAlreadyMinted(..) -> "name_already_minted"
+
+    // `cap/strand.map_error` has no variant for this code and decodes it to
+    // `StrandRefused` with the code verbatim, which is the vocabulary's
+    // provision for a name it has not learned. A program that wants to
+    // branch on it matches the code; one that only reports reads the message.
+    agent.ToolNotHeld(..) -> "tool_not_held"
     agent.ParentRunEnded(..) -> "parent_run_ended"
     agent.ResultSchemaUnmet(..) -> "result_schema_unmet"
     agent.PlaneFailed(..) -> "plane_failed"

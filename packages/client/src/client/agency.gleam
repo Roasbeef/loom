@@ -448,20 +448,18 @@ fn seam_with_custody(
   )
 }
 
-// Whether `strand`'s durable active tool list names `tool`, read at call
-// time from the same cell the tool registry's clearance reads. Every way
-// of not knowing answers no: an absent holder, a strand with no
-// configuration cell, and an unreadable cell all mean the question has no
-// affirmative answer, and a missing answer must never read as a grant.
-fn holds(config: Config, strand: String, tool: String) -> Bool {
-  case borrow(config) {
-    Error(_unavailable) -> False
-    Ok(runtime) ->
-      case read_configuration(runtime, strand) {
-        Error(_refusal) -> False
-        Ok(configuration) ->
-          list.contains(configuration.active_tool_names, tool)
-      }
+// `Ok` when `strand`'s durable active tool list names `tool`, read at call
+// time from the same cell the tool registry's clearance reads. Only a tool
+// genuinely missing from a readable list is `ToolNotHeld`. A holder that is
+// down, an unreadable store and a strand with no configuration cell keep
+// their own refusals, so a transient fault reads as one rather than as
+// policy; every `Error` still means the caller proceeds no further.
+fn holds(config: Config, strand: String, tool: String) -> Result(Nil, Refusal) {
+  use runtime <- result.try(borrow(config))
+  use configuration <- result.try(read_configuration(runtime, strand))
+  case list.contains(configuration.active_tool_names, tool) {
+    True -> Ok(Nil)
+    False -> Error(agent.ToolNotHeld(tool:))
   }
 }
 
