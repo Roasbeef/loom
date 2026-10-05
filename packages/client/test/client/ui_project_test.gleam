@@ -1,13 +1,13 @@
 //// The project a workspace belongs to (`client/daemon/ui_project`), read from
-//// real directories: a git worktree's pointer file, a plain repository, a
-//// directory that is no repository, and pointers that lead nowhere. Then the
-//// cache that derives each workspace once.
+//// real directories: a git worktree's pointer file confirmed by the
+//// repository's backlink, a plain repository, a directory that is no
+//// repository, and pointers that lead nowhere or that the repository does not
+//// confirm.
 
 import broker/token
 import client/daemon/ui_project
 import client/daemon/ui_socket
 import gleam/bit_array
-import gleam/dict
 import gleam/option.{None, Some}
 import host/bootstrap
 import simplifile
@@ -26,21 +26,20 @@ fn fresh() -> String {
 }
 
 // A repository at `root`, with a worktree named `name` checked out at `tree`
-// whose `.git` file points at it, as `git worktree add` writes.
+// whose `.git` file points at it and whose record in the repository names it
+// back, as `git worktree add` writes both.
 fn repository_with_worktree(root: String, tree: String, name: String) -> Nil {
-  let assert Ok(Nil) =
-    simplifile.create_directory_all(root <> "/.git/worktrees/" <> name)
+  let record = root <> "/.git/worktrees/" <> name
+  let assert Ok(Nil) = simplifile.create_directory_all(record)
   let assert Ok(Nil) = simplifile.create_directory_all(tree)
   let assert Ok(Nil) =
-    simplifile.write(
-      tree <> "/.git",
-      "gitdir: " <> root <> "/.git/worktrees/" <> name <> "\n",
-    )
+    simplifile.write(tree <> "/.git", "gitdir: " <> record <> "\n")
+  let assert Ok(Nil) = simplifile.write(record <> "/gitdir", tree <> "/.git\n")
   Nil
 }
 
 // A worktree under `<repo>/.claude/worktrees/` is grouped under the
-// repository's own directory, which is where its pointer leads.
+// repository's own directory, where its confirmed pointer leads.
 pub fn a_worktree_belongs_to_the_repository_its_pointer_names_test() {
   let base = fresh()
   let root = base <> "/btcd"
@@ -56,11 +55,12 @@ pub fn a_relative_pointer_is_resolved_from_the_worktree_test() {
   let base = fresh()
   let root = base <> "/lnd"
   let tree = base <> "/lnd-fix"
-  let assert Ok(Nil) =
-    simplifile.create_directory_all(root <> "/.git/worktrees/fix")
+  let record = root <> "/.git/worktrees/fix"
+  let assert Ok(Nil) = simplifile.create_directory_all(record)
   let assert Ok(Nil) = simplifile.create_directory_all(tree)
   let assert Ok(Nil) =
     simplifile.write(tree <> "/.git", "gitdir: ../lnd/.git/worktrees/fix\n")
+  let assert Ok(Nil) = simplifile.write(record <> "/gitdir", tree <> "/.git\n")
 
   assert ui_project.locate(tree) == Some(root)
 }
@@ -80,11 +80,12 @@ pub fn a_bare_repositorys_worktree_belongs_to_the_bare_directory_test() {
   let base = fresh()
   let root = base <> "/weft.git"
   let tree = base <> "/weft-main"
-  let assert Ok(Nil) =
-    simplifile.create_directory_all(root <> "/worktrees/main")
+  let record = root <> "/worktrees/main"
+  let assert Ok(Nil) = simplifile.create_directory_all(record)
   let assert Ok(Nil) = simplifile.create_directory_all(tree)
   let assert Ok(Nil) =
-    simplifile.write(tree <> "/.git", "gitdir: " <> root <> "/worktrees/main\n")
+    simplifile.write(tree <> "/.git", "gitdir: " <> record <> "\n")
+  let assert Ok(Nil) = simplifile.write(record <> "/gitdir", tree <> "/.git\n")
 
   assert ui_project.locate(tree) == Some(root)
 }
@@ -100,8 +101,7 @@ pub fn a_directory_that_is_no_repository_has_no_project_test() {
 }
 
 // A pointer that cannot be followed is no project: text that is not a pointer,
-// a path that is not a worktree's, a repository that was deleted, and a file
-// too large to be a pointer.
+// a path that is not a worktree's, and a repository that was deleted.
 pub fn a_pointer_that_leads_nowhere_has_no_project_test() {
   let base = fresh()
 
@@ -124,43 +124,68 @@ pub fn a_pointer_that_leads_nowhere_has_no_project_test() {
       "gitdir: " <> base <> "/deleted/.git/worktrees/orphan\n",
     )
   assert ui_project.locate(orphan) == None
-
-  let huge = base <> "/huge"
-  let assert Ok(Nil) = simplifile.create_directory_all(huge)
-  let assert Ok(Nil) =
-    simplifile.write(huge <> "/.git", "gitdir: " <> string_of(5000))
-  assert ui_project.locate(huge) == None
 }
 
-fn string_of(count: Int) -> String {
+// A hostile `.git` can point at any repository on the host. The pointer is
+// accepted only when the repository's own record of the worktree names this
+// workspace, so the same pointer is refused without the backlink, refused when
+// the backlink names another workspace, and accepted when it names this one.
+pub fn a_pointer_needs_the_repositorys_backlink_test() {
+  let base = fresh()
+  let root = base <> "/victim"
+  let record = root <> "/.git/worktrees/real"
+  let assert Ok(Nil) = simplifile.create_directory_all(record)
+  let hostile = base <> "/hostile"
+  let assert Ok(Nil) = simplifile.create_directory_all(hostile)
+  let assert Ok(Nil) =
+    simplifile.write(hostile <> "/.git", "gitdir: " <> record <> "\n")
+
+  // A real repository, but no backlink at all.
+  assert ui_project.locate(hostile) == None
+
+  // A backlink to some other worktree.
+  let assert Ok(Nil) =
+    simplifile.write(record <> "/gitdir", base <> "/elsewhere/.git\n")
+  assert ui_project.locate(hostile) == None
+
+  // The repository's record names this workspace.
+  let assert Ok(Nil) =
+    simplifile.write(record <> "/gitdir", hostile <> "/.git\n")
+  assert ui_project.locate(hostile) == Some(root)
+}
+
+// The size cap is checked before anything is read. A valid, confirmed pointer
+// padded past the cap with newlines is refused, so this fails if the cap goes;
+// the same goes for a backlink padded past it.
+pub fn a_pointer_past_the_size_cap_is_never_read_test() {
+  let base = fresh()
+  let root = base <> "/btcd"
+  let tree = base <> "/padded"
+  repository_with_worktree(root, tree, "padded")
+  assert ui_project.locate(tree) == Some(root)
+
+  let record = root <> "/.git/worktrees/padded"
+  let padding = newlines(5000)
+  let assert Ok(Nil) =
+    simplifile.write(tree <> "/.git", "gitdir: " <> record <> "\n" <> padding)
+  assert ui_project.locate(tree) == None
+
+  let assert Ok(Nil) =
+    simplifile.write(tree <> "/.git", "gitdir: " <> record <> "\n")
+  let assert Ok(Nil) =
+    simplifile.write(record <> "/gitdir", tree <> "/.git\n" <> padding)
+  assert ui_project.locate(tree) == None
+}
+
+fn newlines(count: Int) -> String {
   case count {
     0 -> ""
-    _ -> "x" <> string_of(count - 1)
+    _ -> "\n" <> newlines(count - 1)
   }
 }
 
-// The cache answers for every workspace it is asked about and remembers the
-// answer: a pointer rewritten after the first read does not change it.
-pub fn the_cache_derives_each_workspace_once_test() {
-  let base = fresh()
-  let root = base <> "/btcd"
-  let tree = root <> "/.claude/worktrees/one"
-  repository_with_worktree(root, tree, "one")
-  let notes = base <> "/notes"
-  let assert Ok(Nil) = simplifile.create_directory_all(notes)
-  let assert Ok(projects) = ui_project.start()
-
-  let first = ui_project.of(projects, [tree, notes, tree])
-  assert first == dict.from_list([#(tree, Some(root)), #(notes, None)])
-
-  // The worktree is removed. The cache still answers as it did.
-  let assert Ok(Nil) = simplifile.delete(tree)
-  assert ui_project.of(projects, [tree])
-    == dict.from_list([#(tree, Some(root))])
-}
-
-// The daemon fills each listed entry's project from the cache, by the
-// workspace the catalogue recorded, and leaves one that has none as it was.
+// The daemon fills each listed entry's project from the disk, by the workspace
+// the catalogue recorded, and leaves one that has none without.
 pub fn listed_entries_take_the_project_of_their_workspace_test() {
   let base = fresh()
   let root = base <> "/btcd"
@@ -168,11 +193,10 @@ pub fn listed_entries_take_the_project_of_their_workspace_test() {
   repository_with_worktree(root, tree, "one")
   let notes = base <> "/notes"
   let assert Ok(Nil) = simplifile.create_directory_all(notes)
-  let assert Ok(projects) = ui_project.start()
   let in_tree =
     sessions.Entry("a", "", tree, 0, sessions.Saved, None, None, None)
   let in_notes = sessions.Entry(..in_tree, id: "b", workspace: notes)
 
-  assert ui_socket.with_projects([in_tree, in_notes], projects)
+  assert ui_socket.with_projects([in_tree, in_notes])
     == [sessions.Entry(..in_tree, project: Some(root)), in_notes]
 }

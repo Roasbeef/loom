@@ -663,11 +663,11 @@ tick (an observer's page is given an empty list and draws no sidebar, so a
 stolen observer link does not disclose the principal's other sessions),
 groups it by project (`web_view/sessions`), and `view/sidebar`
 draws it as the frame's second child (the left column). A project is the
-repository a session's workspace belongs to: the daemon derives it once per
-workspace from the filesystem (`client/daemon/ui_project`: a plain checkout is
-its own project, a git worktree's `.git` file is followed to the main
-repository, anything else has none) and keeps the answer in a small actor, so
-the lists never touch the disk on a refresh. It reaches the component as the
+repository a session's workspace belongs to: the daemon reads it from the
+filesystem (`client/daemon/ui_project`: a plain checkout is its own project, a
+git worktree's `.git` file is followed to the main repository and accepted only
+when the repository's own backlink names the worktree, anything else has none),
+with no cache, in the same task that reads the catalogue. It reaches the component as the
 entry's `project` field, in process and not on a wire, so it needs no protocol
 addendum. The heading is the project's directory name, qualified by its parent
 directory when two projects share one; a worktree's row leads its quiet line with the

@@ -21,7 +21,6 @@ import client/daemon/root
 import client/daemon/server
 import client/daemon/ui_assets
 import client/daemon/ui_login
-import client/daemon/ui_project
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
 import client/daemon_claim_test
@@ -179,8 +178,6 @@ fn fixture_lasting(
       session_ms:,
     ))
     as "the web view's tables start"
-  let assert Ok(projects) = ui_project.start()
-    as "the web view's project cache starts"
 
   // The login's root key is read or drawn as the daemon's own start does, so a
   // test that forges a token reads the same key back from the state directory.
@@ -226,7 +223,6 @@ fn fixture_lasting(
                 attachment,
                 gateway.Gateway(name: addresses.new()),
                 sessions,
-                projects,
                 open,
                 register,
                 seen,
@@ -265,7 +261,6 @@ fn fixture_lasting(
                     request,
                     attachment,
                     sessions,
-                    projects,
                     open,
                     seen,
                   )
