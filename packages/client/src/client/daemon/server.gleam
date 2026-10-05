@@ -733,17 +733,22 @@ fn entered(
   let page_cookie = ui_http.set_cookie(redeemed.cookie, redeemed.key)
   let minted = case redeemed.grant.remember {
     ui_sessions.Remembered -> remembered(config, ui, redeemed)
-    ui_sessions.Forgotten -> option.None
+    ui_sessions.Forgotten -> Ok(option.None)
   }
   case minted {
-    option.None ->
+    // A device link exists to set a login, so one whose login cannot be set
+    // opens no page at all. Opening it without would leave a page with no
+    // login and no parent, whose own device link would then start a family of
+    // thirty fresh days past the one the link came from.
+    Error(Nil) -> refused_home(401, ending.LinkExpired)
+    Ok(option.None) ->
       document(
         200,
         "text/html; charset=utf-8",
         page.enter(next, redeemed.nonce),
       )
       |> response.set_header("set-cookie", page_cookie)
-    option.Some(login) ->
+    Ok(option.Some(login)) ->
       document(
         200,
         "text/html; charset=utf-8",
@@ -758,16 +763,22 @@ fn entered(
 }
 
 // The login a remembered exchange sets, written to the catalogue and attached to
-// the page the exchange opened. A daemon that is not ready, or a row that was
-// refused, sets none: the page still opens, as one a person declined a login
-// for, and the person can run `loom ui` again.
+// the page the exchange opened. A ticket with no issuing login is a person's
+// own `loom ui`: when the daemon is not ready or the row is refused, the page
+// still opens with none, and the person can run `loom ui` again. A ticket
+// minted under a login is a device link, which never opens without one, so the
+// same failures, and a parent whose time has run out, are an `Error`.
 fn remembered(
   config: Config(instance),
   ui: Ui(instance),
   redeemed: ui_sessions.Redeemed,
-) -> Option(ui_login.Minted) {
+) -> Result(Option(ui_login.Minted), Nil) {
+  let none = case redeemed.login {
+    option.None -> Ok(option.None)
+    option.Some(_) -> Error(Nil)
+  }
   case ready(config, upgrade_log.Page) {
-    Error(_) -> option.None
+    Error(_) -> none
     Ok(state) ->
       case
         ui_login.issue(
@@ -778,10 +789,10 @@ fn remembered(
           bootstrap.system_time_ms(),
         )
       {
-        Error(_) -> option.None
+        Error(_) -> none
         Ok(minted) -> {
           ui_sessions.attach_login(ui.sessions, redeemed.cookie, minted.issuer)
-          option.Some(minted)
+          Ok(option.Some(minted))
         }
       }
   }

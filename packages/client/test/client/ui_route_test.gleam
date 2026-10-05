@@ -642,6 +642,19 @@ fn signing_from_home(
   open: fn() -> Result(Int, Nil),
 ) {
   let standing = ui_socket.home_standing(attachment, seen)
+
+  // `x-login-ended` asks as a page whose login ran out a moment ago would, for
+  // a test that cannot wait thirty days.
+  let standing = case req.get_header(request, "x-login-ended") {
+    Ok(_) ->
+      ui_socket.Standing(
+        ..standing,
+        login: option.map(standing.login, fn(issuer) {
+          ui_sessions.Issuer(..issuer, expires_at_ms: 0)
+        }),
+      )
+    Error(Nil) -> standing
+  }
   let answer = case
     req.get_header(request, "x-sign-out"),
     req.get_header(request, "x-sign-out-all"),
@@ -4562,12 +4575,12 @@ pub fn a_narrowed_token_is_held_to_the_narrower_value_test() {
 
     // The expiry: an earlier instant appended holds until it comes, and a later
     // one appended after it does not extend it.
-    let instant = bootstrap.system_time_ms() + 1500
+    let instant = bootstrap.system_time_ms() + 5000
     let early = login.append(wide, login.Caveat("e", int.to_string(instant)))
     let extended =
       login.append(parsed(early), login.Caveat("e", "9999999999999"))
     assert resume_with(extended).status == 200
-    process.sleep(1600)
+    process.sleep(int.max(0, instant - bootstrap.system_time_ms()) + 100)
     refused_login(resume_with(extended), signed)
     refused_login(resume_with(early), signed)
 
@@ -5011,6 +5024,10 @@ pub fn the_token_is_in_no_file_and_no_log_line_test() {
     // why it is not among the secrets a file is searched for.
     let assert Ok(files) = simplifile.get_files(ready.state_root)
       as "the state root is readable"
+
+    // The scan has to reach the catalogue, where the rows are, or it would pass
+    // over an empty list.
+    assert list.any(files, fn(file) { string.ends_with(file, "/catalogue.db") })
     list.each(files, fn(file) {
       let assert Ok(bytes) = simplifile.read_bits(file) as "a state file reads"
       list.each(secrets, fn(secret) {
@@ -5091,7 +5108,8 @@ pub fn the_root_key_cases_at_start_test() {
       })
     assert list.length(counted) == 1
     let assert [line] = counted
-    assert string.contains(line, "3")
+    assert string.contains(line, "\"count\":3}")
+      || string.contains(line, "\"count\":3,")
   })
 }
 
@@ -5193,6 +5211,31 @@ pub fn the_principal_listing_counts_logins_beside_the_credential_test() {
     assert owner_logins == 2
     assert member_logins == 1
     assert field(member_credential, "state") == Ok(json.String("active"))
+  })
+}
+
+// A device link whose issuing login has ended opens no page and writes no row.
+// Opening it without a login would leave a page with no parent, whose own
+// device link would then start thirty fresh days past the family's end.
+pub fn a_device_link_from_an_ended_login_opens_no_page_test() {
+  fixture_with(Signing, fn(_, port, credential) {
+    let first = sign_in(port, credential)
+    let link =
+      home_socket(port, first.page, [
+        #("x-device-link", "1"),
+        #("x-login-ended", "1"),
+      ])
+    assert link.status == 284
+    let path =
+      string.drop_start(
+        link.body,
+        string.length("http://127.0.0.1:" <> int.to_string(port)),
+      )
+    let answer = exchange(port, path)
+    assert answer.status == 401
+    assert list.key_find(answer.headers, "set-cookie") == Error(Nil)
+    assert list.length(listed_signins(port, credential)) == 1
+    assert exchange(port, path).status == 401
   })
 }
 

@@ -388,7 +388,7 @@ type Message {
     exchange: Exchange,
     reply: Subject(Result(Redeemed, Refusal)),
   )
-  Attach(cookie: String, login: Issuer)
+  Attach(cookie: String, login: Issuer, reply: Subject(Nil))
   LoginOf(cookie: String, reply: Subject(Option(Issuer)))
   Lookup(cookie: String, reply: Subject(Result(#(Page, Int), Nil)))
   Register(cookie: String, images: Images)
@@ -672,7 +672,9 @@ pub fn redeem(
 /// Records that the page behind `cookie` is the browser of `login`, which a
 /// `Remembered` exchange does once the login's row is written. A cookie that
 /// names no live page records nothing. The page's grant is untouched, so a
-/// socket already holding it still matches.
+/// socket already holding it still matches. The call returns once the table
+/// holds the login, so the exchange that makes it writes its response only
+/// after any other process that reads the page's login will find it.
 ///
 /// ## Examples
 ///
@@ -680,7 +682,12 @@ pub fn redeem(
 /// // ui_sessions.attach_login(sessions, redeemed.cookie, issuer)
 /// ```
 pub fn attach_login(sessions: Sessions, cookie: String, login: Issuer) -> Nil {
-  process.send(sessions.subject, Attach(cookie, login))
+  call.try_call(sessions.subject, waiting: 1000, sending: Attach(
+    cookie,
+    login,
+    _,
+  ))
+  |> result.unwrap(Nil)
 }
 
 /// The login the page behind `cookie` is the browser of, when it has one and
@@ -971,10 +978,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     // A login is attached only to a page that is live now, and only once: the
     // exchange that made the page is the one that attaches, and a second
     // attachment would let a later message change which login a page is.
-    Attach(cookie:, login:) -> {
+    Attach(cookie:, login:, reply:) -> {
       let key = digest(cookie)
       case live_until(state.sessions, key, now) {
-        Ok(#(Page(login: None, ..) as page, ends)) ->
+        Ok(#(Page(login: None, ..) as page, ends)) -> {
+          process.send(reply, Nil)
           actor.continue(
             State(
               ..state,
@@ -985,7 +993,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
               ),
             ),
           )
-        Ok(_) | Error(Nil) -> actor.continue(state)
+        }
+        Ok(_) | Error(Nil) -> {
+          process.send(reply, Nil)
+          actor.continue(state)
+        }
       }
     }
     LoginOf(cookie:, reply:) -> {
