@@ -62,6 +62,38 @@
 //// browser fills, and the daemon checks again that the owner already holds a
 //// session in it.
 ////
+//// The page also lists the browsers signed in as its principal and lets the
+//// person end them (protocol-change/065, the eighth pull request). Each list
+//// that is read starts a read of the principal's sign-ins (`Start.signins`), an
+//// answer from the same registry, which the page draws below the sessions as
+//// one row for each login: a fingerprint, when it was made, when it was last
+//// used and when it ends, with the one this page belongs to marked
+//// (`Start.login`). A row's "Sign out" and the "Sign out everywhere" button ask
+//// the daemon (`Start.sign_out`, `Start.sign_out_all`), which ends the login's
+//// row and with it every page that login minted, at that page's next frame, and
+//// answers `Revoked`; the page then reads its list again. A page a `loom ui`
+//// exchange opened (a fresh home) is also handed `Start.device`, which asks the
+//// daemon for a link that signs in another device and shows it once; a home the
+//// bookmark resumed has none and draws no control, and the daemon refuses the
+//// request from one. A page opened by a remembered login draws the bookmark as
+//// text (`Start.bookmark`). The sign-in rows' messages name a fingerprint the
+//// server drew into the tree, so the browser's event names only the path it
+//// fired at and never a login, and the daemon answers only for the principal's
+//// own.
+////
+//// ## Flow
+////
+//// `init` → `update` → `refreshing` → `answered` → `observing` → `view`
+////
+//// 1. `init` makes the refresh timer's subject and hands it back as
+////    `TimerReady`.
+//// 2. `update` takes each message; a tick or the first timer calls `refreshing`.
+//// 3. `refreshing` reads the sessions and the sign-ins in the component's own
+////    process and arms the timer again.
+//// 4. `answered` replaces the groups, and `observing` starts the activity read
+////    for the running sessions the list holds.
+//// 5. `view` draws the frame with the sessions, the sign-ins and the notice.
+////
 //// ## Transitions
 ////
 //// <!-- transitions: home.Status -->
@@ -103,6 +135,7 @@ import web_view/creations.{type Sharing}
 import web_view/ending.{type Ending}
 import web_view/renames
 import web_view/sessions.{type Activity, type Entry, type Group, Live}
+import web_view/signins.{type Signin}
 import web_view/view/create.{type Create}
 import web_view/view/ended
 import web_view/view/heading
@@ -111,6 +144,7 @@ import web_view/view/home_table
 import web_view/view/resume.{type Resume}
 import web_view/view/shell
 import web_view/view/sidebar
+import web_view/view/signins as signins_view
 import web_view/view/switch
 
 /// The Lustre event path of the sidebar on the home page: it is the second
@@ -127,6 +161,14 @@ pub const sidebar_path = "0\t1"
 /// one running session's name, which asks the daemon for a ticket to open that
 /// session.
 pub const table_path = "0\t2\t1"
+
+/// The Lustre event path of the sign-ins region on the home page: the centre
+/// column's third child, after the sessions. Every handler beneath it is one of
+/// the page's own sign-in controls: a row's "Sign out", "Sign out everywhere",
+/// and on a fresh home "Sign in another device" and its "Done". The home's
+/// socket admits a click beneath it for every home, whatever its ceiling, and
+/// `home_test` fails if the view moves the region.
+pub const signins_path = "0\t2\t2"
 
 /// How long the page's list stands before it is read again, in milliseconds.
 /// The list changes when a session is created, renamed, archived or opened,
@@ -229,7 +271,43 @@ pub type Start {
     /// unless the page's principal is the daemon's owner on a page minted to
     /// operate, and the daemon checks that again when it runs.
     rename: Option(fn(String, String, fn(renames.Answer) -> Nil) -> Nil),
+    /// Reads the principal's sign-ins, with the page's own credential, which the
+    /// registry authenticates again. It runs in the component's process with the
+    /// list's read, and must not run long.
+    signins: fn() -> signins.Listing,
+    /// The fingerprint of the browser login this page belongs to, if it does,
+    /// which the list marks as "This browser".
+    login: Option(String),
+    /// The address the person keeps to come back, when the page was opened by a
+    /// remembered login: the daemon's address and the login's bookmark path.
+    bookmark: Option(String),
+    /// Ends one of the principal's own sign-ins, named by fingerprint: the daemon
+    /// checks the page, then asks the registry, which finds the login among the
+    /// principal's own and no other. It runs in the component's process when a
+    /// press asks, and must not run long.
+    sign_out: fn(String) -> signins.Answer,
+    /// Ends every sign-in of the principal.
+    sign_out_all: fn() -> signins.Answer,
+    /// Asks the daemon for a link that signs in another device. It is `Some`
+    /// only for a page a `loom ui` exchange opened, and the daemon checks that
+    /// again, and the credential's allowance, whatever this page said.
+    device: Option(fn() -> signins.Answer),
   )
+}
+
+/// Where a device link stands on the page.
+pub type Link {
+  /// No link has been asked for, or the last one was dismissed.
+  NoLink
+
+  /// A request is with the daemon.
+  AskingLink
+
+  /// A link was made, which the page shows once. It is the whole address.
+  ShownLink(address: String)
+
+  /// The last request was refused, in the reason's fixed words.
+  RefusedLink(words: String)
 }
 
 /// What the rename control is doing on the page. It is the page's own state and
@@ -293,6 +371,12 @@ pub opaque type Model {
     creating: create.State,
     /// Which row's rename form is open, and where it stands.
     edit: Edit,
+    /// The principal's sign-ins as the last read gave them.
+    signins: List(Signin),
+    /// Where a device link stands.
+    link: Link,
+    /// What the page last said about a sign-out, in fixed words.
+    signin_notice: Option(String),
   )
 }
 
@@ -367,6 +451,42 @@ pub type Msg {
   /// dispatched from the daemon's task, and no handler carries it, so a browser
   /// cannot put a name in the page that the daemon did not store.
   RenameAnswered(answer: renames.Answer)
+
+  /// A read of the principal's sign-ins answered. It is the effect's own
+  /// message, and no handler carries it.
+  SigninsRead(listing: signins.Listing)
+
+  /// A row's "Sign out" was pressed. The fingerprint is the daemon's, fixed
+  /// when the tree was drawn; the daemon finds it among the principal's own
+  /// sign-ins and no others.
+  SigningOut(fingerprint: String)
+
+  /// "Sign out everywhere" was pressed.
+  SigningOutAll
+
+  /// The daemon answered a request to sign one browser out or all of them. It
+  /// is the effect's own message, and no handler carries it.
+  SignedOut(answer: signins.Answer, scope: SignOutScope)
+
+  /// "Sign in another device" was pressed: ask the daemon for a link.
+  AddingDevice
+
+  /// The daemon answered the request for a link. It is the effect's own
+  /// message, and no handler carries it, so a browser cannot put a link in the
+  /// page that the daemon did not make.
+  DeviceAnswered(answer: signins.Answer)
+
+  /// The shown link's "Done" was pressed: hide it.
+  DeviceDone
+}
+
+/// Which sign-outs the daemon answered, so the page's words say which.
+pub type SignOutScope {
+  /// One browser.
+  OneBrowser
+
+  /// Every browser.
+  EveryBrowser
 }
 
 /// The application the daemon's socket starts, one per home page.
@@ -401,6 +521,9 @@ pub fn new(start: Start) -> Model {
     resuming: None,
     creating: create.Idle,
     edit: NotEditing,
+    signins: [],
+    link: NoLink,
+    signin_notice: None,
   )
 }
 
@@ -644,6 +767,95 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         Editing(..), _ | NotEditing, _ -> #(model, effect.none())
       }
 
+    // The sign-ins a read gave replace the page's own, and a read the registry
+    // did not answer leaves them.
+    SigninsRead(listing:) ->
+      case listing {
+        signins.Listed(rows:) -> #(
+          Model(..model, signins: list.take(rows, signins.listed_limit)),
+          effect.none(),
+        )
+        signins.Unread -> #(model, effect.none())
+      }
+
+    // A sign-out asks the daemon in the component's own process, for a page
+    // that is connected. A page that ended asks nothing: its principal's access
+    // is gone, and the daemon would refuse.
+    SigningOut(fingerprint:) ->
+      case model.status {
+        Connected -> #(
+          model,
+          signing_out(fn() { model.start.sign_out(fingerprint) }, OneBrowser),
+        )
+        Connecting | Ended(_) -> #(model, effect.none())
+      }
+    SigningOutAll ->
+      case model.status {
+        Connected -> #(
+          model,
+          signing_out(model.start.sign_out_all, EveryBrowser),
+        )
+        Connecting | Ended(_) -> #(model, effect.none())
+      }
+
+    // The answer: the sign-in is gone, so the list is read again and the page
+    // says so; a refusal is the reason's fixed words.
+    SignedOut(answer:, scope:) ->
+      case answer {
+        signins.Revoked -> #(
+          Model(
+            ..model,
+            signin_notice: Some(case scope {
+              OneBrowser -> "Signed that browser out."
+              EveryBrowser -> "Signed every browser out."
+            }),
+          ),
+          reading_signins(model),
+        )
+        signins.Linked(_) -> #(model, effect.none())
+        signins.Declined(reason:) -> #(
+          Model(..model, signin_notice: Some(signins.reason_words(reason))),
+          reading_signins(model),
+        )
+      }
+
+    // The button asks for a link, if the page may make one and none is out. A
+    // page with no capability, one that ended, and one whose request is already
+    // out ask nothing; these arms are the second layer, since the daemon refuses
+    // the same request from the grant it holds.
+    AddingDevice ->
+      case model.start.device, model.status, model.link {
+        Some(ask), Connected, NoLink
+        | Some(ask), Connected, ShownLink(_)
+        | Some(ask), Connected, RefusedLink(_)
+        -> #(
+          Model(..model, link: AskingLink, signin_notice: None),
+          asking_device(ask),
+        )
+        Some(_), Connected, AskingLink
+        | Some(_), Connecting, _
+        | Some(_), Ended(_), _
+        | None, _, _
+        -> #(model, effect.none())
+      }
+    DeviceAnswered(answer:) ->
+      case model.link, answer {
+        AskingLink, signins.Linked(address:) -> #(
+          Model(..model, link: ShownLink(address)),
+          reading_signins(model),
+        )
+        AskingLink, signins.Declined(reason:) -> #(
+          Model(..model, link: RefusedLink(signins.reason_words(reason))),
+          effect.none(),
+        )
+        AskingLink, signins.Revoked
+        | NoLink, _
+        | ShownLink(_), _
+        | RefusedLink(_), _
+        -> #(model, effect.none())
+      }
+    DeviceDone -> #(Model(..model, link: NoLink), effect.none())
+
     // The answer: a ticket becomes the address `<loom-switch>` navigates to,
     // and a refusal is the page's notice in the reason's fixed words. Either
     // way no resume is out any longer.
@@ -668,6 +880,28 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         )
       }
   }
+}
+
+// Asks the daemon to end sign-ins in the component's own process, and hands the
+// answer back with the scope it was for. The registry call is bounded.
+fn signing_out(
+  ask: fn() -> signins.Answer,
+  scope: SignOutScope,
+) -> Effect(Msg) {
+  use dispatch <- effect.from
+  dispatch(SignedOut(ask(), scope))
+}
+
+// Asks the daemon for a device link in the component's own process.
+fn asking_device(ask: fn() -> signins.Answer) -> Effect(Msg) {
+  use dispatch <- effect.from
+  dispatch(DeviceAnswered(ask()))
+}
+
+// Reads the principal's sign-ins again, after one changed.
+fn reading_signins(model: Model) -> Effect(Msg) {
+  use dispatch <- effect.from
+  dispatch(SigninsRead(model.start.signins()))
 }
 
 // Starts the daemon's rename task and returns at once; the task's answer
@@ -764,6 +998,14 @@ fn refreshing(model: Model) -> Effect(Msg) {
   let listing = model.start.sessions()
   dispatch(Answered(listing))
 
+  // The sign-ins are read with the list, so a login that ended since the last
+  // read leaves the page at the same pace a session does. A page whose read was
+  // closed asks nothing more.
+  case listing {
+    Closed(..) -> Nil
+    Listed(_) | Unread -> dispatch(SigninsRead(model.start.signins()))
+  }
+
   case listing, model.timer {
     Closed(..), _ -> Nil
     _, None -> Nil
@@ -851,6 +1093,16 @@ pub fn view(model: Model) -> Element(Msg) {
         rename_offer(model),
         create_offer(model),
       ),
+      signins_view.view(
+        model.signins,
+        model.now,
+        model.start.login,
+        model.start.bookmark,
+        SigningOut,
+        SigningOutAll,
+        device_offer(model),
+        model.signin_notice,
+      ),
       switch.view(model.departure),
     ],
     element.none(),
@@ -909,6 +1161,31 @@ fn form_field() -> decode.Decoder(#(String, String)) {
   use name <- decode.field(0, decode.string)
   use value <- decode.field(1, decode.string)
   decode.success(#(name, value))
+}
+
+// What the sign-ins region offers for a device link: the control on a page the
+// daemon handed `Start.device`, and nothing otherwise.
+fn device_offer(model: Model) -> signins_view.Device(Msg) {
+  case model.start.device {
+    None -> signins_view.Never
+    Some(_) ->
+      signins_view.Offered(
+        press: AddingDevice,
+        done: DeviceDone,
+        shown: case model.link {
+          ShownLink(address:) -> Some(address)
+          NoLink | AskingLink | RefusedLink(_) -> None
+        },
+        asking: case model.link {
+          AskingLink -> signins_view.Waiting
+          NoLink | ShownLink(_) | RefusedLink(_) -> signins_view.Idle
+        },
+        refused: case model.link {
+          RefusedLink(words:) -> Some(words)
+          NoLink | AskingLink | ShownLink(_) -> None
+        },
+      )
+  }
 }
 
 // What the page offers for making a session: the owner's operating page has

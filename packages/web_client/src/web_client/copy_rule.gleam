@@ -20,6 +20,13 @@
 //// which is hexadecimal digits and hyphens. It has the same rule: nothing else
 //// is copied.
 ////
+//// The home page's sign-ins offer a fourth: the link that signs in another
+//// device (protocol-change/065, PR 8), an address on this daemon's loopback host
+//// for the ticket exchange, `http://` and the host, `/ui/home?ticket=` and 64
+//// lowercase hexadecimal digits. The ticket is a secret that lives ten minutes,
+//// so the element copies exactly that shape and nothing a page could have
+//// altered into another address.
+////
 //// The module imports neither Lustre nor the DOM binding, so the tests load
 //// it under Node.
 
@@ -38,6 +45,11 @@ pub type Subject {
   /// `loom ui --session <id>`, which the document an ended page gets offers
   /// (protocol-change/065, the addendum on the home list).
   Link
+
+  /// The address that signs in another device: `http://`, a loopback host and
+  /// port, `/ui/home?ticket=` and the ticket's 64 lowercase hexadecimal digits
+  /// (protocol-change/065, PR 8).
+  Device
 }
 
 /// What the button has done so far.
@@ -65,6 +77,18 @@ const identity_limit = 64
 
 const token_digits = 64
 
+const device_scheme = "http://"
+
+const device_path = "/ui/home?ticket="
+
+// The characters a loopback host and port are made of: letters, digits and the
+// punctuation of a name, an address and a port. No slash, no space, no quote.
+const host_characters =
+  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:.-[]"
+
+// The longest host and port a device link may carry, in characters.
+const host_limit = 64
+
 // The longest address a command may carry, in characters.
 const address_limit = 256
 
@@ -87,6 +111,7 @@ pub fn subject(value: String) -> Result(Subject, Nil) {
     "command" -> Ok(Command)
     "token" -> Ok(Token)
     "link" -> Ok(Link)
+    "device" -> Ok(Device)
     _ -> Error(Nil)
   }
 }
@@ -105,6 +130,7 @@ pub fn text(subject: Subject, value: String) -> Result(String, Nil) {
     Command -> command(value)
     Token -> token(value)
     Link -> link(value)
+    Device -> device(value)
   }
   case shaped {
     True -> Ok(value)
@@ -136,6 +162,28 @@ fn link(value: String) -> Bool {
           })
         Ok(#(_, _)) | Error(Nil) -> False
       }
+  }
+}
+
+// `http://`, a loopback host, `/ui/home?ticket=` and exactly 64 lowercase
+// hexadecimal digits.
+fn device(value: String) -> Bool {
+  case string.split_once(value, device_scheme) {
+    Ok(#("", rest)) ->
+      case string.split_once(rest, device_path) {
+        Ok(#(host, ticket)) ->
+          host != ""
+          && !longer_than(host, host_limit)
+          && list.all(string.to_graphemes(host), fn(character) {
+            string.contains(host_characters, character)
+          })
+          && exactly(ticket, token_digits)
+          && list.all(string.to_graphemes(ticket), fn(digit) {
+            string.contains("0123456789abcdef", digit)
+          })
+        Error(Nil) -> False
+      }
+    Ok(_) | Error(Nil) -> False
   }
 }
 
@@ -194,9 +242,11 @@ pub fn words(subject: Subject, copying: Copying) -> String {
   case copying, subject {
     Idle, Command | Idle, Link -> "Copy command"
     Idle, Token -> "Copy token"
+    Idle, Device -> "Copy link"
     Copied, Command | Copied, Link -> "Command copied"
     Copied, Token -> "Token copied"
-    Failed, Command | Failed, Token | Failed, Link ->
+    Copied, Device -> "Link copied"
+    Failed, Command | Failed, Token | Failed, Link | Failed, Device ->
       "Copy failed. Select the text and copy it."
   }
 }

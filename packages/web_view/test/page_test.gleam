@@ -32,6 +32,7 @@ pub fn every_owned_asset_is_in_this_packages_priv_test() {
       page.stylesheet_asset,
       page.enter_asset,
       page.page_asset,
+      page.resume_asset,
       page.client_asset,
     ],
     fn(name) {
@@ -123,4 +124,75 @@ pub fn the_refused_document_offers_the_command_in_a_copy_box_test() {
     assert !string.contains(document, "loom-copy")
     assert string.contains(document, "A link works once, within 60 seconds.")
   })
+}
+
+// --- the browser login (protocol-change/065, PR 8) --------------------------
+
+// The login's addresses: the cookie's path is the login key's, and the
+// bookmark is the key and `/home`.
+pub fn a_logins_addresses_are_keyed_by_its_key_test() {
+  assert page.login_prefix("abc") == "/ui/l/abc"
+  assert page.login_home_path("abc") == "/ui/l/abc/home"
+}
+
+// The resume page is a fixed document: one hidden form that posts to its own
+// address, a script from this origin, no inline script or style, and no value
+// from the request. It tells a browser with no nonce what to do.
+pub fn the_resume_page_is_one_fixed_form_and_a_script_test() {
+  let document = page.login_page()
+  assert string.contains(document, "<form id=\"login-form\" method=\"post\"")
+  assert string.contains(document, "action=\"\"")
+  assert string.contains(document, "name=\"nonce\" value=\"\"")
+  assert string.contains(
+    document,
+    "<script src=\"/ui/assets/web_view_resume.js\"></script>",
+  )
+  assert string.contains(document, "loom ui")
+  assert !string.contains(document, "<style")
+  assert !string.contains(document, "<script>")
+  assert !string.contains(document, "onclick")
+
+  // It is the same whatever is asked of it.
+  assert page.login_page() == document
+}
+
+// A refused sign-in is the same document whatever the reason, with the command
+// that signs in again in a copy box, and nothing about the request.
+pub fn a_refused_sign_in_says_the_same_words_and_the_command_test() {
+  let document = page.login_refused()
+  assert string.contains(document, "This browser is not signed in.")
+  assert string.contains(
+    document,
+    "<loom-copy subject=\"link\" text=\"loom ui\">",
+  )
+  assert string.contains(document, "role=\"alert\"")
+  assert page.login_refused() == document
+}
+
+// The exchange's document names the login's key and nonce only for an exchange
+// that set one, and escapes both.
+pub fn the_enter_page_carries_the_login_only_when_one_was_set_test() {
+  let plain = page.enter("/ui/p/k/home", "nonce")
+  assert !string.contains(plain, "data-login")
+  let remembered =
+    page.enter_remembered("/ui/p/k/home", "nonce", "loginkey", "loginnonce")
+  assert string.contains(remembered, "data-next=\"/ui/p/k/home\"")
+  assert string.contains(remembered, "data-nonce=\"nonce\"")
+  assert string.contains(remembered, "data-login-key=\"loginkey\"")
+  assert string.contains(remembered, "data-login-nonce=\"loginnonce\"")
+  let hostile = page.enter_remembered("/x", "n", "\"><script>", "<b>")
+  assert !string.contains(hostile, "<script>")
+  assert !string.contains(hostile, "<b>")
+  assert page.login_nonce_item == "loom.login."
+}
+
+// A form may submit to this origin only on the resume page's policy, and the
+// two policies differ in that one directive.
+pub fn only_the_resume_pages_policy_lets_a_form_submit_test() {
+  let none = page.content_security_policy_for("127.0.0.1:4000", page.NoForms)
+  let own = page.content_security_policy_for("127.0.0.1:4000", page.OwnForms)
+  assert none == page.content_security_policy("127.0.0.1:4000")
+  assert string.contains(none, "form-action 'none'")
+  assert string.contains(own, "form-action 'self'")
+  assert string.replace(own, "form-action 'self'", "form-action 'none'") == none
 }
