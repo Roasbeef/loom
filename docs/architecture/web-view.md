@@ -240,12 +240,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:325`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:338`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:3508`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:3678`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -772,8 +772,14 @@ from the session page). It is the last child of the Session pane, at
   `view/share` then draws the admin page's sentence in the control's place and
   no button, and `component.invite` ignores a press, so the refusal that tells
   a browser user to run `loomd` cannot be reached. A scope that could not be
-  read leaves the buttons, which the daemon still refuses correctly. Making a
-  private session shareable is not offered from the page.
+  read leaves the buttons, which the daemon still refuses correctly. The owner's
+  page offers `Make shareable` in the same place (protocol-change/065, the
+  addendum on making a session shareable): the button asks its question in place
+  (`shareables.Move`, held only in the server model), and its confirm sends
+  `Transport.shareable`, which runs `shareable_for` in a task no page owns, since
+  the stop that begins it ends the page. The page then shows the session-stopped
+  notice it always shows and the owner reloads it; the admin page offers the same
+  button under a private session's sentence and stays open throughout.
 - **The request.** Two buttons, observer and operator, send
   `operator_page.Inviting(role)`; a third, "Hide the token", sends
   `Dismissing`. `component.invite` moves the control from `Ready` to `Asking`,

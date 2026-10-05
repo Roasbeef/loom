@@ -13,6 +13,10 @@ fn every_reason() -> List(grants.Reason) {
     grants.TooMany(used: 3, free_at_ms: 1_790_030_460_000),
     grants.NotIsolated,
     grants.NotFound,
+    grants.NotStopped,
+    grants.NotMoved,
+    grants.Stranded,
+    grants.NotResumed,
     grants.InvalidName,
     grants.Unavailable,
   ]
@@ -48,6 +52,8 @@ pub fn each_change_that_is_made_is_worded_test() {
     == "Membership removed."
   assert grants.changed_words(grants.RevokeCredentials("p"))
     == "Credentials revoked."
+  assert grants.changed_words(grants.MakeShareable("s"))
+    == "This session is shareable now."
   assert grants.changed_words(grants.Rotate("p")) == "Done."
   assert grants.changed_words(grants.Invite("s", invites.Observer, ""))
     == "Done."

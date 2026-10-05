@@ -1417,3 +1417,181 @@ pub fn a_second_invitation_builds_a_new_claim_box_test() {
   // A refresh keeps the box, and so its key, where it was.
   assert string.contains(drawn(run(second, admin.Ticked)), "key=\"claim-2\"")
 }
+
+// A read of a catalogue whose chosen session is private: the owner's one
+// session, with the residency the test names and the chosen one's members.
+fn private_snapshot(
+  chosen: Option(String),
+  residency: sessions.Residency,
+) -> grants.Snapshot {
+  grants.Snapshot(
+    principals: people(),
+    more_principals: grants.Whole,
+    sessions: [entry(session, "review auth", residency)],
+    selection: case chosen {
+      Some(id) if id == session ->
+        Some(grants.Selection(
+          session:,
+          holders: [],
+          more: grants.Whole,
+          scope: creations.Private,
+        ))
+      Some(_) | None -> None
+    },
+    logins: [],
+    summaries: [grants.Summary(session, 1, grants.Whole, creations.Private)],
+  )
+}
+
+// A page over a private session that is `residency`, with the choice already
+// made and the ask recorded.
+fn private_page(
+  residency: sessions.Residency,
+  acts: Subject(grants.Action),
+  answer: grants.Answer,
+) -> admin.Model {
+  let start =
+    admin.Start(
+      ..start_with(process.new_subject(), acts, answer),
+      read: fn(chosen, deliver) {
+        deliver(grants.Read(private_snapshot(chosen, residency)))
+      },
+    )
+  let #(model, _) = opened(start)
+  run(model, admin.Choosing(session))
+}
+
+fn make_shareable() -> grants.Action {
+  grants.MakeShareable(session)
+}
+
+// A private session's members block says it cannot be shared and offers one
+// button, with no invitation form.
+pub fn a_private_session_offers_make_shareable_and_no_form_test() {
+  let html = drawn(private_page(Live, process.new_subject(), grants.Changed))
+  assert string.contains(html, "Private session: it shares the workspace")
+  assert string.contains(html, ">Make shareable<")
+  assert !string.contains(html, "Create invitation")
+}
+
+// The press asks first, in place: the question names what happens to a running
+// session, Cancel takes it back, and nothing reaches the daemon until the
+// confirm, which is the only message that does.
+pub fn make_shareable_asks_before_the_daemon_is_asked_test() {
+  let acts = process.new_subject()
+  let model = private_page(Live, acts, grants.Changed)
+  let model = run(model, admin.Arming(make_shareable()))
+  let html = drawn(model)
+  assert string.contains(
+    html,
+    "Make this session shareable? It will stop, move to its own history, and resume.",
+  )
+  assert process.receive(acts, 0) == Error(Nil)
+
+  let cancelled = run(model, admin.Disarming)
+  assert !string.contains(drawn(cancelled), "Make this session shareable?")
+  assert process.receive(acts, 0) == Error(Nil)
+
+  let model = run(model, admin.Asking(make_shareable()))
+  assert process.receive(acts, 0) == Ok(make_shareable())
+  assert process.receive(acts, 0) == Error(Nil)
+  assert string.contains(drawn(model), "This session is shareable now.")
+}
+
+// The confirm guard in update: an ask that names the change without the
+// question having been armed is not sent, whatever frame reached the page.
+pub fn an_unarmed_make_shareable_asks_nothing_test() {
+  let acts = process.new_subject()
+  let model = private_page(Live, acts, grants.Changed)
+  let model = run(model, admin.Asking(make_shareable()))
+  assert process.receive(acts, 0) == Error(Nil)
+  assert !string.contains(drawn(model), "This session is shareable now.")
+
+  // Arming another change does not arm this one.
+  let model = run(model, admin.Arming(grants.RevokeCredentials("bob")))
+  let _ = run(model, admin.Asking(make_shareable()))
+  assert process.receive(acts, 0) == Error(Nil)
+}
+
+// A saved session is isolated and stays saved, which its question says, and a
+// session the daemon would not open offers nothing.
+pub fn the_question_says_what_a_saved_session_does_test() {
+  let model = private_page(Saved, process.new_subject(), grants.Changed)
+  let html = drawn(run(model, admin.Arming(make_shareable())))
+  assert string.contains(
+    html,
+    "It will move to its own history and stay saved.",
+  )
+  assert !string.contains(html, "It will stop")
+
+  let blocked =
+    private_page(sessions.Blocked, process.new_subject(), grants.Changed)
+  assert !string.contains(drawn(blocked), "Make shareable")
+}
+
+// While the task runs the page says so and offers no button; the ask is out
+// once, and a second confirm asks nothing.
+pub fn a_running_make_shareable_is_worded_and_blocks_a_second_press_test() {
+  let acts = process.new_subject()
+  let start =
+    admin.Start(
+      ..start_with(process.new_subject(), acts, grants.Changed),
+      read: fn(chosen, deliver) {
+        deliver(grants.Read(private_snapshot(chosen, Live)))
+      },
+      act: fn(action, _deliver) { process.send(acts, action) },
+    )
+  let #(model, _) = opened(start)
+  let model = run(model, admin.Choosing(session))
+  let model = run(model, admin.Arming(make_shareable()))
+  let model = run(model, admin.Asking(make_shareable()))
+  let html = drawn(model)
+  assert string.contains(html, "Making this session shareable")
+  assert !string.contains(html, ">Make shareable<")
+  assert process.receive(acts, 0) == Ok(make_shareable())
+  let model = run(model, admin.Arming(make_shareable()))
+  let _ = run(model, admin.Asking(make_shareable()))
+  assert process.receive(acts, 0) == Error(Nil)
+}
+
+// A refusal is worded where the control is, in the reason's fixed words, and the
+// page offers the button again.
+pub fn a_refused_make_shareable_says_what_state_it_left_test() {
+  let model =
+    private_page(
+      Live,
+      process.new_subject(),
+      grants.Declined(grants.NotResumed),
+    )
+  let model = run(model, admin.Arming(make_shareable()))
+  let html = drawn(run(model, admin.Asking(make_shareable())))
+  assert string.contains(
+    html,
+    "The session is shareable now but did not start again.",
+  )
+  assert string.contains(html, ">Make shareable<")
+}
+
+// A refresh that lands while the task is still resuming the session does not end
+// the page's wait: the answer that arrives after it, a failed resume, is still
+// worded beside the control.
+pub fn a_refresh_during_the_task_does_not_drop_a_failed_resume_test() {
+  let start =
+    admin.Start(
+      ..start_with(process.new_subject(), process.new_subject(), grants.Changed),
+      read: fn(chosen, deliver) {
+        deliver(grants.Read(private_snapshot(chosen, Live)))
+      },
+      act: fn(_action, _deliver) { Nil },
+    )
+  let #(model, _) = opened(start)
+  let model = run(model, admin.Choosing(session))
+  let model = run(model, admin.Arming(make_shareable()))
+  let model = run(model, admin.Asking(make_shareable()))
+  let model = run(model, admin.Ticked)
+  let model = run(model, admin.Acted(grants.Declined(grants.NotResumed)))
+  assert string.contains(
+    drawn(model),
+    "The session is shareable now but did not start again.",
+  )
+}

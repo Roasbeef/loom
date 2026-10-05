@@ -77,10 +77,14 @@ import web_view/view/notice.{type Spoken}
 /// is how many invitations the page has made, which keys the invitation form so
 /// each one opens it empty.
 ///
+/// `armed` is the change the owner has pressed once and `waiting` the one the
+/// daemon is making, which is how a private session's control tells a question
+/// from a task that is running.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // admin_sessions.view(entries, Some(id), selection, [], None, None, None, 0, presses, admin_buttons.Free)
+/// // admin_sessions.view(entries, Some(id), selection, [], None, None, None, None, 0, presses, admin_buttons.Free)
 /// ```
 pub fn view(
   entries: List(Entry),
@@ -88,6 +92,7 @@ pub fn view(
   selection: Option(Selection),
   summaries: List(Summary),
   armed: Option(grants.Action),
+  waiting: Option(grants.Action),
   spoken: Option(Spoken),
   claim: Option(Claim),
   invited: Int,
@@ -111,7 +116,17 @@ pub fn view(
             }),
           )
       },
-      members(entries, chosen, selection, armed, spoken, invited, presses, busy),
+      members(
+        entries,
+        chosen,
+        selection,
+        armed,
+        waiting,
+        spoken,
+        invited,
+        presses,
+        busy,
+      ),
       admin_claim.for_session(claim, invited, presses.dismiss),
     ],
   )
@@ -167,6 +182,7 @@ fn members(
   chosen: Option(String),
   selection: Option(Selection),
   armed: Option(grants.Action),
+  waiting: Option(grants.Action),
   spoken: Option(Spoken),
   invited: Int,
   presses: Presses(message),
@@ -190,7 +206,17 @@ fn members(
         notice.at_members(spoken),
         holders(selection, label, armed, presses, busy),
         truncation(selection.more),
-        sharing(selection, label, spoken, invited, presses, busy),
+        sharing(
+          selection,
+          label,
+          residency_of(entries, selection.session),
+          armed,
+          waiting,
+          spoken,
+          invited,
+          presses,
+          busy,
+        ),
       ])
     }
   }
@@ -202,6 +228,9 @@ fn members(
 fn sharing(
   selection: Selection,
   label: String,
+  residency: Option(sessions.Residency),
+  armed: Option(grants.Action),
+  waiting: Option(grants.Action),
   spoken: Option(Spoken),
   invited: Int,
   presses: Presses(message),
@@ -217,11 +246,81 @@ fn sharing(
         #("notice", html.div([], [notice.at_invitation(spoken)])),
       ])
     Private ->
-      html.p([attribute.class("admin-lead")], [
+      html.div([attribute.class("admin-private")], [
+        html.p([attribute.class("admin-lead")], [html.text(private_words)]),
+        make_shareable(
+          selection.session,
+          residency,
+          armed,
+          waiting,
+          presses,
+          busy,
+        ),
+        notice.at_invitation(spoken),
+      ])
+  }
+}
+
+/// The sentence a private session's control opens with. The session page says
+/// the same words (`view/share.private_words`).
+pub const private_words =
+  "Private session: it shares the workspace's notes and history, so it cannot be shared. Sessions created with Shareable can be."
+
+// What a private session offers. The owner's page makes a session shareable in
+// one task, so the control is a button that asks first; while the task runs the
+// button is the sentence that says so. A session nothing runs is isolated and
+// stays saved, which the question says, and a session the daemon will not open
+// from a page, whose creation was never reconciled or whose recovery stopped
+// it, is offered nothing, since the task would refuse it.
+fn make_shareable(
+  session: String,
+  residency: Option(sessions.Residency),
+  armed: Option(grants.Action),
+  waiting: Option(grants.Action),
+  presses: Presses(message),
+  busy: Busy,
+) -> Element(message) {
+  let action = grants.MakeShareable(session)
+  case waiting, residency {
+    Some(held), _ if held == action ->
+      html.p([attribute.class("admin-lead"), attribute.role("status")], [
         html.text(
-          "Private session: it shares the workspace's notes and history, so it cannot be shared. Sessions created with Shareable can be.",
+          "Making this session shareable: stopping it, moving it to its own history and resuming it. This can take a minute.",
         ),
       ])
+    _, Some(sessions.Live) ->
+      admin_buttons.asking(
+        "Make shareable",
+        "Make this session shareable? It will stop, move to its own history, and resume. People you invite will be able to read what it already holds.",
+        "Make shareable",
+        action,
+        armed,
+        presses,
+        busy,
+      )
+    _, Some(sessions.Saved) ->
+      admin_buttons.asking(
+        "Make shareable",
+        "Make this session shareable? It will move to its own history and stay saved. People you invite will be able to read what it already holds.",
+        "Make shareable",
+        action,
+        armed,
+        presses,
+        busy,
+      )
+    _, Some(sessions.Blocked) | _, None -> element.none()
+  }
+}
+
+// Whether the session the members block is about runs, from the list the page
+// holds, or nothing for a session the list no longer holds.
+fn residency_of(
+  entries: List(Entry),
+  session: String,
+) -> Option(sessions.Residency) {
+  case list.find(entries, fn(entry) { entry.id == session }) {
+    Ok(entry) -> Some(entry.residency)
+    Error(Nil) -> None
   }
 }
 

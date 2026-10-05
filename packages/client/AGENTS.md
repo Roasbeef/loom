@@ -472,6 +472,21 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   `operator_accepts` drops an event at or beneath `component.invite_path` or
   `component.rename_path`, `owner_accepts` admits them, and the observer's
   socket admits neither. `start_page` takes the `Role`.
+  An owner's page can also make its private session shareable
+  (protocol-change/065, the addendum on making a session shareable):
+  `shareable_capability(role, origin, ask)` is `Some` for `Owning` on a page a
+  `loom ui` exchange opened, and `shareable_for(attachment, origin, open)`
+  re-checks the origin, that the page is open and `Owning`
+  before `client/daemon/shareable.make` stops, isolates (`manager.isolate`) and
+  resumes the session, refusing as the module's table says. The admin page asks
+  the same task through `admin_for` (`grants.MakeShareable`), which takes the
+  daemon's `state_root` (carried on `server.AdminAttachment` and
+  `server.Attachment`). Both run in `detached`, a plain `spawn_unlinked` (no weft
+  shape fits an unlinked run), because the stop ends the page a linked run would
+  die with. A bookmark cannot mint access: `invite_capability`,
+  `shareable_capability`, `invite_for` and `shareable_for` all refuse a page a
+  bookmark opened (`mints_access`), and its Session tab draws a sentence
+  (`invites.Bookmarked`) in place of the controls.
   `rename_for(standing, open, epoch, target, name)` is the owner page's rename
   (protocol-change/067): the page open, the ceiling operating, the credential
   authenticating as the page's principal and that principal the owner, `target`
@@ -508,6 +523,12 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   message with no text. The callee is `manager.seed_subtitle`, a cast to the
   registry that calls `catalogue.seed_subtitle` in its own turn. `server.view_json`
   adds `subtitle` only when present (protocol-change/067).
+- `daemon/shareable`: `make(registry, digest, epoch, state_root, id)` makes a
+  private session shareable as stop, `manager.isolate`, resume, for the owner
+  only (it authenticates before the stop, which takes no caller). A saved session
+  is isolated and left saved; each refusal (`NotOwner`, `NotFound`,
+  `Unavailable`, `NotStopped`, `NotMoved`, `Stranded`, `NotResumed`) leaves the
+  session in the state its module table names, never half-isolated.
 - `daemon/ui_relay`: the page's stand-in for a session socket. `start`
   returns before the attach, which runs as the relay's first message and
   answers on the component's `opened` subject, so a slow gateway cannot

@@ -3,16 +3,17 @@
 //// makes to either, drawn inside the frame the home draws and bound to no
 //// session.
 ////
-//// The page reads three things from the daemon and asks it seven. A read is the
+//// The page reads three things from the daemon and asks it eight. A read is the
 //// principals the catalogue holds with the credential state of each, the owner's
 //// sessions, and, once the owner has chosen one, that session's members. Every
 //// read is the daemon's own, made as the page's principal with the digest of the
 //// credential the page was admitted under, and it is also the page's check that
 //// it may still be served: a read that answers `Closed` says the UI session ended
 //// or the credential no longer authenticates as the owner, and the page draws why
-//// and asks for nothing more. The five asks are an invitation, a role change, a
+//// and asks for nothing more. The asks are an invitation, a role change, a
 //// membership's removal, a credential's revocation, a rotation, the ending of one
-//// sign-in and a person's rename (`web_view/grants`). A person's row has a Rename
+//// sign-in, a person's rename and the making of a private session shareable
+//// (`web_view/grants`). A person's row has a Rename
 //// button that opens a small form in that row (`Editing`); its submit asks the
 //// daemon to rename that principal (protocol-change/065, the tenth pull request),
 //// the owner's own row included, and the form closes when the daemon says it was
@@ -56,6 +57,19 @@
 //// every other frame (`client/daemon/ui_socket.admin_accepts`). A name is the
 //// peer's and is only ever a text node.
 ////
+//// ## Flow
+////
+//// `init` → `update` → `reading` → `landed` → `answered` → `view`
+////
+//// 1. `init` starts the refresh timer, and `update` answers the timer by asking
+////    for a read (`reading`), which runs the daemon's read and returns at once.
+//// 2. The read's answer arrives as `Answered`; `landed` drops one that was
+////    overtaken, and `answered` applies a snapshot to the model.
+//// 3. A press is `Choosing`, `Arming` or `Asking`. `Asking` sends the change to
+////    the daemon through `acting` and `settled` words the answer, then reads again.
+//// 4. `view` draws the model: the people, and the sessions with the chosen
+////    session's members.
+////
 //// ## Transitions
 ////
 //// <!-- transitions: admin.Status -->
@@ -85,6 +99,7 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
 import lustre/server_component
+import web_view/creations
 import web_view/ending.{type Ending}
 import web_view/grants.{type Action, type Answer, type Claim, type Reading}
 import web_view/invites
@@ -387,13 +402,19 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // An ask goes to the daemon from the daemon's own task so the runtime stays
     // free. An ended page, a page that has not connected and a page whose ask is
     // already out ask nothing; the buttons of such a page carry no handler, so
-    // these arms are the second layer, and the daemon is the third.
+    // these arms are the second layer, and the daemon is the third. Making a
+    // session shareable stops it, so it is sent only from the question its own
+    // button opened: a press that names it while it is not armed asks nothing.
     Asking(action:) ->
       case model.status, model.waiting {
-        Connected, None -> #(
-          Model(..model, waiting: Some(action), armed: None, notice: None),
-          acting(model.start.act, action),
-        )
+        Connected, None ->
+          case confirmed(action, model.armed) {
+            True -> #(
+              Model(..model, waiting: Some(action), armed: None, notice: None),
+              acting(model.start.act, action),
+            )
+            False -> #(model, effect.none())
+          }
         Connected, Some(_) | Connecting, _ | Ended(_), _ -> #(
           model,
           effect.none(),
@@ -441,6 +462,23 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       }
 
     EditCancelled -> #(Model(..model, editing: None), effect.none())
+  }
+}
+
+// Whether an ask may be sent now. Every change but one is sent by the press
+// that names it; making a session shareable stops and restarts it, so it is sent
+// only once the owner has armed it with a first press and been shown what it
+// does.
+fn confirmed(action: Action, armed: Option(Action)) -> Bool {
+  case action {
+    grants.MakeShareable(..) -> armed == Some(action)
+    grants.Invite(..)
+    | grants.SetRole(..)
+    | grants.RevokeMembership(..)
+    | grants.RevokeCredentials(..)
+    | grants.Rotate(..)
+    | grants.RevokeSignin(..)
+    | grants.Rename(..) -> True
   }
 }
 
@@ -502,6 +540,10 @@ fn refusal(reason: grants.Reason) -> notice.Notice {
     grants.NotOwner
     | grants.NotIsolated
     | grants.NotFound
+    | grants.NotStopped
+    | grants.NotMoved
+    | grants.Stranded
+    | grants.NotResumed
     | grants.InvalidName
     | grants.Unavailable -> notice.Refused(grants.reason_words(reason))
   }
@@ -520,6 +562,10 @@ fn spent_by(
     grants.NotOwner
     | grants.NotIsolated
     | grants.NotFound
+    | grants.NotStopped
+    | grants.NotMoved
+    | grants.Stranded
+    | grants.NotResumed
     | grants.InvalidName
     | grants.Unavailable -> before
   }
@@ -678,6 +724,15 @@ fn still_armed(
         True -> armed
         False -> None
       }
+    Some(grants.MakeShareable(session:)) ->
+      case snapshot.selection {
+        Some(selection) ->
+          case selection.session == session, selection.scope {
+            True, creations.Private -> armed
+            True, creations.Shareable | False, _ -> None
+          }
+        None -> None
+      }
     Some(grants.Invite(..))
     | Some(grants.SetRole(..))
     | Some(grants.Rename(..))
@@ -834,6 +889,7 @@ fn body(model: Model) -> Element(Msg) {
           snapshot.selection,
           snapshot.summaries,
           model.armed,
+          model.waiting,
           model.notice,
           model.claim,
           model.invited,
