@@ -37,6 +37,8 @@
 //// The module takes plain strings, so it needs nothing from `web_view/home`,
 //// which imports it.
 
+import gleam/int
+import gleam/option.{type Option, None, Some}
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -71,6 +73,52 @@ pub fn view(
       badge(ceiling, "The most this page may do"),
     ])
   with(title:, who:, status:, tone:, notice:, trailing:)
+}
+
+/// The principal's place in the admin page's bar: the display name as text and,
+/// once the page has read the catalogue, a quiet pill that says how long the
+/// page has left, `ends in 14m`. `remaining` is the milliseconds left when the
+/// server drew it; the pill's number is a `<loom-elapsed remaining="...">`,
+/// which counts it down in the browser and anchors again on every new figure, so
+/// the server never renders for the clock. The title says what to do when the
+/// time is up, since the page has no sentence for it. The name is the owner's
+/// chosen display name, so it is a text node, and the figure is an integer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // home_bar.ending("Alice", Some(840_000))
+/// ```
+pub fn ending(name: String, remaining: Option(Int)) -> Element(message) {
+  html.span([attribute.class("home-who")], [
+    html.text(name),
+    case remaining {
+      None -> element.none()
+      Some(milliseconds) ->
+        html.span(
+          [
+            attribute.class("home-badge"),
+            attribute.class("home-ends"),
+            attribute.title(
+              "This page closes when its time runs out. Press Admin on the home page for another.",
+            ),
+          ],
+          [
+            html.text("ends in "),
+            element.element(
+              "loom-elapsed",
+              [
+                attribute.attribute(
+                  "remaining",
+                  int.to_string(int.max(0, milliseconds)),
+                ),
+              ],
+              [],
+            ),
+          ],
+        )
+    },
+  ])
 }
 
 /// What the server asks of the account panel the name opens.

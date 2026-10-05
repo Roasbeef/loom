@@ -54,6 +54,7 @@ import storage/domain
 import support/addresses
 import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws
+import web_view/actions
 import web_view/creations
 import web_view/ending
 import web_view/grants
@@ -7097,5 +7098,192 @@ pub fn two_posts_of_one_claim_redeem_it_once_test() {
         [],
       )
       == ["1"]
+  })
+}
+
+// --- stopping, archiving and deleting from the home (protocol-change/065) ----
+
+// One action asked of the registry as the page's standing, in the open page's
+// daemon lifetime.
+fn manage(
+  ready: root.Ready(String),
+  standing: ui_socket.Standing(String),
+  action: actions.Action,
+  target: String,
+) -> actions.Answer {
+  ui_socket.manage_for(
+    standing,
+    page_open,
+    ready.epoch,
+    ready.sessions_directory,
+    action,
+    target,
+  )
+}
+
+// A stop ends the process and answers once the registry holds the session saved,
+// so the page's next read does not list it as running.
+pub fn an_owners_home_stops_a_running_session_test() {
+  fixture(fn(ready, _, credential) {
+    let session = create_session(ready, "manage-stop", 1201)
+    let owner = owner_standing(ready, credential, access.Operator)
+    assert !is_saved(ready, session)
+    assert manage(ready, owner, actions.Stop, session)
+      == actions.Done(actions.Stop)
+    assert is_saved(ready, session)
+
+    // Stopping a session that is already saved is a stop that was made.
+    assert manage(ready, owner, actions.Stop, session)
+      == actions.Done(actions.Stop)
+  })
+}
+
+// An archive and a delete refuse a session a process still holds, in the
+// reason's words for it, and change nothing. Once the session is stopped an
+// archive hides it from the owner's list and a delete removes it.
+pub fn an_owners_home_archives_and_deletes_only_a_stopped_session_test() {
+  fixture(fn(ready, _, credential) {
+    let kept = create_session(ready, "manage-kept", 1202)
+    let doomed = create_session(ready, "manage-doomed", 1203)
+    let owner = owner_standing(ready, credential, access.Operator)
+    let before = session_count(ready, credential)
+
+    // Running: both are refused and the sessions are still listed.
+    assert manage(ready, owner, actions.Archive, kept)
+      == actions.Declined(actions.Running)
+    assert manage(ready, owner, actions.Delete, doomed)
+      == actions.Declined(actions.Running)
+    assert session_count(ready, credential) == before
+
+    // Saved: the archive hides one, and the delete removes the other.
+    saved(ready, kept)
+    saved(ready, doomed)
+    assert manage(ready, owner, actions.Archive, kept)
+      == actions.Done(actions.Archive)
+    assert session_count(ready, credential) == before - 1
+    assert manage(ready, owner, actions.Delete, doomed)
+      == actions.Done(actions.Delete)
+    assert session_count(ready, credential) == before - 2
+    assert case manager.get(ready.registry, doomed) {
+      Error(_) -> True
+      Ok(_) -> False
+    }
+  })
+}
+
+// Each refusal changes nothing and is the owner-only words: a member, a home a
+// bookmark resumed, a page minted to read, a page that has ended, a stale
+// epoch, a principal the page was not admitted for, and a forged or unknown
+// identity.
+pub fn a_home_action_refuses_and_changes_nothing_test() {
+  fixture(fn(ready, _, credential) {
+    let session = create_session(ready, "manage-held", 1204)
+    let _ = member(ready, "ui-manager", session, access.Operator)
+    let owner = owner_standing(ready, credential, access.Operator)
+    let #(member_standing, _) =
+      standing_of(ready, "ui-manager", access.Operator)
+    let refused = actions.Declined(actions.NotOwner)
+    let ask = fn(standing, open, epoch, action, target) {
+      ui_socket.manage_for(
+        standing,
+        open,
+        epoch,
+        ready.sessions_directory,
+        action,
+        target,
+      )
+    }
+
+    list.each([actions.Stop, actions.Archive, actions.Delete], fn(action) {
+      assert ask(member_standing, page_open, ready.epoch, action, session)
+        == refused
+      assert ask(
+          ui_socket.Standing(..owner, origin: ui_sessions.Resumed),
+          page_open,
+          ready.epoch,
+          action,
+          session,
+        )
+        == refused
+      assert ask(
+          ui_socket.Standing(..owner, reach: ui_sessions.OneSession),
+          page_open,
+          ready.epoch,
+          action,
+          session,
+        )
+        == refused
+      assert ask(
+          ui_socket.Standing(..owner, ceiling: access.Observer),
+          page_open,
+          ready.epoch,
+          action,
+          session,
+        )
+        == refused
+      assert ask(owner, fn() { Error(Nil) }, ready.epoch, action, session)
+        == refused
+      assert ask(
+          ui_socket.Standing(..owner, principal: "someone-else"),
+          page_open,
+          ready.epoch,
+          action,
+          session,
+        )
+        == refused
+      list.each(
+        ["not a session", "", "01900000-0000-7000-8000-000000000000"],
+        fn(target) {
+          assert ask(owner, page_open, ready.epoch, action, target) == refused
+        },
+      )
+    })
+
+    // A stale epoch reaches the registry, which refuses an archive or a delete
+    // in the same words.
+    saved(ready, session)
+    assert ask(owner, page_open, "an-earlier-epoch", actions.Archive, session)
+      == refused
+    assert ask(owner, page_open, "an-earlier-epoch", actions.Delete, session)
+      == refused
+    assert is_saved(ready, session)
+    assert session_count(ready, credential) >= 1
+  })
+}
+
+// The request runs in a task of its own and the answer is handed to the function
+// the page's runtime gave, from that task, whatever it is.
+pub fn the_home_action_runs_in_a_task_and_delivers_its_answer_test() {
+  fixture(fn(ready, _, credential) {
+    let session = create_session(ready, "manage-task", 1205)
+    let owner = owner_standing(ready, credential, access.Operator)
+    let answered = process.new_subject()
+    ui_socket.manage_task(
+      owner,
+      page_open,
+      ready.epoch,
+      ready.sessions_directory,
+      actions.Stop,
+      session,
+      fn(answer) { process.send(answered, #(process.self(), answer)) },
+    )
+    let assert Ok(#(pid, answer)) = process.receive(answered, 10_000)
+      as "the task answers"
+    assert answer == actions.Done(actions.Stop)
+    assert pid != process.self()
+    assert is_saved(ready, session)
+
+    ui_socket.manage_task(
+      owner,
+      page_open,
+      ready.epoch,
+      ready.sessions_directory,
+      actions.Delete,
+      "not a session",
+      fn(answer) { process.send(answered, #(process.self(), answer)) },
+    )
+    let assert Ok(#(_, refusal)) = process.receive(answered, 10_000)
+      as "the task answers a refusal"
+    assert refusal == actions.Declined(actions.NotOwner)
   })
 }

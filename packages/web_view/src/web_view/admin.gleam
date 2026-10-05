@@ -67,6 +67,7 @@
 
 import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import lustre
@@ -127,6 +128,13 @@ pub type Start {
     /// The fingerprint of the browser login this page was opened from, if it
     /// was, which the owner's own sign-in list marks as "This browser".
     login: Option(String),
+    /// The instant this page ends, in Unix milliseconds on `now`'s clock. The
+    /// daemon takes it from the live UI session when the page opens: the
+    /// earlier of the home's own end and fifteen minutes after the exchange. The
+    /// bar's pill counts down to it (`home_bar.ending`), so no sentence of the
+    /// body has to say when the page ends. It is an in-daemon value and no
+    /// browser supplies it.
+    ends_at: Int,
   )
 }
 
@@ -574,12 +582,12 @@ pub fn claim(model: Model) -> Option(Claim) {
 pub fn view(model: Model) -> Element(Msg) {
   shell.view(
     shell.Home,
-    home_bar.view(
+    home_bar.with(
       title: "Admin",
-      name: model.start.name,
       // The owner's own page carries no role pill, as the owner's home does not
-      // (the round-4 ruling on F72).
-      ceiling: "",
+      // (the round-4 ruling on F72). It carries the time it has left instead,
+      // once a read has said what time it is.
+      who: home_bar.ending(model.start.name, remaining(model)),
       status: status_words(model.status),
       tone: status_tone(model.status),
       notice: ended.admin(ended_ending(model.status)),
@@ -593,6 +601,17 @@ pub fn view(model: Model) -> Element(Msg) {
   )
 }
 
+// The milliseconds the page has left as of the last read, which is when `now`
+// was taken, or nothing before the first read. The pill's element counts on
+// from this in the browser, and a later read brings a fresh figure, so the
+// count is anchored again every read.
+fn remaining(model: Model) -> Option(Int) {
+  case model.snapshot {
+    Some(_) -> Some(int.max(0, model.start.ends_at - model.now))
+    None -> None
+  }
+}
+
 // The bar's trailing control: Back to the page the owner came from. It is a
 // `<loom-back>`, which calls `history.back()` in the browser and sends this
 // component nothing, so it mints no ticket and the admin page's fifteen
@@ -602,7 +621,8 @@ fn back_home() -> Element(Msg) {
   element.element("loom-back", [], [html.text("Home")])
 }
 
-// The body: a line that says what the page is and when it ends, then the lists.
+// The body: a line that says what the page is, then the lists. When the page
+// ends is the bar's pill, not a sentence here.
 // Before the first read it holds that line and one that says the page is reading.
 fn body(model: Model) -> Element(Msg) {
   let presses = presses()
@@ -610,11 +630,6 @@ fn body(model: Model) -> Element(Msg) {
   html.div([attribute.class("admin-body")], [
     html.p([attribute.class("admin-lead")], [
       html.text("Who can use this daemon, and what each can do."),
-    ]),
-    html.p([attribute.class("admin-note")], [
-      html.text(
-        "This page ends fifteen minutes after it opened; press Admin on the home page for another.",
-      ),
     ]),
     ..case model.snapshot {
       None -> [

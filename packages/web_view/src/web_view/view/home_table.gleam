@@ -27,6 +27,16 @@
 //// own path (`home.table_path`), and the daemon checks the principal's
 //// membership again before it mints a ticket.
 ////
+//// The owner's fresh home also offers each row the actions that fit it
+//// (`Manage`, protocol-change/065's addendum on session actions): a running
+//// session can be stopped, and a saved one archived or deleted. They are quiet
+//// buttons beside Rename in one `home-acts` group, after the row's own button,
+//// so the row's own path is the same on every page. Stop and Archive ask the
+//// daemon at once. Delete takes a second step in the row: the row's words are
+//// replaced by "Delete this session? This cannot be undone." with Delete and
+//// Cancel, the same in-place pattern as the rename form. While a request for a
+//// row is out its buttons are disabled.
+////
 //// Every name and path is the catalogue's, written by the owner and the host
 //// and never by a session's agent, and is drawn as a text node. A workspace's
 //// whole path is the heading's `title`. The creation time is the catalogue's
@@ -47,6 +57,7 @@ import lustre/attribute.{type Attribute}
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
+import web_view/actions.{type Stage}
 import web_view/renames.{type Control}
 import web_view/sessions.{
   type Activity, type Entry, type Group, Blocked, Idle, Live, NeedsYou, Saved,
@@ -82,6 +93,29 @@ pub type Open {
   Open(session: String, control: Control)
 }
 
+/// What the table offers for stopping, archiving and deleting a session
+/// (protocol-change/065, the addendum on session actions).
+pub type Manage(message) {
+  /// No control is drawn: the page is not the owner's fresh operating home.
+  Unmanaged
+
+  /// Each running row has a Stop button, and each saved row an Archive and a
+  /// Delete. `stop` and `archive` are the messages those two send given the
+  /// row's identity, `delete` opens the row's confirmation, `confirm` is the
+  /// confirmation's Delete and `cancel` its Cancel. `stage` is where the page
+  /// stands: the one row that is confirming or waiting on the daemon. The
+  /// identities are the catalogue's, drawn into the tree by the server, so a
+  /// browser's event never names a session.
+  Managed(
+    stop: fn(String) -> message,
+    archive: fn(String) -> message,
+    delete: fn(String) -> message,
+    confirm: fn(String) -> message,
+    cancel: message,
+    stage: Stage,
+  )
+}
+
 /// The centre column's content: a heading, and one list for each group, or a
 /// line that says there is nothing to list. `activity` is what the daemon last
 /// said each running session is doing, by identity, and `now` is the instant in
@@ -93,7 +127,8 @@ pub type Open {
 /// `open` and the resume's `press` are not part of the key, so a caller passes
 /// the same functions every time, as a constructor is. `rename` is what the page
 /// offers for renaming a row (`Rename`); the row whose form is open is part of
-/// the key, and so is the control's state. `offer` is what the page offers for
+/// the key, and so is the control's state. `manage` is what the page offers for
+/// acting on a row (`Manage`), and its stage is part of the key. `offer` is what the page offers for
 /// making a session (`view/create`): under each workspace's heading a button, and
 /// below it the form when that workspace's is open. Its state is in the key, so a
 /// group changes when its form opens, closes or starts waiting.
@@ -101,7 +136,7 @@ pub type Open {
 /// ## Examples
 ///
 /// ```gleam
-/// // home_table.view(home.groups(model), dict.new(), now, Opening, resume.Never, Never, create.Never)
+/// // home_table.view(home.groups(model), dict.new(), now, Opening, resume.Never, Never, Unmanaged, create.Never)
 /// ```
 pub fn view(
   groups: List(Group),
@@ -110,6 +145,7 @@ pub fn view(
   open: fn(String) -> message,
   resume: Resume(message),
   rename: Rename(message),
+  manage: Manage(message),
   offer: Create(message),
 ) -> Element(message) {
   use <- element.memo([
@@ -118,6 +154,7 @@ pub fn view(
     element.ref(now),
     element.ref(resume.pending(resume)),
     element.ref(open_form(rename)),
+    element.ref(stage(manage)),
     element.ref(create.state(offer)),
   ])
   html.section([attribute.class("home-sessions")], [
@@ -131,7 +168,16 @@ pub fn view(
         ]),
       ]
       [_, ..] ->
-        list.map(groups, group(_, activity, now, open, resume, rename, offer))
+        list.map(groups, group(
+          _,
+          activity,
+          now,
+          open,
+          resume,
+          rename,
+          manage,
+          offer,
+        ))
     }
   ])
 }
@@ -144,6 +190,7 @@ fn group(
   open: fn(String) -> message,
   resume: Resume(message),
   rename: Rename(message),
+  manage: Manage(message),
   offer: Create(message),
 ) -> Element(message) {
   html.section([attribute.class("home-group")], [
@@ -163,7 +210,15 @@ fn group(
     html.ul(
       [attribute.class("home-list")],
       list.map(group.entries, fn(entry) {
-        row(entry, dict.get(activity, entry.id), now, open, resume, rename)
+        row(
+          entry,
+          dict.get(activity, entry.id),
+          now,
+          open,
+          resume,
+          rename,
+          manage,
+        )
       }),
     ),
   ])
@@ -216,6 +271,14 @@ fn activity_class(activity: Activity) -> String {
   }
 }
 
+// Where the page stands in acting on a row, for the memo's key.
+fn stage(manage: Manage(message)) -> Stage {
+  case manage {
+    Unmanaged -> actions.Calm
+    Managed(stage:, ..) -> stage
+  }
+}
+
 // The form that is open, for the memo's key: the page's own state, which is
 // the row's identity and the control's word.
 fn open_form(rename: Rename(message)) -> Option(Open) {
@@ -227,9 +290,10 @@ fn open_form(rename: Rename(message)) -> Option(Open) {
 
 // One session's list item. The whole item is one button when a press can open
 // it and one block of text when not, so the words read the same either way. On
-// a page that may rename, a second button follows it, after the item so that the
-// item's own path is the same on every page; the row whose form is open is the
-// form and nothing else.
+// a page that may rename or act on a row, a group of quiet buttons follows it,
+// after the item so that the item's own path is the same on every page. The row
+// whose rename form is open is the form and nothing else, and so is the row
+// whose delete is waiting on its second press.
 fn row(
   entry: Entry,
   activity: Result(Activity, Nil),
@@ -237,6 +301,7 @@ fn row(
   open: fn(String) -> message,
   resume: Resume(message),
   rename: Rename(message),
+  manage: Manage(message),
 ) -> Element(message) {
   let kind = resume.kind(resume, entry)
   let standing = standing(entry, activity, kind)
@@ -257,43 +322,149 @@ fn row(
       pressable("Resume this session", press, body)
     Saved, _ | Blocked, _ -> html.div([attribute.class("home-item")], body)
   }
-  case rename {
-    Never ->
-      html.li([attribute.class("home-row"), attribute.class(standing.class)], [
-        item,
-      ])
-    Offered(open: Some(Open(session:, control:)), cancel:, submit:, ..)
+  let classes = [attribute.class("home-row"), attribute.class(standing.class)]
+  case rename, manage {
+    Offered(open: Some(Open(session:, control:)), cancel:, submit:, ..), _
       if session == entry.id
     ->
-      html.li(
-        [
-          attribute.class("home-row"),
-          attribute.class(standing.class),
-          attribute.class("editing"),
-        ],
-        [editing(entry, control, cancel, submit(entry.id))],
-      )
-    Offered(edit:, ..) ->
-      html.li(
-        [
-          attribute.class("home-row"),
-          attribute.class(standing.class),
-          attribute.class("renamable"),
-        ],
-        [
-          item,
-          html.button(
+      html.li([attribute.class("editing"), ..classes], [
+        editing(entry, control, cancel, submit(entry.id)),
+      ])
+    _, Managed(stage: actions.Confirming(session:), confirm:, cancel:, ..)
+      if session == entry.id
+    ->
+      html.li([attribute.class("confirming"), ..classes], [
+        confirming(entry, confirm(entry.id), cancel),
+      ])
+    _, _ ->
+      case acts(entry, rename, manage) {
+        [] -> html.li(classes, [item])
+        [_, ..] as buttons ->
+          html.li(
             [
-              attribute.type_("button"),
-              attribute.class("home-rename"),
-              attribute.title("Rename this session"),
-              event.on_click(edit(entry.id)),
+              attribute.class("actionable"),
+              attribute.class("acts-" <> int.to_string(list.length(buttons))),
+              ..case rename {
+                Never -> classes
+                Offered(..) -> [attribute.class("renamable"), ..classes]
+              }
             ],
-            [html.text("Rename")],
-          ),
-        ],
-      )
+            [item, html.div([attribute.class("home-acts")], buttons)],
+          )
+      }
   }
+}
+
+// The quiet buttons a row carries, in the order they are drawn: Rename where
+// the page may rename, then the actions that fit the row's state. A running row
+// can only be stopped, since the registry refuses to archive or delete what a
+// process holds; a saved one can be archived or deleted, and a blocked one
+// too, since nothing runs it. While a request for this row is out the buttons
+// are disabled, though the handlers stay, because the component is the layer
+// that ignores a second press.
+fn acts(
+  entry: Entry,
+  rename: Rename(message),
+  manage: Manage(message),
+) -> List(Element(message)) {
+  let renaming = case rename {
+    Never -> []
+    Offered(edit:, ..) -> [
+      act("home-rename", "Rename this session", "Rename", edit(entry.id), []),
+    ]
+  }
+  let working = case manage {
+    Managed(stage: actions.Working(session:, ..), ..) if session == entry.id -> [
+      attribute.disabled(True),
+    ]
+    _ -> []
+  }
+  let managing = case manage, entry.residency {
+    Unmanaged, _ -> []
+    Managed(stop:, ..), Live -> [
+      act("home-act", "Stop this session", "Stop", stop(entry.id), working),
+    ]
+    Managed(archive:, delete:, ..), Saved
+    | Managed(archive:, delete:, ..), Blocked
+    -> [
+      act(
+        "home-act",
+        "Archive this session: hide it and keep its history",
+        "Archive",
+        archive(entry.id),
+        working,
+      ),
+      act(
+        "home-act home-act-delete",
+        "Delete this session",
+        "Delete",
+        delete(entry.id),
+        working,
+      ),
+    ]
+  }
+  list.append(renaming, managing)
+}
+
+// One quiet button of the group.
+fn act(
+  class: String,
+  title: String,
+  label: String,
+  press: message,
+  more: List(Attribute(message)),
+) -> Element(message) {
+  html.button(
+    [
+      attribute.type_("button"),
+      attribute.class(class),
+      attribute.title(title),
+      event.on_click(press),
+      ..more
+    ],
+    [html.text(label)],
+  )
+}
+
+// The row's second step before a delete: one question in fixed words, the
+// session's name beneath it as a text node so the person sees which row they are
+// about to delete, a Delete that sends the request and a Cancel that puts the row
+// back.
+fn confirming(
+  entry: Entry,
+  confirm: message,
+  cancel: message,
+) -> Element(message) {
+  html.div(
+    [
+      attribute.class("home-confirm"),
+      attribute.role("alertdialog"),
+      attribute.aria_label("Delete this session"),
+    ],
+    [
+      html.div([attribute.class("home-confirm-text")], [
+        html.p([attribute.class("home-confirm-lead")], [
+          html.text("Delete this session? This cannot be undone."),
+        ]),
+        html.p([attribute.class("home-confirm-name")], [
+          html.text(sessions.label(entry)),
+        ]),
+      ]),
+      html.div([attribute.class("home-confirm-actions")], [
+        html.button(
+          [
+            attribute.type_("button"),
+            attribute.class("home-confirm-delete"),
+            event.on_click(confirm),
+          ],
+          [html.text("Delete")],
+        ),
+        html.button([attribute.type_("button"), event.on_click(cancel)], [
+          html.text("Cancel"),
+        ]),
+      ]),
+    ],
+  )
 }
 
 // A row's rename form, in place of the row's words. The session's current name

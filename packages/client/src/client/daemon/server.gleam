@@ -221,6 +221,11 @@ pub type HomeAttachment(instance) {
     /// deadline, so the page never calls it from its runtime
     /// (`ui_socket.activity_task`).
     activity: fn(List(String)) -> List(#(String, listed_sessions.Activity)),
+    /// The daemon's own sessions directory, which deleting a session removes
+    /// the database family from (`manager.delete_session`). It is the daemon's
+    /// value and never a page's, and only the owner's fresh home may reach it
+    /// (`ui_socket.manage_for`).
+    sessions_directory: String,
     /// Creates a session as the principal it is given, which is the control
     /// command's own `create_session` over this daemon's registry and sessions
     /// directory. It blocks for the registry's call, so the page never calls it
@@ -502,6 +507,7 @@ fn home_upgrade(
             permit:,
             registry: state.registry,
             activity: home_activity(config, state.registry, grant.credential),
+            sessions_directory: state.sessions_directory,
             create: fn(principal, request, scope) {
               create_session(
                 config,

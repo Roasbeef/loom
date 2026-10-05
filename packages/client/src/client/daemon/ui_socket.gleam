@@ -192,6 +192,7 @@ import telemetry/field
 import telemetry/level
 import telemetry/log
 import telemetry/owner
+import web_view/actions
 import web_view/admin
 import web_view/component
 import web_view/creations
@@ -675,6 +676,30 @@ pub fn upgrade_home(
       },
     )
 
+  // The same fresh home may stop, archive and delete the sessions it lists
+  // (protocol-change/065, the addendum on session actions). The click on a row's
+  // button is beneath `home.table_path`, which every home's socket admits, so no
+  // admission is added: the capability is what makes the buttons exist, and
+  // `manage_for` is what decides each press.
+  let managing =
+    home_manage_capability(
+      attachment.principal,
+      ceiling,
+      seen.grant.reach,
+      seen.grant.origin,
+      fn(action, target, deliver) {
+        manage_task(
+          standing,
+          open,
+          attachment.epoch,
+          attachment.sessions_directory,
+          action,
+          target,
+          deliver,
+        )
+      },
+    )
+
   // The owner's operating home that a `loom ui` exchange opened may also open
   // the admin page, and its socket then admits the one click that asks for it
   // (`home_admin_accepts`). Every other home draws no button and admits no such
@@ -720,6 +745,7 @@ pub fn upgrade_home(
         resume_task(standing, tickets, open, target, deliver)
       },
       rename,
+      managing,
       creating,
       signing,
       administering,
@@ -767,6 +793,39 @@ pub fn home_rename_capability(
     access.OwnerPrincipal, access.Observer
     | access.MemberPrincipal, access.Operator
     | access.MemberPrincipal, access.Observer
+    -> None
+  }
+}
+
+/// The capability to stop, archive and delete the sessions a home page lists,
+/// that a home minted for `principal` with `ceiling`, `reach` and `origin` is
+/// handed: `ask` for the daemon's owner on a page minted to operate and opened
+/// by a fresh `loom ui` exchange, and none for any other (protocol-change/065,
+/// the addendum on session actions). The origin rule is the Admin button's
+/// (`fresh_home`): a home that a bookmark resumed, a member's home and a
+/// read-only link are all refused, so a stolen bookmark cannot delete a
+/// session. The daemon checks all of it again when the request runs
+/// (`manage_for`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.home_manage_capability(member, access.Operator, ui_sessions.Workspace, ui_sessions.Fresh, ask) == None
+/// ```
+@internal
+pub fn home_manage_capability(
+  principal: access.Principal,
+  ceiling: access.Role,
+  reach: ui_sessions.Reach,
+  origin: ui_sessions.Origin,
+  ask: fn(actions.Action, String, fn(actions.Answer) -> Nil) -> Nil,
+) -> Option(fn(actions.Action, String, fn(actions.Answer) -> Nil) -> Nil) {
+  case principal.kind, ceiling, fresh_home(reach, origin) {
+    access.OwnerPrincipal, access.Operator, Ok(Nil) -> Some(ask)
+    access.OwnerPrincipal, access.Operator, Error(Nil)
+    | access.OwnerPrincipal, access.Observer, _
+    | access.MemberPrincipal, access.Operator, _
+    | access.MemberPrincipal, access.Observer, _
     -> None
   }
 }
@@ -927,6 +986,7 @@ fn admit_home(
   opening: fn(String) -> sessions.Answer,
   resuming: fn(String, fn(sessions.Answer) -> Nil) -> Nil,
   rename: Option(fn(String, String, fn(renames.Answer) -> Nil) -> Nil),
+  managing: Option(fn(actions.Action, String, fn(actions.Answer) -> Nil) -> Nil),
   creating: Option(
     fn(String, String, creations.Sharing, fn(creations.Answer) -> Nil) -> Nil,
   ),
@@ -957,6 +1017,7 @@ fn admit_home(
         activity_task(attachment.activity, ids, deliver)
       },
       rename:,
+      manage: managing,
       create: creating,
       signins: signing.read,
       login: signing.login,
@@ -2646,6 +2707,210 @@ pub fn rename_task(
   Nil
 }
 
+/// How long a stop waits for the session to leave the registry before it
+/// answers, in milliseconds. The registry begins a stop without waiting for the
+/// drain, so the answer would otherwise come before the session is saved and the
+/// page's next read would still list it running. A drain that takes longer is
+/// not a failure: the stop has begun, the session leaves at its own pace, and
+/// the page's own timer reads it as saved.
+const stop_wait_ms = 5000
+
+/// Stops, archives or deletes `target` for the asking home's owner, or gives the
+/// reason it did not (protocol-change/065, the addendum on session actions). The
+/// session is named by the page's row and the daemon decides everything else,
+/// each step made afresh with the digest of the credential the page was
+/// admitted under:
+///
+/// 0. The home must have been opened by a fresh `loom ui` exchange
+///    (`fresh_home`), and must still be open and minted to operate, with a
+///    credential that still authenticates as the daemon's owner
+///    (`owner_operating`). One refusal, `NotOwner`, for each, so a page learns
+///    nothing about which.
+/// 1. `target` must be a canonical session identity.
+/// 2. A stop is `manager.stop_session`, which the control command's
+///    `sessions.stop` runs after its own owner check, and then waits for the
+///    registry to report the session saved (`stop_wait_ms`). An archive is
+///    `manager.set_visibility` and a delete is `manager.delete_session`, which
+///    authenticate the credential and the epoch a second time in the registry's
+///    own turn, need the owner, and refuse a session a process still holds
+///    (`Running`). The page offers neither on a running row, and the registry
+///    does not rely on that.
+///
+/// The detail of every other refusal stays in the daemon.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.manage_for(standing, open, epoch, sessions, actions.Archive, session_id)
+/// ```
+@internal
+pub fn manage_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  epoch: String,
+  sessions_directory: String,
+  action: actions.Action,
+  target: String,
+) -> actions.Answer {
+  let outcome = {
+    use _ <- result.try(
+      fresh_home(standing.reach, standing.origin)
+      |> result.replace_error(actions.NotOwner),
+    )
+    use _ <- result.try(
+      owner_operating(standing, open) |> result.replace_error(actions.NotOwner),
+    )
+    use _ <- result.try(
+      ids.parse_session_id(target) |> result.replace_error(actions.NotOwner),
+    )
+    case action {
+      actions.Stop -> stop_for(standing.registry, target)
+      actions.Archive ->
+        manager.set_visibility(
+          standing.registry,
+          standing.digest,
+          epoch,
+          target,
+          catalogue.Archived,
+        )
+        |> result.replace(Nil)
+        |> result.map_error(action_refusal)
+      actions.Delete ->
+        manager.delete_session(
+          standing.registry,
+          standing.digest,
+          epoch,
+          target,
+          sessions_directory,
+        )
+        |> result.replace(Nil)
+        |> result.map_error(action_refusal)
+    }
+  }
+  case outcome {
+    Ok(Nil) -> actions.Done(action)
+    Error(reason) -> actions.Declined(reason)
+  }
+}
+
+// Begins the stop and waits, within `stop_wait_ms`, for the registry to report
+// the session saved. A drain that outlasts the wait is still a stop that was
+// made. A session the registry holds as recovering is not one a stop can end.
+fn stop_for(
+  registry: manager.Manager(instance),
+  target: String,
+) -> Result(Nil, actions.Reason) {
+  use status <- result.try(
+    manager.stop_session(registry, target)
+    |> result.map_error(fn(error) {
+      case error {
+        manager.Catalogue(catalogue.Missing) -> actions.NotOwner
+        manager.Catalogue(_)
+        | manager.NotInitialized
+        | manager.SessionArchived
+        | manager.Capacity
+        | manager.Unavailable
+        | manager.StaleOperation
+        | manager.StartFailed(_)
+        | manager.Preparation(_) -> actions.Unavailable
+      }
+    }),
+  )
+  case status {
+    manager.Saved | manager.Reserved -> Ok(Nil)
+    manager.Stopping(_) ->
+      case drained(registry, target) {
+        poll.Failed(reason) -> Error(reason)
+        poll.Answered(Nil) | poll.Expired -> Ok(Nil)
+      }
+    manager.Resident(_) | manager.Opening(_) | manager.RecoveryBlocked(_) ->
+      Error(actions.Unavailable)
+  }
+}
+
+// Looks at the session until the registry holds nothing for it.
+fn drained(
+  registry: manager.Manager(instance),
+  target: String,
+) -> poll.Outcome(Nil, actions.Reason) {
+  poll.until(within: stop_wait_ms, every: 100, attempt: fn() {
+    case manager.get(registry, target) {
+      Error(_) -> poll.Fail(actions.Unavailable)
+      Ok(view) ->
+        case view.status {
+          manager.Saved | manager.Reserved -> poll.Done(Nil)
+          manager.Stopping(_) | manager.Resident(_) | manager.Opening(_) ->
+            poll.Retry
+          manager.RecoveryBlocked(_) -> poll.Fail(actions.Unavailable)
+        }
+    }
+  })
+}
+
+// The fixed reason for a refusal of the registry's archive or delete. A
+// principal that is not the owner, a stale epoch and a session the catalogue
+// does not hold read alike, so a page learns nothing about which; a session a
+// process holds is the one reason a person can act on.
+fn action_refusal(error: manager.AdminError) -> actions.Reason {
+  case error {
+    manager.AdminForbidden
+    | manager.AdminStaleEpoch
+    | manager.AdminMetadata(catalogue.Missing) -> actions.NotOwner
+    manager.AdminBusy -> actions.Running
+    manager.AdminMetadata(catalogue.Invalid(_))
+    | manager.AdminMetadata(catalogue.Unsupported)
+    | manager.AdminMetadata(catalogue.Conflict)
+    | manager.AdminMetadata(catalogue.Database(_))
+    | manager.IsolationRequired
+    | manager.AdminUnavailable
+    | manager.AdminForeignPath -> actions.Unavailable
+  }
+}
+
+/// Starts `manage_for` in a run of its own and returns at once, so the page's
+/// runtime is free while the registry answers, and a stop is free to wait for a
+/// drain; `deliver` is called, from that run, with the answer, whatever it is.
+///
+/// The run is a weft run with one task, linked to the calling process, which is
+/// the page's runtime, as `rename_task`'s is: a page that goes away cancels it,
+/// and a change the registry has already begun finishes on the registry's own
+/// turn. Every step is bounded by its own call timeouts and the stop's wait is
+/// bounded by `stop_wait_ms`, so the task always answers within seconds and needs
+/// no deadline of its own. Its last act is `deliver`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.manage_task(standing, open, epoch, sessions, actions.Stop, session_id, deliver)
+/// ```
+@internal
+pub fn manage_task(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  epoch: String,
+  sessions_directory: String,
+  action: actions.Action,
+  target: String,
+  deliver: fn(actions.Answer) -> Nil,
+) -> Nil {
+  let _ =
+    weft.new([
+      fn() {
+        deliver(manage_for(
+          standing,
+          open,
+          epoch,
+          sessions_directory,
+          action,
+          target,
+        ))
+        Ok(Nil)
+      },
+    ])
+    |> weft.start_witnessed
+  Nil
+}
+
 /// The capability to open the admin page that a home page minted for
 /// `principal` with `ceiling` and `reach` is handed: `ask` for the daemon's
 /// owner on a page minted to operate and opened by a fresh `loom ui` exchange,
@@ -2962,6 +3227,20 @@ fn admit_admin(
   // A change needs only the epoch of the attachment, since the registry and the
   // credential it asks with are the standing's, so its closure keeps that.
   let epoch = attachment.epoch
+
+  // The page's end, read once as the page opens: the live UI session's deadline,
+  // which already is the earlier of the home's end and fifteen minutes from the
+  // exchange (`ui_sessions.mint_before`). The table answers it on its own
+  // monotonic clock, whose zero is arbitrary, so it is carried to the wall clock
+  // the page's reads are counted in as how far it is from the monotonic clock
+  // now, added to the wall clock now (`ui_sessions` does the same for an
+  // allowance). A page that is not open at this instant has no deadline to show,
+  // and its first read ends it.
+  let wall = bootstrap.system_time_ms()
+  let ends_at = case open() {
+    Ok(until) -> wall + { until - bootstrap.monotonic_time_ms() }
+    Error(Nil) -> wall
+  }
   let start =
     admin.Start(
       name: attachment.principal.display_name,
@@ -2976,6 +3255,7 @@ fn admit_admin(
       },
       now: bootstrap.system_time_ms,
       login: option.map(attachment.login, fn(issuer) { issuer.fingerprint }),
+      ends_at:,
     )
   let started = case transferred {
     Error(reason) -> {
