@@ -544,13 +544,13 @@ pub fn the_extension_seam_is_the_workspace_seam_widened_test() {
 /// The extension adds only its own vocabulary and durable memory.
 ///
 /// It must not acquire child custody from the program-mode union. The only
-/// additions to workspace effects are `ext`, `ext/hook`, and `ext/memory`.
-pub fn the_extension_seam_widens_by_exactly_three_names_test() {
+/// additions to workspace effects are `ext`, `ext/hook`, `ext/live`, and `ext/memory`.
+pub fn the_extension_seam_widens_by_exactly_four_names_test() {
   let extra =
     list.filter(policy.extension_cap_modules(), fn(name) {
       !list.contains(policy.default_cap_modules(), name)
     })
-  assert extra == ["ext", "ext/hook", "ext/memory"]
+  assert extra == ["ext", "ext/hook", "ext/memory", "ext/live"]
   assert !policy.contains(policy.extension(), "cap/strand")
 }
 

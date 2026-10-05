@@ -496,7 +496,7 @@ pub fn resident_prelude_modules() -> List(String) {
 /// ```
 ///
 pub fn extension_authority_modules() -> List(String) {
-  ["ext/memory"]
+  ["ext/memory", "ext/live"]
 }
 
 /// The capability-prelude modules in the default allowlist. The union of the
