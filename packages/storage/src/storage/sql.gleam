@@ -1341,6 +1341,7 @@ pub type OwnerToolHeader {
     request_bytes: Int,
     outcome_bytes: Int,
     state: String,
+    run_custody: String,
     reserved_bytes: Int,
   )
 }
@@ -1350,6 +1351,7 @@ pub fn owner_tool_header(address address: String) {
     "SELECT CAST(CASE WHEN typeof(identity) = 'blob' THEN length(identity) ELSE -1 END AS INTEGER) AS identity_bytes, CAST(CASE WHEN typeof(arguments) = 'blob' THEN length(arguments) ELSE -1 END AS INTEGER) AS argument_bytes,
   CAST(CASE WHEN typeof(request) = 'blob' THEN length(request) ELSE -1 END AS INTEGER) AS request_bytes, CAST(CASE WHEN outcome IS NULL THEN 0 WHEN typeof(outcome) = 'blob' THEN length(outcome) ELSE -1 END AS INTEGER) AS outcome_bytes,
   CASE WHEN state IN ('retained', 'frozen') THEN state ELSE '' END AS state,
+  CASE WHEN run_custody IN ('unreleased', 'released') THEN run_custody ELSE '' END AS run_custody,
   reserved_bytes FROM owner_custody_tools WHERE address = ?1 LIMIT 2"
   #(sql, [dev.ParamString(address)], owner_tool_header_decoder())
 }
@@ -1360,13 +1362,15 @@ pub fn owner_tool_header_decoder() -> decode.Decoder(OwnerToolHeader) {
   use request_bytes <- decode.field(2, decode.int)
   use outcome_bytes <- decode.field(3, decode.int)
   use state <- decode.field(4, decode.string)
-  use reserved_bytes <- decode.field(5, decode.int)
+  use run_custody <- decode.field(5, decode.string)
+  use reserved_bytes <- decode.field(6, decode.int)
   decode.success(OwnerToolHeader(
     identity_bytes:,
     argument_bytes:,
     request_bytes:,
     outcome_bytes:,
     state:,
+    run_custody:,
     reserved_bytes:,
   ))
 }
@@ -1413,8 +1417,8 @@ pub fn insert_owner_tool(
   reserved_bytes reserved_bytes: Int,
 ) {
   let sql =
-    "INSERT INTO owner_custody_tools(address, identity, result_entry, arguments, request, state, reserved_bytes)
-VALUES (?1, ?2, ?3, ?4, ?5, 'retained', ?6)"
+    "INSERT INTO owner_custody_tools(address, identity, result_entry, arguments, request, state, run_custody, reserved_bytes)
+VALUES (?1, ?2, ?3, ?4, ?5, 'retained', 'unreleased', ?6)"
   #(sql, [
     dev.ParamString(address),
     dev.ParamBitArray(identity),
@@ -1835,6 +1839,34 @@ pub fn cancel_owner_allocated_child(origin origin: String) {
     "UPDATE owner_custody_children SET state = CASE WHEN state = 'frozen' THEN 'frozen' ELSE 'cancelled' END
 WHERE origin = ?1"
   #(sql, [dev.ParamString(origin)])
+}
+
+pub type OwnerUnreleasedRun {
+  OwnerUnreleasedRun(unreleased: Int)
+}
+
+pub fn owner_unreleased_run() {
+  let sql =
+    "SELECT CAST(EXISTS(SELECT 1 FROM owner_custody_tools WHERE run_custody != 'released' LIMIT 1) AS INTEGER) AS unreleased"
+  #(sql, [], owner_unreleased_run_decoder())
+}
+
+pub fn owner_unreleased_run_decoder() -> decode.Decoder(OwnerUnreleasedRun) {
+  use unreleased <- decode.field(0, decode.int)
+  decode.success(OwnerUnreleasedRun(unreleased:))
+}
+
+pub fn discharge_owner_run(
+  address address: String,
+  outcome outcome: Option(BitArray),
+) {
+  let sql =
+    "UPDATE owner_custody_tools SET run_custody = 'released'
+WHERE address = ?1 AND state = 'retained' AND outcome = ?2 AND run_custody = 'unreleased'"
+  #(sql, [
+    dev.ParamString(address),
+    dev.ParamNullable(option.map(outcome, fn(v) { dev.ParamBitArray(v) })),
+  ])
 }
 
 pub type SnapshotSession {
