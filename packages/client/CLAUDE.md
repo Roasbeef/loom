@@ -209,18 +209,6 @@ and omission of unknown names, so prompt cache prefixes and authorization
 remain unchanged. Public request and target helpers retain their signatures and
 use the same projected implementations as the production surface.
 
-`Effects` is copied into every process and supervisor child specification
-that holds a session's runtime, and a closure over `wiring.Config` puts a full
-copy of the tool registry into each one. `client/serve` therefore builds its
-effects with `wiring.build_effects_held`: the `run` slot captures only the
-address of a `client/tool_holder` process, which keeps the one `Config` and
-hands it back to each tool run (`run_tool_held`). A holder that is gone or does
-not answer inside five seconds yields an in-band `ToolCompleted` failure, never
-a crash. The holder is published to custody as `instance_owner.ToolConfig`
-before `api.open_published` and retires directly after `Runtime`, because
-tools run until the runtime drains. `build_effects(config)` keeps the capturing
-closure for tests, the scripted demo and extension hooks.
-
 ## Code-mode alternatives on direct tools
 
 `contributions.built_in` appends a concrete capability call and result shape to
@@ -526,9 +514,7 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   `daemon/main` holds), so an operator page can open another session
   (protocol-change/051, the addendum on switching sessions): the transport's
   `open` is `opened_for(role, ..)`, which declines an observer's page without
-  asking, and otherwise `ticket_for(standing, tickets, open, target)` (a
-  `Standing` is the registry, credential digest, principal, ceiling and reach of
-  the asking page, from `page_standing` or, for a home, `home_standing`),
+  asking, and otherwise `ticket_for(attachment, tickets, ceiling, target)`,
   which checks with the page's credential digest that the identity is a
   canonical session's (after `open()` says the asking page is still open, which
   also yields its deadline, carried onto the ticket by
@@ -830,9 +816,7 @@ catalogue without opening runtimes. Explicit admission invokes
   `root.acquire_claim` (409 while another upgrade for the same claim is open).
   The socket accepts one message of `protocol.max_claim_bytes`, sends a
   `hello` with only `protocol`, closes after `claim_idle_ms` (2 s) without a
-  command, and closes after answering its one `credentials.claim`, whose
-  optional `name` rides `ClaimRequest` and `manager.claim` to the catalogue,
-  and a refused one is `invalid_name`
+  command, and closes after answering its one `credentials.claim`
   (`protocol.decode_claim`, which refuses every control command, as
   `protocol.decode` refuses `credentials.claim`). Invitation and rotation mint
   the claim with `host/claim.mint_token(token.production_entropy())`, store
@@ -1010,9 +994,7 @@ catalogue without opening runtimes. Explicit admission invokes
 - `client/internal/instance_owner.{Owner, Part, CloseOutcome}` retains
   published cleanup independently of a builder. Weft orders builder exit
   before the holder's cleanup run; `StillClosing` and `RecoveryBlocked`
-  retain reservations rather than authorizing replacement. Cleanup order is
-  `Runtime`, `ToolConfig`, `Services`, `Broker`, `Helpers`, `Mcp`, `Storage`,
-  `Namespace`. The publication
+  retain reservations rather than authorizing replacement. The publication
   handoff in `instance_owner.start` and the registry handoff in
   `lifetime.start` are both bounded at five seconds, and `distill_owner`'s
   cleanup run carries a wall deadline, so a wedged start or close settles
@@ -5952,17 +5934,8 @@ takes the chosen profile and maps `unknown_profile` to
 `remote/custodian` owns the separate per-session request and final-report
 journal under a supervised weft actor. Atomic fresh admission starts a bounded
 weft task; retained evidence never reruns it. Exact final bytes commit before
-the caller ticket is answered, and task slots remain held until the same live incarnation commits discharge
-after weft's complete delivery notification. Fresh reservations persist an
-unreleased run marker before spawn. Worker loss, missing or failed final commit,
-failed discharge and the consumer's `fatal_fence` keep admission fenced; a later
-normal completion cannot clear that sticky disposition. Startup with any
-unreleased row remains recovery-only while exact historical outcomes and late
-receipts remain available. The runner callback receives its pinned custodian
-Handle, original ToolKey and ToolRun. External handles reclaim the registry;
-runner handles retain the original Subject/PID. `cancel_when_exits` watches that
-owner before starting the relayed run, so a worker never rebinds to a replacement
-owner during cancellation. `remote/tool_custody` wraps only ToolSurface run/recover and keeps
+the caller ticket is answered, and task slots remain held until weft's drain
+notification. `remote/tool_custody` wraps only ToolSurface run/recover and keeps
 clearance and scheduling metadata unchanged. `remote/outcome` validates exact
 call identity and actual reserved session-result readback before collection.
 
@@ -6035,7 +6008,7 @@ until a concrete whole-service custody transfer exists. These APIs add no broker
 acceptance, native wire change, new process ledger or shipped remote compile/launch.
 Caller-owned aggregate admission still bounds mailbox ingress independently of DB
 reservations. The outer service completion adapter must validate its full original
-ServiceKey/result association before using existing workspace receipt custody;
+ServiceKey/result association before using existing exact child receipt custody;
 opaque storage bytes alone prove neither artifact correctness nor service completion.
 
 ## Closed owner compiler command binding
@@ -6069,3 +6042,69 @@ original whole-service deadline remain caller duties, not hard real-time promise
 See [remote custody](../../docs/architecture/remote-custody.md) for the owner boundary.
 The tests exercise real SQLite/custodian and original Broker clearance; they do not
 claim physical Compile/Launch or shipped remote deployment acceptance.
+
+
+## Whole remote Compile consumer
+
+`remote/compile_client` supplies an internal `compile.CompileService` for the
+original Fresh managed custodian body. Its opaque configuration pins the existing
+owner, session Broker, administrative enrollment, concrete TLS BEAM endpoint
+and original clock capabilities. Live assembly supplies the original runner's
+incarnation-pinned Handle; external historical handles grant no fresh admission.
+`Facts.owner_limits` carries the original owner quotas to bound an offer before mailbox delivery; `custodian.admit_offer` still
+rechecks its actual configured quotas. The endpoint configuration retains an
+opaque administrative Peer from the original successful boot and the original
+finite exchange wait. Compile and its
+native dispatcher share that fixed endpoint. Closed command headers and segmented
+replies preserve canonical service input, completion and native receipt bytes.
+Runtime membership grants no service admission or receipt retention. This
+adapter creates no clock, actor, registry, Broker or independent caller admission
+policy.
+
+A live Build phase derives the outer Compile origin from the complete original
+parent. The native command separately retains CompileCommand provenance. The
+consumer converts the original nonzero Unix budget once to its original monotonic
+deadline, commits exact service input before transmission, and validates the
+1000 ms Compile challenge with a separate 100 ms margin. Only exact Ready can
+select and retain the positive finite native wall. Pending successful startup
+calls consume `44000 + clearance_wait_ms + 2 * exchange_wait_ms`; abandoned asks
+do not prove cancellation and cannot justify replacement work.
+
+The private accepted-command constructor compares the retained full service,
+immutable offer, original phase and enrollment-derived Ready through the shared
+pure compiler template. It constructs protected and environment allowlist sets
+in native ceiling order before real clearance, while retaining the literal
+ordered command environment. The original Broker and command dispatcher own
+actual Prepared, native admission, execution and durable ordered native receipt.
+Executor artifact locations remain opaque executor data, never owner paths.
+
+The completion boundary checks canonical bounded full-key CompileCompletion,
+actual owner native UUID and Prepared digest, and the exact retained terminal.
+A private nonrecursive receipt parser accepts only an array of at most 64 binary
+chunks of at most 16384 bytes and one binary terminal of at most 32768 bytes.
+Its aggregate is checked against custody's 2 MiB ingress ceiling before slicing,
+and canonical re-encoding preserves every original byte. The generic 256 KiB
+MessagePack profile cannot decode this existing larger receipt format.
+
+Only committed exact owner completion permits executor ACK. Late valid completion
+is accepted after cancellation; ACK loss leaves that local result usable.
+Historical recovery retries only the committed original digest ACK, retaining a
+usable local result if the finite endpoint exchange fails. `recover` and `cancel`
+retain original service identities and never mint, challenge, submit, prepare
+or clear. Consumer-observed live uncertainty invokes
+custodian's direct `fatal_fence` on the exact runner-pinned handle and original
+parent. There is no caller-supplied fence callback. Pure input construction and
+bounds refusal precede the observer, so a definitely effect-free input error
+can finish normally. Failed native settlement ends observation with uncertainty
+instead of waiting for an outer completion that has no admitted native request.
+Production enablement additionally requires the durable managed-run admission
+fence: a killed worker cannot retain its own missing report. The joined component
+control executes a real compiler in an independent executor BEAM runtime under
+original Broker clearance. Both runtimes boot through the public TLS membership
+boundary and use one fixed endpoint for Compile and native traffic. Canonical
+receipt controls check peer custody through that endpoint. Historical executor
+setup reopens committed evidence and never obtains a fresh Claim. The fixture
+checks exact subprocess exits and final witnesses. Component evidence does not
+establish shipped registered-session deployment or separate-host filesystem
+isolation. See [remote custody](../../docs/architecture/remote-custody.md)
+for assembly ownership and remaining acceptance.
