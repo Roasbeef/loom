@@ -358,6 +358,19 @@ their existing bounds. A peer message still requires an exact directional
 grant. The broader import set does not bypass broker grants or the
 satellite's kernel sandbox.
 
+A strand's active tool list also bounds what its programs may do. Each
+`strand.*` capability is refused with `tool_not_held` unless the calling
+strand holds the matching tool: `strand.spawn` needs `agent_spawn`,
+`strand.wait` `agent_wait`, `strand.send` `agent_send`, `strand.note`
+`agent_note`, `strand.notes` `agent_notes` and `strand.roster`
+`agent_roster`. A parent that withholds `agent_send` to keep a child
+silent therefore silences its programs too, and withholding `agent_spawn`
+remains the depth cap on either path. The router asks the Agency on every
+call, reading the strand's durable configuration, so a `set_config` that
+withdraws a tool applies to a program already running. The tool
+description is session-wide like the system prompt and still lists every
+capability; the refusal names the missing tool.
+
 `serve.with_code_mode_peers` composes the peer router around the preceding
 per-execution host wrapper. It retains that wrapper function before creating
 the callback, so the callback does not capture the complete host configuration.

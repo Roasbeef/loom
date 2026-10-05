@@ -163,6 +163,13 @@ session and sends it many invocations.
   so the module's one effectful function was advertised and refused).
   It builds **no `broker.CallSpec`**: every plan it returns is
   `satellite.ServedHere`, so it cannot state coordinates at all.
+  Before decoding anything it asks `Agency.holds` whether the calling
+  strand's active tool list names the `agent_*` tool that does the same
+  thing (`strand.spawn` needs `agent_spawn`, `wait` `agent_wait`, `send`
+  `agent_send`, `note` `agent_note`, `notes` `agent_notes`, `roster`
+  `agent_roster`; `report.emit` needs none) and otherwise refuses with
+  `tool_not_held`, so a program cannot do what the strand's tools forbid.
+  The question is asked on every call, never snapshotted at install.
   `strand.spawn` carries an optional catalogue-name `model` unchanged into
   `SpawnRequest`; absent or nil preserves default routing, and a non-string
   is refused before the Agency is called. The result remains a handle.

@@ -198,7 +198,10 @@ was asked.
 - `tools/agent.Agency` — the messaging seam: `spawn`, `send`, `wait`,
   `note`, `notes`, `todos`, `roster`, plus the published `max_wait_ms`
   the wait tool's schema states and `model_names` advertised by the spawn
-  schema.
+  schema, and `holds` (does the caller's strand hold this tool in its
+  durable active set right now; false on doubt), which only the code-mode
+  orchestration router asks because a model's own call is cleared against
+  that set by the registry.
   Every closure takes a `Caller` first and is judged against it.
 - `tools/agent.{Caller, Handle, SpawnRequest, Provenance, Spawned,
   Waited, Outcome, Peer, Relation, Delivery, Refusal}` — the vocabulary
