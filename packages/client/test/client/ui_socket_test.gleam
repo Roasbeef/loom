@@ -41,7 +41,7 @@ fn start() -> component.Start(ui_relay.Relay) {
       transmit: ui_relay.transmit,
       shut: ui_relay.shut,
       now: fn() { 0 },
-      sessions: fn() { [] },
+      sessions: fn(deliver) { deliver([]) },
       open: fn(_) { sessions.Declined(sessions.NotHeld) },
       resume: fn(_, _) { Nil },
       invite: None,

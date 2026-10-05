@@ -38,11 +38,11 @@ fn page(
     label: Some(component.Label(name: "web ui", workspace: "/src/loom")),
     transport: component.Transport(
       ..start.transport,
-      sessions: fn() {
-        [
+      sessions: fn(deliver) {
+        deliver([
           Entry("A", "web ui", "/src/loom", 100, Live, None, None),
           Entry("B", "other", "/src/loom", 50, Live, None, None),
-        ]
+        ])
       },
       rename: option.map(capability, fn(answer) {
         fn(name, deliver) {

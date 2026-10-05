@@ -3178,7 +3178,8 @@ hour.
 
 `Transport.invite` runs in the component's process, and `manager.administer`
 waits up to five seconds. That blocks the page's runtime for as long as the
-daemon takes, as `Transport.open` and `Transport.sessions` do, and
+daemon takes, as `Transport.open` does (and as `Transport.sessions` did until
+the addendum on the sidebar's read below moved it into a task), and
 `docs/lustre.md`'s checklist prefers a relay process for blocking work. The
 call is one registry dispatch, a press is rare and is refused while one is
 out, so the addendum follows the switching precedent and does not add a
@@ -3948,3 +3949,50 @@ One more region the home socket reads an event from, for every home.
 `ui_socket_test` pins the admitted and the dropped frames for all three admissions.
 `names_test` pins that the form's handler is one submit beneath the panel and that no
 path outside the panel moved.
+
+## Addendum: the sidebar's read leaves the runtime (2026-10-05)
+
+**Status**: PROPOSED, IMPLEMENTED with the fix/older-latency branch ·
+**Raised by**: the owner's recording of a session page during a busy turn,
+where a press of "Load older" was not reflected for about thirty seconds
+
+This addendum changes nothing on the wire, in the routes or in what a socket
+admits. It changes which process makes one daemon call.
+
+### What changed
+
+- **`Transport.sessions` starts a task and returns.** The sidebar's read of
+  the principal's sessions (`manager.authorized_page`, then
+  `manager.authorized_roles`) was made inside the page's Lustre runtime, from
+  the effect that asks for it on `Opened` and every `sessions_refresh_ms`.
+  Lustre performs an effect inside the runtime process and broadcasts the
+  render only after it returns, and each registry call waits up to five
+  seconds, so a registry busy with a turn could hold the page for up to ten
+  seconds at a time with every click, every pushed frame and every patch
+  waiting behind it. The read now runs in a weft run of its own
+  (`ui_socket.listed_task`), as a resume, a rename and the home's activity
+  read already do, and answers as the component's own `SessionsListed`. An
+  observer's page is delivered its empty list without a task, as before.
+- **`Transport.sessions` takes the function the answer is delivered to**,
+  the shape `resume` and `rename` have; it answers no value.
+
+### What was considered
+
+- **A shorter registry timeout.** It would bound the stall and not remove it,
+  and the two calls are correct at their timeouts: the registry is allowed to
+  be slow, the page is not allowed to wait for it.
+- **Leaving `Transport.open`, `home` and `invite` in the runtime.** Each runs
+  only on a press and is refused while one is out, so a press pays its own
+  wait; the sidebar's read ran on a timer and charged the wait to whatever
+  the person did next. They stay as they were.
+
+### Cost
+
+One short-lived process per sidebar read, at most one every thirty seconds
+per page.
+
+### Verification
+
+`sidebar_test` pins that a read which answers late, or never, leaves `Opened`
+and the ticks after it returning at once with an empty sidebar, and that the
+list lands as `SessionsListed` when the task delivers it.

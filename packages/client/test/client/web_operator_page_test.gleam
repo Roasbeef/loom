@@ -94,7 +94,7 @@ fn start_page(
         transmit: ui_relay.transmit,
         shut: ui_relay.shut,
         now: bootstrap.monotonic_time_ms,
-        sessions: fn() { [] },
+        sessions: fn(deliver) { deliver([]) },
         open: fn(_) { sessions.Declined(sessions.NotHeld) },
         resume: fn(_, _) { Nil },
         invite: None,

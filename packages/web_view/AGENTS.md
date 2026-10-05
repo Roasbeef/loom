@@ -40,8 +40,10 @@ page keys and nonces, and the relay into the session's gateway.
   `title`.
 - `component.Transport(socket)`: `connect(inbox, opened)`, which returns at
   once and answers on `opened`; `transmit(socket, frame)`; `shut(socket)`;
-  `now()`, `sessions()`, the sidebar's read of the principal's sessions
-  (the daemon's authorized catalogue read, `[]` on failure), and
+  `now()`, `sessions(deliver)`, which starts the sidebar's read of the
+  principal's sessions (the daemon's authorized catalogue read, `[]` on
+  failure) in the daemon's own task and returns at once, the list arriving
+  as `SessionsListed` through `deliver`, and
   `open(id)`, a request to open another session that answers a
   `sessions.Answer` (a ticket's exchange path, or a `Declined` reason; an
   observer's page is always declined), and `invite`, an `Option` of a request
@@ -50,8 +52,10 @@ page keys and nonces, and the relay into the session's gateway.
   (`ui_socket.Owning`). `home` is an `Option` of a request for a ticket to the
   principal's home (a `sessions.Answer` again, declined as `NoHome`); it is
   `Some` only on a page whose grant has `Workspace` reach, an observer's
-  included, and the page draws the "Home" button only then. All run in the
-  component's process.
+  included, and the page draws the "Home" button only then. All but
+  `sessions`, `resume` and `rename` run in the component's process; those
+  three start a task and answer as a message, so the runtime never waits on
+  the registry for them.
 - `component.Msg(socket)`: `Opened`, `Refused`, `TimerArmed`, `Arrived`
   (a batch of up to `arrival_batch` frames, reduced at once), `Ticked`
   (the deadline timer fired), `OlderRequested` (the "Load older" button, a
@@ -289,8 +293,11 @@ page keys and nonces, and the relay into the session's gateway.
   the session count, and a hairline in the divider colour separates one
   section from the next (team feedback, 2026-09-29); the list's own heading
   is kept for assistive technology and not drawn. The
-  component reads `Transport.sessions` on `Opened` and on a `Ticked` at
-  least `sessions_refresh_ms` (30 s) after the last read, keeps at most
+  component starts `Transport.sessions` on `Opened` and on a `Ticked` at
+  least `sessions_refresh_ms` (30 s) after the last read (the read runs in
+  the daemon's task and lands as `SessionsListed`; a read that is slow or
+  never answers leaves the page working with an empty sidebar,
+  `sidebar_test`), keeps at most
   `sessions.listed_limit` entries, and `component.session_groups(model)` is
   what the operator's page draws. The observer's page draws no sidebar:
   `ui_socket.listed_for` gives it an empty list without making the read

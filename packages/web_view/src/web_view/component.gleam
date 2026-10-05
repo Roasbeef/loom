@@ -450,13 +450,18 @@ pub type Transport(socket) {
     /// A monotonic reading in milliseconds, for the lane's deadlines. The
     /// component reads it once at the top of each message.
     now: fn() -> Int,
-    /// The sessions the page's principal may see, for the sidebar: the
-    /// daemon's authorized catalogue read for an operator's page, or an
-    /// empty list when it fails or the page is an observer's.
-    /// It runs in the component's process when the page opens and every
-    /// `sessions_refresh_ms` after, and it must not run long: the page's
-    /// runtime waits for it.
-    sessions: fn() -> List(sessions.Entry),
+    /// Starts the read of the sessions the page's principal may see, for the
+    /// sidebar, and returns at once: the daemon's authorized catalogue read
+    /// for an operator's page, or an empty list when it fails or the page is
+    /// an observer's. It is asked when the page opens and every
+    /// `sessions_refresh_ms` after. The read runs in the daemon's own task,
+    /// which calls the function it is given with the list, and that call is
+    /// dispatched as `SessionsListed`; the page's runtime never waits for
+    /// it, because the catalogue read is a registry call that can wait on a
+    /// busy daemon for seconds, and a runtime that waited would hold every
+    /// click and every patch behind it (protocol-change/051: the runtime
+    /// never blocks).
+    sessions: fn(fn(List(sessions.Entry)) -> Nil) -> Nil,
     /// Asks the daemon for a ticket to open the named session, for an
     /// operator's page that pressed its row: the daemon checks that the page's
     /// principal holds that session and that a process runs it, and mints a
@@ -1212,10 +1217,13 @@ fn jobs_wanted(model: Model(socket), at: Int) -> Model(socket) {
   }
 }
 
-// The read itself, in the component's process, answered as a message.
+// Starts the read and returns. The transport's task hands the list back
+// through `dispatch`, which sends the runtime a message from whichever
+// process the task runs in, so the effect holds the runtime for no longer
+// than the start of a task.
 fn listing(transport: Transport(socket)) -> Effect(Msg(socket)) {
   use dispatch <- effect.from
-  dispatch(SessionsListed(transport.sessions()))
+  transport.sessions(fn(entries) { dispatch(SessionsListed(entries)) })
 }
 
 // The step's tick at `at`. The two readings are the same one because the

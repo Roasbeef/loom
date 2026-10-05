@@ -114,9 +114,9 @@ pub fn a_page_reads_its_sessions_when_it_opens_test() {
   let start =
     component.Start(
       ..start,
-      transport: component.Transport(..start.transport, sessions: fn() {
+      transport: component.Transport(..start.transport, sessions: fn(deliver) {
         process.send(asked, Nil)
-        listing()
+        deliver(listing())
       }),
     )
   let #(_, effects) =
@@ -174,9 +174,9 @@ pub fn the_list_is_read_again_only_after_the_interval_test() {
   let start =
     component.Start(
       ..start,
-      transport: component.Transport(..start.transport, sessions: fn() {
+      transport: component.Transport(..start.transport, sessions: fn(deliver) {
         process.send(asked, Nil)
-        []
+        deliver([])
       }),
     )
   let model = component.new(start)
@@ -205,6 +205,52 @@ pub fn the_list_is_read_again_only_after_the_interval_test() {
   page_fixture.set(clock, component.sessions_refresh_ms)
   let _ = run(model, component.Ticked)
   assert process.receive(asked, 0) == Ok(Nil)
+}
+
+// The read never holds the page. A transport whose read answers late, or
+// never, leaves `Opened` and every message after it to return at once with
+// the sidebar empty, and the list lands as the page's own message when the
+// transport's task delivers it: the runtime waits on no registry call
+// (protocol-change/051, the runtime never blocks).
+pub fn a_slow_sessions_read_does_not_hold_the_page_test() {
+  let answered = process.new_subject()
+  let delivery = process.new_subject()
+  let start = page_fixture.start()
+  let start =
+    component.Start(
+      ..start,
+      transport: component.Transport(..start.transport, sessions: fn(deliver) {
+        process.send(delivery, deliver)
+      }),
+    )
+  let #(opened, effects) =
+    component.update(
+      component.new(start),
+      component.Opened(process.new_subject()),
+    )
+  effect.perform(
+    effects,
+    fn(message) { process.send(answered, message) },
+    fn(_, _) { Nil },
+    fn(_) { Nil },
+    fn() { panic as "no dynamic value" },
+    fn(_, _) { Nil },
+    fn(_, _) { Nil },
+    fn(_) { Nil },
+  )
+
+  // The effect started the read and returned without an answer; the page
+  // goes on handling messages with no list.
+  assert process.receive(answered, 0) == Error(Nil)
+  assert component.session_groups(opened) == []
+  let #(ticked, _) = component.update(opened, component.Ticked)
+  assert component.session_groups(ticked) == []
+
+  // The answer comes when the transport's task delivers it, as the message
+  // the effect dispatches.
+  let assert Ok(deliver) = process.receive(delivery, 0)
+  deliver(listing())
+  assert process.receive(answered, 0) == Ok(component.SessionsListed(listing()))
 }
 
 // A page holding a capture and a list, on `A`.
