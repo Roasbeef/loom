@@ -21,7 +21,7 @@
    input 29705dc6c90e7cb7da82ea48938b041b6885ef1a39f05d4ffeae2eb7c595ceaf  packages/web_client/src/web_client/internal/dom.mjs
    input 711178a9e03b9f99f0a0537c1eba4f12ff4bf78d7ed204026215abeda7971da4  packages/web_client/src/web_client/internal/ffi_dom.gleam
    input 4d6236a676795d403deef7f357d1f901e4bb3c6520df0ce089e1b7ea1f96d480  packages/web_client/src/web_client/layout_rule.gleam
-   input 2e3c1806ee7ebc88fc6bab6c71f4ba8dcda2fd2cfceb48d3c61981c01842c05d  packages/web_client/src/web_client/popover.gleam
+   input 492ca4d9e457aa176b4f7fd4d3e076667bcc454df41dc6fdf2fed90134f99e7d  packages/web_client/src/web_client/popover.gleam
    input b8ef129c1a538e75dfaaf54b70bb30859013df7d3dcb090c36454d113a3c434f  packages/web_client/src/web_client/popover_rule.gleam
    input 20c0366187196823c841927d2601133956f9b3cf95377d341f839d95400bc2f3  packages/web_client/src/web_client/rename.gleam
    input b545588b4d1b6d193bd58909449c5c068ea9958c6e06a03f9cadbd27421b8986  packages/web_client/src/web_client/rename_rule.gleam

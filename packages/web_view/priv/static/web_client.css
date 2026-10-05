@@ -20,7 +20,7 @@
    input aa3fb4a611257f7d191456071c41713e617dd324a79956703aa1fd6d9073cc2b  packages/web_client/src/web_client/follow_rule.gleam
    input 711178a9e03b9f99f0a0537c1eba4f12ff4bf78d7ed204026215abeda7971da4  packages/web_client/src/web_client/internal/ffi_dom.gleam
    input 4d6236a676795d403deef7f357d1f901e4bb3c6520df0ce089e1b7ea1f96d480  packages/web_client/src/web_client/layout_rule.gleam
-   input 2e3c1806ee7ebc88fc6bab6c71f4ba8dcda2fd2cfceb48d3c61981c01842c05d  packages/web_client/src/web_client/popover.gleam
+   input 492ca4d9e457aa176b4f7fd4d3e076667bcc454df41dc6fdf2fed90134f99e7d  packages/web_client/src/web_client/popover.gleam
    input b8ef129c1a538e75dfaaf54b70bb30859013df7d3dcb090c36454d113a3c434f  packages/web_client/src/web_client/popover_rule.gleam
    input 20c0366187196823c841927d2601133956f9b3cf95377d341f839d95400bc2f3  packages/web_client/src/web_client/rename.gleam
    input b545588b4d1b6d193bd58909449c5c068ea9958c6e06a03f9cadbd27421b8986  packages/web_client/src/web_client/rename_rule.gleam
@@ -29,7 +29,7 @@
    input b2e3b58f4885a4ab8b0ccf6474b5a29fc714eaab7eb85b0de39eb62746cc349b  packages/web_client/src/web_client/switch.gleam
    input 94ebc75eac30dd4a52f54b57551336cf2487ada65daed403def26470a8fd7c81  packages/web_client/src/web_client/switch_rule.gleam
    input 381cf05e3c581ce781989abc32b80b27e232481e82bef90bfec4401d831a073b  packages/web_client/src/web_client/waiting.gleam
-   input 214ed8c9ab7a879b917a1974bd95c8cdb492df36b6fdd5281168c37b32a77ddc  packages/web_view/src/web_view/admin.gleam
+   input 7ca7b9607c1d8bec3f12b7ad0f7a8109d8dd9ed69494c7fe364f3d870dbc9ed4  packages/web_view/src/web_view/admin.gleam
    input 50a0cb141f38c9f14e2a7b54b3a343efd181897a0e3da233beb8020515554526  packages/web_view/src/web_view/completion.gleam
    input 3409c72284a13c088c5ca2b72610bb8d71cbb5f21746f14e9605073ed45e30c5  packages/web_view/src/web_view/component.gleam
    input a94b31709354f8339e4da137fd9b7cfd2b6bb3d5080aff7553246e49ebd6352f  packages/web_view/src/web_view/creations.gleam
@@ -59,7 +59,7 @@
    input dbb8c2d8f3b55d40bde05efba5afb562dcd549c180eb45e51bf6f6b0007ab891  packages/web_view/src/web_view/view/fold_row.gleam
    input c7adc960b241aeebd206c0e05bfea6e65382cecc821ccc764cf6b9660d580606  packages/web_view/src/web_view/view/heading.gleam
    input 9bb7ee45ca218221085358104461442b07725795d3bc668adec6408f75cafc1f  packages/web_view/src/web_view/view/home_bar.gleam
-   input 9250cd716cbc344e6434f9a03e1b2d78f0da0cf7c002639c825512f90b959ce1  packages/web_view/src/web_view/view/home_table.gleam
+   input 2b02035e6de4b3ddb086d162620fd403479616ea865930bfe2102ced421a3a34  packages/web_view/src/web_view/view/home_table.gleam
    input 96f66b365007aabd14a32a543577b19e450b7c7151edf6387e6615fc5c727389  packages/web_view/src/web_view/view/lane.gleam
    input be24fe8b838f736712c7f60cf46a53c42f7929a608e945fe8a5eb4347f267e6e  packages/web_view/src/web_view/view/live.gleam
    input 871dd4b060a2555fd2de0c185e3547b569ec031f187b2699023d4be14d47f7eb  packages/web_view/src/web_view/view/notice.gleam
