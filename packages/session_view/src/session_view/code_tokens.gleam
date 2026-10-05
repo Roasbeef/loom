@@ -30,7 +30,7 @@
 ////   runs of spaces to `take_code_characters`, words to
 ////   `take_identifier_characters` and `word_kind`, and digits to
 ////   `take_number_characters`.
-//// - `diff_kind` classifies a whole line of a `diff` fence.
+//// - `diff_kind` classifies a whole line of a diff fence.
 
 import gleam/list
 import gleam/option.{type Option, None, Some}

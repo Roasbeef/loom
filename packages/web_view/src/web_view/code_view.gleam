@@ -16,7 +16,7 @@
 ////
 //// ## Flow
 ////
-//// - `block` splits a fence's body into lines and draws one `span` per line.
+//// - `block` splits a fence's body into lines and draws one span per line.
 //// - `line_children` draws one line's tokens, with the newline that ends it.
 //// - `kind_class` is the one place a class name is chosen.
 ////
