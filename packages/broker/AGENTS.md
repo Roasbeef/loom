@@ -1144,3 +1144,17 @@ the sole dynamic component; launch uses fixed `s` and `cap-token` basenames and
 checks the 100-byte socket budget. These are lexical locations, not leases or
 permission to create them. Trusted executor assembly still owes filesystem
 canonicalization, durable allocation custody and exact owner-call narrowing.
+
+## Raw terminal envelopes
+
+`framing.decode_raw_envelope` returns an opaque `RawEnvelope` after checking the
+original header through the same validator used by ordinary `decode_payload`.
+`raw_kind` selects the owning body decoder; `raw_body` returns the original
+encoded bytes. The scan substitutes an empty map only in the temporary header
+used for validation. No caller may treat that placeholder as the original body.
+
+This boundary lets the foreground satellite host apply terminal report budgets
+before allocating the outcome tree. It preserves the existing transport header
+semantics, including arbitrary field order and nonminimal encodings. Body
+semantics remain the caller's obligation. Ordinary capability frames retain
+their existing typed decoder.

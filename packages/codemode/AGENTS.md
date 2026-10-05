@@ -1108,3 +1108,18 @@ sequence number; the persistent host shares `InFlight` and records nothing.
   attach it to `details`. `execution_value` never does.
 - A run that never launched, or whose host never answered, carries
   `call_record.empty()`.
+
+## Terminal preflight before allocation
+
+The foreground satellite host first validates the raw transport envelope. An
+`outcome` body then enters `core/report_value.decode_terminal`, which scans its
+fixed byte, depth, node and container budgets before generic MessagePack decoding.
+A failed scan closes this path without a permissive generic-decoder retry. Other
+frame kinds retain ordinary broker decoding; the persistent host retains its
+separate lifecycle.
+
+The terminal controls cover malformed headers, terminal boundaries and deeply
+or widely nested values. An independent Erlang call trace confirms that a large
+terminal body does not reach the generic decoder before its owning preflight.
+See [the review](../../docs/review/distributed-terminal-preflight.md) for the
+executed evidence and its JavaScript limits.

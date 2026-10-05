@@ -41,6 +41,9 @@
 ////
 //// Outbound: `encode` → `encode_payload` → `body_to_msgpack`
 ////
+//// Raw terminal inbound: `decode_raw_envelope` → `raw_pairs` →
+//// `validate_envelope`, with `raw_body` handed to the terminal decoder.
+////
 //// Inbound: `push` → `push_loop` → `take_frame` → `decode_payload` →
 //// `decode_body` → `push_decoded`
 ////
@@ -64,6 +67,7 @@
 
 import broker/policy.{type Limits, type SandboxPolicy}
 import core/corruption.{type CorruptionReport}
+import core/internal/msgpack_scan
 import core/msgpack.{type MsgPackValue}
 import gleam/bit_array
 import gleam/int
@@ -515,6 +519,133 @@ pub fn decode_payload(payload: BitArray) -> Result(Frame, FrameError) {
   use value <- result.try(
     msgpack.decode(payload) |> result.map_error(Malformed),
   )
+  use #(id, kind, body_value) <- result.try(validate_envelope(value))
+  use body <- result.try(decode_body(id, kind, body_value))
+  Ok(Frame(id:, body:))
+}
+
+/// A validated envelope header and its exact, structurally bounded body bytes.
+/// Body UTF-8, duplicate keys, float validity and kind-specific semantics have
+/// not been checked. Callers must validate the body before constructing terms.
+pub opaque type RawEnvelope {
+  /// Retains checked header facts beside the untouched encoded body.
+  RawEnvelope(
+    /// The validated original nonnegative envelope identity.
+    id: Int,
+    /// The validated kind, independent of whether the broker knows it.
+    kind: String,
+    /// The original encoded value, never the header-check placeholder.
+    body: BitArray,
+  )
+}
+
+/// Validates the transport header without decoding its body into a value tree.
+/// Arbitrary field order and nonminimal header encodings retain wire semantics.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(payload) = framing.encode_payload(framing.Frame(0, framing.Heartbeat))
+/// let assert Ok(raw) = framing.decode_raw_envelope(payload)
+/// assert framing.raw_kind(raw) == "heartbeat"
+/// ```
+pub fn decode_raw_envelope(
+  payload: BitArray,
+) -> Result(RawEnvelope, FrameError) {
+  use #(prefix, count, remaining) <- result.try(
+    msgpack_scan.transport_map(payload) |> result.map_error(Malformed),
+  )
+  use #(header, body) <- result.try(raw_pairs(remaining, count, prefix, None))
+  use value <- result.try(msgpack.decode(header) |> result.map_error(Malformed))
+  use #(id, kind, _) <- result.try(validate_envelope(value))
+  use body <- result.try(
+    body |> option.to_result(malformed("frame", "required key body", "missing")),
+  )
+  Ok(RawEnvelope(id:, kind:, body:))
+}
+
+/// Reads the validated transport kind, without interpreting body semantics.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(payload) = framing.encode_payload(framing.Frame(0, framing.Heartbeat))
+/// let assert Ok(raw) = framing.decode_raw_envelope(payload)
+/// assert framing.raw_kind(raw) == "heartbeat"
+/// ```
+pub fn raw_kind(envelope: RawEnvelope) -> String {
+  envelope.kind
+}
+
+/// Reads the exact original body slice for its owning decoder's preflight.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(payload) = framing.encode_payload(framing.Frame(0, framing.Heartbeat))
+/// let assert Ok(raw) = framing.decode_raw_envelope(payload)
+/// assert framing.raw_body(raw) == <<0x80>>
+/// ```
+pub fn raw_body(envelope: RawEnvelope) -> BitArray {
+  envelope.body
+}
+
+fn raw_pairs(
+  bytes: BitArray,
+  count: Int,
+  header: BitArray,
+  body: Option(BitArray),
+) -> Result(#(BitArray, Option(BitArray)), FrameError) {
+  case count {
+    0 ->
+      case bytes == <<>> {
+        True -> Ok(#(header, body))
+        False -> Error(malformed("frame", "no trailing bytes", ""))
+      }
+    _ -> {
+      use #(key_bytes, remaining) <- result.try(
+        msgpack_scan.transport_string(bytes) |> result.map_error(Malformed),
+      )
+      use key <- result.try(
+        msgpack.decode(key_bytes) |> result.map_error(Malformed),
+      )
+      use #(value, rest) <- result.try(raw_field(key, remaining))
+
+      // Every original pair survives into the small header, including duplicates.
+      // Only a body value is replaced; the generic header decoder rejects keys
+      // whose alternative wire encodings denote the same string.
+      let #(checked, body) = case key {
+        msgpack.StringValue("body") -> #(<<0x80>>, Some(value))
+        _ -> #(value, body)
+      }
+      raw_pairs(
+        rest,
+        count - 1,
+        <<header:bits, key_bytes:bits, checked:bits>>,
+        body,
+      )
+    }
+  }
+}
+
+fn raw_field(
+  key: MsgPackValue,
+  bytes: BitArray,
+) -> Result(#(BitArray, BitArray), FrameError) {
+  case key {
+    msgpack.StringValue("v") | msgpack.StringValue("id") ->
+      msgpack_scan.transport_integer(bytes) |> result.map_error(Malformed)
+    msgpack.StringValue("kind") ->
+      msgpack_scan.transport_string(bytes) |> result.map_error(Malformed)
+    msgpack.StringValue("body") ->
+      msgpack_scan.transport_value(bytes) |> result.map_error(Malformed)
+    _ -> Error(malformed("frame", "known string keys", ""))
+  }
+}
+
+fn validate_envelope(
+  value: MsgPackValue,
+) -> Result(#(Int, String, MsgPackValue), FrameError) {
   use entries <- result.try(envelope_map(value))
   use Nil <- result.try(check_keys(entries, ["v", "id", "kind", "body"]))
   use v <- result.try(envelope_int(entries, "v"))
@@ -528,9 +659,8 @@ pub fn decode_payload(payload: BitArray) -> Result(Frame, FrameError) {
     False -> Error(malformed("id", "a u64", int.to_string(id)))
   })
   use kind <- result.try(envelope_string(entries, "kind"))
-  use body_value <- result.try(envelope_field(entries, "body"))
-  use body <- result.try(decode_body(id, kind, body_value))
-  Ok(Frame(id:, body:))
+  use body <- result.try(envelope_field(entries, "body"))
+  Ok(#(id, kind, body))
 }
 
 fn decode_body(
