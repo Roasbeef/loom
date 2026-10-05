@@ -176,7 +176,7 @@ import weft/registry as address
 /// `api.Options.subagent` matches on to route a model-spawned strand into
 /// the tree's second strand factory, so a subagent crash loop cannot
 /// spend the restart budget protecting the strand a human is talking to.
-pub const subagent_prefix = "sub:"
+pub const subagent_prefix = agent.subagent_prefix
 
 /// Where a child's result contract lives: one `fact.custom` cell per
 /// child with a schema, at `result-schema/{child strand}`.
@@ -399,7 +399,7 @@ pub fn start(
 /// ```
 ///
 pub fn is_subagent(strand: String) -> Bool {
-  string.starts_with(strand, subagent_prefix)
+  agent.is_subagent(strand)
 }
 
 /// The messaging seam, closed over the holder's *name* rather than over a

@@ -606,6 +606,18 @@ was asked.
   count, then `digest:`, in that order. Bounded three ways: contexts that
   touch are merged, a block over `max_fresh_anchor_bytes` becomes one line
   naming the offset to read from, and an edit that leaves no lines says so.
+- **`lines` are file text, and the display prefix is refused.** A model once
+  pasted `fs_read`'s `N:anchor|text` rendering into a hunk's `lines`, and the
+  edit applied verbatim. `run_edit` now runs `refuse_display_prefixes` on the
+  decoded hunks, before path resolution and before any anchor or digest
+  check, and rejects the whole edit when any replacement line starts with the
+  whole prefix: digits, a colon, eight lowercase hex digits, a pipe. The
+  shape is `hashline.display_prefix`, kept beside `render_line` so the two
+  cannot drift. A bare eight-hex token is not refused, since hex constants
+  begin real lines. `fs_write` takes one `content` string, so it has no
+  per-line paste to detect and is not checked. The write observer answers an
+  opaque `Option(String)`, so there is no structured diagnostic range for a
+  "this edit left an error here" hint, and none is attempted.
 - **A successful write is enough to plan the next edit.** `write_outcome`
   keeps its first line, then always adds `digest:` — one short line, and
   `fs_edit` cannot be planned without it — then the whole written file as a
@@ -990,6 +1002,15 @@ remain bounded, other resource limits remain active, and session shutdown,
 owner kill or originating-operation abort cancels the execution. Quiet waiting
 has no completion or heartbeat wake unless the caller explicitly asks for the
 existing idle heartbeat. A VM restart loses the job and never replays it.
+
+A subagent may not request `lifetime: "session"`. `bash.requested_lifetime`
+refuses it ahead of every other check, so no approval is raised: a subagent's
+jobs end with it, and the zero wall would only buy an operator prompt that the
+finite default never raises. The test is `agent.is_subagent` on `Ctx.strand`,
+the same `sub:` prefix the Agency mints and the runtime routes on
+(`client/agency.subagent_prefix` now re-exports `agent.subagent_prefix`). The
+`lifetime` description tells every caller that test runs, builds and anything
+expected to finish use the default.
 
 ## Structured schedule responses (protocol 057)
 

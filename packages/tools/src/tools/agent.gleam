@@ -180,6 +180,28 @@ pub const child_floor_tools = ["agent_note", "agent_send"]
 /// active set — a tool the model cannot see is one it never tries.
 pub const spawn_tool_name = "agent_spawn"
 
+/// The name prefix every minted subagent strand carries.
+///
+/// The Agency mints `sub:{parent}/{slug}-{digest}` and the runtime routes
+/// on this prefix to give a subagent its own restart budget, so it is the
+/// one durable marker of a child strand. It lives here, below the client,
+/// because a tool that must treat a child differently (`bash` refusing a
+/// session-lifetime job) reads `Ctx.strand` and cannot import the client.
+pub const subagent_prefix = "sub:"
+
+/// Whether a strand name is a minted subagent's.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert agent.is_subagent("sub:main/audit-1a2b")
+/// assert !agent.is_subagent("main")
+/// ```
+///
+pub fn is_subagent(strand: String) -> Bool {
+  string.starts_with(strand, subagent_prefix)
+}
+
 /// The model-writable blackboard prefix. Every `agent_note` key is forced
 /// under `agent/{caller}/` and every `agent_notes` read under `agent/`.
 pub const blackboard_prefix = "agent/"

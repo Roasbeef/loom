@@ -421,6 +421,12 @@ headroom for its siblings, or a second concurrent call is refused.
   bytes under a temporary name in the same directory and renames them
   into place, so a crash cannot leave a partial file under a SHA-256
   name.
+- **Guards against two observed model mistakes.** `fs_edit` refuses an
+  edit when any replacement line starts with `fs_read`'s `N:anchor|`
+  display prefix, before anything is applied; a bare eight-hex token is
+  allowed. `bash` refuses `lifetime: "session"` from a subagent strand
+  (`sub:` prefix on `Ctx.strand`) before any approval is requested, since
+  a subagent's jobs end with it and a finite default runs with no prompt.
 - **Foreground timeouts are clamped in the tool.** `bash` defaults to 120
   seconds with a 600-second ceiling; `grep` is capped at 60 seconds. A
   background job's wall is the jobs host's to grant.

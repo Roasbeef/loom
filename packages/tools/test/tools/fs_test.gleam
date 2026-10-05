@@ -466,6 +466,88 @@ pub fn edit_replace_roundtrip_test() {
   assert bytes == <<"one\nTWO\nthree\n":utf8>>
 }
 
+// One replace hunk per entry of `replacements`, each over a single line of
+// `content` (line 1 for the first entry, line 2 for the second).
+fn replace_lines_call(
+  content: String,
+  replacements: List(List(String)),
+) -> json.JsonValue {
+  let hunks =
+    list.index_map(replacements, fn(lines, index) {
+      json.Object([
+        #("op", json.String("replace")),
+        #("from", anchor_ref(content, index + 1)),
+        #("to", anchor_ref(content, index + 1)),
+        #("lines", json.Array(list.map(lines, json.String))),
+      ])
+    })
+  args([
+    #("path", json.String("e.txt")),
+    #("digest", digest_of(content)),
+    #("hunks", json.Array(hunks)),
+  ])
+}
+
+pub fn edit_refuses_a_pasted_display_prefix_test() {
+  let #(ctx, filesystem) = memory_ctx()
+  let content = "one\ntwo\n"
+  write_file(ctx, "e.txt", content)
+  let outcome =
+    fs.edit_tool().run(
+      ctx,
+      replace_lines_call(content, [["ok"], ["fine", "154:af63f04c|TWO"]]),
+    )
+  assert outcome.is_error
+  assert string.contains(
+    first_text(outcome),
+    "hunk 2 line 2 starts with fs_read's display prefix (`154:af63f04c|`)",
+  )
+
+  // The refusal comes before anything is applied, so the first hunk's
+  // acceptable replacement did not land either.
+  let assert Ok(bytes) = filesystem.read("/work/e.txt")
+  assert bytes == <<"one\ntwo\n":utf8>>
+}
+
+pub fn edit_refuses_a_prefix_on_the_first_line_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let content = "one\n"
+  write_file(ctx, "e.txt", content)
+  let outcome =
+    fs.edit_tool().run(ctx, replace_lines_call(content, [["1:cbf29ce4|x"]]))
+  assert outcome.is_error
+  assert string.contains(first_text(outcome), "hunk 1 line 1 starts with")
+}
+
+pub fn edit_accepts_bare_hex_and_near_misses_test() {
+  // Real hex constants and test vectors begin lines; only the whole
+  // `N:xxxxxxxx|` shape is refused.
+  let #(ctx, filesystem) = memory_ctx()
+  let content = "one\n"
+  write_file(ctx, "e.txt", content)
+  let lines = [
+    "af63f04c",
+    "af63f04c|x",
+    "7:AF63F04C|x",
+    "7:af63f04|x",
+    "7:af63f04c x",
+    "key: af63f04c|x",
+    "a:af63f04c|x",
+  ]
+  let outcome = fs.edit_tool().run(ctx, replace_lines_call(content, [lines]))
+  assert outcome.is_error == False
+  let assert Ok(bytes) = filesystem.read("/work/e.txt")
+  assert bytes == <<{ string.join(lines, "\n") <> "\n" }:utf8>>
+}
+
+pub fn edit_lines_schema_forbids_the_display_prefix_test() {
+  let description = fs.edit_tool().description
+  assert string.contains(description, "never copy fs_read's `N:anchor|` prefix")
+  let schema = json.to_string(fs.edit_tool().schema)
+  assert string.contains(schema, "exactly as it should appear in the file")
+  assert string.contains(schema, "never the `N:anchor|` prefix")
+}
+
 pub fn edit_multi_hunk_test() {
   let #(ctx, _filesystem) = memory_ctx()
   let content = "a\nb\nc\nd\n"
