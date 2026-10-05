@@ -118,6 +118,8 @@ pub opaque type Journal {
     enrolled: enrollment.SessionEnrollment,
     /// Exact configured native endpoint; scope equality cannot substitute another actor.
     native: native_journal.Journal,
+    /// Exact connection owner for endpoint monitoring, never a resource lease.
+    pid: process.Pid,
   )
 }
 
@@ -492,6 +494,20 @@ pub fn reserve(journal: Journal, original: Input) -> Result(Status, Error) {
 /// `inspect(journal, original)` returns Missing before reservation.
 pub fn inspect(journal: Journal, original: Input) -> Result(Status, Error) {
   request(journal, original, Inspect)
+}
+
+/// Exposes only the exact journal endpoint's lifecycle identity.
+/// Death grants no cleanup, native retirement or permission to recover a Claim.
+///
+/// ## Examples
+///
+/// ```gleam
+/// process.monitor(resource_journal.pid(book))
+/// // -> a monitor for this connection owner.
+/// ```
+@internal
+pub fn pid(book: Journal) -> process.Pid {
+  book.pid
 }
 
 /// Returns the exact fixed native endpoint for trusted local admission binding.
@@ -1115,7 +1131,8 @@ fn start(config: Config, mode: Mode) -> Result(Journal, Error) {
     |> actor.start
     |> result.replace_error(StartFailed),
   )
-  let journal = Journal(started.data, config.enrolled, config.native)
+  let journal =
+    Journal(started.data, config.enrolled, config.native, started.pid)
   case exchange(journal, Initialise(mode, _)) {
     Ok(Nil) -> Ok(journal)
     Error(error) -> {
