@@ -55,6 +55,7 @@ import gleam/set
 import gleam/string
 import machine/strand as machine_strand
 import session_view/advisor_history
+import session_view/advisor_pending
 import session_view/agent_messages
 import session_view/agent_roster
 import session_view/agent_view
@@ -924,6 +925,7 @@ fn render_cut(
     transcript:,
   )
   |> event_fold.settle_pending_cache(cut.next_seq)
+  |> retire_nudges_delivered_in_cut(cut, view)
   |> session_model.record_surface(AgentMessagesCaptured)
   |> session_model.invalidate_transcript
   // A completed cut can make the operation idle before the next animation
@@ -931,6 +933,27 @@ fn render_cut(
   // leaves the old buffer current until an unrelated key or resize arrives.
   |> session_model.invalidate_frame
   |> session_model.mark_activity
+}
+
+// A delivery frame inside the cut retires a held nudges board. The walk is
+// over the cut's own main branch rather than the active strand's records:
+// while the operator reads history on main, the displayed branch is a window
+// frozen at the scroll, and a delivery committed since would never be seen
+// there. The walk costs something only while a board is held.
+fn retire_nudges_delivered_in_cut(
+  shared: Shared(socket, recorder, source, replay_source),
+  cut: snapshot.Captured,
+  view: snapshot_view.View,
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.nudges {
+    None -> shared
+
+    Some(_) ->
+      surfaces.retire_nudges_delivered_since_board(
+        shared,
+        snapshot_view.branch(view, cut.window, advisor_pending.primary_strand).records,
+      )
+  }
 }
 
 // The shared run settings, as the head's attachment row carries them.

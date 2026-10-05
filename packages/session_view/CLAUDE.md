@@ -409,7 +409,9 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
 - `surfaces`: the `service_*` reads (todo seed, notes, queue, worktree,
   jobs, advisor nudges, block summaries, goal, context), the receivers
   (`receive_jobs`, `receive_goal`, `receive_advisor_nudges`,
-  `retire_delivered_nudges`, `refuse_goal`), the `sync_*` edges with
+  `retire_delivered_nudges` for a pushed entry,
+  `retire_nudges_delivered_since_board` for a captured cut, `refuse_goal`),
+  the `sync_*` edges with
   `context_refresh_due`, `advisor_nudges_action` and `goal_action`, which
   compare two records, and the goal commands `submit_goal_action` and
   `confirming`. A dropped queue read appends `queue_request.Dropped`, and a
