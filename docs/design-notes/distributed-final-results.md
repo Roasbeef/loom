@@ -52,8 +52,9 @@ write-ahead-log size.
 
 ## Why a larger blanket limit is costly
 
-The owner store currently has a 256-MiB lifetime budget. Reserving 224 MiB for
-every final code-mode message leaves insufficient space for even one existing
+The owner store supports a configurable lifetime reservation budget of at most
+256 MiB. Even at that ceiling, reserving 224 MiB for every final code-mode
+message leaves insufficient space for one existing
 32-MiB child allowance once request and identity metadata are included. A compact
 structural codec reduces the expansion, but still needs an explicit complete
 bound and charges that allowance before the result is known.
@@ -83,3 +84,8 @@ producer drain.
 The [integration guide](distributed-runtime-integration.md) tracks Launch and
 separate-host acceptance. The [custody architecture](../architecture/remote-custody.md)
 describes the existing owner obligations that this representation must preserve.
+
+Independent Sol review verified the encoder arithmetic and current persistence
+boundaries. It corrected the budget description above: 256 MiB is the maximum
+configurable ceiling, and an actual store may admit less. The large satellite
+regression remains required implementation evidence.
