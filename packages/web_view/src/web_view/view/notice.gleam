@@ -88,8 +88,8 @@ pub fn maybe(notice: Option(Notice)) -> Element(message) {
 }
 
 /// The line, in the row of `principal`, when the action it is about names that
-/// principal: a rotation, a revocation of its credentials or of one of its
-/// sign-ins.
+/// principal: a rotation, a rename, a revocation of its credentials or of one of
+/// its sign-ins.
 ///
 /// ## Examples
 ///
@@ -104,6 +104,7 @@ pub fn at_person(
     Some(Spoken(action: grants.Rotate(principal: named), notice:))
       | Some(Spoken(action: grants.RevokeCredentials(principal: named), notice:))
       | Some(Spoken(action: grants.RevokeSignin(principal: named, ..), notice:))
+      | Some(Spoken(action: grants.Rename(principal: named, ..), notice:))
       if named == principal
     -> line(notice)
     Some(_) | None -> element.none()

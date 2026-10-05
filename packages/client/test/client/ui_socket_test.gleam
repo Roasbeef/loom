@@ -1153,3 +1153,69 @@ pub fn a_row_says_the_role_the_membership_holds_test() {
     == [sessions.Entry(..entry, id: "x")]
   assert ui_socket.with_roles([entry], []) == [entry]
 }
+
+// Protocol-change/065, the tenth pull request: the home's "Your name" form is
+// beneath the account panel, so every home's socket admits a submit there, alone
+// or in a batch, and only there. The panel's own path, a sibling that shares its
+// digits, the table's and the sidebar's paths for a home that may not submit
+// there, and every other event stay dropped, so the new admission is one region
+// and one event.
+pub fn every_home_socket_admits_a_submit_beneath_the_account_panel_test() {
+  let form = home.signins_path <> "\t0\t1\t0"
+  let batch =
+    "{\"kind\":3,\"messages\":["
+    <> click_on(home.signins_path <> "\t3\t0\t0")
+    <> ","
+    <> submit_on(form)
+    <> "]}"
+  list.each(
+    [
+      ui_socket.home_accepts,
+      ui_socket.home_owner_accepts,
+      ui_socket.home_admin_accepts,
+    ],
+    fn(accepts) {
+      assert accepts(submit_on(form))
+      assert accepts(submit_on(home.signins_path <> "\t1"))
+      assert accepts(batch)
+      list.each(
+        [
+          // The region itself and a sibling that shares its digits.
+          submit_on(home.signins_path),
+          submit_on(home.signins_path <> "0\t1"),
+          submit_on("0\t2\t3"),
+          submit_on("0\t2\t2" <> "0"),
+
+          // Another event at the form.
+          "{\"kind\":1,\"path\":\"0\\t2\\t2\\t0\\t1\\t0\",\"name\":\"keydown\"}",
+          "{\"kind\":1,\"path\":\"0\\t2\\t2\\t0\\t1\\t0\",\"name\":\"input\"}",
+          "{\"kind\":1,\"path\":\"0\\t2\\t2\\t0\\t1\\t0\",\"name\":\"change\"}",
+
+          // A batch with one message outside the panel.
+          "{\"kind\":3,\"messages\":["
+            <> submit_on(form)
+            <> ","
+            <> submit_on("0\t0\t1\t0")
+            <> "]}",
+        ],
+        fn(frame) {
+          assert !accepts(frame)
+        },
+      )
+    },
+  )
+
+  // Beneath the table and the sidebar a member's home still admits no submit.
+  assert !ui_socket.home_accepts(submit_on(home.table_path <> "\t1\t2\t0\t0"))
+  assert !ui_socket.home_accepts(submit_on(home.sidebar_path <> "\t1\t1\t0\t0"))
+}
+
+// The capability to rename oneself is the page's ceiling and nothing else: a
+// page minted to operate has it whoever its principal is, and a read-only link
+// has none.
+pub fn only_an_operating_home_may_rename_itself_test() {
+  let ask = fn(_name, _deliver) { Nil }
+  let assert Some(_) =
+    ui_socket.home_rename_self_capability(access.Operator, ask)
+  assert ui_socket.home_rename_self_capability(access.Observer, ask) == None
+}

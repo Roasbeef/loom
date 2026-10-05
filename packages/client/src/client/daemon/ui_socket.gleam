@@ -199,6 +199,7 @@ import web_view/ending
 import web_view/grants
 import web_view/home
 import web_view/invites
+import web_view/names
 import web_view/operator_page
 import web_view/page
 import web_view/renames
@@ -710,6 +711,10 @@ pub fn upgrade_home(
       device: device_capability(seen.grant.origin, fn() {
         device_link_for(standing, tickets, open, seen.address)
       }),
+      who: fn() { name_read(standing, open) },
+      rename_self: home_rename_self_capability(ceiling, fn(name, deliver) {
+        rename_self_task(standing, open, attachment.epoch, name, deliver)
+      }),
     )
   websocket(request, limit, settled, fn(signals) {
     admit_home(
@@ -732,9 +737,11 @@ pub fn upgrade_home(
   })
 }
 
-// What a home page is handed to manage its principal's sign-ins: the read, the
-// fingerprint of the login this page belongs to, the bookmark it draws, the two
-// ways to end logins and, on a fresh home alone, the way to make a device link.
+// What a home page is handed to manage its principal's sign-ins and name: the
+// read, the fingerprint of the login this page belongs to, the bookmark it draws,
+// the two ways to end logins and, on a fresh home alone, the way to make a device
+// link, the read of the principal's display name and, on a page minted to
+// operate, the way to rename the principal.
 type Signing {
   Signing(
     read: fn() -> signins.Listing,
@@ -743,6 +750,8 @@ type Signing {
     out: fn(String) -> signins.Answer,
     all: fn() -> signins.Answer,
     device: Option(fn() -> signins.Answer),
+    who: fn() -> Option(String),
+    rename_self: Option(fn(String, fn(names.Answer) -> Nil) -> Nil),
   )
 }
 
@@ -802,7 +811,8 @@ pub fn home_create_capability(
 /// The browser messages a home page takes: Lustre's `EventFired` for a
 /// `click`, alone or batched, at a path beneath `home.table_path`,
 /// `home.sidebar_path` or `home.signins_path`, where the home's only handlers
-/// are, and nothing else. Each handler in the first two is one session's row,
+/// are, and a `submit` beneath `home.signins_path`, where the "Your name" form is
+/// (protocol-change/065, the tenth pull request), and nothing else. Each handler in the first two is one session's row,
 /// whose message names the session the server drew and not one the frame chose,
 /// so the frame can choose only among the rows that were drawn. Each in the
 /// third is one of the page's own sign-in controls (protocol-change/065, PR 8),
@@ -894,7 +904,8 @@ fn home_event(rights: HomeRights) -> decode.Decoder(Bool) {
         "click", Administering -> home_row_path(path) || path == home.admin_path
         "click", Browsing | "click", Submitting -> home_row_path(path)
         "submit", Submitting | "submit", Administering ->
-          string.starts_with(path, home.table_path <> "\t")
+          string.starts_with(path, home.table_path <> "\t") || named_path(path)
+        "submit", Browsing -> named_path(path)
         _, _ -> False
       })
     }
@@ -907,6 +918,13 @@ fn home_event(rights: HomeRights) -> decode.Decoder(Bool) {
     }
     _ -> decode.success(False)
   }
+}
+
+// The "Your name" form is beneath the account panel (`home.signins_path`), where
+// the page's own controls are, so a page that draws it is admitted a submit there
+// and nowhere else outside the owner's table forms.
+fn named_path(path: String) -> Bool {
+  string.starts_with(path, home.signins_path <> "\t")
 }
 
 // A row's button is beneath the table's section or the sidebar's column. The
@@ -965,6 +983,8 @@ fn admit_home(
       sign_out_all: signing.all,
       device: signing.device,
       admin: administering,
+      who: signing.who,
+      rename_self: signing.rename_self,
     )
   let started = case transferred {
     Error(reason) -> {
@@ -2646,6 +2666,182 @@ pub fn rename_task(
   Nil
 }
 
+/// The capability to rename the page's own principal that a home page minted
+/// with `ceiling` is handed: `ask` on a page minted to operate, whoever its
+/// principal is, and none on a read-only link (protocol-change/065, the tenth
+/// pull request). A member renames itself and the owner renames itself, so the
+/// principal does not decide it. The daemon checks the ceiling and the credential
+/// again when the request runs (`rename_self_for`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.home_rename_self_capability(access.Observer, ask) == None
+/// ```
+@internal
+pub fn home_rename_self_capability(
+  ceiling: access.Role,
+  ask: fn(String, fn(names.Answer) -> Nil) -> Nil,
+) -> Option(fn(String, fn(names.Answer) -> Nil) -> Nil) {
+  case ceiling {
+    access.Operator -> Some(ask)
+    access.Observer -> None
+  }
+}
+
+/// The page's principal's display name as the catalogue holds it now, read with
+/// the page's own credential, or `None` when the page has ended or the registry
+/// did not answer. The registry authenticates the credential again, so a page
+/// whose credential was revoked reads nothing; the sessions read is what ends it.
+/// The home asks with every list, so a name the owner changed from the admin page
+/// reaches an open home at its next read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.name_read(standing, open)
+/// ```
+@internal
+pub fn name_read(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+) -> Option(String) {
+  case open() {
+    Error(Nil) -> None
+    Ok(_) ->
+      case manager.authenticate(standing.registry, standing.digest) {
+        Ok(principal) if principal.id == standing.principal ->
+          Some(principal.display_name)
+        Ok(_) | Error(_) -> None
+      }
+  }
+}
+
+/// Renames the asking page's own principal to `name`, or gives the reason it did
+/// not (protocol-change/065, the tenth pull request). The page sends the text of
+/// the name and nothing else: whose name it is, is the page's principal, which
+/// the daemon reads from the grant it holds and never from a frame.
+///
+/// Every step is the daemon's and is made afresh, with the digest of the
+/// credential the page was admitted under:
+///
+/// 0. The asking page must still be open (`open`). A page that ended but whose
+///    socket is still up renames nothing (`NotAllowed`).
+/// 1. The page must have been minted to operate. A read-only page is refused,
+///    whoever its principal is.
+/// 2. `manager.rename_principal` is the registry turn the control command's
+///    `principals.rename` runs, with no principal named: it authenticates the
+///    credential and the epoch in the same dispatch as the write, so a revoked
+///    credential and a stale epoch are `NotAllowed`, and the credential's own
+///    principal is the one renamed. The credential must also still authenticate
+///    as the principal the page was admitted for.
+/// 3. The name is trimmed and judged there by the rule a claim's chosen name is
+///    held to (`storage/access.rename`): nonblank, at most 256 bytes, no control,
+///    zero-width or direction-changing character (`InvalidName`).
+///
+/// The name an answer carries is the one the catalogue now holds. An origin
+/// already admitted keeps the name it was admitted under.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.rename_self_for(standing, open, epoch, "Alex")
+/// ```
+@internal
+pub fn rename_self_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  epoch: String,
+  name: String,
+) -> names.Answer {
+  let outcome = {
+    use _ <- result.try(open() |> result.replace_error(names.NotAllowed))
+    use _ <- result.try(
+      operating_ceiling(standing.ceiling)
+      |> result.replace_error(names.NotAllowed),
+    )
+    use principal <- result.try(
+      manager.authenticate(standing.registry, standing.digest)
+      |> result.replace_error(names.NotAllowed),
+    )
+    use _ <- result.try(case principal.id == standing.principal {
+      True -> Ok(Nil)
+      False -> Error(names.NotAllowed)
+    })
+    use renamed <- result.map(
+      manager.rename_principal(
+        standing.registry,
+        standing.digest,
+        epoch,
+        None,
+        name,
+      )
+      |> result.map_error(name_refusal),
+    )
+    renamed.display_name
+  }
+  case outcome {
+    Ok(stored) -> names.Renamed(stored)
+    Error(reason) -> names.Declined(reason)
+  }
+}
+
+// The fixed reason for a refusal of the registry's rename of a principal. A
+// credential that no longer authenticates, a stale epoch, a principal the
+// catalogue does not hold and a member naming another read alike, so a page
+// learns nothing about which; a name the catalogue itself refused is a bad name,
+// and anything else is the daemon's to sort out.
+fn name_refusal(error: manager.AdminError) -> names.Reason {
+  case error {
+    manager.AdminForbidden
+    | manager.AdminStaleEpoch
+    | manager.AdminMetadata(catalogue.Missing) -> names.NotAllowed
+    manager.AdminMetadata(catalogue.Invalid(_)) -> names.InvalidName
+    manager.AdminMetadata(catalogue.Unsupported)
+    | manager.AdminMetadata(catalogue.Conflict)
+    | manager.AdminMetadata(catalogue.Database(_))
+    | manager.IsolationRequired
+    | manager.AdminUnavailable
+    | manager.AdminBusy
+    | manager.AdminForeignPath -> names.Unavailable
+  }
+}
+
+/// Starts `rename_self_for` in a run of its own and returns at once, so the
+/// page's runtime is free while the registry answers; `deliver` is called, from
+/// that run, with the answer, whatever it is.
+///
+/// The run is a weft run with one task, linked to the calling process, which is
+/// the page's runtime, as `rename_task`'s is: a page that goes away cancels it,
+/// and a rename the registry has already begun finishes on the registry's own
+/// turn. Every step of `rename_self_for` is bounded by its own call timeouts, so
+/// the task always answers within seconds and needs no deadline of its own. Its
+/// last act is `deliver`, so a page that stays open is always answered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.rename_self_task(standing, open, epoch, "Alex", deliver)
+/// ```
+@internal
+pub fn rename_self_task(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  epoch: String,
+  name: String,
+  deliver: fn(names.Answer) -> Nil,
+) -> Nil {
+  let _ =
+    weft.new([
+      fn() {
+        deliver(rename_self_for(standing, open, epoch, name))
+        Ok(Nil)
+      },
+    ])
+    |> weft.start_witnessed
+  Nil
+}
+
 /// The capability to open the admin page that a home page minted for
 /// `principal` with `ceiling` and `reach` is handed: `ask` for the daemon's
 /// owner on a page minted to operate and opened by a fresh `loom ui` exchange,
@@ -3342,6 +3538,8 @@ pub fn admin_for(
         revoke_signin_for_admin(standing, epoch, principal, fingerprint)
       grants.Rotate(principal:) ->
         rotate_for_admin(standing, tickets, epoch, address, principal)
+      grants.Rename(principal:, name:) ->
+        rename_for_admin(standing, epoch, principal, name)
     }
   }
   case outcome {
@@ -3385,6 +3583,32 @@ fn revoke_signin_for_admin(
       ui_login.revoked(revoked, digest)
       Ok(grants.Changed)
     }
+    Error(error) -> Error(admin_reason(error))
+  }
+}
+
+// One principal's display name changed, which grants nothing and costs no
+// allowance. The registry authenticates the owner's credential and the epoch in
+// the same turn as the write and judges the name there, by the rule a claim's
+// chosen name is held to, so a refused name writes nothing.
+fn rename_for_admin(
+  standing: Standing(instance),
+  epoch: String,
+  principal: String,
+  name: String,
+) -> Result(grants.Answer, grants.Reason) {
+  case
+    manager.rename_principal(
+      standing.registry,
+      standing.digest,
+      epoch,
+      Some(principal),
+      name,
+    )
+  {
+    Ok(_) -> Ok(grants.Changed)
+    Error(manager.AdminMetadata(catalogue.Invalid(_))) ->
+      Error(grants.InvalidName)
     Error(error) -> Error(admin_reason(error))
   }
 }

@@ -1104,3 +1104,134 @@ pub fn a_rotation_claim_is_not_resent_when_a_row_is_inserted_ahead_test() {
   assert string.contains(patch, "Aaron") as "the refresh landed"
   assert !string.contains(patch, "loomclaim_")
 }
+
+// Every row has a Rename button, the owner's own included, and pressing one opens
+// a form in that row only (protocol-change/065, the tenth pull request): the
+// person's name is a text node in the lead, `<loom-rename>` fills the field in the
+// browser and no attribute holds the name. One form is open at a time, Cancel
+// closes it, and the form's one handler is a submit beneath the body.
+pub fn each_row_offers_rename_and_one_form_opens_at_a_time_test() {
+  let #(model, _) = opened(start())
+  let html = drawn(model)
+  assert count(html, ">Rename<") == 5
+    as "one button for each of the five people"
+  assert !string.contains(html, "<form")
+
+  let model = run(model, admin.Editing("bob"))
+  let html = drawn(model)
+  assert count(html, "<form") == 1
+  assert string.contains(html, "Rename <span data-loom-name>Bob</span>")
+  assert string.contains(html, "data-loom-renames")
+  assert string.contains(html, "<loom-rename><input")
+  assert string.contains(html, "name=\"text\"")
+  assert !string.contains(html, " value=")
+  assert !string.contains(html, "placeholder=\"Bob")
+  let keys = handlers(admin.view(model))
+  assert list.any(keys, string.ends_with(_, "\nsubmit"))
+  assert list.all(keys, string.starts_with(_, admin.body_path <> "\t"))
+
+  // The owner's row has one too, since the owner may rename itself.
+  let model = run(model, admin.Editing("owner"))
+  let html = drawn(model)
+  assert count(html, "<form") == 1
+  assert string.contains(html, "Rename <span data-loom-name>Olive Owner</span>")
+  assert !string.contains(html, "<span data-loom-name>Bob</span>")
+
+  let model = run(model, admin.EditCancelled)
+  assert !string.contains(drawn(model), "<form")
+}
+
+// A submit asks the daemon to rename the principal the server drew, with the
+// typed text and nothing else. A change closes the form and says so in the row; a
+// refusal leaves the form open, in fixed words, so the name can be corrected.
+pub fn a_rename_asks_for_the_drawn_principal_and_closes_on_success_test() {
+  let acts = process.new_subject()
+  let #(model, _) =
+    opened(start_with(process.new_subject(), acts, grants.Changed))
+  let model = run(model, admin.Editing("bob"))
+  let model = run(model, admin.Asking(grants.Rename("bob", "Robert")))
+  assert process.receive(acts, 0) == Ok(grants.Rename("bob", "Robert"))
+  let html = drawn(model)
+  assert string.contains(html, "Renamed.")
+  assert !string.contains(html, "<form")
+
+  let acts = process.new_subject()
+  let #(refused, _) =
+    opened(start_with(
+      process.new_subject(),
+      acts,
+      grants.Declined(grants.InvalidName),
+    ))
+  let refused = run(refused, admin.Editing("bob"))
+  let refused = run(refused, admin.Asking(grants.Rename("bob", "")))
+  let html = drawn(refused)
+  assert string.contains(html, grants.reason_words(grants.InvalidName))
+  assert count(html, "<form") == 1
+  assert string.contains(html, "Rename <span data-loom-name>Bob</span>")
+}
+
+// While an ask is out the buttons wait and no form opens.
+pub fn no_form_opens_while_an_ask_is_out_test() {
+  let pending = process.new_subject()
+  let start =
+    admin.Start(..start(), act: fn(action, deliver) {
+      process.send(pending, #(action, deliver))
+    })
+  let #(model, _) = opened(start)
+  let model = run(model, admin.Asking(grants.Rotate("cara")))
+  let model = run(model, admin.Editing("bob"))
+  assert !string.contains(drawn(model), "<form")
+}
+
+// A read that no longer lists the person closes its form, and one that still
+// does leaves it, so a refresh does not take back a name that is being typed.
+pub fn a_read_closes_the_form_of_a_person_who_is_gone_test() {
+  let gone = process.new_subject()
+  let start =
+    admin.Start(..start(), read: fn(chosen, deliver) {
+      let snap = snapshot(chosen)
+      case process.receive(gone, 0) {
+        Ok(Nil) ->
+          deliver(grants.Read(
+            grants.Snapshot(
+              ..snap,
+              principals: list.filter(snap.principals, fn(row) {
+                row.id != "bob"
+              }),
+            ),
+          ))
+        Error(Nil) -> deliver(grants.Read(snap))
+      }
+    })
+  let #(model, _) = opened(start)
+  let model = run(model, admin.Editing("bob"))
+  let model = run(model, admin.Choosing(session))
+  assert string.contains(drawn(model), "<form")
+    as "a read that lists bob keeps it"
+  process.send(gone, Nil)
+  let model = run(model, admin.Choosing(other_session))
+  assert !string.contains(drawn(model), "<form")
+}
+
+// A name that carries markup is only ever escaped text in the form's lead.
+pub fn a_hostile_name_is_text_in_the_rename_form_test() {
+  let hostile = "<script>alert(1)</script>"
+  let start =
+    admin.Start(..start(), read: fn(chosen, deliver) {
+      let snap = snapshot(chosen)
+      deliver(grants.Read(
+        grants.Snapshot(..snap, principals: [
+          grants.Principal(
+            "bob",
+            hostile,
+            grants.MemberKind,
+            grants.NoCredential,
+          ),
+        ]),
+      ))
+    })
+  let #(model, _) = opened(start)
+  let html = drawn(run(model, admin.Editing("bob")))
+  assert !string.contains(html, hostile)
+  assert string.contains(html, "&lt;script&gt;alert(1)&lt;/script&gt;")
+}

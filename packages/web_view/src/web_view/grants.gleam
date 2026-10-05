@@ -179,7 +179,7 @@ pub type Reading {
   Closed(ending: Ending)
 }
 
-/// The six changes the page may ask for. Every identity in one is the
+/// The seven changes the page may ask for. Every identity in one is the
 /// catalogue's, drawn into the tree by the server, and the text of a name is
 /// the browser's and nothing else is: a frame cannot name a session or a
 /// principal the page did not draw. The daemon checks each again, from the
@@ -211,6 +211,12 @@ pub type Action {
   /// server drew into the tree beside it. Every page the login minted ends at
   /// its next request. A reduction, which costs nothing.
   RevokeSignin(principal: String, fingerprint: String)
+
+  /// Change one principal's display name, the owner's own included
+  /// (protocol-change/065, the tenth pull request). `name` is the text the owner
+  /// typed, unjudged: the daemon trims it and applies the rule a claim's chosen
+  /// name is held to. It grants nothing and costs no allowance.
+  Rename(principal: String, name: String)
 }
 
 /// What a claim was made for, which the page words.
@@ -282,8 +288,9 @@ pub type Reason {
   /// drew a row that was removed since.
   NotFound
 
-  /// The suggested name is empty after trimming, longer than 256 bytes, or holds
-  /// a control, zero-width or direction-changing character.
+  /// The suggested name, or the name a rename was asked for, is empty after
+  /// trimming, longer than 256 bytes, or holds a control, zero-width or
+  /// direction-changing character.
   InvalidName
 
   /// The daemon could not answer: it was starting, stopping or slow, or the
@@ -370,6 +377,7 @@ pub fn changed_words(action: Action) -> String {
     RevokeMembership(..) -> "Membership removed."
     RevokeCredentials(..) -> "Credentials revoked."
     RevokeSignin(..) -> "Sign-in ended."
+    Rename(..) -> "Renamed."
     Invite(..) | Rotate(..) -> "Done."
   }
 }
