@@ -55,12 +55,13 @@ owner/Compile/workspace controls and native executor/owner restart tests pass
 against the merged Weft revision. The [transport transition record](../review/distributed-beam-transport-transition.md)
 keeps the exact evidence and known historical-route refusal defect.
 The reviewed [scoped lifetime proposal](distributed-scope-lifetime.md) describes
-the next host boundary; its API and native close-state change await approval.
+the next host boundary; the owner approved its API and native close-state change.
 The [final-result proposal](distributed-final-results.md) records the separate
-Launch result-size and durable-retention decision. Launch/satellite execution,
-the remote LSP host and registered daemon configuration remain required. Acceptance must drive ordinary
-tools and code mode with the owner and executor on separate hosts and no checkout
-on the owner's disk.
+accepted Launch result representation and its remaining retention mechanics.
+Launch/satellite execution, the remote LSP host and registered daemon
+configuration remain required. Acceptance must drive ordinary tools and code
+mode with the owner and executor on separate hosts and no checkout on the
+owner's disk.
 
 Executor pools, trusted orchestrator routing, durable cross-node messaging and
 controlled session movement follow that first working remote path. These are

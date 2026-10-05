@@ -1,7 +1,9 @@
 # Retaining complete remote code-mode results
 
-Status: proposed result representation, awaiting the owner's choice. This note
-records a Launch integration constraint; it changes no runtime limit or API.
+Status: result representation accepted by the owner. Large results use bounded
+previews and durable references to complete values. Storage, retrieval and
+reservation mechanics remain under implementation review; no runtime limit has
+changed yet.
 
 ## Why the satellite limit is insufficient
 
@@ -24,14 +26,15 @@ custodian calls the last encoder before `storage/owner_custody.finish`.
 Increasing a Launch child-receipt limit does not increase the final-message
 limit or establish that the owner can retain the result.
 
-## Proposed representation
+## Accepted representation
 
-The recommended user-visible result is a bounded preview plus a reference to the
+The accepted user-visible result is a bounded preview plus a reference to the
 complete canonical value retained by the owner. The reference binds the value's
 digest, byte length and storage identity. Rerunning the program is never a way to
 recover that value. The alternative is to keep the entire structured value inline
 and introduce a separate bounded final-message codec and reservation profile.
-The owner must choose this representation before implementation.
+The owner selected the reference representation; the inline alternative is not
+the implementation path.
 
 The existing text-blob helper supplies useful storage machinery, but does not
 establish the required custody. It retains full structured details alongside the

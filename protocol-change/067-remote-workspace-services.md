@@ -972,3 +972,54 @@ Launch, owner capabilities and LSP must use one executor-resident workspace,
 with owner canary files proving no local fallback. Formal-model correspondence
 must identify the new transport events and preserve the admission, receipt,
 discharge and retirement distinctions. No transport fixture alone completes #697.
+
+
+## Addendum: scoped endpoint and native lifetime
+
+**Decision: accepted by the owner; implementation and real-peer verification
+remain required.** One node endpoint owns six transport credits and at most
+sixteen immutable scope registrations. A temporary local scope owner is part of
+each concrete registration. Closing that scope MUST acknowledge its permanent
+admission fence before orderly service teardown. Applied owner DOWN also fences
+the row. A reservation that precedes the applied fence can retain uncertainty;
+no crash path promises zero capacity loss.
+
+The six credit records are the sole allocation state. Available means no original
+run owns the credit. Assigned retains the exact row and original correlation.
+Unusable retains that assignment when custody is unresolved, or no assignment
+when an idle credit dies. A completion MUST match both concrete credit and
+original correlation. Only an actual service answer plus managed transport
+AllDelivered, or a joined run with no service handoff, can release an assignment.
+Timeout, DOWN and an unrelated completion MUST NOT reconstruct capacity.
+
+The local administrative fence operation acknowledges the exact immutable row.
+The bounded drain snapshot is Busy for an active row or an assigned original
+run, Uncertain for unresolved unusable custody, and Drained only for a fenced row
+without either obligation. These results establish transport/ask state only.
+They do not establish native retirement, physical cleanup or journal release.
+Closed rows remain tombstones; no unregister, rebind or automatic restart is
+introduced.
+
+A scope close MUST keep reply-producing services alive while waiting for original
+transport drain. Its finite budget reserves time for continuation cancellation,
+physical cleanup and native retirement even after a failed fence or expired
+poll. Journal release follows all required witnesses. Closing one scope MUST NOT
+stop the shared endpoint or a sibling's native pool.
+
+The native service MUST retain its original close disposition independently of
+later durable-confirmation failures. A successful native close ends its actor;
+subsequent remote shutdown uses that retained result instead of closing the dead
+actor again. An outward error after native success MUST NOT discard the result.
+Repeated close may finish only the original durable confirmations. Native
+uncertainty stays uncertain, and native DOWN is never a retirement witness.
+
+Historical missing or conflicting command identity MUST be a definite refusal
+after its metadata worker has drained. Genuine journal, transport or native
+uncertainty remains conservative. The regression MUST pass through the actual
+command endpoint and prove that a later valid operation can still use its
+metadata slot and transport credit.
+
+The [lifetime design](../docs/design-notes/distributed-scope-lifetime.md) and
+[bounded model review](../docs/review/distributed-scoped-drain-model.md) record the
+rationale, failure traces and proof limits. Actual TLS peers must connect those
+modeled events to concrete queued asks, producer joins and native outcomes.

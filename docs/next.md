@@ -18,6 +18,9 @@ independent TLS BEAM roles, including an exact queued Submit retained after
 its actual caller deadline and join. Astra replay and the receipt mutation
 confirm that control. The [transport review](review/distributed-beam-transport-transition.md)
 records independent review, limits and the unresolved historical-refusal defect.
+The owner has now approved its service correction, the scoped lifecycle/native
+close changes, and bounded previews with durable complete-value references.
+Their earlier approval holds are resolved; implementation and verification remain.
 The [owner discharge fix](review/distributed-owner-discharge.md) now retains
 unresolved run obligations across worker loss and owner restart. The earlier storage gate passed 193 tests; the current full client gate passes
 2,847 tests, with 15 explicit optional SKIP notices. These skipped paths still
@@ -57,7 +60,7 @@ witnesses. The current full P gate, including the proposed scoped TLS BEAM credi
 passes 126 cases/probes and 56 mutation controls. Independent Astra review
 replayed the scoped cases, probes and four new mutations. The
 [scoped-model review](review/distributed-scoped-drain-model.md) separates these
-bounded results from the runtime lifecycle API, which still awaits approval.
+bounded results from the approved runtime lifecycle API, now being implemented.
 The model assumes truthful COMMIT/drain events and makes no native-retirement or
 whole-system proof claim.
 
