@@ -1379,3 +1379,15 @@ pub fn a_page_without_the_capability_ignores_the_admin_press_test() {
   assert process.receive(asked, 0) == Error(Nil)
   assert !string.contains(drawn(ended), "Opening the admin page.")
 }
+
+// An unnamed session's label is a fallback built from its identity, not a name.
+// Its lead is drawn without the marker `<loom-rename>` copies from, so the field
+// opens empty and Enter cannot save the fallback as the name.
+pub fn an_unnamed_rows_form_has_no_name_to_copy_test() {
+  let ask = fn(_session, _name, _deliver) { Nil }
+  let #(owner, _) = opened(home.Start(..start(), rename: Some(ask)))
+  let html = drawn(run(owner, home.EditRequested("D")))
+  assert string.contains(html, "home-rename-form")
+  assert string.contains(html, "Rename Session D")
+  assert !string.contains(html, "data-loom-name")
+}

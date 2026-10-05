@@ -322,12 +322,18 @@ fn editing(
       submit,
     ],
     [
-      html.p([attribute.class("home-rename-lead")], [
-        html.text("Rename "),
-        html.span([attribute.attribute(rename_view.name_marker, "")], [
-          html.text(sessions.label(entry)),
-        ]),
-      ]),
+      html.p([attribute.class("home-rename-lead")], case entry.name {
+        // An unnamed session's label is a fallback built from its identity, and
+        // it is not a name: left unmarked, the field opens empty rather than
+        // offering the fallback to be saved as one.
+        "" -> [html.text("Rename " <> sessions.label(entry))]
+        name -> [
+          html.text("Rename "),
+          html.span([attribute.attribute(rename_view.name_marker, "")], [
+            html.text(name),
+          ]),
+        ]
+      }),
       html.div([attribute.class("home-rename-fields")], [
         rename_view.field(),
         html.button([attribute.type_("submit"), ..asking], [
