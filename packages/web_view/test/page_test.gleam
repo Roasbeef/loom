@@ -27,6 +27,48 @@ pub fn the_shell_loads_the_bundle_and_the_stylesheet_from_this_origin_test() {
   assert !string.contains(shell, "<script>")
 }
 
+// A session page's document is titled with the product alone until the
+// component has drawn the bar, and never with the session's identity, which
+// names nothing a person could tell tabs apart by. An identity that holds
+// markup is escaped wherever the shell writes it, so it cannot end the title.
+pub fn the_session_shell_title_is_never_the_identity_test() {
+  let id = "0198c0de-aaaa-bbbb-cccc-0123456789ab"
+  let shell = page.shell(id)
+  assert string.contains(shell, "<title>Loom</title>")
+  let assert Ok(#(head, _)) = string.split_once(shell, "</title>")
+    as "the shell has a title"
+  assert !string.contains(head, id)
+
+  let hostile = page.shell("</title><script>alert(1)</script>")
+  assert string.contains(hostile, "<title>Loom</title>")
+  assert !string.contains(hostile, "<script>alert")
+}
+
+// The home and the admin page name themselves, product last, as a session's
+// tab does once it has read its name.
+pub fn the_other_pages_are_titled_by_what_they_are_test() {
+  assert string.contains(page.home_shell(), "<title>Home — Loom</title>")
+  assert string.contains(page.admin_shell(), "<title>Admin — Loom</title>")
+}
+
+// A browser with no sign-in for its bookmark is told two ways back in: `loom
+// ui`, with the command in a copy box, and a new invitation accepted at the
+// claim form, named by its address. The box needs the client bundle.
+pub fn the_resume_page_names_both_ways_back_in_test() {
+  let document = page.login_page()
+  assert string.contains(
+    document,
+    "<loom-copy subject=\"link\" text=\"loom ui\">",
+  )
+  assert string.contains(
+    document,
+    "<a class=\"ended-link\" href=\"/ui/claim\">/ui/claim</a>",
+  )
+  assert string.contains(document, "ask the person who invited you")
+  assert string.contains(document, page.asset_path(page.client_asset))
+  assert string.contains(page.login_unknown_notice(), "/ui/claim")
+}
+
 pub fn every_owned_asset_is_in_this_packages_priv_test() {
   list.each(
     [
