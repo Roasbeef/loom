@@ -782,3 +782,63 @@ pub fn session_lifetime_cannot_disguise_a_finite_or_foreground_timeout_test() {
     ]),
   ).is_error
 }
+
+pub fn session_lifetime_is_refused_to_a_subagent_before_any_approval_test() {
+  let filesystem = memory_fs.filesystem(memory_fs.start())
+  let recorded = process.new_subject()
+  let original =
+    fake_broker.ctx(workspace:, filesystem:, now:, script: [], recorded:)
+
+  // Neither the approval seam nor the jobs plane may be reached: the point
+  // of the refusal is that no operator prompt is raised for a child.
+  let ctx =
+    tool.Ctx(
+      ..original,
+      strand: "sub:main/run-tests-1a2b3c4d5e6f7a8b",
+      raise_refusal: fn(_request) { panic as "a subagent must not prompt" },
+    )
+  let plane =
+    job.Jobs(..job.unavailable(), start: fn(_ctx, _command, _wall, _wake) {
+      panic as "a refused lifetime must never launch a job"
+    })
+  let outcome = bash.tool(plane).run(ctx, session_watch_args())
+  assert outcome.is_error
+  assert string.contains(
+    first_text(outcome),
+    "a subagent's jobs end with it, so use the default finite lifetime "
+      <> "(omit lifetime)",
+  )
+}
+
+pub fn finite_lifetime_is_unaffected_for_a_subagent_test() {
+  let filesystem = memory_fs.filesystem(memory_fs.start())
+  let recorded = process.new_subject()
+  let original =
+    fake_broker.ctx(workspace:, filesystem:, now:, script: [], recorded:)
+  let ctx = tool.Ctx(..original, strand: "sub:main/run-tests-1a2b3c4d5e6f7a8b")
+  let plane =
+    job.Jobs(..job.unavailable(), start: fn(_ctx, command, wall, _wake) {
+      assert command == "go test ./..."
+      assert wall == option.None
+      Ok(job.Started(id: "finite", deadline_ms: 600_000, wall_ms: 600_000))
+    })
+  let outcome =
+    bash.tool(plane).run(
+      ctx,
+      json.Object([
+        #("command", json.String("go test ./...")),
+        #("mode", json.String("background")),
+        #("lifetime", json.String("finite")),
+      ]),
+    )
+  assert !outcome.is_error
+}
+
+pub fn lifetime_description_steers_finishing_work_to_the_default_test() {
+  let schema = json.to_string(bash.tool(job.unavailable()).schema)
+  assert string.contains(
+    schema,
+    "Test runs, builds, and anything expected to finish use the default",
+  )
+  assert string.contains(schema, "always asks the operator for approval")
+}
