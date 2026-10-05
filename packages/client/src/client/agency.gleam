@@ -444,7 +444,25 @@ fn seam_with_custody(
     roster: fn(caller) { roster(config, caller) },
     max_wait_ms: config.max_wait_ms,
     model_names: list.map(config.models, fn(entry) { entry.0.provider }),
+    holds: fn(caller, tool) { holds(config, caller.strand, tool) },
   )
+}
+
+// Whether `strand`'s durable active tool list names `tool`, read at call
+// time from the same cell the tool registry's clearance reads. Every way
+// of not knowing answers no: an absent holder, a strand with no
+// configuration cell, and an unreadable cell all mean the question has no
+// affirmative answer, and a missing answer must never read as a grant.
+fn holds(config: Config, strand: String, tool: String) -> Bool {
+  case borrow(config) {
+    Error(_unavailable) -> False
+    Ok(runtime) ->
+      case read_configuration(runtime, strand) {
+        Error(_refusal) -> False
+        Ok(configuration) ->
+          list.contains(configuration.active_tool_names, tool)
+      }
+  }
 }
 
 /// Wraps a hook record so a run's end reaps the undetached children that

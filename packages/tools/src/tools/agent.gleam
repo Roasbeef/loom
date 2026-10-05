@@ -621,6 +621,15 @@ pub type Agency {
     max_wait_ms: Int,
     /// Configured catalogue names accepted by an explicit spawn selection.
     model_names: List(String),
+    /// Whether the caller's strand holds the named tool in its active set
+    /// *now*. Read from the strand's durable configuration on every call,
+    /// so a `set_config` that withdraws a tool takes effect on the next
+    /// question. Total and closed on doubt: a strand with no readable
+    /// configuration holds nothing. A model's own `agent_*` call is already
+    /// cleared against this set by the tool registry; the question exists
+    /// for the callers that do not pass through the registry, namely the
+    /// code-mode orchestration seam.
+    holds: fn(Caller, String) -> Bool,
   )
 }
 

@@ -14,6 +14,31 @@
 //// contract, and every refusal name are the tools', and this module's job
 //// is to carry a call across the wire and carry the answer back.
 ////
+//// One check does precede the Agency: a capability is refused when the
+//// calling strand's active tool list lacks the `agent_*` tool that does
+//// the same thing (`authorizing_tool`). The Agency's own rules bound what
+//// a strand may reach, but the tool list is how a parent decides what a
+//// child may do at all, and a program must not be able to do what the
+//// strand's tools forbid.
+////
+//// ## Flow
+////
+//// Inbound: `router` → `check_held` → one `*_plan` function → the Agency
+//// → `answered` or `refused`
+////
+//// 1. `router` receives one decoded capability frame and first asks
+////    `check_held` whether the calling strand holds the tool
+////    `authorizing_tool` names for that capability. A strand that does not
+////    is refused with the in-band code "tool_not_held" before any argument
+////    is read.
+//// 2. Otherwise `router` dispatches on the capability name to
+////    `spawn_plan`, `wait_plan`, `send_plan`, `note_plan`, `notes_plan` or
+////    `roster_plan`. Each decodes its arguments totally and builds a
+////    `Caller` with `caller_of`.
+//// 3. The plan it returns runs the Agency closure. `answered` carries the
+////    reply back, and `refused` carries an Agency refusal back under the
+////    name `refusal_code` gives it.
+////
 //// That is why the plans it returns are `satellite.ServedHere` and never
 //// `satellite.ClearedCall`. An Agency call is a request the harness
 //// answers under its own policy; it spawns no process, opens no socket
@@ -216,6 +241,15 @@ pub const notes_ceiling = 64
 /// below.
 pub const spawn_ceiling_code = "spawn_ceiling"
 
+/// The in-band code a capability refused for want of its `agent_*` tool
+/// travels under.
+///
+/// `cap/strand.map_error` has no variant for it and decodes it to
+/// `StrandRefused` with the code verbatim, which is the vocabulary's
+/// provision for a name it has not learned. A program that wants to branch
+/// on it matches the code; one that only reports reads the message.
+pub const tool_not_held_code = "tool_not_held"
+
 /// The in-band code every other ceiling refusal travels under.
 ///
 /// One code and one decoded variant for the three, not three of each. A
@@ -331,6 +365,8 @@ pub fn ceilings(
 ///
 pub fn router(seam: Orchestration) -> CapRouter {
   fn(request: CapRequest) {
+    use Nil <- result.try(check_held(seam, request))
+
     // Gleam patterns cannot name a constant, so the arms below are string
     // literals while `serviced_caps` holds the constants — two lists that
     // could drift. `orchestration_test` walks `serviced_caps` and asserts
@@ -352,6 +388,67 @@ pub fn router(seam: Orchestration) -> CapRouter {
             <> string.join(serviced_caps, ", "),
         ))
     }
+  }
+}
+
+// The `agent_*` tool that authorizes each capability, or `None` for a
+// capability no tool stands behind.
+//
+// A strand's active tool list is how its parent controls it: withholding
+// `agent_send` keeps a reviewer child silent, and withholding `agent_spawn`
+// is the depth cap. The tool registry enforces that list for a model's own
+// call, but a program's capability call never passes through the registry,
+// so without this table a strand could do from `code_mode` what its tool
+// list forbids it to do directly. Each capability maps to the tool that
+// does the same thing: `strand.send` is `agent_send`, and so on down the
+// six. `report.emit` has no tool behind it. It is `cap/report`, a module
+// both seams carry for any program, so it stays ungated here.
+//
+// The match is on string literals for the reason `router`'s is, and
+// `orchestration_test` walks `serviced_caps` to keep the two lists the same.
+fn authorizing_tool(cap: String) -> Option(String) {
+  case cap {
+    "strand.spawn" -> Some("agent_spawn")
+    "strand.wait" -> Some("agent_wait")
+    "strand.send" -> Some("agent_send")
+    "strand.note" -> Some("agent_note")
+    "strand.notes" -> Some("agent_notes")
+    "strand.roster" -> Some("agent_roster")
+    "report.emit" -> None
+    _ -> None
+  }
+}
+
+// Refuses a capability whose authorizing tool the calling strand does not
+// hold, before any argument is decoded and before the Agency is asked
+// anything.
+//
+// The question goes to the Agency on every call instead of being answered
+// once when the router is built. The active set is durable configuration
+// that a `set_config` can change while a program is blocked in a `wait`, and
+// a snapshot taken at install would keep granting what the operator just
+// withdrew. The refusal is the in-band `tool_not_held`, which the `cap`
+// side reads as a refusal carrying the code verbatim; the message names the
+// capability and the tool so a program (and the model reading its output)
+// can tell a withheld tool from a rejected argument.
+fn check_held(
+  seam: Orchestration,
+  request: CapRequest,
+) -> Result(Nil, CapDenial) {
+  case authorizing_tool(request.cap) {
+    None -> Ok(Nil)
+    Some(tool) ->
+      case seam.agency.holds(caller_of(seam, request), tool) {
+        True -> Ok(Nil)
+        False ->
+          Error(CapDenial(
+            code: tool_not_held_code,
+            message: request.cap
+              <> " needs "
+              <> tool
+              <> ", which this strand does not hold",
+          ))
+      }
   }
 }
 

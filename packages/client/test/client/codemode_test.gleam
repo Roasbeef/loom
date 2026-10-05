@@ -1158,10 +1158,12 @@ pub fn a_spawn_reaches_the_real_agency_test() {
   assert string.starts_with(child_of(value), "sub:main/review-core-")
 }
 
-pub fn a_spawn_from_a_child_hits_the_depth_cap_test() {
-  // `depth_cap` is 1 — only the strand a human is talking to may spawn —
-  // and it is counted from the durable lineage ledger, so a program
-  // running on a child reaches it under the name the tools use.
+pub fn a_spawn_from_a_child_is_refused_by_its_tool_list_test() {
+  // Only the strand a human is talking to may spawn, and the Agency
+  // enforces that by never giving a child `agent_spawn`. A program running
+  // on the child is held to the same list, so the router refuses it for
+  // want of the tool before the Agency's own depth cap is consulted; that
+  // cap is proved against the live Agency in `agency_test`.
   let live = start_runtime()
   let assert framing.CapOk(value:) =
     orchestrated(live, "main", "strand.spawn", spawn_args("review core"))
@@ -1169,19 +1171,53 @@ pub fn a_spawn_from_a_child_hits_the_depth_cap_test() {
   let child = child_of(value)
   let #(code, message) =
     refused(live, child, "strand.spawn", spawn_args("review deeper"))
-  assert code == "depth_cap"
-  assert string.contains(message, "capped at depth")
+  assert code == "tool_not_held"
+  assert string.contains(message, "agent_spawn")
+}
+
+pub fn a_send_without_agent_send_is_refused_by_the_router_test() {
+  // A child spawned with a narrowed tool list may not send from a
+  // program, and the refusal is the router's own, in the sentence a
+  // program reads: the Agency is never asked.
+  let live = start_runtime()
+  let silent =
+    msgpack.MapValue([
+      pair("purpose", msgpack.StringValue("review core")),
+      pair("brief", msgpack.StringValue("look")),
+      pair("within_ms", msgpack.NilValue),
+      pair("detach", msgpack.BoolValue(False)),
+      pair("context", msgpack.StringValue("fresh")),
+      pair("tools", msgpack.ArrayValue([msgpack.StringValue("code_mode")])),
+      pair("result_schema", msgpack.NilValue),
+    ])
+  let assert framing.CapOk(value:) =
+    orchestrated(live, "main", "strand.spawn", silent)
+    as "the narrowed spawn must be admitted"
+  let child = child_of(value)
+  let #(code, message) =
+    refused(
+      live,
+      child,
+      "strand.send",
+      msgpack.MapValue([
+        pair("to", msgpack.StringValue("main")),
+        pair("text", msgpack.StringValue("hello")),
+      ]),
+    )
+  assert code == "tool_not_held"
+  assert message
+    == "strand.send needs agent_send, which this strand does not hold"
 }
 
 pub fn a_call_as_an_unknown_strand_fails_closed_test() {
   // The caller identity comes from the dispatching `Ctx`, never from the
-  // program — and a name the session does not know is refused rather than
-  // treated as a root with no constraints.
+  // program — and a name the session does not know holds no tool at all,
+  // so it is refused rather than treated as a root with no constraints.
   let live = start_runtime()
   let #(code, message) =
     refused(live, "sub:main/nobody-9-9", "strand.spawn", spawn_args("review"))
-  assert code == "not_addressable"
-  assert string.contains(message, "sub:main/nobody-9-9")
+  assert code == "tool_not_held"
+  assert string.contains(message, "agent_spawn")
 }
 
 pub fn a_send_outside_the_lineage_is_refused_by_name_test() {
@@ -1330,6 +1366,7 @@ fn none_agency() -> agent.Agency {
     roster: fn(_caller) { Error(agent.AgencyUnavailable) },
     max_wait_ms: 30_000,
     model_names: [],
+    holds: fn(_caller, _tool) { True },
   )
 }
 
@@ -1377,7 +1414,12 @@ fn start_runtime_over(shape: fn(session.Session) -> session.Session) -> Live {
     machine_strand.StrandConfiguration(
       model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
       thinking_level: machine_strand.ThinkingOff,
-      active_tool_names: ["agent_spawn", "code_mode"],
+      // The root strand holds every `agent_*` tool, as the shipped main
+      // does, so the orchestration router's tool check passes for it.
+      active_tool_names: [
+        "agent_note", "agent_notes", "agent_roster", "agent_send", "agent_spawn",
+        "agent_wait", "code_mode",
+      ],
     )
   let base = api.default_options(configuration)
   let assert Ok(runtime) =

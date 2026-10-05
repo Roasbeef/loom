@@ -726,6 +726,30 @@ pub fn a_spawn_may_narrow_its_tools_but_never_widen_them_test() {
   close(harness)
 }
 
+pub fn the_agency_reports_which_tools_a_strand_holds_test() {
+  // The answer comes from the strand's own durable configuration: the
+  // parent holds what it was seeded with, a narrowed child holds only what
+  // it was narrowed to, and a strand with no configuration holds nothing.
+  let harness = start_harness(Settles("done"))
+  let caller = caller_on("main", "turn-1:holds", 0)
+  let assert Ok(spawned) =
+    harness.seam.spawn(
+      caller,
+      agent.SpawnRequest(..a_spawn("narrow"), tools: Some(["fs_read"])),
+    )
+    as "narrowing must be accepted"
+  assert harness.seam.holds(caller, "agent_spawn")
+  assert !harness.seam.holds(caller, "agent_send")
+    as "a tool the parent was never given is not held"
+  let child = caller_on(spawned.strand, "turn-1:holds", 1)
+  assert harness.seam.holds(child, "fs_read")
+  assert !harness.seam.holds(child, "agent_spawn")
+    as "narrowing the child withdraws the tool from it"
+  assert !harness.seam.holds(caller_on("ghost", "turn-1:holds", 2), "fs_read")
+    as "a strand with no configuration holds nothing"
+  close(harness)
+}
+
 pub fn a_spawn_with_an_unusable_purpose_is_refused_test() {
   let harness = start_harness(Settles("done"))
   let assert Error(agent.InvalidArgument(..)) =
