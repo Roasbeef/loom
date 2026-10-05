@@ -608,6 +608,19 @@ pub fn a_detail_block_draws_no_language_row_test() {
   assert list.any(detail, string.contains(_, "{\"ok\": true}"))
 }
 
+// Detail rows also carry text an agent wrote, so only the harness's own
+// labels are dropped, and a first line that merely reads `json` is content.
+pub fn a_detail_block_keeps_an_authors_label_and_content_test() {
+  let python =
+    markdown.render_detail("```python\nprint(1)\n```", 40)
+    |> list.map(line_text)
+  assert list.any(python, string.contains(_, "python"))
+  let bare =
+    markdown.render_detail("```\njson\nprint(1)\n```", 40)
+    |> list.map(line_text)
+  assert list.any(bare, string.contains(_, "json"))
+}
+
 pub fn a_number_gutter_cannot_hide_source_in_a_narrow_pane_test() {
   let rows =
     markdown.diff("@@ -100 +100 @@\n-old\n+new")

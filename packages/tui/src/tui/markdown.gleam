@@ -176,15 +176,16 @@ pub fn render_sanitized(safe: String, width: Int) -> List(span.Line) {
   |> list.flat_map(render_block(_, width))
 }
 
-/// `render` for the Markdown a tool's detail rows are written in, which
-/// draws a fenced block's language as its highlighting and never as a row.
+/// `render` for a tool's detail rows, which draws the labels of the
+/// harness's own fences as highlighting and never as a row.
 ///
-/// The harness fences the JSON result, the call list and the program it
-/// shows under Ctrl+G with `json`, `text` and `gleam`, so the viewer can
-/// highlight the source. An answer's code block keeps its language label,
-/// since there the model chose the language and the reader may want it; in
-/// a detail row the label would be the only line in the block that is not
-/// part of the thing being shown.
+/// The harness fences the JSON result and call list it shows under Ctrl+G
+/// with `json` and `text`, the program with `gleam`, and an edit's patch
+/// with `diff`, so the viewer can highlight the source; those four labels
+/// are dropped. Detail rows also carry text a model or another agent wrote,
+/// such as advice, a sub-agent's report or a message body, and a fence in
+/// that text keeps whatever label its author gave it. A fence with no label
+/// has no label row to drop, so a first line that reads `json` stays.
 ///
 /// ## Examples
 ///
@@ -199,7 +200,11 @@ pub fn render_detail(markdown: String, width: Int) -> List(span.Line) {
   |> list.flat_map(fn(block) {
     let rows = render_block(block, width)
     case block {
-      tree.CodeBlock(language: Some(_), ..) -> list.drop(rows, 1)
+      tree.CodeBlock(language: Some(label), ..) ->
+        case harness_label(label) {
+          True -> list.drop(rows, 1)
+          False -> rows
+        }
       tree.CodeBlock(language: None, ..)
       | tree.Heading(..)
       | tree.Paragraph(..)
@@ -212,6 +217,14 @@ pub fn render_detail(markdown: String, width: Int) -> List(span.Line) {
       | tree.Rule -> rows
     }
   })
+}
+
+// The fence labels `session_view/transcript_lines` writes into detail rows.
+fn harness_label(label: String) -> Bool {
+  case string.lowercase(string.trim(label)) {
+    "json" | "text" | "gleam" | "diff" -> True
+    _ -> False
+  }
 }
 
 /// Wraps flowing Markdown, hard-wrapping code and leaving fixed rows alone.

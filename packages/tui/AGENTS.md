@@ -2718,8 +2718,8 @@ heading with `· line N` and the source it quotes, and the foot says how
 many lines the whole error has. The key that expands a response is named
 once, on its heading; the feet carry only facts. Body rows holding a number
 and a `│` gutter are drawn as source on the raised ground. A settled block keeps the
-running block's program rows, so it does not change height when the result
-arrives, and adds a `RESULT · object · 3 keys` preview with a type or size
+running block's title and program rows, so they stay put when the result
+arrives, and it grows below them with a `RESULT · object · 3 keys` preview with a type or size
 hint per key in place of the value's JSON. A result that
 carries the call record of protocol-change 060 adds to both: the settled title
 says `4 calls` (or the record's whole summary when any call did not settle),

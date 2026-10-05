@@ -5,9 +5,9 @@
 //// box, and a rule across the bottom carrying the foot. A running block
 //// shows the opening lines of the program, since the program text and,
 //// later, its one result are all the client receives. A completed one keeps
-//// those lines, so the block does not change height when the result
-//// arrives, and adds the calls the program made and a preview of its value;
-//// a failed one shows the error, with the source lines a compiler names
+//// those lines, so its title and program rows stay put when the result
+//// arrives, and it grows below them with the calls the program made and a
+//// preview of its value; a failed one shows the error, with the source lines a compiler names
 //// drawn as source. The border is drawn in the live colour for a program
 //// still running, the success colour for one that completed and the danger
 //// colour for one that failed, so the three read apart before a word of
