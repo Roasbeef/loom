@@ -1143,3 +1143,28 @@ constructor does not silently reinterpret them. The original runtime ToolOutcome
 and CodeMode execution signatures remain unchanged. `client/remote/code_reports`
 provides the original-key adapter, while physical service selection and owner
 read routing remain separate required assembly steps.
+
+### Foreground Launch channel implementation contract
+
+The accepted [Launch channel design](../docs/design-notes/distributed-launch-channel.md)
+places token/listener preparation inside whole Launch after successful Compile.
+Inbound delivery MUST remain paused until the owner host accepts the original
+connection's teardown custody. Foreground completed capability calls retain
+their existing invocation slots until exact consumed-write acknowledgement;
+heartbeat and denial responses share one bounded immediate-response slot.
+
+A validated terminal MUST enter a terminating disposition and acknowledge its
+final consumption before synchronous teardown can join the reader. That final
+acknowledgement MUST NOT grant another frame. Native settlement, resource closure
+and durable report COMMIT remain separate observations. The resource owner MUST
+be able to close a blocked writer's socket without enqueueing cancellation behind
+that writer's data.
+
+The logical cap payload remains at most 16,777,216 bytes; its four-byte prefix
+counts toward the 67,108,864-byte per-direction cumulative allowance. A maximum
+wire frame therefore uses at most 257 exact 65,536-byte transport chunks. Original
+admission reserves its bytes before body receipt or mailbox delivery. Failed or
+uncertain transfer does not refund capacity. Each Launch owner admits at most
+four live channels, retaining unresolved entries; durable history capacity is
+not a live-channel allowance. Shared endpoint request credits MUST NOT be held
+for channel-long reads. No stream exhaustion can produce successful prefix output.
