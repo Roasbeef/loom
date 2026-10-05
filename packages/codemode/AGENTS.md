@@ -1149,3 +1149,17 @@ These records contain only identity and path data. They establish neither an
 existing directory nor a successful compile, live listener, token custody or
 permission to recreate a resource. The durable preparation journal and live
 resource owner must establish those facts separately before physical execution.
+## Terminal preflight before allocation
+
+The foreground satellite host first validates the raw transport envelope. An
+`outcome` body then enters `core/report_value.decode_terminal`, which scans its
+fixed byte, depth, node and container budgets before generic MessagePack decoding.
+A failed scan closes this path without a permissive generic-decoder retry. Other
+frame kinds retain ordinary broker decoding; the persistent host retains its
+separate lifecycle.
+
+The terminal controls cover malformed headers, terminal boundaries and deeply
+or widely nested values. An independent Erlang call trace confirms that a large
+terminal body does not reach the generic decoder before its owning preflight.
+See [the review](../../docs/review/distributed-terminal-preflight.md) for the
+executed evidence and its JavaScript limits.

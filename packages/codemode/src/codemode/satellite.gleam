@@ -115,12 +115,12 @@
 //// body  = {ok:true, value} | {ok:false, message, details}
 //// ```
 ////
-//// `broker/framing` does not know the `outcome` kind — it would classify
-//// the frame as `UnknownKind` and discard the body — so the host runs its
-//// *own* small deframer over the cap socket: it splits length-prefixed
-//// payloads itself, hands `cap_call`/`cancel`/`heartbeat` payloads to
-//// `broker/framing` for typed decoding, and decodes the one `outcome`
-//// frame's body itself into an `Outcome`. That frame is the signal the
+//// The host splits length-prefixed payloads, then `broker/framing` validates
+//// their headers and slices their exact body bytes without allocating trees.
+//// An `outcome` body enters `core/report_value.decode_terminal` and its fixed
+//// preflight before any generic decoding; other kinds retain the ordinary
+//// broker decoder. The persistent host below keeps its separate generic path.
+//// The terminal frame is the signal the
 //// program finished; the host destroys the node and then reports the
 //// outcome — in that order, so the node's enforcement report, which
 //// `destroy` returns, travels out with it (issue #5).
@@ -139,7 +139,8 @@
 ////    `Launcher` create the node and `hand_over` its connection.
 //// 2. `handle` is that actor's one handler. Inbound bytes reach
 ////    `handle_bytes`, which splits payloads with `deframe` and passes each to
-////    `handle_frame`.
+////    `handle_payload`; its raw header chooses the terminal report boundary
+////    or the ordinary broker decoder before `handle_frame` dispatches.
 //// 3. `handle_cap_call` checks the token, `route_cap_call` asks the router for a
 ////    plan. `admit_cap_call` checks lifetime and outstanding ceilings;
 ////    `dispatch_cap_call` uses `admitted_origin` before tally or spawn.
@@ -180,6 +181,7 @@ import codemode/identity.{type PhaseIdentity}
 import core/clock.{type Clock}
 import core/msgpack.{type MsgPackValue}
 import core/remote_tool
+import core/report_value
 import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Subject}
@@ -1037,21 +1039,25 @@ fn handle_payloads(
   }
 }
 
-// Classifies one payload. `broker/framing` decodes every payload exactly
-// once, so the host applies the same strict envelope rules — version, `id`,
-// the exact key set — to the terminal `outcome` frame as to every broker
-// frame (CH-F5), and the two decoders cannot disagree about what is
-// well-formed (CH-F7). `framing` knows no `outcome` kind, so it validates
-// that envelope and then reports the kind as unknown; only then does the
-// host read the body out itself.
+// The raw boundary validates the original header and slices the body before
+// any generic decoder can allocate terminal terms. Ordinary capability traffic
+// still enters the original decoder, with its unchanged semantic checks.
 fn handle_payload(state: State, payload: BitArray) -> FrameStep {
+  case framing.decode_raw_envelope(payload) {
+    Error(_) -> FrameDone(state, Error(ChannelFaulted("malformed cap frame")))
+    Ok(raw) ->
+      case framing.raw_kind(raw) == outcome_kind {
+        True -> finish_from_payload(state, framing.raw_body(raw))
+        False -> handle_ordinary_payload(state, payload)
+      }
+  }
+}
+
+fn handle_ordinary_payload(state: State, payload: BitArray) -> FrameStep {
   case framing.decode_payload(payload) {
     Ok(frame) -> handle_frame(state, frame)
-    Error(framing.UnknownKind(id: _, kind:)) if kind == outcome_kind ->
-      finish_from_payload(state, payload)
 
-    // Any other unknown kind is ignored (forward compatibility); a
-    // genuinely malformed frame closes the channel.
+    // Forward compatibility still requires a semantically valid map body.
     Error(framing.UnknownKind(..)) -> FrameContinue(state)
     Error(_) -> FrameDone(state, Error(ChannelFaulted("malformed cap frame")))
   }
@@ -1118,16 +1124,15 @@ fn handle_cap_call(
   }
 }
 
-// The terminal outcome frame: its envelope is already validated, so read
-// the body out and decode it into an `Outcome`.
-fn finish_from_payload(state: State, payload: BitArray) -> FrameStep {
-  case outcome_body(payload) {
-    Error(reason) -> FrameDone(state, Error(ChannelFaulted(reason)))
-    Ok(body) ->
-      case decode_outcome(body) {
-        Ok(outcome) -> FrameDone(state, Ok(outcome))
-        Error(reason) -> FrameDone(state, Error(OutcomeMalformed(reason)))
-      }
+// Report scanning precedes body decoding, sharing one node budget across all
+// keys and siblings. The closed report Outcome preserves every value distinction.
+fn finish_from_payload(state: State, body: BitArray) -> FrameStep {
+  case report_value.decode_terminal(body) {
+    Error(_) ->
+      FrameDone(state, Error(OutcomeMalformed("invalid terminal report")))
+    Ok(report_value.Completed(value)) -> FrameDone(state, Ok(Completed(value)))
+    Ok(report_value.Errored(message, details)) ->
+      FrameDone(state, Ok(Errored(message:, details:)))
   }
 }
 
@@ -1798,16 +1803,6 @@ fn take_payload(
   }
 }
 
-// Reads the `body` out of an already-validated envelope, totally. The one
-// place the host decodes a payload itself, and only for the single terminal
-// `outcome` frame per execution, whose body `broker/framing` discards.
-fn outcome_body(payload: BitArray) -> Result(MsgPackValue, String) {
-  case msgpack.decode(payload) {
-    Error(_) -> Error("a cap frame payload did not parse")
-    Ok(value) -> map_field(value, "body")
-  }
-}
-
 // --- the default cap router ----------------------------------------------
 
 /// The default capability router.
@@ -2036,27 +2031,6 @@ fn file_result(
 
 // --- total msgpack field decoding ----------------------------------------
 
-// Decodes the marshalled outcome (mirrors `cap/report`'s `to_msgpack`):
-// `{ok: true, value}` or `{ok: false, message, details}`. Total: a
-// malformed shape is a `String` fault, never a crash.
-fn decode_outcome(value: MsgPackValue) -> Result(Outcome, String) {
-  use ok <- result.try(map_bool(value, "ok"))
-  case ok {
-    True -> {
-      use payload <- result.try(map_field(value, "value"))
-      Ok(Completed(value: payload))
-    }
-    False -> {
-      use message <- result.try(map_string(value, "message"))
-      let details = case map_field(value, "details") {
-        Ok(details) -> details
-        Error(_) -> msgpack.NilValue
-      }
-      Ok(Errored(message:, details:))
-    }
-  }
-}
-
 fn map_field(value: MsgPackValue, key: String) -> Result(MsgPackValue, String) {
   case value {
     msgpack.MapValue(entries:) ->
@@ -2068,22 +2042,6 @@ fn map_field(value: MsgPackValue, key: String) -> Result(MsgPackValue, String) {
       })
       |> result.replace_error("missing field `" <> key <> "`")
     _ -> Error("expected a map, got a scalar")
-  }
-}
-
-fn map_bool(value: MsgPackValue, key: String) -> Result(Bool, String) {
-  use found <- result.try(map_field(value, key))
-  case found {
-    msgpack.BoolValue(flag) -> Ok(flag)
-    _ -> Error("field `" <> key <> "` is not a bool")
-  }
-}
-
-fn map_string(value: MsgPackValue, key: String) -> Result(String, String) {
-  use found <- result.try(map_field(value, key))
-  case found {
-    msgpack.StringValue(text) -> Ok(text)
-    _ -> Error("field `" <> key <> "` is not a string")
   }
 }
 
