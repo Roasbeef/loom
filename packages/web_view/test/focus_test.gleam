@@ -179,6 +179,40 @@ pub fn a_focus_starts_the_new_strand_at_its_tail_test() {
   assert component.paging(moved) == component.Tail
 }
 
+// A strand the reader paged back keeps the older rows it loaded while they
+// look at another strand. The window parks under the strand's name, and so
+// does the row limit; restoring only the window would trim it back to the
+// newest `live_rows` on the next projection.
+pub fn a_strands_loaded_history_survives_a_round_trip_test() {
+  let wire = process.new_subject()
+  let page =
+    page_fixture.ready(wire, "operator")
+    |> component.apply([lane_fixture.conversation(301, 450)])
+  let page =
+    page_fixture.run(page, component.update, [component.OlderRequested])
+  let assert [read] =
+    page_fixture.sent(wire)
+    |> list.filter(fn(frame) { string.contains(frame, "\"cmd\":\"history\"") })
+  let page =
+    page_fixture.run(page, component.update, [
+      component.Arrived(page_fixture.history(
+        page_fixture.request_id(read),
+        "operator",
+        lane_fixture.older_page(201, 300),
+        301,
+      )),
+    ])
+  let loaded = list.length(component.rows(page))
+  assert loaded > component.live_rows
+
+  let away = focused(page, "advisor")
+  assert component.paging(away) == component.Tail
+
+  let back = focused(away, "main")
+  assert component.paging(back) == component.Paged
+  assert list.length(component.rows(back)) == loaded
+}
+
 // An observer's focus writes no command. It may ask for a read, the strand's
 // configuration, and the gateway admits reads from an observer's binding.
 pub fn an_observers_focus_sends_no_command_test() {

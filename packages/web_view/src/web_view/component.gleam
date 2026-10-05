@@ -123,7 +123,7 @@
 //// 8. `view` lays the derived pieces out, through `heading`, `panel`, `live`
 ////    and the `web_view/view` modules, and reads nothing the model does not hold.
 
-import gleam/dict
+import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -671,6 +671,12 @@ type View(socket) {
     transport: Transport(socket),
     /// How many rows the page holds. This is the page's own view state.
     paging: Paging,
+    /// The `paging` of each strand the reader left, keyed by strand name,
+    /// for the life of the page. `focus` parks the departing strand's here
+    /// and restores the arriving strand's, so a strand whose older rows the
+    /// reader loaded is still held at that depth when they come back. The
+    /// key is a name the session lists and is never drawn.
+    parked_paging: Dict(String, Paging),
     /// Whether older rows than the page holds exist, derived with `blocks`.
     earlier: Earlier,
     /// The page strand's transcript blocks that the page holds, the newest
@@ -899,6 +905,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       reader: start.standing.reader,
       transport: start.transport,
       paging: Tail,
+      parked_paging: dict.new(),
       earlier: Reached,
       blocks: [],
       pieces: [],
@@ -2794,9 +2801,12 @@ pub fn openable(model: Model(socket), id: String) -> Option(sessions.Entry) {
 /// for the strand being left is dropped before the record parks its window
 /// (`history_view.resume`), because the reply to it could not be placed and a
 /// parked window stuck at "Pending" would leave the strand's lane reading
-/// "Loading" for good when the reader came back. The row limit starts again at
-/// `Tail`, as a page's first strand does, and the projection and the strip are
-/// rebuilt by `refreshed`, since the strand is one of their inputs.
+/// "Loading" for good when the reader came back. The row limit is
+/// parked beside the window under the strand's name and restored with it, so a
+/// strand the reader paged back keeps its depth when they return, and a strand
+/// not yet left starts at `Tail`, as a page's first strand does. The projection
+/// and the strip are rebuilt by `refreshed`, since the strand is one of their
+/// inputs.
 ///
 /// Focusing cancels the lane's unsent frames, as the terminal's
 /// `cancel_pending` does, so a submit or a decision still queued behind the
@@ -2848,10 +2858,28 @@ fn focus_at(
           answer: "",
         )
       let #(focused, effects) = step.focus(parked, strand, stamp(at))
+
+      // The row limit is parked with the history window under the strand's
+      // name. Restoring the window without its limit would let the next
+      // projection trim the older rows the reader loaded back down to
+      // `live_rows`, which is the history this keeps.
+      let remembered =
+        dict.insert(
+          model.view.parked_paging,
+          shared.active_strand,
+          model.view.paging,
+        )
+      let arriving = dict.get(remembered, strand) |> result.unwrap(Tail)
       finished(
         Model(
           shared: focused,
-          view: View(..model.view, paging: Tail, refusal: None, outcome: ""),
+          view: View(
+            ..model.view,
+            paging: arriving,
+            parked_paging: dict.delete(remembered, strand),
+            refusal: None,
+            outcome: "",
+          ),
         ),
         effects,
         at,

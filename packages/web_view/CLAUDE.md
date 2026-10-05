@@ -97,8 +97,10 @@ page keys and nonces, and the relay into the session's gateway.
 - **Strand focus.** `component.focus(model, strand)` (`FocusRequested`) is
   `step.focus`, the shared step's change of strand, plus what only this host
   holds: the history read owed for the strand being left is dropped
-  (`history_view.resume`) before its window parks, and paging starts again
-  at `Tail`. The strand must be listed, must not be the active one, and the
+  (`history_view.resume`) before its window parks, and the row limit
+  (`Paging`) parks beside the window in `View.parked_paging`, keyed by strand
+  name, so returning to a strand restores its depth; a strand not yet left
+  starts at `Tail`. The strand must be listed, must not be the active one, and the
   page must be `Connected`; otherwise nothing changes. Every derived input
   (`Projected.strand`, `Stripped.followed`) includes the active strand, so
   the projection and the strip are rebuilt by `refreshed`. `component.strand(model)`
