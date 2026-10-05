@@ -61,7 +61,7 @@ procedure below. Downloading and publication do not hot-load a running VM.
 
 ## Install a source build
 
-Ordinary builds use released Gleam 1.19.0-rc2 (1.18.1 still compiles the
+Ordinary builds use released Gleam 1.19.0 (1.18.1 still compiles the
 tree), Erlang/OTP 29+, Rebar3, Go and a C compiler. The `sqlight_loom` and
 `esqlite_loom` Hex packages carry the SQLite repair and native build metadata;
 no patched Gleam compiler is required. The maintained compiler described in

@@ -1,13 +1,9 @@
-From 3a9f1f2dfad4c9eae9e46cf43f00355889fb7542 Mon Sep 17 00:00:00 2001
+From 69b528d14086c3b2d178c7bb451d065032c667de Mon Sep 17 00:00:00 2001
 From: Olaoluwa Osuntokun <laolu32@gmail.com>
-Date: Mon, 28 Sep 2026 15:54:50 -0700
+Date: Mon, 5 Oct 2026 11:30:04 -0700
 Subject: [PATCH] compiler: make cache output reproducible
 
-In this commit, we serialize unordered cache collections in key order and stabilize the traversal that allocates imported type IDs. Equal module interfaces, diagnostic names, Unicode source mappings, and local package manifests can otherwise produce different bytes between clean builds.
-
-We preserve the existing serde wire shapes and runtime hash randomization. The regression tests cover equivalent maps and sets, type-ID remapping, diagnostic names, and Git package state.
-
-This is the Gleam 1.18.1 patch rebased onto v1.19.0-rc2. That release removed the inlining pass, so the inline parameter list and the decision-tree label map are no longer serialized, and their ordering and regression test were dropped. The line-number mapping moved to the src-span crate, which now carries its own ordered serializer, and the cache format moved from bincode to bitcode, which writes maps in iteration order just as bincode did.
+Rebase onto v1.19.0 final; only the CHANGELOG context moved.
 ---
  CHANGELOG.md                           |  7 +++
  compiler-cli/src/dependencies.rs       |  2 +
@@ -23,7 +19,7 @@ This is the Gleam 1.18.1 patch rebased onto v1.19.0-rc2. That release removed th
  11 files changed, 255 insertions(+), 2 deletions(-)
 
 diff --git a/CHANGELOG.md b/CHANGELOG.md
-index 95a2343..6c7b21e 100644
+index b3c98494..744e63be 100644
 --- a/CHANGELOG.md
 +++ b/CHANGELOG.md
 @@ -5,6 +5,13 @@
@@ -37,11 +33,11 @@ index 95a2343..6c7b21e 100644
 +  stable order. Existing cache formats and runtime hash randomization remain
 +  unchanged.
 +
- ## 1.19.0-rc2 - 2026-09-26
+ ## 1.19.0 - 2026-10-05
  
- ## Compiler
+ ## 1.19.0-rc3 - 2026-10-01
 diff --git a/compiler-cli/src/dependencies.rs b/compiler-cli/src/dependencies.rs
-index ee21653..917d155 100644
+index ee216533..917d155c 100644
 --- a/compiler-cli/src/dependencies.rs
 +++ b/compiler-cli/src/dependencies.rs
 @@ -631,11 +631,13 @@ fn write_manifest_to_disc(paths: &ProjectPaths, manifest: &Manifest) -> Result<(
@@ -59,7 +55,7 @@ index ee21653..917d155 100644
  }
  
 diff --git a/compiler-cli/src/dependencies/tests.rs b/compiler-cli/src/dependencies/tests.rs
-index 334d458..b25b775 100644
+index 334d458f..b25b775c 100644
 --- a/compiler-cli/src/dependencies/tests.rs
 +++ b/compiler-cli/src/dependencies/tests.rs
 @@ -20,6 +20,33 @@ use gleam_core::{
@@ -97,7 +93,7 @@ index 334d458..b25b775 100644
  fn list_manifest_format() {
      let mut buffer = vec![];
 diff --git a/compiler-core/src/io.rs b/compiler-core/src/io.rs
-index 2ebff74..15cbd64 100644
+index 2ebff74e..15cbd643 100644
 --- a/compiler-core/src/io.rs
 +++ b/compiler-core/src/io.rs
 @@ -478,3 +478,27 @@ where
@@ -129,7 +125,7 @@ index 2ebff74..15cbd64 100644
 +    ordered.serialize(serializer)
 +}
 diff --git a/compiler-core/src/metadata.rs b/compiler-core/src/metadata.rs
-index d09d68b..074870c 100644
+index d09d68b3..074870c4 100644
 --- a/compiler-core/src/metadata.rs
 +++ b/compiler-core/src/metadata.rs
 @@ -7,6 +7,7 @@
@@ -189,7 +185,7 @@ index d09d68b..074870c 100644
                      .collect()
              })
 diff --git a/compiler-core/src/metadata/tests.rs b/compiler-core/src/metadata/tests.rs
-index 718ce3d..6885862 100644
+index 718ce3da..68858626 100644
 --- a/compiler-core/src/metadata/tests.rs
 +++ b/compiler-core/src/metadata/tests.rs
 @@ -35,6 +35,79 @@ fn roundtrip(input: &ModuleInterface) -> ModuleInterface {
@@ -273,7 +269,7 @@ index 718ce3d..6885862 100644
      ModuleInterface {
          warnings: vec![],
 diff --git a/compiler-core/src/reference.rs b/compiler-core/src/reference.rs
-index e32e25b..d149f32 100644
+index e32e25b3..d149f329 100644
 --- a/compiler-core/src/reference.rs
 +++ b/compiler-core/src/reference.rs
 @@ -219,7 +219,9 @@ pub struct LabelDefinition {
@@ -299,7 +295,7 @@ index e32e25b..d149f32 100644
      pub owner: LabelOwner,
      pub label: EcoString,
 diff --git a/compiler-core/src/type_.rs b/compiler-core/src/type_.rs
-index 61ded98..859a2a5 100644
+index 61ded982..859a2a56 100644
 --- a/compiler-core/src/type_.rs
 +++ b/compiler-core/src/type_.rs
 @@ -687,7 +687,9 @@ pub fn collapse_links(t: Arc<Type>) -> Arc<Type> {
@@ -353,7 +349,7 @@ index 61ded98..859a2a5 100644
  }
  
 diff --git a/compiler-core/src/type_/fields.rs b/compiler-core/src/type_/fields.rs
-index 78a1df5..297c635 100644
+index 78a1df53..297c635c 100644
 --- a/compiler-core/src/type_/fields.rs
 +++ b/compiler-core/src/type_/fields.rs
 @@ -13,6 +13,7 @@ pub struct FieldMap {
@@ -365,7 +361,7 @@ index 78a1df5..297c635 100644
  }
  
 diff --git a/compiler-core/src/type_/printer.rs b/compiler-core/src/type_/printer.rs
-index 89fcf50..2042d47 100644
+index 89fcf503..2042d473 100644
 --- a/compiler-core/src/type_/printer.rs
 +++ b/compiler-core/src/type_/printer.rs
 @@ -46,6 +46,7 @@ pub struct Names {
@@ -487,7 +483,7 @@ index 89fcf50..2042d47 100644
 +    }
 +}
 diff --git a/src-span/src/lib.rs b/src-span/src/lib.rs
-index 587fa8b..f2f657d 100644
+index 587fa8ba..f2f657db 100644
 --- a/src-span/src/lib.rs
 +++ b/src-span/src/lib.rs
 @@ -96,9 +96,22 @@ pub struct LineNumbers {

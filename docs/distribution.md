@@ -9,8 +9,7 @@ Erlang/OTP 29.0.5 (ERTS 17.0.5), and Go 1.26.3 by running the targets it
 describes. They are not fresh measurements of the single-daemon implementation.
 Current verification and remaining release gates are recorded in [next.md](next.md).
 
-Ordinary source builds use released Gleam, currently the release candidate
-1.19.0-rc2. The `sqlight_loom` and `esqlite_loom` Hex packages supply the
+Ordinary source builds use released Gleam, currently 1.19.0. The `sqlight_loom` and `esqlite_loom` Hex packages supply the
 SQLite repair, including the Rebar metadata that builds its C library. The
 `stock compiler` CI jobs build and smoke-test the distribution with
 unmodified Gleam on Linux and macOS. The tree still compiles with 1.18.1,

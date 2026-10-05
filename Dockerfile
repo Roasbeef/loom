@@ -2,7 +2,7 @@
 #
 # Two stages. The build stage installs the same toolchain
 # scripts/signoff/Dockerfile (branch build/signoff-container) installs for
-# the test signoff: Ubuntu 24.04, OTP 29, Gleam 1.19.0-rc2 built from
+# the test signoff: Ubuntu 24.04, OTP 29, Gleam 1.19.0 built from
 # source with the maintained compiler patches, Go, the C toolchain
 # esqlite3_nif.so
 # needs, and runs `make codemode-seed` and `make install` the same way a
@@ -46,7 +46,7 @@ FROM --platform=linux/amd64 ubuntu:24.04 AS build
 
 ARG OTP_VERSION=29.0.5
 ARG REBAR3_VERSION=3.27.0
-ARG GLEAM_VERSION=1.19.0-rc2
+ARG GLEAM_VERSION=1.19.0
 ARG GO_VERSION=1.26.3
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -93,7 +93,7 @@ RUN curl -fsSL -o /usr/local/bin/rebar3 \
 # Mirrors .github/actions/setup-toolchain/action.yml's "Build Gleam ...
 # from source" step: the release tag with every
 # scripts/toolchain/gleam/*.patch applied in filename order. The
-# 1.19.0-rc2 tag already carries the upstream fix for issue #248
+# 1.19.0 tag already carries the upstream fix for issue #248
 # (gleam-lang/gleam#6246), which 1.18.1 took as a cherry-picked commit.
 # A Rust toolchain is needed only for this step and is removed once
 # gleam is built.

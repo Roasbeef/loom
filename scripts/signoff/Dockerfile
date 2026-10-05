@@ -31,7 +31,7 @@
 # reusing what happens to be installed on the box.
 FROM ubuntu:24.04
 
-# GLEAM_VERSION is the release candidate 1.19.0-rc2. Its tag already
+# GLEAM_VERSION is the final 1.19.0 release. Its tag already
 # carries gleam-lang/gleam#6246's fix for issue #248 (path dependencies
 # re-resolving through the Hex API on every invocation), which 1.18.1
 # took as a cherry-picked commit. The released 1.18.1 binary silently
@@ -42,7 +42,7 @@ FROM ubuntu:24.04
 # scripts/toolchain/gleam are applied to the tag.
 ARG OTP_VERSION=29.0.5
 ARG REBAR3_VERSION=3.27.0
-ARG GLEAM_VERSION=1.19.0-rc2
+ARG GLEAM_VERSION=1.19.0
 ARG GO_VERSION=1.26.3
 
 ENV DEBIAN_FRONTEND=noninteractive
