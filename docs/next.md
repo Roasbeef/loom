@@ -13,7 +13,10 @@ ownership, command forwarding and the owner consumer now use the trusted TLS
 BEAM endpoint. The Git-pinned Weft dependency is merged upstream. Combined
 owner, workspace and Compile controls pass all 68 tests; twelve endpoint and
 command-route controls pass, and the real native E2E covers executor generation
-replacement and owner SQLite restart. The [transport review](review/distributed-beam-transport-transition.md)
+replacement and owner SQLite restart. The workspace E2E also passes through
+independent TLS BEAM roles, including an exact queued Submit retained after
+its actual caller deadline and join. Astra replay and the receipt mutation
+confirm that control. The [transport review](review/distributed-beam-transport-transition.md)
 records independent review, limits and the unresolved historical-refusal defect.
 The [owner discharge fix](review/distributed-owner-discharge.md) now retains
 unresolved run obligations across worker loss and owner restart. The earlier storage gate passed 193 tests; the current full client gate passes
