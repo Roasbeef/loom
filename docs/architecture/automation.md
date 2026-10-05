@@ -502,6 +502,19 @@ runs. Waking is therefore an operator's opt-in. Under `steer`, a request for
 and the result says the schedule will only steer, so the model has no reason
 to retry.
 
+The confirmation also covers the request the model never made. A heartbeat
+onto the model's own strand created without `wake: true` is steer-only under
+every policy, and the usual use ("re-check CI in 15 minutes", then end the
+turn) leaves the strand idle when it fires, so the occurrence holds until the
+owner's next prompt. The result therefore says it will not start a run and
+that `wake: true` asks for one; it cannot say whether the policy would grant
+it, because the tool does not see the policy, so it points at the result of
+the next create instead. A schedule onto a spawned strand gets no such note,
+since no argument changes it. `schedule_list` marks a steer-only row as never
+waking an idle strand and says a held occurrence is not counted as fired,
+because the fired count comes from the durable fired-marks and a hold writes
+none.
+
 ### The model's door
 
 `tools/schedule` defines three tools, `schedule_create`, `schedule_list` and

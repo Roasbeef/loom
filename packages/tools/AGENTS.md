@@ -391,6 +391,10 @@ was asked.
   returns a record rather than `Nil`: under a `steer` policy the call
   succeeds and the result says it will only steer, rather than refusing
   and teaching the model to retry against a wall that will not move.
+  `wake_note` also covers the request never made: a self-targeted
+  schedule with `wake` omitted gets "will not start a run" and the advice
+  to pass `wake: true`, since the tool cannot see the policy and the
+  advice is true under either; a subagent target gets no note.
   Both are `Wake` (`WakesIdle | SteersOnly`), this door's own name for a
   distinction `client/schedule` holds under the same two names on the
   durable side — `tools` may not import it, so `client/scheduleseam`
