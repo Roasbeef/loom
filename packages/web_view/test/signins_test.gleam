@@ -300,7 +300,11 @@ pub fn an_ended_page_signs_nothing_out_test() {
         },
       ),
     )
-  let ended = run(model, home.Answered(home.Closed(ending.AccessRevoked)))
+  let ended =
+    run(
+      model,
+      home.Answered(home.reads(model), home.Closed(ending.AccessRevoked)),
+    )
   let ended = run(ended, home.SigningOut("1111111111111111"))
   let _ = run(ended, home.SigningOutAll)
   assert process.receive(asked, 0) == Error(Nil)

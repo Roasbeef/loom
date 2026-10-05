@@ -118,7 +118,11 @@ page keys and nonces, and the relay into the session's gateway.
   `refresh_ms` (`home.refresh_ms`, 30 s) and answered from the daemon's task
   as `Refreshed` (after which `signins` and `who`, the same shape, are started
   and the timer armed) or, after an action, `Answered`; the runtime waits on
-  none of them (`ui_socket.read_task`). `Closed` ends the page
+  none of them (`ui_socket.read_task`). Each read is numbered (`Model.reads`,
+  `home.reads`) and both answers carry their read's number, so a timer's read
+  still in flight when an action read again is dropped when it lands rather
+  than putting the removed row back, and a dropped `Refreshed` still arms the
+  timer. `Closed` ends the page
   (`Status`: `Connecting | Connected | Ended`) and stops the reads; `Unread`
   keeps the last list. The view is `shell.view(shell.Home, ...)`:
   `view/home_bar`, `sidebar.home(groups, open, resume)` (a "Home" entry, then the rows),
