@@ -369,10 +369,14 @@ holds that tool:
 | `strand.spawn`, `strand.wait`, `strand.send` | `agent_spawn`, `agent_wait`, `agent_send` |
 | `strand.note`, `strand.notes`, `strand.roster` | `agent_note`, `agent_notes`, `agent_roster` |
 | `notes.put` | `agent_note` (the same blackboard write as `strand.note`) |
+| `notes.get`, `notes.list`, `notes.read` | `agent_notes` (the cells `strand.notes` reads) |
+| `workflow.step` | `agent_spawn` (it mints a child strand) |
+| `peer.send` | `peer_send` |
 | `proc.run`, `job.start` | `bash` |
 | `job.poll`, `job.list` | `job_poll` (which lists when given no id) |
 | `job.send`, `job.kill` | `job_send`, `job_kill` |
 | `fs.write`, `fs.edit` | `fs_write`, `fs_edit` |
+| `lsp.rename` | `fs_edit` (it lands edits to files) |
 | `schedule.create`, `schedule.list`, `schedule.cancel` | `schedule_create`, `schedule_list`, `schedule_cancel` |
 
 A parent that withholds `agent_send` to keep a child silent therefore
@@ -393,16 +397,17 @@ are covered. Every seam selection installs the check, workspace-only
 included; a host with no messaging plane has no durable configuration to
 read and installs none.
 
-These stay open on purpose: `fs.read`, `fs.list`, `search.*`, `lsp.*`, the
-`kv.*` scratch store, the `notes.get`, `notes.list` and `notes.read` reads,
-`report.emit`, and `peer.*`, `workflow.*` and `mcp.<server>`. The reads
-have no authority a strand's list was withholding. MCP is open for now
-because an MCP server is already an operator's per-server decision, made
-in configuration and bounded by its own allowlist, and the registry has no
-per-server tool name to ask about. Extensions are not strands: an
+These stay open on purpose: `fs.read`, `fs.list`, `search.*`, the `lsp.*`
+queries (not `lsp.rename`), the `kv.*` scratch store, `report.emit`, the
+`peer.*` reads, the `execution.*` capabilities (the running execution's own
+mailbox and progress channel to the run that owns it) and `mcp.<server>`.
+The reads have no authority a strand's list was withholding. MCP is open
+for now because an MCP server is already an operator's per-server decision,
+made in configuration and bounded by its own allowlist, and the registry
+has no per-server tool name to ask about. Extensions are not strands: an
 extension satellite is reached through its own registered tool, which the
-strand's list already gates, and it runs on a separate host that does not
-install the check. The tool description is session-wide like the system
+strand's list already gates, and the long-lived host it runs on takes no
+precheck at all. The tool description is session-wide like the system
 prompt and still lists every capability; the refusal names the missing
 tool.
 
