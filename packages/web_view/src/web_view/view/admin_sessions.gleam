@@ -112,7 +112,7 @@ pub fn view(
           )
       },
       members(entries, chosen, selection, armed, spoken, invited, presses, busy),
-      admin_claim.for_session(claim, presses.dismiss),
+      admin_claim.for_session(claim, invited, presses.dismiss),
     ],
   )
 }

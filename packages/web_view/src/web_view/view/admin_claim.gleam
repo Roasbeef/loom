@@ -44,6 +44,7 @@ import gleam/option.{type Option, None, Some}
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/element/keyed
 import lustre/event
 import web_view/grants.{type Claim}
 import web_view/invites
@@ -51,18 +52,27 @@ import web_view/view/share
 
 /// The slot under the invitation form: the display when the claim on screen is
 /// an invitation's, and the empty node otherwise. `dismiss` is the message the
-/// button that hides it sends.
+/// button that hides it sends. The box is keyed by `invited`, how many invitations
+/// the page has made, so the next invitation builds a new box, and with it a new
+/// `<loom-reveal>`, rather than patching the old one in place, which would scroll
+/// nothing. The key is a count the page wrote and never peer text.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // admin_claim.for_session(Some(claim), Dismissed)
-/// // admin_claim.for_session(None, Dismissed)
+/// // admin_claim.for_session(Some(claim), 1, Dismissed)
+/// // admin_claim.for_session(None, 0, Dismissed)
 /// ```
-pub fn for_session(claim: Option(Claim), dismiss: message) -> Element(message) {
+pub fn for_session(
+  claim: Option(Claim),
+  invited: Int,
+  dismiss: message,
+) -> Element(message) {
   case claim {
     Some(grants.Claim(purpose: grants.Invited(..), ..) as claim) ->
-      shown(claim, dismiss)
+      keyed.fragment([
+        #("claim-" <> int.to_string(invited), shown(claim, dismiss)),
+      ])
     Some(grants.Claim(purpose: grants.Rotated, ..)) | None -> element.none()
   }
 }

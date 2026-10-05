@@ -27,7 +27,11 @@
 //// and not what the page believes it asked for, and the read's serial is how an
 //// older answer that arrives after a newer one is recognised and dropped.
 ////
-//// The page holds one request at a time: while an ask is out, every button is
+//// The page also runs one read at a time, because a read makes a registry call
+//// for each listed session and overlapping reads would queue behind a slow
+//// registry. A tick while a read is out only arms the timer again; a press or a
+//// settled change marks that one more read is wanted, and it starts when the
+//// answer lands (`Flight`). The page holds one request at a time: while an ask is out, every button is
 //// drawn disabled, and a second ask asks nothing. That is the page's half of the
 //// rule; the daemon counts the credential's grants itself, whatever any page
 //// does, and refuses a fourth in an hour across this page and the invitation
@@ -150,6 +154,27 @@ type Interval {
   Continue
 }
 
+// Whether a read is out, and what the page does when it answers. A read can
+// make a registry call for each listed session, so the page runs one at a time:
+// a read that is asked for while one is out is not started but remembered, as one
+// more to run when the answer arrives, never as a queue.
+type Flight {
+  /// No read is out.
+  Landed
+
+  /// A read is out, asked under `asked` (the session chosen when it started).
+  Flying(asked: Option(String), then: Then)
+}
+
+// What a read that lands starts next.
+type Then {
+  /// Nothing: no one asked for another read while it ran.
+  Nothing
+
+  /// One more read, because a press or a settled change asked for one.
+  Again
+}
+
 /// What the page says about its own standing.
 pub type Status {
   /// No read has answered yet.
@@ -178,6 +203,8 @@ pub opaque type Model {
     /// How many reads have been asked for, which numbers the next. An answer
     /// whose number is not the latest was overtaken and is dropped.
     reads: Int,
+    /// Whether a read is out. At most one runs, whatever asks for another.
+    flight: Flight,
     /// The refresh timer's subject, known once the runtime has made it.
     timer: Option(Subject(Nil)),
     /// The ask that is out, if one is. A second ask while it is set asks nothing.
@@ -278,6 +305,7 @@ pub fn new(start: Start) -> Model {
     now: 0,
     chosen: None,
     reads: 0,
+    flight: Landed,
     timer: None,
     waiting: None,
     armed: None,
@@ -334,7 +362,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 
     Answered(serial:, reading:) ->
       case serial == model.reads {
-        True -> #(answered(model, reading), effect.none())
+        True -> landed(model, reading)
         False -> #(model, effect.none())
       }
 
@@ -500,23 +528,77 @@ fn spent_by(
 // Asks for a read and, when `interval` says so, arms the timer for the next one
 // in the same effect, so the next read is counted from this ask. The number the
 // read is asked under is the model's next.
+//
+// Only one read is out at a time. While one is, a tick starts nothing and only
+// arms the timer again, and a press or a settled change marks that one more read
+// is wanted, which starts when the answer lands.
 fn reading(model: Model, interval: Interval) -> #(Model, Effect(Msg)) {
-  let serial = model.reads + 1
-  let model = Model(..model, reads: serial)
-  let effect = {
-    use dispatch <- effect.from
-    model.start.read(model.chosen, fn(reading) {
-      dispatch(Answered(serial, reading))
-    })
-    case interval, model.timer {
-      Rearm, Some(timer) -> {
-        let _ = process.send_after(timer, model.start.refresh_ms, Nil)
-        Nil
+  case model.flight, interval {
+    Flying(..), Rearm -> #(model, rearming(model))
+    Flying(asked:, ..), Continue -> #(
+      Model(..model, flight: Flying(asked:, then: Again)),
+      effect.none(),
+    )
+    Landed, _ -> {
+      let serial = model.reads + 1
+      let model =
+        Model(
+          ..model,
+          reads: serial,
+          flight: Flying(asked: model.chosen, then: Nothing),
+        )
+      let effect = {
+        use dispatch <- effect.from
+        model.start.read(model.chosen, fn(reading) {
+          dispatch(Answered(serial, reading))
+        })
+        arm(model, interval)
       }
-      Rearm, None | Continue, _ -> Nil
+      #(model, effect)
     }
   }
-  #(model, effect)
+}
+
+// The effect that arms the timer for the next tick and does nothing else.
+fn rearming(model: Model) -> Effect(Msg) {
+  use _ <- effect.from
+  arm(model, Rearm)
+}
+
+fn arm(model: Model, interval: Interval) -> Nil {
+  case interval, model.timer {
+    Rearm, Some(timer) -> {
+      let _ = process.send_after(timer, model.start.refresh_ms, Nil)
+      Nil
+    }
+    Rearm, None | Continue, _ -> Nil
+  }
+}
+
+// A read landed: what it found is applied, and the one more read that was asked
+// for while it ran starts now. A read asked under a session that is no longer the
+// chosen one found that session's members, which the page must not draw under the
+// new choice, so its selection is dropped and the choice kept; the read that
+// follows finds the right one. A page that ended starts nothing.
+fn landed(model: Model, result: Reading) -> #(Model, Effect(Msg)) {
+  let #(asked, then) = case model.flight {
+    Flying(asked:, then:) -> #(asked, then)
+    Landed -> #(model.chosen, Nothing)
+  }
+  let found = case result, asked == model.chosen {
+    grants.Read(snapshot:), False ->
+      grants.Read(grants.Snapshot(..snapshot, selection: None))
+    _, _ -> result
+  }
+  let after = answered(Model(..model, flight: Landed), found)
+  let after = case asked == model.chosen {
+    True -> after
+    False -> Model(..after, chosen: model.chosen)
+  }
+  case then, after.status {
+    Again, Connecting | Again, Connected -> reading(after, Continue)
+    Again, Ended(_) | Nothing, _ -> #(after, effect.none())
+  }
 }
 
 // Starts the daemon's task for one ask and returns at once; the answer arrives

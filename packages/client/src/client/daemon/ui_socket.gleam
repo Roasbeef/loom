@@ -3557,8 +3557,9 @@ const admin_logins_principals = 20
 // The sign-ins of each principal that holds any, the first few of at most
 // `admin_logins_principals` of them, each read as the page's owner with the
 // registry's own `signins` (which authenticates the credential and names the
-// principal again). A principal whose read the registry did not answer is left
-// out, so a slow answer shows the count and no rows rather than ending the page.
+// principal again). A principal whose read fails fails the snapshot: the
+// registry's refusal ends the page or leaves the last snapshot, as `admin_failure`
+// words it, and no principal is shown without its rows.
 fn admin_logins(
   attachment: server.AdminAttachment(instance),
   rows: List(access.Listing),
@@ -3759,7 +3760,11 @@ fn page_role(role: access.Role) -> invites.Role {
 /// The run is a weft run with one task, linked to the calling process, which is
 /// the page's runtime, as `resume_task`'s is: a page that goes away cancels it.
 /// Every step of the reading is bounded by its own call timeouts, so the task
-/// always answers within seconds and needs no deadline of its own. Its last act
+/// always answers, though not within seconds: a reading makes one registry call
+/// for each listed session (up to `sessions.listed_limit`), each bounded by its
+/// own call timeout, so the bound is that timeout times the sessions listed. It
+/// needs no deadline of its own, and the page runs one reading at a time
+/// (`web_view/admin`), so a slow registry is never asked for two at once. Its last act
 /// is `deliver`, so a page that stays open is always answered.
 ///
 /// ## Examples

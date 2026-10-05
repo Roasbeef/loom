@@ -595,24 +595,56 @@ pub fn a_rotation_is_worded_as_one_and_a_read_carries_no_claim_test() {
   assert string.contains(html, "Their earlier credentials no longer work.")
 }
 
+// One read runs at a time. A tick while one is out only arms the timer again, a
+// press asks for one more read (a flag, not a queue), and that read starts when
+// the answer lands, however many presses and ticks came in between.
+pub fn only_one_read_runs_at_a_time_test() {
+  let reads = process.new_subject()
+  let start =
+    admin.Start(..start(), read: fn(chosen, _) { process.send(reads, chosen) })
+  let timer = process.new_subject()
+  let model = run(admin.new(start), admin.TimerReady(timer))
+  assert process.receive(reads, 0) == Ok(None)
+
+  // Ticks and presses while the first read is out start nothing.
+  let model = run(model, admin.Ticked)
+  let model = run(model, admin.Ticked)
+  let model = run(model, admin.Choosing(session))
+  let model = run(model, admin.Choosing(session))
+  assert process.receive(reads, 0) == Error(Nil)
+
+  // The answer lands: the one wanted read starts, under the chosen session, once.
+  let model = run(model, admin.Answered(1, grants.Read(snapshot(None))))
+  assert process.receive(reads, 0) == Ok(Some(session))
+  assert process.receive(reads, 0) == Error(Nil)
+
+  // The first read found no members, because it was asked before the press. They
+  // are not drawn under the new choice, and the choice is kept.
+  assert !string.contains(drawn(model), "Members of review auth")
+
+  // With nothing wanted, an answer starts nothing, and the next tick reads.
+  let model =
+    run(model, admin.Answered(2, grants.Read(snapshot(Some(session)))))
+  assert string.contains(drawn(model), "Members of review auth")
+  assert process.receive(reads, 0) == Error(Nil)
+  let model = run(model, admin.Ticked)
+  assert process.receive(reads, 0) == Ok(Some(session))
+  let _ = model
+}
+
 // A read that was overtaken is dropped: the page keeps the answer to the latest
-// read it asked for, whatever order the answers arrive in.
+// read it asked for, whatever its number.
 pub fn an_overtaken_read_is_dropped_test() {
   let start = admin.Start(..start(), read: fn(_, _) { Nil })
   let timer = process.new_subject()
   let model = run(admin.new(start), admin.TimerReady(timer))
-  let model = run(model, admin.Choosing(session))
-
-  // Two reads are out, numbered one and two. The second answers first with the
-  // members, and the first answers late with none.
-  let model =
-    run(model, admin.Answered(2, grants.Read(snapshot(Some(session)))))
-  assert string.contains(drawn(model), "Members of review auth")
   let model = run(model, admin.Answered(1, grants.Read(snapshot(None))))
-  assert string.contains(drawn(model), "Members of review auth")
+  let model = run(model, admin.Ticked)
 
-  // Neither an unread nor a closed answer from an older read changes anything.
+  // Read two is out. A late answer numbered one changes nothing.
   let model = run(model, admin.Answered(1, grants.Closed(ending.AccessRevoked)))
+  assert admin.status(model) == admin.Connected
+  let model = run(model, admin.Answered(2, grants.Read(snapshot(None))))
   assert admin.status(model) == admin.Connected
 }
 
@@ -1348,4 +1380,40 @@ pub fn an_invitation_opens_a_fresh_form_test() {
   let again =
     run(invited, admin.Asking(grants.Invite(session, invites.Observer, "Ana")))
   assert submit(again) != submit(invited)
+}
+
+// The claim box is keyed by how many invitations were made, so a second
+// invitation builds a new box and its `<loom-reveal>` runs again.
+pub fn a_second_invitation_builds_a_new_claim_box_test() {
+  let claim =
+    grants.Claim(
+      principal: "guest-1a2b3c4d",
+      purpose: grants.Invited(invites.Observer),
+      page: "http://127.0.0.1:4000/ui/claim",
+      command: "loom claim --addr ws://127.0.0.1:4000/v2/control",
+      token:,
+      expires_in_ms: 3_600_000,
+    )
+  let #(model, _) =
+    opened(start_with(
+      process.new_subject(),
+      process.new_subject(),
+      grants.Claimed(claim),
+    ))
+  let model = run(model, admin.Choosing(session))
+  let first =
+    run(model, admin.Asking(grants.Invite(session, invites.Observer, "A")))
+  assert string.contains(drawn(first), "key=\"claim-1\"")
+
+  // The claim adds one key to the seven the page has, and no name or identity is
+  // a key.
+  assert count(drawn(first), "key=\"") == 8
+  assert !string.contains(drawn(first), "key=\"guest")
+  let second =
+    run(first, admin.Asking(grants.Invite(session, invites.Observer, "B")))
+  assert string.contains(drawn(second), "key=\"claim-2\"")
+  assert !string.contains(drawn(second), "key=\"claim-1\"")
+
+  // A refresh keeps the box, and so its key, where it was.
+  assert string.contains(drawn(run(second, admin.Ticked)), "key=\"claim-2\"")
 }

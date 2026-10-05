@@ -6,9 +6,10 @@
 //// person is, so the server writes the instant as an attribute and this element
 //// draws it as `13:02` in the zone the browser reports (`web_client/time_rule`),
 //// which is what the owner's clock reads. The server also writes the instant's
-//// UTC time as the element's light text and its `title`: the light text is
-//// drawn only where this element is not registered, and the title lets a person
-//// compare the two.
+//// UTC time as the element's light text and its `title`. The light text is
+//// projected through the default slot until the element has drawn a time, and
+//// whenever `at` does not parse, so a page never shows an empty gap; the title
+//// lets a person compare the two.
 ////
 //// The attribute is an instant and not a duration, so a browser whose clock
 //// disagrees with the daemon's still shows the daemon's instant correctly in
@@ -95,6 +96,6 @@ fn localise(milliseconds: Int) -> Effect(Msg) {
 fn view(model: Option(String)) -> Element(Msg) {
   case model {
     Some(clock) -> html.text(clock)
-    None -> element.none()
+    None -> component.default_slot([], [])
   }
 }
