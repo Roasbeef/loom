@@ -45,3 +45,19 @@ isolated fixture does not obscure the link.
 Each image renders an actual full-color `tmux capture-pane -e -p` frame with
 `docs/design-notes/tui-agent-workspace/render_capture.py`. The UI content was
 not composited or rewritten.
+
+## Web home capture
+
+`web-home.png` shows the web home page in dark mode from the live drive of the
+round 5 UI changes (`docs/design-notes/web-design/drive-b19/01-home-words.png`).
+It lists sessions grouped by workspace with activity status (`working`, `idle`,
+`saved`), session actions (`Rename`, `Stop`, `Archive`, `Delete`), the "New session"
+button, and top-bar controls including the connected indicator and the Admin button.
+
+## Web session capture
+
+`web-session.png` shows the web session view in dark mode from the live drive of
+the round 5 UI changes (`docs/design-notes/web-design/drive-b18/01-failed-step-dark.png`).
+It displays the live streaming transcript with collapsible tool execution steps,
+reasoning blocks, code edit feedback, sub-agent and advisor reviews in the right-hand
+rail, the context gauge, and the message composer targeting the active strand.
