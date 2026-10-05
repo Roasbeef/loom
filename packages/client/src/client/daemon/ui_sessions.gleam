@@ -958,12 +958,20 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           actor.continue(State(..state, tickets:))
         }
 
-        // A ticket minted under a login that has since ended, a device link
-        // opened after its family's last day, would open a page with no login
-        // behind it. It is refused before it can take a page's place, so the
-        // owner's existing homes survive the attempt. The row-refused case is
-        // still the exchange's own (`server.entered`).
-        Ok(Ticket(login: Some(issuer), ..)) if issuer.expires_at_ms <= wall -> {
+        // A ticket that sets a login, a device link, minted under a login that
+        // has since ended would open a page with no login behind it. It is
+        // refused before it can take a page's place, so the owner's existing
+        // homes survive the attempt. A `Forgotten` ticket (a switch, the way
+        // home, an admin press) sets no login, and the page it opens keeps
+        // working to its own deadline, so it is not held to the login's end.
+        // The row-refused case is still the exchange's own (`server.entered`).
+        Ok(Ticket(
+          grant: Grant(remember: Remembered, ..),
+          login: Some(issuer),
+          ..,
+        ))
+          if issuer.expires_at_ms <= wall
+        -> {
           process.send(reply, Error(UnknownTicket))
           actor.continue(State(..state, tickets:))
         }

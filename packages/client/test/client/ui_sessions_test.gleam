@@ -12,6 +12,7 @@ import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
+import host/bootstrap
 import session_view/transcript_image
 import storage/access
 
@@ -39,12 +40,18 @@ fn clock() -> Subject(Clock) {
   started.data
 }
 
+// The wall clock is far from the table's own, as the real two are: the monotonic
+// clock's zero is arbitrary and the wall's is 1970. A login's end is written in
+// wall terms, so a table that compared it with the monotonic reading would
+// disagree with every test that moves the two by the same amount.
+const wall_offset = 1_700_000_000_000
+
 fn table(time: Subject(Clock)) -> ui_sessions.Sessions {
   let counter = counter()
   let assert Ok(sessions) =
     ui_sessions.start(ui_sessions.Settings(
       now: fn() { process.call(time, 1000, Read) },
-      wall: fn() { process.call(time, 1000, Read) },
+      wall: fn() { process.call(time, 1000, Read) + wall_offset },
       entropy: fn(size) { distinct_bytes(counter, size) },
       ticket_ms: 60_000,
       device_ms: 600_000,
@@ -1043,7 +1050,7 @@ fn remembered_home(principal: String) -> ui_sessions.Grant {
 fn issuer(fingerprint: String) -> ui_sessions.Issuer {
   ui_sessions.Issuer(
     fingerprint:,
-    expires_at_ms: 2_592_000_000,
+    expires_at_ms: wall_offset + 2_592_000_000,
     key: string.repeat("a", 32),
   )
 }
@@ -1233,7 +1240,10 @@ pub fn a_ticket_of_an_ended_login_evicts_no_page_test() {
       redeemed.cookie
     })
   let ends =
-    ui_sessions.Issuer(..issuer("0123456789abcdef"), expires_at_ms: 5000)
+    ui_sessions.Issuer(
+      ..issuer("0123456789abcdef"),
+      expires_at_ms: wall_offset + 5000,
+    )
 
   // Minted while the login lived, redeemed after it ended.
   let late = ticket(Some(ends))
@@ -1249,7 +1259,9 @@ pub fn a_ticket_of_an_ended_login_evicts_no_page_test() {
 
   // A login with time left redeems, and makes room as any redemption does.
   let live =
-    ticket(Some(ui_sessions.Issuer(..ends, expires_at_ms: 5000 + 600_000)))
+    ticket(Some(
+      ui_sessions.Issuer(..ends, expires_at_ms: wall_offset + 5000 + 600_000),
+    ))
   let assert Ok(opened) =
     ui_sessions.redeem(sessions, live, ui_sessions.HomeExchange)
     as "a ticket of a live login redeems"
@@ -1257,4 +1269,62 @@ pub fn a_ticket_of_an_ended_login_evicts_no_page_test() {
   let assert [oldest, ..rest] = held
   assert looked_up(sessions, oldest) == Error(Nil)
   assert list.all(rest, fn(cookie) { result.is_ok(looked_up(sessions, cookie)) })
+}
+
+// Only a ticket that sets a login is held to its login's end. A switch, the way
+// home or an admin press carries the page's login too (`mint_in`), but sets none,
+// and the page it comes from keeps working to its own deadline, so one minted
+// before the login ended still redeems after.
+pub fn a_switch_ticket_of_an_ended_login_still_redeems_test() {
+  let time = clock()
+  let sessions = table(time)
+  let ends =
+    ui_sessions.Issuer(
+      ..issuer("0123456789abcdef"),
+      expires_at_ms: wall_offset + 5000,
+    )
+  let assert Ok(issued) =
+    ui_sessions.mint_in(sessions, home_for("alice"), 28_800_000, Some(ends))
+    as "a switch ticket is minted"
+  process.send(time, Advance(5000))
+  let assert Ok(redeemed) =
+    ui_sessions.redeem(sessions, issued.ticket, ui_sessions.HomeExchange)
+    as "the switch ticket redeems after the login ended"
+  assert redeemed.login == Some(ends)
+  assert result.is_ok(looked_up(sessions, redeemed.cookie))
+}
+
+// The production table's wall clock is the system's, not the monotonic reading it
+// is handed: a login that ended a second ago by the system's clock is ended
+// whatever small number the monotonic clock reads, and one with time left is not.
+pub fn the_production_table_judges_a_login_by_the_system_clock_test() {
+  let time = clock()
+  let assert Ok(sessions) =
+    ui_sessions.start(
+      ui_sessions.production(fn() { process.call(time, 1000, Read) }),
+    )
+    as "the production table starts"
+  let now = bootstrap.system_time_ms()
+  let ticket = fn(expires_at_ms) {
+    let assert Ok(issued) =
+      ui_sessions.mint_device(
+        sessions,
+        remembered_home("alice"),
+        28_800_000,
+        Some(ui_sessions.Issuer(..issuer("0123456789abcdef"), expires_at_ms:)),
+      )
+      as "a device ticket is minted"
+    issued.ticket
+  }
+  assert ui_sessions.redeem(
+      sessions,
+      ticket(now - 1000),
+      ui_sessions.HomeExchange,
+    )
+    == Error(ui_sessions.UnknownTicket)
+  assert result.is_ok(ui_sessions.redeem(
+    sessions,
+    ticket(now + 600_000),
+    ui_sessions.HomeExchange,
+  ))
 }
