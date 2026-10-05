@@ -74,6 +74,18 @@ pub fn as_element(root: Dynamic) -> Element
 @external(javascript, "./dom.mjs", "host")
 pub fn host(element: Element) -> Element
 
+/// The root an element is attached under (`getRootNode`): the document, or
+/// the shadow root of the server component that holds the element. It answers
+/// the element's own subtree when the element is detached.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let page = ffi_dom.root_node(ffi_dom.host(root))
+/// ```
+@external(javascript, "./dom.mjs", "root_node")
+pub fn root_node(element: Element) -> Element
+
 /// Whether two handles name the same node (`===`). Gleam's `==` would
 /// compare the objects' fields, which says nothing about identity for a DOM
 /// node.
