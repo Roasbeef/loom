@@ -67,7 +67,7 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     name: "Alice",
     ceiling:,
     refresh_ms: 5,
-    sessions: read,
+    sessions: fn(deliver) { deliver(read()) },
     open: fn(_) { sessions.Declined(sessions.NotHeld) },
     resume: fn(_, _) { Nil },
     now: fn() { now },
@@ -75,14 +75,14 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     rename: None,
     manage: None,
     create: None,
-    signins: fn() { signins.Listed([]) },
+    signins: fn(deliver) { deliver(signins.Listed([])) },
     login: None,
     bookmark: None,
     sign_out: fn(_) { signins.Declined(signins.NotFound) },
     sign_out_all: fn() { signins.Revoked },
     device: None,
     admin: None,
-    who: fn() { None },
+    who: fn(deliver) { deliver(None) },
     rename_self: None,
   )
 }
@@ -110,9 +110,13 @@ fn run(model: home.Model, message: home.Msg) -> home.Model {
   settle(model, dispatched)
 }
 
+// Every message the effects dispatched is applied in order, as the runtime
+// would apply them: the timer's read now answers with the list and then
+// starts the sign-ins, the name and the activity reads from that answer, so a
+// settle that took one message would drop the rest.
 fn settle(model: home.Model, dispatched: Subject(home.Msg)) -> home.Model {
   case process.receive(dispatched, 0) {
-    Ok(next) -> run(model, next)
+    Ok(next) -> settle(run(model, next), dispatched)
     Error(Nil) -> model
   }
 }
@@ -137,6 +141,37 @@ pub fn a_new_page_has_read_nothing_test() {
   assert string.contains(html, "connecting")
   assert string.contains(html, "You hold no sessions yet.")
   assert string.contains(html, "sidebar=\"none\"")
+}
+
+// The list is read off the runtime: a read that has not answered leaves the
+// page connecting with no groups, asks for no sign-ins and arms no timer,
+// and the answer, when the task delivers it, lands as `Refreshed`, after
+// which the sign-ins are read and the timer armed.
+pub fn a_list_that_answers_late_leaves_the_page_open_test() {
+  let delivery = process.new_subject()
+  let signins_asked = process.new_subject()
+  let #(model, timer) =
+    opened(
+      home.Start(
+        ..start(),
+        sessions: fn(deliver) { process.send(delivery, deliver) },
+        signins: fn(deliver) {
+          process.send(signins_asked, Nil)
+          deliver(signins.Listed([]))
+        },
+      ),
+    )
+  let assert Ok(_) = process.receive(delivery, 0) as "the read was started"
+  assert home.status(model) == home.Connecting
+  assert home.groups(model) == []
+  assert process.receive(signins_asked, 0) == Error(Nil)
+  assert process.receive(timer, 20) == Error(Nil)
+
+  let model = run(model, home.Refreshed(home.Listed(listing())))
+  assert home.status(model) == home.Connected
+  assert list.length(home.groups(model)) == 3
+  assert process.receive(signins_asked, 0) == Ok(Nil)
+  assert process.receive(timer, 1000) == Ok(Nil)
 }
 
 // The first read answers when the timer exists, the sessions are grouped by
@@ -1254,8 +1289,8 @@ pub fn the_form_draws_the_workspace_only_as_text_test() {
   let hostile = "/src/<script>alert(1)</script>"
   let #(model, _) =
     opened(
-      home.Start(..creator(fn(_, _, _, _) { Nil }), sessions: fn() {
-        home.Listed([entry("Z", "x", hostile, 1, Live)])
+      home.Start(..creator(fn(_, _, _, _) { Nil }), sessions: fn(deliver) {
+        deliver(home.Listed([entry("Z", "x", hostile, 1, Live)]))
       }),
     )
   let model = run(model, home.Choosing(hostile))
@@ -1616,8 +1651,8 @@ pub fn the_confirmation_names_its_row_as_text_test() {
   let ask = fn(_action, _session, _deliver) { Nil }
   let #(owner, _) =
     opened(
-      home.Start(..start(), manage: Some(ask), sessions: fn() {
-        home.Listed([entry("C", hostile, "/src/weft", 1, Saved)])
+      home.Start(..start(), manage: Some(ask), sessions: fn(deliver) {
+        deliver(home.Listed([entry("C", hostile, "/src/weft", 1, Saved)]))
       }),
     )
   let model = run(owner, home.DeleteRequested("C"))
@@ -1638,8 +1673,8 @@ pub fn a_blocked_row_draws_no_action_test() {
   let ask = fn(_action, _session, _deliver) { Nil }
   let #(owner, _) =
     opened(
-      home.Start(..start(), manage: Some(ask), sessions: fn() {
-        home.Listed([entry("X", "stuck", "/src/weft", 1, Blocked)])
+      home.Start(..start(), manage: Some(ask), sessions: fn(deliver) {
+        deliver(home.Listed([entry("X", "stuck", "/src/weft", 1, Blocked)]))
       }),
     )
   let html = drawn(owner)

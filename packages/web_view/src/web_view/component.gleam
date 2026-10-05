@@ -3086,10 +3086,12 @@ pub fn pieces(model: Model(socket)) -> List(turns.Piece) {
 
 /// The live region's rows: the reasoning the provider is writing, with how
 /// much of it has arrived, how long the generation has run and the
-/// summarizer's headline when one was pushed, and the answer as it stands.
-/// All of it is the terminal's own state (`Shared.streams`,
-/// `Shared.summaries` and the generation clock), and the page reads no
-/// extra frame for it.
+/// summarizer's headline when one was pushed, the answer as it stands, and
+/// after them the inputs the daemon holds for the strand (a steer waiting
+/// for the next boundary, the prompts queued behind the turn), as the
+/// terminal draws them. All of it is the terminal's own state
+/// (`Shared.streams`, `Shared.summaries`, the generation clock and the
+/// capture's `pending_inputs`), and the page reads no extra frame for it.
 ///
 /// The elapsed time is a reading, not a running clock: the browser counts
 /// on from it (`<loom-elapsed>`), so the server draws again when a fragment
@@ -3322,9 +3324,10 @@ pub fn notice_serial(model: Model(socket)) -> Int {
   model.view.noticed
 }
 
-/// How many submits were refused with the draft kept, by the page or by the
-/// lane's admission check. The operator page writes it as the composer
-/// element's `refused` attribute.
+/// How many composer submits were refused with the draft kept, by the page
+/// or by the lane's admission check; a stale approval, a reply with no
+/// message or a refused control form do not count. The operator page writes
+/// it as the composer element's `refused` attribute.
 ///
 /// ## Examples
 ///
