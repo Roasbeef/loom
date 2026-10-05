@@ -932,7 +932,6 @@ pub fn unenforced_args_only_on_an_unjailed_platform_test() {
 // the census can tell a declared skip from an undeclared one and a
 // reader can tell which host produced it.
 pub fn unjailed_skip_reason_carries_the_declared_marker_test() {
-  assert exec.unjailed_skip_reason(exec.JailedHost) == None
   let assert Some(reason) =
     exec.unjailed_skip_reason(exec.UnjailedHost("windows"))
   assert string.contains(reason, exec.unjailed_skip_marker)
@@ -940,6 +939,20 @@ pub fn unjailed_skip_reason_carries_the_declared_marker_test() {
   // The census greps `SKIP <name>: <reason>`; a colon before the first
   // one would split the line in the wrong place.
   assert !string.contains(exec.unjailed_skip_marker, ":")
+}
+
+// Inside a Loom jail on macOS the helper cannot nest a second Seatbelt
+// profile, so the real-helper suites skip; the signal is the scratch variable
+// the helper sets in every jail. An unset or empty variable, or a host other
+// than Darwin, leaves the suites to run.
+pub fn jailed_session_skip_reason_follows_the_scratch_variable_test() {
+  let assert Some(reason) =
+    exec.jailed_session_skip_reason("darwin", Ok("/private/var/folders/x/T/l"))
+  assert string.contains(reason, exec.jailed_session_skip_marker)
+  assert !string.contains(exec.jailed_session_skip_marker, ":")
+  assert exec.jailed_session_skip_reason("darwin", Error(Nil)) == None
+  assert exec.jailed_session_skip_reason("darwin", Ok("")) == None
+  assert exec.jailed_session_skip_reason("linux", Ok("/scratch")) == None
 }
 
 // The two CI hosts must agree with the independent OS observation.
