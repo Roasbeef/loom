@@ -121,7 +121,7 @@ fn fixture(name: String) {
       limits(),
       1,
       5000,
-      fn(_, _) {
+      fn(_, _, _) {
         panic as "Child custody cannot run a tool or launch a command."
       },
     )
@@ -275,34 +275,19 @@ pub fn actor_input_bounds_refuse_before_unavailable_mailbox_test() {
     == Error(custody.Capacity)
 }
 
-pub fn racing_v2_openers_upgrade_once_and_keep_original_service_evidence_test() {
-  let #(owner, _, pid, path) = fixture("v2-race")
-  let assert Ok(original) =
+pub fn old_owner_format_refuses_missing_run_discharge_proof_test() {
+  let #(owner, _, pid, path) = fixture("old-format")
+  let assert Ok(_) =
     custodian.reserve_service_child(owner, service(), <<
       "exact service input":utf8,
     >>)
-    as "Live service custody is seeded before upgrade."
+    as "The prior format may contain unfinished service custody."
   stop(owner, pid)
-  let assert Ok(db) = sqlight.open(path)
-    as "The isolated fixture emulates the previous format."
-  assert sqlight.exec(
-      "DROP TABLE owner_custody_command_offers; PRAGMA user_version=2",
-      db,
-    )
-    == Ok(Nil)
+  let assert Ok(db) = sqlight.open(path) as "The fixture owns this journal."
+  assert sqlight.exec("PRAGMA user_version=2", db) == Ok(Nil)
   assert sqlight.close(db) == Ok(Nil)
-  let done = process.new_subject()
-  let open_once = fn() {
-    let assert Ok(store) =
-      custody.open(path, remote_tool.session(parent()), limits())
-      as "Serialized migration rechecks version inside its transaction."
-    assert custody.service_child(store, service()) == Ok(#(original, None))
-    process.send(done, custody.close(store))
-  }
-  let _a = process.spawn_unlinked(open_once)
-  let _b = process.spawn_unlinked(open_once)
-  assert process.receive(done, 2000) == Ok(Ok(Nil))
-  assert process.receive(done, 2000) == Ok(Ok(Nil))
+  assert custody.open(path, remote_tool.session(parent()), limits())
+    == Error(custody.Invalid("unsupported owner custody database"))
 }
 
 pub fn actor_cancel_races_offer_admission_and_never_allocates_native_uuid_test() {

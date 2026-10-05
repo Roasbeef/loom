@@ -329,7 +329,7 @@ fn fixture(name: String) -> Fixture {
   let assert Ok(names) = registry.start()
     as "Owner custody uses its restartable production address."
   let assert Ok(owner_config) =
-    custodian.config(owner_path, session(), limits, 1, 5000, fn(_, _) {
+    custodian.config(owner_path, session(), limits, 1, 5000, fn(_, _, _) {
       panic as "This proof invokes physical children, never a parent body."
     })
     as "No tool body or provider is injected into parent execution."

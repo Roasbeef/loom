@@ -4,7 +4,8 @@
 //// Only a fresh reservation starts a weft-owned worker. Caller death loses
 //// its ticket, never the worker or committed report. `reported` consumes task
 //// reports, commits exact final bytes and only then answers the ticket.
-//// A restarted owner has no active worker and never re-executes retained rows.
+//// Exact commit and complete live delivery discharge a durable run marker.
+//// A restarted owner with any unreleased run remains recovery-only.
 ////
 //// Requests are typed and byte bounded; task admission is bounded by four
 //// active runs. These properties do not bound an OTP mailbox: root must bind
@@ -14,6 +15,8 @@
 //// ## Flow
 ////
 //// `execute` → `begin` → `reported` retains exact final tool outcomes.
+//// `fatal_fence` → `unresolved` permanently fences this incarnation's discharge.
+//// `answer_once` preserves the first disposition; `fence_admission` blocks reuse.
 //// `reserve_service_child` → `admit_offer` → `reserve_command_child` commits
 //// service/offer/complete native custody through the same serialized `handle`.
 //// `service_child`, `offer`, `command_offer_for_origin` and `command_child`
@@ -54,19 +57,28 @@ pub opaque type Config {
     active: Int,
     /// Hard lifetime of one live owner task, in milliseconds.
     task_ms: Int,
-    /// Remote runner receives original runtime identity and grants unchanged.
-    runner: fn(remote_tool.ToolKey, effects.ToolRun) -> effects.ToolOutcome,
+    /// Remote runner receives its pinned custodian and original runtime identity.
+    runner: fn(Handle, remote_tool.ToolKey, effects.ToolRun) ->
+      effects.ToolOutcome,
   )
 }
 
-/// A reclaimable address, resolving the current supervised owner each ask.
+/// External handles resolve the supervised registry; runner handles pin one owner.
+/// Only admission supplies the private pinned destination before spawning work.
 pub opaque type Handle {
   Handle(
     address: registry.Address(Message),
+    destination: Destination,
     task_ms: Int,
     /// Pre-send quota bound, rechecked against the actor store configuration.
     limits: custody.Limits,
   )
+}
+
+// External history follows the registry; an admitted runner retains one incarnation.
+type Destination {
+  Reclaimable
+  Pinned(process.Subject(Message))
 }
 
 /// Closed actor vocabulary; no caller can submit a query closure.
@@ -187,6 +199,7 @@ pub opaque type Message {
     storage.Storage(Nil),
     process.Subject(Result(Nil, custody.Error)),
   )
+  FenceRun(remote_tool.ToolKey, process.Subject(Result(Nil, custody.Error)))
   Reported(String, weft.Pulled(effects.ToolOutcome, Nil))
   Stop(process.Subject(Result(Nil, custody.Error)))
 }
@@ -204,7 +217,13 @@ type Held {
 
 type Disposition {
   AwaitingReport
-  ReportedFinal
+  FinalCommitted(custody.Payload)
+  Unresolved
+}
+
+type AdmissionState {
+  Admitting
+  RecoveryOnly
 }
 
 type State {
@@ -212,6 +231,8 @@ type State {
     config: Config,
     store: custody.Store,
     live: Dict(String, Held),
+    admission: AdmissionState,
+    owner: Handle,
     self: process.Subject(Message),
   )
 }
@@ -229,7 +250,8 @@ pub fn config(
   limits: custody.Limits,
   active: Int,
   task_ms: Int,
-  runner: fn(remote_tool.ToolKey, effects.ToolRun) -> effects.ToolOutcome,
+  runner: fn(Handle, remote_tool.ToolKey, effects.ToolRun) ->
+    effects.ToolOutcome,
 ) -> Result(Config, custody.Error) {
   case active > 0 && active <= 4 && task_ms > 0 && task_ms <= 86_400_000 {
     True -> Ok(Config(path:, session:, limits:, active:, task_ms:, runner:))
@@ -245,7 +267,12 @@ pub fn config(
 /// // let owner = custodian.new(names, config)
 /// ```
 pub fn new(names: registry.Registry, config: Config) -> Handle {
-  Handle(registry.new_address(names), config.task_ms, config.limits)
+  Handle(
+    registry.new_address(names),
+    Reclaimable,
+    config.task_ms,
+    config.limits,
+  )
 }
 
 /// Starts the actor; production embeds supervised instead.
@@ -282,8 +309,27 @@ fn builder(owner: Handle, config: Config) {
       custody.open(config.path, config.session, config.limits)
       |> result.replace_error("owner custody open failed"),
     )
+    use outstanding <- result.try(
+      custody.unreleased(store)
+      |> result.map_error(fn(_) {
+        let _closed = custody.close(store)
+        "owner custody discharge probe failed"
+      }),
+    )
+    let admission = case outstanding {
+      custody.Unreleased -> RecoveryOnly
+      custody.Released -> Admitting
+    }
+    let pinned = Handle(..owner, destination: Pinned(subject))
     Ok(
-      actor.initialised(State(config:, store:, live: dict.new(), self: subject))
+      actor.initialised(State(
+        config:,
+        store:,
+        live: dict.new(),
+        admission:,
+        owner: pinned,
+        self: subject,
+      ))
       |> actor.returning(subject),
     )
   })
@@ -653,12 +699,28 @@ pub fn stop(owner: Handle) -> Result(Nil, custody.Error) {
   ask(owner, Stop)
 }
 
+/// Permanently fences the current run after an unresolved consumer failure.
+/// A later ordinary outcome can be retained but cannot discharge this incarnation.
+///
+/// ## Examples
+///
+/// `fatal_fence(owner, key)` must use the pinned handle supplied to the runner.
+pub fn fatal_fence(
+  owner: Handle,
+  key: remote_tool.ToolKey,
+) -> Result(Nil, custody.Error) {
+  ask(owner, fn(reply) { FenceRun(key, reply) })
+}
+
 fn ask(
   owner: Handle,
   message: fn(process.Subject(Result(a, custody.Error))) -> Message,
 ) -> Result(a, custody.Error) {
   use subject <- result.try(
-    registry.lookup(owner.address)
+    case owner.destination {
+      Reclaimable -> registry.lookup(owner.address)
+      Pinned(subject) -> Ok(subject)
+    }
     |> result.replace_error(custody.Unavailable(
       "owner not supervised or unavailable",
     )),
@@ -774,6 +836,20 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       process.send(reply, outcome)
       resume(state)
     }
+    FenceRun(key, reply) -> {
+      let address = remote_tool.address(key)
+      let state = case dict.get(state.live, address) {
+        Ok(held) -> {
+          process.send(reply, Ok(Nil))
+          unresolved(state, address, held, "owner consumer fatal fence")
+        }
+        Error(Nil) -> {
+          process.send(reply, Error(custody.Missing))
+          State(..state, admission: RecoveryOnly)
+        }
+      }
+      resume(state)
+    }
     Reported(address, report) -> resume(reported(state, address, report))
     Stop(reply) -> {
       process.send(reply, Ok(Nil))
@@ -794,21 +870,29 @@ fn begin(
   let admitted = {
     use args <- result.try(custody.payload(state.config.limits, args))
     use request <- result.try(custody.payload(state.config.limits, request))
-    use Nil <- result.try(case dict.size(state.live) < state.config.active {
-      True -> Ok(Nil)
-      False -> Error(custody.Capacity)
-    })
+    use Nil <- result.try(
+      case
+        state.admission == Admitting
+        && dict.size(state.live) < state.config.active
+      {
+        True -> Ok(Nil)
+        False -> Error(custody.Capacity)
+      },
+    )
     custody.admit_fresh(state.store, key, args, request)
   }
   case admitted {
     Ok(custody.Fresh) -> {
       let runner = state.config.runner
+      let pinned = state.owner
+      let owner_pid = process.self()
       let reports = process.new_subject()
       let cancel = weft.cancel_signal()
       let _relay =
         weft.new_prepared([
-          weft.managed(fn(_ledger) { Ok(runner(key, original)) }),
+          weft.managed(fn(_ledger) { Ok(runner(pinned, key, original)) }),
         ])
+        |> weft.cancel_when_exits(owner_pid)
         |> weft.cancel_with(cancel)
         |> weft.deadline(state.config.task_ms)
         |> weft.start_relayed(to: reports)
@@ -916,9 +1000,15 @@ fn report_held(
         )
         use payload <- result.try(custody.payload(state.config.limits, bytes))
         use Nil <- result.try(custody.finish(state.store, held.key, payload))
-        Ok(value)
+        Ok(#(value, payload))
       }
-      answer_once(state, address, held, committed)
+      case committed {
+        Ok(#(value, payload)) ->
+          answer_once(state, address, held, Ok(value), FinalCommitted(payload))
+        Error(error) ->
+          answer_once(state, address, held, Error(error), Unresolved)
+          |> fence_admission
+      }
     }
     weft.PulledOutcome(weft.Failed(..))
     | weft.PulledOutcome(weft.Crashed(..))
@@ -926,36 +1016,40 @@ fn report_held(
     | weft.PulledOutcome(weft.NeverStarted(..))
     | weft.PulledOutcome(weft.DrainProofLost(..))
     | weft.PulledOutcome(weft.CancellationUnconfirmed(..)) ->
-      answer_once(
+      unresolved(
         state,
         address,
         held,
-        Error(custody.Unavailable(
-          "owner worker lost; exact final report unknown",
-        )),
+        "owner worker lost; exact final report unknown",
       )
+
+    // Only this live run's complete delivery can release exact committed bytes.
+    // Failure leaves the durable marker and the in-memory slot occupied.
     weft.AllDelivered -> {
-      let state =
-        answer_once(
-          state,
-          address,
-          held,
-          Error(custody.Unavailable("owner completed without exact report")),
-        )
-      State(..state, live: dict.delete(state.live, address))
+      case held.disposition {
+        FinalCommitted(payload) -> {
+          case custody.discharge(state.store, held.key, payload) {
+            Ok(Nil) -> State(..state, live: dict.delete(state.live, address))
+            Error(_) ->
+              unresolved(state, address, held, "owner discharge commit failed")
+          }
+        }
+        AwaitingReport | Unresolved ->
+          unresolved(
+            state,
+            address,
+            held,
+            "owner completed without releasable report",
+          )
+      }
     }
-    weft.RunLost(_) -> {
-      let state =
-        answer_once(
-          state,
-          address,
-          held,
-          Error(custody.Unavailable(
-            "owner run lost; exact final report unknown",
-          )),
-        )
-      State(..state, live: dict.delete(state.live, address))
-    }
+    weft.RunLost(_) ->
+      unresolved(
+        state,
+        address,
+        held,
+        "owner run lost; exact final report unknown",
+      )
     weft.NotYet -> state
   }
 }
@@ -965,21 +1059,48 @@ fn answer_once(
   address: String,
   held: Held,
   result: Result(effects.ToolOutcome, custody.Error),
+  disposition: Disposition,
 ) -> State {
   case held.disposition {
-    ReportedFinal -> state
+    FinalCommitted(_) | Unresolved -> state
     AwaitingReport -> {
       process.send(held.reply, result)
       State(
         ..state,
-        live: dict.insert(
-          state.live,
-          address,
-          Held(..held, disposition: ReportedFinal),
-        ),
+        live: dict.insert(state.live, address, Held(..held, disposition:)),
       )
     }
   }
+}
+
+// The owner holds this sticky fence because a dead worker cannot fence itself.
+fn unresolved(
+  state: State,
+  address: String,
+  held: Held,
+  reason: String,
+) -> State {
+  let state =
+    answer_once(
+      state,
+      address,
+      held,
+      Error(custody.Unavailable(reason)),
+      Unresolved,
+    )
+  State(
+    ..state,
+    admission: RecoveryOnly,
+    live: dict.insert(
+      state.live,
+      address,
+      Held(..held, disposition: Unresolved),
+    ),
+  )
+}
+
+fn fence_admission(state: State) -> State {
+  State(..state, admission: RecoveryOnly)
 }
 
 fn input_bound(bytes: BitArray, maximum: Int) -> Result(Nil, custody.Error) {
