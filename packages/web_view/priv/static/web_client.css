@@ -55,7 +55,7 @@
    input dbb8c2d8f3b55d40bde05efba5afb562dcd549c180eb45e51bf6f6b0007ab891  packages/web_view/src/web_view/view/fold_row.gleam
    input c7adc960b241aeebd206c0e05bfea6e65382cecc821ccc764cf6b9660d580606  packages/web_view/src/web_view/view/heading.gleam
    input 1809faac0126ca7a33d6998a0b991bb4b3fdf1598d64ef7e149f839943b27195  packages/web_view/src/web_view/view/home_bar.gleam
-   input 525ef5416619489b07728af198e114df24f10f26599c27f954b93888bbad1a8f  packages/web_view/src/web_view/view/home_table.gleam
+   input 620bc4db2bb718822c2cc117dc519ce7f9020d73b6f298e20af217f31d9d6c43  packages/web_view/src/web_view/view/home_table.gleam
    input 96f66b365007aabd14a32a543577b19e450b7c7151edf6387e6615fc5c727389  packages/web_view/src/web_view/view/lane.gleam
    input be24fe8b838f736712c7f60cf46a53c42f7929a608e945fe8a5eb4347f267e6e  packages/web_view/src/web_view/view/live.gleam
    input b73fc47db8d46314a208fafdaa47629322aab80946ca9fd60fd1e1d1448742cb  packages/web_view/src/web_view/view/nudges.gleam
@@ -68,7 +68,7 @@
    input 46da81c88fb32e8901c35b4839d51d82a87ff05533a7f00a61be5b310507f0ab  packages/web_view/src/web_view/view/sidebar.gleam
    input 20e2880810a0d1b265cda18a61a283cd6c2befb96be44d041ad8bb00b121a103  packages/web_view/src/web_view/view/signins.gleam
    input e4e36ccdcaaeae0d2f5da0f32ca910efe917c4822586b742041d6d5650782f9b  packages/web_view/src/web_view/view/strand_detail.gleam
-   input b211fc8808c34fe13ebf5f88b382fa90cfd5f3db752c4d579ebac55f9e417130  packages/web_view/src/web_view/view/strip.gleam
+   input d99159ca78dd2b79db81c1d60fa189e80a6a5c728df27c49d521ed5f8930648d  packages/web_view/src/web_view/view/strip.gleam
    input 4c2450374b2bac23b881725092cf3933d6a9bc11e128055ba9d66a291da07bbf  packages/web_view/src/web_view/view/switch.gleam
    input 32ed04b6b53318c4d8dc5c6d810871f6847d74ee500c9d8790fcc4fd5542caa5  packages/web_view/src/web_view/view/todo_panel.gleam
    input bd408f579bde07cf0bed49c23152da23fc3ad615bae57fa8ba46db54ceb97f48  packages/web_view/src/web_view/view/trace.gleam
