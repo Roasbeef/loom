@@ -1,4 +1,4 @@
-//// The shared raw MessagePack walk for fixed native and retained-report profiles.
+//// The shared raw MessagePack walk for native, report and transport boundaries.
 ////
 //// The profile is private: callers choose a named boundary rather than supplying
 //// resource knobs. Every sibling returns the remaining node budget, including map
@@ -92,6 +92,115 @@ pub fn metadata(bytes: BitArray) -> Result(Nil, CorruptionReport) {
       8192,
       0,
     ),
+  )
+}
+
+/// Reads the bounded transport envelope's map header without allocating terms.
+/// The four-pair ceiling belongs to the existing envelope shape.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert msgpack_scan.transport_map(<<0x84>>) == Ok(#(<<0x84>>, 4, <<>>))
+/// ```
+pub fn transport_map(
+  bytes: BitArray,
+) -> Result(#(BitArray, Int, BitArray), CorruptionReport) {
+  use Nil <- result.try(transport_bytes(bytes))
+  case bytes {
+    <<tag, rest:bits>> if tag >= 0x80 && tag <= 0x84 ->
+      Ok(#(<<tag>>, tag - 0x80, rest))
+    <<0xde, n:size(16), rest:bits>> if n <= 4 ->
+      Ok(#(<<0xde, n:size(16)>>, n, rest))
+    <<0xdf, n:size(32), rest:bits>> if n <= 4 ->
+      Ok(#(<<0xdf, n:size(32)>>, n, rest))
+    _ -> Error(fail(transport_profile()))
+  }
+}
+
+/// Slices one transport string, retaining its original width encoding.
+/// Container-valued header fields are refused before walking their children.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert msgpack_scan.transport_string(<<0xa1, 97>>) == Ok(#(<<0xa1, 97>>, <<>>))
+/// ```
+pub fn transport_string(
+  bytes: BitArray,
+) -> Result(#(BitArray, BitArray), CorruptionReport) {
+  case bytes {
+    <<tag, _:bits>> if tag >= 0xa0 && tag <= 0xbf -> transport_value(bytes)
+    <<tag, _:bits>> if tag == 0xd9 || tag == 0xda || tag == 0xdb ->
+      transport_value(bytes)
+    _ -> Error(fail(transport_profile()))
+  }
+}
+
+/// Slices one transport integer, retaining signed and nonminimal encodings.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert msgpack_scan.transport_integer(<<0xcc, 1>>) == Ok(#(<<0xcc, 1>>, <<>>))
+/// ```
+pub fn transport_integer(
+  bytes: BitArray,
+) -> Result(#(BitArray, BitArray), CorruptionReport) {
+  case bytes {
+    <<tag, _:bits>>
+      if tag <= 0x7f || tag >= 0xe0 || { tag >= 0xcc && tag <= 0xd3 }
+    -> transport_value(bytes)
+    _ -> Error(fail(transport_profile()))
+  }
+}
+
+/// Slices one value below the already-entered transport envelope.
+/// This structural walk spends one envelope level and skips scalar payloads;
+/// semantic validation and report-profile checks remain the caller's boundary.
+/// Its node and length allowances follow the 16-MiB frame, not report limits.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert msgpack_scan.transport_value(<<0x90, 0xc0>>) == Ok(#(<<0x90>>, <<0xc0>>))
+/// ```
+pub fn transport_value(
+  bytes: BitArray,
+) -> Result(#(BitArray, BitArray), CorruptionReport) {
+  use Nil <- result.try(transport_bytes(bytes))
+  let profile = transport_profile()
+  use parsed <- result.try(scan(bytes, 1, profile.nodes, profile))
+  let consumed = bit_array.byte_size(bytes) - bit_array.byte_size(parsed.0)
+  use value <- result.try(
+    bit_array.slice(bytes, 0, consumed)
+    |> result.map_error(fn(_) { fail(profile) }),
+  )
+  Ok(#(value, parsed.0))
+}
+
+fn transport_bytes(bytes: BitArray) -> Result(Nil, CorruptionReport) {
+  case
+    bit_array.byte_size(bytes) > 0
+    && bit_array.byte_size(bytes) <= 16_777_216
+    && bit_array.bit_size(bytes) % 8 == 0
+  {
+    True -> Ok(Nil)
+    False -> Error(fail(transport_profile()))
+  }
+}
+
+fn transport_profile() -> Profile {
+  Profile(
+    "core/msgpack_scan.transport",
+    16_777_216,
+    256,
+    256,
+    16_777_216,
+    16_777_216,
+    8_388_608,
+    16_777_216,
+    16_777_216,
   )
 }
 
@@ -203,8 +312,12 @@ fn scan_many(
   case count {
     0 -> Ok(#(bytes, nodes))
     _ -> {
-      use parsed <- result.try(scan(bytes, depth, nodes, profile))
-      scan_many(parsed.0, count - 1, depth, parsed.1, profile)
+      // Direct dispatch keeps the successful recursion a tail call on both
+      // targets. A result.try continuation grows JavaScript's stack per sibling.
+      case scan(bytes, depth, nodes, profile) {
+        Error(report) -> Error(report)
+        Ok(parsed) -> scan_many(parsed.0, count - 1, depth, parsed.1, profile)
+      }
     }
   }
 }

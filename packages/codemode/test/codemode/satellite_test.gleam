@@ -25,6 +25,8 @@ import codemode/satellite
 import core/clock
 import core/ids
 import core/msgpack.{type MsgPackValue}
+import core/report_value
+import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -1305,4 +1307,255 @@ fn scoped_stalling_router(
       _other -> satellite.default_router(request)
     }
   }
+}
+
+// The trace runner observes actual generic decodes in the receiving actor;
+// an expected final error alone would not establish allocation ordering.
+pub fn oversized_terminal_body_preflight_order_test() {
+  let elements = bit_array.concat(list.repeat(<<0xc0>>, 2_000_000))
+  let body = <<
+    0x82,
+    0xa2,
+    "ok":utf8,
+    0xc3,
+    0xa5,
+    "value":utf8,
+    0xdd,
+    2_000_000:size(32),
+    elements:bits,
+  >>
+  list.each(
+    [terminal_fields(body), list.reverse(terminal_fields(body))],
+    fn(fields) {
+      let ran = raw_terminal_run("preflight-order", terminal_envelope(fields))
+      let assert Error(satellite.OutcomeMalformed(_)) = ran
+        as "report profile refuses oversized terminal"
+    },
+  )
+}
+
+fn raw_terminal_run(
+  name: String,
+  bytes: BitArray,
+) -> Result(satellite.Outcome, satellite.RunError) {
+  let dir = fresh_dir(name)
+  let broker = start_broker(echoing())
+  let ran =
+    satellite.run(
+      artifact(),
+      run_phase(budget.Budget(8, t + 20_000)),
+      broker,
+      config(dir),
+      satellite_peer.launcher(fn(ctx) {
+        process.send(ctx.wire, satellite.WireBytes(bytes))
+      }),
+    )
+  broker.stop(broker)
+  ran.outcome
+}
+
+fn terminal_fields(body: BitArray) -> List(BitArray) {
+  [
+    <<0xa1, "v":utf8, 1>>,
+    <<0xa2, "id":utf8, 0>>,
+    <<0xa4, "kind":utf8, 0xa7, "outcome":utf8>>,
+    <<0xa4, "body":utf8, body:bits>>,
+  ]
+}
+
+fn terminal_envelope(fields: List(BitArray)) -> BitArray {
+  let payload = <<0x84, { bit_array.concat(fields) }:bits>>
+  <<{ bit_array.byte_size(payload) }:size(32), payload:bits>>
+}
+
+pub fn terminal_shared_budget_across_small_sibling_maps_test() {
+  // Each map contributes its container, key and value. A fresh budget per
+  // sibling would admit each half, so this exercises the shared report budget.
+  let maps = bit_array.concat(list.repeat(<<0x81, 0, 0xc0>>, 11_000))
+  let part = <<0xdc, 11_000:size(16), maps:bits>>
+  let body = <<
+    0x82,
+    0xa2,
+    "ok":utf8,
+    0xc3,
+    0xa5,
+    "value":utf8,
+    0x92,
+    part:bits,
+    part:bits,
+  >>
+  let ran =
+    raw_terminal_run(
+      "preflight-siblings",
+      terminal_envelope(terminal_fields(body)),
+    )
+  let assert Error(satellite.OutcomeMalformed(_)) = ran
+    as "map keys share the terminal node budget"
+}
+
+pub fn ordinary_large_capability_arguments_still_reach_router_test() {
+  let dir = fresh_dir("preflight-ordinary")
+  let broker = start_broker(echoing())
+  let args = msgpack.ArrayValue(list.repeat(msgpack.NilValue, 70_000))
+  let router = fn(request: satellite.CapRequest) {
+    assert request.args == args
+    Ok(
+      satellite.ServedHere(fn() {
+        framing.CapOk(msgpack.StringValue("accepted"))
+      }),
+    )
+  }
+  let cfg = satellite.SatelliteConfig(..config(dir), router:)
+  let ran =
+    satellite.run(
+      artifact(),
+      run_phase(budget.Budget(8, t + 20_000)),
+      broker,
+      cfg,
+      satellite_peer.launcher(fn(ctx) {
+        satellite_peer.send_cap_call(ctx, ctx.token, 1, "test", args)
+        let result = satellite_peer.collect_results(ctx, 1, 3000)
+        assert result == [#(1, framing.CapOk(msgpack.StringValue("accepted")))]
+        satellite_peer.send_outcome(ctx, msgpack.StringValue("done"))
+      }),
+    )
+  assert ran.outcome == Ok(satellite.Completed(msgpack.StringValue("done")))
+  broker.stop(broker)
+}
+
+pub fn terminal_semantic_refusals_do_not_fall_back_to_generic_decode_test() {
+  let bodies = [
+    <<0xc0>>,
+    <<0x82, 0xa2, "ok":utf8, 0xc3, 0xa5, "value":utf8, 0xcc, 0>>,
+    <<0x82, 0xa2, "ok":utf8, 0xc2, 0xa7, "message":utf8, 0xa1, 120>>,
+    <<0x83, 0xa2, "ok":utf8, 0xc3, 0xa5, "value":utf8, 0xc0, 0xa1, "x":utf8, 0>>,
+    <<0x82, 0xa2, "ok":utf8, 0xc3, 0xa5, "value":utf8, 0x82, 0, 0, 0, 1>>,
+    <<0x82, 0xa2, "ok":utf8, 0xc3, 0xa5, "value":utf8, 0xa1, 255>>,
+    <<
+      0x82,
+      0xa2,
+      "ok":utf8,
+      0xc3,
+      0xa5,
+      "value":utf8,
+      0xcb,
+      0x7ff0000000000000:size(64),
+    >>,
+  ]
+  list.each(bodies, fn(body) {
+    let ran =
+      raw_terminal_run(
+        "preflight-semantic",
+        terminal_envelope(terminal_fields(body)),
+      )
+    let assert Error(satellite.OutcomeMalformed(_)) = ran
+      as "terminal semantics refused"
+  })
+}
+
+pub fn terminal_exact_node_budget_and_first_excess_test() {
+  let elements = bit_array.concat(list.repeat(<<0xc0>>, 65_531))
+  let accepted = <<
+    0x82,
+    0xa2,
+    "ok":utf8,
+    0xc3,
+    0xa5,
+    "value":utf8,
+    0xdc,
+    65_531:size(16),
+    elements:bits,
+  >>
+  let ran =
+    raw_terminal_run(
+      "preflight-exact",
+      terminal_envelope(terminal_fields(accepted)),
+    )
+  let assert Ok(satellite.Completed(msgpack.ArrayValue(values))) = ran
+    as "exact 65536 node report accepted"
+  assert list.length(values) == 65_531
+  let excess = <<
+    0x82,
+    0xa2,
+    "ok":utf8,
+    0xc3,
+    0xa5,
+    "value":utf8,
+    0xdc,
+    65_532:size(16),
+    elements:bits,
+    0xc0,
+  >>
+  let ran =
+    raw_terminal_run(
+      "preflight-excess",
+      terminal_envelope(terminal_fields(excess)),
+    )
+  let assert Error(satellite.OutcomeMalformed(_)) = ran
+    as "first excess node refused"
+}
+
+pub fn checked_error_outcome_preserves_binary_and_nonstring_keys_test() {
+  let details =
+    msgpack.MapValue([
+      #(msgpack.IntValue(9), msgpack.BinaryValue(<<0, 255>>)),
+      #(msgpack.FloatValue(9.0), msgpack.NilValue),
+    ])
+  let assert Ok(body) =
+    report_value.encode_terminal(report_value.Errored("failure", details))
+    as "failure encodes"
+  assert raw_terminal_run(
+      "preflight-error",
+      terminal_envelope(terminal_fields(body)),
+    )
+    == Ok(satellite.Errored("failure", details))
+}
+
+pub fn malformed_header_with_huge_body_faults_without_fallback_test() {
+  let elements = bit_array.concat(list.repeat(<<0xc0>>, 2_000_000))
+  let body = <<0xdd, 2_000_000:size(32), elements:bits>>
+  let malformed = [
+    <<0xa4, "body":utf8, body:bits>>,
+    <<0xa1, "v":utf8, 2>>,
+    <<0xa2, "id":utf8, 0>>,
+    <<0xa4, "kind":utf8, 0xa7, "outcome":utf8>>,
+  ]
+  let ran =
+    raw_terminal_run("preflight-header-huge", terminal_envelope(malformed))
+  let assert Error(satellite.ChannelFaulted(_)) = ran
+    as "invalid original header faults before any generic body decode"
+}
+
+pub fn unknown_kind_still_requires_semantically_valid_map_body_test() {
+  let fields = [
+    <<0xa1, "v":utf8, 1>>,
+    <<0xa2, "id":utf8, 0>>,
+    <<0xa4, "kind":utf8, 0xa1, "x":utf8>>,
+    <<0xa4, "body":utf8, 0xc0>>,
+  ]
+  let ran = raw_terminal_run("preflight-unknown", terminal_envelope(fields))
+  let assert Error(satellite.ChannelFaulted(_)) = ran
+    as "unknown scalar body remains a channel fault"
+  let fields = [
+    <<0xa1, "v":utf8, 1>>,
+    <<0xa2, "id":utf8, 0>>,
+    <<0xa4, "kind":utf8, 0xa1, "x":utf8>>,
+    <<0xa4, "body":utf8, 0x80>>,
+  ]
+  let dir = fresh_dir("preflight-unknown-valid")
+  let broker = start_broker(echoing())
+  let bytes = terminal_envelope(fields)
+  let ran =
+    satellite.run(
+      artifact(),
+      run_phase(budget.Budget(8, t + 20_000)),
+      broker,
+      config(dir),
+      satellite_peer.launcher(fn(ctx) {
+        process.send(ctx.wire, satellite.WireBytes(bytes))
+        satellite_peer.send_outcome(ctx, msgpack.StringValue("done"))
+      }),
+    )
+  assert ran.outcome == Ok(satellite.Completed(msgpack.StringValue("done")))
+  broker.stop(broker)
 }
