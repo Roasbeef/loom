@@ -4,7 +4,7 @@
    input 267c74569c053e85cab6eef8cfd94e16f2f618e1ad6bf9f11ca0e7ce2278b526  packages/web_client/src/web_client.css
    input f3ab6e0dbb95b18908bb7ac779e6b39ee27b194fded7dcc3e36ced3018e52e3d  packages/web_client/manifest.toml
    input a8a5d3f538d1e3f1e16a00a79a90997f9f31d2da95473e3139eb2142910af531  packages/web_client/src/web_client.gleam
-   input 0be72762a68c5efd190a6ceb3cb04019c1d754fd8c072880f69864bcba6d29d9  packages/web_client/src/web_client/attach.gleam
+   input 709a88ec6b162e0d976dd38f84b9148e1d7ee45ed53a67460b7c4afb09056cf2  packages/web_client/src/web_client/attach.gleam
    input e837660f49bd0de719b5853366d6967299822514394e0c9616c48fd082429cb0  packages/web_client/src/web_client/attach_rule.gleam
    input b85e3f17c9d6d574afc4057d9857b8e9f5a7aa0f6de469af11a456e48bbe075c  packages/web_client/src/web_client/back.gleam
    input 358043f586f3f9aeb483f4afef2383a40c08bda8e3817688f8a49918f3a9995b  packages/web_client/src/web_client/composer.gleam
@@ -12,7 +12,7 @@
    input c3f4d11a115d3185597c231e45e84677833e743093c2431e127b5a3f6aad1fb1  packages/web_client/src/web_client/copy.gleam
    input d22c43c6d47f670a495233bce7ed5b62198e861cf790d0413049406712bc371c  packages/web_client/src/web_client/copy_rule.gleam
    input 525611281f346ea6ccacde5cf6ee92bf49862c578abb5ed64c21b81086cfe93a  packages/web_client/src/web_client/drop_guard.gleam
-   input 546362f6b56f651ed3117a4c928728bb789b7170e0648606fb286c146f50a883  packages/web_client/src/web_client/drop_rule.gleam
+   input 64097c972554a497c7908986cd37cf130475abb2497e10bb138bb1d882117b1a  packages/web_client/src/web_client/drop_rule.gleam
    input 142f510bae0b40239827a444096c53bf1515af1b45d5eff1bc981de924ffc7fc  packages/web_client/src/web_client/duration.gleam
    input a2fbd4226d72bc87d60600ebcd95958b3e4d206074b841695070893422c7b8fd  packages/web_client/src/web_client/elapsed.gleam
    input 9377889663220f868c80aa6730c6d02e8d6244446fe543839f87101f13209325  packages/web_client/src/web_client/expand.gleam
@@ -20,7 +20,7 @@
    input 3e038808b473603a4854cbe86c83374a5a42f2a8bc7b7ea58bdfe8f21f76abff  packages/web_client/src/web_client/fold.gleam
    input f6a983918db15e3fddb4c8a8861d18e3ccd9d4cb861e988e01e2b9c7c6a104c7  packages/web_client/src/web_client/follow.gleam
    input aa3fb4a611257f7d191456071c41713e617dd324a79956703aa1fd6d9073cc2b  packages/web_client/src/web_client/follow_rule.gleam
-   input ef6c59bcfa25ac2edc4f4520a2c7eb04782497117e54e51a7326f28f4c917d72  packages/web_client/src/web_client/internal/ffi_dom.gleam
+   input 3094851bff444b4983611dd460fbf029a330ed5b3d40673ef47129b304c19d81  packages/web_client/src/web_client/internal/ffi_dom.gleam
    input 4d6236a676795d403deef7f357d1f901e4bb3c6520df0ce089e1b7ea1f96d480  packages/web_client/src/web_client/layout_rule.gleam
    input 492ca4d9e457aa176b4f7fd4d3e076667bcc454df41dc6fdf2fed90134f99e7d  packages/web_client/src/web_client/popover.gleam
    input b8ef129c1a538e75dfaaf54b70bb30859013df7d3dcb090c36454d113a3c434f  packages/web_client/src/web_client/popover_rule.gleam
