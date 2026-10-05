@@ -1,10 +1,10 @@
 //// `<loom-attach name="images" limits="...">`: the operator composer's image
 //// attachments (protocol-change/051, the addendum on images).
 ////
-//// The element draws a "+" button, labelled "Attach image" for assistive technology,, the chips of the images
+//// The element draws a "+" button, labelled "Attach image" for assistive technology, the chips of the images
 //// already attached each with a Remove button, and a line saying why a file
-//// was refused. An image comes from the file picker the button opens or from
-//// a paste into the composer, and its bytes are read in the browser and held
+//// was refused. An image comes from the file picker the button opens, from a
+//// paste into the composer or from a drop onto it, and its bytes are read in the browser and held
 //// here until the form is sent. The element is form-associated: it submits
 //// its images under its `name` as one field, a JSON array of their base64
 //// text (`attach_rule.value`), so they reach the server in the same submit
@@ -30,6 +30,24 @@
 //// page: the element is replaced with every sent draft, and a listener left
 //// behind would go on attaching to an element that is gone.
 ////
+//// ## Drops
+////
+//// Image files dragged onto the composer's form are attached through the
+//// same vetting a paste takes (`attach_rule.choose`), so the limits and the
+//// refusal words are one set. The listeners are on the form, which is the
+//// whole composer box and not only its editor, and they cancel a drag only
+//// when it carries files (`drop_rule`), so text dragged into the editor
+//// keeps working. While files are over the form and a place is free, the
+//// element draws a tinted overlay with a hint (`drop_rule.surface`); the
+//// overlay takes no pointer events. The browser reports crossing each child
+//// as a leave and an enter, so a leave ends the drag only when the element
+//// the pointer went to (`relatedTarget`) is not inside the form, and a leave
+//// that never comes, because the server replaced the element under the
+//// pointer, is repaired by the next enter or by the document's own `drop` or
+//// `dragend` (`drop_rule.Drag`). A form with no place left
+//// draws no overlay and still cancels the drag, and a page with no
+//// attach element at all is covered by `web_client/drop_guard`.
+////
 //// ## What it does not do
 ////
 //// It handles no key, takes no focus of its own and never touches the
@@ -38,6 +56,7 @@
 //// attached is theirs, and the transcript shows it after the daemon accepts
 //// it, from the daemon's own copy.
 
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -50,20 +69,23 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
 import web_client/attach_rule.{type Candidate, type Limits, type State}
+import web_client/drop_rule
 import web_client/internal/ffi_dom
 
 /// The element's tag.
 pub const name = "loom-attach"
 
-/// What the element knows: the rules' state, and the paste listener it put on
-/// its form, so leaving the page can take it off again.
+/// What the element knows: the rules' state, the listeners it put on its
+/// form and the document, so leaving the page can take them off again, and
+/// whether a file drag is over the composer.
 pub type Model {
-  Model(state: State, pasting: Option(Pasting))
+  Model(state: State, listening: Option(Listeners), dragging: drop_rule.Drag)
 }
 
-/// A running listener on the composer's form.
-pub type Pasting {
-  Pasting(form: ffi_dom.Element, listener: ffi_dom.Listener)
+/// The running listeners, each with the element it is on and the event it
+/// hears.
+pub type Listeners {
+  Listeners(heard: List(#(ffi_dom.Element, String, ffi_dom.Listener)))
 }
 
 /// Everything the element can be told.
@@ -92,8 +114,23 @@ pub type Msg {
   /// The element left the page.
   Disconnected
 
-  /// The paste listener is on the form.
-  Listening(pasting: Pasting)
+  /// A drag that carries these kinds of data entered an element of the
+  /// composer.
+  DragEntered(types: List(String))
+
+  /// A drag that carries these kinds of data left an element of the composer
+  /// for `towards`.
+  DragLeft(types: List(String), towards: drop_rule.Destination)
+
+  /// A drop or a drag's end was heard anywhere on the page, so no drag is
+  /// over the composer any more.
+  DragEnded
+
+  /// These files were dropped on the composer.
+  Dropped(files: List(ffi_dom.File))
+
+  /// The paste and drag listeners are on the form.
+  Listening(listeners: Listeners)
 }
 
 /// Registers the element with the browser, form-associated so its value joins
@@ -117,7 +154,10 @@ pub fn register() -> Result(Nil, lustre.Error) {
 }
 
 fn init(_: Nil) -> #(Model, Effect(Msg)) {
-  #(Model(state: attach_rule.start(), pasting: None), effect.none())
+  #(
+    Model(state: attach_rule.start(), listening: None, dragging: drop_rule.away),
+    effect.none(),
+  )
 }
 
 /// Applies one message. The file input, the form and the file reads are
@@ -149,19 +189,45 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       #(Model(..model, state:), reading(reads))
     }
 
+    // A drop is vetted as a paste is. It also ends the drag, since no leave
+    // follows a drop, and an element with no place left refuses the files
+    // with the limit's own words and attaches none.
+    Dropped(files:) -> {
+      let #(state, reads) = attach_rule.choose(model.state, candidates(files))
+      #(
+        Model(..model, state:, dragging: drop_rule.dropped(model.dragging)),
+        reading(reads),
+      )
+    }
+    DragEntered(types:) -> #(
+      Model(..model, dragging: drop_rule.entered(model.dragging, types)),
+      effect.none(),
+    )
+    DragLeft(types:, towards:) -> #(
+      Model(..model, dragging: drop_rule.left(model.dragging, types, towards)),
+      effect.none(),
+    )
+    DragEnded -> #(
+      Model(..model, dragging: drop_rule.dropped(model.dragging)),
+      effect.none(),
+    )
+
     Read(id:, read:) ->
       changed(model, attach_rule.loaded(model.state, id, read))
     Removed(id:) -> changed(model, attach_rule.removed(model.state, id))
 
     Connected -> #(
       model,
-      effect.batch([unlistening(model.pasting), listening()]),
+      effect.batch([unlistening(model.listening), listening()]),
     )
-    Listening(pasting:) -> #(
-      Model(..model, pasting: Some(pasting)),
+    Listening(listeners:) -> #(
+      Model(..model, listening: Some(listeners)),
       effect.none(),
     )
-    Disconnected -> #(Model(..model, pasting: None), unlistening(model.pasting))
+    Disconnected -> #(
+      Model(..model, listening: None, dragging: drop_rule.away),
+      unlistening(model.listening),
+    )
   }
 }
 
@@ -245,9 +311,11 @@ fn clearing() -> Effect(Msg) {
   result.unwrap(cleared, or: Nil)
 }
 
-// Listens for a paste on the composer's form. A paste that holds image files
-// attaches them and is cancelled, and any other is left alone. The listener
-// is handed back so `unlistening` can end it.
+// Listens on the composer's form for a paste and for a file drag. A paste
+// that holds image files attaches them and is cancelled, and any other is left
+// alone. A drag is cancelled only when it carries files, which is what lets a
+// drop land and keeps the browser from navigating to the file. The listeners
+// are handed back so `unlistening` can end them.
 fn listening() -> Effect(Msg) {
   use dispatch, root <- effect.after_paint
   let started = {
@@ -255,8 +323,12 @@ fn listening() -> Effect(Msg) {
       ffi_dom.host(ffi_dom.as_element(root)),
       "form",
     ))
-    let listener =
-      ffi_dom.add_listener(form, "paste", fn(event) {
+    let page = ffi_dom.get_document()
+    let on = fn(element, event_name, handler) {
+      #(element, event_name, ffi_dom.add_listener(element, event_name, handler))
+    }
+    let heard = [
+      on(form, "paste", fn(event) {
         case list.filter(ffi_dom.clipboard_files(event), is_image) {
           [] -> Nil
           files -> {
@@ -264,10 +336,64 @@ fn listening() -> Effect(Msg) {
             dispatch(Pasted(files))
           }
         }
-      })
-    dispatch(Listening(Pasting(form:, listener:)))
+      }),
+      on(form, "dragenter", fn(event) {
+        let types = ffi_dom.drag_types(event)
+        use <- when_files(event, types)
+        dispatch(DragEntered(types))
+      }),
+      on(form, "dragover", fn(event) {
+        use <- when_files(event, ffi_dom.drag_types(event))
+        Nil
+      }),
+      on(form, "dragleave", fn(event) {
+        dispatch(DragLeft(
+          ffi_dom.drag_types(event),
+          towards(form, ffi_dom.related_target(event)),
+        ))
+      }),
+      on(form, "drop", fn(event) {
+        use <- when_files(event, ffi_dom.drag_types(event))
+        dispatch(Dropped(ffi_dom.drag_files(event)))
+      }),
+
+      // A drag can end with no leave reaching the form, when the element
+      // under the pointer was replaced, so the page's own drop and drag end
+      // clear the drag state.
+      on(page, "drop", fn(_) { dispatch(DragEnded) }),
+      on(page, "dragend", fn(_) { dispatch(DragEnded) }),
+    ]
+    dispatch(Listening(Listeners(heard:)))
   }
   result.unwrap(started, or: Nil)
+}
+
+// Where a leave went: inside the form when the element the pointer moved to
+// is in it, and beyond it when that is another element or nothing at all.
+fn towards(
+  form: ffi_dom.Element,
+  target: Result(ffi_dom.Element, Nil),
+) -> drop_rule.Destination {
+  case target {
+    Ok(node) ->
+      case ffi_dom.contains(form, node) {
+        True -> drop_rule.Within
+        False -> drop_rule.Beyond
+      }
+    Error(Nil) -> drop_rule.Beyond
+  }
+}
+
+// Cancels a drag event that carries files and then runs `next`, and leaves
+// any other drag alone and runs nothing.
+fn when_files(event: Dynamic, types: List(String), next: fn() -> Nil) -> Nil {
+  case drop_rule.carries_files(types) {
+    True -> {
+      ffi_dom.prevent_default(event)
+      next()
+    }
+    False -> Nil
+  }
 }
 
 // Whether a clipboard file claims to be an image of any kind. One that is not
@@ -277,12 +403,14 @@ fn is_image(file: ffi_dom.File) -> Bool {
   attach_rule.is_image(ffi_dom.file_type(file))
 }
 
-fn unlistening(pasting: Option(Pasting)) -> Effect(Msg) {
-  case pasting {
+fn unlistening(listening: Option(Listeners)) -> Effect(Msg) {
+  case listening {
     None -> effect.none()
-    Some(Pasting(form:, listener:)) -> {
+    Some(Listeners(heard:)) -> {
       use _ <- effect.from
-      ffi_dom.remove_listener(form, "paste", listener)
+      list.each(heard, fn(entry) {
+        ffi_dom.remove_listener(entry.0, entry.1, entry.2)
+      })
     }
   }
 }
@@ -314,7 +442,21 @@ fn view(model: Model) -> Element(Msg) {
     ]),
     chips(state),
     notice(state),
+    drop_hint(model),
   ])
+}
+
+// The drop state: a tinted overlay on the whole composer box, with a hint.
+// It is the stylesheet's to place over the form, and it takes no pointer
+// events, so it never becomes a target the drag has to enter and leave.
+fn drop_hint(model: Model) -> Element(Msg) {
+  case drop_rule.surface(model.dragging, drop_rule.places(model.state)) {
+    drop_rule.Inviting ->
+      html.div([attribute.class("attach-drop"), attribute.aria_hidden(True)], [
+        html.text("Drop images to attach"),
+      ])
+    drop_rule.Plain -> element.none()
+  }
 }
 
 fn chosen() -> decode.Decoder(Msg) {

@@ -644,6 +644,50 @@ pub fn file_list(files: Dynamic) -> List(File)
 @external(javascript, "./dom.mjs", "clipboard_files")
 pub fn clipboard_files(event: Dynamic) -> List(File)
 
+/// The kinds of data a drag event carries (`dataTransfer.types`): `"Files"`
+/// for a drag of files, media types for anything else. A drag that carries
+/// files lists them while it is still over the page, though their contents are
+/// readable only on the drop.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.drag_types(event)
+/// ```
+@external(javascript, "./dom.mjs", "drag_types")
+pub fn drag_types(event: Dynamic) -> List(String)
+
+/// The files a `drop` event carries (`dataTransfer.files`), or none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.drag_files(event)
+/// ```
+@external(javascript, "./dom.mjs", "drag_files")
+pub fn drag_files(event: Dynamic) -> List(File)
+
+/// The element a drag event is moving to or from (`relatedTarget`), or
+/// `Error(Nil)` when the pointer left the window or the browser withholds it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.related_target(event)
+/// ```
+@external(javascript, "./dom.mjs", "related_target")
+pub fn related_target(event: Dynamic) -> Result(Element, Nil)
+
+/// Whether a node is the element or inside it (`Node.contains`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.contains(form, node)
+/// ```
+@external(javascript, "./dom.mjs", "contains")
+pub fn contains(element: Element, node: Element) -> Bool
+
 /// A file's name (`File.name`). It is the person's own file name, a text the
 /// browser reports and the page only ever draws as a text node.
 ///

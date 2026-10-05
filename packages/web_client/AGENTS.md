@@ -70,8 +70,17 @@ renders again just for it:
   `attach_rule` decides what it accepts before a file is read: declared type,
   size, count, with reads in flight counting; the daemon reads the real type
   from the bytes. A paste holding image files attaches them and is cancelled,
-  and its listener on the form is removed when the element leaves. The chips
-  are the person's own file names as text nodes, and the element draws no image.
+  and its listener on the form is removed when the element leaves. Image files
+  dragged onto the composer's form are attached through the same vetting
+  (`attach_rule.choose`); the form's `dragenter`, `dragover`, `dragleave` and
+  `drop` listeners cancel a drag only when it carries files, and while one is
+  over the form with a place free the element draws a tinted `.attach-drop`
+  overlay with a hint (`drop_rule`: `carries_files`, the `Drag` state, which a leave ends only by its `relatedTarget`, so
+  absorbs child enter/leave, `surface`). `drop_guard` is no element: one
+  document listener installed in `main` that cancels any file drag, so a file
+  dropped elsewhere, or on a page with no composer, never navigates the tab. The
+  chips are the person's own file names as text nodes, and the element draws no
+  image.
 - `<loom-rename>` wraps the rename form's text field (the home row's form and
   the Session pane's). The server cannot give the field a `value`, because a
   session's name is only ever a text node (protocol-change/051), so when the
@@ -389,9 +398,10 @@ time builds anything.
 
 ## Tests
 
-What the components decide is in six modules that import neither Lustre nor
+What the components decide is in seven modules that import neither Lustre nor
 `ffi_dom`: `attach_rule` (the limits, which files are accepted and refused,
-the held images and the form field they make), `follow_rule` (the scroll rule, `Reader` and its transitions,
+the held images and the form field they make), `drop_rule` (which drags carry
+files, the drag state, when the drop state shows), `follow_rule` (the scroll rule, `Reader` and its transitions,
 `keeping`), `expand_rule` (the two states and the chevron), `shell_rule`
 (which columns are open, the buttons' words, what a closed column lets the
 keyboard reach), `composer_rule` (the table, `matching`, `intent`, `hear`, `taken`,

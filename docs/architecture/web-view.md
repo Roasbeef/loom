@@ -342,8 +342,9 @@ component `ImageRequested` with `lustre.dispatch`. What comes back is checked by
 magic number that says the type) and sent with the view's headers, so the browser
 draws what was checked.
 
-An operator's composer draws `<loom-attach>`, which reads files and pasted images
-in the browser and submits them as one form field, a JSON array of base64
+An operator's composer draws `<loom-attach>`, which reads files, pasted images and
+images dropped on the composer (`drop_rule`; `drop_guard` stops a file dropped
+elsewhere from navigating the tab) in the browser and submits them as one form field, a JSON array of base64
 strings, with the draft. `component.submit` runs `web_view/image.admit` on them,
 which reads each type from its bytes and bounds the count and the total, and the
 prompt goes out as `prompt_content` through the shared step. One bad image
