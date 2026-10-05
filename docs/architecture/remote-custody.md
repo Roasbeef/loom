@@ -249,13 +249,13 @@ the command template, complete SandboxPolicy, cleared native envelope and
 service-specific completion associations. Storage opacity does not establish
 those semantic checks or authorize execution.
 
-## The original Broker reserves a compiler command
+## The original Broker reserves a Compile or Launch command
 
 `dispatch_binding.with_commands` extends the existing dispatcher configuration
-with a closed CompileCommand path. It retains the same owner custodian,
+with closed CompileCommand and SatelliteCommand paths. It retains the same owner custodian,
 endpoint, clock, preparation callback and UUID allocator. Ordinary native
-origins keep their existing path; SatelliteCommand explicitly refuses until
-Launch assembly exists.
+origins keep their existing path. Whole physical Launch assembly remains a
+separate prerequisite.
 
 The Broker first clears a real Dispatch. The command binding then reads its
 indexed offer and complete retained service input. It checks canonical bytes,
@@ -263,6 +263,14 @@ input and offer digests, original enrollment, physical operation and step, and
 the complete derived compiler template. Reconstructing the expected allocation
 checks its literal identity; it does not prepare files or prove executor Ready.
 That evidence belongs to the whole Compile consumer.
+
+Launch additionally reads the exact successful Compile producer named in retained
+input. It validates that producer's canonical input and completion against the
+original key and enrollment, then compares the retained artifact and reported
+build evidence. The upstream Compile consumer establishes native provenance
+before publishing that completion to owner custody. Reconstructing Launch paths
+here checks equality only; token placement and listener ownership belong to the
+executor's live preparation continuation.
 
 Only after those checks does the binding call its original preparation callback.
 The returned Prepared must preserve the actual cleared request and step. Its
