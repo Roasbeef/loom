@@ -428,3 +428,30 @@ pub fn error_text(error: ReportError) -> String {
     EmitUnavailable(reason:) -> "emit unavailable: " <> reason
   }
 }
+
+/// Wraps compiled artifact bytes for trusted satellite control transport.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert report.as_bytes(report.bytes(<<1, 2>>)) == Ok(<<1, 2>>)
+/// ```
+///
+pub fn bytes(value: BitArray) -> Value {
+  msgpack.BinaryValue(value)
+}
+
+/// Reads a binary payload without casting an untrusted wire term.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert report.as_bytes(report.string("x")) == Error(Nil)
+/// ```
+///
+pub fn as_bytes(value: Value) -> Result(BitArray, Nil) {
+  case value {
+    msgpack.BinaryValue(bytes) -> Ok(bytes)
+    _ -> Error(Nil)
+  }
+}
