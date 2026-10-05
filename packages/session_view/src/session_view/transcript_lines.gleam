@@ -4241,9 +4241,24 @@ pub fn usage_summary(usage: message.Usage) -> String {
 /// // cost_words(nothing_spent_yet) == "est —"
 /// ```
 pub fn cost_words(usage: message.Usage) -> String {
+  "est " <> cost_figure(usage)
+}
+
+/// The estimated cost as a figure alone, for a place whose label says it is
+/// an estimate: `$0.04`, or `—` when no token was priced. Every surface
+/// words a zero total through this rule, so a fresh session never reads
+/// `$0.00` in one place and `est —` in another.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // cost_figure(priced) == "$0.04"
+/// // cost_figure(nothing_spent_yet) == "—"
+/// ```
+pub fn cost_figure(usage: message.Usage) -> String {
   case usage.cost.total >. 0.0 {
-    True -> "est $" <> money(usage.cost.total)
-    False -> "est —"
+    True -> "$" <> money(usage.cost.total)
+    False -> "—"
   }
 }
 

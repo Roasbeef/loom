@@ -543,7 +543,7 @@ fn frame_status(
     model: short_model(model.shared.current_model),
     effort: effort(model),
     context: context_view.footer(model.shared.context),
-    cost: transcript_lines.money(model.shared.usage.cost.total),
+    cost: transcript_lines.cost_figure(model.shared.usage),
     needs: needs_you(model, strip),
     lock: case model.view.overlay {
       ApprovalInspector(_) -> input_frame.Deciding
@@ -1619,7 +1619,7 @@ fn render_compact_footer(
       text_hygiene.single_line(model.shared.notice),
       text_hygiene.single_line(model.shared.current_model),
       context_view.footer(model.shared.context),
-      "est $" <> transcript_lines.money(model.shared.usage.cost.total),
+      transcript_lines.cost_words(model.shared.usage),
       sessions_hint(
         text_area.value(model.view.input),
         model.shared.attachments,
