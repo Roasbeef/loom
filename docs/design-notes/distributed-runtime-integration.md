@@ -55,8 +55,9 @@ against the merged Weft revision. The [transport transition record](../review/di
 keeps the exact evidence and known historical-route refusal defect.
 The reviewed [scoped lifetime proposal](distributed-scope-lifetime.md) describes
 the next host boundary; its API and native close-state change await approval.
-Launch/satellite execution, the remote LSP host and
-registered daemon configuration remain required. Acceptance must drive ordinary
+The [final-result proposal](distributed-final-results.md) records the separate
+Launch result-size and durable-retention decision. Launch/satellite execution,
+the remote LSP host and registered daemon configuration remain required. Acceptance must drive ordinary
 tools and code mode with the owner and executor on separate hosts and no checkout
 on the owner's disk.
 
