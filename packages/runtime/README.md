@@ -219,6 +219,20 @@ so an OTP crash report *about* the effect process — which this package
 did not author and cannot route through the value — is still correlated
 when it lands.
 
+## Evolution authority stays with the host
+
+`runtime/api` reserves the `evolution/` fact namespace alongside other
+host-owned namespaces. Ordinary model-facing fact writes cannot forge
+approval, adoption or a pinned profile map. The evolution controller uses
+the existing runtime and storage contracts; the machine's operation API
+does not gain an authored-code loader.
+
+`client/evolution` owns live generation replacement and its native worker
+custody. The runtime continues the same conversation while that owner
+serializes promoted invocations against activation. Read
+[the evolution architecture](../../docs/architecture/evolution.md) for the
+commit boundary and recovery rules.
+
 ## The modules
 
 | Module | What it holds |

@@ -7,7 +7,9 @@ it never enters the harness VM. [Protocol 068](../../protocol-change/068-runtime
 and the addendum to [ADR-007](../adr/007-extension-tiers-and-brokered-egress.md)
 record this boundary. Issue [#807](https://github.com/Roasbeef/loom/issues/807)
 consolidates the earlier skill, candidate and loader issues; #236 remains the
-linked trace and model-evaluation workstream.
+linked trace and model-evaluation workstream. This page describes the native
+owners, selection boundaries and recovery path for engineers changing that
+implementation.
 
 ## Three artifact kinds
 
@@ -32,7 +34,8 @@ kernel jail before the host decodes and hashes its bytes. Native directory
 preauthorization alone would leave a check/read race on authored symlinks.
 
 The candidate ID covers source/text, test entry, schemas, kind, publication
-scope, native provenance and build/seam/evaluator identities. Neither a path
+scope, native provenance and build/seam/evaluator identities. A seam is the
+module allowlist against which authored code is vetted. Neither a path
 nor a model-supplied digest grants authority. Tests produce a separate,
 content-addressed evidence envelope. A passing author-owned test establishes
 its checks; it does not establish model quality or replace harness-owned
@@ -64,6 +67,35 @@ requires receipt lookup. `--args` accepts at most 48 KiB of object JSON. A
 selection payload names candidate/evidence IDs, expected generation, reason,
 request ID and optional bounded deadline. No payload grants authority.
 
+For example, after inspecting a passing candidate and its evidence, write
+`approval.json` with their exact IDs:
+
+```json
+{"candidate_id":"<candidate SHA256>","evidence_id":"<evidence SHA256>"}
+```
+
+Then write `selection.json`. Generation zero means no preceding selection;
+for a replacement, use the generation of the currently selected version.
+
+```json
+{
+  "candidate_id": "<candidate SHA256>",
+  "evidence_id": "<evidence SHA256>",
+  "expected_generation": 0,
+  "reason": "Verified the retained author checks and native lifecycle evidence",
+  "request_id": "publish-1",
+  "deadline_ms": 60000
+}
+```
+
+The placeholders must be replaced with the retained identities. Run the
+`approve` and `select` commands above, then query `status` with `publish-1`.
+For an extension, wait for its published selection before invoking it.
+To roll back, approve the retained earlier version if necessary and submit
+`rollback` with that version's IDs, the current generation and a new request ID.
+The deadline applies to live session-extension activation; global program and
+model-profile selection changes their discovery boundary.
+
 Promoted extensions use a stable generic tool surface. Discovery returns the
 actual callable name, description, schema, candidate ID and generation.
 `evolution_invoke` requires that exact version token. It refuses a stale token
@@ -86,11 +118,11 @@ schema. Compilation and execution hold no catalogue writer lease.
 Catalogue handles for the same canonical file share its fenced writer lease,
 including callers from separate sessions or VMs. Admission uses a one-second
 `weft/poll` budget, with a ten-millisecond native SQLite busy timeout.
-Only typed native lock-busy or held-lease refusals before ownership are retried;
-an admitted operation
-and its acknowledged retirement each run once. Transition deadlines are checked
-after admission and immediately before a new selection CAS. An exact committed
-receipt remains recoverable after that deadline.
+Only typed native lock-busy or held-lease refusals before ownership are retried.
+An admitted operation and its acknowledged retirement each run once.
+Transition deadlines are checked after admission and immediately before a new
+selection compare-and-swap (CAS). An exact committed receipt remains recoverable
+after that deadline.
 
 Native compilers receive a writable view of only their own artifact directory
 and discovered toolchain mounts. Satellite nodes receive that directory read
@@ -118,6 +150,40 @@ missing audit, revalidates current approval and reconstructs the committed
 version before publication. Staging failure leaves the previous selection;
 a failed CAS after retirement rebuilds the committed predecessor.
 
+For a session extension, the live owner performs the following sequence.
+It holds the complete promoted hook/tool fold while replacing its generation.
+
+```mermaid
+sequenceDiagram
+    participant O as Authenticated operator
+    participant Q as Managed transition queue
+    participant L as Live generation owner
+    participant J as Native jailed helpers
+    participant C as Catalogue
+    participant S as Session adoption audit
+    O->>Q: select exact IDs, generation and request ID
+    Q-->>O: queued receipt
+    Q->>L: serialized replacement
+    L->>C: revalidate candidate and approval
+    L->>J: stage and compile successor
+    L->>J: retire predecessor and confirm native cleanup
+    L->>C: compare-and-swap selection before deadline
+    C-->>L: committed selection and durable receipt
+    L->>S: append idempotent adoption audit
+    L->>L: publish successor
+    O->>Q: status with original request ID
+    Q-->>O: committed and published selections
+```
+
+| Failure | Owner's response |
+| --- | --- |
+| Capture, author check or staging fails | Retain the refusal or evidence; no new selection commits. A staging failure keeps the predecessor available unless cleanup custody is itself uncertain. |
+| Predecessor retirement is unconfirmed | Retain its remaining cleanup task and refuse publication or another allocation. The old central selection remains, but the live owner does not claim it is callable. |
+| Selection CAS loses after retirement | Discard the staged successor and reconstruct the committed predecessor. Failed reconstruction or cleanup remains an explicit refusal. |
+| Selection commits but adoption fails | Preserve the durable selection and receipt. Recovery must complete the audit and reconstruct that committed version before publication. |
+| Caller loses an acknowledgement | Look up the original request ID. A missing response does not prove that selection failed. |
+| Caller presents a stale invocation token | Refuse instead of interpreting its arguments under the replacement schema. |
+
 The gateway response window is six seconds. Selection therefore returns a
 queued receipt immediately and staging runs behind one managed job. The
 operator polls `status` with the original `request_id`; an identical retry
@@ -137,8 +203,8 @@ The live owner serializes complete promoted invocation folds against replacement
 A provider request already rendered retains its original bytes. Installed
 hooks remain installed; the promoted hook layer captures one generation for
 its complete fold. Newly promoted hooks join future events; activation does
-not replay the original session-start event. Cancellation and revocation do not transfer the old version's
-capabilities to a replacement.
+not replay the original session-start event. Cancellation and revocation do not
+transfer the old version's capabilities to a replacement.
 
 A promoted generation owns a dedicated two-helper executor pool: one persistent
 satellite and one nested brokered process. One active generation and one
@@ -172,9 +238,9 @@ across both arms; measured usage cannot silently refund an unknown charge. The
 comparison records actual usage, turns, tool executions, task/criterion IDs,
 profile IDs and composed-request digests. Incomplete work, absent outcomes or
 unconfirmed retirement produce durable inconclusive evidence. Scripted lifecycle
-callbacks never produce model-quality evidence. The real provider fixture proves
-the coding/evaluation machinery; it does not demonstrate a statistical improvement
-on a commercial model.
+callbacks never produce model-quality evidence. The production fixture uses a
+scripted HTTP provider to prove the coding/evaluation machinery. It does not
+demonstrate a statistical improvement on a commercial model.
 
 An authenticated operator can `mark_outcome` on a settled assistant entry in their
 source session. `evolution_trace` joins bounded source excerpts, actual model
@@ -189,6 +255,30 @@ after each actual fallback, vision or child target is resolved, starting from
 the unchanged base request on every attempt. Description overlays cannot change
 registered names, schemas, requirements, replay policy or generated capability
 signatures. Every attempt journals its actual profile and composition digest.
+
+## Module ownership and reading order
+
+The controller lives in the existing `client` package; it is not a new
+package or an authored module loaded into the harness. Paths below are
+relative to `packages/client/src/client/evolution/`.
+
+| Modules | Responsibility |
+| --- | --- |
+| [`record`](../../packages/client/src/client/evolution/record.gleam), [`identity`](../../packages/client/src/client/evolution/identity.gleam), [`store`](../../packages/client/src/client/evolution/store.gleam) | Immutable envelopes, native compatibility identity, protected catalogue, approval and selection transactions. |
+| [`candidate`](../../packages/client/src/client/evolution/candidate.gleam), [`evaluate`](../../packages/client/src/client/evolution/evaluate.gleam), [`program`](../../packages/client/src/client/evolution/program.gleam) | Jailed capture, author checks, compilation and fresh program inputs. |
+| [`control`](../../packages/client/src/client/evolution/control.gleam), [`cli`](../../packages/client/src/client/evolution/cli.gleam), [`queue`](../../packages/client/src/client/evolution/queue.gleam), [`page`](../../packages/client/src/client/evolution/page.gleam) | Authenticated operator actions, bounded managed staging, receipts and complete paged inspection. |
+| [`live`](../../packages/client/src/client/evolution/live.gleam), [`native`](../../packages/client/src/client/evolution/native.gleam), [`retirement`](../../packages/client/src/client/evolution/retirement.gleam), [`hook`](../../packages/client/src/client/evolution/hook.gleam) | One published generation, its jailed planes, remaining cleanup obligations and serialized invocation folds. |
+| [`prompt`](../../packages/client/src/client/evolution/prompt.gleam), [`model_door`](../../packages/client/src/client/evolution/model_door.gleam), [`tasks`](../../packages/client/src/client/evolution/tasks.gleam) | Profile capture, model-facing dispatch and independently admitted task criteria. |
+| [`rollout`](../../packages/client/src/client/evolution/rollout.gleam), [`rollout_host`](../../packages/client/src/client/evolution/rollout_host.gleam), [`fixture`](../../packages/client/src/client/evolution/fixture.gleam), [`trace`](../../packages/client/src/client/evolution/trace.gleam) | Paired production runs, aggregate request budgets, scoring after native retirement and bounded observations. |
+
+The adjacent package contracts are described in the READMEs for
+[`codemode`](../../packages/codemode/README.md),
+[`ext`](../../packages/ext/README.md), [`tools`](../../packages/tools/README.md),
+[`runtime`](../../packages/runtime/README.md),
+[`provider`](../../packages/provider/README.md),
+[`prompt`](../../packages/prompt/README.md),
+[`session`](../../packages/session/README.md) and
+[`storage`](../../packages/storage/README.md).
 
 ## Hard bounds and deliberate limits
 
@@ -210,7 +300,21 @@ resident authored modules, dependency downloads and automatic state migration ar
 outside this implementation. Noise handling and holdout quality require real
 model trials; a scripted fixture cannot certify those properties.
 
-`make e2e-evolution` exercises the real authoring, evidence, approval, activation
-and rollback path against a scripted loopback provider and the actual toolchain,
-SQLite, capabilities and native helpers. `make check` and platform signoff remain
-separate gates. CI and signoff enable the evolution fixtures explicitly.
+## Acceptance evidence
+
+`make e2e-evolution` enables three fixtures in `packages/client/test/client/`.
+They use a scripted loopback HTTP provider with the actual runtime, compiler,
+SQLite, capabilities and native helpers.
+
+| Fixture | What it demonstrates |
+| --- | --- |
+| [`evolution_acceptance_test`](../../packages/client/test/client/evolution_acceptance_test.gleam) | Author, test, approve, replace, roll back and continue in the same conversation, with native retirement and helper census checks. |
+| [`evolution_program_acceptance_test`](../../packages/client/test/client/evolution_program_acceptance_test.gleam) | Two sessions discover one selected workspace program, pass fresh input and enforce each caller's own policy. |
+| [`evolution_prompt_acceptance_test`](../../packages/client/test/client/evolution_prompt_acceptance_test.gleam) | Independent admitted file criteria, paired coding runs, durable comparison evidence and pinned profile composition. |
+
+Focused tests under `test/client/evolution/` cover stale selection, deadline
+admission, unknown spend, paged bytes and remaining cleanup custody.
+`make check` establishes the repository gate; platform signoff also exercises
+kernel enforcement and shipped release behavior. Those are separate verdicts.
+CI and signoff enable the evolution fixtures explicitly. Passing scripted
+fixtures establishes this operational loop, not commercial-model quality.

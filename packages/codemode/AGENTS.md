@@ -2,8 +2,9 @@
 
 ## Governed candidate admission
 
-`vet/candidate_package` admits the separately retained author-test namespace
-without making it available to the published implementation. Source layout,
+`vet/package.vet_candidate` admits retained source and author-test modules
+under the same seam. The host selects the author-test entry when collecting
+evidence and the declared implementation entry when serving calls. Source layout,
 dependencies, imports, foreign interfaces and entry points still pass the
 selected existing seam. Governed programs are reconstructed from immutable
 source and fresh input, then use the same production pipeline. The client owns

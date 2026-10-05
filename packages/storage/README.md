@@ -430,6 +430,21 @@ the `sqlite3` CLI. `catalogue_test` and `snapshot_test` compare each
 embedded schema with its file in `sql/`, so a DDL edit without
 regeneration fails the tests.
 
+## The evolution catalogue
+
+`client/evolution/store` opens a separate protected database using the same
+session schema, generated SQL and fenced writer lease. Candidate envelopes,
+evidence and selections live in reserved `FactCustom` cells, with lifecycle
+entries committed alongside their fact changes. Evolution adds no schema
+and no handwritten SQL; query changes still go through SQLC/Parrot and
+`make gen-sql`.
+
+`sqlite.OpenError.AdmissionBusy` identifies native lock contention at the
+initial `BEGIN IMMEDIATE`. The caller may retry that pre-open refusal within
+its admission budget. A failure after admission is not permission to replay
+an operation. Catalogue authority and recovery belong to the native host,
+as described in [the evolution architecture](../../docs/architecture/evolution.md).
+
 ## The modules
 
 In reading order: the handle, the two backends, the shared pipeline,

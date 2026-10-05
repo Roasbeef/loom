@@ -26,12 +26,13 @@ resident authenticated session. The source, authority and retirement boundaries
 are in [evolution](architecture/evolution.md) and
 [protocol-change 068](../protocol-change/068-runtime-evolution.md).
 
-The full local gate, `LOOM_EVOLUTION_E2E=1 make check`, passed at source commit
-`b1549f045`, including 2,846 client tests, 1,228 TUI tests, native Go tests and
-house lint with zero errors. All three production lifecycle fixtures ran:
-extension 7.007 seconds, program 3.903 seconds and prompt 2.260 seconds. These
-are whole fixture times with scripted HTTP, not isolated activation latency or
-commercial-model cache measurements. Documentation checks also passed.
+The full local gate, `LOOM_EVOLUTION_E2E=1 make check`, passed on the integrated
+tree at `c95200351f2b`, including 2,916 client tests, 1,231 TUI tests, native
+Go tests and house lint with zero errors. All three production lifecycle
+fixtures ran. Documentation checks also passed. These checks used scripted
+HTTP; they do not measure commercial-model quality, cache effects or isolated
+activation latency. Later documentation and portable test changes require
+their own current-head verdicts.
 
 A subsequent real Program fixture opens two production sessions with separate
 state and the same canonical workspace catalogue. The second discovers the
@@ -58,6 +59,30 @@ memory closures now retain only their needed capabilities.
 Use [the PR's checks](https://github.com/Roasbeef/loom/pull/824/checks) for current
 hosted and exact-head platform verdicts. A local macOS pass cannot establish
 Linux kernel enforcement or measured model quality.
+
+## Current validation blockers
+
+Hosted run `37257455225` on `c95200351f2b` passed every component job and the
+Linux aggregate gate. The macOS aggregate rejected two undeclared helper-test
+skips whose evidence readers were Linux-only. The portable correction observes
+Darwin process metadata and the original helper port, then tests conservative
+retirement refusal and retained pool custody. Linux keeps its descendant-death
+and timestamp assertions. The corrected broker gate passes all 400 tests
+locally without skips; hosted validation must still cover the correction.
+
+Independent Linux signoff on `c95200351f2b` passed all six test lanes and the
+strict skip census. Its shipped `update-release-smoke` check timed out while
+the native installer copied the staged server release. The test host's home
+filesystem was full, making disk pressure the leading explanation; the cause
+is not proven until the fixture is rerun with free space. `signoff/linux` is
+therefore red. Cleanup of two cancelled, task-owned signoff working directories
+awaits operator approval; their separate logs must be preserved. Do not waive
+the release check or raise its deadline to obtain a green verdict.
+
+The evolution architecture now includes the ownership map, activation sequence,
+operator payload examples, failure responses and acceptance fixtures. Ten
+existing package READMEs explain their part of that boundary. This work adds
+modules within existing packages, not a new package.
 
 ## Rulings to retain
 

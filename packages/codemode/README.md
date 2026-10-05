@@ -206,6 +206,21 @@ the broker's degraded rule applied (any `skip:` entry counts, not only the
 bwrap bool). `Unreported(reason)` is never a claim of confinement; a stage
 that produced no report says why.
 
+## Governed candidates use the same boundary
+
+`codemode/vet/package.vet_candidate` admits retained source and author tests
+under the selected seam. It rejects unchecked files and module collisions
+before compilation. The host invokes the retained author-test entry to collect
+evidence, then uses the declared implementation entry when serving calls.
+Passing an authored check does not grant selection authority.
+
+The evolution host reconstructs a named program from immutable source and
+fresh JSON input on each invocation, then uses this package's ordinary vet,
+compile and satellite pipeline. Persistent tool and hook generations use
+the existing extension seam. `client` owns approval, private build paths and
+native retirement. See [the evolution architecture](../../docs/architecture/evolution.md)
+for that ownership and the complete acceptance path.
+
 ## A tour of the modules
 
 Paths are relative to `packages/codemode/src/codemode/`. Read them in

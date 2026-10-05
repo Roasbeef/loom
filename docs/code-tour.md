@@ -1695,6 +1695,7 @@ For the planes in depth: `docs/architecture/durability.md`,
 `orchestration.md`, `effects.md`, `client.md`, `terminal.md`,
 `web-view.md`, `messaging.md`,
 `events.md`, `models.md`, `code-mode.md`, `mcp.md`, `extensions.md`,
+[governed runtime evolution](architecture/evolution.md),
 `advisor.md`, `simulation.md`. For
 intent,
 `docs/loom-design.md`; for the frozen interfaces and normative

@@ -348,6 +348,19 @@ the rewrite counts what it actually changed. A transform that moves an
 entry — changing its id, parent, or kind — is refused as corruption:
 erasure is allowed to change what a row says, never where it sits.
 
+## Short catalogue admission
+
+The internal `session.open_sqlite_owned_waiting` opens an owned SQLite handle
+with a caller-chosen native busy timeout. The evolution catalogue uses a
+short wait so its host can bound pre-open contention through `weft/poll`.
+A successful open returns the existing retirement capability for that writer.
+Admitted work and acknowledged retirement each run once.
+
+Ordinary session opens retain their existing timeout. This package does not
+decide candidate approval or selection; that policy belongs to
+`client/evolution`. See [the evolution architecture](../../docs/architecture/evolution.md)
+for the catalogue lease and live-worker ownership.
+
 ## The modules
 
 | Module | What it holds |

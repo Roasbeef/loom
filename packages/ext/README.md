@@ -423,6 +423,20 @@ extension declaring no `[[hook]]` gets. Two functions rather than one with
 an optional argument, because the generated entry writes whichever call the
 manifest asked for and the common one should read as the common one.
 
+## Governed generations
+
+An approved live extension uses this same jailed prelude and hook protocol.
+`client/evolution` retains its immutable source, compiles its generation and
+owns publication and retirement. This package supplies the authored tool,
+hook and memory vocabulary; it grants no approval authority and loads no
+authored module into the harness VM.
+
+One captured generation serves a complete promoted hook and tool fold.
+Replacement waits for native helper retirement, and rollback recompiles an
+earlier approved version. Durable extension memory is version-scoped;
+ephemeral state starts fresh. The controller and failure behavior are in
+[the evolution architecture](../../docs/architecture/evolution.md).
+
 ## Testing
 
 `answer(tools, hooks, asked)` is the whole dispatch as a function over a

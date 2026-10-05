@@ -1,14 +1,12 @@
 # Extensions
 
 An extension adds tools and hooks to Loom from outside the repository
-without adding code to the trusted computing base (TCB). Today every tool
-the model can call is defined in this repository, compiled into the
-harness, and shipped in a release. That is the right home for `bash` and
-`fs_read`, whose reach is the whole security argument, and the wrong home
-for everything else. Web search, a language server, or a company's
-internal issue tracker is a small amount of code that somebody outside
-this repository wants to write, and none of them is a reason to cut a Loom
-release.
+without adding code to the trusted computing base (TCB). Built-in tools
+such as `bash` and `fs_read` ship in the harness release because they own
+the capability enforcement boundary. Installed extensions and approved live
+generations provide additional tools from jailed source. Web search or a
+company's issue tracker can therefore change without a Loom release, while
+the native capability backend still requires one.
 
 The obvious mechanism, loading somebody else's module into the harness
 virtual machine, is the one the design forbids. It would put
@@ -67,8 +65,8 @@ so a reader who wants only the tree as it stands can skip it on sight.
 
 ## Two tiers, and why jailed is the default
 
-An installed extension has one manifest and up to two bodies, or, in the
-profile tier, none.
+An installed extension has one manifest. A jailed extension supplies Gleam
+source; a profile extension supplies data with no authored body.
 
 **Tier J, the jailed body**, is the only body the tree admits.
 `manifest.Tier` has two variants, `Jailed` and `Profile`, and the second
@@ -126,14 +124,11 @@ flowchart LR
     SAT -->|hook_result| REG
 ```
 
-The rule that makes this shippable is **a tool is always tier J, and a
-hook is tier H only when it cannot be tier J.** Intuition suggests the
-reverse, because hooks feel like harness business and tools feel like
-sandboxable work, but the intuition is backwards. A tool call is a request
-the model made and the broker judges. A hook fires on the harness's own
-timeline with the harness's own data in hand. The more powerful surface
-belongs behind the stronger boundary, which is the same ordering
-`docs/architecture/code-mode.md` applies to the orchestration seam.
+Authored tools and hooks both run in tier J. Hooks receive harness events
+through typed frames, and every effect still crosses the capability broker.
+A hook that needs a new trusted backend requires a core change rather than
+an exception to the jail. ADR-007's addendum records the replacement of the
+historical resident tier-H proposal.
 
 ## The seam an extension is vetted against
 

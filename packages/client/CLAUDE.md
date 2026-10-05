@@ -20,7 +20,7 @@ stages a privately compiled jailed generation and publishes it after native
 retirement of the predecessor. `native` retains failed cleanup capabilities;
 `retirement.Task` carries only the remaining native obligation, so successful
 pool close is not replayed when directory deletion needs another attempt.
-a report, actor exit or deadline is not a worker-exit witness. `control` admits
+A report, actor exit or deadline is not a worker-exit witness. `control` admits
 bounded queued transitions, while `queue` uses managed tasks and reconstructs
 committed receipts from the durable selection before reporting failure.
 `instance_owner` holds Evolution custody through session retirement. Legacy
