@@ -3960,13 +3960,15 @@ event and no field on the wire, and it changes no admission rule.
 ### What changed
 
 - **`<loom-follow>` carries `data-strand-key`.** The lane draws it from the strand on
-  screen (`lane.strand_key`), a decimal integer digest of the strand's name. The
+  screen (`Marks.key`), a decimal integer the page assigns to each strand name the
+  first time it shows it, from 1, with a counter in `View.strand_keys`. The
   element keeps the reader's scroll place in memory under that number, for the life
   of the element, and puts a strand back where the reader left it. It stores
   nothing outside the element.
 - **The key is not text.** A strand's name can be chosen by a peer, so it never
-  reaches an attribute, class or key (the headline rule). The integer digest carries
-  none of the name's characters, and the element decodes it totally (a value that is
+  reaches an attribute, class or key (the headline rule). The counter carries
+  none of the name's characters and cannot collide, which a hash of a name a peer
+  chose could, and the element decodes it totally (a value that is
   not a whole number is ignored).
 
 ### What was considered
@@ -3978,10 +3980,10 @@ event and no field on the wire, and it changes no admission rule.
 
 ### Cost
 
-One more attribute on one element, and a hash collision between two strands of one
-page, which would share a place, in a space of a billion.
+One more attribute on one element, and one small map in the page's model, which
+grows by one entry for each distinct strand name the page shows.
 
 ### Verification
 
-`focus_test` pins that the lane draws the digest and never the name; `follow_test`
+`focus_test` pins that the lane draws the counter's number, never the name, and gives two strands two numbers; `follow_test`
 pins the save and restore rule, including a strand left at the bottom.

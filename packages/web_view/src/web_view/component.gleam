@@ -677,6 +677,12 @@ type View(socket) {
     /// reader loaded is still held at that depth when they come back. The
     /// key is a name the session lists and is never drawn.
     parked_paging: Dict(String, Paging),
+    /// The number the page gave each strand it has shown, from 1, in the order
+    /// it first showed them. The lane draws it as `data-strand-key`, which
+    /// `<loom-follow>` keeps the reader's scroll place under. A counter and
+    /// not a digest of the name: it cannot collide, and a name a peer chose
+    /// never reaches the attribute.
+    strand_keys: Dict(String, Int),
     /// Whether older rows than the page holds exist, derived with `blocks`.
     earlier: Earlier,
     /// The page strand's transcript blocks that the page holds, the newest
@@ -906,6 +912,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       transport: start.transport,
       paging: Tail,
       parked_paging: dict.new(),
+      strand_keys: dict.from_list([#(shared.active_strand, 1)]),
       earlier: Reached,
       blocks: [],
       pieces: [],
@@ -1301,7 +1308,21 @@ fn taken(model: Model(socket)) -> Model(socket) {
 // are forgotten.
 fn settled(model: Model(socket)) -> Model(socket) {
   let held = taken(model)
-  Model(..held, shared: step.forget_surfaces(held.shared))
+  Model(
+    shared: step.forget_surfaces(held.shared),
+    view: View(..held.view, strand_keys: numbered(held)),
+  )
+}
+
+// The strand keys with the strand on screen numbered, if the page has not
+// shown it before. The next number is one past the count, since numbers are
+// never taken back.
+fn numbered(model: Model(socket)) -> Dict(String, Int) {
+  let keys = model.view.strand_keys
+  case dict.has_key(keys, model.shared.active_strand) {
+    True -> keys
+    False -> dict.insert(keys, model.shared.active_strand, dict.size(keys) + 1)
+  }
 }
 
 // What the page says when prompts come back: how many, for which strand, and
@@ -2869,7 +2890,19 @@ fn focus_at(
           shared.active_strand,
           model.view.paging,
         )
-      let arriving = dict.get(remembered, strand) |> result.unwrap(Tail)
+
+      // The depth is used only over a window that still holds rows. The
+      // record empties a parked window when its strand leaves the capture
+      // (`lane_fold.prune_parked_scrollback`), and a strand that later
+      // returns under the same name must open at `Tail`: `Full` over an empty
+      // window draws no Load older, so the reader could not page.
+      let arriving = case
+        dict.get(remembered, strand),
+        dict.get(shared.parked_scrollback, #(shared.session, strand))
+      {
+        Ok(depth), Ok(window) if window.strand != "" -> depth
+        _, _ -> Tail
+      }
       finished(
         Model(
           shared: focused,
@@ -3633,6 +3666,8 @@ pub fn marks(model: Model(socket)) -> lane.Marks {
     active: model.shared.active_strand,
     hue: turns.hue(model.shared.strands, model.shared.active_strand),
     positions: strip.positions(model.view.strip),
+    key: dict.get(model.view.strand_keys, model.shared.active_strand)
+      |> result.unwrap(0),
   )
 }
 

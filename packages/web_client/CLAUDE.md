@@ -49,7 +49,7 @@ renders again just for it:
   to the bottom or pressing the button resumes it. When the reader presses the lane's
   "Load older" button, it keeps the row they were looking at in place while
   the older rows arrive above it. The server draws `data-strand-key`, a
-  numeric digest of the strand on screen (`lane.strand_key`, never the name),
+  small number the page assigned to the strand on screen (`Marks.key`, never the name),
   on it; when the key changes the element saves the departing strand's place
   in memory (`follow_rule.leaving`: an offset, or at the bottom) and restores
   the arriving strand's (`follow_rule.arriving`), following the tail for a

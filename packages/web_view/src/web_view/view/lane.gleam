@@ -145,6 +145,9 @@ pub type Marks {
     hue: turns.Hue,
     /// The position of each listed strand's card, by the strand's identity.
     positions: Dict(String, Int),
+    /// The page's number for that strand, assigned in the order the page first
+    /// showed strands and never reused, so two strands never share one.
+    key: Int,
   )
 }
 
@@ -157,7 +160,7 @@ pub type Marks {
 /// // lane.view(pieces, [], lane.Beginning, load, lane.NoReplies, lane.no_marks())
 /// ```
 pub fn no_marks() -> Marks {
-  Marks(active: "main", hue: turns.Primary, positions: dict.new())
+  Marks(active: "main", hue: turns.Primary, positions: dict.new(), key: 1)
 }
 
 /// Whether the lane offers a reply to a peer's message, and what pressing it
@@ -249,7 +252,7 @@ pub fn rows(
     "loom-follow",
     [
       attribute.class("follow"),
-      attribute.data(strand_key_marker, int.to_string(strand_key(marks.active))),
+      attribute.data(strand_key_marker, int.to_string(marks.key)),
     ],
     [
       top,
@@ -275,28 +278,11 @@ pub fn rows(
 }
 
 /// The suffix of the attribute `<loom-follow>` reads the strand's key from
-/// (`data-strand-key`).
+/// (`data-strand-key`). Its value is `Marks.key`, a small number the page
+/// assigned to the strand the first time it showed it, so the attribute
+/// carries none of the strand's name (protocol-change/051, the addendum on the
+/// strand key).
 pub const strand_key_marker = "strand-key"
-
-/// A number for the strand `name`, which `<loom-follow>` keeps the reader's
-/// place under. It is a digest, so the attribute carries a number and none of
-/// the name's text, which a peer may have chosen (protocol-change/051, the
-/// addendum on the strand key). It is a polynomial hash of the name's
-/// codepoints, modulo a prime below 2^30, so it is the same on every render
-/// and in every run, and two strands of one page share a key only by a
-/// collision in a space of a billion.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert lane.strand_key("main") == lane.strand_key("main")
-/// ```
-pub fn strand_key(name: String) -> Int {
-  string.to_utf_codepoints(name)
-  |> list.fold(7, fn(digest, codepoint) {
-    { digest * 31 + string.utf_codepoint_to_int(codepoint) } % 1_000_000_007
-  })
-}
 
 // The live region as the lane's last entry, or no entry while nothing is
 // streaming. Its key is a word, and a piece's key is a sequence, so the two

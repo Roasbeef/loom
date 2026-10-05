@@ -24,7 +24,6 @@ import session_view/operator
 import session_view/transcript_line.{type Line, Assistant, Line}
 import web_view/component
 import web_view/operator_page
-import web_view/view/lane
 
 // An observer's page holding the forked capture: `main`, the reviewer and the
 // advisor each have a transcript of their own.
@@ -215,20 +214,61 @@ pub fn a_strands_loaded_history_survives_a_round_trip_test() {
   assert list.length(component.rows(back)) == loaded
 }
 
-// The key `<loom-follow>` keeps the reader's place under is a number the
-// lane draws, never the strand's name, which a peer may have chosen.
+// The key `<loom-follow>` keeps the reader's place under is a number the page
+// assigned, never the strand's name, which a peer may have chosen. A strand
+// keeps its number when the reader comes back to it, and two strands never
+// share one.
 pub fn the_lane_draws_a_numeric_strand_key_and_not_the_name_test() {
   let #(model, _) = observing([])
-  let main = html(model)
-  let advisor = html(focused(model, "advisor"))
-  let key = fn(name) {
-    "data-strand-key=\"" <> int.to_string(lane.strand_key(name)) <> "\""
+  let key = fn(model, number) {
+    string.contains(
+      html(model),
+      "data-strand-key=\"" <> int.to_string(number) <> "\"",
+    )
   }
-  assert string.contains(main, key("main"))
-  assert string.contains(advisor, key("advisor"))
-  assert lane.strand_key("main") != lane.strand_key("advisor")
-  assert !string.contains(advisor, "data-strand-key=\"advisor\"")
-  assert !string.contains(advisor, "data-strand-key=\"main\"")
+  assert key(model, 1)
+  let advisor = focused(model, "advisor")
+  assert key(advisor, 2)
+  assert key(focused(advisor, "main"), 1)
+  assert component.marks(focused(advisor, "main")).key == 1
+  assert !string.contains(html(advisor), "data-strand-key=\"advisor\"")
+  assert !string.contains(html(advisor), "data-strand-key=\"main\"")
+}
+
+// A parked depth is used only over a window that still holds rows. The record
+// empties a retired strand's parked window, so a strand that returns under
+// the same name opens at its tail: restoring `Paged` over the empty window
+// would draw no Load older, and the reader could not page.
+pub fn a_returning_strand_does_not_get_a_depth_over_an_emptied_window_test() {
+  let wire = process.new_subject()
+  let page =
+    page_fixture.ready(wire, "operator")
+    |> component.apply([lane_fixture.conversation(301, 450)])
+  let page =
+    page_fixture.run(page, component.update, [component.OlderRequested])
+  let assert [read] =
+    page_fixture.sent(wire)
+    |> list.filter(fn(frame) { string.contains(frame, "\"cmd\":\"history\"") })
+  let page =
+    page_fixture.run(page, component.update, [
+      component.Arrived(page_fixture.history(
+        page_fixture.request_id(read),
+        "operator",
+        lane_fixture.older_page(201, 300),
+        301,
+      )),
+    ])
+  assert component.paging(page) == component.Paged
+
+  // Main is left, retires from the capture, and is listed again.
+  let away = focused(page, "advisor")
+  let retired =
+    component.apply(away, [
+      lane_fixture.without_strand(lane_fixture.conversation(301, 451), "main"),
+    ])
+  let listed = component.apply(retired, [lane_fixture.conversation(301, 452)])
+  let back = focused(listed, "main")
+  assert component.paging(back) == component.Tail
 }
 
 // An observer's focus writes no command. It may ask for a read, the strand's
