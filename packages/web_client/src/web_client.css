@@ -1039,6 +1039,10 @@
   loom-copy{display:block;}
   code.share-text{display:block;margin:2px 0 4px 0;padding:6px 8px;background:var(--color-bg);border:1px solid var(--color-divider);border-radius:4px;font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;user-select:all;}
   button.share-copy{font-size:12px;}
+  code.share-text{flex:1 1 auto;min-width:0;}
+  button.share-copy{flex:0 0 auto;}
+  .admin-body loom-copy{display:flex;align-items:center;gap:8px;}
+  .admin-body loom-reveal{display:none;}
   .todo-total{margin-left:auto;color:var(--color-fg-quiet);font-variant-numeric:tabular-nums;}
   ul.todo-tasks{list-style:none;margin:0;padding:0;}
   li.todo-task{position:relative;padding-left:8px;}

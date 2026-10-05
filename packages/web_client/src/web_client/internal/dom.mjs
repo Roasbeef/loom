@@ -76,6 +76,19 @@ export function set_scroll_top(element, top) {
   element.scrollTop = top;
 }
 
+// Brings the element into view by the least scrolling that shows all of it, at
+// once, so a box that is already on screen does not move.
+export function scroll_into_view(element) {
+  element.scrollIntoView({ block: "nearest", behavior: "instant" });
+}
+
+// The browser's offset from UTC at an instant, in minutes, positive west of
+// Greenwich (`getTimezoneOffset`). It is the one thing about a zone Gleam
+// cannot read, and the arithmetic over it is `web_client/time_rule`.
+export function timezone_offset_minutes(milliseconds) {
+  return new Date(milliseconds).getTimezoneOffset();
+}
+
 export function scroll_by(element, dy) {
   element.scrollBy(0, dy);
 }
