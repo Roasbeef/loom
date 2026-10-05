@@ -5851,8 +5851,17 @@ new consent boundary and the refused external path-dependency scope.
 `remote/custodian` owns the separate per-session request and final-report
 journal under a supervised weft actor. Atomic fresh admission starts a bounded
 weft task; retained evidence never reruns it. Exact final bytes commit before
-the caller ticket is answered, and task slots remain held until weft's drain
-notification. `remote/tool_custody` wraps only ToolSurface run/recover and keeps
+the caller ticket is answered, and task slots remain held until the same live incarnation commits discharge
+after weft's complete delivery notification. Fresh reservations persist an
+unreleased run marker before spawn. Worker loss, missing or failed final commit,
+failed discharge and the consumer's `fatal_fence` keep admission fenced; a later
+normal completion cannot clear that sticky disposition. Startup with any
+unreleased row remains recovery-only while exact historical outcomes and late
+receipts remain available. The runner callback receives its pinned custodian
+Handle, original ToolKey and ToolRun. External handles reclaim the registry;
+runner handles retain the original Subject/PID. `cancel_when_exits` watches that
+owner before starting the relayed run, so a worker never rebinds to a replacement
+owner during cancellation. `remote/tool_custody` wraps only ToolSurface run/recover and keeps
 clearance and scheduling metadata unchanged. `remote/outcome` validates exact
 call identity and actual reserved session-result readback before collection.
 
