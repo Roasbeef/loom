@@ -1,10 +1,15 @@
 //// Changes from the session's own edits: the files the agent edited and the
 //// diff each edit reported, folded into a bounded board.
 ////
-//// A page cannot read the worktree. The daemon serves worktree bytes to an
-//// Owner binding only, and a page is capped at Operator, so a git diff is not
-//// available to it and this module does not ask for one (owner ruling,
-//// 2026-09-29, issue #569). What a page does hold is the strand's records,
+//// This fold reads no worktree. The gateway serves worktree bytes to an Owner
+//// binding only and a page is capped at Operator, so the fold of the records
+//// is what a page had when the Changes tab was built (owner ruling,
+//// 2026-09-29, issue #569). The owner has since ruled that an owner's page and
+//// an operator's page also read the workspace's own Git diff
+//// (protocol-change/051, the addendum of 2026-10-05), and the web view draws
+//// that when it has it. This board is what the tab draws for an observer's page,
+//// for a workspace that is not a checkout, and when that read is refused or
+//// fails. What a page holds here is the strand's records,
 //// and a successful `fs_edit` result carries the `path` it changed and the
 //// `diff` of the change as headerless unified hunks. A successful `fs_write`
 //// replaces a whole file and reports no diff, but its call's `content`
