@@ -185,6 +185,22 @@ page keys and nonces, and the relay into the session's gateway.
   `view/admin_people`, with the home's `view/signins.history` words and a
   two-step `grants.RevokeSignin`; `admin.Start.login` marks "This browser".
 
+- **Renaming** (protocol-change/065, the tenth addendum). `web_view/names` holds
+  the home's `Answer` (`Renamed(name) | Declined(reason)`), `Reason`
+  (`NotAllowed | InvalidName | Unavailable`), `Control` and the fixed words.
+  `Start` gains `who` (reads the principal's name with each list) and
+  `rename_self` (`Some` for a page minted to operate); `Model` gains `name`,
+  `naming` and `named`, and `Msg` gains `NameRead`, `NameSubmitted` and
+  `NameAnswered`. `view/your_name` draws the "Your name" region as the account
+  panel's first child (a text-node lead, `<loom-rename>`, one submit, keyed by
+  `named`), and `view/signins.view` takes it as its last argument. The submit is
+  beneath `home.signins_path`, which the socket now admits for a submit as well as a
+  click. On the admin page `grants.Action` gains `Rename(principal, name)`,
+  `admin.Model` gains `editing`, `Msg` gains `Editing` and `EditCancelled`, and
+  `view/admin_people` draws a Rename button on every row and, for the open one, an
+  in-row form as the row's last child; `view/admin_buttons.Presses` carries the
+  three new messages. Names are text nodes only.
+
 - **The owner's admin page** (protocol-change/065, the fifth addendum).
   `web_view/admin` is a server component in the home's frame
   (`shell.view(shell.Home, ..., shell.Unlisted, ...)`, `home_bar.view(title:
