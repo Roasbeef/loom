@@ -624,8 +624,16 @@ pub fn every_handler_is_beneath_the_body_test() {
 
   // The body is where it was pinned, whether or not a notice is drawn above it.
   assert admin.body_path == "0\t2\t1"
-  let without = run(model, admin.Answered(5, grants.Unread))
-  assert list.all(handlers(admin.view(without)), string.starts_with(
+  let #(refused, _) =
+    opened(start_with(
+      process.new_subject(),
+      process.new_subject(),
+      grants.Declined(grants.NotOwner),
+    ))
+  let refused = run(refused, admin.Choosing(session))
+  let refused = run(refused, admin.Asking(grants.Rotate("bob")))
+  assert string.contains(drawn(refused), grants.reason_words(grants.NotOwner))
+  assert list.all(handlers(admin.view(refused)), string.starts_with(
     _,
     admin.body_path <> "\t",
   ))

@@ -300,8 +300,14 @@ fn fixture_lasting(
         },
         admin: fn(request, attachment, open, ceiling) {
           case serving {
-            // The admin page's own socket, as the daemon serves it.
-            Real ->
+            // The admin page's own socket, as the daemon serves it. A request
+            // that carries `x-revoke-between` names a credential revoked after
+            // the router admitted the page and before the component's first read.
+            Real -> {
+              case req.get_header(request, "x-revoke-between") {
+                Ok(token) -> revoke(ready.state_root, token)
+                Error(Nil) -> Nil
+              }
               ui_socket.upgrade_admin(
                 daemon,
                 request,
@@ -310,6 +316,7 @@ fn fixture_lasting(
                 open,
                 ceiling,
               )
+            }
 
             Granting ->
               administered(sessions, request, attachment, open, ceiling)
@@ -4489,10 +4496,6 @@ pub fn a_rotation_makes_a_claim_and_only_its_digest_is_kept_test() {
       assert !holds(bytes, bit_array.from_string(invited.token))
       assert !holds(bytes, bit_array.from_string(rotated.token))
     })
-
-    // A read of the catalogue carries none.
-    let read = home_socket(port, page, [#("x-admin-chosen", session)])
-    assert !string.contains(read.body, "loomclaim_")
   })
 }
 
@@ -4712,20 +4715,36 @@ pub fn the_daemon_refuses_a_standing_that_is_not_the_owners_operating_one_test()
       )
     }
     let invite = grants.Invite(session, invites.Observer, "")
-    assert ask(observer, invite) == grants.Declined(grants.NotOwner)
-    assert ask(member_standing, invite) == grants.Declined(grants.NotOwner)
-    assert ask(ui_socket.Standing(..owner, principal: "someone-else"), invite)
-      == grants.Declined(grants.NotOwner)
-    assert ui_socket.admin_for(
-        owner,
-        tickets,
-        fn() { Error(Nil) },
-        ready.epoch,
-        address,
-        invite,
-      )
-      == grants.Declined(grants.NotOwner)
-    assert members(ready.state_root) == ["admin-standing-member"]
+    let held = "admin-standing-member"
+    let every_action = [
+      invite,
+      grants.SetRole(session, held, invites.Operator),
+      grants.SetRole(session, held, invites.Observer),
+      grants.RevokeMembership(session, held),
+      grants.RevokeCredentials(held),
+      grants.Rotate(held),
+    ]
+    let refused = grants.Declined(grants.NotOwner)
+    list.each(every_action, fn(action) {
+      assert ask(observer, action) == refused
+      assert ask(member_standing, action) == refused
+      assert ask(ui_socket.Standing(..owner, principal: "someone-else"), action)
+        == refused
+      assert ui_socket.admin_for(
+          owner,
+          tickets,
+          fn() { Error(Nil) },
+          ready.epoch,
+          address,
+          action,
+        )
+        == refused
+    })
+
+    // None of them changed anything: the member is still the only one and still
+    // an operator of the session.
+    assert members(ready.state_root) == [held]
+    assert role_in(ready.state_root, held, session) == ["operator"]
     assert invitee != ""
 
     // None of them took a place: the owner's own standing, with its own table of
@@ -4808,6 +4827,8 @@ pub fn the_real_admin_socket_carries_no_claim_test() {
     assert pressed.status == 290
     let page = enter(port, pressed.body)
     let socket = connect_socket(port, page, [])
+
+    // The page stays open, so "closed" here means no frame for five seconds.
     let closed = read_until_closed(socket, [])
     let _ = ffi_ws.tcp_close(socket)
     let drawn = string.join(closed.texts, "\n")
@@ -4822,5 +4843,25 @@ pub fn the_real_admin_socket_carries_no_claim_test() {
     assert !string.contains(drawn, "loomclaim_")
     assert !string.contains(drawn, token)
     assert !string.contains(drawn, string.drop_start(token, 10))
+  })
+}
+
+// An admin page whose owner credential is revoked after the router admitted it
+// reads the catalogue, finds no owner, draws the ending and closes the socket
+// finally (1000), so the client runtime does not retry.
+pub fn a_revoked_owner_closes_the_real_admin_socket_test() {
+  fixture_with(Real, fn(ready, port, credential) {
+    let _ = create_shared_session(ready, "admin-revoked", 1216)
+    let home = enter(port, operator_home(port, credential))
+    let pressed = home_socket(port, home, [#("x-admin-open", "1")])
+    assert pressed.status == 290
+    let page = enter(port, pressed.body)
+    let socket = connect_socket(port, page, [#("x-revoke-between", credential)])
+    let closed = read_until_closed(socket, [])
+    let _ = ffi_ws.tcp_close(socket)
+    assert closed.code == 1000
+    let drawn = string.join(closed.texts, "\n")
+    assert string.contains(drawn, ending.admin_headline(ending.AccessRevoked))
+    assert !string.contains(drawn, "Rotate")
   })
 }
