@@ -31,13 +31,13 @@
 ////   ec90749a5cecf84dd9562ca2ffbf5b970af787dcb0a2301e8d48183b44311f2b  packages/cap/src/cap/job.gleam
 ////   17a9601d4841ac8c598885f4e4d64ed61c44bf358f0a3d4fded9a788154a382b  packages/cap/src/cap/kv.gleam
 ////   c57b727c05e2557be1775c47351c11aa98cbcba37b7d2f6c5c78de53895d2ecd  packages/cap/src/cap/lsp.gleam
-////   7f16244fa72c9c3e573ad1a8328452f8d2d0f8941d0d8a15025ae28ae288e1ad  packages/cap/src/cap/lsp_sql.gleam
+////   c14dc2ff4a7dcb5f5a5d6a19f43988fb101655d8c61b030b2df11bebc4adbbe8  packages/cap/src/cap/lsp_sql.gleam
 ////   a90f1b65b4b7a59c6fd0ac655210963b094e4a527c648b9291c54df082fc0f88  packages/cap/src/cap/mcp.gleam
 ////   bdb1c89dbfa22358935bf092c103d7bc4defa2e71e48748592d7b4f6e9d8f164  packages/cap/src/cap/net.gleam
 ////   9eec4c79212a6fb20f448392a8281ee55ca4add85b7da59d4bf1138ddd29d129  packages/cap/src/cap/notes.gleam
 ////   856004f80f0e7be10b9ba36221abe3443f126f744ecac3cde407b0fb2c199ea4  packages/cap/src/cap/peer.gleam
 ////   65722a205812d78ae90cfb0f93e804bb2d3da1be02500c88f4607d824964c320  packages/cap/src/cap/proc.gleam
-////   b19ad4893c998fb7ee01091cfb9df12212621a0696baf72a62ee102b5afe4ad4  packages/cap/src/cap/report.gleam
+////   007692391de90b5df269341bf5f6d6393de56c6a95ad2d7cbc4159491f42a976  packages/cap/src/cap/report.gleam
 ////   909bbbc014278c57bb888b3e4c834ba52e405855bd52156a2ff35345283a1274  packages/cap/src/cap/runtime.gleam
 ////   3156b1ffaca196b1fec58975df71e52158b8ee298b2f1b36a4cbe9df72de3f64  packages/cap/src/cap/schedule.gleam
 ////   df1e81353fbcfef3ec434f48869e35070f1ab79d0cc1354f922fd46ccc652a00  packages/cap/src/cap/search.gleam
@@ -46,7 +46,7 @@
 ////   dade50ada67f4ac667f0b92cb10d0da213cac327897524dbb006e02cf3c90963  packages/cap/src/cap/workflow.gleam
 ////   20e291637a68e2d484bd4a17e9b825c59f2c22f439f00f6482af0d26aafafadd  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 7acd5c9b4757b0be9edbcb528a6e9a73cb35ea88dace742dc55d29cfc0acb318
+//// Body digest (every line after the marker): 1b1fb34c87bb86a233d7c565bef2c2ea8c76e8cbbebba69370accb383cd72d1a
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -936,6 +936,11 @@ pub fn metadata(Observation) -> Metadata
 /// second execution deadline, one-million-operation bound, thirty-two
 /// columns and a one-MiB output cap. Bound parameters are Cells; blobs
 /// are unavailable in this vocabulary.
+///
+/// The tables are listed by `schema()`; `\"references\"` is an SQL keyword,
+/// so quote it. Joining `targets` to `\"references\"` on `target_id = id`
+/// pairs each requested target with its references, and a LEFT JOIN with
+/// `WHERE r.target_id IS NULL` proves a requested target has none.
 pub fn query(Observation, String, List(Cell), fn(List(Cell)) -> Result(a, String)) -> Result(QueryResult(a), QueryError)
 /// A one-line rendering of a `QueryError`, for a program building a
 /// report out of what went wrong.
@@ -943,6 +948,13 @@ pub fn query_error_text(QueryError) -> String
 /// The fixed tables and columns every query runs against, one table per
 /// line, so a program can print them instead of probing `sqlite_master`,
 /// which the read-only authorizer refuses.
+///
+/// Only these four tables exist: documents(path, digest, version),
+/// symbols(id, parent_id, name, kind, detail, path, line, column, text,
+/// anchor), targets(id, symbol, asked_path, asked_line, path, line,
+/// column, text, anchor) and \"references\"(target_id, path, line, column,
+/// text, anchor). A requested target is one row of targets, and
+/// \"references\".target_id points at targets.id.
 pub fn schema() -> String
 ",
   ),
