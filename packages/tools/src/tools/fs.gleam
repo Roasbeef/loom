@@ -1452,7 +1452,9 @@ pub fn edit_tool_with(observer: WriteObserver) -> tool.Tool {
       <> "whole edit and returns fresh anchors and the fresh digest. A "
       <> "successful edit returns the fresh digest and the fresh anchors of "
       <> "the regions it changed, so a following edit of the same region "
-      <> "needs no fs_read.",
+      <> "needs no fs_read. A hunk's `lines` are file text: never copy "
+      <> "fs_read's `N:anchor|` prefix into them, and an edit that does is "
+      <> "refused.",
     prompt_snippet: Some(
       "`fs_edit` applies anchored hunks to a file, and rejects the patch "
       <> "rather than corrupting a file that moved under you. A successful "
@@ -1520,7 +1522,12 @@ fn edit_schema() -> JsonValue {
           #("at", anchor_ref),
           #(
             "lines",
-            tool.string_array_property("replacement lines, without newlines"),
+            tool.string_array_property(
+              "the literal text of each new line, exactly as it should appear "
+              <> "in the file, with its indentation and comment markers; no "
+              <> "newlines, and never the `N:anchor|` prefix or anchor hashes "
+              <> "that fs_read displays",
+            ),
           ),
         ]),
       ),
@@ -1563,6 +1570,7 @@ fn run_edit(observer: WriteObserver, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use path <- tool.with_arg(tool.required_string(args, "path"))
   use digest <- tool.with_arg(tool.required_string(args, "digest"))
   use hunks <- tool.with_arg(decode_hunks(args))
+  use Nil <- tool.with_arg(refuse_display_prefixes(hunks))
   use target <- tool.or_outcome(edit_target(ctx, path), fn(outcome) { outcome })
   use landed <- tool.or_outcome(
     land_plan(
@@ -1902,6 +1910,52 @@ fn decode_hunks(args: JsonValue) -> Result(List(hashline.Hunk), String) {
       }
     Ok(_) -> Error("`hunks` must be an array")
     Error(Nil) -> Error("`hunks` is required")
+  }
+}
+
+// Refuses an edit whose replacement text carries `fs_read`'s display prefix.
+//
+// Observed incident: a model pasted rendered lines (`154:af63f04c|text`)
+// into `lines` as file content, the edit applied verbatim, and the file no
+// longer parsed. A replacement line is the literal text of a file line, and
+// no file the model means to write starts with the exact `N:xxxxxxxx|`
+// shape, so the unambiguous case is refused before the file is touched. It
+// runs on the decoded hunks, ahead of path resolution and the digest check,
+// so a refused edit costs no read and applies nothing. `fs_write` takes one
+// `content` string rather than a list of lines, and a whole-file string is
+// not a paste of display lines, so it is left alone.
+fn refuse_display_prefixes(hunks: List(hashline.Hunk)) -> Result(Nil, String) {
+  hunks
+  |> list.index_map(fn(hunk, index) { #(index + 1, hunk_replacement(hunk)) })
+  |> list.try_each(fn(numbered) {
+    let #(hunk_number, lines) = numbered
+    lines
+    |> list.index_map(fn(line, index) { #(index + 1, line) })
+    |> list.try_each(fn(entry) {
+      case hashline.display_prefix(entry.1) {
+        Error(Nil) -> Ok(Nil)
+        Ok(prefix) ->
+          Error(
+            "hunk "
+            <> int.to_string(hunk_number)
+            <> " line "
+            <> int.to_string(entry.0)
+            <> " starts with fs_read's display prefix (`"
+            <> prefix
+            <> "`); pass only the line's text, with no line number or anchor",
+          )
+      }
+    })
+  })
+}
+
+// The replacement text a hunk carries; a delete carries none.
+fn hunk_replacement(hunk: hashline.Hunk) -> List(String) {
+  case hunk {
+    hashline.Replace(from: _, to: _, lines:) -> lines
+    hashline.InsertAfter(at: _, lines:) -> lines
+    hashline.InsertAtStart(lines:) -> lines
+    hashline.Delete(from: _, to: _) -> []
   }
 }
 
