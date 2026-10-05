@@ -257,6 +257,31 @@ thirteen shipped-server fixture notices, and one unavailable rust-analyzer.
 Those paths still need their actual prerequisites. The final candidate requires
 its fresh repository gate and Linux/shipped acceptance before merge readiness.
 
+## Real language-server baseline
+
+Independent physical-host verification ran the six existing
+`conformance@lsp_e2e_test` controls with real Gleam and Go servers. The first
+invocation exited 1: five passed, none skipped, and SQL-Go failed to initialize
+its build cache. The verification runner had set a private `GOCACHE`; the SQL-Go
+fixture does not forward that variable, so its allowed cache path differed from
+the default path used by its child. The ordinary Go fixture forwards it and
+passed. No product or sandbox policy was changed.
+
+Replaying only `lsp_sql_gopls_end_to_end_test_` with the fixture's default cache
+contract passed, command exit 0, with zero prerequisite skips. Its SQL result
+retained two Greet references, zero Lonely references, the unused Lonely symbol
+and ten facts. The evidence is five original passes plus one corrected replay;
+the initial aggregate remains a failed invocation.
+
+The private verification worktree used the actual Git-pinned Weft source,
+Gleam 1.19.0-rc2 and OTP 29. Twelve relevant host/control source files were
+compared byte-for-byte against the integration tree before execution. The native
+helper enforced Seatbelt filesystem/network and file/CPU limits under the test's
+explicit BestEffort demand. macOS address-space, process-count and process-lifetime
+limitations remained visible. This establishes existing local physical-server
+behavior, not remote owner clearance, production registration or separate-host
+acceptance. No new fixture or production source was added for this verification.
+
 ## Remaining acceptance
 
 Independent review of the assembled bootstrap, endpoint, whole-Compile actor,
