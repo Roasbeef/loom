@@ -29,7 +29,7 @@ bash protocol/models/remote-execution/check.sh
 
 The gate compiles a source snapshot, checks every declared normal case,
 requires every `tcProbe*` to produce its exact intended assertion, and checks
-all thirty mutations. It exits zero only if every check succeeds. Compiler
+all registered mutations. It exits zero only if every check succeeds. Compiler
 errors, timeout, memory exhaustion, max-step exhaustion, unrelated assertions,
 missing test cases and probes without witnesses fail the gate. Safety cases
 must explore the entire requested schedule count. Each invocation has separate
@@ -529,3 +529,78 @@ S=44000+W+2E (59000 at W=E=5000), after the owner service_child ask was included
 Neither the old profile nor these schedule-based checks prove production timing,
 codec correctness, TLS authentication, native tickets, database transactions,
 physical OS enforcement or whole Compile refinement.
+
+## Owner-run discharge prerequisite
+
+The additive `RunCustodian`/`RunDownstream` model checks the separate owner-run
+marker implemented by `client/remote/custodian` and `storage/owner_custody`.
+It preserves all 90 earlier cases and 37 earlier mutations. Eight normal cases
+and eight exact positive probes bring the total to 106 cases (47 normal and
+59 positive probes); nine additional decision mutations bring the total to 46.
+`runner.py`, existing P machines/monitors/tests and checker bounds are unchanged.
+
+Fresh COMMIT writes Unreleased before the separate worker-start turn. Only an
+exact final COMMIT and AllDelivered observed by the admitting incarnation may
+release it. Worker loss, consumer fatal, failed final COMMIT and failed discharge
+COMMIT fence the owner; ordinary final history cannot overwrite that disposition.
+Restart preserves rows and erases live reports. Any unreleased row makes fresh
+admission recovery-only. Collection requires Released and preserves the marker.
+A runner's original pinned incarnation refuses replacement-owner child requests;
+external history and an exact late child receipt remain usable.
+
+The controls exercise normal finish/drain and capacity reuse in the same live
+incarnation; early collection refusal and frozen-marker preservation; Fresh
+COMMIT/pre-spawn crash; final COMMIT/pre-drain crash; independently accepted
+held downstream work followed by worker loss and owner restart; sticky consumer
+fatal followed by ordinary final; failed final and discharge COMMIT; and failed
+Fresh COMMIT followed by genuine later execution. The lost-worker control reads
+back the exact original late receipt after rejecting a stale pinned request.
+Every step waits for an actual actor reply. Positive probes retain independent
+commit, start, drain, fence, restart, refusal, receipt and collection histories;
+scenario stage labels never establish these facts.
+
+The additional mutations alter actual reservation, final, discharge, collection,
+startup and pinned-child decisions. They omit the Fresh marker, release on final
+before drain, reset startup admission, overwrite fatal disposition, collect early,
+ignore final/discharge COMMIT failures, rebind an old pinned runner and commit
+changed final bytes. Monitors are unchanged in each mutant snapshot. Each
+unmodified control must pass; each mutant must compile and fail its exact
+registered assertion. Missing witnesses and unrelated assertions fail the gate.
+
+This is a bounded contract model. It has one owner, one independent downstream
+actor, at most two durable tool rows, one live slot, two incarnation classes,
+one accepted downstream origin and one rejected origin. The longest script has
+11 owner operations plus a finite reply chain. There is no retry producer,
+ticker or partition-recovery liveness claim. The same strict 1,000-step,
+60-second, 65-second outer and 1-GiB checker limits apply. Directed schedules
+may repeat the same logical trace; random scheduling is bug-finding, not an
+exhaustive state-space or temporal fairness proof.
+
+The custody assumptions are explicit: journal operations commit atomically or
+fail without changing durable bytes; reported COMMIT status is truthful; final
+payload integers represent exact bytes without collisions; one managed worker
+has at most one ordinary final report; AllDelivered belongs to that original run;
+and a pinned incarnation represents an unforgeable original Subject/PID. The
+model checks decisions consuming those facts, not their SQLite, weft or BEAM
+implementations. A failed final can be simulated directly; actual crash and
+COMMIT-failure production witnesses supply the complementary code evidence.
+Downstream custody and its exact receipt evidence are independent of worker
+lifetime. The production child-row receipt COMMIT/readback is a separate code
+witness; this model does not equate its downstream history actor with that SQL
+API. AllDelivered is not native
+retirement, OS cleanup or proof that every physical command has stopped.
+
+The exact model/code bridge, frozen production hashes, observed schedule counts,
+mutation witnesses and independent review belong in
+[the owner-discharge model review](../../../docs/review/distributed-owner-discharge-model.md).
+This extension does not prove native retirement, Compile/Launch cleanup,
+authentication, codecs, kernel isolation, separate-host acceptance or whole-system
+refinement. Old-format product refusal remains a production witness; this model
+starts with a supported-format journal and supplies no migration authority.
+
+The owner-discharge snapshot's full local strict gate exited 0 in 510.13 seconds
+with all 106 cases validated, all 46 compiling mutants killed and no skipped
+case. Peak observed RSS was 318,799,872 bytes. Fresh independent Astra review
+found no actionable findings within the stated abstraction. The review page
+and `owner-discharge-model-final-verification.json` record exact source hashes,
+model versus measurement exits and replayable evidence.
