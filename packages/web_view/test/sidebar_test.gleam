@@ -245,7 +245,8 @@ pub fn the_sidebar_lists_workspaces_and_sessions_test() {
 
   // Only the session on screen is current.
   assert list.length(string.split(drawn, "aria-current=\"true\"")) == 3
-  assert string.contains(drawn, "resident")
+  assert string.contains(drawn, "running")
+  assert !string.contains(drawn, "resident")
   assert string.contains(drawn, "saved")
 }
 
@@ -378,7 +379,7 @@ pub fn only_the_current_row_draws_strand_bars_test() {
   let assert Ok(#(row, _)) = string.split_once(from_current, "</li>")
   let assert Ok(#(before, after)) = string.split_once(row, "class=\"dots\"")
   assert string.contains(before, "web ui")
-  assert string.contains(after, "resident")
+  assert string.contains(after, "running")
 }
 
 // The bars add no handler and no focusable element: the markup holds the

@@ -77,13 +77,15 @@ import web_view/view/strip
 
 /// What a running session's row says after its glyph.
 type Suffix {
-  /// "resident", which is all a session page knows: it makes no activity read
-  /// (protocol-change/050), so a second word would be a guess.
+  /// "running", which is all a session page knows: it makes no activity read
+  /// (protocol-change/050), so a second word would be a guess. The word is the
+  /// one the home uses for a running session the activity read has not named;
+  /// "resident" is the engine's word and the page does not use it.
   Resident
 
   /// The home's answer to the activity read, by session identity: "needs you",
   /// "working" or "idle" for a session the read named, and nothing for one it
-  /// has not yet, so a row never says "resident" in one column and "working" in
+  /// has not yet, so a row never says "running" in one column and "working" in
   /// another.
   Doing(Dict(String, Activity))
 }
@@ -384,7 +386,7 @@ fn entry(
 // activity read's answer, and a session the read has not named has none.
 fn running(entry: Entry, suffix: Suffix) -> #(List(String), String, String) {
   case suffix {
-    Resident -> #(["live"], "●", "resident")
+    Resident -> #(["live"], "●", "running")
     Doing(activity) ->
       case dict.get(activity, entry.id) {
         Ok(NeedsYou) -> #(

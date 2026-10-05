@@ -156,7 +156,8 @@ pub fn the_page_lists_the_sessions_grouped_by_workspace_test() {
 pub fn resident_and_saved_are_marked_in_words_test() {
   let #(model, _) = opened(start())
   let html = drawn(model)
-  assert string.contains(html, "resident · created ")
+  assert string.contains(html, "running · created ")
+  assert !string.contains(html, "resident")
   assert string.contains(html, "saved · ")
   assert string.contains(html, "Session D")
   assert string.contains(html, "vetting lint")
@@ -202,7 +203,7 @@ pub fn the_creation_time_is_an_age_with_the_utc_minute_in_its_title_test() {
   assert string.contains(html, "title=\"1970-01-01 00:08 UTC\"")
   assert string.contains(
     html,
-    "resident · created <time datetime=\"1970-01-01T00:05Z\""
+    "running · created <time datetime=\"1970-01-01T00:05Z\""
       <> " title=\"1970-01-01 00:05 UTC\">1h ago</time>",
   )
   assert string.contains(html, "saved · <time datetime=\"1970-01-01T00:08Z\"")
@@ -226,8 +227,9 @@ pub fn an_age_is_counted_in_whole_units_test() {
 
 // A row says what its running session is doing, in the words the daemon's
 // state gave, once the daemon has answered; before that, and for a session the
-// daemon could not ask, it says only that the session is resident. A saved
-// session has no activity, whatever a stale answer says.
+// daemon could not ask, it says only that the session is running. The activity
+// word stands in for "running" and does not follow it. A saved session has no
+// activity, whatever a stale answer says.
 pub fn a_running_row_says_what_it_is_doing_test() {
   let asked = process.new_subject()
   let #(model, _) =
@@ -248,21 +250,21 @@ pub fn a_running_row_says_what_it_is_doing_test() {
   let html = drawn(model)
   assert string.contains(
     html,
-    "resident · <span class=\"home-activity\">working</span> · created ",
+    "<span class=\"home-activity\">working</span> · created ",
   )
   assert string.contains(
     html,
-    "resident · <span class=\"home-activity\">needs you</span> · created ",
+    "<span class=\"home-activity\">needs you</span> · created ",
   )
   assert string.contains(html, "home-row working")
   assert string.contains(html, "home-row needs-you")
   assert !string.contains(html, "idle")
   assert !string.contains(html, "saved · idle")
 
-  // Before the answer, a running row shows only that it is resident.
+  // Before the answer, a running row shows only that it is running.
   let before =
     drawn(run(home.new(start()), home.Answered(home.Listed(listing()))))
-  assert string.contains(before, "resident · created ")
+  assert string.contains(before, "running · created ")
   assert !string.contains(before, "working")
 }
 
@@ -274,7 +276,7 @@ pub fn an_activity_answer_replaces_the_last_test() {
     run(model, home.Observed([#("B", sessions.Working), #("A", sessions.Idle)]))
   assert string.contains(
     drawn(model),
-    "resident · <span class=\"home-activity\">idle</span> · created ",
+    "<span class=\"home-activity\">idle</span> · created ",
   )
   let model = run(model, home.Observed([#("B", sessions.Idle)]))
   assert !string.contains(drawn(model), "working")
@@ -300,7 +302,7 @@ pub fn the_activity_word_is_its_own_span_test() {
   let html = drawn(model)
   assert string.contains(
     html,
-    "<span class=\"home-subtitle\">Fix the flaky retry test</span> · resident · <span class=\"home-activity\">needs you</span>",
+    "<span class=\"home-subtitle\">Fix the flaky retry test</span> · <span class=\"home-activity\">needs you</span>",
   )
   assert list.length(string.split(html, "home-activity")) == 2
 
@@ -478,7 +480,7 @@ pub fn an_operator_home_presses_saved_rows_too_test() {
 }
 
 // A resume press hands the session to the daemon's task and returns: the row
-// reads "opening", no saved row has a press while it is out, and a second press
+// reads "Opening…", no saved row has a press while it is out, and a second press
 // asks nothing, even one that names another saved row.
 pub fn a_resume_marks_its_row_and_a_second_press_asks_nothing_test() {
   let asked = process.new_subject()
@@ -488,7 +490,7 @@ pub fn a_resume_marks_its_row_and_a_second_press_asks_nothing_test() {
   assert process.receive(asked, 0) == Ok("C")
   let html = drawn(model)
   assert string.contains(html, "opening")
-  assert string.contains(html, "It may take a moment.")
+  assert string.contains(html, "Opening…")
 
   // Only the two running rows keep a press, in each region.
   assert list.length(handlers(home.view(model))) == 4
@@ -500,8 +502,9 @@ pub fn a_resume_marks_its_row_and_a_second_press_asks_nothing_test() {
 }
 
 // The task's answer arrives as a message from the task's own process: a ticket
-// becomes the address the hidden element navigates to and clears the pending
-// row, and a refusal is the reason's fixed words with the presses restored.
+// becomes the address the hidden element navigates to and leaves the row saying
+// "Opening…" until the page goes, and a refusal is the reason's fixed words,
+// beside the row, with the presses restored.
 pub fn the_tasks_answer_departs_or_words_the_refusal_test() {
   let ticket = "/ui/sessions/C?ticket=t"
   let #(model, _) =
@@ -513,8 +516,8 @@ pub fn the_tasks_answer_departs_or_words_the_refusal_test() {
   let model = run(model, home.Resuming("C"))
   let html = drawn(model)
   assert string.contains(html, "to=\"" <> ticket <> "\"")
-  assert !string.contains(html, "<span class=\"residency opening\"")
-  assert list.length(handlers(home.view(model))) == 8
+  assert string.contains(html, "Opening…")
+  assert list.length(handlers(home.view(model))) == 4
 
   let #(model, _) =
     opened(
@@ -525,6 +528,7 @@ pub fn the_tasks_answer_departs_or_words_the_refusal_test() {
   let model = run(model, home.Resuming("C"))
   let html = drawn(model)
   assert string.contains(html, sessions.reason_words(sessions.NotOpened))
+  assert !string.contains(html, "Opening…")
   assert !string.contains(html, " to=")
   assert list.length(handlers(home.view(model))) == 8
 }
@@ -570,7 +574,14 @@ pub fn a_press_asks_for_a_ticket_and_the_answer_is_the_address_test() {
   let html = drawn(model)
   assert string.contains(html, "to=\"" <> ticket <> "\"")
   assert string.contains(html, "<loom-switch hidden")
-  assert string.contains(html, "Opening that session.")
+
+  // The pressed row says so until the page goes, and a second press asks
+  // nothing.
+  assert string.contains(html, "Opening…")
+  assert string.contains(html, "home-row opening")
+  let again = run(model, home.Opening("B"))
+  assert process.receive(asked, 0) == Error(Nil)
+  assert drawn(again) == html
 }
 
 // The keyboard switcher is the centre's last child on the home, after the
@@ -836,7 +847,7 @@ pub fn a_subtitle_leads_the_quiet_line_in_place_of_the_age_test() {
   let html = drawn(model)
   assert string.contains(
     html,
-    "<span class=\"home-subtitle\">Fix the flaky retry test</span> · resident",
+    "<span class=\"home-subtitle\">Fix the flaky retry test</span> · running",
   )
   assert string.contains(
     html,
@@ -844,7 +855,7 @@ pub fn a_subtitle_leads_the_quiet_line_in_place_of_the_age_test() {
   )
 
   // A and D have no subtitle, so they read as before.
-  assert string.contains(html, "resident · created ")
+  assert string.contains(html, "running · created ")
   assert string.contains(html, "saved · <time")
   assert list.length(string.split(html, "home-subtitle")) == 3
 }
@@ -1132,7 +1143,6 @@ pub fn a_submit_asks_once_and_the_page_waits_test() {
   assert process.receive(asked, 0)
     == Ok(#("/src/loom", "review", creations.Shareable))
   let html = drawn(model)
-  assert string.contains(html, "Creating the session.")
   assert string.contains(html, "Creating</button>")
   assert string.contains(html, "disabled")
 
@@ -1297,7 +1307,7 @@ pub fn the_rename_and_creation_forms_cannot_be_confused_test() {
   assert process.receive(asked, 0)
     == Ok(#("/src/weft", "made", creations.Private))
   assert process.receive(renamed, 0) == Error(Nil)
-  assert string.contains(drawn(after_create), "Creating the session.")
+  assert string.contains(drawn(after_create), "Creating</button>")
 }
 
 // --- the owner's "Admin" button (protocol-change/065, the fifth pull request) --
@@ -1377,7 +1387,6 @@ pub fn pressing_admin_asks_the_daemon_and_departs_with_its_ticket_test() {
   assert process.receive(asked, 0) == Error(Nil)
   let html = drawn(owner)
   assert string.contains(html, "to=\"" <> admin_ticket <> "\"")
-  assert string.contains(html, "Opening the admin page.")
 
   let refused = process.new_subject()
   let #(denied, _) =
@@ -1393,7 +1402,6 @@ pub fn pressing_admin_asks_the_daemon_and_departs_with_its_ticket_test() {
 pub fn a_page_without_the_capability_ignores_the_admin_press_test() {
   let #(plain, _) = opened(start())
   let pressed = run(plain, home.AdminRequested)
-  assert !string.contains(drawn(pressed), "Opening the admin page.")
   assert !string.contains(drawn(pressed), "to=\"/ui/admin")
 
   // A page still connecting, or already ended, asks nothing even with it.
@@ -1401,7 +1409,7 @@ pub fn a_page_without_the_capability_ignores_the_admin_press_test() {
   let offered = administrator(asked, sessions.Ticketed(admin_ticket))
   let waiting = run(home.new(offered), home.AdminRequested)
   assert process.receive(asked, 0) == Error(Nil)
-  assert !string.contains(drawn(waiting), "Opening the admin page.")
+  assert !string.contains(drawn(waiting), "to=\"/ui/admin")
   let #(owner, _) = opened(offered)
   let ended =
     run(
@@ -1409,7 +1417,7 @@ pub fn a_page_without_the_capability_ignores_the_admin_press_test() {
       home.AdminRequested,
     )
   assert process.receive(asked, 0) == Error(Nil)
-  assert !string.contains(drawn(ended), "Opening the admin page.")
+  assert !string.contains(drawn(ended), "to=\"/ui/admin")
 }
 
 // An unnamed session's label is a fallback built from its identity, not a name.
@@ -1442,8 +1450,8 @@ pub fn a_members_rows_say_the_role_they_hold_test() {
   let #(model, _) =
     opened(start_with(home.OperatorCeiling, fn() { home.Listed(rows) }))
   let html = drawn(model)
-  assert string.contains(html, "resident · observer")
-  assert string.contains(html, "resident · operator")
+  assert string.contains(html, "running · observer")
+  assert string.contains(html, "running · operator")
   assert list.length(string.split(html, "· observer")) == 2
   assert list.length(string.split(html, "· operator")) == 2
   let #(owner, _) = opened(start())
@@ -1473,14 +1481,14 @@ pub fn the_sidebar_says_the_activity_word_the_list_says_test() {
   )
   assert string.contains(html, "residency live needs-you")
 
-  // Before the answer, a running row's suffix is empty rather than "resident".
+  // Before the answer, a running row's suffix is empty rather than "running".
   let before =
     drawn(run(home.new(start()), home.Answered(home.Listed(listing()))))
   assert string.contains(
     before,
     "<span aria-hidden=\"true\" class=\"glyph\">●</span></span>",
   )
-  assert !string.contains(before, ">●</span>resident")
+  assert !string.contains(before, ">●</span>running")
   assert string.contains(before, ">○</span>saved")
 }
 
@@ -1537,7 +1545,6 @@ pub fn a_stop_asks_once_and_the_answer_is_the_notice_test() {
   let model = run(model, home.StopRequested("A"))
   assert process.receive(asked, 0) == Ok(#(actions.Archive, "C"))
   assert process.receive(asked, 0) == Error(Nil)
-  assert string.contains(drawn(model), "Archiving the session.")
   assert string.contains(drawn(model), "disabled")
 }
 
@@ -1560,7 +1567,7 @@ pub fn a_delete_asks_only_after_the_rows_confirmation_test() {
   assert list.length(string.split(html, "This cannot be undone.")) == 2
   assert process.receive(asked, 0) == Error(Nil)
 
-  let model = run(model, home.DeleteCancelled)
+  let model = run(model, home.ConfirmCancelled)
   assert !string.contains(drawn(model), "This cannot be undone.")
 
   let model = run(model, home.DeleteRequested("C"))
@@ -1568,7 +1575,6 @@ pub fn a_delete_asks_only_after_the_rows_confirmation_test() {
   assert process.receive(asked, 0) == Error(Nil)
   let model = run(model, home.DeleteConfirmed("C"))
   assert process.receive(asked, 0) == Ok(#(actions.Delete, "C"))
-  assert string.contains(drawn(model), "Deleting the session.")
   let model = run(model, home.DeleteConfirmed("C"))
   assert process.receive(asked, 0) == Error(Nil)
   assert string.contains(drawn(model), "disabled")
@@ -1641,4 +1647,174 @@ pub fn a_blocked_row_draws_no_action_test() {
   assert !string.contains(html, ">Stop<")
   assert !string.contains(html, ">Archive<")
   assert !string.contains(html, ">Delete<")
+}
+
+// --- Stop asks first on a busy row (round 5, F110) ---------------------------
+
+// A page whose manage capability records what the daemon is asked, and whose
+// activity read says B is working and A needs the person.
+fn busy_owner(asked: Subject(#(actions.Action, String))) -> home.Model {
+  let ask = fn(action, session, _deliver) {
+    process.send(asked, #(action, session))
+  }
+  let #(owner, _) =
+    opened(
+      home.Start(..start(), manage: Some(ask), activity: fn(_, deliver) {
+        deliver([#("B", sessions.Working), #("A", sessions.NeedsYou)])
+      }),
+    )
+  owner
+}
+
+// A press on Stop for a working row, or one waiting for the person, replaces the
+// row's words with the question and sends nothing. Cancel puts the row back; a
+// confirmation for another row asks nothing; the confirmation for that row asks
+// once. The row is in a neutral tint and not the danger one.
+pub fn a_stop_on_a_busy_row_asks_first_test() {
+  let asked = process.new_subject()
+  let owner = busy_owner(asked)
+
+  let model = run(owner, home.StopRequested("B"))
+  let html = drawn(model)
+  assert process.receive(asked, 0) == Error(Nil)
+  assert string.contains(html, "Stop this session mid-turn?")
+  assert string.contains(html, "confirm-stop")
+  assert !string.contains(html, "confirm-delete")
+  assert !string.contains(html, "This cannot be undone.")
+
+  let model = run(model, home.ConfirmCancelled)
+  assert !string.contains(drawn(model), "mid-turn")
+
+  let model = run(model, home.StopRequested("B"))
+  let model = run(model, home.StopConfirmed("A"))
+  assert process.receive(asked, 0) == Error(Nil)
+  let model = run(model, home.StopConfirmed("B"))
+  assert process.receive(asked, 0) == Ok(#(actions.Stop, "B"))
+  assert string.contains(drawn(model), "disabled")
+
+  // A row that needs the person asks first too.
+  let model = run(owner, home.StopRequested("A"))
+  assert process.receive(asked, 0) == Error(Nil)
+  assert string.contains(drawn(model), "Stop this session mid-turn?")
+}
+
+// An idle row, and one the activity read has not named, stops at once, with no
+// question.
+pub fn a_stop_on_an_idle_row_acts_at_once_test() {
+  let asked = process.new_subject()
+  let ask = fn(action, session, _deliver) {
+    process.send(asked, #(action, session))
+  }
+  let #(owner, _) =
+    opened(
+      home.Start(..start(), manage: Some(ask), activity: fn(_, deliver) {
+        deliver([#("A", sessions.Idle)])
+      }),
+    )
+  let model = run(owner, home.StopRequested("A"))
+  assert process.receive(asked, 0) == Ok(#(actions.Stop, "A"))
+  assert !string.contains(drawn(model), "mid-turn")
+
+  let _ = run(owner, home.StopRequested("B"))
+  assert process.receive(asked, 0) == Ok(#(actions.Stop, "B"))
+}
+
+// A confirmation acts only for the row and the action that are confirming. One
+// with nothing open, one for the other action, and one for another row ask
+// nothing, so a crafted event cannot skip the question.
+pub fn a_forged_confirmation_asks_nothing_test() {
+  let asked = process.new_subject()
+  let owner = busy_owner(asked)
+
+  let model = run(owner, home.StopConfirmed("B"))
+  let model = run(model, home.DeleteConfirmed("B"))
+  assert process.receive(asked, 0) == Error(Nil)
+  assert drawn(model) == drawn(owner)
+
+  // While a stop is confirming, a Delete confirmation is not it.
+  let model = run(owner, home.StopRequested("B"))
+  let model = run(model, home.DeleteConfirmed("B"))
+  assert process.receive(asked, 0) == Error(Nil)
+  assert string.contains(drawn(model), "Stop this session mid-turn?")
+
+  // And while a delete is confirming, a Stop confirmation is not it.
+  let model = run(owner, home.DeleteRequested("C"))
+  let model = run(model, home.StopConfirmed("C"))
+  assert process.receive(asked, 0) == Error(Nil)
+  assert string.contains(drawn(model), "Delete this session?")
+}
+
+// --- Notes: where a said or refused action is drawn (round 5, F102) -----------
+
+// A completed action is a quiet line in the row it acted on and the list's
+// shape does not change: the row is the same row with a note at the end of its
+// words, and the old boxed notice is gone.
+pub fn a_completed_action_is_a_note_in_its_row_test() {
+  let ask = fn(action, _session, deliver) { deliver(actions.Done(action)) }
+  let #(owner, _) = opened(home.Start(..start(), manage: Some(ask)))
+  let model = run(owner, home.StopRequested("B"))
+  let html = drawn(model)
+  assert string.contains(html, "home-note")
+  assert string.contains(html, "Stopped.")
+  assert !string.contains(html, "home-notice")
+  assert list.length(string.split(html, "<li"))
+    == list.length(string.split(drawn(owner), "<li"))
+}
+
+// When the row is gone the note is in its workspace's heading line and names
+// the session, so a deletion says which one.
+pub fn a_note_for_a_vanished_row_names_it_in_the_heading_test() {
+  let ask = fn(action, _session, deliver) { deliver(actions.Done(action)) }
+  let #(owner, _) = opened(home.Start(..start(), manage: Some(ask)))
+  let model = run(owner, home.ArchiveRequested("C"))
+  let without_c = list.filter(listing(), fn(row) { row.id != "C" })
+  let model = run(model, home.Answered(home.Listed(without_c)))
+  let html = drawn(model)
+  assert string.contains(html, "hex release archived.")
+  assert string.contains(html, "notice-line")
+  assert !string.contains(html, "home-notice")
+}
+
+// A refusal stays, in the row, in the reason's fixed words.
+pub fn a_refusal_stays_beside_its_row_test() {
+  let ask = fn(_action, _session, deliver) {
+    deliver(actions.Declined(actions.Running))
+  }
+  let #(owner, _) = opened(home.Start(..start(), manage: Some(ask)))
+  let model = run(owner, home.ArchiveRequested("C"))
+  let html = drawn(model)
+  assert string.contains(html, "home-note refused")
+  assert string.contains(html, actions.reason_words(actions.Running))
+  assert !string.contains(html, "home-notice")
+}
+
+// --- The resumed home says why it has no controls (round 5, F101) --------------
+
+// The owner's home that a bookmark resumed has a rename capability and no
+// manage or device one: its popover ends with the sentence and a copy box for
+// `loom ui`. A fresh home and a member's home do not.
+pub fn a_resumed_home_says_how_to_get_the_controls_test() {
+  let ask = fn(_action, _session, _deliver) { Nil }
+  let rename = fn(_session, _name, _deliver) { Nil }
+  let device = fn() { signins.Declined(signins.NotFresh) }
+
+  let #(resumed, _) = opened(home.Start(..start(), rename: Some(rename)))
+  let html = drawn(resumed)
+  assert string.contains(html, "This page was opened from a bookmark.")
+  assert string.contains(html, "subject=\"link\"")
+  assert string.contains(html, "text=\"loom ui\"")
+
+  let #(fresh, _) =
+    opened(
+      home.Start(
+        ..start(),
+        rename: Some(rename),
+        manage: Some(ask),
+        device: Some(device),
+      ),
+    )
+  assert !string.contains(drawn(fresh), "opened from a bookmark")
+
+  let #(member, _) = opened(start())
+  assert !string.contains(drawn(member), "opened from a bookmark")
 }

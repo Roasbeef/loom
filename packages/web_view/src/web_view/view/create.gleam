@@ -186,6 +186,10 @@ fn drawn(
           ]),
         ]),
       ]),
+
+      // The hint names what a blank field gets, so the stylesheet hides it once
+      // the field holds a name (`:placeholder-shown`): the field is uncontrolled,
+      // and the server never sees what is typed until it is submitted.
       html.p([attribute.class("home-create-hint")], [
         html.text("Left blank, the session is named "),
         html.b([], [html.text(creations.folder(workspace))]),
