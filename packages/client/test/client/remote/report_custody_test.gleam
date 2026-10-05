@@ -465,7 +465,7 @@ fn limits() -> custody.Limits {
 fn report(text: String) -> rv.CompleteReport {
   let assert Ok(metadata) =
     rv.metadata(
-      string.repeat("b", 64),
+      "sha256-" <> string.repeat("b", 64),
       rv.Enforcement(
         rv.Unreported("not observed"),
         rv.Unreported("not observed"),

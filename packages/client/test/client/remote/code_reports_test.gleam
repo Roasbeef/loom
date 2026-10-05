@@ -141,7 +141,7 @@ fn mode(value: mp.MsgPackValue) -> shell.CodeMode {
   shell.CodeMode(
     execute: fn(_) {
       shell.Execution(
-        shell.Ran(shell.Completed(value), string.repeat("a", 64)),
+        shell.Ran(shell.Completed(value), "sha256-" <> string.repeat("a", 64)),
         shell.Enforcement(
           shell.Unreported("fixture build"),
           shell.Enforced([], [], True),

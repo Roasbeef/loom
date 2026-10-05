@@ -405,7 +405,7 @@ fn sha256(bytes: BitArray) -> BitArray {
 fn bundle(value: mp.MsgPackValue) -> rv.CompleteReport {
   let assert Ok(metadata) =
     rv.metadata(
-      string.repeat("b", 64),
+      "sha256-" <> string.repeat("b", 64),
       rv.Enforcement(
         rv.Unreported("not observed"),
         rv.Unreported("not observed"),

@@ -6,7 +6,7 @@ import * as mp from '../build/dev/javascript/core/core/msgpack.mjs';
 import { Ok, Error as GleamError, toList } from '../build/dev/javascript/core/gleam.mjs';
 
 const checkedMetadata = rv.metadata(
-  '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+  'sha256-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
   new rv.Enforcement(new rv.Unreported('not launched'), new rv.Unreported('not launched')),
   new rv.CallLog(0, 0, 0, 0, 0, 0, toList([])),
 );
