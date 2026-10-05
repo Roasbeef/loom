@@ -32,6 +32,8 @@ import client/async_runs
 import client/codemode
 import client/peer_mail
 import client/peers
+import client/remote/custodian
+import client/remote/report_router
 import client/remote/tool_custody
 import client/serve
 import client/workflows
@@ -71,6 +73,7 @@ import runtime/api
 import runtime/effects
 import session/session
 import simplifile
+import storage/owner_custody
 import storage/storage
 import support/addresses
 import support/internal/ffi_memory
@@ -82,6 +85,7 @@ import tools/fs
 import tools/search
 import tools/tool
 import weft/actor
+import weft/registry
 
 // --- fixtures --------------------------------------------------------------
 
@@ -1043,6 +1047,86 @@ pub fn configured_surfaces_carry_their_admission_ceilings_test() {
     == [
       artifact.ceiling(artifact.default_emit_ceiling),
     ]
+  broker.stop(broker_actor)
+}
+
+pub fn report_authority_installs_surface_route_and_quota_together_test() {
+  let broker_actor = idle_broker()
+  let base = config_for(broker_actor)
+  let session_id = ids.mint_session(ids.generator(clock.fixed(1000), 99)).0
+  let assert Ok(limits) = owner_custody.limits(8, 32, 32_000_000, 262_144)
+    as "The owner admission limits are valid."
+  let assert Ok(owner_config) =
+    custodian.config(
+      "/unopened-owner.db",
+      session_id,
+      limits,
+      1,
+      1000,
+      fn(_, _, _) {
+        effects.ToolFailed("This assembly test never runs a tool.")
+      },
+    )
+    as "A finite owner configuration can allocate an address."
+  let assert Ok(names) = registry.start() as "The address registry starts."
+  let owner = custodian.new(names, owner_config)
+  let configured =
+    codemode.over_reports(base, Some(codemode.ReportReader(owner, session_id)))
+
+  // No actor or database is started: this proves the route is selected before
+  // a malformed report call can touch owner custody or workspace fallback.
+  let call =
+    satellite.CapRequest(
+      report_router.capability,
+      msgpack.NilValue,
+      identity.run_phase(identity.for_execution(
+        an_op(9),
+        "read",
+        budget.Budget(4, 9000),
+      )),
+      policy.workspace_default("/work"),
+      exec.BestEffort,
+      [],
+      "/work",
+      0,
+    )
+  list.each(
+    [codemode_tool.WorkspaceSeam, codemode_tool.OrchestrationSeam],
+    fn(seam) {
+      let request = request_on(seam, "report-reader")
+      let before = codemode.exec_config(base, request, "/work/x", 9000, [])
+      let after = codemode.exec_config(configured, request, "/work/x", 9000, [])
+      assert after.satellite.ceilings
+        == list.append(before.satellite.ceilings, report_router.ceilings())
+      assert after.satellite.router(call)
+        == Error(satellite.CapDenial(
+          "invalid_argument",
+          "Expected exactly reference text and offset integer.",
+        ))
+      assert before.satellite.router(call) != after.satellite.router(call)
+    },
+  )
+
+  // The surface list and the actual execution configuration share the same
+  // optional authority. Removing it restores both quotas and declarations.
+  list.each([vet_policy.WorkspaceSeam, vet_policy.OrchestrationSeam], fn(seam) {
+    assert !list.contains(
+      codemode.seam_caps_on(base, seam),
+      report_router.capability,
+    )
+    assert list.contains(
+      codemode.seam_caps_on(configured, seam),
+      report_router.capability,
+    )
+    assert codemode.seam_caps_on(codemode.over_reports(configured, None), seam)
+      == codemode.seam_caps_on(base, seam)
+  })
+  list.each([vet_policy.ExtensionSeam, vet_policy.ResidentSeam], fn(seam) {
+    assert !list.contains(
+      codemode.seam_caps_on(configured, seam),
+      report_router.capability,
+    )
+  })
   broker.stop(broker_actor)
 }
 
