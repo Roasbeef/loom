@@ -175,10 +175,15 @@ fn drawn(
           attribute.name("shareable"),
           ..locked
         ]),
-        html.span([], [
-          html.text(
-            "Shareable. The session keeps its own notes and history apart from the workspace's, which lets you invite people to it.",
-          ),
+        html.span([attribute.class("home-create-share-text")], [
+          html.span([attribute.class("home-create-share-name")], [
+            html.text("Shareable"),
+          ]),
+          html.span([attribute.class("home-create-share-hint")], [
+            html.text(
+              "Keeps its own notes and history, so you can invite people to it.",
+            ),
+          ]),
         ]),
       ]),
       html.p([attribute.class("home-create-hint")], [

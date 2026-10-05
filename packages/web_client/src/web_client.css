@@ -457,8 +457,11 @@
   .home-create-name{width:100%;box-sizing:border-box;padding:6px 10px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg);color:var(--color-fg);font:14px/1.5 var(--font-sans);}
   .home-create-name:focus-visible{outline:none;border-color:var(--color-fg-quiet);}
   .home-create-name:disabled{opacity:.6;}
-  label.home-create-share{display:flex;align-items:flex-start;gap:8px;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);cursor:pointer;}
-  label.home-create-share input{flex:0 0 auto;margin:2px 0 0 0;}
+  label.home-create-share{display:flex;align-items:flex-start;gap:8px;cursor:pointer;}
+  label.home-create-share input{flex:0 0 auto;margin:3px 0 0 0;}
+  .home-create-share-text{display:flex;flex-direction:column;gap:1px;min-width:0;}
+  .home-create-share-name{color:var(--color-fg);font:14px/1.4 var(--font-sans);}
+  .home-create-share-hint{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
   .home-create-hint{margin:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
   .home-create-actions{display:flex;gap:8px;}
   .home-create-actions button{margin:0;padding:4px 12px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:13px/1.4 var(--font-sans);cursor:pointer;}
@@ -478,7 +481,7 @@
   .home-text{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px;}
   .home-name{font:500 14px/1.4 var(--font-sans);overflow-wrap:anywhere;}
   .home-sub{font:12px/1.4 var(--font-sans);color:var(--color-fg-quiet);overflow-wrap:anywhere;}
-  .home-row.needs-you .home-sub{color:var(--color-signal-text);}
+  .home-row.needs-you .home-activity{color:var(--color-signal-text);}
   /* The owner's rename button sits after the row's own button and is placed
      over its right side, beside the chevron, so the row's own path and its
      whole-row target are the same on every page. */
@@ -490,7 +493,8 @@
   form.home-rename-form{display:flex;flex-direction:column;gap:6px;padding:8px 10px;}
   .home-rename-lead{margin:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
   .home-rename-fields{display:flex;flex-wrap:wrap;gap:6px;}
-  .home-rename-fields input{flex:1 1 14em;min-width:0;background:var(--color-bg);color:var(--color-fg);border:1px solid var(--color-divider);border-radius:4px;padding:5px 8px;font:13px/1.4 var(--font-sans);}
+  loom-rename{display:flex;flex:1 1 14em;min-width:0;}
+  loom-rename input{flex:1 1 auto;min-width:0;background:var(--color-bg);color:var(--color-fg);border:1px solid var(--color-divider);border-radius:4px;padding:5px 8px;font:13px/1.4 var(--font-sans);}
   .home-chevron{flex:0 0 auto;color:var(--color-fg-quiet);font-size:16px;line-height:1;}
   .home-open:hover .home-chevron{color:var(--color-fg);}
   .home-notice{margin:0 0 12px 0;padding:8px 12px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font-size:13px;}

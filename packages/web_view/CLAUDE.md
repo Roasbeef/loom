@@ -83,7 +83,12 @@ page keys and nonces, and the relay into the session's gateway.
   button after each row's own button when `Start.rename` is `Some`, and one open
   form in place of a row (`home_table.Rename`, `home.Edit`); a submit asks only
   for the row whose form is open. Neither control puts the current name in an
-  attribute.
+  attribute: the field is drawn by `rename.field()` inside a `<loom-rename>`
+  (`web_client`), which copies the lead's text node (`rename.name_marker`, within
+  `rename.scope_marker`) into the empty field in the browser. A home row's quiet
+  line draws the activity word in its own `home-activity` span, the only part a
+  needs-you row tints, and the create form's Shareable label is one word with a
+  hint line beneath it.
 - **Strand focus.** `component.focus(model, strand)` (`FocusRequested`) is
   `step.focus`, the shared step's change of strand, plus what only this host
   holds: the history read owed for the strand being left is dropped

@@ -104,7 +104,9 @@ fn count(html: String, part: String) -> Int {
 pub fn an_owners_page_draws_the_control_test() {
   let html = drawn(owner(process.new_subject()))
   assert string.contains(html, "Rename this session")
-  assert string.contains(html, "Name: web ui")
+  assert string.contains(html, "Name: <span data-loom-name>web ui</span>")
+  assert string.contains(html, "<loom-rename><input")
+  assert !string.contains(html, "value=\"web ui")
   assert string.contains(html, "<summary>Rename</summary>")
   assert string.contains(html, "aria-label=\"New name\"")
   assert string.contains(html, "name=\"text\"")
@@ -195,10 +197,10 @@ pub fn a_stored_name_replaces_the_heading_and_the_sidebar_row_test() {
   assert process.receive(asked, 0) == Error(Nil)
   assert component.rename_control(model) == renames.Done
   let html = drawn(model)
-  assert string.contains(html, "Name: review auth")
+  assert string.contains(html, "Name: <span data-loom-name>review auth</span>")
   assert string.contains(html, "Renamed.")
   assert string.contains(html, "<span class=\"session-name\">review auth<")
-  assert !string.contains(html, "Name: web ui")
+  assert !string.contains(html, "Name: <span data-loom-name>web ui</span>")
   assert !string.contains(html, "<span class=\"session-name\">web ui<")
 
   // The other session's row is the catalogue's still.
@@ -242,7 +244,7 @@ pub fn a_refusal_is_worded_in_fixed_words_test() {
       let html = drawn(model)
       assert string.contains(html, renames.reason_words(reason))
       assert !string.contains(html, "Renamed.")
-      assert string.contains(html, "Name: web ui")
+      assert string.contains(html, "Name: <span data-loom-name>web ui</span>")
     },
   )
 
