@@ -1080,6 +1080,17 @@ unknown final outcome with retained report history, never reconstructed final
 authority or permission to rerun the program. Retention failure MUST keep the
 original run unresolved; a later generic diagnostic cannot discharge it.
 
+The report-bearing final has exactly
+`{kind: "code_mode_report_v1", reference: <canonical URI>}` in its structured
+details. Its original call ID and name are unchanged; `is_error` MUST agree
+with the retained Outcome. A trusted refusal before any terminal Outcome uses
+exactly `{kind: "code_mode_not_run_v1", stage: "vet"}` or stage `"compile"`.
+Only the actual host vetting or compilation refusal branch may produce that
+variant. It MUST have bounded text, `is_error` true, and no retained report.
+An arbitrary ToolFailed, satellite failure or program Errored result MUST NOT
+be recast as this no-terminal refusal. These variants preserve the existing
+independent wrapper-drain and physical-child cleanup requirements.
+
 Owner format 5 stores the profile, allowance, report and digest. Scalar headers
 and quota checks precede large BLOB reads. Reopen validates each report's complete
 canonical bytes, digest and original binding, then the custodian validates its
