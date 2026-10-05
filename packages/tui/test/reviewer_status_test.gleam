@@ -24,6 +24,7 @@ import session_view/snapshot_view
 import tui
 import tui/connection
 import tui/frame
+import tui/layout_memory
 import tui/model as tui_model
 import tui/render
 import tui/workspace
@@ -126,7 +127,9 @@ pub fn reviewer_task_survives_eviction_without_inventing_delivery_test() {
   assert !string.contains(successor.task, "Review queue")
 }
 
-pub fn reviewer_rows_remain_visible_beside_the_automatic_diff_test() {
+// With the rail hidden and no second agent, the reviewer's band sits above the
+// composer. (A docked rail lists the reviewer as a strand instead.)
+pub fn reviewer_rows_remain_visible_above_the_composer_test() {
   let #(window, view) = fixture()
   let initial = {
     let base = model()
@@ -138,6 +141,7 @@ pub fn reviewer_rows_remain_visible_beside_the_automatic_diff_test() {
       ),
       view: tui_model.View(
         ..base.view,
+        rail: Some(layout_memory.RailHidden),
         input: textarea.state_from_string("follow-up draft"),
       ),
     )
@@ -148,13 +152,13 @@ pub fn reviewer_rows_remain_visible_beside_the_automatic_diff_test() {
   assert string.contains(text, "Reviewer sub:queue")
   assert string.contains(text, "Task: Review queue delivery")
   assert string.contains(text, "1 received, awaiting delivery")
-  assert painted.view.diff_view == tui_model.DiffAutomatic
+  assert painted.view.diff_view == tui_model.DiffHidden
   assert string.contains(text, "follow-up draft")
 }
 
 // Once a second agent is live the strip under the footer owns the roster, so
 // the band above the composer steps aside rather than repeat it; the reviewer
-// is still on screen beside the automatic diff, one row in the strip.
+// is still on screen, one row in the strip or the docked rail.
 pub fn the_agent_strip_supersedes_the_reviewer_band_test() {
   let #(window, view) = fixture()
   let initial = {
@@ -176,7 +180,7 @@ pub fn the_agent_strip_supersedes_the_reviewer_band_test() {
   let text = frame.buffer_to_text(buffer)
   assert !string.contains(text, "Reviewer sub:queue")
   assert string.contains(text, "sub:queue")
-  assert painted.view.diff_view == tui_model.DiffAutomatic
+  assert painted.view.diff_view == tui_model.DiffHidden
   assert string.contains(text, "follow-up draft")
 }
 

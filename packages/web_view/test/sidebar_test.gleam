@@ -8,7 +8,7 @@
 
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import lane_fixture
@@ -19,6 +19,7 @@ import session_view/turns
 import web_view/component
 import web_view/operator_page
 import web_view/sessions.{type Entry, Entry, Live, Saved}
+import web_view/view/resume
 import web_view/view/sidebar
 
 @external(erlang, "page_events_ffi", "handlers")
@@ -31,7 +32,7 @@ fn entry(
   created_at: Int,
   residency: sessions.Residency,
 ) -> Entry {
-  Entry(id:, name:, workspace:, created_at:, residency:)
+  Entry(id:, name:, workspace:, created_at:, residency:, subtitle: None)
 }
 
 // Three workspaces. `A`, the session on screen, is in `/src/loom` with a
@@ -263,9 +264,9 @@ pub fn an_empty_list_draws_no_sidebar_test() {
   assert !string.contains(drawn, "<aside aria-label=\"Sessions\"")
 }
 
-// The sidebar adds one handler to the operator's page for each running
-// session other than the one on screen, a click beneath its own path, and none
-// to the observer's. No row is a link or a form, and the paths the observer's
+// The sidebar adds one handler to the operator's page for each session other
+// than the one on screen that is running or saved, a click beneath its own
+// path, and none to the observer's. No row is a link or a form, and the paths the observer's
 // socket admits and the operator's composer are exactly where they were.
 pub fn the_sidebar_adds_only_its_session_buttons_test() {
   let bare =
@@ -274,13 +275,13 @@ pub fn the_sidebar_adds_only_its_session_buttons_test() {
   let listed = listed_page(listing())
   assert handlers(component.view(listed)) == handlers(component.view(bare))
 
-  // `B` is the only running session that is not on screen.
+  // `B` is running, and `C`, `D` and `E` are saved; none is on screen.
   let others = handlers(operator_page.view(bare))
   let added =
     list.filter(handlers(operator_page.view(listed)), fn(key) {
       !list.contains(others, key)
     })
-  assert list.length(added) == 1
+  assert list.length(added) == 4
   assert list.all(added, fn(key) {
     string.starts_with(key, component.sidebar_path <> "\t")
     && string.ends_with(key, "\nclick")
@@ -291,7 +292,7 @@ pub fn the_sidebar_adds_only_its_session_buttons_test() {
   assert !string.contains(sidebar, "<form")
   assert !string.contains(sidebar, "href")
   assert !string.contains(sidebar, "onclick")
-  assert list.length(string.split(sidebar, "<button")) == 2
+  assert list.length(string.split(sidebar, "<button")) == 5
 }
 
 // The markup of the sidebar alone: from its opening tag to the first closing
@@ -338,7 +339,13 @@ pub fn an_observers_page_draws_no_sidebar_test() {
 // A sidebar over `listing()` with the given bars, as the page's frame would
 // draw it, for the tests of the strand bars.
 fn sidebar_with(bars: List(sidebar.Bar)) -> Element(Nil) {
-  sidebar.view(sessions.grouped(listing(), "A"), "A", bars, fn(_) { Nil })
+  sidebar.view(
+    sessions.grouped(listing(), "A"),
+    "A",
+    bars,
+    fn(_) { Nil },
+    resume.Never,
+  )
 }
 
 // The current row draws one bar per live strand in the strand's hue, with
@@ -388,4 +395,59 @@ pub fn strand_bars_carry_no_handler_test() {
 // With no strand listed the row has no bars span at all.
 pub fn no_strands_draw_no_bars_test() {
   assert !string.contains(element.to_string(sidebar_with([])), "dots")
+}
+
+// A session with a subtitle draws it in a quiet line under its name
+// (protocol-change/067), in a wrapper that holds the two; a session without one
+// is the two words it always was, with no wrapper and no empty line.
+pub fn a_subtitle_is_a_quiet_line_under_the_name_test() {
+  let rows = [
+    Entry(
+      ..entry("B", "vetting lint", "/src/loom", 300, Live),
+      subtitle: Some("Fix the flaky retry test"),
+    ),
+    entry("A", "web ui", "/src/loom", 100, Live),
+  ]
+  let drawn = operator_html(listed_page(rows))
+  let assert Ok(sidebar) = sidebar_of(drawn)
+  assert string.contains(
+    sidebar,
+    "<span class=\"session-text\"><span class=\"session-name\">vetting lint</span>"
+      <> "<span class=\"session-subtitle\">Fix the flaky retry test</span></span>",
+  )
+
+  // The row without a subtitle has no wrapper, and only one row draws the
+  // quiet line.
+  assert string.contains(sidebar, "<span class=\"session-name\">web ui</span>")
+  assert list.length(string.split(sidebar, "session-subtitle")) == 2
+  assert list.length(string.split(sidebar, "session-text")) == 2
+}
+
+// The subtitle is a person's own prompt: it is a text node and nothing else, so
+// a hostile one is escaped and is in no attribute, class, key or title.
+pub fn a_subtitle_is_only_ever_a_text_node_test() {
+  let hostile = "\"><img src=x onerror=alert(1)>"
+  let rows = [
+    Entry(
+      ..entry("B", "vetting lint", "/src/loom", 300, Live),
+      subtitle: Some(hostile),
+    ),
+    entry("A", "web ui", "/src/loom", 100, Live),
+  ]
+  let drawn = operator_html(listed_page(rows))
+  assert !string.contains(drawn, "<img")
+  assert string.contains(drawn, "&lt;img src=x onerror=alert(1)&gt;")
+  assert list.length(string.split(drawn, "onerror"))
+    == list.length(string.split(drawn, "onerror=alert(1)&gt;"))
+  assert !string.contains(drawn, "title=\"" <> hostile)
+  assert !string.contains(drawn, "class=\"" <> hostile)
+
+  // It adds no handler beyond the row's own: the sidebar's keys are the same
+  // with and without it.
+  let plain = [
+    entry("B", "vetting lint", "/src/loom", 300, Live),
+    entry("A", "web ui", "/src/loom", 100, Live),
+  ]
+  assert handlers(operator_page.view(listed_page(rows)))
+    == handlers(operator_page.view(listed_page(plain)))
 }

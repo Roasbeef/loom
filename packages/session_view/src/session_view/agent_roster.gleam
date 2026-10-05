@@ -343,8 +343,10 @@ pub fn tick(roster: Roster, now_ms: Int) -> #(Roster, Repaint) {
 ///
 /// `main` always leads, since it is the way back to the primary. After it
 /// come the active strand and every strand whose state needs watching:
-/// working, waiting, needing input or halted. Settled strands leave the
-/// strip; the workspace keeps their outcomes. The advisor has its own band
+/// working, waiting, needing input or halted, and a strand that has never run
+/// an operation, which is idle because it waits for its first prompt (a fresh
+/// fork). Settled strands leave the strip; the workspace keeps their
+/// outcomes. The advisor has its own band
 /// and is listed only while it is the active strand.
 ///
 /// ## Examples
@@ -417,6 +419,7 @@ fn listed(row: agent_view.Row, active: String) -> Bool {
   case row.id == active, row.id, row.status {
     True, _, _ -> True
     False, "advisor", _ -> False
+    False, _, agent_view.Idle if row.operation == None -> True
     False, _, agent_view.Working
     | False, _, agent_view.Waiting
     | False, _, agent_view.NeedsInput
@@ -428,6 +431,21 @@ fn listed(row: agent_view.Row, active: String) -> Bool {
     | False, _, agent_view.Unavailable
     -> False
   }
+}
+
+/// One agent's line whether or not a strip would list it.
+///
+/// `lines` lists only the agents worth watching; a host that shows every
+/// agent, as the terminal's workspace list does, describes the rest with
+/// the same words and figures through this.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agent_roster.describe(roster, finished_row).status == agent_view.Finished
+/// ```
+pub fn describe(roster: Roster, row: agent_view.Row) -> Line {
+  line(roster, row)
 }
 
 fn line(roster: Roster, row: agent_view.Row) -> Line {

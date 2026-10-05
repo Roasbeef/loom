@@ -46,14 +46,21 @@ for a host with no surfaces.
 
 ## Key Types
 
-- `strand_card.status_line(line)`, `strand_card.needing(lines)` and
-  `strand_card.context_words(tokens)`: the one status line under a strand's
-  name on its card (`Needs approval` for a strand that waits on a decision,
-  whatever the request was; the state word and the activity after ` · ` for a
-  working one; `Finished` and how long it ran), how many strands wait on a
-  decision, the count on the web view's Strands tab, and the words for a
-  strand's context size in its own view. Both hosts can read them so the
-  terminal can word a card the same way.
+- `strand_card.status_line(line)`, `status_title(line)`, `glyph(status)`,
+  `model_name(model)`, `task_words(title)` (a task, or nothing for the
+  roster's placeholders and the advisor's feed prompt; a brief is cut to its
+  first sentence and `task_limit` characters), `needing(lines)` and `context_words(tokens)`: the one
+  status line under a strand's name on its card (`Needs approval` for a
+  strand that waits on a decision, whatever the request was; the state word
+  and what the strand is doing after ` · ` for a working one, where the
+  engine's phase `assistant` reads `thinking`, a tool is named without its
+  command and a state word the activity already says is not said twice;
+  `Finished` and how long it ran), the whole activity text for a tooltip
+  (`status_title`, cut to `title_limit`), the state's one-character glyph,
+  a model's last path segment, how many strands wait on a decision (the count
+  on the web view's Strands tab), and the words for a strand's context size
+  in its own view. Both hosts can read them so the terminal can word a card
+  the same way.
 - `command.Command`: a parsed draft, `Surface(command.Surface)` for a
   command the host carries out with its own machinery (a panel, the model
   selector, daemon control, a change of strand, the host's exit) or
@@ -115,10 +122,57 @@ for a host with no surfaces.
   `session_wire.Reply`: total decoders for the daemon's frames.
 - `transcript_line.Line(speaker, text)` and `Speaker`, with the live
   observations that become lines: `Stream`, `ToolTail`, `CacheNotice`,
-  `Submission`.
+  `Submission`. Agent traffic has three speakers, `SentMessage`,
+  `StrandMessage` and `PeerMessage`, chosen from the `agent_send` call or
+  the stored origin and never from the text; the text is a heading, a
+  newline and the body. A peer heading ends in
+  `transcript_lines.origin_checked`, and every heading in the local clock
+  time when `Presentation.clock` (from `Shared.clock_offset`) knows the
+  zone. `agent_messages.Item.ts` keeps the send's time for the workspace.
+- `transcript_lines.joined` joins every tool result in a compact window to
+  its call, for responses whose calls are drawn as narrative: the call is
+  drawn with the rows a tool group draws for it (`call_rows`), settled,
+  failed with its reason, a send with its admission, a program with its
+  value, an image result with its image's row, `absorbed` says which result entries draw nothing,
+  `reads_joined` names the responses that bypass the entry cache, and
+  `joined_entry_lines`/`joined_block_lines` draw a response with the
+  results joined. A compact `code_mode` call is one `✓ code_mode ·
+  completed · result …` row once it settles, and otherwise a
+  `ProgramRunning` or `ProgramFailure` block, whose text is a title, a
+  foot and a body: the program's opening lines under their numbers, or the
+  error, with a compiler diagnostic cut to its heading (`· line N`) and the
+  source it quotes. Both block speakers open and close bare, like a call.
+  With a `call_tree` record the settled row counts the calls and a failure
+  block ends in a `CALLS · …` section, grouped by capability and ending.
+- `call_tree.{read, summary, CallLog, Call, Status}` (protocol 060): the
+  total decoder for the `calls` key of a `code_mode` result's `details` and
+  the one-line summary (`7 calls · 1 failed`). An absent key and a
+  malformed one both read as `None`, and `transcript_lines` then renders the
+  result exactly as it did before the record existed. A `code_mode` failure
+  with a readable record shows the summary and rows under the failure text.
+  The golden JSON in `call_tree_test` is the same literal `tools` asserts
+  its encoder writes.
+- `ImageRow` is an image's placeholder row under the call or turn that
+  carries it, worded by `image_header.describe` (`image 1 · image/png ·
+  1200×700 · 84 KB`); `image_header.dimensions` reads the pixel size from a
+  PNG, JPEG or GIF header totally, and answers `None` for anything else.
+  `ImageRow` carries `image_header.picture`, which is `None` when the header
+  cannot be read: a fingerprint (byte count and three 32-byte samples of the
+  base64 text, cheap on a large image), the media type, the pixel size and
+  the byte count. A line is a cache key, so it never holds the data; a host
+  that draws the image finds the data again from its entry by fingerprint.
 - `transcript_lines.Presentation`: everything the line builders read of a
   client's state. A host fills it; the terminal does so in
   `tui_model.presentation`.
+- `transcript_lines.collapse_repeats` folds a run of identical consecutive
+  items into the newest of them with `×N` on its first row, in compact
+  history only. Two predicates say what may fold: `repeated_call` (a call
+  that settled successfully on one row, such as an `agent_wait` poll) inside
+  a tool group, and `repeated_failure` (an entry that draws only a provider
+  error) between items. The terminal's anchor fold in `tui/projection`
+  applies the same fold over the same items, so rows and anchors stay
+  paired; a folded run anchors to its newest call. A failure row opens bare,
+  so it gets a gap under a call's bare last row.
 - `transcript_lines.response_awaited(records, operations, stream)` says
   whether a live response is still owed to a host that draws only captures:
   its request's identity names an entry that `records` do not hold and the
@@ -167,14 +221,24 @@ for a host with no surfaces.
   is parsed.
 
 - `turns.pieces(blocks, strands, latest)`: one strand's lane as turns for a
-  host that draws more than rows (the web view): `Plain` blocks, one `Work`
-  divider per turn (`Folded`, or `Open` while the strand runs or waits on an
-  approval; its `Worked` figures come from the records), `Spawned` and
+  host that draws more than rows (the web view): `Plain` blocks, `Prompt` for a
+  person's message (the sender is a field, not a `name:` line of the text;
+  `turns.authors` reads each principal's role from the presence rows and
+  `turns.attributed` sets it on that principal's messages, never the reader's), one
+  `Work` divider per turn (`Folded`, or `Open` while the strand runs or waits
+  on an approval; its `Worked` figures come from the records, failed calls included, which
+  `turns.divider` prints as `· 1 failed`). The fold's
+  items are `Narrated` blocks (each with `took`, the response's time, which a
+  reasoning row reads), `Step`s (`words` from `step_words.of_call`) and
+  `Memory`, the memory context the daemon recorded ahead of a prompt: it is no
+  input, `split` and `grouped` hold it for the next input, and it is the first
+  item of that turn's fold. `Spawned` and
   `Returned` rows for sub-agents, `Nudged` for a delivered advisor frame,
   `Peer` for another session's message, `Sibling` for a message a strand of
   the same session sent (stored origin `StrandOrigin`, framing removed by
   `strand_framing.strip`, a brief's result-contract trailer kept apart),
-  `Missed` for a cache notice and `Commentary` for the advisor's board. It reads
+  `Missed` for a cache notice and `Commentary` for the advisor's board (reviews that
+  stand next to each other are one piece with a `reviews` count). It reads
   `transcript_lines.keyed_record_blocks` (`transcript.blocks`), which tags
   each block with its `Source`. `turns.grouped(blocks, strands)` splits
   the same blocks at their inputs, the lead before the first input and
@@ -188,6 +252,26 @@ for a host with no surfaces.
   `thoughts` by row key; both are empty when the expansion equals the compact
   rows, so no piece holds uncapped text. `grouped` skips them. The terminal
   does not call `turns`.
+- `step_words`: how one step of a turn reads, shared by every host that
+  draws a step. `of_call(call)` turns a tool's name, arguments and (for an
+  edit) its diff into `Words(verb, subject, change)`: `Read calc.py`,
+  `Edit calc.py +3 −1`, `Ran python3 -m unittest`, `Spawned scan`. A subject
+  is tagged `Mono` (a path or command), `Prose` (a name or purpose), `Figure`
+  (a count or a time) or `Unnamed`, which only says which face a host uses;
+  every subject is session text and is drawn as a text node. A tool the table
+  does not list keeps its own name. `memory`, `reasoning`, `worked`,
+  `returned` and `duration` word the rows that are not tool calls, `text`
+  flattens any `Words` to one line, and `first_call(program)` names the first
+  capability a `code_mode` program calls (`fs.read calc.py`) by reading its
+  text. That reader stands in for the trace view's fold of a program's calls.
+- `diff_view`: a unified diff read into lines a host can colour. `parse(diff)`
+  splits on newlines (a CRLF's `\r` is dropped), keeps at most `max_lines`
+  (400) and returns `Diff(lines, cut)`; `of_lines` reads lines a host already
+  bounded. Each `Line(kind, old, new, text)` has a closed `Kind` (`FileHeader`
+  before the first hunk only, `Hunk`, `Added`, `Removed`, `Context`,
+  `NoNewline`) and, inside a hunk, the line numbers the header's counters give.
+  An added, removed or context line's text has its marker removed. The text is
+  session text; the web view draws it as a text node.
 - `transcript_image`: the images a lane row carries, which the rows draw as
   `[image <type>]` text. `Image(mime_type, data)` holds the entry's own base64
   text (nothing is copied). `of_entry`, `of_message`, `of_outcome` and
@@ -204,10 +288,26 @@ for a host with no surfaces.
   terminal's agent rail and strip and the web view's chips.
   `agent_roster.{Roster, Line, Chips}` is which strands a strip lists, in
   what order, with elapsed time and context size (`lines`, `chips`,
-  `running_ms`, `context`).
+  `running_ms`, `context`). A strand that is idle and has no operation has
+  never run (a fresh fork waiting for its first prompt), and it is listed
+  among the live cards rather than settled; one that ran and is idle again
+  has an operation and is settled. `describe` gives any row the same line
+  whether or not a strip would list it; the terminal's workspace list uses it.
   Its internal `listed_count` uses the same membership predicate without
   constructing display lines, for hosts measuring geometry. The roster test
   compares that count with `lines` across every status and active-strand choice.
+- `notice_words` (`sent`, `outcome`, `done`): the closed table that words a
+  command's outcome for the footer, `Goal pinned`, `Denied`, `Queued for the
+  next turn`, so no wire name is a notice. `reviewer_status.lines` words the
+  advisor row `watching <strand>` and cuts a sub-agent's brief to its first
+  sentence; `without_idle_advisor` is the page's filter.
+- `decisions` (`from_ledger`, `strands`, `words`): the approval decisions the
+  approval ledger holds, with the author, the verdict and the strand the
+  request was raised on (from the pending cell the capture held). `turns.with_decisions` places each as a
+  `turns.Decided` piece by the register sequence that committed it, which
+  storage numbers from the same counter as transcript entries.
+- `approval.wants(tool)`: the fixed words for what a request asks to do
+  (`run a command`), shared by the cards.
 - `cache_miss` (a miss reconstructed from two usage rows, and the TTL
   outlook the rows prove) and `cache_watch.Ledger` (which rows may be
   compared: `admit`, `settle`, `capture`, `observe`, `forget`, and `shown`,
@@ -378,16 +478,33 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   them newest first, into the session's `code_mode` programs, oldest first:
   each with a closed `State` read from the result's `status` word (`Running`
   while it has no result), a label (the `program_path`, else the text of the
-  program's leading `//` comment after any imports, else `Program N`), a result excerpt, the `within_ms` the call named and
-  a closed `Vetting`. It lists programs because no per-capability call is
-  recorded yet (protocol-change/060). Bounded: `max_programs` 12 (older ones
-  counted in `omitted`) and `max_characters` 160 per label and excerpt, both
-  single-line and free of control characters. Portable, no externals.
+  program's leading `//` comment after any imports, else `Program N`), a result
+  excerpt, the `within_ms` the call named, a closed `Vetting`, `detail` (the
+  result's own `detail`, the compiler's diagnostics or a run's reason, kept
+  apart from the excerpt, which for a failed build is the sentence written for
+  the model; the web Trace tab draws `detail` and `budget_words`, the terminal
+  keeps `excerpt` and `budget_line`), and `calls`, the
+  rows of the protocol-change/060 call record the result carries (`CALLS · …`
+  and one row per call, from `transcript_lines.call_section`; nothing for a
+  running call or a result with no readable record). `newest(records, strand)`
+  is the terminal's form: one strand's newest program from a window that holds
+  several strands, in entry order whatever order the records arrive in, with
+  `source`, the program's opening twelve lines numbered. `state_title` words a
+  state as the transcript's failure block does (`compile error`, `refused by
+  vetting`), and `state_word` is the web's. `first_call` is a program's first
+  call row, else its label. Bounded: `max_programs` 12 (older ones counted in
+  `omitted`) and `max_characters` 160 per label and excerpt, both single-line
+  and free of control characters. Both hosts draw it: the web view's Trace pane
+  from `fold`, the terminal's Trace tab from `newest`. Portable, no externals.
 - `changes_view.fold(records)` folds a strand's records, as a branch holds
   them newest first, into the board of the session's own edits: the files
   the successful `fs_edit` results named, each with the diff the result
   reported as rows of a closed `Kind` (`Hunk`, `Added`, `Removed`,
-  `Context`) and the `+` and `-` totals. It reads no worktree, so it is what
+  `Context`) and the `+` and `-` totals, and the successful `fs_write` calls:
+  a write reports no diff, so its file is one hunk whose every line is added,
+  from the call's `content` argument, with `origin: Written` and the words
+  `written · 23 lines` (`counts_words`) in place of counts. A file that was
+  also edited is `Edited` and counts both. It reads no worktree, so it is what
   the agent wrote in the window and not the state of the tree, and it says so
   (`label`). It is bounded (`max_files` 24, `max_file_rows` 200, `max_rows`
   600, `max_row_characters` 240) and every cut is counted. The web page's
@@ -398,8 +515,9 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   supplies. Jobs are the `live_jobs` board for the strand asked about, its
   lines cut to `max_job_rows` with the rest counted, or `Unread` when there is
   no board or it names another strand (never a count of zero). Viewers are the
-  cut's presence rows, one per attachment, at most `max_viewer_rows`, each
-  with a role word and whether it is the host's own. Whether a host shows the
+  cut's presence rows grouped by principal, at most `max_viewer_rows`, each
+  with its role words, how many pages (attachments) it holds and whether one is
+  the host's own; `total` still counts attachments. Whether a host shows the
   viewers is the host's choice: the web page shows them on an operator's page
   only.
 

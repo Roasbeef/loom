@@ -99,12 +99,12 @@ pub fn a_dot_and_a_tag_hold_the_position_of_the_strand_they_name_test() {
   assert in_order(html, [
     "class=\"tl-row hue-2\">",
     "<span aria-hidden=\"true\" class=\"dot\" data-loom-focus=\"1\"></span>",
-    "↳ agent_spawn · ",
-    "<button class=\"tag\" data-loom-focus=\"1\" type=\"button\">sub:&lt;b&gt;review</button>",
+    "Spawned ",
+    "<button class=\"tag\" data-loom-focus=\"1\" type=\"button\">&lt;b&gt;review</button>",
     "class=\"tl-row hue-2\">",
     "<span aria-hidden=\"true\" class=\"dot\" data-loom-focus=\"1\"></span>",
-    "<button class=\"tag\" data-loom-focus=\"1\" type=\"button\">sub:&lt;b&gt;review</button>",
-    " · result · completed",
+    "<button class=\"tag\" data-loom-focus=\"1\" type=\"button\">&lt;b&gt;review</button>",
+    " finished",
   ])
 
   // The nudge belongs to the advisor, whose card is last.
@@ -194,7 +194,7 @@ pub fn a_settled_strand_is_a_control_pointing_at_its_card_test() {
   assert reviewer == 3
   assert string.contains(
     html,
-    "<button class=\"tag\" data-loom-focus=\"3\" type=\"button\">sub:&lt;b&gt;review</button>",
+    "<button class=\"tag\" data-loom-focus=\"3\" type=\"button\">&lt;b&gt;review</button>",
   )
   assert string.contains(html, "data-loom-card=\"3\"")
 
@@ -250,7 +250,7 @@ pub fn a_focused_strand_has_a_breadcrumb_and_a_view_test() {
     "data-loom-card=\"1\"",
     "class=\"strand-detail hue-2\"",
     "<button class=\"detail-back\" data-loom-focus=\"0\" type=\"button\">← Strands</button>",
-    "ring ring-detail",
+    "avatar avatar-detail",
     "&lt;b&gt;review",
     "class=\"detail-figures\"",
     "Recent",
@@ -263,8 +263,9 @@ pub fn a_focused_strand_has_a_breadcrumb_and_a_view_test() {
 // no row is a cost: the session keeps its cost as one total, not per strand.
 pub fn a_strands_view_draws_the_figures_it_knows_test() {
   let html = observer(focused(settled(), lane_fixture.child))
+  // The fixture's capture names no model, so there is no Model row.
+  assert !string.contains(html, "<dt class=\"detail-term\">Model</dt>")
   assert in_order(html, [
-    "<dt class=\"detail-term\">Model</dt>",
     "<dt class=\"detail-term\">Context</dt>",
     "<dt class=\"detail-term\">Running</dt>",
     "loom-elapsed",
@@ -294,6 +295,7 @@ fn chip(
     running_ms: running,
     model:,
     recent:,
+    answer: option.None,
   )
 }
 
@@ -302,8 +304,12 @@ fn chip(
 pub fn a_figure_that_is_not_known_is_not_drawn_test() {
   let bare =
     element.to_string(strand_detail.view(chip("", None, None, None, [])))
-  assert !string.contains(bare, "detail-term")
+  assert !string.contains(bare, "Model")
+  assert !string.contains(bare, "Cache")
   assert !string.contains(bare, "loom-elapsed")
+
+  // A context the roster does not report is said so, not left a blank.
+  assert string.contains(bare, "not reported")
   assert string.contains(bare, "No tools yet.")
   assert string.contains(bare, "Working · reading")
 
@@ -319,7 +325,8 @@ pub fn a_figure_that_is_not_known_is_not_drawn_test() {
         ),
       ),
     )
-  assert string.contains(full, "<dd class=\"detail-value\">glm-5.2</dd>")
+  assert string.contains(full, "<span title=\"glm-5.2\">glm-5.2</span>")
+  assert !string.contains(full, "not reported")
   assert string.contains(full, "136.5k tokens")
   assert string.contains(full, "<dd class=\"detail-value\">cache expired</dd>")
   assert string.contains(full, "offset=\"7000\"")

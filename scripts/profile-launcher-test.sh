@@ -86,6 +86,27 @@ EOF
 loom_profile_consume daemon --config "$profile_config" --state-dir "$state/not-configured"
 [[ "$LOOM_PROFILE_ENABLED" == 0 ]]
 
+# A file that never spells the key cannot enable profiling, so the reader,
+# a second emulator boot, is not started for it.
+rm -f "$PROFILE_READER_PATH"
+cat > "$profile_config" <<'EOF'
+[daemon]
+capacity = true
+EOF
+loom_profile_consume daemon --config "$profile_config" --state-dir "$state/unnamed-key"
+[[ "$LOOM_PROFILE_ENABLED" == 0 ]]
+[[ ! -e "$PROFILE_READER_PATH" ]]
+
+# A quoted key may spell the name with escapes alone, so a file holding one
+# still goes to the reader.
+cat > "$profile_config" <<'EOF'
+[daemon]
+"profile" = true
+EOF
+loom_profile_consume daemon --config "$profile_config" --state-dir "$state/escaped-key"
+[[ "$LOOM_PROFILE_ENABLED" == 1 ]]
+[[ "$(cat "$PROFILE_READER_PATH")" == "$profile_config" ]]
+
 mkdir -p "$state/default-config"
 cat > "$state/default-config/loom.toml" <<'EOF'
 [daemon]

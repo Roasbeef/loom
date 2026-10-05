@@ -13,7 +13,7 @@ import core/register
 import gleam/bool
 import gleam/int
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import session_view/session_wire
@@ -68,6 +68,9 @@ pub type Review {
     origin: Option(message.Origin),
     /// Exact captured authority or the reason approval cannot be encoded.
     permission: Permission,
+    /// The strand whose call asked, from the escalation's captured scope,
+    /// or `None` for a question with no call scope.
+    strand: Option(String),
   )
 }
 
@@ -203,7 +206,15 @@ pub fn decode(cell: snapshot_view.Cell) -> Result(Review, String) {
     Ok(permission) -> permission
     Error(reason) -> Unavailable(reason)
   }
-  Ok(Review(id, cell.seq, state, tool, preview, author, permission))
+  let strand = case list.key_find(fields, "scope") {
+    Ok(json.Object(scope)) ->
+      case list.key_find(scope, "strand") {
+        Ok(json.String(strand)) if strand != "" -> Some(strand)
+        _ -> None
+      }
+    _ -> None
+  }
+  Ok(Review(id, cell.seq, state, tool, preview, author, permission, strand))
 }
 
 fn exact(fields) {
@@ -464,6 +475,29 @@ pub fn presentation(record: Review) -> Result(Presentation, String) {
   Ok(Presentation(question(record.tool), preview, authority))
 }
 
+/// What a request for `tool` asks to do, in words a reader would write:
+/// `run a command`, `write a file`. The tools the table names are the
+/// harness's own, so the words are fixed; any other tool is `use <tool>`,
+/// and its name is the caller's to draw as text.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert approval.wants("bash") == "run a command"
+/// assert approval.wants("fs_write") == "write a file"
+/// assert approval.wants("") == "make a request"
+/// ```
+pub fn wants(tool: String) -> String {
+  case tool {
+    "bash" | "shell" -> "run a command"
+    "fs_read" -> "read a file"
+    "fs_write" -> "write a file"
+    "fs_edit" -> "edit a file"
+    "" -> "make a request"
+    tool -> "use " <> tool
+  }
+}
+
 fn question(tool: String) -> String {
   case tool {
     "bash" | "shell" -> "Allow this command?"
@@ -510,7 +544,9 @@ fn readable_preview(tool: String, preview: String) -> String {
         )
       }
       "bash" | "shell" -> {
-        use _ <- result.try(only_keys(fields, ["command", "timeout_ms"]))
+        use _ <- result.try(
+          only_keys(fields, ["command", "timeout_ms", "permissions"]),
+        )
         use command <- result.try(text(fields, "command"))
         use _ <- result.try(optional_integer(fields, "timeout_ms"))
         Ok(
@@ -599,7 +635,7 @@ fn readable_grant(value: json.JsonValue) -> String {
       }
       "network" -> {
         use network <- result.try(field(fields, "network"))
-        Ok("Network access: " <> { network |> json.to_string |> escaped_json })
+        Ok(readable_network(network))
       }
       "limit" -> Ok("Resource limit: " <> exact)
       "scratch" -> Ok("Scratch storage: " <> exact)
@@ -607,6 +643,55 @@ fn readable_grant(value: json.JsonValue) -> String {
     }
   }
   "- " <> result.lazy_unwrap(readable, fn() { "Exact grant: " <> exact })
+}
+
+// A network grant in words: `net · proxy.golang.org:443 · via proxy` for a
+// proxied allowlist, `net · any host` for full access and `net · off`. A
+// shape this does not know is shown as its exact JSON, escaped, as every
+// other unknown grant is, so nothing the request carries is hidden.
+fn readable_network(network: json.JsonValue) -> String {
+  let exact =
+    "Network access: " <> { network |> json.to_string |> escaped_json }
+  let readable = {
+    use fields <- result.try(object(network))
+    use mode <- result.try(text(fields, "mode"))
+    case mode {
+      "full" -> Ok("net · any host")
+      "off" -> Ok("net · off")
+      "proxy" -> {
+        use allowed <- result.try(case field(fields, "allow") {
+          Ok(json.Array(hosts)) ->
+            list.try_map(hosts, fn(host) {
+              case host {
+                json.String(host) -> Ok(literal_host(host))
+                _ -> Error("unreadable network host")
+              }
+            })
+          _ -> Error("unreadable network allowlist")
+        })
+        Ok("net · " <> string.join(allowed, ", ") <> " · via proxy")
+      }
+      _ -> Error("unknown network mode")
+    }
+  }
+  result.unwrap(readable, exact)
+}
+
+// A host as the grant names it, escaped as a literal is when it holds
+// anything but the letters, digits and punctuation of a host and port.
+fn literal_host(host: String) -> String {
+  let plain =
+    string.to_graphemes(host)
+    |> list.all(fn(char) {
+      string.contains(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-:[]*",
+        char,
+      )
+    })
+  case plain && host != "" {
+    True -> host
+    False -> literal_text(host)
+  }
 }
 
 fn literal_text(text: String) -> String {

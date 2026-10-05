@@ -5,7 +5,7 @@ import core/ids
 import core/json
 import core/workspace
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/result
 import simplifile
 import sqlight
@@ -35,6 +35,7 @@ fn record(seed: Int, epoch: Int) -> catalogue.Registration {
     1,
     id,
     catalogue.Reserved,
+    subtitle: None,
   )
 }
 

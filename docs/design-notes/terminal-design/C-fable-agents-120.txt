@@ -1,0 +1,40 @@
+ ◆ loom                       loom-herdr-update · ~/code/loom-herdr-update (herdr-update)      GLM-5.3 · Ctrl+g details 
+ ╭ AGENTS · 7 · 4 working · 1 needs you · 1 failed ──────────────────────────────────────────── ↑↓ select · esc close ╮ 
+ │    name                   now                          elapsed │ adversarial-…-48f3c1 · Needs approval · 2m 45s ·… │ 
+ │› ◷ main                   Waiting · 2 subagents          1m 34s│ sub:main/adversarial-code-review-48f3c1e67de9efd… │ 
+ │❯ ? adversarial-co…-48f3c1 Needs approval · network       2m 45s│                                                   │ 
+ │  ● documentation-…-0455ab Writing an early note before…  2m 38s│ TASK                                              │ 
+ │  ● adversarial-co…-ec14f0 Grep herdr:loom references a…  1m 03s│ Adversarial code review of the herdr release pat… │ 
+ │  ● documentation-…-9b1a77 Grepping bootstrap.gleam for…     51s│ effect ordering, the release deadlock question, … │ 
+ │  × sub:terminal-checks    Failed · label check failed …        │ each finding with a file:line and a one-sentence… │ 
+ │  ○ advisor                Idle · 0 nudges                      │ Ctrl+g shows all 14 lines                         │ 
+ │                                                                │                                                   │ 
+ │                                                                │ NOW                                               │ 
+ │                                                                │ ? proc.run gleam test · waits for network approv… │ 
+ │                                                                │                                                   │ 
+ │                                                                │ MESSAGES                                          │ 
+ │                                                                │ ← main        Review wire format, effect orderin… │ 
+ │                                                                │ → main        Found an effect-ordering hazard in… │ 
+ │                                                                │ INBOX  0 unread · 1 approval pending · 0 held in… │ 
+ │                                                                │                                                   │ 
+ │                                                                │ RECENT                                            │ 
+ │                                                                │ ? proc.run gleam test                             │ 
+ │                                                                │ ✓ fs_read packages/tui/src/tui/session_step.gleam │ 
+ │                                                                │ ✓ grep publish_herdr · 6 hits                     │ 
+ │                                                                │ ✓ agent_note findings · 1 note                    │ 
+ │                                                                │                                                   │ 
+ │                                                                │                                                   │ 
+ │                                                                │                                                   │ 
+ │                                                                │                                                   │ 
+ │                                                                │                                                   │ 
+ │                                                                │                                                   │ 
+ │                                                                │                                                   │ 
+ │                                                                │                                                   │ 
+ │  enter opens transcript · a approval · x stops · n next attention · m messages · p peer link · tab writes          │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+─ To main · Tab writes · enter opens agent ───────────────────────────────────────────────────────── loom-herdr-update ─
+ ◐ agent_wait · 2 subagents · 51s · esc interrupts                                                                      
+                                                                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                        
+ agent workspace · GLM-5.3 · ctx ~24% · est $13.42                                   7 agents · 5 working · 2 attention 

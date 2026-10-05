@@ -23,6 +23,7 @@ import gleam/result
 import gleam/string
 import simplifile
 import support/satellite_peer.{type PeerCtx}
+import tools/call_record
 
 const now = 1_700_000_000_000
 
@@ -492,6 +493,17 @@ pub fn both_hosts_refuse_invalid_derivation_without_spending_an_ordinal_test() {
       }),
     )
   assert run.outcome == Ok(satellite.Completed(msgpack.StringValue("verified")))
+
+  // Provenance refusals remain visible in the call log without consuming a
+  // native ordinal. The owner callback is recorded after both refused calls.
+  assert run.calls.total == 3
+  assert run.calls.failed == 2
+  assert list.map(run.calls.items, fn(item) { #(item.status, item.error) })
+    == [
+      #(call_record.CallFailed, Some("invalid_origin")),
+      #(call_record.CallFailed, Some("invalid_origin")),
+      #(call_record.CallOk, None),
+    ]
   let assert Ok(host) =
     satellite.start(
       artifact(),

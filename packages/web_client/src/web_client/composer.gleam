@@ -68,9 +68,10 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
 import web_client/composer_rule.{
-  type Direction, type Entry, type Palette, type Returns, Bare, Closed, Complete,
-  Composing, Consumed, Continues, Fresh, Listing, Nothing, Observed, Other,
-  Repeating, Sending, Take, Unseen,
+  type Attachments, type Direction, type Entry, type Gate, type Palette,
+  type Returns, Bare, Closed, Complete, Composing, Consumed, Continues, Fresh,
+  Listing, Nothing, Observed, Open, Other, Repeating, Sending, Shut, Take,
+  Unattached, Unseen,
 }
 import web_client/internal/ffi_dom
 
@@ -93,6 +94,10 @@ pub type Model {
     selected: Int,
     palette: Palette,
     returns: Returns,
+    /// Whether `<loom-attach>` holds an image, which it reports in this
+    /// element's `attached` attribute. With the draft it decides whether the
+    /// send buttons can be pressed (`composer_rule.gate`).
+    attachments: Attachments,
   )
 }
 
@@ -103,6 +108,9 @@ pub type Msg {
 
   /// The server said how many prompts it has handed back.
   Returned(count: Int)
+
+  /// `<loom-attach>` said whether it holds an image.
+  Holding(attachments: Attachments)
 
   /// The editor's text changed to this.
   Typed(text: String)
@@ -142,10 +150,16 @@ pub fn register() -> Result(Nil, lustre.Error) {
     component.on_attribute_change("returned", fn(value) {
       int.parse(value) |> result.map(Returned)
     }),
+    component.on_attribute_change("attached", fn(value) {
+      Ok(Holding(composer_rule.attachments(value)))
+    }),
   ])
   |> lustre.register(name)
 }
 
+// A new editor is empty and holds nothing, so its send buttons start shut:
+// the server draws the editor afresh after every send, and this is the
+// moment the buttons beside it learn there is nothing to send.
 fn init(_: Nil) -> #(Model, Effect(Msg)) {
   #(
     Model(
@@ -154,9 +168,15 @@ fn init(_: Nil) -> #(Model, Effect(Msg)) {
       selected: 0,
       palette: Listing,
       returns: Unseen,
+      attachments: Unattached,
     ),
-    effect.none(),
+    gating(Shut),
   )
+}
+
+// What the draft and the attachments say about the send buttons.
+fn gate(model: Model) -> Gate {
+  composer_rule.gate(model.draft, model.attachments)
 }
 
 // The rows the list shows now, which is none while it is closed.
@@ -194,16 +214,25 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       })
     }
 
-    // Typing reopens the list and starts it at the top.
-    Typed(text:) -> #(
-      Model(
-        ..model,
-        draft: string.slice(text, 0, kept),
-        selected: 0,
-        palette: Listing,
-      ),
-      effect.none(),
-    )
+    // Typing reopens the list and starts it at the top, and says whether
+    // there is now something to send.
+    Typed(text:) -> {
+      let typed =
+        Model(
+          ..model,
+          draft: string.slice(text, 0, kept),
+          selected: 0,
+          palette: Listing,
+        )
+      #(typed, gating(gate(typed)))
+    }
+
+    // An image arriving in an empty editor makes the message sendable, and
+    // the last image leaving it makes it empty again.
+    Holding(attachments:) -> {
+      let holding = Model(..model, attachments:)
+      #(holding, gating(gate(holding)))
+    }
     Moved(direction:) -> #(
       Model(
         ..model,
@@ -218,7 +247,14 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     Accepted -> choose(model, model.selected)
     Picked(index:) -> choose(model, index)
     Dismissed -> #(Model(..model, palette: Closed), effect.none())
-    Sent -> #(model, sending())
+
+    // The chord is refused while there is nothing to send, as the disabled
+    // buttons are, so the server is never asked to refuse an empty message.
+    Sent ->
+      case gate(model) {
+        Open -> #(model, sending())
+        Shut -> #(model, effect.none())
+      }
     Ignored -> #(model, effect.none())
   }
 }
@@ -238,7 +274,8 @@ fn choose(model: Model, index: Int) -> #(Model, Effect(Msg)) {
         Continues, [_, ..] -> Listing
         Continues, [] | Complete, _ -> Closed
       }
-      #(Model(..model, draft: text, selected: 0, palette:), placing(text))
+      let chosen = Model(..model, draft: text, selected: 0, palette:)
+      #(chosen, effect.batch([placing(text), gating(gate(chosen))]))
     }
     [] -> #(model, effect.none())
   }
@@ -294,8 +331,11 @@ fn sending() -> Effect(Msg) {
 // element's shadow root has no slot for, so none is displayed there; each is
 // read here as text, numbered by its `data-n`. `taken` picks the ones this
 // call was told are new, and `joined` says how each meets the draft.
+//
+// A write to the editor fires no `input` event, so the element tells itself
+// what it wrote: a returned prompt makes an empty editor sendable.
 fn restoring(after: Int, up_to: Int) -> Effect(Msg) {
-  use _, root <- effect.after_paint
+  use dispatch, root <- effect.after_paint
   let restored = {
     use area <- result.map(editor(root))
     let held =
@@ -304,14 +344,43 @@ fn restoring(after: Int, up_to: Int) -> Effect(Msg) {
       |> list.filter_map(numbered)
     case composer_rule.taken(held, after, up_to) {
       [] -> Nil
-      [_, ..] as prompts ->
-        ffi_dom.set_value(
-          area,
-          list.fold(prompts, ffi_dom.value(area), composer_rule.joined),
-        )
+      [_, ..] as prompts -> {
+        let text = list.fold(prompts, ffi_dom.value(area), composer_rule.joined)
+        ffi_dom.set_value(area, text)
+        dispatch(Typed(text))
+      }
     }
   }
   result.unwrap(restored, or: Nil)
+}
+
+// Disables the form's submit buttons while the gate is shut and enables them
+// when it opens. The buttons are the server's, drawn beside this element in
+// the form, so they are reached through the form and their own `disabled`
+// attribute: a disabled button raises no submit, and the stylesheet dims it.
+//
+// Known residual: the server swaps Send for Queue and Steer when the strand
+// turns busy, and the new buttons are fresh nodes this element has not gated,
+// so with an empty editor they start enabled until the next keystroke. The
+// server's "Nothing to send." still refuses that press, and no observer is
+// kept to catch the swap.
+fn gating(gate: Gate) -> Effect(Msg) {
+  use _, root <- effect.after_paint
+  let gated = {
+    use form <- result.map(ffi_dom.closest(
+      ffi_dom.host(ffi_dom.as_element(root)),
+      "form",
+    ))
+    form
+    |> ffi_dom.query_selector_all("button[type=\"submit\"]")
+    |> list.each(fn(button) {
+      case gate {
+        Open -> ffi_dom.remove_attribute(button, "disabled")
+        Shut -> ffi_dom.set_attribute(button, "disabled", "")
+      }
+    })
+  }
+  result.unwrap(gated, or: Nil)
 }
 
 // A returned prompt and its number in the server's count. One without a

@@ -57,10 +57,13 @@ import session_view/approval
 import session_view/snapshot_view
 import simplifile
 import support/addresses
+import support/owner_probe
 import support/provider as provider_test
 import support/tool_registry
+import tools/call_record
 import tools/codemode as codemode_tool
 import weft/actor
+import weft/registry as address
 
 // --- the harness -----------------------------------------------------------
 
@@ -485,6 +488,15 @@ fn approve_with_the_wanted_diff(runtime: api.Runtime) -> fn(String) -> Nil {
 // config that production pinned to the empty list, so the second call
 // was refused exactly like the first and an approved grant could not
 // reach a policy decision by any route at all.
+pub fn the_holder_labels_itself_with_its_session_test() {
+  let harness = start_harness(fn() { False }, fn(config) { config })
+  let assert Ok(subject) = address.lookup(harness.escalations.name)
+  let assert Ok(pid) = process.subject_owner(subject)
+  let session = ids.session_id_to_string(api.session_id(harness.runtime))
+  assert owner_probe.label_of(pid)
+    == Some(#([#("session", session)], "escalation"))
+}
+
 pub fn a_runs_grants_reach_policy_composition_test() {
   let harness =
     start_harness_with(fn() { False }, fn(config) { config }, plane: False)
@@ -1514,6 +1526,7 @@ fn narrowed_code_mode() -> codemode_tool.CodeMode {
               ),
             ),
             refusal: codemode_tool.NothingRefused,
+            calls: call_record.empty(),
           )
         False ->
           codemode_tool.Execution(
@@ -1536,6 +1549,7 @@ fn narrowed_code_mode() -> codemode_tool.CodeMode {
               ),
               deadline_ms: code_mode_deadline_ms,
             ),
+            calls: call_record.empty(),
           )
       }
     },

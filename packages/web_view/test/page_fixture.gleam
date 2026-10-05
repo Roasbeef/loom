@@ -25,6 +25,7 @@ import gleam/string
 import lustre/effect.{type Effect}
 import session_view/connection_event
 import session_view/snapshot
+import session_view/snapshot_view
 import web_view/component
 import web_view/sessions
 
@@ -424,7 +425,10 @@ fn started(now: fn() -> Int) -> component.Start(Wire) {
       now:,
       sessions: fn() { [] },
       open: fn(_) { sessions.Declined(sessions.NotHeld) },
+      resume: fn(_, _) { Nil },
       invite: None,
+      home: None,
+      rename: None,
     ),
   )
 }
@@ -584,4 +588,65 @@ pub fn commands(frames: List(String)) -> List(String) {
   list.filter(frames, fn(frame) {
     !string.contains(frame, "\"cmd\":\"snapshot")
   })
+}
+
+/// A pending escalation as a capture's metadata cell, naming the strand
+/// whose call raised it, as the harness stores one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// page_fixture.pending_cell("esc-9", 12, "bash", "main")
+/// ```
+pub fn pending_cell(
+  id: String,
+  seq: Int,
+  tool: String,
+  strand: String,
+) -> snapshot_view.Cell {
+  snapshot_view.Cell(
+    register.FactCustom,
+    "escalation/" <> id,
+    seq,
+    json.Object([
+      #("id", json.String(id)),
+      #("status", json.String("pending")),
+      #("tool", json.String(tool)),
+      #("preview", json.String("printf hi")),
+      #("scope", json.Object([#("strand", json.String(strand))])),
+    ]),
+  )
+}
+
+/// A pending escalation record that names the strand it was raised on.
+///
+/// ## Examples
+///
+/// ```gleam
+/// page_fixture.waiting("esc-1", 7, "bash", "main")
+/// ```
+pub fn waiting(
+  id: String,
+  seq: Int,
+  tool: String,
+  strand: String,
+) -> json.JsonValue {
+  case escalation(id, seq, tool, "{\"command\":\"ls\"}") {
+    json.Object(cell) ->
+      json.Object(
+        list.map(cell, fn(field) {
+          case field {
+            #("value", json.Object(value)) -> #(
+              "value",
+              json.Object([
+                #("scope", json.Object([#("strand", json.String(strand))])),
+                ..value
+              ]),
+            )
+            other -> other
+          }
+        }),
+      )
+    other -> other
+  }
 }

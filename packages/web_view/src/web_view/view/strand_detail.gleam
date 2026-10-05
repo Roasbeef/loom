@@ -12,10 +12,15 @@
 //// `main` is `All strands` and shows the list (docs/design-notes/web-design.md,
 //// section 3.2).
 ////
-//// The figures are the ones a card leaves out. The model comes from the
-//// capture, the context size from the roster and the cache's words from
+//// The figures are the ones a card leaves out. The task is the roster's
+//// title for the strand, the model comes from the capture (its last path
+//// segment, with the whole in a `title`), the context size from the roster
+//// (`Context not reported` while the roster has none, so an empty pane reads
+//// as unknown and not as broken) and the cache's words from
 //// `session_view/cache_miss`, which allows only what the rows proved, so the
-//// view claims no more about the cache than the card's ring does. The
+//// view claims no more about the cache than the card's ring does. Under
+//// `Recent` are the tools the strand ran, or its latest answer's first line
+//// while it ran none. The
 //// elapsed time is counted by the browser from the duration the roster
 //// measured (`<loom-elapsed>`), so the server never renders again only to
 //// move a clock. There is no cost row: the session keeps its cost as a total
@@ -24,8 +29,10 @@
 //// rather than drawn empty.
 ////
 //// Everything here is derived from the session: the name, the status line, the
-//// model and the tool names are drawn as text nodes and never as an
-//// attribute, a class or a key. Every class is a whole literal chosen from a
+//// task, the model, the answer and the tool names are drawn as text nodes and
+//// never as a class or a key. The model's whole identifier is also the
+//// `title` of its row, an escaped tooltip (protocol-change/051, the addendum
+//// of 2026-10-03 on the right panel). Every class is a whole literal chosen from a
 //// closed type. The marker on the back link is the number `0`, fixed here.
 
 import gleam/int
@@ -34,6 +41,7 @@ import gleam/option.{None, Some}
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
+import session_view/agent_view
 import session_view/strand_card
 import web_view/view/strip.{type Chip}
 
@@ -56,13 +64,10 @@ pub fn view(chip: Chip) -> Element(message) {
       [html.text("← Strands")],
     ),
     html.div([attribute.class("detail-head")], [
-      strip.ring(chip.cache, strip.Detail),
+      strip.ring(chip, strip.Detail),
       html.div([attribute.class("detail-title")], [
         html.span([attribute.class("detail-name")], [html.text(line.name)]),
-        html.span(
-          [attribute.class("chip-status"), strip.status_class(line.status)],
-          [html.text(strand_card.status_line(line))],
-        ),
+        strip.status(line),
       ]),
     ]),
     html.dl([attribute.class("detail-figures")], figures(chip)),
@@ -74,13 +79,23 @@ pub fn view(chip: Chip) -> Element(message) {
 // not drawn: an empty row would read as a value.
 fn figures(chip: Chip) -> List(Element(message)) {
   list.flatten([
+    case strand_card.task_words(chip.line.title) {
+      Some(task) -> figure("Task", [html.text(task)])
+      None -> []
+    },
     case chip.model {
       "" -> []
-      model -> figure("Model", [html.text(model)])
+      model if model == agent_view.model_unavailable -> []
+      model ->
+        figure("Model", [
+          html.span([attribute.title(model)], [
+            html.text(strand_card.model_name(model)),
+          ]),
+        ])
     },
     case strand_card.context_words(chip.line.tokens) {
       Some(words) -> figure("Context", [html.text(words)])
-      None -> []
+      None -> figure("Context", [html.text("not reported")])
     },
     case chip.cache {
       Some(#(_, words)) -> figure("Cache", [html.text(words)])
@@ -114,14 +129,17 @@ fn figure(
 }
 
 // The tools the strand ran most recently, newest last as `agent_view` bounds
-// them, or a line saying there are none.
+// them. With none, the first line of its latest answer when it has given one,
+// and otherwise a line saying there is nothing yet.
 fn recent(chip: Chip) -> Element(message) {
   html.section([attribute.class("detail-recent")], [
     html.h3([attribute.class("panel-title")], [html.text("Recent")]),
-    case chip.recent {
-      [] ->
+    case chip.recent, chip.answer {
+      [], Some(answer) ->
+        html.p([attribute.class("detail-answer")], [html.text(answer)])
+      [], None ->
         html.p([attribute.class("pane-empty")], [html.text("No tools yet.")])
-      tools ->
+      tools, _ ->
         html.ul(
           [attribute.class("detail-tools")],
           list.map(tools, fn(tool) { html.li([], [html.text(tool)]) }),

@@ -43,6 +43,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import lustre
 import lustre/attribute
 import lustre/effect.{type Effect}
@@ -53,6 +54,7 @@ import lustre/event
 import session_view/approval
 import session_view/operator
 import session_view/snapshot
+import session_view/turns
 import web_view/completion
 import web_view/component
 import web_view/image
@@ -60,6 +62,7 @@ import web_view/invites
 import web_view/sessions
 import web_view/view/controls
 import web_view/view/lane
+import web_view/view/resume
 import web_view/view/share
 import web_view/view/shell
 import web_view/view/sidebar
@@ -97,6 +100,13 @@ pub type Msg(socket) {
   /// (protocol-change/051, the addendum on switching sessions).
   Opening(session: String)
 
+  /// A saved sidebar row's button: the operator asks the daemon to resume that
+  /// session and open its page (protocol-change/065, the third pull request).
+  /// The identity is the catalogue's, as for `Opening`, and the daemon checks
+  /// the page's ceiling and the principal's role in the session before it opens
+  /// anything.
+  Resuming(session: String)
+
   /// One of the invitation control's two buttons: the owner asks the daemon
   /// to invite a person to this session, in the role the button names. The
   /// role is the message's, fixed when the tree was drawn, and the control is
@@ -107,6 +117,13 @@ pub type Msg(socket) {
   /// The invitation control's "Hide the token" button: the owner has copied
   /// the invitation and the page drops it.
   Dismissing
+
+  /// The rename control's submit: the owner asks the daemon to give this
+  /// page's session the name the field held. The name is the browser's text and
+  /// nothing else is: the session, the principal and the right to rename are
+  /// the daemon's, read again when the request runs (protocol-change/067). The
+  /// control is drawn only on an owner's page.
+  Renaming(name: String)
 }
 
 /// The Lustre application for one session's operator page.
@@ -142,6 +159,7 @@ pub fn update(
   model: component.Model(socket),
   message: Msg(socket),
 ) -> #(component.Model(socket), Effect(Msg(socket))) {
+  let before = component.notice(model)
   let #(model, effects) = case message {
     Observed(message:) -> component.update(model, message)
     Submitted(text:, delivery:, images:) ->
@@ -150,8 +168,18 @@ pub fn update(
     Controlled(control:) -> component.control(model, control)
     Replying(key:) -> component.reply(model, key)
     Opening(session:) -> component.switch_to(model, session)
+    Resuming(session:) -> component.resume(model, session)
     Inviting(role:) -> component.invite(model, role)
     Dismissing -> #(component.dismiss_invitation(model), effect.none())
+    Renaming(name:) -> component.renaming(model, name)
+  }
+
+  // A notice that changed is a new element, which fades from the start. One
+  // that did not is left alone, so a background refresh does not restart the
+  // fade of the words already on screen.
+  let model = case component.notice(model) == before {
+    True -> model
+    False -> component.renew_notice(model)
   }
   #(model, effect.map(effects, Observed))
 }
@@ -203,7 +231,7 @@ pub fn update(
 pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
   shell.view(
     shell.Operator,
-    component.heading(model),
+    component.heading(model, Observed(component.GoingHome)),
     sidebar_place(model),
     [
       component.crumb(model),
@@ -220,11 +248,14 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
       ),
       html.footer([attribute.class("dock")], [
         component.plan(model),
-        controls.view(bar(model)),
-        approvals(component.pending(model)),
+        controls.dock(bar(model)),
+        approvals(component.pending(model), component.raised_on(model)),
         composer(model),
       ]),
-      departure(model),
+
+      // The element that moves the browser to another page is always the
+      // centre's last child, so no admitted path moves with it.
+      component.switch(model),
     ],
     component.panel(
       model,
@@ -238,6 +269,8 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
           done: Dismissing,
         ),
       ),
+      controls.session(bar(model)),
+      component.rename_form(model, form_submit_text(Renaming)),
     ),
     component.needing(model),
     component.workspace_digest(model),
@@ -256,6 +289,7 @@ fn sidebar_place(model: component.Model(socket)) -> shell.Sidebar(Msg(socket)) {
         component.session_id(model),
         sidebar.bars(component.strip(model)),
         Opening,
+        resume.Offered(Resuming, component.resuming_session(model)),
       ))
   }
 }
@@ -271,25 +305,6 @@ fn openable(
   |> option.map(fn(entry) {
     lane.Destination(label: sessions.label(entry), press: Opening(entry.id))
   })
-}
-
-// The element that moves the browser to another session's page. It is always
-// the centre's last child, so no admitted path moves with it, and it carries
-// the address only after the daemon has minted a ticket
-// (`web_client/switch`, which checks the address again before it navigates).
-// It is hidden and holds nothing the reader sees.
-fn departure(model: component.Model(socket)) -> Element(Msg(socket)) {
-  element.element(
-    "loom-switch",
-    [
-      attribute.attribute("hidden", ""),
-      ..case component.departure(model) {
-        Some(address) -> [attribute.attribute("to", address)]
-        None -> []
-      }
-    ],
-    [],
-  )
 }
 
 // The controls, with what each sends. The fork form sends its text as one
@@ -313,6 +328,25 @@ fn form_submit(
   control: fn(String) -> component.Control,
 ) -> attribute.Attribute(Msg(socket)) {
   event.on("submit", written(control)) |> event.prevent_default
+}
+
+// A form's submit as the message `to_message` makes of its one text field, with
+// the same total decoding the control forms have: exactly one field, named
+// `text`.
+fn form_submit_text(
+  to_message: fn(String) -> Msg(socket),
+) -> attribute.Attribute(Msg(socket)) {
+  event.on("submit", written_text(to_message)) |> event.prevent_default
+}
+
+fn written_text(
+  to_message: fn(String) -> Msg(socket),
+) -> decode.Decoder(Msg(socket)) {
+  use fields <- decode.subfield(["detail", "formData"], decode.list(field()))
+  case control_text(fields) {
+    Ok(text) -> decode.success(to_message(text))
+    Error(Nil) -> decode.failure(to_message(""), "text form")
+  }
 }
 
 fn written(
@@ -361,7 +395,10 @@ pub const approvals_marker = "loom-approvals"
 // and this one, whether or not a card is drawn, so the path a browser event
 // names for the composer's form is the same before and after a card
 // appears, and a submit in flight still reaches the form.
-fn approvals(pending: List(approval.Review)) -> Element(Msg(socket)) {
+fn approvals(
+  pending: List(approval.Review),
+  raised_on: List(#(String, String)),
+) -> Element(Msg(socket)) {
   case pending {
     [] -> element.none()
     [_, ..] ->
@@ -375,7 +412,7 @@ fn approvals(pending: List(approval.Review)) -> Element(Msg(socket)) {
           keyed.div(
             [attribute.class("approval-list")],
             list.map(pending, fn(record) {
-              #(int.to_string(record.seq), card(record))
+              #(int.to_string(record.seq), card(record, raised_on))
             }),
           ),
         ],
@@ -389,15 +426,24 @@ fn approvals(pending: List(approval.Review)) -> Element(Msg(socket)) {
 // record's whole authority was captured, which `approval.presentation`
 // decides.
 //
+// The header says who waits and what for, as a sentence: the strand's name,
+// which is session text and a text node, then `approval.wants`, a fixed table
+// of words for the harness's own tools. The question is the quiet line under
+// it.
+//
 // The action row carries `arming`, which the stylesheet uses to refuse
 // clicks on the row for 600 ms after the card is inserted, with the buttons
-// drawn dimmed meanwhile. A card appears above the composer when the agent
-// decides, so a click already on its way to the bottom of the transcript
-// could otherwise land on Allow. The delay is a CSS animation, so it needs
-// no script and no timer here, and it runs once per inserted card: cards
-// are keyed by sequence, so a later patch updates the same node rather
-// than inserting a new one, and the animation does not start again.
-fn card(record: approval.Review) -> Element(Msg(socket)) {
+// drawn dimmed and the row's note, `Arming…`, shown meanwhile. A card appears
+// above the composer when the agent decides, so a click already on its way to
+// the bottom of the transcript could otherwise land on Allow. The delay is a
+// CSS animation, so it needs no script and no timer here, and it runs once
+// per inserted card: cards are keyed by sequence, so a later patch updates
+// the same node rather than inserting a new one, and the animation does not
+// start again.
+fn card(
+  record: approval.Review,
+  raised_on: List(#(String, String)),
+) -> Element(Msg(socket)) {
   let tool = case record.tool {
     "" -> "this request"
     tool -> tool
@@ -408,19 +454,32 @@ fn card(record: approval.Review) -> Element(Msg(socket)) {
       "Deny " <> tool,
       Decided(record.id, record.seq, component.Deny),
     )
+  let head =
+    html.p([attribute.class("approval-head")], [
+      html.b([attribute.class("approval-strand")], [
+        html.text(case list.key_find(raised_on, record.id) {
+          Ok(strand) -> strand
+          Error(Nil) -> "A strand"
+        }),
+      ]),
+      html.text(" wants to " <> approval.wants(record.tool)),
+    ])
+  let arming = html.span([attribute.class("arm-note")], [html.text("Arming…")])
   case approval.presentation(record) {
     Ok(shown) ->
       html.article([attribute.class("approval-card")], [
-        html.p([attribute.class("approval-head")], [
-          html.text("Waits for approval · " <> tool),
-        ]),
+        head,
         html.p([attribute.class("approval-question")], [
           html.text(shown.question),
         ]),
         html.pre([attribute.class("approval-action")], [html.text(shown.action)]),
         html.ul(
           [attribute.class("approval-authority")],
-          list.map(shown.authority, fn(line) { html.li([], [html.text(line)]) }),
+          list.map(shown.authority, fn(line) {
+            // The terminal's lines carry their own dash, and a list item
+            // draws its own marker.
+            html.li([], [html.text(string.drop_start(line, 2))])
+          }),
         ),
         html.div(
           [attribute.class("approval-actions"), attribute.class("arming")],
@@ -431,20 +490,19 @@ fn card(record: approval.Review) -> Element(Msg(socket)) {
               "Allow " <> tool <> " once",
               Decided(record.id, record.seq, component.AllowOnce),
             ),
+            arming,
           ],
         ),
       ])
     Error(reason) ->
       html.article([attribute.class("approval-card")], [
-        html.p([attribute.class("approval-head")], [
-          html.text("Waits for approval · " <> tool),
-        ]),
+        head,
         html.p([attribute.class("approval-question")], [
           html.text("This request cannot be approved from the page: " <> reason),
         ]),
         html.div(
           [attribute.class("approval-actions"), attribute.class("arming")],
-          [deny],
+          [deny, arming],
         ),
       ])
   }
@@ -465,13 +523,16 @@ fn button(
   )
 }
 
-// The composer: who the page acts as and whom it addresses, the editor, and
-// the actions. The editor is uncontrolled and keyed by how many drafts have
-// been sent, so a sent draft is replaced by an empty editor and a refused
-// one stays as the operator left it. The only handler is the form's submit;
-// Enter in the editor is a newline, never a submission and never a
-// decision.
+// The composer, as a card of three rows: whom it addresses, the editor, and
+// a footer holding the hint, the attach button, who the page acts as and the
+// actions. The editor is uncontrolled and keyed by how many drafts have been
+// sent, so a sent draft is replaced by an empty editor and a refused one
+// stays as the operator left it. The attach element is keyed the same way, so
+// a sent draft leaves with its attachments, and it sits in the footer so its
+// button is the footer's icon. The only handler is the form's submit; Enter in
+// the editor is a newline, never a submission and never a decision.
 fn composer(model: component.Model(socket)) -> Element(Msg(socket)) {
+  let sent = int.to_string(component.drafts(model))
   html.form(
     [
       attribute.class("composer"),
@@ -479,39 +540,60 @@ fn composer(model: component.Model(socket)) -> Element(Msg(socket)) {
       event.on("submit", composed()) |> event.prevent_default,
     ],
     [
-      identity(model),
+      addressing(model),
       keyed.div([attribute.class("editor")], [
-        #("draft-" <> int.to_string(component.drafts(model)), draft(model)),
+        #("draft-" <> sent, draft(model)),
       ]),
       html.div([attribute.class("composer-actions")], [
-        notice(component.notice(model)),
+        keyed.div([attribute.class("attach-slot")], [
+          #("attach-" <> sent, attach()),
+        ]),
+        html.span([attribute.class("hint")], [
+          html.text(hint(component.activity(model))),
+        ]),
+        keyed.div([attribute.class("notice-slot")], [
+          #(
+            int.to_string(component.notice_serial(model)),
+            notice(component.notice(model)),
+          ),
+        ]),
+        html.span([attribute.class("foot-space")], []),
+        who(model),
+        outlook(component.addressed(model)),
         ..actions(component.activity(model))
       ]),
     ],
   )
 }
 
-// The draft a sent prompt replaces: the editor, and the element that attaches
-// images to it. Both are keyed together by how many drafts have been sent, so
-// a sent draft leaves with its attachments and a refused one keeps them.
-//
-// `<loom-attach>` is form-associated, so its images join the form as one
-// field named `images`, in the same submit as the draft
-// (protocol-change/051, the addendum on images). Its `limits` attribute is the
-// daemon's own numbers and media types (`web_view/image.limits_attribute`) and
-// holds no session text.
+// The footer's hint: the key that sends, and that the turn is busy when it
+// is.
+fn hint(activity: component.Activity) -> String {
+  case activity {
+    component.Idle -> "Cmd+Enter to send"
+    component.Busy -> "Turn is busy · Cmd+Enter to send"
+  }
+}
+
+// The element that attaches images to the draft. `<loom-attach>` is
+// form-associated, so its images join the form as one field named `images`,
+// in the same submit as the draft (protocol-change/051, the addendum on
+// images). Its `limits` attribute is the daemon's own numbers and media types
+// (`web_view/image.limits_attribute`) and holds no session text.
+fn attach() -> Element(Msg(socket)) {
+  element.element(
+    "loom-attach",
+    [
+      attribute.name("images"),
+      attribute.attribute("limits", image.limits_attribute()),
+    ],
+    [],
+  )
+}
+
+// The editor's wrapper: the draft a sent prompt replaces.
 fn draft(model: component.Model(socket)) -> Element(Msg(socket)) {
-  html.div([attribute.class("draft")], [
-    editor(model),
-    element.element(
-      "loom-attach",
-      [
-        attribute.name("images"),
-        attribute.attribute("limits", image.limits_attribute()),
-      ],
-      [],
-    ),
-  ])
+  html.div([attribute.class("draft")], [editor(model)])
 }
 
 // The editor, inside `<loom-composer>` (`packages/web_client`), which lists
@@ -559,30 +641,34 @@ fn editor(model: component.Model(socket)) -> Element(Msg(socket)) {
   )
 }
 
-// Who the page acts as, from the attachment the last capture was taken
-// for, the strand the composer addresses, and what may be said about that
-// strand's prompt cache, where the operator decides to send now or later.
-fn identity(model: component.Model(socket)) -> Element(Msg(socket)) {
-  let who = case component.attachment(model) {
-    None -> [html.span([attribute.class("identity-name")], [html.text("…")])]
-    Some(attachment) -> [
-      html.span([attribute.class("identity-name")], [
-        html.text(origin.display_label(attachment.origin)),
-      ]),
-      html.span([attribute.class("role-badge")], [
-        html.text(role_text(attachment.role)),
-      ]),
-    ]
-  }
-  html.div(
-    [attribute.class("identity")],
-    list.append(who, [
-      html.span([attribute.class("addressed")], [
-        html.text("→ " <> component.strand(model)),
-      ]),
-      outlook(component.addressed(model)),
+// The line above the editor: whom the composer addresses, as a tag in the
+// strand's hue. The tag has no handler and no marker, so it is a label and
+// not a control; the target menu is ruled out of the page.
+fn addressing(model: component.Model(socket)) -> Element(Msg(socket)) {
+  html.div([attribute.class("to")], [
+    html.span([], [html.text("To")]),
+    html.span([attribute.class("to-tag"), strip.hue_class(hue(model))], [
+      html.text(component.strand(model)),
     ]),
-  )
+  ])
+}
+
+fn hue(model: component.Model(socket)) -> turns.Hue {
+  component.marks(model).hue
+}
+
+// Who the page acts as, from the attachment the last capture was taken for,
+// in the footer's quiet type: `Owner · operator`.
+fn who(model: component.Model(socket)) -> Element(Msg(socket)) {
+  html.span([attribute.class("who")], [
+    html.text(case component.attachment(model) {
+      None -> "…"
+      Some(attachment) ->
+        origin.display_label(attachment.origin)
+        <> " · "
+        <> role_text(attachment.role)
+    }),
+  ])
 }
 
 // The addressed strand's cache outlook, drawn as the chip's ring is and
@@ -605,9 +691,9 @@ fn outlook(chip: Option(strip.Chip)) -> Element(Msg(socket)) {
 
 fn role_text(role: snapshot.Role) -> String {
   case role {
-    snapshot.Owner -> "Owner"
-    snapshot.Operator -> "Operator"
-    snapshot.Observer -> "Observer"
+    snapshot.Owner -> "owner"
+    snapshot.Operator -> "operator"
+    snapshot.Observer -> "observer"
   }
 }
 

@@ -149,3 +149,30 @@ pub fn a_lone_frame_wakes_the_reader_at_once_test() {
   let trace = replay([500, 900])
   assert trace.wakes == [500, 900]
 }
+
+// A reader that has just sent a frame is waiting for its answer, so the
+// reply wakes it at once even inside the interval, and the interval opens
+// again from that wake. Without this every stop-and-wait round trip waited
+// for the interval's end.
+pub fn a_reply_to_the_readers_send_wakes_at_once_test() {
+  let assert #(pacing, websocket.WakeNow) =
+    websocket.pace(websocket.start_pacing(99), 100, interval)
+  let pacing = websocket.asked(pacing)
+  let assert #(pacing, websocket.WakeNow) =
+    websocket.pace(pacing, 102, interval)
+  assert pacing == websocket.Open(102 + interval)
+
+  // Frames the reader did not ask for are paced again from that wake.
+  let assert #(_, websocket.WakeIn(delay_ms:)) =
+    websocket.pace(pacing, 105, interval)
+  assert delay_ms == 102 + interval - 105
+}
+
+// A send while a wake is already scheduled leaves that wake to announce the
+// reply: its timer cannot be withdrawn, so waking early too would spend two
+// wakes on the same frames.
+pub fn a_send_does_not_add_to_a_scheduled_wake_test() {
+  assert websocket.asked(websocket.Scheduled) == websocket.Scheduled
+  let assert #(websocket.Scheduled, websocket.Covered) =
+    websocket.pace(websocket.asked(websocket.Scheduled), 10, interval)
+}

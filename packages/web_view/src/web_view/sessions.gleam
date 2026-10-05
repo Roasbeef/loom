@@ -21,12 +21,15 @@
 //// state them without a page: `grouped` puts the workspace of the session
 //// on screen first, then the workspaces by their newest session, and orders
 //// the sessions of a workspace newest first. Recency is the catalogue's
-//// creation time, which is all the catalogue records; the daemon's activity
-//// read is an owner's control command that a page does not make.
+//// creation time, which is all the catalogue records. The home page also shows
+//// what each running session is doing (`Activity`), which the catalogue does
+//// not record: the daemon asks the sessions themselves, off the page's runtime,
+//// and hands over one state word for each.
 
 import gleam/dict
 import gleam/int
 import gleam/list
+import gleam/option.{type Option}
 import gleam/order
 import gleam/string
 
@@ -41,8 +44,16 @@ pub type Residency {
   /// The daemon holds the session open, or is opening or closing it.
   Live
 
-  /// The session is on disk and nothing runs it.
+  /// The session is on disk, nothing runs it, and the daemon would open it on
+  /// an operator's request.
   Saved
+
+  /// The session is on disk, nothing runs it, and the daemon will not open it
+  /// from a page: its creation was never reconciled, or recovery stopped it
+  /// and needs the owner. A row for it is text at every ceiling, and the
+  /// words say "saved", as they do for `Saved`, because the page cannot tell
+  /// the person more than the catalogue does.
+  Blocked
 }
 
 /// One session in the sidebar.
@@ -60,6 +71,12 @@ pub type Entry {
     created_at: Int,
     /// Whether a process runs the session.
     residency: Residency,
+    /// The first line of the first prompt a person sent the session, at most
+    /// 60 characters, which the daemon derived once and never changes
+    /// (protocol-change/067). It is a person's own words, so a page draws it as
+    /// a text node and nowhere else: never an attribute, a class, a key or a
+    /// title. A session with no prompt, or one older than the field, has none.
+    subtitle: Option(String),
   )
 }
 
@@ -71,7 +88,7 @@ pub type Entry {
 /// ## Examples
 ///
 /// ```gleam
-/// assert sessions.label(Entry("0198a2f4-7c3b", "", "/w", 0, Saved))
+/// assert sessions.label(Entry("0198a2f4-7c3b", "", "/w", 0, Saved, None))
 ///   == "Session 0198a2f4"
 /// ```
 pub fn label(entry: Entry) -> String {
@@ -81,12 +98,85 @@ pub fn label(entry: Entry) -> String {
   }
 }
 
-/// What the daemon answers when an operator's page asks to open another
-/// session (protocol-change/051, the addendum on switching sessions).
+/// What a running session is doing now, as the daemon's activity read
+/// (protocol-change/050) says it. The read says more, and only this word
+/// reaches the home page; a state the page does not know is no activity, and
+/// the row says nothing about it.
+pub type Activity {
+  /// An escalation is pending, or the main strand's last run failed and it
+  /// has nothing running: the session waits for its operator.
+  NeedsYou
+
+  /// A strand has a current operation.
+  Working
+
+  /// Nothing is pending and nothing is running.
+  Idle
+}
+
+/// The activity a state word of the daemon's `sessions.activity` reply names,
+/// or nothing for a word this page does not know, including `unknown`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert sessions.activity_of("needs_you") == Ok(sessions.NeedsYou)
+/// assert sessions.activity_of("unknown") == Error(Nil)
+/// ```
+pub fn activity_of(state: String) -> Result(Activity, Nil) {
+  case state {
+    "needs_you" -> Ok(NeedsYou)
+    "working" -> Ok(Working)
+    "idle" -> Ok(Idle)
+    _ -> Error(Nil)
+  }
+}
+
+/// The words a row shows for an activity.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert sessions.activity_words(sessions.NeedsYou) == "needs you"
+/// ```
+pub fn activity_words(activity: Activity) -> String {
+  case activity {
+    NeedsYou -> "needs you"
+    Working -> "working"
+    Idle -> "idle"
+  }
+}
+
+/// How long ago `then` was, as `now` sees it, both in Unix milliseconds: "just
+/// now" under a minute, then whole minutes, hours and days, and "over a month
+/// ago" from thirty days, where the row's `title` has the exact UTC time. A `then` after `now`, as a clock that stepped back gives,
+/// is "just now" too. The creation time the catalogue records is the only
+/// instant a row has, so this is what "recent" means on the home page.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert sessions.ago(7_300_000, 100_000) == "2h ago"
+/// ```
+pub fn ago(now: Int, then: Int) -> String {
+  let seconds = int.max(now - then, 0) / 1000
+  case seconds {
+    _ if seconds < 60 -> "just now"
+    _ if seconds < 3600 -> int.to_string(seconds / 60) <> "m ago"
+    _ if seconds < 86_400 -> int.to_string(seconds / 3600) <> "h ago"
+    _ if seconds < 2_592_000 -> int.to_string(seconds / 86_400) <> "d ago"
+    _ -> "over a month ago"
+  }
+}
+
+/// What the daemon answers when a page asks to open another session
+/// (protocol-change/051, the addendum on switching sessions), to resume a saved
+/// one or to go home (protocol-change/065, the second and third pull
+/// requests).
 pub type Answer {
   /// The daemon minted a ticket. `path` is the ticket's exchange,
-  /// `/ui/sessions/<id>?ticket=<ticket>`, which the browser navigates to. The
-  /// ticket is single use and lives 60 seconds.
+  /// `/ui/sessions/<id>?ticket=<ticket>` or `/ui/home?ticket=<ticket>`, which
+  /// the browser navigates to. The ticket is single use and lives 60 seconds.
   Ticketed(path: String)
 
   /// The daemon minted nothing. Every page shows the fixed words for the
@@ -108,6 +198,24 @@ pub type Reason {
 
   /// The daemon could not answer: it was starting, stopping or slow.
   Unavailable
+
+  /// The principal holds the session, but only as an observer, so the daemon
+  /// will not run it for them. The control command makes the same refusal
+  /// (`OpenSession` needs Operator or Owner on the target), and the page's
+  /// words are its, not a claim about the session.
+  NotOperator
+
+  /// The daemon tried to open a saved session and it did not become resident
+  /// in time, or the registry refused the open (capacity, an archived or
+  /// blocked session). The page says one thing for each, and no text from the
+  /// open reaches it; the daemon logs the class.
+  NotOpened
+
+  /// The daemon could not mint a ticket for the home page: the page's own
+  /// standing had ended or its credential no longer authenticates. It is the
+  /// one reason a request to go home has, so it has its own words rather than
+  /// the switch's, which speak of a session.
+  NoHome
 }
 
 /// The words a page shows for a declined switch. They are fixed here, one per
@@ -125,6 +233,9 @@ pub fn reason_words(reason: Reason) -> String {
     NotRunning ->
       "That session is not running. Resume it from a terminal, then open it here."
     Unavailable -> "The daemon could not open that session. Try again."
+    NotOperator -> "Ask an operator to resume it."
+    NotOpened -> "That session did not open. Resume it from a terminal."
+    NoHome -> "The daemon could not open the home page. Try again."
   }
 }
 

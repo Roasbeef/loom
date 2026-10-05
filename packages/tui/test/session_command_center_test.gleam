@@ -23,7 +23,7 @@ import tui/workspace
 import weft
 
 fn session(id: String, workspace: String, status) -> protocol.Session {
-  protocol.Session(id, workspace, id, 1, status)
+  protocol.Session(id, workspace, id, 1, status, option.None)
 }
 
 fn activity(id: String, state) -> protocol.Activity {
@@ -289,7 +289,7 @@ pub fn an_empty_wide_picker_draws_no_divider_test() {
   let screen = geometry.rect_new(0, 0, 150, 30)
   let state = session_selector.new(protocol.Page(1, [], None), "")
   let lines =
-    session_selector.render(buffer.buffer_new(screen), screen, state)
+    session_selector.render(buffer.buffer_new(screen), screen, state, 0)
     |> frame.buffer_to_lines
   let assert Ok(advice) =
     list.find(lines, fn(line) { string.contains(line, "No saved sessions") })

@@ -111,6 +111,11 @@ pub type ClaimRefusal {
   /// the presented digest is the claim's own.
   ConflictingClaim
 
+  /// The invitee's chosen display name is blank after trimming, longer than
+  /// 256 bytes, or holds a control character. The claim binds nothing and
+  /// stays open, so the invitee can try again with another name.
+  InvalidClaimName
+
   /// The catalogue could not answer or refused the write.
   ClaimStore(error: Error)
 }
@@ -313,7 +318,7 @@ pub fn bootstrap_owner(
   display_name: String,
   digest: Digest,
 ) -> Result(Principal, Error) {
-  use proposed <- result.try(principal(proposed_id, display_name, "owner"))
+  use proposed <- result.try(new_principal(proposed_id, display_name, "owner"))
   catalogue.atomic(store, fn() {
     case owner(store) {
       Error(Missing) -> insert_principal(store, proposed, digest)
@@ -350,7 +355,7 @@ pub fn create_member(
   display_name: String,
   digest: Digest,
 ) -> Result(Principal, Error) {
-  use proposed <- result.try(principal(id, display_name, "member"))
+  use proposed <- result.try(new_principal(id, display_name, "member"))
   catalogue.atomic(store, fn() { insert_principal(store, proposed, digest) })
 }
 
@@ -394,7 +399,7 @@ pub fn invite_member(
   session_id: String,
   role: Role,
 ) -> Result(Principal, Error) {
-  use proposed <- result.try(principal(id, name, "member"))
+  use proposed <- result.try(new_principal(id, name, "member"))
   catalogue.atomic(store, fn() {
     use _ <- result.try(catalogue.get(store, session_id))
     use Nil <- result.try(absent(get(store, proposed.id)))
@@ -524,19 +529,28 @@ pub fn claim_known(store: Catalogue, claim: ClaimDigest) -> Result(Nil, Error) {
 /// hold no active credential. Then the credential is inserted and the claim
 /// marked claimed at `now_ms`, a wall-clock instant in Unix milliseconds.
 ///
+/// `name` is the display name the invitee chose, or `None` to keep the one
+/// the inviter gave. A chosen name is trimmed, checked by the rule every
+/// display name meets, and written in the same transaction as the credential,
+/// so a refused name (`InvalidClaimName`) binds nothing and leaves the claim
+/// open. Only the redemption that binds applies it: the replay of a lost reply
+/// answers the principal as it stands and never renames, whatever name it
+/// carries. Events already admitted keep the name they were admitted under.
+///
 /// `equal` compares two digests. The daemon passes a constant-time
 /// comparison; this package has no cryptographic dependency of its own.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // access.claim(store, claim, credential, now_ms, constant_time_equal)
+/// // access.claim(store, claim, credential, Some("Alex"), now_ms, constant_time_equal)
 /// ```
 @internal
 pub fn claim(
   store: Catalogue,
   claim: ClaimDigest,
   presented: Digest,
+  name: Option(String),
   now_ms: Int,
   equal: fn(String, String) -> Bool,
 ) -> Result(Claimed, ClaimRefusal) {
@@ -544,9 +558,10 @@ pub fn claim(
     catalogue.atomic(store, fn() {
       // A refusal commits an empty transaction, since every refusal precedes
       // every write. A store failure rolls back whatever had been written.
-      case redeem(store, claim, presented, now_ms, equal) {
+      case redeem(store, claim, presented, name, now_ms, equal) {
         Ok(claimed) -> Ok(Ok(claimed))
         Error(ClaimStore(error)) -> Error(error)
+        Error(InvalidClaimName) -> Ok(Error(InvalidClaimName))
         Error(UnknownClaim) -> Ok(Error(UnknownClaim))
         Error(ExpiredClaim) -> Ok(Error(ExpiredClaim))
         Error(ConflictingClaim) -> Ok(Error(ConflictingClaim))
@@ -562,6 +577,7 @@ fn redeem(
   store: Catalogue,
   claim: ClaimDigest,
   presented: Digest,
+  name: Option(String),
   now_ms: Int,
   equal: fn(String, String) -> Bool,
 ) -> Result(Claimed, ClaimRefusal) {
@@ -585,7 +601,7 @@ fn redeem(
       }
     }
 
-    OpenClaim -> bind(store, row, presented, now_ms, equal)
+    OpenClaim -> bind(store, row, presented, name, now_ms, equal)
   }
 }
 
@@ -593,6 +609,7 @@ fn bind(
   store: Catalogue,
   row: ClaimRow,
   presented: Digest,
+  name: Option(String),
   now_ms: Int,
   equal: fn(String, String) -> Bool,
 ) -> Result(Claimed, ClaimRefusal) {
@@ -611,6 +628,18 @@ fn bind(
     no_active_credential(store, row.principal_id) |> result.map_error(refusal),
   )
 
+  // The name is judged before the first write, so a refused one leaves the
+  // claim open and the principal as the inviter named it.
+  use chosen <- result.try(case name {
+    None -> Ok(None)
+    Some(given) -> {
+      let trimmed = string.trim(given)
+      new_name(trimmed)
+      |> result.replace_error(InvalidClaimName)
+      |> result.replace(Some(trimmed))
+    }
+  })
+
   // The credential row first: the claim's `credential_digest` references it.
   use Nil <- result.try(
     stored(catalogue.statement(
@@ -628,6 +657,14 @@ fn bind(
       ),
     )),
   )
+  use Nil <- result.try(case chosen {
+    None -> Ok(Nil)
+    Some(display_name) ->
+      stored(catalogue.statement(
+        store,
+        sql.rename_access_principal(display_name, row.principal_id),
+      ))
+  })
   claimed(store, row.principal_id)
 }
 
@@ -863,7 +900,8 @@ pub fn rename(
   id: String,
   display_name: String,
 ) -> Result(Principal, Error) {
-  use Nil <- result.try(valid_name(display_name))
+  let display_name = string.trim(display_name)
+  use Nil <- result.try(new_name(display_name))
   catalogue.atomic(store, fn() {
     use found <- result.try(get(store, id))
     use Nil <- result.try(catalogue.statement(
@@ -1061,9 +1099,17 @@ fn credential(store: Catalogue, digest: Digest) {
   }
 }
 
+// A principal about to be written: the name must meet the stricter rule for
+// new names, then the row is built as one read back would be.
+fn new_principal(id: String, display_name: String, kind: String) {
+  use Nil <- result.try(new_name(display_name))
+  principal(id, display_name, kind)
+}
+
+// A principal read back from the catalogue, or built from a validated write.
 fn principal(id: String, display_name: String, kind: String) {
   use Nil <- result.try(valid_id(id))
-  use Nil <- result.try(valid_name(display_name))
+  use Nil <- result.try(stored_name(display_name))
   case kind {
     "owner" -> Ok(Principal(id, display_name, OwnerPrincipal))
     "member" -> Ok(Principal(id, display_name, MemberPrincipal))
@@ -1085,7 +1131,15 @@ fn valid_id(id: String) {
   }
 }
 
-fn valid_name(name: String) {
+// The rule for a name already in the catalogue, applied when a row is read.
+//
+// It is deliberately the older, looser rule: nonblank, at most 256 bytes, no
+// control characters. A row written before `new_name` refused invisible and
+// direction-changing characters must still decode, or authentication and every
+// listing would fail for that principal after an upgrade. Decoding never
+// rewrites a name; it only declines to be the place a stored name is judged
+// against a rule it did not have when it was written.
+fn stored_name(name: String) {
   case
     string.trim(name) != ""
     && string.byte_size(name) <= 256
@@ -1099,6 +1153,27 @@ fn valid_name(name: String) {
       Error(Invalid(
         "display name must be nonblank, at most 256 bytes, and contain no controls",
       ))
+  }
+}
+
+// The rule for a name about to be written (claim, rename, invitation): the
+// stored rule plus no zero-width or direction-changing character, since a
+// name is drawn beside other text and such a character reorders it or leaves
+// the name drawing as nothing. It is stricter than `stored_name` only on
+// writes so that tightening it cannot strand an existing row.
+fn new_name(name: String) {
+  case
+    stored_name(name),
+    list.any(string.to_utf_codepoints(name), fn(point) {
+      catalogue.invisible(string.utf_codepoint_to_int(point))
+    })
+  {
+    Ok(Nil), False -> Ok(Nil)
+    Ok(Nil), True ->
+      Error(Invalid(
+        "display name must be nonblank, at most 256 bytes, and contain no controls or invisible characters",
+      ))
+    Error(error), _ -> Error(error)
   }
 }
 

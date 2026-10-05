@@ -2,6 +2,7 @@ import etui/backend
 import etui/buffer
 import etui/geometry
 import etui/keys
+import etui/style
 import etui/text
 import gleam/dict
 import gleam/int
@@ -29,6 +30,7 @@ fn sessions() -> List(protocol.Session) {
       "loom · main",
       1,
       protocol.RecoveryBlocked,
+      option.None,
     )
   })
 }
@@ -97,41 +99,37 @@ fn line_at(painted: buffer.Buffer, row: Int) -> String {
   line
 }
 
-// Narrow pickers give each row a second line for its status and short
-// identity; wide ones keep a row to one line and put the rest in the details
-// pane. At every width the name, the lifecycle, the workspace tail and a
-// distinguishing identity for each row stay on screen, and the enclosing
-// directories do not crowd them out.
+// Two sessions that share a name are told apart by their short identity at
+// every width, and every row keeps its state word in a column of its own.
+// The workspace heading keeps the path's tail rather than the enclosing
+// directories. Without a details pane the highlighted row's second line
+// carries its reason; with one, the pane does.
 pub fn session_selector_preserves_markers_labels_and_distinct_ids_test() {
   list.each([44, 80, 96, 292], fn(width) {
     let screen = geometry.rect_new(0, 0, width, 24)
     let painted =
-      session_selector.render(buffer.buffer_new(screen), screen, selector(0))
+      session_selector.render(buffer.buffer_new(screen), screen, selector(0), 0)
     let selected = row_with(painted, "▸")
     let title = line_at(painted, selected)
     let header = line_at(painted, selected - 1)
-    assert row_with(painted, "current") == selected
-    assert string.contains(title, "loom · main")
+    assert string.contains(title, "01a07d71")
+    assert string.contains(title, "blocked")
     assert string.contains(header, "loom-worktree")
+    assert !string.contains(header, "/Users/operator")
     assert list.all(frame.buffer_to_lines(painted), fn(line) {
       text.cell_width(line) <= width
     })
     case width == 292 {
       True -> {
-        assert string.contains(title, "[recovery blocked]")
-        assert string.contains(title, "01a07d71-e1fb")
-        assert row_with(painted, "01a07d74-272d") == selected + 1
-        assert string.contains(
-          frame.buffer_to_lines(painted) |> string.join("\n"),
-          "01a07d71-e1fb-7cc1-beeb-8da1658eec67",
-        )
+        assert row_with(painted, "01a07d74") == selected + 1
+        assert row_with(painted, "recovery blocked · Enter opens") == selected
       }
       False -> {
-        let detail = line_at(painted, selected + 1)
-        assert !string.contains(title, "long-parent-directory")
-        assert string.contains(detail, "recovery blocked")
-        assert string.contains(detail, "01a07d71-e1fb")
-        assert row_with(painted, "01a07d74-272d") == selected + 3
+        assert string.contains(
+          line_at(painted, selected + 1),
+          "recovery blocked",
+        )
+        assert row_with(painted, "01a07d74") == selected + 2
       }
     }
   })
@@ -142,14 +140,18 @@ pub fn session_selector_preserves_markers_labels_and_distinct_ids_test() {
 pub fn two_session_picker_fits_its_content_test() {
   let screen = geometry.rect_new(0, 0, 116, 38)
   let painted =
-    session_selector.render(buffer.buffer_new(screen), screen, selector(1))
-  let title = row_with(painted, "SESSIONS · active")
+    session_selector.render(buffer.buffer_new(screen), screen, selector(1), 0)
+  let title = row_with(painted, "SESSIONS · Left from an empty composer")
   let help = row_with(painted, "Enter open · Tab filter")
   assert help - title < 24
   assert row_with(painted, "All 2") == title + 2
   assert row_with(painted, "▸") == title + 6
+  assert row_with(painted, "Esc close") == help + 1
 }
 
+// A page taller than the picker scrolls to the highlighted row and says how
+// many sessions it cut off, so a list that ends at the frame never reads as
+// the whole page.
 pub fn session_selector_scroll_keeps_the_selected_record_visible_test() {
   let rows =
     list.repeat(Nil, 12)
@@ -160,6 +162,7 @@ pub fn session_selector_scroll_keeps_the_selected_record_visible_test() {
         "loom · main",
         1,
         protocol.Resident("generation"),
+        option.None,
       )
     })
   let state =
@@ -174,10 +177,10 @@ pub fn session_selector_scroll_keeps_the_selected_record_visible_test() {
     )
   let screen = geometry.rect_new(0, 0, 80, 16)
   let painted =
-    session_selector.render(buffer.buffer_new(screen), screen, state)
-  assert row_with(painted, "current") == row_with(painted, "▸")
-  assert row_with(painted, "session-11") == row_with(painted, "▸") + 1
-  assert row_with(painted, "↑↓ select") > row_with(painted, "session-11")
+    session_selector.render(buffer.buffer_new(screen), screen, state, 0)
+  assert row_with(painted, "session-11") == row_with(painted, "▸")
+  assert row_with(painted, "more above") < row_with(painted, "▸")
+  assert row_with(painted, "↑↓ move") > row_with(painted, "session-11")
 }
 
 pub fn session_selector_arrows_repaint_the_cached_terminal_frame_test() {
@@ -201,8 +204,8 @@ pub fn session_selector_arrows_repaint_the_cached_terminal_frame_test() {
   let down = tui.update(backend.KeyPress("down"), initial)
   let down = tui.update(backend.Tick, down)
   let #(second, _) = render.view(down, screen)
-  assert row_with(second, "▸") == row_with(first, "▸") + 2
-  assert row_with(second, "current") == row_with(first, "current")
+  assert row_with(second, "▸") == row_with(first, "▸") + 1
+  assert row_with(second, "›") == row_with(first, "▸")
   assert first != second
 
   // A clock that does not advance exercises the deferred frame flush, not
@@ -216,7 +219,7 @@ pub fn session_selector_arrows_repaint_the_cached_terminal_frame_test() {
     as "the selected marker remains visible"
   let cell =
     buffer.get_cell(third, geometry.Position(text.cell_width(before), selected))
-  assert cell.style == theme.overlay_signal()
+  assert cell.style == style.new(theme.signal, theme.raised, style.bold())
 }
 
 // Directory ranking must not confuse sibling prefixes or lose the current ID.
@@ -231,7 +234,14 @@ pub fn session_picker_prefers_workspace_and_preserves_group_order_test() {
       #("distant", "/elsewhere"),
     ]
     |> list.map(fn(pair) {
-      protocol.Session(pair.0, pair.1, pair.0, 1, protocol.RecoveryBlocked)
+      protocol.Session(
+        pair.0,
+        pair.1,
+        pair.0,
+        1,
+        protocol.RecoveryBlocked,
+        option.None,
+      )
     })
   let page =
     protocol.Page(7, rows, None)

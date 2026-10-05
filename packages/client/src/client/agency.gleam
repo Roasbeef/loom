@@ -132,6 +132,7 @@
 //// that finishes in between is still woken; the window is small and named
 //// rather than claimed shut.
 
+import client/internal/session_owner
 import client/internal/timebase
 import client/peer_mail
 import client/workflow_ledger
@@ -160,6 +161,7 @@ import runtime/residency
 import runtime/writer
 import session/session
 import session_view/strand_framing
+import telemetry/owner
 import tools/agent.{
   type Agency, type Caller, type Delivery, type Handle, type Outcome, type Peer,
   type Refusal, type ResultSchema, type Spawned, type TerminalResult,
@@ -340,7 +342,15 @@ pub fn start(
   config: Config,
   runtime: api.Runtime,
 ) -> actor.StartResult(Subject(Message)) {
-  actor.new(runtime)
+  actor.new_with_initialiser(5000, fn(subject) {
+    // The initialiser runs in the actor's own process, so this label names
+    // it to the ownership inspector under its session.
+    session_owner.label(runtime, owner.Agency)
+
+    actor.initialised(runtime)
+    |> actor.returning(subject)
+    |> Ok
+  })
   |> actor.on_message(fn(state, message) {
     case message {
       WorkflowChild(caller, step, request, custody, reply) -> {
@@ -1204,9 +1214,10 @@ fn brief_message(
       ),
     ],
     timestamp: now,
-    // Release N+1 of protocol-change 059 sets `StrandOrigin(caller.strand)`
-    // here; release N only reads and renders it.
-    origin: None,
+    // The origin is attribution from the authenticated caller, never from
+    // anything the model emitted, and it is not authority: no check may read
+    // it to grant or skip anything (protocol-change 059).
+    origin: Some(message.StrandOrigin(strand: caller.strand)),
   )
 }
 
@@ -1601,9 +1612,10 @@ fn send(
         ),
       ],
       timestamp: now,
-      // Release N+1 of protocol-change 059 sets `StrandOrigin(caller.strand)`
-      // here; release N only reads and renders it.
-      origin: None,
+      // The same attribution as a brief carries: the sender is the
+      // authenticated caller, and the framing text above stays the
+      // model-facing hint (protocol-change 059).
+      origin: Some(message.StrandOrigin(strand: caller.strand)),
     )
   let delivery = case upward, custody {
     True, Some(owner) ->

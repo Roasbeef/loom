@@ -84,7 +84,7 @@ pub fn observe(
       Some(inputs) -> {
         let count = list.count(inputs, fn(input) { input.strand == strand.id })
         case count {
-          0 -> "no pending input"
+          0 -> no_pending_input
           _ -> int.to_string(count) <> " received, awaiting delivery"
         }
       }
@@ -169,7 +169,34 @@ fn brief_body(text) {
   }
 }
 
+/// What a row's `pending` says when no input waits for the reviewer. The row
+/// holds the words, so the filter below compares against this one constant
+/// and not a second copy of the phrase.
+pub const no_pending_input = "no pending input"
+
+/// Drops the rows a page need not draw: the advisor with nothing waiting for
+/// it. The panel's advisor card already says so, and a band line for it
+/// would only repeat that card in a second place.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert reviewer_status.without_idle_advisor([]) == []
+/// ```
+pub fn without_idle_advisor(rows: List(Row)) -> List(Row) {
+  list.filter(rows, fn(row) {
+    !{ row.strand == "advisor" && row.pending == no_pending_input }
+  })
+}
+
 /// Produces two clipped rows per reviewer, with an explicit overflow count.
+///
+/// The second row names what the reviewer is for, never the prompt that
+/// started it. The advisor is started by a feed the harness composes, which
+/// is not a task a reader wrote, so its row says `watching` the strand it
+/// follows. Any other reviewer's row is the first sentence of the brief it
+/// was given, cut at a bound, because the whole brief is a page of
+/// instructions.
 ///
 /// ## Examples
 ///
@@ -189,7 +216,7 @@ pub fn lines(rows: List(Row), active: String) -> List(String) {
           <> row.progress
           <> " · "
           <> row.pending,
-        "  Task: " <> row.task,
+        "  Task: " <> described(row, active),
       ]
     })
   case list.length(others) - list.length(visible) {
@@ -198,5 +225,33 @@ pub fn lines(rows: List(Row), active: String) -> List(String) {
       list.append(lines, [
         "+" <> int.to_string(count) <> " more running · /agents to inspect",
       ])
+  }
+}
+
+// What a reviewer's task line says. The advisor's captured prompt is the
+// harness's own feed, so it is replaced by the strand the advisor follows;
+// any other reviewer's is cut to its first sentence.
+fn described(row: Row, active: String) -> String {
+  case row.strand {
+    "advisor" -> "watching " <> active
+    _ -> first_sentence(row.task)
+  }
+}
+
+// The text up to the first sentence end, at most 100 characters, with an
+// ellipsis when anything was cut at the bound. A brief with no sentence end
+// is cut at the bound alone.
+fn first_sentence(text: String) -> String {
+  let cut =
+    list.fold([". ", "! ", "? "], text, fn(kept, end) {
+      case string.split_once(kept, end) {
+        Ok(#(head, _)) -> head <> string.trim(end)
+        Error(Nil) -> kept
+      }
+    })
+
+  case string.length(cut) > 100 {
+    True -> string.slice(cut, 0, 99) <> "…"
+    False -> cut
   }
 }

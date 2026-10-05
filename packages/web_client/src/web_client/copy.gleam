@@ -8,7 +8,7 @@
 //// that acted on any value the server chose would be a way to put text on an
 //// owner's clipboard, so the element takes exactly two attributes and acts
 //// only on the shapes the daemon writes (`web_client/copy_rule`). `subject` is
-//// one of two fixed words, and `text` is the value. The element draws the
+//// one of three fixed words, and `text` is the value. The element draws the
 //// text itself, in a `code` element in its shadow root, and one button. The
 //// text is never parsed as markup: it is a text node. A `text` that is not
 //// the shape its subject allows draws nothing and offers no button.

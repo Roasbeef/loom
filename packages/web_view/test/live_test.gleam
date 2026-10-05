@@ -162,19 +162,19 @@ pub fn a_reasoning_row_counts_lines_and_the_browser_counts_its_time_test() {
 
   // The generation began at the reading the first fragment was stamped
   // with, and the row carries the seconds since as a reading the browser
-  // counts on from, as an agent chip's time is. The thinking itself is not
-  // drawn.
+  // counts on from, as an agent chip's time is. The row says `Reasoning`
+  // and keeps the line count to its title. The thinking itself is not drawn.
   let model = at(model, clock, 5500)
   list.each(pages(model), fn(view) {
     let drawn = region(view)
-    assert string.contains(drawn, "2 lines")
+    assert string.contains(drawn, "title=\"2 lines\"")
     assert string.contains(
       drawn,
-      "<loom-elapsed class=\"elapsed\" offset=\"4500\"></loom-elapsed> so far",
+      "Reasoning · <loom-elapsed class=\"elapsed\" offset=\"4500\"></loom-elapsed></p>",
     )
-    assert string.contains(drawn, "reasoning-digest")
     assert !string.contains(drawn, "first thought")
-    assert !string.contains(drawn, "summarized-reasoning")
+    assert !string.contains(drawn, "thinking-headline")
+    assert !string.contains(drawn, "so far")
   })
 
   // Another fragment moves the count, and the reading is fresh.
@@ -185,12 +185,12 @@ pub fn a_reasoning_row_counts_lines_and_the_browser_counts_its_time_test() {
   let model = at(model, clock, 9000)
   list.each(pages(model), fn(view) {
     let drawn = region(view)
-    assert string.contains(drawn, "3 lines")
+    assert string.contains(drawn, "title=\"3 lines\"")
     assert string.contains(drawn, "offset=\"8000\"")
   })
 }
 
-pub fn a_headline_sits_beneath_the_count_as_text_test() {
+pub fn a_headline_sits_beneath_the_reasoning_row_as_text_test() {
   let generation = lane_fixture.generation(2)
   let model =
     page([
@@ -198,7 +198,7 @@ pub fn a_headline_sits_beneath_the_count_as_text_test() {
       lane_fixture.fragment(generation, "thinking", "a\nb"),
     ])
   list.each(pages(model), fn(view) {
-    assert !string.contains(region(view), "summarized-reasoning")
+    assert !string.contains(region(view), "thinking-headline")
   })
 
   // The summarizer's label for the stream so far (protocol 050). It is
@@ -212,11 +212,12 @@ pub fn a_headline_sits_beneath_the_count_as_text_test() {
     ])
   list.each(pages(model), fn(view) {
     let drawn = region(view)
-    assert string.contains(drawn, "summarized-reasoning")
-    assert string.contains(drawn, "2 lines")
-    assert string.contains(drawn, "Checking &lt;b&gt;the lock&lt;/b&gt; order")
+    assert string.contains(
+      drawn,
+      "<p class=\"thinking-headline\">Checking &lt;b&gt;the lock&lt;/b&gt; order</p>",
+    )
+    assert string.contains(drawn, "title=\"2 lines\"")
     assert !string.contains(drawn, "<b>")
-    assert !string.contains(drawn, "reasoning-digest")
   })
 }
 
@@ -231,7 +232,7 @@ pub fn reasoning_and_the_answer_beside_it_are_both_drawn_in_order_test() {
   list.each(pages(model), fn(view) {
     let drawn = region(view)
     let assert Ok(#(before, _)) = string.split_once(drawn, "The answer")
-    assert string.contains(before, "1 line")
+    assert string.contains(before, "Reasoning")
   })
 }
 
@@ -493,12 +494,107 @@ pub fn the_live_rows_are_plain_values_test() {
     |> element.to_string
   assert string.contains(
     drawn,
-    "2 lines · <loom-elapsed class=\"elapsed\" offset=\"1500\"></loom-elapsed> so far",
+    "Reasoning · <loom-elapsed class=\"elapsed\" offset=\"1500\"></loom-elapsed>",
   )
+  assert string.contains(drawn, "title=\"2 lines\"")
   let none =
     live.view([live.Thinking("1 line", None, None)], fn(line: Line) {
       html.text(line.text)
     })
     |> element.to_string
-  assert string.contains(none, ">1 line so far<")
+  assert string.contains(none, ">Reasoning</p>")
+  assert !string.contains(none, "loom-elapsed")
+}
+
+// A turn that has opened and streamed nothing is not silent. The row stands
+// from the strand's `assistant` phase, which is when the request goes out and
+// the generation clock starts, and not from the first fragment, which a model
+// that streams no reasoning text never sends before its answer.
+pub fn an_opened_turn_shows_thinking_before_anything_streams_test() {
+  let generation = lane_fixture.generation(2)
+  let #(model, clock) = timed([running()])
+  let model = at(model, clock, 1000)
+
+  // A running operation whose strand is not in its `assistant` phase (the
+  // fixture labels it with a phase the server never emits) draws no row, as
+  // an idle lane does not.
+  list.each(pages(model), fn(view) {
+    assert region(view) == ""
+  })
+
+  let model =
+    component.apply(model, [
+      session_channel.Auxiliary(protocol.OperationChanged("main", "assistant")),
+    ])
+  let model = at(model, clock, 4000)
+
+  // The browser counts the reading on, as it does for the reasoning row.
+  list.each(pages(model), fn(view) {
+    let drawn = region(view)
+    assert string.contains(
+      drawn,
+      "Thinking · <loom-elapsed class=\"elapsed\" offset=\"3000\"></loom-elapsed></p>",
+    )
+    assert !string.contains(drawn, "Reasoning")
+  })
+
+  // Reasoning text arriving gives the row its old shape, and the opened row
+  // is gone: one row, never both.
+  let reasoning =
+    component.apply(model, [
+      lane_fixture.fragment(generation, "thinking", "first thought"),
+    ])
+  list.each(pages(reasoning), fn(view) {
+    let drawn = region(view)
+    assert string.contains(drawn, "Reasoning · <loom-elapsed")
+    assert !string.contains(drawn, "Thinking")
+  })
+
+  // An answer streaming with no reasoning does the same.
+  let answering =
+    component.apply(model, [lane_fixture.fragment(generation, "text", "Hi")])
+  list.each(pages(answering), fn(view) {
+    let drawn = region(view)
+    assert string.contains(drawn, "Hi")
+    assert !string.contains(drawn, "Thinking")
+    assert !string.contains(drawn, "Reasoning")
+  })
+
+  // The turn ending releases the region.
+  let done =
+    component.apply(model, [
+      session_channel.Auxiliary(protocol.OperationChanged("main", "done")),
+      lane_fixture.asked(None),
+    ])
+  list.each(pages(done), fn(view) {
+    assert region(view) == ""
+  })
+}
+
+// The opened row rides the lane's own dot, which pulses while a region
+// exists, and carries no animation of its own that reduced motion would
+// have to cancel.
+pub fn the_opened_row_sits_beside_the_pulsing_dot_test() {
+  let model =
+    page([
+      running(),
+      session_channel.Auxiliary(protocol.OperationChanged("main", "assistant")),
+    ])
+  list.each(pages(model), fn(view) {
+    let drawn = element.to_string(view)
+    assert string.contains(drawn, "class=\"dot pulse\"")
+    assert string.contains(region(view), "Thinking")
+  })
+}
+
+// A page that holds only the capture's phase has no generation clock yet. The
+// row is drawn for the phase, with no elapsed element: the operation's clock
+// would read the whole turn, and only the generation clock is ever shown.
+pub fn an_opened_turn_with_no_generation_clock_draws_no_time_test() {
+  let model = page([lane_fixture.phased(running(), "assistant")])
+  list.each(pages(model), fn(view) {
+    let drawn = region(view)
+    assert string.contains(drawn, ">Thinking</p>")
+    assert !string.contains(drawn, "loom-elapsed")
+  })
 }

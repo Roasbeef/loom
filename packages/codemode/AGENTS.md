@@ -492,7 +492,8 @@ The shared host adds the existing `gleam_json` dependency for profile encoding.
   `CapRequest` carry the derived identity rather than a loose
   `{op_id, step_id, budget}` triple. `run` returns a `Run`: the
   program's outcome and the node's enforcement report, which
-  `CapConnection.destroy` hands back. `Msg` is opaque so no forged
+  `CapConnection.destroy` hands back, and `calls`, the host's record of the
+  capability calls the program made (below). `Msg` is opaque so no forged
   settlement can be injected. `CapPlan` has two shapes — `ClearedCall`
   (a jailed `broker.clear_call`) and `ServedHere` (a request the harness
   answers itself, on a process of its own) — and `CapCeiling(cap,
@@ -1074,3 +1075,28 @@ These records contain only identity and path data. They establish neither an
 existing directory nor a successful compile, live listener, token custody or
 permission to recreate a resource. The durable preparation journal and live
 resource owner must establish those facts separately before physical execution.
+
+## The call record (protocol 060)
+
+`satellite.Run.calls` and `codemode.Execution.calls` carry a
+`tools/call_record.CallLog`. The single-shot host keeps a `Ledger` in its
+`State` beside `inflight`, with `seqs` mapping each in-flight frame id to its
+sequence number; the persistent host shares `InFlight` and records nothing.
+
+- **The host writes it, from its own clock.** Wall time
+  (`system_time_ms` through the injected `Clock`), never monotonic time, and
+  never the program's terminal `outcome` frame. A bad token records nothing.
+  A router denial, an admission ceiling and the pooled cap are recorded as
+  `failed` under the refusal's code with no duration (`refuse_cap_call`). A
+  `Cancel` before settlement records `cancelled` whatever the worker answered
+  (`close_call`). Calls in flight when `terminate` runs are closed as
+  `unsettled` at the instant the execution settles, before teardown.
+- **A `cap_call` whose id is already in `inflight` is a channel fault**
+  (`ChannelFaulted("duplicate cap_call id")`), after the token check. An id
+  that settled or was refused may be reused. The record's finalisation relies
+  on this: it keys on the id.
+- **Foreground only.** `client/codemode.translate` threads `calls` into
+  `tools/codemode.Execution`; only `ran_outcome` and `run_failed_outcome`
+  attach it to `details`. `execution_value` never does.
+- A run that never launched, or whose host never answered, carries
+  `call_record.empty()`.

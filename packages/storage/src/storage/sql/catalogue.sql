@@ -24,15 +24,26 @@ UPDATE catalogue_sessions SET state = 'saved' WHERE session_id = ?;
 -- name: RegistrationDisplayName :many
 SELECT name FROM catalogue_session_names WHERE session_id = ?;
 
+-- name: RegistrationSubtitle :many
+SELECT subtitle FROM catalogue_session_subtitles WHERE session_id = ?;
+
+-- name: InsertRegistrationSubtitle :exec
+INSERT INTO catalogue_session_subtitles (session_id, subtitle) VALUES (?, ?)
+ON CONFLICT(session_id) DO NOTHING;
+
+-- name: DeleteSessionSubtitle :exec
+DELETE FROM catalogue_session_subtitles WHERE session_id = ?;
+
 -- name: SetRegistrationDisplayName :exec
 INSERT INTO catalogue_session_names (session_id, name) VALUES (?, ?)
 ON CONFLICT(session_id) DO UPDATE SET name = excluded.name;
 
 -- name: RegistrationPage :many
 SELECT s.session_id, s.path, s.workspace, s.workspace_binding, CAST(COALESCE(n.name, s.name) AS TEXT) AS name,
-       s.configuration, s.created_at, s.request_key, s.state
+       s.configuration, s.created_at, s.request_key, s.state, t.subtitle
 FROM catalogue_sessions AS s
 LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
+LEFT JOIN catalogue_session_subtitles AS t ON t.session_id = s.session_id
 WHERE s.session_id > @after
   AND EXISTS (SELECT 1 FROM catalogue_session_archives AS a
               WHERE a.session_id = s.session_id) = CAST(@archived AS INTEGER)
@@ -44,10 +55,11 @@ SELECT revision FROM catalogue_meta WHERE singleton = 1;
 
 -- name: MemberRegistrationPage :many
 SELECT s.session_id, s.path, s.workspace, s.workspace_binding, CAST(COALESCE(n.name, s.name) AS TEXT) AS name, s.configuration,
-       s.created_at, s.request_key, s.state
+       s.created_at, s.request_key, s.state, t.subtitle
 FROM access_memberships AS m
 JOIN catalogue_sessions AS s ON s.session_id = m.session_id
 LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
+LEFT JOIN catalogue_session_subtitles AS t ON t.session_id = s.session_id
 WHERE m.principal_id = ? AND s.session_id > ?
   AND m.role IN ('operator', 'observer')
   AND NOT EXISTS (SELECT 1 FROM catalogue_session_archives AS a

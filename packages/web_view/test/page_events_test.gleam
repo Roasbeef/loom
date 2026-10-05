@@ -17,6 +17,7 @@ import lustre/element.{type Element}
 import page_fixture
 import web_view/component
 import web_view/operator_page
+import web_view/sessions
 
 @external(erlang, "page_events_ffi", "handlers")
 fn handlers(view: Element(message)) -> List(String)
@@ -112,6 +113,52 @@ pub fn the_marker_controls_add_no_handler_to_either_page_test() {
 // server as an event of its own: the operator's page still registers only
 // the click and the submit that `ui_socket.operator_accepts` admits, with an
 // approval pending and the composer's editor in the tree.
+// A page opened from a home: its transport holds the capability to go home, so
+// the bar draws the button.
+fn homed() {
+  let start = page_fixture.start()
+  component.Start(
+    ..start,
+    transport: component.Transport(
+      ..start.transport,
+      home: option.Some(fn() { sessions.Declined(sessions.NoHome) }),
+    ),
+  )
+  |> component.new
+  |> component.apply([lane_fixture.captured(10, option.None)])
+}
+
+fn home_click() -> String {
+  component.home_path <> "\n" <> "click"
+}
+
+// The Home button's handler is at `component.home_path` on both pages, which
+// is the one path the observer's socket admits beyond the older button and
+// the chips, and it is the only handler a home adds: the chips are where they
+// were.
+pub fn the_home_button_is_at_its_path_on_both_pages_test() {
+  let observer = handlers(component.view(homed()))
+  assert list.contains(observer, home_click())
+  let others = list.filter(observer, fn(key) { key != home_click() })
+  assert list.length(others) == 4
+  assert list.all(others, is_chip_click)
+
+  let operator = handlers(operator_page.view(homed()))
+  assert list.contains(operator, home_click())
+  assert list.filter(operator, is_chip_click)
+    == list.filter(observer, is_chip_click)
+}
+
+// A page a link for one session opened draws no way home: no handler at the
+// path, on either page, and nothing else moved.
+pub fn a_page_with_no_way_home_has_no_handler_at_its_path_test() {
+  let observer = handlers(component.view(crowded()))
+  let operator = handlers(operator_page.view(crowded()))
+  assert !list.contains(observer, home_click())
+  assert !list.contains(operator, home_click())
+  assert list.length(observer) == 4
+}
+
 pub fn the_operators_page_registers_only_clicks_and_submits_test() {
   let page =
     component.new(page_fixture.start())
@@ -125,4 +172,22 @@ pub fn the_operators_page_registers_only_clicks_and_submits_test() {
     })
     |> list.unique
   assert list.sort(names, string.compare) == ["click", "submit"]
+}
+
+// The session controls are the Session pane's fourth child, after the
+// invitation control's place, so neither moves the other. The Fork form is
+// there on every operator page, and an observer's page has no handler there.
+pub fn the_session_controls_are_beneath_their_own_path_test() {
+  let keys = handlers(operator_page.view(crowded()))
+  let controls =
+    list.filter(keys, fn(key) {
+      string.starts_with(key, component.session_controls_path <> "\t")
+    })
+  assert list.length(controls) == 1
+  assert list.all(controls, fn(key) { string.ends_with(key, "\nsubmit") })
+
+  assert !list.any(handlers(component.view(crowded())), fn(key) {
+    string.starts_with(key, component.session_controls_path)
+  })
+  assert component.session_controls_path != component.invite_path
 }

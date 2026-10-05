@@ -23,7 +23,9 @@ import runtime/async_execution
 import runtime/effects
 import session/session
 import support/addresses
+import support/owner_probe
 import weft/actor
+import weft/poll
 import weft/registry as address
 
 type TimeMessage {
@@ -340,6 +342,25 @@ pub fn only_successful_delivery_resets_the_typed_idle_interval_test() {
   close_harness(harness)
 }
 
+pub fn the_service_labels_itself_with_its_session_test() {
+  let harness = start_harness()
+  let assert Ok(service) =
+    async_runs.start(
+      addresses.new(),
+      async_runs.Wiring(
+        runtime: harness.runtime,
+        clock: harness.clock,
+        abort: fn(_, _) { Nil },
+        heartbeat_ms: 0,
+      ),
+    )
+  let session = ids.session_id_to_string(api.session_id(harness.runtime))
+  assert owner_probe.label_of(service.pid)
+    == Some(#([#("session", session)], "async_runs"))
+  stop(service.pid)
+  close_harness(harness)
+}
+
 pub fn cumulative_launch_limit_survives_settlement_and_retry_test() {
   let harness = start_harness()
   let name = addresses.new()
@@ -634,6 +655,24 @@ fn await_phase(
   }
 }
 
+// Waits for the completion notice's mark rather than for the phase that
+// precedes it: the sweep saves the terminal record before it tells the
+// launcher, so the two are written by one process in that order but are
+// not one observation for a reader in another process.
+fn await_notified(harness: Harness, id: String) -> Bool {
+  case
+    poll.until(within: 15_000, every: 20, attempt: fn() {
+      case notified(harness, id) {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+  {
+    poll.Answered(Nil) -> True
+    _ -> False
+  }
+}
+
 fn context_text(harness: Harness, strand: String) -> String {
   let leaf = case session.strand_leaf(harness.runtime.session, strand) {
     Ok(Some(session.Cell(value: leaf, ..))) -> leaf
@@ -664,12 +703,14 @@ pub fn a_finished_execution_is_sent_to_its_launcher_test() {
   let harness = start_harness()
   let #(_name, service) =
     launch(harness, "f1", 0, fn() { json.String("review complete") })
-  let assert async_execution.Finished(_) = await_phase(harness, "f1", 150)
-    as "the execution must finish"
+  assert await_notified(harness, "f1") as "the launcher must be told"
 
-  // The sweep delivers the notice right after saving the terminal phase,
-  // in the same handler, so the mark is there once the phase is.
-  assert notified(harness, "f1")
+  // The sweep saves the terminal phase and only then delivers the notice,
+  // so another process can read `Finished` before the mark exists. The
+  // mark is the event under test, and it lands in the admission's own
+  // commit, so the projected context below is readable once it is there.
+  let assert async_execution.Finished(_) = await_phase(harness, "f1", 0)
+    as "the execution must be recorded finished"
   let text = context_text(harness, "main")
   assert string.contains(text, "[loom] async code-mode execution f1 finished")
   assert string.contains(text, "review complete")

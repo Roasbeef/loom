@@ -5,15 +5,19 @@
 import client/daemon/domain as domain_service
 import client/daemon/lifetime
 import client/daemon/manager
+import client/daemon/server
 import client/distill
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
 import core/clock
 import core/ids
 import core/workspace
+
+import core/json
 import gleam/erlang/process.{type Monitor}
 import gleam/int
 import gleam/list
+import gleam/option
 import gleam/otp/system
 import gleam/string
 import simplifile
@@ -21,6 +25,7 @@ import storage/access
 import storage/catalogue
 import storage/domain
 import support/internal/ffi_memory
+import tui/daemon/protocol as terminal_protocol
 import weft/poll
 
 fn registration(seed: Int) -> catalogue.Registration {
@@ -36,6 +41,7 @@ fn registration(seed: Int) -> catalogue.Registration {
     created_at: 1_700_000_000_000,
     request_key: "request-" <> int.to_string(seed),
     state: catalogue.Reserved,
+    subtitle: option.None,
   )
 }
 
@@ -1759,4 +1765,56 @@ pub fn retired_start_failure_retains_a_bounded_utf8_reason_test() {
   assert string.starts_with(reason, "/workspace/loom.toml: not valid toml ")
   assert string.ends_with(reason, "…")
   assert !string.contains(reason, "\n")
+}
+
+// The wire form of a session view, wrapped as the reply the terminal decodes.
+fn reply_to_get(view: manager.View) -> String {
+  "{\"v\":2,\"reply_to\":1,\"event\":\"sessions.get\",\"body\":"
+  <> json.to_string(server.view_json(view))
+  <> "}"
+}
+
+pub fn the_registry_seeds_the_subtitle_once_and_the_wire_carries_it_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let record = saved(store, 870)
+  let registry = start(store, 1, fn(record, _) { Ok(record.id) })
+
+  // A session with no prompt omits the member, so its frame is the one an
+  // older daemon sent, and the terminal's decoder reads it as no subtitle.
+  let assert Ok(bare) = manager.get(registry, record.id) as "view loads"
+  assert bare.registration.subtitle == option.None
+  assert !string.contains(reply_to_get(bare), "subtitle")
+  let assert Ok(terminal_protocol.Answer(
+    _,
+    _,
+    terminal_protocol.SessionReply(row),
+  )) = terminal_protocol.decode(reply_to_get(bare))
+    as "an older frame decodes in the new terminal"
+  assert row.subtitle == option.None
+
+  // The hub's report is a cast. The registry handles it in its own turn, and
+  // the next call from this process queues behind it.
+  manager.seed_subtitle(registry, record.id, "  Plan the\n migration")
+  let assert Ok(seeded) = manager.get(registry, record.id)
+    as "view loads after the report"
+  assert seeded.registration.subtitle == option.Some("Plan the")
+  let assert Ok(terminal_protocol.Answer(
+    _,
+    _,
+    terminal_protocol.SessionReply(row),
+  )) = terminal_protocol.decode(reply_to_get(seeded))
+    as "a newer frame decodes in the new terminal"
+  assert row.subtitle == option.Some("Plan the")
+
+  // A second report, a report for a session that is not there, and a report
+  // with no text change nothing.
+  manager.seed_subtitle(registry, record.id, "A different first line")
+  manager.seed_subtitle(registry, "no-such-session", "ignored")
+  let assert Ok(again) = manager.get(registry, record.id) as "view loads again"
+  assert again == seeded
+  let assert Ok(#(_, page)) = manager.page(registry, after: "") as "page loads"
+  assert list.map(page, fn(view) { view.registration.subtitle })
+    == [option.Some("Plan the")]
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
 }

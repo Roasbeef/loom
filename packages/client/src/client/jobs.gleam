@@ -182,6 +182,7 @@ import broker/budget
 import broker/exec.{type EnforcementDemand}
 import broker/framing
 import broker/policy.{type SandboxPolicy}
+import client/internal/session_owner
 import client/internal/timebase
 import client/jobstate.{
   type JobId, type JobRecord, type JobSpill, type JobState, type KillCause,
@@ -203,6 +204,7 @@ import gleam/string
 import runtime/api.{type Runtime}
 import runtime/residency
 import simplifile
+import telemetry/owner
 import tom
 import tools/bash
 import tools/blob
@@ -937,6 +939,11 @@ pub fn start(
   wiring: Wiring,
 ) -> Result(actor.Started(Subject(Message)), actor.StartError) {
   actor.new_with_initialiser(1000, fn(subject) {
+    // The initialiser runs in the actor's own process, so this label names
+    // it to the ownership inspector under its session. The runtime is only
+    // borrowed here, and a refused borrow leaves the process unlabelled.
+    session_owner.label_borrowed(wiring.runtime, owner.BackgroundJobs)
+
     let state =
       State(
         wiring:,

@@ -124,8 +124,11 @@ import tui/connection
 import tui/effect
 import tui/focused_goal_panel
 import tui/herdr
+import tui/image_shown
+import tui/image_support
 import tui/job
 import tui/job_runner
+import tui/layout_memory
 import tui/live_tail
 import tui/model_selector
 import tui/msg
@@ -145,14 +148,29 @@ import weft
 /// Whether the transcript area is showing captured edits.
 @internal
 pub type DiffVisibility {
-  /// Show a side pane when wide enough, preserving conversation on narrow screens.
-  DiffAutomatic
-
-  /// Show conversation history.
+  /// Show conversation history. The changes are open only when asked for.
   DiffHidden
 
   /// Show successful edits from the retained history window.
   DiffVisible
+}
+
+/// Whether the rail's sheet is open on a terminal too narrow to dock the rail.
+@internal
+pub type Sheet {
+  SheetClosed
+  SheetOpen
+}
+
+/// Who has the keyboard while the rail shows a tab with no cursor of its own.
+@internal
+pub type RailFocus {
+  /// The composer does; the tab only displays.
+  FocusComposer
+
+  /// The tab does: the digits choose a tab, the arrows scroll it, and Escape
+  /// hands the keyboard back.
+  FocusTab
 }
 
 /// Scroll direction names the operation without carrying a Boolean polarity
@@ -424,6 +442,15 @@ pub type View {
     height: Int,
     /// Launch-time color capability, never read while rendering.
     palette: appearance.Palette,
+    /// What the terminal can draw, asked once at launch (`image_support`).
+    /// Projection reads it to give an image its box, and nothing changes it.
+    image_support: image_support.Support,
+    /// What the terminal has been told about images (`image_shown`), which
+    /// `image_plan` compares with each frame.
+    images: image_shown.Shown,
+    /// Where this terminal keeps its layout between launches, or none for a
+    /// run that keeps nothing (`layout_save`).
+    layout_target: Option(layout_memory.Target),
     /// The composer's editor, including its cursor and selection.
     input: text_area.TextAreaState,
     /// Unsent drafts and reading endpoints never cross session identities.
@@ -518,14 +545,33 @@ pub type View {
     /// file system, so it runs as a job and the creation continues when
     /// `session_control.drain_configuration` takes the reply.
     configuring: Option(job.Awaiting(job.ConfigurationReply)),
+    /// The open-image job, while one runs: `o` while reading hands the
+    /// newest image to the platform's opener, and `image_open.drain` takes
+    /// the reply into the notice.
+    opening_image: Option(job.Awaiting(job.ImageReply)),
     /// Questions already presented locally, keyed by their exact durable sequence.
     prompted_approvals: List(#(String, Int)),
     /// Exact decision currently requested for local inspection, if any.
     inspecting_approval: Option(String),
     /// Next terminal-local attachment identity, independent of server IDs.
     next_attempt: Int,
-    /// Whether the agent rail beside the transcript is shown.
-    agent_rail_visible: Bool,
+    /// The operator's choice about the rail beside the transcript: shown,
+    /// hidden, or none, which leaves it to the terminal's width
+    /// (`tui/rail`). It is the one layout choice the layout memory keeps.
+    rail: Option(layout_memory.Rail),
+    /// The tab the operator left the rail on, or none, which is Strands. The
+    /// Changes tab is not kept here: it is the changes setting's
+    /// (`diff_view`), and closing the changes shows this tab again.
+    rail_tab: Option(layout_memory.Tab),
+    /// Whether the sheet is open, the rail's form on a terminal too narrow to
+    /// dock it (`layout.sheet_shown`). It is not a preference and is not
+    /// remembered: a launch never opens the sheet.
+    sheet: Sheet,
+    /// Who has the keyboard while the rail shows Trace or Session, tabs with
+    /// no cursor of their own. Strands uses the strip's focus.
+    rail_focus: RailFocus,
+    /// How many rows of the Trace or Session tab are scrolled off the top.
+    rail_scroll: Int,
     /// Toggled by an action that replaces most of the viewport, so the
     /// next paint writes every vacated cell (`render.repaint_canvas`).
     repaint_phase: Bool,
@@ -552,6 +598,11 @@ pub type View {
     record_gutters: List(Int),
     /// The width the cached record rows were wrapped at.
     record_cache_width: Int,
+    /// The picture rows (`image_box.picture_rows`) the cached record rows were
+    /// built for. Only an image's box depends on it, so it is compared only
+    /// on a terminal that draws images, and it moves only with the terminal's
+    /// own height, never with the composer.
+    record_cache_height: Int,
     /// The strand the cached record rows were built for.
     record_cache_strand: String,
     /// The details setting the cached record rows were built with.
@@ -1075,7 +1126,8 @@ pub fn release(model: Model, arrival: job.Arrival(job.Daemon)) -> Model {
     | job.ReconnectArrived(..)
     | job.ControlArrived(..)
     | job.ActivityArrived(..)
-    | job.ConfigurationArrived(..) -> model
+    | job.ConfigurationArrived(..)
+    | job.ImageArrived(..) -> model
   }
 }
 

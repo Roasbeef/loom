@@ -416,6 +416,29 @@ necessary. The container runs `signoff.sh --dry-run` and posts the
 verdict itself afterward from the host's own `gh`, which is the
 arrangement that keeps a GitHub token out of the image.
 
+### Landing a `gh stack`, and a busy `main`
+
+`gh stack merge` merges a stack atomically, but it requires
+`signoff/linux` on the head of every layer, and only the top layer is ever
+signed off: a signoff runs the whole gate on one checkout, and the top
+checkout contains the layers beneath it. So a stack lands through a queue
+pull request instead. Make a branch whose head is the signed-off top of
+the stack (it must sit directly on the current `main`), open a pull
+request from it, and merge that. The bottom layer's pull request then
+shows as merged, and every other layer's is closed by hand with a comment
+linking to the queue pull request. #760 landed the sixteen-layer terminal
+revamp (stack #718) this way, on one `signoff/linux` of 1410 seconds.
+Write the layer list into the queue pull request's body, because the
+closed pull requests are what a later reader finds first.
+
+When `main` moves after a green signoff, the owner's ruling of
+2026-10-04 is that a conflict-free update needs only a narrow re-gate:
+update the branch, run `make check-affected BASE=origin/main` and
+`make doc-check`, and merge. A full second signoff is for an update that
+conflicts. On a busy `main` this is what keeps a merge from chasing the
+branch it is waiting on, and a flake that appears in the narrow run is
+rerun and given its own fix pull request, not waited on.
+
 ### Watch for the push race
 
 An agent can commit between your verification and your push. `git push` sends

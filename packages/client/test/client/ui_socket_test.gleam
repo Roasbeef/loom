@@ -9,6 +9,7 @@
 import client/daemon/manager
 import client/daemon/root
 import client/daemon/ui_relay
+import client/daemon/ui_sessions
 import client/daemon/ui_socket
 import core/workspace
 import gleam/erlang/process
@@ -21,6 +22,7 @@ import session_view/snapshot
 import storage/access
 import storage/catalogue
 import web_view/component
+import web_view/home
 import web_view/image
 import web_view/invites
 import web_view/sessions
@@ -40,7 +42,10 @@ fn start() -> component.Start(ui_relay.Relay) {
       now: fn() { 0 },
       sessions: fn() { [] },
       open: fn(_) { sessions.Declined(sessions.NotHeld) },
+      resume: fn(_, _) { Nil },
       invite: None,
+      home: None,
+      rename: None,
     ),
   )
 }
@@ -157,6 +162,107 @@ pub fn an_observer_socket_accepts_a_chip_click_test() {
     ],
     fn(frame) {
       assert !ui_socket.observer_accepts(frame)
+    },
+  )
+}
+
+// Protocol-change/065, the second pull request: an observer's socket admits one
+// more click, at the "Home" button's exact path, and not its neighbours in the
+// top bar, anything beneath it, another event at it, or the path inside a
+// batch.
+pub fn an_observer_socket_accepts_the_home_click_at_its_exact_path_test() {
+  let click_at = fn(path, name) {
+    "{\"kind\":1,\"path\":"
+    <> json.to_string(json.string(path))
+    <> ",\"name\":\""
+    <> name
+    <> "\",\"event\":{}}"
+  }
+  assert ui_socket.observer_accepts(click_at(component.home_path, "click"))
+  list.each(
+    [
+      click_at(component.home_path, "submit"),
+      click_at(component.home_path, "keydown"),
+      click_at(component.home_path <> "\t0", "click"),
+      click_at("0\t0", "click"),
+      click_at("0\t0\t0", "click"),
+      click_at("0\t0\t2", "click"),
+      click_at("0\t0\t11", "click"),
+      "{\"kind\":3,\"messages\":["
+        <> click_at(component.home_path, "click")
+        <> "]}",
+    ],
+    fn(frame) {
+      assert !ui_socket.observer_accepts(frame)
+    },
+  )
+}
+
+// Only a page opened from a home is handed the capability to go home: a page
+// a link for one session opened is not, so it draws no button and cannot call.
+pub fn only_a_workspace_page_is_handed_the_way_home_test() {
+  let ask = fn() { sessions.Declined(sessions.NoHome) }
+  assert ui_socket.home_capability(ui_sessions.OneSession, ask) == None
+  let assert Some(_) = ui_socket.home_capability(ui_sessions.Workspace, ask)
+}
+
+// Protocol-change/065, the second pull request: the home's socket admits a
+// click beneath the sessions table's section or the sidebar's column, where a
+// running session's row is, and nothing else.
+pub fn the_home_socket_admits_only_a_click_on_a_row_test() {
+  let click_at = fn(path, name) {
+    "{\"kind\":1,\"path\":"
+    <> json.to_string(json.string(path))
+    <> ",\"name\":\""
+    <> name
+    <> "\",\"event\":{}}"
+  }
+  let table_row = home.table_path <> "\t1\t2\t0\t0\t0"
+  let sidebar_row = home.sidebar_path <> "\t1\t1\t0\t0"
+  assert ui_socket.home_accepts(click_at(table_row, "click"))
+  assert ui_socket.home_accepts(click_at(sidebar_row, "click"))
+  assert ui_socket.home_accepts(
+    "{\"kind\":3,\"messages\":["
+    <> click_at(table_row, "click")
+    <> ","
+    <> click_at(sidebar_row, "click")
+    <> "]}",
+  )
+  list.each(
+    [
+      // The regions themselves and a sibling that shares their digits.
+      click_at(home.table_path, "click"),
+      click_at(home.sidebar_path, "click"),
+      click_at(home.table_path <> "0\t1", "click"),
+      click_at(home.sidebar_path <> "0\t1", "click"),
+
+      // The frame's other children, the top bar's and the centre's others.
+      click_at("0\t0\t1", "click"),
+      click_at("0\t2\t0", "click"),
+      click_at("0\t2\t2", "click"),
+      click_at("0\t3", "click"),
+      click_at("0", "click"),
+
+      // Another event at a row, or none at all.
+      click_at(table_row, "submit"),
+      click_at(table_row, "keydown"),
+      click_at(sidebar_row, "input"),
+      "{\"kind\":1,\"name\":\"click\"}",
+
+      // A batch with one message outside a row, an empty one and other kinds.
+      "{\"kind\":3,\"messages\":["
+        <> click_at(table_row, "click")
+        <> ","
+        <> click_at("0\t0\t1", "click")
+        <> "]}",
+      "{\"kind\":3,\"messages\":[]}",
+      "{\"kind\":0,\"name\":\"route\",\"value\":\"/elsewhere\"}",
+      "{\"kind\":2,\"name\":\"value\"}",
+      "not json",
+      "",
+    ],
+    fn(frame) {
+      assert !ui_socket.home_accepts(frame)
     },
   )
 }
@@ -308,6 +414,20 @@ pub fn a_member_operators_page_drops_the_invitation_click_test() {
   page.shutdown()
 }
 
+// The session controls sit beneath their own path in the Session pane, which
+// is not the invitation's: a member operator's socket admits a click or a
+// submit there, and an observer's admits neither.
+pub fn the_session_controls_are_admitted_for_an_operator_not_an_observer_test() {
+  let beneath = component.session_controls_path <> "\t1\t0\t0"
+  assert ui_socket.operator_accepts(click_on(beneath))
+  assert ui_socket.owner_accepts(click_on(beneath))
+  assert !ui_socket.observer_accepts(click_on(beneath))
+  assert !string.starts_with(
+    component.session_controls_path,
+    component.invite_path,
+  )
+}
+
 fn view(status: manager.Status) -> manager.View {
   manager.View(
     registration: catalogue.Registration(
@@ -319,6 +439,7 @@ fn view(status: manager.Status) -> manager.View {
       created_at: 1_790_000_000_000,
       request_key: "request-key",
       state: catalogue.Saved,
+      subtitle: option.None,
     ),
     status:,
   )
@@ -336,6 +457,7 @@ pub fn a_listed_entry_names_the_session_and_nothing_private_test() {
       workspace: "/src/loom",
       created_at: 1_790_000_000_000,
       residency: sessions.Saved,
+      subtitle: option.None,
     )
   assert !string.contains(string.inspect(entry), "secret.sqlite")
   assert !string.contains(string.inspect(entry), "request-key")
@@ -343,8 +465,9 @@ pub fn a_listed_entry_names_the_session_and_nothing_private_test() {
 }
 
 // A session the daemon runs, opens or closes is live; one it holds no process
-// for is saved.
-pub fn a_running_session_is_live_and_the_rest_are_saved_test() {
+// for is saved, and one whose creation was never reconciled or whose recovery
+// stopped is blocked, which a page may not ask the daemon to resume.
+pub fn a_running_session_is_live_and_the_rest_are_saved_or_blocked_test() {
   list.each(
     [
       manager.Resident("incarnation"),
@@ -355,14 +478,11 @@ pub fn a_running_session_is_live_and_the_rest_are_saved_test() {
       assert ui_socket.listed_entry(view(status)).residency == sessions.Live
     },
   )
+  assert ui_socket.listed_entry(view(manager.Saved)).residency == sessions.Saved
   list.each(
-    [
-      manager.Saved,
-      manager.Reserved,
-      manager.RecoveryBlocked("proof lost"),
-    ],
+    [manager.Reserved, manager.RecoveryBlocked("proof lost")],
     fn(status) {
-      assert ui_socket.listed_entry(view(status)).residency == sessions.Saved
+      assert ui_socket.listed_entry(view(status)).residency == sessions.Blocked
     },
   )
 }
@@ -378,6 +498,7 @@ pub fn only_an_operators_page_is_listed_sessions_test() {
       workspace: "/src/loom",
       created_at: 1,
       residency: sessions.Live,
+      subtitle: option.None,
     )
   let asked = process.new_subject()
   let read = fn() {
@@ -552,4 +673,231 @@ pub fn only_an_owning_page_is_handed_the_capability_test() {
   assert ui_socket.invite_capability(ui_socket.Observing, ask) == None
   assert ui_socket.invite_capability(ui_socket.Operating, ask) == None
   let assert Some(_) = ui_socket.invite_capability(ui_socket.Owning, ask)
+}
+
+// A page whose transport hands it the capability to go home that
+// `home_capability` gives a page of `reach`, and whose `ask` reports each
+// press on `asked` before it answers with a ticket. What is under test is the
+// daemon's glue, not the component: the reach decides whether the page draws a
+// Home button, and the button's press arrives at the asker.
+fn going_home(
+  reach: ui_sessions.Reach,
+  asked: process.Subject(Nil),
+) -> component.Start(ui_relay.Relay) {
+  let ask = fn() {
+    process.send(asked, Nil)
+    sessions.Ticketed("/ui/exchange?ticket=home-ticket")
+  }
+  let start = start()
+  component.Start(
+    ..start,
+    transport: component.Transport(
+      ..start.transport,
+      home: ui_socket.home_capability(reach, ask),
+    ),
+  )
+}
+
+// The frame a browser sends for a click at `path`.
+fn click_at(path: String) -> String {
+  "{\"kind\":1,\"path\":"
+  <> json.to_string(json.string(path))
+  <> ",\"name\":\"click\",\"event\":{}}"
+}
+
+// Reads frames until one contains `text`, or the page goes quiet.
+fn frames_contain(page: ui_socket.Page, text: String) -> Bool {
+  case process.selector_receive(page.frames, 1000) {
+    Error(Nil) -> False
+    Ok(frame) ->
+      case string.contains(json.to_string(frame), text) {
+        True -> True
+        False -> frames_contain(page, text)
+      }
+  }
+}
+
+// A page opened from a home (`Workspace` reach) draws the Home button, and a
+// click at its path reaches the daemon's asker and navigates to its ticket,
+// for an observer's and an operator's page alike. A page a link for one
+// session opened (`OneSession`) draws no button, and the same frame asks
+// nothing.
+pub fn a_workspace_page_goes_home_and_a_one_session_page_cannot_test() {
+  list.each([ui_socket.Observing, ui_socket.Operating], fn(role) {
+    let asked = process.new_subject()
+    let assert Ok(page) =
+      ui_socket.start_page(role, going_home(ui_sessions.Workspace, asked))
+      as "the workspace page starts"
+    assert string.contains(mounted(page), "home-link")
+    page.forward(click_at(component.home_path))
+    assert process.receive(asked, 1000) == Ok(Nil)
+    assert frames_contain(page, "home-ticket")
+    page.shutdown()
+
+    let asked = process.new_subject()
+    let assert Ok(page) =
+      ui_socket.start_page(role, going_home(ui_sessions.OneSession, asked))
+      as "the one-session page starts"
+    assert !string.contains(mounted(page), "home-link")
+    page.forward(click_at(component.home_path))
+    assert process.receive(asked, 300) == Error(Nil)
+    page.shutdown()
+  })
+}
+
+// A submit at `path` on the page.
+fn submit_on(path: String) -> String {
+  "{\"kind\":1,\"path\":"
+  <> json.to_string(json.string(path))
+  <> ",\"name\":\"submit\",\"event\":{}}"
+}
+
+// Protocol-change/066: only an owner's socket admits an event at or beneath the
+// rename control's path, whether a submit or a click. A member operator's socket
+// drops it, alone or inside a batch, and an observer's drops it as it drops
+// every submit; the same events anywhere else are unaffected for a member.
+pub fn only_an_owners_socket_admits_the_rename_submit_test() {
+  let at = component.rename_path
+  let beneath = at <> "\trename-0\t0"
+  list.each([at, beneath, at <> "\t1"], fn(path) {
+    assert ui_socket.owner_accepts(submit_on(path))
+    assert ui_socket.owner_accepts(click_on(path))
+    assert !ui_socket.operator_accepts(submit_on(path))
+    assert !ui_socket.operator_accepts(click_on(path))
+    assert !ui_socket.observer_accepts(submit_on(path))
+    assert !ui_socket.observer_accepts(click_on(path))
+    let batch =
+      "{\"kind\":3,\"messages\":["
+      <> click_on(component.sidebar_path <> "\t0")
+      <> ","
+      <> submit_on(path)
+      <> "]}"
+    assert !ui_socket.operator_accepts(batch)
+    assert ui_socket.owner_accepts(batch)
+  })
+
+  // Neighbours of the path are not the control: the invitation's, the session
+  // controls', the pane's sibling and a path that only begins with the same
+  // digits. A member's socket admits a submit at each, as it did before.
+  list.each(
+    [
+      component.session_controls_path,
+      component.session_controls_path <> "\t1\t0\t0",
+      "0\t3\t2\t3",
+      "0\t3\t2\t40",
+      "0\t3\t1\t4",
+      "0\t2\t4",
+    ],
+    fn(path) {
+      assert ui_socket.operator_accepts(submit_on(path))
+    },
+  )
+}
+
+// The paths the socket pins are exactly these: no admitted path moved when the
+// rename control was added after the others.
+pub fn the_pinned_event_paths_have_not_moved_test() {
+  assert component.strip_path == "0\t3\t0\t1\t0"
+  assert component.invite_path == "0\t3\t2\t2"
+  assert component.session_controls_path == "0\t3\t2\t3"
+  assert component.older_path == "0\t2\t1\t0\t0"
+  assert component.sidebar_path == "0\t1"
+  assert component.home_path == "0\t0\t1"
+  assert home.table_path == "0\t2\t1"
+  assert home.sidebar_path == "0\t1"
+  assert component.rename_path == "0\t3\t2\t4"
+
+  // The new path is the pane's next child, after the invitation's and the
+  // controls', and begins with neither.
+  assert !string.starts_with(component.rename_path, component.invite_path)
+  assert !string.starts_with(
+    component.rename_path,
+    component.session_controls_path,
+  )
+}
+
+// Only an owner's page is handed the capability to rename, so any other page
+// draws no control and has nothing to call.
+pub fn only_an_owners_page_is_handed_the_capability_to_rename_test() {
+  let ask = fn(_name, _deliver) { Nil }
+  assert ui_socket.rename_capability(ui_socket.Observing, ask) == None
+  assert ui_socket.rename_capability(ui_socket.Operating, ask) == None
+  let assert Some(_) = ui_socket.rename_capability(ui_socket.Owning, ask)
+}
+
+fn home_principal(kind: access.PrincipalKind) -> access.Principal {
+  access.Principal(id: "p", display_name: "P", kind:)
+}
+
+// The home's capability to rename is the owner's on a page minted to operate:
+// a member's home, an observer-ceiling owner's home and every other combination
+// have none, and the socket for each admits the submit only where the
+// capability is.
+pub fn only_an_owners_operating_home_may_rename_test() {
+  let ask = fn(_session, _name, _deliver) { Nil }
+  let owner = home_principal(access.OwnerPrincipal)
+  let member = home_principal(access.MemberPrincipal)
+  let assert Some(_) =
+    ui_socket.home_rename_capability(owner, access.Operator, ask)
+  assert ui_socket.home_rename_capability(owner, access.Observer, ask) == None
+  assert ui_socket.home_rename_capability(member, access.Operator, ask) == None
+  assert ui_socket.home_rename_capability(member, access.Observer, ask) == None
+}
+
+// The home's socket admits a submit only beneath the sessions list's section,
+// where a row's rename form is, and only for an owner's home. A member's home
+// still admits clicks on a row and drops every submit; the owner's admits a
+// submit beneath the list and nowhere else, not the sidebar, not the regions'
+// own paths and not a sibling that shares their digits, and it takes no other
+// event.
+pub fn the_home_socket_admits_a_rename_submit_only_for_an_owner_test() {
+  let row = home.table_path <> "\t1\t2\t0\t0\t0"
+  let form = home.table_path <> "\t1\t2\t0\t0"
+  let sidebar_row = home.sidebar_path <> "\t1\t1\t0\t0"
+  assert ui_socket.home_owner_accepts(submit_on(form))
+  assert ui_socket.home_owner_accepts(submit_on(row))
+  assert ui_socket.home_owner_accepts(click_on(row))
+  assert ui_socket.home_owner_accepts(click_on(sidebar_row))
+  assert ui_socket.home_owner_accepts(
+    "{\"kind\":3,\"messages\":["
+    <> click_on(row)
+    <> ","
+    <> submit_on(form)
+    <> "]}",
+  )
+
+  // Not a member's home, whatever path it names.
+  assert !ui_socket.home_accepts(submit_on(form))
+  assert !ui_socket.home_accepts(submit_on(row))
+  assert ui_socket.home_accepts(click_on(row))
+  assert !ui_socket.home_accepts(
+    "{\"kind\":3,\"messages\":["
+    <> click_on(row)
+    <> ","
+    <> submit_on(form)
+    <> "]}",
+  )
+
+  // And not an owner's home outside the list.
+  list.each(
+    [
+      submit_on(home.table_path),
+      submit_on(home.sidebar_path),
+      submit_on(sidebar_row),
+      submit_on(home.table_path <> "0\t1"),
+      submit_on("0\t0\t1"),
+      submit_on("0\t2\t0"),
+      submit_on("0\t2\t2"),
+      submit_on("0"),
+      "{\"kind\":1,\"name\":\"submit\"}",
+      "{\"kind\":1,\"path\":\"0\\t2\\t1\\t1\",\"name\":\"keydown\"}",
+      "{\"kind\":1,\"path\":\"0\\t2\\t1\\t1\",\"name\":\"input\"}",
+      "{\"kind\":3,\"messages\":[]}",
+      "{\"kind\":2,\"name\":\"value\"}",
+      "not json",
+    ],
+    fn(frame) {
+      assert !ui_socket.home_owner_accepts(frame)
+    },
+  )
 }

@@ -5,9 +5,12 @@
 //// going out and its answer committing, the session is silent on the page
 //// for as long as the model takes, which is the longest wait a reader has.
 //// This region fills it with the two things the terminal draws for that
-//// interval: a reasoning row that says how much has arrived and how long the
-//// generation has run, with the summarizer's headline beneath it when one
-//// has been pushed (protocol 050), and the answer as it grows.
+//// interval: a reasoning row that says the model is reasoning and for how
+//// long, `Reasoning · 7s`, with the summarizer's headline beneath it when one
+//// has been pushed (protocol 050), and the answer as it grows. A turn that has
+//// opened and streamed nothing yet draws `Thinking · 0:03` in the reasoning
+//// row's place, so a model that sends no reasoning text still shows progress. The lane gives
+//// the region a timeline dot of its own and pulses it while the region exists.
 ////
 //// The rows are `component.live`'s, taken from the shared record's streams,
 //// and this module only draws them. It decides nothing about the session.
@@ -46,7 +49,8 @@ pub type Row {
   /// reader as fragments land, and a counter that climbs is easier to ignore
   /// than that.
   Thinking(
-    /// How much has arrived, in the engine's words: `12 lines`.
+    /// How much has arrived, in the engine's words: `12 lines`. The row keeps
+    /// it as its title and does not say it.
     progress: String,
     /// How long the generation had run, in milliseconds, when the row was
     /// built, on the daemon host's clock; `None` before the clock started.
@@ -55,6 +59,17 @@ pub type Row {
     /// The summarizer's headline for the block so far, when one has been
     /// pushed.
     headline: Option(String),
+  )
+
+  /// A turn that has opened and has streamed nothing yet: the request is out
+  /// and the model has said nothing, which is every wait a model that streams
+  /// no reasoning text makes. It is drawn as `Thinking · 0:03` so the lane is
+  /// not silent, and a streamed row replaces it.
+  Opened(
+    /// How long the generation had run, as in `Thinking`. `None` until the
+    /// generation clock starts, and then the row says `Thinking` alone; no
+    /// other clock stands in for it.
+    elapsed_ms: Option(Int),
   )
 
   /// The answer so far, as the transcript's line for an assistant answer.
@@ -89,34 +104,45 @@ fn row(row: Row, draw: fn(Line) -> Element(message)) -> Element(message) {
   case row {
     Answer(line:) -> draw(line)
 
-    // Without a headline the row is the digest the terminal shows,
-    // `12 lines · 1m 04s so far`. With one it is the header of the
-    // summarized row, the same count and clock, and the headline beneath it.
-    Thinking(progress:, elapsed_ms:, headline: None) ->
-      html.pre([attribute.class("line"), attribute.class("reasoning-digest")], [
-        html.text(progress),
-        ..elapsed(elapsed_ms, [html.text(" so far")])
+    // The turn is open and nothing has streamed. The same row the reasoning
+    // text will fill, headed `Thinking`, so that the hand-over changes a word
+    // and not the row's place. The lane's own dot pulses beside it.
+    Opened(elapsed_ms:) ->
+      html.div([attribute.class("thinking")], [
+        html.p([attribute.class("who"), attribute.class("thinking-head")], [
+          html.text("Thinking"),
+          ..elapsed(elapsed_ms)
+        ]),
       ])
-    Thinking(progress:, elapsed_ms:, headline: Some(headline)) ->
-      html.pre(
-        [attribute.class("line"), attribute.class("summarized-reasoning")],
-        [
-          html.text(progress),
-          ..elapsed(elapsed_ms, [html.text("\n" <> headline)])
-        ],
-      )
+
+    // The row says what the model is doing and for how long, `Reasoning ·
+    // 7s`, with the summarizer's headline beneath it once one is pushed. The
+    // count of lines that have arrived is a detail of the engine's, so it is
+    // the row's title and not its words.
+    Thinking(progress:, elapsed_ms:, headline:) ->
+      html.div([attribute.class("thinking"), attribute.title(progress)], [
+        html.p([attribute.class("who"), attribute.class("thinking-head")], [
+          html.text("Reasoning"),
+          ..elapsed(elapsed_ms)
+        ]),
+        ..case headline {
+          Some(headline) -> [
+            html.p([attribute.class("thinking-headline")], [
+              html.text(headline),
+            ]),
+          ]
+          None -> []
+        }
+      ])
   }
 }
 
-// The clock after a row's count, then `rest`. The browser counts it from the
-// reading (`<loom-elapsed offset>`, in milliseconds), so a reading is drawn
-// only once the generation clock has started.
-fn elapsed(
-  elapsed_ms: Option(Int),
-  rest: List(Element(message)),
-) -> List(Element(message)) {
+// The clock after the row's word. The browser counts it from the reading
+// (`<loom-elapsed offset>`, in milliseconds), so a reading is drawn only once
+// the generation clock has started.
+fn elapsed(elapsed_ms: Option(Int)) -> List(Element(message)) {
   case elapsed_ms {
-    None -> rest
+    None -> []
     Some(ms) -> [
       html.text(" · "),
       element.element(
@@ -127,7 +153,6 @@ fn elapsed(
         ],
         [],
       ),
-      ..rest
     ]
   }
 }

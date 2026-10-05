@@ -20,8 +20,10 @@
 #                     and src/storage/sql/*.sql named queries
 #                     -> src/storage/sql.gleam, sql_schema.gleam and
 #                        session_schema.gleam, catalogue_names_schema.gleam,
-#                        catalogue_archives_schema.gleam and
-#                        catalogue_claims_schema.gleam. Each catalogue version
+#                        catalogue_archives_schema.gleam,
+#                        catalogue_claims_schema.gleam and
+#                        catalogue_subtitles_schema.gleam and
+#                        catalogue_workspace_bindings_schema.gleam. Each catalogue version
 #                        after the first has its own migration schema;
 #                        runtime catalogue creation never embeds session tables.
 #   packages/executor — sql/schema.sql, sql/workspace.sql and named queries
@@ -56,6 +58,7 @@ gen_package() {
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_names.sql
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_archives.sql
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_claims.sql
+    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_subtitles.sql
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_workspace_bindings.sql
     sqlite3 "$tmpdb" < packages/storage/sql/session.sql
     sqlite3 "$tmpdb" < packages/storage/sql/owner_custody.sql
@@ -87,7 +90,10 @@ for pkg in "${packages[@]}"; do
   esac
 done
 
-# Schema constants are deterministic copies and do not invoke sqlc.
+# Schema constants are deterministic copies and do not invoke sqlc. Respect
+# the selected package list here too, so a scoped regeneration cannot rewrite
+# another schema owner's artifacts during an integration wave.
+if [[ " ${packages[*]} " == *" executor "* ]]; then
 python3 scripts/embed-sql-schema.py packages/executor/sql/schema.sql \
   packages/executor/src/executor/custody_schema.gleam
 gleam format packages/executor/src/executor/custody_schema.gleam
@@ -97,6 +103,8 @@ gleam format packages/executor/src/executor/workspace_schema.gleam
 python3 scripts/embed-sql-schema.py packages/executor/sql/resources.sql \
   packages/executor/src/executor/resource_schema.gleam
 gleam format packages/executor/src/executor/resource_schema.gleam
+fi
+if [[ " ${packages[*]} " == *" storage "* ]]; then
 python3 scripts/embed-sql-schema.py packages/storage/sql/schema.sql \
   packages/storage/src/storage/sql_schema.gleam
 python3 scripts/embed-sql-schema.py packages/storage/sql/session.sql \
@@ -112,6 +120,9 @@ gleam format packages/storage/src/storage/catalogue_archives_schema.gleam
 python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_claims.sql \
   packages/storage/src/storage/catalogue_claims_schema.gleam
 gleam format packages/storage/src/storage/catalogue_claims_schema.gleam
+python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_subtitles.sql \
+  packages/storage/src/storage/catalogue_subtitles_schema.gleam
+gleam format packages/storage/src/storage/catalogue_subtitles_schema.gleam
 python3 scripts/embed-sql-schema.py packages/storage/sql/owner_custody.sql \
   packages/storage/src/storage/owner_custody_schema.gleam
 gleam format packages/storage/src/storage/owner_custody_schema.gleam
@@ -121,4 +132,5 @@ gleam format packages/storage/src/storage/catalogue_workspace_bindings_schema.gl
 python3 scripts/embed-sql-schema.py packages/storage/sql/owner_command_offers.sql \
   packages/storage/src/storage/owner_command_offers_schema.gleam
 gleam format packages/storage/src/storage/owner_command_offers_schema.gleam
+fi
 echo "generated SQL modules are up to date; review and commit the diff"

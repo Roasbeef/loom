@@ -57,8 +57,13 @@ stays the billing source of truth (§3.4).
   `proc_lib:set_label({pickglass_owner, 1, Path, Role})`, with the path
   derived from a logger's session and strand. `Role` is a closed set
   (`StrandDriver`, `EffectWorker`, `ProviderEffectWorker`, `Gateway`,
-  `PageSocket`, `PageSessions`); `label` takes an explicit path for a
-  process with no logger in reach.
+  `PageSocket`, `PageSessions`, `SessionHost`, `DomainHost`, `Agency`,
+  `Escalation`, `AsyncRuns`, `BackgroundJobs`, `Advisor`, `Glance`,
+  `BlockSummarizer`, `RuleScanner`, `ScheduleScanner`); `label` takes an
+  explicit path for a process with no logger in reach. The session
+  services in `client` reach their path through
+  `client/internal/session_owner`, which derives it from the runtime they
+  were wired with.
 - `telemetry/handler.{install, threshold_named, level_variable}` — the
   boot-time installation an entry point (and only an entry point) calls,
   and the `LOOM_LOG_LEVEL` resolution behind it.

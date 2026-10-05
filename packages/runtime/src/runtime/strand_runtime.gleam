@@ -288,6 +288,13 @@ type Live {
   )
 }
 
+// The default projection depends only on this immutable scan. Keeping its
+// result alongside the scan avoids rebuilding context while a live effect
+// holds the leaf still; request-local transforms remain outside this cache.
+type CachedProjection {
+  CachedProjection(scan: projection.Cached, projected: hooks.Projected)
+}
+
 type State {
   State(
     // This direct subject is bound to this incarnation's PID. Effects and
@@ -334,14 +341,12 @@ type State {
     /// the pending tick alone, so a session configured with one period
     /// for both occupancies arms exactly one deadline for its whole life.
     armed_poll_ms: Option(Int),
-    // The branch as last scanned, keyed by the leaf it was scanned from.
-    // A step projects the branch once for the planner's threshold and once
-    // for the request; both read this, and a later step whose leaf has
-    // moved scans only the entries past the cached leaf and joins them on.
-    // It is a cache of write-once entries and nothing else: a fresh
-    // incarnation starts without one and scans the whole branch, which is
-    // the replay rule every projection here is held to.
-    projection: Option(projection.Cached),
+    // The write-once branch and its pure default projection share one leaf
+    // key. Polls and threshold/request reads reuse the projected value while
+    // that key stays unchanged. A moved leaf still joins new entries or scans
+    // again under the existing fork/compaction rule; a fresh incarnation has
+    // no cache and reconstructs both from storage.
+    projection: Option(CachedProjection),
     /// The grants the most recent tool clearance consumed, held only
     /// between that clearance and the dispatch it authorizes. It is a
     /// one-slot carry rather than durable state because that is exactly
@@ -2008,11 +2013,15 @@ fn project_for(
 ) -> Result(#(hooks.Projected, State), String) {
   case leaf, state.projection {
     None, _ -> Ok(#(hooks.project_from_scan([]), state))
-    Some(leaf), Some(projection.Cached(leaf: cached_leaf, newest_first:))
+    Some(leaf),
+      Some(CachedProjection(
+        scan: projection.Cached(leaf: cached_leaf, ..),
+        projected:,
+      ))
       if leaf == cached_leaf
-    -> Ok(#(hooks.project_from_scan(newest_first), state))
+    -> Ok(#(projected, state))
     Some(leaf), Some(cached) -> {
-      use extended <- result.try(extend_scan(state, leaf, cached))
+      use extended <- result.try(extend_scan(state, leaf, cached.scan))
       case extended {
         Some(newest_first) -> Ok(remember(state, leaf, newest_first))
         None -> full_scan(state, leaf)
@@ -2058,9 +2067,11 @@ fn remember(
   leaf: EntryId,
   newest_first: List(Entry),
 ) -> #(hooks.Projected, State) {
+  let projected = hooks.project_from_scan(newest_first)
+  let scan = projection.Cached(leaf:, newest_first:)
   #(
-    hooks.project_from_scan(newest_first),
-    State(..state, projection: Some(projection.Cached(leaf:, newest_first:))),
+    projected,
+    State(..state, projection: Some(CachedProjection(scan:, projected:))),
   )
 }
 
@@ -2342,17 +2353,21 @@ fn spawn_provider(
   let parent = state.internal
   let driver = process.self()
   let surface = state.effects.provider
+
+  // The worker needs restart custody, not the driver's cached conversation or
+  // sibling tool closures. Project the handle before crossing the spawn boundary.
+  let reaper = state.reaper
   let logger = step_logger(state, token)
   log.debug(logger, "effect.dispatched", [
     field.text(key: "kind", value: effect_kind(token)),
     field.text(key: "model", value: configuration.model.model_id),
   ])
   let #(pid, stop) =
-    spawn_provider_effect(state.reaper, logger, fn(stop) {
+    spawn_provider_effect(reaper, logger, fn(stop) {
       let provider_custodian.Prepared(handle:, begin:) =
         provider_custodian.prepare(surface, spec)
       let drain = stream.watch_drain(handle)
-      case track_provider_owner(state.reaper, handle) {
+      case track_provider_owner(reaper, handle) {
         False -> {
           stream.cancel(handle)
           require_provider_drain(drain)

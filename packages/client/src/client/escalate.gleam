@@ -144,6 +144,7 @@
 import broker/escalation.{type Denial}
 import broker/policy.{type Grant}
 import client/grants
+import client/internal/session_owner
 import client/internal/timebase
 import core/clock.{type Clock}
 import core/ids.{type OpId}
@@ -158,6 +159,7 @@ import gleam/string
 import runtime/api
 import runtime/escalation as durable
 import runtime/residency
+import telemetry/owner
 import tools/blob
 import tools/tool
 import weft/actor
@@ -275,7 +277,15 @@ pub fn start(
   config: Config,
   runtime: api.Runtime,
 ) -> actor.StartResult(Subject(Message)) {
-  actor.new(runtime)
+  actor.new_with_initialiser(5000, fn(subject) {
+    // The initialiser runs in the actor's own process, so this label names
+    // it to the ownership inspector under its session.
+    session_owner.label(runtime, owner.Escalation)
+
+    actor.initialised(runtime)
+    |> actor.returning(subject)
+    |> Ok
+  })
   |> actor.on_message(fn(state, message) {
     case message {
       Borrow(reply:) -> {

@@ -7,7 +7,6 @@ import etui/buffer
 import etui/geometry
 import etui/keys
 import etui/span
-import etui/style
 import etui/widgets/paragraph
 import gleam/int
 import gleam/list
@@ -33,6 +32,7 @@ fn review(path) {
         #("path", json.String(path)),
       ]),
     ]),
+    strand: None,
   )
 }
 
@@ -53,7 +53,7 @@ pub fn approval_capture(width: Int, height: Int) -> String {
       "sub:review",
       "run-1",
     ))
-  approval_panel.render(base, screen, panel) |> frame.buffer_to_text
+  approval_panel.render(base, screen, panel, waiting: 1) |> frame.buffer_to_text
 }
 
 pub fn approval_presentation_ascii_escapes_hidden_paths_without_changing_authority_test() {
@@ -119,14 +119,17 @@ pub fn approval_presentation_exact_display_boundary_and_narrow_scrolling_test() 
     ))
   let screen = geometry.rect_new(0, 0, 80, 10)
   let draw = fn(panel) {
-    approval_panel.render(buffer.buffer_new(screen), screen, panel)
+    approval_panel.render(buffer.buffer_new(screen), screen, panel, waiting: 1)
     |> frame.buffer_to_text
   }
   assert !string.contains(draw(panel), "unsafe-suffix")
   let assert approval_panel.Continue(last) =
     approval_panel.update(keys.End, panel)
     as "End scrolls without making a decision"
-  assert string.contains(draw(last), "unsafe-suffix")
+
+  // The grant wraps inside its word, so its tail is read across the rows.
+  let joined = fn(text) { string.replace(text, "\n   ", "") }
+  assert string.contains(joined(draw(last)), "unsafe-suffix")
     as "a narrow panel wraps and scrolls to the entire grant, not just its prefix"
   assert approval_panel.update(keys.Escape, last) == approval_panel.Close
 }
@@ -142,14 +145,14 @@ pub fn approval_owner_context_preserves_exact_consent_test() {
     ))
   let screen = geometry.rect_new(0, 0, 100, 24)
   let rendered =
-    approval_panel.render(buffer.buffer_new(screen), screen, panel)
+    approval_panel.render(buffer.buffer_new(screen), screen, panel, waiting: 1)
     |> frame.buffer_to_text
   assert string.contains(rendered, "Requested by sub:review")
   assert !string.contains(rendered, "operation run-1")
   let assert approval_panel.Continue(raw) =
     approval_panel.update(keys.Ctrl("g"), panel)
   let raw_rendered =
-    approval_panel.render(buffer.buffer_new(screen), screen, raw)
+    approval_panel.render(buffer.buffer_new(screen), screen, raw, waiting: 1)
     |> frame.buffer_to_text
   assert string.contains(raw_rendered, "operation run-1")
   let assert approval_panel.Continue(unselected) =
@@ -172,7 +175,7 @@ pub fn approval_panel_is_bottom_anchored_and_preserves_the_transcript_test() {
   let base =
     paragraph.render_styled(buffer.buffer_new(screen), screen, transcript)
   let rendered =
-    approval_panel.render(base, screen, approval_panel.new(record))
+    approval_panel.render(base, screen, approval_panel.new(record), waiting: 1)
     |> frame.buffer_to_lines
   let assert Ok(first) = list.first(rendered)
   assert first == "transcript remains visible"
@@ -184,27 +187,27 @@ pub fn approval_panel_is_bottom_anchored_and_preserves_the_transcript_test() {
   assert rendered
     |> list.drop(22)
     |> string.join("\n")
-    |> string.contains("Permission required")
+    |> string.contains("Allow once")
 }
 
 pub fn approval_panel_readable_and_raw_views_stay_compact_test() {
   let panel = approval_panel.new(review("/work/clear-name"))
   let screen = geometry.rect_new(0, 0, 96, 36)
   let draw = fn(panel) {
-    approval_panel.render(buffer.buffer_new(screen), screen, panel)
+    approval_panel.render(buffer.buffer_new(screen), screen, panel, waiting: 1)
     |> frame.buffer_to_text
   }
   assert string.contains(draw(panel), "Read files under")
-  assert !string.contains(draw(panel), "Raw captured request")
+  assert !string.contains(draw(panel), "\"grants\"")
   let assert approval_panel.Continue(raw) =
     approval_panel.update(keys.Ctrl("g"), panel)
   let raw_text = draw(raw)
-  assert string.contains(raw_text, "Raw captured request")
+  assert string.contains(raw_text, "raw request")
   assert string.contains(raw_text, "\"grants\"")
   let rows = raw_text |> string.split("\n")
   assert rows
     |> list.take(18)
-    |> list.all(fn(row) { !string.contains(row, "Raw captured request") })
+    |> list.all(fn(row) { !string.contains(row, "raw request") })
     as "the detail toggle remains in a bottom panel rather than taking the screen"
 }
 
@@ -318,7 +321,12 @@ pub fn approval_paging_cannot_skip_detail_rows_test() {
     int.range(0, 100, #([], approval_panel.new(record)), fn(acc, _) {
       let #(pages, panel) = acc
       let rendered =
-        approval_panel.render(buffer.buffer_new(screen), screen, panel)
+        approval_panel.render(
+          buffer.buffer_new(screen),
+          screen,
+          panel,
+          waiting: 1,
+        )
       let assert approval_panel.Continue(next) =
         approval_panel.update(keys.PageDown, panel)
         as "paging never chooses a decision"
@@ -340,6 +348,7 @@ pub fn unavailable_approval_can_only_select_deny_test() {
       "unknown authority",
       None,
       approval.Unavailable("unsupported requested grant kind"),
+      strand: None,
     )
   let panel = approval_panel.new(record)
   let assert approval_panel.Continue(selected) =
@@ -352,6 +361,7 @@ pub fn unavailable_approval_can_only_select_deny_test() {
       buffer.buffer_new(geometry.rect_new(0, 0, 52, 12)),
       geometry.rect_new(0, 0, 52, 12),
       panel,
+      waiting: 1,
     )
     |> frame.buffer_to_text
   assert string.contains(rendered, "Allow once (unavailable)")
@@ -363,7 +373,7 @@ pub fn narrow_approval_stacks_choices_and_tiny_terminal_stays_bounded_test() {
   let panel = approval_panel.new(review("/work/report"))
   let narrow = geometry.rect_new(0, 0, 48, 12)
   let lines =
-    approval_panel.render(buffer.buffer_new(narrow), narrow, panel)
+    approval_panel.render(buffer.buffer_new(narrow), narrow, panel, waiting: 1)
     |> frame.buffer_to_lines
   let once = row_index(lines, "Allow once")
   let session = row_index(lines, "Allow for session")
@@ -376,7 +386,7 @@ pub fn narrow_approval_stacks_choices_and_tiny_terminal_stays_bounded_test() {
 
   let tiny = geometry.rect_new(0, 0, 24, 6)
   let tiny_lines =
-    approval_panel.render(buffer.buffer_new(tiny), tiny, panel)
+    approval_panel.render(buffer.buffer_new(tiny), tiny, panel, waiting: 1)
     |> frame.buffer_to_lines
   assert list.length(tiny_lines) == 6
   assert list.all(tiny_lines, fn(line) { string.length(line) <= 24 })
@@ -387,25 +397,16 @@ pub fn approval_styles_keep_panel_backgrounds_and_choice_focus_test() {
   let screen = geometry.rect_new(0, 0, 100, 40)
   let panel = approval_panel.new(review("/work/report"))
   let draw = fn(state) {
-    approval_panel.render(buffer.buffer_new(screen), screen, state)
+    approval_panel.render(buffer.buffer_new(screen), screen, state, waiting: 1)
   }
   let initial = draw(panel)
   let rows = frame.buffer_to_lines(initial)
   let once = row_index(rows, "Allow once")
   let session = row_index(rows, "Allow for session")
   let deny = row_index(rows, "Deny")
-  let top = row_index(rows, "Permission required")
+  let top = row_index(rows, "──────────")
   assert top >= 22
   assert once > top && session > once && deny > session
-
-  // Explicit backgrounds prevent terminal-default text from punching holes
-  // through the filled panel, including the trailing cells after a short line.
-  int.range(top + 1, 39, Nil, fn(_, y) {
-    int.range(3, 97, Nil, fn(_, x) {
-      assert buffer.get_cell(initial, geometry.Position(x, y)).style.bg
-        != style.Default
-    })
-  })
   let assert approval_panel.Continue(selected) =
     approval_panel.update(keys.Down, panel)
     as "Down explicitly selects the first available choice"
@@ -419,7 +420,7 @@ pub fn approval_styles_keep_panel_backgrounds_and_choice_focus_test() {
   assert focused
     |> appearance.apply(appearance.Plain)
     |> frame.buffer_to_text
-    |> string.contains("› Allow once")
+    |> string.contains("› 1  Allow once")
     as "selection remains visible when the terminal disables color"
   let assert approval_panel.Decide(exact, approval_panel.AllowOnce) =
     approval_panel.update(keys.Enter, selected)

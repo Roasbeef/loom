@@ -118,7 +118,8 @@
 ////    `commanded` wrap a command as the step's message. `switch_to` asks the
 ////    daemon to open another session.
 //// 7. `older`, `focus` and `invite` are the other public entries that change
-////    what the page shows; `apply` folds lane updates a caller took from the lane itself.
+////    what the page shows; `going_home` asks the daemon for a ticket to the
+////    home page; `apply` folds lane updates a caller took from the lane itself.
 //// 8. `view` lays the derived pieces out, through `heading`, `panel`, `live`
 ////    and the `web_view/view` modules, and reads nothing the model does not hold.
 
@@ -148,6 +149,7 @@ import session_view/command
 import session_view/composer
 import session_view/connection_event
 import session_view/context_view
+import session_view/decisions
 import session_view/goal_view
 import session_view/history_view
 import session_view/inbox
@@ -179,6 +181,7 @@ import session_view/worktree_view
 import web_view/ending.{type Ending}
 import web_view/image as web_image
 import web_view/invites
+import web_view/renames
 import web_view/sessions
 import web_view/view/changes
 import web_view/view/commentary
@@ -190,10 +193,12 @@ import web_view/view/lane
 import web_view/view/live
 import web_view/view/nudges
 import web_view/view/panel
+import web_view/view/rename as rename_view
 import web_view/view/session_tab
 import web_view/view/shell
 import web_view/view/strand_detail
 import web_view/view/strip
+import web_view/view/switch
 import web_view/view/todo_panel
 import web_view/view/trace
 
@@ -289,6 +294,44 @@ pub const sidebar_path = "0\t1"
 /// (`client/daemon/ui_socket.invite_for`). `invite_test` fails if the view
 /// moves the control or a handler leaves the region.
 pub const invite_path = "0\t3\t2\t2"
+
+/// The Lustre event path of the rename control, on an owner's page: it is the
+/// fifth child of the Session pane (`view/session_tab`), after the pane's
+/// title, its list, the invitation control (`invite_path`) and the session
+/// controls (`session_controls_path`), so that placing it there moved no path
+/// the socket admits. The one handler beneath it is the form's submit
+/// (protocol-change/067). The page socket admits a `submit` at or beneath this
+/// path only on a page whose principal is the daemon's owner
+/// (`client/daemon/ui_socket.operator_accepts`), as it does for the invitation
+/// control, so a member operator's browser and an observer's cannot send one
+/// even by forging the path, and the daemon refuses the request a third time
+/// (`client/daemon/ui_socket.rename_for`). `rename_test` fails if the view
+/// moves the control or a handler leaves the region.
+pub const rename_path = "0\t3\t2\t4"
+
+/// The Lustre event path of the "Home" button, on both pages: it is the
+/// second child of the top bar (`view/heading`), after the brand, and the top
+/// bar is the first child of the page's frame (`view/shell`). The button is
+/// drawn only on a page opened from a home, and its one handler asks the
+/// daemon for a ticket to that home (protocol-change/065, the second pull
+/// request). The observer's socket admits a `click` at exactly this path and
+/// nowhere else beyond the two it always admitted
+/// (`client/daemon/ui_socket.observer_accepts`), and the daemon decides again
+/// whether the page's principal and ceiling may have a ticket
+/// (`client/daemon/ui_socket.home_ticket_for`). `page_events_test` fails if
+/// the view moves the button.
+pub const home_path = "0\t0\t1"
+
+/// The Lustre event path of the operator's session controls, the goal's
+/// buttons and the Fork form: the fourth child of the Session pane, after the
+/// invitation control (`invite_path`), so that placing it there moved no path
+/// the socket admits. Every handler beneath it is a click or a submit of a
+/// control (protocol-change/051, the addendum on the session controls'
+/// placement). The operator's socket admits them like any click or submit
+/// that is not the invitation's, and an observer's socket admits none, the
+/// page drawing no control there. `page_events_test` fails if the view moves
+/// the controls.
+pub const session_controls_path = "0\t3\t2\t3"
 
 /// How long the sidebar's list stands before the page reads it again, in
 /// milliseconds of the transport's clock. The list changes when a session is
@@ -388,6 +431,16 @@ pub type Transport(socket) {
     /// when the operator presses a row, and it must not run long: the page's
     /// runtime waits for it.
     open: fn(String) -> sessions.Answer,
+    /// Asks the daemon to resume the named saved session and mint a ticket for
+    /// it, for an operator's page that pressed a saved row
+    /// (protocol-change/065, the third pull request). The daemon checks the
+    /// page's ceiling and the principal's role in that session, opens it, waits
+    /// for it to become resident and mints a ticket with the page's own ceiling
+    /// and deadline. It must return at once: the wait runs in the daemon's own
+    /// task, which calls the function it is given with the answer, and that
+    /// call is dispatched as `Linked`. It answers `Declined` for an observer's
+    /// page without asking.
+    resume: fn(String, fn(sessions.Answer) -> Nil) -> Nil,
     /// Asks the daemon to invite a person to this page's session, in a role
     /// the owner chose, for an owner's page that pressed one of the control's
     /// buttons: the daemon mints the same claim `loomd access invite` mints
@@ -399,6 +452,27 @@ pub type Transport(socket) {
     /// component's process, and it must not run long: the page's runtime
     /// waits for it.
     invite: Option(fn(invites.Role) -> invites.Answer),
+    /// Asks the daemon for a ticket to the principal's home page, for a page
+    /// that was opened from a home (protocol-change/065): the daemon mints it
+    /// for the page's own principal, with the page's own ceiling and deadline,
+    /// and answers with the exchange address or the reason it did not. It is
+    /// `None` on a page a link for one session opened, which draws no way home
+    /// and so offers no capability. The daemon checks the page again when this
+    /// is called. It runs in the component's process, and it must not run
+    /// long: the page's runtime waits for it.
+    home: Option(fn() -> sessions.Answer),
+    /// Asks the daemon to rename this page's own session, for an owner's page
+    /// that submitted the rename control (protocol-change/067): the daemon
+    /// checks that the page is open, that its credential still authenticates as
+    /// the daemon's owner and that the name is one a display name may be, and
+    /// then makes the registry's owner-checked rename. It must return at once:
+    /// the daemon runs the request in a task of its own, which calls the
+    /// function it is given with the answer, and that call is dispatched as
+    /// `Renamed`. It is `None` unless the page's principal is the daemon's
+    /// owner, and the daemon checks that again when it runs, so a page with no
+    /// capability draws no control and a page that has one cannot use it once
+    /// its principal or its own standing has changed.
+    rename: Option(fn(String, fn(renames.Answer) -> Nil) -> Nil),
   )
 }
 
@@ -603,10 +677,19 @@ type View(socket) {
     /// switch replaces it: the ticket is single use and lives 60 seconds, so
     /// a value left behind is spent.
     departure: Option(String),
+    /// The saved session whose resume is out, if one is. It is set when a press
+    /// asks the daemon and cleared by the answer, so a second press while it is
+    /// set asks nothing and the sidebar draws that row as opening.
+    resuming: Option(String),
     /// What the invitation control is doing. It is the one place the page
     /// holds a claim token, only while the invitation is on screen, and the
     /// state is replaced when the owner dismisses it.
     share: invites.Share,
+    /// What the rename control is doing, and how many renames have succeeded,
+    /// which keys the control's form so a successful one is replaced by an empty
+    /// form.
+    renaming: renames.Control,
+    renamed: Int,
     /// When the page opened or last asked for the strand's live jobs, on the
     /// transport's clock, so the next ask waits `jobs_refresh_ms` whether or
     /// not the daemon answered. A refused read is therefore not repeated on
@@ -639,6 +722,17 @@ type View(socket) {
     /// so a consumed draft is replaced by an empty editor while a refused
     /// one stays as the operator left it.
     consumed: Int,
+    /// How many times the composer's notice has changed. The notice is keyed
+    /// by it, so each new notice is a new element and the stylesheet's fade
+    /// starts afresh for it, while a refresh that leaves the words alone does
+    /// not restart the fade of the ones on screen.
+    noticed: Int,
+    /// The strand each approval request was raised on, by the request's
+    /// identity, as the captures saw it while the request was pending. The
+    /// approval ledger's summary of a decided request keeps no scope, so the
+    /// decision's line (`decisions.from_ledger`) reads the strand from here.
+    /// It holds the newest sixty-four.
+    raised: List(#(String, String)),
     /// How many of the controls' forms have sent a command. The forms are
     /// keyed by it, so a form that sent is replaced by a closed, empty one
     /// while a refused one keeps what the operator typed.
@@ -689,6 +783,13 @@ pub type Msg(socket) {
   /// carry it (protocol-change/051, the addendum on strand focus).
   FocusRequested(strand: String)
 
+  /// The "Home" button was pressed. It carries nothing: the daemon mints a
+  /// ticket for this page's own principal, so the press cannot name a place
+  /// to go. It is the second message a browser can send an observer's page,
+  /// and the button exists only on a page opened from a home
+  /// (protocol-change/065).
+  GoingHome
+
   /// The sidebar's read of the principal's sessions answered. It is the
   /// effect's own message, dispatched from the component's process, and no
   /// handler carries it, so a browser cannot send one.
@@ -709,11 +810,21 @@ pub type Msg(socket) {
   /// handler carries it, so a browser cannot send one.
   Linked(answer: sessions.Answer)
 
+  /// The daemon answered a request to go home. Like `Linked` it is the
+  /// effect's own message and no handler carries it.
+  Homed(answer: sessions.Answer)
+
   /// The daemon answered a request to invite. It is the effect's own
   /// message, dispatched from the component's process, and no handler
   /// carries it, so a browser cannot send one and cannot put a token in the
   /// page.
   Invited(answer: invites.Answer)
+
+  /// The daemon answered a request to rename the page's session. It is the
+  /// effect's own message, dispatched from the daemon's task, and no handler
+  /// carries it, so a browser cannot send one and cannot put a name in the page
+  /// that the daemon did not store.
+  Renamed(answer: renames.Answer)
 }
 
 /// The Lustre application for one session's observer page.
@@ -771,16 +882,24 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       groups: [],
       listed_at: None,
       departure: None,
+      resuming: None,
       share: case start.transport.invite {
         Some(_) -> invites.Ready
         None -> invites.Withheld
       },
+      renaming: case start.transport.rename {
+        Some(_) -> renames.Ready
+        None -> renames.Withheld
+      },
+      renamed: 0,
       jobs_asked_at: None,
       refusal: None,
       outcome: "",
       returns: 0,
       returned: [],
       consumed: 0,
+      noticed: 0,
+      raised: [],
       sent_forms: 0,
       timer: None,
       armed: None,
@@ -929,6 +1048,8 @@ pub fn update(
 
     FocusRequested(strand:) -> focus_at(model, strand, at)
 
+    GoingHome -> going_home(model)
+
     // The sidebar's list is the catalogue's own order and the page groups it,
     // at most `listed_limit` sessions. Nothing about the lane moved.
     SessionsListed(entries:) -> #(
@@ -953,9 +1074,19 @@ pub fn update(
       answering(reply, turns.picture(model.view.pieces, ref, position)),
     )
 
-    Linked(answer:) -> #(linked(model, answer), effect.none())
+    Linked(answer:) -> #(
+      linked(model, answer, saying: "Opening that session."),
+      effect.none(),
+    )
+
+    Homed(answer:) -> #(
+      linked(model, answer, saying: "Going to the home page."),
+      effect.none(),
+    )
 
     Invited(answer:) -> #(invited(model, answer), effect.none())
+
+    Renamed(answer:) -> #(renamed(model, answer), effect.none())
   }
 }
 
@@ -971,8 +1102,14 @@ fn answering(
 // The daemon's answer to a request to open another session. A ticket becomes
 // the address `<loom-switch>` navigates to. A refusal is shown in the
 // composer's notice in the fixed words for its reason, and a switch that
-// succeeded says so in the same place until the browser has left.
-fn linked(model: Model(socket), answer: sessions.Answer) -> Model(socket) {
+// succeeded says `saying` in the same place until the browser has left. The
+// answer to a request to go home is folded in the same way as the answer to
+// a request to open a session: both end in one navigation.
+fn linked(
+  model: Model(socket),
+  answer: sessions.Answer,
+  saying saying: String,
+) -> Model(socket) {
   case answer {
     sessions.Ticketed(path:) ->
       Model(
@@ -980,8 +1117,9 @@ fn linked(model: Model(socket), answer: sessions.Answer) -> Model(socket) {
         view: View(
           ..model.view,
           departure: Some(path),
+          resuming: None,
           refusal: None,
-          outcome: "Opening that session.",
+          outcome: saying,
         ),
       )
     sessions.Declined(reason:) ->
@@ -989,6 +1127,7 @@ fn linked(model: Model(socket), answer: sessions.Answer) -> Model(socket) {
         ..model,
         view: View(
           ..model.view,
+          resuming: None,
           refusal: Some(sessions.reason_words(reason)),
           outcome: "",
         ),
@@ -1416,6 +1555,7 @@ fn relaned(model: Model(socket)) -> Model(socket) {
           latest,
           turns.Expand(expansion.capped),
         )
+        |> turns.attributed(turns.authors(view.peers))
       let #(scrollback, earlier) = case fit, branch.unloaded {
         Whole, None -> #(shared.scrollback, Reached)
         Whole, Some(_) ->
@@ -1439,6 +1579,7 @@ fn relaned(model: Model(socket)) -> Model(socket) {
           ..model.view,
           blocks:,
           pieces:,
+          raised: remembered(model.view.raised, view.cells),
           earlier:,
           paging:,
           changes: changes_view.fold(branch.records),
@@ -1623,6 +1764,7 @@ fn strip_of(shared: Session(socket)) -> strip.Strip {
       running_ms: running_ms(shared, line.id),
       model: option.map(row, fn(row) { row.model }) |> option.unwrap(""),
       recent: option.map(row, fn(row) { row.recent }) |> option.unwrap([]),
+      answer: row |> option.then(answer_line),
     )
   }
   let #(drawn, older) = list.split(chips.settled, strip.settled_limit)
@@ -1652,7 +1794,20 @@ fn settled_chip(
     running_ms: None,
     model: "",
     recent: [],
+    answer: None,
   )
+}
+
+// The first line of a strand's latest answer, or nothing while it has given
+// none: the row's excerpt is only an answer when it names the entry it came
+// from, and `agent_view` words the excerpt of an entry outside the loaded
+// history as unavailable, which is not an answer either.
+fn answer_line(row: agent_view.Row) -> Option(String) {
+  case row.update_entry, row.update {
+    None, _ -> None
+    Some(_), update if update == agent_view.update_unavailable -> None
+    Some(_), update -> Some(text_hygiene.single_line(update))
+  }
 }
 
 // A strand's agent row, which carries what its own view shows beyond the
@@ -2071,11 +2226,13 @@ fn peer_named(piece: turns.Piece, key: String) -> Result(String, Nil) {
     turns.Peer(..)
     | turns.Sibling(..)
     | turns.Plain(..)
+    | turns.Prompt(..)
     | turns.Work(..)
     | turns.Spawned(..)
     | turns.Returned(..)
     | turns.Nudged(..)
     | turns.Missed(..)
+    | turns.Decided(..)
     | turns.Commentary(..) -> Error(Nil)
   }
 }
@@ -2182,8 +2339,122 @@ fn asking(transport: Transport(socket), target: String) -> Effect(Msg(socket)) {
   dispatch(Linked(transport.open(target)))
 }
 
+/// Asks the daemon to resume a saved session for this page's operator, when a
+/// saved sidebar row was pressed (protocol-change/065, the third pull request).
+///
+/// The daemon starts a task that opens the session and waits for it, so this
+/// returns at once and the page keeps drawing; the answer arrives as `Linked`,
+/// which departs for the session's page or words why it could not. The row
+/// reads "opening" until then, and a second press while one is out asks
+/// nothing, so one press opens at most one session. The session named is the
+/// message's, drawn from the catalogue's list, and the daemon checks the
+/// principal's role in it again, so a stale row, or a row of a session the
+/// principal observes, resumes nothing. A press for the session on screen, or
+/// for a session the page's list does not show as saved, asks nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.resume(model, "0198a2f4-7c3b-7e10-8d5a-3f9b2c4e6a71")
+/// ```
+pub fn resume(
+  model: Model(socket),
+  target: String,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case model.view.resuming, resumable(model, target) {
+    None, True -> #(
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          resuming: Some(target),
+          refusal: None,
+          outcome: "Opening that session. It may take a moment.",
+        ),
+      ),
+      resuming(model.view.transport, target),
+    )
+    Some(_), _ | None, False -> #(model, effect.none())
+  }
+}
+
+// Whether the page's list shows `target` as a saved session that may be
+// resumed. The daemon decides again; this keeps a frame that named a row the
+// page never drew from reaching it.
+fn resumable(model: Model(socket), target: String) -> Bool {
+  list.any(model.view.groups, fn(group) {
+    list.any(group.entries, fn(entry) {
+      entry.id == target && entry.residency == sessions.Saved
+    })
+  })
+}
+
+// Starts the daemon's task and returns at once. The task's answer arrives
+// later as `Linked`, dispatched from the task's own process.
+fn resuming(
+  transport: Transport(socket),
+  target: String,
+) -> Effect(Msg(socket)) {
+  use dispatch <- effect.from
+  transport.resume(target, fn(answer) { dispatch(Linked(answer)) })
+}
+
+/// The saved session whose resume is out, if one is, which the sidebar draws
+/// as opening.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert component.resuming_session(model) == None
+/// ```
+pub fn resuming_session(model: Model(socket)) -> Option(String) {
+  model.view.resuming
+}
+
+/// Asks the daemon for a ticket to the principal's home page, when the "Home"
+/// button was pressed.
+///
+/// The page sends nothing but the press. The daemon mints the ticket for this
+/// page's own principal, with this page's ceiling and deadline, so the home it
+/// opens can do no more than this page could, and the answer arrives as
+/// `Homed`. A page with no capability to go home (`Transport.home` is `None`)
+/// ignores the message: it draws no button, and a frame that named the path
+/// anyway finds no handler. This page's lane and record are not touched, so
+/// the page left behind stays open until its own deadline, as after a switch.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.going_home(model)
+/// ```
+pub fn going_home(
+  model: Model(socket),
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case model.view.transport.home {
+    None -> #(model, effect.none())
+    Some(ask) -> #(
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          refusal: None,
+          outcome: "Asking for the home page.",
+        ),
+      ),
+      homing(ask),
+    )
+  }
+}
+
+// The daemon's answer, in the component's process, as a message.
+fn homing(ask: fn() -> sessions.Answer) -> Effect(Msg(socket)) {
+  use dispatch <- effect.from
+  dispatch(Homed(ask()))
+}
+
 /// The address `<loom-switch>` is to move the browser to, once the daemon has
-/// minted a ticket for the session the operator chose. `None` until then.
+/// minted a ticket for the session the operator chose, or for the home page.
+/// `None` until then.
 ///
 /// ## Examples
 ///
@@ -2287,6 +2558,129 @@ pub fn dismiss_invitation(model: Model(socket)) -> Model(socket) {
 /// ```
 pub fn share(model: Model(socket)) -> invites.Share {
   model.view.share
+}
+
+/// Asks the daemon to rename this page's session, when an owner submitted the
+/// rename control.
+///
+/// The page sends the text of the field and nothing else. The daemon names the
+/// session, the principal and the right to ask itself, and its answer arrives as
+/// `Renamed`. The control is `Asking` until then, so a second submit while a
+/// request is with the daemon is ignored and one submit renames at most once. A
+/// page that has no capability to rename (`Transport.rename` is `None`) ignores
+/// the message, so a member's page is unchanged if one arrives, and the
+/// observer's page, which draws no control, has no message that reaches here at
+/// all. The request goes to a task of the daemon's own and this returns at
+/// once, so the page keeps drawing while the registry answers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.renaming(model, "review auth")
+/// ```
+pub fn renaming(
+  model: Model(socket),
+  name: String,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case model.view.transport.rename, model.view.renaming {
+    Some(ask), renames.Ready
+    | Some(ask), renames.Done
+    | Some(ask), renames.Refused(..)
+    -> #(
+      Model(..model, view: View(..model.view, renaming: renames.Asking)),
+      asking_rename(ask, name),
+    )
+    Some(_), renames.Asking | Some(_), renames.Withheld | None, _ -> #(
+      model,
+      effect.none(),
+    )
+  }
+}
+
+// Starts the daemon's task and returns at once. The task's answer arrives later
+// as `Renamed`, dispatched from the task's own process.
+fn asking_rename(
+  ask: fn(String, fn(renames.Answer) -> Nil) -> Nil,
+  name: String,
+) -> Effect(Msg(socket)) {
+  use dispatch <- effect.from
+  ask(name, fn(answer) { dispatch(Renamed(answer)) })
+}
+
+// The daemon's answer to a request to rename. A stored name becomes the
+// heading's and the sidebar's at once, in the page's own state, rather than
+// waiting for the next read of the catalogue; the name is the one the daemon
+// reports, never the one the browser sent. A refusal is worded in the
+// control's own status line. An answer that arrives when no request is out was
+// not asked for and is dropped.
+fn renamed(model: Model(socket), answer: renames.Answer) -> Model(socket) {
+  case model.view.renaming, answer {
+    renames.Asking, renames.Renamed(name:) ->
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          renaming: renames.Done,
+          renamed: model.view.renamed + 1,
+          label: option.map(model.view.label, fn(label) {
+            Label(..label, name:)
+          }),
+          groups: list.map(model.view.groups, fn(group) {
+            sessions.Group(
+              ..group,
+              entries: list.map(group.entries, fn(entry) {
+                case entry.id == model.shared.session {
+                  True -> sessions.Entry(..entry, name:)
+                  False -> entry
+                }
+              }),
+            )
+          }),
+        ),
+      )
+    renames.Asking, renames.Declined(reason:) ->
+      Model(
+        ..model,
+        view: View(..model.view, renaming: renames.Refused(reason)),
+      )
+    renames.Withheld, _
+    | renames.Ready, _
+    | renames.Done, _
+    | renames.Refused(..), _
+    -> model
+  }
+}
+
+/// What the rename control is doing, for the operator's view to draw.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.rename_control(model) == renames.Withheld
+/// ```
+pub fn rename_control(model: Model(socket)) -> renames.Control {
+  model.view.renaming
+}
+
+/// The rename control, drawn for the model's state: nothing for a page that
+/// cannot rename, and otherwise the form, with the session's current name as
+/// text in its lead. `submit` is the form's submit handler, which the operator's
+/// page builds because it owns the message type.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.rename_form(model, submit)
+/// ```
+pub fn rename_form(
+  model: Model(socket),
+  submit: attribute.Attribute(message),
+) -> Element(message) {
+  let current = case option.map(model.view.label, fn(label) { label.name }) {
+    Some("") | None -> None
+    named -> named
+  }
+  rename_view.view(model.view.renaming, current, model.view.renamed, submit)
 }
 
 /// The listed session `id` names, when the page may offer to open it: another
@@ -2560,6 +2954,11 @@ pub fn lines(model: Model(socket)) -> List(Line) {
 /// ```
 pub fn pieces(model: Model(socket)) -> List(turns.Piece) {
   model.view.pieces
+  |> turns.with_decisions(decisions.from_ledger(
+    model.shared.approvals,
+    model.view.raised,
+    model.shared.active_strand,
+  ))
 }
 
 /// The live region's rows: the reasoning the provider is writing, with how
@@ -2571,8 +2970,11 @@ pub fn pieces(model: Model(socket)) -> List(turns.Piece) {
 ///
 /// The elapsed time is a reading, not a running clock: the browser counts
 /// on from it (`<loom-elapsed>`), so the server draws again when a fragment
-/// arrives and not to move a second. A tool call the model is composing is
-/// not drawn; the capture draws it as a running call as soon as it commits.
+/// arrives and not to move a second. A turn that has opened and streamed
+/// nothing yet is one `Opened` row, drawn from the phase change with the
+/// generation clock's reading when that clock has started and no time before
+/// it. A tool call the model is composing is not drawn; the capture draws it
+/// as a running call as soon as it commits.
 ///
 /// ## Examples
 ///
@@ -2585,19 +2987,34 @@ pub fn live(model: Model(socket)) -> List(live.Row) {
     option.map(shared.generation_started_ms, fn(started) {
       int.max(0, shared.stamp.now_ms - started)
     })
-  list.filter_map(model.view.streams, fn(stream) {
-    let text = stream.fragments |> list.reverse |> string.concat
-    case stream.kind {
-      "thinking" ->
-        Ok(live.Thinking(
-          progress: transcript_lines.line_count(text),
-          elapsed_ms:,
-          headline: block_summary.live(shared.summaries, stream.generation),
-        ))
-      "tool_call" -> Error(Nil)
-      _ -> Ok(live.Answer(Line(Assistant, text)))
-    }
-  })
+  let streamed =
+    list.filter_map(model.view.streams, fn(stream) {
+      let text = stream.fragments |> list.reverse |> string.concat
+      case stream.kind {
+        "thinking" ->
+          Ok(live.Thinking(
+            progress: transcript_lines.line_count(text),
+            elapsed_ms:,
+            headline: block_summary.live(shared.summaries, stream.generation),
+          ))
+        "tool_call" -> Error(Nil)
+        _ -> Ok(live.Answer(Line(Assistant, text)))
+      }
+    })
+
+  // A strand in its `assistant` phase with nothing streamed yet is a turn
+  // that has opened: the request is out and the model has said nothing. The
+  // row stands from the phase change and not from the first fragment, which
+  // a model that streams no reasoning text never sends before its answer.
+  //
+  // Only the generation clock is ever drawn. Until it starts, on an operation
+  // event or a first fragment, the row says `Thinking` with no time: the
+  // operation's own clock also counts earlier generations of the turn, so it
+  // would read minutes under an answer that just landed.
+  case streamed, session_model.active_strand_phase(shared) {
+    [], Some("assistant") -> [live.Opened(elapsed_ms:)]
+    _, _ -> streamed
+  }
 }
 
 /// The sidebar's groups: the principal's sessions by workspace, newest
@@ -2753,6 +3170,56 @@ pub fn notice(model: Model(socket)) -> Notice {
   }
 }
 
+/// How many times the composer's notice has changed, which keys the notice
+/// element so that a new notice fades from the start.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.notice_serial(model) == 0
+/// ```
+pub fn notice_serial(model: Model(socket)) -> Int {
+  model.view.noticed
+}
+
+/// The model with its notice counted as changed. The operator page calls it
+/// after a message that left a different notice than it found
+/// (`operator_page.update`); this module cannot see the message as one change
+/// because the notice is read from three places.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.renew_notice(model)
+/// ```
+pub fn renew_notice(model: Model(socket)) -> Model(socket) {
+  Model(..model, view: View(..model.view, noticed: model.view.noticed + 1))
+}
+
+/// The strand each approval request was raised on, by the request's identity,
+/// as the captures saw it while the request was pending. A request no capture
+/// named a strand for is absent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.raised_on(model)
+/// ```
+pub fn raised_on(model: Model(socket)) -> List(#(String, String)) {
+  model.view.raised
+}
+
+// The strands requests were raised on: the capture's pending cells first,
+// then what was remembered, one entry for each request, the newest sixty-four.
+fn remembered(
+  known: List(#(String, String)),
+  cells: List(snapshot_view.Cell),
+) -> List(#(String, String)) {
+  list.append(decisions.strands(cells), known)
+  |> list.unique
+  |> list.take(64)
+}
+
 /// How many drafts have left the composer, which keys the composer's
 /// editor: the ones the lane sent and the ones a command consumed.
 ///
@@ -2877,12 +3344,12 @@ pub fn session_id(model: Model(socket)) -> String {
 pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
   shell.view(
     shell.Observer,
-    heading(model),
+    heading(model, GoingHome),
     shell.Unlisted,
     [
       crumb(model),
       lane.view(
-        model.view.pieces,
+        pieces(model),
         live(model),
         top(model),
         OlderRequested,
@@ -2892,15 +3359,57 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
       ),
       plan(model),
       html.p([attribute.class("observer-bar")], [
-        html.text(
-          "Observer · read-only · you can follow this session; ask the owner for operator access",
-        ),
+        html.span([attribute.class("pill")], [
+          html.text("Observer · read-only"),
+        ]),
+        html.span([attribute.class("observer-note")], [
+          html.text(observer_words(model)),
+        ]),
       ]),
+      case model.view.transport.home {
+        Some(_) -> switch(model)
+        None -> element.none()
+      },
     ],
-    panel(model, FocusRequested, None, element.none()),
+    panel(
+      model,
+      FocusRequested,
+      None,
+      element.none(),
+      element.none(),
+      element.none(),
+    ),
     needing(model),
     workspace_digest(model),
   )
+}
+
+// The observer bar's note beside the "Observer · read-only" pill: the fixed
+// words that say how to get operator access, or, after a press of "Home" that the daemon refused, the reason in its fixed
+// words. The observer's page has no composer to hold a notice, and it is the
+// only refusal the page can have.
+fn observer_words(model: Model(socket)) -> String {
+  case notice(model) {
+    Warned(text) | Said(text) -> text
+    Quiet -> "You can follow this session. Ask the owner for operator access."
+  }
+}
+
+/// The element that moves the browser to another page. It is hidden, holds
+/// nothing the reader sees, and carries an address in its `to` attribute only
+/// after the daemon has minted a ticket for one (`web_client/switch`, which
+/// checks the address again before it navigates). Each page draws it as the
+/// centre column's last child, so no admitted path moves with it: the
+/// operator's page always, and an observer's only when it was opened from a
+/// home and so may go back to it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.switch(model)
+/// ```
+pub fn switch(model: Model(socket)) -> Element(message) {
+  switch.view(departure(model))
 }
 
 /// The strand panel both pages draw: the Strands pane with a card for each
@@ -2914,18 +3423,22 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
 /// handed to someone who may only watch does not tell them who else is
 /// watching. `share` is the invitation control the Session pane ends with:
 /// the operator page passes an owner's control (`view/share`), and every other
-/// page passes `element.none()`.
+/// page passes `element.none()`. `controls` is the operator's goal buttons and
+/// fork form, and `rename` the owner's rename control (`rename_form`), which
+/// every other page passes as `element.none()`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // component.panel(model, FocusRequested, None, element.none())
+/// // component.panel(model, FocusRequested, None, element.none(), element.none(), element.none())
 /// ```
 pub fn panel(
   model: Model(socket),
   focus: fn(String) -> message,
   viewers: Option(session_summary.Viewers),
   share: Element(message),
+  controls: Element(message),
+  rename: Element(message),
 ) -> Element(message) {
   panel.view(
     strip.count(model.view.strip),
@@ -2934,10 +3447,12 @@ pub fn panel(
     changes.view(model.view.changes),
     session_tab.view(
       option.map(goal(model), goal_view.row) |> option.unwrap([]),
-      cost_text(model),
+      cost_figure(model),
       jobs(model),
       viewers,
       share,
+      controls,
+      rename,
     ),
     trace.view(trace(model)),
     nudges.view(pending_nudges(model)),
@@ -3057,7 +3572,10 @@ pub fn plan(model: Model(socket)) -> Element(message) {
 
   todo_panel.view(
     option.from_result(dict.get(model.shared.todo_boards, strand)),
-    reviewer_status.lines(model.shared.reviewer_rows, strand),
+    reviewer_status.lines(
+      reviewer_status.without_idle_advisor(model.shared.reviewer_rows),
+      strand,
+    ),
   )
 }
 
@@ -3124,28 +3642,62 @@ pub fn viewers(model: Model(socket)) -> session_summary.Viewers {
 /// the words as plain values, because it cannot import the types this module
 /// defines.
 ///
+/// `going_home` is the message the bar's "Home" button sends, which the page's
+/// own message type wraps. The button is drawn only when the transport has the
+/// capability to go home, and otherwise the bar's second child is an empty
+/// node.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // component.heading(model)
+/// // component.heading(model, GoingHome)
 /// ```
-pub fn heading(model: Model(socket)) -> Element(message) {
+pub fn heading(model: Model(socket), going_home: message) -> Element(message) {
   heading.view(
     session_id: model.shared.session,
+    home: case model.view.transport.home {
+      Some(_) -> heading.home_link(going_home)
+      None -> element.none()
+    },
     name: option.map(model.view.label, fn(label) { label.name }),
     workspace: option.map(model.view.label, fn(label) { label.workspace }),
     status: status_text(model.view.status),
     tone: status_tone(model.view.status),
-    context: context_view.footer(model.shared.context),
+    context: context_figure(model),
     cost: cost_text(model),
     notice: ended.view(ended_ending(model.view.status), model.shared.session),
   )
+}
+
+// The top bar's context figure. The primary strand's has no value until its
+// first turn commits, and the bar draws nothing for that, since a dash there
+// reads as missing data. A strand the reader has focused keeps its dash,
+// which the bar's title explains: that strand has had no turn yet.
+fn context_figure(model: Model(socket)) -> String {
+  let words = context_view.footer(model.shared.context)
+  case
+    string.ends_with(words, " —")
+    && model.shared.active_strand == agent_roster.primary
+  {
+    True -> ""
+    False -> words
+  }
 }
 
 // The session's running cost as the top bar and the Session tab word it,
 // which is the terminal's footer's own words.
 fn cost_text(model: Model(socket)) -> String {
   transcript_lines.cost_words(model.shared.usage)
+}
+
+// The session's cost as a figure alone, for a row whose label says estimate:
+// the same words as `cost_text` without their leading "est", so an unpriced
+// session still reads "—" rather than a misleading "$0.00".
+fn cost_figure(model: Model(socket)) -> String {
+  case cost_text(model) {
+    "est " <> figure -> figure
+    words -> words
+  }
 }
 
 // The ending a page that has ended draws a notice for.

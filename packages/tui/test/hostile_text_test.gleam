@@ -45,6 +45,7 @@ import tui/approval_panel
 import tui/buffered
 import tui/connection
 import tui/frame
+import tui/layout_memory
 import tui/model as tui_model
 import tui/virtual_backend
 import tui/workspace
@@ -135,11 +136,23 @@ pub fn hostile_agent_names_render_inert_test() {
     let base = quiet_model(rail_inbox)
     tui_model.Model(
       ..base,
-      view: tui_model.View(..base.view, agent_rail_visible: True),
+      view: tui_model.View(
+        ..base.view,
+        rail: option.Some(layout_memory.RailShown),
+      ),
     )
   }
-  let rail = last_rows(railed, 120, 24, [deliver(names)])
-  assert_shows(rail, ["active-sentinel", "child-sentinel", "phase-sentinel"])
+  // The rail draws each agent in one row with the row renderer the strip and
+  // the workspace share, so its name column is 11 cells and its action keeps
+  // the head of the text. The markers are short and sit where that row keeps
+  // them: a name's tail and an action's head.
+  let rail_names =
+    gateway.strands_snapshot([
+      #("main", hostile_tail("act"), hostile("phs")),
+      #("sub:one", hostile_tail("chd"), "idle"),
+    ])
+  let rail = last_rows(railed, 200, 24, [deliver(rail_names)])
+  assert_shows(rail, ["act", "chd", "phs"])
   assert_inert(rail)
   assert_no_residue(rail)
 
@@ -155,13 +168,28 @@ pub fn hostile_agent_names_render_inert_test() {
     )
   }
   let inspector = last_rows(opened, 120, 30, [deliver(names)])
-  assert_shows(inspector, [
-    "active-sentinel",
-    "child-sentinel",
-    "phase-sentinel",
-  ])
+  assert_shows(inspector, ["active-sentinel", "phase-sentinel"])
   assert_inert(inspector)
   assert_no_residue(inspector)
+
+  // The workspace covers the strip while it is open and its list cuts a
+  // long name in the middle, so the child's whole name is checked where
+  // the workspace prints it whole: in its own detail.
+  let child_inbox = connection.new_inbox()
+  let child = {
+    let base = quiet_model(child_inbox)
+    tui_model.Model(
+      ..base,
+      view: tui_model.View(
+        ..base.view,
+        overlay: tui_model.AgentInspector(agents.inspect("sub:one")),
+      ),
+    )
+  }
+  let detail = last_rows(child, 120, 30, [deliver(names)])
+  assert_shows(detail, ["child-sentinel"])
+  assert_inert(detail)
+  assert_no_residue(detail)
 }
 
 /// The approval overlay shows an escape as its six characters, not its byte.
@@ -218,7 +246,7 @@ pub fn hostile_approval_detail_shows_escapes_not_controls_test() {
       [],
     )
   assert_shows(raw_rows, [
-    "Raw captured request",
+    "raw request",
     "\"tool\":\"\\u001b\"",
     "preview-sentinel",
     "action-sentinel",
@@ -244,6 +272,7 @@ fn hostile_review() -> approval.Review {
         #("path", json.String(hostile("path-sentinel"))),
       ]),
     ]),
+    strand: None,
   )
 }
 

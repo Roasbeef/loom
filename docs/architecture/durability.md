@@ -259,7 +259,7 @@ checking that the refused commit left no row behind.
 Both backends implement one interface, a record of functions over an
 opaque handle, so callers are written once: `commit`, `get_entries`,
 `get_register`, `list_registers`, `scan_branch`, `scan_entries`,
-`scan_usage`, `stats`, `close`. Commits fail with `CommitError`
+`scan_entry_heads`, `scan_usage`, `stats`, `close`. Commits fail with `CommitError`
 (`StaleExpectation`, `Corruption`, `Faulted`); reads fail with
 `StorageError` (`CorruptRow`, `UnknownEntry`, `BackendFault`,
 `HandleClosed`). Closing is idempotent, and a closed handle returns an

@@ -20,6 +20,12 @@
 //// return to. The path is shown in full with the owner's home directory
 //// written as `~`, and is left out when it is only the name again.
 ////
+//// A page opened from the home (protocol-change/065) draws one more control, a
+//// "Home" button, as the bar's second child, straight after the brand. The
+//// bar always has that child, an empty node when the page has no way home, so
+//// the page socket can name the button's path (`component.home_path`) and
+//// the children after it keep their places whether or not it is drawn.
+////
 //// The status is a pill whose colour and dot follow a `Tone` the component
 //// chooses from the connection, so the words and the colour cannot disagree.
 ////
@@ -32,11 +38,13 @@
 //// page out, and a module the component imports cannot import the
 //// component back.
 
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/event
 
 /// How the status pill is coloured: the connection is up, is being made, or
 /// has ended. The component maps its own status onto one, so the colour is
@@ -69,15 +77,19 @@ pub type Tone {
 /// status as the page words it. `context` and `cost` are the two estimates
 /// the terminal's footer shows (`ctx ~41%` and `est $0.04`), already worded.
 /// The cost is the session's running total across strands, and the bar's
-/// label says so.
+/// label says so. A figure with no value is not drawn: an empty `context`
+/// draws no `ctx`, and a `cost` that ends in the dash (`est —`, a model with
+/// no price) draws no `est`, since two dashes beside each other read as
+/// missing data rather than as "not known".
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // heading.view("0192ab34cd", Some("docs"), Some("/src/loom"), "connected", heading.Live, "ctx ~41%", "est $0.04", element.none())
+/// // heading.view("0192ab34cd", element.none(), Some("docs"), Some("/src/loom"), "connected", heading.Live, "ctx ~41%", "est $0.04", element.none())
 /// ```
 pub fn view(
   session_id session_id: String,
+  home home: Element(message),
   name name: Option(String),
   workspace workspace: Option(String),
   status status: String,
@@ -90,6 +102,7 @@ pub fn view(
     [attribute.class("session-head"), attribute.attribute("slot", "bar")],
     [
       html.span([attribute.class("brand")], [html.text("Loom")]),
+      home,
       workspace_element(workspace, session_name(session_id, name)),
       html.h1([attribute.title(session_id)], [
         html.text(session_name(session_id, name)),
@@ -103,30 +116,67 @@ pub fn view(
         ],
         [html.text(status)],
       ),
-      html.span([attribute.class("figures")], [
-        html.span(
-          [
-            attribute.class("figure"),
-            attribute.title(case string.ends_with(context, " —") {
-              True -> "No turn yet on the strand shown"
-              False -> "Estimated context use of the strand shown"
-            }),
-          ],
-          figure_words(context),
-        ),
-        html.span(
-          [
-            attribute.class("figure"),
-            attribute.title(case string.ends_with(cost, " —") {
-              True -> "No priced usage yet"
-              False -> "Estimated cost of the session, across strands"
-            }),
-          ],
-          figure_words(cost),
-        ),
-      ]),
+      html.span(
+        [attribute.class("figures")],
+        list.flatten([
+          case context {
+            "" -> []
+            _ -> [
+              html.span(
+                [
+                  attribute.class("figure"),
+                  attribute.title(case string.ends_with(context, " —") {
+                    True -> "No turn yet on the strand shown"
+                    False -> "Estimated context use of the strand shown"
+                  }),
+                ],
+                figure_words(context),
+              ),
+            ]
+          },
+
+          // A session whose model has no price has no estimate to give, and
+          // two dashes read as missing data. The Session tab, which has a row
+          // labelled for the estimate, keeps its dash.
+          case cost == "" || string.ends_with(cost, " —") {
+            True -> []
+            False -> [
+              html.span(
+                [
+                  attribute.class("figure"),
+                  attribute.title(
+                    "Estimated cost of the session, across strands",
+                  ),
+                ],
+                figure_words(cost),
+              ),
+            ]
+          },
+        ]),
+      ),
       notice,
     ],
+  )
+}
+
+/// The "Home" button of a page opened from the home: one handler, whose
+/// message is the caller's and is fixed when the tree is drawn. A press asks
+/// the daemon for a home ticket; the browser never names where it goes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // heading.home_link(GoingHome)
+/// ```
+pub fn home_link(press: message) -> Element(message) {
+  html.button(
+    [
+      attribute.type_("button"),
+      attribute.class("home-link"),
+      attribute.title("Back to the list of your sessions"),
+      event.on_click(press),
+    ],
+    [html.text("Home")],
   )
 }
 

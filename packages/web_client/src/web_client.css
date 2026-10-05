@@ -48,8 +48,8 @@
   --color-on-danger: #141517;
   --color-added: #51cf66;
   --color-added-text: #51cf66;
-  --color-added-bg: #17301f;
-  --color-removed-bg: #3a1a26;
+  --color-added-bg: #1f4d2e;
+  --color-removed-bg: #4a1a29;
   --color-strand-2: #3cc9b4;
   --color-strand-2-text: #3cc9b4;
   --color-strand-3: #a3b85a;
@@ -117,8 +117,8 @@
     --color-on-danger: #ffffff;
     --color-added: #2f9e44;
     --color-added-text: #237833;
-    --color-added-bg: #e6f4ea;
-    --color-removed-bg: #fbe9ef;
+    --color-added-bg: #d3efda;
+    --color-removed-bg: #fce6ec;
     --color-strand-2: #0f9d8a;
     --color-strand-2-text: #0b7567;
     --color-strand-3: #7a8a3a;
@@ -154,8 +154,8 @@
   --color-on-danger: #ffffff;
   --color-added: #2f9e44;
   --color-added-text: #237833;
-  --color-added-bg: #e6f4ea;
-  --color-removed-bg: #fbe9ef;
+  --color-added-bg: #d3efda;
+  --color-removed-bg: #fce6ec;
   --color-strand-2: #0f9d8a;
   --color-strand-2-text: #0b7567;
   --color-strand-3: #7a8a3a;
@@ -235,7 +235,9 @@
      most 780px. Each side column is dropped where it would leave the
      transcript under 640px: the sidebar below 1212px (232 + 340 + 640), and
      the panel, which then becomes a row of cards beneath the bar, below 980px
-     (340 + 640). There is no drawer. */
+     (340 + 640). Where the sidebar is dropped it is a drawer: the same
+     wrapper placed over the centre behind a scrim (the narrow frames at the
+     end of this sheet). */
   loom-shell.loom-session{display:block;height:100dvh;min-width:0;overflow:hidden;background:var(--color-bg);}
   /* The top bar. It is 44px tall, and taller only when the ended page's
      notice wraps onto a row of its own. The shell draws the bar's border and
@@ -256,11 +258,11 @@
      no width, is not painted and is inert, which also takes its content out
      of the tab order, and it hides only after the width has finished
      shrinking. Opening shows it at once. Below the breakpoints of the frame
-     above the wrapper of the sidebar is not drawn, and the panel's wrapper
-     goes above the centre. */
+     above the wrapper of the sidebar is not drawn unless the reader opened
+     the drawer, and the panel's wrapper goes above the centre. */
   .shell{display:flex;flex-direction:column;height:100%;min-width:0;}
   .shell-bar{flex:0 0 auto;display:flex;align-items:stretch;min-width:0;background:var(--color-bg-raised);border-bottom:1px solid var(--color-divider);}
-  .shell-body{flex:1 1 0;display:flex;min-height:0;min-width:0;}
+  .shell-body{position:relative;flex:1 1 0;display:flex;min-height:0;min-width:0;}
   .shell-centre{flex:1 1 0;display:flex;min-width:0;min-height:0;}
   .region{flex:0 0 auto;min-height:0;overflow:hidden;transition:width 180ms ease;}
   .region-sidebar{width:232px;}
@@ -342,6 +344,11 @@
   .chip-text{display:grid;row-gap:1px;min-width:0;}
   .chip-name{font:500 14px/1.4 var(--font-sans);color:var(--hue-text,var(--color-fg));min-width:0; overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .chip-status{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  /* The state's glyph leads the status line: it pulses while the strand
+     works, and the line's words carry the state without it. */
+  .chip-status .st{display:inline-block;min-width:1em;margin-right:.35em;font-size:11px;text-align:center;}
+  .chip-status.running .st{color:var(--color-current);animation:loom-pulse 1.4s ease-in-out infinite;}
+  @keyframes loom-pulse{50%{opacity:.35;}}
   .chip-status.needs-input{color:var(--color-signal-text);}
   .chip-status.failed{color:var(--color-danger-text);}
   .chip-status.done{color:var(--color-added-text);}
@@ -369,12 +376,13 @@
   .detail-name{color:var(--hue-text,var(--color-fg));font:600 15px/1.3 var(--font-sans);overflow-wrap:anywhere;}
   .detail-figures{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 14px;margin:0;font:12px/1.5 var(--font-sans);font-variant-numeric:tabular-nums;}
   .detail-term{color:var(--color-fg-quiet);}
-  .detail-value{margin:0;min-width:0;overflow-wrap:anywhere;text-align:right;}
+  .detail-value{margin:0;min-width:0;overflow-wrap:anywhere;text-align:left;}
   .detail-recent .panel-title{margin:0 0 6px 0;}
+  .detail-answer{margin:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);overflow-wrap:anywhere;}
   ul.detail-tools{list-style:none;margin:0;padding:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-mono);overflow-wrap:anywhere;}
   /* The session sidebar, the left column: the principal's sessions by
      workspace, read-only. It is a column of the frame and scrolls on its own.
-     Below 1212px it is not drawn. */
+     Below 1212px it is a drawer over the centre, opened from the bar. */
   aside.sidebar{position:relative;width:232px;height:100%;box-sizing:border-box;min-height:0;padding:12px 10px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin; background:var(--color-bg-sunk);border-right:1px solid var(--color-divider);}
   /* The sections are set apart quietly: a small eyebrow above each group, a
      one-pixel hairline in the divider colour between groups, and space on
@@ -391,9 +399,12 @@
   li.session{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:3px 7px;border:1px solid transparent;border-radius:6px;font-size:13px;}
   li.session.current{background:color-mix(in srgb,var(--color-current) 10%,var(--color-bg-raised));border-color:color-mix(in srgb,var(--color-current) 28%,transparent);}
   .session-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .session-text{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px;}
+  .session-subtitle{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-fg-quiet);font:11px/1.4 var(--font-sans);}
   .residency{flex:0 0 auto;color:var(--color-fg-quiet);font:11px/1.4 var(--font-sans);}
   .residency .glyph{margin-right:4px;}
   .residency.live .glyph{color:var(--color-current);}
+  .residency.opening{color:var(--color-current);}
   /* The app's navigation slot above the first workspace group. It is empty
      until the app has pages to link to. */
   .sidebar .nav{display:flex;flex-direction:column;gap:2px;margin:0 0 12px 0;}
@@ -408,7 +419,7 @@
      row's text until it is hovered or focused. */
   li.session:has(>.session-open){padding:0;}
   .session-open{flex:1 1 auto;display:flex;align-items:baseline;justify-content:space-between;gap:8px;min-width:0;margin:0;padding:3px 7px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;}
-  .session-open:hover{background:var(--color-bg-raised);}
+  .session-open:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);}
   .session-open:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
   /* The home page (web_view/home, protocol-change/065): the same frame with
      no strand panel. The frame's element draws the panel's column and its
@@ -418,29 +429,79 @@
      runs the session, and when it was created. The table scrolls in the
      centre, which does not scroll itself. */
   :host(.loom-home) .region-panel,:host(.loom-home) .toggle-panel{display:none;}
-  .sidebar-home{margin:0 0 12px 0;padding:4px 8px;border:1px solid color-mix(in srgb,var(--color-current) 40%,var(--color-divider));border-radius:6px;background:color-mix(in srgb,var(--color-current) 7%,var(--color-bg-raised));font-size:12px;}
-  .session-head .home-who{color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);}
-  .home-badge{margin-left:8px;padding:0 6px;border:1px solid var(--color-divider);border-radius:99px;font:600 11px/1.4 var(--font-mono);}
+  .sidebar-home{display:flex;align-items:center;gap:8px;margin:0 0 12px 0;padding:4px 7px;border-radius:6px;font:13px/1.4 var(--font-sans);}
+  .sidebar-home[aria-current]{background:color-mix(in srgb,var(--color-current) 10%,var(--color-bg-raised));}
+  .nav-glyph{width:14px;height:14px;flex:0 0 auto;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round;}
+  /* The home's bar is the session bar's: the principal in the bar's sans face
+     with the ceiling as a quiet pill, and the status as the same pill. */
+  .session-head .home-who{display:flex;align-items:center;gap:8px;margin-left:auto;color:var(--color-fg);font:500 13px/1.4 var(--font-sans);}
+  .home-badge{padding:0 8px;border:1px solid var(--color-divider);border-radius:99px;color:var(--color-fg-quiet);font:12px/1.6 var(--font-sans);}
   main.centre > .home-sessions{flex:1 1 0;min-height:0;max-width:960px;padding-bottom:24px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
   .home-heading{margin:0 0 12px 0;font:600 15px/1.4 var(--font-sans);}
   .home-empty{margin:0;color:var(--color-fg-quiet);}
-  table.home-table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:13px;}
-  .home-table th:nth-child(2){width:140px;}
-  .home-table th:nth-child(3){width:200px;}
-  table.home-table + table.home-table{margin-top:24px;}
-  .home-table caption{padding:0 0 6px 0;text-align:left;font:600 11px/1.4 var(--font-mono);letter-spacing:.04em;color:var(--color-fg-quiet);overflow-wrap:anywhere;}
-  .home-table th{padding:6px 12px 6px 0;text-align:left;font:500 12px/1.4 var(--font-mono);color:var(--color-fg-quiet);border-bottom:1px solid var(--color-divider);}
-  .home-table td{padding:8px 12px 8px 0;vertical-align:baseline;border-bottom:1px solid var(--color-divider);}
-  .home-table td.home-name{min-width:0;overflow-wrap:anywhere;}
-  .home-table td.home-created{color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);white-space:nowrap;}
-  .ring{display:inline-block;width:10px;height:10px;border-radius:50%;flex:0 0 auto; border:2px solid var(--color-divider);}
+  /* One list for each workspace: a heading with the shortened path and the
+     count as the sidebar's eyebrow has them, and a hairline-ruled row for each
+     session. A row is a button when a press opens it, filling the row, tinted
+     on hover and ringed on keyboard focus, with a chevron that says it opens;
+     a row that cannot be pressed is the same words in a block with no tint.
+     No shadow, no coloured edge. */
+  .home-group + .home-group{margin-top:24px;}
+  .home-workspace{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:0 0 6px 0;font:500 13px/1.4 var(--font-sans);color:var(--color-fg-quiet);overflow-wrap:anywhere;}
+  .home-count{flex:0 0 auto;font-weight:400;font-variant-numeric:tabular-nums;}
+  ul.home-list{list-style:none;margin:0;padding:0;border-top:1px solid var(--color-divider);}
+  li.home-row{margin:0;border-bottom:1px solid var(--color-divider);}
+  .home-open,.home-item{display:flex;align-items:center;gap:12px;width:100%;box-sizing:border-box;min-height:44px;margin:0;padding:6px 10px;border:0;border-radius:0;background:transparent;color:inherit;font:inherit;text-align:left;}
+  .home-open{cursor:pointer;}
+  .home-open:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);}
+  .home-open:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
+  .home-glyph{flex:0 0 auto;width:1em;text-align:center;color:var(--color-fg-quiet);}
+  .home-row.live .home-glyph,.home-row.idle .home-glyph,.home-row.working .home-glyph,.home-row.opening .home-glyph{color:var(--color-current);}
+  .home-row.working .home-glyph{animation:loom-pulse 1.4s ease-in-out infinite;}
+  .home-row.needs-you .home-glyph{color:var(--color-signal-text);}
+  .home-text{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px;}
+  .home-name{font:500 14px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  .home-sub{font:12px/1.4 var(--font-sans);color:var(--color-fg-quiet);overflow-wrap:anywhere;}
+  .home-row.needs-you .home-sub{color:var(--color-signal-text);}
+  /* The owner's rename button sits after the row's own button and is placed
+     over its right side, beside the chevron, so the row's own path and its
+     whole-row target are the same on every page. */
+  li.home-row.renamable{position:relative;}
+  li.home-row.renamable .home-text{padding-right:84px;}
+  .home-rename{position:absolute;top:50%;right:34px;transform:translateY(-50%);margin:0;padding:2px 8px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);cursor:pointer;}
+  .home-rename:hover{background:var(--color-bg-raised);color:var(--color-fg);}
+  .home-rename:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  form.home-rename-form{display:flex;flex-direction:column;gap:6px;padding:8px 10px;}
+  .home-rename-lead{margin:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  .home-rename-fields{display:flex;flex-wrap:wrap;gap:6px;}
+  .home-rename-fields input{flex:1 1 14em;min-width:0;background:var(--color-bg);color:var(--color-fg);border:1px solid var(--color-divider);border-radius:4px;padding:5px 8px;font:13px/1.4 var(--font-sans);}
+  .home-chevron{flex:0 0 auto;color:var(--color-fg-quiet);font-size:16px;line-height:1;}
+  .home-open:hover .home-chevron{color:var(--color-fg);}
+  .home-notice{margin:0 0 12px 0;padding:8px 12px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font-size:13px;}
+  /* The way back to the home, on a session page opened from one: a quiet
+     button after the brand, tinted on hover like a list row. */
+  .session-head .home-link{margin:0;padding:2px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:12px/1.4 var(--font-sans);cursor:pointer;}
+  .session-head .home-link:hover{background:var(--color-bg-raised);}
+  .session-head .home-link:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  .ring{display:inline-flex;align-items:center;justify-content:center;width:10px;height:10px;border-radius:50%;flex:0 0 auto; border:2px solid var(--color-divider);}
   .ring.ring-head{border-color:var(--color-current);background:color-mix(in srgb,var(--color-current) 25%,transparent);}
   .ring.ring-tail{border-color:var(--color-divider);border-top-color:var(--color-signal);transform:rotate(45deg);}
   .ring.ring-idle{border-color:var(--color-fg-faint);}
   .ring.ring-elapsed{border:2px dashed var(--color-fg-faint);}
-  .ring.ring-none{border-color:var(--color-divider);}
-  .ring.ring-card{width:16px;height:16px;}
-  .ring.ring-detail{width:26px;height:26px;border-width:3px;}
+  .ring.ring-card{box-sizing:border-box;width:34px;height:34px;border-width:4px;}
+  .ring.ring-detail{box-sizing:border-box;width:44px;height:44px;border-width:5px;}
+  /* The state's glyph inside a held ring, in quiet text. The tail ring is
+     turned 45 degrees to put its signal arc at the top, so its glyph is
+     turned back. */
+  .ring-glyph{color:var(--color-fg-quiet);font:12px/1 var(--font-sans);}
+  .ring.ring-detail .ring-glyph{font-size:15px;}
+  .ring.ring-tail .ring-glyph{transform:rotate(-45deg);}
+  /* A strand with no cache outlook is drawn as an avatar, not a hollow ring:
+     a disc tinted toward the strand's hue with its first letter in the
+     hue's text colour. The letter's contrast on the tint is held by
+     scripts/web_client_contrast_check.sh, which blends the same 8%. */
+  .avatar{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;box-sizing:border-box;border-radius:50%;background:color-mix(in srgb,var(--hue) 8%,transparent);color:var(--hue-text);font:600 14px/1 var(--font-sans);user-select:none;}
+  .avatar.avatar-card{width:34px;height:34px;}
+  .avatar.avatar-detail{width:44px;height:44px;font-size:17px;}
   /* The transcript's scroll container: the client component draws the lane
      inside it and scrolls it (web_client/follow). Its height is what the
      frame leaves, so it never grows with the rows. Scroll anchoring is off
@@ -480,6 +541,7 @@
   .tl-body{min-width:0;}
   .dot{position:absolute;left:3px;top:6px;width:9px;height:9px;margin:-2px;box-sizing:content-box;border:2px solid var(--color-bg);border-radius:50%;background:var(--hue,var(--color-current));transition:box-shadow 120ms;}
   .dot[data-loom-focus]{cursor:pointer;}
+  .dot.pulse{animation:pulse 1.4s infinite;}
   .dot[data-loom-focus]::after{content:"";position:absolute;inset:-6px;}
   .dot[data-loom-focus]:hover{box-shadow:0 0 0 3px color-mix(in srgb,var(--hue,var(--color-current)) 28%,transparent);}
   .transcript.lane > .block.live{padding-left:22px;}
@@ -494,7 +556,11 @@
   kbd.crumb-hint{margin:0;padding:0 4px;border:1px solid var(--color-divider);border-radius:4px;color:var(--color-fg-quiet);font:11px/1.5 var(--font-sans);}
   .block{min-width:0;}
   .line{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.5 var(--font-sans);}
-  .line.user{background:var(--color-bg-user);border:1px solid var(--color-divider);padding:8px 12px;border-radius:10px;}
+  /* A person's message (web_view/view/lane): who sent it on a line of its
+     own, and the words in a bubble no wider than nine tenths of the lane. */
+  .who{margin:0 0 2px 0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  .who-name{color:var(--color-fg);font-weight:600;}
+  .line.user{display:inline-block;box-sizing:border-box;max-width:90%;background:var(--color-bg-user);border:1px solid var(--color-divider);padding:8px 12px;border-radius:10px;}
   /* Tool output is code, so it keeps the monospace face. The selector names
      the kind and not `.line`: scripts/web_client_css_check.sh keeps the face
      off the page's own rows. */
@@ -504,6 +570,12 @@
   .line.failure,.line.tool-failure{color:var(--color-danger-text);}
   .line.tool-patch{color:var(--color-fg-quiet);}
   .line.spacer{min-height:.5em;}
+  /* The response the model is still writing (web_view/view/live): the row
+     that says it is reasoning and for how long, its dot pulsing on the
+     timeline, and the summarizer's headline beneath it. */
+  .thinking{min-width:0;}
+  .thinking-head{margin:0;}
+  .thinking-headline{margin:2px 0 0 0;color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;}
   /* A row drawn from Markdown (web_view/markdown_view). Its text wraps as
      prose; only code keeps its whitespace. Every class is one the view
      spells from a closed type, never from the session's text. */
@@ -514,7 +586,6 @@
      bounded thumbnail, and open it takes the lane's width, capped in height so
      a tall image does not push the reader off the row. */
   .pictures{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;min-width:0;}
-  .step .pictures{padding-left:1.6em;}
   details.picture{min-width:0;max-width:100%;}
   summary.picture-summary{display:block;list-style:none;cursor:zoom-in;}
   summary.picture-summary::-webkit-details-marker{display:none;}
@@ -548,62 +619,80 @@
   .markdown .md-table .md-right{text-align:right;}
   .markdown .md-link{color:var(--color-current);text-decoration:underline;}
   .markdown .md-link-target,.markdown .md-image{color:var(--color-fg-quiet);overflow-wrap:anywhere;}
-  loom-fold.work{display:block;border-top:1px solid var(--color-divider);border-bottom:1px solid var(--color-divider);}
-  .fold-toggle{display:flex;align-items:baseline;width:100%;margin:0;padding:4px 0;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);text-align:left;cursor:pointer;}
+  /* A turn's work (web_view/view/lane, view/fold_row): one collapsed line,
+     `Worked 22s · 10 steps · 2 files`, with no rule above or below it, and
+     opened, a column of steps. Each step is one line, a glyph, the verb, what
+     it acted on and for an edit the lines it changed, with one chevron before
+     it from <loom-expand>; what lies behind the line is the body, indented
+     under it. A step with nothing behind it has no chevron and keeps its
+     line in the same column. The verb and the figures are quiet, since a
+     reader scans the subject; the face of a path or a command is the code
+     face and no row's own. */
+  loom-fold.work{display:block;}
+  .fold-toggle{display:flex;align-items:baseline;width:100%;margin:0;padding:2px 0;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);text-align:left;cursor:pointer;}
   .fold-toggle:hover{color:var(--color-fg);}
-  /* An expandable row (web_view/view/lane, web_client/expand): one button,
-     then whichever of its two slots the reader chose. The button sits under
-     a step's head, indented as the step's rows are. */
   loom-expand.expand{display:block;min-width:0;}
-  .expand-toggle{display:flex;align-items:baseline;margin:0;padding:2px 0;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);text-align:left;cursor:pointer;}
+  .expand-toggle{display:flex;align-items:baseline;width:100%;margin:0;padding:2px 0;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);text-align:left;cursor:pointer;}
   .expand-toggle:hover{color:var(--color-fg);}
-  .step loom-expand.expand{padding-left:1.6em;}
-  .step loom-expand.expand .line{padding-left:0;}
-  .fold-glyph{display:inline-block;width:1.2em;flex:0 0 auto;}
+  .fold-glyph{display:inline-block;width:1.2em;flex:0 0 auto;font-size:11px;}
   .fold-body{display:block;}
   .work-divider{min-width:0;overflow-wrap:anywhere;}
-  .work-items{display:flex;flex-direction:column;gap:6px;padding:4px 0 8px 1.2em;}
-  .work.open{display:flex;flex-direction:column;gap:6px;padding-left:10px;}
+  .work-items{display:flex;flex-direction:column;gap:1px;padding:2px 0 6px 1.2em;}
+  .work.open{display:flex;flex-direction:column;gap:1px;}
   .step{min-width:0;}
-  .step-head{display:flex;gap:8px;align-items:baseline;margin:0;font:13px/1.4 var(--font-sans);min-width:0;}
-  .step-head .glyph{flex:0 0 auto;width:1em;}
+  .step.flat{padding:2px 0 2px 1.2em;color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);}
+  .row-head{display:flex;align-items:baseline;gap:6px;min-width:0;}
+  .row-head .glyph{flex:0 0 auto;width:1em;text-align:center;font-size:12px;}
   .step.done .glyph{color:var(--color-added-text);}
   .step.failed .glyph{color:var(--color-danger-text);}
-  .step.pending .glyph{color:var(--color-current);}
-  .step-summary{font:12px/1.4 var(--font-mono);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  .step-state{margin-left:auto;flex:0 0 auto;color:var(--color-fg-quiet);}
-  .step .line{padding-left:1.6em;}
-  .spawn{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;font:12px/1.4 var(--font-sans);color:var(--color-fg-quiet);min-width:0;}
-  .spawn-head{color:var(--hue-text,var(--color-fg));flex:0 0 auto;}
-  .spawn-purpose{color:var(--color-fg);font-size:13px;min-width:0;overflow-wrap:anywhere;}
-  article.result-card,article.nudge,article.peer-card,article.sibling-card{background:var(--color-bg-raised);border-radius:10px;padding:9px 12px;min-width:0;}
-  article.result-card{border:1px solid var(--color-divider);}
+  .step.pending .glyph{color:var(--color-current);animation:pulse 1.4s infinite;}
+  .row-head .verb{flex:0 0 auto;}
+  .row-head .subject{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .row-head .mono{font:12px/1.5 var(--font-mono);}
+  .row-head .figure{flex:0 0 auto;}
+  .row-head .change{display:inline-flex;flex:0 0 auto;gap:6px;font:12px/1.5 var(--font-mono);}
+  .change .added{color:var(--color-added-text);}
+  .change .removed{color:var(--color-danger-text);}
+  .sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;}
+  .row-body{margin:2px 0 6px 1.2em;min-width:0;color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);}
+  .row-body .line{padding-left:0;}
+  /* A spawn and a result are lines of the timeline, not cards: who did what,
+     and for a result the first line of the report, opened to the rest. */
+  .who.spawn{display:block;margin:0;}
+  .spawn-purpose{color:var(--color-fg);overflow-wrap:anywhere;}
+  .result{min-width:0;}
+  .result-line{margin:0;color:var(--color-fg);font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;}
+  .step.reading .subject{color:var(--color-fg);}
+  .result-line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  article.nudge,article.peer-card,article.sibling-card{background:var(--color-bg-raised);border-radius:10px;padding:9px 12px;min-width:0;}
   article.nudge{border:1px solid var(--color-advisor);}
   article.sibling-card{border:1px solid var(--color-divider);}
   article.peer-card{border:1px solid color-mix(in srgb,var(--color-peer) 40%,var(--color-divider));}
   .card-head{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;margin:0 0 4px 0; font:12px/1.4 var(--font-sans);color:var(--color-fg-quiet);}
-  article.result-card .card-head{color:var(--hue-text,var(--color-fg-quiet));}
   article.peer-card .card-head{color:var(--color-peer-text);}
   article.nudge .card-head{color:var(--color-advisor-text);}
   .peer-from{min-width:0;overflow-wrap:anywhere;}
   .receipt{margin-left:auto;border:1px solid var(--color-divider);border-radius:999px;padding:0 8px;font-size:11px;}
   pre.card-body{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.5 var(--font-sans);}
-  /* The advisor's commentary hairline in the lane: one quiet line per
-     review, in the advisor's colour, never the full body. The dot beside
-     it focuses the advisor's own transcript, where the bodies live. */
-  p.commentary-mark{margin:0;color:var(--color-advisor-text);font:12px/1.4 var(--font-sans);}
   /* The commentary section in the Strands pane: the review bodies, under
      the strand cards. Read-only, no handler, hidden with the detail view
      while the advisor itself is on screen, and like the nudges card hidden
      below 980px where the pane is a short row of cards. */
   section.commentary{margin:12px 0 0;padding:0;}
+  /* The section is one native details element, closed: its summary is one
+     line (`Advisor · 3 reviews · last: …`), and the review bodies are
+     inside, as quiet blocks under a who line. */
+  .commentary-summary{cursor:pointer;padding:4px 2px;color:var(--color-advisor-text);font:12px/1.4 var(--font-sans);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .commentary-items{margin-top:8px;}
   .commentary-item{background:var(--color-bg-raised);border:1px solid var(--color-divider);border-radius:10px;min-width:0;padding:9px 12px;margin:0 0 8px;}
   .commentary-item:last-child{margin-bottom:0;}
   .commentary-label{color:var(--color-advisor-text);font:12px/1.4 var(--font-sans);margin:0 0 4px;}
   .commentary-body{color:var(--color-fg);font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;margin:0;}
   .commentary-more,.commentary-unloaded{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);margin:4px 0 0;}
   p.cache-miss{margin:0;padding:6px 10px;border:1px dashed var(--color-signal);border-radius:6px; color:var(--color-signal-text);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
-  .observer-bar{flex:0 0 auto;margin:16px 0 0 0;padding:12px 16px;border-top:1px solid var(--color-divider); color:var(--color-fg-quiet);font-size:13px;}
+  .observer-bar{flex:0 0 auto;display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:8px 0 0 0;padding:10px 4px 12px;border-top:1px solid var(--color-divider);color:var(--color-fg-quiet);font-size:13px;}
+  .observer-bar .pill{border:1px solid var(--color-divider);color:var(--color-fg);}
+  .observer-note{min-width:0;}
   .page-note{margin:16px;color:var(--color-fg-quiet);}
   /* The notice for a page with no session (web_view/view/ended): a row of
      its own in the heading, and the whole of a refused page's document. */
@@ -611,20 +700,25 @@
   .ended-notice p{margin:0;overflow-wrap:anywhere;}
   .ended-headline{color:var(--color-danger-text);font-weight:600;}
   .ended-advice{margin-top:2px;}
-  .ended-document{max-width:640px;margin:48px auto;}
+  .ended-page{display:flex;justify-content:center;padding:48px 16px;}
+  .ended-document{box-sizing:border-box;width:100%;max-width:560px;padding:20px 24px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);font:14px/1.5 var(--font-sans);}
+  .ended-brand{margin:0 0 12px 0;font:600 14px/1.4 var(--font-sans);letter-spacing:.02em;}
+  .ended-document .ended-headline{margin:0 0 8px 0;font-size:16px;overflow-wrap:anywhere;}
+  .ended-document .ended-advice{margin:0 0 8px 0;overflow-wrap:anywhere;}
+  code.ended-command{display:block;margin:2px 0 4px 0;padding:6px 8px;background:var(--color-bg);border:1px solid var(--color-divider);border-radius:4px;font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
   /* The todo panel: the strand's board and the reviewer band, above the
      composer in the operator's dock and above the observer's bar. Its height
      is capped and it scrolls on its own, so a long phase cannot cover the
      transcript, which is the flexible item and shrinks instead. */
-  section.todo-panel{flex:0 0 auto;min-height:0;max-height:28vh;overflow-y:auto;overscroll-behavior:contain;box-sizing:border-box; margin:8px 0 0 0;padding:8px 12px;background:var(--color-bg-raised);border:1px solid var(--color-divider);border-radius:10px; font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;}
+  section.todo-panel{flex:0 0 auto;min-height:0;max-height:28vh;overflow-y:auto;overscroll-behavior:contain;box-sizing:border-box;margin:8px 0 0 0;padding:0 4px;background:none;border:0;border-radius:0;font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;}
   footer.dock > section.todo-panel{margin:0 0 8px 0;}
   .todo-board p,.todo-reviewers p{margin:0;}
   .todo-head{display:flex;flex-wrap:wrap;gap:0 8px;align-items:baseline;}
-  .todo-label{color:var(--color-signal-text);font-weight:700;}
+  .todo-label{color:var(--color-fg);font-weight:600;}
   .todo-phase{color:var(--color-fg);font-weight:700;}
   .todo-quiet{color:var(--color-fg-quiet);}
   loom-fold.todo-fold{display:block;}
-  .todo-current{color:var(--color-signal-text);font-weight:700;}
+  .todo-current{color:var(--color-current);font-weight:500;}
   .todo-detail{padding-top:4px;}
   /* The Changes pane (web_view/view/changes): the session's own edits, in
      the strand panel. The panel scrolls on its own, so an open diff cannot
@@ -633,11 +727,25 @@
   details.changes-file{margin:6px 0 0 0;}
   .changes-file-line{cursor:pointer;overflow-wrap:anywhere;font:12px/1.5 var(--font-mono);}
   .changes-counts{color:var(--color-fg-quiet);}
-  .pane-changes .diff{margin-top:4px;border-radius:6px;overflow-x:auto;background:var(--color-bg);}
-  .diff-row{padding:0 8px;min-height:1.5em;white-space:pre;font:12px/1.5 var(--font-mono);}
-  .diff-hunk{color:var(--color-fg-quiet);}
+  /* A diff (web_view/view/diff), the one drawer of the opened edit step and
+     the Changes tab. A line is its own row: the old and new line numbers in a
+     quiet gutter, the sign, and the text. Added lines are tinted green with a
+     green `+`, removed lines red with a red `−`, a hunk header sits in a
+     quiet band and context is plain. The box scrolls sideways and a line
+     never wraps; the grid makes every row as wide as the widest, so a tint
+     runs the whole way across. */
+  .diff{display:grid;grid-template-columns:minmax(max-content,1fr);margin:4px 0;border:1px solid var(--color-divider);border-radius:6px;overflow-x:auto;background:var(--color-bg);}
+  .diff-row{display:flex;min-height:1.5em;white-space:pre;color:var(--color-fg);font:12px/1.5 var(--font-mono);}
+  .diff-num{flex:0 0 auto;background:var(--color-bg-sunk);min-width:3.5ch;padding:0 6px;text-align:right;color:var(--color-fg-quiet);user-select:none;}
+  .diff-sign{flex:0 0 auto;width:2ch;text-align:center;user-select:none;}
+  .diff-text{flex:1 0 auto;padding:0 8px 0 2px;}
+  .diff-hunk,.diff-file,.diff-note{background:var(--color-bg-sunk);color:var(--color-fg-quiet);}
+  .diff-hunk .diff-text,.diff-file .diff-text,.diff-note .diff-text{padding-left:8px;}
   .diff-added{background:var(--color-added-bg);}
+  .diff-added .diff-sign,.diff-added .diff-text{color:var(--color-added-text);}
   .diff-removed{background:var(--color-removed-bg);}
+  .diff-removed .diff-sign,.diff-removed .diff-text{color:var(--color-danger-text);}
+  .diff-cut{margin:0;padding:2px 8px;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);}
   .changes-cut{margin:4px 0 0 0;color:var(--color-fg-quiet);}
   /* The Trace pane (web_view/view/trace): the session's code_mode programs,
      the newest first with its result and a collapsed budget line. A state's
@@ -649,10 +757,10 @@
   .trace-failed{color:var(--color-danger-text);}
   .trace-running{color:var(--color-current);}
   .trace-result{margin:4px 0 0 0;overflow-wrap:anywhere;font:12px/1.5 var(--font-mono);color:var(--color-fg-quiet);}
-  .trace-sandbox{margin:4px 0 0 0;overflow-wrap:anywhere;font:12px/1.5 var(--font-mono);color:var(--color-fg-quiet);}
-  details.trace-budget{margin:6px 0 0 0;}
-  details.trace-budget summary{cursor:pointer;color:var(--color-fg-quiet);}
-  details.trace-budget p{margin:2px 0 0 0;font:12px/1.5 var(--font-mono);}
+  pre.trace-result,details.trace-diagnostic summary.trace-result{white-space:pre-wrap;}
+  details.trace-diagnostic summary{cursor:pointer;}
+  details.trace-diagnostic pre.trace-result{margin:0;}
+  .trace-budget{margin:6px 0 0 0;font:12px/1.5 var(--font-sans);color:var(--color-fg-quiet);}
   .trace-earlier{margin-top:14px;}
   .trace-subtitle{margin:0 0 6px 0;font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);}
   ul.trace-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;}
@@ -676,6 +784,8 @@
   button.share-operate{border-color:var(--color-signal);color:var(--color-signal-text);}
   button.share-observe:disabled,button.share-operate:disabled{opacity:.45;cursor:default;}
   .share-status{margin:6px 0 0 0;min-height:1.4em;color:var(--color-danger-text);}
+  .rename-status{margin:6px 0 0 0;min-height:1.4em;color:var(--color-fg-quiet);font-size:12px;}
+  .rename-status.refused{color:var(--color-danger-text);}
   .share-field{margin:6px 0;}
   .share-label{display:block;color:var(--color-fg-quiet);font-size:12px;}
   loom-copy{display:block;}
@@ -697,20 +807,26 @@
   /* The approvals sit in the dock above the composer. Their height is
      capped and they scroll on their own, so a long action preview or
      several pending cards cannot push the composer off the screen. */
-  section.approvals{margin:0 0 8px 0;max-height:35vh;overflow-y:auto;overscroll-behavior:contain;}
-  article.approval-card{background:var(--color-bg-raised);border:1px solid var(--color-signal); border-radius:10px;padding:12px 16px;margin:0 0 8px 0;}
+  section.approvals{margin:0 0 6px 0;max-height:35vh;overflow-y:auto;overscroll-behavior:contain;}
+  article.approval-card{background:var(--color-bg-raised);border:1px solid var(--color-danger);border-radius:10px;padding:10px 12px;margin:0 0 6px 0;}
   article.approval-card:last-child{margin-bottom:0;}
-  .approval-head{margin:0 0 4px 0;color:var(--color-signal-text);font:12px/1.4 var(--font-sans);}
-  .approval-question{margin:0 0 8px 0;font-weight:600;}
-  pre.approval-action{margin:0 0 8px 0;padding:8px;background:var(--color-bg);white-space:pre-wrap; overflow-wrap:anywhere;font:13px/1.4 var(--font-mono);}
-  ul.approval-authority{margin:0 0 12px 0;padding-left:20px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);}
-  .approval-actions{display:flex;flex-wrap:wrap;gap:8px;}
+  .approval-head{margin:0 0 2px 0;color:var(--color-fg);font:14px/1.4 var(--font-sans);}
+  .approval-strand{font-weight:600;}
+  .approval-question{margin:0 0 6px 0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);}
+  pre.approval-action{margin:0 0 6px 0;padding:6px 8px;background:var(--color-bg);white-space:pre-wrap; overflow-wrap:anywhere;font:13px/1.4 var(--font-mono);}
+  ul.approval-authority{margin:0 0 8px 0;padding-left:20px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);}
+  .approval-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;}
+  /* The arming note: shown for the 600 ms the row refuses clicks, and
+     hidden after, so the delay is visible as words and not only as a dim. */
+  .arm-note{margin-left:auto;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);opacity:0;}
+  .arming .arm-note{animation:loom-arm-note 600ms steps(1,end);}
+  @keyframes loom-arm-note{from{opacity:1;}to{opacity:1;}}
   /* The arming delay: for 600 ms after a card is inserted its action row
      refuses clicks and its buttons are dimmed, so a click already heading
      for the bottom of the transcript cannot land on Allow. Both keyframes
      hold the same values and the animation keeps no fill, so the row goes
-     back to its own style when it ends. The delay (loom-arm) is exempt from
-     the reduced-motion rule below; only the dimming (loom-arm-look) obeys
+     back to its own style when it ends. The delay (loom-arm) and the note (loom-arm-note) are exempt from
+     the reduced-motion rule below, so the note shows under it too; only the dimming (loom-arm-look) obeys
      it. */
   .approval-actions.arming,.control-actions.arming{animation:loom-arm 600ms steps(1,end);}
   .approval-actions.arming button,.control-actions.arming button{animation:loom-arm-look 600ms steps(1,end);}
@@ -726,7 +842,7 @@
   .nudge-more{margin:4px 0 0 0;color:var(--color-fg-quiet);font-size:12px;}
   /* The operator's session controls, in the dock above the approvals: the
      goal's buttons and the fork form. Stop and Set goal left the page. */
-  section.controls{flex:0 0 auto;margin:0 0 8px 0;font-size:13px;}
+  section.controls{flex:0 0 auto;margin:12px 0 0 0;padding-top:10px;border-top:1px solid var(--color-divider);font-size:13px;}
   .control-row{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;}
   button.control-clear{border-color:var(--color-danger);color:var(--color-danger-text);}
   button.control-pause,button.control-resume{border-color:var(--color-signal);color:var(--color-signal-text);}
@@ -746,11 +862,9 @@
      takes what is left above it, so a card appearing or the editor growing
      shrinks the transcript and never covers its last row. */
   footer.dock{flex:0 0 auto;margin-top:8px;padding:8px 0 max(12px,env(safe-area-inset-bottom)); background:var(--color-bg);}
-  form.composer{margin:0;background:var(--color-bg-raised);border:1px solid var(--color-divider); border-radius:12px;padding:12px;}
-  .identity{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;font-size:12px;margin-bottom:8px;}
-  .identity-name{color:var(--color-fg);}
-  .role-badge{border:1px solid var(--color-signal);color:var(--color-signal-text);border-radius:999px;padding:0 8px;}
-  .addressed{color:var(--color-current);}
+  form.composer{position:relative;margin:0;background:var(--color-bg-raised);border:1px solid var(--color-divider);border-radius:12px;padding:0;}
+  .to{display:flex;gap:8px;align-items:center;padding:8px 12px 0;font-size:12px;color:var(--color-fg-quiet);}
+  .to-tag{border:1px solid var(--hue,var(--color-fg-quiet));border-radius:4px;padding:0 5px;color:var(--hue-text,var(--color-fg));font:11px/1.5 var(--font-mono);}
   .outlook{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--color-divider);border-radius:999px; padding:0 8px;color:var(--color-fg-quiet);font:11px/1.6 var(--font-sans);}
   .outlook::before{content:"";width:9px;height:9px;border-radius:50%;border:2px solid var(--color-divider);}
   .outlook.ring-head::before{border-color:var(--color-current);}
@@ -758,15 +872,17 @@
   .outlook.ring-tail::before{border-color:var(--color-divider);border-top-color:var(--color-signal);}
   .outlook.ring-idle::before{border-color:var(--color-fg-faint);}
   .outlook.ring-elapsed::before{border-style:dashed;border-color:var(--color-fg-quiet);}
-  .editor textarea{field-sizing:content;min-height:4.5em;max-height:30vh;width:100%;background:var(--color-bg);color:var(--color-fg);border:1px solid var(--color-divider); border-radius:4px;padding:8px;font:14px/1.5 var(--font-sans);resize:vertical;}
+  .editor textarea{field-sizing:content;min-height:3em;max-height:30vh;width:100%;box-sizing:border-box;background:transparent;color:var(--color-fg);border:0;border-radius:0;padding:6px 12px 8px;font:14px/1.5 var(--font-sans);resize:none;}
+  .editor textarea:focus-visible{outline:none;}
+  form.composer:has(textarea:focus-visible){border-color:var(--color-fg-quiet);}
   /* The composer's element and its list of commands. The list is drawn in
      the element's shadow root, above the editor in the flow, so opening it
      grows the dock upward and leaves the editor and its buttons where they
      were. It is capped and scrolls on its own. */
   loom-composer{display:block;}
-  ul.completions{position:relative;list-style:none;margin:0 0 6px 0;padding:4px;max-height:min(16em,30vh); overflow-y:auto;background:var(--color-bg);border:1px solid var(--color-divider);border-radius:6px;}
+  ul.completions{position:absolute;bottom:100%;left:0;right:0;z-index:20;list-style:none;margin:0 0 6px 0;padding:4px;max-height:min(16em,30vh);overflow-y:auto;background:var(--color-bg-raised);border:1px solid var(--color-divider);border-radius:10px;box-shadow:var(--shadow-float);}
   li.completion{display:flex;flex-wrap:wrap;gap:0 12px;align-items:baseline;padding:4px 8px;border-radius:4px;cursor:pointer;}
-  li.completion.current{background:color-mix(in srgb,var(--color-current) 12%,var(--color-bg-raised));}
+  li.completion.current{background:color-mix(in srgb,var(--color-current) 14%,var(--color-bg-raised));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--color-current) 35%,transparent);}
   .completion-command{font:13px/1.4 var(--font-mono);color:var(--color-current);}
   .completion-hint{color:var(--color-fg-quiet);font-size:12px;}
   /* The composer's image attachments (web_client/attach): a button that opens
@@ -777,7 +893,8 @@
   .draft{display:flex;flex-direction:column;gap:6px;min-width:0;}
   loom-attach{display:block;min-width:0;}
   .attach-bar{display:flex;align-items:center;gap:8px;}
-  button.attach-add{border-color:var(--color-fg-quiet);color:var(--color-fg-quiet);font-size:12px;}
+  button.attach-add{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border-color:transparent;background:transparent;color:var(--color-fg-quiet);font:16px/1 var(--font-sans);}
+  button.attach-add:hover:not(:disabled){background:color-mix(in srgb,var(--color-fg) 8%,transparent);color:var(--color-fg);}
   button.attach-add:disabled{opacity:.5;cursor:default;}
   ul.attachments{list-style:none;margin:6px 0 0 0;padding:0;display:flex;flex-wrap:wrap;gap:6px;}
   li.attachment{display:inline-flex;align-items:center;gap:8px;max-width:100%;padding:2px 4px 2px 10px;border:1px solid var(--color-divider);border-radius:999px;background:var(--color-bg);font:12px/1.4 var(--font-mono);}
@@ -785,13 +902,34 @@
   .attachment-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   button.attachment-remove{padding:0 8px;border-radius:999px;font-size:12px;border-color:transparent;color:var(--color-fg-quiet);}
   button.attachment-remove:hover{color:var(--color-danger-text);}
-  .composer-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:flex-end;margin-top:8px;}
-  .notice{margin:0 auto 0 0;color:var(--color-fg-quiet);font-size:13px;min-width:0;}
+  .composer-actions{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;padding:6px 10px;border-top:1px solid var(--color-divider);color:var(--color-fg-quiet);font-size:12px;}
+  /* The attach element and the notice flow in the footer as its own
+     children: their hosts draw no box, so the button, the chips and the
+     notice are items of the footer row. The chips go first, on a row of
+     their own. */
+  .attach-slot,.notice-slot,loom-attach{display:contents;}
+  loom-attach ul.attachments{order:-1;flex:1 0 100%;margin:0 0 2px 0;}
+  .foot-space{flex:1 1 auto;}
+  .hint,.who{color:var(--color-fg-quiet);}
+  .notice{margin:0;color:var(--color-fg-quiet);font-size:12px;min-width:0;}
   .notice.warned{color:var(--color-danger-text);}
+  /* An outcome notice is transient: it fades after a few seconds, and a
+     warning stays. Reduced motion keeps it, because the rule below turns
+     every animation off. */
+  .notice:not(.warned){animation:loom-fade 4s forwards;}
+  @keyframes loom-fade{0%,75%{opacity:1;}100%{opacity:0;}}
+  /* One line of the goal in the dock, while a goal is active or paused. */
+  section.dock-goal{flex:0 0 auto;margin:0 0 8px 0;padding:0 4px;font-size:13px;}
+  /* An approval decision in the lane, as a who line. */
+  p.decided{margin:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);overflow-wrap:anywhere;}
+  .decided-who{color:var(--color-fg);font-weight:500;}
+  p.decided-denied .decided-tool{color:var(--color-danger-text);}
+  p.decided-allowed .decided-tool{color:var(--color-added-text);}
   button{font:13px/1.4 var(--font-sans);border-radius:6px;padding:4px 10px;cursor:pointer; border:1px solid var(--color-divider);background:var(--color-bg);color:var(--color-fg);}
   /* One filled primary per region, the rest quiet outlines. */
   button.send,button.queue{background:var(--color-primary-button);border-color:var(--color-primary-button);color:var(--color-bg);}
-  button.send:hover,button.queue:hover{background:color-mix(in srgb,var(--color-primary-button) 88%,var(--color-bg));}
+  button.send:hover:not(:disabled),button.queue:hover:not(:disabled){background:color-mix(in srgb,var(--color-primary-button) 88%,var(--color-bg));}
+  form.composer button[type="submit"]:disabled{opacity:.45;cursor:default;}
   button.steer{border-color:var(--color-signal);color:var(--color-signal-text);}
   button.steer:hover{background:color-mix(in srgb,var(--color-signal) 10%,transparent);}
   /* A status pill (the connected state in the bar). */
@@ -803,15 +941,24 @@
   button.approval-deny{border-color:var(--color-danger);color:var(--color-danger-text);}
   button.approval-allow{border-color:var(--color-added);color:var(--color-added-text);}
   button:focus-visible,textarea:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
-  /* The narrow frames. Below 1212px the sidebar's column and its button are
-     dropped. Below 980px the panel moves under the bar, one row of cards that
-     scrolls sideways, and the body is one column; its button still hides the
-     row. Below 640px the centre's padding shrinks. */
-  @media (max-width:1211px){.region-sidebar,.toggle-sidebar{display:none;}}
+  /* The narrow frames. Below 1212px the sidebar's column is dropped, and the
+     sidebar is a 232px drawer over the page, opened by its bar button or the
+     shortcut, behind a scrim that a click closes (web_client/shell). The
+     drawer floats, so it alone takes the float shadow. Below 980px the panel
+     moves under the bar, one row of cards that scrolls sideways, and the body
+     is one column; its button still hides the row. The panel then takes the
+     height its content has: the strip's cards, never a clipped 41px of tabs.
+     Below 640px the centre's padding shrinks. */
+  @media (max-width:1211px){
+    .region-sidebar{display:none;}
+    .region-sidebar.drawer{display:block;position:absolute;z-index:20;top:0;bottom:0;left:0;box-shadow:var(--shadow-float);}
+    .drawer-scrim{position:absolute;z-index:19;inset:0;background:color-mix(in srgb,var(--color-bg) 60%,transparent);}
+  }
   @media (max-width:979px){
     .shell-body{flex-direction:column;}
-    .region-panel{order:-1;width:auto;border-left:0;border-bottom:1px solid var(--color-divider);}
-    .region-panel.closed{width:auto;height:0;transition:none;}
+    .region-panel{order:-1;width:auto;height:auto;overflow:visible;border-left:0;border-bottom:1px solid var(--color-divider);}
+    .region-panel.closed{width:auto;height:0;overflow:hidden;transition:none;}
+    .panel-body{flex:0 0 auto;}
     aside.panel{width:auto;height:auto;max-height:132px;padding:8px 16px;}
     aside.panel > section.nudges{display:none;}
     .pane-strands .panel-title,.pane-strands > section.commentary{display:none;}
@@ -821,6 +968,6 @@
     li.settled-group{flex:0 0 auto;}
     ul.settled-chips{flex-direction:column;}
   }
-  @media (max-width:640px){main.centre{padding:12px 12px 0;}li.chip{width:200px;} .line.user{padding:6px 10px;}}
-  @media (prefers-reduced-motion:reduce){*:not(.arming){transition:none!important;animation:none!important;}}
+  @media (max-width:640px){main.centre{padding:12px 12px 0;}li.chip{width:200px;} .line.user{padding:6px 10px;} .hint{display:none;}}
+  @media (prefers-reduced-motion:reduce){*:not(.arming):not(.arm-note){transition:none!important;animation:none!important;}}
 }

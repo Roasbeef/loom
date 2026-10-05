@@ -154,14 +154,14 @@ The rule is enforced in four places, from the tool outward:
    tool is unavailable, `is_error` set, and no `details`. The
    registry does not invent a value for a tool's details contract.
 3. **The wiring always answers `ToolCompleted`.** The function
-   `run_tool` (`client/wiring.gleam:1699`) wraps whatever dispatch
+   `run_tool` (`client/wiring.gleam:1745`) wraps whatever dispatch
    returned as a result message. A failure to read the session's
    directory access or standing permissions also becomes an in-band
    failure outcome.
 4. **The runtime turns a dead worker into a result.** Each call runs in
    its own effect process. If that process exits without reporting, the
    strand driver settles the call as `ToolFailed`, and
-   `tool_observation` (`runtime/strand_runtime.gleam:891`) converts that
+   `tool_observation` (`runtime/strand_runtime.gleam:901`) converts that
    into a synthetic error result for the same call. Only
    provider effects halt the driver on an unreported exit; a tool never
    does.
@@ -291,7 +291,7 @@ unregistered name and stores the list sorted and deduplicated.
 Two surfaces reach the model:
 
 - **The tool array.** For each generation request,
-  `tool_specs` (`client/wiring.gleam:1587`) sorts and deduplicates
+  `tool_specs` (`client/wiring.gleam:1633`) sorts and deduplicates
   the captured `active_tool_names`, looks each name up in the
   projected definition table, and returns its
   `ToolSpec(name, description, input_schema)`.
@@ -334,14 +334,14 @@ shows where the tool layer enters it.
    up front.
 2. **Clearance.** The strand driver consumes any approvals attributed to
    exactly this call, then asks the tool surface to clear it.
-   `clear` (`client/wiring.gleam:1654`) refuses a name that is not in
+   `clear` (`client/wiring.gleam:1700`) refuses a name that is not in
    the strand's `active_tool_names` or not registered; the driver stages the
    refusal as an in-band error result. A cleared call carries the
    model's arguments unchanged and the registration's replay policy,
    which the intent commit persists. Clearance is not an execution
    grant: sandbox policy is composed later, inside the tool.
 3. **Scheduling.** The driver's check
-   `tool_may_start` (`runtime/strand_runtime.gleam:3061`) starts a
+   `tool_may_start` (`runtime/strand_runtime.gleam:3076`) starts a
    call only if no `Exclusive` tool is running, and starts an
    `Exclusive` tool only when nothing else is running. The default
    `tool_execution` setting is `parallel`, so calls to `Concurrent`

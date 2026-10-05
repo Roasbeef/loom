@@ -170,6 +170,7 @@ fn settings_under(root: String) -> serve.Settings {
   let root = absolute(root)
   serve.Settings(
     peer_directory: None,
+    first_prompt: None,
     codemode_sockets: None,
     secrets: secret.env(),
     secret_failures: [],
@@ -2666,6 +2667,7 @@ pub fn registered_managed_boot_never_enters_the_local_resolver_test() {
   let registration =
     catalogue.Registration(
       id: "unopened-session",
+      subtitle: None,
       path: "/must-not-create/session.sqlite",
       workspace: workspace.Registered(binding),
       name: "Remote",

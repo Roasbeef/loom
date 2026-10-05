@@ -10,6 +10,7 @@
 //// markup, and the escaping test checks each arrives only as text
 //// (protocol-change/051, "Nothing from the session becomes markup").
 
+import core/message
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -18,6 +19,8 @@ import lustre/dev/query
 import lustre/element
 import page_fixture
 import session_view/agent_roster
+import session_view/snapshot
+import session_view/snapshot_view
 import session_view/transcript_lines
 import session_view/turns
 import web_view/component
@@ -163,13 +166,14 @@ pub fn the_ring_and_the_outlook_say_only_what_the_rows_proved_test() {
     |> at(clock, 60_000)
   let drawn = html(warm)
 
-  // The card's ring is only a shape, hidden from a screen reader; its words
-  // are a strand's own view's, so the list carries none.
+  // The card's ring is hidden from a screen reader, carries the outlook's
+  // words as its `title` and the state's glyph inside; the words are drawn
+  // as text only in a strand's own view, so the list carries none.
   assert string.contains(
     drawn,
-    "<span aria-hidden=\"true\" class=\"ring ring-card ring-tail\"></span>",
+    "<span aria-hidden=\"true\" class=\"ring ring-card ring-tail\" title=\"cache tail ≤4m\"><span class=\"ring-glyph\">",
   )
-  assert !string.contains(drawn, "cache tail")
+  assert !string.contains(drawn, ">cache tail")
 
   // The operator's composer names the same outlook for the strand it
   // addresses.
@@ -185,6 +189,36 @@ pub fn the_ring_and_the_outlook_say_only_what_the_rows_proved_test() {
     warm
     |> component.apply([lane_fixture.captured(10, Some(lane_fixture.main_op()))])
   assert !string.contains(html(running), "ring-tail")
+}
+
+// A strand with no cache outlook has nothing for a ring to say, so its card
+// leads with an avatar: the first letter of its name as a text node, on a disc
+// the stylesheet tints from the card's hue class. No card is a hollow ring.
+pub fn a_card_without_an_outlook_leads_with_the_strands_initial_test() {
+  let drawn = html(settled())
+  assert !string.contains(drawn, "ring-none")
+  assert !string.contains(drawn, "class=\"ring ")
+  assert string.contains(
+    drawn,
+    "<span aria-hidden=\"true\" class=\"avatar avatar-card\">M</span>",
+  )
+  assert string.contains(
+    drawn,
+    "<span aria-hidden=\"true\" class=\"avatar avatar-card\">A</span>",
+  )
+
+  // The reviewer's name opens with markup. Its initial is escaped text and
+  // the name is in no attribute of the avatar.
+  assert string.contains(
+    drawn,
+    "<span aria-hidden=\"true\" class=\"avatar avatar-card\">&lt;</span>",
+  )
+
+  // A strand's own view takes the same rule at its larger size.
+  assert string.contains(
+    html(focused(settled(), "advisor")),
+    "<span aria-hidden=\"true\" class=\"avatar avatar-detail\">A</span>",
+  )
 }
 
 // The advisor is always listed, so its own view is the one a test can open
@@ -247,7 +281,7 @@ pub fn settled_work_folds_under_one_closed_divider_test() {
   let drawn = html(settled())
   assert string.contains(
     drawn,
-    "class=\"work\"><span class=\"work-divider\" slot=\"summary\">worked 48s · 3 steps · 2 files</span>",
+    "class=\"work\"><span class=\"work-divider\" slot=\"summary\">Worked 48s · 3 steps · 2 files</span>",
   )
 
   // The fold's state is the browser's: the server renders no attribute for
@@ -259,10 +293,62 @@ pub fn settled_work_folds_under_one_closed_divider_test() {
   // stays outside it.
   assert in_order(drawn, [
     "review the &lt;patch&gt; &amp; report",
-    "worked 48s",
+    "Worked 48s",
     "</loom-fold>",
     "Done: two files.",
   ])
+}
+
+// The records name who sent a prompt and not in what capacity, so the role
+// beside the name is the author's, from the attachments the page can see, and
+// never the reader's own. Alice sends from an operator page; an observer's
+// page, held by the same principal, must not call her an observer.
+pub fn a_prompt_carries_its_authors_role_never_the_readers_test() {
+  let alice = message.Origin("alice", "Alice")
+  let operating = snapshot_view.Peer("c1", alice, snapshot.Operator)
+  let watching = snapshot_view.Peer("c2", alice, snapshot.Observer)
+
+  // The operator's own page: her operator attachment is one of the peers.
+  let mine =
+    html(
+      page([
+        lane_fixture.attended(lane_fixture.own_prompt(), [operating, watching]),
+      ]),
+    )
+  assert string.contains(
+    mine,
+    "<span class=\"who-name\">Alice</span> · operator</p>",
+  )
+
+  // The observer's page on the same session: the reader's role is observer,
+  // and the words are still the author's.
+  let observed =
+    html(
+      page([
+        lane_fixture.attended(lane_fixture.own_prompt(), [operating, watching])
+        |> lane_fixture.viewed_as(snapshot.Observer),
+      ]),
+    )
+  assert string.contains(
+    observed,
+    "<span class=\"who-name\">Alice</span> · operator</p>",
+  )
+  assert !string.contains(observed, "observer</p>")
+
+  // The page cannot know a role no attachment holds, and draws the name.
+  let unknown =
+    html(
+      page([
+        lane_fixture.attended(lane_fixture.own_prompt(), [watching])
+        |> lane_fixture.viewed_as(snapshot.Observer),
+      ]),
+    )
+  assert string.contains(unknown, "<span class=\"who-name\">Alice</span></p>")
+  assert !string.contains(unknown, "· observer")
+
+  let theirs = html(settled())
+  assert string.contains(theirs, "<span class=\"who-name\">Alice</span></p>")
+  assert !string.contains(theirs, "operator</p>")
 }
 
 pub fn a_running_turn_is_drawn_open_test() {
@@ -275,14 +361,11 @@ pub fn a_running_turn_is_drawn_open_test() {
 pub fn a_spawn_and_its_result_wear_the_childs_hue_test() {
   let drawn = html(settled())
   assert in_order(drawn, [
-    "class=\"spawn hue-2\">",
-    "↳ agent_spawn · ",
-    ">sub:&lt;b&gt;review</button>",
-    "review &lt;the&gt; patch",
-    "class=\"result-card hue-2\">",
-    "from ",
-    ">sub:&lt;b&gt;review</button>",
-    " · result · completed",
+    "class=\"who spawn hue-2\">Spawned ",
+    ">&lt;b&gt;review</button>",
+    " · review &lt;the&gt; patch",
+    "class=\"result hue-2\">",
+    ">&lt;b&gt;review</button> finished</p>",
     "looks &lt;fine&gt; &amp; tidy",
   ])
 }
@@ -393,14 +476,17 @@ pub fn session_markup_arrives_only_as_text_test() {
 
 fn key(piece: turns.Piece) -> String {
   case piece {
-    turns.Plain(block, _) | turns.Commentary(block) -> block.key
+    turns.Plain(block, _, _)
+    | turns.Prompt(block:, ..)
+    | turns.Commentary(block:, ..) -> block.key
     turns.Work(key:, ..)
     | turns.Spawned(key:, ..)
     | turns.Returned(key:, ..)
     | turns.Nudged(key:, ..)
     | turns.Peer(key:, ..)
     | turns.Sibling(key:, ..)
-    | turns.Missed(key:, ..) -> key
+    | turns.Missed(key:, ..)
+    | turns.Decided(key:, ..) -> key
   }
 }
 

@@ -865,6 +865,7 @@ fn capture_leaves(
       let #(strand, op) = pair
       [run_state(op), started(strand, op), ..glanced(strand, op)]
     })
+    |> list.append(finished_cells(operations))
     |> list.append(extra)
   let view =
     snapshot_view.View(
@@ -938,6 +939,30 @@ fn run_state(op: String) -> snapshot_view.Cell {
       #("latestAssistantEntryId", json.Null),
     ]),
   )
+}
+
+// The sub-agents that are not running have run: the daemon records how each
+// ended, and a strand with no operation and no result is one that has never
+// run (a fresh fork), which the strip lists as a card and not as settled.
+fn finished_cells(
+  operations: List(#(String, String)),
+) -> List(snapshot_view.Cell) {
+  [#(child, review_op()), #(tester, tests_op())]
+  |> list.filter(fn(pair) { list.key_find(operations, pair.0) == Error(Nil) })
+  |> list.map(fn(pair) {
+    snapshot_view.Cell(
+      register.StrandLastResult,
+      pair.0,
+      1,
+      json.Object([
+        #("kind", json.String("run")),
+        #("operationId", json.String(pair.1)),
+        #("leafId", json.Null),
+        #("outcome", json.String("completed")),
+        #("runCompletion", json.String("assistant")),
+      ]),
+    )
+  })
 }
 
 // The operation's metadata cell in the wire form `machine/codec` writes,
@@ -1122,6 +1147,31 @@ pub fn remembered() -> session_channel.Update {
       item(1, 10_000, said(memory_context(), None)),
       item(2, 10_001, said("please run the gate", None)),
       item(3, 10_002, assistant([message.AssistantText("**done**", None)])),
+    ],
+    None,
+    [],
+    [],
+  )
+}
+
+/// A capture of `main` holding a prompt the page's own person sent, the
+/// principal the capture's attachment holds, and an answer: what the lane
+/// draws with the reader's role beside the name.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.own_prompt()
+/// ```
+pub fn own_prompt() -> session_channel.Update {
+  capture_of(
+    [
+      item(
+        1,
+        10_000,
+        said("my own prompt", Some(message.Origin("alice", "Alice"))),
+      ),
+      item(2, 10_001, assistant([message.AssistantText("done", None)])),
     ],
     None,
     [],
@@ -1368,4 +1418,95 @@ pub fn marked(
       snapshot.Operator,
     ),
   ])
+}
+
+/// `update`, when it is a capture, as a capture in which `strand` has never
+/// run: it has neither an operation nor a recorded result, as a fresh fork has
+/// not. Any other update is returned as it is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.unrun(lane_fixture.captured_with(10, None, []), lane_fixture.tester)
+/// ```
+pub fn unrun(
+  update: session_channel.Update,
+  strand: String,
+) -> session_channel.Update {
+  case update {
+    session_channel.Captured(cut, view, refresh) ->
+      session_channel.Captured(
+        cut,
+        snapshot_view.View(
+          ..view,
+          cells: list.filter(view.cells, fn(cell) {
+            !{
+              cell.namespace == register.StrandLastResult && cell.key == strand
+            }
+          }),
+        ),
+        refresh,
+      )
+    other -> other
+  }
+}
+
+/// `update`, when it is a capture, as the page of a reader attached in `role`:
+/// the cut's own attachment carries it, and the presence rows are left as
+/// they were. Any other update is returned as it is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.viewed_as(lane_fixture.own_prompt(), snapshot.Observer)
+/// ```
+pub fn viewed_as(
+  update: session_channel.Update,
+  role: snapshot.Role,
+) -> session_channel.Update {
+  case update {
+    session_channel.Captured(cut, view, refresh) ->
+      session_channel.Captured(
+        snapshot.Captured(
+          ..cut,
+          attachment: snapshot.Attachment(..cut.attachment, role:),
+        ),
+        view,
+        refresh,
+      )
+    other -> other
+  }
+}
+
+/// `update`, when it is a capture, with every strand that has a live phase in
+/// `phase` instead of the fixture's own label, which is a word the server
+/// never emits. The server's phase for a model generating is `assistant`. Any
+/// other update is returned as it is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.phased(lane_fixture.asked(Some(lane_fixture.main_op())), "assistant")
+/// ```
+pub fn phased(
+  update: session_channel.Update,
+  phase: String,
+) -> session_channel.Update {
+  case update {
+    session_channel.Captured(cut, view, refresh) ->
+      session_channel.Captured(
+        cut,
+        snapshot_view.View(
+          ..view,
+          strands: list.map(view.strands, fn(strand) {
+            case strand.live_phase {
+              Some(_) -> protocol.Strand(..strand, live_phase: Some(phase))
+              None -> strand
+            }
+          }),
+        ),
+        refresh,
+      )
+    other -> other
+  }
 }

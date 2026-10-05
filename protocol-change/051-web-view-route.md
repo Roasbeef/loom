@@ -3569,3 +3569,206 @@ worded; the section holding no button and no form; and the operator's page
 drawing the same hairline and section. The web client's gates pass unchanged.
 No browser was in the loop; the hairline's look beside a lane and the
 section's under the cards run only in one.
+
+**Amended 2026-10-04 (`web/b9-strands`)**: the lane draws no commentary row at
+all, neither the hairline nor a rule; the panel's section is the record, and
+the advisor's dot on a nudge card is the way into its transcript. Below 980 px
+the section is hidden (`.pane-strands > section.commentary` is `display:none`),
+so there the only record of the reviews is the advisor's own transcript,
+reached by focusing its card, which stays in the strip row at 800 px.
+
+## Addendum: the session controls move to the Session tab (2026-10-03)
+
+**Status**: PROPOSED, IMPLEMENTED with the web/b4-dock branch ·
+**Raised by**: the web UI critique, round 1 (F22) and round 2 (F41)
+
+The dock held a goal row, its buttons and the Fork form on every page,
+beside the todo line and the composer. The design's dock is the todo line and
+the composer only. This addendum amends the placement sentence of the addendum
+on the page's session controls (2026-09-29), which put them "in the dock,
+above the composer", and of the addendum on the dock (2026-10-02), which kept
+them there. It adds no event, removes no operation, and touches no frozen
+interface.
+
+### What changed
+
+- **The goal's buttons and the Fork form moved to the Session pane.** They
+  are one section, `view/controls.session`, drawn as the pane's fourth
+  child. The invitation control is the pane's third child
+  (`component.invite_path`, `0\t3\t2\t2`), and the section comes after it, so
+  that placing it there shifts no path the addendum on inviting pins:
+  `invite_test` and `page_events_test` hold the invitation's handlers at their
+  path and the new section's at `component.session_controls_path`
+  (`0\t3\t2\t3`). Placing the section before the invitation control would
+  have moved it to `0\t3\t2\t3`, and the section is therefore the later of
+  the two.
+- **The dock keeps one goal line, and only while a goal is active or
+  paused.** `view/controls.dock` draws the goal's first row of words and the
+  one button that steers it (Pause while active, Resume while paused). A
+  goal that is complete or limited, and no goal at all, draw nothing, an
+  empty node, so the dock's children keep their places. The `arming` row rule
+  carries over to both places unchanged: a change of the goal's status is a
+  new keyed row and the stylesheet refuses clicks on it for 600 ms.
+- **What the socket admits did not change.** The operator's socket admits a
+  click or a submit at any path but the invitation control's
+  (`client/daemon/ui_socket.operator_accepts`), so the new section's handlers
+  were already admitted; the observer's page draws no section and its socket
+  admits none. `ui_socket_test` pins both.
+- **The dock's children are now the todo panel, the goal line, the approvals
+  and the composer.** The goal line is `element.none()` when it draws
+  nothing, as the approvals are, so the composer stays the last child and
+  the path of its form does not depend on a goal.
+- **Reads of the decision ledger.** A decided approval is drawn in the lane
+  as a who line (`Owner denied bash`). It is read from the approval ledger
+  the page already keeps: the host looks a request up when it leaves the
+  pending cut, and the ledger holds the author, the verdict and the tool
+  (`approval.decisions`, sixteen at most). The strand the request was raised
+  on comes from the pending cell, which the capture held while the request
+  waited (`session_view/decisions`). It adds no event, frame or field. A
+  request still waiting has no line, and the approval card is unchanged in
+  where it sits.
+
+### What was considered
+
+- **Leave the controls in the dock and shrink them.** The goal row and Fork
+  are rare actions, and a form that is closed most of the time still costs a
+  row and a label on every page.
+- **Put the section before the invitation control.** It would shift the
+  invitation's pinned path, which the addendum on inviting forbids without
+  its own amendment. After it costs nothing, since the Session pane scrolls.
+- **Draw no goal line in the dock.** A loop that spends tokens is worth a
+  hand on the button without opening a tab; the line is one row, and only
+  while it is running or held.
+- **Add a transcript record for a decision.** The register already keeps the
+  decided escalation, its author and the strand it was raised on, and the
+  ledger carries the first two. A second channel would duplicate it.
+
+### Cost
+
+- The goal's Clear button and the Fork form are one tab away. An operator who
+  wants Fork opens the Session tab. Below 980px the panel is a short row of
+  cards, and the Session pane's controls are reached by choosing its tab and
+  scrolling the row.
+- A decision's line is placed by the register sequence that committed it,
+  which orders it among the transcript's records but gives no clock time, so
+  the line says who and what and not when.
+- A page that opens after a request was decided never saw it pending, so it
+  has no lookup to make and shows no line for it; the ledger is the page's
+  own and is bounded to sixteen. The register keeps every decided escalation
+  durably, but a metadata cut carries only the pending ones, so a line that
+  survives a reload needs the daemon to list decided escalations. That is a
+  wire change and is not made here.
+
+### Verification
+
+`page_actions_test` shows the dock drawing the goal line and Pause for an
+active goal and Resume for a paused one, nothing for a complete goal or none,
+and the Session pane holding Clear and the Fork form after the invitation
+control's place; the buttons still sending their commands; an observer's page
+drawing no control. `page_events_test` pins the section's handler at
+`component.session_controls_path` and none on the observer's page;
+`invite_test` still pins the invitation's two buttons at `invite_path`.
+`ui_socket_test` pins the admissions. `operator_page_test` shows the decision
+line drawn from a rejected and an approved ledger entry for the strand the
+page follows and not for another's. No browser was in the loop for the tests;
+the drive screenshots under `docs/design-notes/web-design/drive-b4/` show the
+rendered dock and Session tab.
+
+## Addendum: the right panel's content (2026-10-03)
+
+**Status**: PROPOSED, IMPLEMENTED with the web/b5-panel branch ·
+**Raised by**: the web UI critique, round 1 (F24, F25, F26, F28, F29, F31) and
+round 2 (F44, F45, F49)
+
+This addendum records what the strand panel now draws and one place where a
+tooltip carries session text. It adds no event to the socket's accepted list,
+no handler, no operation and no field on the wire, and it touches no frozen
+interface.
+
+### What changed
+
+- **The commentary section is closed by default.** The addendum of 2026-10-02
+  says the section is drawn open in the Strands pane. It is now one native
+  `details`, closed, whose summary is `Advisor · 3 reviews · last: <first line
+  of the newest review>`. Opening it is the browser's, as the settled group's
+  is, so the server draws no handler and never learns which state it is in.
+  Inside, the newest three reviews are drawn as before, but each body goes
+  through the lane's Markdown drawer (`markdown_view`), which keeps this
+  document's rule that nothing from the session becomes markup.
+- **A `title` attribute may carry bounded session text.** Rule 653 of this
+  proposal says no attribute is built from session content. Two tooltips are
+  an exception, both an escaped, inert string with no handler, link, style or
+  key: a strand card's `title` holds the whole activity text a tool's status
+  line left out (`Working · bash` shows, and the command is the tooltip), cut
+  to 240 characters, and the strand view's model row holds the whole model
+  identifier its shortened name came from. The sidebar's workspace `title` was
+  already such a case. A model's text is still never a class, an identifier, a
+  key, a `href`, a `src` or an event value.
+- **A strand that has never run is a live card.** `agent_roster.listed` lists
+  an idle strand with no operation, which is what a fresh fork is until its
+  first prompt. Before, it was drawn in the closed Settled group while the
+  operator who forked it looked for it. Focus is unchanged: the page that sent
+  the fork stays on the strand it was on. The terminal reads the same rule.
+- **Changes folds `fs_write`.** A successful `fs_write` is a file of one hunk
+  whose lines are all added, read from the call's `content` argument already
+  in the page's records and the `path` of the result's details. The file's line
+  says `written · 23 lines` where an edit's counts go, and a file the session
+  also edited counts as edited. The fold is `session_view`'s, so the terminal
+  can draw the same board.
+- **The Session tab words what it shows.** The cost row is the figure
+  (`$0.12`) under the label `Est. cost`; viewers are one line per principal
+  with its roles and page count (`Owner · owner, operator · 3 pages · you`),
+  and the total still counts attachments; a board with no live job reads
+  `none` with `At the last refresh` as its tooltip.
+- **Cards and strand views say more in fewer words.** A card is a 34 px cache
+  ring, the name and a status line that begins with the state's glyph; the
+  engine's phase `assistant` reads `thinking` and a state word the activity
+  repeats is dropped. A strand's own view adds the task, shortens the model to
+  its last path segment, says `not reported` for an unknown context, and
+  shows the first line of the strand's latest answer under Recent when no tool
+  ran.
+
+### What was considered
+
+- **Keep the commentary open and shrink it.** The section pushed the cards to
+  the fold on a short session, and its bodies are the advisor's own words,
+  which the focused transcript already holds. One summary line costs the
+  reader a click for the bodies, and the click is the browser's.
+- **Drop the command from the card without a tooltip.** The command is often
+  the one fact that says what a strand is doing. Showing it in the line made
+  the card unreadable, and hiding it entirely hid the fact; a tooltip is the
+  smallest place that keeps it.
+- **Focus the new strand on the page that forked it.** Focus is the page's, not
+  the server's, and the operator may have meant to stay where they were. The
+  card is enough to find the strand and one click focuses it.
+
+### Cost
+
+- Two more attributes hold session-derived text, both inert `title`s Lustre
+  escapes. The attributes that carry such text are now exactly these: the
+  active strand's identity (a slug of a model-supplied purpose, letters,
+  digits and dashes) as the composer's `aria-label` and `placeholder`
+  (`operator_page`), the session identity and the workspace path as `title`s
+  (`heading`, `sidebar`), and the two tooltips this addendum adds, a card's
+  activity text and a model's identifier. Everything else the session wrote
+  stays a text node, and a later change that adds another attribute must amend
+  this addendum.
+- The commentary's bodies are one click further away, and a short summary quotes
+  only the newest review's first line.
+- A card's activity text is cut at the first ` · ` when the part before it is a
+  single word. A model-written summary that happens to begin with one word and
+  a middle dot shows only that word, with the whole in the tooltip.
+
+### Verification
+
+`strand_card_test` pins the phase words, the repeated-word rule, the tool name
+without its command, the tooltip's cut and the glyphs. `agent_roster_test` pins
+that a never-run strand is listed and one that ran is settled.
+`changes_view_test` folds an `fs_write` whose content carries markup (kept as
+text), bounds a long one and shows a failed or content-free write adding
+nothing. `session_summary_test` groups three pages of one principal into one
+viewer. `right_panel_test` shows the glyph, the tooltip, a never-run strand
+drawn live without a focus change, and the strand view's new rows.
+`commentary_test` shows the closed `details`, the summary line and the Markdown
+body with markup still escaped. The drive screenshots under
+`docs/design-notes/web-design/drive-b5/` show the rendered panel.

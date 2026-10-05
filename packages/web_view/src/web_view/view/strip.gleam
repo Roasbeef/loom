@@ -5,10 +5,15 @@
 //// and classes (`Strip`, `Chip`, `chip-hit`) are from then; the stylesheet
 //// draws each chip as a card.
 ////
-//// A card is a ring, the strand's name and one status line
-//// (`session_view/strand_card`), and nothing else: the model, the context, the
-//// cache's expiry and the elapsed time are figures of one strand's own view
-//// (`view/strand_detail`), not of a row in a list. A strand that waits on a
+//// A card is a mark, the strand's name and one status line
+//// (`session_view/strand_card`) that begins with the state's glyph, and
+//// nothing else: the model, the context, the cache's expiry and the elapsed
+//// time are figures of one strand's own view (`view/strand_detail`), not of a
+//// row in a list. The mark is the cache ring at 34 px when the strand has an
+//// outlook, and the strand's avatar, its first letter on a tint of its hue,
+//// when it has none. The line names a tool
+//// and not its command; the card's `title` holds the whole text for a reader
+//// who hovers. A strand that waits on a
 //// decision reads `Needs approval`, in the attention colour. The approval
 //// card that answers it is drawn in the dock and only for the strand on
 //// screen, so the strand's card is a button that focuses the strand, which
@@ -30,8 +35,11 @@
 //// session.
 ////
 //// A strand's name and its status line are session content or derived from
-//// it, so each is drawn as a text node and never as an attribute, a class or
-//// a key. The chips are listed by position rather
+//// it, so each is drawn as a text node and never as a class or a key. The one
+//// attribute they reach is a card's `title`, the tooltip that holds the
+//// command a tool's status line left out: an inert, escaped string that
+//// names no handler, link or style (protocol-change/051, the addendum of
+//// 2026-10-03 on the right panel). The chips are listed by position rather
 //// than keyed by name, and a chip's hue comes from its position among the
 //// captured strands, never from its name. Every class is a complete
 //// literal, so Tailwind finds it.
@@ -76,6 +84,7 @@ import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -108,6 +117,9 @@ pub type Chip {
     /// The tools the strand's current operation ran most recently, oldest
     /// first, as `agent_view` bounds them.
     recent: List(String),
+    /// The first line of the strand's latest answer, when it has given one:
+    /// what a strand's own view shows under `Recent` when no tool ran.
+    answer: Option(String),
   )
 }
 
@@ -343,24 +355,51 @@ fn chip_element(
   let line = chip.line
   html.li(chip_attributes(chip, followed), [
     html.button(
+      list.append(
+        [
+          attribute.type_("button"),
+          attribute.class("chip-hit"),
+          attribute.data(card_marker, int.to_string(position)),
+          ..press_attributes(chip.line.id, followed, focus)
+        ],
+        title(line),
+      ),
       [
-        attribute.type_("button"),
-        attribute.class("chip-hit"),
-        attribute.data(card_marker, int.to_string(position)),
-        ..press_attributes(chip.line.id, followed, focus)
-      ],
-      [
-        ring(chip.cache, Card),
+        ring(chip, Card),
         html.span([attribute.class("chip-text")], [
           html.span([attribute.class("chip-name")], [html.text(line.name)]),
-          html.span(
-            [attribute.class("chip-status"), status_class(line.status)],
-            [html.text(strand_card.status_line(line))],
-          ),
+          status(line),
         ]),
       ],
     ),
   ])
+}
+
+/// A strand's status as a card and its own view draw it: the state's glyph,
+/// then the status line, in the state's colour.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // strip.status(chip.line)
+/// ```
+pub fn status(line: agent_roster.Line) -> Element(message) {
+  html.span([attribute.class("chip-status"), status_class(line.status)], [
+    html.span([attribute.class("st"), attribute.aria_hidden(True)], [
+      html.text(strand_card.glyph(line.status)),
+    ]),
+    html.text(strand_card.status_line(line)),
+  ])
+}
+
+// The card's tooltip, only when it says more than the line does.
+fn title(line: agent_roster.Line) -> List(attribute.Attribute(message)) {
+  let whole = strand_card.status_title(line)
+
+  case whole == strand_card.status_line(line) {
+    True -> []
+    False -> [attribute.title(whole)]
+  }
 }
 
 // The chip of the strand the page shows is marked as the current one by its
@@ -404,32 +443,73 @@ pub type Size {
   Detail
 }
 
-/// The cache ring: its shape from the outlook and nothing else, drawn at the
-/// size `size` names. The words for it (`cache_miss.outlook_label`) belong to
-/// a strand's own view, so a ring here is decoration, hidden from a screen
-/// reader. A strand with no outlook to show draws a plain ring, so every card
-/// lines up.
+/// A card's mark: the cache ring when the strand has an outlook to show, and
+/// otherwise the strand's avatar, at the size `size` names.
+///
+/// A held outlook is a ring whose shape says it, with the state's glyph inside
+/// and the outlook's words as its `title`, the same words the strand's own view
+/// carries in its Cache row. The words are the engine's literals
+/// (`cache_miss.outlook_label`), never a strand's text. A strand with no
+/// outlook has nothing for a ring to say, and a hollow one reads as a missing
+/// figure, so it draws `avatar` instead. Both are decoration for a screen
+/// reader, which has the status line.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // strip.ring(chip.cache, strip.Card)
+/// // strip.ring(chip, strip.Card)
 /// ```
-pub fn ring(
-  cache: Option(#(cache_miss.Outlook, String)),
-  size: Size,
-) -> Element(message) {
-  let shape = case cache {
-    Some(#(held, _)) -> ring_class(held)
-    None -> attribute.class("ring-none")
+pub fn ring(chip: Chip, size: Size) -> Element(message) {
+  case chip.cache {
+    Some(#(cache_miss.Unheld, _)) | None -> avatar(chip.line.name, size)
+    Some(#(held, words)) ->
+      html.span(
+        [
+          attribute.class("ring"),
+          case size {
+            Card -> attribute.class("ring-card")
+            Detail -> attribute.class("ring-detail")
+          },
+          ring_class(held),
+          attribute.title(words),
+          attribute.aria_hidden(True),
+        ],
+        [
+          html.span([attribute.class("ring-glyph")], [
+            html.text(strand_card.glyph(chip.line.status)),
+          ]),
+        ],
+      )
   }
-  let size = case size {
-    Card -> attribute.class("ring-card")
-    Detail -> attribute.class("ring-detail")
+}
+
+/// A strand's avatar: a disc tinted toward its hue with the name's first
+/// letter. The letter is a text node, the first grapheme of the name in upper
+/// case, and the disc's tint comes from the card's hue class, so nothing a
+/// strand wrote reaches an attribute or a class. A name with no grapheme draws
+/// `?`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // strip.avatar("review-readme-usage", strip.Card) draws the letter R
+/// ```
+pub fn avatar(name: String, size: Size) -> Element(message) {
+  let initial = case string.first(name) {
+    Ok(grapheme) -> string.uppercase(grapheme)
+    Error(Nil) -> "?"
   }
+
   html.span(
-    [attribute.class("ring"), size, shape, attribute.aria_hidden(True)],
-    [],
+    [
+      attribute.class("avatar"),
+      case size {
+        Card -> attribute.class("avatar-card")
+        Detail -> attribute.class("avatar-detail")
+      },
+      attribute.aria_hidden(True),
+    ],
+    [html.text(initial)],
   )
 }
 

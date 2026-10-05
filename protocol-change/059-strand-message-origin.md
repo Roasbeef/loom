@@ -1,6 +1,6 @@
 # protocol-change/059: a structured origin for same-session strand messages
 
-**Status**: PROPOSED 2026-09-30 · **Affects**: Part 1.1 messages (`message.Origin`), the durable and v2 wire encodings of `origin`, provider projection, session_view classification · **Raised by**: #672 (owner ruling 2026-09-30: received strand messages get a strand-origin protocol change now)
+**Status**: ACCEPTED 2026-10-03 · **Affects**: Part 1.1 messages (`message.Origin`), the durable and v2 wire encodings of `origin`, provider projection, session_view classification · **Raised by**: #672 (owner ruling 2026-09-30: received strand messages get a strand-origin protocol change now)
 
 ## Problem
 
@@ -383,4 +383,22 @@ Answered in review, recorded here so the choices stay visible.
 
 ## Decision
 
-**Proposed.** Not yet accepted.
+**Accepted** 2026-10-03, effective with the writer.
+
+**Implementation status.** Both halves are implemented. The reader (slices 1
+to 3) is on `main`: the core variant and codec, `turns.Sibling`, the shared
+strip and both hosts. The writer (slices 4 and 5) is `agent_send` admission and
+`brief_message` setting `StrandOrigin(caller.strand)`, with test 6 and the
+image-then-sibling admission test in `client/vision_test`, and the docs named
+above. The `to a sibling` case of test 6 is covered as the two addressable
+directions, a parent to its descendant and a descendant to its parent, because
+the Agency refuses a message between siblings
+(`a_sibling_is_not_addressable_test`) so none is ever admitted.
+
+The two-release rollout the proposal describes did not happen as written: no
+release was cut between the reader and the writer, and `v0.2.0` predates the
+reader. The next release therefore reads and writes the origin together, and
+the rule that replaces reader-then-writer ordering is in
+[`docs/updating.md`](../docs/updating.md): every client older than that release
+must be stopped before it is selected, or it fails any session that holds a
+strand-origin entry.

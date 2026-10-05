@@ -19,11 +19,15 @@ with these forks: they define the same modules.
 
 ## Key Types
 
-- The catalogue is at `user_version` 5. Each later version has its own embedded
-  migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
-  `catalogue_claims_schema`, `catalogue_workspace_bindings_schema`), and `initialize_schema` applies every schema an
-  older catalogue lacks, then moves the version, in one transaction; a fresh
-  catalogue runs the same list after `sql_schema`. A version it does not know
+- The catalogue is at `user_version` 6. Each later version has one migration
+  schema (`catalogue_names_schema`, `catalogue_archives_schema`,
+  `catalogue_claims_schema`, `catalogue_subtitles_schema`,
+  `catalogue_workspace_bindings_schema`), and `initialize_schema` applies every
+  version the file lacks in the same transaction before it raises the version.
+  Published main version 5 owns subtitles; version 6 first ships remote bindings.
+  Unreleased branch-only version-5 binding databases are unsupported; there is
+  no schema sniffing or alternate upgrade path.
+  A fresh catalogue runs the same list after `sql_schema`. An unknown version
   is refused, so a downgrade needs the pre-upgrade catalogue restored.
 - `catalogue.Visibility` separates active and archived rows from initialization
   state. Schema version 3 adds `catalogue_session_archives`, migrated atomically
@@ -34,6 +38,22 @@ with these forks: they define the same modules.
   before their limit. `archived_page` uses the same revision and bounded shape.
   [Protocol 035](../../protocol-change/035-session-archive.md) defines the boundary.
 
+- `catalogue.seed_subtitle` writes a session's subtitle once
+  ([protocol 067](../../protocol-change/067-session-subtitle.md)). Version 5
+  adds `catalogue_session_subtitles`, a side table keyed by session ID like the
+  name override, so the creation row that `reserve` compares never changes: a
+  `Registration` carries `subtitle: Option(String)` from `get` and the pages,
+  and `find` and `by_request_key` always leave it `None`. The text is reduced by
+  `subtitle_from_prompt` (first nonblank line, whitespace collapsed, controls
+  and the zero-width and direction-changing code points removed,
+  `subtitle_limit` = 60 characters cut on a word with an ellipsis that counts),
+  and the existence check and the insert share one transaction, so the first
+  subtitle stands and a later call writes nothing and leaves the revision
+  alone. A stored value that breaks the rule reads as `None` rather than
+  failing a listing. `delete` removes the row. `catalogue.display_name` is the
+  rule for a name about to be written, and `rename` now applies it: blank,
+  over 256 bytes, a control, or an invisible code point (`invisible`, which
+  `access.new_name` shares) is `Invalid`.
 - `catalogue.rename` writes a session display-name override and increments the
   catalogue revision in one immediate transaction. The version-2 migration adds
   `catalogue_session_names`; the embedded `catalogue_names_schema` migrates
@@ -84,10 +104,14 @@ with these forks: they define the same modules.
   `ClaimDigest` is a separate opaque type from `Digest`, so a claim cannot be
   passed to `authenticate`. `Enrollment` is `ClaimEnrollment(claim,
   expires_at_ms)` (an open claim, no credential) or `DigestEnrollment(digest)`
-  (the invitee's own credential, no claim). `claim(store, claim, digest,
+  (the invitee's own credential, no claim). `claim(store, claim, digest, name,
   now_ms, equal)` binds a digest once in one transaction and answers
   `Claimed(principal, memberships)` (at most 16, in session order) or
-  `UnknownClaim`, `ExpiredClaim`, `ConflictingClaim` or `ClaimStore(error)`.
+  `UnknownClaim`, `ExpiredClaim`, `ConflictingClaim`, `InvalidClaimName` or
+  `ClaimStore(error)`. `name` is the invitee's optional display name: trimmed,
+  judged by `valid_name` before the first write, and applied in the binding
+  transaction only, so a refused name leaves the claim open and a replay never
+  renames.
   `claim_known` is the `/v2/claim` upgrade's filter (exists and not void), and
   `fingerprint` is a digest's first 16 hex characters.
 - `storage/access.{Listing, CredentialSummary, ListingPage, MembershipPage}`
@@ -139,7 +163,8 @@ with these forks: they define the same modules.
   embeds conversation `sql/session.sql`; `catalogue_names_schema` embeds the
   version-2 name-override table; `catalogue_archives_schema` embeds the version-3
   archive overlay; `catalogue_claims_schema` embeds version-4 claim enrollment;
-  `catalogue_workspace_bindings_schema` embeds version-5 binding persistence.
+  `catalogue_subtitles_schema` embeds the version-5 write-once display subtitle;
+  `catalogue_workspace_bindings_schema` embeds version-6 binding persistence.
   Generation loads the schema chain for
   query checking, but each database executes only its own schema. `make gen-sql`
   regenerates these artifacts, and tests pin them to their sources.
@@ -152,8 +177,12 @@ with these forks: they define the same modules.
   discard the outer transaction's writes.
 - `storage/storage.Storage(handle)` — a record of functions closed over a
   backend handle: `commit`, `get_entries`, `get_register`,
-  `list_registers`, `scan_branch`, `scan_entries`, `scan_usage`, `stats`,
-  `close`. `session` erases the handle type to `Storage(Nil)`.
+  `list_registers`, `scan_branch`, `scan_entries`, `scan_entry_heads`,
+  `scan_usage`, `stats`, `close`. `scan_entry_heads` is `scan_entries`
+  projected to `EntryHead` (id, parent, seq) with no payload read; the
+  conformance suite pins it to the full scan
+  ([protocol-change/066](../../protocol-change/066-entry-heads-scan.md)).
+  `session` erases the handle type to `Storage(Nil)`.
 - `storage/storage.{BranchScan, EntryScan, UsageScan}` — the three query
   shapes, built with the pipeline builders (`branch_scan`,
   `branch_stop_at_kind`, `branch_cursor`, `entry_seq_range`, ...).

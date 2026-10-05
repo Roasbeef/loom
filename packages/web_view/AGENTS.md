@@ -42,22 +42,48 @@ page keys and nonces, and the relay into the session's gateway.
   observer's page is always declined), and `invite`, an `Option` of a request
   to invite a person to the page's session in an `invites.Role` that answers
   an `invites.Answer`. `invite` is `Some` only on an owner's operator page
-  (`ui_socket.Owning`). All run in the component's process.
+  (`ui_socket.Owning`). `home` is an `Option` of a request for a ticket to the
+  principal's home (a `sessions.Answer` again, declined as `NoHome`); it is
+  `Some` only on a page whose grant has `Workspace` reach, an observer's
+  included, and the page draws the "Home" button only then. All run in the
+  component's process.
 - `component.Msg(socket)`: `Opened`, `Refused`, `TimerArmed`, `Arrived`
   (a batch of up to `arrival_batch` frames, reduced at once), `Ticked`
   (the deadline timer fired), `OlderRequested` (the "Load older" button, a
   read), `FocusRequested(strand)` (a strip chip, a change of what the page
-  shows), `SessionsListed(entries)` (the sidebar read's own answer) and
-  `Linked(answer)` (the daemon's answer to a request to open a session) and
-  `Invited(answer)` (its answer to a request to invite), all three
-  dispatched by an effect and carried by no handler. It holds no command.
-  `component.older_path` and `component.strip_path` are the Lustre event
-  paths the socket admits an observer's click at: the button, and anything
-  beneath the strip's chip list. `component.sidebar_path` is where an
+  shows), `GoingHome` (the "Home" button, which carries nothing; the answer
+  is `Homed(answer)`), `SessionsListed(entries)` (the sidebar read's own
+  answer) and `Linked(answer)` (the daemon's answer to a request to open a
+  session), `Homed(answer)` (to go home) and `Invited(answer)` (to invite),
+  all four dispatched by an effect and carried by no handler. It holds no
+  command. `component.older_path`, `component.home_path` (`0\t0\t1`, the
+  Home button, the top bar's second child) and `component.strip_path` are the
+  Lustre event paths the socket admits an observer's click at: the button,
+  the Home button, and anything beneath the strip's chip list. The top bar
+  always has that second child (`element.none()` without the capability), so
+  the children after it keep their places; `component.switch(model)` is the
+  hidden `<loom-switch>` both pages draw as the centre's last child (the
+  observer's only with the capability). `component.sidebar_path` is where an
   operator page's session buttons are, and the observer's socket admits no
   click beneath it. `component.invite_path` (`0\t3\t2\t2`) is the invitation
   control's region in the Session pane, and only an owner's socket admits a
-  click at or beneath it.
+  click at or beneath it. `component.rename_path` (`0\t3\t2\t4`) is the
+  rename control's, the pane's fifth child, admitted the same way and for a
+  submit as well (protocol-change/067).
+- **Subtitle and rename.** `sessions.Entry.subtitle` is the first line of the
+  session's first prompt, which the daemon derived once. It is a person's own
+  prompt, so the sidebar (`session-text` wrapping `session-name` and
+  `session-subtitle`) and the home row (`home-subtitle`, leading the quiet
+  line in place of the age) draw it as a text node and nothing else.
+  `web_view/renames` holds the rename vocabulary (`Answer`, `Reason` with fixed
+  words, the page's `Control`). The session page's control is
+  `view/rename`, driven by `component.renaming` and `Transport.rename`, which
+  returns at once and answers as `Renamed`; the daemon names the session and the
+  principal and the page sends only the typed text. The home draws a Rename
+  button after each row's own button when `Start.rename` is `Some`, and one open
+  form in place of a row (`home_table.Rename`, `home.Edit`); a submit asks only
+  for the row whose form is open. Neither control puts the current name in an
+  attribute.
 - **Strand focus.** `component.focus(model, strand)` (`FocusRequested`) is
   `step.focus`, the shared step's change of strand, plus what only this host
   holds: the history read owed for the strand being left is dropped
@@ -72,23 +98,49 @@ page keys and nonces, and the relay into the session's gateway.
   back for any strand of the session is kept, and the notice names the
   strand it was held for when that is not the one on screen.
 - **The home page** (protocol-change/065). `web_view/home` is a server
-  component bound to no session: `Start(name, ceiling, refresh_ms, sessions)`
-  with `sessions: fn() -> Listing` (`Listed(entries) | Unread | Closed(ending)`),
-  read when the timer is wired and every `refresh_ms` (`home.refresh_ms`,
-  30 s), in the component's process. `Closed` ends the page (`Status`:
-  `Connecting | Connected | Ended`) and stops the reads; `Unread` keeps the
-  last list. The view is `shell.view(shell.Home, ...)`: `view/home_bar`,
-  `sidebar.home(groups)` (a "Home" entry, text rows), `view/home_table` (a
-  table per workspace: name, resident or saved in words, created in UTC) and
-  no panel; the stylesheet hides the panel column for the frame class
-  `loom-home`. It attaches no handler. `ending.home_headline` and
+  component bound to no session: `Start(name, ceiling, refresh_ms, sessions,
+  open, resume)` with `sessions: fn() -> Listing` (`Listed(entries) | Unread |
+  Closed(ending)`), read when the timer is wired and every `refresh_ms`
+  (`home.refresh_ms`, 30 s), in the component's process. `Closed` ends the page
+  (`Status`: `Connecting | Connected | Ended`) and stops the reads; `Unread`
+  keeps the last list. The view is `shell.view(shell.Home, ...)`:
+  `view/home_bar`, `sidebar.home(groups, open, resume)` (a "Home" entry, then the rows),
+  `view/home_table` (a list per workspace: a heading with the shortened path
+  and a count, and one item per session with a glyph, the name, and a quiet
+  line of `resident · working · created 2h ago` or `saved · 2h ago`; the UTC
+  minute is the `time`'s `title`; `home_bar` draws the session bar's `pill`
+  and `Tone`) and no panel; the stylesheet hides the panel column for the
+  frame class `loom-home`. `view/switch.view(address)` draws the hidden
+  `<loom-switch>` for both this page and the session page. The one input is a running session's row, in the
+  table and in the sidebar: `home.Opening(id)` asks `Start.open` (in the
+  component's process) for a ticket, and `Linked(answer)` becomes the `to`
+  attribute of the centre's last child, a hidden `<loom-switch>`, or the
+  `home-notice` before the table (an empty node when none, so the table keeps
+  its path). `home.table_path` and `home.sidebar_path` are the two regions the
+  daemon's socket admits a click beneath. A saved row is a button only on an
+  `OperatorCeiling` page (`view/resume`): `home.Resuming(id)` calls
+  `Start.resume(id, deliver)`, which starts the daemon's task and returns, sets
+  `resuming` and draws the row "opening"; `deliver` dispatches `Linked` from
+  the task. A second press, an observer ceiling and an ended page ask nothing.
+  Every list that answers also starts `Start.activity(ids, deliver)` for the
+  running sessions it lists (at most `home.activity_limit`, 24): it returns
+  at once, the daemon asks the sessions in a task of its own, and the answer is
+  `Observed(rows)`, one `sessions.Activity` (`NeedsYou | Working | Idle`) per
+  session that answered, which the rows draw as words and a glyph hue; a row
+  with none says only `resident`. `Start.now` is the clock the ages count from,
+  read once per list. `ending.Advice` (`lead`, `command`) is the ending's
+  advice split, `advised`/`home_advised`; `advice` is it said as a sentence.
+  `ending.home_headline` and
   `home_advice`, `ended.home`, `page.home_shell`, `home_path`,
   `home_exchange_path`, `home_refusal` word and address it. `home_test` reads
   all of it.
 - **The session sidebar.** `web_view/sessions` holds `Entry`, `Residency`
-  (`Live | Saved`), `Group` and `grouped(entries, current)` (the current
+  (`Live | Saved | Blocked`; `Blocked` is a saved row no page may resume),
+  `Group` and `grouped(entries, current)` (the current
   session's workspace first, then by newest session, sessions newest first,
-  ties by identity and path). `view/sidebar.view(groups, current, bars, open)`
+  ties by identity and path). `view/resume` is the one rule for a saved row
+  (`Never | Offered(press, pending)`, `kind` giving `Text | Button | Opening`),
+  shared by the sidebar and the home's table. `view/sidebar.view(groups, current, bars, open, resume)`
   draws it as the frame's second child (`aside.sidebar`, the left column;
   `element.none()` where a page draws none), memoized on the groups, the
   identity and the bars. `bars` is `sidebar.bars(component.strip(model))`: one
@@ -97,7 +149,10 @@ page keys and nonces, and the relay into the session's gateway.
   no handler). A `nav()` child, `element.none()` today, sits before the first
   group for the app's navigation. A row for a running
   session other than the one on screen is a `button.session-open` whose
-  message is `open(id)`; the current row and a saved session are text. A workspace is a
+  message is `open(id)`; a saved session is one whose message is the resume's
+  `press(id)` on an operator page (`operator_page.Resuming`, which
+  `component.resume` handles through `Transport.resume`); the current row is
+  text, and so is a saved row while another resume is out. A workspace is a
   section whose label the stylesheet draws as a small uppercase eyebrow with
   the session count, and a hairline in the divider colour separates one
   section from the next (team feedback, 2026-09-29); the list's own heading
@@ -175,15 +230,19 @@ page keys and nonces, and the relay into the session's gateway.
 - The view, one module per screen region under `web_view/view/`, laid out
   by `component.view` and `operator_page.view`. None of them imports
   `component`, which imports them, so each takes what it draws as its own
-  types or plain values. `heading.view(session_id, name, workspace,
-  status, tone, context, cost, notice)` draws the top bar (the brand, the
-  workspace's path with the home directory as `~` and then the name as two
+  types or plain values. `heading.view(session_id, home, name,
+  workspace, status, tone, context, cost, notice)` draws the top bar (the brand,
+  `home`, the workspace's path with the home directory as `~` and then the name as two
   spans, the status as a `.pill` whose class follows the `Tone`
   (`online | pending | ended`), the `ctx ~41%` estimate and the cost
   `transcript_lines.cost_words` words as `est $0.04` or `est —` when tokens
-  were spent and none priced, each as a word and a `span.num`), with the ended
-  page's notice as its last child; `component.heading(model)` reads those
-  values from the model and stays the entry point both pages call.
+  were spent and none priced, each as a word and a `span.num`; a figure with no
+  value is not drawn, so no `est` for an unpriced model and no `ctx` on the
+  primary strand before its first turn), with the ended
+  page's notice as its last child; `component.heading(model, going_home)` reads those
+  values from the model, draws `heading.home_link(going_home)` as `home`
+  when the transport has the capability, and stays the entry point both pages
+  call.
   `shell.view(audience, bar, sidebar, centre, panel, needing, workspace)`
   draws the frame, the client element `<loom-shell sidebar="listed|none"
   needing="n" workspace="digest">` (`workspace` only when the host has a
@@ -243,43 +302,78 @@ page keys and nonces, and the relay into the session's gateway.
   says `Esc`. `strand_detail.view(chip)` is a strand's own view, the
   Strands pane's third child after the list while a strand other than `main`
   is in focus (`component.detail`): a `← Strands` link (the marker `0`), the
-  ring, the name and status line, the figures the card leaves out (Model,
-  Context, Cache, Running, each drawn only when known; the cache words are
+  mark (`strip.ring`: the cache ring or the avatar), the name and status line, the figures the card leaves out (Task,
+  Model by its last path segment with the whole in a `title`, Context, which
+  says `not reported` while unknown, Cache, Running, the rest only when known; the cache words are
   `cache_miss.outlook_label`'s and no others; no Cost, since the session keeps
   cost as one total) and the tools the strand ran lately. The pane carries the
   class `detailed`, which hides the title and the list in the stylesheet; the
   list stays in the page because the relay presses a card.
-- **Expanding a row.** The terminal's `Ctrl+g` shows a call's whole program
-  and result and a reasoning block's whole text. The page holds the same
-  records, and `component.relaned` asks `turns.pieces` for the expansions
-  (`turns.Expand(expansion.capped)`) when it projects a capture, so they are
-  built once per projection and never on a render. A `Step` carries its
-  `full` rows and a `Plain` or `Narrated` piece carries `thoughts`, the full
-  form of each reasoning row by the row's key, both already cut. `lane.view`
-  draws a row that has more to show as one `<loom-expand>` (`web_client`): the
-  compact rows in a child with `slot="compact"`, the full rows in one with
-  `slot="full"`. For a call that is the rows under its summary; for a
-  response it is only the reasoning row, so an answer beside the reasoning is
-  drawn once. A row whose full form equals the compact one (a call whose
-  result is already shown, a one-line reasoning block) has none. The rows are
-  the terminal's own builders (`transcript_lines.expanded_call_lines`, and
-  `assistant_block_lines` at expanded extent). No event, handler or socket
-  read is involved: the text is already in the model, so choosing which form
-  shows is the browser's, as a fold's open state is, and it works on an
-  observer's page. Both forms are in every viewer's document, so
-  `view/expansion.capped` cuts the full rows to `max_lines` (300) lines and
-  `max_characters` (8,000) characters per row and ends a cut row with one
-  line saying so. The rows are memoized per line as the compact ones are.
-  Session text is drawn as text nodes: a program is a Markdown code block,
-  so a `<pre><code>` holding text.
+- **Rows of a turn's work.** A turn's fold holds a column of steps, each drawn
+  by `view/fold_row` as one line and a body behind it. The line is a glyph for
+  how the call stands (the word for it stays in the row, visually hidden), the
+  verb, what it acted on and, for an edit, `+n −m`: the words are
+  `session_view/step_words` (`Read calc.py`, `Edit calc.py +3 −1`, `Ran
+  python3 -m unittest`, `Memory · 4 lines`, `Reasoning · 4s`), shared with the
+  terminal, and a subject's tag (`Mono`, `Prose`, `Figure`) picks its face and
+  never its text. The terminal's `Ctrl+g` shows a call's whole program and
+  result and a reasoning block's whole text, and the page holds the same
+  records: `component.relaned` asks `turns.pieces` for the expansions
+  (`turns.Expand(expansion.capped)`), so they are built once per projection and
+  never on a render. A `Step` carries its `full` rows, a `Memory` its message
+  and a `Plain` or `Narrated` piece carries `thoughts`, the full form of each
+  reasoning row by the row's key, all already cut. `fold_row` draws a row that
+  has a body as one `<loom-expand>` (`web_client`): the line in a child with
+  `slot="head"` and the body in one with `slot="body"`. The element draws the
+  one chevron, so a row has one and no per-step "Expand" button; a row with no
+  body (a call whose result adds nothing) draws no element and no chevron. The
+  body is the full form when the page holds one and the rows the transcript
+  draws under the call otherwise. A reasoning row's time is `Narrated.took`,
+  from the record before the response to its own. No event, handler or socket
+  read is involved: the text is already in the model, so opening a row is the
+  browser's, as a fold's open state is, and it works on an observer's page. The
+  bodies are in every viewer's document, so `view/expansion.capped` cuts the
+  full rows to `max_lines` (300) lines and `max_characters` (8,000) characters
+  per row and ends a cut row with one line saying so. The rows are memoized per
+  line (`fold_row.line_row`). Session text is drawn as text nodes: a program is
+  a Markdown code block, so a `<pre><code>` holding text.
+- **Diffs.** Every diff the page draws goes through `view/diff`: the opened
+  edit step (a `ToolPatch` line, drawn by `lane.line_element`) and the Changes
+  tab. `session_view/diff_view` reads the text into lines of a closed kind and
+  `view/diff` draws each as its own row: the old and new numbers in a quiet
+  gutter, the sign, and the text in a span, all text nodes. Added lines are
+  green with a green `+`, removed red with a red `−`, a hunk header sits in a
+  quiet band. The box scrolls sideways and never wraps. A diff is cut at
+  `diff_view.max_lines` with `n more lines not shown`.
+- **Prompts, spawns, results and reviews.** A person's message is
+  `turns.Prompt`: `lane` draws its sender as a line of its own (`<span
+  class="who-name">Owner</span> · operator`) above the words in a bubble. The
+  name is session text; the role is the author's, never the reader's: `turns.authors`
+  reads the capacity each principal is attached in from the presence rows
+  (`View.peers`, owners and operators only, since an observer cannot send;
+  `operator` wins when a principal holds both, as a terminal and a page do) and
+  `turns.attributed` sets it on that principal's messages in
+  `component.relaned`. A sender with no such attachment shows the name alone,
+  so an observer's page and an operator's draw the same words for a message. A spawn is a line (`Spawned <tag> · purpose`)
+  and a result is a line naming the child (`<tag> finished`) with the first
+  line of the report, opened to the whole report when it runs longer
+  (`fold_row.reading`); neither is a card. Reviews of the advisor that follow
+  each other are one `turns.Commentary` that counts them, drawn `advisor · 2
+  reviews`.
 - **The live region.** `component.live(model)` turns the shared record's
   streams for the followed strand (`transcript_lines.display_streams`),
   `Shared.summaries` and the generation clock into `live.Row`s, and
   `lane.view(pieces, live, top, load, replies)` draws them through `view/live` as the
   lane's last keyed entry, keyed `live`. `live.Thinking(progress, elapsed_ms,
-  headline)` is the reasoning row: `12 lines · <loom-elapsed offset> so far`,
-  or with a headline the count and clock and the headline as text beneath
-  it; the thinking is not drawn. `live.Answer(line)` is the answer so far,
+  headline)` is the reasoning row: `Reasoning · <loom-elapsed offset>`, with the
+  line count as the row's `title` and the headline as text beneath it when one
+  has been pushed; the thinking is not drawn. `live.Opened(elapsed_ms)` is the
+  row before anything streams: while the followed strand's phase is `assistant`
+  or `streaming` and no stream is held, `component.live` returns it alone,
+  `Thinking · <loom-elapsed offset>` (the browser counts the reading on, so no
+  server timer; before the generation clock starts it says `Thinking` alone), and the first fragment replaces it with `Reasoning` or the
+  answer. The region is a row of the
+  timeline with its own dot, which pulses while the region exists. `live.Answer(line)` is the answer so far,
   drawn by the lane's own assistant line. A tool call being composed is not
   drawn. `View.streams` holds what the page last drew and is maintained by
   `component.streamed`, which follows the record's streams and, when a
@@ -305,25 +399,50 @@ page keys and nonces, and the relay into the session's gateway.
   move out of the dock).
 - `commentary.view(board)` draws the advisor's settled commentary
   (`Shared.advisor_history`, narrowed by `advisor_history.visible`: a board
-  for `main` only) in the Strands pane under the strand cards: the newest
-  three reviews whole, each a request label the projection worded and the
-  advisor's full text as text nodes, a `+n earlier reviews` count, and the
-  board's not-loaded line. Read-only, no handler, hidden while the advisor is
+  for `main` only) in the Strands pane under the strand cards as one closed
+  native `<details>` whose summary is `Advisor · 3 reviews · last: <first
+  line>`; inside, the newest three reviews, each a request label the
+  projection worded and the advisor's text drawn through the lane's Markdown
+  drawer (`markdown_view`), a `+n earlier reviews` count, and the board's
+  not-loaded line. Read-only, no handler, hidden while the advisor is
   on screen (its own transcript already holds the same words as its ordinary
-  entries) and below 980px. The lane keeps one line per review
-  (`view/lane`'s `commentary-mark`): the advisor's tag and the request's
-  label, its dot carrying the advisor card's marker. The 051 addendum of
-  2026-10-02 records the move out of the lane.
-- `controls.view(bar)` draws the operator's controls in the dock, above the
-  approvals: the goal row in the terminal's words
-  (`goal_view.row`) with the buttons its status offers (Pause while active,
-  Resume while held or limited, Clear always, nothing to steer once complete)
-  in a `control-actions arming` row keyed by the status, and one `<details>`
-  holding a one-field form, Fork. Stop and Set goal are gone: stopping is the
-  terminal's Escape, and a goal is pinned by typing `/goal ...` in the
-  composer, which the page parses as a command. `controls.Bar` carries the
-  messages each button sends and the form's submit handler, since
-  `operator_page` owns the message type. The observer's page draws none of it.
+  entries) and below 980px. The lane draws no row for a review
+  (`view/lane.rows` filters `turns.Commentary` out before a timeline row is
+  built). The 051 addendum of 2026-10-02 records the move out of the lane,
+  and its 2026-10-04 amendment the hairline's removal.
+- `controls.session(bar)` draws the operator's controls in the Session pane,
+  as its fourth child after the invitation control (so `invite_path` does not
+  move; its own path is `component.session_controls_path`; the rename control
+  is the fifth child, `component.rename_path`): the goal row in
+  the terminal's words (`goal_view.row`) with the buttons its status offers
+  (Pause while active, Resume while held or limited, Clear always, nothing to
+  steer once complete) in a `control-actions arming` row keyed by the status,
+  and one `<details>` holding a one-field form, Fork. `controls.dock(bar)` is
+  the dock's one goal line, drawn only while a goal is active or paused, with
+  its one steering button; otherwise an empty node. Stop and Set goal are
+  gone: stopping is the terminal's Escape, and a goal is pinned by typing
+  `/goal ...` in the composer, which the page parses as a command.
+  `controls.Bar` carries the messages each button sends and the form's submit
+  handler, since `operator_page` owns the message type. The observer's page
+  draws none of it. The 051 addendum of 2026-10-03 records the move.
+- The composer is a card of three rows: `To <tag>` (the strand's hue, no
+  handler), the borderless editor, and a footer with the attach element
+  (`<loom-attach>`, whose button is a `+` icon), the hint (`Cmd+Enter to
+  send`, `Turn is busy · ` when busy), the notice, `Owner · operator`, the
+  cache outlook and the Send, or Queue and Steer, buttons. The notice is
+  keyed by `component.notice_serial`, which `operator_page.update` raises
+  whenever the notice changed, so the stylesheet's fade starts for each new
+  one; a `warned` notice does not fade. Its words come from
+  `session_view/notice_words`, a closed table the terminal shares.
+- An approval card is headed `<b>strand</b> wants to <approval.wants(tool)>`,
+  with the strand from the escalation record's scope
+  (`component.raised_on`) and the arming delay drawn as the `Arming…` note.
+- A decided approval is a `turns.Decided` piece: `session_view/decisions`
+  reads the approval ledger (`shared.approvals`) and the strands the
+  captures saw pending requests raised on (`View.raised`), and
+  `turns.with_decisions`, called by `component.pieces`, places each by the
+  register sequence that committed it. The lane draws
+  `p.decided` with the author, the verb and the tool as text nodes.
 - `lane.Replies(fn(key) -> message)` or `NoReplies`, the last argument of
   `lane.view`. A peer card draws a `Reply to
   this peer` button after its body when the lane has replies, and the button
@@ -333,7 +452,8 @@ page keys and nonces, and the relay into the session's gateway.
   `component.plan(model)` reads them: `Shared.todo_boards` at
   `Shared.active_strand`, and `reviewer_status.lines` over
   `Shared.reviewer_rows`, the terminal's own lines. The board is one line
-  until the reader opens it, `Todo · 3 of 5 done · <active task>`, the
+  until the reader opens it, `Todo · 3 of 5 done · <active task>` (a board whose tasks are all closed is not
+  drawn; the closed steps are in the turn's fold), the
   summary of a `<loom-fold>` (the browser keeps its open state, so a patch
   leaves it alone and an observer's page has it too); the line follows the
   strand the page shows because the board is that strand's. Opened, the phase holding the
@@ -353,9 +473,10 @@ page keys and nonces, and the relay into the session's gateway.
   before the nudges, so `strip_path` and `invite_path` do not move), on both
   pages from `component.trace(model)`, the `session_view/trace_view` fold of
   the same records `relaned` folds the Changes board from. It lists the
-  session's `code_mode` programs, and not the capability calls inside them:
-  no capability call is recorded on the page's wire (protocol-change/060
-  proposes the record), and the pane says so in its last line. The newest
+  session's `code_mode` programs. The newest program also lists the rows of
+  the protocol-change/060 call record its result carried (`Program.calls`, as
+  text nodes under `trace-calls`), and a program with no record lists none; the
+  pane's last line says so (`trace_view.capability_calls_recorded`). The newest
   program leads with its state chip, result excerpt and a collapsed `Budget`
   `<details>`; earlier programs are rows under it. Labels and excerpts are
   text nodes, a state's class is one of three literals chosen from the closed
@@ -368,7 +489,8 @@ page keys and nonces, and the relay into the session's gateway.
   heading is `Changes · 2 files · +14 -2` with `from this session's edits`
   under it, then one `<details>` per file with the first open. Paths and diff
   rows are text nodes; a row's class is one of four literals chosen from the
-  fold's `Kind`. It has no handler and is memoized on the board. With no edit
+  fold's `Kind`; a file the session only wrote reads `written · N lines` where
+  an edit's counts go. It has no handler and is memoized on the board. With no edit
   it is the heading and one line saying so, so the pane is always drawn and
   the panes after it never move. It reads no worktree: the daemon serves
   worktree bytes to an Owner binding only.
@@ -377,8 +499,9 @@ page keys and nonces, and the relay into the session's gateway.
   `share`, the invitation control's place, in that order so the control's path
   never moves. The rows are the goal (the terminal's own row, `goal_view.row`, or
   `none`), the followed strand's live jobs, where the page shows them the
-  attached viewers (`session_view/session_summary`) and the estimated cost the
-  top bar shows. Schedules are not a row: the shared record keeps a schedule
+  attached viewers (`session_view/session_summary`, one line per principal:
+  `Owner · owner, operator · 3 pages · you`) and the estimated cost, the
+  figure alone since the row's label says estimate. Schedules are not a row: the shared record keeps a schedule
   listing only as transcript lines the page does not draw. The component asks
   for the jobs on a `Ticked` when the page opened or last asked
   `jobs_refresh_ms` (10 s) ago and no answer is outstanding. The clock starts
@@ -407,8 +530,10 @@ page keys and nonces, and the relay into the session's gateway.
   literal classes. `Strip.followed` is the strand the strip marks as current
   (`component.strand(model)`). `strip.view(strip, focus)` draws each chip as
   `li > button.chip-hit` whose click is `focus(name)`, the name the strip was
-  built with, holding a ring (the outlook's shape and nothing else, hidden
-  from a screen reader), the name and one status line
+  built with, holding a mark (`strip.ring`: for a held outlook the ring, its
+  shape, the state's glyph inside and the outlook's words as a literal
+  `title`; for none, `strip.avatar`, a disc with the name's first letter as a
+  text node; both hidden from a screen reader), the name and one status line
   (`session_view/strand_card.status_line`, in the attention colour for a
   strand that needs approval). A card carries no clock and no figure: those
   are the strand's own view's. It carries `data-loom-card`, its position
@@ -431,6 +556,11 @@ page keys and nonces, and the relay into the session's gateway.
   terminal renders as Markdown (assistant, reasoning, tool detail) and for
   the bodies of the result, nudge and peer cards, which are agent prose
   the terminal draws as tool-detail rows; every other row stays a `pre`.
+  The three message speakers (`sent-message`, `strand-message`,
+  `peer-message`) are among those: their text is a heading line and a
+  body, and a `pre` keeps the heading a line of its own. So are the two
+  program blocks (`program-running`, `program-failure`), whose text is
+  already laid out line by line, and an image's row (`image-row`).
   The model holds no trees. `lane.view` draws every transcript line and
   card body inside its own `element.memo` keyed on that line or body, with
   no memo around them (`lane.rows`), so a line is parsed and drawn when it
@@ -586,14 +716,15 @@ page keys and nonces, and the relay into the session's gateway.
   record the page holds. The summary labels' read is not sent.
 - The page renders `web_client`'s custom elements by tag:
   `<loom-elapsed offset>` in a strand's own view and in the live reasoning row, `<loom-fold>` around a settled
-  turn's work, `<loom-expand>` around a row with more to show, and `<loom-follow>` around the lane and `<loom-shell>` around the page. The stylesheet pins the
+  turn's work, `<loom-expand>` around a step or reasoning row with a body, and `<loom-follow>` around the lane and `<loom-shell>` around the page. The stylesheet pins the
   page's frame (`<loom-shell>`: the top bar across the full width, and under
   it the sessions' sidebar, the centre and the strand panel; the dock or the
   observer's bar at the bottom of the centre, the page itself never
   scrolling) and makes `<loom-follow>` the scroll container between them
   and the dock. The element's two buttons hide and show the sidebar and the
   panel (a hidden column is `inert`, so its content leaves the tab order),
-  with nothing kept across a reload. The sidebar is dropped below 1212px, and below 980px the
+  with nothing kept across a reload. Below 1212px the sidebar is a drawer over the page
+  (opened by its bar button or Command/Control B, never saved), and below 980px the
   panel becomes a row of cards under the bar. It keeps the
   newest row in view while the reader is at the bottom, shows a "Jump to
   latest" button while they are not, and keeps the reader's place when a

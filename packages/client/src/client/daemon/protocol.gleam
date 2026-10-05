@@ -211,7 +211,8 @@ pub const min_claim_ttl_ms = 300_000
 pub const max_claim_ttl_ms = 604_800_000
 
 /// The largest message the `/v2/claim` socket accepts. Its one command carries
-/// a 64-character digest, so this leaves room for the envelope and no more.
+/// a 64-character digest and an optional display name of at most 256 bytes,
+/// so this leaves room for the envelope and the name's escapes and no more.
 pub const max_claim_bytes = 1024
 
 /// The one command `/v2/claim` accepts, decoded apart from the control
@@ -223,6 +224,10 @@ pub type ClaimRequest {
     id: Int,
     /// The digest of the credential the invitee drew and stored.
     credential: access.Digest,
+    /// The display name the invitee chose, unjudged: the catalogue trims and
+    /// checks it in the transaction that binds, and `None` keeps the
+    /// inviter's.
+    name: Option(String),
   )
 }
 
@@ -596,10 +601,16 @@ pub fn decode_claim(text: String) -> Result(ClaimRequest, Fault) {
     })
     use body <- result.try(required(fields, "body"))
     use body <- result.try(object(body))
-    digest_field(body, "credential_digest")
+    use credential <- result.try(digest_field(body, "credential_digest"))
+    use name <- result.map(case list.key_find(body, "name") {
+      Error(Nil) -> Ok(None)
+      Ok(json.String(chosen)) -> Ok(Some(chosen))
+      Ok(_) -> Error("expected name to be text")
+    })
+    #(credential, name)
   }
   case claim {
-    Ok(credential) -> Ok(ClaimRequest(id, credential))
+    Ok(#(credential, name)) -> Ok(ClaimRequest(id, credential, name))
     Error(reason) -> Error(Fault(Some(id), "bad_request", reason))
   }
 }

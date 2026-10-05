@@ -26,6 +26,7 @@
 
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 
 /// The most pages one principal holds for one session at once.
@@ -182,10 +183,77 @@ pub fn headline(ending: Ending) -> String {
   }
 }
 
+/// What a person can do about an ending: a lead that says why it happened and
+/// what to try first, and the command that mints a fresh link when one would
+/// help. The command is separate from the lead so the document a refused
+/// request gets can draw it as a chip with a copy button, and the live notice
+/// can say it in a sentence; `advice` is that sentence.
+pub type Advice {
+  Advice(
+    /// The sentences before the command: why the page has no session and what
+    /// to try first.
+    lead: String,
+    /// The command a person runs in a terminal for a fresh link, or `None` for
+    /// an ending a fresh link would not help.
+    command: Option(String),
+  )
+}
+
+/// The advice for a session's page: `lead` and, where a fresh link helps, the
+/// command that mints one. `session_id` is the session's canonical identity,
+/// which the daemon's router parsed before any page existed, and it names the
+/// command.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ending.advised(ending.LinkExpired, "0192ab").command
+///   == Some("loom ui --session 0192ab")
+/// ```
+pub fn advised(ending: Ending, session_id: String) -> Advice {
+  let command = Some("loom ui --session " <> session_id)
+  case ending {
+    PageEnded ->
+      Advice(
+        "A page lasts eight hours, and the daemon forgets every page when it "
+          <> "restarts. You can also have "
+          <> int.to_string(max_pages)
+          <> " pages open for a session at once; opening another ends the "
+          <> "oldest.",
+        command,
+      )
+    AccessRevoked ->
+      Advice("Ask the session's owner to restore your access.", command)
+    SessionStopped ->
+      Advice(
+        "Open the session again, then reload this page. The page's own link "
+          <> "still works, so a fresh one is not needed.",
+        None,
+      )
+    NotOpen ->
+      Advice(
+        "The daemon may still be opening it. Reload this page in a moment. "
+          <> "If it stays closed, it needs a new link.",
+        command,
+      )
+    DaemonNotReady ->
+      Advice(
+        "It may still be starting. Reload this page in a moment. If it keeps "
+          <> "failing, it needs a new link.",
+        command,
+      )
+    LinkExpired -> Advice("A link works once, within 60 seconds.", command)
+    ConnectionFailed ->
+      Advice(
+        "Reload this page. If it fails again, it needs a new link.",
+        command,
+      )
+  }
+}
+
 /// The text after the headline: why it happens, where that is known, and what
-/// to do. `session_id` is the session's canonical identity, which the
-/// daemon's router parsed before any page existed, and it names the command
-/// that mints a fresh link.
+/// to do, as one run of sentences. It is `advised` said aloud, with the command
+/// in backticks.
 ///
 /// ## Examples
 ///
@@ -196,32 +264,14 @@ pub fn headline(ending: Ending) -> String {
 /// )
 /// ```
 pub fn advice(ending: Ending, session_id: String) -> String {
-  case ending {
-    PageEnded ->
-      "A page lasts eight hours, and the daemon forgets every page when it "
-      <> "restarts. You can also have "
-      <> int.to_string(max_pages)
-      <> " pages open for a session at once; opening another ends the "
-      <> "oldest. "
-      <> fresh_link(session_id)
-    AccessRevoked ->
-      "Ask the session's owner to restore your access. Then "
-      <> fresh_link(session_id)
-    SessionStopped ->
-      "Open the session again, then reload this page. The page's own link "
-      <> "still works, so a fresh one is not needed."
-    NotOpen ->
-      "The daemon may still be opening it. Reload this page in a moment. "
-      <> "If it stays closed, "
-      <> fresh_link(session_id)
-    DaemonNotReady ->
-      "It may still be starting. Reload this page in a moment. If it keeps "
-      <> "failing, "
-      <> fresh_link(session_id)
-    LinkExpired ->
-      "A link works once, within 60 seconds. " <> fresh_link(session_id)
-    ConnectionFailed ->
-      "Reload this page. If it fails again, " <> fresh_link(session_id)
+  sentence(advised(ending, session_id))
+}
+
+// The advice as the live notice says it.
+fn sentence(advice: Advice) -> String {
+  case advice.command {
+    Some(command) -> advice.lead <> " Run `" <> command <> "` for a fresh link."
+    None -> advice.lead
   }
 }
 
@@ -246,8 +296,42 @@ pub fn home_headline(ending: Ending) -> String {
   }
 }
 
-/// `advice` for a home page: the same reasons, and a fresh link that is
+/// `advised` for a home page: the same reasons, and a fresh link that is
 /// `loom ui` with no session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ending.home_advised(ending.LinkExpired).command == Some("loom ui")
+/// ```
+pub fn home_advised(ending: Ending) -> Advice {
+  let command = Some("loom ui")
+  case ending {
+    PageEnded ->
+      Advice(
+        "A page lasts eight hours, and the daemon forgets every page when it "
+          <> "restarts. You can also have "
+          <> int.to_string(max_pages)
+          <> " home pages open at once; opening another ends the oldest.",
+        command,
+      )
+    AccessRevoked -> Advice("Ask the owner to restore your access.", command)
+    DaemonNotReady ->
+      Advice(
+        "It may still be starting. Reload this page in a moment. If it keeps "
+          <> "failing, it needs a new link.",
+        command,
+      )
+    LinkExpired -> Advice("A link works once, within 60 seconds.", command)
+    SessionStopped | NotOpen | ConnectionFailed ->
+      Advice(
+        "Reload this page. If it fails again, it needs a new link.",
+        command,
+      )
+  }
+}
+
+/// `advice` for a home page: `home_advised` said as a sentence.
 ///
 /// ## Examples
 ///
@@ -255,29 +339,5 @@ pub fn home_headline(ending: Ending) -> String {
 /// assert string.contains(ending.home_advice(ending.LinkExpired), "`loom ui`")
 /// ```
 pub fn home_advice(ending: Ending) -> String {
-  case ending {
-    PageEnded ->
-      "A page lasts eight hours, and the daemon forgets every page when it "
-      <> "restarts. You can also have "
-      <> int.to_string(max_pages)
-      <> " home pages open at once; opening another ends the oldest. "
-      <> fresh_home_link
-    AccessRevoked ->
-      "Ask the owner to restore your access. Then " <> fresh_home_link
-    DaemonNotReady ->
-      "It may still be starting. Reload this page in a moment. If it keeps "
-      <> "failing, "
-      <> fresh_home_link
-    LinkExpired -> "A link works once, within 60 seconds. " <> fresh_home_link
-    SessionStopped | NotOpen | ConnectionFailed ->
-      "Reload this page. If it fails again, " <> fresh_home_link
-  }
+  sentence(home_advised(ending))
 }
-
-// The sentence every ending that needs a new link ends with. It names a
-// command the person runs in a terminal; the page never runs it.
-fn fresh_link(session_id: String) -> String {
-  "Run `loom ui --session " <> session_id <> "` for a fresh link."
-}
-
-const fresh_home_link = "Run `loom ui` for a fresh link."

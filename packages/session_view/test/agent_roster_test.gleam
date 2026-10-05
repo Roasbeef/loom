@@ -27,6 +27,11 @@ fn row(id: String, status: agent_view.Status) -> agent_view.Row {
   )
 }
 
+// A strand that has run an operation, which is what a settled strand has.
+fn ran(id: String, status: agent_view.Status) -> agent_view.Row {
+  agent_view.Row(..row(id, status), operation: Some("op-1"))
+}
+
 fn ids(lines: List(agent_roster.Line)) -> List(String) {
   case lines {
     [] -> []
@@ -55,7 +60,7 @@ pub fn settled_strands_are_listed_in_reverse_row_order_test() {
     row("main", agent_view.Idle),
     row("sub:main/a-1a2b3c", agent_view.Finished),
     row("sub:main/b-4d5e6f", agent_view.Failed),
-    row("sub:main/c-7a8b9c", agent_view.Idle),
+    ran("sub:main/c-7a8b9c", agent_view.Idle),
   ]
   let chips = agent_roster.chips(agent_roster.new(), rows, "main")
   assert ids(chips.settled)
@@ -113,4 +118,20 @@ pub fn a_capture_without_an_advisor_has_no_advisor_chip_test() {
     )
   assert chips.advisor == None
   assert chips.settled == []
+}
+
+// A fork that has not run is idle and has no operation: it waits for its
+// first prompt, so the strip lists it as a card. One that ran and is idle
+// again has an operation and is settled.
+pub fn a_strand_that_never_ran_is_listed_and_one_that_ran_is_not_test() {
+  let rows = [
+    row("main", agent_view.Idle),
+    row("sub:main/docs", agent_view.Idle),
+    ran("sub:main/old-1a2b3c", agent_view.Idle),
+  ]
+  let chips = agent_roster.chips(agent_roster.new(), rows, "main")
+
+  assert ids(chips.listed) == ["main", "sub:main/docs"]
+  assert ids(chips.settled) == ["sub:main/old-1a2b3c"]
+  assert agent_roster.listed_count(rows, "main") == 2
 }

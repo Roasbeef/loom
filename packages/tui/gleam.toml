@@ -9,11 +9,12 @@ argv = ">= 1.1.0 and < 2.0.0"
 core = { path = "../core" }
 machine = { path = "../machine" }
 session_view = { path = "../session_view" }
-etui = { git = "https://github.com/Roasbeef/etui.git", ref = "c10f6a64b29ef7b59dd3872bb4471c59deeac681" }
+etui = { git = "https://github.com/Roasbeef/etui.git", ref = "4d5e466cf433c322012cb874f147be4d6a400eef" }
 filepath = ">= 1.0.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_http = ">= 4.0.0 and < 5.0.0"
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
+gleam_time = ">= 1.0.0 and < 2.0.0"
 simplifile = ">= 2.0.0 and < 3.0.0"
 weft = "== 0.4.5"
 gun = ">= 2.6.0 and < 3.0.0"

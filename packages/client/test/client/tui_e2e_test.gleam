@@ -588,12 +588,25 @@ fn drive(ready: Ready) -> Nil {
     as "the slash command must be typed"
   let assert Ok(Nil) = terminal.press(term, "Enter")
     as "Enter must reach the pane"
+
+  // The agent count lives in the workspace's title now that the compact
+  // footer is gone, so the workspace is opened to read it and closed again.
+  let assert Ok(Nil) = terminal.press(term, "F2") as "F2 must reach the pane"
   let _metadata =
     must_show(
       term,
-      "2 agents · 0 working · 0 attention",
+      "2 agents · 0 working · 0 need you",
       10_000,
       "fork metadata never painted",
+    )
+  let assert Ok(Nil) = terminal.press(term, "Escape")
+    as "Escape closes the workspace"
+  let _closed =
+    must_show(
+      term,
+      assistant_marker,
+      10_000,
+      "closing the workspace lost the conversation",
     )
   let fork_is_durable = fn() {
     api.strands(booted.instance.runtime)
@@ -1030,6 +1043,7 @@ fn absolute(path: String) -> String {
 fn settings_at(test_root: String) -> serve.Settings {
   serve.Settings(
     peer_directory: None,
+    first_prompt: None,
     codemode_sockets: None,
     secrets: secret.env(),
     secret_failures: [],

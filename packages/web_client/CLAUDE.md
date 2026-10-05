@@ -13,10 +13,10 @@ renders again just for it:
 - `<loom-elapsed offset="<ms>">` counts an operation's elapsed time once a
   second, on from a duration the server measured.
 - `<loom-fold>` opens and closes a turn's folded work with no round trip.
-- `<loom-expand>` shows a row compact or in full, as the terminal's `Ctrl+g`
-  does. The server draws both forms as children (`slot="compact"` and
-  `slot="full"`); the element holds one button and the slot the reader chose,
-  with no round trip.
+- `<loom-expand>` is a row of a turn's fold: one line with one chevron, and a
+  body behind it. The server draws the line and the body as children
+  (`slot="head"` and `slot="body"`); the element holds one button around the
+  head and the body slot while the row is open, with no round trip.
 - `<loom-follow>` is the transcript's scroll container: the page's frame is
   pinned and only it scrolls. It scrolls itself to a row that lands below
   its view while the reader is at the bottom; once the reader scrolls up it
@@ -29,7 +29,11 @@ renders again just for it:
   It lists the slash commands as the draft grows, sends the draft on
   Command or Control with Enter, and puts a prompt the daemon handed back
   into the editor. These react to text that only the browser has until the
-  form is submitted, which is why they are here.
+  form is submitted, which is why they are here. It also disables the form's
+  submit buttons while the editor is empty and holds no image
+  (`composer_rule.gate`, `Open | Shut`); `<loom-attach>` reports images in the
+  composer's `attached` attribute (`yes | no`), because an image alone is a
+  message the daemon accepts.
 - `<loom-attach name="images" limits="<json>">` is the operator composer's
   image attachments (protocol-change/051, the addendum on images): an Attach
   image button for the file picker, a paste into the composer's form, a chip
@@ -44,15 +48,19 @@ renders again just for it:
   and its listener on the form is removed when the element leaves. The chips
   are the person's own file names as text nodes, and the element draws no image.
 - `<loom-switch to="/ui/sessions/<id>?ticket=<t>">` moves the browser to
-  another session's page. The operator's page draws it hidden and writes `to`
+  another session's page, or, as `to="/ui/home?ticket=<t>"`, to the home. The
+  operator's page draws it hidden (an observer's page too, when it was opened
+  from a home), and so does the home, and each writes `to`
   once the daemon has minted a ticket; `switch_rule.target` accepts exactly
-  that address shape and nothing else, and the element then calls
+  those two address shapes and nothing else, and the element then calls
   `location.replace` (one export in `dom.mjs`), so the old page leaves no
   history entry for Back to reopen without a nonce. It renders nothing, takes no
   focus and listens for no event (protocol-change/051, the addendum on
   switching sessions).
-- `<loom-copy subject="command|token" text="...">` draws one of an
-  invitation's two texts in a `code` element in its shadow root, with a button
+- `<loom-copy subject="command|token|link" text="...">` draws one of an
+  invitation's two texts, or the ended page's `loom ui` command for a fresh
+  link (`link`, protocol-change/065, the addendum on the home list), in a
+  `code` element in its shadow root, with a button
   that copies it to the clipboard (protocol-change/051, the addendum on
   inviting from the session page). `copy_rule.subject` decodes the fixed word
   and `copy_rule.text` accepts a value only if it is exactly what the daemon
@@ -146,10 +154,10 @@ time builds anything.
   shadow root holds one button carrying the `summary` slot and, while open,
   the default slot. Each toggle emits `fold.toggled_event`
   (`loom-fold-toggled`, bubbling and composed, no data).
-- `expand_rule.Shown` (`Compact` | `Full`), `expand_rule.toggled`, `slot`,
-  `words` and `glyph`, and `expand.Msg` (`Toggled`): the element's shadow
-  root holds one button (fixed words, `aria-expanded`) and the named slot for
-  the state. It starts `Compact`, and the server never renders the state, so
+- `expand_rule.Shown` (`Closed` | `Open`), `expand_rule.toggled` and
+  `glyph`, and `expand.Msg` (`Toggled`): the element's shadow root holds one
+  button (the chevron and the head slot, `aria-expanded`) and, while open, the
+  body slot. It has no words of its own. It starts `Closed`, and the server never renders the state, so
   a patch leaves the reader's choice alone. Each toggle emits
   `fold.toggled_event`, so `<loom-follow>` hears it as it hears a fold's: it
   sets `Reading`, and expanding the newest row at the bottom does not scroll
@@ -203,7 +211,8 @@ time builds anything.
   subject when it draws and when it copies, because the two attributes may
   arrive in either order.
 - `switch_rule.target(value)`: `Ok(value)` only for exactly
-  `/ui/sessions/<canonical identity>?ticket=<64 hex digits>`, `Error(Nil)` for
+  `/ui/sessions/<canonical identity>?ticket=<64 hex digits>` or
+  `/ui/home?ticket=<64 hex digits>`, `Error(Nil)` for
   anything else, an absolute URL or another path included. `<loom-switch>`
   navigates only to what it returns.
 - `shell_rule.Motion` (`Still` | `Animated`) and `frame_classes`: the frame
@@ -242,6 +251,16 @@ time builds anything.
   from `shell_rule.label` and `shell_rule.tab_label`. A tab press changes
   the custom state and nothing else: closing and reopening the panel keeps the
   tab.
+- `shell_rule.Frame` (`Wide` | `Narrow`), `narrow_query` (`(max-width: 1211px)`,
+  the stylesheet's breakpoint), `sidebar_state`, `sidebar_pressed`,
+  `Dismissal` (`Dismiss` | `Leave`), `dismissal`, `scrimmed` and
+  `presses_button`: below 1212px the sidebar is a drawer over the centre
+  behind a scrim. `<loom-shell>` keeps a `Frame` from a `matchMedia` listener
+  (`ffi_dom.media_query`, `media_matches`) and a drawer `State` beside the
+  layout; the drawer is never saved, starts closed, and closes when the frame
+  changes. The sidebar's button and Command/Control B flip it, a click on the
+  scrim or on a button in the sidebar (read from the click's composed path)
+  closes it, and `Escape` closes it before it leaves a strand.
 - `layout_rule.Workspace` (`Identified(digest)` | `Anonymous`), with
   `workspace` (a total decoder of the `workspace` attribute: exactly 64
   lower-case hex digits, else `Anonymous`), `layout_key` (`loom.layout.v1.` and
@@ -285,7 +304,7 @@ time builds anything.
   `children`, `closest`, `query_selector`, `query_selector_all`, `dataset_get`,
   `text_content`, `scroll_top`, `set_scroll_top`, `scroll_by`,
   `scroll_height`, `client_height`, `offset_top`, `offset_height`,
-  `bounding_top`, `add_passive_listener`, `add_listener` (called with the
+  `bounding_top`, `media_query`, `media_matches`, `add_passive_listener`, `add_listener` (called with the
   event, and may cancel it), `remove_listener`, `get_document`, `composed_path`,
   `tag_name`, `attribute`, `is_content_editable`, `prevent_default`,
   `resize_observer`, `observe`, `mutation_observer`, `observe_child_list`,
@@ -307,7 +326,7 @@ time builds anything.
 What the components decide is in six modules that import neither Lustre nor
 `ffi_dom`: `attach_rule` (the limits, which files are accepted and refused,
 the held images and the form field they make), `follow_rule` (the scroll rule, `Reader` and its transitions,
-`keeping`), `expand_rule` (the two states and the button's words), `shell_rule`
+`keeping`), `expand_rule` (the two states and the chevron), `shell_rule`
 (which columns are open, the buttons' words, what a closed column lets the
 keyboard reach), `composer_rule` (the table, `matching`, `intent`, `hear`, `taken`,
 `joined`, `revealed`) and `duration`. `follow`, `composer` and `elapsed` are

@@ -7,7 +7,8 @@
 -module(client_test_ffi).
 
 -export([ws_roundtrip/4, which/1, run/3, gzip/1,
-         origin_start/0, origin_stop/1, origin_seen/1, monitored_by/1, workspace_credentials/0]).
+         origin_start/0, origin_stop/1, origin_seen/1, monitored_by/1,
+         workspace_credentials/0, owner_label_of/1]).
 
 -include_lib("public_key/include/public_key.hrl").
 
@@ -331,6 +332,15 @@ monitored_by(Pid) ->
     case erlang:process_info(Pid, monitored_by) of
         {monitored_by, Monitors} -> [M || M <- Monitors, is_pid(M)];
         undefined -> []
+    end.
+
+%% The frozen `{pickglass_owner, 1, Path, Role}` label of another process,
+%% as `{some, {Path, Role}}`, or `none` for a process that carries no label
+%% of that shape. This is exactly what the ownership inspector reads.
+owner_label_of(Pid) ->
+    case erlang:process_info(Pid, label) of
+        {label, {pickglass_owner, 1, Path, Role}} -> {some, {Path, Role}};
+        _ -> none
     end.
 
 origin_send(Socket, Status, Body) ->

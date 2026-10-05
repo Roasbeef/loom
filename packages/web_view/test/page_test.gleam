@@ -76,16 +76,51 @@ pub fn the_waiting_paragraph_escapes_what_it_was_given_test() {
 }
 
 // The document a browser gets for a page that cannot be served is the
-// ending's words and nothing else: no script, no reason text of the
-// daemon's, and the session identity escaped.
+// ending's words and nothing else: the brand, no script but the page's own
+// client bundle, no reason text of the daemon's, and the session identity
+// escaped.
 pub fn a_refused_page_document_says_the_ending_and_what_to_do_test() {
   list.each(ending.all(), fn(reason) {
     let document = page.refusal(reason, "0192ab")
     assert string.contains(document, ending.headline(reason))
     assert string.contains(document, "role=\"alert\"")
+    assert string.contains(document, "class=\"ended-brand\">Loom<")
     assert string.contains(document, "/ui/assets/web_client.css")
-    assert !string.contains(document, "<script")
+    assert list.length(string.split(document, "<script")) == 2
+    assert string.contains(document, "src=\"/ui/assets/web_client.mjs\"")
   })
   let hostile = page.refusal(ending.PageEnded, "<script>alert(1)</script>")
-  assert !string.contains(hostile, "<script")
+  assert list.length(string.split(hostile, "<script")) == 2
+}
+
+// The command for a fresh link is drawn in a copy box, once as the element's
+// attribute and once as the code a browser without scripts shows, and never
+// with the backticks the live notice's sentence has. An ending a fresh link
+// would not help draws no box.
+pub fn the_refused_document_offers_the_command_in_a_copy_box_test() {
+  let expired = page.refusal(ending.LinkExpired, "0192ab")
+  assert string.contains(
+    expired,
+    "<loom-copy subject=\"link\" text=\"loom ui --session 0192ab\">"
+      <> "<code class=\"ended-command\">loom ui --session 0192ab</code>"
+      <> "</loom-copy>",
+  )
+  assert !string.contains(expired, "`")
+  assert string.contains(expired, "A link works once, within 60 seconds.")
+
+  let home = page.home_refusal(ending.LinkExpired)
+  assert string.contains(home, "<loom-copy subject=\"link\" text=\"loom ui\">")
+  assert !string.contains(home, "--session")
+
+  let stopped = page.refusal(ending.SessionStopped, "0192ab")
+  assert !string.contains(stopped, "loom-copy")
+
+  // An identity the element would refuse to copy (the router's placeholder, an
+  // empty route, one too long) gets no box, and the lead still says what
+  // happened.
+  list.each(["<id>", "", "not-hex", string.repeat("a", 65)], fn(identity) {
+    let document = page.refusal(ending.LinkExpired, identity)
+    assert !string.contains(document, "loom-copy")
+    assert string.contains(document, "A link works once, within 60 seconds.")
+  })
 }

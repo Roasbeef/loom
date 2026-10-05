@@ -67,6 +67,7 @@ import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Monitor, type Pid, type Subject}
 import gleam/int
 import gleam/list
+import gleam/option.{type Option}
 import gleam/result
 import gleam/string
 import host/bootstrap
@@ -74,6 +75,7 @@ import simplifile
 import storage/access
 import storage/catalogue
 import storage/domain
+import telemetry/owner
 import weft/state_machine as sm
 
 /// Live lifecycle state, joined with the durable initialization the registry
@@ -385,6 +387,9 @@ type DomainSlot {
 }
 
 type Message(instance) {
+  /// A session's first accepted prompt, to be reduced to its subtitle. There
+  /// is no reply: the sender is a hub that must not wait on the registry.
+  SeedSubtitle(String, String)
   Rename(
     access.Digest,
     String,
@@ -422,6 +427,7 @@ type Message(instance) {
   Claim(
     access.ClaimDigest,
     access.Digest,
+    Option(String),
     Int,
     Subject(Result(access.Claimed, ClaimError)),
   )
@@ -665,6 +671,10 @@ pub fn administer(
 /// Redeems a claim for the presented credential digest in one serialized
 /// dispatch, like every administration mutation.
 ///
+/// `name` is the invitee's chosen display name, or `None` to keep the
+/// inviter's; it is applied in the transaction that binds the credential, and
+/// a refused name (`InvalidClaimName`) binds nothing.
+///
 /// `now_ms` is the wall-clock instant the expiry is judged against and the
 /// one recorded as the claim instant. A timeout is an unknown outcome; the
 /// claim socket reports it as `unavailable`, and a rerun with the same claim
@@ -673,18 +683,20 @@ pub fn administer(
 /// ## Examples
 ///
 /// ```gleam
-/// // manager.claim(registry, claim, credential, now_ms: bootstrap.system_time_ms())
+/// // manager.claim(registry, claim, credential, None, now_ms: bootstrap.system_time_ms())
 /// ```
 @internal
 pub fn claim(
   manager: Manager(instance),
   claim: access.ClaimDigest,
   credential: access.Digest,
+  name: Option(String),
   now_ms now_ms: Int,
 ) -> Result(access.Claimed, ClaimError) {
   call.try_call(manager.commands, waiting: 5000, sending: Claim(
     claim,
     credential,
+    name,
     now_ms,
     _,
   ))
@@ -734,6 +746,30 @@ pub fn rename(
     _,
   ))
   |> result.unwrap(Error(AdminUnavailable))
+}
+
+/// Seeds a session's subtitle from its first accepted prompt, without waiting.
+///
+/// The session's own hub calls this once (`gateway.with_first_prompt`), so it
+/// carries no credential: no wire message reaches it, and the identity is the
+/// one the hub was built for. The write runs in the registry's turn, which
+/// serializes it with every other catalogue change, and the catalogue keeps the
+/// first subtitle it is given (`catalogue.seed_subtitle`). A failed write leaves
+/// the session without a subtitle, which every page already draws as the
+/// creation age, so the failure is not reported to the hub.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.seed_subtitle(registry, session_id, "Fix the flaky retry test")
+/// ```
+@internal
+pub fn seed_subtitle(
+  manager: Manager(instance),
+  id: String,
+  prompt: String,
+) -> Nil {
+  process.send(manager.commands, SeedSubtitle(id, prompt))
 }
 
 /// Archives or restores a stopped session under owner and epoch authority.
@@ -1484,6 +1520,10 @@ fn handle(
       )
       sm.keep(book)
     }
+    SeedSubtitle(id, prompt) -> {
+      let _written = catalogue.seed_subtitle(book.catalogue, id, prompt)
+      sm.keep(book)
+    }
     Rename(caller, epoch, id, name, reply) -> {
       let outcome = {
         use Nil <- result.try(authorize_admin(phase, book, caller, epoch))
@@ -1583,10 +1623,17 @@ fn handle(
     // remembered answer can depend on. The memo is dropped anyway, so the
     // rule stays "every writer of the access tables drops it" rather than an
     // argument about which writes are harmless.
-    Claim(claim, credential, now_ms, reply) -> {
+    Claim(claim, credential, name, now_ms, reply) -> {
       let outcome = case phase {
         Ready ->
-          access.claim(book.catalogue, claim, credential, now_ms, same_digest)
+          access.claim(
+            book.catalogue,
+            claim,
+            credential,
+            name,
+            now_ms,
+            same_digest,
+          )
           |> result.map_error(ClaimRefused)
         ShuttingDown -> Error(ClaimUnavailable)
       }
@@ -2150,6 +2197,7 @@ fn reserve_creation(
           created_at: ids.session_id_timestamp_ms(id),
           request_key: request.request_key,
           state: catalogue.Reserved,
+          subtitle: option.None,
         )
       use selected <- result.try(select_creation_domain(
         store,
@@ -2320,6 +2368,7 @@ fn prepare_domain_slot(
       results:,
       faults:,
       failures:,
+      label: fn() { owner.label([#("session", record.id)], owner.SessionHost) },
     )
   {
     Error(reason) -> #(book, Error(Preparation(reason)))
@@ -2461,6 +2510,7 @@ fn prepare_shared_domain(book: Book(instance), selected: domain.Domain) {
           results:,
           faults:,
           failures:,
+          label: fn() { owner.label([], owner.DomainHost) },
         )
       {
         Error(reason) -> #(book, Error(Preparation(reason)))

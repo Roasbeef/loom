@@ -1,0 +1,24 @@
+                                                                                
+                                                                                
+  ╭ SESSIONS · active ───────────────────────────────────────────────────────╮  
+  │                                                                          │  
+  │  All 8  Needs you 1  Working 1  Idle 1  Inactive 4            Tab filter │  
+  │ ──────────────────────────────────────────────────────────────────────── │  
+  │ …tor/gocode/src/github.com/roasbeef/loom-worktrees/loom · herdr-update 1 │  
+  │   ● loom · herdr-update                                          current │  
+  │     working · 01a0eff2-c250                                              │  
+  │                                                                          │  
+  │ …rs/operator/gocode/src/github.com/roasbeef/loom-worktrees/loom · main 1 │  
+  │ ▸ ! loom · main                                                          │  
+  │     needs you · 01a0efca-c7e7                                            │  
+  │                                                                          │  
+  │ …or/gocode/src/github.com/roasbeef/loom-worktrees/weft · managed-tasks 1 │  
+  │   ○ weft · managed-tasks                                                 │  
+  │     idle · 01a0f013-44aa                                                 │  
+  │                                                                          │  
+  │                                                                          │  
+  │ ↑↓ select · Enter open · Tab filter · l link · n new · r rename · d arc… │  
+  │                                                                          │  
+  ╰──────────────────────────────────────────────────────────────────────────╯  
+                                                                                
+                                                                                

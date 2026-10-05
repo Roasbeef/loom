@@ -3,13 +3,20 @@
 //// Metadata may change behind the panel, but a decision carries its captured
 //// record, including the action, grants and sequence. No choice is selected
 //// on opening, so a queued Enter cannot approve a newly arrived request.
+////
+//// It is drawn as a full-width block directly above the input frame, under
+//// a rule, rather than as a dialog over the transcript: the question, the
+//// exact action, the grant and whether session approval exists, then the
+//// numbered choices and the keys. `1`, `2` and `3` select a choice and
+//// never confirm it; only Enter confirms, so no decision is one keystroke.
+//// `d` shows the raw captured request and Escape defers. While it is open
+//// the input frame says it is locked.
 
 import etui/buffer
 import etui/geometry.{type Rect}
 import etui/keys
 import etui/span
 import etui/style
-import etui/widgets/block
 import etui/widgets/paragraph
 import gleam/int
 import gleam/list
@@ -185,6 +192,13 @@ pub fn update(key: keys.Key, state: State) -> Action {
           scroll: FromStart(0),
         ),
       )
+
+    // A number selects its choice, when the choice is offered, and decides
+    // nothing: Enter is the one key that sends a decision.
+    keys.Char("1") -> select(state, AllowOnce, approvable(state.review))
+    keys.Char("2") ->
+      select(state, AllowSession, session_approvable(state.review))
+    keys.Char("3") -> select(state, Deny, True)
     keys.Right | keys.Tab | keys.Down ->
       Continue(State(..state, selected: Some(next(state))))
     keys.Left | keys.Up ->
@@ -194,6 +208,13 @@ pub fn update(key: keys.Key, state: State) -> Action {
     keys.Home -> Continue(State(..state, scroll: FromStart(0)))
     keys.End -> Continue(State(..state, scroll: FromEnd(0)))
     _ -> Continue(state)
+  }
+}
+
+fn select(state: State, choice: Choice, offered: Bool) -> Action {
+  case offered {
+    True -> Continue(State(..state, selected: Some(choice)))
+    False -> Continue(state)
   }
 }
 
@@ -253,78 +274,53 @@ fn session_approvable(review: approval.Review) -> Bool {
   }
 }
 
-/// Renders a compact, styled consent sheet over the transcript tail.
+/// Renders the full-width consent block at the bottom of `area`, which is
+/// the screen above the input frame.
+///
+/// The choices and keys keep their rows while the request's detail scrolls
+/// above them, so a long grant never pushes the decision out of view.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // approval_panel.render(buffer, screen, panel)
+/// // approval_panel.render(buffer, above_input, panel)
 /// ```
-pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
-  let width = int.max(1, int.min(96, screen.size.width))
+pub fn render(
+  buf: buffer.Buffer,
+  area: Rect,
+  state: State,
+  waiting waiting: Int,
+) -> buffer.Buffer {
+  let width = area.size.width
   let panel_width = case width < 74 {
     True -> NarrowPanel
     False -> WidePanel
   }
-  let content_width = int.max(1, width - 4)
+  let content_width = int.max(1, width - 6)
   let lines = detail_lines(state, panel_width, content_width)
-  let wanted_height = int.max(12, list.length(lines) + 7)
-  let max_height = case screen.size.height < 14 {
-    True -> screen.size.height
-    False -> int.max(10, int.min(18, screen.size.height * 3 / 5))
-  }
-  let height = int.max(1, int.min(wanted_height, max_height))
-  let area =
-    geometry.rect_new(
-      screen.position.x + int.max(0, { screen.size.width - width } / 2),
-      screen.position.y + int.max(0, screen.size.height - height),
-      width,
-      height,
-    )
-  let band =
-    geometry.rect_new(
-      screen.position.x,
-      area.position.y,
-      screen.size.width,
-      area.size.height,
-    )
-  let title = case panel_width {
-    NarrowPanel -> " Permission required · Esc defer "
-    WidePanel -> " Permission required · Esc defers "
-  }
 
-  // The frame sits at the terminal bottom, leaving every row above it intact.
-  let frame =
-    block.block_new()
-    |> block.with_border(block.Rounded)
-    |> block.with_colors(theme.signal, theme.graphite)
-    |> block.with_bg_fill
-    |> block.with_title(title, block.Top)
-
-  // Choices remain visible while the exact grant details scroll independently.
-  let inside = block.inner(area, frame)
-  let wanted_button_height = 5
-  let button_height =
-    int.min(wanted_button_height, int.max(1, inside.size.height - 1))
-  let detail_height = int.max(1, inside.size.height - button_height)
-  let detail =
-    geometry.rect_new(
-      inside.position.x + 1,
-      inside.position.y,
-      int.max(1, inside.size.width - 2),
-      detail_height,
-    )
-  let buttons =
-    geometry.rect_new(
-      inside.position.x,
-      inside.position.y + detail_height,
-      inside.size.width,
-      int.max(0, inside.size.height - detail_height),
-    )
-  let max_offset = int.max(0, list.length(lines) - detail.size.height)
+  // The rule, the question, and the blank rows around the choices are
+  // chrome; the choices are three rows and the keys one. What is left goes
+  // to the request's detail, up to its length. A short screen drops the
+  // blank rows before it takes rows from the detail.
+  let spacing = case area.size.height >= 18 {
+    True -> Spaced
+    False -> Tight
+  }
+  let chrome = case spacing {
+    Spaced -> 4 + 3 + 2
+    Tight -> 2 + 3 + 1
+  }
+  let available = int.max(1, area.size.height - chrome)
+  let detail_height =
+    int.max(1, int.min(list.length(lines), int.min(available, 12)))
+  let height = int.min(area.size.height, detail_height + chrome)
+  let top = geometry.bottom(area) - height
+  let block = geometry.rect_new(area.position.x, top, width, height)
+  let max_offset = int.max(0, list.length(lines) - detail_height)
   let offset = case state.scroll {
-    FromStart(page) -> int.min(max_offset, page * detail.size.height)
-    FromEnd(pages) -> int.max(0, max_offset - pages * detail.size.height)
+    FromStart(page) -> int.min(max_offset, page * detail_height)
+    FromEnd(pages) -> int.max(0, max_offset - pages * detail_height)
   }
   let once = case approvable(state.review) {
     True -> Enabled
@@ -334,40 +330,129 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
     True -> Enabled
     False -> Disabled
   }
-  let choice_lines = [
-    choice_line(AllowOnce, "Allow once", once, state, inside.size.width),
-    choice_line(
-      AllowSession,
-      "Allow for session",
-      session,
-      state,
-      inside.size.width,
-    ),
-    choice_line(Deny, "Deny", Enabled, state, inside.size.width),
-  ]
   let more = case offset, max_offset {
-    0, 0 -> ""
-    offset, max if offset < max -> "PgDn more request details"
-    _, _ -> "PgUp earlier request details"
+    0, 0 -> []
+    offset, max if offset < max -> ["PgDn more of the request"]
+    _, _ -> ["PgUp earlier in the request"]
   }
   let controls = case panel_width {
-    NarrowPanel -> "↑↓ choose · Enter · d raw"
-    WidePanel -> "↑↓ choose · Enter confirm · d raw · Esc defer"
+    NarrowPanel -> ["1-3 ↑↓ select", "Enter confirms", "d raw", "Esc defers"]
+    WidePanel ->
+      list.flatten([
+        ["1-3 or ↑↓ select", "Enter confirms", "d raw request", "Esc defers"],
+        more,
+      ])
   }
+  let gap = case spacing {
+    Spaced -> [blank()]
+    Tight -> []
+  }
+  let rows =
+    list.flatten([
+      [rule(width), heading(state, waiting, width)],
+      gap,
+      list.map(list.take(list.drop(lines, offset), detail_height), indent),
+      gap,
+      [
+        choice_line(AllowOnce, "1", "Allow once", once, state, width),
+        choice_line(
+          AllowSession,
+          "2",
+          "Allow for session",
+          session,
+          state,
+          width,
+        ),
+        choice_line(Deny, "3", "Deny", Enabled, state, width),
+      ],
+      gap,
+      [hints(controls, width)],
+    ])
 
-  // Wrap only the bounded literal, then select its viewport. No markdown parser
-  // can reinterpret a grant path or turn the preview into a link or control.
+  // The block clears its rows only: the transcript above it keeps its own.
   buf
-  |> buffer.clear(band)
-  |> block.render(area, frame)
-  |> paragraph.render_styled(detail, list.drop(lines, offset))
-  |> paragraph.render_styled(
-    buttons,
-    list.append(choice_lines, [
-      span.line_new([span.span_styled(more, theme.overlay_signal())]),
-      span.line_new([span.span_styled(controls, theme.overlay_quiet())]),
-    ]),
-  )
+  |> buffer.clear(block)
+  |> paragraph.render_styled(block, rows)
+}
+
+// Whether the block can spare blank rows around its sections.
+type Spacing {
+  Spaced
+  Tight
+}
+
+fn rule(width: Int) -> span.Line {
+  span.line_new([
+    span.span_styled(
+      string.repeat("─", width),
+      style.new(theme.divider, style.Default, style.none()),
+    ),
+  ])
+}
+
+// The question in bold beside the danger mark, as the transcript's own
+// approval row draws it, so the two read as one thing, after the strand
+// whose call asked. When more questions wait, the right end says which of
+// them this is.
+fn heading(state: State, waiting: Int, width: Int) -> span.Line {
+  let approval.Presentation(question, _, _) = state.presentation
+  let asker = case state.review.strand {
+    Some(strand) -> text_hygiene.single_line(strand) <> " · "
+    None -> ""
+  }
+  let place = case waiting > 1 {
+    True -> "1 of " <> int.to_string(waiting) <> " "
+    False -> ""
+  }
+  let room = width - 3 - string.length(place) - 1
+  let words = fit(asker <> text_hygiene.single_line(question), room)
+  let gap = int.max(1, width - 3 - string.length(words) - string.length(place))
+  span.line_new([
+    span.span_styled(
+      " ? ",
+      style.new(theme.danger, style.Default, style.bold()),
+    ),
+    span.span_styled(words, style.new(theme.paper, style.Default, style.bold())),
+    span.span_plain(string.repeat(" ", gap)),
+    span.span_styled(place, theme.quiet_text()),
+  ])
+}
+
+fn fit(value: String, width: Int) -> String {
+  case string.length(value) <= width {
+    True -> value
+    False -> string.slice(value, 0, int.max(0, width - 1)) <> "…"
+  }
+}
+
+fn blank() -> span.Line {
+  span.line_new([])
+}
+
+fn indent(line: span.Line) -> span.Line {
+  span.line_new([span.span_plain("   "), ..line.spans])
+}
+
+// Joins the key hints with ` · `, skipping one that does not fit rather
+// than cutting it in half.
+fn hints(items: List(String), width: Int) -> span.Line {
+  let joined =
+    list.fold(items, "", fn(drawn, item) {
+      let next = case drawn {
+        "" -> " " <> item
+        _ -> drawn <> " · " <> item
+      }
+      case string.length(next) <= width {
+        True -> next
+        False -> drawn
+      }
+    })
+  span.line_new([
+    span.span_styled(
+      joined,
+      style.new(theme.quiet, style.Default, style.none()),
+    ),
+  ])
 }
 
 fn detail_lines(
@@ -378,17 +463,25 @@ fn detail_lines(
   let context = case state.context, panel_width, state.detail_mode {
     NoRequestContext, _, _ -> []
     RequestContextUnavailable(reason), _, _ ->
-      styled_lines(reason, theme.overlay_quiet(), width)
+      styled_lines(reason, quiet(), width)
     CapturedRequest(owner, operation), _, Raw ->
       styled_lines(
         "Requested by " <> owner <> " · operation " <> operation,
-        theme.overlay_current(),
+        style.new(theme.current, style.Default, style.none()),
         width,
       )
     CapturedRequest(owner, _), NarrowPanel, Readable ->
-      styled_lines("From " <> owner, theme.overlay_current(), width)
+      styled_lines(
+        "From " <> owner,
+        style.new(theme.current, style.Default, style.none()),
+        width,
+      )
     CapturedRequest(owner, _), WidePanel, Readable ->
-      styled_lines("Requested by " <> owner, theme.overlay_current(), width)
+      styled_lines(
+        "Requested by " <> owner,
+        style.new(theme.current, style.Default, style.none()),
+        width,
+      )
   }
   case state.detail_mode {
     Raw ->
@@ -396,14 +489,13 @@ fn detail_lines(
         context,
         [
           span.line_new([
-            span.span_styled("Raw captured request", theme.overlay_signal()),
+            span.span_styled("raw request", label()),
           ]),
         ],
-        styled_lines(state.raw, theme.overlay_plain(), width),
+        styled_lines(state.raw, plain(), width),
       ])
     Readable -> {
-      let approval.Presentation(question, action, authority) =
-        state.presentation
+      let approval.Presentation(_, action, authority) = state.presentation
       let session = case approval.rememberable(state.review) {
         Ok(_) ->
           styled_lines(
@@ -418,29 +510,33 @@ fn detail_lines(
             width,
           )
       }
+
+      // The question is the block's own heading, so the detail starts at
+      // the action and the grant.
       list.flatten([
-        styled_lines(question, theme.overlay_signal(), width),
         context,
-        [span.line_new([span.span_styled("Action", theme.overlay_quiet())])],
-        card_lines(
-          "  ▏ " <> action,
-          style.new(theme.paper, theme.raised, style.none()),
-          width,
-        ),
-        [
-          span.line_new([
-            span.span_styled("Access requested", theme.overlay_quiet()),
-          ]),
-        ],
+        styled_lines(action, plain(), width),
+        [span.line_new([])],
+        [span.line_new([span.span_styled("grant", label())])],
         authority
-          |> list.map(fn(line) {
-            styled_lines("  " <> line, theme.overlay_plain(), width)
-          })
+          |> list.map(fn(line) { styled_lines(line, plain(), width) })
           |> list.flatten,
         session,
       ])
     }
   }
+}
+
+fn plain() -> style.Style {
+  style.new(theme.paper, style.Default, style.none())
+}
+
+fn quiet() -> style.Style {
+  style.new(theme.quiet, style.Default, style.none())
+}
+
+fn label() -> style.Style {
+  style.new(theme.quiet, style.Default, style.bold())
 }
 
 fn styled_lines(text: String, appearance: style.Style, width: Int) {
@@ -452,22 +548,11 @@ fn styled_lines(text: String, appearance: style.Style, width: Int) {
   |> fn(wrapped) { wrapped.lines }
 }
 
-fn card_lines(text: String, appearance: style.Style, width: Int) {
-  text
-  |> styled_lines(appearance, width)
-  |> list.map(fn(line) {
-    let padding = int.max(0, width - span.line_width(line))
-    span.Line(
-      ..line,
-      spans: list.append(line.spans, [
-        span.span_styled(string.repeat(" ", padding), appearance),
-      ]),
-    )
-  })
-}
-
+// One numbered choice. The number is amber, the label plain; the selected
+// choice is the raised bar, and an unavailable one says so and is quiet.
 fn choice_line(
   choice: Choice,
+  number: String,
   label: String,
   availability: Availability,
   state: State,
@@ -478,17 +563,28 @@ fn choice_line(
     Enabled -> label
     Disabled -> label <> " (unavailable)"
   }
+  let ground = case selected {
+    True -> theme.raised
+    False -> style.Default
+  }
   let marker = case selected {
-    True -> "› "
-    False -> "  "
+    True -> " › "
+    False -> "   "
   }
-  let content = marker <> label
-  let content =
-    content <> string.repeat(" ", int.max(0, width - string.length(content)))
-  let appearance = case selected, availability {
-    True, Enabled -> style.new(theme.paper, theme.raised, style.bold())
-    True, Disabled | False, Disabled -> theme.overlay_quiet()
-    False, Enabled -> theme.overlay_plain()
+  let look = case selected, availability {
+    True, Enabled -> style.new(theme.paper, ground, style.bold())
+    True, Disabled | False, Disabled ->
+      style.new(theme.quiet, ground, style.none())
+    False, Enabled -> style.new(theme.paper, ground, style.none())
   }
-  span.line_new([span.span_styled(content, appearance)])
+  let used = 3 + string.length(number) + 2 + string.length(label)
+  span.line_new([
+    span.span_styled(marker, style.new(theme.signal, ground, style.bold())),
+    span.span_styled(
+      number <> "  ",
+      style.new(theme.signal, ground, style.bold()),
+    ),
+    span.span_styled(label, look),
+    span.span_styled(string.repeat(" ", int.max(0, width - used)), look),
+  ])
 }

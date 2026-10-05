@@ -198,7 +198,7 @@ fn model_with_patch() {
       input: textarea.state_from_string("draft"),
     ),
   )
-  |> fn(model) { tui.update(backend.Resize(120, 30), model) }
+  |> fn(model) { tui.update(backend.Resize(100, 30), model) }
 }
 
 fn key(model, key) {
@@ -417,7 +417,7 @@ pub fn borrowed_side_patch_routes_wheel_without_moving_transcript_test() {
 
 pub fn mouse_selection_replaces_cached_patch_without_resize_test() {
   let selected =
-    tui.update(backend.MousePress(2, 6, backend.MouseLeft), model_with_patch())
+    tui.update(backend.MousePress(2, 7, backend.MouseLeft), model_with_patch())
   assert selected.shared.worktree.selected == 2
   let visible = painted(selected)
   assert string.contains(visible, "second patch")
@@ -491,7 +491,10 @@ fn range(stop: Int) -> List(Int) {
   int.range(0, stop, [], fn(acc, value) { [value, ..acc] }) |> list.reverse
 }
 
-pub fn automatic_wide_diff_preserves_composer_and_explicit_dismissal_test() {
+// A wide terminal docks the rail on Strands, not on the changes: the changes
+// open only when asked for, in that same rail, and the draft survives every
+// step of it.
+pub fn wide_rail_opens_changes_on_request_and_preserves_composer_test() {
   let base = {
     let base =
       tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
@@ -504,26 +507,31 @@ pub fn automatic_wide_diff_preserves_composer_and_explicit_dismissal_test() {
     )
   }
   let wide = tui.update(backend.Resize(160, 35), base)
-  assert wide.view.diff_view == tui_model.DiffAutomatic
-  assert string.contains(painted(wide), "captured changes")
-  assert string.contains(painted(wide), "transcript / main")
+  assert wide.view.diff_view == tui_model.DiffHidden
+  assert !string.contains(painted(wide), "captured changes")
+    as "nothing opens the changes by itself"
+  assert string.contains(painted(wide), "STRANDS")
   assert textarea.value(key(wide, "x").view.input) == "draftx"
-  assert key(wide, "esc").view.diff_view == tui_model.DiffAutomatic
-    as "the default pane must not intercept the operation stop key"
+  assert key(wide, "esc").view.diff_view == tui_model.DiffHidden
 
-  let narrow = tui.update(backend.Resize(100, 35), wide)
-  assert !string.contains(painted(narrow), "captured changes")
-  let wide_again = tui.update(backend.Resize(160, 35), narrow)
-  assert string.contains(painted(wide_again), "captured changes")
-  let dismissed = submit.open_diff(wide_again)
+  let opened = submit.open_diff(wide)
+  assert opened.view.diff_view == tui_model.DiffVisible
+  assert string.contains(painted(opened), "Captured edits")
+  assert !string.contains(painted(opened), "STRANDS ·")
+    as "the rail is on Changes while they are open"
+  let dismissed = submit.open_diff(opened)
   assert dismissed.view.diff_view == tui_model.DiffHidden
   let resized = tui.update(backend.Resize(170, 35), dismissed)
   assert !string.contains(painted(resized), "captured changes")
   assert textarea.value(resized.view.input) == "draft"
 
+  // Below 120 columns the rail does not dock, so the changes open in the
+  // sheet, which takes the transcript's place.
+  let narrow = tui.update(backend.Resize(100, 35), wide)
+  assert !string.contains(painted(narrow), "Captured edits")
   let manual = submit.open_diff(narrow)
   assert manual.view.diff_view == tui_model.DiffVisible
-  assert string.contains(painted(manual), "captured changes")
+  assert string.contains(painted(manual), "Captured edits")
 }
 
 pub fn changes_during_observation_schedule_exactly_one_followup_test() {

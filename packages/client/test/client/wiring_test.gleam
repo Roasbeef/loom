@@ -23,8 +23,8 @@ import client/directories
 import client/escalate
 import client/gateway as client_gateway
 import client/grants
-import client/internal/ffi_os
 import client/permissions
+import client/tool_holder
 import client/wiring
 import core/clock
 import core/ids
@@ -33,7 +33,6 @@ import core/message
 import core/register
 import core/tx
 import events/bus
-import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -695,11 +694,20 @@ pub fn dispatch_reads_session_directory_authority_before_native_io_test() {
 pub fn remembered_watch_authority_survives_sqlite_reopen_test() {
   let assert Ok(here) = simplifile.current_directory()
     as "the test directory exists"
-  let path =
-    here
-    <> "/build/remembered-watch-"
-    <> int.to_string(ffi_os.unique_positive_integer())
-    <> ".db"
+
+  // The database lives in a directory this test alone owns, and the directory
+  // is cleared first. The previous name carried only
+  // `erlang:unique_integer`, which restarts from 1 in every emulator, so a
+  // run whose counter landed on a value an earlier run had used reopened that
+  // run's file. Its `watch` escalation was already approved, the claim was
+  // inherited rather than raised, and the approval below failed with
+  // `escalation_wrong_status`. Which counter value this test saw depended on
+  // how many other tests had drawn one first, hence the flake under load.
+  let root = here <> "/build/remembered-watch-reopen"
+  let _cleared = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+    as "the fixture directory must exist"
+  let path = root <> "/session.db"
   let time = clock.fixed(1000)
   let assert Ok(opened) = session.open_sqlite(path, "first", 30_000, time)
     as "the durable session opens"
@@ -890,4 +898,79 @@ pub fn remembered_file_and_network_permissions_survive_restart_without_widening_
     as "malformed standing authority must refuse dispatch"
   let assert Ok(Nil) = session.close(reopened)
     as "the reopened store must close"
+}
+
+// --- tool runs through the configuration holder ----------------------------
+
+fn halting_config() -> wiring.Config {
+  wiring.Config(
+    ..config(),
+    registry: tool.registry([terminating_tool(tool.TerminateRun)]),
+  )
+}
+
+fn halt_run() -> effects.ToolRun {
+  let run = tool_run([])
+  effects.ToolRun(..run, call: message.ToolCall(..run.call, name: "halt"))
+}
+
+/// A run through the holder is the run `run_tool` makes over the same
+/// configuration: the slot only changes where the configuration comes from.
+pub fn held_run_matches_direct_run_test() {
+  let config = halting_config()
+  let assert Ok(holder) = tool_holder.start(config)
+    as "the configuration holder must start"
+  let held = wiring.build_effects_held(config, holder)
+
+  assert held.tools.run(halt_run()) == wiring.run_tool(config, halt_run())
+  assert tool_holder.stop(holder) == Ok(Nil)
+}
+
+/// The slot is the point of the holder: it must not carry the registry, so a
+/// larger registry does not enlarge it.
+pub fn held_run_slot_does_not_copy_the_registry_test() {
+  let light = wiring.Config(..config(), registry: registry_padded_to(1))
+  let heavy = wiring.Config(..config(), registry: registry_padded_to(4096))
+  let assert Ok(small_holder) = tool_holder.start(light)
+    as "the light holder must start"
+  let assert Ok(large_holder) = tool_holder.start(heavy)
+    as "the heavy holder must start"
+  let small = wiring.build_effects_held(light, small_holder)
+  let large = wiring.build_effects_held(heavy, large_holder)
+
+  assert ffi_memory.flat_words(heavy.registry)
+    > ffi_memory.flat_words(light.registry) + 8192
+  assert ffi_memory.flat_words(large.tools.run)
+    == ffi_memory.flat_words(small.tools.run)
+
+  // The direct builder still closes over the configuration, which is what
+  // makes the equality above a measurement rather than a tautology.
+  assert ffi_memory.flat_words(wiring.build_effects(heavy).tools.run)
+    > ffi_memory.flat_words(wiring.build_effects(light).tools.run) + 8192
+  assert tool_holder.stop(small_holder) == Ok(Nil)
+  assert tool_holder.stop(large_holder) == Ok(Nil)
+}
+
+/// A holder that is gone cannot supply the configuration, and the runtime is
+/// still owed a `ToolCompleted`: the call fails in band and the caller lives.
+pub fn held_run_without_a_holder_fails_in_band_test() {
+  let config = halting_config()
+  let assert Ok(holder) = tool_holder.start(config)
+    as "the configuration holder must start"
+  let held = wiring.build_effects_held(config, holder)
+  assert tool_holder.stop(holder) == Ok(Nil)
+
+  let assert effects.ToolCompleted(
+    result: message.ToolResultMessage(
+      tool_call_id: "call_1",
+      tool_name: "halt",
+      content: [message.ToolResultText(text:, ..)],
+      is_error: True,
+      timestamp: 4242,
+      ..,
+    ),
+    terminate: False,
+  ) = held.tools.run(halt_run())
+    as "a missing holder is an in-band failure in the usual shape"
+  assert string.contains(text, "configuration is gone")
 }

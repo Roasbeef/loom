@@ -442,6 +442,13 @@ pub fn prepare_startup(
               }),
             ),
           )
+        let settings =
+          serve.Settings(
+            ..settings,
+            first_prompt: Some(fn(text) {
+              manager.seed_subtitle(directory, registration.id, text)
+            }),
+          )
         serve.assemble_in_domain(settings, identity, logger, owner, services)
         |> diagnose_start(logger, identity, RuntimeAssembly)
         |> result.map(serve.resident)
@@ -773,7 +780,7 @@ fn web_view(
         server.Ui(
           sessions:,
           assets:,
-          upgrade: fn(request, attachment, open, register, ceiling) {
+          upgrade: fn(request, attachment, open, register, ceiling, reach) {
             ui_socket.upgrade(
               daemon,
               request,
@@ -783,10 +790,19 @@ fn web_view(
               open,
               register,
               ceiling,
+              reach,
             )
           },
-          home: fn(request, attachment, open, ceiling) {
-            ui_socket.upgrade_home(daemon, request, attachment, open, ceiling)
+          home: fn(request, attachment, open, ceiling, reach) {
+            ui_socket.upgrade_home(
+              daemon,
+              request,
+              attachment,
+              sessions,
+              open,
+              ceiling,
+              reach,
+            )
           },
         ),
       )

@@ -18,6 +18,7 @@ import session_view/command
 import session_view/composer
 import session_view/connection_event
 import session_view/model as session_model
+import session_view/notice_words
 import session_view/protocol
 import session_view/queue_request
 import session_view/queued_input
@@ -549,13 +550,13 @@ pub fn queue_mouse_hit_excludes_controls_and_scrolled_heading_test() {
   assert selected.view.queue_editor.selected == 11
 
   let controls =
-    tui.update(backend.MousePress(2, 14, backend.MouseLeft), selected)
+    tui.update(backend.MousePress(2, 15, backend.MouseLeft), selected)
   let heading =
-    tui.update(backend.MousePress(2, 17, backend.MouseLeft), selected)
+    tui.update(backend.MousePress(2, 18, backend.MouseLeft), selected)
   assert controls.view.queue_editor.selected == 11
   assert heading.view.queue_editor.selected == 11
 
-  let row = tui.update(backend.MousePress(2, 18, backend.MouseLeft), selected)
+  let row = tui.update(backend.MousePress(2, 19, backend.MouseLeft), selected)
   assert row.view.queue_editor.selected == 6
 }
 
@@ -590,7 +591,7 @@ pub fn complete_fetch_and_save_preserve_text_beyond_the_excerpt_test() {
   assert draft(saved).delivery == queue_editor.Saving
   assert saved.view.input == model.view.input
   assert saved.shared.attachments == model.shared.attachments
-  assert saved.shared.notice == "edit_queued_input sent"
+  assert saved.shared.notice == notice_words.sent("edit_queued_input")
   assert string.contains(painted(saved), "Saving this revision")
 
   // The lane deliberately records no sensitive body. Check the encoder used
@@ -859,7 +860,7 @@ pub fn an_idle_held_queue_survives_interrupt_retirement_on_both_terminals_test()
     as "the settled operation retired its marker"
 
   list.each([retired, second], fn(model) {
-    assert string.contains(painted(model), "stopped · enter sends held input")
+    assert string.contains(painted(model), "Enter sends held input")
       as "the composer derives the halt from the connected cut"
     let shown = painted(submit.open_queue(model))
     assert string.contains(shown, "held until your next message")
@@ -885,7 +886,7 @@ pub fn an_idle_held_queue_survives_interrupt_retirement_on_both_terminals_test()
     as "Enter releases held input with an ordinary prompt, not a steer"
 
   let #(empty, _) = ready([])
-  assert !string.contains(painted(empty), "stopped · enter sends held input")
+  assert !string.contains(painted(empty), "Enter sends held input")
     as "an idle strand without held rows is an ordinary prompt"
   let pending_stop = submit.toggle_submission_mode(interrupted)
   assert pending_stop.shared.notice

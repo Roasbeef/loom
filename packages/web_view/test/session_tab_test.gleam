@@ -28,9 +28,11 @@ import web_view/view/session_tab
 fn drawn(jobs, viewers) -> String {
   element.to_string(session_tab.view(
     [],
-    "est $0.00",
+    "$0.00",
     jobs,
     viewers,
+    element.none(),
+    element.none(),
     element.none(),
   ))
 }
@@ -44,16 +46,21 @@ pub fn nothing_to_say_still_draws_the_heading_and_the_cost_test() {
   assert string.contains(html, "pane pane-session")
   assert string.contains(html, "Session</h2>")
   assert string.contains(html, "Est. cost")
-  assert string.contains(html, "est $0.00")
+  assert string.contains(html, "$0.00")
+
+  // The label says it is an estimate, so the figure does not say it again.
+  assert !string.contains(html, "est $")
 }
 
 pub fn a_pinned_goal_is_the_terminals_row_and_no_goal_says_none_test() {
   let with_goal =
     element.to_string(session_tab.view(
       ["goal active · 10/100 tokens · 2 continuations · ship it"],
-      "est $0.12",
+      "$0.12",
       Unread,
       None,
+      element.none(),
+      element.none(),
       element.none(),
     ))
   assert string.contains(with_goal, "Goal")
@@ -61,7 +68,7 @@ pub fn a_pinned_goal_is_the_terminals_row_and_no_goal_says_none_test() {
     with_goal,
     "goal active · 10/100 tokens · 2 continuations · ship it",
   )
-  assert string.contains(with_goal, "est $0.12")
+  assert string.contains(with_goal, "$0.12")
 
   let without = drawn(Unread, None)
   assert string.contains(without, "Goal")
@@ -72,9 +79,11 @@ pub fn the_goal_is_only_ever_a_text_node_test() {
   let html =
     element.to_string(session_tab.view(
       ["goal active · <script>alert(1)</script>"],
-      "est $0.00",
+      "$0.00",
       Unread,
       None,
+      element.none(),
+      element.none(),
       element.none(),
     ))
   assert string.contains(html, "&lt;script&gt;alert(1)&lt;/script&gt;")
@@ -90,11 +99,11 @@ pub fn unread_jobs_say_so_and_never_zero_test() {
   assert !string.contains(html, "none live")
 }
 
-pub fn a_board_with_no_job_says_none_live_at_the_last_refresh_test() {
+pub fn a_board_with_no_job_says_none_and_the_refresh_is_a_tooltip_test() {
   let html = drawn(Live(0, [], 0), None)
 
-  assert string.contains(html, "none live")
-  assert string.contains(html, "at last refresh")
+  assert string.contains(html, "title=\"At the last refresh\">none</p>")
+  assert !string.contains(html, "none live")
 }
 
 pub fn jobs_are_a_count_their_rows_and_what_was_left_out_test() {
@@ -118,14 +127,14 @@ pub fn a_job_command_is_only_ever_a_text_node_test() {
   assert !string.contains(html, "<script")
 }
 
-pub fn viewers_are_named_with_their_role_and_your_own_is_marked_test() {
+pub fn viewers_are_named_with_their_roles_and_your_own_is_marked_test() {
   let html =
     drawn(
       Unread,
       Some(Viewers(
         [
-          Viewer("Alice", "operator", You),
-          Viewer("<b>Bob</b>", "observer", Another),
+          Viewer("Alice", ["operator"], 1, You),
+          Viewer("<b>Bob</b>", ["observer"], 1, Another),
         ],
         5,
       )),
@@ -138,6 +147,19 @@ pub fn viewers_are_named_with_their_role_and_your_own_is_marked_test() {
   assert string.contains(html, " · observer<")
   assert string.contains(html, "+3 more not shown")
   assert !string.contains(html, "<b>Bob")
+}
+
+// One person's three pages are one line that says so, with the roles joined.
+pub fn a_principal_with_pages_is_one_line_that_counts_them_test() {
+  let html =
+    drawn(
+      Unread,
+      Some(Viewers([Viewer("Owner", ["owner", "operator"], 3, You)], 3)),
+    )
+
+  assert string.contains(html, "Owner")
+  assert string.contains(html, " · owner, operator · 3 pages · you")
+  assert !string.contains(html, "more not shown")
 }
 
 pub fn no_roster_means_no_viewers_row_test() {

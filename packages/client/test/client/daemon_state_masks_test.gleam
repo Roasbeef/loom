@@ -387,6 +387,7 @@ fn resolved_with(
       1,
       "masking",
       catalogue.Saved,
+      subtitle: option.None,
     )
   let selected =
     domain.Domain(

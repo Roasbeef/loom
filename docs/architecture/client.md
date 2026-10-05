@@ -979,6 +979,15 @@ the reads and silently drop its events. Register writes that produce no event
 because every source gates on its own row or cell seq exceeding the
 high-water.
 
+The prime that opens a hub runs the same four sources once at a high-water of
+zero and discards the emits. It reads the entry source with
+`scan_entry_heads` rather than `scan_entries`
+([protocol-change/066](../../protocol-change/066-entry-heads-scan.md)), since
+the attribution cache and the high-water need each entry's id, parent and seq
+and never its payload. A pull and the prime share one attribution function over
+heads, so the claim rules exist once, and a test holds the two to the same cache
+and high-water over generated stores.
+
 Reading registers rather than a log has two consequences. Both are documented
 protocol behavior, not bugs to fix later:
 
@@ -1413,13 +1422,13 @@ identities. The agent inspector is a projection of server strands and operation
 phases, not a second lifecycle registry.
 
 `/diff` toggles captured successful edits. It shows retained edit history, not
-a consolidated worktree diff or file browser. At 140 columns or wider it keeps
-the conversation visible beside a right-hand changes pane; narrower terminals
-show the changes in the main panel. Resizing preserves the open view and each
-pane's scroll position. Mouse-wheel input follows the pane under the pointer,
-while PgUp/PgDn scroll the changes while the pane is open, and Escape closes
-it. The changes pane temporarily takes the agent rail's space and restores the
-rail's visibility on close.
+a consolidated worktree diff or file browser. At 120 columns or wider it keeps
+the conversation visible beside the docked rail, which shows the changes on its
+Changes tab; narrower terminals show the changes in the main panel. Resizing
+preserves the open view and each pane's scroll position. Mouse-wheel input
+follows the pane under the pointer, while PgUp/PgDn scroll the changes while
+they are open, and Escape closes them. Opening the changes docks the rail
+whatever the operator chose, and closing them puts it back as chosen.
 
 Durable records and transient streams never alias. The client caches wrapped
 durable rows by strand, width, and detail mode, and rewraps only the changing

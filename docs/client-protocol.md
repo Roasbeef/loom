@@ -165,7 +165,7 @@ specifies them and [the web view](architecture/web-view.md) describes them.
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:258-180`).
+Source: `handle` (`client/daemon/server.gleam:269`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -401,7 +401,7 @@ carries the daemon epoch that most control commands must echo.
 | `ui.path` | string | optional | Present only when the daemon was started with `--ui`: the web view's route prefix, `"/ui"`. A client that does not know the field ignores it. |
 
 Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:1050`).
+`hello_view` (`client/daemon/server.gleam:1070`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -554,6 +554,7 @@ Each session record:
 | `name` | string | required | Display name chosen at creation. |
 | `created_at` | integer | required | Creation time in milliseconds. |
 | `status` | object | required | Lifecycle status, described below. |
+| `subtitle` | string | optional | The first line of the first prompt a person sent the session, at most 60 characters, derived once by the daemon and never changed ([protocol-change/067](../protocol-change/067-session-subtitle.md)). Omitted when the session has none. A client that does not know the member ignores it; a client that does treats a value that is not a nonblank string of at most 60 characters as absent. |
 
 Source: (`client/daemon/server.gleam:829-837`).
 
@@ -573,7 +574,7 @@ Source: (`client/daemon/server.gleam:839-860`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:1897`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:1928`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -962,7 +963,7 @@ While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:1367-1114`).
+`control_use` (`client/daemon/server.gleam:1389`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -1110,7 +1111,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:692`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:703`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -1461,7 +1462,7 @@ single strand's chain. Source: (`client/gateway.gleam:1378-1381`) and
 (`storage/snapshot.gleam:42`).
 
 A `session` that is not this attachment's own is refused with the code
-`wrong_session`. Source: (`client/gateway.gleam:2028`).
+`wrong_session`. Source: (`client/gateway.gleam:2057`).
 
 `from_seq` exists in the command's decoder for the in-process host
 fixture, where it selects a resume reply. Over the authenticated
@@ -1729,7 +1730,7 @@ Source: (`client/gateway.gleam:3883-3915`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:5878`).
+   is `stale_approval`. Source: (`client/gateway.gleam:6149`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3941-3952`).
@@ -3384,14 +3385,14 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:3469`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:3690`) and `navigating`
    (`client/gateway.gleam:3052`).
 
 9. **The spec's control command list is incomplete.**
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:404`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:409`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
    `protocol-change/053` adds a third route, `/v2/claim`, with its one

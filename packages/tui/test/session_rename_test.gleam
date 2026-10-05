@@ -33,7 +33,14 @@ pub fn completed_rename_page_refresh_preserves_selected_identity_test() {
   let model =
     tui.new_model(connection.new_inbox(), workspace.Context("/work/loom", None))
   let row =
-    protocol.Session("selected", "/work/loom", "review auth", 1, protocol.Saved)
+    protocol.Session(
+      "selected",
+      "/work/loom",
+      "review auth",
+      1,
+      protocol.Saved,
+      option.None,
+    )
   let page = protocol.Page(9, [row], None)
   let #(model, key) = tui_model.allocate_job(model)
   let pending =

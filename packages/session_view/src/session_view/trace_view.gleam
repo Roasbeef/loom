@@ -3,14 +3,19 @@
 //// the newest one named.
 ////
 //// Issue #656 planned this as a list of a program's capability calls drawn
-//// from what a page already receives. A page does not receive them:
-//// capability calls are serviced inside the satellite host and nothing
-//// records one (`protocol-change/060` says so and proposes the record). What
-//// a page does hold is each `code_mode` call's arguments and its result, so
-//// this fold lists the programs, which is the finest grain the data has. The
-//// per-call rows, and the timing bars after them, arrive with that record.
+//// from what a page already receives. Capability calls are serviced inside
+//// the satellite host, and `protocol-change/060` adds the record: a result's
+//// `details` carry the calls the program made. This fold lists the programs,
+//// and each one carries the rows of its call record (`calls`, worded as the
+//// transcript's own call section words them) when its result has one. A
+//// program whose result has none, because it is still running or predates the
+//// record, lists no calls. The timing bars are a separate piece of work.
 //// `capability_calls_recorded` says so in words, so a host can state the
 //// limit and not leave the reader to infer that a program made no calls.
+////
+//// The terminal's Trace tab and the web view's share this module. The web
+//// view folds the branch it holds (`fold`), and the terminal asks for one
+//// strand's newest program with its source (`newest`).
 ////
 //// `fold` works over the records a host holds, the same window the
 //// transcript has, so a program older than the window is not listed. It
@@ -28,13 +33,30 @@
 //// programs and counts the older ones. The module is portable: it imports
 //// `core`, other `session_view` modules and the standard library, holds no
 //// `@external`, and performs no I/O.
+////
+//// ## Flow
+////
+//// `fold` → `code_mode_calls` → `program` → `call_rows`
+////
+//// `newest` → `code_mode_calls` → `program` → `source_rows`
+////
+//// 1. `fold` lists a branch's programs, oldest first, bounded.
+//// 2. `newest` picks one strand's records out of a mixed window, in entry
+////    order, and returns the last program with its numbered source.
+//// 3. `code_mode_calls` finds the code-mode calls among entries, with the
+////    results that answer them.
+//// 4. `program` words one call: label, budget, state and excerpt.
+//// 5. `call_rows` reads the call record a result carries, as rows.
+//// 6. `source_rows` numbers the opening lines of a program.
 
+import core/entry
 import core/json
 import core/message
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import session_view/call_tree
 import session_view/protocol
 import session_view/text_hygiene
 import session_view/tool_activity
@@ -46,6 +68,9 @@ pub const max_programs = 12
 
 /// The most characters a label or an excerpt keeps. A longer one ends in `…`.
 pub const max_characters = 160
+
+/// How many rows of source `newest` is given.
+pub const source_lines = 12
 
 /// Where a program is, decided from its result's `status` word.
 pub type State {
@@ -103,6 +128,31 @@ pub type Program {
     /// The sandbox line the result reported (`sandbox · build enforced 4
     /// layers; skipped 0 · satellite …`), when it reported one.
     sandbox: Option(String),
+    /// What went wrong in the result's own words, when the result keeps them
+    /// apart from the text it wrote for the model: the compiler's
+    /// diagnostics of a program that did not compile, the reason a run
+    /// failed. It is the one thing a reader wants from a failed program, and
+    /// `excerpt` is not it, since that is the text beside it that tells the
+    /// model what to do next. At most `max_detail` characters, lines kept.
+    /// Session text.
+    detail: Option(String),
+    /// The rows of the call record the result carried (`CALLS · 2 calls · 1
+    /// failed`, then one row per call), as the transcript's call section
+    /// words them. Nothing while the call runs, and nothing for a result with
+    /// no readable record. Session text.
+    calls: List(String),
+  )
+}
+
+/// One strand's newest program with what a host beside the transcript draws
+/// that the list does not: the opening lines of its source.
+pub type Newest {
+  Newest(
+    /// The program, as `fold` words it.
+    program: Program,
+    /// The opening lines of the source, numbered, ending in a count of what
+    /// was cut. Empty for a call that carried no program text.
+    source: List(String),
   )
 }
 
@@ -129,32 +179,38 @@ pub fn empty() -> Trace {
 }
 
 /// What a host says under the list, so a reader does not take a program that
-/// shows no capability calls to have made none.
+/// shows no capability calls to have made none: a call is listed when its
+/// result carries the record `protocol-change/060` adds.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert trace_view.capability_calls_recorded() == "Capability calls are not recorded yet."
+/// assert trace_view.capability_calls_recorded()
+///   == "Capability calls are listed from each result's call record; a program with no record lists none."
 /// ```
 pub fn capability_calls_recorded() -> String {
-  "Capability calls are not recorded yet."
+  "Capability calls are listed from each result's call record; "
+  <> "a program with no record lists none."
 }
 
-/// The one line the lane's step summary can use for a program: its label.
-/// The first capability call (`read calc.py`) is not available, because no
-/// capability call is recorded (`protocol-change/060`); when that record
-/// lands this is where it is read from.
+/// The one line the lane's step summary can use for a program: its first
+/// capability call (`✓ fs.read   calc.py`) when the result carried a call
+/// record, and its label otherwise.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// let program = trace_view.Program(
 ///   trace_view.Running, "count.gleam", None, None, trace_view.Pending, None,
+///   None, [],
 /// )
 /// assert trace_view.first_call(program) == "count.gleam"
 /// ```
 pub fn first_call(program: Program) -> String {
-  program.label
+  case program.calls {
+    [_heading, first, ..] -> first
+    [_] | [] -> program.label
+  }
 }
 
 /// The word for a state, as the tab prints it.
@@ -173,6 +229,27 @@ pub fn state_word(state: State) -> String {
     CompileFailed -> "compile failed"
     RunFailed -> "run failed"
     Failed -> "failed"
+  }
+}
+
+/// The words the transcript's own failure block uses for a state, so the
+/// terminal's Trace tab names a program's end the way the transcript does:
+/// `compile error`, `refused by vetting`, `did not finish`, `program failed`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert trace_view.state_title(trace_view.Rejected) == "refused by vetting"
+/// ```
+pub fn state_title(state: State) -> String {
+  case state {
+    Running -> "running"
+    Completed -> "completed"
+    Errored -> transcript_lines.status_title("program_failed")
+    Rejected -> transcript_lines.status_title("vetting_rejected")
+    CompileFailed -> transcript_lines.status_title("compile_failed")
+    RunFailed -> transcript_lines.status_title("run_failed")
+    Failed -> transcript_lines.status_title("failed")
   }
 }
 
@@ -198,7 +275,8 @@ pub fn vetting_word(vetting: Vetting) -> String {
 ///
 /// ```gleam
 /// let program = trace_view.Program(
-///   trace_view.Completed, "", None, Some(30_000), trace_view.Passed,
+///   trace_view.Completed, "", None, Some(30_000), trace_view.Passed, None,
+///   None, [],
 /// )
 /// assert trace_view.budget_line(program) == "30000 ms wall · vetted"
 /// ```
@@ -208,6 +286,28 @@ pub fn budget_line(program: Program) -> String {
     None -> "default wall budget"
   }
   wall <> " · " <> vetting_word(program.vetting)
+}
+
+/// The budget a program named, as a reader says it: `30 s`, or `default` when
+/// the call named none. `budget_line` is the terminal's, which also says
+/// whether vetting passed; a program the page lists has a state chip that
+/// already says so.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let program = trace_view.Program(
+///   trace_view.Completed, "", None, Some(30_000), trace_view.Passed, None,
+///   None, [],
+/// )
+/// assert trace_view.budget_words(program) == "30 s"
+/// ```
+pub fn budget_words(program: Program) -> String {
+  case program.within_ms {
+    Some(ms) if ms >= 1000 && ms % 1000 == 0 -> int.to_string(ms / 1000) <> " s"
+    Some(ms) -> int.to_string(ms) <> " ms"
+    None -> "default"
+  }
 }
 
 /// Folds a window of records into the session's trace. Records arrive
@@ -223,9 +323,7 @@ pub fn fold(records: List(protocol.EntryRecord)) -> Trace {
     records
     |> list.reverse
     |> list.map(fn(record) { record.entry })
-    |> tool_activity.project
-    |> list.flat_map(calls)
-    |> list.filter(fn(call) { call.invocation.name == "code_mode" })
+    |> code_mode_calls
     |> list.index_map(fn(call, index) { program(call, index + 1) })
 
   let total = list.length(programs)
@@ -235,12 +333,101 @@ pub fn fold(records: List(protocol.EntryRecord)) -> Trace {
   )
 }
 
-// The calls of a tool group. Prose, and a result whose call is outside the
-// window, hold none.
-fn calls(item: tool_activity.Item) -> List(tool_activity.Call) {
-  case item {
-    tool_activity.Tools(calls:) -> calls
-    tool_activity.Narrative(_) -> []
+/// One strand's newest program, whatever order the records arrive in, or
+/// nothing when the strand has run none. The records may belong to several
+/// strands, as a terminal holds them, and only `strand`'s are read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert trace_view.newest([], "main") == None
+/// ```
+pub fn newest(
+  records: List(protocol.EntryRecord),
+  strand: String,
+) -> Option(Newest) {
+  let calls =
+    records
+    |> list.filter(fn(record) { record.strand == strand })
+    |> list.sort(fn(left, right) {
+      int.compare(entry_seq(left.entry), entry_seq(right.entry))
+    })
+    |> list.map(fn(record) { record.entry })
+    |> code_mode_calls
+  case list.last(calls) {
+    Ok(call) ->
+      Some(Newest(
+        program: program(call, list.length(calls)),
+        source: source_rows(program_text(call)),
+      ))
+    Error(Nil) -> None
+  }
+}
+
+// A message entry's place in the session; the others carry none a program
+// can have, so they sort first.
+fn entry_seq(value: entry.Entry) -> Int {
+  case value {
+    entry.MessageEntry(seq:, ..) -> seq
+    entry.CompactionEntry(..)
+    | entry.BranchSummaryEntry(..)
+    | entry.CustomEntry(..) -> 0
+  }
+}
+
+// The `code_mode` calls among entries given oldest first, each with the
+// result that answers it when one has arrived. `tool_activity.calls` keeps a
+// call made beside visible reasoning or text, which the transcript's
+// projection folds into a prose row.
+fn code_mode_calls(entries: List(entry.Entry)) -> List(tool_activity.Call) {
+  entries
+  |> tool_activity.calls
+  |> list.filter(fn(call) { call.invocation.name == "code_mode" })
+}
+
+// The program text a call sent, or nothing when it named a file instead.
+fn program_text(call: tool_activity.Call) -> String {
+  case call.invocation.arguments {
+    json.Object(fields) ->
+      case list.key_find(fields, "program") {
+        Ok(json.String(source)) -> source
+        Ok(_) | Error(Nil) -> ""
+      }
+    json.Array(_)
+    | json.String(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Bool(_)
+    | json.Null -> ""
+  }
+}
+
+/// The opening lines of a program, each with its number, and a closing row
+/// counting the lines left out.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert trace_view.source_rows("a\nb") == ["  1 │ a", "  2 │ b"]
+/// ```
+pub fn source_rows(program: String) -> List(String) {
+  let lines = string.split(program, "\n")
+  let shown =
+    lines
+    |> list.take(source_lines)
+    |> list.index_map(fn(line, index) {
+      string.pad_start(int.to_string(index + 1), 3, " ")
+      <> " │ "
+      <> text_hygiene.single_line(line)
+    })
+  case list.length(lines) - source_lines {
+    left if left > 0 ->
+      list.append(shown, [
+        "    … "
+        <> int.to_string(left)
+        <> " more lines · the transcript has the rest",
+      ])
+    _ -> shown
   }
 }
 
@@ -264,13 +451,16 @@ fn program(call: tool_activity.Call, position: Int) -> Program {
         _ -> []
       }
       let state = state(fields, is_error)
+      let shown = excerpt(fields, content, state)
       Program(
         sandbox: transcript_lines.sandbox_summary(fields),
+        detail: detail(fields, state, shown),
         state:,
         label:,
-        excerpt: Some(excerpt(fields, content, state)),
+        excerpt: Some(shown),
         within_ms:,
         vetting: vetting(state),
+        calls: call_rows(details),
       )
     }
     Some(_) | None ->
@@ -281,7 +471,95 @@ fn program(call: tool_activity.Call, position: Int) -> Program {
         within_ms:,
         vetting: Pending,
         sandbox: None,
+        detail: None,
+        calls: [],
       )
+  }
+}
+
+/// The most characters of a failure's detail a program keeps.
+pub const max_detail = 800
+
+// What went wrong, for a state that is a failure to compile, vet or run. The
+// result's own `detail` is the reason (the compiler's diagnostics, a run's
+// reason), and a vetting refusal keeps its reasons in `rejections[].detail`.
+// A result with neither, or with empty ones, falls back to the first sentence
+// of its text, which states what happened before it tells the model what to
+// do next. So a failed program always has a reason to show, and never the
+// instruction.
+fn detail(
+  fields: List(#(String, json.JsonValue)),
+  state: State,
+  excerpt: String,
+) -> Option(String) {
+  case state {
+    CompileFailed | RunFailed | Rejected ->
+      case reason(fields) {
+        "" ->
+          case first_sentence(excerpt) {
+            "" -> None
+            sentence -> Some(sentence)
+          }
+        text -> Some(bounded(text))
+      }
+    Running | Completed | Errored | Failed -> None
+  }
+}
+
+fn reason(fields: List(#(String, json.JsonValue))) -> String {
+  let from_detail = case list.key_find(fields, "detail") {
+    Ok(json.String(text)) -> text
+    _ -> ""
+  }
+  let text = case
+    string.trim(from_detail),
+    list.key_find(fields, "rejections")
+  {
+    "", Ok(json.Array(rejections)) ->
+      rejections
+      |> list.filter_map(fn(rejection) {
+        case rejection {
+          json.Object(entry) ->
+            case list.key_find(entry, "detail") {
+              Ok(json.String(text)) -> Ok(text)
+              _ -> Error(Nil)
+            }
+          _ -> Error(Nil)
+        }
+      })
+      |> string.join("\n")
+    _, _ -> from_detail
+  }
+  string.trim(from_first_error(text_hygiene.multiline(text)))
+}
+
+fn bounded(text: String) -> String {
+  case string.length(text) > max_detail {
+    True -> string.slice(text, 0, max_detail - 1) <> "…"
+    False -> text
+  }
+}
+
+// The text up to its first full stop followed by a space, with the stop.
+fn first_sentence(text: String) -> String {
+  case string.split_once(text, ". ") {
+    Ok(#(first, _)) -> first <> "."
+    Error(Nil) -> string.trim(text)
+  }
+}
+
+// The rows of the call record a result's details carry, as the transcript's
+// call section words them without its leading blank row, or nothing when the
+// details carry none.
+fn call_rows(details: Option(json.JsonValue)) -> List(String) {
+  case details {
+    Some(record) ->
+      case call_tree.read(record) {
+        Some(log) ->
+          list.filter(transcript_lines.call_section(log), fn(row) { row != "" })
+        None -> []
+      }
+    None -> []
   }
 }
 
@@ -384,6 +662,16 @@ fn excerpt(
       })
       |> string.join(" ")
       |> clipped
+  }
+}
+
+// The text from its first `error` line on, or the whole text when it has no
+// such line.
+fn from_first_error(text: String) -> String {
+  let lines = string.split(text, "\n")
+  case list.drop_while(lines, fn(line) { !string.starts_with(line, "error") }) {
+    [] -> text
+    [_, ..] as from -> string.join(from, "\n")
   }
 }
 

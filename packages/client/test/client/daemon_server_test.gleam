@@ -35,6 +35,7 @@ import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws.{type Socket}
 import tui/connection
 import tui/daemon/protocol as terminal_protocol
+import web_view/sessions
 import weft
 import weft/poll
 
@@ -891,6 +892,7 @@ pub fn owner_archives_and_restores_through_the_control_socket_test() {
         1000,
         "wire-archive",
         catalogue.Reserved,
+        subtitle: option.None,
       )
     assert catalogue.reserve(store, registration) == Ok(registration)
     let assert Ok(_) = catalogue.confirm(store, id) as "the fixture is saved"
@@ -1430,22 +1432,32 @@ pub fn peer_cli_collects_bounded_inspection_pages_test() {
 pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
   let #(idle, _) = ids.mint_session(ids.generator(clock.fixed(0), 801))
   let #(stuck, _) = ids.mint_session(ids.generator(clock.fixed(0), 802))
+  let #(other, _) = ids.mint_session(ids.generator(clock.fixed(0), 804))
   let idle_id = ids.session_id_to_string(idle)
   let stuck_id = ids.session_id_to_string(stuck)
+  let other_id = ids.session_id_to_string(other)
   let runtime = gateway_test.reserved_fixture(idle).runtime
+  let other_runtime = gateway_test.reserved_fixture(other).runtime
 
   // The first resident answers from a real runtime through the same handler
-  // its Agency actor runs. The second never answers, which is what the
-  // request deadline is for.
+  // its Agency actor runs, and so does a third, which the membership cases
+  // below ask about. The second never answers, which is what the request
+  // deadline is for.
   let endpoint = fn(instance) {
-    case instance == idle_id {
-      True ->
+    case instance == idle_id, instance == other_id {
+      True, _ ->
         Some(
           peer_mail.Endpoint(instance, fn(command) {
             peer_mail.handle(runtime, clock.fixed(0), command)
           }),
         )
-      False ->
+      False, True ->
+        Some(
+          peer_mail.Endpoint(instance, fn(command) {
+            peer_mail.handle(other_runtime, clock.fixed(0), command)
+          }),
+        )
+      False, False ->
         Some(
           peer_mail.Endpoint(instance, fn(_) {
             process.sleep_forever()
@@ -1581,8 +1593,33 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
     assert field(field(stale, "body"), "code") == json.String("stale_epoch")
     let _ = ffi_ws.tcp_close(socket)
 
-    // A member may read the catalogue but may not ask sessions what they
-    // are doing, even one it operates.
+    // The registry holds two residents, so the silent one, now stopped, made
+    // room for a third that answers. Nobody holds it yet.
+    let assert Ok(_) =
+      manager.create(
+        ready.registry,
+        manager.Creation(
+          other_id,
+          workspace.LocalBinding(ready.state_root),
+          other_id,
+          "",
+        ),
+        directory: ready.sessions_directory,
+        generator: ids.generator(clock.fixed(0), 804),
+      )
+      as "the third session is created"
+    let assert poll.Answered(_) =
+      poll.until(within: 2000, every: 1, attempt: fn() {
+        case manager.resolve(ready.registry, other_id) {
+          Ok(instance) -> poll.Done(instance)
+          Error(_) -> poll.Retry
+        }
+      })
+      as "the third session becomes resident"
+
+    // A member is answered only for the sessions it holds, at any role. An
+    // identity it does not hold is left out as an unknown one is, so the reply
+    // is the same whether the session is another's or is not running.
     let member = "activity-member-token"
     let assert Ok(digest) =
       member
@@ -1601,7 +1638,78 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
       == Ok(Nil)
     let #(socket, _) = connect(port, member, "/v2/control")
     let _hello = frame(socket, within_ms: 1000)
-    let denied =
+    let answered =
+      send(
+        socket,
+        1,
+        "sessions.activity",
+        request([stuck_id, idle_id], ready.epoch),
+        within_ms: 1000,
+      )
+    let assert json.Array([mine]) = field(field(answered, "body"), "activity")
+      as "only the held session has a row"
+    assert field(mine, "session_id") == json.String(idle_id)
+    assert field(mine, "state") == json.String("needs_you")
+
+    // The stopped session is another's; asking for it alone
+    // gives the same empty reply as an identity nobody has.
+    let others =
+      send(
+        socket,
+        2,
+        "sessions.activity",
+        request([stuck_id], ready.epoch),
+        within_ms: 1000,
+      )
+    let unknown =
+      send(
+        socket,
+        3,
+        "sessions.activity",
+        request([never_id], ready.epoch),
+        within_ms: 1000,
+      )
+    assert field(others, "body") == field(unknown, "body")
+    assert field(field(others, "body"), "activity") == json.Array([])
+
+    // The discriminating cases: `other_id` is resident and answers, so only
+    // the membership filter keeps it out. A member asking for it and for a
+    // held resident is answered for the held one alone.
+    let both =
+      send(
+        socket,
+        4,
+        "sessions.activity",
+        request([other_id, idle_id], ready.epoch),
+        within_ms: 1000,
+      )
+    let assert json.Array([only_held]) = field(field(both, "body"), "activity")
+      as "the unheld resident has no row"
+    assert field(only_held, "session_id") == json.String(idle_id)
+    let _ = ffi_ws.tcp_close(socket)
+
+    // A member with no grant asking for a resident session gets the reply an
+    // identity nobody has gets.
+    let bystander = "activity-bystander-token"
+    let assert Ok(bystander_digest) =
+      bystander
+      |> bit_array.from_string
+      |> bootstrap.sha256
+      |> bit_array.base16_encode
+      |> string.lowercase
+      |> access.credential_digest
+      as "bystander digest is valid"
+    let assert Ok(_) =
+      access.create_member(
+        store,
+        "activity-bystander",
+        "Bystander",
+        bystander_digest,
+      )
+      as "bystander exists"
+    let #(socket, _) = connect(port, bystander, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let resident =
       send(
         socket,
         1,
@@ -1609,7 +1717,16 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
         request([idle_id], ready.epoch),
         within_ms: 1000,
       )
-    assert field(field(denied, "body"), "code") == json.String("forbidden")
+    let nobody =
+      send(
+        socket,
+        2,
+        "sessions.activity",
+        request([never_id], ready.epoch),
+        within_ms: 1000,
+      )
+    assert field(field(resident, "body"), "activity") == json.Array([])
+    assert field(resident, "body") == field(nobody, "body")
     let _ = ffi_ws.tcp_close(socket)
     assert catalogue.close(store) == Ok(Nil)
   })
@@ -1949,6 +2066,7 @@ pub fn legacy_registered_lifecycle_mutations_are_refused_before_revision_or_visi
         1,
         "lifecycle-archived",
         catalogue.Reserved,
+        None,
       )
     let assert Ok(store) = catalogue.open(ready.state_root <> "/catalogue.db")
       as "fixture administration uses the existing catalogue"
@@ -2036,4 +2154,145 @@ pub fn legacy_registered_lifecycle_mutations_are_refused_before_revision_or_visi
     let _ = ffi_ws.tcp_close(socket)
     Nil
   })
+}
+
+// A home page's activity read is the control command's read reduced to a state
+// word for each session that answered: a resident that answers is idle, then
+// needs you once an approval is pending, a resident that never answers and an
+// identity with no resident are left out, and nothing but the state leaves the
+// daemon. A member is answered only for the sessions it holds, and a session it
+// does not hold reads as an identity nobody has.
+pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
+  let #(idle, _) = ids.mint_session(ids.generator(clock.fixed(0), 811))
+  let #(stuck, _) = ids.mint_session(ids.generator(clock.fixed(0), 812))
+  let #(absent, _) = ids.mint_session(ids.generator(clock.fixed(0), 813))
+  let idle_id = ids.session_id_to_string(idle)
+  let stuck_id = ids.session_id_to_string(stuck)
+  let absent_id = ids.session_id_to_string(absent)
+  let runtime = gateway_test.reserved_fixture(idle).runtime
+  let endpoint = fn(instance) {
+    case instance == idle_id {
+      True ->
+        Some(
+          peer_mail.Endpoint(instance, fn(command) {
+            peer_mail.handle(runtime, clock.fixed(0), command)
+          }),
+        )
+      False ->
+        Some(
+          peer_mail.Endpoint(instance, fn(_) {
+            process.sleep_forever()
+            Error("never answers")
+          }),
+        )
+    }
+  }
+  fixture_with_peers(
+    limits.defaults,
+    endpoint,
+    fn(daemon, ready, _, credential) {
+      list.each([#(idle_id, 811), #(stuck_id, 812)], fn(pair) {
+        let assert Ok(_) =
+          manager.create(
+            ready.registry,
+            manager.Creation(
+              pair.0,
+              workspace.LocalBinding(ready.state_root),
+              pair.0,
+              "",
+            ),
+            directory: ready.sessions_directory,
+            generator: ids.generator(clock.fixed(0), pair.1),
+          )
+          as "the session is created"
+        let assert poll.Answered(_) =
+          poll.until(within: 2000, every: 1, attempt: fn() {
+            case manager.resolve(ready.registry, pair.0) {
+              Ok(instance) -> poll.Done(instance)
+              Error(_) -> poll.Retry
+            }
+          })
+          as "the session becomes resident"
+      })
+      let config =
+        server.Config(
+          peer_endpoint: endpoint,
+          workspace_authority: server.local_workspace_authority(),
+          daemon:,
+          domain_configuration: "",
+          generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
+          session_upgrade: fn(_, _) {
+            response.new(501)
+            |> response.set_body(mist.Bytes(bytes_tree.from_string("absent")))
+          },
+          ui: None,
+        )
+      let digest_of = fn(token) {
+        let assert Ok(digest) =
+          token
+          |> bit_array.from_string
+          |> bootstrap.sha256
+          |> bit_array.base16_encode
+          |> string.lowercase
+          |> access.credential_digest
+          as "digest is valid"
+        digest
+      }
+      let assert Ok(store) = catalogue.open(ready.state_root <> "/catalogue.db")
+        as "fixture administration opens the durable catalogue"
+      let assert Ok(holder) =
+        access.create_member(
+          store,
+          "holder",
+          "Holder",
+          digest_of("holder-token"),
+        )
+        as "member exists"
+      let assert Ok(_) =
+        access.create_member(
+          store,
+          "bystander",
+          "Bystander",
+          digest_of("bystander-token"),
+        )
+        as "member exists"
+      assert access.grant(store, holder.id, idle_id, access.Observer) == Ok(Nil)
+      assert catalogue.close(store) == Ok(Nil)
+      let asked = [idle_id, stuck_id, absent_id]
+
+      // The owner: only the idle resident answers; the rest leave no entry.
+      let read =
+        server.home_activity(config, ready.registry, digest_of(credential))
+      assert read(asked) == [#(idle_id, sessions.Idle)]
+
+      // A pending approval moves it to needs you.
+      let assert Ok(Nil) =
+        api.raise_escalation(runtime, "esc-1", json.Object([]))
+        as "an approval is pending"
+      assert read([idle_id]) == [#(idle_id, sessions.NeedsYou)]
+
+      // A member holding the session, at any role, is answered for it, and for
+      // nothing else it was asked about.
+      let held =
+        server.home_activity(config, ready.registry, digest_of("holder-token"))
+      assert held(asked) == [#(idle_id, sessions.NeedsYou)]
+
+      // A member holding nothing gets exactly what an unknown identity gets: no
+      // row, so a reply cannot tell "not yours" from "not running".
+      let bystander =
+        server.home_activity(
+          config,
+          ready.registry,
+          digest_of("bystander-token"),
+        )
+      assert bystander([idle_id]) == []
+      assert bystander([absent_id]) == read([absent_id])
+
+      // A credential the catalogue does not know reads nothing.
+      assert server.home_activity(config, ready.registry, digest_of("nobody"))(
+          asked,
+        )
+        == []
+    },
+  )
 }
