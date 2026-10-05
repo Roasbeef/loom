@@ -361,8 +361,8 @@ pub type Saved {
 }
 
 /// What the follower remembers of the strands the reader left, by the
-/// strand's numeric key (`data-strand-key`, a digest of the strand's name, so
-/// the key carries none of its text). It lives as long as the element.
+/// strand's numeric key (`data-strand-key`, a number the page assigned the
+/// strand, so the key carries none of its text). It lives as long as the element.
 pub type Memory =
   Dict(Int, Saved)
 
@@ -433,5 +433,52 @@ pub fn arrived(reader: Reader, arrival: Arrival) -> Reader {
   case arrival {
     Tail -> Reader(..reader, position: Following, gap: 0)
     Resume(top:) -> Reader(..reader, position: Reading, top:)
+  }
+}
+
+/// What a change of the strand key asks of the element.
+pub type Keying {
+  /// The key is the one already shown, so nothing changes. The attribute may
+  /// be written again with the same value.
+  Unchanged
+
+  /// Another strand is shown: the memory holds the departing strand's place,
+  /// the reader is set for the arrival, and the transcript is asked to follow
+  /// the tail or resume an offset.
+  Changed(key: Int, memory: Memory, reader: Reader, arrival: Arrival)
+}
+
+/// The decision for a strand key `new` arriving while `shown` is on screen.
+/// The departing strand is saved before the arriving one is looked up, so a
+/// strand that is left and returned to in a row finds the place it was just
+/// left at.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert follow_rule.keyed(Some(7), follow_rule.forgotten(), follow_rule.start(), 7)
+///   == follow_rule.Unchanged
+/// ```
+pub fn keyed(
+  shown: Option(Int),
+  memory: Memory,
+  reader: Reader,
+  new: Int,
+) -> Keying {
+  case shown == Some(new) {
+    True -> Unchanged
+    False -> {
+      let kept = case shown {
+        Some(left) -> leaving(memory, left, reader)
+        None -> memory
+      }
+      let arrival = arriving(kept, new)
+      Changed(
+        key: new,
+        memory: kept,
+        reader: arrived(reader, arrival),
+        arrival:,
+      )
+    }
   }
 }

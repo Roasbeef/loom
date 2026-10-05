@@ -79,8 +79,8 @@
 ////
 //// The page shows one strand at a time in this one transcript, and the reader
 //// leaves a strand where they were reading it. The server draws the strand's
-//// numeric key as `data-strand-key` on the element (a digest of the strand's
-//// name, so no model or peer text reaches an attribute). When the key changes
+//// numeric key as `data-strand-key` on the element (a number the page assigned the
+//// strand, so no model or peer text reaches an attribute). When the key changes
 //// the element keeps the departing strand's place in memory under its key, for
 //// the life of the element: the offset if the reader had scrolled up, or "at
 //// the bottom". It then puts the arriving strand where it was left, or follows
@@ -346,25 +346,12 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // gets the place it was left at, or the tail when it was left at the
     // bottom or never seen. A held row belongs to the old rows and is let go.
     Keyed(key:) ->
-      case model.key == Some(key) {
-        True -> #(model, effect.none())
-        False -> {
-          let memory = case model.key {
-            Some(left) -> follow_rule.leaving(model.memory, left, model.reader)
-            None -> model.memory
-          }
-          let arrival = follow_rule.arriving(memory, key)
-          #(
-            Model(
-              ..model,
-              reader: follow_rule.arrived(model.reader, arrival),
-              anchor: None,
-              key: Some(key),
-              memory:,
-            ),
-            arrive(model.watching, arrival),
-          )
-        }
+      case follow_rule.keyed(model.key, model.memory, model.reader, key) {
+        follow_rule.Unchanged -> #(model, effect.none())
+        follow_rule.Changed(key:, memory:, reader:, arrival:) -> #(
+          Model(..model, reader:, anchor: None, key: Some(key), memory:),
+          arrive(model.watching, arrival),
+        )
       }
 
     // The button is the way back to the tail without a scroll: it follows
@@ -490,12 +477,21 @@ fn arrive(
   case watching {
     None -> effect.none()
     Some(Watching(host:, ..)) -> {
-      use _, _ <- effect.after_paint
+      use dispatch, _ <- effect.after_paint
       case arrival {
         follow_rule.Tail ->
           ffi_dom.set_scroll_top(host, ffi_dom.scroll_height(host))
         follow_rule.Resume(top:) -> ffi_dom.set_scroll_top(host, top)
       }
+
+      // The browser clamps an offset past the end of the content, and a
+      // clamp that leaves the offset where it was raises no scroll event, so
+      // the position and the gap are read again for the button's state.
+      dispatch(Scrolled(
+        top: ffi_dom.scroll_top(host),
+        extent: extent_of(host),
+        at: ffi_dom.now(),
+      ))
     }
   }
 }
