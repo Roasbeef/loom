@@ -126,6 +126,14 @@ fn sample_frames() -> List(framing.Frame) {
 pub fn roundtrip_every_kind_test() {
   list.each(sample_frames(), fn(frame) {
     let assert Ok(payload) = framing.encode_payload(frame)
+    let assert Ok(raw) = framing.decode_raw_envelope(payload)
+      as "raw scan preserves every broker fixture"
+    let assert Ok(body) = msgpack.decode(framing.raw_body(raw))
+      as "original body remains decodable"
+    let assert Ok(envelope) = msgpack.decode(payload)
+      as "fixture envelope decodes"
+    let assert msgpack.MapValue(entries) = envelope as "fixture is a map"
+    assert list.contains(entries, #(msgpack.StringValue("body"), body))
     assert framing.decode_payload(payload) == Ok(frame)
     // And through the length-prefixed wire form + deframer.
     let assert Ok(wire_bytes) = framing.encode(frame)
