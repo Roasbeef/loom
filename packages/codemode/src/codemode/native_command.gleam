@@ -137,6 +137,8 @@ pub fn node_argv(
 
 /// Pins both capability handles before the caller's remaining environment.
 /// Caller-supplied duplicates cannot redirect authentication to another launch.
+/// Erlang's three argument-injection variables are excluded: an executor's
+/// distribution flags and cookie must not become satellite boot arguments.
 ///
 /// ## Examples
 ///
@@ -150,8 +152,16 @@ pub fn node_env(
   token_path: String,
   env: List(#(String, String)),
 ) -> List(#(String, String)) {
+  // A distributed executor still launches an undistributed satellite. These
+  // variables add VM arguments outside node_argv's fixed command, including
+  // names, cookies and TLS option files, so policy permission cannot pass them.
   let permitted =
-    list.filter(env, fn(pair) { pair.0 != sock_env && pair.0 != token_env })
+    list.filter(env, fn(pair) {
+      case pair.0 {
+        "ERL_AFLAGS" | "ERL_FLAGS" | "ERL_ZFLAGS" -> False
+        name -> name != sock_env && name != token_env
+      }
+    })
   [#(sock_env, socket_path), #(token_env, token_path), ..permitted]
 }
 
