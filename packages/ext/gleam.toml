@@ -6,9 +6,10 @@ gleam = ">= 1.18.0"
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 cap = { path = "../cap" }
+weft = { git = "https://github.com/Roasbeef/weft.git", ref = "f076c0661518ce9432cc6ff874b1ece71edbd9b7" }
+gleam_erlang = ">= 1.0.0 and < 2.0.0"
+gleam_otp = ">= 1.0.0 and < 2.0.0"
 
 [dev_dependencies]
 core = { path = "../core" }
-gleam_erlang = ">= 1.0.0 and < 2.0.0"
-gleam_otp = ">= 1.0.0 and < 2.0.0"
 gleeunit = ">= 1.0.0 and < 2.0.0"

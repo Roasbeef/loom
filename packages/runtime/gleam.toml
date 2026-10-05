@@ -12,7 +12,7 @@ provider = { path = "../provider" }
 telemetry = { path = "../telemetry" }
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
-weft = "== 0.4.5"
+weft = { git = "https://github.com/Roasbeef/weft.git", ref = "f076c0661518ce9432cc6ff874b1ece71edbd9b7" }
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
