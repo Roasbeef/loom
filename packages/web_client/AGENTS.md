@@ -47,6 +47,14 @@ renders again just for it:
   from the bytes. A paste holding image files attaches them and is cancelled,
   and its listener on the form is removed when the element leaves. The chips
   are the person's own file names as text nodes, and the element draws no image.
+- `<loom-rename>` wraps the rename form's text field (the home row's form and
+  the Session pane's). The server cannot give the field a `value`, because a
+  session's name is only ever a text node (protocol-change/051), so when the
+  element connects it reads the text of the `[data-loom-name]` element inside the
+  nearest `[data-loom-renames]` container and writes it into the field, if the
+  field is empty (`rename_rule.copy`, cut to the field's 256 characters), then
+  focuses it. It takes no attribute, draws only the default slot and sends the
+  server nothing.
 - `<loom-switch to="/ui/sessions/<id>?ticket=<t>">` moves the browser to
   another session's page, as `to="/ui/home?ticket=<t>"` to the home, or, as
   `to="/ui/admin?ticket=<t>"`, from the owner's home to the admin page

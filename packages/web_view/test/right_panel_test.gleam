@@ -67,19 +67,17 @@ pub fn a_card_begins_its_status_with_the_states_glyph_test() {
   assert !string.contains(waiting, "Waiting · Waiting")
 }
 
-// The command is the card's tooltip and not its status, so a long one cannot
-// push the line off the card, and it is only ever an escaped attribute.
-pub fn a_tool_is_named_and_its_command_is_the_cards_title_test() {
+// The command is the model's own text. The card shows the tool's name in its
+// status line and draws nothing of the command: not as a tooltip, not as any
+// attribute (protocol-change/051).
+pub fn a_tools_command_is_never_an_attribute_test() {
   let drawn =
     card(chip(agent_view.Working, "bash · printf '<b>' > /Users/x/notes.txt"))
 
   assert string.contains(drawn, "Working · bash</span>")
-  assert string.contains(drawn, "title=\"Working · bash · printf ")
-  assert string.contains(drawn, "/Users/x/notes.txt\"")
+  assert !string.contains(drawn, "title=")
+  assert !string.contains(drawn, "notes.txt")
   assert !string.contains(drawn, "<b>")
-
-  // A status that says all there is has no tooltip to repeat it.
-  assert !string.contains(card(chip(agent_view.Idle, "")), "title=")
 }
 
 // A fork has no operation and no recorded result until its first prompt, so

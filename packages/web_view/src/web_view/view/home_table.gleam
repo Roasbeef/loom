@@ -54,6 +54,7 @@ import web_view/sessions.{
 }
 import web_view/view/create.{type Create}
 import web_view/view/heading
+import web_view/view/rename as rename_view
 import web_view/view/resume.{type Resume}
 
 /// What the table offers for renaming a session (protocol-change/067).
@@ -169,9 +170,17 @@ fn group(
 }
 
 // What a row says about its session's process: the class that hues its glyph,
-// the glyph, and the words of the quiet line before the age.
+// the glyph, the word for where the session lives, and the activity word once
+// the daemon has said one. The activity is kept apart from the state because the
+// quiet line draws it in a span of its own, which is the only part of the line
+// a needs-you row tints.
 type Standing {
-  Standing(class: String, glyph: String, words: List(String))
+  Standing(
+    class: String,
+    glyph: String,
+    state: String,
+    activity: Option(String),
+  )
 }
 
 // A running session is "resident" and, once the daemon has said, what it is
@@ -185,14 +194,16 @@ fn standing(
     Live, _ ->
       case activity {
         Ok(doing) ->
-          Standing(activity_class(doing), "●", [
+          Standing(
+            activity_class(doing),
+            "●",
             "resident",
-            sessions.activity_words(doing),
-          ])
-        Error(Nil) -> Standing("live", "●", ["resident"])
+            Some(sessions.activity_words(doing)),
+          )
+        Error(Nil) -> Standing("live", "●", "resident", None)
       }
-    Saved, resume.Opening -> Standing("opening", "…", ["opening"])
-    Saved, _ | Blocked, _ -> Standing("saved", "○", ["saved"])
+    Saved, resume.Opening -> Standing("opening", "…", "opening", None)
+    Saved, _ | Blocked, _ -> Standing("saved", "○", "saved", None)
   }
 }
 
@@ -287,7 +298,8 @@ fn row(
 
 // A row's rename form, in place of the row's words. The session's current name
 // is a text node in the lead, and never the field's `value` or `placeholder`,
-// which are attributes. The field is uncontrolled, and the one submit sends its
+// which are attributes; `<loom-rename>` copies it into the field in the browser
+// when the form opens (`view/rename.field`). The field is uncontrolled, and the one submit sends its
 // text under the name `text`; Cancel is a button that closes the form. While a
 // request is out the buttons are disabled, though the handlers stay, because the
 // component is the layer that ignores a second one. A refusal is in the reason's
@@ -306,21 +318,24 @@ fn editing(
     [
       attribute.class("home-rename-form"),
       attribute.aria_label("Rename this session"),
+      attribute.attribute(rename_view.scope_marker, ""),
       submit,
     ],
     [
-      html.p([attribute.class("home-rename-lead")], [
-        html.text("Rename " <> sessions.label(entry)),
-      ]),
+      html.p([attribute.class("home-rename-lead")], case entry.name {
+        // An unnamed session's label is a fallback built from its identity, and
+        // it is not a name: left unmarked, the field opens empty rather than
+        // offering the fallback to be saved as one.
+        "" -> [html.text("Rename " <> sessions.label(entry))]
+        name -> [
+          html.text("Rename "),
+          html.span([attribute.attribute(rename_view.name_marker, "")], [
+            html.text(name),
+          ]),
+        ]
+      }),
       html.div([attribute.class("home-rename-fields")], [
-        html.input([
-          attribute.type_("text"),
-          attribute.name("text"),
-          attribute.aria_label("New name"),
-          attribute.placeholder("New name"),
-          attribute.attribute("maxlength", "256"),
-          attribute.attribute("autocomplete", "off"),
-        ]),
+        rename_view.field(),
         html.button([attribute.type_("submit"), ..asking], [
           html.text("Rename"),
         ]),
@@ -358,24 +373,33 @@ fn status(control: Control) -> Element(message) {
 // session's own page. Any other session reads as it always did: the standing's
 // words joined by a middle dot, then the age, where a running session's says it
 // was created and a saved one's is the bare age, since "saved" already says
-// what it is. The subtitle is a person's own prompt, so it is a text node and
-// nothing else.
+// what it is. The activity word is its own `home-activity` span, so a row that
+// needs the person can tint that one word and leave the subtitle in the quiet
+// colour: a sixty-character prompt in the signal colour reads as an error. The
+// subtitle is a person's own prompt, so it is a text node and nothing else.
 fn quiet_line(
   standing: Standing,
   entry: Entry,
   now: Int,
 ) -> List(Element(message)) {
-  let lead = string.join(standing.words, " · ")
+  let lead = case standing.activity {
+    Some(doing) -> [
+      html.text(standing.state <> " · "),
+      html.span([attribute.class("home-activity")], [html.text(doing)]),
+    ]
+    None -> [html.text(standing.state)]
+  }
   case entry.subtitle {
     Some(subtitle) -> [
       html.span([attribute.class("home-subtitle")], [html.text(subtitle)]),
-      html.text(" · " <> lead),
+      html.text(" · "),
+      ..lead
     ]
     None -> {
       let age = created(entry.created_at, sessions.ago(now, entry.created_at))
       case entry.residency {
-        Live -> [html.text(lead <> " · created "), age]
-        Saved | Blocked -> [html.text(lead <> " · "), age]
+        Live -> list.append(lead, [html.text(" · created "), age])
+        Saved | Blocked -> list.append(lead, [html.text(" · "), age])
       }
     }
   }

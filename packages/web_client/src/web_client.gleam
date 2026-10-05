@@ -58,6 +58,7 @@ import web_client/elapsed
 import web_client/expand
 import web_client/fold
 import web_client/follow
+import web_client/rename
 import web_client/shell
 import web_client/switch
 import web_client/waiting
@@ -82,6 +83,7 @@ pub fn main() -> Nil {
   let _ = expand.register()
   let _ = fold.register()
   let _ = follow.register()
+  let _ = rename.register()
   let _ = shell.register()
   let _ = switch.register()
   let _ = waiting.register()

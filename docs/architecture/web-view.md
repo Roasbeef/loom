@@ -711,6 +711,15 @@ makes the registry's owner-checked rename, from a task linked to the page's
 runtime, so the runtime never waits on the registry. A member's page and an
 observer's page are handed no capability and their sockets drop the event.
 
+Both forms open with the field holding the current name, which the server cannot
+write: a name is never an attribute. The field sits in a `<loom-rename>` element
+(`web_client/rename`, `rename_rule.copy`) and the form's lead draws the name as a
+text node in a span marked `data-loom-name`, inside a container marked
+`data-loom-renames`. When the form appears the element copies that text node into
+the field if the field is empty, cut to the field's 256 characters, and focuses
+it. The markers are fixed and valueless and the element wraps only the input, so
+the form's handler paths do not move and the server's HTML has no `value`.
+
 ## Inviting from the session page
 
 An owner's operator page has one control that a member's page and every
