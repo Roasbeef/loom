@@ -393,21 +393,24 @@ setting every package passed three runs of three at on a 32-core box;
 to be told apart from a concurrency effect.
 
 `LOOM_SIGNOFF_HOST=<ssh alias> make signoff-remote` runs the same gate
-inside a fresh container on the remote box; `LOOM_SIGNOFF_CONTAINER=0`
-opts out and runs directly in the checkout the script owns, which is
-kept for a box without Docker and for telling a container effect apart
-from a real failure. The hazard the container removes: that checkout persists between runs by design, so anything a
+inside a fresh container on the remote box, and only there; there is
+no bare-checkout mode. The container clones its working tree from a
+read-only mount of the checkout the script owns, on its own filesystem,
+so `docker run --rm` removes everything a run built. Two hazards shaped
+that. The first: the checkout persists between runs by design, so anything a
 run leaves behind — a shipment directory, a stale `build/` tree — is
 inherited by the next one, which is exactly what happened on PR #378
 (2026-09-13): the first `make signoff-remote` found
 `packages/tui/build/erlang-shipment` from an earlier run still there and
 refused to overwrite it, going red in prep before a single lane started.
-In container mode the working tree is a brand-new local clone into a
-brand-new directory on every run, so a later run cannot see what an
-earlier one left behind; only two things persist across runs at all, the
-Hex/gleam package cache and the Go module cache, both named Docker
-volumes chosen because a cold dependency resolution on every run trips
-Hex's rate limit (issue #248) within minutes. `scripts/signoff/Dockerfile`
+The second: the container runs as root, and when its trees were cloned on
+the host and bind mounted in, the login account could not delete what
+root had built there; by 2026-10-04, 289 of them (214 GB) had filled the
+box's disk and a signoff failed at checkout with "No space left on
+device". Only three things outlive a run: a per-commit logs directory on
+the host, and the Hex/gleam package cache and the Go module cache, both
+named Docker volumes chosen because a cold dependency resolution on every
+run trips Hex's rate limit (issue #248) within minutes. `scripts/signoff/Dockerfile`
 carries the toolchain — the same versions `.github/workflows/ci.yml`
 pins, including the patched Gleam compiler CI builds — and
 `scripts/signoff_remote.sh`'s own comment has the container flags this
