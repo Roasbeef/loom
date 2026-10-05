@@ -96,6 +96,13 @@ pub type Share {
   /// is a member.
   Withheld
 
+  /// The page's principal is the owner, and the session is private: it shares
+  /// its notes and history with its workspace, so the daemon would refuse any
+  /// invitation to it (`NotIsolated`). The control draws one sentence that says
+  /// so and no button, so a refusal worded for a terminal cannot be reached.
+  /// Making a session shareable is not offered from the page.
+  Unshareable
+
   /// The control is drawn and waits for the owner to press a button.
   Ready
 

@@ -57,7 +57,6 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -262,26 +261,38 @@ fn viewer_rows(viewers: Viewers) -> List(Element(message)) {
   ]
 }
 
-// One principal: the name, the roles its pages hold, how many pages when more
-// than one, and whether one of them is this page.
+// One principal as `<name> · <role> · you`: the name, the role they hold in the
+// session, how many tabs when more than one, and whether the page is theirs
+// (`you`) or another person's (`viewing`). The role is one word in the terms
+// the home uses. An owner who has a page open may operate it, so `owner` and
+// `operator` are both `operator`, and only a principal whose every page is
+// read-only is an `observer`. The engine's own terms for a grant's roles and
+// attached pages never reach the line.
 fn viewer(viewer: Viewer) -> Element(message) {
   html.li([], [
     html.text(viewer.name),
     html.span([attribute.class("session-quiet")], [
       html.text(
         " · "
-        <> string.join(viewer.roles, ", ")
+        <> role_word(viewer.roles)
         <> case viewer.pages {
           1 -> ""
-          pages -> " · " <> int.to_string(pages) <> " pages"
+          pages -> " · " <> int.to_string(pages) <> " tabs"
         }
         <> case viewer.whose {
           You -> " · you"
-          Another -> ""
+          Another -> " · viewing"
         },
       ),
     ]),
   ])
+}
+
+fn role_word(roles: List(String)) -> String {
+  case list.all(roles, fn(role) { role == "observer" }) {
+    True -> "observer"
+    False -> "operator"
+  }
 }
 
 // The line that says rows were left out, or nothing.

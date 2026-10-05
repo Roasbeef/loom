@@ -418,6 +418,7 @@ fn started(now: fn() -> Int) -> component.Start(Wire) {
     label: None,
     workspace_digest: "",
     expected: snapshot.Expected("A", "epoch", "incarnation"),
+    standing: component.unplaced,
     transport: component.Transport(
       connect: fn(_, _) { Nil },
       transmit: fn(wire, frame) { process.send(wire, frame) },

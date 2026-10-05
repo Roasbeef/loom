@@ -118,6 +118,40 @@ pub fn a_failed_program_shows_its_diagnostics_not_the_models_instructions_test()
   assert !string.contains(bare, "Fix the diagnostics")
 }
 
+// An earlier program that was refused says why in one line under its row, so a
+// refusal that was fixed and run again still has its reason in the tab. A
+// program that ran has none, and a long reason is cut to a row.
+pub fn an_earlier_refusal_says_why_in_one_line_test() {
+  let refused =
+    trace_view.Program(
+      ..program(trace_view.Rejected, "first.gleam"),
+      vetting: trace_view.Refused,
+      detail: Some(
+        "import not allowed: gleam/erlang is not on the cap seam\nsecond reason",
+      ),
+    )
+  let html =
+    drawn(trace_view.Trace(
+      programs: [refused, program(trace_view.Completed, "second.gleam")],
+      omitted: 0,
+    ))
+  assert string.contains(
+    html,
+    "<p class=\"trace-why\">import not allowed: gleam/erlang is not on the cap seam</p>",
+  )
+  assert !string.contains(html, "second reason")
+  assert list.length(string.split(html, "trace-why")) == 2
+
+  let long =
+    trace_view.Program(..refused, detail: Some(string.repeat("word ", 60)))
+  let cut =
+    drawn(trace_view.Trace(
+      programs: [long, program(trace_view.Completed, "second.gleam")],
+      omitted: 0,
+    ))
+  assert string.contains(cut, "word…</p>")
+}
+
 pub fn a_label_and_an_excerpt_are_only_ever_text_nodes_test() {
   let hostile = "<img src=x onerror=alert(1)> \" onmouseover=\"x\""
   let html =

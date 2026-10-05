@@ -304,6 +304,32 @@ pub fn only_the_calls_own_first_argument_is_read_test() {
     == Some("fs.read calc.py")
 }
 
+// A report whose breaks arrived as the two characters `\n` is read with real
+// ones, and only when it holds none of its own, so a program that quotes `\n`
+// inside a laid-out report is left alone.
+pub fn a_double_escaped_report_is_read_with_real_breaks_test() {
+  assert step_words.spoken_breaks("# calc \\n Tiny") == "# calc \n Tiny"
+  assert step_words.spoken_breaks("a\nb \\n c") == "a\nb \\n c"
+  assert step_words.spoken_breaks("plain") == "plain"
+}
+
+// A refusal of a step's arguments is one plain sentence that names the step and
+// not the tool, with the engine's backticks as quotation marks; any other
+// failure only says the step failed, since the engine's text carries the rest.
+pub fn a_failed_step_opens_on_one_plain_sentence_test() {
+  let edit = Words("Edit", Mono("test_calc.py"), None)
+  assert step_words.failure_sentence(
+      edit,
+      "invalid arguments: `from` is required for this hunk op",
+    )
+    == "The edit was rejected: \"from\" is required for this hunk op."
+  assert step_words.failure_sentence(edit, "no such file") == "The edit failed."
+  assert step_words.failure_sentence(Words("Ran", Mono("make"), None), "exit 2")
+    == "The command failed."
+  assert step_words.failure_sentence(Words("fetch", Unnamed, None), "x")
+    == "This step failed."
+}
+
 // A longer name that merely ends in the module's name is skipped, and the real
 // call after it still wins over a later module on the line.
 pub fn a_skipped_longer_name_does_not_reorder_the_calls_test() {

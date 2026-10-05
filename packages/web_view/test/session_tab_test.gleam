@@ -189,12 +189,13 @@ pub fn viewers_are_named_with_their_roles_and_your_own_is_marked_test() {
   assert string.contains(html, "Alice")
   assert string.contains(html, " · operator · you")
   assert string.contains(html, "&lt;b&gt;Bob&lt;/b&gt;")
-  assert string.contains(html, " · observer<")
+  assert string.contains(html, " · observer · viewing<")
   assert string.contains(html, "+3 more not shown")
   assert !string.contains(html, "<b>Bob")
 }
 
-// One person's three pages are one line that says so, with the roles joined.
+// One person's three tabs are one line that says so, with one role in the
+// home's words: the engine's `owner, operator` and `3 pages` never appear.
 pub fn a_principal_with_pages_is_one_line_that_counts_them_test() {
   let html =
     drawn(
@@ -203,7 +204,9 @@ pub fn a_principal_with_pages_is_one_line_that_counts_them_test() {
     )
 
   assert string.contains(html, "Owner")
-  assert string.contains(html, " · owner, operator · 3 pages · you")
+  assert string.contains(html, " · operator · 3 tabs · you")
+  assert !string.contains(html, "owner, operator")
+  assert !string.contains(html, "pages")
   assert !string.contains(html, "more not shown")
 }
 

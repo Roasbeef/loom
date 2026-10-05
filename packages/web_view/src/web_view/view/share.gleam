@@ -67,10 +67,30 @@ pub type Presses(message) {
 pub fn view(share: Share, presses: Presses(message)) -> Element(message) {
   case share {
     invites.Withheld -> element.none()
+    invites.Unshareable -> private()
     invites.Showing(invitation:) -> showing(invitation, presses)
     invites.Ready | invites.Asking | invites.Refused(..) ->
       buttons(presses, share)
   }
+}
+
+/// The sentence that stands where the buttons would, for a session that cannot
+/// be shared. The admin page says the same words for the same session.
+pub const private_words =
+  "Private session: it shares the workspace's notes and history, so it cannot be shared. Sessions created with Shareable can be."
+
+// The control for a private session: its heading and the sentence, with no
+// button and no handler, in the region's place so no path moves.
+fn private() -> Element(message) {
+  html.section(
+    [attribute.class("share"), attribute.aria_label("Invite to this session")],
+    [
+      html.h3([attribute.class("share-title")], [
+        html.text("Invite to this session"),
+      ]),
+      html.p([attribute.class("share-lead")], [html.text(private_words)]),
+    ],
+  )
 }
 
 // The two buttons and a status line. The line is always drawn, empty unless
@@ -127,6 +147,7 @@ fn button(
     invites.Asking ->
       html.button([attribute.disabled(True), ..common], [html.text(label)])
     invites.Withheld
+    | invites.Unshareable
     | invites.Ready
     | invites.Showing(..)
     | invites.Refused(..) ->
@@ -141,7 +162,11 @@ fn status(share: Share) -> Element(message) {
       html.p([attribute.class("share-status"), attribute.role("status")], [
         html.text(invites.reason_words(reason)),
       ])
-    invites.Withheld | invites.Ready | invites.Asking | invites.Showing(..) ->
+    invites.Withheld
+    | invites.Unshareable
+    | invites.Ready
+    | invites.Asking
+    | invites.Showing(..) ->
       html.p([attribute.class("share-status"), attribute.role("status")], [])
   }
 }
