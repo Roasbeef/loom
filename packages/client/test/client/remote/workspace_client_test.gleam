@@ -1,10 +1,12 @@
 //// Concrete owner consumer tests using actual SQLite, TLS and filesystem work.
 ////
-//// Fixtures own separate directories, registries and listener subtrees. Parent
-//// execution is unreachable; all retries keep original child UUID and content.
-//// These checks establish a component consumer, not shipped two-host routing.
+//// Each scenario owns independent TLS BEAM owner and executor OS processes.
+//// Parent execution is unreachable; retries retain original UUID and content.
+//// Fixed file barriers replace cross-node callbacks and preserve effect ordering.
+//// `cancel_executor` is fixed test administration of one original Accepted row.
 
 import broker/exec
+import broker/executor as native
 import broker/policy
 import client/remote/custodian
 import client/remote/workspace_binding as binding
@@ -13,24 +15,26 @@ import core/clock
 import core/ids
 import core/remote_tool
 import core/workspace as cw
-import executor/remote/connection
+import distribution_fixture
+import executor/remote/admission
+import executor/remote/beam_endpoint as connection
+import executor/remote/distribution
 import executor/remote/identity
-import executor/remote/listener
-import executor/remote/tls
-import executor/remote/workspace_connection as transport
+import executor/remote/internal/beam_protocol as transport
+import executor/remote/journal as native_journal
+import executor/remote/service as native_service
 import executor/remote/workspace_journal as journal
 import executor/remote/workspace_service as service
 import gleam/bit_array
 import gleam/erlang/process
-import gleam/int
 import gleam/option.{None, Some}
-import gleam/otp/static_supervisor as supervisor
 import gleam/result
 import gleam/string
-import gleam/time/timestamp
 import simplifile
 import sqlight
 import storage/owner_custody as custody
+import support/workspace_beam_fixture as beam_fixture
+import telemetry/log
 import tools/directory_access
 import tools/fs
 import tools/tool
@@ -39,18 +43,6 @@ import tools/workspace_codec as codec
 import tools/workspace_local as local
 import weft/poll
 import weft/registry
-
-type Credentials {
-  Credentials(ca: BitArray, certificate: BitArray, key: BitArray, pin: BitArray)
-}
-
-type Certificates {
-  WorkspaceCredentials(server: Credentials, client: Credentials)
-}
-
-// Credential generation is test-only and reuses the existing OTP PKIX fixture.
-@external(erlang, "client_test_ffi", "workspace_credentials")
-fn certificates() -> Certificates
 
 // Stock OTP suspension makes custody contention deterministic without a new
 // production callback or a sleep racing the storage actor.
@@ -67,21 +59,15 @@ type Fixture {
     owner_config: custodian.Config,
     owner_pid: process.Pid,
     book: journal.Journal,
-    service: service.Service,
     connection: connection.Config,
-    client: transport.Client,
-    listener: tls.Listener,
-    acceptors: process.Pid,
-    observed: process.Subject(process.Subject(Nil)),
   )
 }
 
-type Shutdown {
-  Shutdown
-}
-
 pub fn completion_receipt_and_ack_are_joined_before_return_test() {
-  let f = fixture()
+  use peer <- beam_fixture.run(
+    "completion_receipt_and_ack_are_joined_before_return_test",
+  )
+  let f = fixture(peer)
   let c = config(f, 11, 5000)
   let request = workspace.Write(path("proof.txt"), "first\n")
   let assert Ok(client.Completed(
@@ -89,6 +75,8 @@ pub fn completion_receipt_and_ack_are_joined_before_return_test() {
     client.Confirmed,
   )) = invoke(c, child(0), request)
     as "Actual mutation, owner receipt and executor ACK complete together."
+
+  // The receipt and ACK precede return; the owner performs no local mutation.
   assert simplifile.read(f.root <> "/executor/proof.txt") == Ok("first\n")
   assert simplifile.is_file(f.root <> "/owner/proof.txt") == Ok(False)
   let assert Ok(#(original, bytes, Some(receipt))) =
@@ -96,7 +84,7 @@ pub fn completion_receipt_and_ack_are_joined_before_return_test() {
     as "Owner exact receipt exists when the consumer returns."
   assert original == entry(11)
   assert codec.decode_completion(request, receipt) |> result.is_ok
-  assert transport.exchange(f.client, transport.Query, bytes)
+  assert connection.workspace_exchange(f.connection, transport.Query, bytes)
     == Ok(journal.Acknowledged(journal.digest(receipt)))
 
   // A duplicate would overwrite an independent editor's later change.
@@ -112,7 +100,10 @@ pub fn completion_receipt_and_ack_are_joined_before_return_test() {
 }
 
 pub fn recovered_receipt_is_usable_when_executor_cannot_answer_test() {
-  let f = fixture()
+  use peer <- beam_fixture.run(
+    "recovered_receipt_is_usable_when_executor_cannot_answer_test",
+  )
+  let f = fixture(peer)
   let request = workspace.Initialize
   let b = binding.new(scope(), f.owner, fn() { entry(11) })
   let assert Ok(reserved) = reserve(b, child(0), request)
@@ -128,7 +119,12 @@ pub fn recovered_receipt_is_usable_when_executor_cannot_answer_test() {
     as "Exact valid completion encodes."
   let assert Ok(_) = binding.receive(reserved, bytes)
     as "Receipt commits independently of the consumer callback."
-  let endpoint = connection.Config(..f.connection, port: 1, within_ms: 50)
+
+  // Durable owner custody remains usable after the actual executor retires.
+  start_executor(f)
+  beam_fixture.mark(f.root, "done")
+  beam_fixture.await(beam_fixture.root(), "executor-success")
+  let endpoint = connection.Config(..f.connection, within_ms: 50)
   let assert Ok(c) =
     client.new(scope(), f.owner, fn() { entry(999) }, endpoint, 50)
     as "Unavailable endpoint is still valid administrative configuration."
@@ -140,13 +136,18 @@ pub fn recovered_receipt_is_usable_when_executor_cannot_answer_test() {
       workspace.InitializationCompleted(Ok(workspace.AlreadyInitialized)),
       None,
     ))
+
+  // Historical owner receipt bytes remain exact despite executor loss.
   assert custodian.child(f.owner, child(0))
     == Ok(#(entry(11), binding.content(reserved), Some(bytes)))
   finish(f)
 }
 
 pub fn recovered_started_observes_without_reexecuting_test() {
-  let f = fixture()
+  use peer <- beam_fixture.run(
+    "recovered_started_observes_without_reexecuting_test",
+  )
+  let f = fixture(peer)
   let request = workspace.Write(path("never.txt"), "must not run")
   let b = binding.new(scope(), f.owner, fn() { entry(11) })
   let assert Ok(reserved) = reserve(b, child(0), request)
@@ -156,6 +157,8 @@ pub fn recovered_started_observes_without_reexecuting_test() {
   let assert Ok(journal.Claimed(_)) =
     journal.claim(f.book, binding.content(reserved))
     as "Original claim commits without starting a filesystem worker."
+
+  // Recovery observes retained executor disposition and cannot claim fresh work.
   assert_observation_only(
     client.recover(config(f, 999, 500), child(0)),
     reserved,
@@ -167,21 +170,31 @@ pub fn recovered_started_observes_without_reexecuting_test() {
 }
 
 pub fn recovered_accepted_and_cancelled_never_submit_test() {
-  let f = fixture()
+  use peer <- beam_fixture.run(
+    "recovered_accepted_and_cancelled_never_submit_test",
+  )
+  let f = fixture(peer)
   let b = binding.new(scope(), f.owner, fn() { entry(11) })
   let request = workspace.Write(path("never.txt"), "must not run")
   let assert Ok(reserved) = reserve(b, child(0), request)
     as "Accepted evidence has exact retained owner identity."
   assert journal.admit(f.book, binding.content(reserved))
     == Ok(journal.Accepted)
+
+  // Recovery observes retained executor disposition and cannot claim fresh work.
   assert_observation_only(
     client.recover(config(f, 999, 500), child(0)),
     reserved,
   )
-  assert journal.inspect(f.book, binding.content(reserved))
+  assert connection.workspace_exchange(
+      f.connection,
+      transport.Query,
+      binding.content(reserved),
+    )
     == Ok(journal.Accepted)
-  assert journal.cancel(f.book, binding.content(reserved))
-    == Ok(journal.Cancelled)
+
+  // The same Accepted identity cancels locally, then the owner observes it.
+  assert cancel_executor(f, binding.content(reserved)) == Ok(journal.Cancelled)
   let assert Ok(client.Cancelled(retained)) =
     client.recover(config(f, 999, 500), child(0))
     as "Durable cancellation is explicit and terminal for this identity."
@@ -191,7 +204,10 @@ pub fn recovered_accepted_and_cancelled_never_submit_test() {
 }
 
 pub fn executor_ack_without_owner_receipt_is_invariant_failure_test() {
-  let f = fixture()
+  use peer <- beam_fixture.run(
+    "executor_ack_without_owner_receipt_is_invariant_failure_test",
+  )
+  let f = fixture(peer)
   let request = workspace.Initialize
   let b = binding.new(scope(), f.owner, fn() { entry(11) })
   let assert Ok(reserved) = reserve(b, child(0), request)
@@ -210,6 +226,8 @@ pub fn executor_ack_without_owner_receipt_is_invariant_failure_test() {
       )),
     )
     as "Fixture completion matches request."
+
+  // Executor collection without owner custody is an invariant violation.
   assert journal.finish(claim, bytes) == Ok(journal.Finished(bytes))
   assert journal.acknowledge(
       f.book,
@@ -227,7 +245,10 @@ pub fn executor_ack_without_owner_receipt_is_invariant_failure_test() {
 }
 
 pub fn invalid_scope_budget_and_changed_candidate_refuse_before_send_test() {
-  let f = fixture()
+  use peer <- beam_fixture.run(
+    "invalid_scope_budget_and_changed_candidate_refuse_before_send_test",
+  )
+  let f = fixture(peer)
   let endpoint = connection.Config(..f.connection, scope: identity_scope(2))
   assert client.new(scope(), f.owner, fn() { entry(11) }, endpoint, 5000)
     == Error(client.InvalidConfiguration)
@@ -237,6 +258,8 @@ pub fn invalid_scope_budget_and_changed_candidate_refuse_before_send_test() {
     == Error(client.InvalidConfiguration)
   assert client.new(scope(), f.owner, fn() { entry(11) }, f.connection, 50)
     == Error(client.InvalidConfiguration)
+
+  // A changed retry cannot replace the original completed reservation.
   let c = config(f, 11, 5000)
   let original = workspace.Write(path("proof.txt"), "first")
   let assert Ok(client.Completed(_, _)) = invoke(c, child(0), original)
@@ -249,7 +272,10 @@ pub fn invalid_scope_budget_and_changed_candidate_refuse_before_send_test() {
 }
 
 pub fn failed_receipt_commit_preserves_effect_and_original_reservation_test() {
-  let f = fixture()
+  use peer <- beam_fixture.run(
+    "failed_receipt_commit_preserves_effect_and_original_reservation_test",
+  )
+  let f = fixture(peer)
   let assert Ok(db) = sqlight.open(f.root <> "/owner/custody.db")
     as "Separate test connection installs a durable receipt refusal."
   assert sqlight.exec(
@@ -257,6 +283,8 @@ pub fn failed_receipt_commit_preserves_effect_and_original_reservation_test() {
       db,
     )
     == Ok(Nil)
+
+  // A failed owner COMMIT cannot turn an executed mutation into a refusal.
   let request = workspace.Write(path("proof.txt"), "executed once")
   let assert Ok(client.Pending(reserved, client.ReceiptUncertain)) =
     invoke(config(f, 11, 5000), child(0), request)
@@ -264,9 +292,15 @@ pub fn failed_receipt_commit_preserves_effect_and_original_reservation_test() {
   assert custodian.child(f.owner, child(0))
     == Ok(#(entry(11), binding.content(reserved), None))
   let assert Ok(journal.Finished(bytes)) =
-    transport.exchange(f.client, transport.Query, binding.content(reserved))
+    connection.workspace_exchange(
+      f.connection,
+      transport.Query,
+      binding.content(reserved),
+    )
     as "Executor must retain exact completion without owner ACK."
   assert simplifile.read(f.root <> "/executor/proof.txt") == Ok("executed once")
+
+  // Restored receipt storage settles original bytes without repeating the effect.
   assert simplifile.write(f.root <> "/executor/proof.txt", "later") == Ok(Nil)
   assert sqlight.exec("DROP TRIGGER reject_receipt", db) == Ok(Nil)
   assert sqlight.close(db) == Ok(Nil)
@@ -280,7 +314,10 @@ pub fn failed_receipt_commit_preserves_effect_and_original_reservation_test() {
 }
 
 pub fn invalid_payload_cannot_send_before_durable_reservation_test() {
-  let f = fixture()
+  use peer <- beam_fixture.run(
+    "invalid_payload_cannot_send_before_durable_reservation_test",
+  )
+  let f = fixture(peer)
   let request =
     workspace.Write(
       path("never.txt"),
@@ -297,7 +334,11 @@ pub fn invalid_payload_cannot_send_before_durable_reservation_test() {
 }
 
 pub fn observer_crash_is_distinct_from_deadline_and_preserves_child_test() {
-  let f = fixture()
+  use peer <- beam_fixture.run(
+    "observer_crash_is_distinct_from_deadline_and_preserves_child_test",
+  )
+  let f = fixture(peer)
+  start_executor(f)
   let assert Ok(c) =
     client.new(
       scope(),
@@ -317,7 +358,10 @@ pub fn observer_crash_is_distinct_from_deadline_and_preserves_child_test() {
 }
 
 pub fn whole_call_deadline_bounds_initial_owner_waits_test() {
-  let f = fixture()
+  use peer <- beam_fixture.run(
+    "whole_call_deadline_bounds_initial_owner_waits_test",
+  )
+  let f = fixture(peer)
   let c = config(f, 11, 50)
   assert suspend(f.owner_pid)
   let started = poll.monotonic().now()
@@ -325,6 +369,8 @@ pub fn whole_call_deadline_bounds_initial_owner_waits_test() {
   let recovered = client.recover(c, child(0))
   let elapsed = poll.monotonic().now() - started
   assert resume(f.owner_pid)
+
+  // Expired observers cannot reserve through the resumed owner afterward.
   assert first == Error(client.ObservationExpired(child(0)))
   assert recovered == Error(client.ObservationExpired(child(0)))
   assert elapsed < 1000
@@ -334,15 +380,11 @@ pub fn whole_call_deadline_bounds_initial_owner_waits_test() {
 }
 
 pub fn whole_call_deadline_preserves_effect_and_original_identity_test() {
-  let written = process.new_subject()
-  let f =
-    fixture_with(fn(_) {
-      let release = process.new_subject()
-      process.send(written, release)
-      let assert Ok(Nil) = process.receive(release, 2000)
-        as "Controller suspends owner before the result can be delivered."
-      Nil
-    })
+  use peer <- beam_fixture.run(
+    "whole_call_deadline_preserves_effect_and_original_identity_test",
+  )
+  let f = fixture(peer)
+  beam_fixture.mark(f.root, "hold-after-write")
   let request = workspace.Write(path("proof.txt"), "original")
   let answers = process.new_subject()
   let c = config(f, 11, 500)
@@ -351,14 +393,17 @@ pub fn whole_call_deadline_preserves_effect_and_original_identity_test() {
     process.spawn_unlinked(fn() {
       process.send(answers, invoke(c, child(0), request))
     })
-  let assert Ok(release) = process.receive(written, 2000)
-    as "Filesystem effect has completed before owner contention."
+
+  // The executor effect is already complete before owner contention begins.
+  beam_fixture.await(f.root, "written")
   assert suspend(f.owner_pid)
-  process.send(release, Nil)
+  beam_fixture.mark(f.root, "release-write")
   let answer = process.receive(answers, 2000)
   let elapsed = poll.monotonic().now() - started
   assert resume(f.owner_pid)
   let assert Ok(answer) = answer as "Consumer returns despite stalled owner."
+
+  // Expiry retains the same recovery key while withholding owner receipt and ACK.
   assert answer == Error(client.ObservationExpired(child(0)))
   assert elapsed < 1500
 
@@ -368,9 +413,11 @@ pub fn whole_call_deadline_preserves_effect_and_original_identity_test() {
     as "Original reservation survives observation expiry."
   assert id == entry(11)
   let assert Ok(journal.Finished(bytes)) =
-    transport.exchange(f.client, transport.Query, content)
+    connection.workspace_exchange(f.connection, transport.Query, content)
     as "Executor retains completion until an owner actually acknowledges it."
   assert receipt == None
+
+  // An independent later editor change must survive original receipt recovery.
   assert simplifile.write(f.root <> "/executor/proof.txt", "later") == Ok(Nil)
   let assert Ok(client.Completed(_, client.Confirmed)) =
     client.recover(config(f, 999, 5000), child(0))
@@ -400,6 +447,7 @@ fn assert_observation_only(answer, reserved) {
 }
 
 fn config(f: Fixture, seed: Int, within: Int) {
+  start_executor(f)
   let endpoint = connection.Config(..f.connection, within_ms: within)
   let assert Ok(c) =
     client.new(scope(), f.owner, fn() { entry(seed) }, endpoint, within)
@@ -415,23 +463,12 @@ fn invoke(
   client.invoke(c, origin, operation(), step(), tool_origin(), request)
 }
 
-fn fixture() -> Fixture {
-  fixture_with(fn(_) { Nil })
-}
-
-fn fixture_with(after_write: fn(process.Pid) -> Nil) -> Fixture {
-  let #(seconds, nanos) =
-    timestamp.system_time() |> timestamp.to_unix_seconds_and_nanoseconds
-  let assert Ok(here) = simplifile.current_directory()
-    as "Fixture has a project directory."
-  let root =
-    here
-    <> "/build/remote-workspace-"
-    <> int.to_string(seconds)
-    <> "-"
-    <> int.to_string(nanos)
+fn fixture(peer: distribution.Peer) -> Fixture {
+  let root = beam_fixture.root() <> "/data"
   assert simplifile.create_directory_all(root <> "/owner") == Ok(Nil)
   assert simplifile.create_directory_all(root <> "/executor") == Ok(Nil)
+
+  // The actual parent admission is committed before the child custodian opens.
   let assert Ok(limits) =
     custody.limits(4, 16, 268_435_456, codec.max_completion_bytes)
     as "Owner reserves complete workspace results within finite aggregate capacity."
@@ -442,6 +479,8 @@ fn fixture_with(after_write: fn(process.Pid) -> Nil) -> Fixture {
     as "Parent material is bounded."
   assert custody.admit(store, key(), parent, parent) == Ok(Nil)
   assert custody.close(store) == Ok(Nil)
+
+  // The owner actor alone retains child admission and final receipt authority.
   let assert Ok(names) = registry.start() as "Fixture owns a registry."
   let assert Ok(owner_config) =
     custodian.config(owner_path, session(), limits, 1, 5000, fn(_, _, _) {
@@ -451,64 +490,157 @@ fn fixture_with(after_write: fn(process.Pid) -> Nil) -> Fixture {
   let owner = custodian.new(names, owner_config)
   let assert Ok(owner_started) = custodian.start(owner, owner_config)
     as "Owner custodian starts."
+
+  // Executor reservations have a distinct actual SQLite journal and ceiling.
   let assert Ok(limits) = journal.limits(4, 268_435_456)
     as "Executor reservation is bounded."
   let assert Ok(book) =
     journal.fresh(root <> "/executor/custody.db", scope(), limits)
     as "Executor SQLite opens."
-  let observed = process.new_subject()
-  let local =
-    local_host(scope(), context(root <> "/executor"), fn(_) {
-      let continue = process.new_subject()
-      process.send(observed, continue)
-      after_write(owner_started.pid)
-      None
+  let endpoint =
+    connection.Config(peer, "owner", "executor", identity_scope(1), 1, 5000)
+  FixtureState(root, owner, owner_config, owner_started.pid, book, endpoint)
+}
+
+/// The fixed executor role hosts actual SQLite, filesystem and native services.
+/// Only test barriers control setup; production operations cross the TLS endpoint.
+pub fn executor_main() -> Nil {
+  let runtime_root = beam_fixture.root()
+  let root = runtime_root <> "/data"
+  let assert Ok(provisioned) =
+    distribution_fixture.read_provisioned(runtime_root <> "/fixture.term")
+    as "The executor receives only its original administrative fixture."
+  let assert Ok(membership) = distribution.start(provisioned.executor_config)
+    as "The independent executor enters real mutual TLS membership."
+  let assert Ok(owner) = distribution.peer(membership, provisioned.owner_name)
+    as "The registered owner has exact admitted boot provenance."
+  let assert poll.Answered(Nil) =
+    poll.until(10_000, 10, fn() {
+      case simplifile.is_file(root <> "/start") {
+        Ok(True) -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
     })
-  let assert Ok(config) = service.configure(local, book, 2, 10_000)
-    as "Service binds exact host and journal scope."
-  let assert Ok(service) = service.start(config)
-    as "Effect custody is independent from connection custody."
-  let assert Ok(Nil) = tls.start() as "SSL starts."
-  let WorkspaceCredentials(server_cert, client_cert) = certificates()
-  let assert Ok(socket) =
-    tls.listen(settings(server_cert, client_cert), tls.Loopback, 0)
-    as "Real listener binds."
-  let assert Ok(port) = tls.port(socket) as "Ephemeral endpoint is known."
-  let assert Ok(server) = transport.server("owner", identity_scope(1), service)
-    as "Peer scope matches actual service."
-  let assert Ok(config) = listener.configure_workspace(socket, server, 2, 5000)
-    as "Acceptor capacity is finite."
-  let assert Ok(acceptors) =
-    supervisor.new(supervisor.OneForOne)
-    |> supervisor.add(listener.supervised(config))
-    |> supervisor.start
-    as "Production acceptor subtree starts."
-  let connection =
-    connection.Config(
-      settings(client_cert, server_cert),
-      "localhost",
-      port,
-      5000,
+    as "The owner commits and releases test setup before executor startup."
+
+  // Executor reservations have a distinct actual SQLite journal and ceiling.
+  let assert Ok(limits) = journal.limits(4, 268_435_456)
+    as "The executor retains the original reservation ceiling."
+  let assert Ok(book) =
+    journal.recover(root <> "/executor/custody.db", scope(), limits)
+    as "The original journal metadata and historical fences reopen unchanged."
+  let host =
+    local_host(scope(), context(root <> "/executor"), fn(_) {
+      case simplifile.is_file(root <> "/hold-after-write") {
+        Ok(True) -> {
+          beam_fixture.mark(root, "written")
+          beam_fixture.await(root, "release-write")
+          None
+        }
+        _ -> None
+      }
+    })
+  let assert Ok(config) = service.configure(host, book, 2, 10_000)
+    as "Concrete semantic host and journal share the exact original scope."
+  let assert Ok(semantic) = service.start(config)
+    as "Real executor-local filesystem work owns its own effect custody."
+
+  // Enrollment derives from concrete local service owners, never wire callbacks.
+  let #(native_executor, native_remote) = concrete_native(root)
+  let assert Ok(row) =
+    connection.registration(owner, native_remote, Some(semantic))
+    as "Enrollment binds the actual native and semantic actors locally."
+  let assert Ok(server_config) = connection.configure_server([row], 10_000)
+    as "Only this original scope enters the finite node-wide rendezvous."
+  let assert Ok(endpoint) = connection.start(server_config)
+    as "The actual fixed endpoint publishes after TLS bootstrap and local setup."
+  beam_fixture.mark(root, "ready")
+
+  // A fixed Accepted cancellation control preserves the original test setup
+  // without adding a semantic Cancel command to the production wire protocol.
+  let assert poll.Answered(Nil) =
+    poll.until(15_000, 10, fn() {
+      case simplifile.is_file(root <> "/done") {
+        Ok(True) -> poll.Done(Nil)
+        _ -> {
+          case
+            simplifile.is_file(root <> "/cancel"),
+            simplifile.is_file(root <> "/cancelled")
+          {
+            Ok(True), Ok(False) -> {
+              let assert Ok(bytes) =
+                simplifile.read_bits(root <> "/cancel.bytes")
+                as "The control contains the original canonical retained request."
+              assert journal.cancel(book, bytes) == Ok(journal.Cancelled)
+              beam_fixture.mark(root, "cancelled")
+            }
+            _, _ -> Nil
+          }
+          poll.Retry
+        }
+      }
+    })
+    as "The finite executor role observes its explicit shutdown barrier."
+  connection.quiesce(endpoint)
+  assert service.close(semantic) == Ok(Nil)
+  assert journal.mode(book) == Ok(journal.SealedScope)
+  assert journal.release(book) == Ok(Nil)
+  connection.stop(endpoint)
+  assert native.close(native_executor, draining: 1000, helpers: 1000) == Ok(Nil)
+  beam_fixture.mark(runtime_root, "executor-success")
+}
+
+fn concrete_native(root: String) {
+  let assert Ok(executor) =
+    native.start(native.ExecutorConfig(
+      fn() { Error(exec.PoolUnavailable) },
+      fn(_) { Nil },
+      fn() { Error(exec.PoolUnavailable) },
+      fn(_) { Ok(Nil) },
+      4,
+      log.discard(),
+    ))
+    as "A real native actor exists; semantic-only cases allocate no process pool."
+  let assert Ok(capacity) = admission.capacity(4)
+    as "Native admission remains finite even though these cases send no commands."
+  let assert Ok(book) =
+    native_journal.fresh(root <> "/native.sqlite", identity_scope(1), capacity)
+    as "Actual native registration has separate SQLite custody."
+  let assert Ok(remote) =
+    native_service.start(native_service.Config(
       "owner",
       "executor",
-      1,
       identity_scope(1),
-    )
-  let assert Ok(client) = transport.client(connection)
-    as "Owner endpoint validates."
-  FixtureState(
-    root,
-    owner,
-    owner_config,
-    owner_started.pid,
-    book,
-    service,
-    connection,
-    client,
-    socket,
-    acceptors.pid,
-    observed,
-  )
+      1,
+      book,
+      executor,
+      fn(_, _) { Ok(Nil) },
+      poll.monotonic().now,
+    ))
+    as "The endpoint enrollment derives from the real scoped native service."
+  #(executor, remote)
+}
+
+// Seeding commits before the executor opens this same journal. Recovery retains
+// its exact metadata, Accepted/Started fences and all original invocation bytes.
+fn start_executor(f: Fixture) -> Nil {
+  case simplifile.is_file(f.root <> "/start") {
+    Ok(True) -> Nil
+    _ -> {
+      assert journal.release(f.book) == Ok(Nil)
+      beam_fixture.mark(f.root, "start")
+      beam_fixture.await(f.root, "ready")
+    }
+  }
+}
+
+// This fixed test administration is not a production workspace command. It
+// cancels exactly the original retained Accepted row in the executor's book.
+fn cancel_executor(f: Fixture, bytes: BitArray) {
+  assert simplifile.write_bits(f.root <> "/cancel.bytes", bytes) == Ok(Nil)
+  beam_fixture.mark(f.root, "cancel")
+  beam_fixture.await(f.root, "cancelled")
+  connection.workspace_exchange(f.connection, transport.Query, bytes)
 }
 
 fn context(root: String) -> tool.Ctx {
@@ -616,14 +748,6 @@ fn identity_scope(epoch: Int) {
   identity.scope(session(), w, e, owner_epoch, workspace_epoch)
 }
 
-fn settings(local: Credentials, peer: Credentials) {
-  let Credentials(ca, certificate, key, _) = local
-  let assert Ok(value) =
-    tls.settings(ca, certificate, key, peer.pin, 2000, 2000, 1000)
-    as "Existing PKIX fixtures parse."
-  value
-}
-
 fn stop_owner(f: Fixture) {
   let monitor = process.monitor(f.owner_pid)
   assert custodian.stop(f.owner) == Ok(Nil)
@@ -636,19 +760,10 @@ fn stop_owner(f: Fixture) {
 }
 
 fn finish(f: Fixture) {
-  tls.close_listener(f.listener)
-  let monitor = process.monitor(f.acceptors)
-  process.unlink(f.acceptors)
-  process.send_abnormal_exit(f.acceptors, Shutdown)
-  let assert Ok(_) =
-    process.new_selector()
-    |> process.select_specific_monitor(monitor, fn(down) { down })
-    |> process.selector_receive(6000)
-    as "All bounded network workers stop."
-  assert service.close(f.service) == Ok(Nil)
-  assert journal.mode(f.book) == Ok(journal.SealedScope)
   assert journal.release(f.book) == Ok(Nil)
   stop_owner(f)
+  beam_fixture.mark(f.root, "done")
+  beam_fixture.await(beam_fixture.root(), "executor-success")
 }
 
 // A registered context cannot construct the executor-local host.

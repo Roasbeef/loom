@@ -26,7 +26,7 @@ import client/remote/custodian
 import core/ids
 import core/msgpack as mp
 import core/remote_tool
-import executor/remote/connection
+import executor/remote/beam_endpoint as connection
 import executor/remote/dispatcher
 import executor/remote/identity
 import executor/remote/journal_codec
@@ -79,24 +79,11 @@ pub fn new(
   reconcile_ms reconcile_ms: Int,
   fatal_fence fatal_fence: fn(custody.Error) -> Nil,
 ) -> Result(Binding, custody.Error) {
-  use _ <- result.try(
-    identity.executor_id(connection.owner)
-    |> result.replace_error(custody.Invalid("invalid configured owner label")),
+  use Nil <- result.try(
+    connection.validate(connection)
+    |> result.replace_error(custody.Invalid("invalid remote executor endpoint")),
   )
-  let scope = identity.scope_fields(connection.scope)
-  case
-    connection.executor == scope.2
-    && connection.hostname != ""
-    && connection.port > 0
-    && connection.port <= 65_535
-    && connection.within_ms > 0
-    && connection.within_ms <= 30_000
-    && connection.generation > 0
-    && connection.generation <= 2_147_483_647
-    && incarnation > 0
-    && reconcile_ms > 0
-    && reconcile_ms <= 86_400_000
-  {
+  case incarnation > 0 && reconcile_ms > 0 && reconcile_ms <= 86_400_000 {
     True ->
       Ok(Binding(
         owner:,
@@ -113,7 +100,7 @@ pub fn new(
 }
 
 /// Projects the production callbacks over the same immutable custody binding.
-/// This adapter performs no socket I/O; the executor dispatcher owns transport.
+/// This adapter performs no network I/O; the executor dispatcher owns transport.
 ///
 /// ## Examples
 ///
