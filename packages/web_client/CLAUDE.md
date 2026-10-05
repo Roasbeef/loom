@@ -59,9 +59,12 @@ renders again just for it:
   history entry for Back to reopen without a nonce. It renders nothing, takes no
   focus and listens for no event (protocol-change/051, the addendum on
   switching sessions).
-- `<loom-copy subject="command|token|link|device" text="...">` (`device` is the
+- `<loom-copy subject="command|token|link|device|claim-address" text="...">`
+  (`device` is the
   home's device-link address, protocol-change/065, PR 8: `http://`, a loopback
-  host, `/ui/home?ticket=` and 64 lowercase hex digits, and nothing else) draws one of an
+  host, `/ui/home?ticket=` and 64 lowercase hex digits, and nothing else;
+  `claim-address` is the browser claim address, `http://`, a loopback host and
+  `/ui/claim` with nothing after it) draws one of an
   invitation's two texts, or the ended page's `loom ui` command for a fresh
   link (`link`, protocol-change/065, the addendum on the home list), in a
   `code` element in its shadow root, with a button
@@ -208,7 +211,7 @@ time builds anything.
   `Reading` more than `slack` pixels from the bottom, one button, "Jump to
   latest" (`Jumped`), whose wrapper has no height and sticks to the
   scroller's bottom edge.
-- `copy_rule.Subject` (`Command` | `Token`), `Copying` (`Idle` | `Copied` |
+- `copy_rule.Subject` (`Command` | `Token` | `Link` | `Device` | `ClaimPage`), `Copying` (`Idle` | `Copied` |
   `Failed`), `subject`, `text`, `after` and `words`, and `copy.Model(subject,
   held, copying)` with `copy.Msg` (`Subjected`, `Texted`, `Pressed`,
   `Written`): the element keeps the raw `text` and checks it against the

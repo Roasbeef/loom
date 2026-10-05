@@ -9,9 +9,11 @@
 //// principal, the session, the lifetime or the name.
 ////
 //// After the daemon has minted an invitation the control shows it once, in
-//// place of the buttons: the command the invitee runs and the claim token,
-//// each in a `<loom-copy>` box (`packages/web_client`), and the words the
-//// owner needs to hand both over safely. The text travels as the box's `text`
+//// place of the buttons: the address an invitee without `loom` opens to claim
+//// in a browser, the claim token, and, second, the command an invitee with
+//// `loom` runs (`handover`, which the admin page's claim box shares). Each is
+//// in a `<loom-copy>` box (`packages/web_client`), and the words say what the
+//// owner needs to hand them over safely. The text travels as the box's `text`
 //// attribute, which the element draws and copies only when it has the exact
 //// shape the daemon writes for its subject. The words are fixed text. They say
 //// that both travel outside Loom, because a token pasted into a session
@@ -34,6 +36,7 @@
 //// key, a URL or a handler's message.
 
 import gleam/int
+import gleam/list
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -155,50 +158,92 @@ fn showing(
       attribute.class("share-shown"),
       attribute.aria_label("Invitation"),
     ],
-    [
-      html.h3([attribute.class("share-title")], [
-        html.text("Invitation ready"),
-      ]),
-      html.p([attribute.class("share-lead")], [
-        html.text(
-          "Role: "
-          <> invites.role_word(invitation.role)
-          <> ". Principal: "
-          <> invitation.principal
-          <> ". Single use, valid for "
-          <> int.to_string(invites.minutes(invitation.expires_in_ms))
-          <> " minutes.",
-        ),
-      ]),
-      html.p([attribute.class("share-lead")], [
-        html.text(
-          "Send the command and the token to the person over a channel outside Loom, never through this session: text sent here becomes transcript, and the agent can read it and use the token first.",
-        ),
-      ]),
-      field("Command", "command", invitation.command),
-      field("Claim token", "token", invitation.token),
-      html.p([attribute.class("share-lead")], [
-        html.text(
-          "The command works on the machine that runs this daemon. This box is the only place the token is shown, so copy it now.",
-        ),
-      ]),
-      html.p([attribute.class("share-lead")], [
-        html.text(
-          "After they have run it, ask them for the credential fingerprint that loom claim prints, and compare it with them before you rely on the new member. If the token is not used, void it with loomd access revoke-credentials "
+    list.flatten([
+      [
+        html.h3([attribute.class("share-title")], [
+          html.text("Invitation ready"),
+        ]),
+        html.p([attribute.class("share-lead")], [
+          html.text(
+            "Role: "
+            <> invites.role_word(invitation.role)
+            <> ". Principal: "
+            <> invitation.principal
+            <> ". Single use, valid for "
+            <> int.to_string(invites.minutes(invitation.expires_in_ms))
+            <> " minutes.",
+          ),
+        ]),
+        html.p([attribute.class("share-lead")], [
+          html.text(
+            "Send the command and the token to the person over a channel outside Loom, never through this session: text sent here becomes transcript, and the agent can read it and use the token first.",
+          ),
+        ]),
+      ],
+      handover(
+        invitation.page,
+        invitation.command,
+        invitation.token,
+        "loom claim prints a credential fingerprint; compare it with them before you rely on the new member. If the token is not used, void it with loomd access revoke-credentials "
           <> invitation.principal
           <> ".",
-        ),
-      ]),
-      html.button(
-        [
-          attribute.type_("button"),
-          attribute.class("share-done"),
-          event.on_click(presses.done),
-        ],
-        [html.text("Hide the token")],
       ),
-    ],
+      [
+        html.button(
+          [
+            attribute.type_("button"),
+            attribute.class("share-done"),
+            event.on_click(presses.done),
+          ],
+          [html.text("Hide the token")],
+        ),
+      ],
+    ]),
   )
+}
+
+/// What the owner hands to the person an invitation or a rotation is for, in
+/// the order they use it: the browser claim address, the token, and, as the
+/// second way, the `loom claim` command for a person who has `loom`. A person
+/// without `loom` can only use the first, which is who an invitation made from a
+/// browser is usually for, so it leads (protocol-change/065, the addendum on the
+/// browser claim). `after_claim` is the fixed sentence that says what the owner
+/// checks once the command has run, since the fingerprint `loom claim` prints
+/// applies to it alone.
+///
+/// The words are fixed here. The three values are the daemon's own and travel
+/// only as the `text` of a copy box.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // share.handover(claim.page, claim.command, claim.token, "loom claim prints a key.")
+/// ```
+pub fn handover(
+  page: String,
+  command: String,
+  token: String,
+  after_claim: String,
+) -> List(Element(message)) {
+  [
+    html.p([attribute.class("share-lead")], [
+      html.text("Open this address and paste the token:"),
+    ]),
+    field("Claim address", "claim-address", page),
+    field("Claim token", "token", token),
+    html.p([attribute.class("share-lead")], [
+      html.text(
+        "This box is the only place the token is shown, so copy it now.",
+      ),
+    ]),
+    html.p([attribute.class("share-lead")], [
+      html.text(
+        "Or, with loom installed, run this on the machine that runs the daemon:",
+      ),
+    ]),
+    field("Command", "command", command),
+    html.p([attribute.class("share-lead")], [html.text(after_claim)]),
+  ]
 }
 
 /// One labelled copy box. `subject` is one of two fixed words, and `text` is

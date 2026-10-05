@@ -1206,10 +1206,14 @@ principal ID (at most 128 bytes, from the `next` of the previous page):
 ```
 
 ```json
-{"v":2,"reply_to":15,"event":"sessions.members","body":{"session_id":"0198c0de-0000-7000-8000-000000000001","members":[{"principal_id":"alice","name":"Alice","role":"operator"}],"next":"alice"}}
+{"v":2,"reply_to":15,"event":"sessions.members","body":{"session_id":"0198c0de-0000-7000-8000-000000000001","scope":"session_only","members":[{"principal_id":"alice","name":"Alice","role":"operator"}],"next":"alice"}}
 ```
 
-`role` is `operator` or `observer`. The members are in principal-ID order, and
+`scope` is the scope the session was created with, `session_only` for a session
+that may be shared and `workspace_private` for one that shares its notes and
+history with its workspace and may not (the sixth addendum to protocol-change/065).
+A client that does not read it is unaffected. `role` is `operator` or `observer`.
+The members are in principal-ID order, and
 the owner holds no membership rows, so it never appears. A session the
 catalogue does not hold is `not_found`. The page and byte bounds are the other
 listings': at most 100 rows and 60,000 bytes, and `next` is the last principal

@@ -1633,7 +1633,7 @@ pub fn device_link_for(
     Error(reason) -> signins.Declined(reason)
     Ok(until) ->
       case ui_sessions.reserve_invite(tickets, standing.digest) {
-        Error(Nil) -> signins.Declined(signins.TooMany)
+        Error(_) -> signins.Declined(signins.TooMany)
         Ok(Nil) ->
           case
             ui_sessions.mint_device(
@@ -2313,7 +2313,7 @@ pub fn invite_for(
     Error(reason) -> invites.Declined(reason)
     Ok(address) ->
       case ui_sessions.reserve_invite(tickets, attachment.digest) {
-        Error(Nil) -> invites.Declined(invites.TooMany)
+        Error(_) -> invites.Declined(invites.TooMany)
         Ok(Nil) ->
           case invited(attachment, address, chosen) {
             Ok(invitation) -> invites.Minted(invitation)
@@ -2442,6 +2442,7 @@ fn invitation(
   invites.Invitation(
     principal: principal.id,
     role: chosen,
+    page: browser_claim_address(address),
     command: "loom claim --addr " <> address,
     token: claim_token,
     expires_in_ms: invites.claim_ttl_ms,
@@ -3121,19 +3122,28 @@ fn chosen_members(
               after: "",
             )
           {
-            Ok(page) ->
-              Ok(
-                Some(grants.Selection(
-                  session:,
-                  holders: list.map(page.entries, listed_holder),
-                  more: more_of(page.remainder),
-                )),
-              )
+            Ok(members) -> Ok(Some(selection_of(session, members)))
             Error(manager.AdminMetadata(catalogue.Missing)) -> Ok(None)
             Error(error) -> Error(admin_failure(error))
           }
       }
   }
+}
+
+// One session's members as the page's selection: who holds it, whether there are
+// more, and whether it may be shared. The registry holds `SessionOnly` for a
+// session created to be shared, and the page words the two scopes by what they
+// allow.
+fn selection_of(session: String, members: manager.Members) -> grants.Selection {
+  grants.Selection(
+    session:,
+    holders: list.map(members.page.entries, listed_holder),
+    more: more_of(members.page.remainder),
+    scope: case members.scope {
+      domain.SessionOnly -> creations.Shareable
+      domain.WorkspacePrivate -> creations.Private
+    },
+  )
 }
 
 // The registry's refusal of an administration read as the page's failure: a
@@ -3382,7 +3392,7 @@ fn granted(
 ) -> Result(grants.Answer, grants.Reason) {
   use _ <- result.try(
     ui_sessions.reserve_invite(tickets, standing.digest)
-    |> result.replace_error(grants.TooMany),
+    |> result.map_error(too_many),
   )
   case manager.administer(standing.registry, standing.digest, epoch, action) {
     Ok(_) -> Ok(grants.Changed)
@@ -3424,7 +3434,7 @@ fn invite_for_admin(
   use address <- result.try(address |> result.replace_error(grants.Unavailable))
   use _ <- result.try(
     ui_sessions.reserve_invite(tickets, standing.digest)
-    |> result.replace_error(grants.TooMany),
+    |> result.map_error(too_many),
   )
   case
     invitation(
@@ -3442,6 +3452,7 @@ fn invite_for_admin(
         grants.Claimed(grants.Claim(
           principal: made.principal,
           purpose: grants.Invited(role),
+          page: made.page,
           command: made.command,
           token: made.token,
           expires_in_ms: made.expires_in_ms,
@@ -3452,6 +3463,13 @@ fn invite_for_admin(
       Error(refusal_reason(refusal))
     }
   }
+}
+
+// The refusal of a grant that found the allowance spent, with the count and the
+// instant a place frees. The count is the whole allowance, since a refusal only
+// happens when every place is taken.
+fn too_many(free_at_ms: Int) -> grants.Reason {
+  grants.TooMany(used: ui_sessions.invite_limit, free_at_ms:)
 }
 
 // The suggested name: none when blank, the trimmed text when it passes the
@@ -3478,7 +3496,7 @@ fn rotate_for_admin(
   use address <- result.try(address |> result.replace_error(grants.Unavailable))
   use _ <- result.try(
     ui_sessions.reserve_invite(tickets, standing.digest)
-    |> result.replace_error(grants.TooMany),
+    |> result.map_error(too_many),
   )
   case rotation(standing, epoch, address, principal) {
     Ok(claim) -> Ok(grants.Claimed(claim))
@@ -3513,6 +3531,7 @@ fn rotation(
   grants.Claim(
     principal: rotated.id,
     purpose: grants.Rotated,
+    page: browser_claim_address(address),
     command: "loom claim --addr " <> address,
     token: claim_token,
     expires_in_ms: invites.claim_ttl_ms,
@@ -3580,6 +3599,27 @@ pub fn admin_task(
     ])
     |> weft.start_witnessed
   Nil
+}
+
+/// The address a person without `loom` opens to claim in a browser, made from
+/// the address `claim_address` made for the command: `http://`, the same host
+/// and `/ui/claim` (`page.claim_path`). It names no token, and the command's
+/// address ends in `/v2/control` by construction, so only the scheme and the
+/// path change.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.browser_claim_address("ws://127.0.0.1:4000/v2/control")
+///   == "http://127.0.0.1:4000/ui/claim"
+/// ```
+@internal
+pub fn browser_claim_address(address: String) -> String {
+  let host =
+    address
+    |> string.drop_start(string.length("ws://"))
+    |> string.drop_end(string.length("/v2/control"))
+  "http://" <> host <> page.claim_path
 }
 
 /// The address a page's claim command names: `ws://` and the `Host` the page

@@ -179,17 +179,34 @@ page keys and nonces, and the relay into the session's gateway.
   overtaken is dropped, and also the page's check that it may still be served
   (`Closed` ends it, `Unread` keeps the snapshot). The model holds one ask at a
   time (`waiting`), the armed revocation (`armed`, at most one), the chosen
-  session, the last notice and the claim an ask made (`claim`) until `Dismissed`.
+  session, the last notice (a `notice.Spoken`: the action with its `Said` or
+  `Refused` words, which decide where the line is drawn) and the claim an ask
+  made (`claim`) until `Dismissed`. The claim is drawn beside the action that
+  made it, never sticky: under the invitation form (`admin_claim.for_session`) or
+  under the rotated person's row (`for_person`), each one fixed child of its
+  parent so no path moves. The centre's first child is an empty place, so the
+  body stays at `admin.body_path`. After a `TooMany` refusal the model keeps when a place frees
+  (`Model.spent`), and until then `admin_buttons.Busy` is `Spent(words)`: the
+  buttons that grant (`admin_buttons.granting`: Rotate, Make operator, Create
+  invitation) carry the refusal's words in their `title` and still send, since
+  the daemon decides.
   `Choosing(id)` reads that session's members; `Asking(action)` asks;
   `Arming(action)`/`Disarming` are a revocation's two presses. `web_view/grants`
   is the vocabulary: `Principal`, `Credential`, `Holder`, `Snapshot`, `Reading`,
   the five `Action`s (`Invite`, `SetRole`, `RevokeMembership`, `RevokeCredentials`,
-  `Rotate`), `Claim`, `Answer` (`Claimed | Changed | Declined`) and `Reason` with
-  `reason_words` and `changed_words`. The views are `view/admin_people` (the
-  people and the pending invitations), `view/admin_sessions` (the session
-  chooser, a chosen session's members and the invitation form, whose `fields` is
-  the one rule for what it may hold), `view/admin_claim` (the claim, once, in
-  `share.field`'s copy boxes) and `view/admin_buttons` (`Busy`, `Presses`, the
+  `Rotate`), `Claim` (with `page`, the browser claim address), `Answer`
+  (`Claimed | Changed | Declined`) and `Reason` with `reason_words` and
+  `changed_words`; `TooMany(used, free_at_ms)` words the count and the UTC time
+  the allowance frees, and `Selection.scope` (`creations.Sharing`) is the `scope`
+  of the members read. `grants.short_identity` draws an identity as its prefix and
+  eight characters. The views are `view/admin_people` (each person once, an open
+  claim in its row, buttons by what the person holds), `view/admin_sessions` (the
+  session chooser, a chosen session's members and the invitation form, whose
+  `fields` is the one rule for what it may hold, or one sentence for a private
+  session), `view/admin_claim` (the claim, once, via `share.handover`: the browser
+  address, the token, then the `loom claim` command), `view/notice` (`Said` and
+  `Refused` lines, placed beside what was acted on; the home adopts it later) and
+  `view/admin_buttons` (`Busy`, `Presses`, the
   two-step `guarded` button). The body (`admin.body_path`, `"0\t2\t1"`) is the
   one region the socket admits an event beneath. The home's `Start.admin`
   (`Some` only for the owner's fresh operating home) draws `home_bar.admin`, the

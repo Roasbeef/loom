@@ -61,6 +61,14 @@ fn table(time: Subject(Clock)) -> ui_sessions.Sessions {
   sessions
 }
 
+// Whether a reservation was refused, whatever instant the refusal names.
+fn refused(reservation: Result(Nil, Int)) -> Bool {
+  case reservation {
+    Error(_) -> True
+    Ok(Nil) -> False
+  }
+}
+
 type Count {
   Next(reply: Subject(Int))
 }
@@ -774,13 +782,13 @@ pub fn every_grant_surface_reserves_from_the_one_allowance_test() {
   list.each(list.repeat(Nil, ui_sessions.invite_limit), fn(_) {
     assert ui_sessions.reserve_invite(sessions, digest) == Ok(Nil)
   })
-  assert ui_sessions.reserve_invite(sessions, digest) == Error(Nil)
+  assert refused(ui_sessions.reserve_invite(sessions, digest))
 
   // A demotion reserves nothing, so it is not a call here at all; a refused grant
   // gives its place back and the next asks again.
   ui_sessions.release_invite(sessions, digest)
   assert ui_sessions.reserve_invite(sessions, digest) == Ok(Nil)
-  assert ui_sessions.reserve_invite(sessions, digest) == Error(Nil)
+  assert refused(ui_sessions.reserve_invite(sessions, digest))
 
   // The place frees an hour after it was taken.
   process.send(time, Advance(ui_sessions.invite_window_ms))
@@ -882,8 +890,8 @@ pub fn a_credential_may_reserve_only_the_invite_limit_test() {
   list.each(list.repeat(Nil, ui_sessions.invite_limit), fn(_) {
     assert ui_sessions.reserve_invite(sessions, owner) == Ok(Nil)
   })
-  assert ui_sessions.reserve_invite(sessions, owner) == Error(Nil)
-  assert ui_sessions.reserve_invite(sessions, owner) == Error(Nil)
+  assert refused(ui_sessions.reserve_invite(sessions, owner))
+  assert refused(ui_sessions.reserve_invite(sessions, owner))
   assert ui_sessions.reserve_invite(sessions, credential("c")) == Ok(Nil)
 }
 
@@ -897,14 +905,37 @@ pub fn a_reservation_frees_an_hour_after_it_was_taken_test() {
   process.send(time, Advance(1_800_000))
   assert ui_sessions.reserve_invite(sessions, owner) == Ok(Nil)
   assert ui_sessions.reserve_invite(sessions, owner) == Ok(Nil)
-  assert ui_sessions.reserve_invite(sessions, owner) == Error(Nil)
+  assert refused(ui_sessions.reserve_invite(sessions, owner))
 
   // The first reservation leaves the window at one hour.
   process.send(time, Advance(1_799_999))
-  assert ui_sessions.reserve_invite(sessions, owner) == Error(Nil)
+  assert refused(ui_sessions.reserve_invite(sessions, owner))
   process.send(time, Advance(1))
   assert ui_sessions.reserve_invite(sessions, owner) == Ok(Nil)
-  assert ui_sessions.reserve_invite(sessions, owner) == Error(Nil)
+  assert refused(ui_sessions.reserve_invite(sessions, owner))
+}
+
+// A refusal answers the wall-clock time a place frees: an hour after the
+// reservation whose leaving makes room, in the wall's terms and not the table's
+// own monotonic ones, so a page can say when the next grant is possible.
+pub fn a_refusal_answers_the_wall_time_a_place_frees_test() {
+  let time = clock()
+  let sessions = table(time)
+  let owner = credential("a")
+  assert ui_sessions.reserve_invite(sessions, owner) == Ok(Nil)
+  process.send(time, Advance(600_000))
+  assert ui_sessions.reserve_invite(sessions, owner) == Ok(Nil)
+  assert ui_sessions.reserve_invite(sessions, owner) == Ok(Nil)
+
+  // The oldest of the three was taken at zero, so it leaves at one hour.
+  let free_at = wall_offset + ui_sessions.invite_window_ms
+  assert ui_sessions.reserve_invite(sessions, owner) == Error(free_at)
+
+  // Later, the answer is the same instant, and when it comes a place is free.
+  process.send(time, Advance(1_200_000))
+  assert ui_sessions.reserve_invite(sessions, owner) == Error(free_at)
+  process.send(time, Advance(ui_sessions.invite_window_ms - 1_800_000))
+  assert ui_sessions.reserve_invite(sessions, owner) == Ok(Nil)
 }
 
 // An invitation that minted nothing gives its place back.
@@ -914,10 +945,10 @@ pub fn a_released_reservation_is_free_again_test() {
   list.each(list.repeat(Nil, ui_sessions.invite_limit), fn(_) {
     assert ui_sessions.reserve_invite(sessions, owner) == Ok(Nil)
   })
-  assert ui_sessions.reserve_invite(sessions, owner) == Error(Nil)
+  assert refused(ui_sessions.reserve_invite(sessions, owner))
   ui_sessions.release_invite(sessions, owner)
   assert ui_sessions.reserve_invite(sessions, owner) == Ok(Nil)
-  assert ui_sessions.reserve_invite(sessions, owner) == Error(Nil)
+  assert refused(ui_sessions.reserve_invite(sessions, owner))
 
   // Releasing a credential that holds nothing is harmless.
   ui_sessions.release_invite(sessions, credential("d"))
@@ -979,13 +1010,13 @@ pub fn creations_and_invitations_are_counted_apart_test() {
   list.each(list.repeat(Nil, ui_sessions.invite_limit), fn(_) {
     assert ui_sessions.reserve_invite(sessions, owner) == Ok(Nil)
   })
-  assert ui_sessions.reserve_invite(sessions, owner) == Error(Nil)
+  assert refused(ui_sessions.reserve_invite(sessions, owner))
   assert ui_sessions.reserve_creation(sessions, owner) == Ok(Nil)
   list.each(list.repeat(Nil, ui_sessions.creation_limit - 1), fn(_) {
     assert ui_sessions.reserve_creation(sessions, owner) == Ok(Nil)
   })
   assert ui_sessions.reserve_creation(sessions, owner) == Error(Nil)
-  assert ui_sessions.reserve_invite(sessions, owner) == Error(Nil)
+  assert refused(ui_sessions.reserve_invite(sessions, owner))
 }
 
 // The window rolls: a creation's place is free again an hour after it was

@@ -1,5 +1,6 @@
-//// The admin page's two lists of people: every principal the catalogue holds,
-//// and, apart, the invitations still waiting to be claimed.
+//// The admin page's list of people: every principal the catalogue holds, each
+//// once, with an invitation still waiting to be claimed drawn in its person's
+//// own row and not in a second list (round 4, F84).
 ////
 //// A principal's row says who it is and what it can authenticate with, in words
 //// the owner can act on: `active` with the fingerprint of the credential and
@@ -9,13 +10,20 @@
 //// sixteen characters of its own, which is enough to compare with what `loom
 //// claim` printed (`web_view/grants`).
 ////
-//// Each member's row offers the two changes the owner makes to a person, not
-//// to a session: rotating its credential, which voids what it held and makes a
-//// new claim, and revoking its credentials, which is a two-step button
-//// (`view/admin_buttons`). The owner's row offers nothing, since the owner's
-//// access is not the page's to change. The pending list is the same people
-//// seen by one fact: those whose claim is open, each with a Void button, so
-//// an invitation sent to the wrong person is easy to take back.
+//// Each member's row offers the changes the owner makes to a person, not to a
+//// session, by what the person holds. A person with an active credential can be
+//// rotated, which voids what it held and makes a new claim, or have its
+//// credentials revoked, a two-step button (`view/admin_buttons`). A person whose
+//// claim is open has one button, `Void invitation`, which is the same
+//// revocation worded for what it undoes. A person with neither can be rotated
+//// to issue a new claim. The owner's row offers nothing, since the owner's
+//// access is not the page's to change. The heading counts the people and, when
+//// any claim is open, how many are invited.
+////
+//// A row also holds two slots for what the owner has just done to its person:
+//// the line that says it (`view/notice`) and the claim a rotation made
+//// (`view/admin_claim`). Both are one child of the row, empty when they do not
+//// apply, so the row's other children keep their places.
 ////
 //// A principal that holds browser logins lists them beneath its row, each with
 //// the words the home's own list uses and a two-step "Revoke sign-in" button
@@ -24,9 +32,10 @@
 //// the page lists says so and leaves the rest to `loom access signins`.
 ////
 //// Every name is a peer's and is drawn as a text node, in a label's words as
-//// well. Every identity is the catalogue's and is a text node too; nothing here
-//// is an attribute, a class or a key made from either. The classes are
-//// complete literals.
+//// well. An identity is the catalogue's and is a text node too, shortened to its
+//// prefix and eight characters with the whole in the `title`
+//// (`grants.short_identity`); nothing here is a class or a key made from
+//// either. The classes are complete literals.
 
 import gleam/int
 import gleam/list
@@ -34,21 +43,26 @@ import gleam/option.{type Option, None, Some}
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
-import web_view/grants.{type Credential, type Logins, type Principal}
+import web_view/grants.{type Claim, type Credential, type Logins, type Principal}
 import web_view/sessions
 import web_view/signins.{type Signin}
 import web_view/view/admin_buttons.{type Busy, type Presses}
+import web_view/view/admin_claim
+import web_view/view/notice.{type Spoken}
 import web_view/view/signins as signins_view
 
 /// The section that lists every principal, or a line saying there are none
 /// besides the owner. `now` is the instant in Unix milliseconds the ages are
-/// counted from, `armed` is the revocation the owner has armed, if any, and
-/// `more` says whether the catalogue holds more rows than the page lists.
+/// counted from, `armed` is the revocation the owner has armed, if any, `more`
+/// says whether the catalogue holds more rows than the page lists, `spoken` is
+/// the last thing the page said about an ask, and `claim` is the claim on screen,
+/// if one is. A row draws the line and the claim only when they are about its
+/// principal.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // admin_people.principals(rows, grants.Whole, logins, None, now, None, presses, admin_buttons.Free)
+/// // admin_people.principals(rows, grants.Whole, logins, None, now, None, None, None, presses, admin_buttons.Free)
 /// ```
 pub fn principals(
   rows: List(Principal),
@@ -57,13 +71,15 @@ pub fn principals(
   this: Option(String),
   now: Int,
   armed: Option(grants.Action),
+  spoken: Option(Spoken),
+  claim: Option(Claim),
   presses: Presses(message),
   busy: Busy,
 ) -> Element(message) {
   html.section(
     [attribute.class("admin-section"), attribute.aria_label("Principals")],
     [
-      heading("People", list.length(rows)),
+      heading(rows),
       html.ul(
         [attribute.class("admin-list")],
         list.map(rows, fn(row) {
@@ -73,6 +89,8 @@ pub fn principals(
             this,
             now,
             armed,
+            spoken,
+            claim,
             presses,
             busy,
           )
@@ -83,66 +101,42 @@ pub fn principals(
   )
 }
 
-/// The section that lists the invitations still waiting to be claimed: the
-/// principals whose credential state is an open claim.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // admin_people.pending(rows, None, presses, admin_buttons.Free)
-/// ```
-pub fn pending(
-  rows: List(Principal),
-  armed: Option(grants.Action),
-  presses: Presses(message),
-  busy: Busy,
-) -> Element(message) {
-  let waiting =
-    list.filter(rows, fn(row) {
+// The heading: "People", how many the page lists, and, when any claim is open,
+// how many of them are invited, all as the home's workspace heading counts its
+// sessions.
+fn heading(rows: List(Principal)) -> Element(message) {
+  let invited =
+    list.count(rows, fn(row) {
       case row.credential {
         grants.ClaimOpen(..) -> True
         grants.Active(..) | grants.ClaimExpired | grants.NoCredential -> False
       }
     })
-  html.section(
-    [
-      attribute.class("admin-section"),
-      attribute.aria_label("Pending invitations"),
-    ],
-    [
-      heading("Pending invitations", list.length(waiting)),
-      case waiting {
-        [] ->
-          html.p([attribute.class("home-empty")], [
-            html.text("No invitation is waiting to be claimed."),
-          ])
-        [_, ..] ->
-          html.ul(
-            [attribute.class("admin-list")],
-            list.map(waiting, fn(row) { invited(row, armed, presses, busy) }),
-          )
-      },
-    ],
-  )
-}
-
-// The heading of a section: its title and how many rows it holds, as the
-// home's workspace heading counts its sessions.
-fn heading(title: String, count: Int) -> Element(message) {
   html.h2([attribute.class("home-heading")], [
-    html.text(title),
-    html.span([attribute.class("home-count")], [html.text(int.to_string(count))]),
+    html.text("People"),
+    html.span([attribute.class("home-count")], [
+      html.text(int.to_string(list.length(rows))),
+    ]),
+    case invited {
+      0 -> element.none()
+      _ ->
+        html.span([attribute.class("home-count")], [
+          html.text("· " <> int.to_string(invited) <> " invited"),
+        ])
+    },
   ])
 }
 
 // One principal: its name and identity, what it can authenticate with, and, for
-// a member, the two changes that are made to a person.
+// a member, the changes that are made to a person, by what it holds.
 fn person(
   row: Principal,
   logins: Option(Logins),
   this: Option(String),
   now: Int,
   armed: Option(grants.Action),
+  spoken: Option(Spoken),
+  claim: Option(Claim),
   presses: Presses(message),
   busy: Busy,
 ) -> Element(message) {
@@ -150,7 +144,7 @@ fn person(
     html.div([attribute.class("admin-text")], [
       html.span([attribute.class("admin-name")], [
         html.text(row.name),
-        html.span([attribute.class("admin-id")], [html.text(row.id)]),
+        identity(row.id),
       ]),
       html.span([attribute.class("admin-sub")], [
         html.text(kind_words(row.kind) <> credential_words(row.credential, now)),
@@ -159,28 +153,74 @@ fn person(
     case row.kind {
       grants.OwnerKind -> element.none()
       grants.MemberKind ->
-        html.div([attribute.class("admin-actions")], [
-          admin_buttons.plain(
-            "Rotate",
-            "admin-act",
-            presses.ask(grants.Rotate(row.id)),
-            busy,
-          ),
-          revocation(
-            row,
-            "Revoke access",
-            "Revoke " <> row.name <> "'s access",
-            armed,
-            presses,
-            busy,
-          ),
-        ])
+        html.div(
+          [attribute.class("admin-actions")],
+          actions(row, armed, presses, busy),
+        )
     },
     case logins {
       Some(held) -> sign_ins(row, held, this, now, armed, presses, busy)
       None -> element.none()
     },
+    notice.at_person(spoken, row.id),
+    admin_claim.for_person(claim, row.id, presses.dismiss),
   ])
+}
+
+/// A principal's identity drawn as its short form, with the whole in the
+/// `title`. The page's other lists draw their identities the same way.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // admin_people.identity("owner-2056528fe1be0db0f7105a24da3aac4d")
+/// ```
+pub fn identity(id: String) -> Element(message) {
+  html.span([attribute.class("admin-id"), attribute.title(id)], [
+    html.text(grants.short_identity(id)),
+  ])
+}
+
+// The buttons of a member's row, by what the member holds: a person with a
+// credential can be rotated or revoked, a person with an open claim can only
+// have it voided, and a person with neither can be given a new claim.
+fn actions(
+  row: Principal,
+  armed: Option(grants.Action),
+  presses: Presses(message),
+  busy: Busy,
+) -> List(Element(message)) {
+  let rotate =
+    admin_buttons.granting(
+      "Rotate",
+      "admin-act",
+      presses.ask(grants.Rotate(row.id)),
+      busy,
+    )
+  case row.credential {
+    grants.Active(..) -> [
+      rotate,
+      revocation(
+        row,
+        "Revoke access",
+        "Revoke " <> row.name <> "'s access",
+        armed,
+        presses,
+        busy,
+      ),
+    ]
+    grants.ClaimOpen(..) -> [
+      revocation(
+        row,
+        "Void invitation",
+        "Void " <> row.name <> "'s invitation",
+        armed,
+        presses,
+        busy,
+      ),
+    ]
+    grants.ClaimExpired | grants.NoCredential -> [rotate]
+  }
 }
 
 // The principal's sign-ins found by the last read, if it has any.
@@ -264,40 +304,10 @@ fn sign_in(
   ])
 }
 
-// One waiting invitation: who it is for and how long it has left, with the
-// button that voids it.
-fn invited(
-  row: Principal,
-  armed: Option(grants.Action),
-  presses: Presses(message),
-  busy: Busy,
-) -> Element(message) {
-  html.li([attribute.class("admin-row")], [
-    html.div([attribute.class("admin-text")], [
-      html.span([attribute.class("admin-name")], [
-        html.text(row.name),
-        html.span([attribute.class("admin-id")], [html.text(row.id)]),
-      ]),
-      html.span([attribute.class("admin-sub")], [
-        html.text(credential_words(row.credential, 0)),
-      ]),
-    ]),
-    html.div([attribute.class("admin-actions")], [
-      revocation(
-        row,
-        "Void invitation",
-        "Void " <> row.name <> "'s invitation",
-        armed,
-        presses,
-        busy,
-      ),
-    ]),
-  ])
-}
-
 // The button that revokes a member's credentials and voids its open claim,
-// armed by a first press. The people list words it as revoking access and the
-// pending list as voiding the invitation, which is the same change.
+// armed by a first press. A person with a credential reads it as revoking
+// access and a person with an open claim as voiding the invitation, which is
+// the same change.
 fn revocation(
   row: Principal,
   label: String,

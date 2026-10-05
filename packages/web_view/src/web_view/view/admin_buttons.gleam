@@ -26,13 +26,21 @@ import lustre/element/html
 import lustre/event
 import web_view/grants.{type Action}
 
-/// Whether the page has a request out. A busy page draws every button disabled.
+/// Whether the page has a request out, and whether the allowance is spent. A
+/// busy page draws every button disabled.
 pub type Busy {
   /// Nothing is out. Buttons carry their handlers.
   Free
 
   /// A request is with the daemon. Buttons are disabled and have no handler.
   Occupied
+
+  /// Nothing is out, but the daemon refused the last grant because the
+  /// credential has made as many as it may in the hour, and the hour has not
+  /// passed. Buttons carry their handlers, since the daemon decides, and the
+  /// buttons that would grant carry `words`, the refusal's own, in their `title`
+  /// so the owner reads when the next is free before pressing (round 4, F89).
+  Spent(words: String)
 }
 
 /// The messages the page's controls send, as values.
@@ -70,9 +78,35 @@ pub fn plain(
 ) -> Element(message) {
   let common = [attribute.type_("button"), attribute.class(class)]
   case busy {
-    Free -> html.button([event.on_click(message), ..common], [html.text(label)])
+    Free | Spent(_) ->
+      html.button([event.on_click(message), ..common], [html.text(label)])
     Occupied ->
       html.button([attribute.disabled(True), ..common], [html.text(label)])
+  }
+}
+
+/// A button for a change that grants access, which counts against the
+/// credential's allowance. It is `plain`, and while the allowance is spent it also
+/// carries the refusal's words as its `title`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // admin_buttons.granting("Rotate", "admin-act", message, busy)
+/// ```
+pub fn granting(
+  label: String,
+  class: String,
+  message: message,
+  busy: Busy,
+) -> Element(message) {
+  let common = [attribute.type_("button"), attribute.class(class)]
+  case busy {
+    Spent(words:) ->
+      html.button([event.on_click(message), attribute.title(words), ..common], [
+        html.text(label),
+      ])
+    Free | Occupied -> plain(label, class, message, busy)
   }
 }
 

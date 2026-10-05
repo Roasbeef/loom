@@ -1710,3 +1710,51 @@ catalogue), `page_test` (the fixed form and its words, each notice, the policy),
 login's ticket and the pages that survive it), `storage/access_test` (a claim
 bound as a login ends at its expiry and is listed as the credential, each kind
 refused by the other's function).
+
+## Addendum: the admin page's placements and the scope on `sessions.members` (2026-10-04)
+
+**Status**: IMPLEMENTED in the change that adds it (round 4 of the web UI
+critique, findings F78 and F82 to F89). It changes where the admin page draws
+and says things, and adds one field to one owner-only read.
+
+**`scope` on `sessions.members`.** The reply body gains `scope`, `"session_only"`
+or `"workspace_private"`, the scope the session's domain record holds. It is
+additive: an existing client ignores a field it does not know, and `loom access
+members` does not print it (`host/access.member_lines` reads `members` and `next`
+only). The read stays owner-only, refused `forbidden` for a member before any
+parameter is judged, and the field is the same fact `sessions.get` already
+reports as `domain_scope` to the same owner. The registry reads it with the
+session's members in one call (`manager.session_member_page` answers a
+`Members(scope, page)`), so the page learns it before the owner presses
+anything. The admin page draws no invitation form for a private session and says
+why in one sentence, where it drew a form that could only be refused with
+`NotIsolated`; this closes the item the admin addendum left out ("the domain scope
+of each session, which the catalogue does not hold"), because the registry does.
+
+**What else moves, with no wire change.** The claim an invitation or a rotation
+makes is drawn beside the action that made it, not pinned over the page. It
+leads with the browser claim address (`http://` and the host the page was reached
+at, `/ui/claim`), then the token, then the `loom claim` command for a person who
+has `loom`; the address is a fixed shape the copy box admits and holds no secret.
+A principal with an open claim is one row of the People list with a `Void
+invitation` button, not a second list. The refusal of a fourth grant in an hour
+names the count and the UTC time a place frees: `reserve_invite` answers the
+wall-clock instant, which is an in-daemon value and reaches the page only as that
+sentence. The allowance itself, three an hour for one credential across this page,
+a session page's invitation control and a device link, is unchanged by the
+owner's ruling. A change's notice is a line under the section acted on and a
+refusal stays beside its control (`view/notice`). `admin.body_path` and every
+other pinned path are where they were: the centre's first child is now an empty
+place, so the body is still its second child.
+
+**Cost.** One additive field and the manager call that carries it; a second
+subject in `<loom-copy>`; no catalogue version, route or admitted event.
+
+**Tests.** `daemon_access_test` (the `scope` of a members reply), `ui_route_test`
+(the admin read's scope for a shared and a private session, the claim address in
+both claims, the refusal's count and instant), `ui_sessions_test` (the instant a
+place frees, in wall terms), `admin_test` (one row for each principal, the claim's
+position, no form on a private selection, the notice's placement, the token in
+one patch and no other), `grants_test` (the refusal's words), `copy_test` (the
+claim address's shape), and `scripts/web_client_css_check.sh` (nothing under
+`.admin-body` is `position:sticky`).

@@ -540,7 +540,9 @@
   .session-head .home-admin:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
   main.centre > .admin-body{flex:1 1 0;min-height:0;max-width:960px;padding-bottom:24px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
   .admin-section + .admin-section{margin-top:24px;}
-  .admin-body > .admin-lead{margin:0 0 20px 0;}
+  .admin-body > .admin-lead{margin:0 0 4px 0;}
+  .admin-note{margin:0 0 20px 0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  .admin-members > .admin-lead{margin:12px 0 0 0;}
   .admin-section > .home-empty{margin:12px 0 0 0;}
   main.centre > .home-notice{max-width:960px;}
   .admin-section .home-heading .home-count{margin-left:8px;color:var(--color-fg-quiet);font-weight:400;font-variant-numeric:tabular-nums;}
@@ -569,6 +571,7 @@
   ul.admin-signin-list{list-style:none;margin:0;padding:0;border-top:1px solid var(--color-divider);}
   li.admin-signin{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;min-height:40px;margin:0;padding:4px 0;border-bottom:1px solid var(--color-divider);}
   .admin-subheading{margin:0 0 8px 0;font:600 14px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  .admin-subheading .home-count{margin-left:8px;color:var(--color-fg-quiet);font-weight:400;font-variant-numeric:tabular-nums;}
   form.admin-invite{display:flex;flex-direction:column;gap:8px;margin:12px 0 0 0;padding:12px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);}
   .admin-lead{margin:0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);overflow-wrap:anywhere;}
   .admin-fields{display:flex;flex-wrap:wrap;gap:6px;}
@@ -576,11 +579,22 @@
   .admin-fields input{flex:1 1 14em;}
   .admin-fields input:focus-visible,.admin-fields select:focus-visible{outline:none;border-color:var(--color-fg-quiet);}
   .admin-fields :disabled{opacity:.6;}
-  /* The claim just made, shown once at the head of the body in the Session
-     pane's own boxes (`<loom-copy>`), as a tinted panel with a hairline. */
-  .admin-body section.share{position:sticky;top:0;z-index:2;max-height:calc(100vh - 72px);overflow-y:auto;margin:0 0 20px 0;padding:12px;border:1px solid color-mix(in srgb,var(--color-signal) 40%,var(--color-divider));border-radius:8px;background:color-mix(in srgb,var(--color-signal) 8%,var(--color-bg-raised));}
+  /* The claim just made, shown once beside the action that made it (under the
+     invitation form, or under the person's row) in the Session pane's own boxes
+     (`<loom-copy>`), as a tinted panel with a hairline. It scrolls with the
+     page and covers nothing. */
+  .admin-body section.share{margin:12px 0 0 0;padding:12px;border:1px solid color-mix(in srgb,var(--color-signal) 40%,var(--color-divider));border-radius:8px;background:color-mix(in srgb,var(--color-signal) 8%,var(--color-bg-raised));}
   .admin-body button.share-done{margin:4px 0 0 0;padding:2px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:12px/1.4 var(--font-sans);cursor:pointer;}
   .admin-body button.share-done:hover{background:var(--color-bg-raised);}
+  .admin-row > section.share{flex:1 1 100%;min-width:0;box-sizing:border-box;margin:4px 0 6px 0;}
+  /* What the page says about the last thing the owner did, as a line beside
+     what was acted on (`view/notice`). A change that was made is quiet and
+     fades after four seconds, as the composer footer's notice does; a refusal
+     stays, in the danger colour with a tinted hairline. */
+  .notice-line,.notice-refusal{margin:8px 0 0 0;font:13px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  .notice-line{color:var(--color-fg-quiet);animation:loom-fade 4s forwards;}
+  .notice-refusal{padding:6px 10px;border:1px solid color-mix(in srgb,var(--color-danger) 40%,var(--color-divider));border-radius:6px;background:color-mix(in srgb,var(--color-danger) 8%,transparent);color:var(--color-danger-text);}
+  .admin-row > .notice-line,.admin-row > .notice-refusal{flex:1 1 100%;min-width:0;box-sizing:border-box;margin:2px 0 4px 0;}
   /* The way back to the home, on a session page opened from one: a quiet
      button after the brand, tinted on hover like a list row. */
   .session-head .home-link{margin:0;padding:2px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:12px/1.4 var(--font-sans);cursor:pointer;}

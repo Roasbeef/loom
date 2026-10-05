@@ -10,7 +10,7 @@ import web_view/invites
 fn every_reason() -> List(grants.Reason) {
   [
     grants.NotOwner,
-    grants.TooMany,
+    grants.TooMany(used: 3, free_at_ms: 1_790_030_460_000),
     grants.NotIsolated,
     grants.NotFound,
     grants.InvalidName,
@@ -51,4 +51,44 @@ pub fn each_change_that_is_made_is_worded_test() {
   assert grants.changed_words(grants.Rotate("p")) == "Done."
   assert grants.changed_words(grants.Invite("s", invites.Observer, ""))
     == "Done."
+}
+
+// The refusal of a spent allowance names how many grants were made and when the
+// next is free, in UTC, to the minute, and it changes with both.
+pub fn the_allowance_refusal_names_the_count_and_the_reset_time_test() {
+  let words =
+    grants.reason_words(grants.TooMany(used: 3, free_at_ms: 1_790_030_460_000))
+  assert string.contains(words, "3 grants in the last hour")
+  assert string.contains(words, "free at 22:41 UTC")
+  let later =
+    grants.reason_words(grants.TooMany(
+      used: 3,
+      free_at_ms: 1_790_030_460_000 + 3_600_000,
+    ))
+  assert string.contains(later, "free at 23:41 UTC")
+
+  // Midnight pads both fields, and a time before the epoch is the epoch.
+  assert string.contains(
+    grants.reason_words(grants.TooMany(
+      used: 3,
+      free_at_ms: 86_400_000 + 300_000,
+    )),
+    "free at 00:05 UTC",
+  )
+  assert string.contains(
+    grants.reason_words(grants.TooMany(used: 3, free_at_ms: -5)),
+    "free at 00:00 UTC",
+  )
+}
+
+// A long identity is shortened to its prefix and eight characters, and a short
+// one is left alone.
+pub fn an_identity_is_shortened_to_eight_characters_after_its_prefix_test() {
+  assert grants.short_identity(
+      "owner-2056528fe1be0db0f7105a24da3aac4dcf722898c6655129c0eabc6231181a05",
+    )
+    == "owner-2056528f"
+  assert grants.short_identity("guest-956fb176") == "guest-956fb176"
+  assert grants.short_identity("bob") == "bob"
+  assert grants.short_identity("0123456789abcdef") == "01234567"
 }

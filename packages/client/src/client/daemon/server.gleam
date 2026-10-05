@@ -2508,13 +2508,16 @@ fn dispatch_class(
         |> result.map_error(admin_error_code),
       )
       let rows =
-        list.map(page.entries, fn(row) { #(row.principal_id, member_json(row)) })
-      use #(bounded, more) <- result.try(bounded_rows(rows, page.remainder))
+        list.map(page.page.entries, fn(row) {
+          #(row.principal_id, member_json(row))
+        })
+      use #(bounded, more) <- result.try(bounded_rows(rows, page.page.remainder))
       Ok(#(
         "sessions.members",
         json.Object(list.append(
           [
             #("session_id", json.String(id)),
+            #("scope", json.String(scope_text(page.scope))),
             #("members", json.Array(list.map(bounded, pair.second))),
           ],
           next_field(bounded, more),
