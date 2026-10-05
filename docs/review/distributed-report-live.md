@@ -47,3 +47,8 @@ This proves a real local producer, owner retention and fresh jailed capability
 reader. It does not enable the default registered remote host, whole remote
 Launch, report-companion archive/restore/compaction, or separate-host acceptance.
 Those remain required integration work.
+
+Root's subsequent full client gate exited 0 with 2,875 tests, including this
+corrected live control. Fifteen optional checks explicitly skipped: one Linux
+`/proc` control, thirteen shipped-server controls and one rust-analyzer control.
+Those skipped environments remain unverified.

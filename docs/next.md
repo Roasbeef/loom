@@ -4,7 +4,7 @@
 
 [PR #819](https://github.com/Roasbeef/loom/pull/819) is the single draft review
 for issue #697, replacing 37 component PRs while retaining their commits and
-review records. Integration source is now `fb6d078e0`. The owner has authorized
+review records. Integration source is now `35c64e259`. The owner has authorized
 TLS BEAM executors, scoped endpoint lifetimes, original native-close proof,
 and bounded transcript previews backed by complete durable reports. No API
 permission hold remains for those changes. No main merge is authorized.
@@ -37,37 +37,48 @@ A real compiler-path check found that report metadata expected bare hex while
 production artifacts use `sha256-` plus 64 hex digits. That mismatch is corrected;
 metadata now preserves the original fingerprint while URI content digests retain
 their separate bare-hex contract. A real jailed run reproduced the original
-failure. A Sol worker has a passing genuine producer/readback run and is adding
-actual cross-reference quota exhaustion before freezing the test for root replay.
-This evidence is not yet a committed live acceptance gate.
+failure. The corrected real-jail gate now passes three actual compiled invocations in
+the integration tree with zero skips: complete result retrieval, nested-process
+owner-file protection, and exact cumulative chunk exhaustion across references.
+Astra found and corrected the first quota assertion because a multichunk final
+probe could hide one excess credit. The one-chunk replacement kills that mutant.
+The [live review](review/distributed-report-live.md) records the evidence and limits.
 
 Current root gates pass 186 core tests plus 72 JavaScript finite-value controls,
-182 cap tests, 202 storage tests and 707 tools tests. The current focused client
-replay passes 101 tests with no skips. The earlier complete client gate at the
-storage integration milestone passed 2,855 tests with fifteen explicit optional
-SKIPs: one Linux `/proc`, thirteen shipped-server and one rust-analyzer control.
+182 cap tests, 202 storage tests and 707 tools tests. The current complete client
+gate passes 2,875 tests with fifteen explicit optional SKIPs: one Linux `/proc`,
+thirteen shipped-server and one rust-analyzer control. The full gate includes
+the corrected three-invocation retained-report test and owner Launch binding.
 Package lint and documentation checks pass with existing warnings. The previous
 aggregate repository run failed a Go sandbox test because PATH selected Codex's
 `rg`; its separate Go replay with Homebrew `rg` and full lint passed. That failed
 aggregate has not become a passing aggregate by combining later commands.
 
-Two component freezes are awaiting integration. The owner Launch command slice
-adds SatelliteCommand validation using original successful Compile custody and
-actual Broker clearance; twenty controls and four compiled mutants pass. The
-raw terminal decoder validates transport shape and terminal budgets before
-large generic MessagePack allocation. Its worker passed 185 core, 24 broker,
-36 satellite and twelve JavaScript scanner controls plus five compiled mutants;
-a separate Sol reader is reviewing it. The scanner's JS tail recursion is fixed,
-while the unrelated generic JS decoder's large-sibling stack limit is explicitly
-recorded. Neither freeze has been imported yet.
+The owner Launch command binding is integrated. It checks the original retained
+Launch input against its successful Compile producer and preserves real Broker
+clearance. Root replay passed all twenty controls with no skips; Astra independently
+replayed those controls and killed three compiling mutants. The
+[binding review](review/distributed-launch-command.md) distinguishes trusted
+producer history from the component fixture's injected completion.
 
-Astra is reviewing the next concrete Launch/duplex-channel design. Whole Launch
-must own token placement after successful Compile, typed uncertain launch,
-executor-local listener/token custody, and actual final-recipient consumption
-credit. Endpoint request credits cannot substitute for channel consumption.
-The owner host must retain completed replies in their original admitted slots
-until the bounded writer consumes them. Independent cancellation and original
-native retirement remain separate from channel close and report COMMIT.
+The terminal preflight is integrated: raw transport validation and terminal
+budgets precede generic body allocation. Root's serial full gate passed 186 core,
+440 broker and 429 code-mode tests. Two Linux `/proc` broker witnesses explicitly
+skip on macOS. Independent trace mutation proves the allocation ordering. The
+[terminal review](review/distributed-terminal-preflight.md) records the scanner's
+JS tail-recursion correction and the unchanged generic JS decoder limitation.
+
+The [accepted Launch channel plan](design-notes/distributed-launch-channel.md)
+now incorporates Astra's design corrections. Whole Launch owns token placement
+after successful Compile, typed uncertainty, executor-local listener/token
+custody, and final-recipient consumption credit. A Sol worker is implementing
+foreground types, the local adapter and retained reply slots; another is modeling
+those transitions in P. Root owns pipeline/client and remote executor assembly.
+Astra is checking the exact resource-journal and completion design before that
+integration. Endpoint request credits, native retirement, channel consumption
+and report COMMIT remain distinct obligations. The enclosing client must also
+receive cleanup evidence independently from program outcome; its current
+unconditional directory deletion must not erase unresolved Launch resources.
 
 The corrected P report-custody extension passes 146 bounded cases/probes, with
 twelve new report mutations and nine replayed owner mutations. The prior full
@@ -77,9 +88,8 @@ old mutant suite has not been replayed after it. The
 COMMIT/drain assumptions and the producer-provenance correction. These are
 bounded model checks, not an implementation refinement or power-loss proof.
 
-Next: finish the live retained-report gate; integrate the cold-reviewed terminal
-preflight and Launch command slices; implement the reviewed Launch resource and
-consumed-stream boundary; wire remote LSP and registered daemon assembly; then
+Next: implement and integrate the reviewed Launch resource and consumed-stream
+boundary, with its P model and actual blocked-I/O controls; wire remote LSP and registered daemon assembly; then
 run the actual separate-host ordinary-tool/code-mode/LSP acceptance with no owner
 checkout. Retained-report companion archive/restore/compaction is still required.
 Executor pools, Khepri-backed orchestrator ownership/routing, durable cross-node
