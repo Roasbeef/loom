@@ -20,7 +20,7 @@
     <rect x="99" y="16" width="40" height="188" rx="20"/>
     <rect x="149" y="44" width="40" height="172" rx="20"/>
   </g>
-  <g class="weft" mask="url(#weft-gaps)">
+  <g class="weft" fill="#1c2225" mask="url(#weft-gaps)">
     <rect x="18" y="83" width="202" height="38" rx="19"/>
     <rect x="18" y="139" width="202" height="38" rx="19"/>
   </g>
