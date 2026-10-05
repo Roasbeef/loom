@@ -5929,6 +5929,18 @@ and only for a page that holds the creation capability; `ui_socket.create_for`
 takes the chosen profile and maps `unknown_profile` to
 `creations.UnknownProfile`.
 
+## Retained complete-report boundary
+
+`remote/tool_custody.wrap_with_profile` captures the final profile through trusted
+assembly. `remote/custodian` supplies an original-incarnation pinned handle to its
+runner; complete-report retention refuses an external reclaimable handle.
+The owner commits the complete report before accepting its exact bounded final.
+Reopen validates digest, final schema and original provider identity before
+publishing the actor. Report-only history remains AwaitingFinal. Any generic
+report-profile failure retains unresolved custody even if no report was committed.
+An actual vet/compile producer may return the closed no-terminal refusal; schema
+validation does not establish the producer's identity by itself.
+
 ## Remote owner custody
 
 `remote/custodian` owns the separate per-session request and final-report

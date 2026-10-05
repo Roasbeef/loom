@@ -19,24 +19,30 @@ SELECT CAST(CASE WHEN typeof(identity) = 'blob' THEN length(identity) ELSE -1 EN
   CAST(CASE WHEN typeof(request) = 'blob' THEN length(request) ELSE -1 END AS INTEGER) AS request_bytes, CAST(CASE WHEN outcome IS NULL THEN 0 WHEN typeof(outcome) = 'blob' THEN length(outcome) ELSE -1 END AS INTEGER) AS outcome_bytes,
   CASE WHEN state IN ('retained', 'frozen') THEN state ELSE '' END AS state,
   CASE WHEN run_custody IN ('unreleased', 'released') THEN run_custody ELSE '' END AS run_custody,
+  CASE WHEN final_profile IN ('ordinary', 'code_mode_report_v1') THEN final_profile ELSE '' END AS final_profile,
+  CAST(CASE WHEN typeof(final_allowance) = 'integer' THEN final_allowance ELSE -1 END AS INTEGER) AS final_allowance,
+  CAST(CASE WHEN report IS NULL THEN 0 WHEN typeof(report) = 'blob' AND length(report) >= 18 THEN length(report) ELSE -1 END AS INTEGER) AS report_bytes,
+  CASE WHEN report_digest IS NULL THEN '' WHEN typeof(report_digest) = 'text' AND length(CAST(report_digest AS BLOB)) = 64 THEN report_digest ELSE 'invalid' END AS report_digest,
+  CASE WHEN typeof(result_entry) = 'text' AND length(CAST(result_entry AS BLOB)) = 36 THEN result_entry ELSE '' END AS result_entry,
   reserved_bytes FROM owner_custody_tools WHERE address = @address LIMIT 2;
 
 -- name: OwnerToolValue :many
 SELECT identity, arguments, request, outcome FROM owner_custody_tools
 WHERE address = @address AND typeof(identity) = 'blob' AND length(identity) <= 8192
   AND typeof(arguments) = 'blob' AND typeof(request) = 'blob' AND length(arguments) <= CAST(@payload_limit AS INTEGER) AND length(request) <= CAST(@payload_limit AS INTEGER)
-  AND (outcome IS NULL OR (typeof(outcome) = 'blob' AND length(outcome) <= CAST(@payload_limit AS INTEGER))) LIMIT 2;
+  AND (outcome IS NULL OR (typeof(outcome) = 'blob' AND length(outcome) <= CASE WHEN final_profile = 'code_mode_report_v1' THEN 262144 ELSE CAST(@payload_limit AS INTEGER) END)) LIMIT 2;
 
 -- name: InsertOwnerTool :exec
-INSERT INTO owner_custody_tools(address, identity, result_entry, arguments, request, state, run_custody, reserved_bytes)
-VALUES (@address, @identity, @result_entry, @arguments, @request, 'retained', 'unreleased', @reserved_bytes);
+INSERT INTO owner_custody_tools(address, identity, result_entry, arguments, request, final_profile, final_allowance, state, run_custody, reserved_bytes)
+VALUES (@address, @identity, @result_entry, @arguments, @request, @final_profile, @final_allowance, 'retained', 'unreleased', @reserved_bytes);
 
 -- name: FinishOwnerTool :exec
 UPDATE owner_custody_tools SET outcome = @outcome WHERE address = @address AND state = 'retained' AND outcome IS NULL;
 
 -- name: FreezeOwnerTool :exec
 UPDATE owner_custody_tools SET arguments = X'', request = X'', outcome = NULL, state = 'frozen',
-  reserved_bytes = length(identity) + length(CAST(address AS BLOB)) + 128 WHERE address = @address;
+  reserved_bytes = length(identity) + length(CAST(address AS BLOB)) + 128
+    + CASE WHEN report IS NULL THEN 0 ELSE length(report) + 128 END WHERE address = @address;
 
 -- name: OwnerChildHeader :many
 SELECT CASE WHEN length(CAST(request_id AS BLOB)) = 36 THEN request_id ELSE '' END AS request_id,
