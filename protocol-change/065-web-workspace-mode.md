@@ -1883,7 +1883,10 @@ child: a lead that shows the current name as a text node, a text field in a
 button. The name is never an attribute, and the form is keyed by how many times the
 name changed so a stored name opens a fresh form on it. `Start.rename_self` is `Some`
 for a page minted to operate, whoever its principal is, and `None` for a read-only
-link, which draws nothing in its place. The daemon decides again at the submit
+link, which draws nothing in its place. A home a bookmark resumed may rename its
+principal, as it may end that principal's logins: the rename mints nothing, which
+is the line a bookmark may not cross (a device link and the admin page both mint).
+The daemon decides again at the submit
 (`ui_socket.rename_self_for`): the page is open, its ceiling is Operator, the
 credential authenticates as the principal the page was admitted for, and the
 registry's own turn applies the rule above to that principal and no other, so the

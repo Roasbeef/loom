@@ -3468,9 +3468,10 @@ fn frame_authorized(
 // This is memoisation rather than a cache, and two fences hold it to that. The
 // first is the single writer: the tables it reads — `access_credential`,
 // `access_principal`, `access_membership`, and the session registration row —
-// are written in exactly two places, `administer_member` and `access.claim`,
-// reached only by the `Administer` and `Claim` messages this same actor
-// serialises, and both arms drop the whole memo before they reply. A claim
+// are written in exactly three places, `administer_member`, `access.claim` and
+// `access.rename`, reached only by the `Administer`, `Claim` and
+// `RenamePrincipal` messages this same actor serialises, and every one of those
+// arms drops the whole memo before it replies. A claim
 // only inserts a credential that has never authenticated, so it could not
 // change a remembered answer anyway; it drops the memo so the fence stays one
 // rule rather than two. Startup's `access.bootstrap_owner` runs in the root
