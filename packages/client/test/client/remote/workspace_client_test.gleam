@@ -548,7 +548,12 @@ pub fn executor_main() -> Nil {
   // Enrollment derives from concrete local service owners, never wire callbacks.
   let #(native_executor, native_remote) = concrete_native(root)
   let assert Ok(row) =
-    connection.registration(owner, native_remote, Some(semantic))
+    connection.registration(
+      owner,
+      native_remote,
+      Some(semantic),
+      process.self(),
+    )
     as "Enrollment binds the actual native and semantic actors locally."
   let assert Ok(server_config) = connection.configure_server([row], 10_000)
     as "Only this original scope enters the finite node-wide rendezvous."
