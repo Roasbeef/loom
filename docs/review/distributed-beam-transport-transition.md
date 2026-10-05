@@ -202,13 +202,32 @@ tests pass, zero skips, command exit 0. Its test runner completed in 99.65 secon
 The migration does not establish registered host lifecycle or separate-host
 acceptance; old socket tests still cover components awaiting replacement.
 
+## Repository milestone gate
+
+The assembled milestone `make check` invocation passed every Gleam and
+JavaScript package gate, then exited 2 in the Go suite. Its single failing test,
+`TestSeatbeltJailedPathFindsHomebrewTools`, resolved `rg` to the Codex executable
+under `/Applications`. The test jail permits the system tool roots, including
+`/opt/homebrew`, but cannot execute that application path.
+
+The complete Go suite then passed with the existing Homebrew `rg` selected on
+PATH. The replay retained Gleam 1.19.0-rc2 from the installed Loom toolchain; no
+source, test or sandbox policy was changed. The remaining full house lint also
+passed, with zero errors and 2,050 warnings. These component results do not turn
+the original failed aggregate invocation into a passing one.
+
+The package run reported 17 explicit SKIP notices: three Linux `/proc` controls,
+thirteen shipped-server fixture notices, and one unavailable rust-analyzer.
+Those paths still need their actual prerequisites. The final candidate requires
+its fresh repository gate and Linux/shipped acceptance before merge readiness.
+
 ## Remaining acceptance
 
 Independent review of the assembled bootstrap, endpoint, whole-Compile actor,
 owner consumers and native restart fixture found no additional reachable defect.
 It confirmed the known historical native lookup issue described above. The full
 client gate passes 2,847 tests with fifteen explicit optional SKIP notices
-(shipped-server fixtures and unavailable rust-analyzer). Registered daemon
+(Linux `/proc` coverage, shipped-server fixtures and unavailable rust-analyzer). Registered daemon
 assembly remains pending. Scoped shutdown must fence a registration before its
 services stop, preserve sibling capacity, and retain original transport and
 native drain witnesses. Executor assembly must still exclude credential files
