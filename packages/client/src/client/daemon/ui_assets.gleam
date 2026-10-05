@@ -26,6 +26,7 @@ pub opaque type Assets {
     page_script: String,
     resume_script: String,
     client: String,
+    favicon: String,
   )
 }
 
@@ -44,6 +45,7 @@ pub fn load() -> Result(Assets, String) {
   use page_script <- result.try(owned(page.page_asset))
   use resume_script <- result.try(owned(page.resume_asset))
   use client <- result.try(owned(page.client_asset))
+  use favicon <- result.try(owned(page.favicon_asset))
   Ok(Assets(
     runtime:,
     stylesheet:,
@@ -51,6 +53,7 @@ pub fn load() -> Result(Assets, String) {
     page_script:,
     resume_script:,
     client:,
+    favicon:,
   ))
 }
 
@@ -90,5 +93,6 @@ pub fn body(assets: Assets, asset: ui_http.Asset) -> #(String, String) {
       assets.resume_script,
     )
     ui_http.Client -> #("text/javascript; charset=utf-8", assets.client)
+    ui_http.Favicon -> #("image/svg+xml", assets.favicon)
   }
 }

@@ -1628,6 +1628,7 @@ pub fn the_assets_are_the_priv_files_under_the_unchanged_policy_test() {
       #(page.enter_asset, javascript, page.static_file),
       #(page.page_asset, javascript, page.static_file),
       #(page.client_asset, javascript, page.static_file),
+      #(page.favicon_asset, "image/svg+xml", page.static_file),
       #(page.runtime_asset, javascript, fn(_) { page.runtime_file() }),
     ]
     list.each(assets, fn(asset) {

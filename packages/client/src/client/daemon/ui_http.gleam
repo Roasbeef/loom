@@ -113,6 +113,9 @@ pub type Asset {
 
   /// The client components' bundle.
   Client
+
+  /// The tab icon, an SVG.
+  Favicon
 }
 
 /// The most images one row may carry that the route will ask the page for.
@@ -177,6 +180,7 @@ pub fn route(request: Request(body)) -> Route {
         _ if name == page.page_asset -> Asset(PageScript)
         _ if name == page.resume_asset -> Asset(ResumeScript)
         _ if name == page.client_asset -> Asset(Client)
+        _ if name == page.favicon_asset -> Asset(Favicon)
         _ -> Unknown
       }
     _, _ -> Unknown
