@@ -1,6 +1,6 @@
 # 068: governed runtime evolution
 
-**Status:** Accepted for implementation on 2026-10-04, within the owner's authorization to implement #807 in one end-to-end PR. Independent pre-implementation review resolved the ownership, model-selection and native-retirement boundaries below. Implementation and release verification remain pending.
+**Status:** Accepted for implementation on 2026-10-04, within the owner's authorization to implement #807 in one end-to-end PR. Independent pre-implementation review resolved the ownership, model-selection and native-retirement boundaries below. The production implementation is in [PR #824](https://github.com/Roasbeef/loom/pull/824); its exact-head checks carry the release-verification verdicts.
 
 ## Problem
 

@@ -1,14 +1,16 @@
 # Current handoff
 
-This edition covers the governed self-extension implementation for
-[#807](https://github.com/Roasbeef/loom/issues/807), on
-`runtime/self-extension` in `.worktrees/self-extension`. Its pinned base is
-`45218983064f1ddb462a4c6d27b01e2a31ac90ea` (the #805 merge). GitHub `main`
-was `5ef1e52b44917c67aa68c1fe4efc38ca9ccf6769` when checked on 2026-10-04;
-this topic is not represented as landed. The previous handoff's #768 baseline
-and hosted-run snapshots were older than the branch this work started from.
+The governed self-extension implementation is in
+[PR #824](https://github.com/Roasbeef/loom/pull/824), on `runtime/self-extension`
+in `.worktrees/self-extension`. It implements the production loop tracked by
+[#807](https://github.com/Roasbeef/loom/issues/807). The topic started at #805
+(`45218983064f1ddb462a4c6d27b01e2a31ac90ea`) and incorporates main through
+`5ef1e52b44917c67aa68c1fe4efc38ca9ccf6769`, including credential kinds, web
+session creation and subtitles. It is not represented as merged or released.
+The previous handoff's #768 baseline and hosted-run snapshots were older than
+this work's starting tree.
 
-## Work in flight
+## Delivered behavior
 
 The accepted release scenario is concrete: an agent authors an extension;
 real jailed checks produce durable evidence; an operator approves it; the same
@@ -24,15 +26,23 @@ resident authenticated session. The source, authority and retirement boundaries
 are in [evolution](architecture/evolution.md) and
 [protocol-change 068](../protocol-change/068-runtime-evolution.md).
 
-The implementation PR and final exact-head gates are still being prepared.
-Focused provider checks passed all 261 tests, and the code-mode package passed
-all 355. All three real lifecycle fixtures passed against scripted HTTP and
-actual production tools, including repeated extension replacement, native helper
-retirement and the protected-source read regression. Astra's independent review
-found five reachable issues: trial policy inheritance, unknown attempt spend,
-durable selection deduplication, cleanup continuation ownership and the advertised
-prompt-evaluation schema. Corrections and fresh validation are in progress.
-These are local results, not platform signoff or measured model-quality evidence.
+The full local gate, `LOOM_EVOLUTION_E2E=1 make check`, passed at source commit
+`b1549f045`, including 2,846 client tests, 1,228 TUI tests, native Go tests and
+house lint with zero errors. All three production lifecycle fixtures ran:
+extension 7.007 seconds, program 3.903 seconds and prompt 2.260 seconds. These
+are whole fixture times with scripted HTTP, not isolated activation latency or
+commercial-model cache measurements. Documentation checks also passed.
+
+Astra's independent review found five reachable issues: trial policy inheritance,
+unknown attempt spend, durable selection deduplication, cleanup continuation
+ownership and the advertised prompt-evaluation schema. Each was verified and
+corrected; a fresh correction review found no further source-verified reachable
+problems. Generated Erlang also confirms that resident validation and scoped
+memory closures now retain only their needed capabilities.
+
+Use [the PR's checks](https://github.com/Roasbeef/loom/pull/824/checks) for current
+hosted and exact-head platform verdicts. A local macOS pass cannot establish
+Linux kernel enforcement or measured model quality.
 
 ## Rulings to retain
 
@@ -67,28 +77,29 @@ runs ordinary coding operations in fresh native fixtures, with admitted exact
 file criteria scored after retirement. Scripted responses exercise mechanics;
 they do not certify model improvement, noise handling or holdout quality.
 
-## Finish this lane
+## Verification and merge boundary
 
-Verify all three real lifecycle fixtures with the runtime compiler and an
+The PR must satisfy the repository's current hosted gates and `signoff/linux`
+on its exact head before merge. The owner controls merge and the public release.
+Do not carry a green verdict from an older head or treat a queued receipt as a
+published generation. The Linux signoff runs the shipped-daemon fixtures and
+strict enforcement/skip census as well as these evolution tests.
+
+To reproduce the production fixtures locally, use the runtime compiler and an
 offline seed built by that same compiler:
 
 ```sh
 PATH=/Users/roasbeef/.local/lib/loom/server/bin:$PATH make codemode-seed
 PATH=/Users/roasbeef/.local/lib/loom/server/bin:$PATH make e2e-evolution
-LOOM_EVOLUTION_E2E=1 make check
+LOOM_EVOLUTION_E2E=1 PATH=/Users/roasbeef/.local/lib/loom/server/bin:$PATH make check
 make doc-check
 ```
 
 Capture each command's own exit status. The seed fingerprint must match the
 runtime compiler; a cold dependency rebuild under a private HOME must not reach
-Hex. The loopback tests and native scratch paths require the usual permitted
-host test environment. Inspect the skip census and obtain Linux signoff on the
-exact pushed head; a local macOS pass cannot establish Linux kernel enforcement.
-
-Run the independent Astra adversarial review, disposition reachable findings,
-and create one PR with the actual validation record. Attach it to the task.
-Do not merge on the user's behalf. Rewrite this handoff with that PR and the
-final exact-head results before delivering the work.
+Hex. Protected-content assertions require a successful public read, existing
+nonempty native targets, zero protected bytes and the platform's exact mask
+outcome. Generic process failures do not count as isolation evidence.
 
 ## Deliberate limits and next work
 
