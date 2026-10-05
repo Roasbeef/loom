@@ -5840,9 +5840,13 @@ validation does not establish the producer's identity by itself.
 
 `remote/code_reports` binds the retained shell to the original managed execution
 and pinned custodian. Its retainer checks operation, step and source index before
-calling the owner. This adapter does not select remote physical services or
-install report retrieval; the configured compiler/launcher and owner router
-remain separate assembly responsibilities.
+calling the owner. The configured compiler/launcher selects physical execution
+placement as a separate assembly responsibility. `codemode.over_reports` installs one exact
+owner/session reader on Workspace and Orchestration together with the serviced
+capability and its 261-admission ceiling. Extension and Resident inherit none of
+that authority. `remote/report_router` owns closed reference/offset validation
+before workspace fallback and uses the original satellite ScopedService lifetime.
+Successful replies fit 66,048 serialized bytes including the framing prefix.
 
 ## Remote owner custody
 
