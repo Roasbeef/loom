@@ -701,3 +701,42 @@ runner discovers the added cases; every probe requires its exact final marker,
 and every mutation requires an unmodified passing control and its intended
 independent-monitor assertion. Focused results for this extension are recorded
 separately from the older full-model gate above.
+
+## Complete-report custody
+
+`OwnerDischarge` now models an immutable final profile selected before Fresh
+admission. Ordinary tools reserve their original final allowance. Code mode
+reserves 17,301,648 bytes for a complete report, bounded final message and stored
+bookkeeping. This fixture admits two such full allowances; identity/request and
+child reservations remain outside its arithmetic. The real owner quota also
+charges those separate obligations.
+
+Report COMMIT, final-reference COMMIT, wrapper drain and exact session readback
+are separate events. A lost report acknowledgement preserves report history
+without inventing the missing final message. Failed retention keeps the run
+unresolved even when a later diagnostic is stored. Collection preserves the
+report's identity, digest and actual byte charge; reboot preserves the complete
+durable row and invalidates the old worker pin.
+
+A no-terminal refusal is a distinct branch. `RunPrelaunchProducer` observes the
+trusted vet or compile refusal before the owner accepts its exact original
+pin and stage. The final sender cannot create that observation by choosing a
+tag. `RunStart` represents the wrapper process, so a compile refusal may follow
+both wrapper startup and native compiler work. The model does not infer native
+cleanup from that refusal. Its producer event abstracts the real trusted renderer
+branch; runtime tests must establish that correspondence.
+
+`ReportCustodyScenarios` exercises complete-report retention, lost replies,
+failed commits, wrong profiles, oversize values and quota pressure. The refusal
+controls exercise both legitimate stages and reject unclassified or forged
+report-free finals. Independent monitors retain producer, commit and collection
+observations. Reachability probes require those observations and completed
+replies, never the driver's step counter. Guard mutations leave those monitors
+unchanged.
+
+Report and digest identities are symbolic atoms. Byte counts are concrete, but
+this model does not implement SQL, hashing, raw decoding or storage flushes.
+The report fixture also does not compose native child retirement; that remains
+an independent production collection prerequisite and a separate model/runtime
+bridge. The [complete-report design](../../../docs/design-notes/distributed-final-results.md)
+records the exact formats and implementation evidence still required.
