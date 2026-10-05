@@ -53,7 +53,10 @@ Whole Compile ownership, native command forwarding and the owner consumer now
 run through the trusted TLS BEAM endpoint in the integration branch. Combined
 owner/Compile/workspace controls and native executor/owner restart tests pass
 against the merged Weft revision. The [transport transition record](../review/distributed-beam-transport-transition.md)
-keeps the exact evidence and known historical-route refusal defect.
+keeps the transport evidence. The historical-route refusal correction and
+scoped endpoint/native-close changes now pass independent review and combined
+package gates; the [lifecycle review](../review/distributed-scoped-lifetime-runtime.md)
+records their remaining enclosing-host obligations.
 The reviewed [scoped lifetime proposal](distributed-scope-lifetime.md) describes
 the next host boundary; the owner approved its API and native close-state change.
 The [final-result proposal](distributed-final-results.md) records the separate

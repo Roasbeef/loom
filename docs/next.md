@@ -17,10 +17,13 @@ replacement and owner SQLite restart. The workspace E2E also passes through
 independent TLS BEAM roles, including an exact queued Submit retained after
 its actual caller deadline and join. Astra replay and the receipt mutation
 confirm that control. The [transport review](review/distributed-beam-transport-transition.md)
-records independent review, limits and the unresolved historical-refusal defect.
-The owner has now approved its service correction, the scoped lifecycle/native
-close changes, and bounded previews with durable complete-value references.
-Their earlier approval holds are resolved; implementation and verification remain.
+records independent review and transport limits. The historical-refusal,
+scoped-endpoint and native-close corrections are now implemented and independently
+reviewed. Their [lifecycle review](review/distributed-scoped-lifetime-runtime.md)
+records the combined gates and the distinction between endpoint drain and physical
+retirement. The owner approved bounded previews with durable complete-value
+references; their codec is implemented, while storage, rendering and read routing
+remain in progress.
 The [owner discharge fix](review/distributed-owner-discharge.md) now retains
 unresolved run obligations across worker loss and owner restart. The earlier storage gate passed 193 tests; the current full client gate passes
 2,847 tests, with 15 explicit optional SKIP notices. These skipped paths still
@@ -42,9 +45,12 @@ actual Gleam caller on OTP 29. Additional count/byte capacity and stale-observat
 controls passed. A production wrapper, receipt-retention lifecycle and the
 remaining D3 operational checks are still required before adoption.
 
-The current full executor gate passes 299 tests with no skips, including all 23
+The current full executor gate passes 306 tests with no skips, including all 23
 native controls after their TLS BEAM migration. Independent Astra review verified
-the migration preserves the original native assertions. Scoped host retirement
+the migration preserves the original native assertions. The complete-report codec
+passes 185 Erlang tests and 72 Node finite-value checks in the core gate; its
+[review](review/distributed-report-codec.md) records the JavaScript u64 limitation
+and the unimplemented custody/read-path obligations. Scoped host retirement
 and the remaining old-socket consumers are next; the endpoint must fence a
 closing scope before its services stop while preserving sibling capacity. The
 [Compile observation adapter](review/distributed-compile-observation.md) remains
@@ -57,10 +63,16 @@ Those results do not establish assembled-system acceptance.
 The [owner discharge model](review/distributed-owner-discharge-model.md) adds
 eight normal cases, eight exact reachability probes and nine compiling mutation
 witnesses. The current full P gate, including the proposed scoped TLS BEAM credit model,
-passes 126 cases/probes and 56 mutation controls. Independent Astra review
+passed 126 cases/probes and 56 mutation controls before the report-custody
+extension. The corrected report extension now passes 146 cases/probes; Astra
+found and verified the correction for unclassified report-free finals. The
+[report model review](review/distributed-report-custody-model.md) records twelve
+new report mutations and nine replayed owner mutations, with their respective
+source baselines. Independent Astra review
 replayed the scoped cases, probes and four new mutations. The
 [scoped-model review](review/distributed-scoped-drain-model.md) separates these
-bounded results from the approved runtime lifecycle API, now being implemented.
+bounded results from the scoped endpoint implementation and its enclosing host,
+which is still being assembled.
 The model assumes truthful COMMIT/drain events and makes no native-retirement or
 whole-system proof claim.
 

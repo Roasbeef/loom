@@ -32,7 +32,10 @@ raw scanning, rejects nonfinite encoded floats.
 
 `make check-core` exited zero with 185 Erlang tests and the same 72 Node checks.
 The Node regression is now part of the normal core gate, with bounded build and
-execution deadlines. The Erlang build remains warning-free. The supplemental
+execution deadlines. An independent replay of the actual check script also passed. Removing the
+finite guard made the real Node regression fail and the script exit one, while
+its Erlang tests still passed; the supplemental check is therefore a required
+part of the gate. The Erlang build remains warning-free. The supplemental
 JavaScript build reports existing and new unsafe-u64 literal warnings: exact u64
 metadata custody on JavaScript's Number representation is not established.
 The test covers finite-float admission, not that separate numeric limitation.
