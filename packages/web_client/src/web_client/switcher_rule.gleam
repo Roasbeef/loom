@@ -1,10 +1,11 @@
 //// What `<loom-switcher>` decides: which key opens the session switcher, which
 //// sessions a typed query lists, and where the highlight moves.
 ////
-//// The switcher lists the sessions the page already draws in its sidebar and
-//// opens one by pressing that session's own sidebar button, so the switch goes
+//// The switcher lists the sessions the page already draws in its sidebar, and
+//// the page's own way home or to the admin page when the bar draws one. It
+//// opens a row by pressing that row's own button, so the switch goes
 //// through the ticket mint every other switch uses and nothing here names a
-//// session to the server. The element reads each row's name, workspace and
+//// session or a page to the server. The element reads each row's name, workspace and
 //// subtitle from the text the server rendered and hands them to this module as
 //// plain strings, and this module only compares them. It never builds markup,
 //// and the element draws the result as text nodes (protocol-change/051, the
@@ -17,14 +18,19 @@ import gleam/int
 import gleam/list
 import gleam/string
 
-/// Whether a session is running or only saved, which the row says beside the
-/// workspace so two rows with one name can be told apart.
+/// What a row opens: a session that is running or only saved, which the row
+/// says beside the workspace so two rows with one name can be told apart, or
+/// one of the principal's own pages.
 pub type Kind {
   /// A process runs the session.
   Running
 
   /// The session is on disk and a press resumes it.
   Saved
+
+  /// A page of the app that is not a session: the home or the admin page.
+  /// Its row says what the page is for, and no workspace.
+  Place
 }
 
 /// One session the sidebar offers, as the server drew it.
@@ -122,6 +128,51 @@ pub fn intent(key: String, phase: Phase) -> Intent {
     Typing, "Enter" -> Choose
     Typing, _ -> Pass
   }
+}
+
+/// The attribute the page's own switcher chip carries, and the value that says
+/// what pressing it opens. The chip is drawn by `<loom-shell>`, which cannot
+/// reach the switcher's element, so the switcher recognises a press on it from
+/// the attribute alone.
+pub const summon_attribute = "data-opens"
+
+/// The value of `summon_attribute` on the chip that opens the switcher.
+pub const summon_value = "switcher"
+
+/// Whether an element on a click's path is the chip that opens the switcher,
+/// given the value of its `summon_attribute` or nothing when it has none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert switcher_rule.summons(Ok("switcher"))
+/// assert !switcher_rule.summons(Ok("elsewhere"))
+/// assert !switcher_rule.summons(Error(Nil))
+/// ```
+pub fn summons(value: Result(String, Nil)) -> Bool {
+  value == Ok(summon_value)
+}
+
+/// The quiet words after a row's name: where it runs, what it began as, and
+/// that it is only saved. A page of the app has no workspace and is never
+/// saved, so its row says only what it is for.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let row = switcher_rule.Row("docs", "loom", "Fix the test", switcher_rule.Saved)
+/// assert switcher_rule.detail(row) == "loom · Fix the test · saved"
+/// ```
+pub fn detail(row: Row) -> String {
+  let parts = [
+    row.workspace,
+    row.subtitle,
+    case row.kind {
+      Saved -> "saved"
+      Running | Place -> ""
+    },
+  ]
+  list.filter(parts, fn(part) { part != "" }) |> string.join(" · ")
 }
 
 /// The last segment of a workspace path, which is what a row says of where the

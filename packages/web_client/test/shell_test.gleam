@@ -656,3 +656,10 @@ pub fn a_press_on_a_button_in_the_sidebar_closes_the_drawer_test() {
 pub fn the_narrow_query_is_the_stylesheets_breakpoint_test() {
   assert shell_rule.narrow_query() == "(max-width: 1211px)"
 }
+
+// The Search chip opens the session switcher, which lists the sidebar's
+// sessions, so it is drawn where there is a sidebar and nowhere else.
+pub fn the_search_chip_is_drawn_only_where_there_is_a_sidebar_test() {
+  assert shell_rule.has_search(Listed)
+  assert !shell_rule.has_search(Unlisted)
+}

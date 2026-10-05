@@ -453,6 +453,23 @@ pub fn has_button(presence: Presence, region: Region) -> Bool {
   }
 }
 
+/// Whether the bar draws the `Search` chip that opens the session switcher.
+/// The switcher lists the sidebar's sessions, so a page with no sidebar has
+/// nothing for it to open and no chip.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert shell_rule.has_search(shell_rule.Listed)
+/// assert !shell_rule.has_search(shell_rule.Unlisted)
+/// ```
+pub fn has_search(presence: Presence) -> Bool {
+  case presence {
+    Listed -> True
+    Unlisted -> False
+  }
+}
+
 /// The presence the server's `sidebar` attribute names. The attribute is a
 /// fixed word (`listed` or `none`) that the server writes, and decoding is
 /// total: any other value, including none at all, is `Unlisted`, so a page

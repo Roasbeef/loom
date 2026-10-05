@@ -28,6 +28,10 @@
 //// attribute keeps nothing, reads nothing and never touches another
 //// workspace's layout. The server never learns the layout.
 ////
+//// A page with a sidebar also gets a `Search ⌘K` chip before the Theme button
+//// (`search_chip`). It is a button the switcher recognises by an attribute and
+//// opens from (`web_client/switcher`), so the shell holds no state for it.
+////
 //// The bar also draws a Theme button. Each press moves the page from following
 //// the system's colour setting to light, then dark, then back
 //// (`layout_rule.next_theme`), by setting or removing `data-theme` on the
@@ -151,6 +155,7 @@ import web_client/shell_rule.{
   type Frame, type Intent, type Layout, type Motion, type Presence, type Region,
   type Relay, type State, type Tab,
 }
+import web_client/switcher_rule
 
 /// The element's tag.
 pub const name = "loom-shell"
@@ -606,6 +611,7 @@ fn view(model: Model) -> Element(Msg) {
     html.div([attribute.class("shell-bar")], [
       button(model, shell_rule.Sidebar),
       component.named_slot("bar", [], []),
+      search_chip(model),
       theme_button(model),
       button(model, shell_rule.Panel),
     ]),
@@ -898,6 +904,39 @@ fn toggle_face(region: Region) -> List(Element(Msg)) {
   case region {
     shell_rule.Sidebar -> [icon, hint]
     shell_rule.Panel -> [hint, icon]
+  }
+}
+
+// The `Search` chip, on the pages that have a switcher: a real button with the
+// shortcut's hint beside its word, for a person who has not been told the
+// shortcut and for a touch screen that has no keys. It carries no handler of
+// the shell's. `<loom-switcher>` hears a click on anything marked with the
+// attribute below, so the shell neither reaches the switcher nor holds a
+// state for it. The hint hides on a narrow bar, as the toggles' do.
+fn search_chip(model: Model) -> Element(Msg) {
+  case shell_rule.has_search(model.sidebar) {
+    False -> element.none()
+    True ->
+      html.button(
+        [
+          attribute.type_("button"),
+          attribute.class("bar-search"),
+          attribute.attribute(
+            switcher_rule.summon_attribute,
+            switcher_rule.summon_value,
+          ),
+          attribute.aria_label("Search sessions and pages"),
+          attribute.title("Search sessions and pages"),
+          attribute.aria("keyshortcuts", "Control+K Meta+K"),
+        ],
+        [
+          html.span([attribute.class("bar-search-word")], [html.text("Search")]),
+          html.kbd(
+            [attribute.class("bar-search-hint"), attribute.aria_hidden(True)],
+            [html.text("⌘K")],
+          ),
+        ],
+      )
   }
 }
 
