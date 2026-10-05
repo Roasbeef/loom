@@ -26,6 +26,36 @@ as data). It starts with the principles the design follows and a map of
 the code in reading order, then covers each mechanism, and ends with how
 to add a language.
 
+## Remote executor integration status
+
+The physical manager is reusable, but the distributed runtime does not yet host
+language servers on a registered executor. `client/serve` constructs the manager
+with the owner's workspace, executable lookup and runner. The TLS BEAM endpoint
+currently routes native, workspace and Compile requests; it has no LSP route.
+
+Remote integration must invoke the manager on the executor, where root discovery,
+document reads, approved dependency preparation and server leases can use the
+authoritative checkout. The owner retains capability admission and command
+approval. A remote query must carry bounded semantic data and the original scope
+and deadline; sending the manager's closure to the owner would run its filesystem
+reads on the wrong machine.
+
+Rename needs the same placement rule. The current code-mode rename adapter uses
+the owner's filesystem, so returned remote edits cannot be fed into it unchanged.
+The physical landing operation and post-write diagnostic observer must share the
+executor manager while preserving owner-approved write authority. Finite SQL
+observations must collect there too.
+
+The next vertical slice is an owner-admitted outline query through a registered
+executor manager and a real jailed language server. It requires a reviewed LSP
+route and native lease-clearance contract first: the current Compile/Launch
+command role does not admit LSP leases. Its gate must exercise both Gleam and Go
+with no target checkout on the owner, exact result coordinates, refused authority,
+caller loss and actual server cleanup. Passing that slice would establish query
+locality; complete remote support still requires rename, observations, diagnostics
+and daemon assembly. The [distributed integration guide](../design-notes/distributed-runtime-integration.md)
+tracks those acceptance requirements.
+
 ## Principles
 
 Seven rules shape every module below. Each is a heading followed by its
