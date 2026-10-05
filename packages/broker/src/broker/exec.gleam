@@ -150,6 +150,7 @@ import broker/internal/ffi_os
 import broker/internal/ffi_port
 import broker/policy.{type SandboxPolicy}
 import core/msgpack
+import envoy
 import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/port.{type Port}
@@ -2640,7 +2641,11 @@ pub const unjailed_skip_marker = "no loom-exec jail for this platform"
 /// of that trade.
 pub fn unjailed_skip_reason(platform: HostPlatform) -> Option(String) {
   case platform {
-    JailedHost -> None
+    JailedHost ->
+      jailed_session_skip_reason(
+        ffi_os.os_name(),
+        envoy.get(jail_scratch_variable),
+      )
     UnjailedHost(os_name:) ->
       Some(
         unjailed_skip_marker
@@ -2650,6 +2655,51 @@ pub fn unjailed_skip_reason(platform: HostPlatform) -> Option(String) {
         <> "running unenforced would prove nothing about a jail that does "
         <> "not exist",
       )
+  }
+}
+
+/// The variable `loom-exec` sets in every jailed execution that has a
+/// private scratch directory, and the one fact a process can read to learn
+/// it is already inside a Loom jail.
+const jail_scratch_variable = "LOOM_SCRATCH_DIR"
+
+/// The marker a suite carries when it declines to run because the test
+/// process is itself inside a Loom jail. It is deliberately absent from
+/// `.github/declared-skips`: CI is never nested, so a declaration would go
+/// stale and fail the census.
+pub const jailed_session_skip_marker = "already inside a Loom/Seatbelt jail"
+
+/// Why a real-helper suite cannot run because this process is inside a
+/// Loom jail, or `None` when it can.
+///
+/// macOS refuses a second `sandbox_apply` from a process that already has a
+/// profile (`Operation not permitted`, exit 71), so the nested helper can
+/// never confine anything and every suite that spawns one fails, first on
+/// an unwritable scratch parent and then on the refusal itself. Reporting
+/// that as a skip keeps a jailed session from spending its time proving the
+/// failures are environmental. The decision is limited to Darwin: Linux
+/// nests bwrap and Landlock on hosts that allow it, and CI is arbiter there.
+/// `scratch` is the `LOOM_SCRATCH_DIR` lookup, taken as an argument so the
+/// decision is testable without touching the process environment.
+///
+/// ## Examples
+///
+/// ```gleam
+/// jailed_session_skip_reason("darwin", Ok("/private/var/folders/x/T/loom"))
+/// // -> Some("already inside a Loom/Seatbelt jail: ...")
+/// ```
+pub fn jailed_session_skip_reason(
+  os_name: String,
+  scratch: Result(String, Nil),
+) -> Option(String) {
+  case os_name, scratch {
+    "darwin", Ok(directory) if directory != "" ->
+      Some(
+        jailed_session_skip_marker
+        <> ": the kernel refuses a nested sandbox_apply, so the real-helper "
+        <> "suites cannot run here; run them from an unjailed shell or in CI",
+      )
+    _other_host, _scratch -> None
   }
 }
 
