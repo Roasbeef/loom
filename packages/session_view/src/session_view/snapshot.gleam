@@ -197,6 +197,23 @@ pub fn begin_lookup(
   begin_window(body, expected, previous, empty(), from_seq, ["escalations"])
 }
 
+/// Starts the read of a session's decided approvals, which carries no
+/// conversation window either.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // snapshot.begin_decided(body, selected, attachment, cursor)
+/// ```
+pub fn begin_decided(
+  body: json.JsonValue,
+  expected: Expected,
+  previous: Option(Attachment),
+  from_seq: Int,
+) -> Result(Transfer, String) {
+  begin_window(body, expected, previous, empty(), from_seq, ["decided"])
+}
+
 fn begin_window(body, expected, previous, window, from_seq, modes) {
   use fields <- result.try(object(body))
   use id <- result.try(text(fields, "snapshot_id"))

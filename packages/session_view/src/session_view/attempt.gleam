@@ -70,6 +70,10 @@ pub type Selection {
     /// Distinct exact keys whose resolution may update the approval view.
     ids: List(String),
   )
+
+  /// The newest decided approvals, which the daemon chooses; the request
+  /// names nothing.
+  DecidedList
 }
 
 /// One issued command without its potentially sensitive body.
@@ -194,6 +198,7 @@ fn encode_selection(selection) {
     ]
     Cursor(seq) -> [#("from_seq", json.Int(seq))]
     Decisions(ids) -> [#("ids", json.Array(list.map(ids, json.String)))]
+    DecidedList -> []
   }
 }
 
@@ -280,6 +285,7 @@ fn decode_selection(kind, fields) {
       )
       Ok(HistoryRange(after, before))
     }
+    "escalations_decided" -> Ok(DecidedList)
     "escalations_get" -> {
       use values <- result.try(case list.key_find(fields, "ids") {
         Ok(json.Array(values)) -> Ok(values)

@@ -13,10 +13,15 @@
 //// The strand comes from the pending cell, which the capture held while the
 //// request waited (`strands`); the host remembers it until the decision.
 ////
-//// A page that opens after a request was decided never saw it pending and
-//// has no way to look it up, so its timeline shows no line for it. Closing
-//// that gap takes the daemon listing decided escalations, which is a wire
-//// change and not made here.
+//// A page that opens after a request was decided never saw it pending, so
+//// it has no identity to look up. It reads the daemon's decided approvals
+//// instead (`escalations_decided`, protocol-change/015 addendum), which
+//// arrive as the same records a lookup returns and join the same ledger.
+//// Those records carry their strand in the escalation's own scope
+//// (`approval.Review.strand`), which is what the line falls back to when no
+//// capture saw the request pending. A decision the page watched and then
+//// read again is one ledger entry, because the ledger is keyed by the
+//// escalation's identity.
 ////
 //// A decision's sequence is the register write that committed it. Storage
 //// numbers register writes and transcript entries from one counter within a
@@ -71,9 +76,10 @@ pub type Decision {
 /// The decisions the approval ledger holds for `strand`, oldest first.
 ///
 /// `raised` says which strand each request was raised on, by the request's
-/// identity (`strands`), because the ledger's summary of a decided request
-/// keeps no scope. A request that is still pending is no decision, and one
-/// whose strand is not known is left out rather than guessed at.
+/// identity (`strands`), and the record's own scope answers for a request
+/// no capture saw pending. A request that is still pending is no decision,
+/// and one whose strand is not known either way is left out rather than
+/// guessed at.
 ///
 /// ## Examples
 ///
@@ -101,7 +107,10 @@ fn decision(
     approval.Approved | approval.Consumed -> Ok(Allowed)
     approval.Rejected -> Ok(Denied)
   })
-  use owner <- result.try(list.key_find(raised, review.id))
+  use owner <- result.try(
+    list.key_find(raised, review.id)
+    |> result.lazy_or(fn() { option.to_result(review.strand, Nil) }),
+  )
   use <- bool.guard(owner != strand, Error(Nil))
   let who = case review.origin {
     Some(author) -> origin.display_label(author)

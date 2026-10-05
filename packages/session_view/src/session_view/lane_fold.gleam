@@ -262,11 +262,12 @@ pub fn apply_channel_update(
 }
 
 // The reads the host issues on its own account: the automatic reads, the
-// pending-decisions lookup a capture triggers, and the history read a host's
-// own paging control asks for. A refusal of one is no command's outcome.
+// pending-decisions lookup a capture triggers, the decided-approvals read a
+// page makes when it opens, and the history read a host's own paging control
+// asks for. A refusal of one is no command's outcome.
 fn host_read(command: String) -> Bool {
   case command {
-    "history" | "escalations_get" -> True
+    "history" | "escalations_get" | "escalations_decided" -> True
     _ -> session_channel.is_read(command)
   }
 }

@@ -106,3 +106,19 @@ pub fn the_strand_comes_from_the_records_scope_test() {
   assert decisions.strands([cell("e1", "main"), other, cell("e2", "sub:x")])
     == [#("e1", "main"), #("e2", "sub:x")]
 }
+
+// A page that opened after the decision has no capture that saw the request
+// pending, so the record's own scope names the strand, and it agrees with
+// what a capture would have said.
+pub fn a_records_own_scope_names_the_strand_when_no_capture_saw_it_test() {
+  let record =
+    approval.Review(
+      ..review("e7", 12, approval.Rejected, owner()),
+      strand: Some("sub:main/review"),
+    )
+  assert decisions.from_ledger([record], [], "main") == []
+  let assert [decision] = decisions.from_ledger([record], [], "sub:main/review")
+  assert decisions.words(decision) == "Owner denied bash"
+  assert decisions.from_ledger([record], [#("e7", "main")], "main") != []
+    as "a capture's account of the request wins over the record's"
+}

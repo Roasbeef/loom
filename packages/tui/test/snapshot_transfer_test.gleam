@@ -88,6 +88,21 @@ pub fn snapshot_transfer_lookup_is_not_a_regular_conversation_cut_test() {
     as "lookup credit cannot accidentally consume a regular snapshot"
 }
 
+pub fn snapshot_transfer_decided_window_is_its_own_lane_test() {
+  let assert json.Object(fields) = begin_body() as "the fixture is an object"
+  let body = json.Object(list.key_set(fields, "window", json.String("decided")))
+  let assert Ok(_) = snapshot.begin_decided(body, expected(), None, 0)
+    as "the decided lane accepts the actual emitted window tag"
+  let assert Error(_) =
+    snapshot.begin(body, expected(), None, snapshot.empty(), 0)
+    as "a decided read is not a conversation cut"
+  let assert Error(_) = snapshot.begin_lookup(body, expected(), None, 0)
+    as "a decided read is not an exact lookup"
+  let assert Error(_) =
+    snapshot.begin_decided(begin_body(), expected(), None, 0)
+    as "a regular snapshot cannot answer a decided read"
+}
+
 fn piece(transfer, kind, id, seq, total, offset, bytes) {
   let #(identity, index) = snapshot.credit(transfer)
   json.Object([
