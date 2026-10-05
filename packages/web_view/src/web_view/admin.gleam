@@ -117,6 +117,9 @@ pub type Start {
     /// counted from. It is read once for each snapshot, in the component's
     /// process, and must return at once.
     now: fn() -> Int,
+    /// The fingerprint of the browser login this page was opened from, if it
+    /// was, which the owner's own sign-in list marks as "This browser".
+    login: Option(String),
   )
 }
 
@@ -466,6 +469,16 @@ fn still_armed(
           }
         None -> None
       }
+    Some(grants.RevokeSignin(principal:, fingerprint:)) ->
+      case
+        list.any(snapshot.logins, fn(held) {
+          held.principal == principal
+          && list.any(held.shown, fn(row) { row.fingerprint == fingerprint })
+        })
+      {
+        True -> armed
+        False -> None
+      }
     Some(grants.Invite(..))
     | Some(grants.SetRole(..))
     | Some(grants.Rotate(_)) -> None
@@ -569,6 +582,8 @@ fn body(model: Model) -> Element(Msg) {
         admin_people.principals(
           snapshot.principals,
           snapshot.more_principals,
+          snapshot.logins,
+          model.start.login,
           model.now,
           model.armed,
           presses,

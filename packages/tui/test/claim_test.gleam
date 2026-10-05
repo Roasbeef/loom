@@ -245,3 +245,32 @@ pub fn launch_refuses_claim_shaped_tokens_and_readable_token_files_test() {
   assert tui.launch_token(["--token", bearer]) == Ok(bearer)
   let _ = simplifile.delete(directory)
 }
+
+// Protocol-change/065, PR 8. A browser login is a cookie and not a credential a
+// terminal presents, so `--token` and `--token-file` name it as such and never
+// echo it. This is a courtesy to the person and not a defence: the daemon refuses
+// every string that is not a 64-digit bearer.
+pub fn launch_refuses_a_browser_login_and_never_echoes_it_test() {
+  let login =
+    "loomb1:" <> string.repeat("0", 32) <> ":p=owner:" <> string.repeat("a", 64)
+  let assert Error(reason) = tui.launch_token(["--token", login])
+    as "a login is not a bearer"
+  assert string.contains(reason, "browser login")
+  assert !string.contains(reason, login)
+
+  let directory = state("login-launch")
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(directory)
+  let file = directory <> "/token"
+  let assert Ok(Nil) = bootstrap.atomic_write_private(file, login)
+  let assert Error(reason) = tui.launch_token(["--token-file", file])
+    as "a login in a token file is refused"
+  assert !string.contains(reason, login)
+
+  // A short value of the same shape is named for what it is.
+  let short = "loomb1:x"
+  let assert Ok(Nil) = bootstrap.atomic_write_private(file, short)
+  let assert Error(named) = tui.launch_token(["--token-file", file])
+    as "a login-shaped file is refused"
+  assert string.contains(named, "browser login")
+  let _ = simplifile.delete(directory)
+}

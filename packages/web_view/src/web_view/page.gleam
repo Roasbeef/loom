@@ -53,6 +53,9 @@ pub const enter_asset = "web_view_enter.js"
 /// nonce.
 pub const page_asset = "web_view_page.js"
 
+/// The script the resume page runs to post the login nonce.
+pub const resume_asset = "web_view_resume.js"
+
 /// The client components (`packages/web_client`), bundled into one ES
 /// module, which the page loads so the server component can render their
 /// custom elements.
@@ -68,6 +71,30 @@ pub const client_asset = "web_client.mjs"
 /// ```
 pub fn keyed_prefix(key: String) -> String {
   prefix <> "/p/" <> key
+}
+
+/// Where a browser login's pages live: `/ui/l/<key>`, the path the login's
+/// cookie is scoped to (protocol-change/065).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert page.login_prefix("abc") == "/ui/l/abc"
+/// ```
+pub fn login_prefix(key: String) -> String {
+  prefix <> "/l/" <> key
+}
+
+/// The bookmark a browser login's person keeps: the address that resumes a
+/// home page while the login lasts.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert page.login_home_path("abc") == "/ui/l/abc/home"
+/// ```
+pub fn login_home_path(key: String) -> String {
+  login_prefix(key) <> "/home"
 }
 
 /// The keyed address of one session's page.
@@ -386,6 +413,84 @@ fn fresh_link_box(command: Option(String)) -> String {
   }
 }
 
+/// The page for a browser's visit to its bookmark: a fixed document whose
+/// script reads the login nonce this browser kept and posts it, in a form to
+/// this same address, so the daemon can verify the login (protocol-change/065).
+/// A browser with no nonce is told what to do instead. The document names no
+/// key and no principal: the script takes the key from the address it was
+/// served at, and the form posts to that address.
+///
+/// It is the one document, with the claim form, served under a policy that lets
+/// a form submit to this origin (`OwnForms`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(page.login_page(), "name=\"nonce\"")
+/// ```
+pub fn login_page() -> String {
+  "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
+  <> "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+  <> "<title>Loom</title>"
+  <> "<link rel=\"stylesheet\" href=\""
+  <> asset_path(stylesheet_asset)
+  <> "\"></head><body><main class=\"ended-page\">"
+  <> "<section class=\"ended-document\" role=\"status\">"
+  <> "<p class=\"ended-brand\">Loom</p>"
+  <> "<p class=\"ended-headline\" id=\"login-status\">Signing in.</p>"
+  <> "<p class=\"ended-advice\" id=\"login-help\" hidden>"
+  <> houdini.escape(login_unknown_notice())
+  <> "</p>"
+  <> "<form id=\"login-form\" method=\"post\" action=\"\" hidden>"
+  <> "<input type=\"hidden\" name=\"nonce\" value=\"\"></form>"
+  <> "<noscript><p class=\"ended-advice\">"
+  <> houdini.escape(login_script_notice())
+  <> "</p></noscript>"
+  <> "</section></main><script src=\""
+  <> asset_path(resume_asset)
+  <> "\"></script></body></html>\n"
+}
+
+/// What the resume page says when this browser holds no nonce for the login:
+/// a new profile, cleared storage or a private window. The way back in is a
+/// terminal, or a device link another signed-in browser made.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(page.login_unknown_notice(), "loom ui")
+/// ```
+pub fn login_unknown_notice() -> String {
+  "This browser has no sign-in for this address. Run `loom ui` in a terminal "
+  <> "to sign in, or open a device link from a browser that is signed in."
+}
+
+fn login_script_notice() -> String {
+  "Signing in needs scripts. Run `loom ui` in a terminal and open the link "
+  <> "it prints."
+}
+
+/// The document a sign-in that was refused is answered with: fixed words and
+/// the command that signs in again, and nothing the request said. The status is
+/// the caller's, and every refusal reads the same, so the answer does not tell
+/// a forged token from an expired or revoked one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(page.login_refused(), "loom ui")
+/// ```
+pub fn login_refused() -> String {
+  ended_document(
+    "This browser is not signed in.",
+    ending.Advice(
+      lead: "The sign-in has ended, was signed out, or did not match this "
+        <> "browser.",
+      command: Some("loom ui"),
+    ),
+  )
+}
+
 /// The page the ticket exchange answers with. Its body names the keyed page
 /// to move to and the tab's nonce, as data attributes; its script, which
 /// runs at the end of the body, keeps the nonce in `sessionStorage` and
@@ -399,18 +504,58 @@ fn fresh_link_box(command: Option(String)) -> String {
 /// // page.enter("/ui/p/abc/sessions/S", nonce)
 /// ```
 pub fn enter(next: String, nonce: String) -> String {
+  enter_document(next, nonce, "")
+}
+
+/// `enter` for an exchange that also set a browser login: the body carries the
+/// login's key and nonce as well, and the same script keeps the nonce in
+/// `localStorage` under `loom.login.<key>` before it moves on
+/// (protocol-change/065). The nonce is delivered here once and the daemon keeps
+/// only its digest, inside the token.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // page.enter_remembered("/ui/p/abc/home", nonce, login_key, login_nonce)
+/// ```
+pub fn enter_remembered(
+  next: String,
+  nonce: String,
+  login_key: String,
+  login_nonce: String,
+) -> String {
+  enter_document(
+    next,
+    nonce,
+    " data-login-key=\""
+      <> houdini.escape(login_key)
+      <> "\" data-login-nonce=\""
+      <> houdini.escape(login_nonce)
+      <> "\"",
+  )
+}
+
+// The exchange's document, with `login` the login's two attributes, or nothing.
+fn enter_document(next: String, nonce: String, login: String) -> String {
   "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
   <> "<title>Loom</title>"
   <> "</head><body data-next=\""
   <> houdini.escape(next)
   <> "\" data-nonce=\""
   <> houdini.escape(nonce)
-  <> "\">"
+  <> "\""
+  <> login
+  <> ">"
   <> "<script src=\""
   <> asset_path(enter_asset)
   <> "\"></script>"
   <> "</body></html>\n"
 }
+
+/// The `localStorage` item prefix a login's nonce is kept under: the item is
+/// this and the login key. The enter and resume scripts spell the same name; the
+/// daemon's route tests check that the served scripts carry it.
+pub const login_nonce_item = "loom.login."
 
 /// The `sessionStorage` item the nonce is kept under. The two scripts in
 /// `assets/` spell the same name; the daemon's route tests check that the
@@ -431,11 +576,42 @@ pub const nonce_item = "loom-page-nonce"
 /// // page.content_security_policy("127.0.0.1:4000")
 /// ```
 pub fn content_security_policy(host: String) -> String {
+  content_security_policy_for(host, NoForms)
+}
+
+/// Whether a document may submit a form.
+pub type Forms {
+  /// No form submits anywhere: `form-action 'none'`, the policy of every `/ui`
+  /// document but one.
+  NoForms
+
+  /// A form may submit to this origin and to no other: `form-action 'self'`.
+  /// Only the resume page and the claim form are served so (protocol-change/065).
+  OwnForms
+}
+
+/// `content_security_policy` for a document that may hold a form. Nothing else
+/// in the policy differs.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(
+///   page.content_security_policy_for("127.0.0.1:4000", page.OwnForms),
+///   "form-action 'self'",
+/// )
+/// ```
+pub fn content_security_policy_for(host: String, forms: Forms) -> String {
+  let action = case forms {
+    NoForms -> "'none'"
+    OwnForms -> "'self'"
+  }
   "default-src 'none'; script-src 'self'; style-src 'self'; "
   <> "style-src-attr 'unsafe-inline'; connect-src 'self' ws://"
   <> host
-  <> "; img-src 'self'; base-uri 'none'; form-action 'none'; "
-  <> "frame-ancestors 'none'"
+  <> "; img-src 'self'; base-uri 'none'; form-action "
+  <> action
+  <> "; frame-ancestors 'none'"
 }
 
 /// The path an asset is served at.

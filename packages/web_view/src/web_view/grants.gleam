@@ -30,6 +30,7 @@ import gleam/option.{type Option}
 import web_view/ending.{type Ending}
 import web_view/invites.{type Role}
 import web_view/sessions.{type Entry}
+import web_view/signins.{type Signin}
 
 /// Whether a principal is the daemon's owner. The page offers the owner no
 /// action, since the owner's access is not the page's to change.
@@ -116,6 +117,26 @@ pub type Selection {
   )
 }
 
+/// One principal's browser logins, as the last read found them
+/// (protocol-change/065, the eighth pull request): how many are active and
+/// unexpired, and the first of them. The fingerprints identify a login and
+/// authenticate nothing.
+pub type Logins {
+  Logins(
+    /// The principal these belong to, one of the snapshot's principals.
+    principal: String,
+    /// How many logins the principal holds that are active and have not reached
+    /// their expiry, whether or not they are listed here.
+    count: Int,
+    /// The first of them, at most `signins_shown`, in the daemon's order.
+    shown: List(Signin),
+  )
+}
+
+/// The most sign-ins the admin page lists for one principal. A principal with
+/// more says so and leaves the rest to `loom access signins`.
+pub const signins_shown = 10
+
 /// What one read of the catalogue gave: who exists, which sessions the owner
 /// holds, and, when the page has chosen one, that session's members.
 pub type Snapshot {
@@ -129,6 +150,8 @@ pub type Snapshot {
     /// The chosen session's members, or `None` when no session is chosen or
     /// the catalogue holds no such session.
     selection: Option(Selection),
+    /// The sign-ins of each principal that holds any, in the principals' order.
+    logins: List(Logins),
   )
 }
 
@@ -147,7 +170,7 @@ pub type Reading {
   Closed(ending: Ending)
 }
 
-/// The five changes the page may ask for. Every identity in one is the
+/// The six changes the page may ask for. Every identity in one is the
 /// catalogue's, drawn into the tree by the server, and the text of a name is
 /// the browser's and nothing else is: a frame cannot name a session or a
 /// principal the page did not draw. The daemon checks each again, from the
@@ -174,6 +197,11 @@ pub type Action {
   /// Void a principal's credentials and claim and issue a new claim. A grant:
   /// it costs one allowance.
   Rotate(principal: String)
+
+  /// End one browser login of a principal, named by its fingerprint, which the
+  /// server drew into the tree beside it. Every page the login minted ends at
+  /// its next request. A reduction, which costs nothing.
+  RevokeSignin(principal: String, fingerprint: String)
 }
 
 /// What a claim was made for, which the page words.
@@ -283,6 +311,7 @@ pub fn changed_words(action: Action) -> String {
     SetRole(..) -> "Role changed."
     RevokeMembership(..) -> "Membership removed."
     RevokeCredentials(..) -> "Credentials revoked."
+    RevokeSignin(..) -> "Sign-in ended."
     Invite(..) | Rotate(..) -> "Done."
   }
 }

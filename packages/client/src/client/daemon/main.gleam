@@ -14,6 +14,7 @@ import client/daemon/root
 import client/daemon/server
 import client/daemon/session_socket
 import client/daemon/ui_assets
+import client/daemon/ui_login
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
 import client/host
@@ -772,14 +773,25 @@ fn web_view(
       // The page's assets are read once, here, so a release that lost one
       // refuses `--ui` at startup rather than serving a page without it.
       use assets <- result.try(ui_assets.load())
-      use sessions <- result.map(
+      use sessions <- result.try(
         ui_sessions.start(ui_sessions.production(bootstrap.monotonic_time_ms)),
       )
+
+      // The login's root key is read here, once, with the registry that can
+      // revoke the rows of a lost one (`ui_login.root_key`): a key that is
+      // present and wrong refuses `--ui` at startup rather than serving a view
+      // whose logins can never verify.
+      use ready <- result.try(root.ready(daemon, within: 20_000))
+      use root_key <- result.map(ui_login.root_key(
+        ready.state_root,
+        ready.registry,
+      ))
       Some(
         server.Ui(
           sessions:,
           assets:,
-          upgrade: fn(request, attachment, open, register, ceiling, reach) {
+          root_key:,
+          upgrade: fn(request, attachment, open, register, seen) {
             ui_socket.upgrade(
               daemon,
               request,
@@ -788,19 +800,17 @@ fn web_view(
               sessions,
               open,
               register,
-              ceiling,
-              reach,
+              seen,
             )
           },
-          home: fn(request, attachment, open, ceiling, reach) {
+          home: fn(request, attachment, open, seen) {
             ui_socket.upgrade_home(
               daemon,
               request,
               attachment,
               sessions,
               open,
-              ceiling,
-              reach,
+              seen,
             )
           },
           admin: fn(request, attachment, open, ceiling) {

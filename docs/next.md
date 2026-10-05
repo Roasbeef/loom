@@ -32,7 +32,7 @@ the code, and it was not re-run.
 | Terminal revamp ([#655](https://github.com/Roasbeef/loom/issues/655)) | Landed as #760 (`2625d2251`): all sixteen layers of stack #718. Open edges and follow-ups below. |
 | protocol-change 059, strand message origin | Accepted 2026-10-03, reader and writer both on `main`. No release has been cut since `v0.2.0` (2026-09-14), so the next release carries both. |
 | protocol-change 060, code-mode call record | Accepted. The record, the terminal's rows and the web Trace tab's rows are built. The live feed for a running program is not ([#765](https://github.com/Roasbeef/loom/issues/765)). |
-| Web view | Four-tab panel (Strands, Changes, Trace, Session), a visual system, a home page that opens running and saved sessions, a Home button on pages it opened, an invitee-chosen name. PRs 1, 2, 3 and 6 of workspace mode's ten are built. |
+| Web view | Four-tab panel (Strands, Changes, Trace, Session), a visual system, a home page that opens running and saved sessions, a Home button on pages it opened, an invitee-chosen name, a thirty-day browser login with a home that lists and ends its sign-ins. PRs 1 to 8 of workspace mode's ten are built, the admin page included, which lists each principal's sign-ins and ends one. |
 | Executor service ([#696](https://github.com/Roasbeef/loom/issues/696)) | Closed. Landed as #727 and #732; `broker/direct` is gone. |
 | Language servers | Stack merged (#680), SQL observations (#693), dependency preparation (#728). |
 | Flake fixes | #746 and #747 merged through #761. #513 is still open. |

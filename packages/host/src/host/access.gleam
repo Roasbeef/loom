@@ -133,6 +133,13 @@ type Kind {
   // `principals.memberships`.
   MembershipListing
 
+  // `credentials.signins`: one principal's browser logins, listed (protocol-change/065).
+  SigninListing
+
+  // `credentials.revoke_login`: one login ended; the reply names the principal
+  // and the fingerprint.
+  LoginRevocation
+
   // `sessions.members`.
   MemberListing
 }
@@ -160,7 +167,7 @@ type Epoch {
 }
 
 const commands_usage =
-  "list [--after PRINCIPAL] | show PRINCIPAL [--after SESSION] | members SESSION [--after PRINCIPAL] | invite SESSION PRINCIPAL ROLE NAME [--ttl 30m|24h|7d] [--claim-addr URL | --credential-digest HEX] | set-role SESSION PRINCIPAL ROLE | revoke SESSION PRINCIPAL | rotate PRINCIPAL [--ttl 30m|24h|7d] [--claim-addr URL | --credential-digest HEX] | revoke-credentials PRINCIPAL | isolate SESSION --share-existing-transcript"
+  "list [--after PRINCIPAL] | show PRINCIPAL [--after SESSION] | members SESSION [--after PRINCIPAL] | invite SESSION PRINCIPAL ROLE NAME [--ttl 30m|24h|7d] [--claim-addr URL | --credential-digest HEX] | set-role SESSION PRINCIPAL ROLE | revoke SESSION PRINCIPAL | rotate PRINCIPAL [--ttl 30m|24h|7d] [--claim-addr URL | --credential-digest HEX] | revoke-credentials PRINCIPAL | signins PRINCIPAL [--after FINGERPRINT] | revoke-login PRINCIPAL FINGERPRINT | isolate SESSION --share-existing-transcript"
 
 /// The complete access-command usage for one binary.
 ///
@@ -268,7 +275,8 @@ pub fn run_on(
 // change nothing and name nothing to recover.
 fn announce(console: Console, request: Request) -> Nil {
   case request.kind {
-    Member -> console.err("principal recovery ID: " <> request.subject)
+    Member | SigninListing | LoginRevocation ->
+      console.err("principal recovery ID: " <> request.subject)
     Isolation -> console.err("session ID: " <> request.subject)
     Passthrough | PrincipalListing | MembershipListing | MemberListing -> Nil
   }
@@ -294,8 +302,13 @@ fn note_loopback_claim(console: Console, request: Request) -> Nil {
 // Only a mutation can leave an outcome unknown that a retry could repeat.
 fn unknown_outcome(request: Request) -> String {
   case request.kind {
-    Member | Isolation -> "; do not retry an unknown mutation automatically"
-    Passthrough | PrincipalListing | MembershipListing | MemberListing -> ""
+    Member | Isolation | LoginRevocation ->
+      "; do not retry an unknown mutation automatically"
+    Passthrough
+    | PrincipalListing
+    | MembershipListing
+    | SigninListing
+    | MemberListing -> ""
   }
 }
 
@@ -314,7 +327,8 @@ pub fn parse(
   use #(target, rest) <- result.try(parse_target(arguments, program))
   use request <- result.try(parse_command(target, rest, program))
   use Nil <- result.try(case request.kind {
-    Member | MembershipListing -> valid_principal(request.subject)
+    Member | MembershipListing | SigninListing | LoginRevocation ->
+      valid_principal(request.subject)
     Isolation | Passthrough | PrincipalListing | MemberListing -> Ok(Nil)
   })
   Ok(request)
@@ -486,6 +500,28 @@ fn parse_command(
     }
     ["revoke-credentials", principal] ->
       Ok(Request(target, Member, "credentials.revoke", principal, [], NoClaim))
+    ["signins", principal, ..options] -> {
+      use after <- result.try(after_option(options, fingerprint))
+      Ok(Request(
+        target,
+        SigninListing,
+        "credentials.signins",
+        principal,
+        after_field(after),
+        NoClaim,
+      ))
+    }
+    ["revoke-login", principal, login] -> {
+      use Nil <- result.try(fingerprint(login))
+      Ok(Request(
+        target,
+        LoginRevocation,
+        "credentials.revoke_login",
+        principal,
+        [#("fingerprint", json.String(login))],
+        NoClaim,
+      ))
+    }
     _other -> Error(usage(program))
   }
 }
@@ -647,15 +683,16 @@ pub fn envelope(request: Request, epoch: String) -> String {
   // the session. Listings read and change nothing, so they carry no epoch to
   // fence.
   let identity = case request.kind {
-    Member | MembershipListing -> [
+    Member | MembershipListing | SigninListing | LoginRevocation -> [
       #("principal_id", json.String(request.subject)),
     ]
     MemberListing -> [#("session_id", json.String(request.subject))]
     Isolation | Passthrough | PrincipalListing -> []
   }
   let fenced = case request.kind {
-    PrincipalListing | MembershipListing | MemberListing -> request.body
-    Member | Isolation | Passthrough -> [
+    PrincipalListing | MembershipListing | SigninListing | MemberListing ->
+      request.body
+    Member | Isolation | Passthrough | LoginRevocation -> [
       #("epoch", json.String(epoch)),
       ..request.body
     ]
@@ -962,8 +999,49 @@ pub fn success(
     }
     PrincipalListing -> principal_lines(body)
     MembershipListing -> membership_lines(body, request.subject)
+    SigninListing -> signin_lines(body, request.subject)
+    LoginRevocation -> {
+      use fields <- result.try(object_fields(body))
+      use Nil <- result.try(equal_field(
+        fields,
+        "principal_id",
+        json.String(request.subject),
+      ))
+      use login <- result.try(text_field(fields, "fingerprint"))
+      use Nil <- result.try(fingerprint(login))
+      Ok([
+        json.Object([
+          #("principal_id", json.String(request.subject)),
+          #("fingerprint", json.String(login)),
+        ]),
+      ])
+    }
     MemberListing -> member_lines(body, request.subject)
   }
+}
+
+/// Checks a `credentials.signins` reply body for `principal` and answers its
+/// lines, in the shape `principal_lines` answers: one checked row for each
+/// browser login, then `{"next": CURSOR}` when another page follows. A row is a
+/// 16-digit fingerprint and times, and never a token, so nothing printed could
+/// sign a browser in. A reply that names another principal is refused.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.signin_lines(body, "alice")
+/// ```
+pub fn signin_lines(
+  body: JsonValue,
+  principal: String,
+) -> Result(List(JsonValue), String) {
+  use fields <- result.try(object_fields(body))
+  use Nil <- result.try(equal_field(
+    fields,
+    "principal_id",
+    json.String(principal),
+  ))
+  page_lines(fields, "signins", signin_row)
 }
 
 /// Checks a `principals.list` reply body and answers its lines: one checked
@@ -1153,14 +1231,75 @@ fn listing_row(value: JsonValue) -> Result(JsonValue, String) {
     Ok(found) -> credential_state(found)
     Error(Nil) -> Error("missing credential state")
   })
-  Ok(
-    json.Object([
+  use logins <- result.map(case list.key_find(fields, "logins") {
+    Error(Nil) -> Ok([])
+    Ok(json.Int(count)) if count >= 0 -> Ok([#("logins", json.Int(count))])
+    Ok(_) -> Error("invalid login count")
+  })
+  json.Object(list.append(
+    [
       #("principal_id", json.String(id)),
       #("name", json.String(name)),
       #("kind", json.String(kind)),
       #("credential", credential),
+    ],
+    logins,
+  ))
+}
+
+// One browser login, rebuilt from checked fields. The fingerprint and the
+// parent's are exactly 16 lowercase hexadecimal digits and the times are
+// non-negative integers, so no longer value can ride in a field.
+fn signin_row(value: JsonValue) -> Result(JsonValue, String) {
+  use fields <- result.try(object_fields(value))
+  use login <- result.try(text_field(fields, "fingerprint"))
+  use Nil <- result.try(fingerprint(login))
+  use issued <- result.try(case list.key_find(fields, "issued_at_ms") {
+    Ok(json.Int(at)) if at >= 0 -> Ok(at)
+    Ok(_) | Error(Nil) -> Error("invalid sign-in instant")
+  })
+  use resumed <- result.try(optional_instant(fields, "last_resumed_ms"))
+  use expires <- result.try(optional_instant(fields, "expires_at_ms"))
+  use parent <- result.map(case list.key_find(fields, "issued_by") {
+    Error(Nil) -> Ok([])
+    Ok(json.String(from)) ->
+      fingerprint(from)
+      |> result.map(fn(_) { [#("issued_by", json.String(from))] })
+    Ok(_) -> Error("invalid sign-in parent")
+  })
+  json.Object(
+    list.flatten([
+      [
+        #("fingerprint", json.String(login)),
+        #("issued_at_ms", json.Int(issued)),
+      ],
+      resumed,
+      expires,
+      parent,
     ]),
   )
+}
+
+fn optional_instant(
+  fields: List(#(String, JsonValue)),
+  key: String,
+) -> Result(List(#(String, JsonValue)), String) {
+  case list.key_find(fields, key) {
+    Error(Nil) -> Ok([])
+    Ok(json.Int(at)) if at >= 0 -> Ok([#(key, json.Int(at))])
+    Ok(_) -> Error("invalid sign-in instant")
+  }
+}
+
+// A login's fingerprint: the first sixteen hexadecimal digits of its digest,
+// lowercase.
+fn fingerprint(value: String) -> Result(Nil, String) {
+  case
+    string.byte_size(value) == 16 && claim.is_hex_256(string.repeat(value, 4))
+  {
+    True -> Ok(Nil)
+    False -> Error("a fingerprint is 16 lowercase hex characters")
+  }
 }
 
 // The four states the daemon reports, each rebuilt from checked fields. A

@@ -10,6 +10,7 @@ import gleam/http/response
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import web_view/page
 
 fn get(path: String, headers: List(#(String, String))) {
   let base =
@@ -199,6 +200,164 @@ pub fn a_name_or_place_of_the_wrong_shape_is_not_routed_test() {
   assert ui_http.route(get("/ui/p/k/sessions/s/image/7.0/0/x", []))
     == ui_http.Unknown
   assert ui_http.route(get("/ui/sessions/s/image/7.0/0", [])) == ui_http.Unknown
+}
+
+// --- the browser login (protocol-change/065, PR 8) --------------------------
+
+fn post(path: String, headers: List(#(String, String))) {
+  get(path, headers) |> request.set_method(http.Post)
+}
+
+// The login's two routes are the bookmark and the post to it, and nothing else
+// under `/ui/l` is a route.
+pub fn the_bookmark_is_a_get_and_the_resume_a_post_test() {
+  assert ui_http.route(get("/ui/l/k1/home", [])) == ui_http.LoginPage("k1")
+  assert ui_http.route(post("/ui/l/k1/home", [])) == ui_http.LoginResume("k1")
+  assert ui_http.route(get("/ui/l/k1", [])) == ui_http.Unknown
+  assert ui_http.route(get("/ui/l/k1/home/ws", [])) == ui_http.Unknown
+  assert ui_http.route(get("/ui/l/home", [])) == ui_http.Unknown
+  assert ui_http.route(post("/ui/home", [])) == ui_http.Unknown
+  assert ui_http.route(post("/ui/l/k1/sessions/abc", [])) == ui_http.Unknown
+  assert ui_http.route(get("/ui/assets/web_view_resume.js", []))
+    == ui_http.Asset(ui_http.ResumeScript)
+}
+
+// The login cookie is read the way the page cookie is: every value, in the
+// order the browser sent them, and no more than four, so a value another port
+// planted under a longer path cannot shadow the real one and a request stuffed
+// with cookies costs four chain checks at most.
+pub fn the_login_cookie_is_read_in_order_and_bounded_test() {
+  assert ui_http.login_cookies(get("/ui/l/k/home", [])) == []
+  assert ui_http.login_cookies(
+      get("/ui/l/k/home", [#("cookie", "loom_ui=x; loom_login=a; other=1")]),
+    )
+    == ["a"]
+  assert ui_http.login_cookies(
+      get("/ui/l/k/home", [#("cookie", "loom_login=planted; loom_login=real")]),
+    )
+    == ["planted", "real"]
+  assert ui_http.login_cookies(
+      get("/ui/l/k/home", [
+        #(
+          "cookie",
+          "loom_login=a; loom_login=b; loom_login=c; loom_login=d; loom_login=e",
+        ),
+      ]),
+    )
+    == ["a", "b", "c", "d"]
+
+  // The page cookie is not a login and a login is not a page cookie.
+  assert ui_http.session_cookies(
+      get("/ui/l/k/home", [#("cookie", "loom_login=a")]),
+    )
+    == []
+  assert ui_http.login_cookies(get("/ui/p/k/home", [#("cookie", "loom_ui=a")]))
+    == []
+}
+
+// The login cookie has the page cookie's attributes and one more: it outlives
+// the browser, so it names its lifetime, which is the token's.
+pub fn the_login_cookie_is_set_with_its_attributes_and_a_lifetime_test() {
+  assert ui_http.set_login_cookie("loomb1:token", "k1", 2_592_000)
+    == "loom_login=loomb1:token; HttpOnly; SameSite=Strict; Path=/ui/l/k1; Max-Age=2592000"
+
+  // The page's own cookie keeps no lifetime.
+  assert !string.contains(ui_http.set_cookie("abc", "k1"), "Max-Age")
+}
+
+// The resume is a post from this origin's own page: `same-origin` and nothing
+// else, `none` included, since nobody types a post.
+pub fn only_this_origins_own_page_may_post_the_resume_test() {
+  let site = fn(value) {
+    ui_http.same_origin_post(post("/ui/l/k/home", [#("sec-fetch-site", value)]))
+  }
+  assert site("same-origin")
+  assert !site("none")
+  assert !site("same-site")
+  assert !site("cross-site")
+  assert !ui_http.same_origin_post(post("/ui/l/k/home", []))
+}
+
+// The form is declared before it is read: a length no more than a kilobyte,
+// the URL-encoded type, and no transfer encoding, whose body has no length to
+// bound.
+pub fn the_resume_form_is_declared_small_and_urlencoded_test() {
+  let form = [#("content-type", "application/x-www-form-urlencoded")]
+  let declared = fn(headers) {
+    ui_http.form_declared(post("/ui/l/k/home", headers))
+  }
+  assert declared([#("content-length", "70"), ..form])
+  assert declared([#("content-length", "1024"), ..form])
+  assert declared([
+    #("content-length", "70"),
+    #("content-type", "Application/X-WWW-Form-Urlencoded"),
+  ])
+  assert !declared([#("content-length", "1025"), ..form])
+  assert !declared([#("content-length", "-1"), ..form])
+  assert !declared([#("content-length", "many"), ..form])
+  assert !declared(form)
+  assert !declared([
+    #("content-length", "70"),
+    #("transfer-encoding", "chunked"),
+    ..form
+  ])
+  assert !declared([
+    #("content-length", "70"),
+    #("content-type", "text/plain"),
+  ])
+  assert !declared([
+    #("content-length", "70"),
+    #("content-type", "application/x-www-form-urlencoded; charset=utf-8"),
+  ])
+  assert !declared([#("content-length", "70")])
+}
+
+// The posted body is one field, `nonce`, of 64 lowercase hexadecimal digits.
+pub fn the_posted_nonce_is_one_field_of_sixty_four_hex_digits_test() {
+  let nonce = string.repeat("ab", 32)
+  assert ui_http.posted_nonce(<<"nonce=":utf8, nonce:utf8>>) == Ok(nonce)
+  assert ui_http.posted_nonce(<<"nonce=":utf8>>) == Error(Nil)
+  assert ui_http.posted_nonce(<<"":utf8>>) == Error(Nil)
+  assert ui_http.posted_nonce(<<"nonce=":utf8, "ab":utf8>>) == Error(Nil)
+  assert ui_http.posted_nonce(<<"nonce=":utf8, nonce:utf8, "0":utf8>>)
+    == Error(Nil)
+  assert ui_http.posted_nonce(<<
+      "nonce=":utf8,
+      { string.uppercase(nonce) }:utf8,
+    >>)
+    == Error(Nil)
+  assert ui_http.posted_nonce(<<"nonce=":utf8, nonce:utf8, "&x=1":utf8>>)
+    == Error(Nil)
+  assert ui_http.posted_nonce(<<"x=1&nonce=":utf8, nonce:utf8>>) == Error(Nil)
+  assert ui_http.posted_nonce(<<"other=":utf8, nonce:utf8>>) == Error(Nil)
+  assert ui_http.posted_nonce(<<
+      "nonce=":utf8,
+      nonce:utf8,
+      "&nonce=":utf8,
+      nonce:utf8,
+    >>)
+    == Error(Nil)
+  assert ui_http.posted_nonce(<<0xff, 0xfe>>) == Error(Nil)
+}
+
+// The resume page, and only it, is served under a policy that lets a form submit
+// to this origin; everything else in the policy is the same.
+pub fn only_the_resume_page_may_submit_a_form_test() {
+  let policy = fn(forms) {
+    let secured =
+      ui_http.secured_for(response.new(200), "127.0.0.1:4000", forms)
+    let assert Ok(text) =
+      response.get_header(secured, "content-security-policy")
+      as "the policy is present"
+    text
+  }
+  let own = policy(page.OwnForms)
+  let none = policy(page.NoForms)
+  assert string.contains(own, "form-action 'self'")
+  assert string.contains(none, "form-action 'none'")
+  assert string.replace(own, "form-action 'self'", "form-action 'none'") == none
+  let ordinary = ui_http.secured(response.new(200), "127.0.0.1:4000")
+  assert response.get_header(ordinary, "content-security-policy") == Ok(none)
 }
 
 // The admin page's three routes (protocol-change/065, the fifth pull request)

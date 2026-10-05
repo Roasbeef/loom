@@ -6333,6 +6333,12 @@ fn lazy_masks(state_root: String) -> List(String) {
     // a failed WAL pragma.
     sqlite_side_files(state_root <> "/catalogue.db"),
     [
+      // The key every browser login is signed and verified under, created by
+      // the first daemon started with `--ui` (protocol-change/065). A jailed
+      // process that read it could mint a login for any principal, the owner
+      // included, and one that rewrote it would end every login in the daemon.
+      state_root <> "/browser.key",
+
       // The launcher's per-endpoint bearer tokens. Credentials, plainly:
       // one of these attaches to the session it names.
       state_root <> "/tokens",

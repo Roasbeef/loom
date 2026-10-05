@@ -190,8 +190,9 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   single use) and the UI-session table (8 h), both keyed by the SHA-256 of
   the secret. A `Grant` carries a `Scope` (`Session(id)`, `Home` or `Admin`,
   protocol-change/065), the minting credential's digest, the principal, the
-  page's `ceiling` (`Observer` unless `ui.link` named `page:"operator"`) and a
-  `Reach` (`OneSession | Workspace`, not yet read). `ui.link` without
+  page's `ceiling` (`Observer` unless `ui.link` named `page:"operator"`), a
+  `Reach` (`OneSession | Workspace`), an `Origin` (`Fresh | Resumed`) and a
+  `Remember` (`Remembered | Forgotten`) (protocol-change/065, PR 8). `ui.link` without
   `session_id` mints a `Home` grant; the home routes (`ui_http.HomeExchange`,
   `HomePage`, `HomeSocket`, `server.home_grant`/`home_socket`) and
   `ui_socket.upgrade_home` serve it, a home living `ui_sessions.session_ms`.
@@ -216,6 +217,24 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   own component, and the image route reads it back. It is found only through a
   live UI session, is replaced by a reload's new socket, and is dropped by the
   sweep with the page.
+  The browser login (protocol-change/065, PR 8) rides on the same table. A
+  `Remembered` ticket (`loom ui`'s home, a device link) sets a login when it is
+  exchanged: `server.entered` is the one function that builds a redeemed ticket's
+  response, and it asks `ui_login.issue` for a token and a catalogue row, sets the
+  `loom_login` cookie and the login's key and nonce in the body, and attaches the
+  login to the page (`attach_login`). Every ticket carries the `Issuer` (the
+  login's fingerprint, expiry and key) of the context that minted it
+  (`mint_in`, `mint_device`, `mint_resumed`), so a page knows its login
+  (`login_of`), a device link inherits the issuing login's expiry, and a chain of
+  switches neither loses the login nor becomes fresh: `Origin` is carried onto
+  every ticket a page mints. A device link's ticket lives `device_ms` (ten
+  minutes). `Exchange` (`SessionExchange(id) | HomeExchange | AdminExchange`) names which
+  exchange a ticket is redeemed at. `ui_socket.fresh_home(reach, origin)` is the
+  one rule for who may open the admin page and refuses a `Resumed` home; the
+  admin page's sign-in reads and `RevokeSignin` run beside its other changes
+  (`admin_logins`, `revoke_signin_for_admin`), and its ticket carries the
+  pressing page's login so it marks "This browser".
+
   An `Admin` page (the fifth addendum) lives `admin_ms` (fifteen minutes, never
   more than `Settings.session_ms`) and is counted against `max_pages` apart from
   homes and sessions; its ticket redeems only at the admin exchange.
@@ -225,6 +244,26 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   credential's fingerprint and not by any page, at most `invite_limit` (three)
   in any `invite_window_ms` (an hour, the claim's own lifetime), counted and
   taken in one message.
+- `daemon/ui_login`: the daemon's half of the browser login (protocol-change/065,
+  PR 8). `root_key(state_root, registry)` reads `browser.key` through
+  `host/login.probe_root` or, when it is missing, revokes every login row
+  (`manager.revoke_all_logins`), logs `daemon.logins_revoked` and only then writes
+  a new key (`write_root`); a key that is present and wrong refuses `--ui`.
+  `issue(root, registry, grant, parent, now)` draws the login's identifier, key
+  and nonce, signs the token, writes the row (`manager.issue_login`, whose digest
+  is `access.browser_digest(login.row_digest(id))`) and answers `Minted`;
+  `parent`'s expiry becomes the new login's, and `issued_by` its fingerprint.
+  `resume(root, registry, cookies, key, nonce, now)` opens each cookie value in
+  turn (`login.open`: parse, chain, caveats, key, nonce, clock) and only then
+  asks the registry (`manager.resume_login`: the row is active, of kind
+  `Browser`, and the token's principal). It logs `daemon.login_issued`,
+  `login_resumed` and `login_revoked` with the fingerprint and never a token.
+  `server.login_resume` is the `POST /ui/l/<key>/home` handler: sender
+  (`ui_http.same_origin_post`), declared form (`form_declared`), a `Control`
+  parser permit, the body's `nonce`, `ui_login.resume`, then a ticket minted and
+  redeemed in the same request (`Resumed`, `Forgotten`); a login narrowed to a
+  session mints a `Session` page of that session (`OneSession`) and never a home.
+  `GET /ui/l/<key>/home` is `page.login_page`, served under `form-action 'self'`.
 - `daemon/ui_http`: pure checks. `route` also routes the admin page's three
   (`AdminExchange` at `/ui/admin?ticket=`, `AdminPage`, `AdminSocket`). `route` (the exchange at
   `/ui/sessions/<id>?ticket=`, the page at `/ui/p/<key>/sessions/<id>`,
@@ -318,7 +357,17 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   reach, the page's deadline and ceiling, never remembered, `Declined(NoHome)`
   on any refusal). The home's socket takes a click beneath `home.table_path` or
   `home.sidebar_path` (`home_accepts`) and its `Start.open` is `ticket_for` with
-  the home's `Standing`.
+  the home's `Standing`. A home also manages its principal's browser logins
+  (protocol-change/065, PR 8): `signins_read`, `sign_out_for` and
+  `sign_out_all_for` read and end the principal's own logins through
+  `manager.signins`, `revoke_login` and `revoke_logins` (the registry applies the
+  own-or-owner rule, drops its frame memo and answers the digest the page logs),
+  and `device_link_for` mints the ten-minute `Remembered` device ticket for a
+  `Fresh` home only, after `reserve_invite`; `device_capability` hands the control
+  to a fresh home alone and the daemon refuses from a resumed one regardless.
+  `home_accepts` also takes a click beneath `home.signins_path`. `Standing` carries
+  the page's `origin` and `login`, from `server.PageGrant`, which the router builds
+  from the grant and hands to both `upgrade` and `upgrade_home`.
   A saved session opens through `resume_for(standing, tickets, open, target,
   within:)` (protocol-change/065, the third addendum): the page open, ceiling
   Operator, a canonical identity, `session_authority` Owner or Operator

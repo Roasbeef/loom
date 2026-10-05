@@ -1237,7 +1237,7 @@ bytes a page, `next` the last principal. An unknown session is `not_found`. The
 query reads `access_memberships` by session, which its primary key does not
 index, so it scans the table; the table holds one row for each invitee and
 session and the call is the owner's alone, so the scan is accepted rather than
-adding an index and a catalogue version. `docs/client-protocol.md` §3.24 has the
+adding an index and a catalogue version. `docs/client-protocol.md` §3.25 has the
 wire.
 
 **`Scope.Admin`.** A third scope with its own exchange (`/ui/admin?ticket=`), page
@@ -1347,3 +1347,194 @@ minted from the page itself is not on offer.
 allowance table shared rather than added, one admitted path on the home and one
 region on a socket, seven view modules and a component, and the loss of a way
 back to the home from the admin page.
+
+## Addendum: the browser login, the eighth pull request (2026-10-04)
+
+**Status**: IMPLEMENTED in the change that adds it. It builds the design note's
+PR 8 and the login security review's decisions above. It adds the routes the
+proposal lists, two control commands and one catalogue version, and it changes a
+few things the proposal said, each named below. The admin page and its Admin
+button are PR 5's and are not in it.
+
+**What it builds.** `host/login` (the token's grammar, the HMAC chain, the
+intersection, the root key's file); `client/daemon/ui_login` (issue, resume, the
+start-time rule); the login cookie and nonce on a remembered exchange, in the one
+function that builds a redeemed ticket's response (`server.entered`); `GET` and
+`POST /ui/l/<key>/home` and the resume page; `Grant.origin` and
+`Grant.remember`; `ui.link`'s `remember` and `loom ui --no-remember`; the home's
+sign-in rows with "this browser" marked, "Sign out", "Sign out everywhere" and, on
+a fresh home, "Sign in another device"; `credentials.signins` and
+`credentials.revoke_login` with `loom access signins` and `revoke-login`; the
+`logins` count on `principals.list`; the `daemon.login_issued`,
+`login_resumed`, `login_revoked` and `logins_revoked` lines; and `loom --token`
+refusing `loomb1:`. Nothing else is admitted on any socket: the home's socket
+takes clicks beneath one more region, `home.signins_path`, and the forms'
+submit admission is unchanged.
+
+**What it changes in what the proposal said.**
+
+- **The kind travels with the digest.** The proposal and PR 7 gave
+  `authenticate` and `claim` a `CredentialKind` argument, fixed to `Bearer` in the
+  manager. A page minted from a login re-authenticates on every frame through some
+  fifty calls between the page and the catalogue, each of which would have needed
+  the argument. `access.Digest` now carries its kind: `credential_digest`, which
+  every wire path uses, makes a `Bearer`, and only `browser_digest` makes a
+  `Browser`, so a string a connection presents can never be looked up as a login
+  whatever it hashes to, and no caller can pick a kind apart from the digest it
+  holds. The two arguments are gone. The paths that enroll a member's own
+  credential refuse a `Browser` digest.
+- **`bind` counts both kinds.** PR 7 left a note that `claim`'s
+  no-active-credential check counted bearers only. 053's rule 3 says a member has
+  an open claim and no credential, and a login is a credential, so the check now
+  counts a row of either kind: a member whose only credential is a login binds no
+  claim of either kind. `ActiveMemberCredentials` therefore loses the `kind =
+  'bearer'` the proposal gave it, and its one caller is that check. The listing's
+  `PrincipalActiveCredential` keeps it, so `principals.list` still reports the
+  bearer or the claim and a login is counted beside it as `logins`; a member
+  whose only credential is a login lists `credential: none` or `claim_open` and
+  `logins: 1`.
+- **Catalogue version 7** adds two nullable columns, `expires_at_ms` and
+  `issued_by`. The listing has to be exact for a login that inherited an earlier
+  expiry, and a family has to be traceable from any member, so both are stored
+  (`issued_at_ms` and `last_resumed_ms` were already there). A login row without
+  an expiry (a claim bound as a login, which PR 9 builds) is listed as live.
+- **The origin is on the grant, not in the scope.** The proposal wrote
+  `Home(origin)`; the design note's PR 8 paragraph names `Grant.origin`. A session
+  page must carry the origin of the home it came from to the tickets it mints, so
+  it is a field of `Grant` and `Scope` is unchanged. A ticket a page mints carries
+  the page's origin, so a chain home, session, home from a resumed home stays
+  resumed and one from a fresh home stays fresh. The design note's sentence that a
+  home reached through a chain of switches is never fresh reads as 065's: the
+  chain carries the origin of the page it began from.
+- **The login travels with the ticket.** Every ticket carries the login of the
+  context that minted it and a page keeps the login it is the browser of
+  (`ui_sessions.Issuer`: fingerprint, expiry and the bookmark's key, never a token
+  or a nonce). That is how a device link inherits the issuing login's expiry
+  without the browser saying what it is, how the home marks "this browser", and
+  why a chain of switches cannot launder a login into a fresh thirty days. A
+  remembered exchange's page gets its login attached once the login's row is
+  written (`attach_login`), and only once.
+- **The cookie's `Max-Age` is the time left.** It is the token's expiry minus now,
+  not always thirty days, since a device link's login ends when its parent does.
+  The page's cookie is set first and the login's second, so a reader of the first
+  `Set-Cookie` still finds the page cookie.
+- **The root key is hex text.** `atomic_write_private` takes text, so `browser.key`
+  is 64 lowercase hex characters, as `owner.token` is; the 32 bytes are what it
+  decodes to, and a file of another length or alphabet is refused. The key is read
+  back through `read_private_bounded` after it is written. A missing file revokes
+  every `browser` row first and writes the key second (`probe_root`, then
+  `write_root`), so a start that stops between the two finds no file again and
+  revokes nothing more. A start with no `--ui` never reads or writes it.
+- **A login narrowed to a session mints that session's page.** A token carrying
+  `s` is not refused at the resume; it mints a `Session` page of that session with
+  the reach of a link for one session (`OneSession`) and never a home. Nothing in
+  this change makes such a token.
+- **Every refusal of a login is one `401`.** The resume's pre-checks (the sender,
+  the form's declared size and type, a daemon that is not serving, a body that is
+  not a nonce) are `403`, `400` and `503`; every failure of the login itself is the
+  same `401` document with a command to sign in again, no cookie and nothing
+  echoed.
+- **The bookmark is drawn as text.** A page opened by a remembered login shows the
+  bookmark address, so the person can keep it; the daemon's address is the request's
+  validated `Host`.
+- **`__Host-loom_login` is not built.** It belongs to 052, which is not built.
+
+**The callers of the two queries, and what each does with a browser-only
+principal.** `principal_active_credential` has one caller,
+`access.credential_summary`, behind `principals_page`, `manager.principal_page`
+and the owner's `principals.list`: it returns no row for a principal whose only
+active credential is a login, so the listing falls through to the open claim, or
+to `none`, and reports the login in `logins`. `active_member_credentials` has one
+caller, `access.no_active_credential`, run only by `access.bind` for `claim`, whose
+callers are the `/v2/claim` socket (a `Bearer` digest) and, in PR 9, the browser
+claim: it now returns the login's row, so the claim is `ConflictingClaim`, binds
+nothing and stays open. `revoke_member_credentials` (rotation and revocation) and
+the digest-reuse checks already ask both kinds, and are unchanged.
+
+**A device link always sets a login.** An exchange whose ticket was minted under
+a login (a device link) that cannot set its own, because the parent's time has
+run out or the row is refused, is refused with the fixed `401` and opens no
+page. Opening it without one would leave a page with no login and no parent, and
+its own device link would then be thirty fresh days past the family's end. The
+only `issue` caller is `server.remembered`, so this is the one place the rule is
+held; a ticket with no issuing login (a person's own `loom ui`) still opens a
+page without one when the daemon cannot set it.
+
+A device link's exchange page runs under the issuing page's credential, so
+revoking the child login does not end that page before its eight hours; "the
+pages a login minted" means the pages its bookmark resumed.
+
+**What a stolen page is worth.** A stolen fresh home mints a device link, which
+the thief redeems into a login at the page's ceiling for the time the issuing
+login has left, three an hour under the allowance, each listed with its parent;
+that is the price 065's review named. A stolen resumed home mints nothing that
+outlives its eight hours. A stolen cookie alone resumes nothing: the nonce is in
+`localStorage` and is posted by the daemon's own page. A stolen root key signs a
+login for any principal, which is why it is one `0600` file masked from every
+session's jail (`serve.state_root_mask_candidates`).
+
+**What it costs.** One more kind on every credential lookup, now carried by the
+digest; a second cookie on a remembered exchange; a root key file and a start-time
+rule for it; two columns; one region on the home and one more admitted click path
+on its socket; and a registry call for each sign-in read, made with the sessions'
+at the list's interval.
+
+**Left for PR 9.** `claim` bound as a login writes `issued_at_ms` and no expiry;
+the browser claim must record the login's expiry as `issue_login` does, and set its
+login through `server.entered`.
+
+**The admin page's part, built after the fifth pull request merged.** The owner's
+Admin button and `admin_ticket_for` read the origin through one function,
+`ui_socket.fresh_home(reach, origin)`, which now refuses a `Resumed` home as it
+refuses a one-session page, so a resumed home is handed no button and a forged
+press from one is `NoAdmin`. `Exchange` gained `AdminExchange`, and the ticket an
+admin press mints carries the pressing page's login, so the admin page marks
+"This browser". The admin page lists, beneath each principal that holds any, its
+sign-ins (`grants.Logins`: the count, and the first ten, for at most twenty
+principals a read), in the home's own words, each with a two-step "Revoke
+sign-in" (`grants.RevokeSignin`). The daemon makes that change as every admin
+change is made, afresh at the click (`administering`, then
+`manager.revoke_login` under the owner's credential and the epoch), and it costs
+no allowance. A fingerprint that does not belong to the named principal is
+`NotFound`, and ending a login ends every page it minted at their next frame.
+
+**Mutations, each applied alone and reverted, each failing the test it names.**
+
+| Mutation | Failing test |
+|---|---|
+| the chain compared with `==` | `host/login_test.no_secret_is_compared_with_equality_test` (reads the module's source, since `==` gives the same answer) |
+| a resume sets a fresh login, so a used login renews itself | `ui_route_test.the_bookmark_resumes_a_home_without_loom_test` |
+| a repeated `c` taking the larger | `host/login_test.a_repeated_ceiling_narrows_in_either_order_test` |
+| the row looked up before the chain is verified | `ui_route_test.every_token_that_does_not_open_is_refused_alike_test` (the registry's reductions move for a forged token) |
+| the page cookie given a `Max-Age` | `ui_route_test.a_remembered_exchange_sets_the_login_beside_the_page_test` |
+| a `Resumed` home offered the device-link control (the Admin button is PR 5's) | `ui_route_test.a_resumed_home_makes_no_device_link_test` |
+| a device link minted from a `Resumed` home | `ui_route_test.a_resumed_home_makes_no_device_link_test` |
+| a device-link login given thirty days under an issuing login | `ui_route_test.a_login_inherits_its_parents_expiry_and_a_dead_parent_makes_none_test` |
+| `reserve_invite` skipped for a device link | `ui_route_test.a_fresh_home_signs_in_another_device_for_the_time_the_login_has_left_test` |
+| a missing root key drawn without the revocation | `ui_route_test.the_root_key_cases_at_start_test` |
+| only the first `loom_login` value read | `ui_route_test.a_planted_login_cookie_does_not_deny_the_real_one_test` |
+| the resume document served with `form-action 'none'` | `ui_route_test.the_bookmark_resumes_a_home_without_loom_test` |
+| a switch ticket minted `Remembered` | `ui_route_test.session_links_and_switch_tickets_set_no_login_test` |
+| the kind dropped from the `authenticate` query | `storage/access_test.a_credential_authenticates_only_as_the_kind_it_was_made_as_test` |
+| `ParentEnded` (and any failed issue under a parent) mapped to no login, so a device link opens a page without one | `ui_route_test.a_device_link_from_an_ended_login_opens_no_page_test` |
+| `fresh_home` ignoring the origin, so a `Resumed` home is offered the Admin button | `ui_route_test.a_resumed_home_is_offered_no_admin_page_test` and `ui_socket_test.the_freshness_of_a_home_is_one_function_test` |
+| the 64-hex shape check removed from `credential` | `daemon_server_test.a_bearer_that_is_not_64_lowercase_hex_is_refused_before_any_lookup_test` |
+| `principal_active_credential` without its kind | `storage/access_test.a_login_is_counted_beside_the_bearer_and_never_in_its_place_test` |
+| `bind`'s check counting bearers only | `storage/access_test.a_browser_row_blocks_a_claim_of_either_kind_test` |
+
+Each was applied alone to the source, run against its named test until the test
+failed on its own assertion (a compile error was not counted), and reverted.
+
+**Tests.** `host/login_test` (the chain, the grammar, every refusal, the
+intersection, appending, the three root-key cases); `storage/access_test` and
+`catalogue_test` (the rows and their queries, the version 7 migration, the
+claim's both-kinds rule); `ui_sessions_test` (the device ticket's lifetime, a
+ticket's login, attaching once, the page cap across origins); `ui_http_test`
+(the routes, the cookies, the declared form, the posted nonce, the policy);
+`ui_route_test` (the exchange's cookies and nonce, `--no-remember`, the
+bookmark, every refusal, a planted cookie, narrowing, revocation by login,
+principal and rotation, no login on a `/v2` route, the device link in each
+origin, the page's sign-in asks, a chain's origin and login, the scan of the
+state root and the log, and the root key's start cases); `signins_test` and
+`page_test` in `web_view`; `copy_test` in `web_client`; the access, view and
+protocol tests in `host` and `tui`.

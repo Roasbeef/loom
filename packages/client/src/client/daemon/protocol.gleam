@@ -12,6 +12,7 @@ import gleam/bit_array
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import storage/access
 import storage/domain
 
@@ -27,6 +28,15 @@ pub const max_bytes = 65_536
 pub const activity_limit = 24
 
 /// Decoded requests carry no client-supplied principal or database path.
+/// Whether a home link's exchange sets a browser login (protocol-change/065).
+pub type Remembering {
+  /// The exchange sets the login, so the next visit needs no `loom ui`.
+  Remember
+
+  /// The exchange opens the page and sets nothing: `loom ui --no-remember`.
+  Forget
+}
+
 pub type Command {
   /// Reads both directions of one resident strand's operator peer grants.
   InspectPeers(
@@ -119,6 +129,16 @@ pub type Command {
   /// Owner-only. An empty cursor starts the listing.
   PrincipalMemberships(principal_id: String, after: String)
 
+  /// Lists a principal's browser logins, its sign-ins, after one fingerprint
+  /// (protocol-change/065, PR 8). A member omits the principal and reads its
+  /// own; the owner may name any principal. An empty cursor starts the listing.
+  CredentialSignins(principal_id: Option(String), after: String)
+
+  /// Revokes one browser login, named by its fingerprint. A member omits the
+  /// principal and revokes its own; the owner may name any principal. Every page
+  /// the login minted ends at its next frame.
+  RevokeLogin(principal_id: Option(String), fingerprint: String, epoch: String)
+
   /// Lists one session's members after one principal ID, each with its display
   /// name and role in that session (protocol-change/065). Owner-only. An empty
   /// cursor starts the listing.
@@ -133,8 +153,14 @@ pub type Command {
   /// when the daemon was started with `--ui`. `page` is the page's ceiling,
   /// from the optional `page` field: `observer` when absent, `operator` only
   /// when the launcher was asked for an operator's page. It caps the
-  /// membership role and never grants one.
-  UiLink(session_id: Option(String), page: access.Role)
+  /// membership role and never grants one. `remember` is meaningful only for
+  /// the home: it says whether the exchange sets a browser login
+  /// (protocol-change/065), and absent is `Remember`.
+  UiLink(
+    session_id: Option(String),
+    page: access.Role,
+    remember: Option(Remembering),
+  )
 
   /// Lists authorized metadata after one canonical identity.
   ListSessions(after: String, revision: Option(Int))
@@ -435,6 +461,22 @@ fn decode_fields(
       })
       PrincipalMemberships(principal, after)
     }
+    "credentials.signins" -> {
+      use target <- result.try(optional_principal(fields))
+      use after <- result.map(case list.key_find(fields, "after") {
+        Error(Nil) -> Ok("")
+        Ok(json.String("")) -> Ok("")
+        Ok(_) -> fingerprint_field(fields, "after")
+      })
+      CredentialSignins(target, after)
+    }
+    "credentials.revoke_login" -> {
+      use target <- result.try(optional_principal(fields))
+      use fingerprint <- result.try(fingerprint_field(fields, "fingerprint"))
+      use epoch <- result.map(text_field(fields, "epoch", 256))
+      RevokeLogin(target, fingerprint, epoch)
+    }
+
     "sessions.members" -> {
       use session <- result.try(session_id(fields))
       use after <- result.map(case list.key_find(fields, "after") {
@@ -446,8 +488,13 @@ fn decode_fields(
     "status" -> Ok(Status)
     "ui.link" -> {
       use id <- result.try(optional_session_id(fields))
-      use page <- result.map(page_ceiling(fields))
-      UiLink(id, page)
+      use page <- result.try(page_ceiling(fields))
+      use remember <- result.try(remembering(fields))
+      case id, remember {
+        Some(_), Some(_) ->
+          Error("remember applies to the home link and not to a session's")
+        _, _ -> Ok(UiLink(id, page, remember))
+      }
     }
     "sessions.list" -> {
       use after <- result.try(cursor(fields))
@@ -700,6 +747,48 @@ fn optional_session_id(
   case list.key_find(fields, "session_id") {
     Error(Nil) -> Ok(None)
     Ok(_) -> session_id(fields) |> result.map(Some)
+  }
+}
+
+// A principal the command names, or none when it is absent, which means the
+// caller's own.
+fn optional_principal(
+  fields: List(#(String, JsonValue)),
+) -> Result(Option(String), String) {
+  case list.key_find(fields, "principal_id") {
+    Error(Nil) -> Ok(None)
+    Ok(_) -> text_field(fields, "principal_id", 128) |> result.map(Some)
+  }
+}
+
+// A login's fingerprint: the first sixteen hexadecimal digits of its digest,
+// lowercase, which is the whole of how a login is named on the wire.
+fn fingerprint_field(
+  fields: List(#(String, JsonValue)),
+  key: String,
+) -> Result(String, String) {
+  use text <- result.try(text_field(fields, key, 16))
+  case
+    bit_array.byte_size(bit_array.from_string(text)) == 16
+    && list.all(string.to_graphemes(text), fn(digit) {
+      string.contains("0123456789abcdef", digit)
+    })
+  {
+    True -> Ok(text)
+    False -> Error("expected a 16-digit lowercase hex fingerprint")
+  }
+}
+
+// Whether a home link's exchange sets a browser login. Absent is no answer,
+// which the daemon reads as `Remember`.
+fn remembering(
+  fields: List(#(String, JsonValue)),
+) -> Result(Option(Remembering), String) {
+  case list.key_find(fields, "remember") {
+    Error(Nil) -> Ok(None)
+    Ok(json.Bool(True)) -> Ok(Some(Remember))
+    Ok(json.Bool(False)) -> Ok(Some(Forget))
+    Ok(_) -> Error("remember must be true or false")
   }
 }
 

@@ -57,9 +57,16 @@ import gleam/string
 import storage/catalogue.{type Catalogue, type Error, Conflict, Invalid, Missing}
 import storage/sql
 
-/// A validated lowercase hexadecimal SHA-256 credential digest.
+/// A validated lowercase hexadecimal SHA-256 credential digest, and the kind of
+/// credential it names.
+///
+/// The kind travels with the digest so that every check that takes a digest
+/// looks it up as the kind its constructor named. `credential_digest`, which
+/// every wire path uses, makes a `Bearer` digest, and only `browser_digest`
+/// makes a `Browser` one, so a string a connection presents as a bearer can
+/// never be looked up as a login's row, whatever it hashes to.
 pub opaque type Digest {
-  Digest(value: String)
+  Digest(value: String, kind: CredentialKind)
 }
 
 /// A validated lowercase hexadecimal SHA-256 digest of a claim token.
@@ -76,8 +83,9 @@ pub opaque type ClaimDigest {
 /// A credential's digest is the key of its row, and the digest of a `Browser`
 /// row is derived from a value that is not secret (protocol-change/065). So
 /// the kind is part of every lookup: a digest authenticates only as the kind
-/// its caller names, and a string a connection presents as a bearer can never
-/// reach a `Browser` row, whatever its digest.
+/// it was made as (`credential_digest` or `browser_digest`), and a string a
+/// connection presents as a bearer can never reach a `Browser` row, whatever
+/// its digest.
 pub type CredentialKind {
   /// A token the holder presents as `Authorization: Bearer`, and the only kind
   /// 053's one-credential-per-principal rules count.
@@ -174,8 +182,58 @@ pub type CredentialSummary {
 
 /// One principal and the credential state the owner's listing shows for it.
 pub type Listing {
-  Listing(principal: Principal, credential: CredentialSummary)
+  Listing(
+    principal: Principal,
+    /// The bearer's state, or the claim's: what 053's listing always showed.
+    /// A login is never reported here.
+    credential: CredentialSummary,
+    /// How many browser logins the principal holds that are active and have
+    /// not reached their expiry (protocol-change/065).
+    logins: Int,
+  )
 }
+
+/// One browser login as its principal's sign-in list shows it. The fingerprint
+/// identifies a login and authenticates nothing.
+pub type Signin {
+  Signin(
+    /// The first sixteen hexadecimal digits of the login row's digest.
+    fingerprint: String,
+    /// When the login was minted, in Unix milliseconds; zero for a row whose
+    /// minting time was not recorded.
+    issued_at_ms: Int,
+    /// When the login last minted a home page, if it has. Written at most once
+    /// an hour (`resumed`), so it says when a login was last used and not how
+    /// often.
+    last_resumed_ms: Option(Int),
+    /// When the login ends, as its token's expiry says, if it was recorded. A
+    /// login that inherited an earlier login's expiry ends then, and not thirty
+    /// days after it was minted.
+    expires_at_ms: Option(Int),
+    /// The fingerprint of the login whose device link made this one, so a
+    /// family of logins is traceable from any member.
+    issued_by: Option(String),
+  )
+}
+
+/// One page of `Signin` rows in fingerprint order, at most `listing_limit`.
+pub type SigninPage {
+  SigninPage(entries: List(Signin), remainder: Remainder)
+}
+
+/// What `resumed` did.
+pub type Stamp {
+  /// The row's `last_resumed_ms` was older than `resume_stamp_window_ms`, or
+  /// absent, and is now the instant given.
+  Stamped
+
+  /// The row's `last_resumed_ms` is recent enough that nothing was written.
+  Unchanged
+}
+
+/// How recent a login's `last_resumed_ms` may be before a resume leaves it
+/// alone: one hour, so a visit costs one registry read and rarely a write.
+pub const resume_stamp_window_ms = 3_600_000
 
 /// Whether a listing page is the last one.
 pub type Remainder {
@@ -289,7 +347,26 @@ type Credential {
 @internal
 pub fn credential_digest(value: String) -> Result(Digest, Error) {
   case string.byte_size(value) == 64 && ascii_in(value, "0123456789abcdef") {
-    True -> Ok(Digest(value))
+    True -> Ok(Digest(value, Bearer))
+    False -> Error(Invalid("credential digest must be 64 lowercase hex bytes"))
+  }
+}
+
+/// Validates the digest of a browser login's identifier. It is
+/// `credential_digest` for the other kind: the same 64 lowercase hex bytes, and
+/// a digest that every lookup then asks of `Browser` rows only. Only the
+/// daemon's login code makes one, from the identifier of a token whose chain
+/// has verified; no wire path does.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.browser_digest(login.row_digest(identifier))
+/// ```
+@internal
+pub fn browser_digest(value: String) -> Result(Digest, Error) {
+  case string.byte_size(value) == 64 && ascii_in(value, "0123456789abcdef") {
+    True -> Ok(Digest(value, Browser))
     False -> Error(Invalid("credential digest must be 64 lowercase hex bytes"))
   }
 }
@@ -369,7 +446,7 @@ fn verify_owner_credential(
   existing: Principal,
   digest: Digest,
 ) {
-  case authenticate(store, digest, Bearer) {
+  case authenticate(store, digest) {
     Ok(found) if found.id == existing.id -> Ok(existing)
     Ok(_) | Error(Missing) -> Error(Conflict)
     Error(error) -> Error(error)
@@ -396,6 +473,7 @@ pub fn create_member(
 }
 
 fn insert_principal(store: Catalogue, proposed: Principal, digest: Digest) {
+  use Nil <- result.try(bearer_only(digest))
   use Nil <- result.try(absent(get(store, proposed.id)))
   use Nil <- result.try(unused(store, digest))
   use Nil <- result.try(catalogue.statement(
@@ -527,6 +605,7 @@ fn enroll(
       )
     }
     DigestEnrollment(credential: digest) -> {
+      use Nil <- result.try(bearer_only(digest))
       use Nil <- result.try(unused(store, digest))
       catalogue.statement(
         store,
@@ -576,9 +655,12 @@ pub fn claim_known(store: Catalogue, claim: ClaimDigest) -> Result(Nil, Error) {
 /// answers the principal as it stands and never renames, whatever name it
 /// carries. Events already admitted keep the name they were admitted under.
 ///
-/// The row is written with `kind`, and an exact replay is recognised only for
-/// that kind: a claim bound as one kind answers a replay of the other as a
-/// conflict. The `/v2/claim` route is a bearer path and passes `Bearer`.
+/// The row is written as the kind `presented` was made as, and an exact replay is
+/// recognised only for that kind: a claim bound as one kind answers a replay of
+/// the other as a conflict. The `/v2/claim` route is a bearer path and presents a
+/// `Bearer` digest. A claim binds only a principal that holds no active
+/// credential of either kind (`no_active_credential`), so a login is counted
+/// beside a bearer and never ignored in its place.
 ///
 /// `equal` compares two digests. The daemon passes a constant-time
 /// comparison; this package has no cryptographic dependency of its own.
@@ -586,14 +668,13 @@ pub fn claim_known(store: Catalogue, claim: ClaimDigest) -> Result(Nil, Error) {
 /// ## Examples
 ///
 /// ```gleam
-/// // access.claim(store, claim, credential, access.Bearer, Some("Alex"), now_ms, constant_time_equal)
+/// // access.claim(store, claim, credential, Some("Alex"), now_ms, constant_time_equal)
 /// ```
 @internal
 pub fn claim(
   store: Catalogue,
   claim: ClaimDigest,
   presented: Digest,
-  kind: CredentialKind,
   name: Option(String),
   now_ms: Int,
   equal: fn(String, String) -> Bool,
@@ -602,7 +683,7 @@ pub fn claim(
     catalogue.atomic(store, fn() {
       // A refusal commits an empty transaction, since every refusal precedes
       // every write. A store failure rolls back whatever had been written.
-      case redeem(store, claim, presented, kind, name, now_ms, equal) {
+      case redeem(store, claim, presented, name, now_ms, equal) {
         Ok(claimed) -> Ok(Ok(claimed))
         Error(ClaimStore(error)) -> Error(error)
         Error(InvalidClaimName) -> Ok(Error(InvalidClaimName))
@@ -621,7 +702,6 @@ fn redeem(
   store: Catalogue,
   claim: ClaimDigest,
   presented: Digest,
-  kind: CredentialKind,
   name: Option(String),
   now_ms: Int,
   equal: fn(String, String) -> Bool,
@@ -638,7 +718,7 @@ fn redeem(
     // again. The credential bound before is the only one that repeats the
     // success, and only while it still authenticates.
     ClaimedBy(bound) -> {
-      use found <- result.try(case credential(store, bound, kind) {
+      use found <- result.try(case credential(store, bound, presented.kind) {
         // The row exists, since the claim references it, so only a bound
         // credential of the other kind is absent from this lookup.
         Error(Missing) -> Error(ConflictingClaim)
@@ -651,7 +731,7 @@ fn redeem(
       }
     }
 
-    OpenClaim -> bind(store, row, presented, kind, name, now_ms, equal)
+    OpenClaim -> bind(store, row, presented, name, now_ms, equal)
   }
 }
 
@@ -659,7 +739,6 @@ fn bind(
   store: Catalogue,
   row: ClaimRow,
   presented: Digest,
-  kind: CredentialKind,
   name: Option(String),
   now_ms: Int,
   equal: fn(String, String) -> Bool,
@@ -690,15 +769,24 @@ fn bind(
   })
 
   // The credential row first: the claim's `credential_digest` references it.
+  // A login's row records when it began, as `issue_login` writes it.
   use Nil <- result.try(
-    stored(catalogue.statement(
-      store,
-      sql.insert_access_credential(
-        presented.value,
-        row.principal_id,
-        kind_name(kind),
-      ),
-    )),
+    stored(
+      catalogue.statement(store, case presented.kind {
+        Bearer ->
+          sql.insert_access_credential(
+            presented.value,
+            row.principal_id,
+            kind_name(Bearer),
+          )
+        Browser ->
+          sql.insert_access_claimed_login(
+            presented.value,
+            row.principal_id,
+            Some(now_ms),
+          )
+      }),
+    ),
   )
   use Nil <- result.try(
     stored(catalogue.statement(
@@ -750,6 +838,10 @@ fn stored(result: Result(a, Error)) -> Result(a, ClaimRefusal) {
   result.map_error(result, ClaimStore)
 }
 
+// A claim binds only a member who holds no active credential, whatever kind:
+// 053's rule 3 is that a member has an open claim and no credential, or no open
+// claim, and a login is a credential. Counting bearers alone would let a member
+// whose only credential is a login bind a second one.
 fn no_active_credential(store: Catalogue, id: String) -> Result(Nil, Error) {
   use rows <- result.try(catalogue.query(
     store,
@@ -823,8 +915,9 @@ pub fn principals_page(
           row.display_name,
           row.kind,
         ))
-        use summary <- result.map(credential_summary(store, found.id, now_ms))
-        Listing(found, summary)
+        use summary <- result.try(credential_summary(store, found.id, now_ms))
+        use logins <- result.map(login_count(store, found.id, now_ms))
+        Listing(found, summary, logins)
       }),
     )
     let #(entries, remainder) = split_page(listed)
@@ -948,25 +1041,24 @@ fn split_page(rows: List(a)) -> #(List(a), Remainder) {
   }
 }
 
-/// Resolves an active credential of `kind` to the principal's current durable
-/// identity. Invalid persisted values fail closed instead of receiving a
-/// default role.
+/// Resolves an active credential to the principal's current durable identity.
+/// Invalid persisted values fail closed instead of receiving a default role.
 ///
-/// The kind is a parameter so that no caller can omit it: a digest that names
-/// a row of the other kind is `Missing`, exactly as an unknown digest is.
+/// The lookup is of the kind the digest was made as, so no caller can omit it
+/// and none can ask for the other: a digest that names a row of the other kind
+/// is `Missing`, exactly as an unknown digest is.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // access.authenticate(store, digest, access.Bearer)
+/// // access.authenticate(store, digest)
 /// ```
 @internal
 pub fn authenticate(
   store: Catalogue,
   digest: Digest,
-  kind: CredentialKind,
 ) -> Result(Principal, Error) {
-  use found <- result.try(credential(store, digest, kind))
+  use found <- result.try(credential(store, digest, digest.kind))
   case found.state {
     Active -> get(store, found.principal_id)
     Revoked -> Error(Missing)
@@ -1047,7 +1139,9 @@ pub fn rotate_credential(
   replacement: Digest,
 ) -> Result(Principal, Error) {
   catalogue.atomic(store, fn() {
-    use found <- result.try(authenticate(store, old, Bearer))
+    use Nil <- result.try(bearer_only(old))
+    use Nil <- result.try(bearer_only(replacement))
+    use found <- result.try(authenticate(store, old))
     use Nil <- result.try(unused(store, replacement))
     use Nil <- result.try(catalogue.statement(
       store,
@@ -1063,6 +1157,247 @@ pub fn rotate_credential(
     ))
     Ok(found)
   })
+}
+
+/// Records a browser login: one `Browser` credential row for `principal_id`,
+/// keyed by the digest of the login token's identifier, with the instant it was
+/// minted and the instant its token expires. `issued_by`, when there is one, is
+/// the fingerprint of the login whose device link made this one.
+///
+/// The digest must be a `browser_digest` and unused in either kind, and the
+/// principal must exist; any of them wrong writes nothing. Whether the principal
+/// may hold a login is the daemon's decision and not made here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.issue_login(store, "alice", digest, now_ms, now_ms + thirty_days, None)
+/// ```
+@internal
+pub fn issue_login(
+  store: Catalogue,
+  principal_id: String,
+  digest: Digest,
+  issued_at_ms: Int,
+  expires_at_ms: Int,
+  issued_by: Option(String),
+) -> Result(Nil, Error) {
+  use Nil <- result.try(case digest.kind {
+    Browser -> Ok(Nil)
+    Bearer -> Error(Invalid("a login row is a browser credential"))
+  })
+  use Nil <- result.try(case issued_by {
+    None -> Ok(Nil)
+    Some(parent) -> fingerprint_shape(parent)
+  })
+  catalogue.atomic(store, fn() {
+    use _found <- result.try(get(store, principal_id))
+    use Nil <- result.try(unused(store, digest))
+    catalogue.statement(store, case issued_by {
+      None ->
+        sql.insert_access_login(
+          digest.value,
+          principal_id,
+          Some(issued_at_ms),
+          Some(expires_at_ms),
+        )
+      Some(parent) ->
+        sql.insert_access_login_from(
+          digest.value,
+          principal_id,
+          Some(issued_at_ms),
+          Some(expires_at_ms),
+          Some(parent),
+        )
+    })
+  })
+}
+
+/// Lists a principal's active, unexpired browser logins after the fingerprint
+/// `after`, in fingerprint order, at most `listing_limit`. `after` is empty for
+/// the first page. `now_ms` is the wall-clock instant expiry is judged against.
+/// An unknown principal is `Missing`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.signins_page(store, "alice", "", now_ms)
+/// ```
+@internal
+pub fn signins_page(
+  store: Catalogue,
+  principal_id: String,
+  after: String,
+  now_ms: Int,
+) -> Result(SigninPage, Error) {
+  use Nil <- result.try(valid_id(principal_id))
+  use Nil <- result.try(case after {
+    "" -> Ok(Nil)
+    fingerprint -> fingerprint_shape(fingerprint)
+  })
+  catalogue.coherent(store, fn() {
+    use _found <- result.try(get(store, principal_id))
+    use rows <- result.try(catalogue.query(
+      store,
+      sql.principal_logins(principal_id, Some(now_ms), after),
+    ))
+    use listed <- result.map(
+      list.try_map(rows, fn(row) {
+        use digest <- result.map(browser_digest(row.digest))
+        Signin(
+          fingerprint: fingerprint(digest),
+          issued_at_ms: option.unwrap(row.issued_at_ms, 0),
+          last_resumed_ms: row.last_resumed_ms,
+          expires_at_ms: row.expires_at_ms,
+          issued_by: row.issued_by,
+        )
+      }),
+    )
+    let #(entries, remainder) = split_page(listed)
+    SigninPage(entries, remainder)
+  })
+}
+
+// Counts the principal's active browser logins whose expiry has not come.
+fn login_count(
+  store: Catalogue,
+  principal_id: String,
+  now_ms: Int,
+) -> Result(Int, Error) {
+  use rows <- result.try(catalogue.query(
+    store,
+    sql.principal_login_count(principal_id, Some(now_ms)),
+  ))
+  use row <- result.map(one(rows))
+  row.count
+}
+
+/// Revokes one of a principal's own browser logins, named by its fingerprint,
+/// and answers its digest so the caller can log its fingerprint and drop what
+/// it remembers of it. Only a row of this principal and of kind `Browser` can
+/// match, so a fingerprint of a bearer, or of another principal's login, is
+/// `Missing`. Revoking a login that is already revoked is idempotent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.revoke_login(store, "alice", "9c1e0f2ab3d4e5f6")
+/// ```
+@internal
+pub fn revoke_login(
+  store: Catalogue,
+  principal_id: String,
+  fingerprint: String,
+) -> Result(Digest, Error) {
+  use Nil <- result.try(valid_id(principal_id))
+  use Nil <- result.try(fingerprint_shape(fingerprint))
+  catalogue.atomic(store, fn() {
+    use rows <- result.try(catalogue.query(
+      store,
+      sql.principal_login_by_fingerprint(principal_id, fingerprint),
+    ))
+    use row <- result.try(one(rows))
+    use digest <- result.try(browser_digest(row.digest))
+    use Nil <- result.map(catalogue.statement(
+      store,
+      sql.revoke_access_credential(digest.value),
+    ))
+    digest
+  })
+}
+
+/// Revokes every active browser login of one principal ("sign out everywhere")
+/// and answers how many were active. Bearers and claims are untouched.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.revoke_logins(store, "alice")
+/// ```
+@internal
+pub fn revoke_logins(
+  store: Catalogue,
+  principal_id: String,
+) -> Result(Int, Error) {
+  use Nil <- result.try(valid_id(principal_id))
+  catalogue.atomic(store, fn() {
+    use _found <- result.try(get(store, principal_id))
+
+    // Zero as the instant counts every active row, since no login's expiry is
+    // before it.
+    use held <- result.try(login_count(store, principal_id, 0))
+    use Nil <- result.map(catalogue.statement(
+      store,
+      sql.revoke_principal_logins(principal_id),
+    ))
+    held
+  })
+}
+
+/// Revokes every active browser login of every principal and answers how many
+/// there were. It is what a daemon start does after it drew a new root key: the
+/// rows' tokens can no longer verify, and without this the sign-in listings
+/// would show them as live.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.revoke_all_logins(store)
+/// ```
+@internal
+pub fn revoke_all_logins(store: Catalogue) -> Result(Int, Error) {
+  catalogue.atomic(store, fn() {
+    use rows <- result.try(catalogue.query(store, sql.active_login_count()))
+    use row <- result.try(one(rows))
+    use Nil <- result.map(catalogue.statement(store, sql.revoke_all_logins()))
+    row.count
+  })
+}
+
+/// Records that a login minted a home page at `now_ms`, when its last record is
+/// absent or at least `resume_stamp_window_ms` old, and otherwise writes
+/// nothing. A login row that does not exist is `Missing`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.resumed(store, digest, now_ms)
+/// ```
+@internal
+pub fn resumed(
+  store: Catalogue,
+  digest: Digest,
+  now_ms: Int,
+) -> Result(Stamp, Error) {
+  use Nil <- result.try(case digest.kind {
+    Browser -> Ok(Nil)
+    Bearer -> Error(Invalid("a login row is a browser credential"))
+  })
+  catalogue.atomic(store, fn() {
+    use rows <- result.try(catalogue.query(
+      store,
+      sql.login_resumed_at(digest.value),
+    ))
+    use row <- result.try(one(rows))
+    case row.last_resumed_ms {
+      Some(last) if now_ms - last < resume_stamp_window_ms -> Ok(Unchanged)
+      Some(_) | None -> {
+        use Nil <- result.map(catalogue.statement(
+          store,
+          sql.stamp_login_resumed(Some(now_ms), digest.value),
+        ))
+        Stamped
+      }
+    }
+  })
+}
+
+// A fingerprint is the first sixteen hexadecimal digits of a digest.
+fn fingerprint_shape(value: String) -> Result(Nil, Error) {
+  case string.byte_size(value) == 16 && ascii_in(value, "0123456789abcdef") {
+    True -> Ok(Nil)
+    False -> Error(Invalid("fingerprint must be 16 lowercase hex bytes"))
+  }
 }
 
 /// Grants or replaces one member's role for an existing session.
@@ -1212,6 +1547,16 @@ fn kind_name(kind: CredentialKind) -> String {
   case kind {
     Bearer -> "bearer"
     Browser -> "browser"
+  }
+}
+
+// The paths that enroll a member's own credential, and the one that replaces it,
+// are bearer paths. A login's row is written only by `issue_login`, which
+// records its expiry, and by a claim bound as a login.
+fn bearer_only(digest: Digest) -> Result(Nil, Error) {
+  case digest.kind {
+    Bearer -> Ok(Nil)
+    Browser -> Error(Invalid("a browser login is not a bearer credential"))
   }
 }
 

@@ -10,6 +10,7 @@
 //// them in the order 051 gives: the host first, then the check that belongs
 //// to the route, then the cookie.
 
+import gleam/bit_array
 import gleam/http
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
@@ -18,11 +19,15 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/uri
 import web_view/image
 import web_view/page
 
 /// The cookie that carries a UI session.
 pub const cookie_name = "loom_ui"
+
+/// The cookie that carries a browser login (protocol-change/065).
+pub const login_cookie_name = "loom_login"
 
 /// One `/ui` request, by route.
 ///
@@ -58,6 +63,13 @@ pub type Route {
   /// as the socket URL's `csrf-token`.
   HomeSocket(key: String, nonce: Option(String))
 
+  /// `GET /ui/l/<key>/home`: the fixed resume page, which posts the login nonce
+  /// the browser kept to the same address.
+  LoginPage(key: String)
+
+  /// `POST /ui/l/<key>/home`: a browser login asks for a home page.
+  LoginResume(key: String)
+
   /// `GET /ui/admin?ticket=<ticket>`: the admin page's ticket exchange
   /// (protocol-change/065, the fifth pull request).
   AdminExchange(ticket: String)
@@ -90,6 +102,9 @@ pub type Asset {
   /// The session page's script.
   PageScript
 
+  /// The resume page's script, which posts the login nonce.
+  ResumeScript
+
   /// The client components' bundle.
   Client
 }
@@ -99,9 +114,10 @@ pub type Asset {
 /// request from naming a position no row could have.
 pub const max_position = 256
 
-/// Routes a `/ui` request; every route is a `GET`. The session ID is returned as the path gave it;
-/// the caller parses it as a canonical ID before using it. The home's three
-/// routes and the admin page's three name no session (protocol-change/065).
+/// Routes a `/ui` request; every route is a `GET` except the login's resume,
+/// which is a `POST`. The session ID is returned as the path gave it; the caller
+/// parses it as a canonical ID before using it. The home's three routes and the
+/// admin page's three name no session (protocol-change/065).
 ///
 /// ## Examples
 ///
@@ -134,6 +150,9 @@ pub fn route(request: Request(body)) -> Route {
     http.Get, ["ui", "p", key, "home"] -> HomePage(key)
     http.Get, ["ui", "p", key, "home", "ws"] ->
       HomeSocket(key, query(request, "csrf-token"))
+    http.Get, ["ui", "l", key, "home"] -> LoginPage(key)
+    http.Post, ["ui", "l", key, "home"] -> LoginResume(key)
+
     http.Get, ["ui", "admin"] ->
       case query(request, "ticket") {
         Some(ticket) -> AdminExchange(ticket)
@@ -148,6 +167,7 @@ pub fn route(request: Request(body)) -> Route {
         _ if name == page.stylesheet_asset -> Asset(Stylesheet)
         _ if name == page.enter_asset -> Asset(EnterScript)
         _ if name == page.page_asset -> Asset(PageScript)
+        _ if name == page.resume_asset -> Asset(ResumeScript)
         _ if name == page.client_asset -> Asset(Client)
         _ -> Unknown
       }
@@ -245,6 +265,80 @@ pub fn navigation_allowed(request: Request(body)) -> Bool {
   }
 }
 
+/// Whether a state-changing request came from this origin's own page:
+/// `Sec-Fetch-Site` is `same-origin` and nothing else. The login's resume is a
+/// `POST` from the resume page, which is this origin's, so a link another page
+/// followed, a form another page posted and a request with no such header (a
+/// program that is not a browser, or one that cannot be trusted to say) are all
+/// refused, `none` included: nobody types a `POST`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_http.same_origin_post(request)
+/// ```
+pub fn same_origin_post(request: Request(body)) -> Bool {
+  case request.get_header(request, "sec-fetch-site") {
+    Ok("same-origin") -> True
+    Ok(_) | Error(Nil) -> False
+  }
+}
+
+/// The most bytes the resume form's body may hold.
+pub const max_form_bytes = 1024
+
+/// Whether the request declares a body the resume may read: a `Content-Length`
+/// of at most `max_form_bytes`, no `Transfer-Encoding` (a chunked body has no
+/// length to bound before it is read), and the URL-encoded form type a form
+/// posts. The caller reads the body only after this holds, so an oversized or
+/// unbounded one is refused unread.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_http.form_declared(request)
+/// ```
+pub fn form_declared(request: Request(body)) -> Bool {
+  let length = case request.get_header(request, "content-length") {
+    Ok(text) -> int.parse(text) |> result.unwrap(max_form_bytes + 1)
+    Error(Nil) -> max_form_bytes + 1
+  }
+  let chunked = result.is_ok(request.get_header(request, "transfer-encoding"))
+  let kind = case request.get_header(request, "content-type") {
+    Ok(text) -> string.lowercase(text) == "application/x-www-form-urlencoded"
+    Error(Nil) -> False
+  }
+  length >= 0 && length <= max_form_bytes && !chunked && kind
+}
+
+/// The login nonce a resume form posted: a body of exactly one field, `nonce`,
+/// whose value is 64 lowercase hexadecimal digits. Anything else, a second
+/// field included, is not a resume.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_http.posted_nonce(<<"nonce=00...">>)
+/// ```
+pub fn posted_nonce(body: BitArray) -> Result(String, Nil) {
+  use text <- result.try(bit_array.to_string(body))
+  use fields <- result.try(uri.parse_query(text))
+  case fields {
+    [#("nonce", value)] ->
+      case string.byte_size(value) == 64 && lowercase_hex(value) {
+        True -> Ok(value)
+        False -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+}
+
+fn lowercase_hex(value: String) -> Bool {
+  list.all(string.to_graphemes(value), fn(digit) {
+    string.contains("0123456789abcdef", digit)
+  })
+}
+
 /// Whether a WebSocket upgrade came from this origin: `Origin` is present
 /// and is `http://` followed by the request's host.
 ///
@@ -285,6 +379,60 @@ pub fn session_cookies(request: Request(body)) -> List(String) {
     }
   })
   |> list.take(max_session_cookies)
+}
+
+/// The most `loom_login` values a request is tried with. A browser sends one for
+/// every login cookie whose path covers the request, which is one for a login
+/// set normally, and sends a value planted under a longer path first. Four is
+/// enough to pass over a few planted values and still reach the real one, and
+/// the bound keeps a request stuffed with cookies from costing a chain
+/// verification each.
+pub const max_login_cookies = 4
+
+/// Every `loom_login` value the request carries, in the order the browser sent
+/// them, up to `max_login_cookies`. The caller opens each in turn and takes the
+/// first that verifies and holds for the request.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_http.login_cookies(request) == ["planted", "real"]
+/// ```
+pub fn login_cookies(request: Request(body)) -> List(String) {
+  request.get_cookies(request)
+  |> list.filter_map(fn(pair) {
+    case pair.0 == login_cookie_name {
+      True -> Ok(pair.1)
+      False -> Error(Nil)
+    }
+  })
+  |> list.take(max_login_cookies)
+}
+
+/// The `Set-Cookie` value for a browser login whose login key is `key`, with
+/// the token `value`, ending `max_age` seconds from now.
+///
+/// It has the page cookie's attributes: `HttpOnly` keeps it from every script,
+/// `SameSite=Strict` keeps a cross-site navigation from carrying it, and
+/// `Path=/ui/l/<key>` keeps it off every path that does not name the login key,
+/// on this port and on every other, since browsers do not scope a cookie by
+/// port. It also has a `Max-Age`, the page cookie's one difference: the login
+/// is the cookie that outlives the browser, and it ends when its token's
+/// expiry does, so the browser drops it when the token would stop verifying.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_http.set_login_cookie(token, key, 2_592_000)
+/// ```
+pub fn set_login_cookie(value: String, key: String, max_age: Int) -> String {
+  login_cookie_name
+  <> "="
+  <> value
+  <> "; HttpOnly; SameSite=Strict; Path="
+  <> page.login_prefix(key)
+  <> "; Max-Age="
+  <> int.to_string(max_age)
 }
 
 /// The `Set-Cookie` value for a new UI session whose page key is `key`.
@@ -339,10 +487,27 @@ pub fn refused(response: Response(body)) -> Response(body) {
 /// // ui_http.secured(response, "127.0.0.1:4000")
 /// ```
 pub fn secured(response: Response(body), host: String) -> Response(body) {
+  secured_for(response, host, page.NoForms)
+}
+
+/// `secured` for a document that holds a form, whose policy lets that form
+/// submit to this origin and nowhere else. The resume page is the one such
+/// document, and nothing else in the policy widens for it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_http.secured_for(response, "127.0.0.1:4000", page.OwnForms)
+/// ```
+pub fn secured_for(
+  response: Response(body),
+  host: String,
+  forms: page.Forms,
+) -> Response(body) {
   response
   |> response.set_header(
     "content-security-policy",
-    page.content_security_policy(host),
+    page.content_security_policy_for(host, forms),
   )
   |> response.set_header("x-content-type-options", "nosniff")
   |> response.set_header("referrer-policy", "no-referrer")

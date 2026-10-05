@@ -165,7 +165,7 @@ specifies them and [the web view](architecture/web-view.md) describes them.
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:267-180`).
+Source: `handle` (`client/daemon/server.gleam:296-180`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -401,7 +401,7 @@ carries the daemon epoch that most control commands must echo.
 | `ui.path` | string | optional | Present only when the daemon was started with `--ui`: the web view's route prefix, `"/ui"`. A client that does not know the field ignores it. |
 
 Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:1248`).
+`hello_view` (`client/daemon/server.gleam:1521`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -536,7 +536,7 @@ Source: (`client/daemon/server.gleam:839-860`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:2099`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:2439`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -928,8 +928,8 @@ Errors: `forbidden`, `stale_epoch`, `not_found`, `busy`, `unavailable`.
 While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
-`principals.list`, `principals.memberships`, `sessions.members`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:1567-1114`).
+`principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
+`control_use` (`client/daemon/server.gleam:1840-1114`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -1077,9 +1077,31 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:708`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:797`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
+
+With no `session_id` the request is for the principal's home page
+([protocol-change/065](../protocol-change/065-web-workspace-mode.md)): no
+membership is checked, the reply's `path` is `/ui/home?ticket=<t>`, and the
+exchange also signs the browser in for 30 days (the browser login, below)
+unless the request carries `"remember": false`, which `loom ui --no-remember`
+sends. `remember` is `true` when absent; a request that names both a session
+and `remember` is refused with `bad_request`, since a session's link sets no
+login.
+
+The login is a second cookie, `loom_login`, whose value is a signed token the
+daemon verifies from its own root key (`<state-dir>/browser.key`, mode `0600`);
+the daemon stores only one catalogue row for the login, never the token. The
+cookie is `HttpOnly; SameSite=Strict`, scoped by `Path=/ui/l/<login key>`, and
+its `Max-Age` runs to the token's expiry, thirty days from the exchange and
+never extended. The exchange's page carries the login's key and a nonce in two
+data attributes, which the enter script keeps in `localStorage` under
+`loom.login.<key>`; the daemon keeps only the nonce's digest, inside the
+token. `GET /ui/l/<key>/home` serves a fixed page whose script posts the nonce
+to the same path, and `POST /ui/l/<key>/home` verifies the login and answers
+with the exchange page of a new home page, which can start no admin page and
+make no device link (a "resumed" home).
 
 Reply:
 
@@ -1095,7 +1117,7 @@ Reply:
 The server checks the caller's membership with the call a session upgrade
 makes, `manager.session_authority`, and refuses a non-member; it refuses
 with `unavailable` when the daemon was started without `--ui` (`UiLink`,
-`client/daemon/server.gleam:1078`). The ticket is 32 random bytes, sent
+`client/daemon/server.gleam:1639`). The ticket is 32 random bytes, sent
 base16 encoded; the daemon keeps only its SHA-256 digest, with the
 principal, the session, the digest of the credential that asked and the
 ceiling. It is redeemed at most once, and redeeming it ends every earlier
@@ -1133,6 +1155,7 @@ Reply:
 | `principals[].name` | string | required | The current display name. |
 | `principals[].kind` | string | required | `owner` or `member`. |
 | `principals[].credential` | object | required | One state per principal, below. |
+| `principals[].logins` | integer | optional | How many browser logins the principal holds that are active and unexpired (protocol-change/065). Absent from a daemon that predates it. A login is counted here and is never reported as the `credential`. |
 | `next` | string | optional | Present only when another page follows; the last principal ID of this page. |
 
 `credential.state` is one of:
@@ -1194,6 +1217,48 @@ ID when another page follows. `loom access members SESSION [--after PRINCIPAL]`
 prints it, one JSON line for each member and a `{"next": ...}` line.
 
 Errors: `forbidden`, `not_found`, `bad_request`, `unavailable`.
+
+### 3.25 `credentials.signins` and `credentials.revoke_login`
+
+A principal's browser logins ([protocol-change/065](../protocol-change/065-web-workspace-mode.md)),
+read and ended from a terminal (`loom access signins` and `revoke-login`). A
+member omits `principal_id` and works on its own logins; naming another
+principal is `forbidden`. The owner may name any principal, itself included.
+The caller's credential is authenticated again in the registry's own turn, so a
+credential revoked a moment ago reads and revokes nothing.
+
+```json
+{"v":2,"id":15,"cmd":"credentials.signins","body":{"principal_id":"alice","after":"0123456789abcdef"}}
+{"v":2,"reply_to":15,"event":"credentials.signins","body":{"principal_id":"alice","signins":[{"fingerprint":"9c1e0f2ab3d4e5f6","issued_at_ms":1790000000000,"last_resumed_ms":1790003600000,"expires_at_ms":1792592000000,"issued_by":"0123456789abcdef"}],"next":"9c1e0f2ab3d4e5f6"}}
+```
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `signins[].fingerprint` | string | required | The first 16 hexadecimal characters of the login row's digest. It identifies the login and authenticates nothing; the token is in the browser and on no reply. |
+| `signins[].issued_at_ms` | integer | required | When the login was made. |
+| `signins[].last_resumed_ms` | integer | optional | When the login last minted a home page, written at most once an hour. |
+| `signins[].expires_at_ms` | integer | optional | When the login ends. A login a device link made inherits the issuing login's. |
+| `signins[].issued_by` | string | optional | The fingerprint of the login whose device link made this one. |
+| `next` | string | optional | The last fingerprint of this page, when another follows. |
+
+The list holds the principal's active, unexpired logins in fingerprint order,
+at most 100 and 60,000 bytes of them; an unknown principal is `not_found`.
+
+```json
+{"v":2,"id":16,"cmd":"credentials.revoke_login","body":{"principal_id":"alice","fingerprint":"9c1e0f2ab3d4e5f6","epoch":"..."}}
+{"v":2,"reply_to":16,"event":"credentials.revoke_login","body":{"principal_id":"alice","fingerprint":"9c1e0f2ab3d4e5f6"}}
+```
+
+`credentials.revoke_login` ends one login: its row is revoked, so the login
+resumes nothing and every page it minted is refused at its next request and
+closes at its next frame. A fingerprint that names no login of the principal
+(another principal's, a bearer's, or none) is `not_found`; one that is not 16
+lowercase hexadecimal characters is `bad_request`. It carries the daemon
+`epoch` as every mutation does, and is refused during a drain. The daemon logs
+`daemon.login_revoked` with the principal's ID and the fingerprint. Revoking
+credentials or rotating a member ends every login of that member too.
+
+Errors: `forbidden`, `not_found`, `bad_request`, `stale_epoch`, `unavailable`.
 
 ---
 
@@ -3384,7 +3449,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:400`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:426`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
    `protocol-change/053` adds a third route, `/v2/claim`, with its one

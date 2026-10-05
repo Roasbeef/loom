@@ -17,6 +17,12 @@
 //// seen by one fact: those whose claim is open, each with a Void button, so
 //// an invitation sent to the wrong person is easy to take back.
 ////
+//// A principal that holds browser logins lists them beneath its row, each with
+//// the words the home's own list uses and a two-step "Revoke sign-in" button
+//// (protocol-change/065, the eighth pull request); the owner's own login the
+//// page was opened from is marked "This browser". A principal with more than
+//// the page lists says so and leaves the rest to `loom access signins`.
+////
 //// Every name is a peer's and is drawn as a text node, in a label's words as
 //// well. Every identity is the catalogue's and is a text node too; nothing here
 //// is an attribute, a class or a key made from either. The classes are
@@ -28,9 +34,11 @@ import gleam/option.{type Option, None, Some}
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
-import web_view/grants.{type Credential, type Principal}
+import web_view/grants.{type Credential, type Logins, type Principal}
 import web_view/sessions
+import web_view/signins.{type Signin}
 import web_view/view/admin_buttons.{type Busy, type Presses}
+import web_view/view/signins as signins_view
 
 /// The section that lists every principal, or a line saying there are none
 /// besides the owner. `now` is the instant in Unix milliseconds the ages are
@@ -40,11 +48,13 @@ import web_view/view/admin_buttons.{type Busy, type Presses}
 /// ## Examples
 ///
 /// ```gleam
-/// // admin_people.principals(rows, grants.Whole, now, None, presses, admin_buttons.Free)
+/// // admin_people.principals(rows, grants.Whole, logins, None, now, None, presses, admin_buttons.Free)
 /// ```
 pub fn principals(
   rows: List(Principal),
   more: grants.More,
+  logins: List(Logins),
+  this: Option(String),
   now: Int,
   armed: Option(grants.Action),
   presses: Presses(message),
@@ -56,7 +66,17 @@ pub fn principals(
       heading("People", list.length(rows)),
       html.ul(
         [attribute.class("admin-list")],
-        list.map(rows, fn(row) { person(row, now, armed, presses, busy) }),
+        list.map(rows, fn(row) {
+          person(
+            row,
+            logins_of(logins, row.id),
+            this,
+            now,
+            armed,
+            presses,
+            busy,
+          )
+        }),
       ),
       truncation(more),
     ],
@@ -119,6 +139,8 @@ fn heading(title: String, count: Int) -> Element(message) {
 // a member, the two changes that are made to a person.
 fn person(
   row: Principal,
+  logins: Option(Logins),
+  this: Option(String),
   now: Int,
   armed: Option(grants.Action),
   presses: Presses(message),
@@ -154,6 +176,91 @@ fn person(
           ),
         ])
     },
+    case logins {
+      Some(held) -> sign_ins(row, held, this, now, armed, presses, busy)
+      None -> element.none()
+    },
+  ])
+}
+
+// The principal's sign-ins found by the last read, if it has any.
+fn logins_of(logins: List(Logins), principal: String) -> Option(Logins) {
+  list.find(logins, fn(held) { held.principal == principal })
+  |> option.from_result
+}
+
+// A principal's browser logins, in a list of their own across the row: each
+// with its history and the button that ends it, two steps like every revocation.
+// "This browser" marks the one the page was opened from.
+fn sign_ins(
+  row: Principal,
+  held: Logins,
+  this: Option(String),
+  now: Int,
+  armed: Option(grants.Action),
+  presses: Presses(message),
+  busy: Busy,
+) -> Element(message) {
+  html.div([attribute.class("admin-signins")], [
+    html.span([attribute.class("admin-subheading")], [
+      html.text("Sign-ins"),
+      html.span([attribute.class("home-count")], [
+        html.text(int.to_string(held.count)),
+      ]),
+    ]),
+    html.ul(
+      [attribute.class("admin-signin-list")],
+      list.map(held.shown, fn(signin) {
+        sign_in(row, signin, this, now, armed, presses, busy)
+      }),
+    ),
+    case held.count > list.length(held.shown) {
+      True ->
+        html.p([attribute.class("home-empty")], [
+          html.text(
+            "More sign-ins exist than this page lists. Run loom access signins to see them.",
+          ),
+        ])
+      False -> element.none()
+    },
+  ])
+}
+
+fn sign_in(
+  row: Principal,
+  signin: Signin,
+  this: Option(String),
+  now: Int,
+  armed: Option(grants.Action),
+  presses: Presses(message),
+  busy: Busy,
+) -> Element(message) {
+  let here = this == Some(signin.fingerprint)
+  html.li([attribute.class("admin-signin")], [
+    html.span([attribute.class("admin-text")], [
+      html.span([attribute.class("admin-name")], [
+        html.text(case here {
+          True -> "This browser"
+          False -> "Browser"
+        }),
+        html.span([attribute.class("admin-id")], [
+          html.text(signin.fingerprint),
+        ]),
+      ]),
+      html.span([attribute.class("admin-sub")], [
+        html.text(signins_view.history(signin, now)),
+      ]),
+    ]),
+    html.div([attribute.class("admin-actions")], [
+      admin_buttons.guarded(
+        "Revoke sign-in",
+        "Revoke this sign-in of " <> row.name,
+        grants.RevokeSignin(row.id, signin.fingerprint),
+        armed,
+        presses,
+        busy,
+      ),
+    ]),
   ])
 }
 

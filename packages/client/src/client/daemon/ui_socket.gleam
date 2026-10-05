@@ -101,6 +101,15 @@
 //// own list drew, a name and a sharing choice, and nothing else, and the
 //// daemon creates only in a workspace the owner already holds a session in.
 ////
+//// A home page also manages the browser logins of its own principal
+//// (protocol-change/065, PR 8). `signins_read` lists them, `sign_out_for` and
+//// `sign_out_all_for` end one or all, and `device_link_for` makes a link that
+//// signs in another device. Each is the daemon's own check, made afresh from the
+//// grant the daemon holds and never from the page: the page is still open, the
+//// credential still authenticates as the principal, and for the link the page is
+//// a fresh home (`Origin`) and the credential's grant allowance has a place. A
+//// home the bookmark resumed is handed no device capability, and the daemon
+//// refuses the request from one as well.
 //// The owner's home also draws an "Admin" button (protocol-change/065, the fifth
 //// pull request), and the admin page it opens is the third page this socket
 //// serves. The button is admitted as the creation control is, and only a little
@@ -153,6 +162,7 @@ import client/daemon/manager
 import client/daemon/root
 import client/daemon/server
 import client/daemon/ui_http
+import client/daemon/ui_login
 import client/daemon/ui_relay
 import client/daemon/ui_sessions
 import client/daemon/upgrade_log
@@ -193,6 +203,7 @@ import web_view/operator_page
 import web_view/page
 import web_view/renames
 import web_view/sessions
+import web_view/signins
 import weft
 import weft/poll
 
@@ -415,10 +426,10 @@ pub fn upgrade(
   tickets: ui_sessions.Sessions,
   open: fn() -> Result(Int, Nil),
   register: fn(ui_sessions.Images) -> Nil,
-  ceiling: access.Role,
-  reach: ui_sessions.Reach,
+  seen: server.PageGrant,
 ) -> Response(mist.ResponseData) {
   let role = role_of(attachment)
+  let ceiling = seen.grant.ceiling
   let limit = case role {
     Observing -> root.message_limit(root.Observer)
     Operating | Owning -> operator_frame_limit
@@ -473,7 +484,7 @@ pub fn upgrade(
   // The capability to rename is an owner's too, and is made from the same
   // attachment: the session it renames is the attachment's, and the daemon's
   // epoch is the one the router read when it admitted the page.
-  let standing = page_standing(attachment, ceiling, reach)
+  let standing = page_standing(attachment, seen)
   let rename =
     rename_capability(role, fn(name, deliver) {
       rename_task(
@@ -495,7 +506,7 @@ pub fn upgrade(
       register,
       invite,
       rename,
-      reach,
+      seen,
       expected,
       signals,
       settled,
@@ -615,7 +626,7 @@ fn websocket(
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.upgrade_home(root, request, attachment, tickets, open, access.Operator, ui_sessions.Workspace)
+/// // ui_socket.upgrade_home(root, request, attachment, tickets, open, seen)
 /// ```
 pub fn upgrade_home(
   daemon: root.Root(instance),
@@ -623,12 +634,12 @@ pub fn upgrade_home(
   attachment: server.HomeAttachment(instance),
   tickets: ui_sessions.Sessions,
   open: fn() -> Result(Int, Nil),
-  ceiling: access.Role,
-  reach: ui_sessions.Reach,
+  seen: server.PageGrant,
 ) -> Response(mist.ResponseData) {
   let settled = process.new_subject()
   let limit = root.message_limit(root.Observer)
-  let standing = home_standing(attachment, ceiling, reach)
+  let ceiling = seen.grant.ceiling
+  let standing = home_standing(attachment, seen)
 
   // An owner's page minted to operate may rename the sessions it lists
   // (protocol-change/067) and create new ones (protocol-change/065, the fourth
@@ -669,14 +680,37 @@ pub fn upgrade_home(
   // (`home_admin_accepts`). Every other home draws no button and admits no such
   // click, so each layer holds alone.
   let administering =
-    home_admin_capability(attachment.principal, ceiling, reach, fn(deliver) {
-      admin_ticket_task(standing, tickets, open, deliver)
-    })
+    home_admin_capability(
+      attachment.principal,
+      ceiling,
+      seen.grant.reach,
+      seen.grant.origin,
+      fn(deliver) { admin_ticket_task(standing, tickets, open, deliver) },
+    )
   let admits = case rename, creating, administering {
     _, _, Some(_) -> home_admin_accepts
     Some(_), _, None | None, Some(_), None -> home_owner_accepts
     None, None, None -> home_accepts
   }
+
+  // The page's own sign-ins. Every home reads and ends its principal's logins,
+  // whatever its ceiling, since they are the principal's own. Only a fresh home
+  // is handed the capability to make a device link.
+  let signing =
+    Signing(
+      read: fn() { signins_read(standing, open) },
+      login: option.map(seen.login, fn(issuer) { issuer.fingerprint }),
+      bookmark: option.map(seen.login, fn(issuer) {
+        seen.address <> page.login_home_path(issuer.key)
+      }),
+      out: fn(fingerprint) {
+        sign_out_for(standing, attachment.epoch, open, fingerprint)
+      },
+      all: fn() { sign_out_all_for(standing, attachment.epoch, open) },
+      device: device_capability(seen.grant.origin, fn() {
+        device_link_for(standing, tickets, open, seen.address)
+      }),
+    )
   websocket(request, limit, settled, fn(signals) {
     admit_home(
       daemon,
@@ -687,6 +721,7 @@ pub fn upgrade_home(
       },
       rename,
       creating,
+      signing,
       administering,
       admits,
       open,
@@ -695,6 +730,20 @@ pub fn upgrade_home(
       settled,
     )
   })
+}
+
+// What a home page is handed to manage its principal's sign-ins: the read, the
+// fingerprint of the login this page belongs to, the bookmark it draws, the two
+// ways to end logins and, on a fresh home alone, the way to make a device link.
+type Signing {
+  Signing(
+    read: fn() -> signins.Listing,
+    login: Option(String),
+    bookmark: Option(String),
+    out: fn(String) -> signins.Answer,
+    all: fn() -> signins.Answer,
+    device: Option(fn() -> signins.Answer),
+  )
 }
 
 /// The capability to rename a listed session that a home page minted for
@@ -751,11 +800,14 @@ pub fn home_create_capability(
 }
 
 /// The browser messages a home page takes: Lustre's `EventFired` for a
-/// `click`, alone or batched, at a path beneath `home.table_path` or
-/// `home.sidebar_path`, where the home's only handlers are, and nothing else.
-/// Each handler is one running session's row, whose message names the session
-/// the server drew and not one the frame chose, so the frame can choose only
-/// among the rows that were drawn. Every other frame is dropped before it costs
+/// `click`, alone or batched, at a path beneath `home.table_path`,
+/// `home.sidebar_path` or `home.signins_path`, where the home's only handlers
+/// are, and nothing else. Each handler in the first two is one session's row,
+/// whose message names the session the server drew and not one the frame chose,
+/// so the frame can choose only among the rows that were drawn. Each in the
+/// third is one of the page's own sign-in controls (protocol-change/065, PR 8),
+/// which the daemon answers only for the principal's own logins and, for a
+/// device link, only from a fresh home. Every other frame is dropped before it costs
 /// the component a render, a batch with one of them included.
 ///
 /// The paths and the separator are exact, so a path that merely begins with the
@@ -862,6 +914,7 @@ fn home_event(rights: HomeRights) -> decode.Decoder(Bool) {
 fn home_row_path(path: String) -> Bool {
   string.starts_with(path, home.table_path <> "\t")
   || string.starts_with(path, home.sidebar_path <> "\t")
+  || string.starts_with(path, home.signins_path <> "\t")
 }
 
 // Takes the permit in the socket's first handler turn, as `admit` does, and
@@ -877,6 +930,7 @@ fn admit_home(
   creating: Option(
     fn(String, String, creations.Sharing, fn(creations.Answer) -> Nil) -> Nil,
   ),
+  signing: Signing,
   administering: Option(fn(fn(sessions.Answer) -> Nil) -> Nil),
   admits: fn(String) -> Bool,
   open: fn() -> Result(Int, Nil),
@@ -904,6 +958,12 @@ fn admit_home(
       },
       rename:,
       create: creating,
+      signins: signing.read,
+      login: signing.login,
+      bookmark: signing.bookmark,
+      sign_out: signing.out,
+      sign_out_all: signing.all,
+      device: signing.device,
       admin: administering,
     )
   let started = case transferred {
@@ -1076,13 +1136,14 @@ fn admit(
   register: fn(ui_sessions.Images) -> Nil,
   invite: Option(fn(invites.Role) -> invites.Answer),
   rename: Option(fn(String, fn(renames.Answer) -> Nil) -> Nil),
-  reach: ui_sessions.Reach,
+  seen: server.PageGrant,
   expected: snapshot.Expected,
   signals: process.Subject(Signal),
   settled: process.Subject(Nil),
 ) -> mist.Next(Phase, Signal) {
   let role = role_of(attachment)
-  let standing = page_standing(attachment, attach.ceiling, reach)
+  let standing = page_standing(attachment, seen)
+  let reach = seen.grant.reach
   let transferred = root.transfer(daemon, attachment.permit, within: 1000)
   process.send(settled, Nil)
   let transport =
@@ -1301,6 +1362,13 @@ pub type Standing(instance) {
     ceiling: access.Role,
     /// What the page was minted for, carried onto every page it opens.
     reach: ui_sessions.Reach,
+    /// How the page was reached, carried onto every ticket it mints so a chain
+    /// from a resumed page stays resumed (protocol-change/065, PR 8).
+    origin: ui_sessions.Origin,
+    /// The browser login the page is the browser of, carried onto every ticket
+    /// it mints so the page it opens belongs to the same login, and which a
+    /// device link inherits its expiry from.
+    login: Option(ui_sessions.Issuer),
   )
 }
 
@@ -1310,20 +1378,21 @@ pub type Standing(instance) {
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.page_standing(attachment, access.Operator, ui_sessions.Workspace)
+/// // ui_socket.page_standing(attachment, seen)
 /// ```
 @internal
 pub fn page_standing(
   attachment: server.Attachment(instance),
-  ceiling: access.Role,
-  reach: ui_sessions.Reach,
+  seen: server.PageGrant,
 ) -> Standing(instance) {
   Standing(
     registry: attachment.registry,
     digest: attachment.digest,
     principal: attachment.principal.id,
-    ceiling:,
-    reach:,
+    ceiling: seen.grant.ceiling,
+    reach: seen.grant.reach,
+    origin: seen.grant.origin,
+    login: seen.login,
   )
 }
 
@@ -1333,21 +1402,264 @@ pub fn page_standing(
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.home_standing(attachment, access.Operator, ui_sessions.Workspace)
+/// // ui_socket.home_standing(attachment, seen)
 /// ```
 @internal
 pub fn home_standing(
   attachment: server.HomeAttachment(instance),
-  ceiling: access.Role,
-  reach: ui_sessions.Reach,
+  seen: server.PageGrant,
 ) -> Standing(instance) {
   Standing(
     registry: attachment.registry,
     digest: attachment.digest,
     principal: attachment.principal.id,
-    ceiling:,
-    reach:,
+    ceiling: seen.grant.ceiling,
+    reach: seen.grant.reach,
+    origin: seen.grant.origin,
+    login: seen.login,
   )
+}
+
+/// The principal's own sign-ins, read with the page's credential, or `Unread`
+/// when the page has ended or the registry did not answer. The registry
+/// authenticates the credential again and reads only that principal's rows, so a
+/// page learns nothing about another principal's logins. A page whose credential
+/// was revoked is ended by the sessions read; this read has nothing to add.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.signins_read(standing, open)
+/// ```
+@internal
+pub fn signins_read(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+) -> signins.Listing {
+  case open() {
+    Error(Nil) -> signins.Unread
+    Ok(_) ->
+      case
+        manager.signins(
+          standing.registry,
+          standing.digest,
+          None,
+          after: "",
+          now_ms: bootstrap.system_time_ms(),
+        )
+      {
+        Ok(#(_, page)) -> signins.Listed(list.map(page.entries, listed_signin))
+        Error(_) -> signins.Unread
+      }
+  }
+}
+
+// A login as the catalogue holds it, as the page draws it.
+fn listed_signin(row: access.Signin) -> signins.Signin {
+  signins.Signin(
+    fingerprint: row.fingerprint,
+    issued_at_ms: row.issued_at_ms,
+    last_resumed_ms: row.last_resumed_ms,
+    expires_at_ms: row.expires_at_ms,
+    issued_by: row.issued_by,
+  )
+}
+
+/// Ends one of the page's principal's own sign-ins, named by `fingerprint`
+/// (protocol-change/065, PR 8). The page must still be open and the registry
+/// authenticates its credential and the daemon's epoch again in the same turn as
+/// the write, and finds the login among this principal's `browser` rows and no
+/// other: a fingerprint of another principal's login, or of a bearer, is
+/// `NotFound`. Revoking the row ends every page the login minted at that page's
+/// next frame. It is logged as `daemon.login_revoked`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.sign_out_for(standing, epoch, open, "9c1e0f2ab3d4e5f6")
+/// ```
+@internal
+pub fn sign_out_for(
+  standing: Standing(instance),
+  epoch: String,
+  open: fn() -> Result(Int, Nil),
+  fingerprint: String,
+) -> signins.Answer {
+  case open() {
+    Error(Nil) -> signins.Declined(signins.Unavailable)
+    Ok(_) ->
+      case
+        manager.revoke_login(
+          standing.registry,
+          standing.digest,
+          epoch,
+          None,
+          fingerprint,
+        )
+      {
+        Ok(#(principal, digest)) -> {
+          ui_login.revoked(principal, digest)
+          signins.Revoked
+        }
+        Error(error) -> signins.Declined(sign_out_reason(error))
+      }
+  }
+}
+
+/// Ends every sign-in of the page's principal ("sign out everywhere"), under the
+/// rules of `sign_out_for`, and logs the count as `daemon.login_revoked`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.sign_out_all_for(standing, epoch, open)
+/// ```
+@internal
+pub fn sign_out_all_for(
+  standing: Standing(instance),
+  epoch: String,
+  open: fn() -> Result(Int, Nil),
+) -> signins.Answer {
+  case open() {
+    Error(Nil) -> signins.Declined(signins.Unavailable)
+    Ok(_) ->
+      case
+        manager.revoke_logins(standing.registry, standing.digest, epoch, None)
+      {
+        Ok(#(principal, count)) -> {
+          ui_login.revoked_all(principal, count)
+          signins.Revoked
+        }
+        Error(error) -> signins.Declined(sign_out_reason(error))
+      }
+  }
+}
+
+// A refused sign-out in the page's words. A fingerprint the principal does not
+// hold is the one the person can act on; every other refusal is the daemon's.
+fn sign_out_reason(error: manager.AdminError) -> signins.Reason {
+  case error {
+    manager.AdminMetadata(catalogue.Missing)
+    | manager.AdminMetadata(catalogue.Invalid(_)) -> signins.NotFound
+    manager.AdminMetadata(_)
+    | manager.IsolationRequired
+    | manager.AdminForbidden
+    | manager.AdminStaleEpoch
+    | manager.AdminUnavailable
+    | manager.AdminBusy
+    | manager.AdminForeignPath -> signins.Unavailable
+  }
+}
+
+/// The capability to make a device link that a home page of `origin` is handed:
+/// `ask` for a fresh home, and none for a home the bookmark resumed, which draws
+/// no control. The daemon checks the origin again when the request runs
+/// (`device_link_for`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.device_capability(ui_sessions.Resumed, ask) == None
+/// ```
+@internal
+pub fn device_capability(
+  origin: ui_sessions.Origin,
+  ask: fn() -> signins.Answer,
+) -> Option(fn() -> signins.Answer) {
+  case origin {
+    ui_sessions.Fresh -> Some(ask)
+    ui_sessions.Resumed -> None
+  }
+}
+
+/// A link that signs in another device, or the reason there is none
+/// (protocol-change/065, PR 8). The link is a `Home` ticket that is
+/// `Remembered`, so its exchange sets a browser login on the device that opens
+/// it, and it lives ten minutes (`ui_sessions.device_ms`) instead of sixty
+/// seconds.
+///
+/// Each step is the daemon's own and is made afresh, and none is taken from the
+/// page:
+///
+/// 0. The page must still be open (`open`), and its deadline goes on the ticket,
+///    so the page the link opens never outlives the page that made it.
+/// 1. The page must be a fresh home: opened by a `loom ui` exchange, a claim or a
+///    device link, and not by the bookmark and not by a chain from the bookmark.
+///    A stolen bookmark must not be able to make a second credential, so a
+///    resumed home is `NotFresh` (the second layer; it is handed no control).
+/// 2. The credential the page was admitted under must still authenticate as the
+///    principal.
+/// 3. The credential must have a place in its grant allowance
+///    (`ui_sessions.reserve_invite`), the one allowance an invitation, a
+///    promotion and a link share. A place is given back if no ticket was minted.
+/// 4. The ticket carries the page's own principal, credential and ceiling, and
+///    the login the page belongs to, so the login the link sets inherits that
+///    login's expiry and names it as its parent: no family of logins outlives the
+///    one it began from. A page with no login (`loom ui --no-remember`) gives the
+///    new login thirty days of its own.
+///
+/// The answer is the whole address, `address` (the daemon's own, as the browser
+/// reached it) and the ticket's exchange.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.device_link_for(standing, tickets, open, "http://127.0.0.1:4000")
+/// ```
+@internal
+pub fn device_link_for(
+  standing: Standing(instance),
+  tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
+  address: String,
+) -> signins.Answer {
+  let checked = {
+    use until <- result.try(open() |> result.replace_error(signins.Unavailable))
+    use Nil <- result.try(case standing.origin {
+      ui_sessions.Fresh -> Ok(Nil)
+      ui_sessions.Resumed -> Error(signins.NotFresh)
+    })
+    use principal <- result.try(
+      manager.authenticate(standing.registry, standing.digest)
+      |> result.replace_error(signins.Unavailable),
+    )
+    use Nil <- result.map(case principal.id == standing.principal {
+      True -> Ok(Nil)
+      False -> Error(signins.Unavailable)
+    })
+    until
+  }
+  case checked {
+    Error(reason) -> signins.Declined(reason)
+    Ok(until) ->
+      case ui_sessions.reserve_invite(tickets, standing.digest) {
+        Error(Nil) -> signins.Declined(signins.TooMany)
+        Ok(Nil) ->
+          case
+            ui_sessions.mint_device(
+              tickets,
+              ui_sessions.Grant(
+                scope: ui_sessions.Home,
+                credential: standing.digest,
+                principal: standing.principal,
+                ceiling: standing.ceiling,
+                reach: ui_sessions.Workspace,
+                origin: ui_sessions.Fresh,
+                remember: ui_sessions.Remembered,
+              ),
+              until,
+              standing.login,
+            )
+          {
+            Ok(issued) ->
+              signins.Linked(address <> page.home_exchange_path(issued.ticket))
+            Error(Nil) -> {
+              ui_sessions.release_invite(tickets, standing.digest)
+              signins.Declined(signins.Unavailable)
+            }
+          }
+      }
+  }
 }
 
 /// The capability to go home that a page of `reach` is handed: `ask` for a
@@ -1383,8 +1695,9 @@ pub fn home_capability(
 ///    began from.
 /// 1. The credential the page was admitted under must still authenticate, and
 ///    must still be the principal's: a revoked credential gets no way back.
-/// 2. The ticket carries the page's own credential, principal and ceiling, so
-///    a home reached from an observer page is an observer's home. Its reach is
+/// 2. The ticket carries the page's own credential, principal, ceiling, origin
+///    and login, so a home reached from an observer page is an observer's home
+///    and a home reached from a resumed page is a resumed one. Its reach is
 ///    `Workspace`, and it is never remembered: nothing a page mints sets a
 ///    browser login.
 ///
@@ -1411,7 +1724,7 @@ pub fn home_ticket_for(
       True -> Ok(Nil)
       False -> Error(sessions.NoHome)
     })
-    ui_sessions.mint_before(
+    ui_sessions.mint_in(
       tickets,
       ui_sessions.Grant(
         scope: ui_sessions.Home,
@@ -1419,8 +1732,11 @@ pub fn home_ticket_for(
         principal: standing.principal,
         ceiling: standing.ceiling,
         reach: ui_sessions.Workspace,
+        origin: standing.origin,
+        remember: ui_sessions.Forgotten,
       ),
       until,
+      standing.login,
     )
     |> result.replace_error(sessions.NoHome)
   }
@@ -1489,7 +1805,7 @@ pub fn ticket_for(
       |> result.replace_error(sessions.Unavailable),
     )
     use _ <- result.try(running(view.status))
-    ui_sessions.mint_before(
+    ui_sessions.mint_in(
       tickets,
       ui_sessions.Grant(
         scope: ui_sessions.Session(target),
@@ -1497,8 +1813,11 @@ pub fn ticket_for(
         principal: standing.principal,
         ceiling: standing.ceiling,
         reach: standing.reach,
+        origin: standing.origin,
+        remember: ui_sessions.Forgotten,
       ),
       until,
+      standing.login,
     )
     |> result.replace_error(sessions.Unavailable)
   }
@@ -2325,22 +2644,23 @@ pub fn rename_task(
 /// and none for any other (protocol-change/065, the fifth pull request). The
 /// daemon checks all of it again when the request runs (`admin_ticket_for`).
 ///
-/// The origin rule is `fresh_home` and nothing else reads it, so the browser
-/// login can narrow it in one place.
+/// The origin rule is `fresh_home` and nothing else reads it, so a home the
+/// bookmark resumed is refused in one place.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert ui_socket.home_admin_capability(member, access.Operator, ui_sessions.Workspace, ask) == None
+/// assert ui_socket.home_admin_capability(member, access.Operator, ui_sessions.Workspace, ui_sessions.Fresh, ask) == None
 /// ```
 @internal
 pub fn home_admin_capability(
   principal: access.Principal,
   ceiling: access.Role,
   reach: ui_sessions.Reach,
+  origin: ui_sessions.Origin,
   ask: fn(fn(sessions.Answer) -> Nil) -> Nil,
 ) -> Option(fn(fn(sessions.Answer) -> Nil) -> Nil) {
-  case principal.kind, ceiling, fresh_home(reach) {
+  case principal.kind, ceiling, fresh_home(reach, origin) {
     access.OwnerPrincipal, access.Operator, Ok(Nil) -> Some(ask)
     access.OwnerPrincipal, access.Operator, Error(Nil)
     | access.OwnerPrincipal, access.Observer, _
@@ -2358,22 +2678,26 @@ pub fn home_admin_capability(
 ///
 /// A fresh step is what bounds the admin page's fifteen minutes. A page that a
 /// bookmark could mint again would bound nothing against a stolen login, so the
-/// owner runs `loom ui` on the day they administer. Until the browser login
-/// exists, a home is only ever opened by a `loom ui` exchange, which is the
-/// `Workspace` reach, so every home is fresh and the rule has nothing to read
-/// but that. The browser login adds the origin a resumed home records, and
-/// narrows this function and nothing around it.
+/// owner runs `loom ui` on the day they administer. A home is fresh when it is
+/// a home (the `Workspace` reach) and a `loom ui` exchange or a device link
+/// opened it, not the bookmark's resume (`Origin`, protocol-change/065, the
+/// eighth pull request). The origin travels on every ticket a page mints, so a
+/// chain that began at a resumed home is never fresh.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert ui_socket.fresh_home(ui_sessions.Workspace) == Ok(Nil)
+/// assert ui_socket.fresh_home(ui_sessions.Workspace, ui_sessions.Fresh) == Ok(Nil)
 /// ```
 @internal
-pub fn fresh_home(reach: ui_sessions.Reach) -> Result(Nil, Nil) {
-  case reach {
-    ui_sessions.Workspace -> Ok(Nil)
-    ui_sessions.OneSession -> Error(Nil)
+pub fn fresh_home(
+  reach: ui_sessions.Reach,
+  origin: ui_sessions.Origin,
+) -> Result(Nil, Nil) {
+  case reach, origin {
+    ui_sessions.Workspace, ui_sessions.Fresh -> Ok(Nil)
+    ui_sessions.Workspace, ui_sessions.Resumed | ui_sessions.OneSession, _ ->
+      Error(Nil)
   }
 }
 
@@ -2411,12 +2735,13 @@ pub fn admin_ticket_for(
 ) -> sessions.Answer {
   let outcome = {
     use _ <- result.try(
-      fresh_home(standing.reach) |> result.replace_error(sessions.NoAdmin),
+      fresh_home(standing.reach, standing.origin)
+      |> result.replace_error(sessions.NoAdmin),
     )
     use until <- result.try(
       owner_operating(standing, open) |> result.replace_error(sessions.NoAdmin),
     )
-    ui_sessions.mint_before(
+    ui_sessions.mint_in(
       tickets,
       ui_sessions.Grant(
         scope: ui_sessions.Admin,
@@ -2424,8 +2749,11 @@ pub fn admin_ticket_for(
         principal: standing.principal,
         ceiling: standing.ceiling,
         reach: ui_sessions.Workspace,
+        origin: ui_sessions.Fresh,
+        remember: ui_sessions.Forgotten,
       ),
       until,
+      standing.login,
     )
     |> result.replace_error(sessions.NoAdmin)
   }
@@ -2583,8 +2911,9 @@ fn admin_event() -> decode.Decoder(Bool) {
 
 // What an admin page asks the daemon with: the registry, the credential it was
 // admitted under, its principal and the ceiling it was minted with. Its reach is
-// `Workspace`, which only the tickets a page mints read, and the admin page
-// mints none.
+// `Workspace` and its origin `Fresh`, which only the tickets a page mints read,
+// and the admin page mints none; the login it was opened from is the one its
+// sign-in rows mark as this browser.
 fn admin_standing(
   attachment: server.AdminAttachment(instance),
   ceiling: access.Role,
@@ -2595,6 +2924,8 @@ fn admin_standing(
     principal: attachment.principal.id,
     ceiling:,
     reach: ui_sessions.Workspace,
+    origin: ui_sessions.Fresh,
+    login: attachment.login,
   )
 }
 
@@ -2630,6 +2961,7 @@ fn admit_admin(
         admin_task(standing, tickets, open, epoch, address, action, deliver)
       },
       now: bootstrap.system_time_ms,
+      login: option.map(attachment.login, fn(issuer) { issuer.fingerprint }),
     )
   let started = case transferred {
     Error(reason) -> {
@@ -2712,13 +3044,54 @@ fn admin_snapshot(
     manager.authorized_page(attachment.registry, attachment.digest, after: "")
     |> result.map_error(authentication_failure),
   )
-  use selection <- result.map(chosen_members(attachment, chosen))
+  use selection <- result.try(chosen_members(attachment, chosen))
+  use logins <- result.map(admin_logins(attachment, people.entries))
   grants.Snapshot(
     principals: owner_first(list.map(people.entries, listed_principal)),
     more_principals: more_of(people.remainder),
     sessions: list.map(list.take(views, sessions.listed_limit), listed_entry),
     selection:,
+    logins:,
   )
+}
+
+// The most principals whose sign-ins one read lists. A principal beyond them
+// still shows its count, and the terminal's `loom access signins` lists any.
+const admin_logins_principals = 20
+
+// The sign-ins of each principal that holds any, the first few of at most
+// `admin_logins_principals` of them, each read as the page's owner with the
+// registry's own `signins` (which authenticates the credential and names the
+// principal again). A principal whose read the registry did not answer is left
+// out, so a slow answer shows the count and no rows rather than ending the page.
+fn admin_logins(
+  attachment: server.AdminAttachment(instance),
+  rows: List(access.Listing),
+) -> Result(List(grants.Logins), Failure) {
+  list.filter(rows, fn(row) { row.logins > 0 })
+  |> list.take(admin_logins_principals)
+  |> list.try_map(fn(row) {
+    case
+      manager.signins(
+        attachment.registry,
+        attachment.digest,
+        Some(row.principal.id),
+        after: "",
+        now_ms: bootstrap.system_time_ms(),
+      )
+    {
+      Ok(#(_, page)) ->
+        Ok(grants.Logins(
+          principal: row.principal.id,
+          count: row.logins,
+          shown: list.map(
+            list.take(page.entries, grants.signins_shown),
+            listed_signin,
+          ),
+        ))
+      Error(error) -> Error(admin_failure(error))
+    }
+  })
 }
 
 // The chosen session's members, or none when no session is chosen or the
@@ -2942,6 +3315,8 @@ pub fn admin_for(
         reduced(standing, epoch, manager.RevokeMembership(principal, session))
       grants.RevokeCredentials(principal:) ->
         reduced(standing, epoch, manager.RevokeMember(principal))
+      grants.RevokeSignin(principal:, fingerprint:) ->
+        revoke_signin_for_admin(standing, epoch, principal, fingerprint)
       grants.Rotate(principal:) ->
         rotate_for_admin(standing, tickets, epoch, address, principal)
     }
@@ -2961,6 +3336,34 @@ fn administering(
   owner_operating(standing, open)
   |> result.replace(Nil)
   |> result.replace_error(grants.NotOwner)
+}
+
+// One sign-in of the named principal ended, which only reduces access and costs
+// no allowance. The registry authenticates the owner's credential and the epoch
+// in the same turn as the write and drops its frame memo before it answers, so
+// every page the login minted ends at its next frame. The log says which login,
+// by fingerprint, as the control command's does.
+fn revoke_signin_for_admin(
+  standing: Standing(instance),
+  epoch: String,
+  principal: String,
+  fingerprint: String,
+) -> Result(grants.Answer, grants.Reason) {
+  case
+    manager.revoke_login(
+      standing.registry,
+      standing.digest,
+      epoch,
+      Some(principal),
+      fingerprint,
+    )
+  {
+    Ok(#(revoked, digest)) -> {
+      ui_login.revoked(revoked, digest)
+      Ok(grants.Changed)
+    }
+    Error(error) -> Error(admin_reason(error))
+  }
 }
 
 // A change that grants access: one allowance first, then the registry turn, and

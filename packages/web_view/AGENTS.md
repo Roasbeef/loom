@@ -145,6 +145,26 @@ page keys and nonces, and the relay into the session's gateway.
   `home_advice`, `ended.home`, `page.home_shell`, `home_path`,
   `home_exchange_path`, `home_refusal` word and address it. `home_test` reads
   all of it.
+  The home's sign-ins (protocol-change/065, PR 8): `web_view/signins` holds
+  `Signin` (fingerprint, issued, last resumed, expires, issued by), `Listing`,
+  `Answer` (`Revoked | Linked(address) | Declined(reason)`) and the fixed words
+  of each `Reason`. `Start` gains `signins`, `login` (the fingerprint of the login
+  this page belongs to), `bookmark`, `sign_out`, `sign_out_all` and `device`
+  (`Some` only for a fresh home). `view/signins` draws the region as the centre's
+  third child, beneath `home.signins_path` (`0\t2\t2`): a row for each login ("This
+  browser" for the page's own) with "Sign out", "Sign out everywhere", the
+  bookmark as text for a remembered login, and on a fresh home "Sign in another
+  device", whose link is shown once in `<loom-copy subject="device">` and hidden
+  by "Done". The list is read with each sessions read (and again after a
+  sign-out); a press names the fingerprint the server drew. `page` also holds
+  the resume page (`login_page`, `login_refused`), the exchange page that carries
+  the login's key and nonce (`enter_remembered`), `login_prefix`,
+  `login_home_path` and the `Forms` policy choice (`content_security_policy_for`;
+  only the resume page is `OwnForms`). `signins_test` and `page_test` read it. The admin page also lists each
+  principal's sign-ins (`grants.Logins`, `Snapshot.logins`) beneath its row in
+  `view/admin_people`, with the home's `view/signins.history` words and a
+  two-step `grants.RevokeSignin`; `admin.Start.login` marks "This browser".
+
 - **The owner's admin page** (protocol-change/065, the fifth addendum).
   `web_view/admin` is a server component in the home's frame
   (`shell.view(shell.Home, ..., shell.Unlisted, ...)`, `home_bar.view(title:

@@ -934,28 +934,69 @@ pub fn only_an_owners_fresh_operating_home_may_open_the_admin_page_test() {
   let member = home_principal(access.MemberPrincipal)
   let reach = ui_sessions.Workspace
   let assert Some(_) =
-    ui_socket.home_admin_capability(owner, access.Operator, reach, ask)
-  assert ui_socket.home_admin_capability(owner, access.Observer, reach, ask)
+    ui_socket.home_admin_capability(
+      owner,
+      access.Operator,
+      reach,
+      ui_sessions.Fresh,
+      ask,
+    )
+  assert ui_socket.home_admin_capability(
+      owner,
+      access.Observer,
+      reach,
+      ui_sessions.Fresh,
+      ask,
+    )
     == None
-  assert ui_socket.home_admin_capability(member, access.Operator, reach, ask)
+  assert ui_socket.home_admin_capability(
+      member,
+      access.Operator,
+      reach,
+      ui_sessions.Fresh,
+      ask,
+    )
     == None
-  assert ui_socket.home_admin_capability(member, access.Observer, reach, ask)
+  assert ui_socket.home_admin_capability(
+      member,
+      access.Observer,
+      reach,
+      ui_sessions.Fresh,
+      ask,
+    )
     == None
 }
 
-// A home is fresh when a `loom ui` exchange opened it, which until the browser
-// login exists is every home. The rule is one function, and a page minted for one
+// A home is fresh when a `loom ui` exchange or a device link opened it, and not
+// when the bookmark's resume did (protocol-change/065, the eighth pull request).
+// The rule is one function of the reach and the origin, and a page minted for one
 // session is no home, so it is not fresh, which also keeps the capability from
-// following any other reach.
+// following any other reach. A home the bookmark resumed is handed no Admin
+// button, even the owner's, operating.
 pub fn the_freshness_of_a_home_is_one_function_test() {
-  assert ui_socket.fresh_home(ui_sessions.Workspace) == Ok(Nil)
-  assert ui_socket.fresh_home(ui_sessions.OneSession) == Error(Nil)
+  assert ui_socket.fresh_home(ui_sessions.Workspace, ui_sessions.Fresh)
+    == Ok(Nil)
+  assert ui_socket.fresh_home(ui_sessions.Workspace, ui_sessions.Resumed)
+    == Error(Nil)
+  assert ui_socket.fresh_home(ui_sessions.OneSession, ui_sessions.Fresh)
+    == Error(Nil)
+  assert ui_socket.fresh_home(ui_sessions.OneSession, ui_sessions.Resumed)
+    == Error(Nil)
   let ask = fn(_deliver) { Nil }
   let owner = home_principal(access.OwnerPrincipal)
   assert ui_socket.home_admin_capability(
       owner,
       access.Operator,
       ui_sessions.OneSession,
+      ui_sessions.Fresh,
+      ask,
+    )
+    == None
+  assert ui_socket.home_admin_capability(
+      owner,
+      access.Operator,
+      ui_sessions.Workspace,
+      ui_sessions.Resumed,
       ask,
     )
     == None

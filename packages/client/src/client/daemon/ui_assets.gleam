@@ -24,6 +24,7 @@ pub opaque type Assets {
     stylesheet: String,
     enter_script: String,
     page_script: String,
+    resume_script: String,
     client: String,
   )
 }
@@ -41,8 +42,16 @@ pub fn load() -> Result(Assets, String) {
   use stylesheet <- result.try(owned(page.stylesheet_asset))
   use enter_script <- result.try(owned(page.enter_asset))
   use page_script <- result.try(owned(page.page_asset))
+  use resume_script <- result.try(owned(page.resume_asset))
   use client <- result.try(owned(page.client_asset))
-  Ok(Assets(runtime:, stylesheet:, enter_script:, page_script:, client:))
+  Ok(Assets(
+    runtime:,
+    stylesheet:,
+    enter_script:,
+    page_script:,
+    resume_script:,
+    client:,
+  ))
 }
 
 // One of the assets `web_view` ships in its own `priv/static`.
@@ -75,6 +84,10 @@ pub fn body(assets: Assets, asset: ui_http.Asset) -> #(String, String) {
     ui_http.PageScript -> #(
       "text/javascript; charset=utf-8",
       assets.page_script,
+    )
+    ui_http.ResumeScript -> #(
+      "text/javascript; charset=utf-8",
+      assets.resume_script,
     )
     ui_http.Client -> #("text/javascript; charset=utf-8", assets.client)
   }

@@ -98,10 +98,13 @@ pub fn the_daemon_masks_its_secrets_and_not_its_root_test() {
     as "the state root is not masked wholesale"
 
   // The half that must survive the fix.
-  list.each(["/owner.token", "/catalogue.db", "/sessions", "/tokens"], fn(leaf) {
-    assert list.contains(protected, root <> leaf)
-      as { "the daemon still masks " <> leaf }
-  })
+  list.each(
+    ["/owner.token", "/catalogue.db", "/sessions", "/tokens", "/browser.key"],
+    fn(leaf) {
+      assert list.contains(protected, root <> leaf)
+        as { "the daemon still masks " <> leaf }
+    },
+  )
 
   // And the policy is one this server will boot on, which the whole-root
   // mask was not for this workspace.

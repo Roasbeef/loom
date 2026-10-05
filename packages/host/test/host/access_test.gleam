@@ -95,6 +95,9 @@ pub fn both_programs_parse_every_local_command_to_the_same_request_test() {
     ["revoke", session, "alice"],
     ["rotate", "alice"],
     ["revoke-credentials", "alice"],
+    ["signins", "alice"],
+    ["signins", "alice", "--after", "0123456789abcdef"],
+    ["revoke-login", "alice", "0123456789abcdef"],
     ["isolate", session, "--share-existing-transcript"],
   ]
   list.each(commands, fn(arguments) {
@@ -222,6 +225,8 @@ pub fn usage_names_the_program_and_the_whole_grammar_test() {
       "list [--after PRINCIPAL]", "show PRINCIPAL [--after SESSION]",
       "invite SESSION PRINCIPAL ROLE NAME", "set-role", "revoke SESSION",
       "rotate PRINCIPAL", "revoke-credentials", "isolate SESSION",
+      "signins PRINCIPAL [--after FINGERPRINT]",
+      "revoke-login PRINCIPAL FINGERPRINT",
     ],
     fn(word) {
       assert string.contains(loomd, word)
@@ -554,4 +559,81 @@ pub fn the_lines_the_overlay_shows_parse_in_the_shared_grammar_test() {
     == "loom access invite " <> session <> " PRINCIPAL ROLE NAME"
   let assert Ok(_) =
     access.parse(["invite", session, "carol", "observer", "Carol"], access.Loom)
+}
+
+// Protocol-change/065, PR 8. A principal's browser logins are listed and ended
+// from a terminal: the listing carries a cursor and no epoch, as every listing
+// does, and a revocation names the principal and the fingerprint and is fenced
+// by the epoch.
+pub fn the_login_commands_become_the_requests_the_daemon_decodes_test() {
+  assert envelope(["signins", "alice"], access.Loom)
+    == "{\"v\":2,\"id\":1,\"cmd\":\"credentials.signins\",\"body\":{\"principal_id\":\"alice\"}}"
+  assert envelope(
+      ["signins", "alice", "--after", "0123456789abcdef"],
+      access.Loom,
+    )
+    == "{\"v\":2,\"id\":1,\"cmd\":\"credentials.signins\",\"body\":{\"principal_id\":\"alice\",\"after\":\"0123456789abcdef\"}}"
+  assert envelope(["revoke-login", "alice", "0123456789abcdef"], access.Loom)
+    == "{\"v\":2,\"id\":1,\"cmd\":\"credentials.revoke_login\",\"body\":{\"principal_id\":\"alice\",\"epoch\":\"epoch-1\",\"fingerprint\":\"0123456789abcdef\"}}"
+}
+
+// A fingerprint is checked before any connection is made, so a typo is named
+// and a longer value, which could be a credential, is never sent.
+pub fn a_malformed_fingerprint_is_refused_before_a_connection_test() {
+  let usage = access.usage(access.Loom)
+  assert refusal(["revoke-login", "alice", "short"], access.Loom) != ""
+  assert refusal(["revoke-login", "alice", hex("a")], access.Loom) != ""
+  assert refusal(["revoke-login", "alice", "0123456789ABCDEF"], access.Loom)
+    != ""
+  assert refusal(["revoke-login", "alice"], access.Loom) == usage
+  assert refusal(["signins"], access.Loom) == usage
+  assert refusal(["signins", "alice", "--after", "alice"], access.Loom) != ""
+  assert refusal(["signins", "alice", "--after"], access.Loom) != ""
+}
+
+// The sign-in listing is re-encoded from checked fields: a row keeps a
+// 16-digit fingerprint and non-negative times, and anything else the daemon
+// sent is dropped or refuses the reply.
+pub fn the_signin_check_accepts_a_row_and_refuses_what_is_not_one_test() {
+  let assert Ok(page) =
+    json.parse(
+      "{\"principal_id\":\"alice\",\"signins\":[{\"fingerprint\":\"0123456789abcdef\",\"issued_at_ms\":5,\"last_resumed_ms\":7,\"expires_at_ms\":9,\"issued_by\":\"fedcba9876543210\",\"token\":\"loomb1:x\"}],\"next\":\"0123456789abcdef\"}",
+    )
+  let assert Ok([row, next]) = access.signin_lines(page, "alice")
+  assert json.to_string(row)
+    == "{\"fingerprint\":\"0123456789abcdef\",\"issued_at_ms\":5,\"last_resumed_ms\":7,\"expires_at_ms\":9,\"issued_by\":\"fedcba9876543210\"}"
+  assert json.to_string(next) == "{\"next\":\"0123456789abcdef\"}"
+
+  // A reply for another principal, and a row that is not one, are refused.
+  let assert Error(_) = access.signin_lines(page, "bob")
+  let refused = fn(row: String) {
+    let assert Ok(body) =
+      json.parse("{\"principal_id\":\"alice\",\"signins\":[" <> row <> "]}")
+    let assert Error(_) = access.signin_lines(body, "alice")
+    Nil
+  }
+  refused("{\"fingerprint\":\"short\",\"issued_at_ms\":5}")
+  refused("{\"fingerprint\":\"" <> hex("a") <> "\",\"issued_at_ms\":5}")
+  refused("{\"fingerprint\":\"0123456789abcdef\"}")
+  refused("{\"fingerprint\":\"0123456789abcdef\",\"issued_at_ms\":-1}")
+  refused(
+    "{\"fingerprint\":\"0123456789abcdef\",\"issued_at_ms\":1,\"issued_by\":\"x\"}",
+  )
+  refused(
+    "{\"fingerprint\":\"0123456789abcdef\",\"issued_at_ms\":1,\"expires_at_ms\":\"later\"}",
+  )
+}
+
+// A principal's row gains a login count beside its credential, and a daemon
+// that predates the field sends none.
+pub fn the_listing_row_keeps_the_login_count_when_the_daemon_sends_one_test() {
+  let with =
+    "{\"principals\":[{\"principal_id\":\"alice\",\"name\":\"Alice\",\"kind\":\"member\",\"credential\":{\"state\":\"none\"},\"logins\":2}]}"
+  let assert Ok(page) = json.parse(with)
+  let assert Ok([row]) = access.principal_lines(page)
+  assert json.to_string(row)
+    == "{\"principal_id\":\"alice\",\"name\":\"Alice\",\"kind\":\"member\",\"credential\":{\"state\":\"none\"},\"logins\":2}"
+  let assert Ok(bad) =
+    json.parse(string.replace(with, "\"logins\":2", "\"logins\":-1"))
+  let assert Error(_) = access.principal_lines(bad)
 }

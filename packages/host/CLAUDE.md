@@ -47,6 +47,20 @@ callers own launch timing, authentication policy, and application messages.
   owns `remote_address`, the rule that a bearer or a claim crosses cleartext
   `ws` only to a literal loopback address, and `endpoint`, which turns a
   `/v2/control` address into its `/v2/claim` twin.
+- `host/login` is the browser login's token (protocol-change/065): a
+  macaroon-style `loomb1:<id>:<caveats>:<sig>` whose signature is an
+  HMAC-SHA256 chain from a root key (`issue`, `sign`, `append`), and its
+  verification (`parse`, `verify`, `intersect`, `check`, or `open` for the
+  four in order) with `crypto.secure_compare` for every comparison. `parse`
+  refuses over 384 bytes before reading a field and uppercase hex anywhere;
+  `intersect` narrows repeats and refuses an unknown caveat name; `row_digest`
+  is the one place a login's public identifier becomes a credential digest, to
+  be looked up only as a `Browser` credential. `load_root` reads or draws
+  `<state-dir>/browser.key` through the owner-and-`0600` rule `owner.token`
+  uses (`Kept`, or `Drawn` when the file was missing, which tells the daemon to
+  revoke every login row); an unreadable or wrong-sized file is an error and
+  is never regenerated. Pure apart from that file; the clock and entropy are
+  arguments.
 - `host/access` is the owner's access command (protocol-change/053), one
   implementation behind `loomd access` and `loom access`. `parse(arguments,
   program)` turns the positional grammar (`list`, `show`, `members`, `invite`,
@@ -161,6 +175,11 @@ callers own launch timing, authentication policy, and application messages.
 - The transport does not implement application credits or bound an arbitrary
   reader's inbox. Callers enforce their protocol's frame and outstanding-work
   limits; moving the transport does not establish a new memory bound.
+- A login token is never compared with `==`, never stored and never logged:
+  `verify` recomputes the chain and compares in constant time, and the daemon
+  keeps the root key and one catalogue row per login. The token's identifier is
+  public, so nothing may authenticate with it or with `row_digest` alone; the
+  catalogue lookup that follows names the `Browser` kind.
 - A claim token and a bearer are told apart by shape alone: a claim always
   carries the prefix and a bearer never does. Every place that accepts one
   refuses the other, and no function here logs, formats or echoes either;

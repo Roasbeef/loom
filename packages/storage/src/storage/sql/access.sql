@@ -50,7 +50,7 @@ UPDATE access_claims SET state = 'claimed', credential_digest = ?, claimed_at_ms
 UPDATE access_claims SET state = 'void' WHERE principal_id = ? AND state = 'open';
 
 -- name: ActiveMemberCredentials :many
-SELECT digest FROM access_credentials WHERE principal_id = ? AND state = 'active' AND kind = 'bearer' LIMIT 1;
+SELECT digest FROM access_credentials WHERE principal_id = ? AND state = 'active' LIMIT 1;
 
 -- name: ClaimMemberships :many
 SELECT session_id, role FROM access_memberships WHERE principal_id = ? ORDER BY session_id LIMIT 16;
@@ -74,6 +74,54 @@ JOIN catalogue_sessions AS s ON s.session_id = m.session_id
 LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
 WHERE m.principal_id = ? AND m.session_id > ?
 ORDER BY m.session_id LIMIT 101;
+
+-- Browser logins (protocol-change/065). A login's row is a credential of kind
+-- 'browser': these queries name the kind, so none of them can touch a bearer.
+
+-- name: InsertAccessLogin :exec
+INSERT INTO access_credentials(digest, principal_id, state, kind, issued_at_ms, expires_at_ms)
+VALUES (?, ?, 'active', 'browser', ?, ?);
+
+-- name: InsertAccessLoginFrom :exec
+INSERT INTO access_credentials(digest, principal_id, state, kind, issued_at_ms, expires_at_ms, issued_by)
+VALUES (?, ?, 'active', 'browser', ?, ?, ?);
+
+-- name: InsertAccessClaimedLogin :exec
+INSERT INTO access_credentials(digest, principal_id, state, kind, issued_at_ms)
+VALUES (?, ?, 'active', 'browser', ?);
+
+-- name: PrincipalLogins :many
+SELECT digest, issued_at_ms, last_resumed_ms, expires_at_ms, issued_by FROM access_credentials
+WHERE principal_id = ? AND kind = 'browser' AND state = 'active'
+  AND (expires_at_ms IS NULL OR expires_at_ms > ?)
+  AND substr(digest, 1, 16) > ?
+ORDER BY digest LIMIT 101;
+
+-- name: PrincipalLoginCount :one
+SELECT COUNT(*) FROM access_credentials
+WHERE principal_id = ? AND kind = 'browser' AND state = 'active'
+  AND (expires_at_ms IS NULL OR expires_at_ms > ?);
+
+-- name: PrincipalLoginByFingerprint :many
+SELECT digest, state FROM access_credentials
+WHERE principal_id = ? AND kind = 'browser' AND substr(digest, 1, 16) = ?
+LIMIT 2;
+
+-- name: RevokePrincipalLogins :exec
+UPDATE access_credentials SET state = 'revoked'
+WHERE principal_id = ? AND kind = 'browser' AND state = 'active';
+
+-- name: ActiveLoginCount :one
+SELECT COUNT(*) FROM access_credentials WHERE kind = 'browser' AND state = 'active';
+
+-- name: RevokeAllLogins :exec
+UPDATE access_credentials SET state = 'revoked' WHERE kind = 'browser' AND state = 'active';
+
+-- name: LoginResumedAt :many
+SELECT last_resumed_ms FROM access_credentials WHERE digest = ? AND kind = 'browser';
+
+-- name: StampLoginResumed :exec
+UPDATE access_credentials SET last_resumed_ms = ? WHERE digest = ? AND kind = 'browser';
 
 -- name: SessionMembers :many
 SELECT m.principal_id, p.display_name, m.role

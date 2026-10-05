@@ -494,6 +494,26 @@
   .home-chevron{flex:0 0 auto;color:var(--color-fg-quiet);font-size:16px;line-height:1;}
   .home-open:hover .home-chevron{color:var(--color-fg);}
   .home-notice{margin:0 0 12px 0;padding:8px 12px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font-size:13px;}
+  main.centre > .home-signins{flex:0 0 auto;max-width:960px;max-height:45%;margin-top:16px;padding:16px 0 8px 0;border-top:1px solid var(--color-divider);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
+  .home-signins-lead,.home-bookmark{margin:0 0 10px 0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  .home-bookmark-text{padding:1px 6px;border:1px solid var(--color-divider);border-radius:4px;background:var(--color-bg-raised);color:var(--color-fg);font:12px/1.4 var(--font-mono);}
+  ul.home-signin-list{list-style:none;margin:0 0 10px 0;padding:0;border-top:1px solid var(--color-divider);}
+  li.home-signin{display:flex;align-items:center;gap:12px;min-height:44px;box-sizing:border-box;margin:0;padding:6px 10px;border-bottom:1px solid var(--color-divider);}
+  li.home-signin.this{background:color-mix(in srgb,var(--color-current) 9%,transparent);border-bottom-color:color-mix(in srgb,var(--color-current) 35%,var(--color-divider));}
+  .home-signin-text{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px;}
+  .home-signin-name{font:500 14px/1.4 var(--font-sans);}
+  .home-signin-sub{font:12px/1.4 var(--font-sans);color:var(--color-fg-quiet);overflow-wrap:anywhere;}
+  .home-signin-out,.home-signin-all,.home-signin-device,.home-device-done{flex:0 0 auto;margin:0;padding:2px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:12px/1.4 var(--font-sans);cursor:pointer;}
+  .home-signin-out:hover,.home-signin-all:hover,.home-signin-device:hover:not(:disabled),.home-device-done:hover{background:var(--color-bg-raised);}
+  .home-signin-out:focus-visible,.home-signin-all:focus-visible,.home-signin-device:focus-visible,.home-device-done:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  .home-signin-device:disabled{opacity:.5;cursor:default;}
+  .home-signin-actions{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 8px 0;}
+  .home-signin-status{margin:0;min-height:1.4em;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  .home-device-link{display:flex;flex-direction:column;align-items:flex-start;gap:8px;margin:8px 0 0 0;padding:12px;border:1px solid color-mix(in srgb,var(--color-current) 35%,var(--color-divider));border-radius:8px;background:color-mix(in srgb,var(--color-current) 7%,transparent);}
+  .home-device-lead{margin:0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);}
+  code.home-device-text{display:block;padding:6px 8px;border:1px solid var(--color-divider);border-radius:4px;background:var(--color-bg);font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
+  .ended-document [hidden]{display:none;}
+
   /* The owner's admin page (web_view/admin, protocol-change/065, the fifth pull
      request): the home's frame with its own centre, and the "Admin" button the
      owner's home draws in the bar. The body is one scroll container, as the
@@ -529,6 +549,10 @@
   .admin-pick[aria-current]{background:color-mix(in srgb,var(--color-current) 10%,var(--color-bg-raised));}
   .admin-pick:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
   .admin-members{margin:20px 0 0 0;}
+  .admin-signins{flex:1 1 100%;display:flex;flex-direction:column;gap:4px;box-sizing:border-box;margin:0;padding:4px 0 6px 16px;}
+  .admin-signins > .admin-subheading{margin:0;}
+  ul.admin-signin-list{list-style:none;margin:0;padding:0;border-top:1px solid var(--color-divider);}
+  li.admin-signin{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;min-height:40px;margin:0;padding:4px 0;border-bottom:1px solid var(--color-divider);}
   .admin-subheading{margin:0 0 8px 0;font:600 14px/1.4 var(--font-sans);overflow-wrap:anywhere;}
   form.admin-invite{display:flex;flex-direction:column;gap:8px;margin:12px 0 0 0;padding:12px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);}
   .admin-lead{margin:0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);overflow-wrap:anywhere;}

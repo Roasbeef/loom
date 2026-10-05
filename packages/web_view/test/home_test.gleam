@@ -22,6 +22,7 @@ import web_view/home
 import web_view/page
 import web_view/renames
 import web_view/sessions.{type Entry, Blocked, Entry, Live, Saved}
+import web_view/signins
 import web_view/view/create
 import web_view/view/home_table
 
@@ -64,6 +65,12 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     activity: fn(_, _) { Nil },
     rename: None,
     create: None,
+    signins: fn() { signins.Listed([]) },
+    login: None,
+    bookmark: None,
+    sign_out: fn(_) { signins.Declined(signins.NotFound) },
+    sign_out_all: fn() { signins.Revoked },
+    device: None,
     admin: None,
   )
 }

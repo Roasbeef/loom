@@ -150,3 +150,42 @@ pub fn the_link_subject_copies_only_the_ui_command_test() {
   assert copy_rule.text(copy_rule.Token, "loom ui") == Error(Nil)
   assert copy_rule.words(copy_rule.Link, copy_rule.Idle) == "Copy command"
 }
+
+// The home's device-link box copies the exchange address a fresh home's ticket
+// makes, and only that shape: `http://`, a loopback host and port,
+// `/ui/home?ticket=` and the ticket's 64 lowercase hexadecimal digits
+// (protocol-change/065, PR 8).
+pub fn the_device_subject_copies_only_an_exchange_address_test() {
+  assert copy_rule.subject("device") == Ok(copy_rule.Device)
+  let ticket = string.repeat("ab", 32)
+  let link = "http://127.0.0.1:4000/ui/home?ticket=" <> ticket
+  assert copy_rule.text(copy_rule.Device, link) == Ok(link)
+  let bracketed = "http://[::1]:4000/ui/home?ticket=" <> ticket
+  assert copy_rule.text(copy_rule.Device, bracketed) == Ok(bracketed)
+  list.each(
+    [
+      "",
+      "http://127.0.0.1:4000/ui/home?ticket=" <> string.repeat("ab", 31),
+      "http://127.0.0.1:4000/ui/home?ticket=" <> string.repeat("ab", 33),
+      "http://127.0.0.1:4000/ui/home?ticket=" <> string.uppercase(ticket),
+      "https://127.0.0.1:4000/ui/home?ticket=" <> ticket,
+      "http:///ui/home?ticket=" <> ticket,
+      "http://127.0.0.1:4000/ui/sessions/abc?ticket=" <> ticket,
+      "http://127.0.0.1:4000/ui/home?ticket=" <> ticket <> "\nrm -rf ~",
+      "http://127.0.0.1:4000/ui/home?ticket=" <> ticket <> "&x=1",
+      "http://127.0.0.1:4000/x/ui/home?ticket=" <> ticket,
+      "http://evil.example/ cat /ui/home?ticket=" <> ticket,
+      " http://127.0.0.1:4000/ui/home?ticket=" <> ticket,
+      "http://" <> string.repeat("a", 65) <> "/ui/home?ticket=" <> ticket,
+      command,
+      token,
+      "loom ui",
+    ],
+    fn(value) {
+      assert copy_rule.text(copy_rule.Device, value) == Error(Nil)
+    },
+  )
+  assert copy_rule.text(copy_rule.Link, link) == Error(Nil)
+  assert copy_rule.words(copy_rule.Device, copy_rule.Idle) == "Copy link"
+  assert copy_rule.words(copy_rule.Device, copy_rule.Copied) == "Link copied"
+}

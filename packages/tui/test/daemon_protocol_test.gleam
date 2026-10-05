@@ -388,7 +388,7 @@ pub fn a_ui_link_names_the_page_only_for_an_operator_test() {
   let epoch = protocol.Epoch("current")
   assert protocol.encode(
       1,
-      protocol.UiLink(Some(id), protocol.ObserverPage),
+      protocol.UiLink(Some(id), protocol.ObserverPage, protocol.Remember),
       epoch,
     )
     == Ok(
@@ -398,7 +398,7 @@ pub fn a_ui_link_names_the_page_only_for_an_operator_test() {
     )
   assert protocol.encode(
       1,
-      protocol.UiLink(Some(id), protocol.OperatorPage),
+      protocol.UiLink(Some(id), protocol.OperatorPage, protocol.Remember),
       epoch,
     )
     == Ok(
@@ -412,11 +412,42 @@ pub fn a_ui_link_names_the_page_only_for_an_operator_test() {
 // of what makes it one; the page's ceiling is named exactly as for a session.
 pub fn a_home_link_names_no_session_test() {
   let epoch = protocol.Epoch("current")
-  assert protocol.encode(1, protocol.UiLink(None, protocol.ObserverPage), epoch)
+  assert protocol.encode(
+      1,
+      protocol.UiLink(None, protocol.ObserverPage, protocol.Remember),
+      epoch,
+    )
     == Ok("{\"v\":2,\"id\":1,\"cmd\":\"ui.link\",\"body\":{}}")
-  assert protocol.encode(1, protocol.UiLink(None, protocol.OperatorPage), epoch)
+  assert protocol.encode(
+      1,
+      protocol.UiLink(None, protocol.OperatorPage, protocol.Remember),
+      epoch,
+    )
     == Ok(
       "{\"v\":2,\"id\":1,\"cmd\":\"ui.link\",\"body\":{\"page\":\"operator\"}}",
+    )
+}
+
+// Protocol-change/065, PR 8. The home's link sets a browser login unless the
+// person declined it, and only the decline is sent: absent is the default, so a
+// daemon that predates the field is asked what it always was.
+pub fn a_home_link_names_remember_only_to_decline_it_test() {
+  let epoch = protocol.Epoch("current")
+  assert protocol.encode(
+      1,
+      protocol.UiLink(None, protocol.ObserverPage, protocol.Forget),
+      epoch,
+    )
+    == Ok(
+      "{\"v\":2,\"id\":1,\"cmd\":\"ui.link\",\"body\":{\"remember\":false}}",
+    )
+  assert protocol.encode(
+      1,
+      protocol.UiLink(None, protocol.OperatorPage, protocol.Forget),
+      epoch,
+    )
+    == Ok(
+      "{\"v\":2,\"id\":1,\"cmd\":\"ui.link\",\"body\":{\"page\":\"operator\",\"remember\":false}}",
     )
 }
 

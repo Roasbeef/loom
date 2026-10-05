@@ -19,10 +19,11 @@ with these forks: they define the same modules.
 
 ## Key Types
 
-- The catalogue is at `user_version` 6. Each later version has its own embedded
+- The catalogue is at `user_version` 7. Each later version has its own embedded
   migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
   `catalogue_claims_schema`, `catalogue_subtitles_schema`,
-  `catalogue_credential_kinds_schema`), and `initialize_schema` applies every
+  `catalogue_credential_kinds_schema`, `catalogue_logins_schema`), and
+  `initialize_schema` applies every
   schema an
   older catalogue lacks, then moves the version, in one transaction; a fresh
   catalogue runs the same list after `sql_schema`. A version it does not know
@@ -111,7 +112,20 @@ with these forks: they define the same modules.
   transaction only, so a refused name leaves the claim open and a replay never
   renames.
   `claim_known` is the `/v2/claim` upgrade's filter (exists and not void), and
-  `fingerprint` is a digest's first 16 hex characters.
+  `fingerprint` is a digest's first 16 hex characters. The claim's kind is the
+  presented digest's: a `Browser` digest binds a login row, recording when it
+  began.
+- `storage/access.{Signin, SigninPage, Stamp}` and `issue_login`,
+  `signins_page`, `revoke_login`, `revoke_logins`, `revoke_all_logins` and
+  `resumed` are the browser login's rows (protocol-change/065, PR 8).
+  `issue_login` writes one `Browser` row with its minting instant, its token's
+  expiry and, for a device link's login, the issuing login's fingerprint
+  (`issued_by`). `signins_page` lists a principal's active unexpired logins in
+  fingerprint order. `revoke_login` finds a login by principal and fingerprint
+  among `browser` rows only; `revoke_logins` signs a principal out everywhere;
+  `revoke_all_logins` is a daemon start's answer to a new root key. `resumed`
+  writes `last_resumed_ms` at most once in `resume_stamp_window_ms`.
+  `Listing` gains `logins`, the count beside `credential`.
 - `storage/access.{Listing, CredentialSummary, ListingPage, MembershipPage}`
   are the owner's read side (protocol-change/053 phase 2). `principals_page`
   lists principals in ID order with one credential state each: the active
@@ -303,14 +317,22 @@ with these forks: they define the same modules.
 - **A credential has a kind, and every lookup names it.** Catalogue version 6
   adds `kind` (`bearer` or `browser`, default `bearer`, so every existing row
   keeps its meaning) and the nullable `issued_at_ms` and `last_resumed_ms` to
-  `access_credentials` (protocol-change/065). `access.authenticate` and
-  `access.claim` take a `CredentialKind`, and `AccessCredential` is
-  `WHERE digest = ? AND kind = ?`, so a browser login's row, keyed by the digest
-  of a public identifier, is absent to every bearer lookup. Digest reuse checks
-  ask both kinds (`held`, `unused`), because the digest is one primary key.
-  `ActiveMemberCredentials` and `PrincipalActiveCredential` count `bearer` rows
-  only, which is what keeps 053's rule 3 true of bearers; a login is counted
-  beside them.
+  `access_credentials` (protocol-change/065); version 7 adds the nullable
+  `expires_at_ms` and `issued_by`. The kind travels with the digest: the opaque
+  `Digest` is made as a `Bearer` by `credential_digest`, which every wire path
+  uses, or as a `Browser` by `browser_digest`, which only the login code uses,
+  and `access.authenticate` and `access.claim` read the kind from it.
+  `AccessCredential` is `WHERE digest = ? AND kind = ?`, so a browser login's
+  row, keyed by the digest of a public identifier, is absent to every bearer
+  lookup, and no caller can omit or choose the kind separately from the digest
+  it holds. Digest reuse checks ask both kinds (`held`, `unused`), because the
+  digest is one primary key. The paths that enroll a member's own credential
+  (`bootstrap_owner`, `create_member`, `DigestEnrollment`, `rotate_credential`)
+  refuse a `Browser` digest. `PrincipalActiveCredential` counts `bearer` rows
+  only, so the listing keeps reporting the bearer or the claim and a login is
+  counted beside it (`Listing.logins`). `ActiveMemberCredentials`, which is
+  `claim`'s rule-3 check, counts rows of either kind: a member whose only
+  credential is a login binds no claim.
 - **A claim authenticates nothing and binds once.** Catalogue version 4 adds
   `access_claims`: the SHA-256 of each claim token, its member, a wall-clock
   expiry, and `open`, `claimed` or `void`. The digest never enters

@@ -279,3 +279,24 @@ pub fn launch_reports_exit_and_stops_waiting_at_the_deadline_test() {
   assert view_link.launch_within("/bin/sh", ["-c", "sleep 2"], 100)
     == Ok(view_link.StillRunning)
 }
+
+// Protocol-change/065, PR 8. The home's exchange also signs the browser in for
+// thirty days unless `--no-remember` declines it, and a session's link, which
+// no login can come from, refuses the switch rather than ignoring it.
+pub fn the_home_remembers_unless_told_not_to_test() {
+  let assert Ok(home) = tui.view_request([])
+  assert home.remember == control_protocol.Remember
+  let assert Ok(forgetting) = tui.view_request(["--no-remember"])
+  assert forgetting.remember == control_protocol.Forget
+  assert forgetting.session == None
+  let assert Ok(observing) =
+    tui.view_request(["--observe", "--no-remember", "--open"])
+  assert observing.remember == control_protocol.Forget
+  assert observing.page == control_protocol.ObserverPage
+  let assert Ok(session) = tui.view_request(["--session", "s"])
+  assert session.remember == control_protocol.Remember
+  let assert Error(reason) =
+    tui.view_request(["--session", "s", "--no-remember"])
+  assert string.contains(reason, "home page")
+  let assert Error(_) = tui.view_request(["--no-remembered"])
+}

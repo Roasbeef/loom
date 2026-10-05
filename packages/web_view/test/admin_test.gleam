@@ -23,6 +23,7 @@ import web_view/grants
 import web_view/home
 import web_view/invites
 import web_view/sessions.{type Entry, Entry, Live, Saved}
+import web_view/signins
 import web_view/view/admin_sessions
 
 @external(erlang, "page_events_ffi", "handlers")
@@ -94,6 +95,7 @@ fn snapshot(chosen: Option(String)) -> grants.Snapshot {
         Some(grants.Selection(session:, holders: holders(), more: grants.Whole))
       Some(_) | None -> None
     },
+    logins: [],
   )
 }
 
@@ -117,6 +119,7 @@ fn start_with(
       deliver(answer)
     },
     now: fn() { 7_400_000 },
+    login: None,
   )
 }
 
@@ -253,23 +256,26 @@ pub fn a_name_is_only_ever_a_text_node_test() {
   let start =
     admin.Start(..start(), read: fn(_, deliver) {
       deliver(
-        grants.Read(grants.Snapshot(
-          principals: [
-            grants.Principal(
-              "evil",
-              hostile,
-              grants.MemberKind,
-              grants.ClaimOpen(60_000),
-            ),
-          ],
-          more_principals: grants.Whole,
-          sessions: [entry(session, hostile, Live)],
-          selection: Some(grants.Selection(
-            session:,
-            holders: [grants.Holder("evil", hostile, invites.Observer)],
-            more: grants.Whole,
-          )),
-        )),
+        grants.Read(
+          grants.Snapshot(
+            principals: [
+              grants.Principal(
+                "evil",
+                hostile,
+                grants.MemberKind,
+                grants.ClaimOpen(60_000),
+              ),
+            ],
+            more_principals: grants.Whole,
+            sessions: [entry(session, hostile, Live)],
+            selection: Some(grants.Selection(
+              session:,
+              holders: [grants.Holder("evil", hostile, invites.Observer)],
+              more: grants.Whole,
+            )),
+            logins: [],
+          ),
+        ),
       )
     })
   let #(model, _) = opened(start)
@@ -634,6 +640,75 @@ pub fn every_handler_is_beneath_the_body_test() {
   let refused = run(refused, admin.Asking(grants.Rotate("bob")))
   assert string.contains(drawn(refused), grants.reason_words(grants.NotOwner))
   assert list.all(handlers(admin.view(refused)), string.starts_with(
+    _,
+    admin.body_path <> "\t",
+  ))
+}
+
+// A principal that holds browser logins lists them beneath its row
+// (protocol-change/065, the eighth pull request): the history in the home's own
+// words, "This browser" on the login the page was opened from, a two-step
+// "Revoke sign-in" button for each that asks the one change the daemon checks,
+// and a line saying so when more exist than the page lists.
+pub fn a_principals_sign_ins_are_listed_with_a_two_step_revoke_test() {
+  let mine =
+    signins.Signin(
+      fingerprint: "aaaaaaaaaaaaaaaa",
+      issued_at_ms: 7_000_000,
+      last_resumed_ms: Some(7_200_000),
+      expires_at_ms: Some(7_400_000 + 86_400_000),
+      issued_by: None,
+    )
+  let theirs =
+    signins.Signin(
+      ..mine,
+      fingerprint: "bbbbbbbbbbbbbbbb",
+      issued_by: Some("cc"),
+    )
+  let acts = process.new_subject()
+  let start =
+    admin.Start(
+      ..start_with(process.new_subject(), acts, grants.Changed),
+      login: Some("aaaaaaaaaaaaaaaa"),
+      read: fn(_, deliver) {
+        deliver(grants.Read(
+          grants.Snapshot(..snapshot(None), logins: [
+            grants.Logins("owner", 1, [mine]),
+            grants.Logins("bob", 12, [theirs]),
+          ]),
+        ))
+      },
+    )
+  let #(model, _) = opened(start)
+  let html = drawn(model)
+  assert string.contains(html, "Sign-ins")
+  assert string.contains(html, "This browser")
+  assert string.contains(html, "aaaaaaaaaaaaaaaa")
+  assert string.contains(html, "bbbbbbbbbbbbbbbb")
+  assert string.contains(html, "from cc")
+  assert count(html, ">Revoke sign-in<") == 2
+  assert string.contains(html, "More sign-ins exist than this page lists")
+
+  // A revocation is two presses, as every revocation on the page is.
+  let revoke = grants.RevokeSignin("bob", "bbbbbbbbbbbbbbbb")
+  let armed = run(model, admin.Arming(revoke))
+  assert process.receive(acts, 0) == Error(Nil)
+  assert string.contains(drawn(armed), "Revoke this sign-in of Bob")
+  let sent = run(armed, admin.Asking(revoke))
+  assert process.receive(acts, 0) == Ok(revoke)
+  assert string.contains(drawn(sent), grants.changed_words(revoke))
+
+  // A read that no longer lists the sign-in takes the armed button back.
+  let refreshed =
+    admin.Start(..start, read: fn(_, deliver) {
+      deliver(grants.Read(snapshot(None)))
+    })
+  let #(other, _) = opened(refreshed)
+  let other = run(other, admin.Arming(revoke))
+  assert count(drawn(other), ">Cancel<") == 0
+
+  // Every handler stays beneath the one region the socket admits.
+  assert list.all(handlers(admin.view(armed)), string.starts_with(
     _,
     admin.body_path <> "\t",
   ))
