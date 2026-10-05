@@ -70,6 +70,7 @@ import gleam/string
 import lustre/attribute.{type Attribute}
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/element/keyed
 import lustre/event
 import web_view/actions.{type Stage}
 import web_view/renames.{type Control}
@@ -275,19 +276,27 @@ fn group(
       create.button(offer, group.workspace),
     ]),
     create.form(offer, group.workspace),
-    html.ul(
+
+    // Rows are keyed by the session's identity, a daemon value and never model
+    // text. A handler's path then names its session and not a position, so a
+    // press in flight when a row above is archived cannot land on the row that
+    // moved up into its place.
+    keyed.ul(
       [attribute.class("home-list")],
       list.map(group.entries, fn(entry) {
-        row(
-          entry,
-          dict.get(activity, entry.id),
-          now,
-          open,
-          resume,
-          rename,
-          manage,
-          opening,
-          landing,
+        #(
+          entry.id,
+          row(
+            entry,
+            dict.get(activity, entry.id),
+            now,
+            open,
+            resume,
+            rename,
+            manage,
+            opening,
+            landing,
+          ),
         )
       }),
     ),
@@ -447,7 +456,7 @@ fn row(
         ],
       )
     _, _ ->
-      case acts(entry, rename, manage) {
+      case offered(standing, entry, rename, manage) {
         [] -> html.li(classes, [item])
         [_, ..] as buttons ->
           html.li(
@@ -462,6 +471,20 @@ fn row(
             [item, html.div([attribute.class("home-acts")], buttons)],
           )
       }
+  }
+}
+
+// The buttons a row draws. A row waiting on the daemon offers none of its own,
+// so Stop and Rename cannot be pressed while its open is out.
+fn offered(
+  standing: Standing,
+  entry: Entry,
+  rename: Rename(message),
+  manage: Manage(message),
+) -> List(Element(message)) {
+  case standing.state {
+    Waking -> []
+    Running(_) | Stored -> acts(entry, rename, manage)
   }
 }
 

@@ -1818,3 +1818,54 @@ pub fn a_resumed_home_says_how_to_get_the_controls_test() {
   let #(member, _) = opened(start())
   assert !string.contains(drawn(member), "opened from a bookmark")
 }
+
+// --- Review fixes: keyed rows and an opening row's actions --------------------
+
+// Rows are keyed by session identity, so a row's handler paths do not depend on
+// its position. When the row above is archived, every handler the next row had
+// is at the path it had before, and a press in flight for the old position can
+// not land on the row that moved up. Every handler stays beneath the table.
+pub fn a_rows_handlers_do_not_move_when_a_row_above_goes_test() {
+  let ask = fn(_action, _session, _deliver) { Nil }
+  let #(owner, _) = opened(home.Start(..start(), manage: Some(ask)))
+  let before = handlers(home.view(owner))
+
+  // B is the first row of its workspace and A the second.
+  let without_b = list.filter(listing(), fn(row) { row.id != "B" })
+  let after_model = run(owner, home.Answered(home.Listed(without_b)))
+  let after = handlers(home.view(after_model))
+  let table_only =
+    list.filter(after, string.starts_with(_, home.table_path <> "\t"))
+  assert table_only != []
+  assert list.all(table_only, fn(key) { list.contains(before, key) })
+}
+
+// A row whose open is out draws no actions, and an action pressed for it asks
+// nothing, so Stop and Rename cannot be pressed on a row that is opening.
+pub fn an_opening_row_offers_no_actions_test() {
+  let asked = process.new_subject()
+  let ask = fn(action, session, _deliver) {
+    process.send(asked, #(action, session))
+  }
+  let rename = fn(_session, _name, _deliver) { Nil }
+  let #(owner, _) =
+    opened(
+      home.Start(
+        ..start(),
+        manage: Some(ask),
+        rename: Some(rename),
+        open: fn(_) { sessions.Ticketed("/ui/sessions/A?ticket=t") },
+      ),
+    )
+  let idle = drawn(owner)
+  let model = run(owner, home.Opening("A"))
+  let html = drawn(model)
+  assert string.contains(html, "Opening…")
+  assert list.length(string.split(html, ">Stop<"))
+    == list.length(string.split(idle, ">Stop<")) - 1
+
+  let model = run(model, home.StopRequested("A"))
+  let model = run(model, home.DeleteRequested("A"))
+  assert process.receive(asked, 0) == Error(Nil)
+  assert !string.contains(drawn(model), "mid-turn")
+}

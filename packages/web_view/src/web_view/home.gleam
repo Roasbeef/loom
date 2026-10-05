@@ -172,6 +172,7 @@
 //// | `Composing(w)` | moves to the pressed workspace | asks the daemon if it is `w`'s form, then `Waiting(w)` | nothing to answer | `Idle` |
 //// | `Waiting(w)` | asks nothing | asks nothing | departs and `Idle`, or says why and `Composing(w)`, or `Idle` for a session made and not opened | stays `Waiting(w)` |
 
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
@@ -1264,19 +1265,29 @@ fn start_action(
   action: actions.Action,
   session: String,
 ) -> #(Model, Effect(Msg)) {
-  case model.start.manage, model.status, model.acting {
-    Some(ask), Connected, actions.Calm
-    | Some(ask), Connected, actions.Confirming(..)
-    -> #(
-      Model(..model, acting: actions.Working(session, action), note: None),
-      managing(ask, action, session),
-    )
-    Some(_), Connected, actions.Working(..)
-    | Some(_), Connecting, _
-    | Some(_), Ended(_), _
-    | None, _, _
-    -> #(model, effect.none())
+  case opening_now(model, session) {
+    True -> #(model, effect.none())
+    False ->
+      case model.start.manage, model.status, model.acting {
+        Some(ask), Connected, actions.Calm
+        | Some(ask), Connected, actions.Confirming(..)
+        -> #(
+          Model(..model, acting: actions.Working(session, action), note: None),
+          managing(ask, action, session),
+        )
+        Some(_), Connected, actions.Working(..)
+        | Some(_), Connecting, _
+        | Some(_), Ended(_), _
+        | None, _, _
+        -> #(model, effect.none())
+      }
   }
+}
+
+// Whether the session is the one whose open or resume is out. Its row draws no
+// actions, and a press for it is ignored here as the second layer.
+fn opening_now(model: Model, session: String) -> Bool {
+  model.opening == Some(session) || model.resuming == Some(session)
 }
 
 // Whether the page last read a session as busy: working on a turn, or waiting
@@ -1302,6 +1313,7 @@ fn confirm_first(
   action: actions.Action,
   session: String,
 ) -> #(Model, Effect(Msg)) {
+  use <- bool.guard(opening_now(model, session), #(model, effect.none()))
   case model.start.manage, model.status, model.acting {
     Some(_), Connected, actions.Calm
     | Some(_), Connected, actions.Confirming(..)
@@ -1563,6 +1575,7 @@ pub fn view(model: Model) -> Element(Msg) {
     ),
     shell_sidebar(model),
     [
+      // The empty node keeps the table at `table_path`.
       element.none(),
       home_table.view(
         model.groups,

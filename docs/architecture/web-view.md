@@ -829,9 +829,10 @@ each other, in one tab, each page a new UI session.
   to operate (next section). The component asks
   `Start.open`, in its own process, and the answer returns as `Linked`: a
   ticket becomes the `to` attribute of the hidden `<loom-switch>` (the centre's
-  last child), a refusal is the page's `home-notice` in `sessions.reason_words`.
-  The notice's place before the table is an empty node when there is none, so
-  the table keeps its path.
+  last child), a refusal is a `home_table.Note` (`Refused`) beside the row, in
+  `sessions.reason_words`. The empty node at the centre's first child remains
+  as the path pin, so the table stays at `home.table_path`. Rows are keyed by
+  session identity, so a handler's path names its session and not a position.
 - **The socket admits exactly that.** `ui_socket.home_accepts` takes a `click`,
   alone or batched, at a path beneath `home.table_path` or `home.sidebar_path`
   and nothing else, where it admitted no frame before. A frame can choose among
