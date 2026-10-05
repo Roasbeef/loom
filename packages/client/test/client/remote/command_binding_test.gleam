@@ -122,7 +122,7 @@ fn new_fixture(name: String) -> Fixture {
       limits(),
       1,
       5000,
-      fn(_, _) { panic as "No tool body in this custody witness." },
+      fn(_, _, _) { panic as "No tool body in this custody witness." },
     )
     as "Bounded actor."
   let owner = custodian.new(names, config)
