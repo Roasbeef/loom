@@ -1,5 +1,5 @@
 //// `cap/report` — the structured result a program's `main` returns, plus
-//// artifact emission.
+//// artifact emission and complete saved-result reads.
 ////
 //// A code-mode program is a function returning an `Outcome`. The
 //// satellite boot module marshals that value back to the broker with
@@ -39,10 +39,16 @@
 import cap/internal/channel.{type CallError, Denied, Unreachable}
 import cap/internal/dispatch
 import cap/internal/wire
+import core/corruption
 import core/json
 import core/json_wire
 import core/msgpack.{type MsgPackValue}
+import core/report_value
+import gleam/bit_array
+import gleam/bool
+import gleam/int
 import gleam/list
+import gleam/option.{type Option}
 import gleam/result
 
 /// The result of a program. `Completed` carries a structured value;
@@ -80,6 +86,121 @@ pub type ReportError {
 
   /// The capability channel could not carry the call.
   EmitUnavailable(reason: String)
+}
+
+/// A complete saved program result with independently produced host observations.
+pub type SavedReport {
+  /// The full value and original execution metadata, without transport credentials.
+  SavedReport(
+    /// The program's complete success or controlled error value.
+    outcome: Outcome,
+    /// The canonical digest of the compiled artifact that executed.
+    manifest_hash: String,
+    /// The build helper's actual enforcement observation.
+    build: SavedStage,
+    /// The satellite helper's actual enforcement observation.
+    node: SavedStage,
+    /// The original complete bounded host call log.
+    calls: SavedCalls,
+  )
+}
+
+/// An enforcement observation preserves absence and the helper's actual quality.
+pub type SavedStage {
+  /// Applied and skipped layers in their original order.
+  Reported(
+    /// Layers the helper reported applying.
+    applied: List(String),
+    /// Layers the helper reported skipping.
+    skipped: List(String),
+    /// The helper's original quality flag, without inference from layer names.
+    quality: SavedQuality,
+  )
+
+  /// An absent report is not a claim that the stage was confined.
+  Unreported(
+    /// The original explanation for the absence.
+    reason: String,
+  )
+}
+
+/// The quality reported by the original helper.
+pub type SavedQuality {
+  /// The helper reported complete enforcement.
+  Complete
+
+  /// The helper reported degraded enforcement.
+  Degraded
+}
+
+/// A capability call's original host-observed disposition.
+pub type SavedCallStatus {
+  /// The call succeeded.
+  CallOk
+
+  /// The call failed or was refused.
+  CallFailed
+
+  /// The satellite cancelled the call.
+  CallCancelled
+
+  /// The call remained active when the program settled.
+  CallUnsettled
+}
+
+/// A bounded redacted call observation, in original admission order.
+pub type SavedCall {
+  /// Records one call without retaining its authority or credentials.
+  SavedCall(
+    /// The admitted capability name.
+    cap: String,
+    /// An optional redacted argument summary.
+    args: Option(String),
+    /// The host-observed disposition.
+    status: SavedCallStatus,
+    /// An optional error code.
+    error: Option(String),
+    /// Milliseconds from original execution start.
+    start_ms: Int,
+    /// Original call duration in milliseconds.
+    duration_ms: Int,
+  )
+}
+
+/// Complete execution counters and the original bounded itemised call list.
+pub type SavedCalls {
+  /// Itemisation may cover fewer calls than the complete counters.
+  SavedCalls(
+    /// Original execution start in Unix milliseconds.
+    started_unix_ms: Int,
+    /// Original total elapsed milliseconds.
+    elapsed_ms: Int,
+    /// All admitted calls, including those beyond the itemisation limit.
+    total: Int,
+    /// Failed or refused calls.
+    failed: Int,
+    /// Cancelled calls.
+    cancelled: Int,
+    /// Calls still active at settlement.
+    unsettled: Int,
+    /// At most 128 original call observations.
+    items: List(SavedCall),
+  )
+}
+
+/// A saved-result read preserves validation, policy and channel failures.
+pub type ReadError {
+  /// The supplied text is not a canonical bounded result reference.
+  InvalidReference(reason: String)
+
+  /// The authenticated owner refused the read with this code and explanation.
+  ReadDenied(code: String, message: String)
+
+  /// The capability channel could not carry the read.
+  ReadUnavailable(reason: String)
+
+  /// A reply changed the original reference, offset, length or report encoding.
+  InvalidReport(reason: String)
 }
 
 /// A `Completed` outcome carrying a plain-text summary.
@@ -412,6 +533,166 @@ pub fn decode_json(text: String) -> Result(Value, String) {
 /// ```
 pub fn encode_json(value: Value) -> Result(String, String) {
   json_wire.to_json(value) |> result.map(json.to_string)
+}
+
+/// Loads a complete saved result through the authenticated session owner.
+///
+/// The reference names data; it grants no read authority. The host checks the
+/// current session and retained digest before returning aligned chunks. This
+/// helper collects at most 261 chunks, concatenates once, and validates the full
+/// report. The host meters those calls across all references in this invocation;
+/// reading does not renew its deadline, call credits or pooled byte budget.
+/// Known metadata is typed, while the program's value and details remain Value.
+/// Capability: `report.result_chunk`. Only configured owner hosts serve it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // Use the result:// reference from an earlier code-mode final message.
+/// case report.load_result(saved_reference) {
+///   Ok(saved) -> saved.outcome
+///   Error(_) -> report.failure("The saved result could not be read.")
+/// }
+/// ```
+pub fn load_result(reference: String) -> Result(SavedReport, ReadError) {
+  use checked <- result.try(
+    report_value.parse_ref(reference)
+    |> result.map_error(fn(error) {
+      InvalidReference(corruption.describe(error))
+    }),
+  )
+  use chunks <- result.try(
+    read_chunks(reference, 0, report_value.ref_byte_length(checked), []),
+  )
+
+  // One concatenation retains the original linear byte budget. Appending each
+  // chunk to an accumulated binary would repeatedly copy the complete prefix.
+  chunks
+  |> list.reverse
+  |> bit_array.concat
+  |> report_value.decode
+  |> result.map(saved_report)
+  |> result.map_error(fn(error) { InvalidReport(corruption.describe(error)) })
+}
+
+fn read_chunks(
+  reference: String,
+  offset: Int,
+  remaining: Int,
+  chunks: List(BitArray),
+) -> Result(List(BitArray), ReadError) {
+  use <- bool.lazy_guard(when: remaining == 0, return: fn() { Ok(chunks) })
+  let expected = int.min(65_536, remaining)
+  use reply <- result.try(
+    dispatch.call(
+      "report.result_chunk",
+      wire.args([
+        #("reference", wire.string(reference)),
+        #("offset", wire.int(offset)),
+      ]),
+    )
+    |> result.map_error(read_error),
+  )
+  use bytes <- result.try(read_chunk(reply, reference, offset, expected))
+
+  // The checked reference bounds total bytes, so every successful call advances
+  // one fixed slice toward completion. No response can prolong this recursion.
+  read_chunks(reference, offset + expected, remaining - expected, [
+    bytes,
+    ..chunks
+  ])
+}
+
+fn read_chunk(
+  reply: MsgPackValue,
+  reference: String,
+  offset: Int,
+  expected: Int,
+) -> Result(BitArray, ReadError) {
+  use Nil <- result.try(case reply {
+    msgpack.MapValue([_, _, _]) -> Ok(Nil)
+    _ -> Error(InvalidReport("expected the closed result chunk record"))
+  })
+  use echoed <- result.try(
+    wire.string_field(reply, "reference") |> result.map_error(InvalidReport),
+  )
+  use at <- result.try(
+    wire.int_field(reply, "offset") |> result.map_error(InvalidReport),
+  )
+  use bytes <- result.try(
+    wire.binary_field(reply, "bytes") |> result.map_error(InvalidReport),
+  )
+
+  // Three required distinct fields exhaust the closed record. Matching the
+  // original address and exact expected slice refuses replay and truncation.
+  use <- bool.guard(
+    when: echoed != reference
+      || at != offset
+      || bit_array.byte_size(bytes) != expected
+      || bit_array.bit_size(bytes) != expected * 8,
+    return: Error(InvalidReport(
+      "result chunk changed reference, offset or length",
+    )),
+  )
+  Ok(bytes)
+}
+
+fn read_error(error: CallError) -> ReadError {
+  case error {
+    Denied(code:, message:) -> ReadDenied(code:, message:)
+    Unreachable(reason:) -> ReadUnavailable(reason:)
+  }
+}
+
+fn saved_report(saved: report_value.CompleteReport) -> SavedReport {
+  let metadata = report_value.report_metadata(saved)
+  let enforcement = report_value.enforcement(metadata)
+  let calls = report_value.calls(metadata)
+  SavedReport(
+    outcome: case report_value.outcome(saved) {
+      report_value.Completed(value) -> Completed(value)
+      report_value.Errored(message, details) -> Errored(message, details)
+    },
+    manifest_hash: report_value.manifest_hash(metadata),
+    build: saved_stage(enforcement.build),
+    node: saved_stage(enforcement.node),
+    calls: SavedCalls(
+      started_unix_ms: calls.started_unix_ms,
+      elapsed_ms: calls.elapsed_ms,
+      total: calls.total,
+      failed: calls.failed,
+      cancelled: calls.cancelled,
+      unsettled: calls.unsettled,
+      items: list.map(calls.items, saved_call),
+    ),
+  )
+}
+
+fn saved_stage(stage: report_value.StageReport) -> SavedStage {
+  case stage {
+    report_value.Unreported(reason) -> Unreported(reason)
+    report_value.Reported(applied, skipped, quality) ->
+      Reported(applied, skipped, case quality {
+        report_value.Complete -> Complete
+        report_value.Degraded -> Degraded
+      })
+  }
+}
+
+fn saved_call(call: report_value.CallRecord) -> SavedCall {
+  SavedCall(
+    cap: call.cap,
+    args: call.args,
+    status: case call.status {
+      report_value.CallOk -> CallOk
+      report_value.CallFailed -> CallFailed
+      report_value.CallCancelled -> CallCancelled
+      report_value.CallUnsettled -> CallUnsettled
+    },
+    error: call.error,
+    start_ms: call.start_ms,
+    duration_ms: call.duration_ms,
+  )
 }
 
 /// A one-line rendering of a `ReportError`.

@@ -542,3 +542,25 @@ fields return `MalformedScheduleResult`, separately from transport failure.
 These types grant no authority and change no queue, receipt or schedule custody.
 
 See [protocol 057](../../protocol-change/057-typed-capability-results.md).
+
+## Complete saved reports
+
+`report.load_result` reads a canonical result reference through the authenticated
+owner's `report.result_chunk` capability. Each reply must name the same reference
+and expected aligned offset, with exactly the expected slice length. The checked
+bundle length bounds the helper to at most 261 reads. It collects a bounded list,
+concatenates once, and applies the core canonical report decoder.
+
+`SavedReport` exposes the complete `Outcome` and typed manifest, build/satellite
+enforcement and call-log observations. Program values retain binary data,
+non-string keys and controlled error details. The explicit public metadata types
+let vetted programs inspect observations without importing core internals.
+`ReadError` keeps malformed references, host refusals, channel failures and bad
+report replies distinct from a valid program Errored outcome.
+
+The reference grants no authority. The owner router must authenticate the current
+session, compare retained identity/digest/length, and meter 261 chunk admissions
+across all references in one invocation. The helper does not renew deadlines or
+replace those host checks. Its unit tests inject an authenticated-owner channel;
+they establish chunk and value fidelity, not storage or remote-host assembly.
+Only a host with the real owner door installed may advertise the read capability.
