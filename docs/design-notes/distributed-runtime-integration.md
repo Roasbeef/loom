@@ -53,6 +53,8 @@ run through the trusted TLS BEAM endpoint in the integration branch. Combined
 owner/Compile/workspace controls and native executor/owner restart tests pass
 against the merged Weft revision. The [transport transition record](../review/distributed-beam-transport-transition.md)
 keeps the exact evidence and known historical-route refusal defect.
+The reviewed [scoped lifetime proposal](distributed-scope-lifetime.md) describes
+the next host boundary; its API and native close-state change await approval.
 Launch/satellite execution, the remote LSP host and
 registered daemon configuration remain required. Acceptance must drive ordinary
 tools and code mode with the owner and executor on separate hosts and no checkout
