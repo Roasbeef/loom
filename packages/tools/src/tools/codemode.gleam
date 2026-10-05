@@ -100,6 +100,7 @@ import gleam/result
 import gleam/string
 import tools/blob
 import tools/call_record.{type CallLog}
+import tools/codemode_pointer
 import tools/codemode_recipes
 import tools/directory_access
 import tools/fs
@@ -1536,10 +1537,10 @@ fn render(
 ) -> ToolOutcome {
   case execution.result {
     VetRejected(rejections:) -> vet_outcome(offer, source, rejections)
-    CompileFailed(failure:) -> compile_outcome(ctx, execution, failure)
+    CompileFailed(failure:) -> compile_outcome(ctx, offer, execution, failure)
     RunFailed(failure:) -> run_failed_outcome(execution, failure)
     Ran(outcome:, manifest_hash:) ->
-      ran_outcome(ctx, execution, outcome, manifest_hash)
+      ran_outcome(ctx, offer, execution, outcome, manifest_hash)
   }
 }
 
@@ -1731,8 +1732,12 @@ fn rule_key(rule: Rule) -> String {
 // precise signal in the whole pipeline and the model can act on it
 // directly. Large diagnostics overflow to the blob store like any other
 // oversized tool output (spec §3.2).
+//
+// When the diagnostics name a capability module, one line says which
+// reference to read (`codemode_pointer`).
 fn compile_outcome(
   ctx: Ctx,
+  offer: SeamOffer,
   execution: Execution,
   failure: CompileFailure,
 ) -> ToolOutcome {
@@ -1741,7 +1746,11 @@ fn compile_outcome(
       "build_rejected",
       "the program did not compile and did not run. Fix the diagnostics "
         <> "below; warnings also fail the build:\n"
-        <> diagnostics,
+        <> diagnostics
+        <> pointer_suffix(codemode_pointer.compile_modules(
+        diagnostics,
+        offer.allowed_imports,
+      )),
     )
     WorkspaceSetupFailed(reason:) -> #(
       "workspace_setup_failed",
@@ -1764,6 +1773,14 @@ fn compile_outcome(
       #("sandbox", enforcement_json(execution.enforcement)),
     ])
   bounded_failure(ctx, body <> "\n" <> sandbox_text(execution), details)
+}
+
+// The pointer as a line of its own after the text it belongs to, or nothing.
+fn pointer_suffix(modules: List(String)) -> String {
+  case codemode_pointer.line(modules) {
+    "" -> ""
+    line -> "\n" <> line
+  }
 }
 
 fn compile_detail(failure: CompileFailure) -> String {
@@ -1827,6 +1844,7 @@ fn run_failure_detail(failure: RunFailure) -> String {
 // `is_error` result: something for the model to react to, not a fault.
 fn ran_outcome(
   ctx: Ctx,
+  offer: SeamOffer,
   execution: Execution,
   outcome: Outcome,
   manifest_hash: String,
@@ -1862,7 +1880,12 @@ fn ran_outcome(
         ],
       ]),
     )
-  let text = body <> "\n" <> sandbox_text(execution)
+  let pointer =
+    pointer_suffix(codemode_pointer.failed_call_modules(
+      execution.calls,
+      offer.allowed_imports,
+    ))
+  let text = body <> pointer <> "\n" <> sandbox_text(execution)
   case is_error {
     True -> bounded_failure(ctx, text, details)
     False -> bounded_success(ctx, text, details)

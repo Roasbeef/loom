@@ -771,6 +771,77 @@ pub fn a_compile_error_comes_back_as_readable_text_test() {
   assert list.contains(fields, #("detail", json.String(diagnostics)))
 }
 
+pub fn a_compile_error_about_a_capability_says_which_reference_to_read_test() {
+  let outcome =
+    call(
+      scripted(codemode.Execution(
+        result: codemode.CompileFailed(codemode.BuildRejected(
+          diagnostics: "error: Unknown module value\n5 │   proc.runn(x)\n",
+        )),
+        enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
+      )),
+      [#("program", json.String("..."))],
+    )
+  assert string.contains(
+    text_of(outcome),
+    "\nsee fs_read cap://proc for its types, functions and error helpers\n",
+  )
+}
+
+pub fn a_compile_error_about_no_capability_adds_no_reference_line_test() {
+  let outcome =
+    call(
+      scripted(codemode.Execution(
+        result: codemode.CompileFailed(codemode.BuildRejected(
+          diagnostics: "warning: Unused variable `count`\n",
+        )),
+        enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
+      )),
+      [#("program", json.String("..."))],
+    )
+  assert !string.contains(text_of(outcome), "fs_read cap://")
+}
+
+pub fn a_failed_capability_call_says_which_reference_to_read_test() {
+  let failed_proc =
+    call_record.CallLog(..some_calls(), items: [
+      call_record.CallRecord(
+        cap: "proc.run",
+        args: None,
+        status: call_record.CallFailed,
+        error: Some("policy"),
+        start_ms: 3,
+        duration_ms: 0,
+      ),
+    ])
+  let outcome =
+    call(
+      scripted(
+        codemode.Execution(
+          ..ran(codemode.Errored("no", msgpack.NilValue)),
+          calls: failed_proc,
+        ),
+      ),
+      [#("program", json.String("..."))],
+    )
+  assert string.contains(
+    text_of(outcome),
+    "\nsee fs_read cap://proc for its types, functions and error helpers\n",
+  )
+
+  // The shared fixture's failed call is `fs.read`, and this offer does not
+  // admit `cap/fs`, so a reference the host would refuse is never named.
+  let unadmitted =
+    call(scripted(with_calls(ran(codemode.Completed(msgpack.NilValue)))), [
+      #("program", json.String("...")),
+    ])
+  assert !string.contains(text_of(unadmitted), "fs_read cap://")
+}
+
 pub fn a_build_that_could_not_run_is_not_blamed_on_the_program_test() {
   let outcome =
     call(
