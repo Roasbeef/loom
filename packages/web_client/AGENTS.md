@@ -48,7 +48,13 @@ renders again just for it:
   button never covers the row the reader is about to read, and scrolling back
   to the bottom or pressing the button resumes it. When the reader presses the lane's
   "Load older" button, it keeps the row they were looking at in place while
-  the older rows arrive above it.
+  the older rows arrive above it. The server draws `data-strand-key`, a
+  numeric digest of the strand on screen (`lane.strand_key`, never the name),
+  on it; when the key changes the element saves the departing strand's place
+  in memory (`follow_rule.leaving`: an offset, or at the bottom) and restores
+  the arriving strand's (`follow_rule.arriving`), following the tail for a
+  strand left at the bottom or never seen. Nothing is stored outside the
+  element.
 - `<loom-composer commands="<json>" returned="<n>">` wraps the operator's
   editor, the server's uncontrolled textarea, which is its default slot.
   It lists the slash commands as the draft grows, sends the draft on

@@ -422,3 +422,43 @@ pub fn the_jump_button_is_withheld_within_a_row_of_the_bottom_test() {
   assert follow_rule.jump(Following, 600) == follow_rule.Withheld
   assert follow_rule.jump_gap > follow_rule.slack
 }
+
+// The reader's place in each strand they leave is kept under the strand's
+// numeric key, and put back when they return.
+
+fn reading_at(top: Float) -> follow_rule.Reader {
+  follow_rule.Reader(..at_the_bottom(), position: Reading, top: top, gap: 900)
+}
+
+pub fn a_strand_left_while_reading_resumes_at_its_offset_test() {
+  let memory =
+    follow_rule.leaving(follow_rule.forgotten(), 7, reading_at(420.0))
+  assert follow_rule.arriving(memory, 7) == follow_rule.Resume(top: 420.0)
+  let resumed = follow_rule.arrived(at_the_bottom(), follow_rule.Resume(420.0))
+  assert resumed.position == Reading
+  assert resumed.top == 420.0
+}
+
+pub fn a_strand_left_at_the_bottom_follows_the_tail_test() {
+  let memory = follow_rule.leaving(follow_rule.forgotten(), 7, at_the_bottom())
+  assert follow_rule.arriving(memory, 7) == follow_rule.Tail
+  let followed = follow_rule.arrived(reading_at(420.0), follow_rule.Tail)
+  assert followed.position == Following
+  assert followed.gap == 0
+}
+
+pub fn a_strand_never_left_follows_the_tail_test() {
+  let memory =
+    follow_rule.leaving(follow_rule.forgotten(), 7, reading_at(420.0))
+  assert follow_rule.arriving(memory, 8) == follow_rule.Tail
+}
+
+pub fn each_strand_keeps_its_own_place_and_the_latest_leaving_wins_test() {
+  let memory =
+    follow_rule.forgotten()
+    |> follow_rule.leaving(7, reading_at(420.0))
+    |> follow_rule.leaving(8, reading_at(90.0))
+    |> follow_rule.leaving(7, reading_at(610.0))
+  assert follow_rule.arriving(memory, 7) == follow_rule.Resume(top: 610.0)
+  assert follow_rule.arriving(memory, 8) == follow_rule.Resume(top: 90.0)
+}
