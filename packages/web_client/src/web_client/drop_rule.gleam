@@ -12,9 +12,13 @@
 ////
 //// The browser raises `dragenter` and `dragleave` for every element the
 //// pointer crosses, so moving over the composer's own children leaves it
-//// and enters it again. The element therefore counts the elements it is
-//// inside, as a depth, and shows its drop state while that depth is above
-//// zero. A `drop` resets the depth, since no `dragleave` follows it.
+//// and enters it again. A leave therefore ends the drag only when the
+//// element the pointer moved to is outside the composer, or there is none
+//// (`Destination`). A count of enters and leaves would be wrong whenever the
+//// server replaces the element under the pointer mid-drag, since that
+//// element never fires its leave; deciding from where the pointer went
+//// needs no count, and the next enter, or a drop or drag end anywhere on the
+//// page, sets the state right again.
 ////
 //// What a dropped file may be is not decided here. The drop goes through
 //// `attach_rule.choose`, the same vetting a paste and the file picker take,
@@ -24,21 +28,33 @@
 //// under Node in `drop_test`. `web_client/attach` is the element that
 //// listens, and `web_client/drop_guard` is the page-wide listener.
 
-import gleam/int
 import gleam/list
 import web_client/attach_rule
 
 /// The entry `dataTransfer.types` holds for a drag that carries files.
 pub const files_type = "Files"
 
-/// How many of the composer's elements the pointer is inside while it drags
-/// files, as `dragenter` and `dragleave` report it. It is never below zero.
-pub type Depth {
-  Depth(inside: Int)
+/// Whether a file drag is over the composer.
+pub type Drag {
+  /// A file drag is over the composer.
+  Over
+
+  /// No file drag is over the composer.
+  Away
 }
 
-/// A pointer that is not dragging over the composer.
-pub const outside = Depth(inside: 0)
+/// The state of a pointer that is not dragging files over the composer.
+pub const away = Away
+
+/// Where the pointer went when a drag left an element of the composer.
+pub type Destination {
+  /// To another element of the composer, so the drag is still over it.
+  Within
+
+  /// To an element outside the composer, or to nothing (the pointer left the
+  /// window, or the browser reports no target).
+  Beyond
+}
 
 /// Whether a drag carries files, from the types its data transfer lists.
 ///
@@ -52,46 +68,47 @@ pub fn carries_files(types: List(String)) -> Bool {
   list.contains(types, files_type)
 }
 
-/// The depth after a `dragenter` from a drag with these types. A drag
+/// The state after a `dragenter` from a drag with these types. A drag
 /// without files changes nothing.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert drop_rule.entered(drop_rule.outside, ["Files"]) == drop_rule.Depth(1)
+/// assert drop_rule.entered(drop_rule.away, ["Files"]) == drop_rule.Over
 /// ```
-pub fn entered(depth: Depth, types: List(String)) -> Depth {
+pub fn entered(drag: Drag, types: List(String)) -> Drag {
   case carries_files(types) {
-    True -> Depth(inside: depth.inside + 1)
-    False -> depth
+    True -> Over
+    False -> drag
   }
 }
 
-/// The depth after a `dragleave` from a drag with these types. A drag without
-/// files changes nothing, and the depth stops at zero, so a `dragleave`
-/// whose `dragenter` was missed cannot leave it negative.
+/// The state after a `dragleave` from a drag with these types, towards
+/// `towards`. Only a file drag that went beyond the composer is away; one
+/// that went to another element of it, and any drag without files, changes
+/// nothing.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert drop_rule.left(drop_rule.outside, ["Files"]) == drop_rule.outside
+/// assert drop_rule.left(drop_rule.Over, ["Files"], drop_rule.Beyond) == drop_rule.Away
 /// ```
-pub fn left(depth: Depth, types: List(String)) -> Depth {
-  case carries_files(types) {
-    True -> Depth(inside: int.max(depth.inside - 1, 0))
-    False -> depth
+pub fn left(drag: Drag, types: List(String), towards: Destination) -> Drag {
+  case carries_files(types), towards {
+    True, Beyond -> Away
+    _, _ -> drag
   }
 }
 
-/// The depth after a drop, which no `dragleave` follows.
+/// The state after a drop or a drag's end, which no `dragleave` need follow.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert drop_rule.dropped(drop_rule.Depth(2)) == drop_rule.outside
+/// assert drop_rule.dropped(drop_rule.Over) == drop_rule.away
 /// ```
-pub fn dropped(_depth: Depth) -> Depth {
-  outside
+pub fn dropped(_drag: Drag) -> Drag {
+  Away
 }
 
 /// What the composer draws while files are dragged over it, as the element's
@@ -104,18 +121,18 @@ pub type Surface {
   Plain
 }
 
-/// The surface for a depth and whether the composer has a place left for an
+/// The surface for a drag state and whether the composer has a place left for an
 /// image.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert drop_rule.surface(drop_rule.Depth(1), drop_rule.Room) == drop_rule.Inviting
-/// assert drop_rule.surface(drop_rule.Depth(1), drop_rule.Full) == drop_rule.Plain
+/// assert drop_rule.surface(drop_rule.Over, drop_rule.Room) == drop_rule.Inviting
+/// assert drop_rule.surface(drop_rule.Over, drop_rule.Full) == drop_rule.Plain
 /// ```
-pub fn surface(depth: Depth, places: Places) -> Surface {
-  case depth.inside > 0, places {
-    True, Room -> Inviting
+pub fn surface(drag: Drag, places: Places) -> Surface {
+  case drag, places {
+    Over, Room -> Inviting
     _, _ -> Plain
   }
 }

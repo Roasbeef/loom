@@ -75,7 +75,7 @@ renders again just for it:
   (`attach_rule.choose`); the form's `dragenter`, `dragover`, `dragleave` and
   `drop` listeners cancel a drag only when it carries files, and while one is
   over the form with a place free the element draws a tinted `.attach-drop`
-  overlay with a hint (`drop_rule`: `carries_files`, the `Depth` counter that
+  overlay with a hint (`drop_rule`: `carries_files`, the `Drag` state, which a leave ends only by its `relatedTarget`, so
   absorbs child enter/leave, `surface`). `drop_guard` is no element: one
   document listener installed in `main` that cancels any file drag, so a file
   dropped elsewhere, or on a page with no composer, never navigates the tab. The
@@ -401,7 +401,7 @@ time builds anything.
 What the components decide is in seven modules that import neither Lustre nor
 `ffi_dom`: `attach_rule` (the limits, which files are accepted and refused,
 the held images and the form field they make), `drop_rule` (which drags carry
-files, the drag depth, when the drop state shows), `follow_rule` (the scroll rule, `Reader` and its transitions,
+files, the drag state, when the drop state shows), `follow_rule` (the scroll rule, `Reader` and its transitions,
 `keeping`), `expand_rule` (the two states and the chevron), `shell_rule`
 (which columns are open, the buttons' words, what a closed column lets the
 keyboard reach), `composer_rule` (the table, `matching`, `intent`, `hear`, `taken`,

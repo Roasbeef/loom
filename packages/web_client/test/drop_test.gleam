@@ -1,9 +1,9 @@
-//// The drop rules: which drags are about files, how the drag depth moves as
+//// The drop rules: which drags are about files, how the drag state moves as
 //// the pointer crosses the composer's elements, when the drop state shows,
 //// and that a drop is vetted by the paste's own rules.
 
 import web_client/attach_rule.{Candidate, Limits}
-import web_client/drop_rule.{Depth}
+import web_client/drop_rule.{Away, Beyond, Over, Within}
 
 const files = ["text/uri-list", "Files"]
 
@@ -23,33 +23,41 @@ pub fn only_a_drag_with_files_is_about_files_test() {
   assert !drop_rule.carries_files([])
 }
 
-pub fn the_depth_counts_the_elements_a_file_drag_is_inside_test() {
-  let depth =
-    drop_rule.outside
+pub fn a_file_drag_entering_is_over_the_composer_test() {
+  assert drop_rule.entered(drop_rule.away, files) == Over
+  assert drop_rule.entered(Over, files) == Over
+}
+
+pub fn leaving_for_another_element_of_the_composer_stays_over_test() {
+  assert drop_rule.left(Over, files, Within) == Over
+}
+
+pub fn leaving_for_nothing_or_for_the_outside_is_away_test() {
+  assert drop_rule.left(Over, files, Beyond) == Away
+}
+
+pub fn an_element_replaced_mid_drag_cannot_stick_the_overlay_test() {
+  // The element under the pointer was removed, so its leave never came. The
+  // next enter, then a leave towards the outside, ends the drag as it should.
+  let drag =
+    drop_rule.away
     |> drop_rule.entered(files)
     |> drop_rule.entered(files)
-  assert depth == Depth(2)
-  assert drop_rule.left(depth, files) == Depth(1)
-  assert drop_rule.left(Depth(1), files) == drop_rule.outside
+  assert drop_rule.left(drag, files, Beyond) == Away
+
+  // And a drop or drag end anywhere ends it with no leave at all.
+  assert drop_rule.dropped(Over) == Away
 }
 
-pub fn the_depth_never_goes_below_zero_test() {
-  assert drop_rule.left(drop_rule.outside, files) == drop_rule.outside
-}
-
-pub fn a_text_drag_never_moves_the_depth_test() {
-  assert drop_rule.entered(drop_rule.outside, text) == drop_rule.outside
-  assert drop_rule.left(Depth(2), text) == Depth(2)
-}
-
-pub fn a_drop_ends_the_drag_test() {
-  assert drop_rule.dropped(Depth(3)) == drop_rule.outside
+pub fn a_text_drag_never_moves_the_state_test() {
+  assert drop_rule.entered(drop_rule.away, text) == Away
+  assert drop_rule.left(Over, text, Beyond) == Over
 }
 
 pub fn the_drop_state_shows_only_with_room_test() {
-  assert drop_rule.surface(Depth(1), drop_rule.Room) == drop_rule.Inviting
-  assert drop_rule.surface(Depth(0), drop_rule.Room) == drop_rule.Plain
-  assert drop_rule.surface(Depth(1), drop_rule.Full) == drop_rule.Plain
+  assert drop_rule.surface(Over, drop_rule.Room) == drop_rule.Inviting
+  assert drop_rule.surface(Away, drop_rule.Room) == drop_rule.Plain
+  assert drop_rule.surface(Over, drop_rule.Full) == drop_rule.Plain
 }
 
 pub fn an_element_told_no_limits_has_no_room_test() {
@@ -62,7 +70,7 @@ pub fn a_full_element_shows_no_drop_state_and_takes_nothing_test() {
   let #(state, reads) = attach_rule.choose(ready(), [file])
   assert reads != []
   assert drop_rule.places(state) == drop_rule.Full
-  assert drop_rule.surface(Depth(1), drop_rule.places(state)) == drop_rule.Plain
+  assert drop_rule.surface(Over, drop_rule.places(state)) == drop_rule.Plain
 
   // A second drop is refused with the limit's words, as a paste is.
   let #(state, reads) = attach_rule.choose(state, [file])

@@ -278,6 +278,17 @@ export function drag_files(event) {
   return toList(Array.from(event.dataTransfer?.files ?? []));
 }
 
+// The element a drag event is moving to or from (`relatedTarget`), or nothing
+// when the pointer left the window or the browser withholds it.
+export function related_target(event) {
+  return found(event.relatedTarget);
+}
+
+// Whether a node is the element or inside it (`Node.contains`).
+export function contains(element, node) {
+  return element.contains(node);
+}
+
 export function file_name(file) {
   return file.name;
 }

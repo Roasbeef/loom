@@ -667,6 +667,27 @@ pub fn drag_types(event: Dynamic) -> List(String)
 @external(javascript, "./dom.mjs", "drag_files")
 pub fn drag_files(event: Dynamic) -> List(File)
 
+/// The element a drag event is moving to or from (`relatedTarget`), or
+/// `Error(Nil)` when the pointer left the window or the browser withholds it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.related_target(event)
+/// ```
+@external(javascript, "./dom.mjs", "related_target")
+pub fn related_target(event: Dynamic) -> Result(Element, Nil)
+
+/// Whether a node is the element or inside it (`Node.contains`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.contains(form, node)
+/// ```
+@external(javascript, "./dom.mjs", "contains")
+pub fn contains(element: Element, node: Element) -> Bool
+
 /// A file's name (`File.name`). It is the person's own file name, a text the
 /// browser reports and the page only ever draws as a text node.
 ///

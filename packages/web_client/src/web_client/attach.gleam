@@ -39,9 +39,12 @@
 //// when it carries files (`drop_rule`), so text dragged into the editor
 //// keeps working. While files are over the form and a place is free, the
 //// element draws a tinted overlay with a hint (`drop_rule.surface`); the
-//// overlay takes no pointer events, and the element counts the elements the
-//// pointer is inside (`drop_rule.Depth`) because the browser reports
-//// crossing each child as a leave and an enter. A form with no place left
+//// overlay takes no pointer events. The browser reports crossing each child
+//// as a leave and an enter, so a leave ends the drag only when the element
+//// the pointer went to (`relatedTarget`) is not inside the form, and a leave
+//// that never comes, because the server replaced the element under the
+//// pointer, is repaired by the next enter or by the document's own `drop` or
+//// `dragend` (`drop_rule.Drag`). A form with no place left
 //// draws no overlay and still cancels the drag, and a page with no
 //// attach element at all is covered by `web_client/drop_guard`.
 ////
@@ -73,16 +76,16 @@ import web_client/internal/ffi_dom
 pub const name = "loom-attach"
 
 /// What the element knows: the rules' state, the listeners it put on its
-/// form, so leaving the page can take them off again, and how many elements of
-/// the composer a file drag is inside.
+/// form and the document, so leaving the page can take them off again, and
+/// whether a file drag is over the composer.
 pub type Model {
-  Model(state: State, listening: Option(Listeners), dragging: drop_rule.Depth)
+  Model(state: State, listening: Option(Listeners), dragging: drop_rule.Drag)
 }
 
-/// The running listeners on the composer's form, each with the event it
+/// The running listeners, each with the element it is on and the event it
 /// hears.
 pub type Listeners {
-  Listeners(form: ffi_dom.Element, heard: List(#(String, ffi_dom.Listener)))
+  Listeners(heard: List(#(ffi_dom.Element, String, ffi_dom.Listener)))
 }
 
 /// Everything the element can be told.
@@ -115,8 +118,13 @@ pub type Msg {
   /// composer.
   DragEntered(types: List(String))
 
-  /// A drag that carries these kinds of data left an element of the composer.
-  DragLeft(types: List(String))
+  /// A drag that carries these kinds of data left an element of the composer
+  /// for `towards`.
+  DragLeft(types: List(String), towards: drop_rule.Destination)
+
+  /// A drop or a drag's end was heard anywhere on the page, so no drag is
+  /// over the composer any more.
+  DragEnded
 
   /// These files were dropped on the composer.
   Dropped(files: List(ffi_dom.File))
@@ -147,11 +155,7 @@ pub fn register() -> Result(Nil, lustre.Error) {
 
 fn init(_: Nil) -> #(Model, Effect(Msg)) {
   #(
-    Model(
-      state: attach_rule.start(),
-      listening: None,
-      dragging: drop_rule.outside,
-    ),
+    Model(state: attach_rule.start(), listening: None, dragging: drop_rule.away),
     effect.none(),
   )
 }
@@ -199,8 +203,12 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       Model(..model, dragging: drop_rule.entered(model.dragging, types)),
       effect.none(),
     )
-    DragLeft(types:) -> #(
-      Model(..model, dragging: drop_rule.left(model.dragging, types)),
+    DragLeft(types:, towards:) -> #(
+      Model(..model, dragging: drop_rule.left(model.dragging, types, towards)),
+      effect.none(),
+    )
+    DragEnded -> #(
+      Model(..model, dragging: drop_rule.dropped(model.dragging)),
       effect.none(),
     )
 
@@ -217,7 +225,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       effect.none(),
     )
     Disconnected -> #(
-      Model(..model, listening: None, dragging: drop_rule.outside),
+      Model(..model, listening: None, dragging: drop_rule.away),
       unlistening(model.listening),
     )
   }
@@ -315,11 +323,12 @@ fn listening() -> Effect(Msg) {
       ffi_dom.host(ffi_dom.as_element(root)),
       "form",
     ))
-    let on = fn(event_name, handler) {
-      #(event_name, ffi_dom.add_listener(form, event_name, handler))
+    let page = ffi_dom.get_document()
+    let on = fn(element, event_name, handler) {
+      #(element, event_name, ffi_dom.add_listener(element, event_name, handler))
     }
     let heard = [
-      on("paste", fn(event) {
+      on(form, "paste", fn(event) {
         case list.filter(ffi_dom.clipboard_files(event), is_image) {
           [] -> Nil
           files -> {
@@ -328,26 +337,51 @@ fn listening() -> Effect(Msg) {
           }
         }
       }),
-      on("dragenter", fn(event) {
+      on(form, "dragenter", fn(event) {
         let types = ffi_dom.drag_types(event)
         use <- when_files(event, types)
         dispatch(DragEntered(types))
       }),
-      on("dragover", fn(event) {
+      on(form, "dragover", fn(event) {
         use <- when_files(event, ffi_dom.drag_types(event))
         Nil
       }),
-      on("dragleave", fn(event) {
-        dispatch(DragLeft(ffi_dom.drag_types(event)))
+      on(form, "dragleave", fn(event) {
+        dispatch(DragLeft(
+          ffi_dom.drag_types(event),
+          towards(form, ffi_dom.related_target(event)),
+        ))
       }),
-      on("drop", fn(event) {
+      on(form, "drop", fn(event) {
         use <- when_files(event, ffi_dom.drag_types(event))
         dispatch(Dropped(ffi_dom.drag_files(event)))
       }),
+
+      // A drag can end with no leave reaching the form, when the element
+      // under the pointer was replaced, so the page's own drop and drag end
+      // clear the drag state.
+      on(page, "drop", fn(_) { dispatch(DragEnded) }),
+      on(page, "dragend", fn(_) { dispatch(DragEnded) }),
     ]
-    dispatch(Listening(Listeners(form:, heard:)))
+    dispatch(Listening(Listeners(heard:)))
   }
   result.unwrap(started, or: Nil)
+}
+
+// Where a leave went: inside the form when the element the pointer moved to
+// is in it, and beyond it when that is another element or nothing at all.
+fn towards(
+  form: ffi_dom.Element,
+  target: Result(ffi_dom.Element, Nil),
+) -> drop_rule.Destination {
+  case target {
+    Ok(node) ->
+      case ffi_dom.contains(form, node) {
+        True -> drop_rule.Within
+        False -> drop_rule.Beyond
+      }
+    Error(Nil) -> drop_rule.Beyond
+  }
 }
 
 // Cancels a drag event that carries files and then runs `next`, and leaves
@@ -372,10 +406,10 @@ fn is_image(file: ffi_dom.File) -> Bool {
 fn unlistening(listening: Option(Listeners)) -> Effect(Msg) {
   case listening {
     None -> effect.none()
-    Some(Listeners(form:, heard:)) -> {
+    Some(Listeners(heard:)) -> {
       use _ <- effect.from
       list.each(heard, fn(entry) {
-        ffi_dom.remove_listener(form, entry.0, entry.1)
+        ffi_dom.remove_listener(entry.0, entry.1, entry.2)
       })
     }
   }
