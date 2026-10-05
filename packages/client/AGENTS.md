@@ -186,6 +186,19 @@ starts `daemon/ui_sessions` and passes `server.Ui(sessions, upgrade)` to
 is a 404, the control `hello` has no `ui` field and `ui.link` answers
 `unavailable`.
 
+- `daemon/ui_project`: a small `weft/actor` started beside `ui_sessions` that
+  derives each workspace's project once and keeps the answer, so the home's and
+  the sidebar's lists never read the disk on a refresh. `locate(workspace)` reads
+  `<workspace>/.git`: a directory is a plain checkout (the workspace is its own
+  project), a file is a worktree's `gitdir: <repo>/.git/worktrees/<name>` pointer
+  followed to the main repository (a bare repository's common directory is its own
+  project), and a missing, broken or dangling pointer is `None`. Plain Gleam and
+  `simplifile`, no FFI. `of(projects, workspaces)` answers a `Dict`; an answer that
+  misses its 2 s wait is an empty one, which leaves each session its own project for
+  that read. `ui_socket.with_projects` fills `sessions.Entry.project` from it on
+  the session page's sidebar read and the home's list (`upgrade` and `upgrade_home`
+  take the handle after the ticket table's); the admin page lists by workspace and
+  does not. The field is in process, not on a wire, so no protocol addendum.
 - `daemon/ui_sessions`: one `weft/actor` owning the ticket table (60 s,
   single use) and the UI-session table (8 h), both keyed by the SHA-256 of
   the secret. A `Grant` carries a `Scope` (`Session(id)`, `Home` or `Admin`,

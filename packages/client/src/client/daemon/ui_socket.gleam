@@ -163,12 +163,14 @@ import client/daemon/root
 import client/daemon/server
 import client/daemon/ui_http
 import client/daemon/ui_login
+import client/daemon/ui_project
 import client/daemon/ui_relay
 import client/daemon/ui_sessions
 import client/daemon/upgrade_log
 import client/gateway
 import core/ids
 import gleam/bit_array
+import gleam/dict
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/http/request.{type Request}
@@ -426,6 +428,7 @@ pub fn upgrade(
   attachment: server.Attachment(instance),
   hub: gateway.Gateway,
   tickets: ui_sessions.Sessions,
+  projects: ui_project.Projects,
   open: fn() -> Result(Int, Nil),
   register: fn(ui_sessions.Images) -> Nil,
   seen: server.PageGrant,
@@ -504,6 +507,7 @@ pub fn upgrade(
       attachment,
       attach,
       tickets,
+      projects,
       open,
       register,
       invite,
@@ -635,6 +639,7 @@ pub fn upgrade_home(
   request: Request(mist.Connection),
   attachment: server.HomeAttachment(instance),
   tickets: ui_sessions.Sessions,
+  projects: ui_project.Projects,
   open: fn() -> Result(Int, Nil),
   seen: server.PageGrant,
 ) -> Response(mist.ResponseData) {
@@ -745,6 +750,7 @@ pub fn upgrade_home(
     admit_home(
       daemon,
       attachment,
+      projects,
       fn(target) { ticket_for(standing, tickets, open, target) },
       fn(target, deliver) {
         resume_task(standing, tickets, open, target, deliver)
@@ -1001,6 +1007,7 @@ fn home_row_path(path: String) -> Bool {
 fn admit_home(
   daemon: root.Root(instance),
   attachment: server.HomeAttachment(instance),
+  projects: ui_project.Projects,
   opening: fn(String) -> sessions.Answer,
   resuming: fn(String, fn(sessions.Answer) -> Nil) -> Nil,
   rename: Option(fn(String, String, fn(renames.Answer) -> Nil) -> Nil),
@@ -1024,9 +1031,15 @@ fn admit_home(
       ceiling: home_ceiling(ceiling),
       refresh_ms: home.refresh_ms,
       sessions: fn() {
-        home_listing(attachment, open, fn(reason) {
-          process.send(signals, Ended(reason))
-        })
+        case
+          home_listing(attachment, open, fn(reason) {
+            process.send(signals, Ended(reason))
+          })
+        {
+          home.Listed(entries) -> home.Listed(with_projects(entries, projects))
+          home.Unread -> home.Unread
+          home.Closed(reason) -> home.Closed(reason)
+        }
       },
       open: opening,
       resume: resuming,
@@ -1220,6 +1233,7 @@ fn admit(
   attachment: server.Attachment(instance),
   attach: ui_relay.Attach,
   tickets: ui_sessions.Sessions,
+  projects: ui_project.Projects,
   open: fn() -> Result(Int, Nil),
   register: fn(ui_sessions.Images) -> Nil,
   invite: Option(fn(invites.Role) -> invites.Answer),
@@ -1244,7 +1258,7 @@ fn admit(
       transmit: ui_relay.transmit,
       shut: ui_relay.shut,
       now: bootstrap.monotonic_time_ms,
-      sessions: fn() { listed_for(role, fn() { listed(attachment) }) },
+      sessions: fn() { listed_for(role, fn() { listed(attachment, projects) }) },
       open: fn(target) {
         opened_for(role, fn() { ticket_for(standing, tickets, open, target) })
       },
@@ -1383,11 +1397,14 @@ fn closing(close: ending.Close) -> mist.Next(Phase, Signal) {
 // credential none. It carries the catalogue's own fields, and never a
 // database path or a configuration, which the entry has no place for. A
 // failed read is an empty list, which the sidebar draws as nothing.
-fn listed(attachment: server.Attachment(instance)) -> List(sessions.Entry) {
+fn listed(
+  attachment: server.Attachment(instance),
+  projects: ui_project.Projects,
+) -> List(sessions.Entry) {
   case
     manager.authorized_page(attachment.registry, attachment.digest, after: "")
   {
-    Ok(#(_, views)) -> list.map(views, listed_entry)
+    Ok(#(_, views)) -> list.map(views, listed_entry) |> with_projects(projects)
     Error(_) -> []
   }
 }
@@ -4305,7 +4322,35 @@ pub fn listed_entry(view: manager.View) -> sessions.Entry {
     },
     subtitle: record.subtitle,
     role: None,
+    project: None,
   )
+}
+
+/// The entries with the project of each one's workspace, from the daemon's
+/// own cache of what the filesystem says (`ui_project`). A workspace the cache
+/// could not answer for keeps no project, which makes it its own.
+///
+/// The project is read from the host's disk by the workspace the catalogue
+/// recorded, and nothing a page sent reaches it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.with_projects(entries, projects)
+/// ```
+@internal
+pub fn with_projects(
+  entries: List(sessions.Entry),
+  projects: ui_project.Projects,
+) -> List(sessions.Entry) {
+  let found =
+    ui_project.of(projects, list.map(entries, fn(entry) { entry.workspace }))
+  list.map(entries, fn(entry) {
+    case dict.get(found, entry.workspace) {
+      Ok(project) -> sessions.Entry(..entry, project:)
+      Error(Nil) -> entry
+    }
+  })
 }
 
 /// The entries with the role the principal holds in each, from the daemon's

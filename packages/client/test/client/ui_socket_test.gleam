@@ -460,6 +460,7 @@ pub fn a_listed_entry_names_the_session_and_nothing_private_test() {
       residency: sessions.Saved,
       subtitle: option.None,
       role: option.None,
+      project: None,
     )
   assert !string.contains(string.inspect(entry), "secret.sqlite")
   assert !string.contains(string.inspect(entry), "request-key")
@@ -502,6 +503,7 @@ pub fn only_an_operators_page_is_listed_sessions_test() {
       residency: sessions.Live,
       subtitle: option.None,
       role: option.None,
+      project: None,
     )
   let asked = process.new_subject()
   let read = fn() {

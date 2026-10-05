@@ -15,6 +15,7 @@ import client/daemon/server
 import client/daemon/session_socket
 import client/daemon/ui_assets
 import client/daemon/ui_login
+import client/daemon/ui_project
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
 import client/host
@@ -776,6 +777,7 @@ fn web_view(
       use sessions <- result.try(
         ui_sessions.start(ui_sessions.production(bootstrap.monotonic_time_ms)),
       )
+      use projects <- result.try(ui_project.start())
 
       // The login's root key is read here, once, with the registry that can
       // revoke the rows of a lost one (`ui_login.root_key`): a key that is
@@ -798,6 +800,7 @@ fn web_view(
               attachment,
               attachment.instance.gateway,
               sessions,
+              projects,
               open,
               register,
               seen,
@@ -809,6 +812,7 @@ fn web_view(
               request,
               attachment,
               sessions,
+              projects,
               open,
               seen,
             )
