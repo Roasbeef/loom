@@ -1,17 +1,19 @@
-//// Joined owner custody, registered mTLS and native helper component proof.
+//// Joined owner custody, registered TLS BEAM and native helper component proof.
 ////
 //// `main` runs alone under scripts/e2e_remote_owner.sh. This module exports no
-//// EUnit tests, so package parallelism cannot mix this real listener and helper
-//// lifecycle with unit fixtures. Ephemeral credentials come from the executor's
-//// existing OTP PKIX fixture, compiled into the runner's isolated code path.
+//// EUnit tests. Fixed owner and executor entrypoints run in independent OS VMs
+//// with real TLS membership. Test files coordinate local journal inspection;
+//// actual remote effects and observations use the production BEAM endpoint.
 ////
 //// `success` enters the actual broker with the original compile-child identity.
 //// It compares both custody stores with the actual observed helper output, then
 //// reuses the exact cleared request across TLS generation change and owner
-//// custody restart. `refusals` checks administrative digest, policy and scope
+//// custody restart. `compile_origin` pins the original child provenance.
+//// `refusals` checks administrative digest, policy and scope
 //// failures before a physical marker write. The fixture proves these joined
 //// components; daemon routing, executor pools, workspace and LSP are separate.
 
+import argv
 import broker/broker
 import broker/budget
 import broker/dispatch
@@ -25,18 +27,18 @@ import client/remote/dispatch_binding
 import core/clock
 import core/ids
 import core/remote_tool
+import distribution_fixture
 import executor
 import executor/remote/admission
-import executor/remote/connection
+import executor/remote/beam_endpoint
 import executor/remote/dispatcher
+import executor/remote/distribution
 import executor/remote/identity
 import executor/remote/journal
-import executor/remote/listener
 import executor/remote/native
 import executor/remote/payload
 import executor/remote/registration
 import executor/remote/service
-import executor/remote/tls
 import executor/remote/wire
 import gleam/bit_array
 import gleam/erlang/process
@@ -44,50 +46,27 @@ import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/static_supervisor as supervisor
 import gleam/result
 import gleam/string
 import gleam/time/timestamp
 import host/bootstrap
 import simplifile
 import storage/owner_custody as custody
+import support/native_beam_fixture as nodes
 import telemetry/log
 import weft/poll
 import weft/registry
 
-type Credentials {
-  Credentials(ca: BitArray, certificate: BitArray, key: BitArray, pin: BitArray)
-}
-
-type Certificates {
-  Fixture(
-    server: Credentials,
-    client: Credentials,
-    wrong_server: Credentials,
-    wrong_client: Credentials,
-    foreign: Credentials,
-    expired: Credentials,
-  )
-}
-
-// No credential generation is added to production. The existing executor test
-// fixture needs OTP's PKIX generator, which has no Gleam library interface.
-@external(erlang, "executor_remote_tls_test_ffi", "fixture")
-fn certificates() -> Certificates
-
 type Fixture {
   FixtureState(
+    root: String,
     path: String,
     owner: custodian.Handle,
     owner_config: custodian.Config,
     owner_pid: process.Pid,
-    book: journal.Journal,
-    server: service.Service,
     registered: registration.Registration,
     policy: policy.SandboxPolicy,
-    connection: connection.Config,
-    listener: tls.Listener,
-    acceptors: process.Pid,
+    connection: beam_endpoint.Config,
     fenced: process.Subject(custody.Error),
   )
 }
@@ -96,10 +75,6 @@ type ProofMode {
   Baseline
   BypassRegistration
   SkipOwnerReceipt
-}
-
-type Shutdown {
-  Shutdown
 }
 
 type Observation {
@@ -114,13 +89,28 @@ type Observation {
 /// bash scripts/e2e_remote_owner.sh
 /// ```
 pub fn main() {
-  success()
-  refusals()
-  io.println("remote-owner: joined component proof passed")
+  case argv.load().arguments {
+    ["--native-beam-owner", root] -> {
+      let assert Ok(name) = simplifile.read(root <> "/scenario")
+        as "The parent chooses one fixed source scenario."
+      case name {
+        "success" -> success()
+        "refusals" -> refusals()
+        _ -> panic as "No runtime-selected callback is admitted."
+      }
+    }
+    [] -> {
+      success()
+      refusals()
+      io.println("remote-owner: joined component proof passed")
+    }
+    _ -> panic as "Only fixed owner arguments enter the native component proof."
+  }
 }
 
 fn success() {
-  let fixture = fixture("success")
+  use peer <- nodes.run("success")
+  let fixture = fixture(peer)
   let origin = compile_origin()
   let cleared = process.new_subject()
   let config = binding(fixture, fixture.connection, fixture.registered, cleared)
@@ -132,6 +122,8 @@ fn success() {
     )
     as "The actual broker owns clearance, token and pooled budget."
   let events = process.new_subject()
+
+  // Broker clearance preserves child provenance before any executor admission.
   let shell =
     "printf x >> proof; printf owner-stream; printf executor-stderr >&2"
   let spec = call_spec(fixture, shell)
@@ -140,11 +132,15 @@ fn success() {
     as "The real broker preserves original provenance while clearing authority."
   let assert Ok(#(request, prepared)) = process.receive(cleared, 3000)
     as "Preparation observes the exact broker-cleared physical request."
+
+  // Physical identity and logical parent provenance must remain distinct.
   assert request.context.origin == Some(origin)
   assert request.context.operation == operation(4)
   assert request.context.step == "physical:compile"
   assert remote_tool.operation(parent()) != request.context.operation
   assert remote_tool.step(parent()) != request.context.step
+
+  // Actual helper stdout and stderr must match the broker settlement.
   let observed = broker_observation(events, [])
   let assert dispatch.Completed(result) = observed.terminal
     as "The real native helper must complete under platform enforcement."
@@ -165,11 +161,17 @@ fn success() {
   assert process.receive(fixture.fenced, 0) == Error(Nil)
   broker.stop(broker)
 
-  // Every exchange already reconnects its socket. A newer administrative
-  // generation also fences old tickets while retaining the same logical UUID.
-  let renewed = connection.Config(..fixture.connection, generation: 2)
-  let assert Ok(wire.Hello) = connection.exchange(renewed, wire.Hello)
-    as "The actual authenticated service accepts the newer transport generation."
+  // The old native epoch is permanently fenced and actually drained before its
+  // OS VM exits. The manager joins that exit before opening the same DB in VM2.
+  retire(fixture.connection)
+  nodes.mark(fixture.root, "rotate")
+  nodes.await(fixture.root, "executor-ready-2")
+  assert simplifile.is_file(fixture.root <> "/vm-exited-1") == Ok(True)
+  let renewed = beam_endpoint.Config(..fixture.connection, generation: 2)
+  let assert Ok(wire.Hello) = beam_endpoint.exchange(renewed, wire.Hello)
+    as "The replacement endpoint binds generation2 to the same fenced journal."
+
+  // The new endpoint may observe history but cannot remint the original effect.
   let retry = binding(fixture, renewed, fixture.registered, cleared)
   let repeated = retry_request(retry, request)
   assert repeated == observed
@@ -186,6 +188,8 @@ fn success() {
   assert retry.reserve(request) == Ok(reserved)
   assert custodian.child(fixture.owner, origin) == Ok(original)
   assert simplifile.read(fixture.path <> "/proof") == Ok("x")
+
+  // Final retirement joins the replacement executor after durable owner restart.
   finish(FixtureState(..fixture, owner_pid: reopened.pid), renewed)
   io.println(
     "remote-owner: broker stream, exact durable receipt and restart retry passed",
@@ -193,7 +197,8 @@ fn success() {
 }
 
 fn refusals() {
-  let fixture = fixture("refusals")
+  use peer <- nodes.run("refusals")
+  let fixture = fixture(peer)
   let cleared = process.new_subject()
   let changed_scope = scope(2)
   let assert Ok(other) =
@@ -205,15 +210,19 @@ fn refusals() {
       canonical,
     )
     as "A different epoch is valid administration, but cannot grant old scope."
+
+  // A well-formed alternate registration cannot approve the original scope.
   let wrong_registration = binding(fixture, fixture.connection, other, cleared)
   let request =
     physical_request(fixture, origin(1), "printf bad >> registration-proof", 1)
   let assert Ok(reserved) = wrong_registration.reserve(request)
     as "Owner reservation is not executor registration approval."
+
+  // Refusal evidence remains cancellation-only in the actual executor journal.
   expect_failure(wrong_registration, request)
   let assert Ok(digest) = wire.prepared_digest(reserved.prepared)
     as "Even the refused request has a well-formed digest."
-  no_native_payload(fixture.book, reserved.key, digest)
+  no_native_payload(fixture, "registration-refusal", reserved.key, digest)
   assert simplifile.is_file(fixture.path <> "/registration-proof") == Ok(False)
   let assert Ok(#(_, _, None)) = custodian.child(fixture.owner, origin(1))
     as "A refusal never becomes a successful durable child terminal."
@@ -230,15 +239,17 @@ fn refusals() {
   let config = binding(fixture, fixture.connection, fixture.registered, cleared)
   let assert Ok(reserved) = config.reserve(request)
     as "The owner retains the attempted exact authority for reconciliation."
+
+  // Broader native authority is rejected before any physical materialization.
   expect_failure(config, request)
   let assert Ok(digest) = wire.prepared_digest(reserved.prepared)
     as "The attempted authority is canonical and bounded."
-  no_native_payload(fixture.book, reserved.key, digest)
+  no_native_payload(fixture, "policy-refusal", reserved.key, digest)
   assert simplifile.is_file(fixture.path <> "/policy-proof") == Ok(False)
 
-  // Socket authentication does not permit a peer to replace workspace epochs.
+  // Runtime authentication does not permit a request to replace workspace epochs.
   // The decoder rejects the changed full scope before service admission.
-  let foreign = connection.Config(..fixture.connection, scope: changed_scope)
+  let foreign = beam_endpoint.Config(..fixture.connection, scope: changed_scope)
   let config = binding(fixture, foreign, other, cleared)
   let request =
     physical_request(fixture, origin(3), "printf bad >> scope-proof", 3)
@@ -246,6 +257,8 @@ fn refusals() {
   assert simplifile.is_file(fixture.path <> "/scope-proof") == Ok(False)
   let assert Ok(#(_, _, None)) = custodian.child(fixture.owner, origin(3))
     as "Scope rejection leaves owner reservation pending, never successful."
+
+  // Refusals do not fence healthy owner custody, and native teardown is still real.
   assert process.receive(fixture.fenced, 0) == Error(Nil)
   finish(fixture, fixture.connection)
   io.println(
@@ -253,27 +266,71 @@ fn refusals() {
   )
 }
 
-fn fixture(name: String) -> Fixture {
-  let assert Ok(here) = simplifile.current_directory()
-    as "The runner starts in packages/client."
-  let #(seconds, nanos) =
-    timestamp.system_time() |> timestamp.to_unix_seconds_and_nanoseconds
-  let path =
-    here
-    <> "/build/remote-owner/"
-    <> name
-    <> "-"
-    <> int.to_string(seconds)
-    <> "-"
-    <> int.to_string(nanos)
-  let assert Ok(Nil) = simplifile.create_directory_all(path <> "/scratch/tmp")
-    as "The fixture has an independent native writable checkout."
-  let assert Ok(path) = canonical(path)
-    as "The registered directory uses its actual filesystem identity."
+fn fixture(peer: distribution.Peer) -> Fixture {
+  let root = nodes.root()
+  nodes.await(root, "executor-ready-1")
+  let #(path, policy, registered) = authority(root)
+  let connection =
+    beam_endpoint.Config(peer, "owner", "linux", scope(1), 1, 2500)
+  let assert Ok(limits) = custody.limits(4, 8, 16_777_216, 2_097_152)
+    as "Owner request and receipt lifetime storage is bounded independently."
+
+  // Fresh parent authority is durably admitted before creating its custodian.
+  let owner_path = root <> "/owner.sqlite"
+  let assert Ok(store) = custody.open(owner_path, session(), limits)
+    as "The owner journal is real SQLite, separate from executor custody."
+  let assert Ok(bytes) = custody.payload(limits, <<"original parent":utf8>>)
+    as "Parent bytes fit the existing bound."
+  assert custody.admit_fresh(store, parent(), bytes, bytes) == Ok(custody.Fresh)
+  assert custody.close(store) == Ok(Nil)
+
+  // Only the original owner process owns durable child receipt callbacks.
+  let assert Ok(names) = registry.start()
+    as "Owner custody uses its restartable production address."
+  let assert Ok(owner_config) =
+    custodian.config(owner_path, session(), limits, 1, 5000, fn(_, _, _) {
+      panic as "This proof invokes physical children, never a parent body."
+    })
+    as "No tool body or provider is injected into parent execution."
+  let owner = custodian.new(names, owner_config)
+  let assert Ok(started) = custodian.start(owner, owner_config)
+    as "The real custodian reopens durable parent authority."
+  FixtureState(
+    root,
+    path,
+    owner,
+    owner_config,
+    started.pid,
+    registered,
+    policy,
+    connection,
+    process.new_subject(),
+  )
+}
+
+fn authority(
+  root: String,
+) -> #(String, policy.SandboxPolicy, registration.Registration) {
+  let assert Ok(path) = canonical(root <> "/checkout")
+    as "The native effects directory has its actual canonical identity."
+  let assert Ok(provisioned) =
+    distribution_fixture.read_provisioned(root <> "/fixture.term")
+    as "Both roles derive the same immutable test registration ceiling."
+  let protected =
+    list.append(
+      distribution.protected_paths(provisioned.owner_config),
+      distribution.protected_paths(provisioned.executor_config),
+    )
+  let protected =
+    list.append(protected, [
+      provisioned.owner_options,
+      provisioned.executor_options,
+    ])
   let base = executor.base_policy(path)
   let policy =
     policy.SandboxPolicy(
       ..base,
+      protected: protected,
       limits: policy.Limits(
         cpu_s: 10,
         wall_s: 2,
@@ -291,19 +348,54 @@ fn fixture(name: String) -> Fixture {
       exec.PlatformEnforcement,
       canonical,
     )
-    as "Real canonical paths and finite policy enter the production constructor."
-  let native = native_service(path, base)
+    as "The actual administrative constructor validates a finite exact policy."
+  #(path, policy, registered)
+}
+
+/// Owns real executor-local helpers and journal in one of two fixed OS roles.
+///
+/// ## Examples
+/// The finite fixture invokes `executor_main()` only in its named executor VM.
+pub fn executor_main() -> Nil {
+  let root = nodes.root()
+  let generation = case argv.load().arguments {
+    ["--native-beam-executor-1", _] -> 1
+    ["--native-beam-executor-2", _] -> 2
+    _ ->
+      panic as "Only the fixed original or replacement executor role is valid."
+  }
+  let assert Ok(provisioned) =
+    distribution_fixture.read_provisioned(root <> "/fixture.term")
+    as "The executor reads the original trusted administrative data."
+  let assert Ok(membership) = distribution.start(provisioned.executor_config)
+    as "The actual executor is a TLS-only trusted runtime member."
+  let assert Ok(owner_peer) =
+    distribution.peer(membership, provisioned.owner_name)
+    as "Only the original owner can access this registered endpoint."
+
+  // Native effects and their durable journal are owned only by the executor VM.
+  assert simplifile.create_directory_all(root <> "/checkout/scratch/tmp")
+    == Ok(Nil)
+  let #(path, policy, registered) = authority(root)
+  let native = native_service(path, policy)
+  let native_monitor = process.monitor(local.pid(native))
   let assert Ok(capacity) = admission.capacity(8)
-    as "Executor lifetime evidence is bounded."
-  let assert Ok(book) =
-    journal.fresh(path <> "/executor.sqlite", scope(1), capacity)
-    as "The executor owns actual WAL/FULL payload and admission custody."
+    as "Native lifetime evidence is bounded."
+
+  // Recovery retains the closed epoch; generation is transport incarnation only.
+  let book = case generation {
+    1 -> journal.fresh(path <> "/executor.sqlite", scope(1), capacity)
+    2 -> journal.recover(path <> "/executor.sqlite", scope(1), capacity)
+    _ -> panic as "Only the two fixed generation roles can open this database."
+  }
+  let assert Ok(book) = book
+    as "VM2 recovers the original permanently fenced authority and bytes."
   let assert Ok(server) =
     service.start(service.Config(
       "owner",
       "linux",
       scope(1),
-      1,
+      generation,
       book,
       native,
       fn(key, prepared) {
@@ -315,41 +407,49 @@ fn fixture(name: String) -> Fixture {
       },
       poll.monotonic().now,
     ))
-    as "The service never substitutes a digest-only approval callback."
-  let #(connection, listener, acceptors) = transport(server)
-  let assert Ok(limits) = custody.limits(4, 8, 16_777_216, 2_097_152)
-    as "Owner request and receipt lifetime storage is bounded independently."
-  let owner_path = path <> "/owner.sqlite"
-  let assert Ok(store) = custody.open(owner_path, session(), limits)
-    as "The owner journal is real SQLite, separate from executor custody."
-  let assert Ok(bytes) = custody.payload(limits, <<"original parent":utf8>>)
-    as "Parent bytes fit the existing bound."
-  assert custody.admit_fresh(store, parent(), bytes, bytes) == Ok(custody.Fresh)
-  assert custody.close(store) == Ok(Nil)
-  let assert Ok(names) = registry.start()
-    as "Owner custody uses its restartable production address."
-  let assert Ok(owner_config) =
-    custodian.config(owner_path, session(), limits, 1, 5000, fn(_, _, _) {
-      panic as "This proof invokes physical children, never a parent body."
+    as "Actual native service retains exact scope, generation and registration."
+
+  // Endpoint credits carry only closed requests to this concrete local service.
+  let assert Ok(row) = beam_endpoint.registration(owner_peer, server, None)
+    as "Endpoint admission derives authority from the concrete service."
+  let assert Ok(config) = beam_endpoint.configure_server([row], 5000)
+    as "The finite endpoint registers only this original service."
+  let assert Ok(endpoint) = beam_endpoint.start(config)
+    as "The real distributed endpoint owns bounded data and control lanes."
+  nodes.mark(root, "executor-ready-" <> int.to_string(generation))
+  let assert poll.Answered(Nil) =
+    poll.until(35_000, 10, fn() {
+      inspect_jobs(root, book)
+      case
+        simplifile.is_file(root <> "/done"),
+        simplifile.is_file(root <> "/rotate"),
+        simplifile.is_file(root <> "/abort")
+      {
+        Ok(True), _, _ | _, _, Ok(True) -> poll.Done(Nil)
+        _, Ok(True), _ if generation == 1 -> poll.Done(Nil)
+        _, _, _ -> poll.Retry
+      }
     })
-    as "No tool body or provider is injected into parent execution."
-  let owner = custodian.new(names, owner_config)
-  let assert Ok(started) = custodian.start(owner, owner_config)
-    as "The real custodian reopens durable parent authority."
-  FixtureState(
-    path,
-    owner,
-    owner_config,
-    started.pid,
-    book,
-    server,
-    registered,
-    policy,
-    connection,
-    listener,
-    acceptors,
-    process.new_subject(),
-  )
+    as "The original owner either finishes, rotates or explicitly aborts."
+
+  // Native drain precedes the witness and OS exit. Endpoint stop is asynchronous
+  // and never substitutes for joining every old transport process at VM exit.
+  beam_endpoint.quiesce(endpoint)
+  assert service.quiesce(server) == Ok(Nil)
+  case simplifile.is_file(root <> "/abort") {
+    Ok(True) -> {
+      assert service.shutdown(server) == Ok(Nil)
+    }
+    _ -> Nil
+  }
+  let assert Ok(_) =
+    process.new_selector()
+    |> process.select_specific_monitor(native_monitor, fn(down) { down })
+    |> process.selector_receive(1000)
+    as "ScopeRetirement or abort shutdown actually ends the native custody actor."
+  assert journal.release(book) == Ok(Nil)
+  beam_endpoint.stop(endpoint)
+  nodes.mark(root, "native-drained-" <> int.to_string(generation))
 }
 
 fn native_service(path: String, base: policy.SandboxPolicy) -> local.Executor {
@@ -383,51 +483,9 @@ fn native_service(path: String, base: policy.SandboxPolicy) -> local.Executor {
   native
 }
 
-fn transport(
-  server: service.Service,
-) -> #(connection.Config, tls.Listener, process.Pid) {
-  assert tls.start() == Ok(Nil)
-  let Fixture(server_cert, client_cert, _, _, _, _) = certificates()
-  let assert Ok(socket) =
-    tls.listen(credentials(server_cert, client_cert), tls.Loopback, 0)
-    as "Loopback mTLS must listen; a sandbox denial is a failed fixture."
-  let assert Ok(port) = tls.port(socket)
-    as "The operating system chooses an isolated available port."
-  let assert Ok(config) = listener.configure(socket, server, 4, 3000)
-    as "The production listener bounds simultaneous connection workers."
-  let assert Ok(started) =
-    supervisor.new(supervisor.OneForOne)
-    |> supervisor.add(listener.supervised(config))
-    |> supervisor.start
-    as "The real listener runs under its finite restart supervisor."
-  #(
-    connection.Config(
-      credentials(client_cert, server_cert),
-      "localhost",
-      port,
-      2500,
-      "owner",
-      "linux",
-      1,
-      scope(1),
-    ),
-    socket,
-    started.pid,
-  )
-}
-
-fn credentials(local: Credentials, peer: Credentials) -> tls.Settings {
-  let Credentials(ca, certificate, key, _) = local
-  let Credentials(_, _, _, pin) = peer
-  let assert Ok(settings) =
-    tls.settings(ca, certificate, key, pin, 1000, 1000, 500)
-    as "Both peers require PKIX validation and the exact ephemeral leaf pin."
-  settings
-}
-
 fn binding(
   fixture: Fixture,
-  connection: connection.Config,
+  connection: beam_endpoint.Config,
   registered: registration.Registration,
   cleared: process.Subject(#(dispatch.Dispatch, wire.Prepared)),
 ) -> dispatcher.Config {
@@ -582,38 +640,35 @@ fn check_receipt(
   digest: identity.Digest,
   observed: Observation,
 ) -> #(ids.EntryId, BitArray, Option(BitArray)) {
-  let assert Ok(items) = journal.payloads(fixture.book, key, digest)
-    as "The executor retained exact native output and terminal bytes."
+  inspect_request(fixture, "receipt", key, digest)
+  let assert Ok(count) =
+    simplifile.read(fixture.root <> "/receipt.count")
+    |> result.replace_error(Nil)
+    |> result.try(int.parse)
+    as "The executor reports its actual retained ordered output slot count."
   let outputs =
-    list.filter_map(items, fn(item) {
-      case item {
-        payload.Output(_, bytes) -> Ok(bytes)
-        _ -> Error(Nil)
-      }
+    int.range(0, count, [], fn(outputs, index) {
+      let assert Ok(bytes) =
+        simplifile.read_bits(
+          fixture.root <> "/receipt.output-" <> int.to_string(index + 1),
+        )
+        as "Raw output bytes came from the executor's original durable slots."
+      list.append(outputs, [bytes])
     })
-  let assert Ok(payload.Terminal(terminal)) =
-    list.find(items, fn(item) {
-      case item {
-        payload.Terminal(_) -> True
-        _ -> False
-      }
-    })
-    as "Executor custody contains the actual encoded terminal."
+  let assert Ok(terminal) =
+    simplifile.read_bits(fixture.root <> "/receipt.terminal")
+    as "The executor transfers its actual original terminal bytes for comparison."
   assert list.try_map(outputs, native.decode_output) == Ok(observed.outputs)
   assert native.decode_terminal(terminal) == Ok(observed.terminal)
+
+  // The owner compares the actual raw slots with its independently durable receipt.
   let assert Ok(expected) = custodian.receipt(outputs, terminal)
     as "The owner uses the actual ordered receipt codec."
   let assert Ok(child) = custodian.child(fixture.owner, origin)
     as "The original child UUID and envelope live in owner SQLite."
   assert child.2 == Some(expected)
-  let assert Ok(evidence) = journal.inspect(fixture.book, key, digest)
-    as "The executor acknowledges only the persisted owner receipt."
-  let assert admission.Terminal(
-    _,
-    admission.NativeUnconfirmed,
-    admission.ReceiptDurable,
-  ) = admission.phase(evidence)
-    as "A terminal is durably received before native retirement is claimed."
+  assert simplifile.is_file(fixture.root <> "/receipt.checked") == Ok(True)
+    as "The executor independently checked NativeUnconfirmed and ReceiptDurable."
   child
 }
 
@@ -628,23 +683,20 @@ fn stop_owner(fixture: Fixture) {
   Nil
 }
 
-fn finish(fixture: Fixture, connection: connection.Config) {
+fn retire(connection: beam_endpoint.Config) -> Nil {
   let assert Ok(wire.ScopeRetirement) =
-    connection.exchange(connection, wire.CloseScope)
-    as "The actual native pool must witness retirement before fixture completion."
-  tls.close_listener(fixture.listener)
+    beam_endpoint.exchange(connection, wire.CloseScope)
+    as "The actual native pool witnesses retirement before executor replacement."
+  Nil
+}
 
-  // Closing the listener stops admissions. Supervisor shutdown ends network
-  // workers; native retirement was already witnessed independently above.
-  let monitor = process.monitor(fixture.acceptors)
-  process.unlink(fixture.acceptors)
-  process.send_abnormal_exit(fixture.acceptors, Shutdown)
-  let assert Ok(_) =
-    process.new_selector()
-    |> process.select_specific_monitor(monitor, fn(down) { down })
-    |> process.selector_receive(2000)
-    as "The fixture's accepting subtree terminates within its own deadline."
-  assert journal.release(fixture.book) == Ok(Nil)
+fn finish(fixture: Fixture, connection: beam_endpoint.Config) {
+  retire(connection)
+  nodes.mark(fixture.root, "done")
+  nodes.await(
+    fixture.root,
+    "native-drained-" <> int.to_string(connection.generation),
+  )
   stop_owner(fixture)
 }
 
@@ -707,21 +759,128 @@ fn mint_candidate() -> ids.EntryId {
 }
 
 fn no_native_payload(
-  book: journal.Journal,
+  fixture: Fixture,
+  name: String,
   key: identity.RequestKey,
   digest: identity.Digest,
 ) {
-  let assert Ok(items) = journal.payloads(book, key, digest)
-    as "Refused authority may retain only the cancellation fence, never native materialization."
-  assert list.all(items, fn(item) {
-    case item {
-      payload.Cancellation(_) -> True
-      payload.Request(_)
-      | payload.Authority(_)
-      | payload.Output(_, _)
-      | payload.Terminal(_) -> False
+  inspect_request(fixture, name, key, digest)
+}
+
+fn inspect_request(
+  fixture: Fixture,
+  name: String,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+) {
+  let envelope =
+    wire.Envelope(
+      wire.Owner,
+      "owner",
+      "linux",
+      1,
+      scope(1),
+      wire.Query(key, digest, 0),
+    )
+  let assert Ok(bytes) = wire.encode(envelope)
+    as "Fixed test inspection carries the same canonical original identity."
+  assert simplifile.write_bits(fixture.root <> "/" <> name <> ".query", bytes)
+    == Ok(Nil)
+  nodes.await(fixture.root, name <> ".checked")
+}
+
+fn inspect_jobs(root: String, book: journal.Journal) -> Nil {
+  list.each(["receipt", "registration-refusal", "policy-refusal"], fn(name) {
+    case
+      simplifile.is_file(root <> "/" <> name <> ".query"),
+      simplifile.is_file(root <> "/" <> name <> ".checked")
+    {
+      Ok(True), Ok(False) -> inspect_job(root, name, book)
+      _, _ -> Nil
     }
   })
+}
+
+fn inspect_job(root: String, name: String, book: journal.Journal) -> Nil {
+  let assert Ok(bytes) = simplifile.read_bits(root <> "/" <> name <> ".query")
+    as "Only the original owner writes this fixed local test inspection slot."
+  let assert Ok(envelope) =
+    wire.decode(bytes, wire.Owner, "owner", "linux", scope(1))
+    as "Even test inspection decodes the original closed bounded native wire."
+  let assert wire.Query(key, digest, 0) = envelope.body
+    as "This test seam only inspects an exact admitted original request."
+  let assert Ok(items) = journal.payloads(book, key, digest)
+    as "The executor reads its actual retained payload journal."
+  case name {
+    "receipt" -> inspect_receipt(root, book, key, digest, items)
+    "registration-refusal" | "policy-refusal" -> {
+      assert list.all(items, fn(item) {
+        case item {
+          payload.Cancellation(_) -> True
+          payload.Request(_)
+          | payload.Authority(_)
+          | payload.Output(_, _)
+          | payload.Terminal(_) -> False
+        }
+      })
+        as "Refused authority never materializes native authority, output or terminal."
+    }
+    _ -> panic as "Only the three fixed inspection scenarios are valid."
+  }
+  nodes.mark(root, name <> ".checked")
+}
+
+fn inspect_receipt(
+  root: String,
+  book: journal.Journal,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+  items: List(payload.Item),
+) -> Nil {
+  let outputs =
+    list.filter_map(items, fn(item) {
+      case item {
+        payload.Output(_, bytes) -> Ok(bytes)
+        payload.Request(_)
+        | payload.Authority(_)
+        | payload.Cancellation(_)
+        | payload.Terminal(_) -> Error(Nil)
+      }
+    })
+  let assert Ok(payload.Terminal(terminal)) =
+    list.find(items, fn(item) {
+      case item {
+        payload.Terminal(_) -> True
+        payload.Request(_)
+        | payload.Authority(_)
+        | payload.Cancellation(_)
+        | payload.Output(_, _) -> False
+      }
+    })
+    as "Actual terminal custody is present before owner acknowledgement."
+  assert simplifile.write(
+      root <> "/receipt.count",
+      int.to_string(list.length(outputs)),
+    )
+    == Ok(Nil)
+  let _ =
+    list.index_map(outputs, fn(bytes, index) {
+      assert simplifile.write_bits(
+          root <> "/receipt.output-" <> int.to_string(index + 1),
+          bytes,
+        )
+        == Ok(Nil)
+    })
+  assert simplifile.write_bits(root <> "/receipt.terminal", terminal) == Ok(Nil)
+  let assert Ok(evidence) = journal.inspect(book, key, digest)
+    as "The executor acknowledges only the persisted original owner receipt."
+  let assert admission.Terminal(
+    _,
+    admission.NativeUnconfirmed,
+    admission.ReceiptDurable,
+  ) = admission.phase(evidence)
+    as "Durable receipt is established before any native retirement claim."
+  Nil
 }
 
 fn proof_mode() -> ProofMode {

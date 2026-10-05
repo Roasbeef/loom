@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Join real owner custody, registered mTLS and native execution in one emulator.
-# This is a component integration gate, not shipped daemon or two-host E2E.
+# Join real owner custody and native execution across independent TLS BEAM VMs.
+# This is a component integration gate with sequential, drained executor generations.
 set -euo pipefail
 # Named counterexamples remove one trusted-assembly invariant. They must fail
 # the same assertions as the baseline and never modify production source.
@@ -23,17 +23,13 @@ for prerequisite in gleam erl erlc python3 go; do
     exit 2
   }
 done
-fixture_ebin="$(mktemp -d "${TMPDIR:-/tmp}/loom-owner-tls-ebin.XXXXXX")"
-trap 'rm -rf "$fixture_ebin"' EXIT
 cd "$root"
 python3 scripts/with_timeout.py "${LOOM_BUILD_TIMEOUT_SECONDS:-1200}" -- make sandbox
-python3 scripts/with_timeout.py 30 -- erlc -o "$fixture_ebin" \
-  packages/executor/test/executor_remote_tls_test_ffi.erl
 cd "$root/packages/client"
 python3 "$root/scripts/with_timeout.py" "${LOOM_BUILD_TIMEOUT_SECONDS:-1200}" -- \
   gleam build --warnings-as-errors
 python3 "$root/scripts/with_timeout.py" "${LOOM_TEST_TIMEOUT_SECONDS:-90}" -- \
-  erl +S 4 -pa "$fixture_ebin" build/dev/erlang/*/ebin -noshell -eval '
+  erl +S 4 -pa build/dev/erlang/*/ebin -noshell -eval '
     try
       {ok, _} = application:ensure_all_started(client),
       nil = client@remote@native_integration:main(),
