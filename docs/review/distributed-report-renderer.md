@@ -65,7 +65,8 @@ contract; no compatibility form was added solely for unreleased test fixtures.
 A real jailed execution reproduced the failure before correction: the renderer
 could not retain its report and the owner rejected a final without prior report
 custody. This is a distinct regression witness, not a compiler failure. The
-corrected live producer/reader replay is still in progress.
+corrected live producer/reader replay now passes in the integration tree; the
+[real-jail review](distributed-report-live.md) records its independent evidence.
 
 Root's corrected gates pass 186 core tests plus 72 JavaScript finite-value
 checks, 182 cap tests, 202 storage tests and 707 tools tests. The focused client
