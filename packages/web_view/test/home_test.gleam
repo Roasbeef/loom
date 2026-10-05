@@ -1905,3 +1905,19 @@ pub fn the_home_groups_by_project_and_names_the_worktree_test() {
   )
   assert list.length(string.split(html, "home-tree")) == 2
 }
+
+// Each running row's dot class follows what the session is doing, in the
+// sidebar: working and idle and needs-you each have a class of their own, which
+// the stylesheet hues and pulses, and a session the read has not named has
+// none beyond `live`.
+pub fn the_sidebar_dot_class_follows_the_activity_test() {
+  let #(model, _) = opened(start())
+  let model =
+    run(model, home.Observed([#("B", sessions.Working), #("A", sessions.Idle)]))
+  let html = drawn(model)
+  assert string.contains(html, "residency live working")
+  assert string.contains(html, "residency live idle")
+  assert !string.contains(html, "residency live needs-you")
+  let model = run(model, home.Observed([#("A", sessions.NeedsYou)]))
+  assert string.contains(drawn(model), "residency live needs-you")
+}

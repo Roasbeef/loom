@@ -421,6 +421,12 @@
   .residency.live .glyph{color:var(--color-current);}
   .residency.opening{color:var(--color-current);}
   .residency.needs-you,.residency.needs-you .glyph{color:var(--color-signal-text);}
+  /* A running session's dot follows what it is doing: working pulses in the
+     accent as the home's rows do, idle is quiet and still, and needs-you is the
+     signal hue with a slower pulse. The reduced-motion rule below stops both. */
+  .residency.working .glyph{animation:loom-pulse 1.4s ease-in-out infinite;}
+  .residency.idle .glyph{color:var(--color-fg-quiet);}
+  .residency.needs-you .glyph{animation:loom-pulse 2.6s ease-in-out infinite;}
   /* The app's navigation slot above the first workspace group. It is empty
      until the app has pages to link to. */
   .sidebar .nav{display:flex;flex-direction:column;gap:2px;margin:0 0 12px 0;}

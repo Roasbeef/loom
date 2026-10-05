@@ -81,24 +81,24 @@ import lustre/event
 import session_view/agent_view
 import session_view/turns
 import web_view/sessions.{
-  type Activity, type Entry, type Group, Blocked, Live, NeedsYou, Saved,
+  type Activity, type Entry, type Group, Blocked, Idle, Live, NeedsYou, Saved,
+  Working,
 }
 import web_view/view/resume.{type Resume}
 import web_view/view/strip
 
 /// What a running session's row says after its glyph.
 type Suffix {
-  /// "running", which is all a session page knows: it makes no activity read
-  /// (protocol-change/050), so a second word would be a guess. The word is the
-  /// one the home uses for a running session the activity read has not named;
-  /// "resident" is the engine's word and the page does not use it.
-  Resident
-
   /// The home's answer to the activity read, by session identity: "needs you",
   /// "working" or "idle" for a session the read named, and nothing for one it
   /// has not yet, so a row never says "running" in one column and "working" in
   /// another.
   Doing(Dict(String, Activity))
+
+  /// The session page's answer to the same read: the word and dot the home
+  /// draws for a session the read named, and "running" for one it has not yet,
+  /// since the page has no other column to disagree with.
+  Known(Dict(String, Activity))
 }
 
 /// One live strand's bar on the current row: its hue and whether it is
@@ -128,7 +128,7 @@ pub type Pulse {
 /// ## Examples
 ///
 /// ```gleam
-/// // sidebar.view(groups, current, sidebar.bars(component.strip(model)), Opening)
+/// // sidebar.view(groups, current, sidebar.bars(component.strip(model)), activity, Opening, resume)
 /// ```
 pub fn bars(strip: strip.Strip) -> List(Bar) {
   let chips = case strip.advisor {
@@ -155,13 +155,15 @@ fn pulse(status: agent_view.Status) -> Pulse {
 }
 
 /// The sidebar for `groups`, with the session named `current` marked, the
-/// current session's strand `bars`, `open` the message a press of another
+/// current session's strand `bars`, `activity` what the daemon last said each
+/// running session is doing (the home's read, asked from a task; a session it
+/// has not named says "running"), `open` the message a press of another
 /// live session's row sends, given that session's identity, and `resume` what
 /// the page offers for a saved session's row.
 ///
 /// With no group it is `element.none()`, so a page whose daemon listed
 /// nothing, or could not, draws no empty column. The result is memoized on
-/// the groups, the identity and the bars, so a page that re-read an unchanged
+/// the groups, the identity, the bars and the activity, so a page that re-read an unchanged
 /// list diffs nothing. `open` and the resume's `press` are not part of the
 /// memo's key, so a caller passes the same functions every time, as a
 /// constructor is; the session whose resume is out is, so its row changes when
@@ -170,12 +172,13 @@ fn pulse(status: agent_view.Status) -> Pulse {
 /// ## Examples
 ///
 /// ```gleam
-/// // sidebar.view(component.session_groups(model), component.session_id(model), [], Opening, resume.Never)
+/// // sidebar.view(component.session_groups(model), component.session_id(model), [], dict.new(), Opening, resume.Never)
 /// ```
 pub fn view(
   groups: List(Group),
   current: String,
   bars: List(Bar),
+  activity: Dict(String, Activity),
   open: fn(String) -> message,
   resume: Resume(message),
 ) -> Element(message) {
@@ -183,9 +186,10 @@ pub fn view(
     element.ref(groups),
     element.ref(current),
     element.ref(bars),
+    element.ref(activity),
     element.ref(resume.pending(resume)),
   ])
-  column(groups, element.none(), current, bars, Resident, open, resume)
+  column(groups, element.none(), current, bars, Known(activity), open, resume)
 }
 
 /// The sidebar the home page draws (protocol-change/065): the same groups, with
@@ -502,17 +506,31 @@ fn entry(
 // activity read's answer, and a session the read has not named has none.
 fn running(entry: Entry, suffix: Suffix) -> #(List(String), String, String) {
   case suffix {
-    Resident -> #(["live"], "●", "running")
     Doing(activity) ->
       case dict.get(activity, entry.id) {
-        Ok(NeedsYou) -> #(
-          ["live", "needs-you"],
-          "●",
-          sessions.activity_words(NeedsYou),
-        )
-        Ok(doing) -> #(["live"], "●", sessions.activity_words(doing))
+        Ok(doing) -> doing_row(doing)
         Error(Nil) -> #(["live"], "●", "")
       }
+    Known(activity) ->
+      case dict.get(activity, entry.id) {
+        Ok(doing) -> doing_row(doing)
+        Error(Nil) -> #(["live"], "●", "running")
+      }
+  }
+}
+
+// The classes, glyph and word of a running session whose activity is known. The
+// class names the dot's colour and motion in the stylesheet: working pulses in
+// the accent, idle is quiet and still, and needs-you is the signal hue.
+fn doing_row(doing: Activity) -> #(List(String), String, String) {
+  #(["live", activity_class(doing)], "●", sessions.activity_words(doing))
+}
+
+fn activity_class(doing: Activity) -> String {
+  case doing {
+    NeedsYou -> "needs-you"
+    Working -> "working"
+    Idle -> "idle"
   }
 }
 

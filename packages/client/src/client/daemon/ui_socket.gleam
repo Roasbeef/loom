@@ -1259,6 +1259,9 @@ fn admit(
       shut: ui_relay.shut,
       now: bootstrap.monotonic_time_ms,
       sessions: fn() { listed_for(role, fn() { listed(attachment, projects) }) },
+      activity: fn(ids, deliver) {
+        activity_for(role, attachment.activity, ids, deliver)
+      },
       open: fn(target) {
         opened_for(role, fn() { ticket_for(standing, tickets, open, target) })
       },
@@ -1435,6 +1438,29 @@ pub fn listed_for(
   case role {
     Observing -> []
     Operating | Owning -> read()
+  }
+}
+
+/// The sidebar's activity read for a page of `role`: the daemon's read
+/// (`server.home_activity`, held by the page's own credential) from a task of
+/// its own for an operator's page, and nothing for an observer's, which lists no
+/// sessions and so asks about none. The answer is delivered from the task.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.activity_for(Observing, ask, ["0198..."], deliver)
+/// ```
+@internal
+pub fn activity_for(
+  role: Role,
+  ask: fn(List(String)) -> List(#(String, sessions.Activity)),
+  ids: List(String),
+  deliver: fn(List(#(String, sessions.Activity))) -> Nil,
+) -> Nil {
+  case role {
+    Observing -> Nil
+    Operating | Owning -> activity_task(ask, ids, deliver)
   }
 }
 

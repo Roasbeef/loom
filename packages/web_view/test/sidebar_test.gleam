@@ -354,6 +354,7 @@ fn sidebar_with(bars: List(sidebar.Bar)) -> Element(Nil) {
     sessions.grouped(listing(), "A"),
     "A",
     bars,
+    dict.new(),
     fn(_) { Nil },
     resume.Never,
   )
@@ -655,5 +656,96 @@ pub fn a_worktree_row_with_a_subtitle_says_both_test() {
     "<span class=\"session-subtitle\"><span class=\"session-tree\" title=\""
       <> tree
       <> "\">calm-turing</span> · Fix the retry</span>",
+  )
+}
+
+// A page whose transport answers the activity read with `rows`, after a list
+// of `entries`, as the page's own messages arrive: the list, then the answer.
+fn with_activity(
+  entries: List(Entry),
+  rows: List(#(String, sessions.Activity)),
+) {
+  let asked = process.new_subject()
+  let start = page_fixture.start()
+  let start =
+    component.Start(
+      ..start,
+      transport: component.Transport(
+        ..start.transport,
+        activity: fn(ids, deliver) {
+          process.send(asked, ids)
+          deliver(rows)
+        },
+      ),
+    )
+  let messages = process.new_subject()
+  let model =
+    component.new(start) |> component.apply([lane_fixture.captured(10, None)])
+  let #(model, effects) =
+    component.update(model, component.SessionsListed(entries))
+  effect.perform(
+    effects,
+    fn(message) { process.send(messages, message) },
+    fn(_, _) { Nil },
+    fn(_) { Nil },
+    fn() { panic as "no dynamic value" },
+    fn(_, _) { Nil },
+    fn(_, _) { Nil },
+    fn(_) { Nil },
+  )
+  let assert Ok(answer) = process.receive(messages, 0)
+  let #(model, _) = component.update(model, answer)
+  #(model, process.receive(asked, 0))
+}
+
+// The session page asks the daemon what its running sessions are doing, once
+// for each read of the list, naming only the running ones in the order the
+// sidebar draws them, and the answer sets each row's word and dot class: the
+// same three states the home draws.
+pub fn the_session_pages_sidebar_draws_each_sessions_activity_test() {
+  let #(model, asked) =
+    with_activity(listing(), [
+      #("B", sessions.Working),
+      #("A", sessions.NeedsYou),
+    ])
+  assert asked == Ok(["B", "A"])
+  let assert Ok(sidebar) = sidebar_of(operator_html(model))
+  assert string.contains(sidebar, "residency live working")
+  assert string.contains(sidebar, "residency live needs-you")
+  assert string.contains(sidebar, "</span>working</span>")
+  assert string.contains(sidebar, "</span>needs you</span>")
+
+  let #(idle, _) = with_activity(listing(), [#("B", sessions.Idle)])
+  let assert Ok(sidebar) = sidebar_of(operator_html(idle))
+  assert string.contains(sidebar, "residency live idle")
+  assert string.contains(sidebar, "</span>idle</span>")
+
+  // A session the read has not named yet says "running" as it always did.
+  assert string.contains(sidebar, "</span>running</span>")
+}
+
+// A page with nothing running asks nothing, and the daemon is never asked
+// about a saved session.
+pub fn a_list_with_nothing_running_asks_no_activity_test() {
+  let rows = [entry("C", "hex release", "/src/weft", 900, Saved)]
+  let start = page_fixture.start()
+  let start =
+    component.Start(
+      ..start,
+      transport: component.Transport(..start.transport, activity: fn(_, _) {
+        panic as "nothing runs, so nothing is asked"
+      }),
+    )
+  let #(_, effects) =
+    component.update(component.new(start), component.SessionsListed(rows))
+  effect.perform(
+    effects,
+    fn(_) { Nil },
+    fn(_, _) { Nil },
+    fn(_) { Nil },
+    fn() { panic as "no dynamic value" },
+    fn(_, _) { Nil },
+    fn(_, _) { Nil },
+    fn(_) { Nil },
   )
 }

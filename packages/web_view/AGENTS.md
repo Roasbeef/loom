@@ -302,7 +302,15 @@ page keys and nonces, and the relay into the session's gateway.
   section whose label the stylesheet draws as a small uppercase eyebrow with
   the session count, and a hairline in the divider colour separates one
   section from the next (team feedback, 2026-09-29); the list's own heading
-  is kept for assistive technology and not drawn. The
+  is kept for assistive technology and not drawn. A running row's word and dot follow the home's activity
+  read: after each list the component asks `Transport.activity(ids, deliver)` (an
+  async task, never in the page runtime; the daemon's `server.home_activity` with
+  the page's own credential, so a member hears only of sessions they hold) and
+  `ActivityObserved` sets `View.activity`, so the session page says `working`,
+  `idle` or `needs you` (classes `residency live working|idle|needs-you`, drawn
+  as accent pulse, quiet, signal hue) on the list's 30 s cadence, and `running`
+  until a session is named. The read cannot tell an approval from a failed run:
+  `needs you` covers both. The
   component reads `Transport.sessions` on `Opened` and on a `Ticked` at
   least `sessions_refresh_ms` (30 s) after the last read, keeps at most
   `sessions.listed_limit` entries, and `component.session_groups(model)` is
