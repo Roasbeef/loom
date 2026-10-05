@@ -1342,6 +1342,11 @@ pub type OwnerToolHeader {
     outcome_bytes: Int,
     state: String,
     run_custody: String,
+    final_profile: String,
+    final_allowance: Int,
+    report_bytes: Int,
+    report_digest: String,
+    result_entry: String,
     reserved_bytes: Int,
   )
 }
@@ -1352,6 +1357,11 @@ pub fn owner_tool_header(address address: String) {
   CAST(CASE WHEN typeof(request) = 'blob' THEN length(request) ELSE -1 END AS INTEGER) AS request_bytes, CAST(CASE WHEN outcome IS NULL THEN 0 WHEN typeof(outcome) = 'blob' THEN length(outcome) ELSE -1 END AS INTEGER) AS outcome_bytes,
   CASE WHEN state IN ('retained', 'frozen') THEN state ELSE '' END AS state,
   CASE WHEN run_custody IN ('unreleased', 'released') THEN run_custody ELSE '' END AS run_custody,
+  CASE WHEN final_profile IN ('ordinary', 'code_mode_report_v1') THEN final_profile ELSE '' END AS final_profile,
+  CAST(CASE WHEN typeof(final_allowance) = 'integer' THEN final_allowance ELSE -1 END AS INTEGER) AS final_allowance,
+  CAST(CASE WHEN report IS NULL THEN 0 WHEN typeof(report) = 'blob' AND length(report) >= 18 THEN length(report) ELSE -1 END AS INTEGER) AS report_bytes,
+  CASE WHEN report_digest IS NULL THEN '' WHEN typeof(report_digest) = 'text' AND length(CAST(report_digest AS BLOB)) = 64 THEN report_digest ELSE 'invalid' END AS report_digest,
+  CASE WHEN typeof(result_entry) = 'text' AND length(CAST(result_entry AS BLOB)) = 36 THEN result_entry ELSE '' END AS result_entry,
   reserved_bytes FROM owner_custody_tools WHERE address = ?1 LIMIT 2"
   #(sql, [dev.ParamString(address)], owner_tool_header_decoder())
 }
@@ -1363,7 +1373,12 @@ pub fn owner_tool_header_decoder() -> decode.Decoder(OwnerToolHeader) {
   use outcome_bytes <- decode.field(3, decode.int)
   use state <- decode.field(4, decode.string)
   use run_custody <- decode.field(5, decode.string)
-  use reserved_bytes <- decode.field(6, decode.int)
+  use final_profile <- decode.field(6, decode.string)
+  use final_allowance <- decode.field(7, decode.int)
+  use report_bytes <- decode.field(8, decode.int)
+  use report_digest <- decode.field(9, decode.string)
+  use result_entry <- decode.field(10, decode.string)
+  use reserved_bytes <- decode.field(11, decode.int)
   decode.success(OwnerToolHeader(
     identity_bytes:,
     argument_bytes:,
@@ -1371,6 +1386,11 @@ pub fn owner_tool_header_decoder() -> decode.Decoder(OwnerToolHeader) {
     outcome_bytes:,
     state:,
     run_custody:,
+    final_profile:,
+    final_allowance:,
+    report_bytes:,
+    report_digest:,
+    result_entry:,
     reserved_bytes:,
   ))
 }
@@ -1392,7 +1412,7 @@ pub fn owner_tool_value(
     "SELECT identity, arguments, request, outcome FROM owner_custody_tools
 WHERE address = ?1 AND typeof(identity) = 'blob' AND length(identity) <= 8192
   AND typeof(arguments) = 'blob' AND typeof(request) = 'blob' AND length(arguments) <= CAST(?2 AS INTEGER) AND length(request) <= CAST(?2 AS INTEGER)
-  AND (outcome IS NULL OR (typeof(outcome) = 'blob' AND length(outcome) <= CAST(?2 AS INTEGER))) LIMIT 2"
+  AND (outcome IS NULL OR (typeof(outcome) = 'blob' AND length(outcome) <= CASE WHEN final_profile = 'code_mode_report_v1' THEN 262144 ELSE CAST(?2 AS INTEGER) END)) LIMIT 2"
   #(
     sql,
     [dev.ParamString(address), dev.ParamInt(payload_limit)],
@@ -1414,17 +1434,21 @@ pub fn insert_owner_tool(
   result_entry result_entry: String,
   arguments arguments: BitArray,
   request request: BitArray,
+  final_profile final_profile: String,
+  final_allowance final_allowance: Int,
   reserved_bytes reserved_bytes: Int,
 ) {
   let sql =
-    "INSERT INTO owner_custody_tools(address, identity, result_entry, arguments, request, state, run_custody, reserved_bytes)
-VALUES (?1, ?2, ?3, ?4, ?5, 'retained', 'unreleased', ?6)"
+    "INSERT INTO owner_custody_tools(address, identity, result_entry, arguments, request, final_profile, final_allowance, state, run_custody, reserved_bytes)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'retained', 'unreleased', ?8)"
   #(sql, [
     dev.ParamString(address),
     dev.ParamBitArray(identity),
     dev.ParamString(result_entry),
     dev.ParamBitArray(arguments),
     dev.ParamBitArray(request),
+    dev.ParamString(final_profile),
+    dev.ParamInt(final_allowance),
     dev.ParamInt(reserved_bytes),
   ])
 }
@@ -1444,7 +1468,8 @@ pub fn finish_owner_tool(
 pub fn freeze_owner_tool(address address: String) {
   let sql =
     "UPDATE owner_custody_tools SET arguments = X'', request = X'', outcome = NULL, state = 'frozen',
-  reserved_bytes = length(identity) + length(CAST(address AS BLOB)) + 128 WHERE address = ?1"
+  reserved_bytes = length(identity) + length(CAST(address AS BLOB)) + 128
+    + CASE WHEN report IS NULL THEN 0 ELSE length(report) + 128 END WHERE address = ?1"
   #(sql, [dev.ParamString(address)])
 }
 
@@ -1867,6 +1892,124 @@ WHERE address = ?1 AND state = 'retained' AND outcome = ?2 AND run_custody = 'un
     dev.ParamString(address),
     dev.ParamNullable(option.map(outcome, fn(v) { dev.ParamBitArray(v) })),
   ])
+}
+
+pub type OwnerToolNext {
+  OwnerToolNext(address: String)
+}
+
+pub fn owner_tool_next(after_address after_address: String) {
+  let sql =
+    "SELECT CASE WHEN typeof(address) = 'text' AND length(CAST(address AS BLOB)) <= 8192 THEN address ELSE '' END AS address
+FROM owner_custody_tools WHERE address > ?1 ORDER BY address LIMIT 1"
+  #(sql, [dev.ParamString(after_address)], owner_tool_next_decoder())
+}
+
+pub fn owner_tool_next_decoder() -> decode.Decoder(OwnerToolNext) {
+  use address <- decode.field(0, decode.string)
+  decode.success(OwnerToolNext(address:))
+}
+
+pub type OwnerReportIdentity {
+  OwnerReportIdentity(address: String, identity: BitArray)
+}
+
+pub fn owner_report_identity(result_entry result_entry: String) {
+  let sql =
+    "SELECT address, identity FROM owner_custody_tools
+WHERE result_entry = ?1 AND typeof(address) = 'text' AND length(CAST(address AS BLOB)) <= 8192
+  AND typeof(identity) = 'blob' AND length(identity) <= 8192 LIMIT 2"
+  #(sql, [dev.ParamString(result_entry)], owner_report_identity_decoder())
+}
+
+pub fn owner_report_identity_decoder() -> decode.Decoder(OwnerReportIdentity) {
+  use address <- decode.field(0, decode.string)
+  use identity <- decode.field(1, decode.bit_array)
+  decode.success(OwnerReportIdentity(address:, identity:))
+}
+
+pub type OwnerToolIdentity {
+  OwnerToolIdentity(identity: BitArray)
+}
+
+pub fn owner_tool_identity(address address: String) {
+  let sql =
+    "SELECT identity FROM owner_custody_tools WHERE address = ?1
+  AND typeof(identity) = 'blob' AND length(identity) <= 8192 LIMIT 2"
+  #(sql, [dev.ParamString(address)], owner_tool_identity_decoder())
+}
+
+pub fn owner_tool_identity_decoder() -> decode.Decoder(OwnerToolIdentity) {
+  use identity <- decode.field(0, decode.bit_array)
+  decode.success(OwnerToolIdentity(identity:))
+}
+
+pub type OwnerReportValue {
+  OwnerReportValue(report: Option(BitArray))
+}
+
+pub fn owner_report_value(address address: String) {
+  let sql =
+    "SELECT report FROM owner_custody_tools WHERE address = ?1
+  AND final_profile = 'code_mode_report_v1' AND final_allowance = 17301648
+  AND typeof(report) = 'blob' AND length(report) BETWEEN 18 AND 17039376
+  AND typeof(report_digest) = 'text' AND length(CAST(report_digest AS BLOB)) = 64 LIMIT 2"
+  #(sql, [dev.ParamString(address)], owner_report_value_decoder())
+}
+
+pub fn owner_report_value_decoder() -> decode.Decoder(OwnerReportValue) {
+  use report <- decode.field(0, decode.optional(decode.bit_array))
+  decode.success(OwnerReportValue(report:))
+}
+
+pub fn retain_owner_report(
+  report report: Option(BitArray),
+  report_digest report_digest: Option(String),
+  address address: String,
+) {
+  let sql =
+    "UPDATE owner_custody_tools SET report = ?1, report_digest = ?2
+WHERE address = ?3 AND state = 'retained' AND final_profile = 'code_mode_report_v1'
+  AND final_allowance = 17301648 AND report IS NULL AND outcome IS NULL"
+  #(sql, [
+    dev.ParamNullable(option.map(report, fn(v) { dev.ParamBitArray(v) })),
+    dev.ParamNullable(option.map(report_digest, fn(v) { dev.ParamString(v) })),
+    dev.ParamString(address),
+  ])
+}
+
+pub type OwnerReportChunk {
+  OwnerReportChunk(chunk: BitArray)
+}
+
+pub fn owner_report_chunk(
+  byte_offset byte_offset: Int,
+  address address: String,
+  report_bytes report_bytes: Int,
+  report_digest report_digest: Option(String),
+) {
+  let sql =
+    "SELECT CAST(substr(report, CAST(?1 AS INTEGER) + 1, 65536) AS BLOB) AS chunk
+FROM owner_custody_tools WHERE address = ?2
+  AND final_profile = 'code_mode_report_v1' AND final_allowance = 17301648
+  AND typeof(report) = 'blob' AND length(report) = CAST(?3 AS INTEGER)
+  AND length(report) BETWEEN 18 AND 17039376 AND report_digest = ?4
+  AND (state = 'frozen' OR outcome IS NOT NULL) LIMIT 2"
+  #(
+    sql,
+    [
+      dev.ParamInt(byte_offset),
+      dev.ParamString(address),
+      dev.ParamInt(report_bytes),
+      dev.ParamNullable(option.map(report_digest, fn(v) { dev.ParamString(v) })),
+    ],
+    owner_report_chunk_decoder(),
+  )
+}
+
+pub fn owner_report_chunk_decoder() -> decode.Decoder(OwnerReportChunk) {
+  use chunk <- decode.field(0, decode.bit_array)
+  decode.success(OwnerReportChunk(chunk:))
 }
 
 pub type SnapshotSession {
