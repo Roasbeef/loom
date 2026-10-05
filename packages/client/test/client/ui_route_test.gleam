@@ -222,6 +222,7 @@ fn fixture_lasting(
                 request,
                 attachment,
                 gateway.Gateway(name: addresses.new()),
+                fn() { Error("no worktree") },
                 sessions,
                 open,
                 register,

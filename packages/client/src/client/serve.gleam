@@ -546,6 +546,14 @@ pub type Instance {
     /// name rather than a pid, which is what lets the hub be restarted
     /// under it.
     gateway: hub.Gateway,
+    /// The session's bounded observation of its own Git working tree: the
+    /// closure the gateway's `worktree_diff` read runs, kept here as well so
+    /// the web view's page can read it under its own admission
+    /// (`ui_socket.worktree_answer`) without the gateway's owner-only one
+    /// being widened. It closes over the session's workspace and base commit,
+    /// takes nothing from a caller, and blocks for up to the observation's own
+    /// deadline, so a caller runs it in a task.
+    worktree: fn() -> Result(json.JsonValue, String),
     services: Pid,
     /// Reclaimable addresses shared by this session's composition services.
     namespace: address.Registry,
@@ -2185,6 +2193,10 @@ pub type Resident {
     peer: peer_mail.Endpoint,
     /// The hub's stable address, which is all an attaching socket reads.
     gateway: hub.Gateway,
+    /// The session's worktree observation (`Instance.worktree`), for the web
+    /// view's page. A closure over a workspace path and a few handles, not the
+    /// runtime graph.
+    worktree: fn() -> Result(json.JsonValue, String),
     /// The fatal roots, named for the log line. Read once, immediately after
     /// publication, by the assembly host that monitors them.
     children: List(#(String, Pid)),
@@ -2205,6 +2217,7 @@ pub fn resident(instance: Instance) -> Resident {
   Resident(
     peer: instance.peer,
     gateway: instance.gateway,
+    worktree: instance.worktree,
     children: instance_children(instance),
     drain: api.draining(instance.runtime),
   )
@@ -3996,6 +4009,15 @@ fn assemble_in(
     }),
   )
 
+  // The one observation of the session's tree. The gateway runs it for an
+  // owner's terminal, and the instance keeps it for the web view's page, whose
+  // admission is its own (`ui_socket.worktree_answer`).
+  let observe_worktree = fn() {
+    worktree_diff.capture_since(worktree_wiring, git_start)
+    |> result.map(worktree_diff.to_json)
+    |> result.map_error(worktree_diff.error_message)
+  }
+
   // The system prompt, before the open, because `wiring.Config` needs
   // the string and `api.open` is what stands the writer up. The pinned
   // cells are therefore read straight off the store here — legal, nothing
@@ -4467,11 +4489,7 @@ fn assemble_in(
             ))
             |> hub.with_bus(event_bus)
             |> with_summary_demand(summary_route, summary_name)
-            |> hub.with_worktree_diff(fn() {
-              worktree_diff.capture_since(worktree_wiring, git_start)
-              |> result.map(worktree_diff.to_json)
-              |> result.map_error(worktree_diff.error_message)
-            })
+            |> hub.with_worktree_diff(observe_worktree)
             |> hub.with_context(context_reader)
             |> hub.with_live_jobs(fn(strand) {
               jobs.live_jobs(jobs_name, strand, waiting: 1000)
@@ -4553,6 +4571,7 @@ fn assemble_in(
     pool:,
     executor: plane.executor,
     gateway: hub.Gateway(name:),
+    worktree: observe_worktree,
     goal: option.map(advisor_wiring, goalcommand.seam),
     goal_abort: option.map(advisor_wiring, advisor.abort_notice),
     services: started_services.pid,

@@ -202,6 +202,7 @@ import web_view/view/strip
 import web_view/view/switch
 import web_view/view/todo_panel
 import web_view/view/trace
+import web_view/worktrees
 
 /// The most frames one `Arrived` carries: the frame the selector matched
 /// and up to this many less one already waiting behind it.
@@ -507,6 +508,16 @@ pub type Transport(socket) {
     /// capability draws no control and a page that has one cannot use it once
     /// its principal or its own standing has changed.
     rename: Option(fn(String, fn(renames.Answer) -> Nil) -> Nil),
+    /// Asks the daemon to observe the session's Git working tree for the
+    /// Changes tab (protocol-change/051, the addendum on the worktree read). It
+    /// must return at once: the daemon runs the observation in a task of its
+    /// own, which calls the function it is given with the answer, and that call
+    /// is dispatched as `Worktreed`. It is `None` for an observer's page, which
+    /// is never shown worktree bytes. The daemon takes the session, the
+    /// workspace and every bound from its own records and checks the page's
+    /// standing again each time it is called, so a page whose grant was
+    /// revoked is answered `Declined`.
+    worktree: Option(fn(fn(worktrees.Read) -> Nil) -> Nil),
   )
 }
 
@@ -687,6 +698,18 @@ type View(socket) {
     /// folded when the projection is built, so a message that changed none
     /// of its inputs costs the Changes section no fold.
     changes: changes_view.Board,
+    /// What the page knows of the workspace's Git tree, for the Changes tab,
+    /// whether a read is out, when the last one was asked on the transport's
+    /// clock, and the sequence of the newest tool result the page had seen when
+    /// it asked (`worktrees`). A newer one in the records is the reason to
+    /// ask again.
+    worktree: worktrees.Read,
+    asking: worktrees.Asking,
+    worktree_asked_at: Option(Int),
+    worktree_seen: Int,
+    /// The sequence of the newest tool result the held records carry, derived
+    /// with `changes`.
+    latest_result: Int,
     /// The `code_mode` programs the held window carries
     /// (`session_view/trace_view`), folded with `changes` for the same
     /// reason.
@@ -860,6 +883,13 @@ pub type Msg(socket) {
   /// carries it, so a browser cannot send one and cannot put a name in the page
   /// that the daemon did not store.
   Renamed(answer: renames.Answer)
+
+  /// The daemon answered a request to observe the workspace. It is the
+  /// effect's own message, dispatched from the daemon's task, and no handler
+  /// carries it, so a browser cannot send one and cannot put a diff in the
+  /// page that the daemon did not observe. The read is `Seen`, `Declined` or
+  /// `Unreadable`.
+  Worktreed(read: worktrees.Read)
 }
 
 /// The Lustre application for one session's observer page.
@@ -904,6 +934,14 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       pieces: [],
       projected: projected_of(shared, Tail),
       changes: changes_view.empty(),
+      worktree: case start.transport.worktree {
+        Some(_) -> worktrees.Unread
+        None -> worktrees.Withheld
+      },
+      asking: worktrees.Idle,
+      worktree_asked_at: None,
+      worktree_seen: -1,
+      latest_result: 0,
       trace: trace_view.empty(),
       streams: [],
       strip: strip.Strip(
@@ -1124,6 +1162,17 @@ pub fn update(
     Invited(answer:) -> #(invited(model, answer), effect.none())
 
     Renamed(answer:) -> #(renamed(model, answer), effect.none())
+
+    // The observation is the page's own state and changes nothing the lane
+    // holds. The next read waits for a newer tool result, so this asks for
+    // nothing.
+    Worktreed(read:) -> #(
+      Model(
+        ..model,
+        view: View(..model.view, worktree: read, asking: worktrees.Idle),
+      ),
+      effect.none(),
+    )
   }
 }
 
@@ -1253,7 +1302,54 @@ fn finished(
   at: Int,
 ) -> #(Model(socket), Effect(Msg(socket))) {
   let model = settled(model) |> refreshed |> rearm(at)
-  #(model, perform(model.view.transport, effects))
+  let #(model, observing) = observed(model, at)
+  #(model, effect.batch([perform(model.view.transport, effects), observing]))
+}
+
+// Asks the daemon to observe the workspace when the page may, no read is out,
+// the transcript shows a tool result the last read did not see (the page's
+// first read is owed from the start), and `worktrees.refresh_ms` have passed
+// since the last ask. A burst of tool calls therefore asks once, and a page
+// with nothing happening asks nothing. The answer arrives as `Worktreed`.
+fn observed(
+  model: Model(socket),
+  at: Int,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let view = model.view
+  let since = case view.worktree_asked_at {
+    Some(before) -> at - before
+    None -> worktrees.lost_ms
+  }
+
+  // A read that never answered is lost after `lost_ms`, and is asked again.
+  let free = case view.asking {
+    worktrees.Idle -> since >= worktrees.refresh_ms
+    worktrees.Out -> since >= worktrees.lost_ms
+  }
+  case view.transport.worktree, free, view.worktree_seen {
+    Some(ask), True, seen if seen != view.latest_result -> #(
+      Model(
+        ..model,
+        view: View(
+          ..view,
+          asking: worktrees.Out,
+          worktree_asked_at: Some(at),
+          worktree_seen: view.latest_result,
+        ),
+      ),
+      asking_worktree(ask),
+    )
+    _, _, _ -> #(model, effect.none())
+  }
+}
+
+// Starts the daemon's task and returns at once. Its answer arrives later as
+// `Worktreed`, dispatched from the task's own process.
+fn asking_worktree(
+  ask: fn(fn(worktrees.Read) -> Nil) -> Nil,
+) -> Effect(Msg(socket)) {
+  use dispatch <- effect.from
+  ask(fn(read) { dispatch(Worktreed(read)) })
 }
 
 // Takes the prompts the daemon handed back out of the shared record, which
@@ -1657,6 +1753,7 @@ fn relaned(model: Model(socket)) -> Model(socket) {
           earlier:,
           paging:,
           changes: changes_view.fold(branch.records),
+          latest_result: worktrees.latest_result(branch.records),
           trace: trace_view.fold(branch.records),
         ),
       ))
@@ -3530,10 +3627,14 @@ pub fn panel(
     strip.count(model.view.strip),
     strip.view(model.view.strip, focus),
     detail(model),
-    changes.view(model.view.changes, case model.view.earlier {
-      Reached -> changes.Whole
-      Unheld -> changes.Partial
-    }),
+    changes.view(
+      model.view.changes,
+      case model.view.earlier {
+        Reached -> changes.Whole
+        Unheld -> changes.Partial
+      },
+      model.view.worktree,
+    ),
     session_tab.view(
       option.map(goal(model), goal_view.row) |> option.unwrap([]),
       cost_figure(model),

@@ -100,6 +100,7 @@ fn start_page(
         invite: None,
         home: None,
         rename: None,
+        worktree: None,
       ),
     )
   let assert Ok(runtime) =

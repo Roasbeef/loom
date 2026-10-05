@@ -797,6 +797,7 @@ fn web_view(
               request,
               attachment,
               attachment.instance.gateway,
+              attachment.instance.worktree,
               sessions,
               open,
               register,
