@@ -14,6 +14,7 @@ CREATE TABLE owner_custody_tools (
   arguments BLOB NOT NULL,
   request BLOB NOT NULL,
   outcome BLOB,
+  run_custody TEXT NOT NULL CHECK(run_custody IN ('unreleased', 'released')),
   state TEXT NOT NULL CHECK(state IN ('retained', 'frozen')),
   reserved_bytes INTEGER NOT NULL CHECK(reserved_bytes >= 0)
 );
@@ -42,3 +43,6 @@ CREATE TABLE owner_custody_command_offers (
 );
 CREATE INDEX owner_command_offer_parent ON owner_custody_command_offers(parent, address);
 CREATE INDEX owner_command_offer_service ON owner_custody_command_offers(service_origin, address);
+-- Released histories never enter the index used by the startup existence probe.
+CREATE INDEX owner_tool_run_custody ON owner_custody_tools(run_custody, address)
+WHERE run_custody != 'released';

@@ -3,6 +3,7 @@
 //// The injected runner replaces physical remote transport only. Every owner
 //// admission, immutable comparison, final write, reopen and receipt is real.
 
+import broker/internal/call
 import client/remote/custodian
 import client/remote/outcome
 import client/remote/tool_custody
@@ -16,6 +17,7 @@ import core/register
 import core/remote_tool
 import core/tx
 import gleam/bit_array
+import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -28,6 +30,7 @@ import host/bootstrap
 import machine/operation
 import runtime/effects
 import simplifile
+import sqlight
 import storage/owner_custody as custody
 import storage/sqlite
 import storage/storage
@@ -101,7 +104,14 @@ fn start(
 ) {
   let assert Ok(names) = registry.start() as "owner address namespace starts"
   let assert Ok(config) =
-    custodian.config(path, session_id(), limits(), capacity, 5000, runner)
+    custodian.config(
+      path,
+      session_id(),
+      limits(),
+      capacity,
+      5000,
+      fn(_, key, original) { runner(key, original) },
+    )
     as "owner config is finite"
   let owner = custodian.new(names, config)
   let assert Ok(started) = custodian.start(owner, config)
@@ -307,7 +317,7 @@ pub fn actual_supervision_restarts_owner_without_reexecuting_awaiting_body_test(
   let seen = process.new_subject()
   let assert Ok(names) = registry.start() as "supervised registry starts"
   let assert Ok(config) =
-    custodian.config(directory, session_id(), limits(), 1, 2000, fn(_, run) {
+    custodian.config(directory, session_id(), limits(), 1, 2000, fn(_, _, run) {
       process.send(seen, Nil)
       final(run)
     })
@@ -598,4 +608,334 @@ pub fn exact_validator_rejects_changed_fields_and_synthetic_failure_test() {
       custody.ResultReadback(actual, custody.Terminates),
     )
     as "runtime synthetic messages never fabricate owner collection proof"
+}
+
+pub fn crashed_worker_with_held_downstream_ask_keeps_custody_after_restart_test() {
+  let directory = path("crashed-held-ask")
+  let started = process.new_subject()
+  let downstream = process.new_subject()
+  let assert Ok(names) = registry.start() as "The test owns a fresh registry."
+  let assert Ok(config) =
+    custodian.config(
+      directory,
+      session_id(),
+      limits(),
+      1,
+      5000,
+      fn(pinned, key, original) {
+        let assert Ok(origin) = remote_tool.tool_child(key, remote_tool.Compile)
+          as "The downstream request retains its original parent."
+        assert custodian.reserve_child(pinned, origin, run(9).result_entry, <<
+            "held request":utf8,
+          >>)
+          == Ok(#(run(9).result_entry, <<"held request":utf8>>))
+        process.send(started, #(pinned, process.self()))
+        let _answer =
+          call.try_call(downstream, waiting: 5000, sending: fn(reply) { reply })
+        final(original)
+      },
+    )
+    as "One bounded managed worker owns this real downstream ask."
+  let owner = custodian.new(names, config)
+  let assert Ok(first) = custodian.start(owner, config)
+    as "Original incarnation starts."
+  let done = process.new_subject()
+  let _caller =
+    process.spawn_unlinked(fn() {
+      process.send(
+        done,
+        surface(owner, <<"full:authority:workspace:epochs":utf8>>).run(run(0)),
+      )
+    })
+  let assert Ok(#(pinned, worker)) = process.receive(started, 1000)
+    as "The runner receives its exact original incarnation."
+  let assert Ok(pending_reply) = process.receive(downstream, 1000)
+    as "Real downstream work was accepted and still holds its reply."
+  process.kill(worker)
+  let assert Ok(effects.ToolFailed(_)) = process.receive(done, 2000)
+    as "Worker death settles the caller truthfully unknown."
+  let second = invocation(run(1))
+  assert custodian.execute(
+      owner,
+      second.key,
+      second.arguments,
+      second.request,
+      run(1),
+    )
+    == Error(custody.Capacity)
+  assert custodian.lookup(owner, second.key, second.arguments, second.request)
+    == Error(custody.Missing)
+  assert_fenced(owner, run(1))
+  stop(owner, first.pid)
+  let assert Ok(restarted) = custodian.start(owner, config)
+    as "Restart reopens unresolved custody."
+  assert custodian.execute(
+      owner,
+      second.key,
+      second.arguments,
+      second.request,
+      run(1),
+    )
+    == Error(custody.Capacity)
+  let assert Error(custody.Unavailable(_)) =
+    custodian.fatal_fence(pinned, invocation(run(0)).key)
+    as "The old runner cannot resolve the replacement registry incarnation."
+  let assert Ok(origin) =
+    remote_tool.tool_child(invocation(run(0)).key, remote_tool.Compile)
+    as "Late custody retains the original child identity."
+  assert custodian.receive_child(owner, origin, run(9).result_entry, <<
+      "late exact receipt":utf8,
+    >>)
+    == Ok(Nil)
+  assert custodian.child(owner, origin)
+    == Ok(#(
+      run(9).result_entry,
+      <<"held request":utf8>>,
+      Some(<<"late exact receipt":utf8>>),
+    ))
+  process.send(pending_reply, Ok(Nil))
+  assert process.receive(started, 20) == Error(Nil)
+  stop(owner, restarted.pid)
+}
+
+pub fn sticky_consumer_fatal_fence_cannot_be_cleared_by_normal_completion_test() {
+  let directory = path("sticky-fatal")
+  let started = process.new_subject()
+  let assert Ok(names) = registry.start() as "The test owns a fresh registry."
+  let assert Ok(config) =
+    custodian.config(
+      directory,
+      session_id(),
+      limits(),
+      1,
+      5000,
+      fn(pinned, key, original) {
+        let release = process.new_subject()
+        process.send(started, release)
+        assert custodian.fatal_fence(pinned, key) == Ok(Nil)
+        let assert Ok(Nil) = process.receive(release, 2000)
+          as "The witness deliberately returns an ordinary final after fencing."
+        final(original)
+      },
+    )
+    as "The consumer receives pinned fence authority."
+  let owner = custodian.new(names, config)
+  let assert Ok(first) = custodian.start(owner, config)
+    as "Original owner starts."
+  let done = process.new_subject()
+  let _caller =
+    process.spawn_unlinked(fn() {
+      process.send(
+        done,
+        surface(owner, <<"full:authority:workspace:epochs":utf8>>).run(run(0)),
+      )
+    })
+  let assert Ok(release) = process.receive(started, 1000)
+    as "The worker reaches its fatal failure."
+  let assert Ok(effects.ToolFailed(_)) = process.receive(done, 1000)
+    as "The owner reports uncertainty before normal completion."
+  process.send(release, Nil)
+  let tools = surface(owner, <<"full:authority:workspace:epochs":utf8>>)
+  let assert poll.Answered(_) =
+    poll.until(2000, 10, fn() {
+      case recover(tools, run(0)) {
+        effects.RecoveredOutcome(_) -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    as "Exact final evidence may still be retained after the sticky fence."
+  let next = invocation(run(1))
+  assert custodian.execute(
+      owner,
+      next.key,
+      next.arguments,
+      next.request,
+      run(1),
+    )
+    == Error(custody.Capacity)
+  assert_fenced(owner, run(1))
+  stop(owner, first.pid)
+  let assert Ok(restarted) = custodian.start(owner, config)
+    as "The durable unresolved marker survives later completion."
+  assert custodian.execute(
+      owner,
+      next.key,
+      next.arguments,
+      next.request,
+      run(1),
+    )
+    == Error(custody.Capacity)
+  stop(owner, restarted.pid)
+}
+
+pub fn failed_owner_discharge_keeps_admission_fenced_test() {
+  let directory = path("discharge-write-failure")
+  let started = process.new_subject()
+  let #(owner, config, pid) =
+    start(directory, 1, fn(_, original) {
+      let release = process.new_subject()
+      process.send(started, release)
+      let assert Ok(Nil) = process.receive(release, 2000)
+        as "The fixture installs a release COMMIT failure after fresh admission."
+      final(original)
+    })
+  let done = process.new_subject()
+  let _caller =
+    process.spawn_unlinked(fn() {
+      process.send(
+        done,
+        surface(owner, <<"full:authority:workspace:epochs":utf8>>).run(run(0)),
+      )
+    })
+  let assert Ok(release) = process.receive(started, 1000)
+    as "Fresh admission committed."
+  let assert Ok(db) = sqlight.open(directory)
+    as "The isolated test injects a discharge COMMIT failure."
+  assert sqlight.exec(
+      "CREATE TABLE discharge_parent (id INTEGER PRIMARY KEY); CREATE TABLE discharge_guard (ref INTEGER REFERENCES discharge_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER reject_discharge AFTER UPDATE OF run_custody ON owner_custody_tools BEGIN INSERT INTO discharge_guard(ref) VALUES (1); END",
+      db,
+    )
+    == Ok(Nil)
+  process.send(release, Nil)
+  assert process.receive(done, 1000) == Ok(final(run(0)))
+  let next = invocation(run(1))
+  assert_fenced(owner, run(1))
+  stop(owner, pid)
+  let assert Ok(restarted) = custodian.start(owner, config)
+    as "Failed discharge persists through restart."
+  assert custodian.execute(
+      owner,
+      next.key,
+      next.arguments,
+      next.request,
+      run(1),
+    )
+    == Error(custody.Capacity)
+  stop(owner, restarted.pid)
+  assert sqlight.close(db) == Ok(Nil)
+}
+
+pub fn exact_normal_finish_and_drain_allow_capacity_reuse_test() {
+  let directory = path("drained-reuse")
+  let #(owner, config, pid) =
+    start(directory, 1, fn(_, original) { final(original) })
+  let tools = surface(owner, <<"full:authority:workspace:epochs":utf8>>)
+  assert tools.run(run(0)) == final(run(0))
+  let next = invocation(run(1))
+  let assert poll.Answered(_) =
+    poll.until(2000, 10, fn() {
+      case
+        custodian.execute(owner, next.key, next.arguments, next.request, run(1))
+      {
+        Ok(value) -> poll.Done(value)
+        Error(custody.Capacity) -> poll.Retry
+        _ -> poll.Retry
+      }
+    })
+    as "Exact commit plus complete delivery releases the one live slot."
+  await_released(directory)
+  stop(owner, pid)
+  let assert Ok(restarted) = custodian.start(owner, config)
+    as "A fully released journal admits after restart."
+  let next = invocation(run(2))
+  assert custodian.execute(
+      owner,
+      next.key,
+      next.arguments,
+      next.request,
+      run(2),
+    )
+    == Ok(final(run(2)))
+  stop(owner, restarted.pid)
+}
+
+// A separate read-only probe makes the successful drain boundary observable.
+fn await_released(path: String) {
+  let assert Ok(db) = sqlight.open(path)
+    as "The fixture probes its own journal."
+  let assert poll.Answered(_) =
+    poll.until(2000, 10, fn() {
+      case
+        sqlight.query(
+          "SELECT COUNT(*) FROM owner_custody_tools WHERE run_custody != 'released'",
+          db,
+          [],
+          decode.at([0], decode.int),
+        )
+      {
+        Ok([0]) -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    as "Every exact live outcome completed delivery and discharge."
+  assert sqlight.close(db) == Ok(Nil)
+}
+
+pub fn original_owner_death_cancels_its_managed_worker_test() {
+  let directory = path("owner-death-cancels")
+  let started = process.new_subject()
+  let #(owner, config, pid) =
+    start(directory, 1, fn(_, original) {
+      let release = process.new_subject()
+      process.send(started, process.self())
+      let assert Ok(Nil) = process.receive(release, 4000)
+        as "Only owner cancellation can retire this blocked worker."
+      final(original)
+    })
+  let _caller =
+    process.spawn_unlinked(fn() {
+      surface(owner, <<"full:authority:workspace:epochs":utf8>>).run(run(0))
+    })
+  let assert Ok(worker) = process.receive(started, 1000)
+    as "The original owner starts a managed worker."
+  let worker_monitor = process.monitor(worker)
+  let owner_monitor = process.monitor(pid)
+  process.unlink(pid)
+  process.kill(pid)
+  let assert Ok(_) =
+    process.new_selector()
+    |> process.select_specific_monitor(owner_monitor, fn(down) { down })
+    |> process.selector_receive(1000)
+    as "The owner dies before its shutdown callback can cancel."
+  let assert Ok(_) =
+    process.new_selector()
+    |> process.select_specific_monitor(worker_monitor, fn(down) { down })
+    |> process.selector_receive(1000)
+    as "The run watches the original owner and retires its worker."
+  let assert Ok(restarted) = custodian.start(owner, config)
+    as "The replacement owner reopens unresolved work."
+  let next = invocation(run(1))
+  assert custodian.execute(
+      owner,
+      next.key,
+      next.arguments,
+      next.request,
+      run(1),
+    )
+    == Error(custody.Capacity)
+  stop(owner, restarted.pid)
+}
+
+// Complete delivery may follow the final ticket. Observe refusal throughout
+// the bounded window instead of succeeding on a single pre-drain Capacity.
+fn assert_fenced(owner: custodian.Handle, original: effects.ToolRun) {
+  let next = invocation(original)
+  let refusal =
+    poll.until(250, 10, fn() {
+      case
+        custodian.execute(
+          owner,
+          next.key,
+          next.arguments,
+          next.request,
+          original,
+        )
+      {
+        Error(custody.Capacity) -> poll.Retry
+        Error(error) -> poll.Fail(error)
+        Ok(_) ->
+          poll.Fail(custody.Invalid("Unresolved work reopened admission."))
+      }
+    })
+  assert refusal == poll.Expired
 }

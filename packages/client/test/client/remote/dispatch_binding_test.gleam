@@ -106,7 +106,7 @@ fn fixture(name: String, limits: custody.Limits) -> Fixture {
   let assert Ok(names) = registry.start()
     as "A fresh registry owns this fixture's supervised address."
   let assert Ok(config) =
-    custodian.config(path, session_id(1), limits, 1, 5000, fn(_, _) {
+    custodian.config(path, session_id(1), limits, 1, 5000, fn(_, _, _) {
       panic as "These callback tests never execute a tool body."
     })
     as "The actual custodian config has finite capacity and lifetime."
