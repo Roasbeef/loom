@@ -421,7 +421,11 @@ pub fn the_owner_on_a_read_only_link_is_not_told_to_ask_the_owner_test() {
   let words = fn(reader) {
     component.Start(
       ..page_fixture.start(),
-      standing: component.Standing(reader:, sharing: None),
+      standing: component.Standing(
+        reader:,
+        sharing: None,
+        opening: component.FromLink,
+      ),
     )
     |> component.new
     |> component.view

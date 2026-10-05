@@ -9,12 +9,17 @@
 ////
 //// - No attribute takes its value from session text. Classes come from a
 ////   `case` over a closed type: a heading's level, a cell's alignment.
-//// - A link is drawn as its label followed by its destination in plain
-////   text. There is no `<a href>`: the page follows nothing the agent
-////   wrote, and a `javascript:` destination is only characters.
+//// - A link is `<loom-link>` holding its label and its destination as
+////   text, in `ll-text` and hidden `ll-url` spans. There is no `<a href>`
+////   here: the server writes no attribute from session text, and the
+////   browser element checks the destination (`http` or `https` only) before
+////   it makes the label clickable, so a `javascript:` destination stays
+////   plain text (protocol-change/051, the addendum on clickable links).
 //// - An ordered list's numbers are text in each item rather than a `start`
 ////   attribute, so the number the model wrote never reaches an attribute.
-//// - A code fence's language is a text label, never a class.
+//// - A code fence's language is a text label, never a class. It also picks
+////   the scanner that colours the fence (`code_view`), which draws token
+////   classes from a closed type and every token's text as a text node.
 ////
 //// The tree is bounded in depth by the parser (`markdown.max_depth`,
 //// `markdown.max_emphasis`), so the recursion here is too.
@@ -28,6 +33,7 @@ import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 import session_view/markdown.{type Block, type Inline}
+import web_view/code_view
 
 /// The elements for a parsed Markdown tree, one per top-level block.
 ///
@@ -231,7 +237,7 @@ fn block_element(block: Block) -> Element(message) {
             html.span([attribute.class("md-code-lang")], [html.text(language)])
           None -> element.none()
         },
-        html.pre([], [code_lines(text)]),
+        html.pre([], [code_view.block(language, text)]),
       ])
 
     markdown.Quote(blocks:) ->
@@ -292,28 +298,6 @@ fn block_element(block: Block) -> Element(message) {
 
     markdown.Rule -> html.hr([attribute.class("md-rule")])
   }
-}
-
-// A fence's body as one span per line. A streamed block grows at its tail,
-// and a single text node would be sent whole on every batch, which over a
-// long block is quadratic. Lustre diffs unkeyed children by position, so the
-// lines that did not change are skipped, the one still being written is
-// patched, and the new ones are inserted as one trailing addition. Every
-// span but the last carries its own newline, so the text a reader copies is
-// the fence's text unchanged.
-fn code_lines(text: String) -> Element(message) {
-  let lines = string.split(text, "\n")
-  let last = list.length(lines) - 1
-  html.code(
-    [],
-    list.index_map(lines, fn(line, index) {
-      let shown = case index == last {
-        True -> line
-        False -> line <> "\n"
-      }
-      html.span([], [html.text(shown)])
-    }),
-  )
 }
 
 fn alert_title(kind: markdown.AlertKind) -> String {
@@ -398,28 +382,16 @@ fn inline_element(inline: Inline) -> Element(message) {
   }
 }
 
-// The label, styled as a link, then the destination as text, in one
-// unstyled span so the two stay one inline node and the underline does not
-// reach the destination. An autolink's label is its destination, or its
-// destination without the `http://` or `mailto:` the parser put in front of
-// a bare `www.` link or an address, and an empty destination says nothing,
-// so none of those repeats it.
+// A link is `<loom-link>` with two text-only children: the label, and the
+// destination as hidden text. No attribute carries either (051), so the page
+// follows nothing until the browser element has validated the destination
+// and made the label clickable (`web_client/link_rule`). A destination it
+// refuses leaves the label as plain text.
 fn link(label: List(Inline), destination: String) -> Element(message) {
-  let shown = markdown.plain(label)
-  let repeats =
-    destination == ""
-    || destination == shown
-    || destination == "http://" <> shown
-    || destination == "mailto:" <> shown
-  let target = case repeats {
-    True -> element.none()
-    False ->
-      html.span([attribute.class("md-link-target")], [
-        html.text(" (" <> destination <> ")"),
-      ])
-  }
-  html.span([], [
-    html.span([attribute.class("md-link")], list.map(label, inline_element)),
-    target,
+  element.element("loom-link", [], [
+    html.span([attribute.class("ll-text")], list.map(label, inline_element)),
+    html.span([attribute.class("ll-url"), attribute.attribute("hidden", "")], [
+      html.text(destination),
+    ]),
   ])
 }

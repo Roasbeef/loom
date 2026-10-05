@@ -180,10 +180,12 @@ import session_view/turns
 import session_view/worktree_view
 import web_view/creations
 import web_view/ending.{type Ending}
+import web_view/grants
 import web_view/image as web_image
 import web_view/invites
 import web_view/renames
 import web_view/sessions
+import web_view/shareables
 import web_view/view/changes
 import web_view/view/commentary
 import web_view/view/crumb
@@ -398,7 +400,24 @@ pub type Standing {
     /// control or the host could not read it. A session known to be private
     /// draws no invitation buttons (`invites.Unshareable`).
     sharing: Option(creations.Sharing),
+    /// How an owner's page was opened. A page a bookmark opened cannot mint
+    /// access, so it is handed neither the invitation nor the make-shareable
+    /// capability and draws a sentence in their place (`invites.Bookmarked`).
+    opening: Opening,
   )
+}
+
+/// How the page was opened, for an owner's page that would otherwise draw the
+/// invitation control.
+pub type Opening {
+  /// A `loom ui` exchange, a claim or a device link opened it, or it is not an
+  /// owner's page. The capabilities, where the principal has them, are handed
+  /// out.
+  FromLink
+
+  /// The page's principal is the owner and a bookmark opened the page, or a page
+  /// a bookmark's home opened. Nothing that mints access is offered.
+  FromBookmark
 }
 
 /// Who the page's principal is to the daemon.
@@ -412,7 +431,8 @@ pub type Reader {
 
 /// A standing that says nothing: a member, and a session whose sharing was not
 /// read. Fixtures and hosts with no catalogue start from it.
-pub const unplaced = Standing(reader: Participant, sharing: None)
+pub const unplaced =
+  Standing(reader: Participant, sharing: None, opening: FromLink)
 
 /// What the daemon's catalogue says about a session, for the page's
 /// heading. Neither field comes from the session's transcript: the name is
@@ -507,6 +527,19 @@ pub type Transport(socket) {
     /// capability draws no control and a page that has one cannot use it once
     /// its principal or its own standing has changed.
     rename: Option(fn(String, fn(renames.Answer) -> Nil) -> Nil),
+    /// Asks the daemon to make this page's session shareable, for an owner's
+    /// page that confirmed the question its control asked (protocol-change/065,
+    /// the addendum on making a session shareable): the daemon checks that the
+    /// page is open and its principal is the owner, stops the session, moves it
+    /// to its own history and resumes it, as one task that no page owns. It
+    /// must return at once, because the task waits for a stop and a resume: the
+    /// daemon calls the function it is given with the answer, and that call is
+    /// dispatched as `MadeShareable`. It is `None` unless the page's principal is the
+    /// daemon's owner, so a page with no capability draws no button and a page
+    /// that has one cannot use it once its standing has changed. The session
+    /// stopping ends this page, so the answer reaches it only when the task
+    /// refused before the stop.
+    shareable: Option(fn(fn(grants.Answer) -> Nil) -> Nil),
   )
 }
 
@@ -720,6 +753,9 @@ type View(socket) {
     /// holds a claim token, only while the invitation is on screen, and the
     /// state is replaced when the owner dismisses it.
     share: invites.Share,
+    /// What the control that makes a private session shareable is doing. The
+    /// question it asks before it starts lives here and nowhere else.
+    moving: shareables.Move,
     /// What the rename control is doing, and how many renames have succeeded,
     /// which keys the control's form so a successful one is replaced by an empty
     /// form.
@@ -860,6 +896,12 @@ pub type Msg(socket) {
   /// carries it, so a browser cannot send one and cannot put a name in the page
   /// that the daemon did not store.
   Renamed(answer: renames.Answer)
+
+  /// The daemon answered a request to make the page's session shareable. It is
+  /// the effect's own message, dispatched from the daemon's task, and no handler
+  /// carries it, so a browser cannot send one and cannot make the page believe
+  /// the session can be shared when the daemon did not say so.
+  MadeShareable(answer: grants.Answer)
 }
 
 /// The Lustre application for one session's observer page.
@@ -919,10 +961,24 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       listed_at: None,
       departure: None,
       resuming: None,
-      share: case start.transport.invite, start.standing.sharing {
-        Some(_), Some(creations.Private) -> invites.Unshareable
-        Some(_), Some(creations.Shareable) | Some(_), None -> invites.Ready
-        None, _ -> invites.Withheld
+      share: case
+        start.transport.invite,
+        start.standing.sharing,
+        start.standing.opening
+      {
+        None, Some(creations.Private), FromBookmark -> invites.BookmarkedPrivate
+        None, Some(creations.Shareable), FromBookmark
+        | None, None, FromBookmark
+        -> invites.Bookmarked
+        Some(_), Some(creations.Private), _ -> invites.Unshareable
+        Some(_), Some(creations.Shareable), _ | Some(_), None, _ ->
+          invites.Ready
+        None, _, FromLink -> invites.Withheld
+      },
+      moving: case start.transport.shareable, start.standing.sharing {
+        Some(_), Some(creations.Private) -> shareables.Idle
+        Some(_), Some(creations.Shareable) | Some(_), None | None, _ ->
+          shareables.Withheld
       },
       renaming: case start.transport.rename {
         Some(_) -> renames.Ready
@@ -1124,6 +1180,8 @@ pub fn update(
     Invited(answer:) -> #(invited(model, answer), effect.none())
 
     Renamed(answer:) -> #(renamed(model, answer), effect.none())
+
+    MadeShareable(answer:) -> #(made_shareable(model, answer), effect.none())
   }
 }
 
@@ -2571,6 +2629,8 @@ pub fn invite(
     | Some(_), invites.Showing(..)
     | Some(_), invites.Withheld
     | Some(_), invites.Unshareable
+    | Some(_), invites.Bookmarked
+    | Some(_), invites.BookmarkedPrivate
     | None, _
     -> #(model, effect.none())
   }
@@ -2601,6 +2661,8 @@ fn invited(model: Model(socket), answer: invites.Answer) -> Model(socket) {
       Model(..model, view: View(..model.view, share: invites.Refused(reason)))
     invites.Withheld, _
     | invites.Unshareable, _
+    | invites.Bookmarked, _
+    | invites.BookmarkedPrivate, _
     | invites.Ready, _
     | invites.Showing(..), _
     | invites.Refused(..), _
@@ -2621,9 +2683,127 @@ pub fn dismiss_invitation(model: Model(socket)) -> Model(socket) {
   case model.view.share {
     invites.Showing(..) | invites.Refused(..) ->
       Model(..model, view: View(..model.view, share: invites.Ready))
-    invites.Withheld | invites.Unshareable | invites.Ready | invites.Asking ->
-      model
+    invites.Withheld
+    | invites.Unshareable
+    | invites.Bookmarked
+    | invites.BookmarkedPrivate
+    | invites.Ready
+    | invites.Asking -> model
   }
+}
+
+/// The owner's first press on "Make shareable": the page asks the question in
+/// the button's place and changes nothing else. Only a page that drew the button
+/// (`Idle`, or `Refused` after an earlier try) arms, so a frame that names the
+/// press on any other page asks nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.arm_shareable(model)
+/// ```
+pub fn arm_shareable(model: Model(socket)) -> Model(socket) {
+  case model.view.moving {
+    shareables.Idle | shareables.Refused(..) ->
+      Model(..model, view: View(..model.view, moving: shareables.Confirming))
+    shareables.Withheld | shareables.Confirming | shareables.Making -> model
+  }
+}
+
+/// The question's Cancel: the button comes back and nothing was asked.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.disarm_shareable(model)
+/// ```
+pub fn disarm_shareable(model: Model(socket)) -> Model(socket) {
+  case model.view.moving {
+    shareables.Confirming | shareables.Refused(..) ->
+      Model(..model, view: View(..model.view, moving: shareables.Idle))
+    shareables.Withheld | shareables.Idle | shareables.Making -> model
+  }
+}
+
+/// The question's confirm: asks the daemon to make the page's session
+/// shareable, and only from the question. A press that arrives in any other
+/// state, or on a page with no capability, asks nothing, so one confirm starts
+/// at most one task and a page that never asked the question cannot start one.
+///
+/// The task stops the session, which ends this page as any stop does, so the
+/// answer is for the page that outlives the stop: a refusal before it. The page
+/// that does not reaches the ended notice the session's stop has always drawn.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.make_shareable(model)
+/// ```
+pub fn make_shareable(
+  model: Model(socket),
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case model.view.moving, model.view.transport.shareable {
+    shareables.Confirming, Some(ask) -> #(
+      Model(..model, view: View(..model.view, moving: shareables.Making)),
+      sharing(ask),
+    )
+    shareables.Withheld, _
+    | shareables.Idle, _
+    | shareables.Making, _
+    | shareables.Refused(..), _
+    | shareables.Confirming, None
+    -> #(model, effect.none())
+  }
+}
+
+// Starts the daemon's task and returns at once. The answer arrives later as
+// `MadeShareable`, dispatched from the task's own process.
+fn sharing(ask: fn(fn(grants.Answer) -> Nil) -> Nil) -> Effect(Msg(socket)) {
+  use dispatch <- effect.from
+  ask(fn(answer) { dispatch(MadeShareable(answer)) })
+}
+
+// The daemon's answer to the task. A session made shareable draws the
+// invitation buttons in the sentence's place; a refusal is worded in the
+// control's own status line, in the reason's fixed words. An answer that arrives
+// when no task is out was not asked for and is dropped.
+fn made_shareable(
+  model: Model(socket),
+  answer: grants.Answer,
+) -> Model(socket) {
+  case model.view.moving, answer {
+    shareables.Making, grants.Changed ->
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          moving: shareables.Withheld,
+          share: invites.Ready,
+        ),
+      )
+    shareables.Making, grants.Declined(reason:) ->
+      Model(
+        ..model,
+        view: View(..model.view, moving: shareables.Refused(reason)),
+      )
+    shareables.Making, grants.Claimed(..)
+    | shareables.Withheld, _
+    | shareables.Idle, _
+    | shareables.Confirming, _
+    | shareables.Refused(..), _
+    -> model
+  }
+}
+
+/// What the make-shareable control is doing, for the operator's view to draw.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert component.moving(model) == shareables.Withheld
+/// ```
+pub fn moving(model: Model(socket)) -> shareables.Move {
+  model.view.moving
 }
 
 /// What the invitation control is doing, for the operator's view to draw.

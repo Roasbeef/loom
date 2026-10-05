@@ -56,6 +56,11 @@ pub const page_asset = "web_view_page.js"
 /// The script the resume page runs to post the login nonce.
 pub const resume_asset = "web_view_resume.js"
 
+/// The tab icon: the woven mark of the logo, one SVG that switches its weft
+/// colour with the browser's colour scheme. Every document's `<head>` links it,
+/// so no browser has a reason to ask for `/favicon.ico`.
+pub const favicon_asset = "favicon.svg"
+
 /// The client components (`packages/web_client`), bundled into one ES
 /// module, which the page loads so the server component can render their
 /// custom elements.
@@ -246,6 +251,7 @@ fn component_document(title: String, waiting: String) -> String {
   <> "<title>"
   <> houdini.escape(title)
   <> "</title>"
+  <> icon_link()
   <> "<link rel=\"stylesheet\" href=\""
   <> asset_path(stylesheet_asset)
   <> "\">"
@@ -423,6 +429,7 @@ fn ended_document(headline: String, advice: ending.Advice, way: Way) -> String {
   "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
   <> "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
   <> "<title>Loom</title>"
+  <> icon_link()
   <> "<link rel=\"stylesheet\" href=\""
   <> asset_path(stylesheet_asset)
   <> "\"><script type=\"module\" src=\""
@@ -499,6 +506,7 @@ pub fn login_page() -> String {
   "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
   <> "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
   <> "<title>Loom</title>"
+  <> icon_link()
   <> "<link rel=\"stylesheet\" href=\""
   <> asset_path(stylesheet_asset)
   <> "\"><script type=\"module\" src=\""
@@ -622,6 +630,7 @@ pub fn claim_page(notice: Option(ClaimNotice)) -> String {
   "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
   <> "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
   <> "<title>Loom</title>"
+  <> icon_link()
   <> "<link rel=\"stylesheet\" href=\""
   <> asset_path(stylesheet_asset)
   <> "\"></head><body><main class=\"ended-page\">"
@@ -745,6 +754,7 @@ pub fn enter_remembered(
 fn enter_document(next: String, nonce: String, login: String) -> String {
   "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
   <> "<title>Loom</title>"
+  <> icon_link()
   <> "</head><body data-next=\""
   <> houdini.escape(next)
   <> "\" data-nonce=\""
@@ -820,6 +830,21 @@ pub fn content_security_policy_for(host: String, forms: Forms) -> String {
   <> "; img-src 'self'; base-uri 'none'; form-action "
   <> action
   <> "; frame-ancestors 'none'"
+}
+
+/// The `<link>` that gives a document the tab icon. The `href` is the fixed
+/// asset path, never built from a request.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert page.icon_link()
+///   == "<link rel=\"icon\" type=\"image/svg+xml\" href=\"/ui/assets/favicon.svg\">"
+/// ```
+pub fn icon_link() -> String {
+  "<link rel=\"icon\" type=\"image/svg+xml\" href=\""
+  <> asset_path(favicon_asset)
+  <> "\">"
 }
 
 /// The path an asset is served at.

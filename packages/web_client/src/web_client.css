@@ -841,6 +841,13 @@
   .markdown .md-code{margin:0 0 .6em 0;border:1px solid var(--color-divider);border-radius:6px; background:var(--color-code);min-width:0;}
   .markdown .md-code-lang{display:block;padding:4px 10px 0;color:var(--color-fg-quiet);font:11px/1.4 var(--font-mono);}
   .markdown .md-code pre{margin:0;padding:6px 10px;overflow-x:auto;white-space:pre;font:13px/1.4 var(--font-mono);color:var(--color-fg);}
+  .md-code .tok-kw{color:var(--color-current);font-weight:600;}
+  .md-code .tok-type{color:var(--color-strand-2-text);}
+  .md-code .tok-str,.md-code .tok-num{color:var(--color-signal-text);}
+  .md-code .tok-com{color:var(--color-fg-quiet);font-style:italic;}
+  .md-code .tok-meta{color:var(--color-fg-quiet);font-weight:600;}
+  .md-code .tok-add{color:var(--color-added-text);background:var(--color-added-bg);}
+  .md-code .tok-del{color:var(--color-danger-text);background:var(--color-removed-bg);}
   .markdown .md-quote{margin:0 0 .6em 0;padding-left:10px;border-left:2px solid var(--color-current);color:var(--color-fg-quiet);}
   .markdown .md-list{margin:0 0 .6em 0;padding:0;list-style:none;}
   .markdown .md-item{display:flex;gap:.5em;min-width:0;}
@@ -854,7 +861,17 @@
   .markdown .md-table th{font-weight:600;background:var(--color-bg-raised);}
   .markdown .md-table .md-center{text-align:center;}
   .markdown .md-table .md-right{text-align:right;}
-  .markdown .md-link{color:var(--color-current);text-decoration:underline;}
+  /* A Markdown link is <loom-link> (web_client/link). Its shadow root draws an
+     anchor around the label once the browser has validated the destination,
+     and the sheet is adopted there, so the anchor's rules sit beside the
+     page's. The accent colour, an underline on hover or keyboard focus only,
+     and a small glyph after the label; no shadow. */
+  loom-link{display:inline;}
+  a.link-anchor{color:var(--color-current);text-decoration:none;cursor:pointer;border-radius:2px;}
+  a.link-anchor:hover{text-decoration:underline;}
+  a.link-anchor:focus-visible{text-decoration:underline;outline:2px solid var(--color-current);outline-offset:1px;}
+  .link-refused{color:var(--color-fg-quiet);overflow-wrap:anywhere;}
+  .link-glyph{margin-left:.2em;font-size:.8em;opacity:.7;}
   .markdown .md-link-target,.markdown .md-image{color:var(--color-fg-quiet);overflow-wrap:anywhere;}
   /* A turn's work (web_view/view/lane, view/fold_row): one collapsed line,
      `Worked 22s · 10 steps · 2 files`, with no rule above or below it, and
@@ -1073,7 +1090,17 @@
   .share-lead{margin:0 0 6px 0;color:var(--color-fg-quiet);overflow-wrap:anywhere;}
   .share-actions{display:flex;flex-wrap:wrap;gap:6px 8px;}
   button.share-operate{border-color:var(--color-signal);color:var(--color-signal-text);}
-  button.share-observe:disabled,button.share-operate:disabled{opacity:.45;cursor:default;}
+  button.share-observe:disabled,button.share-operate:disabled,button.share-make:disabled{opacity:.45;cursor:default;}
+  /* The make-shareable control (web_view/view/share, web_view/shareables): the
+     question replaces the button in place, so it is a tinted block and not a
+     card, and the confirm is the one tinted button. */
+  .share-ask{margin:0 0 6px 0;padding:8px 10px;border:1px solid color-mix(in srgb,var(--color-signal) 35%,var(--color-divider));border-radius:6px;background:color-mix(in srgb,var(--color-signal) 7%,transparent);}
+  .share-ask .share-lead{margin:0 0 8px 0;color:var(--color-fg);}
+  button.share-make{border-color:var(--color-signal);color:var(--color-signal-text);}
+  .admin-ask{display:flex;flex-direction:column;gap:8px;margin:0;padding:8px 10px;border:1px solid color-mix(in srgb,var(--color-signal) 35%,var(--color-divider));border-radius:6px;background:color-mix(in srgb,var(--color-signal) 7%,transparent);}
+  .admin-ask .admin-lead{color:var(--color-fg);}
+  button.admin-go{border-color:var(--color-signal);color:var(--color-signal-text);}
+  .admin-private{display:flex;flex-direction:column;gap:8px;align-items:flex-start;}
   .share-status{margin:6px 0 0 0;min-height:1.4em;color:var(--color-danger-text);}
   .rename-status{margin:6px 0 0 0;min-height:1.4em;color:var(--color-fg-quiet);font-size:12px;}
   .rename-status.refused{color:var(--color-danger-text);}
@@ -1204,6 +1231,12 @@
      their own. */
   .attach-slot,.notice-slot,loom-attach{display:contents;}
   loom-attach ul.attachments{order:-1;flex:1 0 100%;margin:0 0 2px 0;}
+  /* The drop state while image files are dragged over the composer: a layer
+     over the whole form, tinted toward the accent, with a tinted 1px border
+     and a hint. It sits against form.composer, the nearest positioned
+     ancestor of the display:contents attach element, takes no pointer events
+     so the drag never enters it, and has no shadow or edge bar. */
+  .attach-drop{position:absolute;inset:0;z-index:5;box-sizing:border-box;display:flex;align-items:center;justify-content:center;border-radius:12px;pointer-events:none;border:1px solid color-mix(in srgb,var(--color-current) 55%,transparent);background:color-mix(in srgb,var(--color-current) 12%,var(--color-bg-raised));color:var(--color-current);font:13px/1.4 var(--font-sans);}
   .foot-space{flex:1 1 auto;}
   .hint,.who{color:var(--color-fg-quiet);}
   .notice{margin:0;color:var(--color-fg-quiet);font-size:12px;min-width:0;}

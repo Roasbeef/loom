@@ -144,3 +144,39 @@ pub fn guarded(
     Some(_) | None -> plain(label, "admin-act", presses.arm(action), busy)
   }
 }
+
+/// A button for a change that is slow or hard to undo, which asks first, in
+/// place: `label` while it is not armed and, once the component has armed
+/// `action`, `question`, a button worded `yes` that sends it, and Cancel. Unlike
+/// `guarded`, whose confirm names what is removed and is drawn in the danger
+/// colour, the question says what will happen to a session and is drawn quiet,
+/// because the change is made on purpose and nothing is lost.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // admin_buttons.asking("Make shareable", "Make this session shareable?", "Make shareable", action, Some(action), presses, busy)
+/// ```
+pub fn asking(
+  label: String,
+  question: String,
+  yes: String,
+  action: Action,
+  armed: Option(Action),
+  presses: Presses(message),
+  busy: Busy,
+) -> Element(message) {
+  case armed {
+    Some(held) if held == action ->
+      html.div([attribute.class("admin-ask")], [
+        html.p([attribute.class("admin-lead"), attribute.role("alert")], [
+          html.text(question),
+        ]),
+        html.span([attribute.class("admin-confirm")], [
+          plain(yes, "admin-act admin-go", presses.ask(action), busy),
+          plain("Cancel", "admin-act", presses.disarm, busy),
+        ]),
+      ])
+    Some(_) | None -> plain(label, "admin-act", presses.arm(action), busy)
+  }
+}

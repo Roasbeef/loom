@@ -25,6 +25,8 @@
 //// - `<loom-attach name="images">` (`web_client/attach`) is the composer's
 ////   image attachments: a file picker, a paste, a chip for each image with
 ////   a Remove button, and the images as one form field.
+//// - `drop_guard` (`web_client/drop_guard`) is no element: one listener on
+////   the document that stops a dropped file from navigating the tab.
 //// - `<loom-shell sidebar="listed">` (`web_client/shell`) is the page's
 ////   frame. It lays the server's regions out in its slots and draws the two
 ////   buttons that hide and show the sidebar and the strand panel.
@@ -50,6 +52,9 @@
 ////   the home's account panel from the person's name in the bar.
 //// - `<loom-time at="...">` (`web_client/time`) draws an instant, in Unix
 ////   milliseconds, as the time of day in the browser's own zone.
+//// - `<loom-link>` (`web_client/link`) makes a Markdown link clickable once the
+////   browser has checked its destination, read from the element's own child
+////   text, as an `http` or `https` address.
 //// - `<loom-reveal>` (`web_client/reveal`) scrolls the box it sits in into view
 ////   once, when the box appears.
 ////
@@ -68,10 +73,12 @@ import web_client/attach
 import web_client/back
 import web_client/composer
 import web_client/copy
+import web_client/drop_guard
 import web_client/elapsed
 import web_client/expand
 import web_client/fold
 import web_client/follow
+import web_client/link
 import web_client/popover
 import web_client/rename
 import web_client/reveal
@@ -97,11 +104,15 @@ pub fn main() -> Nil {
   let _ = composer.register()
   let _ = copy.register()
 
+  // A file dropped anywhere else must not navigate the tab away.
+  drop_guard.install()
+
   // The transcript, the strand panel and the page's frame.
   let _ = elapsed.register()
   let _ = expand.register()
   let _ = fold.register()
   let _ = follow.register()
+  let _ = link.register()
   let _ = popover.register()
   let _ = rename.register()
   let _ = reveal.register()

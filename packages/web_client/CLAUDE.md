@@ -70,8 +70,17 @@ renders again just for it:
   `attach_rule` decides what it accepts before a file is read: declared type,
   size, count, with reads in flight counting; the daemon reads the real type
   from the bytes. A paste holding image files attaches them and is cancelled,
-  and its listener on the form is removed when the element leaves. The chips
-  are the person's own file names as text nodes, and the element draws no image.
+  and its listener on the form is removed when the element leaves. Image files
+  dragged onto the composer's form are attached through the same vetting
+  (`attach_rule.choose`); the form's `dragenter`, `dragover`, `dragleave` and
+  `drop` listeners cancel a drag only when it carries files, and while one is
+  over the form with a place free the element draws a tinted `.attach-drop`
+  overlay with a hint (`drop_rule`: `carries_files`, the `Drag` state, which a leave ends only by its `relatedTarget`, so
+  absorbs child enter/leave, `surface`). `drop_guard` is no element: one
+  document listener installed in `main` that cancels any file drag, so a file
+  dropped elsewhere, or on a page with no composer, never navigates the tab. The
+  chips are the person's own file names as text nodes, and the element draws no
+  image.
 - `<loom-rename>` wraps the rename form's text field (the home row's form and
   the Session pane's). The server cannot give the field a `value`, because a
   session's name is only ever a text node (protocol-change/051), so when the
@@ -96,6 +105,23 @@ renders again just for it:
   seconds draws the ended document's shape. It renders nothing, takes no
   focus and listens for no event (protocol-change/051, the addendum on
   switching sessions).
+- `<loom-link>` makes a Markdown link clickable. The server draws it with two text
+  children, the label in `<span class="ll-text">` and the destination in
+  `<span class="ll-url" hidden>`, and no attribute carries either. The element
+  reads the `ll-url` text and `link_rule.destination` accepts it only as a plain
+  absolute `http` or `https` address (any scheme case; no whitespace, control
+  character or backslash; a non-empty authority with no `@`; at most 2048
+  characters), a text check on purpose because the `URL` constructor forgives what
+  a hostile address uses. An accepted address is drawn in the shadow root as
+  `<a href target="_blank" rel="noopener noreferrer" title="<address>">` around the
+  default slot, plus a `↗` glyph, so focus, Enter, middle click and copy-link-address
+  are the browser's and the new tab has no opener. That `href` and `title` are the
+  one attribute built from session-derived text, set in the browser from the
+  validated value (protocol-change/051, the addendum on clickable links). A refused
+  address draws the slot and, unless it is empty or repeats the label
+  (`link_rule.hint`), the address as quiet text in parentheses, with no anchor. The
+  rule also refuses bidi isolates and other invisible characters. A mutation observer on
+  the element's own children re-reads after a patch; it sends the server nothing.
 - `<loom-time at="<ms>">` draws an instant as the time of day in the browser's own
   zone (`time_rule.clock`: round up to the minute, then the browser's UTC offset
   from `ffi_dom.timezone_offset_minutes`). The admin page's grant refusal uses it
@@ -201,7 +227,8 @@ components make is Gleam over it (see `internal/ffi_dom` under Key Types).
 `lustre_dev_tools` (a dev dependency here and nowhere else) into
 `packages/web_view/priv/static/web_client.mjs`, together with the page's
 stylesheet, which Tailwind builds from `src/web_client.css`, and the two
-page scripts in `assets/`. The daemon serves those files; nothing at run
+page scripts and the tab icon (`favicon.svg`, the logo's mark, light and dark
+by media query) in `assets/`. The daemon serves those files; nothing at run
 time builds anything.
 
 ## Key Types
@@ -389,9 +416,10 @@ time builds anything.
 
 ## Tests
 
-What the components decide is in six modules that import neither Lustre nor
+What the components decide is in seven modules that import neither Lustre nor
 `ffi_dom`: `attach_rule` (the limits, which files are accepted and refused,
-the held images and the form field they make), `follow_rule` (the scroll rule, `Reader` and its transitions,
+the held images and the form field they make), `drop_rule` (which drags carry
+files, the drag state, when the drop state shows), `follow_rule` (the scroll rule, `Reader` and its transitions,
 `keeping`), `expand_rule` (the two states and the chevron), `shell_rule`
 (which columns are open, the buttons' words, what a closed column lets the
 keyboard reach), `composer_rule` (the table, `matching`, `intent`, `hear`, `taken`,

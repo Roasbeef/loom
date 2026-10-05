@@ -371,6 +371,7 @@ pub fn a_private_session_draws_one_sentence_and_no_button_test() {
       standing: component.Standing(
         reader: component.DaemonOwner,
         sharing: sharing,
+        opening: component.FromLink,
       ),
       transport: component.Transport(
         ..start.transport,

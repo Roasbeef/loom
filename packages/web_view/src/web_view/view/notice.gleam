@@ -161,7 +161,8 @@ pub fn at_members(spoken: Option(Spoken)) -> Element(message) {
 }
 
 /// The line, beside the invitation form, when the action it is about is an
-/// invitation. An invitation that was made shows its claim and no line, so in
+/// invitation, or the making of the session shareable that the form's presence
+/// follows. An invitation that was made shows its claim and no line, so in
 /// practice this is a refusal.
 ///
 /// ## Examples
@@ -171,7 +172,8 @@ pub fn at_members(spoken: Option(Spoken)) -> Element(message) {
 /// ```
 pub fn at_invitation(spoken: Option(Spoken)) -> Element(message) {
   case spoken {
-    Some(Spoken(action: grants.Invite(..), notice:)) -> line(notice)
+    Some(Spoken(action: grants.Invite(..), notice:))
+    | Some(Spoken(action: grants.MakeShareable(..), notice:)) -> line(notice)
     Some(_) | None -> element.none()
   }
 }

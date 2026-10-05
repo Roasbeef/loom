@@ -34,7 +34,9 @@ page keys and nonces, and the relay into the session's gateway.
   `sharing`, the catalogue's scope for an owner's page, so a private session
   draws `invites.Unshareable`'s one sentence and no invitation button; the
   daemon reads it with the members read the admin page makes, no new frame;
-  `component.unplaced` for fixtures), and a `Transport(socket)`. The heading shows the name (or
+  and `opening`, `FromBookmark` for an owner's page a bookmark opened, which is
+  handed neither invitation nor make-shareable capability and draws
+  `invites.Bookmarked`'s sentence; `component.unplaced` for fixtures), and a `Transport(socket)`. The heading shows the name (or
   `Session` and the ID's first eight characters) with the whole ID in a
   `title`, and the workspace's last segment with the whole path in a
   `title`.
@@ -47,7 +49,13 @@ page keys and nonces, and the relay into the session's gateway.
   observer's page is always declined), and `invite`, an `Option` of a request
   to invite a person to the page's session in an `invites.Role` that answers
   an `invites.Answer`. `invite` is `Some` only on an owner's operator page
-  (`ui_socket.Owning`). `home` is an `Option` of a request for a ticket to the
+  (`ui_socket.Owning`), and so is `shareable`, an `Option` of a request that
+  stops, isolates and resumes the page's private session as one task
+  (protocol-change/065, the addendum on making a session shareable): it returns
+  at once and its `grants.Answer` arrives as `MadeShareable`. The control's state
+  is `shareables.Move` in `View.moving`, set only by `component.arm_shareable`,
+  `disarm_shareable` and `make_shareable`, which sends the task only from
+  `Confirming`. `home` is an `Option` of a request for a ticket to the
   principal's home (a `sessions.Answer` again, declined as `NoHome`); it is
   `Some` only on a page whose grant has `Workspace` reach, an observer's
   included, and the page draws the "Home" button only then. All run in the
@@ -243,8 +251,9 @@ page keys and nonces, and the relay into the session's gateway.
   `Choosing(id)` reads that session's members; `Asking(action)` asks;
   `Arming(action)`/`Disarming` are a revocation's two presses. `web_view/grants`
   is the vocabulary: `Principal`, `Credential`, `Holder`, `Snapshot`, `Reading`,
-  the five `Action`s (`Invite`, `SetRole`, `RevokeMembership`, `RevokeCredentials`,
-  `Rotate`), `Claim` (with `page`, the browser claim address), `Answer`
+  the `Action`s (`Invite`, `SetRole`, `RevokeMembership`, `RevokeCredentials`,
+  `Rotate`, `RevokeSignin`, `Rename`, and `MakeShareable`, which `admin.update`
+  sends only from the question its own button armed (`admin.confirmed`)), `Claim` (with `page`, the browser claim address), `Answer`
   (`Claimed | Changed | Declined`) and `Reason` with `reason_words` and
   `changed_words`; `TooMany(used, free_at_ms)` words the count and the UTC time
   the allowance frees, and `Selection.scope` (`creations.Sharing`) is the `scope`
@@ -726,6 +735,15 @@ page keys and nonces, and the relay into the session's gateway.
   not counted by `strip.count` (the title and the tab's badge speak of live
   strands). Focusing one makes it the active strand, which the roster lists
   with the live cards, so it leaves the group until the reader goes back.
+- `code_view.block(language, text)`: a code fence's body as one `span` per
+  line, each token a `span` whose class (`tok-kw`, `tok-type`, `tok-str`,
+  `tok-num`, `tok-com`, `tok-add`, `tok-del`, `tok-meta`) is a
+  literal chosen by a `case` over `session_view/code_tokens.CodeKind`. The
+  token's text is a text node and the fence's language tag only selects the
+  scanner. A `code_mode` program is a fenced `gleam` block, so the lane's
+  program body and an answer's fence share it; a line the scanner has no
+  class for is one text node. The rows are memoized per line, so a streamed
+  delta scans only the line being written.
 - `markdown_view.blocks(tree)`: the elements for an answer's Markdown,
   drawn from `session_view/markdown`'s tree, the tree the terminal's
   `tui/markdown` also draws. `view/lane` uses it for the speakers the
@@ -844,7 +862,8 @@ page keys and nonces, and the relay into the session's gateway.
   client runtime hides when it mounts and which so shows exactly while the
   page has no session; `refusal(ending, session_id)`, the document a
   refused page request is answered with; the exchange page (`enter(next, nonce)`), the asset
-  names (`stylesheet_asset`, `enter_asset`, `page_asset`, `client_asset`,
+  names (`stylesheet_asset`, `enter_asset`, `page_asset`, `client_asset`, `favicon_asset` (linked from every
+  document's head by `icon_link`),
   `runtime_asset`) and where each is on disk (`static_file`,
   `runtime_file`), the keyed paths (`keyed_prefix`, `session_path`) and
   `content_security_policy(host)`.
@@ -1033,8 +1052,9 @@ page keys and nonces, and the relay into the session's gateway.
   daemon's escalation identity and sequence; cards are keyed by sequence
   (every storage write takes its own), rows by the engine's `transcript.Row` key. Text is only ever
   `html.text`; nothing uses `unsafe_raw_html`. Rendered Markdown keeps the
-  same rule: a link is its label and its destination as text, never an
-  `href`; a Markdown image is text and is never loaded; an ordered list's numbers
+  same rule: a link is `<loom-link>` holding its label and its destination as
+  two text children, never an `href` (the browser element validates the
+  destination and draws the anchor, 051's addendum on clickable links); a Markdown image is text and is never loaded; an ordered list's numbers
   and a fence's language are text; classes come from closed types.
 - **An approval card is drawn from the record alone** (`approval.presentation`),
   in its own region outside the transcript, directly above the composer in

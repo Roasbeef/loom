@@ -1344,7 +1344,7 @@ pub fn marked(
         call(
           "m3",
           "code_mode",
-          json.Object([#("program", json.String(marker <> " program"))]),
+          json.Object([#("program", json.String(marker <> "_program"))]),
         ),
       ]),
     ),

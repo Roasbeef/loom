@@ -100,8 +100,21 @@ pub type Share {
   /// its notes and history with its workspace, so the daemon would refuse any
   /// invitation to it (`NotIsolated`). The control draws one sentence that says
   /// so and no button, so a refusal worded for a terminal cannot be reached.
-  /// Making a session shareable is not offered from the page.
+  /// The owner's page offers a button in the same place that makes the session
+  /// shareable (`web_view/shareables`), and the state becomes `Ready` when it
+  /// has.
   Unshareable
+
+  /// The page's principal is the owner, and the page was opened from a
+  /// bookmark, which cannot mint access (protocol-change/065, the eighth pull
+  /// request): an invitation or a shareable session is new access. The control
+  /// draws one quiet sentence that says why and how to get a page that can, and
+  /// no button.
+  Bookmarked
+
+  /// `Bookmarked`, for a session known to be private: the sentence says the
+  /// session cannot be shared as well.
+  BookmarkedPrivate
 
   /// The control is drawn and waits for the owner to press a button.
   Ready

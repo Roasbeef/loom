@@ -22,7 +22,7 @@
 #   `@source` lines name the server component's views and the client
 #   components, so the utilities in it are exactly the classes those spell;
 # - web_view_enter.js and web_view_page.js, the page's two bootstrap
-#   scripts, copied from packages/web_client/assets.
+#   scripts, and favicon.svg, copied from packages/web_client/assets.
 #
 # They land in packages/web_view/priv/static, which the daemon reads once at
 # startup and a release carries like any application's priv.
@@ -66,9 +66,9 @@ stylesheet_inputs() {
 	find packages/web_view/src "$client/src" -name '*.gleam' | LC_ALL=C sort
 }
 
-# The copied scripts.
+# The copied files: the scripts and the favicon.
 scripts() {
-	ls "$client"/assets/*.js | LC_ALL=C sort
+	ls "$client"/assets/*.js "$client"/assets/*.svg | LC_ALL=C sort
 }
 
 digest_of() {

@@ -168,6 +168,7 @@ fn start() -> component.Start(process.Subject(String)) {
       invite: None,
       home: None,
       rename: None,
+      shareable: None,
     ),
   )
 }

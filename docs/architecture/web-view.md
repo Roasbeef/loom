@@ -240,12 +240,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:325`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:338`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:3508`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:3678`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -342,8 +342,9 @@ component `ImageRequested` with `lustre.dispatch`. What comes back is checked by
 magic number that says the type) and sent with the view's headers, so the browser
 draws what was checked.
 
-An operator's composer draws `<loom-attach>`, which reads files and pasted images
-in the browser and submits them as one form field, a JSON array of base64
+An operator's composer draws `<loom-attach>`, which reads files, pasted images and
+images dropped on the composer (`drop_rule`; `drop_guard` stops a file dropped
+elsewhere from navigating the tab) in the browser and submits them as one form field, a JSON array of base64
 strings, with the draft. `component.submit` runs `web_view/image.admit` on them,
 which reads each type from its bytes and bounds the count and the total, and the
 prompt goes out as `prompt_content` through the shared step. One bad image
@@ -771,8 +772,14 @@ from the session page). It is the last child of the Session pane, at
   `view/share` then draws the admin page's sentence in the control's place and
   no button, and `component.invite` ignores a press, so the refusal that tells
   a browser user to run `loomd` cannot be reached. A scope that could not be
-  read leaves the buttons, which the daemon still refuses correctly. Making a
-  private session shareable is not offered from the page.
+  read leaves the buttons, which the daemon still refuses correctly. The owner's
+  page offers `Make shareable` in the same place (protocol-change/065, the
+  addendum on making a session shareable): the button asks its question in place
+  (`shareables.Move`, held only in the server model), and its confirm sends
+  `Transport.shareable`, which runs `shareable_for` in a task no page owns, since
+  the stop that begins it ends the page. The page then shows the session-stopped
+  notice it always shows and the owner reloads it; the admin page offers the same
+  button under a private session's sentence and stays open throughout.
 - **The request.** Two buttons, observer and operator, send
   `operator_page.Inviting(role)`; a third, "Hide the token", sends
   `Dismissing`. `component.invite` moves the control from `Ready` to `Asking`,
@@ -1296,7 +1303,7 @@ keeps a page from acting.
 | Role ceiling | An operator's power by default. A page is an observer's unless minted with `--operate`, and never above Operator. | `ui_relay.capped` |
 | Component type | An observer's page sending a command. Its `Msg` has no command and its view one handler, the "Load older" read; the socket admits only that click at its fixed path and drops every other frame. | `web_view/component`, `ui_socket.observer_accepts` |
 | Approval card rules | Tricking the person into approving (below). | `web_view/operator_page` |
-| Text only | Script injected through session content. Session text is drawn only as text nodes; no attribute, handler, key or URL is built from it. An answer's Markdown becomes fixed elements from a closed tree, and a link's destination is text. | `web_view/view/lane`, `web_view/view/strip`, `web_view/view/todo_panel`, `web_view/markdown_view`, `web_view/operator_page` |
+| Text only | Script injected through session content. Session text is drawn only as text nodes; no attribute, handler, key or URL is built from it. An answer's Markdown becomes fixed elements from a closed tree, and a link's destination is hidden text that `<loom-link>` validates in the browser before it draws an anchor. | `web_view/view/lane`, `web_view/view/strip`, `web_view/view/todo_panel`, `web_view/markdown_view`, `web_view/operator_page` |
 | Response headers | Inline script and style, framing, `Referer` leaks of the ticket and key, caching. | `ui_http.secured`, `page.content_security_policy` |
 
 The approval card follows its own rules, because it is where an agent
@@ -1425,7 +1432,8 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/view/controls.gleam` | The operator's session controls: the goal row with its buttons and the Fork form (`session`, in the Session pane), and the dock's one goal line while a goal runs or is held (`dock`). It takes the messages its buttons send and the form's submit handler as values. |
 | `packages/web_view/src/web_view/view/expansion.gleam` | The budget an expanded row is cut to (300 lines, 8,000 characters) and the line that says a row was cut. |
 | `packages/web_view/src/web_view/view/lane.gleam` | The transcript lane: the line above its oldest row (`Top`, the "Load older" button), the keyed pieces as timeline rows with a dot in the strand's hue, the tags and dots that carry a marker for a listed strand (`Marks`), folded work, the cards, no row for the advisor's commentary (the panel's section is its record), and each transcript line and card body in its own leaf memo. |
-| `packages/web_view/src/web_view/markdown_view.gleam` | The elements for an answer's Markdown, drawn from `session_view/markdown`'s tree: fixed tags, classes from closed types, every string a text node; `line` is the one-row preview (bold and code kept, cut on the parsed spans) a finished sub-agent row and a strand's latest answer use. |
+| `packages/web_view/src/web_view/code_view.gleam` | A code fence's lines drawn with the token classes `session_view/code_tokens` shares with the terminal: a `span` per token, its `tok-` class a literal chosen from the closed kind type, its text a text node. A `code_mode` program (a fenced `gleam` block) and an answer's fenced code both pass through it. |
+| `packages/web_view/src/web_view/markdown_view.gleam` | The elements for an answer's Markdown, drawn from `session_view/markdown`'s tree: fixed tags, classes from closed types, every string a text node, a link as `<loom-link>` holding its label and its destination as two text children; `line` is the one-row preview (bold and code kept, cut on the parsed spans) a finished sub-agent row and a strand's latest answer use. |
 | `packages/web_view/src/web_view/operator_page.gleam` | The operator's application: `Submitted`, `Decided`, `Controlled` and `Replying`, the uncontrolled composer and its total form decoder, the control forms' decoder, the approval cards. |
 | `packages/web_view/src/web_view/page.gleam` | The shell, the exchange page, the two scripts, the stylesheet, the keyed paths and the content security policy. |
 | `packages/client/src/client/daemon/server.gleam` | `/ui` routing and its check order, `ui.link`, and the `hello` `ui` field. |
@@ -1433,6 +1441,7 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/home.gleam`, `view/home_bar.gleam`, `view/home_table.gleam` | The home page's component, top bar and per-workspace lists, whose running rows open a session and, on an operator-ceiling page, whose saved rows resume one (protocol-change/065). The bar draws the name as the account panel's button and a `read-only link` pill for an observer-ceiling page, and a member's rows say their role (`sessions.Entry.role`, filled from `manager.authorized_roles`). |
 | `packages/web_view/src/web_view/actions.gleam` | The home's stop, archive and delete: `Action`, `Answer`, `Reason` with their fixed words, and the row's `Stage` (`Calm`, `Confirming`, `Working`). |
 | `packages/web_client/src/web_client/switcher.gleam`, `switcher_rule.gleam` | `<loom-switcher>`, the keyboard and chip switcher, and the rule it decides by: the shortcut, the chip's marker, the filter and its order, the highlight. |
+| `packages/web_client/src/web_client/link.gleam`, `link_rule.gleam` | `<loom-link>`, which reads a Markdown link's destination from its own hidden child text and, when the rule accepts it (plain absolute `http` or `https`, no credentials, 2048 characters at most), draws a real `target="_blank" rel="noopener noreferrer"` anchor with the destination as its `title`. Protocol-change/051, the addendum on clickable links. |
 | `packages/web_client/src/web_client/title.gleam`, `title_rule.gleam` | `<loom-title>`, which sets the tab's title from the bar's name and the waiting count, and the rule that words it. |
 | `packages/web_view/src/web_view/view/resume.gleam` | The one rule for a saved row on the sidebar and the home's table: text, a resume button, or "opening" while a resume is out. |
 | `packages/client/src/client/daemon/ui_sessions.gleam` | The ticket and UI-session actor: mint, single-use redeem, lookup, key and nonce comparison, sweep, and the page-minted invitations' allowance (three an hour per credential). |

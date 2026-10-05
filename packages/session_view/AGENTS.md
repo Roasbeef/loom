@@ -205,6 +205,15 @@ for a host with no surfaces.
   pass over the whole is that prefix followed by the pass over the rest;
   the terminal's live tail uses it to sanitize a growing answer once
   rather than on every frame.
+- `code_tokens.line(language, text) -> List(CodePart)`: the token classes of
+  one line of a code fence (`CodeKeyword`, `CodeType`, `CodeString`,
+  `CodeNumber`, `CodeComment`, `CodePunctuation`, and a diff's `CodeAdded`,
+  `CodeRemoved`, `CodeDiffMeta`). A `gleam` tag is scanned, a `diff` tag
+  classifies the whole line, any other tag is one plain run. Total, per line
+  (no state across a line break), and the tokens joined are the line
+  unchanged. The terminal maps each kind to a style in `tui/markdown`, the
+  web view to a `tok-` class in `web_view/code_view`; it holds no
+  `@external`, so R6 stays clean.
 - `markdown.parse(text) -> List(Block)`: an answer's Markdown as a closed
   tree (`Block`, `Inline`, `Cell`, `Level`, `Align`, `AlertKind`,
   `TaskState`) whose every string is text to show. Both hosts draw it: the

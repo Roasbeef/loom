@@ -146,6 +146,9 @@ One daemon hosts sessions across workspaces. Closing or switching a terminal's
 attachment leaves the session available to other clients. Remote connections
 use a secure tunnel or TLS proxy to the loopback-bound daemon.
 
+To share a session with a colleague from a browser, follow the
+[guide to working with other people](docs/guide/multiplayer.md).
+
 See [multiplayer](docs/architecture/multiplayer.md) and
 [session management](docs/architecture/sessions.md) for access and lifecycle
 details.

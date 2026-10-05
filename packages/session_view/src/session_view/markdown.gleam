@@ -2287,11 +2287,29 @@ fn linked(state: Scan, target: String) -> Scan {
     Bracket(target: ToLink, ..) | Root | Delimited(..) -> {
       let state =
         close_frame(state, fn(children) {
-          Link(label: children, destination: target)
+          Link(label: unlinked(children), destination: target)
         })
       Scan(..state, epoch: state.epoch + 1)
     }
   }
+}
+
+// A link's label with any link inside it taken out, its own label kept. A
+// link cannot hold a link: `[see https://a.test](https://b.test)` is one
+// link to `b.test`, and a page that drew the inner autolink as well would
+// nest one clickable address inside another.
+fn unlinked(inlines: List(Inline)) -> List(Inline) {
+  list.flat_map(inlines, fn(inline) {
+    case inline {
+      Link(label:, ..) -> unlinked(label)
+      Emphasis(children:) -> [Emphasis(unlinked(children))]
+      Strong(children:) -> [Strong(unlinked(children))]
+      Strikethrough(children:) -> [Strikethrough(unlinked(children))]
+      Text(..) | Code(..) | Image(..) | Task(..) | FootnoteRef(..) | Break -> [
+        inline,
+      ]
+    }
+  })
 }
 
 // A link's destination: `(` directly after the `]`, then everything up to
@@ -2499,10 +2517,7 @@ fn bare_link(
     })
     use #(prefix, used, rest) <- result.try(link_prefix(input))
     use Nil <- result.try(domain(rest))
-    let #(body, after) =
-      list.split_while(rest, fn(grapheme) {
-        grapheme != "<" && !is_space(grapheme)
-      })
+    let #(body, after) = split_bare_body(rest, [])
     let #(kept, dropped) = trimmed_link(list.reverse(body), parens(body), [])
     Ok(#(prefix, used, list.reverse(kept), list.append(dropped, after)))
   }
@@ -2526,6 +2541,25 @@ fn bare_link(
     }
     Error(Nil), [grapheme, ..rest] -> read_text(grapheme, rest, position, state)
     Error(Nil), [] -> finish(state)
+  }
+}
+
+// A bare link's body and what follows it: the body ends at whitespace, at
+// `<`, or at a `](`, the close of a bracketed label and the open of its
+// destination, so `[see https://a.test](https://b.test)` autolinks `a.test`
+// and leaves the real link's destination for the bracket to take.
+fn split_bare_body(
+  input: List(String),
+  kept: List(String),
+) -> #(List(String), List(String)) {
+  case input {
+    [] -> #(list.reverse(kept), [])
+    ["]", "(", ..] | ["<", ..] -> #(list.reverse(kept), input)
+    [grapheme, ..rest] ->
+      case is_space(grapheme) {
+        True -> #(list.reverse(kept), input)
+        False -> split_bare_body(rest, [grapheme, ..kept])
+      }
   }
 }
 

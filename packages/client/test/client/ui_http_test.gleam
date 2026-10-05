@@ -111,6 +111,9 @@ pub fn routes_are_gets_under_ui_test() {
     == ui_http.Asset(ui_http.Stylesheet)
   assert ui_http.route(get("/ui/assets/web_client.mjs", []))
     == ui_http.Asset(ui_http.Client)
+  assert ui_http.route(get("/ui/assets/favicon.svg", []))
+    == ui_http.Asset(ui_http.Favicon)
+  assert ui_http.route(get("/favicon.ico", [])) == ui_http.Unknown
   assert ui_http.route(get("/ui/assets/web_view.css", [])) == ui_http.Unknown
   assert ui_http.route(get("/ui/assets/other.js", [])) == ui_http.Unknown
   assert ui_http.route(
