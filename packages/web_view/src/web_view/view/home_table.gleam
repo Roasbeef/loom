@@ -762,6 +762,10 @@ fn inline(notice: Notice) -> Element(message) {
         ],
         [html.text(" · " <> words)],
       )
+
+    // A grant allowance is the admin page's, and the home never words a
+    // refusal of one, so a throttled notice has nothing to say in a row.
+    notice.Throttled(..) -> element.none()
   }
 }
 
@@ -802,6 +806,10 @@ fn named(label: String, notice: Notice) -> Notice {
   case notice {
     notice.Said(words:) -> notice.Said(label <> " " <> string.lowercase(words))
     notice.Refused(words:) -> notice.Refused(label <> ": " <> words)
+
+    // The admin page's grant refusal carries no words to put a name in front
+    // of, and the home never makes one.
+    notice.Throttled(..) -> notice
   }
 }
 
