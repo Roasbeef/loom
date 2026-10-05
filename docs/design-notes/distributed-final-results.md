@@ -79,7 +79,7 @@ fresh execution authority.
 One bundle contains two canonical MessagePack segments. The first is the
 program's existing Outcome body: either a complete value or a failure message
 and complete details. It contains no authenticated frame header, token or channel
-identity. The second contains independent owner observations: the manifest hash,
+identity. The second contains independent owner observations: the exact compiler fingerprint (`sha256-` plus 64 lowercase hex digits),
 both enforcement stages, and the complete existing bounded capability-call log.
 Keeping these segments distinct prevents a program from supplying its own
 enforcement or call history.
