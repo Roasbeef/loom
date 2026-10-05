@@ -45,10 +45,15 @@ import web_client/link_rule
 /// The element's tag.
 pub const name = "loom-link"
 
-/// What the element holds: the destination `link_rule` approved, if any, and
-/// the observer that watches its children.
+/// What the element holds: the destination `link_rule` approved, if any; for
+/// a destination it refused, the text to show after the label as a hint (empty
+/// when there is none); and the observer that watches its children.
 pub type Model {
-  Model(destination: Result(String, Nil), observer: Result(Observer, Nil))
+  Model(
+    destination: Result(String, Nil),
+    refused: String,
+    observer: Result(Observer, Nil),
+  )
 }
 
 /// Everything the element can be told.
@@ -62,8 +67,9 @@ pub type Msg {
   /// The observer is watching.
   Watching(observer: Observer)
 
-  /// The children were read: the approved destination, or none.
-  Read(destination: Result(String, Nil))
+  /// The children were read: the approved destination, or none, and the hint
+  /// text for a refused one.
+  Read(destination: Result(String, Nil), refused: String)
 }
 
 /// Registers the element with the browser.
@@ -82,7 +88,10 @@ pub fn register() -> Result(Nil, lustre.Error) {
 }
 
 fn init(_: Nil) -> #(Model, Effect(Msg)) {
-  #(Model(destination: Error(Nil), observer: Error(Nil)), effect.none())
+  #(
+    Model(destination: Error(Nil), refused: "", observer: Error(Nil)),
+    effect.none(),
+  )
 }
 
 fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
@@ -90,9 +99,12 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     Connected -> #(model, watch())
     Watching(observer:) -> #(
       Model(..model, observer: Ok(observer)),
+      stop(model.observer),
+    )
+    Read(destination:, refused:) -> #(
+      Model(..model, destination:, refused:),
       effect.none(),
     )
-    Read(destination:) -> #(Model(..model, destination:), effect.none())
     Disconnected -> #(
       Model(..model, observer: Error(Nil)),
       stop(model.observer),
@@ -105,19 +117,32 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 fn watch() -> Effect(Msg) {
   use dispatch, root <- effect.after_paint
   let host = ffi_dom.host(ffi_dom.as_element(root))
-  let observer = ffi_dom.mutation_observer(fn() { dispatch(Read(read(host))) })
+  let observer = ffi_dom.mutation_observer(fn() { dispatch(read(host)) })
 
   ffi_dom.observe_text(observer, host)
-  dispatch(Read(read(host)))
+  dispatch(read(host))
   dispatch(Watching(observer))
 }
 
-// The approved destination in the element's `ll-url` child, or none: no such
-// child, or text the rule refuses.
-fn read(host: ffi_dom.Element) -> Result(String, Nil) {
-  ffi_dom.query_selector(host, ".ll-url")
-  |> result.map(ffi_dom.text_content)
-  |> result.try(link_rule.destination)
+// What the element's `ll-url` and `ll-text` children say: the approved
+// destination, or none, and for a refused one the hint to show after the
+// label.
+fn read(host: ffi_dom.Element) -> Msg {
+  let text = fn(selector) {
+    ffi_dom.query_selector(host, selector)
+    |> result.map(ffi_dom.text_content)
+    |> result.unwrap("")
+  }
+  let raw = text(".ll-url")
+
+  case link_rule.destination(raw) {
+    Ok(url) -> Read(destination: Ok(url), refused: "")
+    Error(Nil) ->
+      Read(
+        destination: Error(Nil),
+        refused: link_rule.hint(text(".ll-text"), raw),
+      )
+  }
 }
 
 fn stop(observer: Result(Observer, Nil)) -> Effect(Msg) {
@@ -130,11 +155,24 @@ fn stop(observer: Result(Observer, Nil)) -> Effect(Msg) {
   }
 }
 
-// The slot alone until a destination is approved. With one, the anchor around
+// The slot until a destination is approved, followed by the refused
+// destination as quiet text when there is one to show: a relative path such
+// as `docs/README.md` is the most common link a model writes, and the reader
+// should see where it pointed. With an approved destination, the anchor around
 // the slot and a glyph that marks the link as leaving the page.
 fn view(model: Model) -> Element(Msg) {
   case model.destination {
-    Error(Nil) -> component.default_slot([], [])
+    Error(Nil) ->
+      case model.refused {
+        "" -> component.default_slot([], [])
+        hint ->
+          element.fragment([
+            component.default_slot([], []),
+            html.span([attribute.class("link-refused")], [
+              html.text(" (" <> hint <> ")"),
+            ]),
+          ])
+      }
     Ok(url) ->
       html.a(
         [

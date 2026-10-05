@@ -60,10 +60,9 @@ pub fn destination(text: String) -> Result(String, Nil) {
   Ok(text)
 }
 
-// The text is not longer than the limit. A list is cut at the limit and one
-// more, so a very long destination is not counted to its end.
+// The text is not longer than the limit, counted in code points.
 fn within_limit(codepoints: List(a)) -> Result(Nil, Nil) {
-  case list.length(list.take(codepoints, limit + 1)) > limit {
+  case list.length(codepoints) > limit {
     True -> Error(Nil)
     False -> Ok(Nil)
   }
@@ -87,9 +86,10 @@ fn allowed(code: Int) -> Bool {
     _ if code <= 0x20 -> False
     _ if code == 0x5c -> False
     _ if code >= 0x7f && code <= 0xa0 -> False
+    _ if code >= 0x2060 && code <= 0x2069 -> False
     _ if code >= 0x2000 && code <= 0x200f -> False
     _ if code >= 0x2028 && code <= 0x202f -> False
-    0x3000 | 0xfeff -> False
+    0xad | 0x61c | 0x3000 | 0xfeff -> False
     _ -> True
   }
 }
@@ -127,5 +127,28 @@ fn host_only(authority: String) -> Result(Nil, Nil) {
         True -> Error(Nil)
         False -> Ok(Nil)
       }
+  }
+}
+
+/// The text to show after a label whose destination `destination` refused: the
+/// destination itself, cut to `limit` characters, or nothing when it is empty
+/// or only repeats the label (a bare `www.` address or an email carries the
+/// scheme the parser added).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert link_rule.hint("README", "docs/README.md") == "docs/README.md"
+/// assert link_rule.hint("x.test", "http://x.test") == ""
+/// ```
+pub fn hint(label: String, destination: String) -> String {
+  let repeats =
+    destination == ""
+    || destination == label
+    || destination == "http://" <> label
+    || destination == "mailto:" <> label
+  case repeats {
+    True -> ""
+    False -> string.slice(destination, 0, limit)
   }
 }

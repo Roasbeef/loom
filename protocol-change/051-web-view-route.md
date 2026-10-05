@@ -3986,8 +3986,10 @@ and the one attribute that carries a destination is written by the browser.
   The browser supplies focus, Enter, middle click and "copy link address". This sets
   an attribute on an element the browser component itself drew, from a value the rule
   approved, and never in the server's markup; the server-side rule stands as written.
-- **An invalid destination leaves the label as plain text.** The element then draws
-  only the slot, the hidden destination stays hidden and nothing happens on a click.
+- **A refused destination leaves the label as plain text.** The element draws the slot
+  and, for a destination that is not empty and does not repeat the label, the
+  destination in parentheses as quiet text. There is no anchor and nothing happens on
+  a click.
   The element watches its own children, so a destination the server patches later is
   validated again.
 
@@ -4009,9 +4011,14 @@ and the one attribute that carries a destination is written by the browser.
 
 ### Cost
 
-An invalid destination is no longer visible as text; the label alone shows. A link
-the browser may open needs the client bundle, so a page whose script did not load
-shows labels with no links.
+A link the browser may open needs the client bundle, so a page whose script did not
+load shows labels with no links. A destination the rule refuses, a relative path such
+as `docs/README.md` being the common case, is drawn after the label as quiet text in
+parentheses with no anchor, unless it is empty or only repeats the label, so the
+reader still sees where the model pointed. That text is a text node the element
+draws from the hidden child's text, cut to 2048 characters. The rule also refuses the
+bidi isolates (U+2066 to U+2069), the invisible characters U+2060 to U+2065, U+00AD
+and U+061C, which could reorder or hide part of the address in the hover title.
 
 ### Verification
 

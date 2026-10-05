@@ -863,6 +863,7 @@
   a.link-anchor{color:var(--color-current);text-decoration:none;cursor:pointer;border-radius:2px;}
   a.link-anchor:hover{text-decoration:underline;}
   a.link-anchor:focus-visible{text-decoration:underline;outline:2px solid var(--color-current);outline-offset:1px;}
+  .link-refused{color:var(--color-fg-quiet);overflow-wrap:anywhere;}
   .link-glyph{margin-left:.2em;font-size:.8em;opacity:.7;}
   .markdown .md-link-target,.markdown .md-image{color:var(--color-fg-quiet);overflow-wrap:anywhere;}
   /* A turn's work (web_view/view/lane, view/fold_row): one collapsed line,

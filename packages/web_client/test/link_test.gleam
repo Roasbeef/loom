@@ -90,3 +90,31 @@ pub fn a_very_long_destination_is_refused_test() {
   let long = "https://example.com/" <> string.repeat("a", 100_000)
   assert link_rule.destination(long) == Error(Nil)
 }
+
+// Bidi isolates and other invisible characters can reorder or hide part of an
+// address as the hover title draws it.
+pub fn invisible_and_bidi_characters_are_refused_test() {
+  assert link_rule.destination("https://example.com/\u{2066}a") == Error(Nil)
+  assert link_rule.destination("https://example.com/\u{2069}") == Error(Nil)
+  assert link_rule.destination("https://example.com/\u{2060}") == Error(Nil)
+  assert link_rule.destination("https://example.com/\u{2065}") == Error(Nil)
+  assert link_rule.destination("https://exam\u{00ad}ple.com/") == Error(Nil)
+  assert link_rule.destination("https://example.com/\u{061c}") == Error(Nil)
+}
+
+pub fn a_refused_destination_is_shown_as_a_hint_test() {
+  assert link_rule.hint("README", "docs/README.md") == "docs/README.md"
+  assert link_rule.hint("click", "javascript:alert(1)") == "javascript:alert(1)"
+}
+
+pub fn a_hint_that_repeats_the_label_is_dropped_test() {
+  assert link_rule.hint("", "") == ""
+  assert link_rule.hint("x.test", "x.test") == ""
+  assert link_rule.hint("www.x.test", "http://www.x.test") == ""
+  assert link_rule.hint("me@x.test", "mailto:me@x.test") == ""
+}
+
+pub fn a_long_hint_is_cut_test() {
+  let long = string.repeat("a", link_rule.limit + 50)
+  assert string.length(link_rule.hint("x", long)) == link_rule.limit
+}
