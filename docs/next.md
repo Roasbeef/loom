@@ -16,10 +16,10 @@ storage and executor package gates passed; the full repository and separate-host
 gates remain pending. The [merge review](review/distributed-main-integration.md)
 records optional skips and existing peer-fixture failures.
 
-The latest component executor gate passed 259 tests with no skips before the
-native original-deadline follow-up. That follow-up passed its 20 focused controls,
-and the exact final P live-association source passed all 90 bounded cases/probes
-at 100 schedules. See the [deadline review](review/distributed-native-command-admission.md)
+The combined-main executor gate passed 274 tests with no skips, including the
+[Compile observation adapter](review/distributed-compile-observation.md). The
+native original-deadline follow-up passed its 20 focused controls, and the exact
+final P live-association source passed all 90 bounded cases/probes at 100 schedules. See the [deadline review](review/distributed-native-command-admission.md)
 and [model review](review/distributed-live-association-model.md) for limits.
 Those results do not establish assembled-system acceptance.
 
