@@ -87,6 +87,17 @@ for pkg in "${targets[@]}"; do
     gleam format --check "${format_paths[@]}"
     bash ../../scripts/test.sh "$pkg"
   )
+  # JavaScript admits NaN and infinities as terms; BEAM cannot construct them.
+  # Keep the portable report constructor regression in the normal core gate.
+  # This supplemental target retains existing u64 precision warnings; the
+  # Erlang build above remains warning-free and authoritative for u64 custody.
+  if [ "$pkg" = "core" ]; then
+    (
+      cd packages/core
+      python3 ../../scripts/with_timeout.py 120 -- gleam build --target javascript
+      python3 ../../scripts/with_timeout.py 30 -- node test/report_value_finite_test.mjs
+    )
+  fi
   # This fixture checks the work removed by leaf memoisation and the provider
   # worker's copy boundary in a disposable VM, separate from correctness tests.
   if [ "$pkg" = "runtime" ]; then
