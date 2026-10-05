@@ -42,8 +42,10 @@ exposes the canonical certificate, key, CA, cookie and TLS-options paths through
 Membership itself does not establish that sandbox assembly performed this step.
 
 `remote/beam_endpoint.Registration` binds that original owner Peer to concrete
-native, optional semantic-workspace and optional whole-Compile service handles.
-Only trusted local `register` adds a binding. One literal node-wide rendezvous
+native, optional semantic-workspace and optional whole-Compile service handles,
+and their original local lifetime owner PID. The endpoint installs that owner's
+monitor before making the registration eligible. Only trusted local `register`
+adds a binding. One literal node-wide rendezvous
 owns at most sixteen lifetime registrations, sharing four data and two control
 credits across all scopes. `remote/internal/beam_protocol` selects a closed
 native, workspace, Compile or original-command route with the unchanged full
@@ -57,6 +59,22 @@ arrive. A lost service or run retires that credit; endpoint restart alone cannot
 reclaim native custody. The embedding subtree must be Temporary and separately
 prove native quiescence before replacing a generation against retained journals.
 There is no in-place generation update or registration removal.
+
+`fence(server, exact_row)` permanently closes that original row to new exchanges.
+An observed lifetime-owner DOWN performs the same transition. The six canonical
+credit records retain Available, Assigned(original row and correlation), or
+Unusable(original assignment, when one existed); there is no replacement credit.
+A delayed release must match both the original row and correlation. Normal
+credit death while idle reduces capacity; death while assigned keeps that scope's
+uncertainty even if a later release arrives.
+
+`inspect_drain` reports Busy for an active row or its outstanding assignments,
+DrainUncertain for a fenced row with an unusable outstanding assignment, and
+Drained only for a fenced row without either. An unavailable endpoint returns
+Error(Uncertain). This snapshot covers transport and queued service asks. It
+does not establish native retirement, physical resource cleanup or journal
+release. Host assembly must still order those obligations before generation
+replacement.
 
 `remote/dispatcher` now uses this BEAM endpoint. The old socket modules and their
 fixtures remain during migration; they are not an additional supported deployment
@@ -740,8 +758,10 @@ This module owns no listener, ingress credits or alternate native admission.
 Successful answers and definite resource-journal Missing/Conflict refusals
 release metadata capacity after the actual final drain. Ambiguous errors and
 lost reports retain it and fence admission through one shared classification.
-The native command-context lookup still maps its missing/conflicting historical
-lookup to uncertainty; its separately proposed correction remains pending approval.
+The native command-context lookup maps a definite missing or conflicting
+historical identity to Invalid. The whole Compile route uses that same definite
+classification; a real managed-task drain must still arrive before the metadata
+slot is reusable. Journal loss and ambiguous replies retain uncertainty.
 
 The original continuation polls `compile_observation.observe` only until its
 unchanged cap. Missing association or uncommitted terminal is Pending; errors end
@@ -778,3 +798,19 @@ death and an independent journal reopen returning history without a Claim.
 Broker fixture peers are monitored through their actual Dispatcher owner identity
 and joined after explicit native settlement. Cancellation signals are released
 after final managed reports; no completed run leaves an idle signal behind.
+
+
+## Original native close disposition
+
+`remote/service` retains NativeOpen, NativeRetired or NativeUncertain inside its
+original actor. Close first quiesces admission and clears challenge tickets. It
+attempts native pool retirement once, retaining the result even if the original
+epoch fence or a covered-key confirmation fails. A repeated close retries only
+those original durable confirmations. NativeUncertain stays uncertain; process
+death cannot turn it into retirement.
+
+A successful physical close alone is insufficient for ScopeRetirement: the
+original epoch fence and every covered-key retirement confirmation must also
+succeed. `shutdown` terminates the service only after that complete result. The
+enclosing host must consume this service-owned proof rather than invoking the
+same native close independently.

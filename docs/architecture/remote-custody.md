@@ -272,6 +272,23 @@ After service handoff, the actual service answer and `AllDelivered` must both
 arrive before credit reuse. Exact run correlations refuse delayed handoffs from
 a previous assignment. Ambiguous answers and lost drains retire capacity.
 
+Each registration also retains the original local lifetime owner. Explicit
+`fence` and an observed owner DOWN close only that exact row. The endpoint
+installs the owner monitor before admitting exchanges. A fenced row remains
+queryable: `inspect_drain` returns Busy while its assignments remain,
+DrainUncertain if an assigned credit was lost, and Drained only after those
+transport obligations clear. An active row is never Drained. Idle credit death
+reduces shared capacity; it does not invent scoped work or a replacement credit.
+A stale completion must match both the original registration and correlation.
+
+That drain witness permits the enclosing host to advance its shutdown sequence;
+it does not retire native work. The native service separately retains its first
+physical-close disposition across durable-confirmation failures. Retrying close
+can finish those original confirmations without calling the pool close twice.
+A failed physical close remains uncertain. Only successful native retirement,
+epoch fencing and covered-key confirmations produce ScopeRetirement. Production
+host wiring must still join its other services and release journals last.
+
 This transport preserves the existing canonical request and receipt bytes.
 Native frames use their original bounded codecs; large semantic input and
 completion use acknowledged fixed chunks. The transport bounds retained
