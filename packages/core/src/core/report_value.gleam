@@ -10,6 +10,7 @@
 //// ## Flow
 ////
 //// `metadata` validates owner observations and encodes their closed schema.
+//// `check_manifest` preserves compiler fingerprints separately from URI digests.
 //// `complete` validates a raw terminal; `from_outcome` validates a term first.
 //// `decode` checks the bundle header before `decode_terminal` and metadata.
 //// `encode_terminal` and `walk` share the terminal's fixed allocation budgets.
@@ -153,7 +154,7 @@ pub type Enforcement {
 pub opaque type Metadata {
   /// Contains only validated, complete owner observations.
   Metadata(
-    /// The validated canonical artifact digest.
+    /// The original artifact fingerprint: `sha256-` followed by lowercase hex.
     manifest_hash: String,
     /// Both validated stage observations.
     sandbox: Enforcement,
@@ -205,7 +206,8 @@ type TermProfile {
 }
 
 /// Checks actual owner observations before encoding their independent schema.
-/// The manifest must be the canonical lowercase SHA-256 digest of the artifact.
+/// The manifest preserves the compiler fingerprint: `sha256-` plus 64 lowercase
+/// hexadecimal digits. Result-reference digests separately remain bare hex.
 ///
 /// ## Examples
 ///
@@ -217,7 +219,7 @@ pub fn metadata(
   sandbox: Enforcement,
   calls: CallLog,
 ) -> Result(Metadata, CorruptionReport) {
-  use Nil <- result.try(check_digest(manifest_hash))
+  use Nil <- result.try(check_manifest(manifest_hash))
   use Nil <- result.try(check_log(calls))
   use Nil <- result.try(check_stage(sandbox.build))
   use Nil <- result.try(check_stage(sandbox.node))
@@ -787,6 +789,22 @@ fn walk_entries(
         dict.insert(seen, key, Nil),
       )
     }
+  }
+}
+
+// Artifact fingerprints and report-content digests are different names. The
+// compiler already prefixes its fingerprint; retaining it verbatim avoids a
+// renderer-only spelling that cannot be compared with original Compile evidence.
+fn check_manifest(manifest: String) -> Result(Nil, CorruptionReport) {
+  case <<manifest:utf8>> {
+    <<"sha256-":utf8, digest:bytes-size(64)>> -> {
+      use digest <- result.try(
+        bit_array.to_string(digest)
+        |> result.map_error(fn(_) { fail("a canonical artifact fingerprint") }),
+      )
+      check_digest(digest)
+    }
+    _ -> Error(fail("sha256- followed by 64 lowercase hexadecimal digits"))
   }
 }
 

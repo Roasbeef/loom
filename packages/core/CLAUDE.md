@@ -271,7 +271,9 @@ capability command identity are deliberately absent from this fixed-role slice.
 
 `core/report_value` separates a terminal `Outcome` from its trusted `Metadata`.
 Opaque `CompleteReport` values contain a checked canonical terminal value,
-manifest digest, enforcement observations and bounded call log. The raw scanner
+original `sha256-` artifact fingerprint, enforcement observations and bounded
+call log. The metadata validator preserves the compiler spelling; the report URI
+instead carries a bare lowercase digest of the complete bundle. The raw scanner
 checks shared byte, node, container and nesting budgets before MessagePack
 allocation. Term constructors apply the same budgets before encoding; JavaScript
 nonfinite floats are refused explicitly. The fixed `LOOMRV01` bundle carries
