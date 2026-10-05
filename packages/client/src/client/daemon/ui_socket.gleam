@@ -2410,22 +2410,12 @@ pub fn admin_ticket_for(
   open: fn() -> Result(Int, Nil),
 ) -> sessions.Answer {
   let outcome = {
-    use until <- result.try(open() |> result.replace_error(sessions.NoAdmin))
-    use _ <- result.try(
-      operating_ceiling(standing.ceiling)
-      |> result.replace_error(sessions.NoAdmin),
-    )
     use _ <- result.try(
       fresh_home(standing.reach) |> result.replace_error(sessions.NoAdmin),
     )
-    use principal <- result.try(
-      manager.authenticate(standing.registry, standing.digest)
-      |> result.replace_error(sessions.NoAdmin),
+    use until <- result.try(
+      owner_operating(standing, open) |> result.replace_error(sessions.NoAdmin),
     )
-    use _ <- result.try(case principal.id == standing.principal {
-      True -> owner_principal_for_admin(principal)
-      False -> Error(sessions.NoAdmin)
-    })
     ui_sessions.mint_before(
       tickets,
       ui_sessions.Grant(
@@ -2445,14 +2435,25 @@ pub fn admin_ticket_for(
   }
 }
 
-// Only the daemon's owner opens an admin page. A member's home is refused here
-// even if a message reached it.
-fn owner_principal_for_admin(
-  principal: access.Principal,
-) -> Result(Nil, sessions.Reason) {
-  case principal.kind {
-    access.OwnerPrincipal -> Ok(Nil)
-    access.MemberPrincipal -> Error(sessions.NoAdmin)
+// The steps an admin ticket and every admin change begin with: the asking page
+// is open (its deadline is the answer), was minted to operate, and its credential
+// still authenticates as the principal it was admitted for, who is the daemon's
+// owner. A member's page is refused here even if a message reached it.
+fn owner_operating(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+) -> Result(Int, Nil) {
+  use until <- result.try(open())
+  use _ <- result.try(
+    operating_ceiling(standing.ceiling) |> result.replace_error(Nil),
+  )
+  use principal <- result.try(
+    manager.authenticate(standing.registry, standing.digest)
+    |> result.replace_error(Nil),
+  )
+  case principal.id == standing.principal, principal.kind {
+    True, access.OwnerPrincipal -> Ok(until)
+    True, access.MemberPrincipal | False, _ -> Error(Nil)
   }
 }
 
@@ -2957,18 +2958,9 @@ fn administering(
   standing: Standing(instance),
   open: fn() -> Result(Int, Nil),
 ) -> Result(Nil, grants.Reason) {
-  use _ <- result.try(open() |> result.replace_error(grants.NotOwner))
-  use _ <- result.try(
-    operating_ceiling(standing.ceiling) |> result.replace_error(grants.NotOwner),
-  )
-  use principal <- result.try(
-    manager.authenticate(standing.registry, standing.digest)
-    |> result.replace_error(grants.NotOwner),
-  )
-  case principal.id == standing.principal, principal.kind {
-    True, access.OwnerPrincipal -> Ok(Nil)
-    True, access.MemberPrincipal | False, _ -> Error(grants.NotOwner)
-  }
+  owner_operating(standing, open)
+  |> result.replace(Nil)
+  |> result.replace_error(grants.NotOwner)
 }
 
 // A change that grants access: one allowance first, then the registry turn, and
