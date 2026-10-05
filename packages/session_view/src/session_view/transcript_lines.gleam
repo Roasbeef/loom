@@ -281,29 +281,55 @@ fn queued_lines(
   }
 }
 
+/// The inputs the daemon holds for the strand on screen, in the capture's
+/// own order: a steer waiting for the running generation's next boundary,
+/// or a prompt queued behind the turn. `None` when the capture predates the
+/// host queue (an older recording), which a host then stands in for with its
+/// own submissions (`pending_input_lines`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.held_inputs(presentation) == Some([])
+/// ```
+pub fn held_inputs(
+  presentation: Presentation,
+) -> Option(List(snapshot_view.PendingInput)) {
+  case presentation.captured {
+    Some(#(_, view)) ->
+      option.map(view.pending_inputs, fn(rows) {
+        list.filter(rows, fn(row) { row.strand == presentation.active_strand })
+      })
+    None -> None
+  }
+}
+
+/// The words beneath a held input, by how the daemon will run it. The
+/// terminal and the page draw the same ones.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert transcript_lines.held_words(snapshot_view.Steer) == "steer · runs next"
+/// ```
+pub fn held_words(kind: snapshot_view.InputKind) -> String {
+  case kind {
+    snapshot_view.Steer -> "steer · runs next"
+    snapshot_view.Queue -> "queued · after this turn"
+  }
+}
+
 /// Modern cuts carry the complete host queue, including other peers' input.
 /// Replacing that list also removes drained rows after reconnect or a skipped
 /// idle interval, without matching repeated text against transcript entries.
 @internal
 pub fn pending_input_lines(presentation: Presentation) -> List(Line) {
-  let pending = case presentation.captured {
-    Some(#(_, view)) -> view.pending_inputs
-    None -> None
-  }
-  case pending {
+  case held_inputs(presentation) {
     None -> queued_lines(presentation.queued, presentation.awaiting_outcome)
-    Some(rows) -> {
-      let visible =
-        list.filter(rows, fn(row) { row.strand == presentation.active_strand })
+    Some(visible) -> {
       let queued =
         list.flat_map(visible, fn(row) {
-          [
-            Line(User, row.text),
-            Line(System, case row.kind {
-              snapshot_view.Steer -> "steer · runs next"
-              snapshot_view.Queue -> "queued · after this turn"
-            }),
-          ]
+          [Line(User, row.text), Line(System, held_words(row.kind))]
         })
       list.append(queued, queued_lines([], presentation.awaiting_outcome))
     }

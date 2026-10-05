@@ -11,6 +11,12 @@
 //// opened and streamed nothing yet draws `Thinking · 0:03` in the reasoning
 //// row's place, so a model that sends no reasoning text still shows progress. The lane gives
 //// the region a timeline dot of its own and pulses it while the region exists.
+//// After them come the inputs the daemon holds for the strand, as the
+//// terminal draws them: a steer waiting for the generation's next boundary
+//// and the prompts queued behind the turn, each a quiet row of the person's
+//// own words with the engine's words for how it will run beneath, so a
+//// message that was taken but not yet run is on the page from the capture
+//// that first lists it until the one that no longer does.
 ////
 //// The rows are `component.live`'s, taken from the shared record's streams,
 //// and this module only draws them. It decides nothing about the session.
@@ -74,6 +80,15 @@ pub type Row {
 
   /// The answer so far, as the transcript's line for an assistant answer.
   Answer(line: Line)
+
+  /// An input the daemon holds for the strand (`snapshot_view.PendingInput`):
+  /// a steer not yet folded in, or a prompt queued behind the turn.
+  Held(
+    /// The daemon's excerpt of the person's own words.
+    text: String,
+    /// How it will run, in the engine's words (`transcript_lines.held_words`).
+    words: String,
+  )
 }
 
 /// The region's rows in the order the provider sent them, in one block.
@@ -103,6 +118,15 @@ pub fn view(
 fn row(row: Row, draw: fn(Line) -> Element(message)) -> Element(message) {
   case row {
     Answer(line:) -> draw(line)
+
+    // The person's words and, beneath them, how the daemon will run them.
+    // Both are text nodes: the words are the daemon's excerpt of a message
+    // a person typed, and the mark is the engine's fixed phrase.
+    Held(text:, words:) ->
+      html.div([attribute.class("held")], [
+        html.p([attribute.class("held-text")], [html.text(text)]),
+        html.p([attribute.class("held-mark")], [html.text(words)]),
+      ])
 
     // The turn is open and nothing has streamed. The same row the reasoning
     // text will fill, headed `Thinking`, so that the hand-over changes a word

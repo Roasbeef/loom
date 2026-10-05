@@ -484,8 +484,12 @@ draws what the terminal draws for that interval, from the same state: the
 shared record's `streams` for the followed strand
 (`transcript_lines.display_streams`, which also seeds a stream from the
 capture's sampled preview when the page attached mid-answer), the
-summarizer's `summaries` for the request's headline (protocol 050), and the
-generation clock. No read and no socket event is added. `component.live`
+summarizer's `summaries` for the request's headline (protocol 050), the
+generation clock, and the inputs the daemon holds for the strand (the
+capture's `pending_inputs`, filtered by `transcript_lines.held_inputs` and
+worded by `held_words`, the terminal's own rule), so a steer or a queued
+prompt the daemon took is on the page until the capture that no longer lists
+it. No read and no socket event is added. `component.live`
 turns them into `live.Row`s and `view/live` draws them as the last entry of
 the lane's keyed list, keyed `live`:
 

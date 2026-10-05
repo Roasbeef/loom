@@ -3122,10 +3122,27 @@ pub fn live(model: Model(socket)) -> List(live.Row) {
   // event or a first fragment, the row says `Thinking` with no time: the
   // operation's own clock also counts earlier generations of the turn, so it
   // would read minutes under an answer that just landed.
-  case streamed, session_model.active_strand_phase(shared) {
+  let streamed = case streamed, session_model.active_strand_phase(shared) {
     [], Some("assistant") -> [live.Opened(elapsed_ms:)]
     _, _ -> streamed
   }
+
+  // The held inputs are the newest thing on the page: typed after the run
+  // above them started, and run after it. The capture lists them, so a
+  // message the daemon took but has not run is drawn from the capture that
+  // first lists it until the one that no longer does, when its own row has
+  // landed above (`transcript_lines.held_inputs` is the terminal's rule).
+  let held =
+    session_model.presentation(shared)
+    |> transcript_lines.held_inputs
+    |> option.unwrap([])
+    |> list.map(fn(input) {
+      live.Held(
+        text: input.text,
+        words: transcript_lines.held_words(input.kind),
+      )
+    })
+  list.append(streamed, held)
 }
 
 /// The sidebar's groups: the principal's sessions by workspace, newest
