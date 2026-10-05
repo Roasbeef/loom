@@ -498,3 +498,38 @@ The rule above now names the floor and the two classes: a read below the
 reader minimum is not issued, a timeout on the reader's full budget poisons,
 and a timeout on a caller-paced remainder fails only that request. The wire
 shape is unchanged; only the server's classification narrowed.
+
+## Addendum: a read of the session's decided approvals
+
+An approval that was answered leaves its record in the session register
+(`escalation/<id>`, status `approved`, `rejected` or `consumed`, with the
+author of the decision), but the snapshot cut carries only the pending ones.
+A page open when a request was decided learned of it from the pending cell
+and a later `escalations_get`, and draws "Owner allowed bash" from its own
+ledger. A page opened afterwards never saw the request pending, has no id to
+ask for, and draws nothing, so two views of one session disagreed. The owner
+ruled (2026-10-05) that the daemon should list decided approvals so every
+page draws the same rows.
+
+The decision is already durable, so no storage is added. `escalations_decided`
+is an additive session command with an empty body. Its reply is a bounded
+metadata-only transfer in the shape of `escalations_get`: `snapshot_begin`
+with `window` `decided`, the decided cells, an empty `missing`, no
+descriptors. The reader selects the three decided statuses under the escalation
+prefix, inside the same metadata budget every capture has, and the gateway
+keeps the newest sixteen by register sequence, oldest first. Sixteen is the
+approval ledger's bound on resolved records, so a page seeded from the read
+holds what a page that watched the decisions would hold.
+
+Authority is the session's: the attachment is re-checked at admission and at
+delivery, and an observer may send the command, because it is read-only and
+the live decision row is already drawn to every attachment. The read adds no
+new socket admission and no new window beyond `decided`. A client that does
+not know the command is refused with `unsupported`, which the web page treats
+as a quiet automatic read.
+
+Considered and not taken: a push of each decision as an event (a decision is
+already announced; the gap is history, not delivery), and a read by key page
+(the keys are not ordered by time, so a page of them is not the newest). The
+cost is one selection per page open and a refusal, with no seeded rows, on a
+session whose decided records exceed the metadata budget.
