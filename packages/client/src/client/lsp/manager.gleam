@@ -2945,6 +2945,7 @@ type Collection {
     initial: lsp.ObservationState,
     aliases: Dict(String, String),
     files: Dict(String, ObservedFile),
+    gated: Dict(String, Named),
     symbols: List(observation.Symbol),
     targets: List(observation.Target),
     references: List(observation.Reference),
@@ -3151,6 +3152,7 @@ fn observed(
       initial:,
       aliases: path_map,
       files: dict.new(),
+      gated: dict.new(),
       symbols: [],
       targets: [],
       references: [],
@@ -3449,7 +3451,8 @@ fn collect_references(
     ),
   ))
   list.try_fold(locations, collection, fn(collection, location) {
-    case named_uri(collection.session, location.uri) {
+    let #(collection, named) = gate_observed_uri(collection, location.uri)
+    case named {
       Withheld(_) ->
         Ok(Collection(..collection, withheld: collection.withheld + 1))
       Admitted(path:) -> {
@@ -3480,6 +3483,34 @@ fn collect_references(
       }
     }
   })
+}
+
+// A reference answer names the same few files many times over, and the gate
+// resolves a path's real location with one file-system call per path
+// component. Judging each distinct URI once per collection makes the cost of
+// an answer proportional to the files it names rather than to its length.
+// Without it, a 10,000-location answer over one file spent its invocation's
+// deadline on repeated judgements (22 ms each at a host load average near 120)
+// before the fact bound could refuse it. The verdict is not trusted past this
+// collection: `check_observation` re-admits and rereads every retained file
+// before anything is published.
+fn gate_observed_uri(
+  collection: Collection,
+  uri: String,
+) -> #(Collection, Named) {
+  case dict.get(collection.gated, uri) {
+    Ok(named) -> #(collection, named)
+    Error(Nil) -> {
+      let named = named_uri(collection.session, uri)
+      #(
+        Collection(
+          ..collection,
+          gated: dict.insert(collection.gated, uri, named),
+        ),
+        named,
+      )
+    }
+  }
 }
 
 fn resolve_observed_target(
