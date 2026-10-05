@@ -497,3 +497,26 @@ alone; `make lint-ext` runs the house-rule lint over these sources.
   this one sits beside, and the boot runtime it reuses.
 - [`packages/client/CLAUDE.md`](../client/CLAUDE.md) — the harness side:
   the manifest decoder, the install pipeline, the hook bus, and `loom ext`.
+
+## Keeping state through an upgrade
+
+A jailed extension can declare `[live]` and return an `ext/live.Definition`
+from its entry module. Its callback receives a bounded JSON state document
+and the existing invocation envelope, then returns the next state and reply.
+A separate pure migration module exports `migrate(from, state)`. The compiler
+vets its entire authored import closure, so importing an effectful helper
+cannot hide a capability call inside migration.
+
+Compatible operator selections retain the actual satellite and state actor
+PID. The host compiles immutable vetted source into the inactive one of two
+fixed module namespaces, validates exact bytes and bounds, and prepares the
+migration before committing the existing catalogue selection. Publication
+releases the new callback; a refused or expired preparation retains the old
+state and callback. Rollback migrates current state, preserving subsequent
+work. The declared message boundary and accepted state versions control
+compatibility; unsupported transitions return an explicit refusal.
+
+This feature does not expose a loader, arbitrary module paths or raw BEAM
+uploads to extension authors. Loader controls live in trusted satellite
+internals under protocol-change/069. Extensions without `[live]` retain their
+existing replacement lifecycle.
