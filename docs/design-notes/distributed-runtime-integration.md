@@ -58,9 +58,11 @@ ownership service, C2 adds TLS BEAM membership and routing, C3 adds durable
 cross-node messaging, and M1 adds planned session movement. None is complete
 merely because remote executor requests can cross a TLS connection.
 
-Khepri remains a candidate for small authoritative cluster metadata pending the
-compatibility spike. Automatic failover and workspace snapshot migration remain
-deferred.
+The [Khepri compatibility probe](../review/distributed-khepri-compatibility.md)
+passed bounded Gleam/OTP 29, three-member partition, receipt-reconciliation and
+restart controls. The wrapper's production decoder, retention lifecycle and
+remaining D3 operational checks are still open; no dependency is adopted here.
+Automatic failover and workspace snapshot migration remain deferred.
 
 ## How changes enter the integration branch
 
