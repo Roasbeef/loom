@@ -121,9 +121,10 @@ A journal failure after native success must preserve that success without claimi
 durable closure. Poll expiry must still attempt native cleanup. Lost registration
 acknowledgement must not leave active admission after successful cleanup.
 
-The P credit model will cover scoped fencing, original correlation, unusable
-assignment retention and the snapshot predicate. Its answer and drain events
-remain assumptions until bridged to those real-peer tests. This is not a proof
+The [P credit model](../review/distributed-scoped-drain-model.md) now covers
+scoped fencing, original correlation, unusable assignment retention and the
+snapshot predicate. Its answer and drain events remain assumptions until
+bridged to those real-peer tests. This is not a proof
 of OTP delivery or native process retirement.
 
 See the [transport review](../review/distributed-beam-transport-transition.md),
