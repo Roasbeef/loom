@@ -506,7 +506,9 @@ The running session can serve the selected tool or hook generation and roll
 back to earlier approved source while preserving its conversation. Named
 workspace programs and exact-model prose profiles use the same catalogue,
 with their own selection boundaries. Authored code stays in satellites;
-new trusted capability backends still require a reviewed release.
+new trusted capability backends still require a reviewed release. The
+[state-preserving component upgrade guide](docs/architecture/live-upgrades.md)
+describes explicit state migration, partial upgrades and downgrade evidence.
 
 ### Language server profiles
 

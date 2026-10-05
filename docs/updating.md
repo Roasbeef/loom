@@ -6,6 +6,12 @@ Running terminals retain their original client files until they are reopened.
 This guide covers updates, source installation, restart, rollback and cleanup;
 [distribution](distribution.md) describes the release artifacts.
 
+Component upgrades have a separate operator workflow: an opted-in actor can
+change code and preserve its state while its session remains running. See
+[component upgrades](architecture/live-upgrades.md) for the supported components,
+authority and validation status. The `loom update` commands below still replace
+the installed distribution and restart the daemon.
+
 ## Update a published release
 
 ```sh

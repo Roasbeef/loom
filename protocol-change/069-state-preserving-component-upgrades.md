@@ -14,7 +14,8 @@ The replacement has a new process and fresh ephemeral state. Selecting an
 earlier candidate starts another fresh satellite. That is useful for ordinary
 extensions, but it cannot preserve a populated actor while changing its code.
 
-Weft's system-message decoder currently treats `change_code` as unimplemented.
+At the start of this proposal, weft's system-message decoder treated
+`change_code` as unimplemented.
 Loading a BEAM module would not close that gap: a running actor retains its
 state and callback function values. Both must migrate together, and callers
 must know whether queued messages remain compatible with the new handler.
@@ -161,7 +162,10 @@ or constructor names. Authored BEAM atom tables MUST be checked as bytes before
 any API can intern them. Admission MUST bound cumulative atom names and their
 encoded bytes across successful and failed loads in one satellite. Exhausting
 that budget refuses another upgrade while the current component remains usable;
-a VM atom-limit crash is not an acceptable refusal mechanism.
+a VM atom-limit crash is not an acceptable refusal mechanism. Both the module
+atom table and atoms embedded in literal terms count toward that reservation.
+Literal inflation checks actual output size before a bounded byte-level term
+walk; a term decoder that interns names before admission is forbidden.
 
 ## Reviewed harness components
 

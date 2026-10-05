@@ -14,7 +14,7 @@ led here, with the per-site measurements, is
 
 ## What it gives
 
-Six modules, all Erlang-target, all interoperable with `gleam_otp` (a
+Eight public modules, all Erlang-target, all interoperable with `gleam_otp` (a
 weft `start` returns upstream's `StartResult`, a weft `supervised` returns
 upstream's `ChildSpecification`, and every weft process answers the OTP
 system messages, so it shows up in the observer like anything else).
@@ -23,10 +23,21 @@ system messages, so it shows up in the observer like anything else).
 |---|---|---|
 | `weft` | The run engine: a scope process owns every worker by link, with `limit`, `deadline`, an external cancel signal, input-order `start` and completion-order `fold`. Every task gets exactly one `Outcome`. | spawn + monitor + race a reply against `DOWN` + kill on timeout |
 | `weft` managed tasks | `prepared_task`/`prepared_leaf` (owner known up front) and `managed` (owners discovered while the task runs, published through a `Ledger` with `adopt`, `adopt_leaf`, `adopt_under`). A task's slot is held and its outcome withheld until its worker *and every owner* have exited; only a normal transitive-owner exit proves drain. `start_witnessed` runs with no consumer at all — the scope's exit reason is the whole report — and `cancel_when_exits` names a consumer whose death cancels. | an ad-hoc ledger of monitored pids with cancel closures; the custodian |
-| `weft/actor` | A strict superset of `gleam/otp/actor`: `continuing` (a message guaranteed to be handled before the mailbox), `then_handle`, `hibernate_after`, `idle_timeout`, `periodic` (a fixed-delay heartbeat), `on_shutdown`, `trapping_exits`, `unlinked`. | an init gate every handler checks first; a `ready` subject handshake; a `send_after` its own handler re-arms |
+| `weft/actor` | A strict superset of `gleam/otp/actor`: `continuing` (a message guaranteed to be handled before the mailbox), `then_handle`, `hibernate_after`, `idle_timeout`, `periodic` (a fixed-delay heartbeat), `on_shutdown`, `trapping_exits`, `unlinked`, and opt-in `with_upgrade` for atomic state and callback migration. | an init gate every handler checks first; a `ready` subject handshake; a `send_after` its own handler re-arms |
 | `weft/state_machine` | A typed gen_statem: a state ADT with exhaustive `case state, message` dispatch, `postpone`, state / event / named / **periodic** timeouts with generation-stamped cancel-with-flush, enter callbacks, `selecting` for monitors and ports, `unlinked`, and `with_timer_source` to arm every one of those timeouts on an **injected** clock rather than the wall clock. | mutually recursive functions with ten arguments each rebuilding one selector; a timer carrying an id so its handler can detect a stale fire; a hand-kept list of waiters; a `send_after` its own handler re-arms |
 | `weft/poll` | `until(within:, every:, attempt:)`, bounded polling in the caller's own process: immediate first attempt, a last attempt at the deadline, `Fail` kept apart from `Retry`, `Expired` as its own outcome. `until_on` runs the same loop on an injected `Clock(now:, sleep:)`; `fold_until` threads a state from one attempt to the next and hands it back as `RanOut` on expiry; `Interval` is `Fixed` or `Doubling(from:, to:)`. | sleep-and-recurse until a deadline, on the wall clock or on an injected one |
 | `weft/event_manager` | A typed gen_event: an ordered handler list, each handler's state sealed in its own closure, `notify` and `sync_notify` (which returns only once every handler has finished), and `Failed(reason)` as the answer a broken handler gives — it is dropped and logged while its siblings carry on. | a fan-out written by hand over a list of subscribers with a removal policy and a per-subscriber state record |
+
+`weft/upgrade` carries the standard system change-code request and bounded
+migration preparation shared by `weft/actor` and `weft/state_machine`.
+`with_upgrade` is opt-in: unsupported components refuse changes. A migration
+returns state, callbacks and selector together while preserving the process
+identity and runtime queues. Loom's controllers own verified code loading and
+resumption; see [component upgrades](architecture/live-upgrades.md).
+
+Loom currently pins weft commit
+`f076c0661518ce9432cc6ff874b1ece71edbd9b7`, which includes this primitive,
+instead of the earlier Hex release.
 
 `weft/event_manager` has exactly one consumer here, and it took until
 phase 3 of the extension work to find it. Every *other* fan-out in this

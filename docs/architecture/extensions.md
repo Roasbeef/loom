@@ -93,7 +93,9 @@ arguments to the approved implementation. It serializes the whole hook and tool
 fold with activation. Rollback recompiles the selected previous source and
 publishes it only after old native workers have retired. The controller's
 catalogue is independent of a session's conversation store; that conversation
-survives replacement.
+survives replacement. An opted-in `[live]` manifest adds explicit migration of
+current state and callbacks in the existing satellite; its transaction and
+acceptance requirements are described in [component upgrades](live-upgrades.md).
 
 **The profile tier** (ADR-016 §3) holds data and nothing that runs: one or
 more `[lsp.<name>]` language profiles, the same tables an operator writes
@@ -351,7 +353,7 @@ sequenceDiagram
   C->>D: rename staging into place
 ```
 
-`run` (`extension/install.gleam:231`) acquires the tree and hands it to
+`run` (`extension/install.gleam:241`) acquires the tree and hands it to
 one of two paths by the tier its manifest declares; the jailed path is
 that sequence read top to bottom, in four `use` lines and a `stage`
 call. Every failure removes its staging
@@ -494,7 +496,7 @@ it is not part of what an operator approves.
 
 Three orderings matter.
 
-1. `installed_tree` runs **first** (`extension/install.gleam:255`), ahead
+1. `installed_tree` runs **first** (`extension/install.gleam:265`), ahead
    of the UTF-8 decode, the manifest, the vetting, the digest and the
    write. So the recorded digest describes the installed tree, and a
    later load compares like with like instead of re-deriving the prune
@@ -732,7 +734,7 @@ the exclusive channel slot in one place, and it means this module could
 not read a token if it tried. `serve` (`ext/runtime.gleam:148`) is the
 same call with an empty event table, which is what an artifact declaring
 no `[[hook]]` gets. The generated entry writes whichever of the two the
-manifest asked for (`entry_source` at `extension/install.gleam:727`).
+manifest asked for (`entry_source` at `extension/install.gleam:745`).
 
 `answer` does exactly two things: it dispatches on what the harness asked
 for, and it returns a value or an in-band code. There is no third step,
@@ -1540,7 +1542,7 @@ whose door serves `cap/lsp` and automatic post-edit diagnostics (ADR-015,
 | `client/extension/source.gleam` | The grammar of what an operator may type: `parse` (`extension/source.gleam:84`), the refused schemes, and the codeload archive URL. |
 | `client/extension/archive.gleam` | The total tar.gz reader, the directory walker, and the tree digest: `extract` (`extension/archive.gleam:269`), `from_directory`, `digest` (`extension/archive.gleam:356`). |
 | `client/extension/manifest.gleam` | The total `extension.toml` decoder: `decode` (`extension/manifest.gleam:342`), the closed key lists, the name grammars, the `[[hook]]` event names, and `no_net()`. |
-| `client/extension/install.gleam` | The pipeline: `run` (`extension/install.gleam:231`), the staging discipline, and the generated satellite entry that serves this manifest's tools and hooks. |
+| `client/extension/install.gleam` | The pipeline: `run` (`extension/install.gleam:241`), the staging discipline, and the generated satellite entry that serves this manifest's tools and hooks. |
 | `client/extension/record.gleam` | The install record and the `Root` that says where installs live: `Record` (`extension/record.gleam:134`), `terms`, `root_for`. Format 2 carries the hooks an operator approved; format 3 adds the tier and the approved language profiles, and format 2 is still read. |
 | `client/lsp/profiles.gleam` | ADR-016 §4's precedence as one pure function: `effective_lsp_servers` over the `loom.toml` tables and the installed profiles, and the `Refusal` the boot logs as `lsp.profile_refused`. |
 | `client/extension/hooks.gleam` | The hook bus: the `Event` type, `Invoker`/`HookFailure`, the five fan-out events, the two folds, the fence an injection is rendered in, and `wire`, which composes the bus into a session's `Effects`. |

@@ -104,8 +104,11 @@ Provider-native tool registrations remain the installed contributions.
 
 `rollback` selects previously approved source under a new generation. It does
 not reverse filesystem, network or other external effects from previous calls.
-Ephemeral extension state resets; durable extension memory is version-scoped.
-There is no implicit state migration.
+Ordinary replacement resets ephemeral extension state; durable extension memory
+is version-scoped. Opted-in `[live]` extensions use explicit current-state
+migration under [protocol 069](../../protocol-change/069-state-preserving-component-upgrades.md).
+The [component upgrade architecture](live-upgrades.md) describes that additional
+transaction and the separate reviewed harness-component path.
 
 ## Catalogue, commit and recovery
 
@@ -150,7 +153,7 @@ missing audit, revalidates current approval and reconstructs the committed
 version before publication. Staging failure leaves the previous selection;
 a failed CAS after retirement rebuilds the committed predecessor.
 
-For a session extension, the live owner performs the following sequence.
+For an extension using ordinary replacement, the live owner performs the following sequence.
 It holds the complete promoted hook/tool fold while replacing its generation.
 
 ```mermaid

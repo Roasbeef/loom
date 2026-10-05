@@ -1581,14 +1581,13 @@ processes and lookups are local-speed ETS reads
 (`events/internal/ffi_pg.gleam`). Re-implementing membership as a Gleam
 actor would lose `pg`'s monitor-based crash cleanup.
 
-And two honest omissions. **Hot code loading is not implemented.** The
-design names it as the mechanism for the self-improvement loop; no
-release-upgrade machinery, no upgrade handling, and no extension zone
-exists in the tree. The single `code_change/3` in the source is the
-SIGTERM relay's gen_event boilerplate — a no-op
-`code_change` (`client_ffi.erl:257`). **Distribution is not used
-either**: the bus is a single node's, and the control-plane half of the
-two-channel doctrine has no code behind it yet.
+**Component upgrades use the BEAM system-message boundary.** Weft's opt-in
+migration support changes an actor's state and callbacks together. Loom's
+[component upgrade work](architecture/live-upgrades.md) adds verified code
+loading, bounded suspension and current-state downgrade for jailed extensions
+and a reviewed scratch component. The acceptance record distinguishes that
+work from an arbitrary module or Erlang runtime upgrade. Authored modules
+remain outside the harness VM.
 
 One more thing is deliberately *not* taken from the BEAM. Delayed wakeups
 go through an injected `effects.Timers` seam rather than the VM's timer

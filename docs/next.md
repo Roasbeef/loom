@@ -1,5 +1,62 @@
 # Current handoff
 
+The active follow-on is state-preserving component upgrades under
+[protocol 069](../protocol-change/069-state-preserving-component-upgrades.md).
+Weft's actor and state-machine migration primitive is merged in
+[weft #18](https://github.com/Roasbeef/weft/pull/18), commit
+`f076c0661518ce9432cc6ff874b1ece71edbd9b7`. The integrated dependency passed
+198 tests, warning-free build, lint and documentation checks; independent
+Astra review of the upgrade implementation found one scheduling-dependent
+test, corrected and rechecked before merge. Those tests establish callback
+migration, not actual loading of new BEAM modules.
+
+Loom now implements two state-preserving upgrade paths: approved authored
+extensions inside the existing jailed satellite, and reviewed scratch-component
+artifacts inside the harness VM. Both load newly compiled BEAM, retain populated
+actors and migrate callbacks with state. Their artifact authorities remain
+separate. The implementation and contract are described in
+[live upgrades](architecture/live-upgrades.md).
+
+The core scratch slice passes nine focused native tests, independently rerun
+with newly compiled BEAM, queued work, current-state downgrade and owner-loss
+cleanup. Astra reproduced delayed Arm admission, delayed slot acquisition and
+a lost slot confirmation acknowledgement. Token-scoped cleanup now survives
+uncertain admission, and confirmation is idempotent without releasing a newer
+reservation. All three regressions plus stale-token isolation pass; Astra's
+correction recheck found no further core findings and also exercised stale
+change-code rejection during a later suspension.
+
+The real jailed-session fixture passes seven separately authored, tested and
+approved candidates. It retains the actor PID and original native helper while
+observing new behavior, migration refusal and timeout, incompatible downgrade,
+nonterminating definition refusal and hook-boundary refusal. A separately owned
+code-mode job spans the successful upgrade and failure cases. Current-state
+rollback retains all eight increments, and session closure proves native helper
+retirement. Four controller tests separately inspect a queued invocation and
+exercise real system operations with missing acknowledgements; each explicitly
+retires both original fixture actors.
+
+Astra independently verified seven production corrections: fresh compiler
+budgets, literal-table atom accounting, callback result bounds, uncertain
+catalogue reconciliation, suspension and resumption custody, bounded definition
+evaluation, and fixed hook subscriptions. Its focused actor/runtime, parser and
+client lifecycle gates pass. A lost resume acknowledgement retries resumption
+without applying a second migration over already completed work. The reviewer
+also found an overly short test lease and incomplete fixture retirement; both
+are corrected, and the full extension gate passes all 49 tests.
+
+The offline seed vendors the merged Weft revision. Its macOS standalone
+network-namespace probe is unavailable; actual jailed source compilation runs
+in the production fixture. No official scratch release artifact has been
+published and no installed user daemon was upgraded by these tests. The full
+local `LOOM_EVOLUTION_E2E=1 make check` gate passed with 2,934 client tests,
+1,231 TUI tests, conformance, native Go tests and zero house-lint errors. The
+fixture-retirement correction passed the full 49-test extension suite afterward.
+Formatting and documentation checks pass. After rebuilding the final seed,
+`make e2e-evolution` passed all four production fixtures again, including the
+seven-candidate live upgrade test in 17.1 seconds. Hosted and independent Linux
+release verdicts must still cover the pushed head.
+
 The governed self-extension implementation is in
 [PR #824](https://github.com/Roasbeef/loom/pull/824), on `runtime/self-extension`
 in `.worktrees/self-extension`. It implements the production loop tracked by
@@ -26,8 +83,8 @@ resident authenticated session. The source, authority and retirement boundaries
 are in [evolution](architecture/evolution.md) and
 [protocol-change 068](../protocol-change/068-runtime-evolution.md).
 
-The full local gate, `LOOM_EVOLUTION_E2E=1 make check`, passed on the integrated
-tree at `c95200351f2b`, including 2,916 client tests, 1,231 TUI tests, native
+The earlier full local gate, `LOOM_EVOLUTION_E2E=1 make check`, passed on the
+integrated tree at `c95200351f2b`, including 2,916 client tests, 1,231 TUI tests, native
 Go tests and house lint with zero errors. All three production lifecycle
 fixtures ran. Documentation checks also passed. These checks used scripted
 HTTP; they do not measure commercial-model quality, cache effects or isolated
@@ -68,16 +125,20 @@ skips whose evidence readers were Linux-only. The portable correction observes
 Darwin process metadata and the original helper port, then tests conservative
 retirement refusal and retained pool custody. Linux keeps its descendant-death
 and timestamp assertions. The corrected broker gate passes all 400 tests
-locally without skips; hosted validation must still cover the correction.
+locally without skips. At `0185cba3954c`, hosted Linux and macOS aggregate
+gates both passed, including the corrected broker coverage. The new native
+upgrade work requires new exact-head verdicts.
 
 Independent Linux signoff on `c95200351f2b` passed all six test lanes and the
 strict skip census. Its shipped `update-release-smoke` check timed out while
 the native installer copied the staged server release. The test host's home
 filesystem was full, making disk pressure the leading explanation; the cause
 is not proven until the fixture is rerun with free space. `signoff/linux` is
-therefore red. Cleanup of two cancelled, task-owned signoff working directories
-awaits operator approval; their separate logs must be preserved. Do not waive
-the release check or raise its deadline to obtain a green verdict.
+therefore red for that old head. A fresh read-only check now finds 206 GB and
+ample inodes free; the previous cleanup request is no longer needed and no
+directories were deleted by this task. Run independent signoff on the new
+pushed head. Do not waive the release check or raise its deadline to obtain a
+green verdict.
 
 The evolution architecture now includes the ownership map, activation sequence,
 operator payload examples, failure responses and acceptance fixtures. Ten
@@ -88,8 +149,9 @@ modules within existing packages, not a new package.
 
 Authored execution stays outside the trusted harness VM. The resident-loader
 proposal in #30–#32 is superseded by #807; #100's pi-compatibility scope was
-closed. The native core and capability backends still change through ordinary
-reviewed releases. Existing TCB freeze tests remain gates.
+closed. Native core artifacts still come only from reviewed releases; the new
+scratch controller may load those artifacts in place. Agent-authored revisions
+never cross that authority boundary. Existing TCB freeze tests remain gates.
 
 Candidates retain immutable source and native provenance. The catalogue uses
 existing generated SQL storage transactions and reserved FactCustom namespaces;
