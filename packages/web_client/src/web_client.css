@@ -845,7 +845,6 @@
   .md-code .tok-type{color:var(--color-strand-2-text);}
   .md-code .tok-str,.md-code .tok-num{color:var(--color-signal-text);}
   .md-code .tok-com{color:var(--color-fg-quiet);font-style:italic;}
-  .md-code .tok-punct{color:var(--color-fg-quiet);}
   .md-code .tok-meta{color:var(--color-fg-quiet);font-weight:600;}
   .md-code .tok-add{color:var(--color-added-text);background:var(--color-added-bg);}
   .md-code .tok-del{color:var(--color-danger-text);background:var(--color-removed-bg);}

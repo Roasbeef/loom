@@ -19,16 +19,24 @@ import session_view/markdown
 import web_view/component
 import web_view/markdown_view
 
+// A memo is drawn as a marker comment in a string, which the browser does
+// not receive as a node, so it is taken out before a fence's markup is read.
+fn unmemoized(html: String) -> String {
+  string.replace(html, "<!-- lustre:memo -->", "")
+}
+
 fn page(texts: List(String)) -> String {
   component.new(page_fixture.start())
   |> component.apply([lane_fixture.answered(texts)])
   |> component.view
   |> element.to_string
+  |> unmemoized
 }
 
 fn drawn(source: String) -> String {
   html.div([], markdown_view.blocks(markdown.parse(source)))
   |> element.to_string
+  |> unmemoized
 }
 
 fn count(haystack: String, needle: String) -> Int {
@@ -105,12 +113,9 @@ pub fn a_code_fence_labels_its_language_as_text_test() {
   let html = drawn("```gleam\npub fn main() { <b> }\n```")
   assert string.contains(
     html,
-    "<div class=\"md-code\"><span class=\"md-code-lang\">gleam</span><pre><code><span><span class=\"tok-kw\">pub</span><span> </span><span class=\"tok-kw\">fn</span><span> </span><span>main</span><span class=\"tok-punct\">(</span>",
+    "<div class=\"md-code\"><span class=\"md-code-lang\">gleam</span><pre><code><span><span class=\"tok-kw\">pub</span> <span class=\"tok-kw\">fn</span> main() { &lt;b&gt; }</span>",
   )
-  assert string.contains(
-    html,
-    "<span class=\"tok-punct\">&lt;</span><span>b</span><span class=\"tok-punct\">&gt;</span>",
-  )
+  assert string.contains(html, "main() { &lt;b&gt; }")
   assert !string.contains(html, "<b>")
 }
 
@@ -143,6 +148,11 @@ pub fn hostile_text_in_a_gleam_fence_stays_escaped_text_test() {
 // shaped like an attribute breakout is escaped text and never a class.
 pub fn a_hostile_language_tag_never_reaches_a_class_test() {
   let html = drawn("```x\" onmouseover=\"alert(1)\nlet x\n```")
+
+  // The fence is still a code block, with the tag as an escaped text label.
+  assert string.contains(html, "<div class=\"md-code\">")
+  assert string.contains(html, "<span class=\"md-code-lang\">x&quot;</span>")
+  assert string.contains(html, "<pre><code><span>let x</span></code></pre>")
   assert !string.contains(html, "onmouseover=\"alert")
   assert !string.contains(html, "tok-")
 }

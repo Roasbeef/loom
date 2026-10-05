@@ -31,11 +31,17 @@ fn model(update) {
 }
 
 fn observer(update) -> String {
-  model(update) |> component.view |> element.to_string
+  model(update)
+  |> component.view
+  |> element.to_string
+  |> string.replace("<!-- lustre:memo -->", "")
 }
 
 fn operator(update) -> String {
-  model(update) |> operator_page.view |> element.to_string
+  model(update)
+  |> operator_page.view
+  |> element.to_string
+  |> string.replace("<!-- lustre:memo -->", "")
 }
 
 pub fn a_code_mode_call_expands_to_its_whole_program_test() {
@@ -46,11 +52,7 @@ pub fn a_code_mode_call_expands_to_its_whole_program_test() {
   assert string.contains(drawn, "class=\"expand step done\">")
   assert string.contains(drawn, "slot=\"head\"")
   assert string.contains(drawn, "slot=\"body\"")
-  assert string.contains(drawn, "<span>a12</span>")
-  assert string.contains(
-    drawn,
-    "<span class=\"tok-punct\">&lt;</span><span>x12</span>",
-  )
+  assert string.contains(drawn, "a12 = &lt;x12&gt;")
   assert !string.contains(drawn, "<x12>")
   assert string.contains(drawn, "the output")
 }
@@ -64,11 +66,7 @@ pub fn reasoning_expands_to_the_whole_block_test() {
 pub fn the_operators_page_draws_the_same_expanders_test() {
   let drawn = operator(lane_fixture.programmed(program(), "the output"))
   assert string.contains(drawn, "class=\"expand step done\">")
-  assert string.contains(drawn, "<span>a12</span>")
-  assert string.contains(
-    drawn,
-    "<span class=\"tok-punct\">&lt;</span><span>x12</span>",
-  )
+  assert string.contains(drawn, "a12 = &lt;x12&gt;")
 }
 
 pub fn a_row_with_nothing_more_to_show_has_no_expander_test() {

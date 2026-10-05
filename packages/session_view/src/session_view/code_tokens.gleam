@@ -222,24 +222,29 @@ fn gleam_parts(
   }
 }
 
+// A grapheme that is one ASCII codepoint is classified by range. Any other
+// grapheme, a letter with a combining mark included, is punctuation, which is
+// what a membership test over the ASCII alphabets said of it.
 fn code_character(character: String) -> CodeCharacter {
   case character {
     " " | "\t" -> SpaceCharacter
     "\"" -> QuoteCharacter
     _ ->
-      case
-        string.contains(
-          "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_@",
-          character,
-        )
-      {
-        True -> IdentifierCharacter
-        False ->
-          case string.contains("0123456789", character) {
-            True -> NumberCharacter
-            False -> PunctuationCharacter
-          }
+      case string.to_utf_codepoints(character) {
+        [codepoint] -> ascii_character(string.utf_codepoint_to_int(codepoint))
+        _ -> PunctuationCharacter
       }
+  }
+}
+
+fn ascii_character(code: Int) -> CodeCharacter {
+  case code {
+    // `A`-`Z`, `a`-`z`, `_` and `@`.
+    code if code >= 65 && code <= 90 -> IdentifierCharacter
+    code if code >= 97 && code <= 122 -> IdentifierCharacter
+    95 | 64 -> IdentifierCharacter
+    code if code >= 48 && code <= 57 -> NumberCharacter
+    _ -> PunctuationCharacter
   }
 }
 

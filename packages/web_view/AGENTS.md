@@ -728,7 +728,7 @@ page keys and nonces, and the relay into the session's gateway.
   with the live cards, so it leaves the group until the reader goes back.
 - `code_view.block(language, text)`: a code fence's body as one `span` per
   line, each token a `span` whose class (`tok-kw`, `tok-type`, `tok-str`,
-  `tok-num`, `tok-com`, `tok-punct`, `tok-add`, `tok-del`, `tok-meta`) is a
+  `tok-num`, `tok-com`, `tok-add`, `tok-del`, `tok-meta`) is a
   literal chosen by a `case` over `session_view/code_tokens.CodeKind`. The
   token's text is a text node and the fence's language tag only selects the
   scanner. A `code_mode` program is a fenced `gleam` block, so the lane's
