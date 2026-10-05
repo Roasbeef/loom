@@ -529,17 +529,22 @@ and separate-host end-to-end assembly remain unfinished.
 ## Registered host lifetime and workspace custody
 
 `remote/host.configure` validates service, registration and journal scope before
-listening, and replaces the supplied verifier with `registration.verify`.
-The host owns its TLS listener, linked admission actor and bounded acceptor
-subtree. Its supervision specification is Temporary: restarting over the same
-native custody is not an admission policy. A late startup failure may follow
-peer admission and therefore cannot roll back the epoch or authorize replay.
+publishing one native route on the shared TLS BEAM endpoint. It replaces the
+supplied verifier with `registration.verify`. The host owns the native service
+and journal lifetime but borrows the node endpoint. Register and Fence originate
+from the same host process, so an uncertain registration acknowledgement cannot
+be overtaken by a later registration from that owner. Its supervision is
+Temporary; restarting over uncertain native custody is not admission policy.
 
-Explicit close first stops listener admission, quiesces the service and stops
-acceptors. It releases the journal only after durable epoch closure, witnessed
-native retirement and owned service exit. Uncertain cleanup retains evidence.
-Actor or socket death alone never establishes native retirement; an untrappable
-host kill still requires reconciliation by the enclosing owner.
+Explicit close fences the original row, quiesces the service, observes transport
+drain while its producers remain alive, then requests the service's retained
+original native-close proof and joins that service. Cleanup is attempted even
+when an earlier fence or drain observation fails. Only success at every boundary
+releases the journal. A lost original service also loses its in-memory native-close
+witness; a second independent close cannot recreate it. Uncertain cleanup keeps
+the journal and sibling registrations keep the shared endpoint. This owner
+currently covers the native service; whole Compile and workspace lifetimes
+remain separate assembly obligations.
 
 `remote/workspace_journal` owns a separate SQLite connection through weft.
 The source schema is `sql/workspace.sql`, queries are named under
