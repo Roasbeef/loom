@@ -4227,21 +4227,38 @@ pub fn usage_summary(usage: message.Usage) -> String {
 }
 
 /// The estimated cost as the footer and the web bar word it: `est $0.04`,
-/// or `est —` when tokens were spent and the pricing model priced none of
-/// them. A model with no price entry reports a zero total, and `$0.00`
-/// after real work reads as a bug rather than as "unpriced". A session that
-/// has spent nothing yet is `est $0.00`, which is true.
+/// or `est —` when no token was priced. A model with no price entry reports
+/// a zero total, and `$0.00` after real work reads as a bug rather than as
+/// "unpriced". A session that has spent nothing yet has priced nothing
+/// either, so a zero total is unpriced whatever the token count: the figure
+/// is not known, and `$0.00` would claim that it is.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// // cost_words(priced) == "est $0.04"
 /// // cost_words(spent_but_unpriced) == "est —"
+/// // cost_words(nothing_spent_yet) == "est —"
 /// ```
 pub fn cost_words(usage: message.Usage) -> String {
-  case usage.cost.total >. 0.0 || usage.total_tokens <= 0 {
-    True -> "est $" <> money(usage.cost.total)
-    False -> "est —"
+  "est " <> cost_figure(usage)
+}
+
+/// The estimated cost as a figure alone, for a place whose label says it is
+/// an estimate: `$0.04`, or `—` when no token was priced. Every surface
+/// words a zero total through this rule, so a fresh session never reads
+/// `$0.00` in one place and `est —` in another.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // cost_figure(priced) == "$0.04"
+/// // cost_figure(nothing_spent_yet) == "—"
+/// ```
+pub fn cost_figure(usage: message.Usage) -> String {
+  case usage.cost.total >. 0.0 {
+    True -> "$" <> money(usage.cost.total)
+    False -> "—"
   }
 }
 

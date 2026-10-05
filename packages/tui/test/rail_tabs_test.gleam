@@ -245,7 +245,7 @@ pub fn session_shows_goal_jobs_viewers_and_cost_test() {
   assert string.contains(shown, "Goal    none pinned")
   assert string.contains(shown, "Jobs    not read")
   assert string.contains(shown, "Viewers ")
-  assert string.contains(shown, "Cost    est $")
+  assert string.contains(shown, "Cost    est ")
   assert model.shared.jobs_refresh == worktree_requested()
     as "choosing Session asks for a fresh read of the live jobs"
 }

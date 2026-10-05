@@ -852,6 +852,12 @@
      runs the whole way across. */
   .diff{display:grid;grid-template-columns:minmax(max-content,1fr);margin:4px 0;border:1px solid var(--color-divider);border-radius:6px;overflow-x:auto;background:var(--color-bg);}
   .diff-row{display:flex;min-height:1.5em;white-space:pre;color:var(--color-fg);font:12px/1.5 var(--font-mono);}
+  /* The gutter (the two line numbers and the sign) is one cell that stays at
+     the box's left edge while a long line scrolls, on the row's own opaque
+     background so the code passes under it and not through it. */
+  .diff-gutter{position:sticky;left:0;z-index:1;display:flex;flex:0 0 auto;background:var(--color-bg);}
+  .diff-added .diff-gutter{background:var(--color-added-bg);}
+  .diff-removed .diff-gutter{background:var(--color-removed-bg);}
   .diff-num{flex:0 0 auto;background:var(--color-bg-sunk);min-width:3.5ch;padding:0 6px;text-align:right;color:var(--color-fg-quiet);user-select:none;}
   .diff-sign{flex:0 0 auto;width:2ch;text-align:center;user-select:none;}
   .diff-text{flex:1 0 auto;padding:0 8px 0 2px;}
@@ -881,12 +887,42 @@
   .trace-subtitle{margin:0 0 6px 0;font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);}
   ul.trace-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;}
   .trace-cut,.trace-note{margin:8px 0 0 0;font:12px/1.4 var(--font-sans);color:var(--color-fg-quiet);}
-  /* The Session pane (web_view/view/session_tab): the goal, the live jobs,
-     on an operator's page the attached viewers, and the estimated cost. */
-  .session-list{margin:4px 0 0 0;display:grid;grid-template-columns:max-content minmax(0,1fr);gap:2px 12px;}
-  .session-term{color:var(--color-fg-quiet);}
-  .session-value{margin:0;min-width:0;overflow-wrap:anywhere;}
-  .session-value p,.session-value ul{margin:0;}
+  /* The Session pane (web_view/view/session_tab): groups that each lead with
+     an eyebrow, read in this order: Session (the name with Rename, then the
+     workspace), People (viewers, then the invitation buttons), Goal (the goal,
+     then its buttons), Fork, Jobs, Cost. The pane's children cannot be in
+     that order, because the socket admits events beneath their paths
+     (component.invite_path, session_controls_path, rename_path). So the pane
+     is a column and `order` places each piece. The rows wrapper and the
+     controls section are `display:contents`, which makes their groups and
+     rows the column's own items. `reading-flow:flex-visual` makes keyboard
+     focus follow that order; a browser without it ignores the line. */
+  .pane-session{display:flex;flex-direction:column;reading-flow:flex-visual;}
+  .pane-session > .panel-title{order:0;margin-bottom:6px;}
+  .pane-session > section.session-rename{order:1;display:flex;flex-wrap:wrap;align-items:center;gap:2px 12px;margin:0 0 6px 0;padding:0;border-top:0;}
+  .session-rows{display:contents;}
+  .session-group{min-width:0;margin:0 0 14px 0;}
+  .session-group-workspace{order:2;}
+  .session-group-people{order:3;margin-bottom:8px;}
+  .pane-session > section.share{order:4;margin:0 0 14px 0;padding:0;border-top:0;}
+  .session-group-goal{order:5;margin-bottom:8px;}
+  .pane-session > section.controls:not(.session-rename){display:contents;}
+  .pane-session > section.controls:not(.session-rename) .control-row{order:6;margin:0 0 14px 0;}
+  .pane-session > section.controls:not(.session-rename) .control-forms{order:7;margin:0 0 14px 0;}
+  .session-group-jobs{order:8;}
+  .session-group-cost{order:9;margin-bottom:0;}
+  .session-eyebrow{margin:0 0 4px 0;font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);}
+  .pane-session > section.controls:not(.session-rename) details.control-form > summary{font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);}
+  /* The Goal group says there is no goal, so the controls' hint saying the
+     same is dropped; a pinned goal's buttons stand alone beneath its words. */
+  .pane-session > section.controls:not(.session-rename) span.control-goal{display:none;}
+  .session-rename .control-goal-text{flex:0 1 auto;color:var(--color-fg);font:13px/1.4 var(--font-sans);}
+  .session-rename .control-forms{margin-top:0;}
+  .session-rename details.control-form{flex:0 1 auto;}
+  .session-rename .rename-status{flex:1 0 100%;margin:0;}
+  .session-rename .rename-status:empty{display:none;}
+  .session-group p,.session-group ul{margin:0;}
+  .session-workspace{color:var(--color-fg-quiet);font:12px/1.5 var(--font-mono);overflow-wrap:anywhere;}
   ul.session-jobs,ul.session-viewers{list-style:none;padding:0;}
   .session-quiet{color:var(--color-fg-quiet);}
   /* The owner's invitation control at the foot of the Session pane
@@ -1076,6 +1112,10 @@
     .region-panel.closed{width:auto;height:0;overflow:hidden;transition:none;}
     .panel-body{flex:0 0 auto;}
     aside.panel{width:auto;height:auto;max-height:132px;padding:8px 16px;}
+    /* Only the Strands pane is a row of cards sized for 132px. The Changes,
+       Session and Trace panes hold prose and tables, so they take up to
+       45vh and scroll inside it. */
+    loom-shell:not(:state(tab-strands)) aside.panel{max-height:45vh;}
     aside.panel > section.nudges{display:none;}
     .pane-strands .panel-title,.pane-strands > section.commentary{display:none;}
     nav.agent-strip{overflow-x:auto;scrollbar-width:thin;}

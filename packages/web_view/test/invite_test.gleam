@@ -121,7 +121,7 @@ pub fn an_owners_page_draws_the_control_test() {
     string.split_once(html, "<section aria-label=\"Session\"")
   assert string.contains(session, "Invite to this session")
   let assert Ok(#(before, _)) = string.split_once(session, "class=\"share\"")
-  assert string.contains(before, "Est. cost")
+  assert string.contains(before, "Cost")
 }
 
 // The path constant names the control: its two buttons are the only handlers

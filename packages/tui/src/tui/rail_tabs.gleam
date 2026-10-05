@@ -209,10 +209,7 @@ fn session_rows(model: Model) -> List(Row) {
     jobs,
     attached,
     [
-      Row(
-        Plain,
-        "Cost    est $" <> transcript_lines.money(model.shared.usage.cost.total),
-      ),
+      Row(Plain, "Cost    " <> transcript_lines.cost_words(model.shared.usage)),
     ],
   ])
 }
