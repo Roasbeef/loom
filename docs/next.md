@@ -22,6 +22,12 @@ ownership routing, durable cross-node messaging and planned session movement are
 also required remaining issue #697 phases. The [merge review](review/distributed-main-integration.md)
 records optional skips and existing peer-fixture failures.
 
+The [Khepri compatibility probe](review/distributed-khepri-compatibility.md)
+passed bounded three-node partition/reconciliation/restart controls through an
+actual Gleam caller on OTP 29. Additional count/byte capacity and stale-observation
+controls passed. A production wrapper, receipt-retention lifecycle and the
+remaining D3 operational checks are still required before adoption.
+
 The combined-main executor gate passed 274 tests with no skips, including the
 [Compile observation adapter](review/distributed-compile-observation.md). The
 native original-deadline follow-up passed its 20 focused controls, and the exact
