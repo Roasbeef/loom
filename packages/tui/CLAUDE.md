@@ -1218,6 +1218,9 @@ boundaries and the split's measurements under Invariants.
 - `tui/model_selector.State` owns the searchable `/model` overlay. Its
   exact, prefix, substring, and initials matching is presentation state only;
   a selection returns the catalogue name for `set_config`.
+- `tui/markdown` takes a code fence's token classes from
+  `session_view/code_tokens`, the scanner the web view also draws, and keeps
+  only the style for each class (`code_span`).
 - `tui/markdown` walks `session_view/markdown`'s closed tree, the one the
   web view also draws, and emits etui spans directly. The parser is linear
   in its input and bounds the tree's depth; mork, which this module walked

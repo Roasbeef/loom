@@ -49,6 +49,10 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import session_view/code_tokens.{
+  type CodePart, CodeAdded, CodeComment, CodeDiffMeta, CodeKeyword, CodeNumber,
+  CodePart, CodePlain, CodePunctuation, CodeRemoved, CodeString, CodeType,
+}
 import session_view/markdown as tree
 import session_view/text_hygiene
 import tui/theme
@@ -56,34 +60,6 @@ import tui/theme
 type InlinePart {
   Styled(span.Span)
   Break
-}
-
-// Code blocks keep the model's bytes but give common Gleam token classes
-// enough contrast to scan quickly. This is presentation, not parsing: the
-// compiler remains the only authority on whether a program is valid.
-type CodePart {
-  CodePart(text: String, kind: CodeKind)
-}
-
-type CodeKind {
-  CodePlain
-  CodeKeyword
-  CodeType
-  CodeString
-  CodeNumber
-  CodeComment
-  CodePunctuation
-  CodeAdded
-  CodeRemoved
-  CodeDiffMeta
-}
-
-type CodeCharacter {
-  SpaceCharacter
-  IdentifierCharacter
-  NumberCharacter
-  QuoteCharacter
-  PunctuationCharacter
 }
 
 // How a finished row must be treated once the viewport width is known.
@@ -795,31 +771,16 @@ fn code_style() -> style.Style {
   style.new(theme.paper, style.Default, style.none())
 }
 
+// Code blocks keep the model's bytes and give each class of token a style.
+// The classes come from the scanner `session_view/code_tokens` shares with
+// the web view; only the look of each class is the terminal's.
 fn code_spans(language: Option(String), line: String) -> List(span.Span) {
-  case language {
-    Some(name) ->
-      case string.lowercase(string.trim(name)) {
-        "gleam" ->
-          line
-          |> string.to_graphemes
-          |> gleam_parts([])
-          |> list.map(code_span)
-        "diff" -> [diff_span(line)]
-        _ -> [span.span_styled(line, code_style())]
-      }
-    None -> [span.span_styled(line, code_style())]
-  }
+  code_tokens.line(language, line)
+  |> list.map(code_span)
 }
 
 fn diff_span(line: String) -> span.Span {
-  let kind = case line {
-    "+++" <> _ | "---" <> _ | "@@" <> _ | "diff " <> _ | "*** " <> _ ->
-      CodeDiffMeta
-    "+" <> _ -> CodeAdded
-    "-" <> _ -> CodeRemoved
-    _ -> CodePlain
-  }
-  code_span(CodePart(line, kind))
+  code_span(CodePart(line, code_tokens.diff_kind(line)))
 }
 
 /// Renders patch bytes directly, keeping indentation and addition/removal colors.
@@ -924,167 +885,6 @@ fn diff_range(value: String) -> Option(#(Int, Int)) {
   case start >= 0 && count >= 0 && { start > 0 || count == 0 } {
     True -> Some(#(start, count))
     False -> None
-  }
-}
-
-fn gleam_parts(
-  characters: List(String),
-  accumulated: List(CodePart),
-) -> List(CodePart) {
-  case characters {
-    [] -> list.reverse(accumulated)
-    ["/", "/", ..rest] ->
-      list.reverse([
-        CodePart("//" <> string.concat(rest), CodeComment),
-        ..accumulated
-      ])
-    [character, ..rest] ->
-      case code_character(character) {
-        QuoteCharacter -> {
-          let #(text, remaining) = quoted_text(rest, [character], False)
-          gleam_parts(remaining, [CodePart(text, CodeString), ..accumulated])
-        }
-        SpaceCharacter -> {
-          let #(tail, remaining) =
-            take_code_characters(rest, SpaceCharacter, [])
-          let text = string.concat([character, ..tail])
-          gleam_parts(remaining, [CodePart(text, CodePlain), ..accumulated])
-        }
-        IdentifierCharacter -> {
-          let #(tail, remaining) = take_identifier_characters(rest, [])
-          let text = string.concat([character, ..tail])
-          gleam_parts(remaining, [
-            CodePart(text, word_kind(text)),
-            ..accumulated
-          ])
-        }
-        NumberCharacter -> {
-          let #(tail, remaining) = take_number_characters(rest, [])
-          let text = string.concat([character, ..tail])
-          gleam_parts(remaining, [CodePart(text, CodeNumber), ..accumulated])
-        }
-        PunctuationCharacter ->
-          gleam_parts(rest, [
-            CodePart(character, CodePunctuation),
-            ..accumulated
-          ])
-      }
-  }
-}
-
-fn code_character(character: String) -> CodeCharacter {
-  case character {
-    " " | "\t" -> SpaceCharacter
-    "\"" -> QuoteCharacter
-    _ ->
-      case
-        string.contains(
-          "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_@",
-          character,
-        )
-      {
-        True -> IdentifierCharacter
-        False ->
-          case string.contains("0123456789", character) {
-            True -> NumberCharacter
-            False -> PunctuationCharacter
-          }
-      }
-  }
-}
-
-fn take_code_characters(
-  characters: List(String),
-  wanted: CodeCharacter,
-  accumulated: List(String),
-) -> #(List(String), List(String)) {
-  case characters {
-    [character, ..rest] ->
-      case code_character(character) == wanted {
-        True -> take_code_characters(rest, wanted, [character, ..accumulated])
-        False -> #(list.reverse(accumulated), characters)
-      }
-    [] -> #(list.reverse(accumulated), [])
-  }
-}
-
-fn take_identifier_characters(
-  characters: List(String),
-  accumulated: List(String),
-) -> #(List(String), List(String)) {
-  case characters {
-    [character, ..rest] ->
-      case code_character(character) {
-        IdentifierCharacter | NumberCharacter ->
-          take_identifier_characters(rest, [character, ..accumulated])
-        SpaceCharacter | QuoteCharacter | PunctuationCharacter -> #(
-          list.reverse(accumulated),
-          characters,
-        )
-      }
-    [] -> #(list.reverse(accumulated), [])
-  }
-}
-
-fn take_number_characters(
-  characters: List(String),
-  accumulated: List(String),
-) -> #(List(String), List(String)) {
-  case characters {
-    [character, ..rest] ->
-      case code_character(character) {
-        NumberCharacter ->
-          take_number_characters(rest, [character, ..accumulated])
-        IdentifierCharacter if character == "_" ->
-          take_number_characters(rest, [character, ..accumulated])
-        SpaceCharacter
-        | IdentifierCharacter
-        | QuoteCharacter
-        | PunctuationCharacter -> #(list.reverse(accumulated), characters)
-      }
-    [] -> #(list.reverse(accumulated), [])
-  }
-}
-
-fn quoted_text(
-  characters: List(String),
-  accumulated: List(String),
-  escaped: Bool,
-) -> #(String, List(String)) {
-  case characters, escaped {
-    [], _ -> #(string.concat(list.reverse(accumulated)), [])
-    [character, ..rest], True ->
-      quoted_text(rest, [character, ..accumulated], False)
-    ["\\", ..rest], False -> quoted_text(rest, ["\\", ..accumulated], True)
-    ["\"", ..rest], False -> #(
-      string.concat(list.reverse(["\"", ..accumulated])),
-      rest,
-    )
-    [character, ..rest], False ->
-      quoted_text(rest, [character, ..accumulated], False)
-  }
-}
-
-fn word_kind(word: String) -> CodeKind {
-  case
-    list.contains(
-      [
-        "as", "assert", "case", "const", "echo", "fn", "if", "import", "let",
-        "opaque", "panic", "pub", "todo", "type", "use",
-      ],
-      word,
-    )
-  {
-    True -> CodeKeyword
-    False ->
-      case string.to_graphemes(word) {
-        [first, ..] ->
-          case string.contains("ABCDEFGHIJKLMNOPQRSTUVWXYZ", first) {
-            True -> CodeType
-            False -> CodePlain
-          }
-        [] -> CodePlain
-      }
   }
 }
 
