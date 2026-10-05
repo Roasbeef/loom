@@ -131,8 +131,11 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     Connected -> #(model, effect.batch([stop(model.listeners), listen()]))
 
     // `listen` registers after the paint, so this can arrive after a later
-    // `Connected` or a `Disconnected` has run. Whatever pair the model still
-    // holds is stopped as the new one is kept.
+    // `Connected` has run; the pair the model still holds is stopped as the new
+    // one is kept. A `Disconnected` inside that one paint would leave the new
+    // pair on the document for a detached element. That needs a connect and a
+    // disconnect within one frame, and the cost is a listener whose messages
+    // reach nothing, so it is left as it is.
     Listening(listeners:) -> #(
       Model(..model, listeners: Some(listeners)),
       stop(model.listeners),
