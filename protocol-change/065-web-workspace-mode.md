@@ -1538,3 +1538,164 @@ origin, the page's sign-in asks, a chain's origin and login, the scan of the
 state root and the log, and the root key's start cases); `signins_test` and
 `page_test` in `web_view`; `copy_test` in `web_client`; the access, view and
 protocol tests in `host` and `tui`.
+
+## Addendum: the browser claim, the ninth pull request (2026-10-04)
+
+**Status**: IMPLEMENTED in the change that adds it. It builds the design note's
+PR 9: an invitee with no `loom` redeems a claim in a browser, chooses a name and
+lands on a home with a login set. It adds two routes, one catalogue function and
+one manager command, and no catalogue version. It also closes the item PR 8 left
+for it and three review items PR 8 left in the same code.
+
+**What it builds.** `GET /ui/claim`, a fixed form (`page.claim_page`: a token
+field, an optional name field and the words that say the inviter's name is kept
+when it is left empty), served under `form-action 'self'`; `POST /ui/claim`
+(`server.claim_submit`); `ui_login.claim`; `manager.claim_login` and
+`access.claim_login`; and the notices a refusal is drawn with
+(`page.ClaimNotice`). Nothing is admitted on any socket, and the home the claim
+opens is the home PR 8 built.
+
+**What the route does, in order.** The host is checked by the router. The sender
+must be this origin's own page: `Sec-Fetch-Site` is `same-origin` and nothing
+else (`ui_http.same_origin_post`, PR 8's rule). The form is declared at most 1
+KiB, URL-encoded, with no transfer encoding. A control-class parser permit is
+taken, and a daemon that is not serving refuses `503`. The body is read and must
+be `token` and, optionally, `name`, each once and no other field. The token is
+trimmed of the spaces a paste carries and must then be `loomclaim_` and 64
+lowercase hex characters, and this is checked **before any lookup**, so a bearer,
+a login, the owner's credential, a capitalised or truncated claim or an empty
+field is refused with the registry having done no work. Only then is the claim
+hashed, dropped and redeemed.
+
+**What the redemption is.** `ui_login.claim` draws a login (identifier, key,
+nonce) and calls `manager.claim_login`, which runs `access.claim_login`: the same
+transaction as `claim` (every check before every write, the name judged before
+the first write, so a refused name binds nothing and the claim stays open), with
+the credential it binds a `Browser` row written as `issue_login` writes one, with
+`issued_at_ms` and an expiry. The expiry is `login.lifetime_ms` (thirty days) from
+the claim, closing PR 8's note that a claim bound as a login recorded none. The
+token is signed **after** the transaction, since the claim is what names the
+principal; so no refusal has a token or a nonce to leak. The login is an
+`Operator` login, as the design note says, and `Operator` caps a membership and
+never grants one.
+
+`claim` takes a `Bearer` digest only, and `claim_login` a `Browser` one, each
+refusing the other kind. The expiry is part of the login's variant inside
+`storage/access` (`Presented`), so there is no way to bind a claim as a login
+without one. `InsertAccessClaimedLogin`, which wrote none, is removed in favour of
+`InsertAccessLogin`.
+
+**The login is set through the one place a login is set.** `server.entered` split
+in two: it still decides whether the exchange's ticket asks for a login and
+issues it, and the half that writes the response, `enter_response`, takes the
+login to set. The claim does not go through `remembered`, because its login was
+bound by the claim and writing a second row would be a second login for one
+claim; it reaches `enter_response` with the one it bound, after minting and
+redeeming a `Home` ticket (`Fresh`, `Operator`, `Workspace`, `Forgotten`) in the
+same request and attaching the login to the page. The response is the exchange
+page with the page cookie and the login cookie (its `Max-Age` the time left) and
+the login's key and nonce in the body, as a remembered exchange's. A `Forgotten`
+ticket is right here: it asks for no login of its own, and the home it opens is
+the browser of the login the claim made.
+
+**Refusals, in fixed words.** A refusal a person can correct is the claim form
+again, under `form-action 'self'`, with one fixed paragraph over it and no cookie.
+The words are the same for the same reason whoever asks and none repeats anything
+the request carried:
+
+| Reason | Status | Words begin |
+|---|---|---|
+| not a claim token (any other shape) | 400 | That is not a claim token. |
+| unknown, or voided by a rotation | 404 | This claim is not valid. |
+| expired | 410 | This claim has expired. |
+| spent, bound to another credential, or its member already holds one | 409 | This claim has already been used. |
+| a name that is blank, over 256 bytes or holds a control character | 400 | That name cannot be used. |
+| the registry could not answer | 503 | The daemon could not take the claim just now. |
+
+A cross-site, same-site, `none` or header-less `POST`, a host that is not
+loopback, a body that is not the declared small form, and a daemon that is not
+serving are `403`, `403`, `400` and `503` plain documents with no form, and none of
+them touches the claim. The success carries the policy every document has,
+`form-action 'none'`; only the form and its refusals carry `'self'`.
+
+**What it changes in what the proposal and the design note said.**
+
+- **`POST /ui/claim` is `same-origin` only.** The route table said `none` or
+  `same-origin`, which `none` makes a post nobody can type. The claim holds the
+  same rule as the resume (PR 8): the one thing the browser sends is a form this
+  origin served.
+- **The listing shows the claim redeemed.** A login that a claim bound is the
+  credential that claim made, since the browser claim has no bearer.
+  `principal_active_credential` lists a `browser` row only when an `access_claims`
+  row names it, so `principals.list` and `loom access list` show
+  `credential: active` with the fingerprint and `claimed_at_ms`, and the same
+  login is counted in `logins` as every login is. A login no claim bound is
+  counted only, as PR 8 said. Rotation and revocation end both together.
+- **The name is the catalogue's.** The form sends the name as typed. An empty
+  field is no name, so the inviter's name stays; a field of spaces is a blank
+  name and is refused `NameRefused` with the claim open. The catalogue trims and
+  judges it, as for `loom claim --name`.
+- **A lost reply is not replayable.** The login's identifier is drawn per
+  request and a replay would draw another, which a claim bound to the first
+  refuses as `ClaimedBy` another credential. A person whose response was lost
+  after the bind (the connection dropped, the page closed before the script ran)
+  has a spent claim and a login nobody holds; the owner rotates, which voids it
+  and issues a new claim. `/v2/claim` can replay because its credential is the
+  client's own digest; here there is nothing the client holds to present twice.
+  Making this recoverable would mean the browser choosing the login's identifier
+  and presenting it twice, which would put a value the daemon must trust into the
+  claim's body for the sake of a rare lost response.
+
+**The three PR 8 review items.**
+
+- **A ticket whose login has ended is refused before it takes a place.** In
+  `ui_sessions` `Redeem`, a ticket whose `login` is `Some(issuer)` with
+  `issuer.expires_at_ms <= now` is `UnknownTicket` before `with_room` runs, so a
+  device link opened after its family ended neither takes a page's slot nor
+  evicts the owner's oldest home. `server.entered`'s `401` for a login whose row
+  is refused stays. The table's `now` is the monotonic clock and an issuer's
+  expiry is a wall-clock instant, so the comparison needed the wall clock:
+  `Settings` gains `wall` (`bootstrap.system_time_ms` in production), the one
+  field this change adds to an existing record.
+- **`server.resume_exchange` has no `Admin` arm.** The scope, the reach, the
+  exchange and the page's address are built in one `case` on the login's session,
+  so a scope that cannot be reached is not written down.
+- **`ui_socket.admin_standing` says why `Fresh` is sound**: `admin_ticket_for` mints
+  an admin ticket only from a `Fresh` home (`fresh_home`) and the admin socket
+  mints no tickets.
+
+**What a stolen claim is worth.** A claim string in a chat log is, until it is
+redeemed, the credential for one browser's thirty days at `Operator` ceiling on
+whatever the member holds, which is 053's rule and the reason a claim lives an
+hour by default and is single use. Redeemed by the wrong person it shows in
+`principals.list` as `claimed_at_ms` and as a login the owner did not expect; the
+owner rotates, which ends that login. Nothing but the digest of the claim, and the
+digest of the login's identifier, is under the state root, and no log line holds a
+claim, a login or a nonce.
+
+**What it costs.** Two routes and a form document; a second public claim
+function and a manager command; a field on `Settings`; a split in `entered`; one
+more place a person's typed value is read (bounded to 1 KiB and checked for shape
+before anything else). A claim redeemed in a browser has a thirty-day login and no
+bearer: the invitee cannot use `loom` or the terminal's `/v2` from it, and
+`loom claim` is still the route for that.
+
+**Mutations, each applied alone and reverted, each failing the test it names.**
+
+| Mutation | Failing test |
+|---|---|
+| the token's shape check removed, so any value is hashed and looked up | `ui_route_test.a_cross_site_claim_and_a_value_that_is_no_claim_ask_nothing_test` (the registry's reductions move) |
+| the sender check taken from `navigation_allowed`, so `none` posts | `ui_route_test.a_cross_site_claim_and_a_value_that_is_no_claim_ask_nothing_test` |
+| the login row bound without its expiry | `ui_route_test.a_browser_claim_lands_on_an_operator_fresh_home_with_a_login_test` and three others |
+| the ended-login arm of `Redeem` made unreachable | `ui_sessions_test.a_ticket_of_an_ended_login_evicts_no_page_test` |
+| a refusal of a claim served under `form-action 'none'` | `ui_route_test.a_claim_that_cannot_redeem_is_refused_in_fixed_words_test` |
+| the claim's home minted `Resumed` | `ui_route_test.a_browser_claim_lands_on_an_operator_fresh_home_with_a_login_test` |
+
+**Tests.** `ui_route_test` (the form, the redemption and its listing and its
+bookmark, every refusal and the name that binds nothing, the senders and the sizes
+and the values that are no claim, the state-root and log scan that reaches the
+catalogue), `page_test` (the fixed form and its words, each notice, the policy),
+`ui_http_test` (the routes and the posted fields), `ui_sessions_test` (the ended
+login's ticket and the pages that survive it), `storage/access_test` (a claim
+bound as a login ends at its expiry and is listed as the credential, each kind
+refused by the other's function).

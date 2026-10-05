@@ -160,7 +160,10 @@ page keys and nonces, and the relay into the session's gateway.
   the resume page (`login_page`, `login_refused`), the exchange page that carries
   the login's key and nonce (`enter_remembered`), `login_prefix`,
   `login_home_path` and the `Forms` policy choice (`content_security_policy_for`;
-  only the resume page is `OwnForms`). `signins_test` and `page_test` read it. The admin page also lists each
+  only the resume page and the claim form are `OwnForms`). The claim form
+  (PR 9) is `claim_page(notice)`: two fields, no script, posting to
+  `claim_path`, with the words for the name field and, after a refusal, one
+  fixed paragraph from `claim_notice(ClaimNotice)`. `signins_test` and `page_test` read it. The admin page also lists each
   principal's sign-ins (`grants.Logins`, `Snapshot.logins`) beneath its row in
   `view/admin_people`, with the home's `view/signins.history` words and a
   two-step `grants.RevokeSignin`; `admin.Start.login` marks "This browser".
