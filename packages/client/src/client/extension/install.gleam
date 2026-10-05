@@ -647,7 +647,7 @@ fn compiled(
   staging: String,
 ) -> Result(Compiled, Failure) {
   let build_root = staging <> "/build"
-  use Nil <- result.try(prepare_build(build_root, decoded, vetted))
+  use Nil <- result.try(prepare(build_root, decoded, vetted))
   let compile.Built(result: built, enforcement:) = config.build(build_root)
   use products <- result.try(
     result.map_error(built, fn(error) { Compile(compile_reason(error)) }),
@@ -674,7 +674,15 @@ fn compiled(
 // entry beside them, and a `gleam.toml` that pins exactly what every
 // hermetic build pins. The extension's own project file is not copied —
 // that is what makes a dependency it named unable to enter the build.
-fn prepare_build(
+/// Writes the vetted hermetic build without creating an approval record.
+///
+/// Callers own staging and cleanup. This preparation grants no installation or
+/// execution authority; evolution records supply the separate approval boundary.
+///
+/// ## Examples
+///
+/// `prepare(build_root, manifest, vetted)` writes the offline compiler inputs.
+pub fn prepare(
   build_root: String,
   decoded: Manifest,
   vetted: VettedPackage,
