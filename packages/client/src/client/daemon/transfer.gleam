@@ -59,6 +59,10 @@ pub type Window {
 
   /// Exact current escalation cells, without changing the adopted history cut.
   Escalations(ids: List(String))
+
+  /// The newest decided escalation cells, at most `decided_limit`, again
+  /// without touching the adopted history cut.
+  Decided
 }
 
 /// Retained state contains bounded metadata and at most one descriptor page.
@@ -110,6 +114,29 @@ pub type Step {
   Exhausted
 }
 
+/// How many decided escalations one `escalations_decided` read carries. It
+/// is the approval ledger's own bound on resolved records, so a page seeded
+/// from the read holds what a page that watched the decisions would hold.
+pub const decided_limit = 16
+
+/// The newest `limit` cells by register sequence, oldest first.
+///
+/// The reader selects every decided escalation under the metadata budget,
+/// and the selection has no order a client could use, so the gateway keeps
+/// the newest here, before the cells are encoded into the transfer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert transfer.newest([], 16) == []
+/// ```
+pub fn newest(cells: List(snapshot.Cell), limit: Int) -> List(snapshot.Cell) {
+  cells
+  |> list.sort(fn(a, b) { int.compare(b.register.seq, a.register.seq) })
+  |> list.take(limit)
+  |> list.reverse
+}
+
 /// Starts a transfer only after the complete metadata fits its encoded budget.
 ///
 /// ## Examples
@@ -128,7 +155,7 @@ pub fn start(
   let encoded = bit_array.from_string(json.to_string(metadata))
   let #(entries, range) = case window {
     Recent -> #(cut.recent, None)
-    Escalations(_) -> #([], None)
+    Escalations(_) | Decided -> #([], None)
     Reconcile(from_seq) -> #(
       [],
       Some(#(int.max(0, from_seq - 1), cut.next_seq)),

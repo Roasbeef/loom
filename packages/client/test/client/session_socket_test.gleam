@@ -27,9 +27,11 @@ import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/erlang/atom
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/system
+import gleam/result
 import gleam/string
 import host/bootstrap
 import mist
@@ -577,6 +579,90 @@ pub fn exact_escalation_resolution_captures_author_without_prefix_neighbors_test
   })
 }
 
+pub fn decided_escalations_return_the_newest_decided_questions_only_test() {
+  fixture(fn(port, credential, id, _, harness) {
+    let author = message.Origin("bob", "Bob")
+    let commit_record = fn(record: escalation.Escalation) {
+      let assert Ok(_) =
+        writer.commit(
+          harness.runtime.tree.writer,
+          tx.Tx(
+            [
+              tx.SetRegister(
+                register.FactCustom,
+                escalation.register_key(record.id),
+                register.value(escalation.encode(record)),
+              ),
+            ],
+            [],
+          ),
+        )
+        as "the escalation commits"
+      Nil
+    }
+    let raised = fn(name) {
+      escalation.raised(name, json.Object([]), action: None, scope: None)
+    }
+    commit_record(raised("still-waiting"))
+    commit_record(escalation.approve(raised("allowed"), [], Some(author)))
+    list.each(numbers(1, 18), fn(index) {
+      commit_record(escalation.reject(
+        raised("denied-" <> int.to_string(index)),
+        Some(author),
+      ))
+    })
+
+    let #(socket, _) =
+      wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
+    let #(_, snapshot_id) = begin(socket, id, within_ms: 1000)
+    let _ = drain(socket, snapshot_id, 0, [], 20, within_ms: 1000)
+    let decided =
+      request(
+        socket,
+        80,
+        "escalations_decided",
+        json.Object([]),
+        within_ms: 1000,
+      )
+    let body = field(decided, "body")
+    assert field(body, "window") == json.String("decided")
+    let assert json.String(decided_id) = field(body, "snapshot_id")
+      as "the decided read uses the same credit protocol"
+    let metadata =
+      drain(socket, decided_id, 0, [], 20, within_ms: 1000)
+      |> decoded_record("metadata")
+    let assert json.Array(cells) = field(metadata, "cells")
+      as "the decided cells are listed"
+    assert list.length(cells) == 16
+    let keys = list.map(cells, fn(cell) { field(cell, "key") })
+    assert !list.contains(keys, json.String("escalation/still-waiting"))
+      as "a pending question is not a decision"
+    assert list.contains(keys, json.String("escalation/denied-18"))
+      as "the newest decision is kept"
+    assert !list.contains(keys, json.String("escalation/allowed"))
+      as "the oldest decisions fall outside the sixteen"
+    assert field(metadata, "missing") == json.Array([])
+    let sequences =
+      list.map(cells, fn(cell) {
+        let assert json.Int(seq) = field(cell, "seq") as "each cell has a seq"
+        seq
+      })
+    assert sequences == list.sort(sequences, int.compare)
+      as "cells arrive oldest first"
+    let assert Ok(record) =
+      escalation.decode(field(
+        list.find(cells, fn(cell) {
+          field(cell, "key") == json.String("escalation/denied-18")
+        })
+          |> result.unwrap(json.Null),
+        "value",
+      ))
+      as "the raw payload keeps the resolution author"
+    assert record.origin == Some(author)
+    ffi_ws.tcp_close(socket)
+  })
+}
+
 pub fn real_metadata_and_large_entry_are_fragmented_without_legacy_reads_test() {
   fixture(fn(port, credential, id, _, harness) {
     let metadata_text = string.repeat("m", 100_000)
@@ -810,4 +896,10 @@ pub fn daemon_drain_writes_held_input_before_socket_teardown_test() {
       ffi_ws.tcp_close(socket)
     },
   )
+}
+
+// The integers from `first` to `last`, inclusive.
+fn numbers(first: Int, last: Int) -> List(Int) {
+  list.repeat(0, last - first + 1)
+  |> list.index_map(fn(_, index) { first + index })
 }
