@@ -20,8 +20,9 @@
 //// Each file is a `<details>` keyed by its path, the first open, as the edit
 //// board draws them, and each diff is the shared drawer (`view/diff`), in
 //// colour, with the sign gutter. The path and every diff line are repository
-//// text and are drawn only as text nodes: never an attribute, a class or a
-//// key's separator, and no handler sits beneath the pane. What the pane says
+//// text and are drawn as text nodes, and the path is also the element's key,
+//// which Lustre escapes; it is never a class, and no handler sits beneath the
+//// pane. What the pane says
 //// of a file's status and kind is chosen from closed sets here, and none of it
 //// is taken from the observation's text.
 

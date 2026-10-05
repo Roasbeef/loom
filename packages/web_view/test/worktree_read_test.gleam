@@ -111,7 +111,7 @@ pub fn the_bounds_are_drawn_test() {
 
   assert string.contains(html, "This diff is cut at the size limit.")
   assert string.contains(html, "modified · +1+ -1+")
-  assert string.contains(html, "new")
+  assert string.contains(html, "> new</span>")
   assert string.contains(html, "Binary file, not shown.")
   assert string.contains(html, "A directory or nested repository, not shown.")
   assert string.contains(html, "No net change.")

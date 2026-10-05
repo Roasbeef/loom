@@ -34,6 +34,12 @@ fn standing(
   fn() { Ok(#(principal(), authority)) }
 }
 
+// A reservation that always succeeds, for a test that is not about the
+// allowance.
+fn allowed() -> Result(Nil, Nil) {
+  Ok(Nil)
+}
+
 fn revoked() -> Result(#(access.Principal, access.Authority), String) {
   Error("access revoked")
 }
@@ -120,6 +126,7 @@ pub fn an_owner_and_an_operator_are_admitted_test() {
         ui_socket.worktree_answer(
           standing(standing_and_ceiling.0),
           standing_and_ceiling.1,
+          allowed,
           counting(ran, Ok(one_file())),
         )
       assert process.receive(ran, 0) == Ok(Nil)
@@ -144,6 +151,7 @@ pub fn an_observer_is_refused_without_running_the_observation_test() {
         ui_socket.worktree_answer(
           standing(standing_and_ceiling.0),
           standing_and_ceiling.1,
+          allowed,
           counting(ran, Ok(one_file())),
         )
       assert read == worktrees.Declined
@@ -161,6 +169,7 @@ pub fn a_revoked_page_is_refused_at_its_next_read_test() {
     ui_socket.worktree_answer(
       revoked,
       access.Operator,
+      allowed,
       counting(ran, Ok(one_file())),
     )
 
@@ -172,12 +181,14 @@ pub fn a_revoked_page_is_refused_at_its_next_read_test() {
 // a repository's own words, and none of it is forwarded to a page.
 pub fn a_failed_observation_is_unreadable_and_its_text_is_not_forwarded_test() {
   let read =
-    ui_socket.worktree_answer(standing(access.Owner), access.Operator, fn() {
-      Error("fatal: <script>alert(1)</script> in /secret/path")
-    })
+    ui_socket.worktree_answer(
+      standing(access.Owner),
+      access.Operator,
+      allowed,
+      fn() { Error("fatal: <script>alert(1)</script> in /secret/path") },
+    )
 
   assert read == worktrees.Unreadable
-  assert !string.contains(string.inspect(read), "secret")
 }
 
 // What is not a board the page accepts is `Unreadable` too: an answer that is
@@ -186,7 +197,9 @@ pub fn a_failed_observation_is_unreadable_and_its_text_is_not_forwarded_test() {
 pub fn an_answer_that_breaks_the_pages_bounds_is_unreadable_test() {
   let owner = standing(access.Owner)
   let read = fn(answer) {
-    ui_socket.worktree_answer(owner, access.Operator, fn() { Ok(answer) })
+    ui_socket.worktree_answer(owner, access.Operator, allowed, fn() {
+      Ok(answer)
+    })
   }
 
   assert read(json.String("not a board")) == worktrees.Unreadable
@@ -214,9 +227,12 @@ pub fn an_answer_that_breaks_the_pages_bounds_is_unreadable_test() {
 // says so and the page falls back to the agent's edits with a sentence.
 pub fn a_workspace_that_is_not_a_checkout_is_a_board_test() {
   let read =
-    ui_socket.worktree_answer(standing(access.Owner), access.Operator, fn() {
-      Ok(board("not_repository", [], 0, 0))
-    })
+    ui_socket.worktree_answer(
+      standing(access.Owner),
+      access.Operator,
+      allowed,
+      fn() { Ok(board("not_repository", [], 0, 0)) },
+    )
 
   assert board_of(read).repository == "not_repository"
 }
@@ -226,9 +242,12 @@ pub fn a_workspace_that_is_not_a_checkout_is_a_board_test() {
 pub fn a_hidden_directory_path_with_markup_survives_as_data_test() {
   let path = ".claude/worktrees/x/<b>y</b>.toml"
   let read =
-    ui_socket.worktree_answer(standing(access.Owner), access.Operator, fn() {
-      Ok(board("head", [file(path, "@@ -1 +1 @@\n-a\n+b")], 1, 0))
-    })
+    ui_socket.worktree_answer(
+      standing(access.Owner),
+      access.Operator,
+      allowed,
+      fn() { Ok(board("head", [file(path, "@@ -1 +1 @@\n-a\n+b")], 1, 0)) },
+    )
 
   let assert [only] = board_of(read).files as "one file"
   assert only.path == path
@@ -244,6 +263,7 @@ pub fn asking_returns_before_the_observation_finishes_test() {
   ui_socket.worktree_task(
     standing(access.Owner),
     access.Operator,
+    allowed,
     fn() {
       // The observation holds here until the test lets it go. The gate is
       // made in the observation's own process, which is the only one that
@@ -266,4 +286,39 @@ pub fn asking_returns_before_the_observation_finishes_test() {
   let assert Ok(read) = process.receive(delivered, 5000)
     as "the answer was delivered after the observation finished"
   assert board_of(read).files != []
+}
+
+// A credential's reads are counted together: a read the allowance refuses is
+// `Unreadable` and the observation does not run, so a credential holding many
+// sockets cannot spend the session's helper pool on Git calls. The first two
+// reads inside the window run; the third does not.
+pub fn a_third_read_inside_the_window_is_refused_without_running_test() {
+  let taken = process.new_subject()
+  let ran = process.new_subject()
+  let reserve = fn() {
+    case process.receive(taken, 0) {
+      Ok(0) -> Error(Nil)
+      Ok(left) -> {
+        process.send(taken, left - 1)
+        Ok(Nil)
+      }
+      Error(Nil) -> Error(Nil)
+    }
+  }
+  process.send(taken, 2)
+  let read = fn() {
+    ui_socket.worktree_answer(
+      standing(access.Owner),
+      access.Operator,
+      reserve,
+      counting(ran, Ok(one_file())),
+    )
+  }
+
+  assert board_of(read()).files != []
+  assert board_of(read()).files != []
+  assert read() == worktrees.Unreadable
+  assert process.receive(ran, 0) == Ok(Nil)
+  assert process.receive(ran, 0) == Ok(Nil)
+  assert process.receive(ran, 0) == Error(Nil)
 }

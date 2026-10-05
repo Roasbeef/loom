@@ -795,6 +795,23 @@ pub fn every_grant_surface_reserves_from_the_one_allowance_test() {
   assert ui_sessions.reserve_invite(sessions, digest) == Ok(Nil)
 }
 
+// Worktree reads are counted for the credential across its pages, in a short
+// rolling window: the third inside it is refused, and one is free again once
+// the window has passed.
+pub fn a_credentials_worktree_reads_are_limited_in_a_short_window_test() {
+  let time = clock()
+  let sessions = table(time)
+  let assert Ok(digest) = access.credential_digest(string.repeat("c", 64))
+    as "a digest"
+  list.each(list.repeat(Nil, ui_sessions.worktree_read_limit), fn(_) {
+    assert ui_sessions.reserve_worktree_read(sessions, digest) == Ok(Nil)
+  })
+  assert ui_sessions.reserve_worktree_read(sessions, digest) == Error(Nil)
+
+  process.send(time, Advance(ui_sessions.worktree_read_window_ms))
+  assert ui_sessions.reserve_worktree_read(sessions, digest) == Ok(Nil)
+}
+
 // --- the readers of a page's images ----------------------------------------
 
 // A reader that answers every request with one image, so a test can tell

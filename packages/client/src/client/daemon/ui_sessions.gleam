@@ -194,6 +194,17 @@ pub const creation_limit = 10
 /// The window `creation_limit` is counted over, in milliseconds.
 pub const creation_window_ms = 3_600_000
 
+/// How many worktree reads a credential's pages may start in
+/// `worktree_read_window_ms`. A read is about twenty-six jailed Git calls on
+/// the session's helper pool, which the agent's own tools share, so the count
+/// is per credential and not per page: opening more sockets does not buy more
+/// reads. Two in four seconds is one page's refresh rate (`web_view/worktrees`
+/// asks at most once in four) with room for one reload.
+pub const worktree_read_limit = 2
+
+/// The window `worktree_read_limit` is counted over, in milliseconds.
+pub const worktree_read_window_ms = 4000
+
 /// What a page may be limited in the number of.
 pub type Allowance {
   /// The invitations a credential's pages mint (`invite_limit`).
@@ -201,6 +212,9 @@ pub type Allowance {
 
   /// The sessions a credential's pages create (`creation_limit`).
   Creations
+
+  /// The worktree reads a credential's pages start (`worktree_read_limit`).
+  WorktreeReads
 }
 
 /// What page a ticket opens, which is also the page the UI session it becomes
@@ -463,6 +477,8 @@ type State {
     /// The same for the sessions each credential's pages have created inside
     /// `creation_window_ms`.
     creations: Dict(String, List(Int)),
+    /// The same for the worktree reads inside `worktree_read_window_ms`.
+    reads: Dict(String, List(Int)),
   )
 }
 
@@ -502,6 +518,7 @@ pub fn start(settings: Settings) -> Result(Sessions, String) {
       dict.new(),
       dict.new(),
       0,
+      dict.new(),
       dict.new(),
       dict.new(),
       dict.new(),
@@ -664,6 +681,30 @@ pub fn reserve_creation(
 ) -> Result(Nil, Nil) {
   call.try_call(sessions.subject, waiting: 1000, sending: Reserve(
     Creations,
+    access.fingerprint(credential),
+    _,
+  ))
+  |> result.unwrap(Error(0))
+  |> result.replace_error(Nil)
+}
+
+/// Reserves one of the credential's worktree reads, or refuses when it has
+/// started `worktree_read_limit` in the last `worktree_read_window_ms`. The
+/// count is made and taken in one message, so pages asking at once cannot all
+/// take the last place. The place is not given back: a read that failed still
+/// spent its Git calls.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_sessions.reserve_worktree_read(sessions, digest) == Ok(Nil)
+/// ```
+pub fn reserve_worktree_read(
+  sessions: Sessions,
+  credential: access.Digest,
+) -> Result(Nil, Nil) {
+  call.try_call(sessions.subject, waiting: 1000, sending: Reserve(
+    WorktreeReads,
     access.fingerprint(credential),
     _,
   ))
@@ -1150,6 +1191,29 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       }
     }
 
+    Reserve(allowance: WorktreeReads, credential:, reply:) -> {
+      let recent =
+        recent_instants(state.reads, credential, now, worktree_read_window_ms)
+      case list.drop(recent, worktree_read_limit - 1) {
+        [held, ..] -> {
+          process.send(
+            reply,
+            Error(frees_at(state.settings, held + worktree_read_window_ms)),
+          )
+          actor.continue(state)
+        }
+        [] -> {
+          process.send(reply, Ok(Nil))
+          actor.continue(
+            State(
+              ..state,
+              reads: dict.insert(state.reads, credential, [now, ..recent]),
+            ),
+          )
+        }
+      }
+    }
+
     Release(credential:) -> {
       let held = case
         recent_instants(state.invites, credential, now, invite_window_ms)
@@ -1175,6 +1239,9 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           }),
           creations: dict.filter(state.creations, fn(_, instants) {
             list.any(instants, fn(at) { at > now - creation_window_ms })
+          }),
+          reads: dict.filter(state.reads, fn(_, instants) {
+            list.any(instants, fn(at) { at > now - worktree_read_window_ms })
           }),
           tickets: dict.filter(state.tickets, fn(_, entry) {
             entry.expires_at > now

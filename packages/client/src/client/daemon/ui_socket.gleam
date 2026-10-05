@@ -510,7 +510,13 @@ pub fn upgrade(
   // nothing the page sends reaches it.
   let worktree =
     worktree_capability(role, fn(deliver) {
-      worktree_task(attach.check, attach.ceiling, observe, deliver)
+      worktree_task(
+        attach.check,
+        attach.ceiling,
+        fn() { ui_sessions.reserve_worktree_read(tickets, attachment.digest) },
+        observe,
+        deliver,
+      )
     })
   websocket(request, limit, settled, fn(signals) {
     admit(
@@ -2450,19 +2456,20 @@ pub fn worktree_capability(
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.worktree_task(check, access.Operator, observe, deliver)
+/// // ui_socket.worktree_task(check, access.Operator, reserve, observe, deliver)
 /// ```
 @internal
 pub fn worktree_task(
   check: fn() -> Result(#(access.Principal, access.Authority), String),
   ceiling: access.Role,
+  reserve: fn() -> Result(Nil, Nil),
   observe: fn() -> Result(wire.JsonValue, String),
   deliver: fn(worktrees.Read) -> Nil,
 ) -> Nil {
   let _ =
     weft.new([
       fn() {
-        deliver(worktree_answer(check, ceiling, observe))
+        deliver(worktree_answer(check, ceiling, reserve, observe))
         Ok(Nil)
       },
     ])
@@ -2480,18 +2487,22 @@ pub fn worktree_task(
 /// page is shown the observation; an observer's, and any page whose check now
 /// fails, is `Declined` and the observation does not run. The observation is
 /// the instance's own, over its own workspace and base commit, and takes
-/// nothing from the page. Its failure text is never forwarded: it can carry a
+/// nothing from the page. A credential's reads are counted together across its
+/// pages (`ui_sessions.reserve_worktree_read`), so many sockets cannot spend
+/// the session's helper pool on Git calls; a refused read is `Unreadable` and
+/// the observation does not run. Its failure text is never forwarded: it can carry a
 /// repository's own words, so the page is told only `Unreadable`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.worktree_answer(check, access.Operator, observe)
+/// // ui_socket.worktree_answer(check, access.Operator, reserve, observe)
 /// ```
 @internal
 pub fn worktree_answer(
   check: fn() -> Result(#(access.Principal, access.Authority), String),
   ceiling: access.Role,
+  reserve: fn() -> Result(Nil, Nil),
   observe: fn() -> Result(wire.JsonValue, String),
 ) -> worktrees.Read {
   case check() {
@@ -2499,7 +2510,10 @@ pub fn worktree_answer(
     Ok(#(_, authority)) ->
       case ui_relay.capped(authority, ceiling) {
         access.Owner | access.Participant(access.Operator) ->
-          worktree_read(observe())
+          case reserve() {
+            Ok(Nil) -> worktree_read(observe())
+            Error(Nil) -> worktrees.Unreadable
+          }
         access.Participant(access.Observer) -> worktrees.Declined
       }
   }
