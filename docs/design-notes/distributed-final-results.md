@@ -151,7 +151,22 @@ The preview visitor produces at most 4,096 UTF-8 bytes without first rendering
 the entire value as JSON or text. Known metadata gets a bounded truthful summary.
 The complete final message must pass the existing 256-KiB codec. Its original
 call identity is bounded before admission, and arbitrary extra details cannot
-enter this closed final schema.
+enter this closed final schema. The report-bearing ToolResultMessage has
+exactly `{kind: "code_mode_report_v1", reference: <canonical URI>}` in its
+structured details. Its bounded text content is a preview, its original call ID
+and name stay unchanged, and `is_error` agrees with the retained Outcome. The
+final commit compares that exact reference with the retained row. A generic
+ToolFailed result cannot discharge retained or unresolved report custody.
+
+A refusal before a terminal Outcome exists uses a separate closed schema:
+`{kind: "code_mode_not_run_v1", stage: "vet"}` or the same shape with
+`stage: "compile"`. Only the trusted vetting and compilation refusal branches
+emit it. Its text is bounded to 4,096 bytes, `is_error` is true, and no report may
+already be retained for the row. A program error or satellite failure cannot
+be relabeled from its tool name or `is_error` flag. This shape preserves ordinary
+refusals without letting a missing terminal value masquerade as a completed
+program. Existing producer and physical-child discharge requirements still apply;
+a compilation refusal alone proves no physical cleanup.
 
 Owner format 5 adds the immutable profile/allowance, report BLOB and digest.
 Scalar headers and aggregate quotas are checked before loading report bytes.
