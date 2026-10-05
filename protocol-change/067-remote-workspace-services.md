@@ -17,7 +17,10 @@ The owner keeps the provider, session SQLite, runtime, approvals, broker,
 code-mode capability router, and client gateway. The executor keeps the
 registered checkout, toolchain, jailed compiler and satellite, language
 servers, native pool, and durable execution evidence. The executor never
-imports the client package or joins native Erlang distribution.
+imports the client package. The original transport proposal excluded executor
+nodes from Erlang distribution; the **Trusted executor distribution** addendum
+below supersedes that choice under the owner's explicit authorization. Its
+implementation and acceptance gates remain in progress.
 
 This proposal changes the internal Dispatch handoff and introduces explicit
 remote workspace, command-preparation, compilation, launch-resource and LSP
@@ -174,6 +177,10 @@ native retirement and exact durable owner receipt. Bounded capacity exhaustion
 refuses admission rather than discarding unacknowledged evidence.
 
 ## Authenticated transport and bounds
+
+This section records the original socket transport. The **Trusted executor
+distribution** addendum supersedes its inter-node TLS/socket mechanics. Its
+durable identity, original deadline and bounded consumption requirements remain.
 
 Use mutually authenticated TLS with certificate-chain verification and an
 exact configured peer certificate pin. The client also verifies the endpoint
@@ -871,3 +878,97 @@ A later remaining-budget value, owner wall-clock adjustment, duplicate exchange
 or recovered record MUST NOT renew this cap. Selected native wall and cleared
 Prepared bytes remain unchanged. Ordinary native requests retain their existing
 deadline rules; historical contexts grant no fresh authority.
+
+## Addendum: Trusted executor distribution
+
+**Decision: accepted by the owner, implementation pending.** Executors join
+TLS-protected Erlang distribution within the orchestrators' administrative
+trust domain. TLS BEAM is the single supported inter-node executor transport.
+This supersedes the executor-distribution prohibition and custom socket TLS
+mechanics above. The satellite's local Unix capability socket and the native
+sandbox-helper protocol remain separate boundaries.
+
+### Trust and membership
+
+An enrolled executor VM is a fully trusted runtime peer. A compromise of its
+runtime or OS account can reach the connected owner runtime through ordinary
+distributed Erlang facilities, including remote process creation. TLS protects
+the connection against outsiders; a closed Loom endpoint, an executor role or
+a hidden node does not isolate the owner from a malicious connected executor.
+Administrative enrollment MUST make that trust explicit.
+
+Both ends MUST use `inet_tls_dist`, validate the certificate chain and require
+the configured peer identity and certificate pin. The server MUST require a
+client certificate. Nodes MUST reject plaintext distribution, unconfigured
+peers and a wrong peer certificate issued by the same CA. Node names and the
+finite allowed peer set come from administrative configuration; model or
+request content MUST NOT create atoms or change membership. Connections are
+explicit, with hidden executor nodes and no automatic mesh expansion.
+
+An executor role starts workspace/execution services and their journals. It
+does not start a provider or session owner, and membership does not make the
+executor a Raft voter. Raft membership requires separate administrative action.
+Model-authored satellites MUST remain distribution-disabled. Their launch
+environment, arguments, readable mounts and inherited handles MUST expose no
+distribution cookie, private key or other membership credential.
+
+### The endpoint and durable identity
+
+The endpoint accepts a closed, versioned message vocabulary. Requests retain
+their full immutable service/command/native identity and canonical input bytes.
+No message ships an arbitrary function, closure or module/function invocation.
+PID/reference correlation identifies one live endpoint incarnation only; it
+MUST NOT replace a durable request identity or grant authority after reconnect.
+
+Canonical request, completion and receipt encodings remain stable where they
+define durable identity. Inter-node socket length prefixes and passive-read
+loops are removed after all consumers move to BEAM. Bounded transfer reducers
+may carry large payloads in chunks; they do not create a second effect identity.
+There is no dual-transport selector or automatic fallback. A future executor
+written outside the BEAM would need an explicit adapter or another reviewed
+transport proposal, not an untested compatibility path in this implementation.
+
+Every sender MUST validate aggregate bytes and structural bounds before send.
+Receivers MUST validate the closed shape and canonical content before service
+admission. These are cooperative application limits: a compromised connected
+VM can allocate distribution terms before the receiver validates them. The
+limits MUST NOT be described as a hostile-peer memory-isolation boundary.
+
+### Credits, observation and recovery
+
+Endpoint admission MUST bound outstanding operations and retained request and
+reply bytes. A caller timeout or process DOWN does not prove the service has
+consumed or withdrawn its queued request, and MUST NOT return that credit.
+Control traffic has reserved capacity independent of ordinary data consumption.
+The actor managing cancellation MUST NOT block on a distribution send.
+
+Admitted capability calls retain their original reply reservations through
+Running, ReplyReady and Sending until the final recipient consumes the exact
+reply. A full transport window leaves a ready result in its existing bounded
+slot; it is neither a stream failure nor permission to drop a result. A stale
+ACK or duplicate completion cannot release another delivery's capacity.
+Logical frame limits, cumulative stream quotas and original deadlines still
+apply. Terminal success MUST NOT discard preceding admitted replies.
+
+A successful BEAM send is not durable admission or consumption. `nodedown`,
+remote process DOWN and observer expiry establish loss of observation only.
+Original executor deadlines continue locally; native cancellation and witnessed
+retirement remain independent obligations. Reconciliation queries the original
+retained identity and cannot repeat preparation, renew a deadline, replay an
+effect or recreate a satellite token. Owner receipt still commits before ACK.
+
+### Replacement gates
+
+The implementation MUST exercise actual TLS-distributed BEAM nodes, including
+missing/wrong certificates, same-CA wrong identity, plaintext refusal, incompatible
+endpoint versions, bounded concurrent admission, delayed consumption, disconnect
+after possible submission and exact historical reconciliation. Satellite launch
+tests MUST establish credential exclusion and distribution-disabled execution.
+Existing socket fixtures remain historical component evidence until replaced;
+their passes do not validate this new transport.
+
+The separate-host product gate remains unchanged: ordinary tools, Compile,
+Launch, owner capabilities and LSP must use one executor-resident workspace,
+with owner canary files proving no local fallback. Formal-model correspondence
+must identify the new transport events and preserve the admission, receipt,
+discharge and retirement distinctions. No transport fixture alone completes #697.
