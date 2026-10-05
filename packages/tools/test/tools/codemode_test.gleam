@@ -22,6 +22,8 @@ import core/ids.{type OpId}
 import core/json
 import core/message
 import core/msgpack
+import core/report_value
+import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
@@ -2364,4 +2366,290 @@ fn local_request(
   let assert Ok(request) = codemode.request(mode, ctx, source, within, on: seam)
     as "fixture has a local code-mode request"
   request
+}
+
+// Retention tests exercise the real tool shell with a fake commit boundary.
+// The full value crosses that boundary before only a preview reaches the caller.
+pub fn retained_report_keeps_binary_and_nontext_keys_before_preview_test() {
+  let saved = process.new_subject()
+  let value =
+    msgpack.MapValue([
+      #(
+        msgpack.IntValue(7),
+        msgpack.BinaryValue(bit_array.from_string(string.repeat("x", 90_000))),
+      ),
+      #(
+        msgpack.StringValue("combining"),
+        msgpack.StringValue("e" <> string.repeat("́", 20_000)),
+      ),
+    ])
+  let execution = retained_execution(codemode.Completed(value))
+  let assert Ok(shell) =
+    codemode.retained_tool(scripted(execution), fn(ctx, report) {
+      assert ctx.step_id == "retained"
+      assert report_value.outcome(report) == report_value.Completed(value)
+      process.send(saved, report)
+      Ok(report_reference(report))
+    })
+    as "retained synchronous tool assembles"
+  let outcome =
+    shell.run(
+      ctx_for("retained"),
+      json.Object([#("program", json.String("source"))]),
+    )
+  let assert Ok(report) = process.receive(saved, 100)
+    as "full report crossed the commit boundary"
+  assert !outcome.is_error
+  assert bit_array.byte_size(bit_array.from_string(text_of(outcome))) <= 4096
+  assert string.contains(text_of(outcome), "binary: 90000 bytes")
+  assert outcome.details
+    == Some(
+      json.Object([
+        #("kind", json.String("code_mode_report_v1")),
+        #(
+          "reference",
+          json.String(report_value.ref_to_string(report_reference(report))),
+        ),
+      ]),
+    )
+}
+
+pub fn retained_controlled_error_preserves_complete_details_test() {
+  let saved = process.new_subject()
+  let message = string.repeat("error", 4000)
+  let details = msgpack.BinaryValue(<<0, 255, 0>>)
+  let assert Ok(shell) =
+    codemode.retained_tool(
+      scripted(retained_execution(codemode.Errored(message, details))),
+      fn(_, report) {
+        process.send(saved, report)
+        Ok(report_reference(report))
+      },
+    )
+    as "retained synchronous tool assembles"
+  let outcome =
+    shell.run(
+      ctx_for("error"),
+      json.Object([#("program", json.String("source"))]),
+    )
+  let assert Ok(report) = process.receive(saved, 100)
+    as "complete error retained"
+  assert report_value.outcome(report) == report_value.Errored(message, details)
+  assert outcome.is_error
+  assert bit_array.byte_size(bit_array.from_string(text_of(outcome))) <= 4096
+}
+
+pub fn retention_failure_cannot_return_a_reference_or_no_terminal_claim_test() {
+  let assert Ok(shell) =
+    codemode.retained_tool(
+      scripted(retained_execution(codemode.Completed(msgpack.IntValue(1)))),
+      fn(_, _) { Error("commit failed") },
+    )
+    as "retained synchronous tool assembles"
+  let outcome =
+    shell.run(
+      ctx_for("failed"),
+      json.Object([#("program", json.String("source"))]),
+    )
+  assert outcome.is_error
+  assert outcome.details == None
+  assert string.contains(text_of(outcome), "custody remains unresolved")
+}
+
+pub fn only_actual_vet_and_compile_results_emit_no_terminal_schema_test() {
+  let cases = [
+    #(codemode.VetRejected([]), Some("vet")),
+    #(
+      codemode.CompileFailed(codemode.BuildRejected(string.repeat("́", 9000))),
+      Some("compile"),
+    ),
+    #(codemode.RunFailed(codemode.DeadlineExceeded), None),
+  ]
+  list.each(cases, fn(pair) {
+    let base = retained_execution(codemode.Completed(msgpack.NilValue))
+    let execution = codemode.Execution(..base, result: pair.0)
+    let assert Ok(shell) =
+      codemode.retained_tool(scripted(execution), fn(_, _) {
+        panic as "nonterminal result must never invoke report retention"
+      })
+      as "retained synchronous tool assembles"
+    let outcome =
+      shell.run(
+        ctx_for("refused"),
+        json.Object([#("program", json.String("source"))]),
+      )
+    assert outcome.is_error
+    assert bit_array.byte_size(bit_array.from_string(text_of(outcome))) <= 4096
+    assert outcome.details
+      == case pair.1 {
+        None -> None
+        Some(stage) ->
+          Some(
+            json.Object([
+              #("kind", json.String("code_mode_not_run_v1")),
+              #("stage", json.String(stage)),
+            ]),
+          )
+      }
+  })
+}
+
+fn retained_execution(outcome: codemode.Outcome) -> codemode.Execution {
+  codemode.Execution(
+    ..ran(outcome),
+    result: codemode.Ran(outcome, string.repeat("a", 64)),
+  )
+}
+
+fn report_reference(
+  report: report_value.CompleteReport,
+) -> report_value.ReportRef {
+  let #(session, generator) =
+    ids.mint_session(ids.generator(clock.fixed(at: 0), 71))
+  let #(entry, _) = ids.mint_entry(generator)
+  let assert Ok(reference) =
+    report_value.reference(
+      session,
+      entry,
+      string.repeat("b", 64),
+      bit_array.byte_size(report_value.bytes(report)),
+    )
+    as "valid fake owner reference"
+  reference
+}
+
+pub fn retained_metadata_preserves_each_status_and_stage_test() {
+  let items = [
+    call_record.CallRecord("one", Some("alpha"), call_record.CallOk, None, 1, 2),
+    call_record.CallRecord(
+      "two",
+      None,
+      call_record.CallFailed,
+      Some("policy"),
+      3,
+      4,
+    ),
+    call_record.CallRecord(
+      "three",
+      Some("gamma"),
+      call_record.CallCancelled,
+      Some("cancel"),
+      5,
+      6,
+    ),
+    call_record.CallRecord("four", None, call_record.CallUnsettled, None, 7, 8),
+  ]
+  let expected_items = [
+    report_value.CallRecord(
+      "one",
+      Some("alpha"),
+      report_value.CallOk,
+      None,
+      1,
+      2,
+    ),
+    report_value.CallRecord(
+      "two",
+      None,
+      report_value.CallFailed,
+      Some("policy"),
+      3,
+      4,
+    ),
+    report_value.CallRecord(
+      "three",
+      Some("gamma"),
+      report_value.CallCancelled,
+      Some("cancel"),
+      5,
+      6,
+    ),
+    report_value.CallRecord(
+      "four",
+      None,
+      report_value.CallUnsettled,
+      None,
+      7,
+      8,
+    ),
+  ]
+  let value =
+    msgpack.MapValue([
+      #(msgpack.StringValue("calls"), msgpack.StringValue("forged")),
+      #(msgpack.BinaryValue(<<0, 255>>), msgpack.IntValue(9)),
+    ])
+  let base = retained_execution(codemode.Completed(value))
+  let execution =
+    codemode.Execution(
+      ..base,
+      enforcement: codemode.Enforcement(
+        codemode.Unreported("not observed"),
+        codemode.Enforced([], [], True),
+      ),
+      calls: call_record.CallLog(1000, 42, 4, 1, 1, 1, items),
+    )
+  let retained = process.new_subject()
+  let assert Ok(shell) =
+    codemode.retained_tool(scripted(execution), fn(_, report) {
+      let metadata = report_value.report_metadata(report)
+      assert report_value.outcome(report) == report_value.Completed(value)
+      assert report_value.manifest_hash(metadata) == string.repeat("a", 64)
+      assert report_value.enforcement(metadata)
+        == report_value.Enforcement(
+          report_value.Unreported("not observed"),
+          report_value.Reported([], [], report_value.Degraded),
+        )
+      assert report_value.calls(metadata)
+        == report_value.CallLog(1000, 42, 4, 1, 1, 1, expected_items)
+      process.send(retained, Nil)
+      Ok(report_reference(report))
+    })
+    as "The trusted renderer accepts exact bounded metadata."
+  let outcome =
+    shell.run(
+      ctx_for("retained-metadata"),
+      json.Object([#("program", json.String("source"))]),
+    )
+  assert !outcome.is_error
+  assert process.receive(retained, 0) == Ok(Nil)
+}
+
+pub fn retained_constructor_refuses_background_before_callbacks_test() {
+  let mode =
+    codemode.CodeMode(
+      ..scripted(retained_execution(codemode.Completed(msgpack.NilValue))),
+      background: Some(
+        codemode.Background(
+          fn(_) { panic as "Constructor must not launch." },
+          fn(_, _, _, _) { panic as "Constructor must not interact." },
+        ),
+      ),
+    )
+  let constructed =
+    codemode.retained_tool(mode, fn(_, _) {
+      panic as "Constructor must not retain."
+    })
+  let assert Error(_) = constructed
+    as "Async assembly cannot enter foreground custody."
+}
+
+pub fn invalid_metadata_returns_generic_without_retention_test() {
+  let base = retained_execution(codemode.Completed(msgpack.NilValue))
+  let execution =
+    codemode.Execution(
+      ..base,
+      result: codemode.Ran(codemode.Completed(msgpack.NilValue), "not-a-digest"),
+    )
+  let assert Ok(shell) =
+    codemode.retained_tool(scripted(execution), fn(_, _) {
+      panic as "Invalid metadata cannot issue a retention request."
+    })
+    as "Synchronous assembly does not consume future execution data."
+  let outcome =
+    shell.run(
+      ctx_for("retained-invalid"),
+      json.Object([#("program", json.String("source"))]),
+    )
+  assert outcome.is_error
+  assert outcome.details == None
 }
