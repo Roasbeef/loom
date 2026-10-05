@@ -747,7 +747,7 @@ pub fn a_principals_sign_ins_are_listed_with_a_two_step_revoke_test() {
   assert string.contains(html, "This browser")
   assert string.contains(html, "aaaaaaaaaaaaaaaa")
   assert string.contains(html, "bbbbbbbbbbbbbbbb")
-  assert string.contains(html, "from cc")
+  assert string.contains(html, "device link")
   assert count(html, ">Revoke sign-in<") == 2
   assert string.contains(html, "More sign-ins exist than this page lists")
 

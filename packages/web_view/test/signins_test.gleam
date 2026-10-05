@@ -139,8 +139,9 @@ pub fn a_page_with_no_sign_in_says_how_to_make_one_test() {
 }
 
 // Each row says whose it is, when it was signed in, when it last came back and
-// when it ends, in words, and a login a device link made says which one it came
-// from. Only the login this page belongs to is "This browser".
+// when it ends, in words, and a login a device link made says so. Only the login
+// this page belongs to is "This browser", and it leaves out the use clause: it
+// is in use, so "not used yet" would be false of it.
 pub fn a_row_says_when_it_was_made_last_used_and_ends_test() {
   let html =
     drawn(opened(
@@ -152,13 +153,22 @@ pub fn a_row_says_when_it_was_made_last_used_and_ends_test() {
   assert string.contains(html, "This browser")
   assert string.contains(html, "Another browser")
   assert list.length(string.split(html, "This browser")) == 2
+  assert string.contains(html, "signed in 2d ago · ends in 28d")
+  assert !string.contains(html, "last used 1h ago")
+  assert string.contains(
+    html,
+    "signed in 10m ago · device link · not used yet · ends in 3d",
+  )
+  assert !string.contains(html, "from 1111111111111111")
+}
+
+// The same row on a page that no login belongs to is another browser's, and
+// says when it last came back or that it has not.
+pub fn another_browsers_row_says_when_it_last_came_back_test() {
+  let html = drawn(opened(start(listing([here()]))))
   assert string.contains(
     html,
     "signed in 2d ago · last used 1h ago · ends in 28d",
-  )
-  assert string.contains(
-    html,
-    "signed in 10m ago · not used yet · ends in 3d · from 1111111111111111",
   )
 }
 
