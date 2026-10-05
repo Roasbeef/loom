@@ -178,6 +178,32 @@ pub fn node_env_pins_the_cap_handles_test() {
   assert list.length(env) == 3
 }
 
+pub fn satellite_environment_excludes_executor_vm_arguments_test() {
+  let dir = "/work/x"
+  let wire = process.new_subject()
+  let executor_env = [
+    #("PATH", "/usr/bin"),
+    #("ERL_AFLAGS", "-name executor@host"),
+    #("ERL_FLAGS", "-proto_dist inet_tls -setcookie private-cookie"),
+    #("ERL_ZFLAGS", "-ssl_dist_optfile /private/distribution.conf"),
+    #("ERL_FLAGS", "-name duplicate@host"),
+  ]
+  let launch_spec = satellite.LaunchSpec(..spec(dir, wire), env: executor_env)
+
+  // The same factory builds local and remote offers. Remove every duplicate
+  // before deriving either the actual environment or its permission request.
+  assert launch.node_env(launch_spec)
+    == [
+      #(launch.sock_env, dir <> "/sock/cap.sock"),
+      #(launch.token_env, dir <> "/token/cap-token"),
+      #("PATH", "/usr/bin"),
+    ]
+  let assert Ok(requirements) =
+    launch.node_requirements(launch_spec, host_mounts: [], now_ms: t)
+    as "satellite requirements derive from its fixed command"
+  assert requirements.env_allow == [launch.sock_env, launch.token_env, "PATH"]
+}
+
 // --- the requirements put to the session base -----------------------------
 
 pub fn node_requirements_turn_the_network_off_test() {
