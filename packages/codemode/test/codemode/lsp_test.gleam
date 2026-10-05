@@ -659,12 +659,30 @@ pub fn sentence_errors_are_refusals_with_their_codes_test() {
 pub fn not_found_is_an_unresolved_answer_test() {
   let outcome =
     serviced(
-      refusing(query.NotFound(asked())),
+      refusing(query.NotFound(asked(), searched: None)),
       "lsp.references",
       args_for("lsp.references"),
     )
   assert ok_value(outcome)
     == map([#("unresolved", text("not_found")), #("symbol", text("util.greet"))])
+}
+
+pub fn not_found_carries_the_root_a_bare_search_covered_test() {
+  let outcome =
+    serviced(
+      refusing(query.NotFound(
+        asked(),
+        searched: Some("the go server rooted at /work/app"),
+      )),
+      "lsp.references",
+      args_for("lsp.references"),
+    )
+  assert ok_value(outcome)
+    == map([
+      #("unresolved", text("not_found")),
+      #("symbol", text("util.greet")),
+      #("searched", text("the go server rooted at /work/app")),
+    ])
 }
 
 pub fn ambiguous_carries_its_candidates_test() {

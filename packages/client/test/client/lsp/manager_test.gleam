@@ -963,6 +963,43 @@ pub fn a_relative_path_still_means_the_workspace_test() {
   Nil
 }
 
+pub fn an_empty_bare_name_search_says_which_tree_it_searched_test() {
+  let workspace = scratch("searched-root")
+  let root = project(workspace, "app")
+  let rig = rig(workspace, no_search, outline_script)
+  let door = rig.door
+
+  // Before any server runs, the search covers the whole workspace for every
+  // configured server, and says so.
+  let assert Error(query.NotFound(asked, Some(searched))) =
+    door.definition(query.SymbolQuery("ParseLevel", None, None))
+    as "a name nothing defines is not found"
+  assert asked.symbol == "ParseLevel"
+  assert searched == "the workspace " <> workspace
+
+  // Once a server runs, the search covers its project root, and the answer
+  // names that root rather than the workspace.
+  let assert Ok(_) = door.outline("app/src/a.gleam") as "the server must start"
+  let assert Error(query.NotFound(_, Some(searched))) =
+    door.definition(query.SymbolQuery("ParseLevel", None, None))
+    as "a name nothing defines is still not found"
+  assert searched
+    == "the fake server rooted at " <> resolve.workspace_real(root)
+
+  // A question that named its file says nothing of roots: the path already
+  // told the harness where to look.
+  let assert Error(query.NotFound(_, None)) =
+    door.definition(query.SymbolQuery(
+      "ParseLevel",
+      Some("app/src/a.gleam"),
+      None,
+    ))
+    as "a name absent from a named file is not found there"
+  manager.stop(rig.manager)
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
 pub fn two_distinct_definitions_are_ambiguous_and_a_qualifier_narrows_test() {
   let workspace = scratch("ambiguous")
   let root = project(workspace, "app")
@@ -1006,7 +1043,7 @@ pub fn two_distinct_definitions_are_ambiguous_and_a_qualifier_narrows_test() {
     as "a qualifier must pick the module"
   assert list.map(served.value, fn(site) { #(site.path, site.line) })
     == [#("app/src/b.gleam", 1)]
-  let assert Error(query.NotFound(_)) =
+  let assert Error(query.NotFound(_, _)) =
     rig.door.definition(query.SymbolQuery("c.greet", None, None))
     as "a qualifier nothing satisfies finds nothing"
   manager.stop(rig.manager)
@@ -1927,7 +1964,7 @@ fn run_gleam(live: Live) -> Nil {
     as "a qualified symbol must resolve"
   assert sites(served) == [#(probe_path, 1)]
   assert served.warmth == query.Warm
-  let assert Error(query.NotFound(_)) =
+  let assert Error(query.NotFound(_, _)) =
     door.definition(query.SymbolQuery("nowhere.greet", None, None))
     as "a qualifier no file satisfies finds nothing"
 

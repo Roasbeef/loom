@@ -132,10 +132,14 @@ const unavailable_code = "server_unavailable"
 ///
 /// With `path` and `line`, the first occurrence of the identifier on that
 /// line is meant. With `path` alone, the file's outline is searched by
-/// name. With neither, the whole project is searched, and more than one
-/// distinct definition is `Ambiguous` rather than a guess. A `line`
-/// without a `path` narrows nothing and is refused as `LspDenied` with
-/// code `invalid_argument`, as is a line below 1.
+/// name. With neither, the session's project is searched, and more than one
+/// distinct definition is `Ambiguous` rather than a guess. That search can
+/// only answer about the tree the session's server is rooted in; a `path`
+/// outside the workspace is refused as `NoServer` rather than answered from
+/// that tree, and a `NotFound` from the search names the root it covered.
+///
+/// A `line` without a `path` narrows nothing and is refused as `LspDenied`
+/// with code `invalid_argument`, as is a line below 1.
 pub type Query {
   Query(
     /// The symbol's name, plain or qualified.
@@ -381,7 +385,10 @@ pub type RenameReport {
 /// can act on, which is why none of them is a bare string.
 pub type LspError {
   /// No configured server owns the path, the path's real location is
-  /// outside the server's root, or the server could not start.
+  /// outside the server's root, or the server could not start. A path
+  /// outside the session's workspace is always this, never an answer from
+  /// the workspace's own tree: `reason` names the path and the root, and
+  /// a relative path means the workspace.
   NoServer(reason: String)
 
   /// The server does not offer `request` (for example call hierarchy),
@@ -389,7 +396,14 @@ pub type LspError {
   Unsupported(server: String, request: String)
 
   /// The symbol was not found where the query said to look.
-  NotFound(symbol: String)
+  ///
+  /// A query with no `path` searches one server's project root, and
+  /// `searched` names it ("the go server rooted at /work/app"). An empty
+  /// answer from that search says nothing about any other tree, such as a
+  /// sibling clone of the same project, so read `searched` before taking
+  /// the answer for the code you meant. It is `None` when the query named a
+  /// file, because the path already says where the harness looked.
+  NotFound(symbol: String, searched: Option(String))
 
   /// More than one distinct definition matched. Narrow the query with
   /// `in` or `at_line` using one of these.
@@ -661,7 +675,8 @@ fn decode_unresolved(value: MsgPackValue) -> Result(LspError, String) {
   case tag {
     "not_found" -> {
       use symbol <- result.try(wire.string_field(value, "symbol"))
-      Ok(NotFound(symbol:))
+      use searched <- result.try(optional_text(value, "searched"))
+      Ok(NotFound(symbol:, searched:))
     }
 
     "ambiguous" -> {

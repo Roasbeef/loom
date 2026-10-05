@@ -258,7 +258,7 @@ fn query_message(error: query.QueryError) -> String {
     query.ServerRefused(message) -> message
     query.Unsupported(server, request) ->
       server <> " does not support " <> request
-    query.NotFound(asked) -> "symbol not found: " <> asked.symbol
+    query.NotFound(asked, searched: _) -> "symbol not found: " <> asked.symbol
     query.Ambiguous(_) -> "reference seed is ambiguous; narrow its line"
   }
 }

@@ -112,7 +112,14 @@ pub type QueryError {
   Unsupported(server: String, request: String)
 
   /// The symbol was not found where the query said to look.
-  NotFound(query: SymbolQuery)
+  ///
+  /// `searched` is set when the query named no file, so the search covered
+  /// a server's project root rather than a place the model chose: it words
+  /// that root ("the go server rooted at /work/app") so an empty answer
+  /// is never taken for one about some other tree. A query that named a
+  /// file leaves it `None`, since the path already says where the harness
+  /// looked.
+  NotFound(query: SymbolQuery, searched: Option(String))
 
   /// More than one distinct definition matched; the model narrows with a
   /// path or a line.

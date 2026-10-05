@@ -378,7 +378,24 @@ pub fn not_found_decodes_test() {
     answering(
       map([#("unresolved", text("not_found")), #("symbol", text("util.greet"))]),
     )
-  assert lsp.references(query()) == Error(lsp.NotFound(symbol: "util.greet"))
+  assert lsp.references(query())
+    == Error(lsp.NotFound(symbol: "util.greet", searched: None))
+}
+
+pub fn not_found_decodes_the_root_a_bare_search_covered_test() {
+  let _take =
+    answering(
+      map([
+        #("unresolved", text("not_found")),
+        #("symbol", text("ParseLevel")),
+        #("searched", text("the go server rooted at /work/app")),
+      ]),
+    )
+  assert lsp.references(query())
+    == Error(lsp.NotFound(
+      symbol: "ParseLevel",
+      searched: Some("the go server rooted at /work/app"),
+    ))
 }
 
 pub fn ambiguous_decodes_candidates_test() {
