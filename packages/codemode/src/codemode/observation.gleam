@@ -12,6 +12,7 @@ import core/msgpack as m
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
+import gleam/string
 import lsp/observation as o
 import lsp/query
 import tools/hashline
@@ -252,13 +253,28 @@ fn encode(batch: o.Batch) -> m.MsgPackValue {
   ])
 }
 
+// A bare name is the usual reason a seed misses: the server indexes a method
+// under its receiver and a package-level item under its package, and a program
+// that wrote only the last segment gets no more than "not found" to go on. The
+// resolver is unchanged; only the reason says what to try.
+fn not_found_message(symbol: String) -> String {
+  case string.contains(symbol, ".") {
+    True -> "symbol not found: " <> symbol
+    False ->
+      "symbol not found: "
+      <> symbol
+      <> "; the name is unqualified, and the server may want the qualified "
+      <> "form (package.Name, or Receiver.Method for a method)"
+  }
+}
+
 fn query_message(error: query.QueryError) -> String {
   case error {
     query.NoServer(reason) | query.Unavailable(reason) -> reason
     query.ServerRefused(message) -> message
     query.Unsupported(server, request) ->
       server <> " does not support " <> request
-    query.NotFound(asked) -> "symbol not found: " <> asked.symbol
+    query.NotFound(asked) -> not_found_message(asked.symbol)
     query.Ambiguous(_) -> "reference seed is ambiguous; narrow its line"
   }
 }
