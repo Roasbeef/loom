@@ -245,7 +245,17 @@ cannot hide the capability error. This does not grant the program a new effect.
 `Cell` values and uses a caller-owned `RowDecoder(a)`. `QueryResult(a)` keeps
 typed rows and column names beside unchanged provenance. `QueryError` names
 authorization, statement, budget, value and decoder failures without parsing
-sentences. A SELECT or decoder issues no host calls.
+sentences. A SELECT or decoder issues no host calls. `schema()` returns the
+four tables and their columns from one definition (the `query` doc repeats it,
+because the prelude keeps only function docs, and a test runs every column
+through the native boundary). A query that names an unknown table or
+`sqlite_master` is refused with the table list in its reason. `error_text`,
+`query_error_text` and `cell_text` render errors and cells for a report.
+
+Every capability module whose public error type had no renderer ships
+`error_text(Error) -> String`, exhaustive and one line, following
+`strand.error_text`; `lsp_sql` has a second, `query_error_text`, for its second
+error type. Programs used to hand-write these.
 
 Native authorization and progress/heap enforcement cannot be implemented by
 the pure Gleam API. `cap/internal/ffi_lsp_sql` delegates through

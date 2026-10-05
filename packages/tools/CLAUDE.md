@@ -17,7 +17,15 @@ batching and compact returned evidence. The description retains the offered
 seams, concurrency contract, recipes, module index and generated public types.
 A `BuildRejected` result says compilation and execution never completed and
 asks for diagnostic repair, including warnings. Compiler diagnostics and the
-structured failure fields remain intact; no automatic resubmission is added.
+structured failure fields remain intact; no automatic resubmission is added
+by this tool. The pipeline itself rebuilds once without unused imports
+(`codemode/unused_imports`); `Execution.edits` carries what it removed, and the
+result text and `details.edits` say so on success and on failure.
+
+A compile error whose diagnostics mention an admitted capability module, and a
+run whose call record shows a failed capability call, add one line naming the
+`fs_read cap://<module>` reads (`tools/codemode_pointer`, at most two modules,
+none when nothing applies). Vetting refusals never get the line.
 
 ## Saved program source
 

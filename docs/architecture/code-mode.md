@@ -962,6 +962,27 @@ vetting's allowlist remains their only gate. And every module present
 remains loadable at run time by a hand-written `.beam`, which is the
 jail's problem, not the build's.
 
+The flag also fails a program whose only fault is an unused import, which
+used to cost a model round trip to delete a line the compiler had already
+named. So one failure shape is repaired in the pipeline: when a build is
+rejected and **every** diagnostic is an unused-import warning (`Unused
+imported module`, or `value`, `type` or `item` for a name inside an
+unqualified `{...}` list), `codemode.execute` removes exactly what the
+compiler named, vets the rewritten source again under the same policy,
+and builds once more in the same root. The rewrite is
+`codemode/unused_imports.rewrite`, a pure parser over the compiler's text
+(the pinned toolchain offers no machine-readable diagnostics) that refuses
+on anything else: another warning, including the transitive-dependency
+one, an error, a diagnostic it cannot parse, a summary that does not
+count every warning (the captured output is cut at a fixed size), or a
+location, underline or echoed line that disagrees with the source. There
+is never a second rewrite; the second build's result is final. What runs
+is what was vetted: the rewritten source is what the second build
+compiled, what its content address covers, and what `Ran.source` carries.
+`Execution.edits` lists the removals (`removed unused import gleam/int
+(line 3)`); the model reads them on success and on failure, and a failure
+adds that its diagnostic line numbers are for the rewritten program.
+
 Two behaviors of Gleam's resolver stand between a pinned manifest and a
 build that actually runs offline, and both look like accidents until you
 hit them:

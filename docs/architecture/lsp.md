@@ -507,8 +507,13 @@ boundaries, or whose outline parent chain does. Under `module_case =
 "snake"` the module-path comparison maps each segment to snake_case
 first (`MyApp` to `my_app`, `HTTPServer` to `http_server`); the parent
 chain is the server's own spelling of a type and is compared as written.
+A server may spell a method with its receiver as one top-level outline
+entry, as gopls does (`(*Server).handle`, `(Server).handle`); the method part
+of such a name counts as the entry's name and its receiver as a parent for a
+qualifier, so `handle`, `Server.handle` and `(*Server).handle` all find it.
 A name that still reaches more than one distinct definition is answered
-with the candidates, never a guess.
+with the candidates, never a guess, including one method name on two
+receivers in one file.
 
 The answers are shaped to be the agent's next step rather than a report
 to read:
