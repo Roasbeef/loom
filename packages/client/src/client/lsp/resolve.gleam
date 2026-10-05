@@ -626,18 +626,46 @@ pub fn satisfies(
   string.ends_with(module, wanted) || string.ends_with(directory, wanted)
 }
 
+/// Whether a server's outline spells a method with its receiver in the
+/// entry's own name.
+pub type MethodNames {
+  /// The entry is `(*T).M` or `T.M`, as gopls writes it.
+  ReceiverNames
+
+  /// The entry is the bare name, with any receiver in its parent chain.
+  ExactNames
+}
+
+/// The method spelling to expect from `server`. Only the Go server is known
+/// to name methods with their receiver, so every other server keeps whole-name
+/// matching and a dotted name such as Elixir's `MyApp.Server` is never split.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // resolve.method_names(go_server) == resolve.ReceiverNames
+/// ```
+///
+pub fn method_names(server: LspServer) -> MethodNames {
+  case server.language_id {
+    "go" -> ReceiverNames
+    _other -> ExactNames
+  }
+}
+
 /// Positions of every outline entry named `identifier`, with the entry's
 /// parents joined as `Outer.inner`. A qualifier keeps an entry when its
 /// parent chain ends with it, or when the file at `path` under `root`
 /// satisfies it (the qualifier named the module rather than a type).
 ///
-/// A method that the server spells with its receiver, as gopls does
-/// (`(*Server).handle`, `(Server).handle` or `Server.handle` as one
-/// top-level entry), is named by its method part too, and its receiver
-/// counts as a parent for a qualifier: `handle`, `Server.handle` and
-/// `(*Server).handle` all find it. The same method name on two receivers
-/// in one file yields two entries, so the caller reports it as ambiguous
-/// rather than picking one.
+/// With `ReceiverNames` (`method_names` says which servers), a method the
+/// server spells with its receiver, as gopls does (`(*Server).handle`,
+/// `(Server).handle` or `Server.handle` as one top-level entry), is named by
+/// its method part too, and its receiver counts as a parent for a qualifier:
+/// `handle`, `Server.handle` and `(*Server).handle` all find it. The same
+/// method name on two receivers in one file yields two entries, so the caller
+/// reports it as ambiguous rather than picking one. With `ExactNames` an
+/// entry is matched by its whole name only, as before.
 ///
 /// Only the module match is `cased`. A parent chain is the server's own
 /// spelling of a type (`Server.handle` in Elixir is `Server`, not
@@ -657,10 +685,12 @@ pub fn named(
   module_case: ModuleCase,
   root root: String,
   path path: String,
+  methods methods: MethodNames,
 ) -> List(#(String, Position)) {
   flatten(symbols)
   |> list.filter(fn(entry) {
-    entry.name == identifier || method_part(entry.name) == Ok(identifier)
+    entry.name == identifier
+    || { methods == ReceiverNames && method_part(entry.name) == Ok(identifier) }
   })
   |> list.filter(fn(entry) {
     case qualifier {
@@ -671,7 +701,7 @@ pub fn named(
           "/" <> string.replace(entry.parents, ".", "/"),
           "/" <> qualifier,
         )
-        || receiver_named(entry.name, qualifier)
+        || { methods == ReceiverNames && receiver_named(entry.name, qualifier) }
     }
   })
   |> list.map(fn(entry) { #(qualified(entry), entry.at) })

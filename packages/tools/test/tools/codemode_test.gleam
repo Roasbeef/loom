@@ -16,6 +16,7 @@ import broker/escalation
 import broker/exec
 import broker/framing
 import broker/policy
+import cap/lsp_sql
 import core/clock
 import core/ids.{type OpId}
 import core/json
@@ -28,6 +29,7 @@ import gleam/string
 import simplifile
 import tools/call_record
 import tools/codemode
+import tools/codemode_recipes
 import tools/directory_access
 import tools/fs
 import tools/prelude
@@ -903,6 +905,20 @@ pub fn a_failed_capability_call_says_which_reference_to_read_test() {
     text_of(outcome),
     "\nsee fs_read cap://proc for its types, functions and error helpers\n",
   )
+
+  // A program that completed despite the failed call handled it itself, so
+  // it gets no hint.
+  let completed =
+    call(
+      scripted(
+        codemode.Execution(
+          ..ran(codemode.Completed(msgpack.NilValue)),
+          calls: failed_proc,
+        ),
+      ),
+      [#("program", json.String("..."))],
+    )
+  assert !string.contains(text_of(completed), "fs_read cap://")
 
   // The shared fixture's failed call is `fs.read`, and this offer does not
   // admit `cap/fs`, so a reference the host would refuse is never named.
@@ -2250,4 +2266,40 @@ pub fn a_program_cannot_forge_the_call_record_test() {
   assert list.key_find(fields, "calls") == Ok(call_record.to_json(some_calls()))
   assert list.key_find(fields, "value")
     == Ok(json.Object([#("calls", json.String("forged"))]))
+}
+
+// The prelude generator keeps only the prose before a doc's first heading,
+// so a fact written under `## Tables` never reached a model, and nothing
+// failed. This pins what the model is actually shown: every table line of
+// `lsp_sql.schema()` is in the generated `cap/lsp_sql` surface (collapsed
+// of line wrapping), and the description carries the compiling recipe.
+pub fn the_lsp_sql_schema_and_recipe_reach_the_model_test() {
+  let sql =
+    codemode.SeamOffer(
+      ..workspace_offer(),
+      allowed_imports: [
+        "cap/lsp_sql", "cap/report", "gleam/option", "gleam/string",
+      ],
+      serviced_caps: ["lsp.snapshot"],
+    )
+  let mode = echoing_over(codemode.one_seam(sql))
+  let collapse = fn(text) {
+    text
+    |> string.split(" ")
+    |> list.filter(fn(w) { w != "" })
+    |> string.join(" ")
+  }
+  let flatten = fn(text) {
+    collapse(string.replace(text, "\n", " ") |> string.replace("/// ", ""))
+  }
+  let assert Ok(surface) =
+    codemode.cap_scheme(mode).read(ctx_for("discovery"), "lsp_sql")
+  let surface = flatten(surface)
+  list.each(string.split(lsp_sql.schema(), "\n"), fn(line) {
+    assert string.contains(surface, line)
+  })
+  assert string.contains(
+    codemode.description(mode),
+    codemode_recipes.lsp_sql_skeleton(),
+  )
 }

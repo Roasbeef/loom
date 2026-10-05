@@ -120,3 +120,13 @@ pub fn the_line_is_one_sentence_and_empty_when_nothing_applies_test() {
   assert codemode_pointer.line(["cap/lsp_sql", "cap/lsp", "cap/fs"])
     == "see fs_read cap://lsp_sql and cap://lsp for their types, functions and error helpers"
 }
+
+pub fn an_import_path_is_not_found_inside_a_longer_one_test() {
+  // `cap/lsp` is the front of `cap/lsp_sql`, and the compiler writes the
+  // longer path.
+  assert codemode_pointer.compile_modules(
+      "The module `cap/lsp_sql` does not have a `Plann` value.",
+      admitted,
+    )
+    == ["cap/lsp_sql"]
+}

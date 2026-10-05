@@ -140,10 +140,36 @@ fn mention_index(text: String, module: String) -> Result(Int, Nil) {
   }
 }
 
+// The offset of the first mention of `needle` that is not the front of a
+// longer name: `cap/lsp` is found in `cap/lsp.` but not inside `cap/lsp_sql`.
 fn first_index(text: String, needle: String) -> Result(Int, Nil) {
-  case string.split(text, needle) {
-    [before, _after, ..] -> Ok(string.length(before))
-    _none -> Error(Nil)
+  first_bounded(text, needle, 0)
+}
+
+fn first_bounded(
+  text: String,
+  needle: String,
+  offset: Int,
+) -> Result(Int, Nil) {
+  case string.split_once(text, on: needle) {
+    Error(Nil) -> Error(Nil)
+    Ok(#(before, after)) ->
+      case starts_a_name(after) {
+        False -> Ok(offset + string.length(before))
+        True ->
+          first_bounded(
+            after,
+            needle,
+            offset + string.length(before) + string.length(needle),
+          )
+      }
+  }
+}
+
+fn starts_a_name(after: String) -> Bool {
+  case string.pop_grapheme(after) {
+    Error(Nil) -> False
+    Ok(#(first, _rest)) -> string.contains(name_characters, first)
   }
 }
 

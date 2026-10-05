@@ -1928,11 +1928,17 @@ fn ran_outcome(
         edits_fields(execution),
       ]),
     )
-  let pointer =
-    pointer_suffix(codemode_pointer.failed_call_modules(
-      execution.calls,
-      offer.allowed_imports,
-    ))
+
+  // A program that completed handled its failed calls itself, so a hint
+  // about them would read as a fault it did not have.
+  let pointer = case is_error {
+    False -> ""
+    True ->
+      pointer_suffix(codemode_pointer.failed_call_modules(
+        execution.calls,
+        offer.allowed_imports,
+      ))
+  }
   let text =
     body
     <> edits_suffix(execution)
@@ -2161,17 +2167,36 @@ fn recipes_text(seams: Seams) -> String {
       list.all(needed, fn(name) { list.contains(offer.allowed_imports, name) }),
       offer.seam
     {
-      False, _ -> text
+      False, _ -> text <> lsp_sql_recipe(offer)
       True, WorkspaceSeam ->
         text
         <> "\nWorkspace recipe (seam: workspace): read JSON inputs in parallel, save structured analysis, and export JSON.\n```gleam\n"
         <> codemode_recipes.workspace()
         <> "```\n"
+        <> lsp_sql_recipe(offer)
       True, OrchestrationSeam ->
         text
         <> "\nOrchestration recipe (seam: orchestration): bounded child reviews with structured results saved to notes. Results preserve assignment order; keep pending handles and retry only NotStarted work after prior children settle.\n```gleam\n"
         <> codemode_recipes.orchestration()
         <> "```\n"
+        <> lsp_sql_recipe(offer)
     }
   })
+}
+
+// The `lsp_sql` skeleton, for an offer that admits every module it imports.
+// It lives here rather than in a module doc because the prelude generator
+// keeps only the prose before a doc's first heading, and a recipe is the
+// one place the description already carries a whole compiling program.
+fn lsp_sql_recipe(offer: SeamOffer) -> String {
+  let needed = ["cap/lsp_sql", "cap/report", "gleam/option", "gleam/string"]
+  case
+    list.all(needed, fn(name) { list.contains(offer.allowed_imports, name) })
+  {
+    False -> ""
+    True ->
+      "\nLSP SQL recipe: capture once, join with SQL, and return every branch as a report.Outcome.\n```gleam\n"
+      <> codemode_recipes.lsp_sql_skeleton()
+      <> "```\n"
+  }
 }

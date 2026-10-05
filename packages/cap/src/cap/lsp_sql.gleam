@@ -263,21 +263,10 @@ pub fn metadata(observation: Observation) -> Metadata {
 /// one-million-operation bound, thirty-two columns and a one-MiB output cap.
 /// Bound parameters are Cells; blobs are unavailable in this vocabulary.
 ///
-/// ## Tables
-///
-/// Only these four tables exist, and `sqlite_master` is not readable. The same
-/// text is returned by `lsp_sql.schema()`.
-///
-/// ```text
-/// documents(path, digest, version)
-/// symbols(id, parent_id, name, kind, detail, path, line, column, text, anchor)
-/// targets(id, symbol, asked_path, asked_line, path, line, column, text, anchor)
-/// "references"(target_id, path, line, column, text, anchor)
-/// ```
-///
-/// `references` is an SQL keyword, so quote it. `targets` holds one row per
-/// requested `Target` (a capture fails if one cannot resolve), and `"references".target_id` points at
-/// `targets.id`.
+/// The tables are listed by `schema()`; `"references"` is an SQL keyword, so
+/// quote it. Joining `targets` to `"references"` on `target_id = id` pairs each
+/// requested target with its references, and a LEFT JOIN with `WHERE
+/// r.target_id IS NULL` proves a requested target has none.
 ///
 /// ## Examples
 ///
@@ -538,9 +527,12 @@ pub fn query_error_text(error: QueryError) -> String {
 }
 
 // The one definition of the schema. `schema()` renders it and the table hint
-// in a refusal quotes its names. `query`'s doc repeats it because the prelude
-// keeps only function docs; a test runs every listed column against the native
-// boundary, so this list cannot drift from the tables the bridge creates.
+// in a refusal quotes its names. `schema`'s doc repeats it as prose, because
+// the prelude generator keeps only the paragraphs before a doc's first
+// heading and a fenced block would not survive. A cap test runs every listed
+// column against the native boundary, and a tools test checks that the
+// generated surface carries each line of `schema()`, so neither this list nor
+// that prose can drift from the tables the bridge creates.
 const tables = [
   #("documents", ["path", "digest", "version"]),
   #("symbols", [
@@ -560,6 +552,13 @@ const table_hint =
 /// The fixed tables and columns every query runs against, one table per
 /// line, so a program can print them instead of probing `sqlite_master`, which
 /// the read-only authorizer refuses.
+///
+/// Only these four tables exist: documents(path, digest, version),
+/// symbols(id, parent_id, name, kind, detail, path, line, column, text,
+/// anchor), targets(id, symbol, asked_path, asked_line, path, line, column,
+/// text, anchor) and "references"(target_id, path, line, column, text,
+/// anchor). A requested target is one row of targets, and
+/// "references".target_id points at targets.id.
 ///
 /// ## Examples
 ///

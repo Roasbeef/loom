@@ -45,6 +45,7 @@ fn found(identifier: String, qualifier: option.Option(String)) -> List(Int) {
     profile.AsWritten,
     root: "/w",
     path: "/w/auth/multi_authenticator.go",
+    methods: resolve.ReceiverNames,
   )
   |> list_lines
   |> list.sort(int.compare)
@@ -87,4 +88,19 @@ pub fn one_method_name_on_two_receivers_stays_two_entries_test() {
 pub fn a_plain_entry_is_still_found_by_its_whole_name_test() {
   assert found("Helper", None) == [120]
   assert found("MultiAuthenticator", None) == [10]
+}
+
+pub fn another_servers_dotted_names_keep_whole_name_matching_test() {
+  // Under `ExactNames` the same outline does not split `(*Mux).Close`.
+  let found =
+    resolve.named(
+      outline(),
+      "Close",
+      None,
+      profile.AsWritten,
+      root: "/w",
+      path: "/w/lib/mux.ex",
+      methods: resolve.ExactNames,
+    )
+  assert found == []
 }

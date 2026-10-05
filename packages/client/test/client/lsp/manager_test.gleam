@@ -368,6 +368,7 @@ pub fn the_container_is_the_innermost_entry_qualified_by_its_parents_test() {
       profile.AsWritten,
       root: "/w",
       path: "/w/x.gleam",
+      methods: resolve.ExactNames,
     )
     == [#("Server.handle", range.Position(2, 6))]
   assert resolve.named(
@@ -377,6 +378,7 @@ pub fn the_container_is_the_innermost_entry_qualified_by_its_parents_test() {
       profile.AsWritten,
       root: "/w",
       path: "/w/x.gleam",
+      methods: resolve.ExactNames,
     )
     == []
 }
@@ -415,6 +417,7 @@ pub fn a_parent_type_matches_as_written_under_snake_test() {
       profile.Snake,
       root: "/w",
       path: "/w/lib/web/endpoint.ex",
+      methods: resolve.ExactNames,
     )
     == [#("Server.handle", range.Position(2, 6))]
 
@@ -427,6 +430,7 @@ pub fn a_parent_type_matches_as_written_under_snake_test() {
       profile.Snake,
       root: "/w",
       path: "/w/lib/web/endpoint.ex",
+      methods: resolve.ExactNames,
     )
     == [#("Server.handle", range.Position(2, 6))]
   assert resolve.named(
@@ -436,6 +440,7 @@ pub fn a_parent_type_matches_as_written_under_snake_test() {
       profile.AsWritten,
       root: "/w",
       path: "/w/lib/web/endpoint.ex",
+      methods: resolve.ExactNames,
     )
     == []
 }

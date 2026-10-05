@@ -1,5 +1,5 @@
 //// Unused-import removal reads the compiler's own text, so these tests run
-//// over output captured from the pinned Gleam toolchain (1.19.0-rc2) rather
+//// over output captured from the pinned Gleam toolchain (1.19.0) rather
 //// than over a model of it, with the build root path shortened to `/b`.
 //// Every refusal the module promises has a test: another warning beside the
 //// unused imports (the transitive-dependency one above all), an error, a
