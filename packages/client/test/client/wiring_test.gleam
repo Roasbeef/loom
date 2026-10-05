@@ -449,6 +449,9 @@ pub fn clearance_refuses_an_unlisted_tool_test() {
     clearance(["bash", "grep"], "fs_write")
   assert string.contains(reason, "fs_write")
   assert string.contains(reason, "not active")
+  // The refusal also says what the strand can call, so a child whose
+  // system prompt lists more learns its real set from the first miss.
+  assert string.contains(reason, "can call only: bash, grep.")
 }
 
 pub fn clearance_refuses_an_unregistered_tool_test() {

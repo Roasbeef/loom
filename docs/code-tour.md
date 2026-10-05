@@ -732,7 +732,7 @@ human approved. What the clearance won then travels onto the dispatch it
 authorized — `take_cleared` (`runtime/strand_runtime.gleam:1693`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
-`Ctx.grants` (`run_grants`, `client/wiring.gleam:2013`). That is the
+`Ctx.grants` (`run_grants`, `client/wiring.gleam:2019`). That is the
 whole channel: an approval a human gave for this call, reaching the
 policy composition this call is judged by. It used to stop at the query.
 

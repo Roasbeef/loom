@@ -267,8 +267,9 @@ its own durable configuration, `StrandConfiguration.active_tool_names`.
 At session assembly, `client/serve` seeds the primary strand's list
 with every registered name except `advise`, which only the advisor
 strand is granted. A spawned child receives its parent's list,
-narrowed to the tools the spawn requested, and loses `agent_spawn` at
-the depth cap. An operator can replace a strand's list through the
+narrowed to the tools the spawn requested plus the communication floor
+(`agent_note`, `agent_send`, when the parent holds them), and loses
+`agent_spawn` at the depth cap. An operator can replace a strand's list through the
 gateway's `active_tools` configuration key. The gateway refuses any
 unregistered name and stores the list sorted and deduplicated.
 

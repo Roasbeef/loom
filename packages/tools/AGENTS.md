@@ -845,6 +845,11 @@ was asked.
   rejection, because a model that has to guess an import surface pays a
   whole wasted submission in output tokens, which is the dearer side of
   that ledger.
+- **A child keeps a communication floor.** An explicit `tools` list on
+  `agent_spawn` replaces the default, so `child_floor_tools` (`agent_note`,
+  `agent_send`) is added back, limited to what the parent holds and never
+  including `agent_spawn`. The Agency's `child_notice` then tells the child
+  its real tool set and that its final message is its result.
 - **A result contract is a lower bound, refused loudly at both ends.** A
   spawn may carry a `result_schema`; the child records the matching value
   as an ordinary `agent_note` under `result_note_key`, and `Waited.Ready`

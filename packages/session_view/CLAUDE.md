@@ -643,7 +643,7 @@ observer's page holds no command.
   and peer cards draw their bodies as Markdown too.
 - **`strand_framing` owns the Agency's framing strings, and `strip` runs only
   for a stored `StrandOrigin`.** `client/agency` builds `frame_message`,
-  `frame_brief` and `result_contract` from them, because `client` depends on
+  `frame_brief` and `child_notice` from them, because `client` depends on
   `session_view`. `strip` compares exact strings built from the origin's own
   strand, anchors a brief's trailer on the last foot plus opening line and the
   closing marker at the end, and returns any text that is not exactly the
